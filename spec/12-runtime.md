@@ -585,6 +585,7 @@ WASM traps are unrecoverable runtime errors. The following conditions cause trap
 |-----------|-----------------|--------|------|
 | Integer division by zero | `i64.div_s`, `i64.rem_s` | `/` or `%` on `Int` or `Nat` | `divide_by_zero` |
 | Integer overflow (in `i64.div_s`) | `i64.div_s` | `Int.min_value / -1` | `overflow` |
+| Float-to-integer truncation of NaN, an infinity or a value past its range | `i64.trunc_f64_s`, etc. | `float_to_string` of a finite value of magnitude 2^63 or more ([#1482](https://github.com/aallan/vera/issues/1482)); every other conversion is checked before it truncates (Chapter 11, Section 11.8.5) | `float_conversion` |
 | A failed runtime check | `unreachable`, after a `vera.contract_fail` or `vera.trap` call | A contract, arithmetic overflow, a `@Nat` narrowing or widening, `@Nat` subtraction, an `assert`, an array or `string_char_code` index, a `Float64` to `Int` conversion, heap exhaustion | The kind the call names (Sections 12.4.3, 12.4.6) |
 | A runtime-internal limit | `unreachable`, with no call before it | GC shadow-stack overflow, a collector limit, a WASI host I/O failure | `unreachable` |
 | Out-of-bounds memory access | `i64.load`, etc. | Invalid pointer dereference by a runtime helper | `out_of_bounds` |

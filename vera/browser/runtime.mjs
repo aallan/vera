@@ -153,7 +153,7 @@ const TRAP_TABLE = {
     ],
     [
       "float unrepresentable in integer range",
-      "overflow"
+      "float_conversion"
     ],
     [
       "memory access out of bounds",

@@ -12,7 +12,13 @@ from typing import TYPE_CHECKING
 
 from dataclasses import dataclass
 
-from vera.trap_registry import TRAP_KINDS, WASMTIME_NATIVE_TRAPS, kind_for_code
+from vera.trap_registry import (
+    NATIVE_TRAP_OPCODES,
+    TRAP_KINDS,
+    WASMTIME_NATIVE_TRAPS,
+    kind_for_code,
+    native_trap_kind,
+)
 
 if TYPE_CHECKING:
     pass
@@ -404,10 +410,30 @@ def _classify_host_error(exc: BaseException) -> tuple[str, str, str]:
     )
 
 
+def trapping_instruction(
+    exc: BaseException, wasm_bytes: bytes | bytearray,
+) -> str | None:
+    """The natively trapping instruction a wasmtime trap stopped at, or None.
+
+    The innermost frame's offset into the module is the trapping
+    instruction's, so the opcode there says which instruction it was
+    (#1479) — needed because wasmtime gives a truncation past its range and
+    ``INT_MIN / -1`` the same reason, "integer overflow"."""
+    try:
+        frames = getattr(exc, "frames", None)
+        offset = frames[0].module_offset if frames else None
+    except (AttributeError, IndexError, ValueError):
+        return None
+    if offset is None or not 0 <= offset < len(wasm_bytes):
+        return None
+    return NATIVE_TRAP_OPCODES.get(wasm_bytes[offset])
+
+
 def _classify_trap(
     exc: BaseException,
     last_violation: list[str],
     last_trap: list[tuple[int, str]] | None = None,
+    instruction: str | None = None,
 ) -> tuple[str, str, str]:
     """Classify a wasmtime trap into ``(kind, description, fix)``.
 
@@ -423,11 +449,13 @@ def _classify_trap(
       carries one, is the description, and the kind's canonical
       description stands in when it does not.
 
-    Otherwise the wasmtime trap reason is matched against
-    ``WASMTIME_NATIVE_TRAPS`` (first match wins) — the instructions that trap
-    by themselves, and the generic ``unreachable``.  An unrecognised reason
-    is ``unknown`` and surfaces verbatim so the user is never left without a
-    message.  The third element is the kind's Fix paragraph (#547).
+    Otherwise the trap is the engine's own: its kind comes from
+    ``native_trap_kind`` — the trapping *instruction*, where the host can
+    report it (``trapping_instruction``), and the wasmtime trap reason
+    matched against ``WASMTIME_NATIVE_TRAPS`` (first match wins).  An
+    unrecognised reason is ``unknown`` and surfaces verbatim so the user is
+    never left without a message.  The third element is the kind's Fix
+    paragraph (#547).
     """
     if last_violation:
         return (
@@ -444,11 +472,11 @@ def _classify_trap(
         if named is not None:
             return (named.name, message or named.description, named.fix)
 
-    msg = str(exc).lower()
-    for needle, kind in WASMTIME_NATIVE_TRAPS:
-        if needle in msg:
-            return (kind, TRAP_KINDS[kind].description,
-                    _TRAP_FIX_PARAGRAPHS[kind])
+    native = native_trap_kind(
+        str(exc).lower(), instruction, WASMTIME_NATIVE_TRAPS)
+    if native is not None:
+        return (native, TRAP_KINDS[native].description,
+                _TRAP_FIX_PARAGRAPHS[native])
     # Couldn't classify — surface the raw wasmtime message verbatim so the
     # user still sees something diagnostic.  `str(exc)` directly rather than
     # `f"WASM trap: {exc}"`: the wasmtime text already contains "wasm trap:"

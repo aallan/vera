@@ -55,11 +55,29 @@ from vera.codegen.api import ExecuteResult, WasmTrapError
 from vera.codegen.wasi import emit_wasi_component
 from vera.runtime.text import safe_utf8_decode
 from vera.runtime.traps import _classify_trap
-from vera.trap_registry import TRAP_KINDS
+from vera.trap_registry import NATIVE_TRAP_OPCODES, TRAP_KINDS
 
 #: The adapter function a named trap executes its ``unreachable`` in, as the
 #: wasmtime backtrace renders it (``Adapter!trap_kind_nat_underflow``).
 _TRAP_KIND_FRAME = re.compile(r"!trap_kind_([a-z_]+)")
+
+#: The innermost frame of a component trap's rendered backtrace
+#: (``    0:    0x840 - Main!main``): its offset is into the component
+#: binary, which is how the trapping instruction is read (#1479).
+_INNERMOST_FRAME_OFFSET = re.compile(r"^\s*0:\s+0x([0-9a-f]+)\s", re.MULTILINE)
+
+
+def _component_trap_instruction(message: str, binary: bytes) -> str | None:
+    """The natively trapping instruction a component trap stopped at, read
+    from *binary* — the component the trap came from — at the innermost
+    frame's offset; None when the backtrace names no frame there."""
+    frame = _INNERMOST_FRAME_OFFSET.search(message)
+    if frame is None:
+        return None
+    offset = int(frame.group(1), 16)
+    if not 0 <= offset < len(binary):
+        return None
+    return NATIVE_TRAP_OPCODES.get(binary[offset])
 
 #: The longest :func:`_release_store` waits for wasmtime to let go of the
 #: output callbacks.  A release takes well under a millisecond; the bound only
@@ -131,6 +149,9 @@ def execute_wasi_p2(
     from wasmtime.component import Component, Linker
 
     wat = emit_wasi_component(result)
+    # Assembled here rather than inside `Component`, so a trap's backtrace
+    # offset can be read against the same bytes (#1479).
+    binary = bytes(wasmtime.wat2wasm(wat))
 
     # Same engine feature set as the core-path execute(): handle[Exn]
     # compiles to the WASM exception-handling proposal, which wasmtime
@@ -139,7 +160,7 @@ def execute_wasi_p2(
     engine_config = wasmtime.Config()
     engine_config.wasm_exceptions = True
     engine = wasmtime.Engine(engine_config)
-    component = Component(engine, wat)
+    component = Component(engine, binary)
     linker = Linker(engine)
     linker.add_wasip2()
     store = wasmtime.Store(engine)
@@ -187,7 +208,7 @@ def execute_wasi_p2(
         return _run_component(
             store, config, linker, component,
             out_buf, err_buf, last_err_chunk,
-            argv=[argv0, *(cli_args or [])],
+            argv=[argv0, *(cli_args or [])], binary=binary,
         )
     finally:
         # A config the store never took still owns the callbacks.
@@ -205,6 +226,7 @@ def _run_component(
     last_err_chunk: list[bytes],
     *,
     argv: list[str],
+    binary: bytes,
 ) -> ExecuteResult:
     """Configure, instantiate and call the component; the body of
     :func:`execute_wasi_p2`, which releases the store around it."""
@@ -257,7 +279,7 @@ def _run_component(
         exit_code = trap.code if trap.code is not None else 1
     except wasmtime.WasmtimeError as trap:
         raise _component_trap_error(
-            trap, out_buf, err_buf, last_err_chunk[0],
+            trap, out_buf, err_buf, last_err_chunk[0], binary,
         ) from trap
 
     return ExecuteResult(
@@ -273,6 +295,7 @@ def _component_trap_error(
     out_buf: bytearray,
     err_buf: bytearray,
     last_err_chunk: bytes,
+    binary: bytes = b"",
 ) -> WasmTrapError:
     """Wrap a component trap in the core path's ``WasmTrapError`` shape.
 
@@ -310,7 +333,10 @@ def _component_trap_error(
         kind, description, fix = _classify_trap(
             trap, [], [(row.code, message)])
     else:
-        kind, description, fix = _classify_trap(trap, [])
+        # A trap the engine raised itself: its kind needs the instruction
+        # where wasmtime's reason is shared (#1479), read from *binary*.
+        kind, description, fix = _classify_trap(
+            trap, [], instruction=_component_trap_instruction(msg, binary))
     return WasmTrapError(
         description,
         stdout=stdout,

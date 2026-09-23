@@ -24,6 +24,7 @@ package for every trap it emits and compares the answer with these tables.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 #: The one host import a named check calls before its ``unreachable``.  Its
@@ -502,7 +503,9 @@ TRAP_IMPORT_WAT = (
 )
 
 
-def signal_instructions(kind: str, ptr: int = 0, length: int = 0) -> list[str]:
+def signal_instructions(
+    kind: str, ptr: int = 0, length: int = 0, marker: str = "",
+) -> list[str]:
     """The instructions that raise trap *kind*: the signal, then the trap.
 
     The ONE place code generation writes the ``unreachable`` of a named
@@ -512,14 +515,16 @@ def signal_instructions(kind: str, ptr: int = 0, length: int = 0) -> list[str]:
     string, both zero for a kind whose sites carry none).  Callers splice
     the result where the trap belongs — inside the ``if`` that tests the
     check's condition — and raise the import's ``_needs_...`` flag beside
-    the splice; ``WasmContext._emit_trap`` does both and records the check.
+    the splice; ``WasmContext._emit_trap`` does both and records the check,
+    passing the record's *marker* (:func:`check_marker`) for the signal's
+    ``call`` to carry.
     """
     row = TRAP_KINDS[kind]
     if kind == "contract_violation":
         return [
             f"i32.const {ptr}",
             f"i32.const {length}",
-            f"call $vera.{CONTRACT_SIGNAL}",
+            f"call $vera.{CONTRACT_SIGNAL}{marker}",
             "unreachable",
         ]
     if not row.code:
@@ -528,9 +533,55 @@ def signal_instructions(kind: str, ptr: int = 0, length: int = 0) -> list[str]:
         f"i32.const {row.code}",
         f"i32.const {ptr}",
         f"i32.const {length}",
-        f"call $vera.{TRAP_SIGNAL}",
+        f"call $vera.{TRAP_SIGNAL}{marker}",
         "unreachable",
     ]
+
+
+#: While a module is assembled, every recorded check carries this WAT block
+#: comment on the instruction that IS the check — a signal's ``call``, a
+#: native division — naming the record entry it came from.  The per-module
+#: record is read back from the assembled text
+#: (``CodeGenerator._assemble_emitted_checks``), which then strips the
+#: comments: a check whose instructions were thrown away is not in the text,
+#: and one spliced twice is in it twice, so the record holds exactly the
+#: checks the module holds, in the function that holds them.  Always found
+#: and stripped through :func:`find_check_markers` and
+#: :func:`strip_check_markers`, never through this pattern alone.
+CHECK_MARKER_RE = re.compile(r" \(;vera-check:(\d+);\)")
+
+#: A marker, or one of the two WAT lexemes that can hold a marker's text
+#: without being one: a string literal — a data segment holds the program's
+#: strings, printable characters verbatim — and a line comment.  Matched
+#: left to right, so each literal and comment is consumed whole and only a
+#: marker outside them is seen (it alone sets group 1).
+_WAT_MARKER_LEXEMES = re.compile(
+    r'"(?:[^"\\]|\\.)*"|;;[^\n]*|' + CHECK_MARKER_RE.pattern)
+
+
+def check_marker(check_id: int) -> str:
+    """The marker of record entry *check_id* (see :data:`CHECK_MARKER_RE`)."""
+    return f" (;vera-check:{check_id};)"
+
+
+def find_check_markers(
+    wat: str, start: int = 0, end: int | None = None,
+) -> Iterator[re.Match[str]]:
+    """Every record marker in ``wat[start:end]`` — none inside a string
+    literal or a comment, whatever the program's own text spells.  The
+    entry id is ``group(1)``."""
+    for match in _WAT_MARKER_LEXEMES.finditer(
+            wat, start, len(wat) if end is None else end):
+        if match.group(1) is not None:
+            yield match
+
+
+def strip_check_markers(wat: str) -> str:
+    """*wat* without its record markers, every string literal and comment
+    left exactly as it was."""
+    return _WAT_MARKER_LEXEMES.sub(
+        lambda match: "" if match.group(1) is not None else match.group(0),
+        wat)
 
 
 def signal_call_pattern(kind: str) -> re.Pattern[str]:
@@ -765,8 +816,8 @@ KNOWN_TRAP_DEFECTS: tuple[NativeSite, ...] = (
         "wasm/calls_strings.py:_float_to_string_core", "i64.trunc_f64_s", 1,
         "#1482: the integer part of a finite value of magnitude 2^63 or "
         "more does not fit the i64 the digit loop runs over, so the total "
-        "`float_to_string` traps (as overflow)",
-        kind="overflow",
+        "`float_to_string` traps, as float_conversion",
+        kind="float_conversion",
     ),
 )
 
@@ -787,9 +838,13 @@ NATIVE_TRAPPING_INSTRUCTIONS: frozenset[str] = frozenset({
 # =====================================================================
 
 #: wasmtime's trap reason, as a lower-cased substring, to the kind it is —
-#: first match wins (wasmtime and the WASI 0.2 host).
+#: first match wins (wasmtime and the WASI 0.2 host).  "integer overflow" is
+#: also what wasmtime says for a truncation past its range or of an
+#: infinity, so a host that can read the trapping instruction consults it
+#: first (:func:`native_trap_kind`).
 WASMTIME_NATIVE_TRAPS: tuple[tuple[str, str], ...] = (
     ("integer divide by zero", "divide_by_zero"),
+    ("invalid conversion to integer", "float_conversion"),
     ("out of bounds memory access", "out_of_bounds"),
     ("call stack exhausted", "stack_exhausted"),
     ("unreachable", "unreachable"),
@@ -798,15 +853,108 @@ WASMTIME_NATIVE_TRAPS: tuple[tuple[str, str], ...] = (
 
 #: V8's ``WebAssembly.RuntimeError`` message to the kind it is (the browser
 #: runtime).  A ``RangeError`` from call-stack exhaustion is
-#: ``stack_exhausted`` there, whatever its message.
+#: ``stack_exhausted`` there, whatever its message.  V8 gives every
+#: truncation trap its own message, so it needs no instruction.
 BROWSER_NATIVE_TRAPS: tuple[tuple[str, str], ...] = (
     ("divide by zero", "divide_by_zero"),
     ("remainder by zero", "divide_by_zero"),
     ("divide result unrepresentable", "overflow"),
-    ("float unrepresentable in integer range", "overflow"),
+    ("float unrepresentable in integer range", "float_conversion"),
     ("memory access out of bounds", "out_of_bounds"),
     ("unreachable", "unreachable"),
 )
+
+#: The opcode of every natively trapping instruction (WebAssembly core
+#: specification, binary format, numeric instructions), so a host that
+#: reports WHERE a trap happened can say which instruction it was: wasmtime
+#: gives the trapping frame's offset into the module (core runtime) or the
+#: component binary (WASI 0.2 host).
+NATIVE_TRAP_OPCODES: dict[int, str] = {
+    0x6D: "i32.div_s", 0x6E: "i32.div_u", 0x6F: "i32.rem_s", 0x70: "i32.rem_u",
+    0x7F: "i64.div_s", 0x80: "i64.div_u", 0x81: "i64.rem_s", 0x82: "i64.rem_u",
+    0xA8: "i32.trunc_f32_s", 0xA9: "i32.trunc_f32_u",
+    0xAA: "i32.trunc_f64_s", 0xAB: "i32.trunc_f64_u",
+    0xAE: "i64.trunc_f32_s", 0xAF: "i64.trunc_f32_u",
+    0xB0: "i64.trunc_f64_s", 0xB1: "i64.trunc_f64_u",
+}
+
+
+def native_trap_kind(
+    reason: str,
+    instruction: str | None,
+    table: tuple[tuple[str, str], ...],
+) -> str | None:
+    """The kind of a trap the WASM engine raised itself, from its *reason*
+    (lower-cased, matched against *table*, first match wins) and — where the
+    host can report it — the *instruction* that trapped.
+
+    A float-to-integer truncation traps only on a value it cannot convert:
+    NaN, an infinity, or a finite value past its target range.  That is a
+    ``float_conversion`` whatever the engine calls it, and wasmtime calls the
+    last two "integer overflow", the reason it also gives ``INT_MIN / -1``;
+    the instruction is what tells them apart.  ``None`` for a reason no row
+    matches.
+    """
+    if instruction is not None and ".trunc_" in instruction:
+        return "float_conversion"
+    for needle, kind in table:
+        if needle in reason:
+            return kind
+    return None
+
+
+@dataclass(frozen=True)
+class NativeTrapCondition:
+    """One way a natively trapping instruction traps by itself."""
+
+    instruction: str
+    condition: str
+    """What makes it trap, in words."""
+
+    operands: tuple[str, ...]
+    """WAT instructions that push operands making it trap that way."""
+
+    kind: str
+    """The trap kind that is."""
+
+
+_NATIVE_SHAPE = re.compile(r"^(i32|i64)\.(div|rem|trunc)_(?:(f32|f64)_)?([su])$")
+
+
+def native_trap_conditions(instruction: str) -> tuple[NativeTrapCondition, ...]:
+    """Every way *instruction* traps by itself, derived from its name under
+    WebAssembly's semantics: integer division and remainder trap on a zero
+    divisor, signed division also on the one quotient that overflows
+    (``INT_MIN / -1``), and a truncation on NaN, on an infinity and on a
+    finite value past its target range.  Raises for an instruction outside
+    those families, so a trapping instruction nothing here can derive is a
+    failure rather than a silent gap."""
+    shape = _NATIVE_SHAPE.match(instruction)
+    if shape is None:
+        raise ValueError(f"no trap conditions known for {instruction!r}")
+    result, op, source, sign = shape.groups()
+    bits = 32 if result == "i32" else 64
+
+    def cond(what: str, operands: tuple[str, ...], kind: str,
+             ) -> NativeTrapCondition:
+        return NativeTrapCondition(instruction, what, operands, kind)
+
+    if op in ("div", "rem"):
+        out = [cond("a zero divisor",
+                    (f"{result}.const 1", f"{result}.const 0"),
+                    "divide_by_zero")]
+        if op == "div" and sign == "s":
+            out.append(cond("the one quotient that overflows",
+                            (f"{result}.const {-(2 ** (bits - 1))}",
+                             f"{result}.const -1"), "overflow"))
+        return tuple(out)
+    past = 2 ** (bits - 1) if sign == "s" else 2 ** bits
+    return (
+        cond("NaN", (f"{source}.const nan",), "float_conversion"),
+        cond("an infinity", (f"{source}.const inf",), "float_conversion"),
+        cond("a finite value past its range", (f"{source}.const {past}",),
+             "float_conversion"),
+    )
 
 
 def browser_trap_table() -> dict[str, object]:
@@ -833,6 +981,11 @@ def browser_trap_table() -> dict[str, object]:
 
 def _validate() -> None:
     """Import-time consistency of the tables above."""
+    if set(NATIVE_TRAP_OPCODES.values()) != NATIVE_TRAPPING_INSTRUCTIONS:
+        raise ValueError(
+            "NATIVE_TRAP_OPCODES and NATIVE_TRAPPING_INSTRUCTIONS disagree")
+    for instruction in NATIVE_TRAPPING_INSTRUCTIONS:
+        native_trap_conditions(instruction)
     cause_keys = {cause.key for cause in UNREACHABLE_CAUSES}
     for entry in INTERNAL_TRAPS:
         if entry.cause not in cause_keys:
@@ -858,11 +1011,13 @@ _validate()
 class EmittedCheck:
     """One check a compiled module contains (``CompileResult.emitted_checks``).
 
-    Recorded by the emitter at the moment it emits the check, and kept only
-    if the function it was emitted into survives into the module — a
-    function dropped after compiling (``[E620]``) takes its checks with it.
-    A generic body monomorphised N times contributes N entries sharing one
-    span, one per clone; the ``function`` field tells them apart.
+    Entered by the emitter as it emits the check, whose instruction carries
+    the entry's marker (:data:`CHECK_MARKER_RE`); listed once for every copy
+    of the marker the assembled module holds, under the function holding it
+    — so a check that never reaches the module is not listed, and one
+    spliced twice is listed twice.  A generic body monomorphised N times
+    contributes N entries sharing one span, one per clone; the ``function``
+    field tells them apart.
     """
 
     emitter: str

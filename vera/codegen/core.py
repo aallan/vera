@@ -18,7 +18,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import re
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 import wasmtime
@@ -43,7 +43,12 @@ from vera.prelude import (
 )
 from vera.skip import CodegenInvariantError
 from vera.slots import family_fallback_name
-from vera.trap_registry import TRAP_EMITTERS, EmittedCheck
+from vera.trap_registry import (
+    TRAP_EMITTERS,
+    EmittedCheck,
+    find_check_markers,
+    strip_check_markers,
+)
 from vera.wasm import StringPool
 from vera.wasm.helpers import CellNames
 from vera.wasm.async_fusion import (
@@ -62,7 +67,7 @@ from vera.codegen.compilability import CompilabilityMixin
 if TYPE_CHECKING:
     from vera.resolver import ResolvedModule
     from vera.types import ModuleArtifacts, SpanTypeTable, Type
-    from vera.wasm.context import WasmContext
+    from vera.wasm.context import CheckRecord, WasmContext
 
 
 # #1100: WAT-text scanning for the skip-propagation pass
@@ -75,14 +80,12 @@ if TYPE_CHECKING:
 # function symbol); `throw $tag` references an exception tag, not a
 # function; `ref.func` is never emitted.
 _WAT_FN_NAME_RE = re.compile(r"\s*\(func \$([^\s()]+)")
-# #1479: every function DEFINITION in the assembled module, with the rest of
-# its header line — a dropped closure's stub is `(func $anon_N unreachable)`,
-# a definition that holds none of the checks its body was compiled with.
+# #1479: every function DEFINITION in the assembled module, which is how the
+# per-module record attributes each check marker to the function holding it.
 _WAT_FN_DEF_RE = re.compile(r"^\s*\(func \$([^\s()]+)(.*)$", re.MULTILINE)
 # The whole body of a closure whose enclosing function was dropped: its table
-# slot must survive, and nothing can construct it.  Stated once, for the stub
-# `_drop_dangling_callers` writes and for the record, which must not credit
-# the stub with the checks its body was compiled with.
+# slot must survive, and nothing can construct it.  Named so the trap roster
+# (`vera.trap_registry.INTERNAL_TRAPS`) can list the stub's `unreachable`.
 _DROPPED_CLOSURE_BODY = "unreachable"
 _WAT_CALL_RE = re.compile(r"\b(?:return_call|call)\s+\$([^\s()]+)")
 # #1185: an INDIRECT call names no function symbol at all — it dispatches
@@ -248,13 +251,11 @@ class CodeGenerator(
         # calls it too, so an allocating module declares it whatever this
         # says (see `_assemble_module`).
         self._needs_trap: bool = False
-        # #1479: every check emitted into this module, as (WASM function,
-        # TRAP_EMITTERS key, the node its span comes from).  Filled from
-        # each `WasmContext`'s record at the per-scope merges, and directly
-        # for a check the generator splices in after a merge; assembled into
-        # `CompileResult.emitted_checks` once the module's final function
-        # set is known.
-        self._emitted_checks: list[tuple[str, str, ast.Node | None]] = []
+        # #1479: every check emitted into this module, by record entry id —
+        # one record, shared with every `WasmContext` compiling the module.
+        # `CompileResult.emitted_checks` is read back from the assembled text,
+        # whose instructions carry the entries' markers.
+        self._emitted_checks: CheckRecord = {}
         self._needs_memory: bool = False
         # (cell, wasm_type).  `CellNames` rather than a bare family
         # (#1238 review F2): the wasi target names the unsupported
@@ -933,73 +934,57 @@ class CodeGenerator(
         self._error(
             node, description, rationale=rationale, error_code=error_code)
 
-    def _record_generator_check(
-        self, function: str, emitter: str, at: ast.Node | None,
-    ) -> None:
-        """Note a check the generator splices into *function* itself (#1479).
-
-        The counterpart of ``WasmContext._record_check`` for an emission made
-        after that context's record was merged — the self-tail ``decreases``
-        prefix, spliced at each ``return_call`` once the body is lowered.
-        """
-        if emitter not in TRAP_EMITTERS:
-            raise CodegenInvariantError(
-                f"trap emitter {emitter!r} is not in "
-                "vera.trap_registry.TRAP_EMITTERS", at,
-            )
-        self._emitted_checks.append((function, emitter, at))
-
-    def _record_spliced_checks(
-        self,
-        function: str,
-        checks: Iterable[tuple[str, ast.Node | None]],
-    ) -> None:
-        """Record, once for one splice into *function*, checks a context
-        emitted into a rendering that is spliced after its record was merged
-        (#1479) — the self-tail ``decreases`` prefix's measure guards and
-        range backstop, which the prefix carries off its context's record.
-        Each was emitted, and its key checked, through ``_emit_trap`` where
-        the prefix was built; this places one entry per copy in the module.
-        """
-        for emitter, at in checks:
-            self._record_generator_check(function, emitter, at)
-
     def _assemble_emitted_checks(self, wat: str) -> list[EmittedCheck]:
-        """The per-module record: every recorded check whose function the
-        assembled module *wat* still defines (#1479).
+        """The per-module record, read back from the assembled module *wat*
+        (#1479): one entry for every record marker the text holds, under the
+        function whose body holds it.
 
-        Keyed on the final text rather than on the compile's bookkeeping, so
-        a function dropped after it compiled — an ``[E620]`` caller, a
-        closure stubbed to ``unreachable`` because its enclosing function
-        failed — takes its checks with it, and nothing the module lacks is
-        claimed.
+        Every recorded check's instruction carries its entry's marker
+        (``vera.trap_registry.CHECK_MARKER_RE``), so the text is the record;
+        a string literal or comment that spells a marker is not one.
+        A translation thrown away and redone, a function dropped after it
+        compiled, a closure stubbed to ``unreachable``, a failed closure
+        worklist, a self-tail prefix spliced zero or several times — each is
+        counted by what the module holds, with no bookkeeping to keep in step
+        with the compile.
         """
-        defined = {
-            m.group(1) for m in _WAT_FN_DEF_RE.finditer(wat)
-            if m.group(2).strip() != f"{_DROPPED_CLOSURE_BODY})"
-        }
+        headers = list(_WAT_FN_DEF_RE.finditer(wat))
         out: list[EmittedCheck] = []
-        for function, emitter, node in self._emitted_checks:
-            if function not in defined:
-                continue
-            row = TRAP_EMITTERS[emitter]
+        for position, header in enumerate(headers):
+            function = header.group(1)
+            end = (headers[position + 1].start()
+                   if position + 1 < len(headers) else len(wat))
             prelude = function.split("$")[0] in self._prelude_fn_names
             source = (self._fn_source_map.get(function)
                       or self._fn_source_map.get(function.rsplit("$", 1)[0]))
-            span = node.span if node is not None else None
-            out.append(EmittedCheck(
-                emitter=emitter,
-                kind=row.kind,
-                obligations=row.obligations,
-                function=function,
-                line=span.line if span is not None else 0,
-                column=span.column if span is not None else 0,
-                end_line=span.end_line if span is not None else 0,
-                end_column=span.end_column if span is not None else 0,
-                file=(None if prelude
-                      else source[0] if source is not None else self.file),
-                prelude=prelude,
-            ))
+            for marker in find_check_markers(wat, header.start(), end):
+                entry = self._emitted_checks.get(int(marker.group(1)))
+                if entry is None:
+                    raise CodegenInvariantError(
+                        f"${function} carries record marker "
+                        f"{marker.group(0).strip()!r}, which names no entry "
+                        "of this module's record", None,
+                    )
+                emitter, node = entry
+                row = TRAP_EMITTERS[emitter]
+                span = node.span if node is not None else None
+                out.append(EmittedCheck(
+                    emitter=emitter,
+                    kind=row.kind,
+                    obligations=row.obligations,
+                    function=function,
+                    line=span.line if span is not None else 0,
+                    column=span.column if span is not None else 0,
+                    end_line=span.end_line if span is not None else 0,
+                    end_column=span.end_column if span is not None else 0,
+                    file=(None if prelude
+                          else source[0] if source is not None else self.file),
+                    prelude=prelude,
+                ))
+        stray = sum(1 for _ in find_check_markers(wat)) - len(out)
+        if stray:
+            raise CodegenInvariantError(
+                f"{stray} record marker(s) outside every function body", None)
         return out
 
     def _get_source_line(self, line: int) -> str:
@@ -3111,6 +3096,11 @@ class CodeGenerator(
 
         # Assemble the module
         wat = self._assemble_module(functions_wat)
+        # #1479: read the per-module record back from the assembled text, then
+        # take its markers out — the WAT a caller sees carries none, and the
+        # binary never did (they are comments).
+        emitted_checks = self._assemble_emitted_checks(wat)
+        wat = strip_check_markers(wat)
 
         # Convert WAT to WASM binary
         try:
@@ -3204,7 +3194,7 @@ class CodeGenerator(
             fn_source_map=dict(self._fn_source_map),
             prelude_fn_names=set(self._prelude_fn_names),
             dropped_fns=dropped_fns,
-            emitted_checks=self._assemble_emitted_checks(wat),
+            emitted_checks=emitted_checks,
         )
 
     def _user_dropped_fns(

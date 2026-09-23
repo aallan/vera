@@ -56,6 +56,7 @@ from vera.runtime.traps import WasmTrapError
 from vera.trap_registry import (
     INTERNAL_TRAPS,
     KNOWN_TRAP_DEFECTS,
+    NATIVE_TRAP_OPCODES,
     NATIVE_TRAP_SITES,
     NATIVE_TRAPPING_INSTRUCTIONS,
     SAFE_NATIVE_SITES,
@@ -63,7 +64,9 @@ from vera.trap_registry import (
     TRAP_EMITTERS,
     TRAP_KINDS,
     UNREACHABLE_CAUSES,
+    NativeTrapCondition,
     browser_trap_table,
+    native_trap_conditions,
     unreachable_fix_paragraph,
 )
 
@@ -78,13 +81,9 @@ _NATIVE = re.compile(
     r"(?<![\w$.])(" + "|".join(
         re.escape(i) for i in sorted(NATIVE_TRAPPING_INSTRUCTIONS)) + r")(?![\w.])")
 
-#: The calls through which a check is emitted or recorded, and where the
-#: key or kind they name sits among their arguments.
-_EMISSION_CALLS = ("_emit_trap", "_record_check", "signal_instructions",
-                   "_record_generator_check")
-
-#: Where each call's key or kind sits among its positional arguments.
-_KEY_POSITION = {"_record_generator_check": 1}
+#: The calls through which a check is emitted or recorded; each names its
+#: key or kind as its first argument.
+_EMISSION_CALLS = ("_emit_trap", "_record_check", "signal_instructions")
 
 
 def _rel(path: Path) -> str:
@@ -181,8 +180,7 @@ def emission_calls_for_tree(
                 else func.id if isinstance(func, pyast.Name) else None)
         if name not in _EMISSION_CALLS:
             continue
-        position = _KEY_POSITION.get(name, 0)
-        arg = node.args[position] if len(node.args) > position else None
+        arg = node.args[0] if node.args else None
         literal = (arg.value if isinstance(arg, pyast.Constant)
                    and isinstance(arg.value, str) else None)
         out.append((name, f"{rel}:{owner.get(id(node), '<module>')}", literal))
@@ -240,18 +238,6 @@ def test_the_enumeration_contains_the_emitters() -> None:
 #: The emission path itself, whose own calls pass the caller's key through.
 _THE_PATH = "wasm/context.py:_emit_trap"
 
-#: Emitters that render their signal directly and are recorded where the
-#: rendering is SPLICED rather than where it is built: the self-tail
-#: `decreases` prefix's own decrease check, built once and spliced at every
-#: self-recursive `return_call`, after the body's record was merged.
-_RENDERED_THEN_SPLICED = {"codegen/contracts.py:_dec_self_tail_prefix"}
-
-#: The one site that records checks it did not emit: once per splice, it
-#: replays the entries the prefix carried off its context's record — each
-#: emitted, and its key checked, through the emission path where the
-#: prefix was built.
-_REPLAY = "codegen/core.py:_record_spliced_checks"
-
 
 def test_every_emission_names_its_own_row() -> None:
     """A call to the emission path names the registry row of the function it
@@ -259,14 +245,11 @@ def test_every_emission_names_its_own_row() -> None:
     row cannot be satisfied by a call made somewhere else."""
     problems: list[str] = []
     for call, site, literal in emission_calls():
-        if site in (_THE_PATH, _REPLAY):
+        if site == _THE_PATH:
             continue
         if call == "signal_instructions":
             row = TRAP_EMITTERS.get(site)
-            if site in _RENDERED_THEN_SPLICED:
-                if literal != "contract_violation":
-                    problems.append(f"{site}: renders {literal!r}")
-            elif row is None or row.per_site or literal != row.kind:
+            if row is None or row.per_site or literal != row.kind:
                 problems.append(f"{site}: renders {literal!r} directly")
             continue
         if literal is None:
@@ -275,9 +258,6 @@ def test_every_emission_names_its_own_row() -> None:
         row = TRAP_EMITTERS.get(literal)
         if row is None:
             problems.append(f"{site}: {literal!r} is not a registry row")
-        elif call == "_record_generator_check":
-            if literal not in _RENDERED_THEN_SPLICED:
-                problems.append(f"{site}: splices a record for {literal!r}")
         elif literal != site:
             problems.append(f"{site}: {call}({literal!r}) names another row")
         elif call == "_emit_trap" and row.via not in ("signal", "contract"):
@@ -291,8 +271,7 @@ def test_every_registry_row_is_emitted() -> None:
     """Every row names a function that emits — no row outlives its emitter."""
     calls = emission_calls()
     keyed = {literal for call, _site, literal in calls
-             if call in ("_emit_trap", "_record_check",
-                         "_record_generator_check")}
+             if call in ("_emit_trap", "_record_check")}
     rendered = {site for call, site, _ in calls
                 if call == "signal_instructions"}
     missing = [
@@ -668,6 +647,186 @@ def test_the_browser_runtime_names_the_trap(
     out = _NODE(wasm, fn="main")
     assert out["error"], out
     _assert_named(kind, out["trapKind"], out["error"], out["fix"])
+
+
+# ---------------------------------------------------------------------------
+# Native traps: derived from the emitted sites and the engines' own messages
+# ---------------------------------------------------------------------------
+#
+# A trap the WASM engine raises itself is named from the engine's reason and,
+# where a host can read it, the instruction that trapped.  So the matrix is
+# DERIVED, not listed: every natively trapping instruction the static scan
+# finds in the code generator, every way WebAssembly says it traps
+# (`native_trap_conditions`), run on each engine for the reason the engine
+# really gives.  A NaN truncation reported `unknown` because a hand list of
+# one program per kind never ran one; a new trapping site joins this matrix
+# with no edit here.
+
+
+def native_trap_matrix(
+    sites: Counter[tuple[str, str]],
+) -> list[NativeTrapCondition]:
+    """Every trap condition of every natively trapping instruction *sites*
+    holds, in a stable order."""
+    instructions = sorted({token for (_site, token) in sites
+                           if token in NATIVE_TRAPPING_INSTRUCTIONS})
+    return [cell for instruction in instructions
+            for cell in native_trap_conditions(instruction)]
+
+
+NATIVE_MATRIX = native_trap_matrix(literal_sites())
+
+
+def _cell_id(cell: NativeTrapCondition) -> str:
+    return f"{cell.instruction}: {cell.condition}"
+
+
+def _cell_module(cell: NativeTrapCondition) -> str:
+    result = cell.instruction.split(".")[0]
+    body = " ".join((*cell.operands, cell.instruction))
+    return f'(module (func (export "t") (result {result}) {body}))'
+
+
+def _cell_component(cell: NativeTrapCondition) -> bytes:
+    """The cell's function inside a component, lifted — the shape the WASI
+    host meets a trap in, and the binary its backtrace offsets index."""
+    import wasmtime
+    result = cell.instruction.split(".")[0]
+    lifted = {"i32": "s32", "i64": "s64"}[result]
+    body = " ".join((*cell.operands, cell.instruction))
+    return bytes(wasmtime.wat2wasm(
+        "(component\n"
+        f'  (core module $M (func (export "t") (result {result}) {body}))\n'
+        "  (core instance $m (instantiate $M))\n"
+        f'  (func (export "t") (result {lifted}) '
+        '(canon lift (core func $m "t")))\n'
+        ")\n"))
+
+
+def _wasmtime_kind(cell: NativeTrapCondition) -> str:
+    """What `execute()` reports for the cell's trap."""
+    import wasmtime
+    wat = _cell_module(cell)
+    result = CompileResult(
+        wat=wat, wasm_bytes=bytes(wasmtime.wat2wasm(wat)), exports=["t"],
+        diagnostics=[])
+    with pytest.raises(WasmTrapError) as info:
+        execute(result, fn_name="t")
+    return info.value.kind
+
+
+def _wasi_kind(cell: NativeTrapCondition) -> str:
+    """What the WASI 0.2 host reports for the cell's trap in a component."""
+    import wasmtime
+    from wasmtime.component import Component, Linker
+    from vera.runtime.wasi_host import _component_trap_error
+    binary = _cell_component(cell)
+    engine = wasmtime.Engine()
+    store = wasmtime.Store(engine)
+    try:
+        instance = Linker(engine).instantiate(
+            store, Component(engine, binary))
+        func = instance.get_func(store, "t")
+        assert func is not None
+        with pytest.raises(wasmtime.WasmtimeError) as info:
+            func(store)
+        return _component_trap_error(
+            info.value, bytearray(), bytearray(), b"", binary).kind
+    finally:
+        store.close()
+
+
+def _browser_kind(cell: NativeTrapCondition, tmp_path: Path) -> str:
+    """What the browser runtime reports for the cell's trap under V8."""
+    import wasmtime
+    wasm = tmp_path / "cell.wasm"
+    wasm.write_bytes(bytes(wasmtime.wat2wasm(_cell_module(cell))))
+    assert _NODE is not None
+    out = _NODE(wasm, fn="t")
+    assert out["error"], out
+    return str(out["trapKind"])
+
+
+def test_every_emitted_native_instruction_is_in_the_matrix() -> None:
+    """The derivation reaches every natively trapping instruction the code
+    generator emits, each with at least one condition — the zero-divisor
+    cell of the `/` every program can write among them."""
+    emitted = {token for (_site, token) in literal_sites()
+               if token in NATIVE_TRAPPING_INSTRUCTIONS}
+    assert emitted == {cell.instruction for cell in NATIVE_MATRIX}
+    assert "i64.div_s: a zero divisor" in {_cell_id(c) for c in NATIVE_MATRIX}
+
+
+def test_the_opcode_table_is_the_encoders() -> None:
+    """`NATIVE_TRAP_OPCODES` is what the assembler emits: each instruction,
+    assembled as the last one in a function, sits just before its `end`."""
+    import wasmtime
+    for instruction in sorted(NATIVE_TRAPPING_INSTRUCTIONS):
+        cell = native_trap_conditions(instruction)[0]
+        binary = bytes(wasmtime.wat2wasm(_cell_module(cell)))
+        assert binary[-1] == 0x0B, instruction
+        assert NATIVE_TRAP_OPCODES.get(binary[-2]) == instruction, (
+            instruction, hex(binary[-2]))
+
+
+@pytest.mark.parametrize("cell", NATIVE_MATRIX, ids=_cell_id)
+def test_wasmtime_names_every_native_trap(cell: NativeTrapCondition) -> None:
+    assert _wasmtime_kind(cell) == cell.kind
+
+
+@pytest.mark.parametrize("cell", NATIVE_MATRIX, ids=_cell_id)
+def test_the_wasi_host_names_every_native_trap(
+    cell: NativeTrapCondition,
+) -> None:
+    assert _wasi_kind(cell) == cell.kind
+
+
+@browser
+@pytest.mark.parametrize("cell", NATIVE_MATRIX, ids=_cell_id)
+def test_the_browser_names_every_native_trap(
+    cell: NativeTrapCondition, tmp_path: Path,
+) -> None:
+    assert _browser_kind(cell, tmp_path) == cell.kind
+
+
+def test_a_nan_truncation_is_named_from_its_reason_alone() -> None:
+    """Where no instruction can be read — no frame, or bytes that are not
+    the module's — wasmtime's own reason for a NaN truncation still names
+    it, since no other trap shares that reason."""
+    from vera.runtime.traps import _classify_trap
+
+    class _Reason(Exception):
+        pass
+
+    kind, _description, fix = _classify_trap(
+        _Reason("wasm trap: invalid conversion to integer"), [])
+    assert kind == "float_conversion"
+    assert fix == TRAP_KINDS["float_conversion"].fix
+
+
+#: A trapping instruction no emitter uses today, planted as a new site.
+_PLANTED_SITE = pyast.parse(
+    'def emit_planted():\n'
+    '    return ["f32.const 1", "i32.trunc_f32_u", "drop"]\n')
+
+
+@pytest.mark.parametrize("host", ["wasmtime", "wasi", "browser"])
+def test_a_planted_native_site_joins_the_matrix_and_is_named(
+    host: str, tmp_path: Path,
+) -> None:
+    """A site the scan has never seen is derived into the matrix with no
+    edit here, and every host names each way it traps."""
+    if host == "browser" and _NODE is None:
+        pytest.skip("Node.js not available or lacks exnref support")
+    planted = native_trap_matrix(
+        literal_sites_for_tree(_PLANTED_SITE, "wasm/planted.py"))
+    assert [c.condition for c in planted] == [
+        "NaN", "an infinity", "a finite value past its range"]
+    for cell in planted:
+        kind = (_wasmtime_kind(cell) if host == "wasmtime"
+                else _wasi_kind(cell) if host == "wasi"
+                else _browser_kind(cell, tmp_path))
+        assert kind == cell.kind, (_cell_id(cell), kind)
 
 
 # ---------------------------------------------------------------------------

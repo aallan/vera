@@ -19,6 +19,7 @@ See spec/11-compilation.md for the compilation specification.
 
 from __future__ import annotations
 
+import itertools
 from typing import TYPE_CHECKING, Callable
 
 from vera import ast
@@ -29,7 +30,12 @@ from vera.skip import (
     CodegenSkip,
 )
 from vera.slots import bare_call_denotes_user_fn
-from vera.trap_registry import TRAP_EMITTERS, TRAP_KINDS, signal_instructions
+from vera.trap_registry import (
+    TRAP_EMITTERS,
+    TRAP_KINDS,
+    check_marker,
+    signal_instructions,
+)
 
 if TYPE_CHECKING:
     from vera.codegen import ConstructorLayout
@@ -64,6 +70,17 @@ from vera.wasm.data import DataMixin
 # =====================================================================
 # WASM translation context
 # =====================================================================
+
+
+#: Identities for per-module record entries (#1479).  Unique across the
+#: process, so an entry can never be mistaken for one from another module:
+#: the record is read back from each module's own text by these numbers.
+_CHECK_IDS = itertools.count(1)
+
+#: The per-module record while a module is compiled: entry id -> (the
+#: `TRAP_EMITTERS` key, the node the check's span comes from).
+CheckRecord = dict[int, tuple[str, ast.Node | None]]
+
 
 class WasmContext(
     InferenceMixin,
@@ -114,6 +131,7 @@ class WasmContext(
         ctor_adt_tp_indices: dict[str, tuple[int | None, ...]] | None = None,
         adt_tp_counts: dict[str, int] | None = None,
         adt_tp_param_names: dict[str, tuple[str, ...]] | None = None,
+        checks: CheckRecord | None = None,
     ) -> None:
         self.string_pool = string_pool
         self._next_local: int = 0
@@ -339,12 +357,13 @@ class WasmContext(
         # #1479: the contract channel's twin, raised the same way by the
         # contract checks `_emit_trap` emits and merged at the same seams.
         self._needs_contract_fail: bool = False
-        # #1479: every check this context emitted, as (TRAP_EMITTERS key,
-        # the node its span comes from) in emission order.  The source of
-        # `CompileResult.emitted_checks`: merged into the CodeGenerator at the
-        # same per-scope seams as the `_needs_*` flags above, which is where
-        # the WASM function the checks sit in is known.
-        self._emitted_checks: list[tuple[str, ast.Node | None]] = []
+        # #1479: every check this context emitted, by record entry id.
+        # Shared with the CodeGenerator (and every other context compiling
+        # the same module), which reads the record back from the assembled
+        # module text through the marker each entry's instruction carries —
+        # so an entry whose instructions never reach the module drops out on
+        # its own, and nothing has to be merged or rolled back.
+        self._emitted_checks: CheckRecord = checks if checks is not None else {}
         # R-1412 F3: the component type an enclosing construction hands to
         # the argument it is translating, for a NESTED literal whose own
         # span carries no recorded target.  Saved and restored around each
@@ -922,25 +941,29 @@ class WasmContext(
             self._needs_contract_fail = True
         else:
             self._needs_trap = True
-        self._record_check(emitter, at)
-        return signal_instructions(row.kind, ptr, length)
+        return signal_instructions(
+            row.kind, ptr, length, marker=self._record_check(emitter, at))
 
-    def _record_check(self, emitter: str, at: ast.Node | None) -> None:
-        """Note one emitted check for the per-module record (#1479).
+    def _record_check(self, emitter: str, at: ast.Node | None) -> str:
+        """Enter one check in the per-module record (#1479); returns the
+        marker the instruction that IS the check must carry.
 
         *emitter* is the :data:`vera.trap_registry.TRAP_EMITTERS` key of the
         function emitting the check, and *at* the node its span is taken
-        from (``TrapEmitter.span`` says which node that is).  Called beside
-        the emission, never ahead of it, so a translation abandoned before
-        its check is emitted records nothing; a function dropped after it
-        compiled is filtered out when the record is assembled.
+        from (``TrapEmitter.span`` says which node that is).  The entry
+        counts once for every copy of the marker in the assembled module and
+        not at all when no copy survives — a translation thrown away, a
+        function dropped after it compiled, a rendering spliced twice — so
+        the caller only has to put the marker on its instruction.
         """
         if emitter not in TRAP_EMITTERS:
             raise CodegenInvariantError(
                 f"trap emitter {emitter!r} is not in "
                 "vera.trap_registry.TRAP_EMITTERS", at,
             )
-        self._emitted_checks.append((emitter, at))
+        check_id = next(_CHECK_IDS)
+        self._emitted_checks[check_id] = (emitter, at)
+        return check_marker(check_id)
 
     # -----------------------------------------------------------------
     # #1212 — the @Byte write boundary's literal width

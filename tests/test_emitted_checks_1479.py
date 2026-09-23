@@ -33,9 +33,12 @@ from tests.codegen_helpers import wat_fn_body
 from tests.module_fixture_helpers import build_multi_module
 from vera.checker import typecheck_with_artifacts
 from vera.codegen import compile as codegen_compile
-from vera.codegen.api import CompileResult
+from vera.codegen import CodeGenerator
+from vera.codegen.api import CompileResult, execute
 from vera.parser import parse_to_ast
+from vera.skip import CodegenInvariantError
 from vera.trap_registry import (
+    CHECK_MARKER_RE,
     TRAP_EMITTERS,
     TRAP_KINDS,
     EmittedCheck,
@@ -435,6 +438,99 @@ def test_a_failed_closure_worklist_takes_its_records_with_it() -> None:
     assert not _record_mismatches(result, "anon_0")
     assert {c.kind for c in result.emitted_checks
             if c.function == "anon_0"} == {"overflow"}
+
+
+#: A measure whose first component lowers (with its own overflow guard)
+#: and whose second, a parameterised ADT, cannot be ranked: the whole
+#: translation is abandoned, at the function's entry and at its self-tail
+#: site, and the guard lowered for the first component is in neither.
+_ABANDONED_MEASURE = """\
+private data Seq<T> {
+  Empty,
+  More(T, Seq<T>)
+}
+
+public fn walk(@Int, @Seq<Int> -> @Int)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  decreases(@Int.0 + 1, @Seq<Int>.0)
+  effects(pure)
+{
+  match @Seq<Int>.0 {
+    Empty -> @Int.0,
+    More(@Int, @Seq<Int>) -> walk(@Int.1, @Seq<Int>.0)
+  }
+}
+"""
+
+
+def test_an_abandoned_measure_translation_leaves_no_record() -> None:
+    result = _compile(_ABANDONED_MEASURE)
+    assert not _record_mismatches(result, "walk")
+    assert "overflow" not in {c.kind for c in result.emitted_checks
+                              if c.function == "walk"}
+
+
+def test_no_record_marker_reaches_the_module_text() -> None:
+    """The record is read back from the assembled text through markers on
+    the checks' instructions, and the markers are taken out after: the WAT a
+    caller sees is the WAT without them."""
+    result = _compile(_ARITHMETIC_MEASURE)
+    assert result.emitted_checks
+    assert not CHECK_MARKER_RE.search(result.wat), result.wat[:400]
+
+
+#: A program whose own text spells markers: a string it prints, and one inside
+#: an assertion, whose trap message quotes it — both land in data segments.
+_SPELLS_MARKERS = """\
+private fn half(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  assert(string_length(" (;vera-check:1;)") == 17);
+  @Int.0 / 2
+}
+
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(" (;vera-check:2;) (;vera-check:999999999;)");
+  half(8)
+}
+"""
+
+
+def test_a_program_string_that_spells_a_marker_is_left_alone() -> None:
+    """Marker text inside a string literal is the program's, not a marker: it
+    compiles, prints byte for byte, and the record lists the real checks."""
+    result = _compile(_SPELLS_MARKERS)
+    run = execute(result, fn_name="main")
+    assert run.value == 4
+    assert run.stdout == " (;vera-check:2;) (;vera-check:999999999;)"
+    assert not _record_mismatches(result, "half")
+    assert sorted(c.kind for c in result.emitted_checks
+                  if c.function == "half") == [
+        "assertion_failed", "divide_by_zero"]
+
+
+def _marked(body: str) -> str:
+    return f"(module\n  (func $f\n{body}\n  )\n)\n"
+
+
+def test_a_marker_naming_no_entry_is_an_invariant_error() -> None:
+    generator = CodeGenerator(source="", file="x.vera")
+    with pytest.raises(CodegenInvariantError, match="names no entry"):
+        generator._assemble_emitted_checks(
+            _marked("    i64.div_s (;vera-check:424242;)"))
+
+
+def test_a_marker_outside_every_function_is_an_invariant_error() -> None:
+    generator = CodeGenerator(source="", file="x.vera")
+    generator._emitted_checks[424243] = (
+        "wasm/operators.py:_translate_binary", None)
+    with pytest.raises(CodegenInvariantError, match="outside every function"):
+        generator._assemble_emitted_checks(
+            "(module\n  (global $g i32 (i32.const 0)) (;vera-check:424243;)\n"
+            + _marked("    nop")[len("(module\n"):])
 
 
 def test_a_stubbed_closure_takes_its_checks_with_it() -> None:

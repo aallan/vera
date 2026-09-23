@@ -446,6 +446,8 @@ class FunctionCompilationMixin:
 
         ctx = WasmContext(
             self.string_pool,
+            # #1479: one record for the whole module, read back from its text.
+            checks=self._emitted_checks,
             effect_ops=effect_ops,
             effect_op_result_wt=effect_op_result_wt,
             effect_op_result_vera=effect_op_result_vera,
@@ -1259,12 +1261,6 @@ class FunctionCompilationMixin:
         self._needs_contract_fail = (
             self._needs_contract_fail or ctx._needs_contract_fail
         )
-        # #1479: and the checks the body emitted, at the same seam, now that
-        # the WASM function they sit in is known.
-        self._emitted_checks.extend(
-            (decl.name, emitter, node)
-            for emitter, node in ctx._emitted_checks
-        )
         # #773: structural-Eq helper functions generated while lowering this
         # body (deduped by name across the whole module at assembly).
         self._adt_eq_helpers.update(ctx._adt_eq_helpers)
@@ -1367,21 +1363,8 @@ class FunctionCompilationMixin:
                 if target == decl.name:
                     if dec_self_tail is not None:
                         patched_dec.extend(
-                            ws + part for part in dec_self_tail.instrs)
+                            ws + part for part in dec_self_tail)
                         patched_dec.append(instr)
-                        # #1479: the prefix is built once and spliced at
-                        # every self-tail site, so its checks are recorded
-                        # per splice — and on the generator, because this
-                        # runs after `ctx`'s record was merged above.
-                        measure = next((c for c in decl.contracts
-                                        if isinstance(c, ast.Decreases)), None)
-                        self._record_generator_check(
-                            decl.name,
-                            "codegen/contracts.py:_dec_self_tail_prefix",
-                            measure,
-                        )
-                        self._record_spliced_checks(
-                            decl.name, dec_self_tail.checks)
                     else:
                         patched_dec.append(
                             instr.replace("return_call ", "call ", 1))

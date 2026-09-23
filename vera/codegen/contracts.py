@@ -17,7 +17,6 @@ from vera.narrowing import (
     measure_component_needs_range_check,
 )
 from vera.skip import CodegenSkip
-from vera.trap_registry import signal_instructions
 from vera.wasm import WasmContext, WasmSlotEnv
 from vera.wasm.helpers import (
     bind_slot_value_from_field,
@@ -95,23 +94,6 @@ class _ElementGuardSite:
     #: The element's RESOLVED base name, which is what names the host
     #: import's type tag for a projected carrier.
     element_base: str
-
-
-@dataclass(frozen=True)
-class SelfTailPrefix:
-    """The self-tail ``decreases`` prefix and the checks it holds (#1479).
-
-    Built once and spliced before every self-recursive ``return_call`` —
-    possibly never, possibly several times — so its checks are recorded
-    per splice, by the caller that splices it: the prefix's own
-    lexicographic-decrease check, and ``checks``, every check the prefix's
-    lowering emitted (the measure's own arithmetic guards and its range
-    backstop), taken back off the context's record where the prefix was
-    built.
-    """
-
-    instrs: list[str]
-    checks: tuple[tuple[str, ast.Node | None], ...]
 
 
 class ContractsMixin:
@@ -517,9 +499,6 @@ class ContractsMixin:
         # locals that belong to the guard either way, so a declined site
         # costs two unused locals and no module-level state.
         prepared: list[tuple[_ElementGuardSite, int, int, list[str]]] = []
-        # #1479: a declining position discards the checks already lowered,
-        # so their entries in the per-module record go with them.
-        mark = len(ctx._emitted_checks)
         for site in sites:
             idx = ctx.alloc_local("i32")
             elem = ctx.alloc_local(site.load_wt)
@@ -531,14 +510,12 @@ class ContractsMixin:
             check = self._emit_refinement_check(
                 ctx, site.predicate, site.base_name, elem, msg, env, at=te)
             if check is None:
-                del ctx._emitted_checks[mark:]
                 return []
             prepared.append((site, idx, elem, check))
         instrs: list[str] = []
         for site, idx, elem, check in prepared:
             if site.projection is None:
                 if len_local is None:  # pragma: no cover — caller invariant
-                    del ctx._emitted_checks[mark:]
                     return []
                 prologue: list[str] = []
                 seq_ptr, seq_len = ptr_local, len_local
@@ -546,7 +523,6 @@ class ContractsMixin:
                 projected = self._project_element_sequence(
                     ctx, site, ptr_local)
                 if projected is None:
-                    del ctx._emitted_checks[mark:]
                     return []
                 seq_ptr, seq_len, prologue = projected
             instrs.extend(prologue)
@@ -1496,7 +1472,7 @@ class ContractsMixin:
         ctx: WasmContext,
         decl: ast.FnDecl,
         env: WasmSlotEnv,
-    ) -> tuple[list[str], list[str], SelfTailPrefix | None]:
+    ) -> tuple[list[str], list[str], list[str] | None]:
         """Compile the entry check-and-set of the termination guard (#1172).
 
         For a function carrying a ``decreases`` clause, emits at entry:
@@ -1665,7 +1641,7 @@ class ContractsMixin:
         decl: ast.FnDecl,
         contract: ast.Decreases,
         restore: list[str],
-    ) -> SelfTailPrefix | None:
+    ) -> list[str] | None:
         """The instruction prefix for a SELF-recursive ``return_call``.
 
         At the site, the callee's arguments are already on the operand
@@ -1684,12 +1660,6 @@ class ContractsMixin:
         caller demotes that site instead — never a partial check.
         """
         name = decl.name
-        # Every check the prefix's own lowering emits — the measure's
-        # arithmetic guards, its range backstop — lands on `ctx`'s record
-        # here, once, however many times the prefix is spliced.  So it is
-        # taken back off below and carried in the prefix, whose caller
-        # records it per splice (#1479).
-        mark = len(ctx._emitted_checks)
         param_layout: list[tuple[str, list[int]]] = []
         capture_env = WasmSlotEnv()
         for param_te in decl.params:
@@ -1718,9 +1688,6 @@ class ContractsMixin:
             ctx, contract, capture_env,
         )
         if maybe_components is None:
-            # The site is demoted, so no check of the abandoned lowering
-            # is in the module.
-            del ctx._emitted_checks[mark:]
             return None
         comp_values = maybe_components
 
@@ -1772,15 +1739,15 @@ class ContractsMixin:
             f"termination metric must strictly decrease and stay "
             f"non-negative on every recursive call"
         )
-        # Rendered here and RECORDED at each splice (`_compile_fn` splices
-        # this prefix before every self-recursive `return_call`, possibly
-        # several times, after `ctx`'s record is merged) — so the signal is
-        # rendered directly rather than through `ctx._emit_trap` (#1479).
-        ptr, length = self.string_pool.intern(msg)
-        ctx._needs_contract_fail = True
+        # `_compile_fn` splices this prefix before every self-recursive
+        # `return_call` — possibly never, possibly several times — and the
+        # record counts every copy of its checks' markers, so each check in
+        # it, this one and those its measure lowered, is recorded here once
+        # and listed once per splice (#1479).
         prefix.extend(
-            f"    {i}" for i in signal_instructions(
-                "contract_violation", ptr, length))
+            f"    {i}" for i in ctx._emit_trap(
+                "codegen/contracts.py:_dec_self_tail_prefix",
+                at=contract, message=msg))
         prefix.append("  end")
         prefix.append("end")
         prefix.extend(restore)
@@ -1788,9 +1755,7 @@ class ContractsMixin:
         for _kinds, locs in param_layout:
             for loc in locs:
                 prefix.append(f"local.get {loc}")
-        checks = tuple(ctx._emitted_checks[mark:])
-        del ctx._emitted_checks[mark:]
-        return SelfTailPrefix(prefix, checks)
+        return prefix
 
     #: Field types that contribute nothing to a structural rank — safe to
     #: step over.  Everything else either recurses (a concrete layout

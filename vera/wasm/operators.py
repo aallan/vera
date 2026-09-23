@@ -81,9 +81,6 @@ class OperatorsMixin:
             # its `path`, exactly as the direct spelling of the same call does.
             return self.translate_expr(desugared, env)
 
-        # #1479: where the operands' checks start in the per-module record,
-        # for the Byte lowering below, which discards these translations.
-        checks_mark = len(self._emitted_checks)
         left = self.translate_expr(expr.left, env)
         right = self.translate_expr(expr.right, env)
         # #657 / #630 [E615]: keep as `return None` — do NOT "clean up" to
@@ -111,17 +108,9 @@ class OperatorsMixin:
         if (op in self._ARITH_OPS or op in self._CMP_OPS) and (
                 self._is_byte_expr(expr.left)
                 or self._is_byte_expr(expr.right)):
-            # The Byte lowering translates both operands AGAIN, so the checks
-            # recorded for `left` and `right` above belong to instructions it
-            # throws away — an index or a guard inside a Byte operand would
-            # otherwise be recorded twice and emitted once (#1479).
-            operand_checks = self._emitted_checks[checks_mark:]
-            del self._emitted_checks[checks_mark:]
             byte_result = self._translate_byte_binop(expr, env)
             if byte_result is not None:
                 return byte_result
-            del self._emitted_checks[checks_mark:]
-            self._emitted_checks.extend(operand_checks)
 
         # Arithmetic
         if op in self._ARITH_OPS:
@@ -179,9 +168,11 @@ class OperatorsMixin:
                     left, right, op, ovf, at=expr)
             if op in (ast.BinOp.DIV, ast.BinOp.MOD):
                 # `i64.div_s` / `i64.rem_s` trap by themselves on a zero
-                # divisor, so the instruction IS the check (#1479).
-                self._record_check(
-                    "wasm/operators.py:_translate_binary", expr)
+                # divisor, so the instruction IS the check, and carries its
+                # record entry's marker (#1479).
+                return left + right + [
+                    self._ARITH_OPS[op] + self._record_check(
+                        "wasm/operators.py:_translate_binary", expr)]
             return left + right + [self._ARITH_OPS[op]]
 
         # Comparison — choose i32/i64/f64 based on operand types

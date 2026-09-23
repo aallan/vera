@@ -1302,7 +1302,7 @@ public fn string_char_code(@String, @Int -> @Nat)
   requires(true) ensures(true) effects(pure)
 ```
 
-Returns the ASCII code point (as a `Nat`) of the byte at the given index in the string. The index is zero-based, and counts bytes: it must lie in `[0, string_length(s))`, the string's length in BYTES, or the call traps as `string_index_out_of_bounds` (Section 11.8.5).
+Returns the unsigned byte value (as a `Nat`) at the given index in the string. The index is zero-based, and counts bytes: it must lie in `[0, string_length(s))`, the string's length in BYTES, or the call traps as `string_index_out_of_bounds` (Section 11.8.5).
 
 ```vera
 string_char_code("A", 0)     -- 65

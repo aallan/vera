@@ -61,6 +61,7 @@ from vera.runtime.traps import (
     _classify_host_error,
     _classify_trap,
     _resolve_trap_frames,
+    trapping_instruction,
 )
 
 if TYPE_CHECKING:
@@ -189,9 +190,9 @@ class CompileResult:
     # `vera.trap_registry.EmittedCheck` per check the module contains, with
     # the trap kind it reports, the verifier obligation kinds it is the
     # runtime half of, the WASM function it sits in and its source span.
-    # Only functions the assembled module still defines contribute, so the
-    # record never claims a check the module lacks.  Empty for a compile
-    # that failed before assembly.
+    # Read back from the assembled module's text, so it lists exactly the
+    # checks the module holds.  Empty for a compile that failed before
+    # assembly.
     emitted_checks: list["EmittedCheck"] = field(default_factory=list)
 
     @property
@@ -1393,6 +1394,7 @@ def execute(
             # unknown).
             kind, message, fix = _classify_trap(
                 exc, last_violation, last_trap,
+                instruction=trapping_instruction(exc, result.wasm_bytes),
             )
         else:
             # Diagnostic escape hatch (ENVIRONMENT.md,
