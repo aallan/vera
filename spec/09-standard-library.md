@@ -120,7 +120,7 @@ private fn checked_nat(@Int -> @Result<Nat, String>)
 
 ### 9.3.3 UrlParts
 
-<!-- vera:skip-check category="ILLUSTRATIVE" reason="prelude-injected UrlParts declaration shown without visibility" -->
+<!-- vera:skip-check category="ILLUSTRATIVE" code="none" reason="prelude-injected UrlParts declaration shown without visibility" -->
 ```
 data UrlParts {
   UrlParts(String, String, String, String, String)
@@ -136,7 +136,7 @@ See §9.6.18 for the `url_parse` and `url_join` function specifications.
 
 ### 9.3.4 Future\<T\>
 
-<!-- vera:skip-check category="ILLUSTRATIVE" reason="prelude-injected Future<T> declaration shown without visibility" -->
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E158 none" reason="prelude-injected Future<T> declaration shown without visibility" -->
 ```
 data Future<T> { Future(T) }
 ```
@@ -352,6 +352,7 @@ private fn hello(-> @Unit)
 
 File operations return `Result` types for error handling:
 
+<!-- vera:no-run category="fixture" reason="reads data.txt, which the block does not create" -->
 ```
 public fn main(-> @Unit)
   requires(true)
@@ -431,6 +432,7 @@ This fits naturally with Vera's algebraic effect system and makes network I/O ex
 
 `Http.get` returns a string. To get typed data, compose with `json_parse`:
 
+<!-- vera:no-run category="network" reason="calls Http, so a run would reach the network" -->
 ```
 public fn fetch_json(@String -> @Result<Json, String>)
   requires(string_length(@String.0) > 0)
@@ -489,7 +491,6 @@ The `<Async>` effect enables asynchronous computation via `async(expr)` and `awa
 
 **Built-in functions:**
 
-<!-- vera:skip-parse category="FRAGMENT" reason="async/await signatures (no body)" -->
 ```
 fn async<T>(@T.0 -> @Future<T>) effects(<Async>)
 fn await<T>(@Future<T>.0 -> @T) effects(<Async>)
@@ -575,6 +576,7 @@ private fn classify(@String -> @Result<String, String>)
 
 The `HttpServer` effect (a marker, §7.7.5 — no operations) enables **verified HTTP request handling** (#305, since v0.0.193).  A server program defines a total, contract-checked handler:
 
+<!-- vera:no-run category="non-scalar-entry" reason="its exported functions take Request parameters" -->
 ```vera
 public fn handle(@Request -> @Response)
   requires(true)
@@ -590,7 +592,7 @@ public fn handle(@Request -> @Response)
 
 **Built-in types** (prelude ADTs, injected when referenced; user definitions shadow them):
 
-<!-- vera:skip-check category="ILLUSTRATIVE" reason="prelude-injected Request/Response decls shown without visibility (#305)" -->
+<!-- vera:skip-check category="ILLUSTRATIVE" code="none" reason="prelude-injected Request/Response decls shown without visibility (#305)" -->
 ```
 data Request { Request(String, String, Map<String, String>, String) }
 data Response { Response(Int, Map<String, String>, String) }
@@ -629,6 +631,7 @@ type error but a read at an address that was never a `Response`.
 
 The `DB` effect (a built-in, §7.7.7) executes SQL through the host (#229, since v0.1.7). `execute` runs writes and returns the affected-row count; `query` runs reads and returns a grid of cells:
 
+<!-- vera:run fn="seed_and_count" stdout="1" -->
 ```vera
 public fn seed_and_count(-> @Int)
   requires(true)
@@ -1150,6 +1153,7 @@ public fn float_is_nan(@Float64 -> @Bool)
 
 Tests whether a Float64 value is NaN (not a number). NaN is the only value that is not equal to itself. Compiled to `f64.ne(x, x)`.
 
+<!-- vera:run fn="test_is_nan" stdout="1" -->
 ```vera
 public fn test_is_nan(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -1168,6 +1172,7 @@ public fn float_is_infinite(@Float64 -> @Bool)
 
 Tests whether a Float64 value is positive or negative infinity. Compiled to `f64.eq(f64.abs(x), inf)`. Returns `false` for NaN.
 
+<!-- vera:run fn="test_is_infinite" stdout="1" -->
 ```vera
 public fn test_is_infinite(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -1188,6 +1193,7 @@ public fn nan(-> @Float64)
 
 Returns a quiet NaN value. Compiled to `f64.const nan`.
 
+<!-- vera:run fn="test_nan" stdout="nan" -->
 ```vera
 public fn test_nan(@Unit -> @Float64)
   requires(true) ensures(true) effects(pure)
@@ -1204,6 +1210,7 @@ public fn infinity(-> @Float64)
 
 Returns positive infinity. Negative infinity can be obtained via `0.0 - infinity()`. Compiled to `f64.const inf`.
 
+<!-- vera:run fn="test_infinity" stdout="inf" -->
 ```vera
 public fn test_infinity(@Unit -> @Float64)
   requires(true) ensures(true) effects(pure)
@@ -2416,6 +2423,7 @@ The rules are visible from a value a program builds, which is where they
 bite: a parser cannot produce an empty list item or a space-bounded code
 span, so only a constructed `MdBlock` reaches them.
 
+<!-- vera:run fn="quote_rules" stdout="> one\n>\n> ```sh\n> a\n> b\n> ```\n\n>" -->
 ```
 -- A container prefixes every line of every child, separates adjacent
 -- children with a bare '>', and still writes a line for an empty one.
@@ -2433,6 +2441,7 @@ Renders `> one`, `>`, `> ```sh`, `> a`, `> b`, `> ``` `, a blank line, and
 `>` separates the quote's two children, and the empty quote still occupies
 its own line.
 
+<!-- vera:run fn="span_rules" stdout="``a`b`` `  x  `\n\n- " -->
 ```
 -- A code span is fenced longer than its content, and padded when the
 -- content would otherwise merge with the fence or lose its own spaces.
@@ -2607,6 +2616,7 @@ Returns the value of the named attribute if the node is an `HtmlElement` with th
 
 Vera supports restricted abilities for constraining type variables in generic functions. To support practical generic programming — sorting, hashing, serialisation — type variables need constraints. Vera adopts restricted abilities rather than full typeclasses:
 
+<!-- vera:no-run category="non-scalar-entry" reason="its exported functions take Array, T parameters" -->
 ```
 ability Eq<T> {
   op eq(T, T -> Bool);

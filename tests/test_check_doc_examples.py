@@ -268,14 +268,14 @@ class TestStages:
         assert _MOD.STAGE_ORDER == ("parse", "check", "verify", "run")
 
     def test_marked_failing_stage_is_skipped(self, tmp_path: Path) -> None:
-        marker = '<!-- vera:skip-verify category="ILLUSTRATIVE" reason="loose" -->'
+        marker = '<!-- vera:skip-verify category="ILLUSTRATIVE" code="E500" reason="loose" -->'
         report = _gate(tmp_path, _fence(_OLD_CORRECT, marker))
         assert _findings(report) == _MOD.Findings([], [], [])
         (result,) = report.results
         assert [o.status for o in result.outcomes] == ["ok", "ok", "skipped"]
 
     def test_marked_passing_stage_is_stale(self, tmp_path: Path) -> None:
-        marker = '<!-- vera:skip-verify category="ILLUSTRATIVE" reason="loose" -->'
+        marker = '<!-- vera:skip-verify category="ILLUSTRATIVE" code="E500" reason="loose" -->'
         findings = _findings(_gate(tmp_path, _fence(_FIXED_CORRECT, marker)))
         assert findings.failures == []
         assert len(findings.stale) == 1
@@ -284,7 +284,7 @@ class TestStages:
     def test_marked_check_on_a_block_that_checks_is_stale(
         self, tmp_path: Path,
     ) -> None:
-        marker = '<!-- vera:skip-check category="WRONG" reason="it does not" -->'
+        marker = '<!-- vera:skip-check category="WRONG" code="E131" reason="it does not" -->'
         findings = _findings(_gate(tmp_path, _fence(_FIXED_CORRECT, marker)))
         assert len(findings.stale) == 1
 
@@ -303,7 +303,7 @@ class TestStages:
         self, tmp_path: Path,
     ) -> None:
         program = _TWO.replace("{\n  2\n}", "{\n  helper(())\n}")
-        marker = '<!-- vera:skip-check category="INCOMPLETE" reason="helper is elsewhere" -->'
+        marker = '<!-- vera:skip-check category="INCOMPLETE" code="E200" reason="helper is elsewhere" -->'
         findings = _findings(_gate(tmp_path, _fence(program, marker)))
         assert findings == _MOD.Findings([], [], [])
 
@@ -370,13 +370,13 @@ private fn to_int(@Color -> @Int)
         self, tmp_path: Path,
     ) -> None:
         markers = (
-            '<!-- vera:skip-verify category="ILLUSTRATIVE" reason="loose" -->',
+            '<!-- vera:skip-verify category="ILLUSTRATIVE" code="E500" reason="loose" -->',
             '<!-- vera:run fn="f" args="1" stdout="1" -->',
         )
         report = _gate(tmp_path, _fence(_OLD_CORRECT, *markers))
         findings = _findings(report)
         assert len(findings.problems) == 1
-        assert "never run" in findings.problems[0]
+        assert "never reaches the run stage" in findings.problems[0]
         (result,) = report.results
         assert result.run_errors == ()
 
@@ -453,7 +453,7 @@ private fn half(@Meters -> @Int)
 
         for command in (says_ok_exits_1, says_not_ok_exits_0):
             error = _MOD.cli_stage_error(command, path)
-            assert error is not None and "disagrees" in error
+            assert error is not None and "disagrees" in error.message
 
     def test_unreadable_envelope_is_a_failure(self, tmp_path: Path) -> None:
         path = tmp_path / "x.vera"
@@ -464,7 +464,7 @@ private fn half(@Meters -> @Int)
             return 0
 
         error = _MOD.cli_stage_error(prints_prose, path)
-        assert error is not None and "did not parse" in error
+        assert error is not None and "did not parse" in error.message
 
     def test_workspace_lays_out_the_import_root(self, tmp_path: Path) -> None:
         workspace = _MOD.Workspace(ROOT, tmp_path)
@@ -650,6 +650,523 @@ class TestCoverage:
         for name in _RETIRED_GATES:
             assert not (ROOT / "scripts" / name).exists(), name
             assert name not in config and name not in ci, name
+
+
+# ---------------------------------------------------------------------------
+# The check stage fails every warning it does not name as benign
+# ---------------------------------------------------------------------------
+
+
+def _load_script(name: str) -> Any:
+    """Load a script by path.  It is registered in `sys.modules` first,
+    because a `@dataclass` in it resolves its annotations through there."""
+    import sys
+
+    key = f"_doc_gate_test_{name}"
+    if key in sys.modules:
+        return sys.modules[key]
+    spec = importlib.util.spec_from_file_location(key, ROOT / "scripts" / f"{name}.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[key] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+# The modules `vera check` runs: parse, transform, resolve, type-check.
+_CHECK_PATH = ("vera/checker/", "vera/resolver.py", "vera/parser.py", "vera/transform.py")
+# The later stages, whose warnings `vera check` never gives.
+_LATER_STAGES = ("vera/codegen/", "vera/verifier.py", "vera/tester.py")
+
+
+def _warning_sites() -> list[tuple[str, int, str | None]]:
+    """Every warning-severity diagnostic site in `vera/`, as (module, line,
+    code), from the sites `check_diagnostic_fields.py` enumerates."""
+    import ast as pyast
+
+    fields = _load_script("check_diagnostic_fields")
+    sites: list[tuple[str, int, str | None]] = []
+    for path in sorted((ROOT / "vera").rglob("*.py")):
+        src = path.read_text(encoding="utf-8")
+        tree = pyast.parse(src)
+        rel = path.relative_to(ROOT).as_posix()
+        for call in fields._diagnostic_call_sites(src, rel, tree):
+            severity = None
+            if isinstance(call.func, pyast.Attribute) and call.func.attr == "_warning":
+                severity = "warning"
+            code = None
+            for kw in call.keywords:
+                if kw.arg == "severity" and isinstance(kw.value, pyast.Constant):
+                    severity = kw.value.value
+                if kw.arg == "error_code" and isinstance(kw.value, pyast.Constant):
+                    code = kw.value.value
+            if severity == "warning":
+                sites.append((rel, call.lineno, code))
+    return sites
+
+
+def _checker_warning_codes() -> set[str]:
+    codes: set[str] = set()
+    for module, line, code in _warning_sites():
+        if module.startswith(_CHECK_PATH):
+            assert code is not None, f"{module}:{line}: a warning with no literal code"
+            codes.add(code)
+    return codes
+
+
+_WARNING_PLANT_HEAD = """\
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+"""
+
+# One block per warning the checker gives, drawing exactly that warning.
+_WARNING_PLANTS: dict[str, str] = {
+    "E200": _WARNING_PLANT_HEAD + "  helper(())\n}",
+    "E210": _WARNING_PLANT_HEAD + "  let @Option<Int> = Circle(1);\n  @Int.0\n}",
+    "E214": _WARNING_PLANT_HEAD + "  let @Option<Int> = Nothing;\n  @Int.0\n}",
+    "E220": _WARNING_PLANT_HEAD + "  Nope.op(@Int.0)\n}",
+    "E230": _WARNING_PLANT_HEAD + "  vera.geometry::magnitude(@Int.0)\n}",
+    "E233": "import vera.math;\n\n" + _WARNING_PLANT_HEAD
+    + "  vera.math::nonexistent(@Int.0)\n}",
+    "E310": _WARNING_PLANT_HEAD + "  match @Int.0 {\n    _ -> 1,\n    0 -> 2\n  }\n}",
+    "E320": _WARNING_PLANT_HEAD
+    + "  match Some(@Int.0) {\n    Circle(@Int) -> 1,\n    _ -> 0\n  }\n}",
+    "E322": _WARNING_PLANT_HEAD
+    + "  match Some(@Int.0) {\n    Nothing -> 1,\n    _ -> 0\n  }\n}",
+    "W001": _WARNING_PLANT_HEAD + "  ?\n}",
+    "W002": """\
+private fn shout(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.print("tick");
+  @Int.0
+}
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<Async, IO>)
+{
+  await(async(shout(@Int.0)))
+}""",
+}
+
+
+class TestCheckWarnings:
+    """The check stage fails every warning outside a named benign set, so a
+    warning the checker gains later fails the gate until it is classified
+    (#1484 review: a hand list of undefined-name codes missed E214, E230 and
+    E320)."""
+
+    def test_every_checker_warning_code_has_a_plant(self) -> None:
+        """Derived from the checker's source: a warning code added to it with
+        no plant here turns this red."""
+        assert set(_WARNING_PLANTS) == _checker_warning_codes()
+
+    def test_warnings_outside_the_check_path_belong_to_a_later_stage(self) -> None:
+        """A module that starts giving warnings must be placed on one side
+        or the other, so the derivation above cannot miss it."""
+        unplaced = sorted(
+            {m for m, _line, _code in _warning_sites()
+             if not m.startswith(_CHECK_PATH + _LATER_STAGES)}
+        )
+        assert unplaced == []
+
+    def test_the_benign_set_is_the_named_three(self) -> None:
+        assert set(_MOD.BENIGN_CHECK_WARNINGS) == {"W001", "W002", "E310"}
+        assert set(_MOD.BENIGN_CHECK_WARNINGS) <= set(_WARNING_PLANTS)
+
+    @pytest.mark.parametrize("code", sorted(_WARNING_PLANTS))
+    def test_the_plant_draws_exactly_its_warning(
+        self, code: str, tmp_path: Path,
+    ) -> None:
+        from vera.cli import cmd_check
+
+        path = _write_block(tmp_path, _WARNING_PLANTS[code])
+        rc, data, _raw = _MOD._cli_json(cmd_check, path)
+        assert rc == 0 and data["ok"] is True
+        assert data["diagnostics"] == []
+        assert [w.get("error_code") for w in data["warnings"]] == [code]
+
+    @pytest.mark.parametrize("code", sorted(_WARNING_PLANTS))
+    def test_the_check_stage_passes_only_a_benign_warning(
+        self, code: str, tmp_path: Path,
+    ) -> None:
+        failure = _MOD.check_error(_write_block(tmp_path, _WARNING_PLANTS[code]))
+        if code in _MOD.BENIGN_CHECK_WARNINGS:
+            assert failure is None
+        else:
+            assert failure is not None
+            assert failure.codes == frozenset({code})
+            assert f"[{code}]" in failure.message
+
+
+# ---------------------------------------------------------------------------
+# Which untagged blocks are Vera: derived from the grammar
+# ---------------------------------------------------------------------------
+
+
+# One opening per word a program can start with.  A top-level form the
+# grammar gains adds a word to `program_keywords()`, and this table must
+# then gain its opening, so the selector is shown reading every form.
+_SAMPLE_OPENINGS: dict[str, str] = {
+    "ability": "ability Sized<T> {\n  op size(T -> Int);\n}",
+    "data": "data Color {\n  Red\n}",
+    "effect": "effect Log {\n  op note(String -> Unit);\n}",
+    "fn": "fn f(@Int -> @Int)",
+    "forall": "forall<T> fn id(@T -> @T)",
+    "import": "import vera.math;",
+    "module": "module a.b;",
+    "private": "private fn f(@Int -> @Int)",
+    "public": "public data Color {\n  Red\n}",
+    "type": "type Id = Int;",
+}
+
+
+class TestGrammarSelection:
+    """An untagged fence or `<pre>` block is Vera when it opens a program,
+    as the compiler's own grammar says (#1484 review: the hand regex omitted
+    `ability`, so five spec blocks were never gated)."""
+
+    def test_every_program_keyword_has_a_sample(self) -> None:
+        assert set(_SAMPLE_OPENINGS) == set(_MOD.program_keywords())
+
+    @pytest.mark.parametrize("word", sorted(_SAMPLE_OPENINGS))
+    def test_each_top_level_form_is_read(self, word: str) -> None:
+        block = _MOD.CodeBlock(1, "", _SAMPLE_OPENINGS[word], ())
+        assert _MOD.selects(block)
+
+    @pytest.mark.parametrize("text", [
+        "fn(@Int -> @Int) effects(pure) { @Int.0 }",
+        "type the command below",
+        "public class Foo {}",
+        "fn          let         if          then",
+    ])
+    def test_a_closure_or_prose_is_not_read(self, text: str) -> None:
+        assert not _MOD.selects(_MOD.CodeBlock(1, "", text, ()))
+
+    def test_an_untagged_ability_block_is_gated(self, tmp_path: Path) -> None:
+        """The reviewer's repro: an untagged fence opening with `ability`
+        and holding the refuted example is gated, and fails verify."""
+        text = "```\nability Sized<T> {\n  op size(T -> Int);\n}\n\n" + _OLD_CORRECT + "\n```\n"
+        findings = _findings(_gate(tmp_path, text))
+        assert len(findings.failures) == 1
+        assert "[verify]" in findings.failures[0] and "[E500]" in findings.failures[0]
+
+    def test_the_spec_ability_blocks_are_gated(self) -> None:
+        blocks, _problems = _MOD.scan_document(ROOT / "spec" / "09-standard-library.md")
+        ability = [b for b in blocks if b.lang == "" and b.content.lstrip().startswith("ability")]
+        assert len(ability) >= 5
+        assert all(_MOD.selects(b) for b in ability)
+
+
+# ---------------------------------------------------------------------------
+# A vera:diagnostic pair excuses only a replayed failure
+# ---------------------------------------------------------------------------
+
+
+def _pair(program: str, stage: str, code: str | None) -> str:
+    code_attr = f' error_code="{code}"' if code else ""
+    return (
+        f'<!-- vera:diagnostic file="f.vera" stage="{stage}"{code_attr} -->\n'
+        + _fence(program)
+        + "<!-- /vera:diagnostic -->\n```text\nanything at all\n```\n"
+    )
+
+
+class TestDiagnosticPairs:
+    """A pair is honoured only at a stage the replay gate replays and only
+    with a code, and the replay gate scans every document the example gate
+    reads (#1484 review)."""
+
+    def test_a_pair_at_an_unreplayed_stage_excuses_nothing(
+        self, tmp_path: Path,
+    ) -> None:
+        """The reviewer's repro: a `stage="verify"` pair around the refuted
+        CORRECT example."""
+        findings = _findings(_gate(tmp_path, _pair(_OLD_CORRECT, "verify", None)))
+        assert any("is not replayed" in p for p in findings.problems)
+        assert len(findings.failures) == 1 and "[E500]" in findings.failures[0]
+
+    def test_a_pair_with_no_code_excuses_nothing(self, tmp_path: Path) -> None:
+        program = _TWO.replace("{\n  2\n}", "{\n  helper(())\n}")
+        findings = _findings(_gate(tmp_path, _pair(program, "check", None)))
+        assert any("no error_code" in p for p in findings.problems)
+        assert len(findings.failures) == 1 and "[E200]" in findings.failures[0]
+
+    def test_the_replay_gate_scans_every_gated_document(self) -> None:
+        diag = _load_script("check_diagnostic_examples")
+        gated, _errors = _MOD.expand_gates(ROOT)
+        expected = [ROOT / d for d in gated if not d.endswith(".html")]
+        assert list(diag.DOCS) == expected
+        assert ROOT / "DE_BRUIJN.md" in diag.DOCS
+
+
+# ---------------------------------------------------------------------------
+# Fences as CommonMark reads them, through the gate
+# ---------------------------------------------------------------------------
+
+
+class TestFencesThroughTheGate:
+    """A fence GitHub renders as Vera is one the gate reads, in every stage
+    and in the coverage rule (#1484 review)."""
+
+    @pytest.mark.parametrize("wrap", [
+        lambda p: "- item\n\n  ```vera\n" + "".join(f"  {ln}\n" for ln in p.splitlines()) + "  ```\n",
+        lambda p: f"~~~vera\n{p}\n~~~\n",
+        lambda p: f"````vera\n{p}\n````\n",
+        lambda p: f'```vera title="demo"\n{p}\n```\n',
+    ], ids=["indented", "tilde", "four-backtick", "info-string"])
+    def test_the_refuted_example_is_caught_in_any_fence(
+        self, wrap: Any, tmp_path: Path,
+    ) -> None:
+        findings = _findings(_gate(tmp_path, wrap(_OLD_CORRECT)))
+        assert len(findings.failures) == 1 and "[E500]" in findings.failures[0]
+
+    def test_an_info_string_does_not_hide_the_next_block(
+        self, tmp_path: Path,
+    ) -> None:
+        program = _TWO.replace("{\n  2\n}", "{\n  helper(())\n}")
+        text = '```vera title="demo"\n' + _FIXED_CORRECT + "\n```\n\nprose\n\n" + _fence(program)
+        findings = _findings(_gate(tmp_path, text))
+        assert len(findings.failures) == 1 and "[E200]" in findings.failures[0]
+
+
+# ---------------------------------------------------------------------------
+# Every block the run stage reaches makes a run decision
+# ---------------------------------------------------------------------------
+
+
+_TRAPS_AT_RUN = """\
+public fn main(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  string_char_code("abc", 7)
+}"""
+
+
+class TestRunDecision:
+    """A block that reaches the run stage and exports a function names an
+    invocation or says why it cannot run, so no example skips the run
+    silently (#1484 review: the run stage was opt-in)."""
+
+    def test_an_exported_block_with_no_decision_fails(self, tmp_path: Path) -> None:
+        """The reviewer's repro: verify passes, and the run would trap."""
+        findings = _findings(_gate(tmp_path, _fence(_TRAPS_AT_RUN)))
+        assert len(findings.failures) == 1
+        assert "[run]" in findings.failures[0]
+        assert "names no invocation" in findings.failures[0]
+
+    def test_with_a_run_marker_the_trap_is_caught(self, tmp_path: Path) -> None:
+        marker = '<!-- vera:run fn="main" stdout="0" -->'
+        findings = _findings(_gate(tmp_path, _fence(_TRAPS_AT_RUN, marker)))
+        assert len(findings.failures) == 1 and "exited" in findings.failures[0]
+
+    def test_an_unpinned_run_still_catches_a_trap(self, tmp_path: Path) -> None:
+        marker = '<!-- vera:run fn="main" reason="the value is not the point" -->'
+        findings = _findings(_gate(tmp_path, _fence(_TRAPS_AT_RUN, marker)))
+        assert len(findings.failures) == 1 and "exited" in findings.failures[0]
+
+    def test_an_unpinned_run_passes_a_clean_block(self, tmp_path: Path) -> None:
+        marker = '<!-- vera:run fn="two" reason="any output" -->'
+        assert _findings(_gate(tmp_path, _fence(_TWO, marker))) == _MOD.Findings([], [], [])
+
+    def test_a_no_run_property_that_holds_passes(self, tmp_path: Path) -> None:
+        program = _TWO.replace("{\n  2\n}", "{\n  ?\n}").replace(
+            "ensures(@Int.result == 2)", "ensures(true)"
+        )
+        marker = '<!-- vera:no-run category="typed-hole" reason="shows the hole" -->'
+        assert _findings(_gate(tmp_path, _fence(program, marker))) == _MOD.Findings([], [], [])
+
+    def test_a_no_run_property_that_does_not_hold_is_stale(
+        self, tmp_path: Path,
+    ) -> None:
+        marker = '<!-- vera:no-run category="network" reason="it does not" -->'
+        findings = _findings(_gate(tmp_path, _fence(_TWO, marker)))
+        assert len(findings.problems) == 1 and "does not hold" in findings.problems[0]
+
+    def test_no_run_on_a_block_that_exports_nothing_is_a_problem(
+        self, tmp_path: Path,
+    ) -> None:
+        marker = '<!-- vera:no-run category="network" reason="nothing to run" -->'
+        findings = _findings(_gate(tmp_path, _fence(_FIXED_CORRECT, marker)))
+        assert len(findings.problems) == 1
+        assert "exports no public function" in findings.problems[0]
+
+    def test_no_run_beside_run_is_a_problem(self, tmp_path: Path) -> None:
+        markers = (
+            '<!-- vera:run fn="two" stdout="2" -->',
+            '<!-- vera:no-run category="network" reason="both" -->',
+        )
+        findings = _findings(_gate(tmp_path, _fence(_TWO, *markers)))
+        assert len(findings.problems) == 1 and "beside vera:run" in findings.problems[0]
+
+    def test_an_unknown_no_run_category_is_a_problem(self, tmp_path: Path) -> None:
+        marker = '<!-- vera:no-run category="too-slow" reason="r" -->'
+        findings = _findings(_gate(tmp_path, _fence(_TWO, marker)))
+        assert len(findings.problems) == 1 and "unknown category" in findings.problems[0]
+
+    @pytest.mark.parametrize("category", ["network", "api-key", "stdin", "long-running"])
+    def test_shared_properties_use_the_harness_definitions(self, category: str) -> None:
+        assert _MOD.NO_RUN_PROPERTIES[category] == _MOD.SKIP_PROPERTIES[category]
+
+
+# ---------------------------------------------------------------------------
+# A skip marker excuses the failure it names
+# ---------------------------------------------------------------------------
+
+
+class TestCodedMarkers:
+    """A check or verify marker names its codes, and a failure carrying any
+    other code fails the gate (#1484 review: a marker pinned a stage, not a
+    failure)."""
+
+    def test_a_second_defect_under_a_marker_fails(self, tmp_path: Path) -> None:
+        """The reviewer's plant: an undefined helper the marker excuses, and
+        a type error it does not."""
+        program = _TWO.replace("{\n  2\n}", "{\n  helper(());\n  @Int.0 + true\n}")
+        marker = '<!-- vera:skip-check category="INCOMPLETE" code="E200" reason="helper is elsewhere" -->'
+        findings = _findings(_gate(tmp_path, _fence(program, marker)))
+        assert len(findings.failures) == 1
+        assert "[check]" in findings.failures[0]
+        assert "marker names E200" in findings.failures[0]
+
+    @pytest.mark.parametrize("doc", ["spec/02-types.md", "spec/06-contracts.md"])
+    def test_the_invariant_examples_are_marked_future(self, doc: str) -> None:
+        blocks, _problems = _MOD.scan_document(ROOT / doc)
+        invariant = [b for b in blocks if "invariant(" in b.content and b.annotations]
+        assert invariant
+        for block in invariant:
+            (ann,) = block.annotations
+            assert ann.category == "FUTURE" and "E130" in ann.codes
+
+
+# ---------------------------------------------------------------------------
+# Every example invocation a document names is run
+# ---------------------------------------------------------------------------
+
+
+class TestDocumentedInvocations:
+    """A `vera run examples/...` a document names is run by some gate
+    (#1484 review: EXAMPLES.md named two that no gate ran)."""
+
+    def test_invocations_are_read_in_their_written_forms(self, tmp_path: Path) -> None:
+        doc = tmp_path / "doc.md"
+        doc.write_text(
+            "Run with `vera run examples/safe_divide.vera --fn safe_divide -- 3 10`.\n"
+            "```bash\nvera run examples/hello_world.vera      # prints Hello\n```\n"
+            "`VERA_DB_URL=x vera run examples/sqlitedb.vera` (requires a fixture)\n"
+            "`vera run examples/modules.vera --fn abs_max -- -3 -5`\n",
+            encoding="utf-8",
+        )
+        found, problems = _MOD.documented_invocations(doc, "doc.md")
+        assert problems == []
+        assert [(i.name, i.fn, i.args) for i in found] == [
+            ("safe_divide", "safe_divide", ("3", "10")),
+            ("hello_world", None, ()),
+            ("sqlitedb", None, ()),
+            ("modules", "abs_max", ("-3", "-5")),
+        ]
+
+    def test_an_unreadable_invocation_is_a_problem(self, tmp_path: Path) -> None:
+        doc = tmp_path / "doc.md"
+        doc.write_text(
+            "`vera run --json examples/hello_world.vera`\n"
+            "`vera run examples/hello_world.vera --weird`\n",
+            encoding="utf-8",
+        )
+        found, problems = _MOD.documented_invocations(doc, "doc.md")
+        assert found == [] and len(problems) == 2
+
+    def test_the_owner_is_the_harness_when_it_runs_or_skips_the_example(self) -> None:
+        inv = _MOD.Invocation
+        assert _MOD.invocation_owner(inv("d", 1, "safe_divide", "safe_divide", ("3", "10")))
+        assert _MOD.invocation_owner(inv("d", 1, "hello_world", None, ()))
+        assert "skips" in _MOD.invocation_owner(inv("d", 1, "http", None, ()))
+        assert _MOD.invocation_owner(inv("d", 1, "effect_handler", "run_counter", ())) is None
+
+    def test_an_invocation_no_gate_runs_is_run_here(self, tmp_path: Path) -> None:
+        inv = _MOD.Invocation
+        failing = inv("d", 3, "safe_divide", "safe_divide", ("0", "5"))
+        passing = inv("d", 4, "effect_handler", "run_counter", ())
+        failures = _MOD.run_invocations(ROOT, [failing, passing], tmp_path)
+        assert len(failures) == 1
+        assert failures[0].startswith("d line 3 [invocation]")
+
+    def test_a_missing_example_is_a_failure(self, tmp_path: Path) -> None:
+        inv = _MOD.Invocation("d", 5, "no_such_example", None, ())
+        failures = _MOD.run_invocations(ROOT, [inv], tmp_path)
+        assert len(failures) == 1 and "does not exist" in failures[0]
+
+    def test_the_gate_runs_the_invocations_its_documents_name(
+        self, tmp_path: Path,
+    ) -> None:
+        """`run_gate` itself, not only its parts: a document that names a
+        failing invocation fails the gate."""
+        import shutil
+
+        shutil.copytree(ROOT / "examples", tmp_path / "examples")
+        (tmp_path / "d.md").write_text(
+            "`vera run examples/safe_divide.vera --fn safe_divide -- 0 5`\n",
+            encoding="utf-8",
+        )
+        (report,) = _MOD.run_gate(tmp_path, ["d.md"])
+        assert len(report.problems) == 1
+        assert report.problems[0].startswith("d.md line 1 [invocation]")
+
+    def test_examples_md_names_the_two_the_harness_does_not_run(self) -> None:
+        found, problems = _MOD.documented_invocations(ROOT / "EXAMPLES.md", "EXAMPLES.md")
+        assert problems == []
+        unowned = {(i.name, i.fn, i.args) for i in found if _MOD.invocation_owner(i) is None}
+        assert {("effect_handler", "run_counter", ()),
+                ("effect_handler", "safe_div", ("10", "0"))} <= unowned
+
+
+# ---------------------------------------------------------------------------
+# The instrument's own pieces
+# ---------------------------------------------------------------------------
+
+
+class TestInstrumentPieces:
+    """Cells for the pieces a mutation could otherwise remove unseen (#1484
+    review)."""
+
+    @pytest.mark.parametrize("name,text", [
+        ("page.html", "<pre>public fn f(-> @Int)</pre>\n"),
+        ("notes.txt", "```vera\nx\n```\n"),
+        ("untagged.md", "```\npublic fn f(-> @Int)\n```\n"),
+        ("tilde.md", "~~~vera\nx\n~~~\n"),
+        ("indented.md", "- item\n\n  ```vera\n  x\n  ```\n"),
+    ])
+    def test_every_selection_arm_makes_a_document_need_classifying(
+        self, name: str, text: str, tmp_path: Path,
+    ) -> None:
+        (tmp_path / name).write_text(text, encoding="utf-8")
+        errors = _MOD.check_coverage(tmp_path, [], {}, [name])
+        assert errors == [
+            f"{name} has Vera blocks the gate does not read — add it to "
+            f"DOC_GATES, or to NOT_GATED with the reason it is exempt"
+        ]
+
+    def test_the_canary_refuses_another_checkout(self) -> None:
+        assert _MOD.compiler_canary(ROOT) is None
+        elsewhere = Path("/elsewhere/vera/__init__.py")
+        message = _MOD.compiler_canary(ROOT, elsewhere)
+        assert message is not None and "not from" in message
+
+    def test_the_run_stage_puts_this_checkout_first(self) -> None:
+        import os
+
+        env = _MOD.run_env(ROOT)
+        assert env["PYTHONPATH"].split(os.pathsep)[0] == str(ROOT)
+        assert not set(_MOD.NEUTRALISED_ENV) & set(env)
 
 
 # ---------------------------------------------------------------------------

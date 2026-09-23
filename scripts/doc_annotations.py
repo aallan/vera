@@ -9,13 +9,21 @@ the lines immediately before its opening fence (or its ``<pre>`` tag)::
     List<Result<User, Error>>
     ```
 
-There are two kinds of marker, read by ``scripts/check_doc_examples.py``:
+``scripts/check_doc_examples.py`` reads three kinds of marker.  Every marker
+is a list of ``name="value"`` attributes; a value may use ``\n``, ``\t``,
+``\"`` and ``\\``, and any other name, a repeated name, or text outside the
+attributes is a problem rather than something to ignore.
 
 - **Skip markers** — ``vera:skip-parse``, ``vera:skip-check``,
   ``vera:skip-verify`` — say the block is expected to FAIL that stage, and
-  why.  ``category`` is one of :data:`CATEGORIES`, a closed vocabulary, so a
-  typo'd category is a problem rather than a new label; ``reason`` is free
-  text.  Neither value may contain a double quote.  A block carries at most
+  why.  ``category`` is one of :data:`CATEGORIES`, a closed vocabulary;
+  ``reason`` is free text; both must say something.  ``code`` names the
+  error codes the failure is expected to carry (space-separated, ``none``
+  for a diagnostic that carries no code), and the stage must then fail with
+  those codes and no others, so a marker excuses the failure it describes
+  rather than any failure at its stage.  It is required at the check and
+  verify stages, which report every error they find, and on a ``WRONG``
+  marker, whose code is what the example teaches.  A block carries at most
   one skip marker per stage, and the gate stops at the first marked stage.
 - **Run markers** — ``vera:run`` — name an invocation and the output it must
   print::
@@ -24,10 +32,20 @@ There are two kinds of marker, read by ``scripts/check_doc_examples.py``:
 
   ``fn`` is the function ``vera run --fn`` calls, ``args`` (optional) its
   arguments, split the way a POSIX shell splits a command line, and
-  ``stdout`` exactly what the run prints (``\n`` for a line break, ``\"``
-  for a double quote, ``\\`` for a backslash).  A block may carry several,
+  ``stdout`` exactly what the run prints.  A run whose output is not a value
+  — ``vera run`` prints a returned array, record or ``Result`` as a heap
+  address — gives a ``reason`` in place of ``stdout``: it still runs, and
+  still fails on a trap, with nothing pinned.  A block may carry several,
   one invocation each, and none together with a skip marker: a block the
   gate stops early never reaches the run.
+- **No-run markers** — ``vera:no-run`` — say why a block that exports a
+  public function names no invocation, with a ``category`` from the gate's
+  run-exclusion properties and a ``reason``.  A block the run stage
+  reaches carries run markers or one no-run marker, never neither.
+
+A fence is recognised the way CommonMark recognises one: a run of three or
+more backticks or tildes, indented or not, whose language is the first word
+of its info string, closed by a run of the same character at least as long.
 
 The markers travel with their fence through document edits, so there are no
 line numbers to maintain.  This replaced the line-number-keyed ``ALLOWLIST``
@@ -79,8 +97,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # The stages a skip marker can name, in pipeline order.  The gate's fourth
 # stage, `run`, is driven by `vera:run` markers instead: a block runs only
-# when it names an invocation, so there is nothing for a `skip-run` to skip.
+# the invocations its document names.
 STAGES = ("parse", "check", "verify")
+
+# The stages at which a skip marker must name its expected codes: they report
+# every error they find, so a marker without codes would excuse a second,
+# unrelated failure in the same block.
+CODED_STAGES = frozenset({"check", "verify"})
+
+# The stages `replay_diagnostic_examples` replays.  A `vera:diagnostic` pair
+# at any other stage is not checked against live output, so the example gate
+# does not let one excuse a failure.
+REPLAYED_STAGES: tuple[str, ...] = ("check",)
 
 # The closed category vocabulary for skip markers.  Each entry says what kind
 # of block the marker describes; the gate prints the definitions beside its
@@ -110,37 +138,97 @@ CATEGORIES: dict[str, str] = {
     ),
 }
 
-# A full, well-formed skip-marker line.
-ANNOTATION_RE = re.compile(
-    r'^\s*<!--\s*vera:skip-(parse|check|verify)\s+'
-    r'category="([^"]+)"\s+reason="([^"]+)"\s*-->\s*$'
+# A marker line, of any kind; its attributes are parsed by `_parse_attrs`.
+# The kind must end where a word or a hyphenated suffix would continue it,
+# so `vera:runs` and `vera:skip-run` are not markers of a known kind.
+MARKER_RE = re.compile(
+    r"^\s*<!--\s*vera:(?P<kind>skip-(?:parse|check|verify)|run|no-run)"
+    r"(?![\w-])(?P<body>.*?)-->\s*$"
 )
-
-# A run-marker line; its attribute list is parsed by `parse_run_marker`.
-RUN_MARKER_RE = re.compile(r"^\s*<!--\s*vera:run\b(.*?)-->\s*$")
-_RUN_ATTR_RE = re.compile(r'\s*([A-Za-z_]+)="((?:[^"\\]|\\.)*)"')
-_RUN_ESCAPES = {"n": "\n", "t": "\t", '"': '"', "\\": "\\"}
-_RUN_ESCAPE_RE = re.compile(r"\\(.)")
+_ATTR_RE = re.compile(r'\s*([A-Za-z_]+)="((?:[^"\\]|\\.)*)"')
+_ESCAPES = {"n": "\n", "t": "\t", '"': '"', "\\": "\\"}
+_ESCAPE_RE = re.compile(r"\\(.)")
 _FN_NAME_RE = re.compile(r"^[a-z_][A-Za-z0-9_]*$")
+_CODE_RE = re.compile(r"^(?:[EW]\d{3}|none)$")
+
+# The attributes each marker kind takes: (required, optional).
+_MARKER_ATTRS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
+    "skip": (frozenset({"category", "reason"}), frozenset({"code"})),
+    "run": (frozenset({"fn"}), frozenset({"args", "stdout", "reason"})),
+    "no-run": (frozenset({"category", "reason"}), frozenset()),
+}
 
 # Anything that *looks* like a marker attempt: a comment opening on a
 # `vera:` directive other than the `vera:diagnostic` pair (which
 # `scan_diagnostic_examples` owns), or naming `vera:skip` / `vera:run`
-# anywhere inside it.  A line matching this but neither marker regex is
-# reported as malformed rather than silently ignored — a typo'd marker must
-# not quietly un-skip (or fail to skip) a block, and a misspelt directive
-# such as `vera:rn` must not quietly run nothing.
+# anywhere inside it.  A line matching this but not MARKER_RE is reported as
+# malformed rather than silently ignored — a typo'd marker must not quietly
+# un-skip (or fail to skip) a block, and a misspelt directive such as
+# `vera:rn` must not quietly run nothing.
 ANNOTATION_HINT_RE = re.compile(
-    r"<!--(?:\s*vera:(?!diagnostic\b)|.*\bvera:(?:skip|run))", re.IGNORECASE
+    r"<!--(?:\s*vera:(?!diagnostic\b)|.*\bvera:(?:skip|run|no-run))",
+    re.IGNORECASE,
 )
 
 # Used by build_site.py to keep markers out of generated site assets.
 _ANNOTATION_LINE_RE = re.compile(
-    r"^[ \t]*<!--\s*vera:(?:skip-|run\b)[^\n]*-->[ \t]*\n", re.MULTILINE
+    r"^[ \t]*<!--\s*vera:(?:skip-|run\b|no-run\b)[^\n]*-->[ \t]*\n",
+    re.MULTILINE,
 )
 
-_FENCE_OPEN_RE = re.compile(r"^```(\w*)$")
-_FENCE_CLOSE_RE = re.compile(r"^```$")
+
+class Fence(NamedTuple):
+    """An opening code fence, as CommonMark reads one."""
+
+    indent: str  # the whitespace before the fence characters
+    char: str  # "`" or "~"
+    length: int  # how many of them
+    lang: str  # the first word of the info string, "" when there is none
+
+
+_FENCE_LINE_RE = re.compile(r"^(?P<indent>[ \t]*)(?P<run>`{3,}|~{3,})(?P<info>.*)$")
+_FENCE_CLOSE_RE = re.compile(r"^[ \t]*(?P<run>`{3,}|~{3,})[ \t]*$")
+
+
+def fence_opener(line: str) -> Fence | None:
+    """The fence *line* opens, or None when it opens none.
+
+    CommonMark's rule: three or more backticks or tildes, and an info string
+    whose first word is the language.  A backtick fence's info string cannot
+    itself contain a backtick — such a line is inline code, not a fence.
+    Indentation is accepted at any depth: in these documents an indented
+    fence is one inside a list item, where GitHub renders it as a fence.
+    """
+    m = _FENCE_LINE_RE.match(line)
+    if m is None:
+        return None
+    run, info = m.group("run"), m.group("info")
+    if run[0] == "`" and "`" in info:
+        return None
+    words = info.split()
+    return Fence(m.group("indent"), run[0], len(run), words[0] if words else "")
+
+
+def fence_closes(fence: Fence, line: str) -> bool:
+    """Whether *line* closes *fence*: the same character, at least as many,
+    and nothing after them but whitespace."""
+    m = _FENCE_CLOSE_RE.match(line)
+    return (
+        m is not None
+        and m.group("run")[0] == fence.char
+        and len(m.group("run")) >= fence.length
+    )
+
+
+def _dedent(line: str, fence: Fence) -> str:
+    """Remove up to the fence's own indentation from a content line, as
+    CommonMark does."""
+    width = len(fence.indent)
+    i = 0
+    while i < width and i < len(line) and line[i] in " \t":
+        i += 1
+    return line[i:]
+
 
 # `vera:diagnostic` — rendered-diagnostic replay (#1291).  A ```text fence
 # carrying compiler output (a diagnostic block, a fix text) is otherwise
@@ -246,14 +334,14 @@ def scan_diagnostic_examples(path: Path) -> tuple[list[DiagnosticExample], list[
                     f"annotation or end of file"
                 )
                 continue
-            program_open = _FENCE_OPEN_RE.match(program_lines[0]) if program_lines else None
+            program_open = fence_opener(program_lines[0]) if program_lines else None
             malformed_fence = (
-                not program_lines
+                len(program_lines) < 2
                 or program_open is None
-                or program_open.group(1).lower() != "vera"
-                or not _FENCE_CLOSE_RE.match(program_lines[-1])
+                or program_open.lang.lower() != "vera"
+                or not fence_closes(program_open, program_lines[-1])
             )
-            if malformed_fence:
+            if program_open is None or malformed_fence:
                 problems.append(
                     f"line {start_line}: vera:diagnostic annotation body "
                     f"must be wrapped in its own ```vera fence (so the "
@@ -261,27 +349,27 @@ def scan_diagnostic_examples(path: Path) -> tuple[list[DiagnosticExample], list[
                     f"between the two annotation comments"
                 )
                 continue
-            program_lines = program_lines[1:-1]
+            program_lines = [_dedent(ln, program_open) for ln in program_lines[1:-1]]
             while i < len(lines) and lines[i].strip() == "":
                 i += 1
-            if i >= len(lines) or not _FENCE_OPEN_RE.match(lines[i]):
+            text_fence = fence_opener(lines[i]) if i < len(lines) else None
+            if text_fence is None:
                 problems.append(
                     f"line {start_line}: vera:diagnostic annotation is not "
                     f"immediately followed by a code fence"
                 )
                 continue
-            fence_lang = _FENCE_OPEN_RE.match(lines[i]).group(1)  # type: ignore[union-attr]
-            if fence_lang.lower() != "text":
+            if text_fence.lang.lower() != "text":
                 problems.append(
                     f"line {start_line}: vera:diagnostic annotation is "
-                    f"followed by a ```{fence_lang} fence, not ```text"
+                    f"followed by a ```{text_fence.lang} fence, not ```text"
                 )
                 continue
             fence_line = i + 1
             i += 1
             fence_lines: list[str] = []
-            while i < len(lines) and not _FENCE_CLOSE_RE.match(lines[i]):
-                fence_lines.append(lines[i])
+            while i < len(lines) and not fence_closes(text_fence, lines[i]):
+                fence_lines.append(_dedent(lines[i], text_fence))
                 i += 1
             if i >= len(lines):
                 problems.append(
@@ -325,7 +413,7 @@ def replay_diagnostic_examples(
 
     errors: list[str] = []
     for ex in examples:
-        if ex.stage != "check":
+        if ex.stage not in REPLAYED_STAGES:
             errors.append(
                 f"line {ex.line}: vera:diagnostic stage={ex.stage!r} is not "
                 f"replayed yet (only \"check\" is currently supported)"
@@ -375,6 +463,7 @@ class Annotation(NamedTuple):
     stage: str  # "parse" | "check" | "verify"
     category: str
     reason: str
+    codes: tuple[str, ...] = ()  # the codes the failure must carry; () = any
 
 
 class RunMarker(NamedTuple):
@@ -383,17 +472,34 @@ class RunMarker(NamedTuple):
     line: int  # 1-based line of the marker comment
     fn: str  # the function `vera run --fn` calls
     args: tuple[str, ...]  # its arguments, after `--`
-    stdout: str  # the exact output, escapes decoded
+    stdout: str | None  # the exact output, escapes decoded; None = unpinned
+    reason: str = ""  # why the output is not pinned, when stdout is None
+
+
+class NoRunMarker(NamedTuple):
+    """One vera:no-run marker: why a block names no invocation."""
+
+    line: int  # 1-based line of the marker comment
+    category: str  # a run-exclusion property the gate defines
+    reason: str
 
 
 class CodeBlock(NamedTuple):
     """A code block plus the markers attached to it."""
 
     line: int  # 1-based line of the opening fence / <pre> tag
-    lang: str  # fence language tag ("" for HTML <pre> blocks)
+    lang: str  # fence language ("" for an untagged fence or a <pre> block)
     content: str
     annotations: tuple[Annotation, ...]
     runs: tuple[RunMarker, ...] = ()
+    no_runs: tuple[NoRunMarker, ...] = ()
+
+
+class StageFailure(NamedTuple):
+    """Why a stage refused a block: a message, and the codes it carried."""
+
+    message: str
+    codes: frozenset[str] = frozenset()
 
 
 class StageOutcome(NamedTuple):
@@ -402,7 +508,8 @@ class StageOutcome(NamedTuple):
     stage: str
     status: str  # "ok" | "failed" | "skipped" | "stale"
     error: str | None  # the stage error for "failed" / "skipped"
-    annotation: Annotation | None  # set for "skipped" / "stale"
+    annotation: Annotation | None  # set for "skipped" / "stale", and for a
+    # "failed" stage whose failure is not the one its marker names
 
 
 class _Pending:
@@ -411,23 +518,27 @@ class _Pending:
     def __init__(self) -> None:
         self.skips: list[Annotation] = []
         self.runs: list[RunMarker] = []
+        self.no_runs: list[NoRunMarker] = []
         self.first_line: int | None = None
 
     def __bool__(self) -> bool:
-        return bool(self.skips or self.runs)
+        return bool(self.skips or self.runs or self.no_runs)
 
     def note(self, lineno: int) -> None:
         if self.first_line is None:
             self.first_line = lineno
 
-    def take(self) -> tuple[tuple[Annotation, ...], tuple[RunMarker, ...]]:
-        taken = (tuple(self.skips), tuple(self.runs))
+    def take(
+        self,
+    ) -> tuple[tuple[Annotation, ...], tuple[RunMarker, ...], tuple[NoRunMarker, ...]]:
+        taken = (tuple(self.skips), tuple(self.runs), tuple(self.no_runs))
         self.clear()
         return taken
 
     def clear(self) -> None:
         self.skips.clear()
         self.runs.clear()
+        self.no_runs.clear()
         self.first_line = None
 
 
@@ -441,20 +552,67 @@ def _flush_pending(pending: _Pending, problems: list[str], where: str) -> None:
         pending.clear()
 
 
-def _decode_run_value(raw: str) -> str | None:
-    """Decode a run-marker attribute's backslash escapes, or None when it
-    holds one this grammar does not define."""
+def _decode_value(raw: str) -> str | None:
+    """Decode an attribute value's backslash escapes, or None when it holds
+    one this grammar does not define."""
     unknown = False
 
     def one(m: re.Match[str]) -> str:
         nonlocal unknown
-        if m.group(1) not in _RUN_ESCAPES:
+        if m.group(1) not in _ESCAPES:
             unknown = True
             return ""
-        return _RUN_ESCAPES[m.group(1)]
+        return _ESCAPES[m.group(1)]
 
-    decoded = _RUN_ESCAPE_RE.sub(one, raw)
+    decoded = _ESCAPE_RE.sub(one, raw)
     return None if unknown else decoded
+
+
+_EXPECTED = {
+    "skip": '<!-- vera:skip-<stage> category="..." [code="..."] reason="..." -->',
+    "run": '<!-- vera:run fn="..." [args="..."] stdout="..." (or reason="...") -->',
+    "no-run": '<!-- vera:no-run category="..." reason="..." -->',
+}
+
+
+def _parse_attrs(
+    kind: str, body: str, line: str, lineno: int,
+) -> dict[str, str] | str:
+    """The attributes of one marker, or a problem string."""
+    family = "skip" if kind.startswith("skip-") else kind
+    required, optional = _MARKER_ATTRS[family]
+    expected = f"(expected {_EXPECTED[family]})"
+    attrs: dict[str, str] = {}
+    pos = 0
+    while True:
+        am = _ATTR_RE.match(body, pos)
+        if am is None:
+            break
+        name, raw = am.group(1), am.group(2)
+        if name not in required | optional:
+            return f"line {lineno}: vera:{kind} has an unknown attribute {name!r} {expected}"
+        if name in attrs:
+            return f"line {lineno}: vera:{kind} repeats the attribute {name!r}"
+        value = _decode_value(raw)
+        if value is None:
+            return (
+                f"line {lineno}: vera:{kind} attribute {name!r} holds an "
+                f"escape other than \\n, \\t, \\\" or \\\\"
+            )
+        attrs[name] = value
+        pos = am.end()
+    if body[pos:].strip():
+        return f"line {lineno}: malformed vera:{kind} marker: {line.strip()!r} {expected}"
+    missing = sorted(required - set(attrs))
+    if missing:
+        return (
+            f"line {lineno}: vera:{kind} is missing "
+            f"{' and '.join(repr(a) for a in missing)} {expected}"
+        )
+    for name in ("category", "reason"):
+        if name in attrs and not attrs[name].strip():
+            return f"line {lineno}: vera:{kind} has a blank {name!r} — say why"
+    return attrs
 
 
 def parse_run_marker(line: str, lineno: int) -> RunMarker | str | None:
@@ -462,45 +620,14 @@ def parse_run_marker(line: str, lineno: int) -> RunMarker | str | None:
 
     Returns the :class:`RunMarker`, a problem string when the line is a run
     marker that does not follow the grammar, or ``None`` when the line is
-    not a run marker at all.  Every attribute is ``name="value"``; ``fn`` and
-    ``stdout`` are required and ``args`` is optional, and any other name, a
-    repeated name, an unknown escape or text outside the attributes is a
-    problem rather than something to ignore.
+    not a run marker at all.
     """
-    m = RUN_MARKER_RE.match(line)
-    if m is None:
+    m = MARKER_RE.match(line)
+    if m is None or m.group("kind") != "run":
         return None
-    expected = (
-        '(expected <!-- vera:run fn="..." [args="..."] stdout="..." -->)'
-    )
-    body = m.group(1)
-    attrs: dict[str, str] = {}
-    pos = 0
-    while True:
-        am = _RUN_ATTR_RE.match(body, pos)
-        if am is None:
-            break
-        name, raw = am.group(1), am.group(2)
-        if name not in ("fn", "args", "stdout"):
-            return f"line {lineno}: vera:run has an unknown attribute {name!r} {expected}"
-        if name in attrs:
-            return f"line {lineno}: vera:run repeats the attribute {name!r}"
-        value = _decode_run_value(raw)
-        if value is None:
-            return (
-                f"line {lineno}: vera:run attribute {name!r} holds an escape "
-                f"other than \\n, \\t, \\\" or \\\\"
-            )
-        attrs[name] = value
-        pos = am.end()
-    if body[pos:].strip():
-        return f"line {lineno}: malformed vera:run marker: {line.strip()!r} {expected}"
-    missing = [a for a in ("fn", "stdout") if a not in attrs]
-    if missing:
-        return (
-            f"line {lineno}: vera:run is missing "
-            f"{' and '.join(repr(a) for a in missing)} {expected}"
-        )
+    attrs = _parse_attrs("run", m.group("body"), line, lineno)
+    if isinstance(attrs, str):
+        return attrs
     if not _FN_NAME_RE.match(attrs["fn"]):
         return (
             f"line {lineno}: vera:run fn={attrs['fn']!r} is not a function "
@@ -510,7 +637,49 @@ def parse_run_marker(line: str, lineno: int) -> RunMarker | str | None:
         args = tuple(shlex.split(attrs.get("args", ""), posix=True))
     except ValueError as exc:
         return f"line {lineno}: vera:run args do not split: {exc}"
-    return RunMarker(lineno, attrs["fn"], args, attrs["stdout"])
+    if ("stdout" in attrs) == ("reason" in attrs):
+        return (
+            f"line {lineno}: vera:run names its expected stdout, or, when the "
+            f"output is not a value to pin (a heap address), a reason — "
+            f"exactly one of the two"
+        )
+    return RunMarker(
+        lineno, attrs["fn"], args, attrs.get("stdout"), attrs.get("reason", "")
+    )
+
+
+def _skip_marker(
+    stage: str, attrs: dict[str, str], lineno: int, problems: list[str],
+) -> Annotation:
+    """Build a skip marker, reporting what its attributes get wrong.  The
+    marker still attaches, so the block's stage outcome is still computed;
+    a problem alone fails the gate."""
+    category = attrs["category"]
+    if category not in CATEGORIES:
+        problems.append(
+            f"line {lineno}: vera:skip-{stage} has the unknown category "
+            f"{category!r} (one of {', '.join(CATEGORIES)})"
+        )
+    codes = tuple(attrs.get("code", "").replace(",", " ").split())
+    bad = [c for c in codes if not _CODE_RE.match(c)]
+    if bad:
+        problems.append(
+            f"line {lineno}: vera:skip-{stage} code {' '.join(bad)!r} is not "
+            f"an error code (E### or W###, or none for a diagnostic that "
+            f"carries no code)"
+        )
+    if not codes and (stage in CODED_STAGES or category == "WRONG"):
+        why = (
+            f"the {stage} stage reports every error it finds"
+            if stage in CODED_STAGES
+            else "the code is what a WRONG example teaches"
+        )
+        problems.append(
+            f"line {lineno}: vera:skip-{stage} must name the codes its failure "
+            f"carries, code=\"...\", because {why}; without them it would "
+            f"excuse any failure at that stage"
+        )
+    return Annotation(lineno, stage, category, attrs["reason"], codes)
 
 
 def _take_annotation(
@@ -520,37 +689,47 @@ def _take_annotation(
 
     Returns True when the line was marker-shaped and has been handled.
     """
-    m = ANNOTATION_RE.match(line)
-    if m:
-        ann = Annotation(lineno, m.group(1), m.group(2), m.group(3))
+    m = MARKER_RE.match(line)
+    if m is not None:
+        kind = m.group("kind")
         pending.note(lineno)
-        if ann.category not in CATEGORIES:
+        if kind == "run":
+            run = parse_run_marker(line, lineno)
+            if isinstance(run, str):
+                problems.append(run)
+            elif run is not None:
+                pending.runs.append(run)
+            return True
+        attrs = _parse_attrs(kind, m.group("body"), line, lineno)
+        if isinstance(attrs, str):
+            problems.append(attrs)
+            return True
+        if kind == "no-run":
+            if pending.no_runs:
+                problems.append(
+                    f"line {lineno}: a second vera:no-run marker for the same "
+                    f"block"
+                )
+            else:
+                pending.no_runs.append(
+                    NoRunMarker(lineno, attrs["category"], attrs["reason"])
+                )
+            return True
+        stage = kind.removeprefix("skip-")
+        ann = _skip_marker(stage, attrs, lineno, problems)
+        if any(p.stage == stage for p in pending.skips):
             problems.append(
-                f"line {lineno}: vera:skip-{ann.stage} has the unknown "
-                f"category {ann.category!r} (one of "
-                f"{', '.join(CATEGORIES)})"
-            )
-        if any(p.stage == ann.stage for p in pending.skips):
-            problems.append(
-                f"line {lineno}: duplicate vera:skip-{ann.stage} annotation "
-                f"for the same block"
+                f"line {lineno}: duplicate vera:skip-{stage} annotation for "
+                f"the same block"
             )
         else:
             pending.skips.append(ann)
         return True
-    run = parse_run_marker(line, lineno)
-    if run is not None:
-        pending.note(lineno)
-        if isinstance(run, str):
-            problems.append(run)
-        else:
-            pending.runs.append(run)
-        return True
     if ANNOTATION_HINT_RE.search(line):
         problems.append(
             f"line {lineno}: malformed vera marker: {line.strip()!r} "
-            f'(expected <!-- vera:skip-<stage> category="..." reason="..." -->'
-            f' or <!-- vera:run fn="..." [args="..."] stdout="..." -->)'
+            f"(expected {_EXPECTED['skip']}, {_EXPECTED['run']} or "
+            f"{_EXPECTED['no-run']})"
         )
         return True
     return False
@@ -559,8 +738,11 @@ def _take_annotation(
 def scan_markdown(path: Path) -> tuple[list[CodeBlock], list[str]]:
     """Extract fenced code blocks (with markers) from a Markdown file.
 
-    Returns ``(blocks, problems)``.  ``problems`` lists malformed, dangling,
-    and duplicate markers — the gate treats a non-empty list as failure.
+    A fence is read as CommonMark reads one (:func:`fence_opener`), its
+    content de-indented by the opener's indentation.  Returns ``(blocks,
+    problems)``.  ``problems`` lists malformed, dangling, and duplicate
+    markers and unterminated fences — the gate treats a non-empty list as
+    failure.
     """
     lines = path.read_text(encoding="utf-8").splitlines()
     blocks: list[CodeBlock] = []
@@ -572,14 +754,13 @@ def scan_markdown(path: Path) -> tuple[list[CodeBlock], list[str]]:
         if _take_annotation(line, i + 1, pending, problems):
             i += 1
             continue
-        m = _FENCE_OPEN_RE.match(line)
-        if m:
-            lang = m.group(1)
+        fence = fence_opener(line)
+        if fence is not None:
             start_line = i + 1  # 1-based
             content_lines: list[str] = []
             i += 1
-            while i < len(lines) and not _FENCE_CLOSE_RE.match(lines[i]):
-                content_lines.append(lines[i])
+            while i < len(lines) and not fence_closes(fence, lines[i]):
+                content_lines.append(_dedent(lines[i], fence))
                 i += 1
             if i >= len(lines):
                 # The fence ran to EOF — malformed markdown must fail
@@ -587,13 +768,16 @@ def scan_markdown(path: Path) -> tuple[list[CodeBlock], list[str]]:
                 # well-formed.
                 problems.append(
                     f"line {start_line}: unterminated code fence "
-                    f"(no closing ``` before end of file)"
+                    f"(no closing {fence.char * fence.length} before end of file)"
                 )
                 pending.clear()
                 break
-            skips, runs = pending.take()
+            skips, runs, no_runs = pending.take()
             blocks.append(
-                CodeBlock(start_line, lang, "\n".join(content_lines), skips, runs)
+                CodeBlock(
+                    start_line, fence.lang, "\n".join(content_lines),
+                    skips, runs, no_runs,
+                )
             )
             i += 1
             continue
@@ -635,9 +819,9 @@ def scan_html(path: Path) -> tuple[list[CodeBlock], list[str]]:
                 content = m.group(1)
                 content = re.sub(r"<[^>]+>", "", content)
                 content = html.unescape(content)
-                skips, runs = pending.take()
+                skips, runs, no_runs = pending.take()
                 blocks.append(
-                    CodeBlock(start_line, "", content.strip(), skips, runs)
+                    CodeBlock(start_line, "", content.strip(), skips, runs, no_runs)
                 )
             else:
                 # The collect loop only exits without a match when </pre>
@@ -656,19 +840,29 @@ def scan_html(path: Path) -> tuple[list[CodeBlock], list[str]]:
     return blocks, problems
 
 
+def _as_failure(result: str | StageFailure | None) -> StageFailure | None:
+    if result is None or isinstance(result, StageFailure):
+        return result
+    return StageFailure(result)
+
+
 def evaluate_block(
     block: CodeBlock,
-    stage_runners: Sequence[tuple[str, Callable[[str], str | None]]],
+    stage_runners: Sequence[
+        tuple[str, Callable[[str], str | StageFailure | None]]
+    ],
 ) -> list[StageOutcome]:
     """Run a block through ordered pipeline stages, honoring skip markers.
 
-    Each runner takes the block content and returns an error message, or
-    ``None`` on success.  For each stage in order:
+    Each runner takes the block content and returns ``None`` on success, or
+    the failure: a :class:`StageFailure` carrying the codes of what failed,
+    or a plain message.  For each stage in order:
 
-    - marked ``skip-<stage>``: the runner still runs, and *failure* is the
-      expected outcome (``"skipped"``); *success* means the marker is
-      ``"stale"`` and the gate must fail so the marker gets removed.
-      Either way the pipeline stops at a marked stage.
+    - marked ``skip-<stage>``: the runner still runs.  A failure is the
+      expected outcome (``"skipped"``) — unless the marker names codes and
+      the failure carries a code it does not name, which is a different
+      failure from the one the marker excuses (``"failed"``).  A pass means
+      the marker is ``"stale"``.  Either way the pipeline stops there.
     - unmarked: success (``"ok"``) continues to the next stage; failure
       (``"failed"``) stops the pipeline.
     """
@@ -676,19 +870,34 @@ def evaluate_block(
     outcomes: list[StageOutcome] = []
     for stage, runner in stage_runners:
         annotation = by_stage.get(stage)
-        error = runner(block.content)
+        failure = _as_failure(runner(block.content))
         if annotation is not None:
-            status = "stale" if error is None else "skipped"
-            outcomes.append(StageOutcome(stage, status, error, annotation))
+            if failure is None:
+                outcomes.append(StageOutcome(stage, "stale", None, annotation))
+            elif annotation.codes and not (
+                failure.codes and failure.codes <= set(annotation.codes)
+            ):
+                carried = " ".join(sorted(failure.codes)) or "no code"
+                outcomes.append(StageOutcome(
+                    stage, "failed",
+                    f"{failure.message} — it fails {stage} with {carried}, "
+                    f"and its vera:skip-{stage} marker names "
+                    f"{' '.join(annotation.codes)}",
+                    annotation,
+                ))
+            else:
+                outcomes.append(
+                    StageOutcome(stage, "skipped", failure.message, annotation)
+                )
             break
-        if error is not None:
-            outcomes.append(StageOutcome(stage, "failed", error, None))
+        if failure is not None:
+            outcomes.append(StageOutcome(stage, "failed", failure.message, None))
             break
         outcomes.append(StageOutcome(stage, "ok", None, None))
     return outcomes
 
 
 def strip_annotations(text: str) -> str:
-    """Remove vera:skip and vera:run marker lines (used by build_site.py so
-    the markers never leak into generated site assets)."""
+    """Remove vera:skip, vera:run and vera:no-run marker lines (used by
+    build_site.py so the markers never leak into generated site assets)."""
     return _ANNOTATION_LINE_RE.sub("", text)

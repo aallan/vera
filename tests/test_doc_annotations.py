@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from typing import Any
 
 from vera.parser import parse
 
@@ -98,14 +99,15 @@ class TestScanMarkdown:
     def test_stacked_annotations(self, tmp_path: Path) -> None:
         path = _md(
             tmp_path,
-            '<!-- vera:skip-check category="INCOMPLETE" reason="uses ext fn" -->\n'
-            '<!-- vera:skip-verify category="ILLUSTRATIVE" reason="loose contract" -->\n'
+            '<!-- vera:skip-check category="INCOMPLETE" code="E200" reason="uses ext fn" -->\n'
+            '<!-- vera:skip-verify category="ILLUSTRATIVE" code="E500" reason="loose contract" -->\n'
             "```vera\nx\n```\n",
         )
         blocks, problems = scan_markdown(path)
         assert problems == []
         stages = [a.stage for a in blocks[0].annotations]
         assert stages == ["check", "verify"]
+        assert [a.codes for a in blocks[0].annotations] == [("E200",), ("E500",)]
 
     def test_dangling_annotation_is_problem(self, tmp_path: Path) -> None:
         path = _md(
@@ -139,7 +141,7 @@ class TestScanMarkdown:
         )
         _blocks, problems = scan_markdown(path)
         assert len(problems) == 1
-        assert "malformed" in problems[0]
+        assert "unknown attribute 'categry'" in problems[0]
 
     def test_unknown_stage_is_problem(self, tmp_path: Path) -> None:
         path = _md(
@@ -327,7 +329,7 @@ class TestCategories:
 
     def test_every_defined_category_is_accepted(self, tmp_path: Path) -> None:
         text = "".join(
-            f'<!-- vera:skip-parse category="{c}" reason="r" -->\n'
+            f'<!-- vera:skip-parse category="{c}" code="E005" reason="r" -->\n'
             "```vera\nx\n```\n\n"
             for c in CATEGORIES
         )
@@ -389,10 +391,26 @@ class TestRunMarkers:
             '<!-- vera:skip-parse category="FRAGMENT" reason="r" -->', 1
         ) is None
 
-    def test_missing_stdout_is_problem(self) -> None:
+    def test_missing_stdout_and_reason_is_problem(self) -> None:
         problem = parse_run_marker('<!-- vera:run fn="main" -->', 3)
         assert isinstance(problem, str)
-        assert problem.startswith("line 3:") and "'stdout'" in problem
+        assert problem.startswith("line 3:") and "exactly one" in problem
+
+    def test_stdout_and_reason_together_is_problem(self) -> None:
+        problem = parse_run_marker(
+            '<!-- vera:run fn="main" stdout="1" reason="both" -->', 3
+        )
+        assert isinstance(problem, str) and "exactly one" in problem
+
+    def test_reason_instead_of_stdout_leaves_the_output_unpinned(self) -> None:
+        marker = parse_run_marker(
+            '<!-- vera:run fn="grid" reason="returns an array" -->', 4
+        )
+        assert marker == RunMarker(4, "grid", (), None, "returns an array")
+
+    def test_blank_run_reason_is_problem(self) -> None:
+        problem = parse_run_marker('<!-- vera:run fn="grid" reason=" " -->', 4)
+        assert isinstance(problem, str) and "blank 'reason'" in problem
 
     def test_missing_fn_is_problem(self) -> None:
         problem = parse_run_marker('<!-- vera:run stdout="1" -->', 3)
@@ -438,7 +456,7 @@ class TestRunMarkers:
             '<!-- vera:run fn="main" -->\n```vera\nprogram\n```\n',
         )
         blocks, problems = scan_markdown(path)
-        assert len(problems) == 1 and "'stdout'" in problems[0]
+        assert len(problems) == 1 and "exactly one" in problems[0]
         assert blocks[0].runs == ()
 
     def test_misspelt_directive_is_malformed_not_ignored(
@@ -481,6 +499,223 @@ class TestRunMarkers:
         blocks, problems = scan_html(path)
         assert problems == []
         assert blocks[0].runs == (RunMarker(1, "main", (), "5"),)
+
+
+class TestMarkerValues:
+    """Every marker says something, and a skip marker at a stage that reports
+    every error names the codes it excuses (#1484 review)."""
+
+    def test_blank_reason_is_problem(self, tmp_path: Path) -> None:
+        for reason in ("", " "):
+            path = _md(
+                tmp_path,
+                f'<!-- vera:skip-parse category="FRAGMENT" reason="{reason}" -->\n'
+                "```vera\nx\n```\n",
+            )
+            _blocks, problems = scan_markdown(path)
+            assert len(problems) == 1, reason
+            assert "blank 'reason'" in problems[0], reason
+
+    def test_blank_category_is_problem(self, tmp_path: Path) -> None:
+        path = _md(
+            tmp_path,
+            '<!-- vera:skip-parse category=" " reason="r" -->\n```vera\nx\n```\n',
+        )
+        _blocks, problems = scan_markdown(path)
+        assert len(problems) == 1 and "blank 'category'" in problems[0]
+
+    def test_codes_are_read(self, tmp_path: Path) -> None:
+        path = _md(
+            tmp_path,
+            '<!-- vera:skip-check category="FUTURE" code="E130 E200" reason="r" -->\n'
+            "```vera\nx\n```\n",
+        )
+        blocks, problems = scan_markdown(path)
+        assert problems == []
+        assert blocks[0].annotations[0].codes == ("E130", "E200")
+
+    def test_none_names_a_diagnostic_without_a_code(self, tmp_path: Path) -> None:
+        path = _md(
+            tmp_path,
+            '<!-- vera:skip-check category="ILLUSTRATIVE" code="none" reason="r" -->\n'
+            "```vera\nx\n```\n",
+        )
+        blocks, problems = scan_markdown(path)
+        assert problems == [] and blocks[0].annotations[0].codes == ("none",)
+
+    def test_a_code_that_is_not_one_is_problem(self, tmp_path: Path) -> None:
+        path = _md(
+            tmp_path,
+            '<!-- vera:skip-check category="FUTURE" code="E13" reason="r" -->\n'
+            "```vera\nx\n```\n",
+        )
+        _blocks, problems = scan_markdown(path)
+        assert len(problems) == 1 and "not an error code" in problems[0]
+
+    def test_check_and_verify_markers_must_name_codes(self, tmp_path: Path) -> None:
+        for stage in ("check", "verify"):
+            path = _md(
+                tmp_path,
+                f'<!-- vera:skip-{stage} category="INCOMPLETE" reason="r" -->\n'
+                "```vera\nx\n```\n",
+            )
+            _blocks, problems = scan_markdown(path)
+            assert len(problems) == 1, stage
+            assert "must name the codes" in problems[0], stage
+
+    def test_a_wrong_marker_must_name_its_code(self, tmp_path: Path) -> None:
+        path = _md(
+            tmp_path,
+            '<!-- vera:skip-parse category="WRONG" reason="missing contracts" -->\n'
+            "```vera\nx\n```\n",
+        )
+        _blocks, problems = scan_markdown(path)
+        assert len(problems) == 1 and "what a WRONG example teaches" in problems[0]
+
+    def test_a_parse_fragment_need_not_name_a_code(self, tmp_path: Path) -> None:
+        path = _md(
+            tmp_path,
+            '<!-- vera:skip-parse category="FRAGMENT" reason="bare call" -->\n'
+            "```vera\nx\n```\n",
+        )
+        _blocks, problems = scan_markdown(path)
+        assert problems == []
+
+
+class TestCodedEvaluation:
+    """A marker that names codes excuses that failure, not any failure at its
+    stage (#1484 review)."""
+
+    def _block(self, codes: tuple[str, ...]) -> Any:
+        ann = doc_annotations.Annotation(1, "check", "INCOMPLETE", "r", codes)
+        return CodeBlock(2, "vera", "x", (ann,))
+
+    def test_the_named_failure_is_skipped(self) -> None:
+        outcomes = evaluate_block(
+            self._block(("E200",)),
+            [("check", lambda _c: doc_annotations.StageFailure("m", frozenset({"E200"})))],
+        )
+        assert outcomes[-1].status == "skipped"
+
+    def test_a_failure_with_another_code_fails(self) -> None:
+        outcomes = evaluate_block(
+            self._block(("E200",)),
+            [("check", lambda _c: doc_annotations.StageFailure(
+                "m", frozenset({"E200", "E121"})))],
+        )
+        assert outcomes[-1].status == "failed"
+        assert "E121 E200" in (outcomes[-1].error or "")
+        assert "names E200" in (outcomes[-1].error or "")
+
+    def test_a_failure_with_no_code_fails_a_coded_marker(self) -> None:
+        outcomes = evaluate_block(
+            self._block(("E200",)), [("check", lambda _c: "no code at all")]
+        )
+        assert outcomes[-1].status == "failed"
+
+    def test_an_uncoded_marker_excuses_any_failure_at_parse(self) -> None:
+        ann = doc_annotations.Annotation(1, "parse", "FRAGMENT", "r")
+        block = CodeBlock(2, "vera", "x", (ann,))
+        outcomes = evaluate_block(block, [("parse", _try_parse)])
+        assert outcomes[-1].status == "skipped"
+
+
+class TestNoRunMarkers:
+    """`vera:no-run` says why a block that exports a function names no
+    invocation (#1484 review)."""
+
+    def test_marker_attaches_to_following_fence(self, tmp_path: Path) -> None:
+        path = _md(
+            tmp_path,
+            '<!-- vera:no-run category="network" reason="calls Http" -->\n'
+            "```vera\nprogram\n```\n",
+        )
+        blocks, problems = scan_markdown(path)
+        assert problems == []
+        assert blocks[0].no_runs == (
+            doc_annotations.NoRunMarker(1, "network", "calls Http"),
+        )
+
+    def test_blank_reason_is_problem(self, tmp_path: Path) -> None:
+        path = _md(
+            tmp_path,
+            '<!-- vera:no-run category="network" reason="" -->\n```vera\nx\n```\n',
+        )
+        _blocks, problems = scan_markdown(path)
+        assert len(problems) == 1 and "blank 'reason'" in problems[0]
+
+    def test_a_second_no_run_marker_is_problem(self, tmp_path: Path) -> None:
+        path = _md(
+            tmp_path,
+            '<!-- vera:no-run category="network" reason="a" -->\n'
+            '<!-- vera:no-run category="api-key" reason="b" -->\n'
+            "```vera\nx\n```\n",
+        )
+        _blocks, problems = scan_markdown(path)
+        assert len(problems) == 1 and "second vera:no-run" in problems[0]
+
+    def test_no_run_marker_lines_are_stripped(self) -> None:
+        text = (
+            "before\n"
+            '<!-- vera:no-run category="network" reason="calls Http" -->\n'
+            "```vera\nprogram\n```\n"
+        )
+        assert "vera:no-run" not in strip_annotations(text)
+
+
+class TestCommonMarkFences:
+    """A fence is recognised as CommonMark recognises one, so a fence GitHub
+    renders is one the gate reads (#1484 review)."""
+
+    def _one(self, tmp_path: Path, text: str) -> Any:
+        blocks, problems = scan_markdown(_md(tmp_path, text))
+        assert problems == []
+        assert len(blocks) == 1
+        return blocks[0]
+
+    def test_indented_fence(self, tmp_path: Path) -> None:
+        block = self._one(
+            tmp_path, "- item\n\n  ```vera\n  fn broken(\n    body\n  ```\n"
+        )
+        assert block.lang == "vera"
+        assert block.content == "fn broken(\n  body"
+
+    def test_tilde_fence(self, tmp_path: Path) -> None:
+        block = self._one(tmp_path, "~~~vera\nfn broken(\n~~~\n")
+        assert block.lang == "vera"
+
+    def test_longer_fence_holds_shorter_runs(self, tmp_path: Path) -> None:
+        block = self._one(tmp_path, "````vera\nx\n```\ny\n````\n")
+        assert block.content == "x\n```\ny"
+
+    def test_closer_must_use_the_same_character(self, tmp_path: Path) -> None:
+        block = self._one(tmp_path, "```vera\nx\n~~~\ny\n```\n")
+        assert block.content == "x\n~~~\ny"
+
+    def test_info_string_takes_its_first_word(self, tmp_path: Path) -> None:
+        block = self._one(tmp_path, '```vera title="demo"\nx\n```\n')
+        assert block.lang == "vera"
+
+    def test_info_string_keeps_the_scan_in_step(self, tmp_path: Path) -> None:
+        """The reviewer's desync: an opener with attributes used to be
+        misread, its closer taken for an opener, and the next real block
+        swallowed.  Both blocks are found, each with its own content."""
+        blocks, problems = scan_markdown(_md(
+            tmp_path,
+            '```vera title="demo"\na\n```\n\nprose\n\n```vera\nb\n```\n',
+        ))
+        assert problems == []
+        assert [(b.lang, b.content) for b in blocks] == [("vera", "a"), ("vera", "b")]
+
+    def test_backtick_in_a_backtick_info_string_is_not_a_fence(self) -> None:
+        assert doc_annotations.fence_opener("```vera `x`") is None
+        assert doc_annotations.fence_opener("~~~vera `x`") is not None
+
+    def test_closer_is_at_least_as_long(self) -> None:
+        opener = doc_annotations.fence_opener("````vera")
+        assert opener is not None
+        assert not doc_annotations.fence_closes(opener, "```")
+        assert doc_annotations.fence_closes(opener, "`````")
 
 
 class TestStripAnnotations:

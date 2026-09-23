@@ -95,23 +95,24 @@ repos:
       # (scripts/check_doc_examples.py): each block parses, passes
       # `vera check` and `vera verify`, and runs every `vera:run` invocation
       # it names, or carries a vera:skip marker (scripts/doc_annotations.py,
-      # #538) naming the stage it fails.  It also holds every tracked
+      # #538) naming the stage it fails.  It also runs the `vera run
+      # examples/...` invocations the documents name and holds every tracked
       # document with Vera blocks to its DOC_GATES / NOT_GATED lists, so the
-      # trigger is any document, as well as the compiler, the stub modules
-      # the blocks import (examples/vera/), and the gate's own modules.
+      # trigger is any document, the compiler, the examples (and the stub
+      # modules the blocks import, examples/vera/), and the gate's modules.
       - id: doc-examples
         name: doc examples
         entry: .venv/bin/python scripts/check_doc_examples.py
         language: system
         pass_filenames: false
-        files: '(\.(md|html|txt)$|vera/.*\.py$|vera/grammar\.lark$|examples/vera/.*\.vera$|scripts/(check_doc_examples|check_examples_run|doc_annotations)\.py$)'
+        files: '(\.(md|html|txt)$|vera/.*\.py$|vera/grammar\.lark$|examples/.*\.vera$|scripts/(check_doc_examples|check_examples_run|doc_annotations)\.py$)'
 
       - id: diagnostic-examples
         name: diagnostic examples
         entry: .venv/bin/python scripts/check_diagnostic_examples.py
         language: system
         pass_filenames: false
-        files: '(DE_BRUIJN\.md$|vera/.*\.py$|vera/grammar\.lark$|scripts/(check_diagnostic_examples|doc_annotations)\.py$)'
+        files: '(\.(md|txt)$|vera/.*\.py$|vera/grammar\.lark$|scripts/(check_diagnostic_examples|check_doc_examples|doc_annotations)\.py$)'
 
       # #819 — fails when a doc example *defines* a function named after an
       # opaque built-in (which `vera check` rejects with E151).  The doc

@@ -195,6 +195,7 @@ written after `effects` is a parse error (`E032`) naming the move.
 
 Complete example:
 
+<!-- vera:run fn="safe_divide" args="2 10" stdout="5" -->
 ```vera
 public fn safe_divide(@Int, @Int -> @Int)
   requires(@Int.1 != 0)
@@ -209,6 +210,7 @@ public fn safe_divide(@Int, @Int -> @Int)
 
 Vera accepts two equivalent shapes for functions that take no meaningful argument:
 
+<!-- vera:run fn="a" stdout="42" -->
 ```vera
 public fn a(-> @Int)        requires(true) ensures(true) effects(pure) { 42 }
 public fn b(@Unit -> @Int)  requires(true) ensures(true) effects(pure) { 42 }
@@ -240,6 +242,7 @@ Every top-level `fn` and `data` declaration **must** have an explicit visibility
 - `public` -- the declaration is visible to other modules that import this one. Only `public` functions are exported as WASM entry points (callable via `vera run`). Use for library APIs, exported functions, and program entry points.
 - `private` -- the declaration is only visible within the current file/module. Private functions compile but are not WASM exports. Use for internal helpers.
 
+<!-- vera:run fn="exported_api" args="3" stdout="3" -->
 ```vera
 public fn exported_api(@Int -> @Int)
   requires(true)
@@ -537,7 +540,7 @@ private data Option<T> {
 
 With an invariant *(NYI — see [#686](https://github.com/aallan/vera/issues/686); use a refinement type instead, shown below)*:
 
-<!-- vera:skip-check category="FUTURE" reason="the data invariant clause is not implemented yet (#686), so vera check reports E130" -->
+<!-- vera:skip-check category="FUTURE" code="E130" reason="the data invariant clause is not implemented yet (#686), so vera check reports E130" -->
 ```vera
 private data Positive invariant(@Int.0 > 0) {
   MkPositive(Int)
@@ -552,7 +555,7 @@ type Positive = { @Int | @Int.0 > 0 };
 
 ## Pattern Matching
 
-<!-- vera:skip-check category="INCOMPLETE" reason="matches on Color, declared in the Data Types block above" -->
+<!-- vera:skip-check category="INCOMPLETE" code="E322" reason="matches on Color, declared in the Data Types block above" -->
 ```vera
 private fn to_int(@Color -> @Int)
   requires(true)
@@ -619,6 +622,7 @@ Statements end with `;`. The final expression (no `;`) is the block's value.
 
 **When you do not know the right expression to write, use `?` rather than guessing.** A typed hole tells you immediately what type is needed and what bindings are available — it is always faster than writing the wrong thing and debugging the type error.
 
+<!-- vera:no-run category="typed-hole" reason="it holds a typed hole, which vera run refuses (E614)" -->
 ```vera
 public fn double(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -644,6 +648,7 @@ The program type-checks successfully (`ok: true`) — holes are warnings, not er
 
 Use holes to build programs incrementally:
 
+<!-- vera:no-run category="typed-hole" reason="it holds a typed hole, which vera run refuses (E614)" -->
 ```vera
 public fn safe_div(@Int, @Int -> @Option<Int>)
   requires(true) ensures(true) effects(pure)
@@ -679,7 +684,7 @@ See `tests/conformance/ch03_typed_holes.vera` for a minimal working example.
 
 Vera has no `for` or `while` loops. Iteration is always expressed as tail-recursive functions. The standard pattern for counted iteration:
 
-<!-- vera:skip-check category="INCOMPLETE" reason="calls fizzbuzz, defined in the Iteration with IO example below" -->
+<!-- vera:skip-check category="INCOMPLETE" code="E200" reason="calls fizzbuzz, defined in the Iteration with IO example below" -->
 ```vera
 private fn loop(@Nat, @Nat -> @Unit)
   requires(@Nat.0 <= @Nat.1)
@@ -723,6 +728,7 @@ Inside the closure body, `@Int.0` is the closure's own parameter (index 0 = most
 
 Outer bindings are available at higher De Bruijn indices — the closure's own parameters are pushed on top of the slot stack, so outer `@T` bindings shift up by the number of inner `@T` parameters.
 
+<!-- vera:run fn="sum_plus_offset" stdout="306" -->
 ```vera
 -- WORKS: capturing a primitive @Int.
 public fn sum_plus_offset(@Unit -> @Int)
@@ -791,6 +797,7 @@ For counted iteration with IO, use the recursive `loop` pattern from the Iterati
 
 Closures inside closure bodies work end-to-end — the natural 2D `array_map(rows, fn(row) { array_map(cols, fn(col) { ... }) })` shape compiles, validates, and runs at any return type. Captures from the outer scope flow through nested closures correctly for every type that can be captured at the top level (primitives, pair types, ADTs, opaque handles). Three or more levels of nesting work the same way; the lifting pass uses a worklist that handles arbitrary depth.
 
+<!-- vera:run fn="build_grid" reason="returns Array, which vera run prints as a heap address" -->
 ```vera
 public fn build_grid(@Unit -> @Array<Array<Int>>)
   requires(true) ensures(true) effects(pure)
@@ -1459,6 +1466,7 @@ Do **not** write an `effect IO { ... }` block: redeclaring a built-in effect is 
 
 Call the effect operations directly:
 
+<!-- vera:no-run category="fixture" reason="reads data.txt, which the block does not create" -->
 ```vera
 private fn greet(@String -> @Unit)
   requires(true)
@@ -1522,7 +1530,7 @@ private fn safe_div(@Int, @Int -> @Int)
 
 Handle exceptions with `handle[Exn<E>]`:
 
-<!-- vera:skip-check category="INCOMPLETE" reason="calls safe_div, defined in the block above" -->
+<!-- vera:skip-check category="INCOMPLETE" code="E121 E200" reason="calls safe_div, defined in the block above" -->
 ```vera
 private fn try_div(@Int, @Int -> @Option<Int>)
   requires(true)
@@ -1567,6 +1575,7 @@ private fn compute(@Int, @Int -> @Int)
 
 **Concurrency (#841):** `async(Http.get(url))` and `async(Http.post(url, body))` — with call-free argument expressions — run **concurrently** in the native runtime: the request is issued on a worker thread at the `async(...)` point, and `await` blocks for the response. Fire several, then await them in any order to overlap network latency:
 
+<!-- vera:no-run category="network" reason="calls Http, so a run would reach the network" -->
 ```vera
 public fn fan_out(@String, @String -> @Bool)
   requires(true) ensures(true) effects(<Http, Async>)
@@ -1585,6 +1594,7 @@ Every other `async` shape evaluates eagerly (sequential) — `Future<T>` is then
 
 `HttpServer` is a marker effect (no operations) for **verified HTTP request handling** (#305). Define a total handler and serve it with `vera serve prog.vera [--port N]` — the accept loop lives in the host, so no `Diverge` is involved and every contract on the handler is an ordinary obligation. `Request` / `Response` are built-in prelude ADTs:
 
+<!-- vera:no-run category="non-scalar-entry" reason="its exported functions take Request parameters" -->
 ```vera
 public fn handle(@Request -> @Response)
   requires(true) ensures(true) effects(<HttpServer>)
@@ -1615,6 +1625,7 @@ effects(<Http, IO>)              -- network + IO
 
 Both operations return `Result<String, String>` — `Ok` with the response body on success, `Err` with the error message on failure. Compose with `json_parse` for typed API responses:
 
+<!-- vera:no-run category="network" reason="calls Http, so a run would reach the network" -->
 ```vera
 public fn fetch_json(@String -> @Result<Json, String>)
   requires(string_length(@String.0) > 0)
@@ -1661,7 +1672,7 @@ private fn classify(@String -> @Result<String, String>)
 
 Compose with `match` to handle the `Result`:
 
-<!-- vera:skip-check category="INCOMPLETE" reason="calls classify, defined in the block above" -->
+<!-- vera:skip-check category="INCOMPLETE" code="E200" reason="calls classify, defined in the block above" -->
 ```vera
 public fn safe_classify(@String -> @String)
   requires(string_length(@String.0) > 0)
@@ -1702,7 +1713,7 @@ The Python runtime backs Random onto the `random` module (`random.randint`, `ran
 
 Functions that mix randomness with other effects compose normally:
 
-<!-- vera:skip-check category="INCOMPLETE" reason="calls pick_card, defined in the block above" -->
+<!-- vera:skip-check category="INCOMPLETE" code="E200" reason="calls pick_card, defined in the block above" -->
 ```vera
 public fn print_random_card(-> @Unit)
   requires(true)
@@ -1724,6 +1735,7 @@ The `DB` effect executes SQL against a relational database. Like `IO` and `Http`
 
 The second argument is the positional parameter list bound to the `?` placeholders: `Some(v)` binds a value, `None` binds SQL `NULL`. Bind data as parameters rather than splicing it into the SQL text — a bound value can never be parsed as SQL, the standard defence against injection.
 
+<!-- vera:run fn="insert_and_count" stdout="1" -->
 ```vera
 public fn insert_and_count(-> @Int)
   requires(true)
@@ -1933,6 +1945,7 @@ Four built-in abilities are available — no declarations needed:
 
 The `Ordering` type is a built-in ADT with three constructors: `Less`, `Equal`, `Greater`. Use it with pattern matching:
 
+<!-- vera:run fn="signum" args="3 3" stdout="0" -->
 ```vera
 public fn signum(@Int, @Int -> @Int)
   requires(true)
@@ -1958,6 +1971,7 @@ Key rules:
 
 ## Modules
 
+<!-- vera:run fn="exported" args="3" stdout="3" -->
 ```vera
 module vera.math;
 
@@ -2062,6 +2076,7 @@ Vera's De Bruijn slot references (`@T.n`) are clear when functions have 2–3 pa
 
 When writing a new function, start with `?` placeholders and check the skeleton first. The `W001` warning tells you the expected type and lists every available binding — it is the cheapest way to confirm the return type is correct before writing the body:
 
+<!-- vera:no-run category="typed-hole" reason="it holds a typed hole, which vera run refuses (E614)" -->
 ```vera
 public fn gcd(@Int, @Int -> @Int)
   requires(@Int.1 > 0 && @Int.0 > 0)
@@ -2078,6 +2093,7 @@ Read the hint, then fill in the expression. This is especially useful when De Br
 
 Where-functions are private helpers scoped to their parent function. They reset the slot index namespace, making code easier to reason about:
 
+<!-- vera:run fn="process" args="3 3 hello" stdout="30" -->
 ```vera
 public fn process(@Int, @Int, @String -> @Int)
   requires(@Int.1 > 0)
@@ -2102,7 +2118,7 @@ where {
 ### Missing contract block
 
 WRONG:
-<!-- vera:skip-parse category="WRONG" reason="missing contract block" -->
+<!-- vera:skip-parse category="WRONG" code="E001" reason="missing contract block" -->
 ```vera
 private fn add(@Int, @Int -> @Int) {
   @Int.0 + @Int.1
@@ -2123,7 +2139,7 @@ private fn add(@Int, @Int -> @Int)
 ### Missing effects clause
 
 WRONG:
-<!-- vera:skip-parse category="WRONG" reason="missing effects clause (with contracts)" -->
+<!-- vera:skip-parse category="WRONG" code="E001" reason="missing effects clause (with contracts)" -->
 ```vera
 private fn add(@Int, @Int -> @Int)
   requires(true)
@@ -2218,7 +2234,7 @@ private fn factorial(@Nat -> @Nat)
 ### Undeclared effects
 
 WRONG — `IO.print` performs IO but function declares `pure`:
-<!-- vera:skip-check category="WRONG" reason="IO.print in a pure function is E122" -->
+<!-- vera:skip-check category="WRONG" code="E122" reason="IO.print in a pure function is E122" -->
 ```vera
 private fn greet(@String -> @Unit)
   requires(true)
@@ -2245,7 +2261,7 @@ private fn greet(@String -> @Unit)
 ### Using `@T.result` outside ensures
 
 WRONG:
-<!-- vera:skip-check category="WRONG" reason="@Int.result in requires is E131" -->
+<!-- vera:skip-check category="WRONG" code="E131" reason="@Int.result in requires is E131" -->
 ```vera
 private fn f(@Int -> @Int)
   requires(@Int.result > 0)
@@ -2307,7 +2323,7 @@ if @Bool.0 then {
 ### Trying to use import aliasing
 
 WRONG — Vera does not support renaming imports:
-<!-- vera:skip-parse category="WRONG" reason="import aliasing not supported" -->
+<!-- vera:skip-parse category="WRONG" code="E005" reason="import aliasing not supported" -->
 ```vera
 import vera.math(magnitude as math_magnitude);
 ```
@@ -2324,7 +2340,7 @@ Note: if two of a namespace's imports supply the same bare name, `vera check` re
 ### Trying to use wildcard exclusion
 
 WRONG — Vera does not support `hiding` syntax:
-<!-- vera:skip-parse category="WRONG" reason="import hiding not supported" -->
+<!-- vera:skip-parse category="WRONG" code="E005" reason="import hiding not supported" -->
 ```vera
 import vera.math hiding(larger);
 ```
@@ -2372,6 +2388,7 @@ set_add(set_new(), 1)
 
 ### Pure function with postconditions
 
+<!-- vera:run fn="absolute_value" args="3" stdout="3" -->
 ```vera
 public fn absolute_value(@Int -> @Nat)
   requires(true)
@@ -2389,6 +2406,7 @@ public fn absolute_value(@Int -> @Nat)
 
 ### Recursive function with termination proof
 
+<!-- vera:run fn="factorial" args="5" stdout="120" -->
 ```vera
 public fn factorial(@Nat -> @Nat)
   requires(true)
@@ -2406,6 +2424,7 @@ public fn factorial(@Nat -> @Nat)
 
 ### Stateful effects with old/new
 
+<!-- vera:run fn="increment" stdout="" -->
 ```vera
 public fn increment(@Unit -> @Unit)
   requires(true)
@@ -2420,6 +2439,7 @@ public fn increment(@Unit -> @Unit)
 
 ### ADT with pattern matching
 
+<!-- vera:no-run category="non-scalar-entry" reason="its exported functions take List parameters" -->
 ```vera
 private data List<T> {
   Nil,
@@ -2443,6 +2463,7 @@ public fn length(@List<Int> -> @Nat)
 
 FizzBuzz with a recursive loop and IO effects. `fizzbuzz` is pure; `loop` and `main` have `effects(<IO>)`. Run with `vera run examples/fizzbuzz.vera`.
 
+<!-- vera:run fn="fizzbuzz" args="15" stdout="FizzBuzz" -->
 ```vera
 public fn fizzbuzz(@Nat -> @String)
   requires(true)

@@ -84,6 +84,7 @@ Yes. Nearly every SQL injection starts the same way: a query assembled from a va
 
 The SQL argument of `DB.query` / `DB.execute` must have **literal provenance**. It can be a string literal, or a `string_concat`, an interpolation, or a `let` chain — but every part of that chain has to trace back to a literal. A query built from a parameter, a call result, or a `\(expr)` interpolation of one is rejected at compile time with `E207`. Data from outside the program reaches the database only through the `?` placeholders and the params array:
 
+<!-- vera:no-run category="fixture" reason="queries a users table the block does not create" -->
 ```vera
 public fn find_user(@String -> @Result<Array<Array<Option<String>>>, String>)
   requires(string_length(@String.0) > 0)
@@ -279,7 +280,7 @@ The reference compiler is under active development. The current release includes
 
 - A seven-stage pipeline: parse, transform, resolve, typecheck, verify, compile, execute
 - A 14-chapter formal specification
-- 16,166 tests, including a 253-program conformance suite
+- 16,273 tests, including a 253-program conformance suite
 - 43 working example programs
 - 164 built-in functions covering strings, arrays, math, parsing, and data types
 - Four built-in abilities (Eq, Ord, Hash, Show) with constrained generics and ADT auto-derivation

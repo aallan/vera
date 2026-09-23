@@ -90,6 +90,7 @@ The same effect with the same type parameters MUST NOT appear twice (it would be
 
 Within a function that declares an effect, operations are called like regular functions:
 
+<!-- vera:run fn="increment" stdout="" -->
 ```
 public fn increment(@Unit -> @Unit)
   requires(true)
@@ -102,6 +103,7 @@ public fn increment(@Unit -> @Unit)
 }
 ```
 
+<!-- vera:run fn="hello" stdout="hello, world" -->
 ```
 public fn hello(-> @Unit)
   requires(true)
@@ -483,7 +485,7 @@ The argument to `old` and `new` MUST be an *effect reference* — the name of a 
 
 When a function calls other functions, the effects compose via row union:
 
-<!-- vera:skip-check category="INCOMPLETE" reason="calls bar and baz, which the example describes but does not define" -->
+<!-- vera:skip-check category="INCOMPLETE" code="E200" reason="calls bar and baz, which the example describes but does not define" -->
 ```
 private fn foo(@Unit -> @Unit)
   requires(true)
