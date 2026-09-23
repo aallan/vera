@@ -84,6 +84,7 @@ from vera.types import (
     AdtType,
     EffectRowType,
     FunctionType,
+    ModuleArtifacts,
     PrimitiveType,
     PureEffectRow,
     RefinedType,
@@ -701,6 +702,7 @@ def verify(
     resolved_modules: list[ResolvedModule] | None = None,
     expr_types: dict[tuple[int, int, int, int], Type] | None = None,
     expr_target_types: dict[tuple[int, int, int, int], Type] | None = None,
+    module_artifacts: ModuleArtifacts | None = None,
 ) -> VerifyResult:
     """Verify contracts in a type-checked Vera Program AST.
 
@@ -710,7 +712,30 @@ def verify(
     *resolved_modules* provides imported module ASTs for cross-module
     contract verification (C7d).  Imported function preconditions are
     checked at call sites; postconditions are assumed.
+
+    *module_artifacts* is each resolved module's own pair of checker tables
+    (``CheckArtifacts.module_artifacts``, collected with
+    ``collect_module_artifacts=True``), which instantiation discovery reads
+    for that module's bodies (#1509) exactly as code generation does.  When
+    a program with imports is verified without them, they are collected
+    here, so the instantiations this run verifies are the ones code
+    generation emits.
     """
+    if resolved_modules and module_artifacts is None:
+        # #1509: discovery reads each module's own table for that module's
+        # bodies, and code generation is handed those tables by every CLI
+        # path that compiles.  Collected with the entry's tables below when
+        # those are missing too, so the program is checked once.
+        from vera.checker import typecheck_with_artifacts
+        _diags, _arts = typecheck_with_artifacts(
+            program, source, file=file, resolved_modules=resolved_modules,
+            collect_module_artifacts=True,
+        )
+        module_artifacts = _arts.module_artifacts
+        if expr_types is None:
+            expr_types = _arts.expr_semantic_types
+        if expr_target_types is None:
+            expr_target_types = _arts.expr_target_types
     if expr_types is None or expr_target_types is None:
         # #747: when the caller didn't supply the checker's semantic-type
         # side-tables, collect them here so a bare verify() matches the CLI
@@ -733,6 +758,7 @@ def verify(
         timeout_ms=resolve_timeout_ms(timeout_ms),
         resolved_modules=resolved_modules,
         expr_types=expr_types, expr_target_types=expr_target_types,
+        module_artifacts=module_artifacts,
     )
     verifier.verify_program(program)
     return VerifyResult(
@@ -784,6 +810,7 @@ class ContractVerifier:
         shared_smt: SmtContext | None = None,
         expr_types: dict[tuple[int, int, int, int], Type] | None = None,
         expr_target_types: dict[tuple[int, int, int, int], Type] | None = None,
+        module_artifacts: ModuleArtifacts | None = None,
     ) -> None:
         self.env = TypeEnv()
         self.errors: list[Diagnostic] = []
@@ -975,6 +1002,19 @@ class ContractVerifier:
         self._expr_target_types: dict[tuple[int, int, int, int], Type] = (
             expr_target_types or {}
         )
+        # #1509: each resolved module's OWN semantic table, which instantiation
+        # discovery reads for that module's bodies, as code generation's does
+        # (`MonoContext.module_expr_types`).  Empty when a caller verifies
+        # without them — a module's body is then looked up in no table, never
+        # in this program's.
+        self._module_artifacts: ModuleArtifacts = dict(module_artifacts or {})
+        self._module_expr_types: dict[
+            tuple[str, ...], dict[tuple[int, int, int, int], Type]
+        ] = {
+            path: tables[0]
+            for path, tables in self._module_artifacts.items()
+            if tables[0] is not None
+        }
         # #732: per-monomorphization discovery results, populated by
         # register_program (so both the cold verify_program path and the warm
         # incremental session see the same instantiation set).  Maps a generic
@@ -2187,6 +2227,9 @@ class ContractVerifier:
         self,
         disc_program: ast.Program,
         generic_decls: dict[str, ast.FnDecl],
+        qualified_generic_decls: (
+            dict[tuple[str, ...], dict[str, ast.FnDecl]] | None
+        ) = None,
     ) -> MonoContext:
         """Build a MonoContext for per-monomorphization discovery (#732).
 
@@ -2444,12 +2487,23 @@ class ContractVerifier:
                 },
             ),
             adt_ctor_tp_indices=adt_ctor_tp_indices,
-            # #1327/#1366/#1369: the same checker table codegen's own
-            # `_build_mono_context` threads — the ENTRY program's, which the
-            # CLI hands to both.  The two consultors must back off to the SAME
-            # answers, or this discovery finds a strict subset of what codegen
-            # emits and a clone whose contract lies runs unverified.
+            # #1327/#1366/#1369: the same checker tables codegen's own
+            # `_build_mono_context` threads — the ENTRY program's for the entry
+            # file's bodies and (#1509) each module's own for that module's —
+            # which the CLI hands to both.  The two consultors must back off to
+            # the SAME answers, or this discovery finds a strict subset of what
+            # codegen emits and a clone whose contract lies runs unverified.
             expr_types=self._expr_types,
+            module_expr_types=self._module_expr_types,
+            # #1509: the qualified-only generics' declarations, the set
+            # codegen's `_shadowed_imported_generic_decls` holds, so a nested
+            # `path::name(...)` is named from its instantiated return on both
+            # sides.
+            qualified_generic_decls={
+                (path, name): decl
+                for path, by_name in (qualified_generic_decls or {}).items()
+                for name, decl in by_name.items()
+            },
         )
 
     @staticmethod
@@ -2786,7 +2840,8 @@ class ContractVerifier:
         if not generic_decls:
             return {}
 
-        ctx = self._build_mono_context(disc, generic_decls)
+        qualified_only = self._qualified_only_generic_decls(program)
+        ctx = self._build_mono_context(disc, generic_decls, qualified_only)
         mono = Monomorphizer(ctx)
         # Stash for verification-time monomorphization (monomorphize_fn needs
         # no context, so reusing the discovery instance is fine).
@@ -2980,7 +3035,8 @@ class ContractVerifier:
         # bare name in `program.declarations` and is verified as itself, so this
         # supplementary set is discovery-only bookkeeping for the differential.
         self._collect_shadowed_qualified_instances(
-            program, mono, generic_decls, result,
+            program, mono, generic_decls, result, qualified_only,
+            qualified_module_programs,
         )
         # #1327/#1366: discovery is complete, so every type argument it could
         # not infer is now known.  The verifier's discovered set is what the
@@ -3011,10 +3067,17 @@ class ContractVerifier:
             # the namespace the walk was in; this is the scope that makes
             # every half of "which file is this?" agree (#1208/#1220).
             with self._declaring_module_scope(rec.origin):
-                self._report_one_uninferred(rec)
+                # #1509: the table of the file the argument is written in —
+                # the one discovery consulted before recording it.
+                self._report_one_uninferred(
+                    rec, mono.checker_table(rec.origin))
 
-    def _report_one_uninferred(self, rec: UninferredTypeArg) -> None:
-        """The [E622] diagnostic for one record, in the caller's scope."""
+    def _report_one_uninferred(
+        self, rec: UninferredTypeArg,
+        table: dict[tuple[int, int, int, int], Type] | None,
+    ) -> None:
+        """The [E622] diagnostic for one record, in the caller's scope;
+        *table* is the checker table of the file the argument is in."""
         self._error(
             rec.arg,
             f"Cannot infer the type argument '{rec.type_var}' of "
@@ -3028,7 +3091,7 @@ class ContractVerifier:
                 "at a guessed type would report a tier for a "
                 "specialisation the compiler does not emit."
             ),
-            fix=uninferred_type_arg_fix(rec, self._expr_types),
+            fix=uninferred_type_arg_fix(rec, table),
             spec_ref='Chapter 5, Section 5.9 "Generic Functions"',
             error_code="E622",
         )
@@ -3039,6 +3102,8 @@ class ContractVerifier:
         mono: Monomorphizer,
         generic_decls: dict[str, ast.FnDecl],
         result: dict[str, set[tuple[str, ...]]],
+        shadowed: dict[tuple[str, ...], dict[str, ast.FnDecl]],
+        module_programs: list[ast.Program],
     ) -> None:
         """Discover ``m::gen(...)`` instantiations of shadowed imported generics.
 
@@ -3047,6 +3112,9 @@ class ContractVerifier:
         variant.  Uses the shared arg-driven inference (identical to the bare
         path) over every ``ast.ModuleCall`` whose target is a shadowed imported
         generic, accumulating into ``result`` keyed by the bare generic name.
+        *shadowed* is :meth:`_qualified_only_generic_decls`'s map, and
+        *module_programs* the resolved modules' discovery copies, parallel to
+        ``_resolved_modules``.
 
         Runs the SAME transitive worklist codegen does (CR 3518737014): a
         shadowed clone body that calls ANOTHER generic — an unshadowed imported
@@ -3055,58 +3123,9 @@ class ContractVerifier:
         verifier would discover a strict subset of codegen's emitted set (a new
         false Tier-1: a cross-module transitive clone runs unverified).
         """
-        local_fn_names = self._local_fn_names(program)
-        ctor_to_adt = mono.ctx.ctor_to_adt
-        # Build the (path → {name → decl}) map of shadowed imported generics,
-        # mirroring codegen's ``_shadowed_imported_generic_decls`` — which holds
-        # every QUALIFIED-ONLY module generic, i.e. the ones that do not own the
-        # importer's bare name (#1029 R4, widened to the full predicate by
-        # #1274).  Pre-#1029 only the public-shadowed generics were here, so a
-        # shadowed generic's body call to a PRIVATE sibling (`gen` → `sib`) had
-        # no `sib` base in the transitive scan: the `mod$g$sib` clone codegen
-        # emits ran with a contract the verifier never checked (a false
-        # Tier-1).  Each decl is rerouted the SAME shadow-aware
-        # way codegen reroutes it (bare private-generic call → a ``ModuleCall``
-        # the by-name transitive scan then matches), keeping the two sides'
-        # discovered set in lockstep.  A private sibling reached this way is
-        # verified via ``_imported_generic_verify_decls`` (it is keyed there too),
-        # so it must NOT ALSO be stashed in ``_shadowed_module_generic_verify``
-        # below — the guard there avoids the double-verify.
-        shadowed: dict[tuple[str, ...], dict[str, ast.FnDecl]] = {}
-        for mod in self._resolved_modules:
-            qual_names = module_qualified_generic_names(
-                mod.program, self._import_names.get(mod.path), local_fn_names,
-                direct=mod.direct,
-            )
-            # #1274 (F1): the reroute reaches a DIFFERENT module's generics too,
-            # each under its own owner's path.
-            reroute_targets = self._qualified_generic_targets(
-                program, mod.path,
-            )
-
-            def _reroute(
-                decl: ast.FnDecl,
-                targets: dict[str, tuple[str, ...]] = reroute_targets,
-            ) -> ast.FnDecl:
-                return reroute_module_qualified_generic_calls(
-                    decl, targets,
-                    lambda call, args: ast.ModuleCall(
-                        path=targets[call.name], name=call.name,
-                        args=args, span=call.span,
-                    ),
-                )
-
-            for tld in mod.program.declarations:
-                decl = tld.decl
-                if not isinstance(decl, ast.FnDecl) or not decl.forall_vars:
-                    continue
-                if decl.name in qual_names:
-                    shadowed.setdefault(mod.path, {}).setdefault(
-                        decl.name, _reroute(decl),
-                    )
         if not shadowed:
             return
-
+        ctor_to_adt = mono.ctx.ctor_to_adt
         # Seed: `m::gen(...)` sites in the importer's non-generic bodies.
         # Keyed by (path, name) so a shadowed sibling reached transitively is
         # monomorphized against the correct module's decl.
@@ -3177,9 +3196,13 @@ class ContractVerifier:
                 try:
                     # In *origin*'s namespace, so an [E622] recorded here
                     # names the file the call is written in.
+                    # #1509: with the generics the main walk knows, as
+                    # codegen's twin (`_mono_infer_shadowed`) now infers —
+                    # so a nested generic call in an argument is named from
+                    # its instantiated return on both sides.
                     with mono.namespace_scope(origin):
                         type_args = mono._infer_type_args_from_args(
-                            decl, node.args, ctor_to_adt, None,
+                            decl, node.args, ctor_to_adt, generic_decls,
                         )
                 finally:
                     mono._op_result_types = saved_ops
@@ -3199,6 +3222,20 @@ class ContractVerifier:
             decl = tld.decl
             if isinstance(decl, ast.FnDecl) and not decl.forall_vars:
                 walk_seed(decl, None, None)
+        # #1509: and every module's own bodies, mirroring codegen's scan of
+        # `_imported_fn_decls` (#1029, #1274).  A module body may call a
+        # qualified-only generic QUALIFIED in its own source (`gl::justg(2)`,
+        # `gl` a module the entry does not import); the reroute leaves that a
+        # `ModuleCall`, codegen emitted its clone, and this discovery never
+        # saw it — a clone in the compiled program whose contract no run
+        # verified.
+        for mod, qmod in zip(
+            self._resolved_modules, module_programs, strict=True,
+        ):
+            for tld in qmod.declarations:
+                decl = tld.decl
+                if isinstance(decl, ast.FnDecl) and not decl.forall_vars:
+                    walk_seed(decl, None, mod.path)
 
         # Also seed from every NORMAL (unshadowed) generic clone body already in
         # `result` (CR 3519063445): an unshadowed generic `caller<T>` whose body
@@ -3285,6 +3322,64 @@ class ContractVerifier:
                     nxt = (spath, s_name, s_ct)
                     if nxt not in shadowed_seen:
                         worklist.append(nxt)
+
+    def _qualified_only_generic_decls(
+        self, program: ast.Program,
+    ) -> dict[tuple[str, ...], dict[str, ast.FnDecl]]:
+        """Every module generic *program* reaches only qualified, by module.
+
+        Mirrors codegen's ``_shadowed_imported_generic_decls`` — which holds
+        every QUALIFIED-ONLY module generic, i.e. the ones that do not own the
+        importer's bare name (#1029 R4, widened to the full predicate by
+        #1274).  Pre-#1029 only the public-shadowed generics were here, so a
+        shadowed generic's body call to a PRIVATE sibling (`gen` → `sib`) had
+        no `sib` base in the transitive scan: the `mod$g$sib` clone codegen
+        emits ran with a contract the verifier never checked (a false
+        Tier-1).  Each decl is rerouted the SAME shadow-aware way codegen
+        reroutes it (bare private-generic call → a ``ModuleCall`` the by-name
+        transitive scan then matches), keeping the two sides' discovered set
+        in lockstep.  A private sibling reached this way is verified via
+        ``_imported_generic_verify_decls`` (it is keyed there too), so it must
+        NOT ALSO be stashed in ``_shadowed_module_generic_verify`` — the guard
+        in the walk avoids the double-verify.
+
+        #1509: the discovery context reads the same map, so a nested
+        ``path::name(...)`` is named from the generic's instantiated return.
+        """
+        local_fn_names = self._local_fn_names(program)
+        shadowed: dict[tuple[str, ...], dict[str, ast.FnDecl]] = {}
+        for mod in self._resolved_modules:
+            qual_names = module_qualified_generic_names(
+                mod.program, self._import_names.get(mod.path), local_fn_names,
+                direct=mod.direct,
+            )
+            # #1274 (F1): the reroute reaches a DIFFERENT module's generics too,
+            # each under its own owner's path.
+            reroute_targets = self._qualified_generic_targets(
+                program, mod.path,
+            )
+
+            def _reroute(
+                decl: ast.FnDecl,
+                targets: dict[str, tuple[str, ...]] = reroute_targets,
+            ) -> ast.FnDecl:
+                return reroute_module_qualified_generic_calls(
+                    decl, targets,
+                    lambda call, args: ast.ModuleCall(
+                        path=targets[call.name], name=call.name,
+                        args=args, span=call.span,
+                    ),
+                )
+
+            for tld in mod.program.declarations:
+                decl = tld.decl
+                if not isinstance(decl, ast.FnDecl) or not decl.forall_vars:
+                    continue
+                if decl.name in qual_names:
+                    shadowed.setdefault(mod.path, {}).setdefault(
+                        decl.name, _reroute(decl),
+                    )
+        return shadowed
 
     def _chase_normal_from_clone(
         self,
@@ -12232,6 +12327,7 @@ class ContractVerifier:
             from vera.disclosure import ModuleDisclosureIndex
             self._disclosure_index = ModuleDisclosureIndex(
                 self._resolved_modules, self.timeout_ms,
+                self._module_artifacts,
             )
         return self._disclosure_index.disclosed_in(path)
 

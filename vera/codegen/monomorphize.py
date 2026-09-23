@@ -190,12 +190,30 @@ class MonomorphizationMixin:
                 ).items()
                 for name in by_name
             ),
+            # #1509: and their declarations, so a nested `path::name(...)` in
+            # an argument is named from its instantiated return, as the
+            # rewrite names it — a module body's call to its own private
+            # generic is one of these after the Pass-0 reroute.
+            qualified_generic_decls={
+                (path, name): decl
+                for path, by_name in getattr(
+                    self, "_shadowed_imported_generic_decls", {},
+                ).items()
+                for name, decl in by_name.items()
+            },
             # #1327/#1366/#1369: the checker's own answer, for the shapes this
-            # walker has no arm for.  The ENTRY program's table — the one the
-            # CLI hands BOTH codegen and the verifier — so the two consultors
-            # back off to identical answers and the #732 differential stays an
-            # equality (see `checker_clone_type_name`).
+            # walker has no arm for — the ENTRY program's table for the entry
+            # file's bodies, and (#1509) each module's own for that module's
+            # bodies, the tables the call-site rewrite reads for the same
+            # bodies (#987).  The CLI hands the verifier the same tables, so
+            # the two consultors back off to identical answers and the #732
+            # differential holds (see `checker_clone_type_name`).
             expr_types=self._expr_semantic_types,
+            module_expr_types={
+                path: tables[0]
+                for path, tables in self._module_artifacts.items()
+                if tables[0] is not None
+            },
         )
 
     def _monomorphize(
@@ -266,6 +284,10 @@ class MonomorphizationMixin:
         mono = Monomorphizer(
             self._build_mono_context(generic_decls, ctor_to_adt),
         )
+        # #1509: the qualified-only discovery below builds a throwaway walker
+        # per call, and it names a nested generic call in an argument the way
+        # this walker does only if it knows the same generics.
+        self._mono_generic_decls = generic_decls
 
         # Record of every (generic name, concrete types) actually emitted —
         # i.e. that passed constraint checks.  Consumed by the #732 differential
@@ -504,8 +526,10 @@ class MonomorphizationMixin:
                     "and specialising at a guessed type would emit a "
                     "specialisation nothing calls."
                 ),
+                # #1509: the table of the file the argument is written in —
+                # the one discovery consulted before recording it.
                 fix=uninferred_type_arg_fix(
-                    rec, self._expr_semantic_types),
+                    rec, mono.checker_table(rec.origin)),
                 spec_ref='Chapter 5, Section 5.9 "Generic Functions"',
                 severity="error",
                 error_code="E622",
@@ -1266,11 +1290,19 @@ class MonomorphizationMixin:
         [E622] as the entry program's; the call site inside an imported body
         would then be reported against the importer's file and source line.
         """
-        m = Monomorphizer(self._build_mono_context({}, ctor_to_adt))
+        # #1509: with the generics the main walk knows.  Built with none, a
+        # nested generic call in an argument was named from its RAW declared
+        # return — `opt_or(option_map(...))` bound `T` to the prelude's own
+        # `VeraB` — where the main walk and the call-site rewrite instantiate
+        # it, so a module's private generic around a nested call was
+        # discovered at a clone nothing calls.
+        generic_decls = getattr(self, "_mono_generic_decls", {})
+        m = Monomorphizer(self._build_mono_context(generic_decls, ctor_to_adt))
         m._namespace_path = origin
         if op_result_types:
             m._op_result_types = op_result_types
-        result = m._infer_type_args_from_args(decl, args, ctor_to_adt, None)
+        result = m._infer_type_args_from_args(
+            decl, args, ctor_to_adt, generic_decls)
         # #1327/#1366: this walker is a THROWAWAY built per qualified call, so
         # its fail-closed records would be dropped on the floor.  Carry them to
         # the codegen-level accumulator `_monomorphize` drains, or the shadowed

@@ -276,6 +276,7 @@ class _TestEngine:
             resolved_modules=self.resolved_modules,
             expr_types=self.expr_semantic_types,
             expr_target_types=self.expr_target_types,
+            module_artifacts=self.module_artifacts,
         )
         classification = _classify_functions(
             self.program, verify_result.diagnostics,

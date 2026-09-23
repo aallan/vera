@@ -220,8 +220,12 @@ class VerificationSession:
                 resolved_modules = []
 
         from vera.checker import typecheck_with_artifacts
+        # #1509: each module's own tables too, which instantiation
+        # discovery reads for that module's bodies — as a cold `verify()`
+        # and every compiling CLI path do.
         check_diags_raw, artifacts = typecheck_with_artifacts(
             program, source, file=file, resolved_modules=resolved_modules,
+            collect_module_artifacts=True,
         )
         check_diags = resolver_errors + check_diags_raw
         if any(d.severity == "error" for d in check_diags):
@@ -239,6 +243,7 @@ class VerificationSession:
             shared_smt=smt,
             expr_types=artifacts.expr_semantic_types,
             expr_target_types=artifacts.expr_target_types,
+            module_artifacts=artifacts.module_artifacts,
         )
         verifier.register_program(program)
 

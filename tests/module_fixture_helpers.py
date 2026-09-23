@@ -177,8 +177,13 @@ def build_multi_module(
     assert not check_errors, (
         f"typecheck errors: {[d for _, d in check_errors]}"
     )
+    # With the checker's tables, each module's own included, as `vera verify`
+    # hands them over (#1509).
     vres = verify(program, source, file=str(main_path),
-                  resolved_modules=resolved)
+                  resolved_modules=resolved,
+                  expr_types=arts.expr_semantic_types,
+                  expr_target_types=arts.expr_target_types,
+                  module_artifacts=arts.module_artifacts)
     verify_errors = [
         (d.error_code, d.description)
         for d in vres.diagnostics if d.severity == "error"

@@ -183,7 +183,50 @@ public fn main(@Unit -> @Int)
 
 # The un-nameable argument written inside an IMPORTED module, so the [E622]
 # must name THAT module's file and quote ITS line — not the entry program's.
+# A closure literal, the shape neither walker nor checker names: an indexed
+# argument is named in a module's body too since discovery reads the
+# module's own checker table (#1509).
 _MODULE_OWNED_SITE = {
+    "mlib.vera": """\
+module mlib;
+
+type IntToInt = fn(Int -> Int) effects(pure);
+
+private forall<T> fn idg(@T -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @T.0
+}
+
+public fn compute(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @IntToInt = idg(fn(@Int -> @Int) effects(pure) { @Int.0 * 2 });
+  apply_fn(@IntToInt.0, 21)
+}
+""",
+    "main.vera": """\
+import mlib(compute);
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  compute(())
+}
+""",
+}
+
+
+# The #1327 shape — an indexed argument — in a module's body.  Named since
+# discovery reads the module's own checker table (#1509); the entry
+# program's table holds no span of this file, so it was [E622] before.
+_MODULE_INDEXED_SITE = {
     "mlib.vera": """\
 module mlib;
 
@@ -204,17 +247,7 @@ public fn compute(@Unit -> @Int)
   idg(@Array<Int>.0[1])
 }
 """,
-    "main.vera": """\
-import mlib(compute);
-
-public fn main(@Unit -> @Int)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  compute(())
-}
-""",
+    "main.vera": _MODULE_OWNED_SITE["main.vera"],
 }
 
 
@@ -224,6 +257,8 @@ public fn main(@Unit -> @Int)
 _MODULE_OWNED_SHADOWED = {
     "slib.vera": """\
 module slib;
+
+type IntToInt = fn(Int -> Int) effects(pure);
 
 public forall<T> fn idg(@T -> @T)
   requires(true)
@@ -238,8 +273,8 @@ public fn compute(@Unit -> @Int)
   ensures(true)
   effects(pure)
 {
-  let @Array<Int> = [7, 8, 9];
-  idg(@Array<Int>.0[1])
+  let @IntToInt = idg(fn(@Int -> @Int) effects(pure) { @Int.0 * 2 });
+  apply_fn(@IntToInt.0, 21)
 }
 """,
     "main.vera": """\
@@ -338,6 +373,25 @@ def _compile_checked(source: str) -> object:
         expr_semantic_types=arts.expr_semantic_types,
         expr_target_types=arts.expr_target_types,
     )
+
+
+def _walk(node: object) -> list[object]:
+    """Every AST node under *node*."""
+    import dataclasses
+
+    from vera import ast
+
+    out: list[object] = []
+    stack: list[object] = [node]
+    while stack:
+        cur = stack.pop()
+        if isinstance(cur, ast.Node):
+            out.append(cur)
+            stack.extend(getattr(cur, f.name)
+                         for f in dataclasses.fields(cur))
+        elif isinstance(cur, (tuple, list)):
+            stack.extend(cur)
+    return out
 
 
 def _errors(diagnostics: object) -> list[tuple[str, str]]:
@@ -502,6 +556,107 @@ class TestDiagnosticIsActionable:
         assert e622[0].location.file is not None
         assert e622[0].location.file.endswith("slib.vera"), (
             e622[0].location.file)
+
+    def test_an_indexed_argument_in_a_module_is_named(
+        self, tmp_path: Path,
+    ) -> None:
+        """#1509: a module body's argument is named from the module's OWN
+        checker table.  Discovery asked the entry program's, which holds no
+        span of another file, so the #1327 shape stayed [E622] in a module
+        while the entry file named it."""
+        from tests.module_fixture_helpers import module_value
+
+        verify_errors, result, cg_errors = build_multi_module(
+            tmp_path / "indexed", _MODULE_INDEXED_SITE,
+        )
+        assert verify_errors == [] and cg_errors == [], (
+            verify_errors, cg_errors)
+        assert module_value(result) == ("ok", 8)
+
+    def test_verify_collects_the_module_tables_itself(
+        self, tmp_path: Path,
+    ) -> None:
+        """#1509: `verify()` called with imports and no module tables
+        collects them, so its discovery reads a module's body in that
+        module's table exactly as a caller that threads them does."""
+        from vera.verifier import verify
+
+        from tests.module_fixture_helpers import _resolve_and_check
+
+        program, source, main_path, resolved, _arts, check_errors = (
+            _resolve_and_check(
+                tmp_path / "indexed_bare", _MODULE_INDEXED_SITE, "main.vera")
+        )
+        assert not check_errors, check_errors
+        vres = verify(program, source, file=str(main_path),
+                      resolved_modules=resolved)
+        assert not [d for d in vres.diagnostics if d.severity == "error"], [
+            (d.error_code, d.description) for d in vres.diagnostics]
+
+    def test_a_module_sites_fix_reads_the_modules_own_table(
+        self, tmp_path: Path,
+    ) -> None:
+        """#1509: the fix names a type only from the table of the file the
+        argument is written in.
+
+        The span tables carry no file, so the module's closure literal looked
+        up in the ENTRY file's table finds whatever entry expression shares its
+        coordinates.  Here the entry puts an integer expression exactly where
+        the module's closure sits, and reading the entry's table the fix told
+        the reader to bind a closure to an integer slot.
+        """
+        from vera import ast
+        from vera.parser import parse_to_ast
+        from vera.verifier import verify
+
+        from tests.module_fixture_helpers import _resolve_and_check
+
+        module = _MODULE_OWNED_SITE["mlib.vera"]
+        closure = next(
+            node for node in _walk(parse_to_ast(module))
+            if isinstance(node, ast.AnonFn)
+        )
+        line, col, end_line, end_col = ast.span_key(closure)  # type: ignore[misc]
+        assert line == end_line
+        width = end_col - col
+        # An integer expression of exactly the closure's width, at its column.
+        head = "1" * (((width - 1) % 4) + 1)
+        expr = head + " + 1" * ((width - len(head)) // 4)
+        assert len(expr) == width
+        prefix = "  let @Int ="
+        assert col - 1 > len(prefix)
+        entry_lines = [
+            "import mlib(compute);", "",
+            "public fn main(@Unit -> @Int)",
+            "  requires(true)", "  ensures(true)", "  effects(pure)", "{",
+        ]
+        entry_lines += [""] * (line - 1 - len(entry_lines))
+        entry_lines.append(prefix + " " * (col - 1 - len(prefix)) + expr + ";")
+        entry_lines += ["  compute(())", "}", ""]
+        files = {"mlib.vera": module, "main.vera": "\n".join(entry_lines)}
+
+        program, source, main_path, resolved, arts, check_errors = (
+            _resolve_and_check(tmp_path / "collide", files, "main.vera"))
+        assert not check_errors, check_errors
+        coincident = [
+            key for key in arts.expr_semantic_types
+            if key == (line, col, end_line, end_col)
+        ]
+        assert coincident, "the entry expression does not share the span"
+
+        shape_only = "'let @<Type> = <the argument>;'"
+        _verify_errors, result, _cg = build_multi_module(
+            tmp_path / "collide_cg", files)
+        codegen_e622 = [d for d in result.diagnostics if d.error_code == "E622"]
+        vres = verify(program, source, file=str(main_path),
+                      resolved_modules=resolved,
+                      expr_types=arts.expr_semantic_types,
+                      expr_target_types=arts.expr_target_types,
+                      module_artifacts=arts.module_artifacts)
+        verifier_e622 = [d for d in vres.diagnostics if d.error_code == "E622"]
+        assert codegen_e622 and verifier_e622
+        for diag in (*codegen_e622, *verifier_e622):
+            assert shape_only in diag.fix, diag.fix
 
     def test_namespace_scope_restores_the_path_it_saved(self) -> None:
         # The context manager's visible-tables branch — the one every real

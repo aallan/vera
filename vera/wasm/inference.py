@@ -971,10 +971,11 @@ class InferenceMixin:
         The precedence and its rationale are stated once, on
         :func:`vera.monomorphize.checker_clone_type_name`.  The discovery twin
         (``Monomorphizer._infer_vera_type_name``) asks the same two sources in
-        the same order over the same table, so a shape either walker cannot
-        name is named identically for both rather than becoming a clone only
-        one of them believes in — which is what every member of the #1327
-        family was.
+        the same order over the same table — the checker's table for the file
+        the body was written in, the entry program's or a module's own
+        (#1509) — so a shape either walker cannot name is named identically
+        for both rather than becoming a clone only one of them believes in —
+        which is what every member of the #1327 family was.
         """
         walked = self._walk_vera_type(expr)
         if walked is not None:

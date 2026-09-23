@@ -1,8 +1,9 @@
 """A program `vera check` accepts is a program code generation builds.
 
-The class (#1489, #1493, and the family behind #1383): the front end accepts
-a program that code generation then refuses or silently drops.  Two
-mechanisms are closed here.
+The class (#1489, #1493, #1506, #1509, #1233, and the family behind #1383):
+the front end accepts a program that code generation then refuses or
+silently drops.  Two mechanisms are closed here, and the instrument holds
+three more shapes of the class.
 
 * **An unresolved name** (#1489).  The checker's last-resort branch turned any
   type name nothing declares into an opaque type, and any effect name in a
@@ -39,12 +40,26 @@ of the entry file is exported (a drop that reports nothing is still a drop).
     programs that are check-green and still refused by code generation for
     a reason outside this class are held in an exact roster, each with the
     reason; a new one fails, and so does a stale entry.
+(d) :class:`TestClauseOperationMatrix` — a handler-clause State operation
+    code generation cannot lower is refused at check (E339, #1233), and the
+    check-time walk must agree with code generation's own gate in both
+    directions: handler nesting shapes × clause-body positions.
+(e) :class:`TestNestedGenericCalls` — a generic call nested inside another
+    compiles wherever it is written (#1509): every prelude generic as the
+    outer call around every producer of its argument, in a function, a
+    generic function and a ``where`` helper, in the entry file and in a
+    module, each run to its value and held against the verifier's discovery
+    (#732).
+
+:class:`TestQuantifierShapes` (#1506) puts every type shape at a
+quantifier's two type positions.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import itertools
+import re
 import typing
 from dataclasses import dataclass
 from pathlib import Path
@@ -1783,3 +1798,337 @@ class TestClauseOperationMatrix:
         emitted = cell.position.label != "assume"
         assert ("E339" in {d.error_code for d in outcome.check_errors}) \
             == (cell.shadowed and emitted), outcome.describe()
+
+
+# =====================================================================
+# (e) Nested generic calls, in the entry file and in a module (#1509)
+# =====================================================================
+#
+# Code generation compiles a generic once per concrete type it is called
+# with, and DISCOVERY names each specialisation from the types of the
+# arguments at the call.  Where its own walker cannot name an argument — a
+# nested generic call is the common one — it asks the CHECKER, whose tables
+# are keyed by span, one table per file.  Discovery asked the ENTRY file's
+# table for every body it walked, so a nested call in a module's body got no
+# answer, the type variable fell to the phantom default, and the call site —
+# compiled against the module's own table — named a specialisation nothing
+# emitted: E602, then E620 up the call graph, on a program that ran as the
+# entry file.
+#
+# The cells: every prelude generic as the OUTER call — enumerated from the
+# prelude itself — plus user generics that bind a variable directly and only
+# through a type argument, around every producer of the outer's first
+# parameter type (the prelude's own, enumerated likewise, and a user
+# generic), written in three places — a function, a generic function and a
+# `where` helper — in the entry file and in a module.  Every cell must
+# compile clean and run to its value, and the verifier must discover every
+# specialisation code generation emits (the #732 differential), with the
+# checker's tables threaded to both as the CLI threads them.
+
+_NC = "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+
+
+def prelude_generics() -> dict[str, ast.FnDecl]:
+    """The prelude's generic functions, as the prelude declares them."""
+    from vera.prelude import inject_prelude
+
+    program = parse_to_ast(
+        "public fn main(@Unit -> @Int)\n" + _NC + "{\n  1\n}\n")
+    inject_prelude(program)
+    return {
+        tld.decl.name: tld.decl for tld in program.declarations
+        if isinstance(tld.decl, ast.FnDecl) and tld.decl.forall_vars
+    }
+
+
+def _head(te: ast.TypeExpr) -> str | None:
+    """``Option`` or ``Result`` for a type written as one, else ``None``."""
+    if isinstance(te, ast.NamedType) and te.name in ("Option", "Result"):
+        return te.name
+    return None
+
+
+#: Each prelude generic that returns an ``Option`` or a ``Result``, called as
+#: the INNER producer: an expression of that type whose payload is 2.
+_PRELUDE_PRODUCERS: dict[str, str] = {
+    "option_map":
+        "option_map(Some(1), fn(@Int -> @Int) effects(pure) "
+        "{ @Int.0 + 1 })",
+    "option_and_then":
+        "option_and_then(Some(1), fn(@Int -> @Option<Int>) effects(pure) "
+        "{ Some(@Int.0 + 1) })",
+    "result_map":
+        'result_map(parse_int("1"), fn(@Int -> @Int) effects(pure) '
+        "{ @Int.0 + 1 })",
+}
+
+#: Each prelude generic as the OUTER call around a producer ``{P}``, closed
+#: to an ``Int``, with the value it computes from a payload of 2.
+_PRELUDE_OUTERS: dict[str, tuple[str, int]] = {
+    "option_unwrap_or": ("option_unwrap_or({P}, 0)", 2),
+    "option_map": (
+        "option_unwrap_or(option_map({P}, fn(@Int -> @Int) effects(pure) "
+        "{ @Int.0 * 10 }), 0)", 20),
+    "option_and_then": (
+        "option_unwrap_or(option_and_then({P}, fn(@Int -> @Option<Int>) "
+        "effects(pure) { Some(@Int.0 * 10) }), 0)", 20),
+    "result_unwrap_or": ("result_unwrap_or({P}, 0)", 2),
+    "result_map": (
+        "result_unwrap_or(result_map({P}, fn(@Int -> @Int) effects(pure) "
+        "{ @Int.0 * 10 }), 0)", 20),
+}
+
+#: The user generics a cell declares beside its expression, each only where
+#: the expression calls it (an entry file's generic that nothing instantiates
+#: is its own E604): a producer per head, an identity (its variable bound
+#: DIRECTLY by the nested call), and an unwrap per head (``E`` bound only
+#: through ``Result<T, E>``).
+_USER_GENERICS: dict[str, str] = {
+    "justg": "private forall<T> fn justg(@T -> @Option<T>)\n" + _NC
+             + "{\n  Some(@T.0)\n}\n\n",
+    "okg": "private forall<T> fn okg(@T -> @Result<T, String>)\n" + _NC
+           + "{\n  Ok(@T.0)\n}\n\n",
+    "idg": "private forall<T> fn idg(@T -> @T)\n" + _NC + "{\n  @T.0\n}\n\n",
+    "opt_or": "private forall<T> fn opt_or(@Option<T>, @T -> @T)\n" + _NC
+              + "{\n  match @Option<T>.0 {\n    Some(@T) -> @T.0,\n"
+              "    None -> @T.0\n  }\n}\n\n",
+    "res_or": "private forall<T, E> fn res_or(@Result<T, E>, @T -> @T)\n"
+              + _NC + "{\n  match @Result<T, E>.0 {\n    Ok(@T) -> @T.0,\n"
+              "    Err(@E) -> @T.0\n  }\n}\n\n",
+}
+
+#: The same generics, public in a library module ``gl`` and called
+#: QUALIFIED from the namespace the expression is written in.
+_GL = (
+    "module gl;\n\n"
+    + _USER_GENERICS["justg"].replace("private ", "public ", 1)
+    + _USER_GENERICS["okg"].replace("private ", "public ", 1)
+    + _USER_GENERICS["idg"].replace("private ", "public ", 1)
+)
+
+_USER_PRODUCERS: dict[str, dict[str, str]] = {
+    "Option": {"justg": "justg(2)", "gl::justg": "gl::justg(2)"},
+    "Result": {"okg": "okg(2)", "gl::okg": "gl::okg(2)"},
+}
+
+_USER_OUTERS: dict[str, dict[str, tuple[str, int]]] = {
+    "Option": {
+        "idg": ("option_unwrap_or(idg({P}), 0)", 2),
+        "gl::idg": ("option_unwrap_or(gl::idg({P}), 0)", 2),
+        "opt_or": ("opt_or({P}, 0)", 2),
+    },
+    "Result": {
+        "idg": ("result_unwrap_or(idg({P}), 0)", 2),
+        "gl::idg": ("result_unwrap_or(gl::idg({P}), 0)", 2),
+        "res_or": ("res_or({P}, 0)", 2),
+    },
+}
+
+#: Where the expression is written: a function, a generic function (so the
+#: expression reaches discovery through a specialisation's body), and a
+#: `where` helper — each in the entry file and in an imported module.
+NEST_PLACES = ("function", "generic function", "where helper")
+
+
+def _nested_body(place: str, expr: str) -> str:
+    """``probe`` computing *expr* from *place*."""
+    if place == "function":
+        return ("public fn probe(@Unit -> @Int)\n" + _NC
+                + "{\n  " + expr + "\n}\n")
+    if place == "generic function":
+        return ("private forall<T> fn viag(@T -> @Int)\n" + _NC
+                + "{\n  " + expr + "\n}\n\n"
+                "public fn probe(@Unit -> @Int)\n" + _NC
+                + "{\n  viag(1)\n}\n")
+    assert place == "where helper", place
+    return ("public fn probe(@Unit -> @Int)\n" + _NC
+            + "{\n  helper(1)\n}\nwhere {\n  fn helper(@Int -> @Int)\n"
+            "    requires(true)\n    ensures(true)\n    effects(pure)\n"
+            "  {\n    " + expr + "\n  }\n}\n")
+
+
+_NEST_MAIN = "public fn main(@Unit -> @Int)\n" + _NC + "{\n  probe(())\n}\n"
+
+
+@dataclass(frozen=True)
+class NestedCallCell:
+    outer: str
+    producer: str
+    expr: str
+    value: int
+    place: str
+    in_module: bool
+
+    @property
+    def label(self) -> str:
+        where = "module" if self.in_module else "entry"
+        return f"{where}|{self.place}|{self.outer}({self.producer})"
+
+    def files(self) -> dict[str, str]:
+        unqualified = self.expr.replace("gl::", "gl.")
+        used = "".join(
+            decl for name, decl in _USER_GENERICS.items()
+            if re.search(rf"(?<![\w.]){name}\(", unqualified)
+        )
+        body = used + _nested_body(self.place, self.expr)
+        imports = "import gl;\n\n" if "gl::" in self.expr else ""
+        library = {"gl.vera": _GL} if imports else {}
+        if not self.in_module:
+            return {**library, "main.vera": imports + body + "\n" + _NEST_MAIN}
+        return {
+            **library,
+            "mb.vera": "module mb;\n\n" + imports + body,
+            "main.vera": "import mb(probe);\n\n" + _NEST_MAIN,
+        }
+
+
+def _nested_shapes() -> list[tuple[str, str, str, int]]:
+    """``(outer, producer, expression, value)`` for every pairing."""
+    decls = prelude_generics()
+    producers: dict[str, dict[str, str]] = {
+        head: dict(user) for head, user in _USER_PRODUCERS.items()
+    }
+    for name, decl in decls.items():
+        head = _head(decl.return_type)
+        if head is not None:
+            producers[head][name] = _PRELUDE_PRODUCERS[name]
+    outers: dict[str, dict[str, tuple[str, int]]] = {
+        head: dict(user) for head, user in _USER_OUTERS.items()
+    }
+    for name, decl in decls.items():
+        head = _head(decl.params[0])
+        assert head is not None, f"{name}: first parameter is not an ADT"
+        outers[head][name] = _PRELUDE_OUTERS[name]
+    shapes = []
+    for head in sorted(outers):
+        for outer, (template, value) in sorted(outers[head].items()):
+            for producer, call in sorted(producers[head].items()):
+                shapes.append(
+                    (outer, producer, template.replace("{P}", call), value))
+    return shapes
+
+
+NESTED_CALL_CELLS: tuple[NestedCallCell, ...] = tuple(
+    NestedCallCell(outer, producer, expr, value, place, in_module)
+    for outer, producer, expr, value in _nested_shapes()
+    for place in NEST_PLACES
+    for in_module in (False, True)
+)
+
+
+def _emitted_and_discovered(
+    tmp_path: Path, files: dict[str, str],
+) -> tuple[set[tuple[str, tuple[str, ...]]], set[tuple[str, tuple[str, ...]]]]:
+    """``(what code generation emits, what the verifier discovers)``.
+
+    Both built with the checker's tables threaded exactly as the CLI threads
+    them — the entry file's, and each module's own.
+    """
+    from vera.codegen.core import CodeGenerator
+    from vera.verifier import ContractVerifier
+
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    for name, text in files.items():
+        (tmp_path / name).write_text(text, encoding="utf-8")
+    main_path = tmp_path / "main.vera"
+    source = files["main.vera"]
+    program = parse_to_ast(source)
+    resolved = ModuleResolver(_root=tmp_path).resolve_imports(
+        program, main_path)
+    _diags, arts = typecheck_with_artifacts(
+        program, source, file=str(main_path), resolved_modules=resolved,
+        collect_module_artifacts=True,
+    )
+    gen = CodeGenerator(
+        source=source, file=str(main_path), resolved_modules=resolved,
+        expr_semantic_types=arts.expr_semantic_types,
+        expr_target_types=arts.expr_target_types,
+        module_artifacts=arts.module_artifacts,
+    )
+    gen.compile_program(parse_to_ast(source))
+    verifier = ContractVerifier(
+        source=source, file=str(main_path), resolved_modules=resolved,
+        expr_types=arts.expr_semantic_types,
+        expr_target_types=arts.expr_target_types,
+        module_artifacts=arts.module_artifacts,
+    )
+    verifier.register_program(parse_to_ast(source))
+    discovered = {
+        (name, types)
+        for name, all_types in verifier._instances.items()
+        for types in all_types
+    }
+    return set(gen._emitted_instances), discovered
+
+
+def uncovered_instances(
+    emitted: set[tuple[str, tuple[str, ...]]],
+    discovered: set[tuple[str, tuple[str, ...]]],
+) -> set[tuple[str, tuple[str, ...]]]:
+    """What code generation emits that the verifier did not discover.
+
+    The verifier names scalars more precisely than code generation's WAT
+    collapse (``Nat`` for ``Int``), so its set is normalised through that
+    collapse first — the #732 differential's own rule.
+    """
+    collapse = {"Nat": "Int", "Byte": "Bool"}
+
+    def norm(types: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(collapse.get(t, t) for t in types)
+
+    seen = {(name, norm(types)) for name, types in discovered}
+    return {(n, t) for n, t in emitted if (n, norm(t)) not in seen}
+
+
+class TestNestedGenericCalls:
+    """(e): a nested generic call compiles wherever it is written (#1509)."""
+
+    def test_every_prelude_generic_is_an_outer_and_a_producer_where_it_can_be(
+        self,
+    ) -> None:
+        """The prelude's generics are the matrix's, enumerated not listed."""
+        decls = prelude_generics()
+        assert set(_PRELUDE_OUTERS) == set(decls), sorted(decls)
+        producing = {n for n, d in decls.items() if _head(d.return_type)}
+        assert set(_PRELUDE_PRODUCERS) == producing, sorted(producing)
+        outers = {c.outer for c in NESTED_CALL_CELLS}
+        assert set(decls) <= outers, sorted(set(decls) - outers)
+
+    def test_the_reported_program_is_a_cell(self) -> None:
+        labels = {c.label for c in NESTED_CALL_CELLS}
+        assert "module|function|result_unwrap_or(result_map)" in labels
+
+    @pytest.mark.parametrize("cell", NESTED_CALL_CELLS, ids=lambda c: c.label)
+    def test_compiles_and_runs_wherever_it_is_written(
+        self, cell: NestedCallCell, tmp_path: Path,
+    ) -> None:
+        outcome = pipeline(tmp_path, cell.files())
+        assert outcome.accepted and outcome.compiles_clean, (
+            outcome.describe())
+        assert run_main(outcome) == ("ok", cell.value)
+        emitted, discovered = _emitted_and_discovered(
+            tmp_path / "differential", cell.files())
+        assert emitted, "no specialisation emitted: the cell is vacuous"
+        assert not uncovered_instances(emitted, discovered), (
+            f"emitted {sorted(emitted)}, discovered {sorted(discovered)}")
+
+    def test_the_differential_can_fail(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Not vacuous: a verifier reading the entry file's table for a
+        module's body discovers a specialisation code generation does not
+        emit, and misses the one it does."""
+        from vera.verifier import ContractVerifier
+
+        cell = next(c for c in NESTED_CALL_CELLS
+                    if c.label == "module|function|result_unwrap_or(result_map)")
+        real = ContractVerifier.__init__
+
+        def entry_table_only(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            kwargs.pop("module_artifacts", None)
+            real(self, *args, **kwargs)
+
+        monkeypatch.setattr(ContractVerifier, "__init__", entry_table_only)
+        emitted, discovered = _emitted_and_discovered(tmp_path, cell.files())
+        assert uncovered_instances(emitted, discovered), (
+            f"emitted {sorted(emitted)}, discovered {sorted(discovered)}")

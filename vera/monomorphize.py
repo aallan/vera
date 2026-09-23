@@ -2108,17 +2108,38 @@ class MonoContext:
     qualified_module_generics: frozenset[tuple[tuple[str, ...], str]] = (
         frozenset()
     )
+    # #1509: the declaration of each generic a program reaches only QUALIFIED
+    # (a module's private generic, or one whose bare name the importer's own
+    # declaration owns), keyed ``(module path, name)``.  The type namer reads
+    # it to name a ``ModuleCall`` to such a generic the way the call-site
+    # rewrite does — instantiating its declared return — rather than falling
+    # back to the checker, whose type for an ADT (``Option<Nat>``) is not the
+    # clone name the rewrite uses (``Option``).  Codegen supplies its
+    # ``_shadowed_imported_generic_decls`` and the verifier the same set,
+    # derived by the same predicate.  Defaulted empty: a consumer not
+    # threaded names such a call as before.
+    qualified_generic_decls: Mapping[tuple[tuple[str, ...], str], ast.FnDecl] = (
+        field(default_factory=dict))
     # #1327/#1366/#1369: the checker's span-keyed resolved-type table for the
-    # ENTRY program — the single source both type namers fall back to when
-    # their own walk names nothing (see :func:`checker_clone_type_name`).  The
-    # ENTRY program's, deliberately: codegen and the verifier are both handed
-    # exactly this table by the CLI, so both consultors back off to the same
-    # answers and the #732 emitted-versus-discovered differential stays an
-    # equality.  Threading a per-module table to only one of them would buy
-    # reach on that side and a false Tier 1 on the other.  Defaulted ``None``:
-    # a consumer that has not been threaded keeps the pre-#1327 behaviour,
-    # where an unnameable argument is [E622] rather than a guess.
+    # ENTRY program — the source both type namers fall back to when their own
+    # walk names nothing (see :func:`checker_clone_type_name`), for a body the
+    # entry file or the prelude holds.  Defaulted ``None``: a consumer that
+    # has not been threaded keeps the pre-#1327 behaviour, where an unnameable
+    # argument is [E622] rather than a guess.
     expr_types: SpanTypeTable | None = None
+    # #1509: each resolved module's OWN table, for the bodies that module
+    # holds — its functions and helpers, and the specialisations of its
+    # generics.  A span key carries no file, so the entry program's table
+    # answers a module's expression with nothing, or with whatever entry
+    # expression shares its coordinates; discovery then named a module body's
+    # nested generic call differently from the call site, which reads the
+    # module's own table (#987), and the function was dropped.  Codegen and
+    # the verifier are both handed the same per-module tables by the CLI, so
+    # both consultors still back off to the same answers and the #732
+    # differential holds.  Read through :meth:`Monomorphizer.checker_table`;
+    # a module absent here has no table, never the entry program's.
+    module_expr_types: Mapping[tuple[str, ...], SpanTypeTable] = field(
+        default_factory=dict)
 
 
 class Monomorphizer:
@@ -2238,6 +2259,22 @@ class Monomorphizer:
             self._namespace_path = saved_path
             self._scope_fn_names = saved
             self._scope_ctor_owners = saved_owners
+
+    def checker_table(
+        self, path: tuple[str, ...] | None,
+    ) -> SpanTypeTable | None:
+        """The checker's table for the bodies namespace *path* holds (#1509).
+
+        The entry program's for ``None`` — the entry file and the prelude,
+        whose bodies the walk enters with no module path — and each module's
+        OWN for a module's bodies and its generics' specialisations.  A span
+        key carries no file, so a body is only ever looked up in the table
+        of the file it was written in; a module with no table here has none,
+        and the caller is exactly as informed as with no table at all.
+        """
+        if path is None:
+            return self.ctx.expr_types
+        return self.ctx.module_expr_types.get(path)
 
     def _ctor_owner(
         self, name: str, ctor_to_adt: Mapping[str, str],
@@ -3024,7 +3061,8 @@ class Monomorphizer:
                 # semantic type and the walkers' is a naming vocabulary, so
                 # asking earlier lets `Option<Nat>` displace the `Int` a
                 # later parameter's literal supplies.
-                arg_info = checker_arg_type_info(self.ctx.expr_types, arg)
+                arg_info = checker_arg_type_info(
+                    self.checker_table(self._namespace_path), arg)
             if arg_info and arg_info[0] == param_te.name:
                 for param_ta, arg_ta_name in zip(
                     param_te.type_args, arg_info[1]
@@ -3094,7 +3132,8 @@ class Monomorphizer:
         walked = self._walk_vera_type_name(expr, ctor_to_adt, generic_decls)
         if walked is not None:
             return walked
-        return checker_clone_type_name(self.ctx.expr_types, expr)
+        return checker_clone_type_name(
+            self.checker_table(self._namespace_path), expr)
 
     def _walk_vera_type_name(
         self,
@@ -3254,11 +3293,77 @@ class Monomorphizer:
                 and not self._bare_call_is_user_fn(expr.name)
                 and expr.name in self._op_result_types):
             return self._op_result_types[expr.name]
+        if isinstance(expr, ast.ModuleCall):
+            # #1509: a qualified call to a GENERIC names its instantiated
+            # return, exactly as the bare call's arm below and the rewrite
+            # twin's `ModuleCall` arm (which resolves the target and reuses
+            # its FnCall arm) do.  Without it the checker answered, and for a
+            # data type its answer is the full semantic type (`Option<Nat>`)
+            # where both of those name the clone after the bare type
+            # (`Option`, #772): `idg(lib::justg(2))` discovered `idg` at a
+            # specialisation the call site does not call.  A module's own
+            # private generics reach here too — code generation reroutes a
+            # module body's call to one into a `ModuleCall`.  A non-generic
+            # target keeps the checker's answer, as before.
+            decl = self._module_call_generic_decl(expr, generic_decls)
+            if decl is not None:
+                return self._generic_return_name(
+                    decl, self._infer_type_args_from_args(
+                        decl, expr.args, ctor_to_adt, generic_decls,
+                    ),
+                )
+            return None
         if isinstance(expr, ast.FnCall) and generic_decls:
             return self._infer_fncall_vera_type(
                 expr, ctor_to_adt, generic_decls)
         if isinstance(expr, ast.FnCall):
             return self._infer_fncall_vera_type_simple(expr)
+        return None
+
+    def _module_call_generic_decl(
+        self, call: ast.ModuleCall,
+        generic_decls: dict[str, ast.FnDecl] | None,
+    ) -> ast.FnDecl | None:
+        """The generic declaration ``path::name`` reaches, if it is one.
+
+        A qualified-only generic is looked up under its own module
+        (``qualified_generic_decls``); any other is the one the bare name
+        denotes, since a module generic that owns the importer's bare name is
+        the generic ``generic_decls`` holds under it (#774).  ``None`` for a
+        non-generic target, or a qualified-only generic the consumer did not
+        supply.
+        """
+        key = (tuple(call.path), call.name)
+        decl = self.ctx.qualified_generic_decls.get(key)
+        if decl is None and key not in self.ctx.qualified_module_generics:
+            decl = (generic_decls or {}).get(call.name)
+        if decl is None or not decl.forall_vars:
+            return None
+        return decl
+
+    @staticmethod
+    def _generic_return_name(
+        decl: ast.FnDecl, type_args: tuple[str, ...] | None,
+    ) -> str | None:
+        """The name of *decl*'s return, instantiated at *type_args*.
+
+        A return spelled as a type variable names what that variable binds
+        to; a parameterised return names its bare type (``Option<T>`` names
+        ``Option``, #772) — the vocabulary the rewrite twin's generic branch
+        answers in, so the two land on one clone.
+        """
+        if type_args and decl.forall_vars:
+            mapping = dict(zip(decl.forall_vars, type_args))
+            ret_te = decl.return_type
+            # Unwrap an inline refinement to its base, mirroring the rewrite
+            # side's generic branch (vera/wasm/inference.py) — the two
+            # consultors must land on the same name (PR #972 review; both
+            # previously agreed via the WAT collapse only by coincidence for
+            # refined returns).
+            if isinstance(ret_te, ast.RefinementType):
+                ret_te = ret_te.base_type
+            if isinstance(ret_te, ast.NamedType):
+                return mapping.get(ret_te.name, ret_te.name)
         return None
 
     def _infer_fncall_vera_type(
@@ -3298,21 +3403,13 @@ class Monomorphizer:
             return inner
         if call.name in generic_decls:
             decl = generic_decls[call.name]
-            type_args = self._infer_type_args_from_call(
-                decl, call, ctor_to_adt, generic_decls,
+            named = self._generic_return_name(
+                decl, self._infer_type_args_from_call(
+                    decl, call, ctor_to_adt, generic_decls,
+                ),
             )
-            if type_args and decl.forall_vars:
-                mapping = dict(zip(decl.forall_vars, type_args))
-                ret_te = decl.return_type
-                # Unwrap an inline refinement to its base, mirroring the
-                # rewrite side's generic branch (vera/wasm/inference.py) —
-                # the two consultors must land on the same name (PR #972
-                # review; both previously agreed via the WAT collapse only
-                # by coincidence for refined returns).
-                if isinstance(ret_te, ast.RefinementType):
-                    ret_te = ret_te.base_type
-                if isinstance(ret_te, ast.NamedType):
-                    return mapping.get(ret_te.name, ret_te.name)
+            if named is not None:
+                return named
         return self._infer_fncall_vera_type_simple(call)
 
     def _closure_arg_return_te(self, arg: ast.Expr) -> ast.TypeExpr | None:

@@ -317,9 +317,12 @@ def cmd_verify(path: str, as_json: bool = False, quiet: bool = False,
 
         # First type-check, collecting the #747 semantic-type side-tables
         # so the verifier can obligate projection / generic-instantiation
-        # @Nat narrowings.
+        # @Nat narrowings — and each module's own (#1509), which
+        # instantiation discovery reads for that module's bodies exactly as
+        # `vera compile` / `run` hand them to code generation.
         check_diags, artifacts = typecheck_with_artifacts(
             ast, source, file=str(p), resolved_modules=resolved,
+            collect_module_artifacts=True,
         )
         type_diags = resolver.errors + check_diags
         type_errors = [d for d in type_diags if d.severity == "error"]
@@ -344,7 +347,8 @@ def cmd_verify(path: str, as_json: bool = False, quiet: bool = False,
                         timeout_ms=timeout_ms,
                         resolved_modules=resolved,
                         expr_types=artifacts.expr_semantic_types,
-                        expr_target_types=artifacts.expr_target_types)
+                        expr_target_types=artifacts.expr_target_types,
+                        module_artifacts=artifacts.module_artifacts)
 
         errors = [d for d in result.diagnostics if d.severity == "error"]
         warnings = [d for d in result.diagnostics if d.severity == "warning"]

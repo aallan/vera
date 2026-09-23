@@ -1228,6 +1228,7 @@ def _checked(entry: Path):
     assert not resolver.errors, resolver.errors
     diags, artifacts = typecheck_with_artifacts(
         program, source, file=str(entry), resolved_modules=resolved,
+        collect_module_artifacts=True,
     )
     assert not [d for d in diags if d.severity == "error"], diags
     return source, program, resolved, artifacts
@@ -1240,6 +1241,7 @@ def _verify_checked(entry: Path, source, program, resolved, artifacts):
         program, source, file=str(entry), resolved_modules=resolved,
         expr_types=artifacts.expr_semantic_types,
         expr_target_types=artifacts.expr_target_types,
+        module_artifacts=artifacts.module_artifacts,
     )
 
 
@@ -1350,6 +1352,7 @@ def test_1399_a_deep_chain_verifies_each_module_once(tmp_path: Path) -> None:
         resolved = resolver.resolve_imports(program, entry)
         _d, artifacts = typecheck_with_artifacts(
             program, source, file=str(entry), resolved_modules=resolved,
+            collect_module_artifacts=True,
         )
 
         def counting_check(self, prog):  # type: ignore[no-untyped-def]
@@ -1362,6 +1365,7 @@ def test_1399_a_deep_chain_verifies_each_module_once(tmp_path: Path) -> None:
                 program, source, file=str(entry), resolved_modules=resolved,
                 expr_types=artifacts.expr_semantic_types,
                 expr_target_types=artifacts.expr_target_types,
+                module_artifacts=artifacts.module_artifacts,
             )
         finally:
             checker_core.TypeChecker.check_program = orig_check
