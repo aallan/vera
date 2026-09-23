@@ -18,7 +18,17 @@ longer exists) and carries the store, the warm
 
 Threading: Z3 contexts are not thread-safe, so every analysis runs
 under ``analysis_lock`` — one session, strictly serialised, no matter
-which transport thread delivers the triggering notification.
+which transport thread delivers the triggering notification.  The three
+edit-applying methods are coroutines: each waits for the client's
+answer to its ``workspace/applyEdit`` with the lock released, so the
+notifications that arrive meanwhile are read and analysed while it
+waits.
+
+Document state: the store, the per-URI analysis table and the published
+diagnostics describe the client's open buffer, so they are written only
+from the client's own ``didOpen`` / ``didChange`` / ``didClose``
+(#1444).  An edit the server proposes reaches them as the client's
+``didChange`` if the client applies it, and not at all otherwise.
 """
 
 from __future__ import annotations
@@ -220,22 +230,25 @@ def create_server() -> VeraLanguageServer:
             return speculative_edit(server.session, baseline, uri, text)
 
     @server.feature("vera/proposeEdit")
-    def vera_propose_edit(ls: Any, params: Any) -> dict[str, Any]:
+    async def vera_propose_edit(ls: Any, params: Any) -> dict[str, Any]:
         """#222 Phase F1: enforced edit → verify → apply workflow.
 
-        The whole sequence — speculative verify, gate, and (on pass)
-        ``workspace/applyEdit`` + canonical-state update — runs in
+        The whole sequence — speculative verify, gate, and (on pass) a
+        version-guarded ``workspace/applyEdit`` and the wait for the
+        client's answer — runs in
         :func:`vera.lsp.workflows.apply_propose_edit`; this handler is
-        wire glue only.
+        wire glue only.  It is a coroutine so that pygls runs it as a
+        task and goes on reading messages — the client's answer among
+        them — while it waits.
         """
         uri = _require_str(params, "uri")
         text = _require_str(params, "text")
-        return apply_propose_edit(
+        return await apply_propose_edit(
             server, uri, text, _force_param(params),
         )
 
     @server.feature("vera/strengthenContract")
-    def vera_strengthen_contract(
+    async def vera_strengthen_contract(
         ls: Any, params: Any,
     ) -> dict[str, Any]:
         """#222 Phase F2: contract change with call-site audit.
@@ -255,12 +268,14 @@ def create_server() -> VeraLanguageServer:
                 f"got {kind!r}",
             )
         try:
-            return strengthen_contract(server, uri, fn_name, kind, expr)
+            return await strengthen_contract(
+                server, uri, fn_name, kind, expr,
+            )
         except ValueError as exc:
             raise JsonRpcInvalidParams(message=str(exc)) from exc
 
     @server.feature("vera/addEffect")
-    def vera_add_effect(ls: Any, params: Any) -> dict[str, Any]:
+    async def vera_add_effect(ls: Any, params: Any) -> dict[str, Any]:
         """#222 Phase F3: effect propagation through the call graph.
 
         Closure + multi-site rewrite + verify + gate run in
@@ -275,7 +290,7 @@ def create_server() -> VeraLanguageServer:
                 message="'effect' must be a non-empty effect reference",
             )
         try:
-            return add_effect(server, uri, fn_name, effect)
+            return await add_effect(server, uri, fn_name, effect)
         except ValueError as exc:
             raise JsonRpcInvalidParams(message=str(exc)) from exc
 

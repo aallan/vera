@@ -16,10 +16,12 @@ mandatory-contracts philosophy applied to tooling.
 Response (plain JSON)::
 
     {
-      "applied": true,           # the edit passed the gate (or force)
+      "applied": true,           # the gate passed (or force) AND the
+                                 #   client applied the edit
       "ok": true,                # proposed source parsed + checked
       "proof_delta": {...},      # Phase E shape; null if not compiled
       "diagnostics": <count of error diagnostics in the proposed state>,
+      "client": "applied",       # the client's side: see below
     }
 
 The gate: apply iff the proof delta has no ``proof_regressions`` (no
@@ -33,21 +35,51 @@ all three — "this edit knowingly weakens a proof" (or doesn't compile
 yet) is sometimes the intent, but it must be said out loud; the default
 is the enforced gate.
 
-On apply, three things happen, in order: a ``workspace/applyEdit``
-request (the LSP-native mechanism — the *client* owns the buffer, so
-the server must round-trip the edit rather than silently diverge), the
-canonical :class:`~vera.lsp.documents.DocumentStore` text updates, and
-the document re-analyzes + republishes diagnostics.  The client's
-echoed ``didChange`` then replays as a no-op from the warm session's
-discharge cache — the pre-warming Phase E was designed around.  The
-``applyEdit`` request is fire-and-forget: the response's ``applied``
-reports the *gate* verdict, not the client's asynchronous answer, and
-canonical state is not rolled back if the client declines — a
-declining client's buffer re-converges on its next full-sync
-``didChange``, and blocking the handler on the client round-trip
-would serialise every proposal on editor latency.  On refuse,
-canonical state is untouched: same isolation guarantee as
-``vera/speculativeEdit``.
+The client owns the buffer, so an edit that passes the gate goes to it
+as a ``workspace/applyEdit`` request, and nothing on the server's side
+changes until the client says its buffer did (#1444).  The canonical
+:class:`~vera.lsp.documents.DocumentStore` describes the client's open
+buffer, so it is written by the client's own ``didOpen`` /
+``didChange`` / ``didClose`` and by nothing else — this module included;
+the analysis table and the published diagnostics follow the store.  So
+the request is:
+
+* **Version-guarded.**  One whole-document ``TextDocumentEdit`` naming
+  the document version whose text the gate verified against.  A client
+  must refuse an edit whose version its buffer has moved past, so a
+  ``didChange`` that lands while the edit is pending — the user typed,
+  or another proposal was applied first — is never overwritten by a
+  replacement computed from the text before it.  ``documentChanges`` is
+  the only ``WorkspaceEdit`` form that can carry a version, so a client
+  that does not advertise it (with ``workspace.applyEdit``) is sent
+  nothing, rather than an edit that lands on whatever the buffer holds.
+* **Awaited.**  The workflows are coroutines: the server waits for the
+  client's answer, and ``analysis_lock`` is not held while it does, so
+  the notifications that arrive meanwhile are analysed as they come.
+  Z3 work stays serialised; waiting on an editor does not.
+* **Reconciled by the client.**  An applied edit reaches the server as
+  the client's own ``didChange``: at the client's actual version, and
+  analysed and published like any other change — replayed from the warm
+  session's discharge cache, which the gate's speculative run just
+  filled (the pre-warming Phase E was designed around).  That
+  notification may arrive before the answer or after it; either way
+  the server publishes nothing for the new text until it does.
+
+``applied`` is true only when the client applied the edit, and
+``client`` says what became of it on the client's side: ``null`` (the
+gate refused; nothing was sent), ``"applied"``, ``"declined"`` (the
+client answered ``applied: false`` — typically because its buffer is no
+longer at the verified version), ``"failed"`` (an error answer, or the
+request could not be sent), ``"cancelled"`` (the request was cancelled
+unanswered), or ``"unsupported"`` (the client cannot take a
+version-guarded edit, so none was sent).  If the proposal request
+itself is cancelled while the edit is pending, it ends as cancelled —
+an error response, never ``applied`` — and the edit request is left for
+the client to answer.  Whatever the answer, the workflow itself writes
+no canonical state — the same isolation guarantee as
+``vera/speculativeEdit`` — so an applied edit arrives only as the
+client's ``didChange``, and any other outcome leaves the text, version
+and published analysis exactly as they were.
 
 ``vera/addEffect`` (Phase F3) — request params::
 
@@ -64,7 +96,8 @@ functions already naming the effect are skipped), and ONE multi-site
 candidate runs through the proposeEdit pipeline.  The response adds
 ``rewritten``: the affected functions in declaration order; if it is
 empty the row state was already satisfied and nothing ran
-(``applied: false, ok: true, proof_delta: null`` — the no-op shape).
+(``applied: false, ok: true, proof_delta: null, client: null`` — the
+no-op shape).
 Propagation is bounded at handlers (#725): a call site inside a
 ``handle[E]`` body contributes no edge, so a caller that discharges
 the effect around every one of its call sites is left unrewritten.  A
@@ -111,6 +144,8 @@ project model.
 
 from __future__ import annotations
 
+import asyncio
+
 from typing import TYPE_CHECKING, Any
 
 from lsprotocol import types as lsp
@@ -137,7 +172,9 @@ def propose_edit(
 
     Returns ``(should_apply, response)``.  The caller owns the side
     effects of applying; this function only verifies and decides, so
-    the gate logic is testable without a server.
+    the gate logic is testable without a server.  The response's
+    ``applied`` is therefore the GATE's verdict here, and
+    :func:`apply_propose_edit` settles it from the client's answer.
     """
     speculative = speculative_edit(session, baseline, uri, text)
     delta = speculative["proof_delta"]
@@ -211,7 +248,108 @@ def full_document_range(doc: Document | None) -> lsp.Range:
     )
 
 
-def apply_propose_edit(
+def supports_versioned_edits(
+    capabilities: lsp.ClientCapabilities | None,
+) -> bool:
+    """Whether a client with *capabilities* can take a version-guarded
+    whole-document edit.
+
+    Two capabilities, both required: ``workspace.applyEdit`` (the client
+    answers the request at all) and ``workspace.workspaceEdit.
+    documentChanges`` — the only ``WorkspaceEdit`` form whose text edits
+    name the document version they apply to.  The other form,
+    ``changes``, is unversioned: an edit sent that way lands on whatever
+    the buffer holds when it arrives, including typing that came after
+    the text it was verified against.  *capabilities* is ``None`` before
+    the client has initialised.
+    """
+    workspace = capabilities.workspace if capabilities is not None else None
+    if workspace is None or workspace.apply_edit is not True:
+        return False
+    edit = workspace.workspace_edit
+    return edit is not None and edit.document_changes is True
+
+
+def versioned_edit(
+    uri: str, doc: Document | None, text: str,
+) -> lsp.ApplyWorkspaceEditParams:
+    """The request replacing *uri*'s whole text with *text*, guarded by
+    the version of the text it replaces.
+
+    With the document open, that is *doc*'s version, and a client whose
+    buffer has moved past it must refuse the edit (LSP 3.17,
+    ``TextDocumentEdit``).  Unopened, the version is ``null``, the
+    protocol's spelling for "the file on disk is the master", over the
+    clamp-sentinel range :func:`full_document_range` gives.
+    """
+    return lsp.ApplyWorkspaceEditParams(
+        edit=lsp.WorkspaceEdit(
+            document_changes=[
+                lsp.TextDocumentEdit(
+                    text_document=lsp.OptionalVersionedTextDocumentIdentifier(
+                        uri=uri,
+                        version=doc.version if doc is not None else None,
+                    ),
+                    edits=[
+                        lsp.TextEdit(
+                            range=full_document_range(doc), new_text=text,
+                        ),
+                    ],
+                ),
+            ],
+        ),
+    )
+
+
+def _retrieve(answer: asyncio.Future[Any]) -> None:
+    """Mark a settled answer's outcome as retrieved.
+
+    Matters only when the workflow was cancelled while it waited: the
+    answer then settles with nobody awaiting it, and asyncio would log an
+    error it "never retrieved" for an outcome that is no longer anyone's
+    concern.
+    """
+    if not answer.cancelled():
+        answer.exception()
+
+
+async def client_outcome(
+    server: VeraLanguageServer, request: lsp.ApplyWorkspaceEditParams,
+) -> str:
+    """Send *request* as ``workspace/applyEdit`` and wait for the answer.
+
+    Returns ``"applied"``, ``"declined"``, ``"failed"`` or
+    ``"cancelled"``.  The caller must hold no lock: the answer, and every
+    notification the client sends before it, arrive through the same
+    event loop this coroutine is suspended on.
+
+    The wait is SHIELDED.  Cancelling this coroutine — the client
+    cancelling the proposal request — must not cancel the edit request
+    underneath it: pygls would then fail the client's late answer with
+    ``InvalidStateError`` inside its reader, and the client may apply the
+    edit anyway.  Own cancellation propagates; the edit request's
+    cancellation (pygls cancels every outstanding request at shutdown) is
+    an outcome, reported like any other.
+    """
+    try:
+        pending = server.workspace_apply_edit(request)
+    except Exception:  # noqa: BLE001 — any failure to SEND is "not applied", which is the one thing this reports
+        return "failed"
+    answer = asyncio.wrap_future(pending)
+    answer.add_done_callback(_retrieve)
+    try:
+        result = await asyncio.shield(answer)
+    except asyncio.CancelledError:
+        task = asyncio.current_task()
+        if task is not None and task.cancelling():
+            raise
+        return "cancelled"
+    except Exception:  # noqa: BLE001 — an error answer, of whatever type, is an edit the client did not apply
+        return "failed"
+    return "applied" if getattr(result, "applied", None) is True else "declined"
+
+
+async def apply_propose_edit(
     server: VeraLanguageServer,
     uri: str,
     text: str,
@@ -220,10 +358,13 @@ def apply_propose_edit(
     """Run the full proposeEdit workflow against *server* state.
 
     The decision runs under ``analysis_lock`` (one Z3 session, strictly
-    serialised).  The apply path then releases the lock before
-    ``analyze_and_publish`` re-acquires it — the re-analysis replays
-    the just-verified state from the discharge cache, so the second
-    pass is cheap by construction.
+    serialised), and the edit it passes goes to the client guarded by
+    the version of the text the gate read (:func:`versioned_edit`).  The
+    lock is released before the wait for the client's answer
+    (:func:`client_outcome`), and nothing here writes the document
+    store, the analysis table or the published diagnostics: the client
+    owns the buffer, so an applied edit reaches the server as the
+    client's own ``didChange``, at the client's own version (#1444).
     """
     with server.analysis_lock:
         baseline_analysis = server.analyses.get(uri)
@@ -235,28 +376,28 @@ def apply_propose_edit(
         should_apply, response = propose_edit(
             server.session, baseline, uri, text, force,
         )
-    if not should_apply:
+        # Read in the same step as the baseline, with no await between
+        # them for a notification to land in, so the precondition names
+        # the version the baseline was analysed from -- every didChange
+        # re-analyses before anything else runs.  (An analysis that
+        # RAISES leaves the table behind the store; that is the handler
+        # failing part-way, not a race this read can close.)
+        request = (
+            versioned_edit(uri, server.store.get(uri), text)
+            if should_apply else None
+        )
+    response["client"] = None
+    if request is None:
         return response
-
-    doc = server.store.get(uri)
-    server.workspace_apply_edit(
-        lsp.ApplyWorkspaceEditParams(
-            edit=lsp.WorkspaceEdit(
-                changes={
-                    uri: [
-                        lsp.TextEdit(
-                            range=full_document_range(doc),
-                            new_text=text,
-                        ),
-                    ],
-                },
-            ),
-        ),
-    )
-    server.store.change(
-        uri, text, version=(doc.version + 1) if doc is not None else 0,
-    )
-    server.analyze_and_publish(uri, text)
+    if not supports_versioned_edits(
+        getattr(server, "client_capabilities", None),
+    ):
+        response["applied"] = False
+        response["client"] = "unsupported"
+        return response
+    outcome = await client_outcome(server, request)
+    response["applied"] = outcome == "applied"
+    response["client"] = outcome
     return response
 
 
@@ -316,7 +457,7 @@ def splice_contract(
     return None
 
 
-def strengthen_contract(
+async def strengthen_contract(
     server: VeraLanguageServer,
     uri: str,
     fn_name: str,
@@ -327,9 +468,11 @@ def strengthen_contract(
 
     Splices against the canonical analysis (read under the lock), then
     delegates to :func:`apply_propose_edit` — which re-verifies the
-    *candidate* from scratch, so a ``didChange`` racing the window
-    between splice and apply degrades to last-writer-wins, exactly the
-    full-document-sync semantics every other path already has.
+    *candidate* from scratch and sends it guarded by the document's
+    version.  Nothing awaits between the splice and that request, so the
+    version is the one the spliced text was analysed at, and a
+    ``didChange`` that lands after it makes the client refuse the edit
+    rather than lose the newer text to a candidate built without it.
 
     Raises ``ValueError`` for requests that cannot name a splice
     target (no analysis for the URI, document does not parse, unknown
@@ -353,7 +496,7 @@ def strengthen_contract(
         raise ValueError(
             f"no top-level function {fn_name!r} with a {kind} clause",
         )
-    return apply_propose_edit(server, uri, candidate, force=False)
+    return await apply_propose_edit(server, uri, candidate, force=False)
 
 
 def _top_level_fns(program: ast.Program) -> dict[str, ast.FnDecl]:
@@ -589,7 +732,7 @@ def effect_row_rewrite(
     return None
 
 
-def add_effect(
+async def add_effect(
     server: VeraLanguageServer,
     uri: str,
     fn_name: str,
@@ -597,7 +740,9 @@ def add_effect(
 ) -> dict[str, Any]:
     """Run the full addEffect workflow against *server* state.
 
-    Same locking/racing model as :func:`strengthen_contract`.  Raises
+    Same locking and version-guarding model as
+    :func:`strengthen_contract`: the candidate is rewritten from the
+    canonical text, and the edit names that text's version.  Raises
     ``ValueError`` when the request cannot name a target (no analysis,
     unparseable document, unknown top-level function).
     """
@@ -632,12 +777,13 @@ def add_effect(
             "ok": True,
             "proof_delta": None,
             "diagnostics": 0,
+            "client": None,
             "rewritten": [],
         }
 
     candidate = analysis.text
     for start, end, replacement in sorted(rewrites, reverse=True):
         candidate = candidate[:start] + replacement + candidate[end:]
-    response = apply_propose_edit(server, uri, candidate, force=False)
+    response = await apply_propose_edit(server, uri, candidate, force=False)
     response["rewritten"] = rewritten
     return response

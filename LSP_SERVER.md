@@ -64,8 +64,13 @@ and exits; every other `vera` command works without it.
   `PATH`. See its [README](editors/vscode/README.md) for setup.
 - **Anything else** — point your editor's generic LSP client at the
   command `vera lsp` for language `vera` / file pattern `*.vera`,
-  using stdio transport and full-document sync. That is the entire
-  contract.
+  using stdio transport and full-document sync. That is the whole
+  contract for diagnostics, hover, navigation and completion. The three
+  custom methods that edit the document also need the client to
+  advertise `workspace.applyEdit` and
+  `workspace.workspaceEdit.documentChanges`: the server sends only
+  version-guarded edits, and `documentChanges` is the only form that
+  can carry a version.
 
 ## Standard features
 
@@ -236,13 +241,41 @@ every speculative obligation, so it has to be — but it introduced
 nothing and took nothing away, so the gate passes it.  A pair that
 worsened is refused exactly as the identical unmoved edit is.
 
-On apply the server issues `workspace/applyEdit` (the client owns the
-buffer), updates its canonical state, and republishes
-diagnostics; on refuse, nothing changes and the response says why:
+On a pass the server asks the client to apply the edit, and changes
+nothing of its own. The client owns the buffer: the server's copy of
+the text, its version and the published diagnostics describe what the
+client has, and they move only when the client's own `didOpen`,
+`didChange` or `didClose` says the buffer moved. So the edit goes out
+as one `workspace/applyEdit` — a whole-document replacement guarded by
+the version of the text it was verified against, which a client whose
+buffer has moved on since (the user typed, or another edit landed
+first) must refuse rather than let it overwrite the newer text. The
+server waits for the answer without holding up anything else, and an
+applied edit reaches it as the client's `didChange`: at the client's
+own version, analysed and published like any other change, and
+replayed from the warm cache. On refuse, nothing is sent and nothing
+changes, and the response says why:
 
 ```json
-{"applied": false, "ok": true, "proof_delta": {...}, "diagnostics": 0}
+{"applied": false, "ok": true, "proof_delta": {...}, "diagnostics": 0, "client": null}
 ```
+
+`applied` is `true` only when the client applied the edit. `client`
+says what became of it:
+
+| `client` | What happened | What to do |
+|----------|---------------|------------|
+| `null` | The gate refused; nothing was sent. | Read the proof delta and the diagnostics count. |
+| `"applied"` | The client applied the edit. | Nothing: its `didChange` brings the server's state along. |
+| `"declined"` | The client answered `applied: false` — most often because its buffer is no longer at the version the edit was verified against. | Re-read the document and propose again. |
+| `"failed"` | The request failed: the client answered with an error, or the request could not be sent. | Propose again. |
+| `"cancelled"` | The request was cancelled before the client answered. | Propose again. |
+| `"unsupported"` | The client does not advertise `workspace.applyEdit` and `workspace.workspaceEdit.documentChanges`, so no version-guarded edit could be sent, and none was. | Advertise both capabilities. |
+
+If the client cancels the `vera/proposeEdit` request itself while the
+edit is pending, that request ends with a `RequestCancelled` error —
+never `applied` — and the edit request stays open for the client to
+answer.
 
 `"force": true` (strictly boolean — anything else fails closed)
 overrides the gate for the cases where breaking a proof is the point,
@@ -283,7 +316,7 @@ all-or-nothing, never a half-propagated document. The response adds
 `"rewritten"`: the affected functions in declaration order. If every
 row already carries the effect, nothing runs and the no-op shape comes
 back (`"applied": false, "ok": true, "proof_delta": null,
-"rewritten": []`).
+"client": null, "rewritten": []`).
 
 The closure is **bounded at handlers**: a call site inside a
 `handle[E]` body contributes no edge, because the handler discharges
@@ -324,7 +357,8 @@ every step.
 1. `didOpen` the file; read the published diagnostics and tier hints.
 2. Draft an edit; `vera/speculativeEdit` it; inspect the proof delta.
 3. If the delta looks right, `vera/proposeEdit` the same text — the
-   server re-verifies (cheaply, from the warm cache) and applies.
+   server re-verifies (cheaply, from the warm cache) and has the client
+   apply it; `applied: true` means the client did.
 4. For the two structured refactors — tightening a contract,
    threading an effect — call the dedicated method instead and let
    the server construct the candidate.
