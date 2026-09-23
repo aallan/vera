@@ -1778,13 +1778,25 @@ async def _awaited(value: Any) -> Any:
     return await value if inspect.isawaitable(value) else value
 
 
+#: Failure detector for the fake-client cells, never an ordering device
+#: (the fake's counterpart to ``WIRE_TIMEOUT_S``): every step is ordered by
+#: an await, and a working workflow settles in a small fraction of this.
+#: It exists so that a wait nothing will ever settle -- the failure the
+#: server's own bound on the wait prevents -- fails the cell instead of
+#: hanging the suite, which CI runs with no per-test timeout.
+SETTLE_TIMEOUT_S = 120
+
+
 def _settle(server: _FakeServer, script: Callable[[], Any]) -> Any:
     """Run *script* to completion on a fresh event loop; return its value.
 
     *script* is a workflow call (``lambda: apply_propose_edit(...)``) or
     an async test script.  Every task the modelled client started is
     awaited afterwards, so an assertion raised on the client's side of
-    the wire fails the test instead of vanishing into the loop.
+    the wire fails the test instead of vanishing into the loop.  The
+    whole of it is bounded by ``SETTLE_TIMEOUT_S``: the fake runs on
+    one thread and never blocks (its lock raises instead), so every
+    hang it can have is an await, which the bound cancels.
     """
     async def main() -> Any:
         out = await _awaited(script())
@@ -1792,7 +1804,16 @@ def _settle(server: _FakeServer, script: Callable[[], Any]) -> Any:
             await task
         return out
 
-    return asyncio.run(main())
+    async def bounded() -> Any:
+        try:
+            return await asyncio.wait_for(main(), SETTLE_TIMEOUT_S)
+        except TimeoutError:
+            pytest.fail(
+                f"the scenario did not settle within {SETTLE_TIMEOUT_S} s: "
+                "something awaits an answer nothing will give",
+            )
+
+    return asyncio.run(bounded())
 
 
 class TestProposeEditGate:
@@ -2684,7 +2705,8 @@ class TestProposeEditWiring:
     def test_a_cancelled_request_is_not_reported_as_applied(self) -> None:
         """The request is cancelled with no answer -- pygls cancels every
         outstanding request at shutdown.  Nothing is known about the
-        client's buffer, so nothing is claimed about it."""
+        client's buffer, so nothing is claimed about it: ``applied`` is
+        ``null``, neither true nor false."""
         server = self._server("cancel")
         before = server.analyses[URI]
         out = _settle(
@@ -2693,8 +2715,9 @@ class TestProposeEditWiring:
         assert _doc_state(server) == (SPEC_BASE, 1)
         assert server.analyses[URI] is before
         assert server.published == []
-        assert out["applied"] is False
+        assert out["applied"] is None
         assert out["client"] == "cancelled"
+        assert "re-read the document" in out["client_reason"]
 
     def test_cancelling_the_workflow_leaves_the_request_answerable(
         self,
@@ -2756,19 +2779,49 @@ class TestProposeEditWiring:
         assert server.store.get(URI) is None
         assert server.published == []
 
-    def test_an_unanswered_request_is_failed_not_left_pending(self) -> None:
+    def test_an_unanswered_request_times_out_not_left_pending(self) -> None:
         """A request can go unanswered with nothing cancelling it -- a
         write error pygls swallows, or a client that hangs.  The wait is
-        bounded, and the proposal completes as failed, with the reason,
-        rather than never."""
+        bounded, and the proposal answers ``timeout`` rather than never:
+        with ``applied`` unknown, because the edit request is still open
+        and the client may yet apply it."""
         server = self._server("silent")
         server.apply_edit_timeout_s = 0
         out = _settle(
             server, lambda: apply_propose_edit(server, URI, SHIFTED_BASE),
         )
         assert _doc_state(server) == (SPEC_BASE, 1)
-        assert (out["applied"], out["client"]) == (False, "failed")
+        assert (out["applied"], out["client"]) == (None, "timeout")
         assert "did not answer within 0 s" in out["client_reason"]
+        assert "may still apply it" in out["client_reason"]
+
+    def test_an_edit_applied_after_the_timeout_still_reaches_the_server(
+        self,
+    ) -> None:
+        """The case the ``timeout`` outcome exists for: the proposal has
+        answered, and only then does the client apply the edit.  The
+        answer said ``applied: null`` -- it claimed neither way -- and
+        the client's own ``didChange`` brings the server's state along,
+        as any change does.  (A real 0.2 s wait: the bound is what is
+        under test.  The order is fixed by the awaits, not by it.)"""
+        server = self._server("manual")
+        server.apply_edit_timeout_s = 0.2
+
+        async def script() -> dict[str, Any]:
+            workflow = asyncio.ensure_future(
+                _awaited(apply_propose_edit(server, URI, SHIFTED_BASE)),
+            )
+            request = await server.request(workflow)
+            out = await workflow  # the bound runs out; nothing answered
+            assert (out["applied"], out["client"]) == (None, "timeout")
+            assert _doc_state(server) == (SPEC_BASE, 1)
+            request.answer(server.apply(request))  # the client, late
+            return out
+
+        _settle(server, script)
+        assert server.buffers[URI] == (SHIFTED_BASE, 11)
+        assert _doc_state(server) == (SHIFTED_BASE, 11)
+        assert server.analyses[URI].text == SHIFTED_BASE
 
     @pytest.mark.parametrize(("answer", "reason"), [
         (None, "answered null"),
@@ -2787,8 +2840,9 @@ class TestProposeEditWiring:
 
         from vera.lsp.workflows import read_answer
 
-        outcome, why = read_answer(_dict_to_object(answer))
+        outcome, applied, why = read_answer(_dict_to_object(answer))
         assert outcome == "failed"
+        assert applied is None  # it answered, but not whether it applied
         assert reason in (why or "")
 
     def test_a_boolean_answer_is_read_as_sent(self) -> None:
@@ -2797,14 +2851,14 @@ class TestProposeEditWiring:
         from vera.lsp.workflows import read_answer
 
         assert read_answer(_dict_to_object({"applied": True})) == (
-            "applied", None,
+            "applied", True, None,
         )
         assert read_answer(_dict_to_object(
             {"applied": False, "failureReason": "the buffer moved"},
-        )) == ("declined", "the buffer moved")
+        )) == ("declined", False, "the buffer moved")
         assert read_answer(
             lsp.ApplyWorkspaceEditResult(applied=False),
-        ) == ("declined", None)
+        ) == ("declined", False, None)
 
     def test_verification_lock_is_free_while_the_client_decides(
         self,
@@ -3210,15 +3264,15 @@ class TestProposeEditOverTheWire:
     def test_an_answer_pygls_cannot_type_is_failed(self, answer: Any) -> None:
         """Each of these used to be dropped in pygls' reader (``null``,
         ``{}``) or read as ``True`` (``"false"``).  Read as sent, each
-        completes the proposal as failed, with the reason, and changes
-        nothing."""
+        completes the proposal as failed, with the reason and with
+        ``applied`` unknown, and changes nothing."""
         async def scenario(client: _WireClient) -> None:
             client.start(WIRE_VERSIONED_EDITS, SPEC_BASE)
             client.propose("p", SHIFTED_BASE)
             request = await client.edit_request()
             client.send(id=request["id"], result=answer)
             response = await client.response("p")
-            assert response["result"]["applied"] is False
+            assert response["result"]["applied"] is None
             assert response["result"]["client"] == "failed"
             assert response["result"]["client_reason"]
             doc = client.server.store.get(URI)
@@ -3226,15 +3280,46 @@ class TestProposeEditOverTheWire:
 
         _on_the_wire(scenario)
 
-    def test_an_unanswered_request_completes_as_failed(self) -> None:
+    def test_an_unanswered_request_completes_as_timeout(self) -> None:
         async def scenario(client: _WireClient) -> None:
             client.server.apply_edit_timeout_s = 0
             client.start(WIRE_VERSIONED_EDITS, SPEC_BASE)
             client.propose("p", SHIFTED_BASE)
             await client.edit_request()  # never answered
             response = await client.response("p")
-            assert response["result"]["client"] == "failed"
+            assert response["result"]["applied"] is None
+            assert response["result"]["client"] == "timeout"
             assert "did not answer" in response["result"]["client_reason"]
+
+        _on_the_wire(scenario)
+
+    def test_an_edit_applied_after_the_timeout_reaches_the_server(
+        self,
+    ) -> None:
+        """R-1485's repro, as a cell: with a 0.2 s bound, the proposal
+        answers ``timeout`` with ``applied`` unknown; the client then
+        applies the edit (its ``didChange`` at version 7, then
+        ``applied: true``); the store ends at the client's text and
+        version, and the late answer raises nothing in the reader."""
+        async def scenario(client: _WireClient) -> None:
+            client.server.apply_edit_timeout_s = 0.2
+            client.start(WIRE_VERSIONED_EDITS, SPEC_BASE)
+            client.propose("p", SHIFTED_BASE)
+            request = await client.edit_request()
+            response = await client.response("p")  # after the bound
+            assert response["result"]["applied"] is None
+            assert response["result"]["client"] == "timeout"
+            assert "may still apply it" in response["result"]["client_reason"]
+            client.unread()
+            client.did_change(SHIFTED_BASE, 7)  # the client, late
+            client.send(id=request["id"], result={"applied": True})
+            doc = client.server.store.get(URI)
+            assert (doc.text, doc.version) == (SHIFTED_BASE, 7)
+            assert client.server.analyses[URI].text == SHIFTED_BASE
+            assert not [
+                m for m in client.unread()
+                if m.get("method") == "window/showMessage"
+            ]
 
         _on_the_wire(scenario)
 
@@ -3483,8 +3568,10 @@ def _document_state_writes(source: str, path: str) -> list[_Write]:
             _is_binding_value(node, parents)
         ):
             # Recorded as the USE -- the method it reaches, the call it
-            # is passed to -- which is what makes it a write.
-            record(parents.get(node, node), "store", scope)
+            # is passed to -- which is what makes it a write.  (A `with`
+            # item has no position of its own; the reference stands in.)
+            use = parents.get(node, node)
+            record(use if hasattr(use, "lineno") else node, "store", scope)
         if (
             isinstance(node, pyast.Call) and isinstance(node.func, pyast.Name)
             and node.func.id == "DocumentStore"
@@ -4004,6 +4091,116 @@ class TestDocumentStateWriters:
             self._allowed(w, handlers, publisher, constructor)
             for w in writes
         )
+
+
+#: One planted spelling per rule of the writer scan, each reported by
+#: that rule alone -- so removing any one rule turns exactly its case red
+#: (PR #1485 review): ``(source, [(line, kind, scope name)])``.  The
+#: snippets are parsed, never run, so they need only be Python.
+WRITER_RULES: dict[str, tuple[str, list[tuple[int, str, str]]]] = {
+    "a saved store method": (
+        "def f(server, uri, text):\n"
+        "    change = server.store.change\n"
+        "    change(uri, text, 1)\n",
+        [(2, "store", "f")],
+    ),
+    "the store passed to a helper": (
+        "def f(server, uri, text):\n"
+        "    reconcile(server.store, uri, text)\n",
+        [(2, "store", "f")],
+    ),
+    "a loop alias": (
+        "def f(server, uri, text):\n"
+        "    for s in (server.store,):\n"
+        "        s.change(uri, text, 1)\n",
+        [(2, "store", "f")],
+    ),
+    "a with alias": (
+        "def f(server, uri, text):\n"
+        "    with server.store as s:\n"
+        "        s.change(uri, text, 1)\n",
+        [(2, "store", "f")],
+    ),
+    "getattr, setattr, vars and __dict__": (
+        "def f(server, uri, text, doc):\n"
+        "    getattr(server, 'store').change(uri, text, 1)\n"
+        "    setattr(doc, 'text', text)\n"
+        "    vars(server)['analyses'][uri] = None\n"
+        "    server.__dict__['analyses'].get(uri)\n",
+        [(2, "dynamic", "f"), (3, "dynamic", "f"), (4, "dynamic", "f"),
+         (5, "dynamic", "f")],
+    ),
+    "a lambda is a scope of its own": (
+        "def did_change(server, uri):\n"
+        "    reset = lambda: server.store.change(uri, '', 0)\n",
+        [(2, "store", "<lambda>")],
+    ),
+    "the protocol is a publisher": (
+        "def f(server, params):\n"
+        "    server.protocol.notify('textDocument/publishDiagnostics', params)\n",
+        [(2, "publish", "f")],
+    ),
+    "a publisher counts uncalled": (
+        "def f(server, uri, text):\n"
+        "    publish = server.analyze_and_publish\n"
+        "    publish(uri, text)\n",
+        [(2, "publish", "f")],
+    ),
+    "a Document method is a write": (
+        "def f(doc, text):\n"
+        "    doc.set_text(text)\n",
+        [(2, "document", "f")],
+    ),
+    "the Document fields come from the class": (
+        "def f(doc):\n"
+        "    doc.uri = 'file:///elsewhere.vera'\n",
+        [(2, "document", "f")],
+    ),
+    "DocumentStore.<method> is the store": (
+        "def f(uri, text):\n"
+        "    DocumentStore.change(make_store(), uri, text, 1)\n",
+        [(2, "store", "f")],
+    ),
+}
+
+
+class TestEachWriterScanRule:
+    """Each rule of the writer scan is pinned by a spelling only it
+    reports.  The rules are what make the scan's silence mean something,
+    and a rule no cell needs can be lost in a later edit without a
+    failure (PR #1485 review)."""
+
+    @pytest.mark.parametrize("rule", list(WRITER_RULES))
+    def test_the_rule_reports_its_spelling(
+        self, rule: str, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from vera.lsp.documents import Document
+
+        # A method the class does not have today: the rule must come
+        # from the class as it stands, not from a list written earlier.
+        monkeypatch.setattr(
+            Document, "set_text", lambda self, text: None, raising=False,
+        )
+        source, expected = WRITER_RULES[rule]
+        writes = _document_state_writes(source, "vera/lsp/planted.py")
+        assert [
+            (w.line, w.kind, w.scope[0] if w.scope else None)
+            for w in writes
+        ] == expected
+
+    def test_a_lambda_is_a_scope_of_its_own_in_the_reader_scan(
+        self,
+    ) -> None:
+        """A lambda inside the accessor's own ``def`` is not the
+        accessor: its read is attributed to the lambda, so it is not
+        sanctioned by the accessor's name."""
+        planted = (
+            "def current_analysis(self, uri):\n"
+            "    self._peek = lambda u: self.analyses.get(u)\n"
+            "    return None\n"
+        )
+        reads = _analysis_table_reads(planted, "vera/lsp/planted.py")
+        assert [(r.line, r.scope) for r in reads] == [(2, ("<lambda>", 2))]
 
 
 class TestParamExtraction:

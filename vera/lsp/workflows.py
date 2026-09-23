@@ -72,7 +72,8 @@ the request is:
   bounded (:data:`APPLY_EDIT_TIMEOUT_S`), and only a boolean ``applied``
   counts as an answer (:func:`read_answer`), so no proposal is left
   pending and none is reported applied on an answer the server cannot
-  read.
+  read.  A wait that runs out answers ``"timeout"``: the edit request is
+  still open, so whether it lands is not yet known.
 * **Reconciled by the client.**  An applied edit reaches the server as
   the client's own ``didChange``: at the client's actual version, and
   analysed and published like any other change — replayed from the warm
@@ -81,16 +82,21 @@ the request is:
   notification may arrive before the answer or after it; either way
   the server publishes nothing for the new text until it does.
 
-``applied`` is true only when the client applied the edit, and
-``client`` says what became of it on the client's side: ``null`` (the
-gate refused; nothing was sent), ``"applied"``, ``"declined"`` (the
-client answered ``applied: false`` — typically because its buffer is no
-longer at the verified version), ``"failed"`` (an error answer, an
-answer whose ``applied`` is not a boolean, no answer within the bound,
-or a request that could not be sent), ``"cancelled"`` (the request was
-cancelled unanswered), or ``"unsupported"`` (the client cannot take a
-version-guarded edit, so none was sent), with ``client_reason`` saying
-why when the client side says why.  A document the client has not
+``applied`` is ``true`` when the client applied the edit, ``false`` when
+it did not or the edit was never sent, and ``null`` when the server
+cannot tell -- a response states only what the server knows (DESIGN.md
+§1).  ``client`` says what became of the edit on the client's side:
+``null`` (the gate refused; nothing was sent), ``"applied"``,
+``"declined"`` (the client answered ``applied: false`` — typically
+because its buffer is no longer at the verified version), ``"failed"``
+(an error answer or a request that could not be sent, ``applied:
+false``; or an answer whose ``applied`` is not a boolean, ``applied:
+null``), ``"timeout"`` (no answer within the bound; ``applied: null``,
+and the edit request is still open, so the client may yet apply it),
+``"cancelled"`` (the request was cancelled unanswered; ``applied:
+null``), or ``"unsupported"`` (the client cannot take a version-guarded
+edit, so none was sent), with ``client_reason`` saying why when there
+is a why.  A document the client has not
 opened is refused before any of this, with ``InvalidParams``: it has no
 version to guard an edit with.  If the proposal request
 itself is cancelled while the edit is pending, it ends as cancelled —
@@ -335,16 +341,25 @@ def _retrieve(answer: asyncio.Future[Any]) -> None:
 
 _ABSENT = object()
 
+#: Appended to every reason whose outcome leaves ``applied`` unknown.
+_MAY_LAND = (
+    "; the server cannot tell whether the edit was applied, so re-read "
+    "the document before proposing again"
+)
+
 #: How long an edit workflow waits for the client's answer to its
-#: ``workspace/applyEdit`` before reporting it ``"failed"``.  An answer
-#: can fail to arrive without anything cancelling the request -- a write
-#: error pygls swallows, or a client that never answers -- and a request
-#: must not hang forever.  A server's ``apply_edit_timeout_s`` overrides it.
+#: ``workspace/applyEdit`` before it answers ``"timeout"``.  An answer can
+#: fail to arrive without anything cancelling the request -- a write error
+#: pygls swallows, or a client that never answers -- and a request must not
+#: hang forever.  The edit request itself stays open, so the client may
+#: still apply it after the proposal has answered.  A server's
+#: ``apply_edit_timeout_s`` overrides it.
 APPLY_EDIT_TIMEOUT_S = 60.0
 
 
-def read_answer(result: Any) -> tuple[str, str | None]:
-    """``(outcome, reason)`` from the client's answer to an edit request.
+def read_answer(result: Any) -> tuple[str, bool | None, str | None]:
+    """``(outcome, applied, reason)`` from the client's answer to an edit
+    request.
 
     Read strictly: only a boolean ``applied`` is an answer.  The server's
     protocol hands the answer over unstructured
@@ -352,8 +367,9 @@ def read_answer(result: Any) -> tuple[str, str | None]:
     the JSON, with its values as sent -- because pygls' own reading turns
     ``"applied": "false"`` into ``True`` and drops ``null`` or ``{}`` in
     its reader.  Anything but a boolean is a failure, with the reason
-    saying what arrived.  A declining client's ``failureReason`` is
-    passed on.
+    saying what arrived -- and with ``applied`` unknown (``None``): the
+    client answered, but not in a form that says whether it applied the
+    edit.  A declining client's ``failureReason`` is passed on.
     """
     if isinstance(result, lsp.ApplyWorkspaceEditResult):
         applied: Any = result.applied
@@ -362,31 +378,40 @@ def read_answer(result: Any) -> tuple[str, str | None]:
         applied = result.get("applied", _ABSENT)
         reason = result.get("failureReason")
     elif result is None:
-        return "failed", "the client answered null"
+        return "failed", None, "the client answered null" + _MAY_LAND
     else:
         applied = getattr(result, "applied", _ABSENT)
         reason = getattr(result, "failureReason", None)
     if applied is True:
-        return "applied", None
+        return "applied", True, None
     if applied is False:
-        return "declined", reason if isinstance(reason, str) else None
+        return "declined", False, reason if isinstance(reason, str) else None
     if applied is _ABSENT:
-        return "failed", f"the client's answer {result!r} has no `applied`"
-    return "failed", f"the client's `applied` is {applied!r}, not a boolean"
+        return "failed", None, (
+            f"the client's answer {result!r} has no `applied`" + _MAY_LAND
+        )
+    return "failed", None, (
+        f"the client's `applied` is {applied!r}, not a boolean" + _MAY_LAND
+    )
 
 
 async def client_outcome(
     server: VeraLanguageServer, request: lsp.ApplyWorkspaceEditParams,
-) -> tuple[str, str | None]:
+) -> tuple[str, bool | None, str | None]:
     """Send *request* as ``workspace/applyEdit`` and wait for the answer.
 
-    Returns ``(outcome, reason)``: ``"applied"``, ``"declined"``,
-    ``"failed"`` or ``"cancelled"``, with what the client or the
-    transport said about it.  The caller must hold no lock: the answer,
-    and every notification the client sends before it, arrive through
-    the same event loop this coroutine is suspended on.  The wait is
-    bounded (:data:`APPLY_EDIT_TIMEOUT_S`), and an answer that does not
-    arrive within it is ``"failed"``.
+    Returns ``(outcome, applied, reason)``: ``"applied"``,
+    ``"declined"``, ``"failed"``, ``"timeout"`` or ``"cancelled"``;
+    whether the edit was applied -- ``None`` when the server cannot tell
+    (DESIGN.md §1: a response states only what the server knows); and
+    what the client or the transport said.  The caller must hold no
+    lock: the answer, and every notification the client sends before
+    it, arrive through the same event loop this coroutine is suspended
+    on.  The wait is bounded (:data:`APPLY_EDIT_TIMEOUT_S`); an answer
+    that does not arrive within it is ``"timeout"``, with ``applied``
+    unknown, because the edit request is still open and the client may
+    yet apply it -- its ``didChange`` then updates the server as any
+    change does.
 
     The wait is SHIELDED.  Cancelling this coroutine — the client
     cancelling the proposal request — must not cancel the edit request
@@ -400,7 +425,7 @@ async def client_outcome(
     try:
         pending = server.workspace_apply_edit(request)
     except Exception as exc:  # noqa: BLE001 — any failure to SEND is "not applied", which is the one thing this reports
-        return "failed", f"the request could not be sent: {exc!r}"
+        return "failed", False, f"the request could not be sent: {exc!r}"
     answer = asyncio.wrap_future(pending)
     answer.add_done_callback(_retrieve)
     try:
@@ -409,11 +434,17 @@ async def client_outcome(
         task = asyncio.current_task()
         if task is not None and task.cancelling():
             raise
-        return "cancelled", "the request was cancelled before the client answered"
+        return "cancelled", None, (
+            "the request was cancelled before the client answered" + _MAY_LAND
+        )
     except TimeoutError:
-        return "failed", f"the client did not answer within {timeout:g} s"
+        return "timeout", None, (
+            f"the client did not answer within {timeout:g} s, and the edit "
+            "request is still open: the client may still apply it, and its "
+            "didChange would then update the server" + _MAY_LAND
+        )
     except Exception as exc:  # noqa: BLE001 — an error answer, of whatever type, is an edit the client did not apply
-        return "failed", f"the client answered with an error: {exc}"
+        return "failed", False, f"the client answered with an error: {exc}"
     return read_answer(result)
 
 
@@ -534,8 +565,8 @@ async def apply_propose_edit(
             "workspace.workspaceEdit.documentChanges"
         )
         return response
-    outcome, reason = await client_outcome(server, request)
-    response["applied"] = outcome == "applied"
+    outcome, applied, reason = await client_outcome(server, request)
+    response["applied"] = applied
     response["client"] = outcome
     response["client_reason"] = reason
     return response

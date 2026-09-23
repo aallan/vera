@@ -275,18 +275,21 @@ changes, and the response says why:
  "client": null, "client_reason": null}
 ```
 
-`applied` is `true` only when the client applied the edit. `client`
-says what became of it, and `client_reason` says why when there is a
-why — the client's `failureReason`, the error it answered with, or what
-arrived in place of an answer:
+`applied` is `true` when the client applied the edit, `false` when it
+did not or the edit was never sent, and `null` when the server cannot
+tell — it states only what it knows. `client` says what became of the
+edit, and `client_reason` says why when there is a why — the client's
+`failureReason`, the error it answered with, or what arrived in place
+of an answer:
 
 | `client` | What happened | What to do |
 |----------|---------------|------------|
 | `null` | The gate refused; nothing was sent. | Read the proof delta and the diagnostics count. |
 | `"applied"` | The client applied the edit. | Nothing: its `didChange` brings the server's state along. |
 | `"declined"` | The client answered `applied: false` — most often because its buffer is no longer at the version the edit was verified against. | Re-read the document and propose again. |
-| `"failed"` | The request failed: the client answered with an error, or with something other than a boolean `applied`; the request could not be sent; or no answer arrived within 60 seconds, the bound on the wait, so that no proposal is left pending. | Propose again. |
-| `"cancelled"` | The request was cancelled before the client answered. | Propose again. |
+| `"failed"` | The client answered with an error, or the request could not be sent (`applied: false`); or the client answered with something other than a boolean `applied` (`applied: null`). | Propose again; after `applied: null`, re-read the document first. |
+| `"timeout"` | No answer arrived within 60 seconds, the bound on the wait, so the proposal answers rather than wait for ever (`applied: null`). The edit request is still open: the client may still apply it, and its `didChange` then updates the server as any change does. | Re-read the document before proposing again. |
+| `"cancelled"` | The request was cancelled before the client answered (`applied: null`). | Re-read the document before proposing again. |
 | `"unsupported"` | The client does not advertise `workspace.applyEdit` and `workspace.workspaceEdit.documentChanges`, so no version-guarded edit could be sent, and none was. | Advertise both capabilities. |
 
 If the client cancels the `vera/proposeEdit` request itself while the
