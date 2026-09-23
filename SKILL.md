@@ -1826,9 +1826,9 @@ public fn sum_with_state(@Nat -> @Int)
 }
 where {
   fn sum_loop(@Nat, @Nat -> @Int)
-    requires(true)
+    requires(@Nat.0 <= @Nat.1 + 1)
     ensures(true)
-    decreases(@Nat.1 - @Nat.0 + 1)
+    decreases(@Nat.1 + 1 - @Nat.0)
     effects(<State<Int>>)
   {
     if @Nat.0 > @Nat.1 then {
@@ -1841,13 +1841,15 @@ where {
 }
 ```
 
+`vera run file.vera --fn sum_with_state -- 5` prints `15`, and `-- 0` prints `0`.
+
 Key points:
 - The outer function `sum_with_state` is **pure** — the handler discharges the State effect
 - The `where` block helper `sum_loop` has `effects(<State<Int>>)` — it uses `get`/`put` directly
 - Functions inside `where` blocks do NOT take `public`/`private` visibility
 - The `put` clause stores its argument as the new state intrinsically — no `with` clause is needed for the common "store the value" case (a `with` clause is only for *transforming* the stored value; see the handler-syntax notes above)
 - Pure helper functions (like `add_value`) can be called from the `where` block helper (`sum_loop`)
-- The `decreases` clause on the loop helper ensures termination
+- The `decreases` clause on the loop helper ensures termination. The runtime guard evaluates a measure on every call, so a `@Nat` subtraction inside it needs the same bound a body would. Here the bound is `requires(@Nat.0 <= @Nat.1 + 1)`: it holds on the last call too, where the counter has passed the limit, and the measure adds before it subtracts. `decreases(@Nat.1 - @Nat.0 + 1)` computes `n - (n + 1)` on that last call and traps. A count-down loop, `decreases(@Nat.0)`, has no subtraction to bound
 
 ## Where Blocks (Mutual Recursion)
 
@@ -2244,10 +2246,10 @@ private fn f(@Int -> @Int)
 }
 ```
 
-CORRECT — `@T.result` is only valid in `ensures`:
+CORRECT — `@T.result` is only valid in `ensures`, and the input bound that makes it hold goes in `requires`:
 ```vera
 private fn f(@Int -> @Int)
-  requires(true)
+  requires(@Int.0 > 0)
   ensures(@Int.result > 0)
   effects(pure)
 {
