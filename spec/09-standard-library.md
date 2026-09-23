@@ -914,7 +914,7 @@ public fn round(@Float64 -> @Int)
   effects(pure)
 ```
 
-Rounds to the nearest integer using banker's rounding (IEEE 754 roundTiesToEven). This means `round(2.5)` evaluates to `2`, not `3` — ties round to the nearest even integer. Compiles to `f64.nearest` followed by `i64.trunc_f64_s`. Traps on NaN or out-of-range values (WASM semantics).
+Rounds to the nearest integer using banker's rounding (IEEE 754 roundTiesToEven). This means `round(2.5)` evaluates to `2`, not `3` — ties round to the nearest even integer. Compiles to `f64.nearest` followed by `i64.trunc_f64_s`, behind a domain check: NaN, an infinity, or a result outside `[-2^63, 2^63)` traps as `float_conversion` (Section 11.8.5).
 
 ```
 round(3.7)

@@ -105,6 +105,12 @@ class ClosureLiftingMixin:
         # are observably free; recycling them keeps the next fn's
         # closure_id ↔ table_index correspondence intact.
         prev_next_closure_id = self._next_closure_id
+        # #1479: a lifted body records its checks on the generator as it
+        # compiles, and a failed worklist recycles its closure ids — so the
+        # next function's closure can be emitted under one of them.  The
+        # failure paths below drop the worklist's records with its ids, or
+        # the record would credit that closure with another body's checks.
+        checks_mark = len(self._emitted_checks)
         # Sync forward from the ctx so the worklist sees the correct
         # current id counter; we'll restore on failure.
         self._next_closure_id = ctx._next_closure_id
@@ -197,6 +203,7 @@ class ClosureLiftingMixin:
                 # the stack frame; module-level state is committed only on the
                 # all-success path below, so nothing else needs rolling back.)
                 self._next_closure_id = prev_next_closure_id
+                del self._emitted_checks[checks_mark:]
                 raise
             if lifted_wat is None:
                 # Closure body failed — diagnostics already emitted by
@@ -267,6 +274,7 @@ class ClosureLiftingMixin:
         # subsequent fns recycle the consumed range.
         if any_failed:
             self._next_closure_id = prev_next_closure_id
+            del self._emitted_checks[checks_mark:]
         else:
             self._closure_fns_wat.extend(new_closure_fns_wat)
             self._closure_table.extend(new_closure_table)

@@ -1052,8 +1052,7 @@ def _guard_mutations() -> list[tuple]:
             # termination rule for a measure that decreases perfectly well.
             "1222 decreases measure range",
             ContractsMixin, "_dec_measure_bound_check",
-            lambda self, ctx, contract, measured, name, indent="", *,
-            record=True: [],
+            lambda self, ctx, contract, measured, name, indent="": [],
             (_1222_UNBOUNDED, "halve", [2 ** 63]),
             "i64 range", "failed to decrease",
         ),

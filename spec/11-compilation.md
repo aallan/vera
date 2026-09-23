@@ -305,11 +305,14 @@ i64.const 0
 i64.gt_s
 i32.eqz
 if
-  unreachable    ;; trap: precondition violated
+  i32.const <ptr>             ;; the contract's message, interned
+  i32.const <len>
+  call $vera.contract_fail    ;; report which contract failed
+  unreachable                 ;; trap: precondition violated
 end
 ```
 
-The precondition expression is compiled to a Boolean value. If it is false (`i32.eqz`), the function traps via `unreachable`.
+The precondition expression is compiled to a Boolean value. If it is false (`i32.eqz`), the function reports the contract through `vera.contract_fail` — its message names the function, the clause and its text — and traps via `unreachable` (Section 11.8.5).
 
 ### 11.8.3 Postcondition Checks
 
@@ -325,12 +328,15 @@ i64.const 0
 i64.gt_s
 i32.eqz
 if
-  unreachable    ;; trap: postcondition violated
+  i32.const <ptr>             ;; the contract's message, interned
+  i32.const <len>
+  call $vera.contract_fail    ;; report which contract failed
+  unreachable                 ;; trap: postcondition violated
 end
 local.get $result    ;; push result back for return
 ```
 
-The body's return value is stored in a temporary local. The `@T.result` reference in the ensures clause resolves to this local. After the check passes, the result is pushed back onto the stack for return.
+The body's return value is stored in a temporary local. The `@T.result` reference in the ensures clause resolves to this local. After the check passes, the result is pushed back onto the stack for return; a failed check reports through `vera.contract_fail` and traps, as a precondition does.
 
 ### 11.8.4 State Expressions in Postconditions
 
@@ -353,7 +359,10 @@ i64.add
 i64.eq
 i32.eqz
 if
-  unreachable              ;; trap: postcondition violated
+  i32.const <ptr>            ;; the contract's message, interned
+  i32.const <len>
+  call $vera.contract_fail   ;; report which contract failed
+  unreachable                ;; trap: postcondition violated
 end
 ```
 

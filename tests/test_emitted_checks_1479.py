@@ -29,6 +29,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.codegen_helpers import wat_fn_body
 from tests.module_fixture_helpers import build_multi_module
 from vera.checker import typecheck_with_artifacts
 from vera.codegen import compile as codegen_compile
@@ -230,7 +231,7 @@ def test_a_self_tail_check_is_recorded_once_per_splice() -> None:
         "    if @Nat.0 == 7 then { f(@Nat.1 - 1, 0) } "
         "else { f(@Nat.1 - 1, 7) }\n  }\n}\n")
     tail = _by_emitter(result, "codegen/contracts.py:_dec_self_tail_prefix")
-    body = result.wat.split("(func $f")[1].split("\n  (func")[0]
+    body = wat_fn_body(result.wat, "f")
     assert len(tail) == body.count("return_call $f") == 2, (
         len(tail), body.count("return_call $f"))
 
@@ -323,12 +324,117 @@ def test_the_record_matches_the_signals_in_the_module() -> None:
         "public fn f(@Pos, @Int, @Nat -> @Int)\n"
         "  requires(@Int.0 != 3) ensures(@Int.result != 4) effects(pure)\n"
         "{\n  let @Nat = @Int.0;\n  let @Int = @Nat.1;\n  @Int.0\n}\n")
-    body = result.wat.split("(func $f")[1]
+    body = wat_fn_body(result.wat, "f")
     recorded = Counter(c.kind for c in result.emitted_checks
                        if c.function == "f")
     for kind in ("contract_violation", "nat_guard", "widen_guard"):
         emitted = len(signal_call_pattern(kind).findall(body))
         assert recorded[kind] == emitted > 0, (kind, recorded[kind], emitted)
+
+
+def _record_mismatches(
+    result: CompileResult, function: str,
+) -> dict[str, tuple[int, int]]:
+    """``kind -> (recorded, emitted)`` for every signalled kind on which the
+    record and *function*'s body in the module disagree."""
+    body = wat_fn_body(result.wat, function)
+    recorded = Counter(c.kind for c in result.emitted_checks
+                       if c.function == function)
+    out: dict[str, tuple[int, int]] = {}
+    for kind, row in TRAP_KINDS.items():
+        if not row.code and kind != "contract_violation":
+            continue
+        emitted = len(signal_call_pattern(kind).findall(body))
+        if recorded[kind] != emitted:
+            out[kind] = (recorded[kind], emitted)
+    return out
+
+
+#: An arithmetic measure: the self-tail prefix evaluates it, so every copy
+#: of the prefix carries the measure's own overflow guard.  `down` splices
+#: the prefix at two tail sites; `nontail` builds it and splices it nowhere.
+_ARITHMETIC_MEASURE = """\
+public fn down(@Int, @Int -> @Int)
+  requires(@Int.1 >= @Int.0)
+  ensures(true)
+  decreases(@Int.1 - @Int.0)
+  effects(pure)
+{
+  if @Int.1 == @Int.0 then {
+    0
+  } else {
+    if @Int.1 - @Int.0 > 5 then {
+      down(@Int.1 - 2, @Int.0)
+    } else {
+      down(@Int.1 - 1, @Int.0)
+    }
+  }
+}
+
+public fn nontail(@Int, @Int -> @Int)
+  requires(@Int.1 >= @Int.0)
+  ensures(true)
+  decreases(@Int.1 - @Int.0)
+  effects(pure)
+{
+  if @Int.1 == @Int.0 then {
+    0
+  } else {
+    1 + nontail(@Int.1 - 1, @Int.0)
+  }
+}
+"""
+
+
+@pytest.mark.parametrize(("function", "splices"), [("down", 2), ("nontail", 0)])
+def test_the_self_tail_prefix_records_its_measure_per_splice(
+    function: str, splices: int,
+) -> None:
+    """Every check the prefix's lowering emits — here the measure's own
+    overflow guard — is in the module once per splice, and so in the
+    record: twice for two tail sites, not at all for recursion the prefix
+    never reaches."""
+    result = _compile(_ARITHMETIC_MEASURE)
+    body = wat_fn_body(result.wat, function)
+    assert body.count(f"return_call ${function}") == splices, body
+    assert not _record_mismatches(result, function)
+
+
+#: `f`'s refined formal lifts a closure whose own refinement leads back to
+#: itself, so its worklist fails after one lift (E602) and hands its closure
+#: id back; `main`'s closure is then emitted under that same id.
+_RECYCLED_CLOSURE_ID = """\
+type SelfRef = { @Int | @Int.0 > 0 && apply_fn(fn(@SelfRef -> @Int)
+  effects(pure) { @SelfRef.0 }, 3) > 0 };
+
+private fn f(@SelfRef -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @SelfRef.0
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  apply_fn(fn(@Int -> @Int) effects(pure) { @Int.0 + 1 }, 41)
+}
+"""
+
+
+def test_a_failed_closure_worklist_takes_its_records_with_it() -> None:
+    """The closure the failed worklist did lift recorded its refinement
+    check; its id is reused by `main`'s closure, so a record that kept the
+    entry would credit `$anon_0` with a check its body does not hold."""
+    result = _compile(_RECYCLED_CLOSURE_ID)
+    assert "E602" in {d.error_code for d in result.diagnostics}
+    assert "(func $anon_0 " in result.wat
+    assert not _record_mismatches(result, "anon_0")
+    assert {c.kind for c in result.emitted_checks
+            if c.function == "anon_0"} == {"overflow"}
 
 
 def test_a_stubbed_closure_takes_its_checks_with_it() -> None:

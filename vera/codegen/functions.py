@@ -1380,12 +1380,8 @@ class FunctionCompilationMixin:
                             "codegen/contracts.py:_dec_self_tail_prefix",
                             measure,
                         )
-                        for _ in range(dec_self_tail.bound_checks):
-                            self._record_generator_check(
-                                decl.name,
-                                "codegen/contracts.py:_dec_bound_check_pairs",
-                                measure,
-                            )
+                        self._record_spliced_checks(
+                            decl.name, dec_self_tail.checks)
                     else:
                         patched_dec.append(
                             instr.replace("return_call ", "call ", 1))

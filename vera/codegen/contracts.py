@@ -17,7 +17,7 @@ from vera.narrowing import (
     measure_component_needs_range_check,
 )
 from vera.skip import CodegenSkip
-from vera.trap_registry import signal_call_pattern, signal_instructions
+from vera.trap_registry import signal_instructions
 from vera.wasm import WasmContext, WasmSlotEnv
 from vera.wasm.helpers import (
     bind_slot_value_from_field,
@@ -104,12 +104,14 @@ class SelfTailPrefix:
     Built once and spliced before every self-recursive ``return_call`` —
     possibly never, possibly several times — so its checks are recorded
     per splice, by the caller that splices it: the prefix's own
-    lexicographic-decrease check, and ``bound_checks`` measure-range
-    checks.
+    lexicographic-decrease check, and ``checks``, every check the prefix's
+    lowering emitted (the measure's own arithmetic guards and its range
+    backstop), taken back off the context's record where the prefix was
+    built.
     """
 
     instrs: list[str]
-    bound_checks: int
+    checks: tuple[tuple[str, ast.Node | None], ...]
 
 
 class ContractsMixin:
@@ -1328,8 +1330,6 @@ class ContractsMixin:
         measured: list[int],
         name: str,
         indent: str = "",
-        *,
-        record: bool = True,
     ) -> list[str]:
         """Trap when a measure component leaves the range the guard compares
         in (#1222) — the chain path's entry point, over components it has
@@ -1376,7 +1376,7 @@ class ContractsMixin:
             if k < len(measured)
         ]
         return self._dec_bound_check_pairs(
-            locals_, name, indent, ctx=ctx, at=contract, record=record)
+            locals_, name, indent, ctx=ctx, at=contract)
 
     def _dec_bound_check_pairs(
         self,
@@ -1386,7 +1386,6 @@ class ContractsMixin:
         *,
         ctx: WasmContext,
         at: ast.Node | None,
-        record: bool = True,
     ) -> list[str]:
         """The emission itself: one range check per component local.
 
@@ -1402,18 +1401,9 @@ class ContractsMixin:
                 f"the termination check compares in: a @Nat above i64.MAX "
                 f"reads as negative, so the metric cannot be compared"
             )
-            if record:
-                trap = ctx._emit_trap(
-                    "codegen/contracts.py:_dec_bound_check_pairs", at=at,
-                    message=msg)
-            else:
-                # Inside the self-tail prefix, which is spliced once per
-                # self-recursive `return_call` — possibly never, possibly
-                # twice — so the check is recorded at each splice rather
-                # than here (#1479).
-                ptr, length = self.string_pool.intern(msg)
-                ctx._needs_contract_fail = True
-                trap = signal_instructions("contract_violation", ptr, length)
+            trap = ctx._emit_trap(
+                "codegen/contracts.py:_dec_bound_check_pairs", at=at,
+                message=msg)
             checks.extend([
                 f"{indent}local.get {local}",
                 f"{indent}i64.const 0",
@@ -1694,6 +1684,12 @@ class ContractsMixin:
         caller demotes that site instead — never a partial check.
         """
         name = decl.name
+        # Every check the prefix's own lowering emits — the measure's
+        # arithmetic guards, its range backstop — lands on `ctx`'s record
+        # here, once, however many times the prefix is spliced.  So it is
+        # taken back off below and carried in the prefix, whose caller
+        # records it per splice (#1479).
+        mark = len(ctx._emitted_checks)
         param_layout: list[tuple[str, list[int]]] = []
         capture_env = WasmSlotEnv()
         for param_te in decl.params:
@@ -1722,6 +1718,9 @@ class ContractsMixin:
             ctx, contract, capture_env,
         )
         if maybe_components is None:
+            # The site is demoted, so no check of the abandoned lowering
+            # is in the module.
+            del ctx._emitted_checks[mark:]
             return None
         comp_values = maybe_components
 
@@ -1738,12 +1737,8 @@ class ContractsMixin:
             prefix.append(f"local.set {measured[k]}")
         # #1222, at the site too: a self-tail hop evaluates the measure here
         # and compares it the same way, so it needs the same backstop.
-        # Rendered unrecorded: its checks are recorded at each splice.
-        bound = self._dec_measure_bound_check(
-            ctx, contract, measured, name, record=False)
-        bound_checks = len(signal_call_pattern("contract_violation").findall(
-            "\n".join(bound)))
-        prefix.extend(bound)
+        prefix.extend(
+            self._dec_measure_bound_check(ctx, contract, measured, name))
         prefix.append(f"global.get $dec_active_{name}")
         prefix.append("if")
 
@@ -1780,8 +1775,7 @@ class ContractsMixin:
         # Rendered here and RECORDED at each splice (`_compile_fn` splices
         # this prefix before every self-recursive `return_call`, possibly
         # several times, after `ctx`'s record is merged) — so the signal is
-        # rendered directly rather than through `ctx._emit_trap`, which
-        # would record it once here whatever the splice count (#1479).
+        # rendered directly rather than through `ctx._emit_trap` (#1479).
         ptr, length = self.string_pool.intern(msg)
         ctx._needs_contract_fail = True
         prefix.extend(
@@ -1794,7 +1788,9 @@ class ContractsMixin:
         for _kinds, locs in param_layout:
             for loc in locs:
                 prefix.append(f"local.get {loc}")
-        return SelfTailPrefix(prefix, bound_checks)
+        checks = tuple(ctx._emitted_checks[mark:])
+        del ctx._emitted_checks[mark:]
+        return SelfTailPrefix(prefix, checks)
 
     #: Field types that contribute nothing to a structural rank — safe to
     #: step over.  Everything else either recurses (a concrete layout

@@ -48,7 +48,14 @@ stage).
   #237 target**: the runner classifies trap kinds from the backtrace text +
   the WASI stderr channel (`vera/runtime/wasi_host.py`); structured frames stay
   core-path-only (spec §13.6).  The stdout-capture wiring (check 3) landed as
-  `WasiConfig.stdout_custom` → `ExecuteResult.stdout` in the same runner.
+  `WasiConfig.stdout_custom` → `ExecuteResult.stdout` in the same runner, which
+  closes its store before it returns or raises and waits until wasmtime has let
+  go of both output callbacks: wasmtime releases a stream the program wrote to
+  from a tokio worker thread, and that thread calling into Python during
+  interpreter shutdown is ended by `pthread_exit`, whose forced unwind cannot
+  cross wasmtime's Rust frames — the process aborts (SIGABRT).  A trapping call
+  leaves the store in a wasmtime-py reference cycle, so without the explicit
+  close it was freed at shutdown.
 - The `wasmtime serve` deployment path (check 7) → **landed as `--world server`**
   (spec §13.7).  Two check-7 findings were superseded during the Stage-D design
   study: the `$Libc` two-module realloc dodge is unnecessary (the Stage-C

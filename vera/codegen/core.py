@@ -18,7 +18,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import re
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from typing import TYPE_CHECKING
 
 import wasmtime
@@ -948,6 +948,21 @@ class CodeGenerator(
                 "vera.trap_registry.TRAP_EMITTERS", at,
             )
         self._emitted_checks.append((function, emitter, at))
+
+    def _record_spliced_checks(
+        self,
+        function: str,
+        checks: Iterable[tuple[str, ast.Node | None]],
+    ) -> None:
+        """Record, once for one splice into *function*, checks a context
+        emitted into a rendering that is spliced after its record was merged
+        (#1479) — the self-tail ``decreases`` prefix's measure guards and
+        range backstop, which the prefix carries off its context's record.
+        Each was emitted, and its key checked, through ``_emit_trap`` where
+        the prefix was built; this places one entry per copy in the module.
+        """
+        for emitter, at in checks:
+            self._record_generator_check(function, emitter, at)
 
     def _assemble_emitted_checks(self, wat: str) -> list[EmittedCheck]:
         """The per-module record: every recorded check whose function the

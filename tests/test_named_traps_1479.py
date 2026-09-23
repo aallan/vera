@@ -32,11 +32,16 @@ hold it to the backend and to the hosts.
 from __future__ import annotations
 
 import ast as pyast
+import gc
+import inspect
 import json
 import os
 import re
 import subprocess
 import sys
+import threading
+import time
+import weakref
 from collections import Counter
 from pathlib import Path
 
@@ -237,13 +242,15 @@ _THE_PATH = "wasm/context.py:_emit_trap"
 
 #: Emitters that render their signal directly and are recorded where the
 #: rendering is SPLICED rather than where it is built: the self-tail
-#: `decreases` prefix — and the measure-range checks it embeds — is built
-#: once and spliced at every self-recursive `return_call`, after the body's
-#: record was merged.
-_RENDERED_THEN_SPLICED = {
-    "codegen/contracts.py:_dec_self_tail_prefix",
-    "codegen/contracts.py:_dec_bound_check_pairs",
-}
+#: `decreases` prefix's own decrease check, built once and spliced at every
+#: self-recursive `return_call`, after the body's record was merged.
+_RENDERED_THEN_SPLICED = {"codegen/contracts.py:_dec_self_tail_prefix"}
+
+#: The one site that records checks it did not emit: once per splice, it
+#: replays the entries the prefix carried off its context's record — each
+#: emitted, and its key checked, through the emission path where the
+#: prefix was built.
+_REPLAY = "codegen/core.py:_record_spliced_checks"
 
 
 def test_every_emission_names_its_own_row() -> None:
@@ -252,7 +259,7 @@ def test_every_emission_names_its_own_row() -> None:
     row cannot be satisfied by a call made somewhere else."""
     problems: list[str] = []
     for call, site, literal in emission_calls():
-        if site == _THE_PATH:
+        if site in (_THE_PATH, _REPLAY):
             continue
         if call == "signal_instructions":
             row = TRAP_EMITTERS.get(site)
@@ -509,6 +516,132 @@ def test_vera_run_wasi_p2_names_the_trap(kind: str, tmp_path: Path) -> None:
     _assert_named(kind, diag["trap_kind"], diag["description"], diag["fix"])
 
 
+
+# --- The WASI host lets go of its store before it returns ------------------
+#
+# wasmtime drops a component's stdout / stderr stream on whichever thread
+# holds it last — a stream the program wrote to belongs to a tokio worker —
+# and the drop calls back into Python to release the output callback.  A
+# Python callback from a foreign thread while the interpreter shuts down ends
+# that thread with `pthread_exit`, whose forced unwind cannot cross wasmtime's
+# Rust frames: the process aborts (SIGABRT, "panic in a function that cannot
+# unwind") after printing a correct envelope, which `vera run --target
+# wasi-p2` did on Linux.  A trap made that the usual order of events:
+# the error wasmtime-py raises keeps its own frame alive in a reference cycle,
+# that frame holds the store, and the store was left to the cycle collector —
+# which, in a process about to exit, runs at interpreter shutdown.
+
+_WROTE_STDERR = (
+    "public fn main(-> @Int)\n"
+    "  requires(true) ensures(true) effects(<IO>)\n"
+    '{\n  IO.stderr("note\\n");\n  7\n}\n'
+)
+
+
+def _live_output_callbacks() -> list[str]:
+    """The output callbacks `execute_wasi_p2` created that are still alive."""
+    return [
+        obj.__qualname__ for obj in gc.get_objects()
+        if inspect.isfunction(obj)
+        and obj.__module__ == "vera.runtime.wasi_host"
+        and obj.__name__ in ("_on_stdout", "_on_stderr")
+    ]
+
+
+@pytest.mark.parametrize(
+    "case", ["float_conversion", "contract_violation", "overflow", "returns"])
+def test_a_wasi_run_releases_its_output_callbacks(case: str) -> None:
+    """When `execute_wasi_p2` returns or raises, nothing holds an output
+    callback of its — wasmtime included, so no wasmtime thread can call
+    into Python afterwards.  Measured with the cycle collector off: the
+    collector is what a process that exits next may never run in time.
+    Cells: a trap that writes its message to stderr, a contract violation
+    (the same write on the contract channel), a trap with no message, and a
+    normal return after a stderr write."""
+    from vera.runtime.wasi_host import execute_wasi_p2
+    source = _WROTE_STDERR if case == "returns" else KIND_CASES[case][0]
+    result = _compile(source)
+    gc.collect()
+    assert not _live_output_callbacks()
+    gc.disable()
+    try:
+        if case == "returns":
+            assert execute_wasi_p2(result).value == 7
+        else:
+            with pytest.raises(WasmTrapError):
+                execute_wasi_p2(result)
+        live = _live_output_callbacks()
+    finally:
+        gc.enable()
+        gc.collect()
+    assert not live, live
+
+
+def test_a_wasi_run_that_fails_before_the_store_takes_its_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A run that fails while the config is still being built — before the
+    store owns it — releases the callbacks too, and at once: the config is
+    closed, so the wait for them does not run to its bound."""
+    import wasmtime
+    from vera.runtime.wasi_host import execute_wasi_p2
+
+    def refuse(self: object, path: str, guest_path: str) -> None:
+        raise RuntimeError("preopen refused")
+
+    monkeypatch.setattr(wasmtime.WasiConfig, "preopen_dir", refuse)
+    result = _compile(_WROTE_STDERR)
+    gc.collect()
+    gc.disable()
+    try:
+        start = time.monotonic()
+        with pytest.raises(RuntimeError, match="preopen refused"):
+            execute_wasi_p2(result)
+        elapsed = time.monotonic() - start
+        live = _live_output_callbacks()
+    finally:
+        gc.enable()
+        gc.collect()
+    assert not live, live
+    assert elapsed < 1.0, elapsed
+
+
+class _ClosingStore:
+    """A store whose release, like wasmtime's tokio worker, lets go of a
+    callback on another thread some time after `close()` returns."""
+
+    def __init__(self, holder: list[object], delay: float) -> None:
+        self.holder = holder
+        self.delay = delay
+
+    def close(self) -> None:
+        threading.Timer(self.delay, self.holder.clear).start()
+
+
+def test_releasing_the_store_waits_for_a_callback_freed_elsewhere() -> None:
+    from vera.runtime.wasi_host import _release_store
+
+    def sink(chunk: bytes) -> None:  # pragma: no cover — never called
+        del chunk
+
+    released = threading.Event()
+    weakref.finalize(sink, released.set)
+    holder: list[object] = [sink]
+    del sink
+    start = time.monotonic()
+    assert _release_store(_ClosingStore(holder, 0.05), [released]) is True
+    assert released.is_set()
+    assert time.monotonic() - start >= 0.04
+
+
+def test_releasing_the_store_is_bounded() -> None:
+    from vera.runtime.wasi_host import _release_store
+    start = time.monotonic()
+    assert _release_store(
+        _ClosingStore([], 0.0), [threading.Event()], timeout=0.05) is False
+    assert time.monotonic() - start < 2.0
+
+
 _NODE = None
 try:
     from tests.test_browser import _HAS_EXNREF, _run_node
@@ -603,6 +736,9 @@ def test_a_check_only_in_one_scope_links_in_the_browser(
 #: on the machine running the suite.
 _CAPPED_RUN = r'''
 import sys, wasmtime
+# The parent decodes UTF-8; a Windows pipe would otherwise carry the locale's
+# code page, and a Fix paragraph's em dash would not survive the trip.
+sys.stdout.reconfigure(encoding="utf-8")
 _Store = wasmtime.Store
 class _Capped(_Store):
     def __init__(self, *args, **kwargs):
@@ -662,13 +798,31 @@ HEAP_CASES: dict[str, str] = {
 }
 
 
-def _capped(host: str, source: str) -> subprocess.CompletedProcess[str]:
+def _capped(
+    host: str, source: str, *, io_encoding: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    env = {**os.environ, "PYTHONPATH": str(ROOT)}
+    if io_encoding is not None:
+        env["PYTHONIOENCODING"] = io_encoding
     return subprocess.run(
         [sys.executable, "-c", _CAPPED_RUN, host],
         input=source, capture_output=True, text=True, encoding="utf-8",
-        timeout=300, check=False, cwd=ROOT,
-        env={**os.environ, "PYTHONPATH": str(ROOT)},
+        timeout=300, check=False, cwd=ROOT, env=env,
     )
+
+
+def test_the_capped_harness_writes_utf8_under_any_locale() -> None:
+    """A Windows pipe carries the locale's code page unless the child says
+    otherwise, and `heap_exhausted`'s Fix holds an em dash: a cp1252 child
+    handed the parent a byte its UTF-8 decoder refused, and the result's
+    `stdout` came back empty.  So the harness writes UTF-8 itself — asserted
+    here under a cp1252 stream encoding, on every platform."""
+    proc = _capped("wasmtime", HEAP_CASES["a single request of 2 GiB or more"],
+                   io_encoding="cp1252")
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    assert proc.stdout is not None
+    assert proc.stdout.splitlines()[0] == "heap_exhausted", proc.stdout[:300]
+    assert TRAP_KINDS["heap_exhausted"].fix in proc.stdout
 
 
 @pytest.mark.parametrize("host", ["wasmtime", "wasi"])

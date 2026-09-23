@@ -32,6 +32,11 @@ wasip2 host.
 A ``WasiConfig`` is ALWAYS set on the store before any call: invoking
 a wasip2 import on a config-less store aborts the whole process
 (SIGABRT), per the WASI.md spike invariants.
+
+The store is ALWAYS released before ``execute_wasi_p2`` returns or raises,
+and the call waits until wasmtime has let go of both output callbacks
+(:func:`_release_store`): a callback wasmtime releases from one of its own
+threads while the interpreter shuts down aborts the process the same way.
 """
 
 from __future__ import annotations
@@ -40,7 +45,11 @@ import codecs
 import os
 import re
 import sys
-from typing import TYPE_CHECKING
+import threading
+import time
+import weakref
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Protocol
 
 from vera.codegen.api import ExecuteResult, WasmTrapError
 from vera.codegen.wasi import emit_wasi_component
@@ -52,7 +61,51 @@ from vera.trap_registry import TRAP_KINDS
 #: wasmtime backtrace renders it (``Adapter!trap_kind_nat_underflow``).
 _TRAP_KIND_FRAME = re.compile(r"!trap_kind_([a-z_]+)")
 
+#: The longest :func:`_release_store` waits for wasmtime to let go of the
+#: output callbacks.  A release takes well under a millisecond; the bound only
+#: keeps a wasmtime that never releases them from hanging a run.
+_OUTPUT_RELEASE_TIMEOUT_S = 2.0
+
+
+class _Closable(Protocol):
+    def close(self) -> None: ...
+
+
+def _release_store(
+    store: _Closable,
+    released: Sequence[threading.Event],
+    *,
+    timeout: float = _OUTPUT_RELEASE_TIMEOUT_S,
+) -> bool:
+    """Release *store* now, then wait until every event in *released* is set.
+
+    wasmtime drops a stdout / stderr stream on whichever thread holds it
+    last — a stream the program wrote to belongs to a tokio worker, which
+    drops it after the store is freed — and the drop calls back into Python
+    to release the output callback.  A Python callback from a foreign thread
+    while the interpreter shuts down ends that thread with ``pthread_exit``,
+    whose forced unwind cannot cross wasmtime's Rust frames, so the process
+    aborts (SIGABRT, "panic in a function that cannot unwind").  Freeing the
+    store here, rather than whenever the last Python reference goes, is what
+    keeps the release inside the call: after a trap the error wasmtime-py
+    raises holds its own frame, and with it the store, in a reference cycle
+    that only the cycle collector frees — at interpreter shutdown, in a
+    process about to exit.  Each event is set when wasmtime lets go of one
+    callback, so returning after them means no wasmtime thread calls into
+    Python once the call is over.  Returns whether they all were set within
+    *timeout* seconds.
+    """
+    store.close()
+    deadline = time.monotonic() + timeout
+    return all(
+        event.wait(max(0.0, deadline - time.monotonic()))
+        for event in released
+    )
+
 if TYPE_CHECKING:
+    import wasmtime
+    from wasmtime.component import Component, Linker
+
     from vera.codegen.api import CompileResult
 
 
@@ -112,17 +165,52 @@ def execute_wasi_p2(
             out_buf.extend(chunk)
             sys.stdout.write(tee_decoder.decode(chunk))
             sys.stdout.flush()
-
-        config.stdout_custom = _on_stdout
     else:
-        config.stdout_custom = out_buf.extend
+
+        def _on_stdout(chunk: bytes) -> None:
+            out_buf.extend(chunk)
 
     def _on_stderr(chunk: bytes) -> None:
         err_buf.extend(chunk)
         last_err_chunk[0] = bytes(chunk)
 
+    # wasmtime owns each callback until it drops the stream that writes
+    # through it; each event is set when it lets go, which `_release_store`
+    # waits for.  The names go, so wasmtime's is the last reference.
+    released = (threading.Event(), threading.Event())
+    weakref.finalize(_on_stdout, released[0].set)
+    weakref.finalize(_on_stderr, released[1].set)
+    config.stdout_custom = _on_stdout
     config.stderr_custom = _on_stderr
-    config.argv = [argv0, *(cli_args or [])]
+    del _on_stdout, _on_stderr
+    try:
+        return _run_component(
+            store, config, linker, component,
+            out_buf, err_buf, last_err_chunk,
+            argv=[argv0, *(cli_args or [])],
+        )
+    finally:
+        # A config the store never took still owns the callbacks.
+        config.close()
+        _release_store(store, released)
+
+
+def _run_component(
+    store: "wasmtime.Store",
+    config: "wasmtime.WasiConfig",
+    linker: "Linker",
+    component: "Component",
+    out_buf: bytearray,
+    err_buf: bytearray,
+    last_err_chunk: list[bytes],
+    *,
+    argv: list[str],
+) -> ExecuteResult:
+    """Configure, instantiate and call the component; the body of
+    :func:`execute_wasi_p2`, which releases the store around it."""
+    import wasmtime
+
+    config.argv = argv
     config.env = list(os.environ.items())
     config.inherit_stdin()
     config.preopen_dir(".", "/")
