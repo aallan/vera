@@ -1824,32 +1824,49 @@ public fn run(@Option<Int> -> @Int)
         )
 
     def test_no_spurious_entries_for_builtins(self) -> None:
-        """Compiler-emitted helpers (alloc, gc_collect) must NOT appear.
+        """Compiler-emitted helpers (`$rt.alloc`, `$rt.gc_collect`) must NOT
+        appear.
 
-        If they did, the resolver would surface them as "user" frames
-        with bogus locations.  These WASM helpers (`$rt.alloc`,
-        `$rt.gc_collect`, `$contract_fail`, `$exn_*`, `$vera.*`) are
-        emitted directly into WAT by the assembly module — they
-        never go through `_register_fn` at all, which is why no
-        entry exists.  Prelude-injected functions (a different class
-        of "built-in") DO go through `_register_fn` and are then
-        moved out of `_fn_source_map` into `_prelude_fn_names` by
-        the post-`inject_prelude` registration loop in
-        `compile_program`; that path is covered by
+        If they did, the resolver — which resolves an exact source-map hit
+        FIRST (#1494) — would surface them as "user" frames with bogus
+        locations.  The runtime's functions (`$rt.*`) and the host imports
+        (`$vera.*`) are emitted directly into WAT — they never go through
+        `_register_fn` at all, which is why no entry exists.  The one
+        runtime symbol that IS source-mapped is a lifted closure,
+        `$rt.anon_N`, which carries the span of its `fn(...)` expression.
+        Prelude-injected functions (a different class of "built-in") DO go
+        through `_register_fn` and are then moved out of `_fn_source_map`
+        into `_prelude_fn_names` by the post-`inject_prelude` registration
+        loop in `compile_program`; that path is covered by
         ``test_prelude_functions_registered_as_builtins`` above.
+
+        The program allocates (a String concatenation) and lifts a closure,
+        and the emitted functions are asserted first, so the source-map
+        check reads a module that really holds runtime helpers.
         """
+        from tests.codegen_helpers import wat_fn_names
+
         result = self._compile("""\
 public fn make_box(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 {
-  @Int.0
+  string_length(string_concat(int_to_string(@Int.0), "ab"))
+    + array_length(array_map([1, 2], fn(@Int -> @Int) effects(pure) {
+        @Int.0 + 1
+      }))
 }
 """)
-        # The synthetic runtime helpers must never be source-mapped.
-        for forbidden in ("alloc", "gc_collect", "contract_fail"):
-            assert forbidden not in result.fn_source_map, (  # type: ignore[attr-defined]
-                f"Built-in {forbidden!r} leaked into fn_source_map"
-            )
+        emitted = wat_fn_names(result.wat)  # type: ignore[attr-defined]
+        assert {"rt.alloc", "rt.gc_collect", "rt.anon_0"} <= set(emitted), (
+            emitted
+        )
+        source_map = result.fn_source_map  # type: ignore[attr-defined]
+        leaked = sorted(
+            key for key in source_map
+            if key.startswith(("rt.", "vera.")) and not key.startswith("rt.anon_")
+        )
+        assert leaked == [], f"runtime symbols leaked into fn_source_map: {leaked}"
+        assert "rt.anon_0" in source_map, sorted(source_map)
 
 
 # =====================================================================

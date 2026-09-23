@@ -258,7 +258,7 @@ The WASM module exports one page (64 KiB) of linear memory as `"memory"`. This m
 - **String constants** (data section, starting at offset 0)
 - **Heap-allocated ADTs** (bump-allocated after string data)
 
-A bump allocator manages heap allocation. A mutable global `$heap_ptr` tracks the next free byte (initialized to the first byte after string data). The `$alloc` internal function bump-allocates with 8-byte alignment and returns a pointer to the allocated block. The allocator and heap global are only emitted when the program declares ADT types.
+A bump allocator manages heap allocation. A mutable global `$heap_ptr` tracks the next free byte (initialized to the first byte after string data). The `$rt.alloc` internal function bump-allocates with 8-byte alignment and returns a pointer to the allocated block. The allocator and heap global are only emitted when the program declares ADT types.
 
 ADT constructors allocate heap blocks containing a tag (i32) followed by field values at computed offsets. Match expressions dispatch on the tag and extract fields at the corresponding offsets.
 
@@ -280,7 +280,7 @@ The `IO` effect is implemented via host imports. Each IO operation the program u
 | `exit` | `(import "vera" "exit" (func $vera.exit (param i64)))` |
 | `get_env` | `(import "vera" "get_env" (func $vera.get_env (param i32 i32) (result i32)))` |
 
-Only the operations actually used in the program are imported. Operations that return host-allocated data (`read_line`, `read_file`, `write_file`, `args`, `get_env`) cause the module to export its `$alloc` function so the host can allocate WASM memory.
+Only the operations actually used in the program are imported. Operations that return host-allocated data (`read_line`, `read_file`, `write_file`, `args`, `get_env`) cause the module to export its `$rt.alloc` function, as `vera.alloc`, so the host can allocate WASM memory.
 
 `IO.exit` emits `unreachable` after the call since the process terminates. Operations returning `Result` or `Option` return an `i32` heap pointer to the ADT; operations returning `String` or `Array<String>` return an `(i32, i32)` pair.
 

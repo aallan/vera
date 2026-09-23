@@ -714,12 +714,14 @@ public fn main(@Unit -> @Int)
         gen = CodeGenerator(source="", file="<test>")
         gen._ambiguous_imported_fn_names = frozenset()
 
-        def rail(*claims: tuple[str, bool]) -> list[object]:
+        def rail(
+            *claims: tuple[str, bool], prelude: frozenset[str] = frozenset(),
+        ) -> list[object]:
             declarers: dict[str, tuple[str, ...]] = {}
             owners: dict[str, tuple[str, ...]] = {}
             return [
                 gen._colliding_declarer(
-                    "gen", (path,), owner, declarers, owners,
+                    "gen", (path,), owner, declarers, owners, prelude,
                 )
                 for path, owner in claims
             ]
@@ -738,6 +740,15 @@ public fn main(@Unit -> @Int)
         # A name some namespace can name twice collides whoever owns it.
         gen._ambiguous_imported_fn_names = frozenset({"gen"})
         assert rail(("a", False), ("b", False)) == [None, ("a",)]
+        # ... unless the prelude holds it: then every namespace's bare call is
+        # the prelude's, so no namespace can name either declaration by it
+        # (PR #1507 review).  The owner condition is not relaxed by it.
+        assert rail(
+            ("a", False), ("b", False), prelude=frozenset({"gen"}),
+        ) == [None, None]
+        assert rail(
+            ("a", True), ("b", True), prelude=frozenset({"gen"}),
+        ) == [None, ("a",)]
 
     def test_a_local_declaration_disambiguates_two_dependencies(
         self, tmp_path: Path,

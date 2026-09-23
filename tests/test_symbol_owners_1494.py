@@ -25,7 +25,9 @@ side so a failure names the side that went wrong:
 * **module** pairs cross the four ways §11.16 says a declaration does not
   own the importing namespace's bare name — private, outside the import
   filter, shadowed by a local declaration, reached only transitively — with
-  zero and one owner, generic and non-generic, in both import orders;
+  zero and one owner, generic and non-generic, in both import orders, and
+  two modules' declarations of each prelude function's name meet in one
+  namespace's imports;
 * the #1498 shapes, the #1495 table and the #1494 table are cells of their
   own, named after the issue.
 
@@ -833,6 +835,57 @@ def test_module_fn_named_after_prelude_fn(
     _run_cell(tmp_path, files, {
         "side_module": 101, "side_prelude": value, **prelude_expected,
     })
+
+
+@pytest.mark.parametrize("name", sorted(PRELUDE_FNS))
+@pytest.mark.parametrize("route", ["entry", "hub"])
+@pytest.mark.parametrize("vis", ["private", "public"])
+def test_two_modules_declare_a_prelude_name(
+    name: str, route: str, vis: str, tmp_path: Path,
+) -> None:
+    """Two modules each declare a prelude function's name, and one
+    namespace imports both.
+
+    The prelude holds the bare name in every namespace (§8.5.2.2), so
+    neither declaration owns it and no namespace's bare call can mean
+    either: each module's call reaches its own declaration, and the
+    importer's bare call reaches the prelude's.  The checker accepts the
+    shape, and code generation's E608 rail agrees with it only because it
+    removes the prelude-held names from its ambiguity set.  ``route`` is
+    where the two imports meet: in the entry, or in a module the entry
+    imports.
+    """
+    files = {
+        f"lib{key}.vera": (
+            f"module lib{key};\n\n" + _fn(vis, name, f"@Int.0 + {tag}")
+            + _fn("public", f"p{key}", f"{name}(@Int.0)")
+        )
+        for key, tag in (("a", 100), ("b", 200))
+    }
+    snippet, value = PRELUDE_SNIPPETS[name]
+    expected: dict[str, object] = {
+        "side_a": 101, "side_b": 201, "side_prelude": value,
+    }
+    probes = (
+        _probe("side_prelude", snippet)
+        + _probe("side_a", "pa(1)") + _probe("side_b", "pb(1)")
+    )
+    if route == "entry":
+        imports = "import liba;\nimport libb;\n\n"
+    else:
+        files["hub.vera"] = (
+            "module hub;\n\nimport liba;\nimport libb;\n\n"
+            + _probe("hh", snippet)
+        )
+        imports = "import hub(hh);\nimport liba(pa);\nimport libb(pb);\n\n"
+        # The entry calls the prelude function as well, as every cell of
+        # `_prelude_side` does: a prelude data type that only a module uses
+        # is not injected at all, a separate defect this cell must not
+        # depend on.  The two imports still meet only in `hub`.
+        probes += _probe("side_hub", "hh()")
+        expected["side_hub"] = value
+    files["main.vera"] = imports + probes
+    _run_cell(tmp_path, files, expected)
 
 
 # ---------------------------------------------------------------------------

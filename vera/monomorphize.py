@@ -1056,10 +1056,12 @@ def namespace_fn_names(
     exporting ``option_map`` are ambiguous under ``prelude=()`` and are not
     under the populated set.  Codegen calls
     ``_collect_namespace_fn_names`` twice, before and after its prelude pass,
-    and its E608 rail reads the FIRST (prelude-empty) answer because
-    ``_register_modules`` runs between them; the checker passes its built-in
-    snapshot and so reads the populated one.  The ordering is therefore
-    load-bearing rather than incidental, and is pinned by
+    and its E608 rail runs between them, so it reads the FIRST
+    (prelude-empty) answer and removes the prelude's names from it itself
+    (#1498): no module declaration of a prelude name owns a bare name, so
+    two of them never share a symbol.  That leaves the populated answer the
+    checker reads, from its built-in snapshot.  The difference between the
+    two answers is pinned by
     ``test_the_prelude_argument_changes_the_ambiguity_half``.
     """
     public_fns: dict[tuple[str, ...], frozenset[str]] = {}

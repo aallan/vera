@@ -7,7 +7,7 @@ call detection) of the code generation pipeline.
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Iterator, Mapping
+from collections.abc import Collection, Iterator, Mapping
 from dataclasses import fields as dc_fields
 from typing import TYPE_CHECKING
 
@@ -519,6 +519,7 @@ class CrossModuleMixin:
                 # refuses.  Every other declaration has its own symbol.
                 clash = self._colliding_declarer(
                     fn_name, mod.path, owner, fn_provenance, bare_owners,
+                    prelude_fn_names,
                 )
                 if clash is not None:
                     self._emit_collision_error(
@@ -1622,6 +1623,7 @@ class CrossModuleMixin:
         owner: bool,
         declarers: dict[str, tuple[str, ...]],
         owners: dict[str, tuple[str, ...]],
+        prelude_held: Collection[str],
     ) -> tuple[str, ...] | None:
         """The earlier module this declaration of *name* collides with, if any.
 
@@ -1644,6 +1646,15 @@ class CrossModuleMixin:
           no one declaration to mean, so the pair stays refused here as it is
           at check.
 
+        A name the prelude holds (*prelude_held*, the set the ownership
+        predicate reads) is neither.  No module declaration of it owns a bare
+        name, and no namespace's bare call can mean one: the prelude's
+        function is the incumbent in every namespace (§8.5.2.2), which is why
+        the checker does not refuse two imports of it.  The ambiguity set
+        this rail reads is computed before the prelude pass, so it still
+        lists such a name, and the rail removes it here, which leaves exactly
+        the answer the checker reads.
+
         *declarers* keeps the first module to declare each name.  A name that
         is already owner-qualified (``mod$…``, a nested generic helper) needs
         no case of its own: its path makes its first declarer its only one,
@@ -1654,7 +1665,8 @@ class CrossModuleMixin:
             prior = owners.setdefault(name, path)
             if prior != path:
                 return prior
-        if first != path and name in self._ambiguous_imported_fn_names:
+        if (first != path and name in self._ambiguous_imported_fn_names
+                and name not in prelude_held):
             return first
         return None
 
@@ -1694,9 +1706,11 @@ class CrossModuleMixin:
         export ``option_map`` are ambiguous under the empty prelude and are
         not under the populated one (:func:`~vera.monomorphize
         .namespace_fn_names` records the measurement).  The E608 rail below
-        reads the FIRST, prelude-empty answer, because ``_register_modules``
-        runs between the two calls — so the ORDERING is load-bearing and
-        neither call may move.  Route three of #1299 (a ``forall<T>`` parent's
+        runs between the two calls, so it reads the FIRST, prelude-empty
+        answer, and removes the prelude's names from it itself
+        (:meth:`_colliding_declarer`), which leaves the populated answer the
+        checker reads.  The first call must still precede
+        ``_register_modules``, whose rail needs the ambiguity half in hand.  Route three of #1299 (a ``forall<T>`` parent's
         ``where`` helper) involves no imports at all, so the entry program
         needs its set whether or not any module exists.
         """

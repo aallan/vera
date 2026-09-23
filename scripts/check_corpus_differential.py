@@ -51,8 +51,12 @@ behaviour, so the WAT digest can no longer separate the two.  Under
 ``--run`` each side runs ``vera run`` on every program with an empty
 standard input and fingerprints the outcome — exit status, standard
 output, and the first line of any error — and a mover is reported as
-``outcome differs`` with each side's reading.  A run that does not finish
-within the budget is an outcome too (a server waits for requests).  A
+``outcome differs`` with each side's reading, which names the output by
+its length, its digest and its opening.  A run that does not finish
+within the budget is an outcome too (a server waits for requests).  Each
+side first runs a canary program whose outcome is known, because a
+``vera run`` that failed before reading any program would fail every
+program alike on both sides, and that would read as agreement.  A
 program whose outcome depends on the clock, the environment or the
 network moves between any two runs, so a ``--run`` mover list is read
 program by program rather than taken as a verdict.
@@ -104,6 +108,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path, PurePath
@@ -208,12 +213,18 @@ class Comparison(NamedTuple):
 
 
 class RunInfo(NamedTuple):
-    """What the run compared, for the report and the JSON envelope."""
+    """What the run compared, for the report and the JSON envelope.
+
+    ``mode`` is the measurement: ``"compile"`` compares each program's WAT,
+    ``"run"`` (``--run``) compares what ``vera run`` does.  Every line of the
+    report names it, so a run-mode verdict never reads as a WAT one.
+    """
 
     base_ref: str
     base_sha: str
     base_root: str
     head_root: str
+    mode: str = "compile"
 
 
 # ---------------------------------------------------------------------------
@@ -495,6 +506,67 @@ def compile_one(
     return Artifact(ok=True, digest=digest, size=len(wat), error="")
 
 
+def _vera_run(
+    python: str, compiler_root: Path, timeout: int, path: Path
+) -> subprocess.CompletedProcess[str]:
+    """``vera run`` on *path* with one side's compiler, under an empty stdin.
+
+    Raises ``subprocess.TimeoutExpired`` and ``OSError`` to the caller, which
+    decides what each means.
+    """
+    return subprocess.run(
+        [python, "-m", "vera.cli", "run", str(path)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=str(compiler_root),
+        env=_side_env(compiler_root),
+        stdin=subprocess.DEVNULL,
+        timeout=timeout,
+        check=False,
+    )
+
+
+# The run canary: a program whose outcome is known on every revision.
+_RUN_CANARY = (
+    "public fn main(@Unit -> @Int)\n"
+    "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+    "{\n  40 + 2\n}\n"
+)
+
+
+def run_canary_error(
+    python: str, root: Path, side: str, timeout: int
+) -> str | None:
+    """Can this side's ``vera run`` run a program at all?
+
+    The import canary proves which compiler a side imports, not that its
+    ``vera run`` works.  A ``run`` that failed before reading any program —
+    a usage error, a crash at start-up — would fail every program the same
+    way on both sides, and ``--run`` would report the identical failures as
+    agreement.  So each side first runs a program whose outcome is known,
+    and a side that does not print its value is a refusal, not a green run.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        program = Path(tmp) / "run_canary.vera"
+        program.write_text(_RUN_CANARY, encoding="utf-8")
+        try:
+            result = _vera_run(python, root, timeout, program)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return (
+                f"the {side} side could not run the canary program: {exc}"
+            )
+    if result.returncode == 0 and result.stdout.strip() == "42":
+        return None
+    reason = _first_error(result.stderr, program) or "no error output"
+    return (
+        f"the {side} side's `vera run` did not run the canary program (exit "
+        f"{result.returncode}, {reason}) — every program would fail the same "
+        f"way on both sides, and --run would report that as agreement."
+    )
+
+
 def run_one(
     python: str, compiler_root: Path, timeout: int, path: Path
 ) -> Artifact:
@@ -511,18 +583,7 @@ def run_one(
     failure.
     """
     try:
-        result = subprocess.run(
-            [python, "-m", "vera.cli", "run", str(path)],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            cwd=str(compiler_root),
-            env=_side_env(compiler_root),
-            stdin=subprocess.DEVNULL,
-            timeout=timeout,
-            check=False,
-        )
+        result = _vera_run(python, compiler_root, timeout, path)
     except subprocess.TimeoutExpired:
         outcome = f"did not finish in {timeout}s"
         return Artifact(
@@ -542,6 +603,13 @@ def run_one(
     if error:
         summary += f", {error}"
     summary += f", {len(result.stdout)} bytes of output"
+    if result.stdout:
+        # The output's own fingerprint and its opening, so two outputs of one
+        # length read differently in the report as they hash differently.
+        out_digest = hashlib.sha256(result.stdout.encode("utf-8")).hexdigest()
+        summary += (
+            f" (sha256 {out_digest[:12]}, starting {result.stdout[:24]!r})"
+        )
     return Artifact(
         ok=True,
         digest=hashlib.sha256(outcome.encode("utf-8")).hexdigest(),
@@ -723,6 +791,7 @@ def release_base_checkout(repo_root: Path, base_root: Path) -> None:
 def json_payload(info: RunInfo, comparison: Comparison) -> dict[str, object]:
     return {
         "ok": not comparison.movers and not comparison.unreported,
+        "mode": info.mode,
         "base_ref": info.base_ref,
         "base_sha": info.base_sha,
         "base_root": info.base_root,
@@ -735,15 +804,25 @@ def json_payload(info: RunInfo, comparison: Comparison) -> dict[str, object]:
     }
 
 
+def _measured(info: RunInfo) -> tuple[str, str, str]:
+    """(past participle, what is compared, the command) for the mode."""
+    if info.mode == "run":
+        return "run", "run outcome", "vera run"
+    return "compiled", "compiled output", "vera compile --wat"
+
+
 def summary_lines(info: RunInfo, comparison: Comparison) -> list[str]:
     """The stdout summary — what was compared, and how it partitioned."""
+    done, _, _ = _measured(info)
+    compared = "outcome" if info.mode == "run" else "WAT"
+    neither = "ran" if info.mode == "run" else "compiled"
     return [
-        f"Corpus differential: {comparison.compared} programs compiled at "
+        f"Corpus differential: {comparison.compared} programs {done} at "
         f"both revisions.",
         f"  base: {info.base_ref} ({info.base_sha[:12]}) -> {info.base_root}",
         f"  head: working tree -> {info.head_root}",
-        f"  identical WAT: {comparison.identical}",
-        f"  compiled at neither revision: {comparison.both_failed} "
+        f"  identical {compared}: {comparison.identical}",
+        f"  {neither} at neither revision: {comparison.both_failed} "
         f"(vacuous agreement — nothing was compared for these)",
         f"  movers: {len(comparison.movers)}",
     ]
@@ -752,24 +831,26 @@ def summary_lines(info: RunInfo, comparison: Comparison) -> list[str]:
 def failure_lines(info: RunInfo, comparison: Comparison) -> list[str]:
     """The stderr report: every mover, then what to do about it."""
     lines: list[str] = []
+    _, what, command = _measured(info)
+    verb = "run" if info.mode == "run" else "compile"
     if comparison.movers:
         lines.append(f"MOVERS ({len(comparison.movers)}):")
         lines += [f"  {m.path}: {m.reason}" for m in comparison.movers]
         lines += [
             "",
-            "Each line is a program whose compiled output changed between "
+            f"Each line is a program whose {what} changed between "
             f"{info.base_ref} and the working tree.  If the change under "
             "test was meant to be inert, these are its counter-examples; if "
             "it was meant to move output, this is the enumeration of what "
             "it moved.  Reproduce one with:",
             "",
-            "  vera compile --wat <program>            # working tree",
-            f"  (cd {info.base_root} && vera compile --wat "
+            f"  {command} <program>            # working tree",
+            f"  (cd {info.base_root} && {command} "
             f"{info.head_root}/<program>)",
             "",
-            "<program> is the mover's path above, and BOTH commands compile "
+            f"<program> is the mover's path above, and BOTH commands {verb} "
             "the working tree's copy of it — that is what the differential "
-            "compared.  A relative path in the second command would compile "
+            f"compared.  A relative path in the second command would {verb} "
             "the base checkout's own copy instead, which is a different "
             "input whenever the corpus source has changed.",
         ]
@@ -804,8 +885,9 @@ def emit(info: RunInfo, comparison: Comparison, *, as_json: bool) -> int:
             print(line, file=sys.stderr)
         return 1
 
+    _, what, _ = _measured(info)
     print(
-        f"\nNo movers: the working tree's compiled output is identical to "
+        f"\nNo movers: the working tree's {what} is identical to "
         f"{info.base_ref}'s across the corpus."
     )
     return 0
@@ -916,6 +998,10 @@ def _run(
     # must be a refusal rather than a green run.
     for side, root in (("head", repo_root), ("base", base_root)):
         problem = canary_error(probe_compiler(sys.executable, root), root, side)
+        if problem is None and args.run:
+            # The import canary cannot see a `vera run` that fails before
+            # reading a program; under --run that would be agreement.
+            problem = run_canary_error(sys.executable, root, side, args.timeout)
         if problem is not None:
             print(f"ERROR: {problem}", file=sys.stderr)
             return 1
@@ -925,6 +1011,7 @@ def _run(
         base_sha=sha,
         base_root=str(base_root),
         head_root=str(repo_root),
+        mode="run" if args.run else "compile",
     )
 
     sides: dict[str, dict[str, Artifact]] = {}

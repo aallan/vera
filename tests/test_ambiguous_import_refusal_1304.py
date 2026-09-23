@@ -687,10 +687,10 @@ public fn main(@Unit -> @Int)
         the prelude names were passed, "since a prelude name is imported from
         nowhere".  It is not: the combinators are overridable rather than
         reserved, so a dependency may export one, and the two answers differ.
-        Codegen's two calls pass different preludes and its E608 rail reads
-        the first; the checker passes its built-in snapshot and reads the
-        populated one.  That ordering is load-bearing, so the difference is
-        asserted rather than described.
+        Codegen's two calls pass different preludes, and its E608 rail reads
+        the first and removes the prelude's names from it itself (#1498); the
+        checker passes its built-in snapshot and reads the populated one.
+        The difference is asserted rather than described.
         """
         from vera.monomorphize import namespace_fn_names
         from vera.parser import parse_to_ast
