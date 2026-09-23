@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import enum
 import math
+import weakref
 
 import z3
 
@@ -272,15 +273,6 @@ class BlockBindingPolicy(enum.Enum):
     against the enclosing env: it carried no variant at all (#1452 review).
     """
 
-    SKIP = "skip"
-    """Leave the env alone; a later slot reference resolves to the outer.
-
-    For a reader that only LOOKS for something (`_walk_for_calls` hunts
-    recursive-group calls): it records no obligation, so a stale resolution
-    cannot become a false claim, and pushing an opaque value would lose the
-    outer binding a call argument may still legitimately name.
-    """
-
     HALT = "halt"
     """Stop reading the block here.
 
@@ -294,13 +286,21 @@ class BlockBindingPolicy(enum.Enum):
     """Replace a shadowed stale outer with a TRACKED fresh const of its sort.
 
     For readers that record obligations against the value (the primitive-op
-    walker, and the construction descent).  A stale same-type outer is the
-    dangerous case: `let @Int = random_int(...)` over a parameter carrying
-    `requires(@Int.0 > 0)` would otherwise discharge the block-local value's
-    predicate from the PARAMETER's bound — a Tier-1 claim about a value the
-    verifier never knew.  Tracking the const as an opaque shadow is what
-    routes an operand that IS one to Tier 3 instead of a false E526/E502 on
-    its unconstrained value.
+    walker, the construction descent, and the recursive-call walk whose
+    call sites the termination proof and the tail-call measure read).  A
+    stale same-type outer is the dangerous case: `let @Int = random_int(...)`
+    over a parameter carrying `requires(@Int.0 > 0)` would otherwise
+    discharge the block-local value's predicate from the PARAMETER's bound —
+    a Tier-1 claim about a value the verifier never knew.  Tracking the const
+    as an opaque shadow is what routes an operand that IS one to Tier 3
+    instead of a false E526/E502 on its unconstrained value.
+
+    The recursive-call walk once LEFT THE ENV ALONE here, on the argument
+    that it only looked for calls and recorded nothing.  But its consumers
+    record from what it found, and a recursive call's argument read against
+    the stale outer proved `decreases(@Nat.0)` for `let @Nat = get(());
+    f(@Nat.0 - 1)`, a function whose measure guard traps on its first call
+    (#1480 review).
     """
 
     FRESH_VAR = "fresh_var"
@@ -1057,9 +1057,12 @@ class ContractVerifier:
         self._predicate_call_ids: frozenset[int] = frozenset()
         # #1480: each recorded `call_pre` -> the precondition it is about, by
         # identity (see `_call_pre_recorded`).  Keyed by the record's `id`,
-        # with the record held beside the precondition.
+        # with a WEAK reference to the record beside the precondition: an
+        # entry cannot answer for a later record that reuses a discarded
+        # one's `id` (its reference is dead, or is to a record that is not
+        # the one asked about), and it keeps no discarded record alive.
         self._call_pre_contracts: dict[
-            int, tuple[ProofObligation, ast.Node]
+            int, tuple[weakref.ref[ProofObligation], ast.Node]
         ] = {}
         # Warm-session hook: when provided (by
         # obligations.session.VerificationSession), _verify_fn calls
@@ -1549,11 +1552,17 @@ class ContractVerifier:
         ))
         if kind == "call_pre":
             # #1480: which precondition this record is about, by identity —
-            # see `_call_pre_recorded`.  The record itself is held beside it,
-            # so an entry whose record was discarded with its buffer cannot
-            # answer for a later record that happens to reuse its `id`.
+            # see `_call_pre_recorded` and `_call_pre_contract_of`.
             record = self.obligations[-1]
-            self._call_pre_contracts[id(record)] = (record, node)
+            self._call_pre_contracts[id(record)] = (weakref.ref(record), node)
+
+    def _call_pre_contract_of(self, record: ProofObligation) -> ast.Node | None:
+        """The precondition a `call_pre` *record* is about, or None when
+        this verifier recorded no such record."""
+        entry = self._call_pre_contracts.get(id(record))
+        if entry is None or entry[0]() is not record:
+            return None
+        return entry[1]
 
     @staticmethod
     def _contract_kind(contract: ast.Contract) -> ObligationKind:
@@ -6854,14 +6863,23 @@ class ContractVerifier:
                 or self._decreases_chain_may_be_declined(decl, contract)):
             return
         tail_ids = compute_tail_call_sites(decl)
-        for site in self._collect_recursive_calls(
-                decl.name, decl.body, smt, slot_env):
+        # Finding the sites re-reads the body — its conditions, its `let`
+        # right-hand sides — without the path conditions the body walk held,
+        # and the arguments of a site are body code too.  Every call met
+        # there was obligated by the body walk under the right facts, so
+        # what these translations find is dropped; only the measure's own
+        # evaluation is recorded here (#1480 review).
+        with smt.call_outcomes_discarded():
+            sites = self._collect_recursive_calls(
+                decl.name, decl.body, smt, slot_env)
+        for site in sites:
             if id(site.node) not in tail_ids:
                 continue
-            callee_env = self._callee_env_at(decl, site, smt)
             depth = len(smt._path_conditions)
             smt._path_conditions.extend(site.path_conds)
             try:
+                with smt.call_outcomes_discarded():
+                    callee_env = self._callee_env_at(decl, site, smt)
                 self._walk_evaluated(
                     decl, list(contract.exprs), smt, callee_env,
                     assumptions, EvaluatedAt("measure_call", call=site.node),
@@ -6885,20 +6903,54 @@ class ContractVerifier:
             name = self._type_expr_to_slot_name(param_te, smt._alias_env)
             term = smt.translate_expr(arg, site.env)
             if term is None:
-                placeholder = self._fresh_slot_var(smt, param_te)
-                if placeholder is None:
-                    resolved = self._resolve_type(param_te)
-                    if self._is_array_type(resolved):
-                        placeholder = self._declare_array_var(
-                            smt, smt._fresh_name("tail_arg"), resolved)
-                    elif self._is_adt_type(resolved):
-                        placeholder = smt.declare_adt(
-                            smt._fresh_name("tail_arg"), resolved)
-                if placeholder is None:
-                    placeholder = smt.declare_int(smt._fresh_name("tail_arg"))
-                self._opaque_shadows.append(placeholder)
-                term = placeholder
+                term = self._opaque_value(smt, param_te, "tail_arg")
             env = env.push(name, term)
+        return env
+
+    def _opaque_value(
+        self, smt: SmtContext, te: ast.TypeExpr, prefix: str,
+    ) -> object:
+        """A TRACKED fresh value of *te*'s sort, for a slot whose value the
+        walk cannot know.
+
+        Tracked in `_opaque_shadows`, so an obligation whose operand is one
+        falls to Tier 3 rather than taking the unconstrained value's
+        countermodel as real.  A type with no SMT sort of its own still gets
+        a value, an integer one, so the De Bruijn positions of the slots
+        pushed after it stay aligned.
+        """
+        value = self._fresh_slot_var(smt, te)
+        if value is None:
+            resolved = self._resolve_type(te)
+            if self._is_array_type(resolved):
+                value = self._declare_array_var(
+                    smt, smt._fresh_name(prefix), resolved)
+            elif self._is_adt_type(resolved):
+                value = smt.declare_adt(smt._fresh_name(prefix), resolved)
+        if value is None:
+            value = smt.declare_int(smt._fresh_name(prefix))
+        self._opaque_shadows.append(value)
+        return value
+
+    def _bind_unknown(
+        self,
+        env: SlotEnv,
+        smt: SmtContext,
+        binders: Iterable[ast.TypeExpr],
+    ) -> SlotEnv:
+        """*env* with an opaque value pushed for each binder, in order.
+
+        For a scope whose binders take values the recursive-call walk cannot
+        know: a closure's parameters, a handler clause's operation
+        parameters and the handler state it binds after them (the order the
+        checker binds them in).  A reference to one of them resolves to an
+        unknown value of its sort, and a reference past them still reaches
+        the enclosing binding it captures.
+        """
+        for te in binders:
+            env = env.push(
+                self._type_expr_to_slot_name(te, smt._alias_env),
+                self._opaque_value(smt, te, "scoped"))
         return env
 
     def _walk_evaluated(
@@ -7051,8 +7103,7 @@ class ContractVerifier:
         return any(
             o.kind == "call_pre"
             and o.fn_name == decl.name
-            and self._call_pre_contracts.get(id(o), (None, None))[0] is o
-            and self._call_pre_contracts[id(o)][1] is precondition
+            and self._call_pre_contract_of(o) is precondition
             and not (failures_only and o.status == "verified")
             and o.line == line
             and o.column == column
@@ -7212,6 +7263,9 @@ class ContractVerifier:
             return
 
         if isinstance(expr, ast.IfExpr):
+            # The condition is evaluated first, and a call in it is a call.
+            self._walk_for_calls(group_names, expr.condition, z3_path_conds,
+                                 results, smt, slot_env)
             z3_cond = smt.translate_expr(expr.condition, slot_env)
             if z3_cond is not None:
                 import z3 as z3mod
@@ -7229,6 +7283,9 @@ class ContractVerifier:
             return
 
         if isinstance(expr, ast.Block):
+            # Every binder the block crosses is pushed, so a later call's
+            # argument is read in the scope it is written in: its consumers
+            # record from it (#1480 review).
             cur_env = slot_env
             for stmt in expr.statements:
                 if isinstance(stmt, ast.LetStmt):
@@ -7236,10 +7293,15 @@ class ContractVerifier:
                                          z3_path_conds, results, smt, cur_env)
                     bound = self._apply_let_binding(
                         stmt, smt, cur_env,
-                        policy=BlockBindingPolicy.SKIP,
+                        policy=BlockBindingPolicy.OPAQUE_SHADOW,
                     )
-                    if bound is not None:  # SKIP never halts
+                    if bound is not None:  # OPAQUE_SHADOW never halts
                         cur_env = bound
+                elif isinstance(stmt, ast.LetDestruct):
+                    self._walk_for_calls(group_names, stmt.value,
+                                         z3_path_conds, results, smt, cur_env)
+                    cur_env = self._shadow_destructured_slots(
+                        stmt, smt, cur_env)
                 elif isinstance(stmt, ast.ExprStmt):
                     # Walk a statement-position expression for recursive-group
                     # calls so `decreases` sees a discarded recursive call
@@ -7292,26 +7354,44 @@ class ContractVerifier:
         # guard then trapped a `verify`-green program.  Path conditions
         # are NOT extended here (conservative: fewer assumptions can
         # only make the proof harder, never wrongly easier).
+        #
+        # A clause or a closure body binds slots of its own over the
+        # enclosing ones, and is read in that scope (#1480 review): read
+        # against the enclosing env, a closure's `@Nat.0` was the enclosing
+        # PARAMETER, and a measure proved over it held for a value the call
+        # never passes.
         if isinstance(expr, ast.HandleExpr):
+            # The state's initialiser and the handled body are enclosing-
+            # scope code: the state is no slot in the body (§7.5.1).
             if expr.state is not None:
                 self._walk_for_calls(group_names, expr.state.init_expr,
                                      z3_path_conds, results, smt, slot_env)
             self._walk_for_calls(group_names, expr.body, z3_path_conds,
                                  results, smt, slot_env)
+            state = (expr.state.type_expr,) if expr.state is not None else ()
             for clause in expr.clauses:
+                clause_env = self._bind_unknown(
+                    slot_env, smt, (*clause.params, *state))
                 self._walk_for_calls(group_names, clause.body,
-                                     z3_path_conds, results, smt, slot_env)
+                                     z3_path_conds, results, smt, clause_env)
                 if clause.state_update is not None:
                     self._walk_for_calls(group_names, clause.state_update[1],
                                          z3_path_conds, results, smt,
-                                         slot_env)
+                                         clause_env)
             return
 
         if isinstance(expr, ast.AnonFn):
-            # The closure's parameters shadow nothing the measure can
-            # reference soundly from here; walk the body with the
-            # enclosing env — a hit only ADDS a call site to prove.
-            self._walk_for_calls(group_names, expr.body, z3_path_conds,
+            self._walk_for_calls(
+                group_names, expr.body, z3_path_conds, results, smt,
+                self._bind_unknown(slot_env, smt, expr.params))
+            return
+
+        if isinstance(expr, (ast.ForallExpr, ast.ExistsExpr)):
+            # The domain is enclosing-scope code; the predicate is a
+            # closure, called on each element of it.
+            self._walk_for_calls(group_names, expr.domain, z3_path_conds,
+                                 results, smt, slot_env)
+            self._walk_for_calls(group_names, expr.predicate, z3_path_conds,
                                  results, smt, slot_env)
             return
 
@@ -7347,8 +7427,8 @@ class ContractVerifier:
                                  results, smt, slot_env)
             return
 
-        # Other expression types (literals, slot refs, quantifiers) — no
-        # calls a body can reach.
+        # Other expression types (literals, slot refs, holes) — no calls a
+        # body can reach.
         return
 
     # -----------------------------------------------------------------
@@ -10178,13 +10258,23 @@ class ContractVerifier:
         if self._is_float64_type(ty):
             self._check_float_to_int_domain_obligation(
                 decl, site, value, "float_to_string", smt, slot_env)
-        elif self._type_holds_float64(ty):
+        elif self._type_holds_float64(smt, ty):
             self._record_obligation(
                 decl.name, "float_to_int_domain", site, "tier3")
 
-    def _type_holds_float64(self, ty: Type) -> bool:
+    def _type_holds_float64(self, smt: SmtContext, ty: Type) -> bool:
         """Whether a value of *ty* has a `@Float64` anywhere a structural
-        `show` renders one: a field, a component, an element, a payload."""
+        `show` renders one: a field, a component, an element, a payload.
+
+        The walk is keyed on the INSTANTIATED type, which a non-regular
+        declaration gives no fixed point (#1429): the checker refuses one,
+        but `verify()` is a public entry point whose check-clean
+        precondition is its caller's to keep.  Such a type is declined by
+        the rule rather than by a bound on depth, and answered yes, so its
+        rendering is recorded Tier 3 with the truncation as its check.
+        """
+        if not smt.type_is_regular(ty):
+            return True
         seen: set[str] = set()
         stack: list[Type] = [ty]
         while stack:

@@ -436,6 +436,83 @@ class TestBuiltinDomainIsObligated:
         assert _run(CHAR_CODE_BOUNDED, "c3", [1]).value == 98
 
 
+# The substitution behind a built-in's domain (and behind E501's "At this
+# call site" text) rebuilds a precondition with the call's arguments in place
+# of the parameters.  Where it cannot do that exactly it refuses: a parameter
+# slot left in place would be resolved against the CALLER's scope, so a
+# half-substituted tree is a goal about the wrong values.
+
+_SUBSTITUTION_SIGNATURE = """\
+private fn f(@Int, @String -> @Unit)
+  requires({pre})
+  ensures(true)
+  effects(pure)
+{{
+  ()
+}}
+"""
+
+
+def _substituted(pre: str) -> object:
+    from vera import ast as A
+    from vera.naming import EMPTY_ALIAS_ENV
+    from vera.slots import substitute_parameters
+
+    source = _SUBSTITUTION_SIGNATURE.format(pre=pre)
+    fn = parse_to_ast(source).declarations[0].decl
+    assert isinstance(fn, A.FnDecl)
+    requires = next(c for c in fn.contracts if isinstance(c, A.Requires))
+    args = (A.IntLit(value=5, span=None), A.StringLit(value="x", span=None))
+    return substitute_parameters(
+        requires.expr, fn.params, args, EMPTY_ALIAS_ENV, None)
+
+
+def _slot_refs(node: object) -> list[object]:
+    """Every slot reference reachable from *node*, through any field."""
+    import dataclasses
+
+    from vera import ast as A
+
+    found: list[object] = []
+
+    def walk(value: object) -> None:
+        if isinstance(value, A.SlotRef):
+            found.append(value)
+        if isinstance(value, tuple):
+            for item in value:
+                walk(item)
+        elif dataclasses.is_dataclass(value) and not isinstance(value, type):
+            for f in dataclasses.fields(value):
+                walk(getattr(value, f.name))
+
+    walk(node)
+    return found
+
+
+class TestParameterSubstitution:
+    """A precondition rebuilt in call-site terms is exact, or refused."""
+
+    def test_a_parameter_inside_an_interpolation_is_substituted(self) -> None:
+        from vera import ast as A
+
+        rebuilt = _substituted('string_length("n=\\(@Int.0)") > 0')
+        assert isinstance(rebuilt, A.Expr)
+        assert _slot_refs(rebuilt) == []
+        assert A.format_expr(rebuilt) == 'string_length("n=\\(5)") > 0'
+
+    @pytest.mark.parametrize("pre", [
+        # The branch's `@Int.0` is the `let`, not the parameter.
+        "if true then { let @Int = 1; @Int.0 > 0 } else { false }",
+        # The arm binds an `@Int`; its `@String.0` is still the parameter.
+        "match @Int.0 { @Int -> string_length(@String.0) > @Int.0 }",
+        # The quantifier's function binds its own `@Int`.
+        "forall(@Int, 3, fn(@Int -> @Bool) effects(pure) {"
+        " @Int.0 < string_length(@String.0) })",
+    ])
+    def test_a_binder_is_refused_not_half_substituted(self, pre: str) -> None:
+        assert _substituted(pre) is None
+
+
 # =====================================================================
 # Contract predicates: the walks #801 did not extend
 # =====================================================================
@@ -554,6 +631,407 @@ def test_two_preconditions_spelled_alike_at_one_call_are_two() -> None:
     # The measure is evaluated on the arguments first, so it is
     # `need_pos`'s precondition that stops the hop, not `f`'s.
     assert "Precondition violation in need_pos" in ran.trap_message
+
+
+# =====================================================================
+# The recursive-call walk: the env a call's arguments are read in
+# =====================================================================
+#
+# The measure at a tail call is evaluated on the call's arguments, read in
+# the env the recursive-call walk builds as it crosses the body — the same
+# walk the termination proof reads.  Two things can go wrong there, and each
+# is a verdict about a value the compiled program never computes.
+
+# A call in a tail call's argument, guarded by an enclosing `if`.  The walk
+# re-translates the body to find the call, without the `if` among the
+# solver's path conditions; what that translation found is the body's, which
+# the body walk has already recorded under the right facts.
+GUARDED_CALL_IN_TAIL_ARGUMENT = """\
+private fn need_pos(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(@Int.result == @Int.0)
+  effects(pure)
+{
+  @Int.0
+}
+
+public fn walk(@Int, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then {
+    0
+  } else {
+    if @Int.0 > 0 then {
+      walk(need_pos(@Int.0), @Nat.0 - 1)
+    } else {
+      0
+    }
+  }
+}
+"""
+
+# The same call, bound by a `let` before the tail call.
+GUARDED_CALL_IN_TAIL_LET = """\
+private fn need_pos(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(@Int.result == @Int.0)
+  effects(pure)
+{
+  @Int.0
+}
+
+public fn walk(@Int, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then {
+    0
+  } else {
+    if @Int.0 > 0 then {
+      let @Int = need_pos(@Int.0);
+      walk(@Int.0, @Nat.0 - 1)
+    } else {
+      0
+    }
+  }
+}
+"""
+
+
+@pytest.mark.parametrize("source", [GUARDED_CALL_IN_TAIL_ARGUMENT,
+                                    GUARDED_CALL_IN_TAIL_LET])
+def test_a_guarded_call_before_a_tail_call_is_not_charged_to_it(
+        source: str) -> None:
+    v = _verify(source)
+    tail = _at(source, "walk(", 1)
+    assert _records(v, "call_pre", tail) == []
+    assert v.ok, v.errors
+    assert _run(source, "walk", [3, 4]).value == 0
+
+
+# The same calls unguarded: a violation the body walk records at the call
+# itself, once.  The walk that finds the tail call translates the argument
+# again, and the `let` before it, and what it found there was reported a
+# second time, at the tail call.
+UNGUARDED_CALL_IN_TAIL_ARGUMENT = GUARDED_CALL_IN_TAIL_ARGUMENT.replace(
+    """    if @Int.0 > 0 then {
+      walk(need_pos(@Int.0), @Nat.0 - 1)
+    } else {
+      0
+    }""", "    walk(need_pos(@Int.0), @Nat.0 - 1)")
+UNGUARDED_CALL_IN_TAIL_LET = GUARDED_CALL_IN_TAIL_LET.replace(
+    """    if @Int.0 > 0 then {
+      let @Int = need_pos(@Int.0);
+      walk(@Int.0, @Nat.0 - 1)
+    } else {
+      0
+    }""", """    let @Int = need_pos(@Int.0);
+    walk(@Int.0, @Nat.0 - 1)""")
+
+
+@pytest.mark.parametrize("source", [UNGUARDED_CALL_IN_TAIL_ARGUMENT,
+                                    UNGUARDED_CALL_IN_TAIL_LET])
+def test_a_violated_call_before_a_tail_call_is_one_record_at_the_call(
+        source: str) -> None:
+    assert source.count("if @Int.0 > 0") == 0
+    v = _verify(source)
+    call = _at(source, "need_pos(@Int.0)")
+    assert _records(v, "call_pre", call) == ["violated/E501"]
+    assert _records(v, "call_pre", _at(source, "walk(", 1)) == []
+    assert [e for e in v.errors if e[0] == "E501"] == [("E501", *call)]
+    assert "need_pos" in _run(source, "walk", [-1, 2]).trap_message
+
+
+# A tail call whose argument a `let` binds to a value the SMT layer cannot
+# read (an effect operation's result).  Read against the enclosing env, the
+# argument was the PARAMETER, whose path proves the measure's subtraction —
+# a Tier-1 claim about a value the program never passes.  The compiled
+# measure is evaluated on the value `get` returns, and traps on 0.
+OPAQUE_TAIL_ARGUMENT = """\
+public fn f(@Nat -> @Nat)
+  requires(@Nat.0 >= 1)
+  ensures(true)
+  decreases(@Nat.0 - 1)
+  effects(<State<Nat>>)
+{
+  if @Nat.0 <= 1 then {
+    0
+  } else {
+    let @Nat = get(());
+    f(@Nat.0)
+  }
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Nat>](@Nat = 0) {
+    get(@Unit) -> { resume(@Nat.0) },
+    put(@Nat) -> { resume(()) }
+  } in {
+    f(5)
+  }
+}
+"""
+
+
+def test_an_opaque_tail_argument_leaves_the_measure_to_its_guard() -> None:
+    v = _verify(OPAQUE_TAIL_ARGUMENT)
+    tail = _at(OPAQUE_TAIL_ARGUMENT, "f(@Nat.0)")
+    assert _records(v, "nat_sub", tail) == ["tier3"]
+    assert _run(OPAQUE_TAIL_ARGUMENT, "main", []).trap_kind is not None
+
+
+# The termination proof reads the same walk, so every binder it crossed
+# wrongly was a `decreases` proved over the wrong value.  Each program below
+# was reported `decreases`/verified while its runtime measure guard trapped
+# on the first call: the call's argument was read against the enclosing
+# PARAMETER, or the call was not seen at all.
+UNTRANSLATABLE_LET_BEFORE_CALL = """\
+public fn f(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(<State<Nat>>)
+{
+  if @Nat.0 == 0 then {
+    0
+  } else {
+    let @Nat = get(());
+    f(@Nat.0 - 1)
+  }
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Nat>](@Nat = 10) {
+    get(@Unit) -> { resume(@Nat.0) },
+    put(@Nat) -> { resume(()) }
+  } in {
+    f(2)
+  }
+}
+"""
+
+# A destructure: its right-hand side hides a call that does not decrease, and
+# the call after it reads the destructured slot, not the parameter.
+CALL_IN_A_DESTRUCTURE = """\
+public fn f(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then {
+    0
+  } else {
+    let Tuple<@Nat, @Nat> = Tuple(f(@Nat.0), 1);
+    f(@Nat.0 - 1)
+  }
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  f(3)
+}
+"""
+
+# A closure's `@Nat.0` is its own parameter.
+CALL_IN_A_CLOSURE = """\
+public fn f(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then {
+    0
+  } else {
+    apply_fn(fn(@Nat -> @Nat) effects(pure) { f(@Nat.0 - 1) }, @Nat.0 + 5)
+  }
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  f(2)
+}
+"""
+
+# A handler clause's `@Nat.0` is the handler's state.
+CALL_IN_A_HANDLER_CLAUSE = """\
+public fn f(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then {
+    0
+  } else {
+    handle[State<Nat>](@Nat = @Nat.0 + 5) {
+      get(@Unit) -> { resume(f(@Nat.0 - 1)) },
+      put(@Nat) -> { resume(()) }
+    } in {
+      get(())
+    }
+  }
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  f(2)
+}
+"""
+
+
+# A call in an `if` condition: evaluated before either branch.
+CALL_IN_A_CONDITION = """\
+public fn f(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then {
+    0
+  } else {
+    if f(@Nat.0) > 100 then {
+      0
+    } else {
+      f(@Nat.0 - 1)
+    }
+  }
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  f(2)
+}
+"""
+
+# A call in a quantifier's predicate, a closure called on each element.
+CALL_IN_A_QUANTIFIER = """\
+public fn f(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then {
+    0
+  } else {
+    if forall(@Nat, 1, fn(@Nat -> @Bool) effects(pure) {
+      f(@Nat.1 + 1) > 0
+    }) then {
+      f(@Nat.0 - 1)
+    } else {
+      f(@Nat.0 - 1)
+    }
+  }
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  f(2)
+}
+"""
+
+
+@pytest.mark.parametrize("source", [
+    UNTRANSLATABLE_LET_BEFORE_CALL, CALL_IN_A_DESTRUCTURE,
+    CALL_IN_A_CLOSURE, CALL_IN_A_HANDLER_CLAUSE, CALL_IN_A_CONDITION,
+    CALL_IN_A_QUANTIFIER,
+], ids=["untranslatable-let", "destructure", "closure", "handler-clause",
+        "if-condition", "quantifier"])
+def test_the_termination_proof_sees_every_call_in_its_scope(
+        source: str) -> None:
+    v = _verify(source)
+    decreases = sorted(
+        f"{o.status}/{o.error_code}" if o.error_code else o.status
+        for o in v.obligations if o.kind == "decreases")
+    assert decreases == ["tier3/E525"]
+    ran = _run(source, "main", [])
+    assert "failed to decrease" in ran.trap_message, ran
+
+
+# The rendering walk behind `show` asks whether a type holds a `@Float64`
+# by descending its constructor fields.  A non-regular declaration gives that
+# descent no fixed point, and `verify()` is a public entry point whose
+# check-clean precondition is its caller's to keep, so the walk must decline
+# the type rather than recurse without end (#1429's rule).
+NON_REGULAR_SHOWN = """\
+private data Nest<T> { N(Nest<Option<T>>), Z }
+
+public fn f(@Nest<Int> -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  show(@Nest<Int>.0)
+}
+"""
+
+
+def test_a_non_regular_type_is_declined_by_the_rendering_walk() -> None:
+    import time
+
+    started = time.monotonic()
+    result = verify(parse_to_ast(NON_REGULAR_SHOWN), NON_REGULAR_SHOWN)
+    assert time.monotonic() - started < 60
+    show = _at(NON_REGULAR_SHOWN, "show(")
+    assert [o.status for o in result.obligations
+            if o.kind == "float_to_int_domain"
+            and (o.line, o.column) == show] == ["tier3"]
+
+
+def test_the_call_pre_table_keeps_no_record_alive() -> None:
+    """The identity table behind `_call_pre_recorded` must not keep a
+    record alive once the buffer holding it is discarded, as a disclosure
+    rerun's or a generic instance's buffer is."""
+    import gc
+    import weakref
+
+    from vera.verifier import ContractVerifier
+
+    program = parse_to_ast(CHAR_CODE)
+    _diags, arts = typecheck_with_artifacts(program, CHAR_CODE)
+    verifier = ContractVerifier(
+        source=CHAR_CODE,
+        expr_types=arts.expr_semantic_types,
+        expr_target_types=arts.expr_target_types,
+    )
+    verifier.verify_program(program)
+    refs = [weakref.ref(o) for o in verifier.obligations
+            if o.kind == "call_pre"]
+    assert refs
+    verifier.obligations = []
+    gc.collect()
+    assert [r() for r in refs] == [None] * len(refs)
 
 
 # A predicate is checked where it is declared, whatever the declaration.

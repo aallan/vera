@@ -1093,6 +1093,28 @@ class SmtContext:
         self._call_discharges.clear()
         return kept
 
+    @contextlib.contextmanager
+    def call_outcomes_discarded(self) -> Iterator[None]:
+        """Translate without keeping a call-site outcome (#1480).
+
+        For a translation that re-reads code another walk has already
+        obligated under the right facts: the recursive-call walk re-reads a
+        function's body to find its calls, and the arguments of a tail call
+        it found, without the path conditions the body walk held.  Whatever
+        it finds at a call is a repeat at best and a check under the wrong
+        facts at worst, so every violation, demotion and discharge recorded
+        inside the block is dropped on exit.  Outcomes already pending when
+        the block is entered are kept.
+        """
+        marks = (len(self._call_violations), len(self._call_demotions),
+                 len(self._call_discharges))
+        try:
+            yield
+        finally:
+            del self._call_violations[marks[0]:]
+            del self._call_demotions[marks[1]:]
+            del self._call_discharges[marks[2]:]
+
     def _record_call_demotion(
         self,
         callee_info: Any,

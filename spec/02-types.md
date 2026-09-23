@@ -244,6 +244,7 @@ Refinement predicates MUST be drawn from the following decidable logic fragment:
 - Arithmetic: `+`, `-`, `*` (where at least one operand of `*` is a literal)
 - Comparison: `==`, `!=`, `<`, `>`, `<=`, `>=`
 - Boolean connectives: `&&`, `||`, `!`, `==>`  (where `==>` is logical implication)
+- Conditional: `if P then { A } else { B }` over allowed sub-expressions — the one form that evaluates only the branch its condition selects, so the condition guards each branch (§2.6)
 - `array_length(@Array<T>.n)` — array length
 - `length(@String.n)` — string length
 - `true`, `false`

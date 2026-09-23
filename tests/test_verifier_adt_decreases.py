@@ -360,7 +360,7 @@ private fn sum(@List<Int> -> @Int)
         assert result.summary.tier1_verified == 8
 
     def test_overall_tier_counts(self) -> None:
-        """All examples together: 415 T1 / 141 T3 / 556 total (current).
+        """All examples together: 416 T1 / 140 T3 / 556 total (current).
 
         Counts move when examples are added or their contracts become
         more / less verifiable.  Trajectory:
@@ -730,9 +730,14 @@ private fn sum(@List<Int> -> @Int)
         # float, are left to the truncation trap (+11 T3).  No example's
         # measure or refinement predicate performs an operation, so the
         # other two #1480 positions move nothing: 413/130/543 ->
-        # 415/141/556.
-        assert t1 == 415, f"Expected 415 T1, got {t1}"
-        assert t3 == 141, f"Expected 141 T3, got {t3}"
+        # 415/141/556.  And the recursive-call walk now reads a call's
+        # arguments in the scope they are written in, which PROVES
+        # `json.vera`'s `sum_hourly` measure: its call passes the `let`-bound
+        # `@Nat.0 - 1`, and the `@Float64` bound by an untranslatable `match`
+        # before it is now an opaque value in its slot rather than a missing
+        # one, so every argument translates (one T3 -> T1): 416/140/556.
+        assert t1 == 416, f"Expected 416 T1, got {t1}"
+        assert t3 == 140, f"Expected 140 T3, got {t3}"
         assert total == 556, f"Expected 556 total, got {total}"
         # Zero is the load-bearing value, not a vacuous one: every corpus
         # narrowing is now covered by an emitted guard, so any reappearance
