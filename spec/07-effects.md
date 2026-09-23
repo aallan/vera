@@ -181,6 +181,7 @@ For the builtin `State` effect the state declaration **is** the `State<T>` cell:
 
 **Cell identity is the RESOLVED `T`, not the spelling.** `State<T>` is one effect instance per resolved `T`, so every spelling that resolves to the same type names the same cell — whether that type is scalar or composite, and whether the alias is plain or parameterized. A `handle[State<MaybeInt>]` under `type MaybeInt = Option<Int>` therefore handles a callee declaring `effects(<State<Option<Int>>>)`, and the two share one cell:
 
+<!-- vera:run fn="main" stdout="7" -->
 ```vera
 type MaybeInt = Option<Int>;
 
@@ -482,6 +483,7 @@ The argument to `old` and `new` MUST be an *effect reference* — the name of a 
 
 When a function calls other functions, the effects compose via row union:
 
+<!-- vera:skip-check category="INCOMPLETE" reason="calls bar and baz, which the example describes but does not define" -->
 ```
 private fn foo(@Unit -> @Unit)
   requires(true)

@@ -1,26 +1,30 @@
-"""Tests for scripts/doc_annotations.py — inline fence-annotation support (#538).
+"""Tests for scripts/doc_annotations.py — inline fence markers (#538, #1481).
 
-The doc code-block gates (check_skill_examples.py and friends) used to keep
-line-number-keyed ALLOWLIST dicts that went stale on every doc edit and needed
-scripts/fix_allowlists.py to renumber (whose bulk-shift heuristic was itself
-buggy — #606).  #538 replaced both with inline HTML-comment annotations placed
-immediately before each fence:
+The documentation gates used to keep line-number-keyed ALLOWLIST dicts that
+went stale on every doc edit and needed scripts/fix_allowlists.py to renumber
+(whose bulk-shift heuristic was itself buggy — #606).  #538 replaced both with
+inline HTML-comment annotations placed immediately before each fence:
 
     <!-- vera:skip-parse category="FRAGMENT" reason="bare type expression" -->
     ```vera
     List<Result<User, Error>>
     ```
 
-These tests pin the shared scanning/evaluation module the gates now use:
+These tests pin the shared scanning/evaluation module the documentation
+example gate (scripts/check_doc_examples.py) uses:
 
   - an annotated unparseable block is SKIPPED (expected failure — gate green)
   - an unannotated unparseable block FAILS the gate
   - a STALE annotation (block passes the stage it is exempted from) FAILS the
     gate, so the skip surface shrinks over time (mirrors check_e602_clean.py's
     stale-entry treatment)
-  - malformed / dangling / duplicate annotations are hard problems
-  - build_site.py's strip helper removes annotation lines so they never leak
-    into generated site assets (docs/SKILL.md, docs/llms-full.txt)
+  - malformed / dangling / duplicate annotations are hard problems, and so is
+    a category outside the closed vocabulary (#1481)
+  - a `vera:run` marker names an invocation and its exact output, and every
+    way of writing one wrong is a problem rather than a silently ignored
+    line (#1481)
+  - build_site.py's strip helper removes skip AND run marker lines so they
+    never leak into generated site assets (docs/SKILL.md, docs/llms-full.txt)
 """
 
 from __future__ import annotations
@@ -42,8 +46,10 @@ _spec.loader.exec_module(doc_annotations)
 scan_markdown = doc_annotations.scan_markdown
 scan_html = doc_annotations.scan_html
 evaluate_block = doc_annotations.evaluate_block
-unsupported_stage_annotations = doc_annotations.unsupported_stage_annotations
 strip_annotations = doc_annotations.strip_annotations
+parse_run_marker = doc_annotations.parse_run_marker
+RunMarker = doc_annotations.RunMarker
+CATEGORIES = doc_annotations.CATEGORIES
 CodeBlock = doc_annotations.CodeBlock
 scan_diagnostic_examples = doc_annotations.scan_diagnostic_examples
 replay_diagnostic_examples = doc_annotations.replay_diagnostic_examples
@@ -148,8 +154,8 @@ class TestScanMarkdown:
     def test_duplicate_stage_is_problem(self, tmp_path: Path) -> None:
         path = _md(
             tmp_path,
-            '<!-- vera:skip-parse category="A" reason="one" -->\n'
-            '<!-- vera:skip-parse category="B" reason="two" -->\n'
+            '<!-- vera:skip-parse category="FRAGMENT" reason="one" -->\n'
+            '<!-- vera:skip-parse category="INCOMPLETE" reason="two" -->\n'
             "```vera\nx\n```\n",
         )
         _blocks, problems = scan_markdown(path)
@@ -314,16 +320,181 @@ class TestEvaluateBlock:
         )
         assert [o.status for o in outcomes] == ["ok", "stale"]
 
-    def test_unsupported_stage_annotations(self) -> None:
-        ann_p = doc_annotations.Annotation(1, "parse", "FRAGMENT", "r")
-        ann_c = doc_annotations.Annotation(2, "check", "INCOMPLETE", "r")
-        block = CodeBlock(3, "vera", "x", (ann_p, ann_c))
-        extra = unsupported_stage_annotations(block, {"parse"})
-        assert extra == [ann_c]
+
+class TestCategories:
+    """A skip marker's category is one of a closed vocabulary (#1481), so a
+    typo cannot mint a new label the gate's report would count on its own."""
+
+    def test_every_defined_category_is_accepted(self, tmp_path: Path) -> None:
+        text = "".join(
+            f'<!-- vera:skip-parse category="{c}" reason="r" -->\n'
+            "```vera\nx\n```\n\n"
+            for c in CATEGORIES
+        )
+        blocks, problems = scan_markdown(_md(tmp_path, text))
+        assert problems == []
+        assert [b.annotations[0].category for b in blocks] == list(CATEGORIES)
+
+    def test_unknown_category_is_problem(self, tmp_path: Path) -> None:
+        path = _md(
+            tmp_path,
+            '<!-- vera:skip-parse category="SNIPPET" reason="retired label" -->\n'
+            "```vera\nx\n```\n",
+        )
+        blocks, problems = scan_markdown(path)
+        assert len(problems) == 1
+        assert "unknown category 'SNIPPET'" in problems[0]
+        # The marker still attaches, so the block's stage outcome is still
+        # computed; the problem alone fails the gate.
+        assert blocks[0].annotations[0].category == "SNIPPET"
+
+    def test_every_category_has_a_definition(self) -> None:
+        assert CATEGORIES
+        assert all(text.strip() for text in CATEGORIES.values())
+
+
+class TestRunMarkers:
+    """`vera:run` names an invocation and the exact output it prints (#1481)."""
+
+    def test_marker_attaches_to_following_fence(self, tmp_path: Path) -> None:
+        path = _md(
+            tmp_path,
+            '<!-- vera:run fn="sum_with_state" args="5" stdout="15" -->\n'
+            '<!-- vera:run fn="sum_with_state" args="0" stdout="0" -->\n'
+            "```vera\nprogram\n```\n",
+        )
+        blocks, problems = scan_markdown(path)
+        assert problems == []
+        assert blocks[0].annotations == ()
+        assert blocks[0].runs == (
+            RunMarker(1, "sum_with_state", ("5",), "15"),
+            RunMarker(2, "sum_with_state", ("0",), "0"),
+        )
+
+    def test_args_split_like_a_shell_and_escapes_decode(self) -> None:
+        line = (
+            '<!-- vera:run fn="f" args="\'two words\' -3" '
+            'stdout="a\\nb \\"q\\" \\\\ end" -->'
+        )
+        marker = parse_run_marker(line, 7)
+        assert marker == RunMarker(7, "f", ("two words", "-3"), 'a\nb "q" \\ end')
+
+    def test_args_is_optional_and_stdout_may_be_empty(self) -> None:
+        marker = parse_run_marker('<!-- vera:run fn="main" stdout="" -->', 1)
+        assert marker == RunMarker(1, "main", (), "")
+
+    def test_a_line_that_is_not_a_run_marker_is_none(self) -> None:
+        assert parse_run_marker("plain prose", 1) is None
+        assert parse_run_marker(
+            '<!-- vera:skip-parse category="FRAGMENT" reason="r" -->', 1
+        ) is None
+
+    def test_missing_stdout_is_problem(self) -> None:
+        problem = parse_run_marker('<!-- vera:run fn="main" -->', 3)
+        assert isinstance(problem, str)
+        assert problem.startswith("line 3:") and "'stdout'" in problem
+
+    def test_missing_fn_is_problem(self) -> None:
+        problem = parse_run_marker('<!-- vera:run stdout="1" -->', 3)
+        assert isinstance(problem, str) and "'fn'" in problem
+
+    def test_unknown_attribute_is_problem(self) -> None:
+        problem = parse_run_marker(
+            '<!-- vera:run fn="main" stdin="x" stdout="1" -->', 1
+        )
+        assert isinstance(problem, str) and "unknown attribute 'stdin'" in problem
+
+    def test_repeated_attribute_is_problem(self) -> None:
+        problem = parse_run_marker(
+            '<!-- vera:run fn="a" fn="b" stdout="1" -->', 1
+        )
+        assert isinstance(problem, str) and "repeats the attribute 'fn'" in problem
+
+    def test_unknown_escape_is_problem(self) -> None:
+        problem = parse_run_marker(
+            '<!-- vera:run fn="main" stdout="a\\zb" -->', 1
+        )
+        assert isinstance(problem, str) and "escape" in problem
+
+    def test_text_outside_the_attributes_is_problem(self) -> None:
+        problem = parse_run_marker(
+            '<!-- vera:run fn="main" stdout="1" trailing -->', 1
+        )
+        assert isinstance(problem, str) and "malformed vera:run" in problem
+
+    def test_fn_must_be_a_function_name(self) -> None:
+        problem = parse_run_marker('<!-- vera:run fn="Main" stdout="1" -->', 1)
+        assert isinstance(problem, str) and "not a function name" in problem
+
+    def test_unbalanced_args_quote_is_problem(self) -> None:
+        problem = parse_run_marker(
+            '<!-- vera:run fn="main" args="\'open" stdout="1" -->', 1
+        )
+        assert isinstance(problem, str) and "do not split" in problem
+
+    def test_problem_surfaces_through_the_scanner(self, tmp_path: Path) -> None:
+        path = _md(
+            tmp_path,
+            '<!-- vera:run fn="main" -->\n```vera\nprogram\n```\n',
+        )
+        blocks, problems = scan_markdown(path)
+        assert len(problems) == 1 and "'stdout'" in problems[0]
+        assert blocks[0].runs == ()
+
+    def test_misspelt_directive_is_malformed_not_ignored(
+        self, tmp_path: Path,
+    ) -> None:
+        """A directive the grammar does not know must not quietly do
+        nothing: `vera:runs` would otherwise leave the block unrun while
+        the document claims an output."""
+        path = _md(
+            tmp_path,
+            '<!-- vera:runs fn="main" stdout="1" -->\n```vera\nprogram\n```\n',
+        )
+        blocks, problems = scan_markdown(path)
+        assert len(problems) == 1 and "malformed vera marker" in problems[0]
+        assert blocks[0].runs == ()
+
+    def test_dangling_run_marker_is_problem(self, tmp_path: Path) -> None:
+        path = _md(
+            tmp_path,
+            '<!-- vera:run fn="main" stdout="1" -->\n\nprose\n',
+        )
+        _blocks, problems = scan_markdown(path)
+        assert len(problems) == 1 and "dangling" in problems[0]
+
+    def test_diagnostic_pair_is_not_a_marker_problem(
+        self, tmp_path: Path,
+    ) -> None:
+        """The `vera:diagnostic` pair belongs to its own scanner; the marker
+        hint must leave it alone."""
+        _blocks, problems = scan_markdown(_md(tmp_path, _E130_EXAMPLE))
+        assert problems == []
+
+    def test_run_marker_on_a_pre_block(self, tmp_path: Path) -> None:
+        path = tmp_path / "index.html"
+        path.write_text(
+            '<!-- vera:run fn="main" stdout="5" -->\n'
+            "<pre>public fn main(-&gt; @Int) {}</pre>\n",
+            encoding="utf-8",
+        )
+        blocks, problems = scan_html(path)
+        assert problems == []
+        assert blocks[0].runs == (RunMarker(1, "main", (), "5"),)
 
 
 class TestStripAnnotations:
     """build_site.py must not leak annotations into generated site assets."""
+
+    def test_run_marker_lines_removed(self) -> None:
+        text = (
+            "before\n"
+            '<!-- vera:run fn="main" stdout="5" -->\n'
+            "```vera\nprogram\n```\n"
+        )
+        stripped = strip_annotations(text)
+        assert "vera:run" not in stripped
+        assert "before\n```vera\nprogram\n```" in stripped
 
     def test_annotation_lines_removed(self) -> None:
         text = (
@@ -423,9 +594,9 @@ class TestScanDiagnosticExamples:
     def test_bare_unfenced_body_is_a_problem(self, tmp_path: Path) -> None:
         """CodeRabbit #1377: a program left bare between the two
         annotation comments (not wrapped in its own ```vera fence) is
-        invisible to `run_parse_only_gate`, which only collects fenced
-        blocks — so the scanner must refuse it rather than silently
-        replay an example the sibling parse-only gate never sees."""
+        invisible to the documentation example gate, which only
+        collects fenced blocks — so the scanner must refuse it rather
+        than silently replay an example the sibling gate never sees."""
         text = (
             '<!-- vera:diagnostic file="main.vera" -->\n'
             "program\n<!-- /vera:diagnostic -->\n```text\nx\n```\n"

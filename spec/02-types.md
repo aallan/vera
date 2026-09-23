@@ -329,14 +329,15 @@ The guard is *defense in depth* for the unverified path: a `vera verify`-clean p
 
 Functions and data types may be parameterised by type variables:
 
-<!-- vera:skip-check category="INCOMPLETE" reason="forall<A,B> fn swap uses Tuple" -->
 ```
 private forall<A, B> fn swap(@Tuple<A, B> -> @Tuple<B, A>)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  Tuple(@B.0, @A.0)
+  match @Tuple<A, B>.0 {
+    Tuple(@A, @B) -> Tuple(@B.0, @A.0)
+  }
 }
 ```
 

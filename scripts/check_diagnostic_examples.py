@@ -1,10 +1,9 @@
 #!/usr/bin/env python
 """Replay `vera:diagnostic`-annotated ```text fences against live output (#1291).
 
-The doc-example gates (`check_debruijn_examples.py` and siblings) parse
-```vera fences only, so a ```text fence carrying RENDERED COMPILER
-OUTPUT — a diagnostic block, a fix text, a trap message — is validated by
-nothing: DE_BRUIJN.md's §6.2 E130 example is the instance that motivated
+The doc example gate (`check_doc_examples.py`) reads ```vera fences
+only, so a ```text fence carrying RENDERED COMPILER OUTPUT — a diagnostic
+block, a fix text, a trap message — is validated by nothing else: DE_BRUIJN.md's §6.2 E130 example is the instance that motivated
 this (it went stale the moment #1262 extended E130's fix text, and every
 ```vera-fence gate stayed green throughout, since parsing Vera source was
 never what that block needed checked).
@@ -14,7 +13,7 @@ For each `<!-- vera:diagnostic file="..." [stage="check"]
 immediately followed by a ```text fence, this script re-parses and
 re-checks the program and asserts the fence is byte-identical to the live
 `Diagnostic.format()` output — the same replay-not-trust shape the ```vera
-fence gates already use, applied to rendered TEXT instead of source.
+fence gate already uses, applied to rendered TEXT instead of source.
 
 Scope: this is the "marker-annotated subset" #1291 asks for first, not a
 sweep of every ```text fence that happens to look like diagnostic output.

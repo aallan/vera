@@ -1,43 +1,58 @@
 #!/usr/bin/env python
-"""Inline fence-annotation support for the documentation code-block gates (#538).
+r"""Inline fence markers for the documentation example gate (#538, #1481).
 
-Documentation code blocks that intentionally fail a compiler stage carry an
-HTML-comment annotation on the line immediately before the opening fence::
+A documentation code block carries its gate instructions as HTML comments on
+the lines immediately before its opening fence (or its ``<pre>`` tag)::
 
     <!-- vera:skip-parse category="FRAGMENT" reason="bare type expression" -->
     ```vera
     List<Result<User, Error>>
     ```
 
-Each pipeline stage has its own directive — ``vera:skip-parse``,
-``vera:skip-check``, ``vera:skip-verify`` — and directives stack (one per
-line) when a block is exempt from more than one stage.  ``category`` is one of
-the conventional taxonomy labels (FRAGMENT, MISMATCH, FUTURE, INCOMPLETE,
-ILLUSTRATIVE, SNIPPET, EXPECTED); ``reason`` is free text.  Neither value may
-contain a double quote.
+There are two kinds of marker, read by ``scripts/check_doc_examples.py``:
 
-The annotation travels with its fence through document edits, so there are no
+- **Skip markers** — ``vera:skip-parse``, ``vera:skip-check``,
+  ``vera:skip-verify`` — say the block is expected to FAIL that stage, and
+  why.  ``category`` is one of :data:`CATEGORIES`, a closed vocabulary, so a
+  typo'd category is a problem rather than a new label; ``reason`` is free
+  text.  Neither value may contain a double quote.  A block carries at most
+  one skip marker per stage, and the gate stops at the first marked stage.
+- **Run markers** — ``vera:run`` — name an invocation and the output it must
+  print::
+
+      <!-- vera:run fn="sum_with_state" args="5" stdout="15" -->
+
+  ``fn`` is the function ``vera run --fn`` calls, ``args`` (optional) its
+  arguments, split the way a POSIX shell splits a command line, and
+  ``stdout`` exactly what the run prints (``\n`` for a line break, ``\"``
+  for a double quote, ``\\`` for a backslash).  A block may carry several,
+  one invocation each, and none together with a skip marker: a block the
+  gate stops early never reaches the run.
+
+The markers travel with their fence through document edits, so there are no
 line numbers to maintain.  This replaced the line-number-keyed ``ALLOWLIST``
 dicts in the check scripts and ``scripts/fix_allowlists.py`` (whose bulk-shift
 renumbering heuristic was itself buggy — #606).
 
-Stale detection: the gates still RUN the exempted stage.  An annotated block
-that *passes* the stage is a stale annotation and fails the gate — the
-annotation must be removed.  This mirrors ``check_e602_clean.py``'s
-stale-entry treatment, so the skip surface shrinks as parser/checker features
-land.  Malformed, dangling, and duplicate annotations are hard failures too.
+Stale detection: the gate still RUNS a skip-marked stage.  A marked block that
+*passes* the stage carries a stale marker and fails the gate — the marker must
+be removed.  This mirrors ``check_e602_clean.py``'s stale-entry treatment, so
+the skip surface shrinks as parser/checker features land.  Malformed,
+dangling, and duplicate markers are hard failures too, and so is any
+``<!-- vera:...`` comment that is not a marker this module knows, so a
+misspelt directive cannot quietly do nothing.
 
 Rendering safety: HTML comments are invisible in rendered markdown, and the
 language tag stays plain ``vera`` so GitHub syntax highlighting is unaffected
 (the rationale for preferring this form over an info-string variant is in
-issue #538).  ``build_site.py`` uses :func:`strip_annotations` so annotations
+issue #538).  ``build_site.py`` uses :func:`strip_annotations` so markers
 never leak into the generated site assets (docs/SKILL.md, docs/llms-full.txt).
 
 A second, unrelated annotation pair lives here too — ``vera:diagnostic`` /
 ``vera:diagnostic``'s closing tag ``/vera:diagnostic`` (#1291) — replaying a
 ```text fence carrying RENDERED COMPILER OUTPUT against a live re-run,
-the same "replay, don't trust" shape as the ```vera fence gates above, for
-content those gates never touch (they parse Vera source; this diffs
+the same "replay, don't trust" shape as the ```vera fence markers above,
+for content the example gate never touches (it runs Vera source; this diffs
 diagnostic TEXT).  See :func:`scan_diagnostic_examples` and
 :func:`replay_diagnostic_examples`.
 """
@@ -46,36 +61,82 @@ from __future__ import annotations
 
 import html
 import re
+import shlex
 import sys
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import NamedTuple
 
-# `run_parse_only_gate` and `replay_diagnostic_examples` below both import
-# from `vera` — pin that to the checkout THIS FILE lives in before either
-# runs, ahead of whichever venv's editable-install finder would otherwise
-# answer first (pinned to whatever checkout `pip install -e` last ran in,
-# possibly a different worktree entirely — plan-file S13).  See TESTING.md's
-# "Running against ANOTHER checkout" section for the sibling pytest-rootdir
-# trap this is NOT — a different mechanism with a different remedy.
+# `replay_diagnostic_examples` below, and `scripts/check_doc_examples.py`,
+# which imports this module, both import from `vera` — pin that to the
+# checkout THIS FILE lives in before either runs, ahead of whichever venv's
+# editable-install finder would otherwise answer first (pinned to whatever
+# checkout `pip install -e` last ran in, possibly a different worktree
+# entirely — plan-file S13).  See TESTING.md's "Running against ANOTHER
+# checkout" section for the sibling pytest-rootdir trap this is NOT — a
+# different mechanism with a different remedy.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+# The stages a skip marker can name, in pipeline order.  The gate's fourth
+# stage, `run`, is driven by `vera:run` markers instead: a block runs only
+# when it names an invocation, so there is nothing for a `skip-run` to skip.
 STAGES = ("parse", "check", "verify")
 
-# A full, well-formed annotation line.
+# The closed category vocabulary for skip markers.  Each entry says what kind
+# of block the marker describes; the gate prints the definitions beside its
+# per-category counts, so a reader of a gate run sees what was skipped and
+# why without opening this file.
+CATEGORIES: dict[str, str] = {
+    "FRAGMENT": (
+        "not a complete program: an expression, a statement, a clause, a "
+        "signature or a template"
+    ),
+    "INCOMPLETE": (
+        "complete declarations that use a function, type or module the "
+        "block does not define"
+    ),
+    "FUTURE": (
+        "syntax or a feature the spec describes and the reference compiler "
+        "does not implement yet"
+    ),
+    "ILLUSTRATIVE": (
+        "a construct shown in a form the toolchain does not accept as "
+        "written: a contract left deliberately loose, or a declaration "
+        "shown the way the compiler injects it"
+    ),
+    "WRONG": (
+        "a deliberate mistake the prose labels as one; the marked stage is "
+        "where the toolchain rejects it"
+    ),
+}
+
+# A full, well-formed skip-marker line.
 ANNOTATION_RE = re.compile(
     r'^\s*<!--\s*vera:skip-(parse|check|verify)\s+'
     r'category="([^"]+)"\s+reason="([^"]+)"\s*-->\s*$'
 )
 
-# Anything that *looks* like an annotation attempt.  A line matching this but
-# not ANNOTATION_RE is reported as malformed rather than silently ignored —
-# a typo'd annotation must not quietly un-skip (or fail to skip) a block.
-ANNOTATION_HINT_RE = re.compile(r"<!--.*vera:skip")
+# A run-marker line; its attribute list is parsed by `parse_run_marker`.
+RUN_MARKER_RE = re.compile(r"^\s*<!--\s*vera:run\b(.*?)-->\s*$")
+_RUN_ATTR_RE = re.compile(r'\s*([A-Za-z_]+)="((?:[^"\\]|\\.)*)"')
+_RUN_ESCAPES = {"n": "\n", "t": "\t", '"': '"', "\\": "\\"}
+_RUN_ESCAPE_RE = re.compile(r"\\(.)")
+_FN_NAME_RE = re.compile(r"^[a-z_][A-Za-z0-9_]*$")
 
-# Used by build_site.py to keep annotations out of generated site assets.
+# Anything that *looks* like a marker attempt: a comment opening on a
+# `vera:` directive other than the `vera:diagnostic` pair (which
+# `scan_diagnostic_examples` owns), or naming `vera:skip` / `vera:run`
+# anywhere inside it.  A line matching this but neither marker regex is
+# reported as malformed rather than silently ignored — a typo'd marker must
+# not quietly un-skip (or fail to skip) a block, and a misspelt directive
+# such as `vera:rn` must not quietly run nothing.
+ANNOTATION_HINT_RE = re.compile(
+    r"<!--(?:\s*vera:(?!diagnostic\b)|.*\bvera:(?:skip|run))", re.IGNORECASE
+)
+
+# Used by build_site.py to keep markers out of generated site assets.
 _ANNOTATION_LINE_RE = re.compile(
-    r"^[ \t]*<!--\s*vera:skip-[^\n]*-->[ \t]*\n", re.MULTILINE
+    r"^[ \t]*<!--\s*vera:(?:skip-|run\b)[^\n]*-->[ \t]*\n", re.MULTILINE
 )
 
 _FENCE_OPEN_RE = re.compile(r"^```(\w*)$")
@@ -104,11 +165,14 @@ _FENCE_CLOSE_RE = re.compile(r"^```$")
 #     ```
 #
 # The program is wrapped in its own ```vera fence — not left bare between
-# the two annotation comments — so the shared parse-only doc gate
-# (`run_parse_only_gate`, which only collects FENCED blocks) also parses it;
-# `scan_diagnostic_examples` strips the fence's opening and closing lines
-# before handing the body to the replay, so both gates cover the same
-# source with neither seeing the other's markers.
+# the two annotation comments — so the documentation example gate
+# (`scripts/check_doc_examples.py`, which only collects FENCED blocks) also
+# gates it: the fence carries no skip marker (the open annotation already
+# sits on the line before it), and the example gate reads the pair as the
+# expected failure at `stage`, so the program is held to fail there and
+# nowhere earlier.  `scan_diagnostic_examples` strips the fence's opening
+# and closing lines before handing the body to the replay, so both gates
+# cover the same source with neither seeing the other's markers.
 #
 # `error_code` is optional: when given, the replay selects the one
 # diagnostic with that code (and fails if that is not unique); when
@@ -150,7 +214,7 @@ def scan_diagnostic_examples(path: Path) -> tuple[list[DiagnosticExample], list[
     silently skipped.  The returned :class:`DiagnosticExample`'s
     ``program`` field holds the de-fenced source (the ```vera / ```
     marker lines are stripped, not just skipped over) so it can be
-    handed to the parser exactly as `run_parse_only_gate` would.
+    handed to the parser exactly as the example gate hands a fence body.
     """
     lines = path.read_text(encoding="utf-8").splitlines()
     examples: list[DiagnosticExample] = []
@@ -193,7 +257,7 @@ def scan_diagnostic_examples(path: Path) -> tuple[list[DiagnosticExample], list[
                 problems.append(
                     f"line {start_line}: vera:diagnostic annotation body "
                     f"must be wrapped in its own ```vera fence (so the "
-                    f"parse-only doc gate also covers it), not left bare "
+                    f"documentation example gate also covers it), not left bare "
                     f"between the two annotation comments"
                 )
                 continue
@@ -305,21 +369,31 @@ def replay_diagnostic_examples(
 
 
 class Annotation(NamedTuple):
-    """One vera:skip directive: which stage a block is exempt from, and why."""
+    """One vera:skip marker: which stage a block is expected to fail, and why."""
 
-    line: int  # 1-based line of the annotation comment
+    line: int  # 1-based line of the marker comment
     stage: str  # "parse" | "check" | "verify"
     category: str
     reason: str
 
 
+class RunMarker(NamedTuple):
+    """One vera:run marker: an invocation and the output it must print."""
+
+    line: int  # 1-based line of the marker comment
+    fn: str  # the function `vera run --fn` calls
+    args: tuple[str, ...]  # its arguments, after `--`
+    stdout: str  # the exact output, escapes decoded
+
+
 class CodeBlock(NamedTuple):
-    """A code block plus the annotations attached to it."""
+    """A code block plus the markers attached to it."""
 
     line: int  # 1-based line of the opening fence / <pre> tag
     lang: str  # fence language tag ("" for HTML <pre> blocks)
     content: str
     annotations: tuple[Annotation, ...]
+    runs: tuple[RunMarker, ...] = ()
 
 
 class StageOutcome(NamedTuple):
@@ -331,55 +405,167 @@ class StageOutcome(NamedTuple):
     annotation: Annotation | None  # set for "skipped" / "stale"
 
 
-def _flush_pending(
-    pending: list[Annotation], problems: list[str], where: str
-) -> None:
-    """Report annotations that are not immediately followed by a block."""
+class _Pending:
+    """The markers read since the last block, waiting for the next fence."""
+
+    def __init__(self) -> None:
+        self.skips: list[Annotation] = []
+        self.runs: list[RunMarker] = []
+        self.first_line: int | None = None
+
+    def __bool__(self) -> bool:
+        return bool(self.skips or self.runs)
+
+    def note(self, lineno: int) -> None:
+        if self.first_line is None:
+            self.first_line = lineno
+
+    def take(self) -> tuple[tuple[Annotation, ...], tuple[RunMarker, ...]]:
+        taken = (tuple(self.skips), tuple(self.runs))
+        self.clear()
+        return taken
+
+    def clear(self) -> None:
+        self.skips.clear()
+        self.runs.clear()
+        self.first_line = None
+
+
+def _flush_pending(pending: _Pending, problems: list[str], where: str) -> None:
+    """Report markers that are not immediately followed by a block."""
     if pending:
         problems.append(
-            f"line {pending[0].line}: dangling vera:skip annotation — "
+            f"line {pending.first_line}: dangling vera marker — "
             f"not immediately followed by {where}"
         )
         pending.clear()
 
 
-def _take_annotation(
-    line: str, lineno: int, pending: list[Annotation], problems: list[str]
-) -> bool:
-    """Consume *line* as an annotation (or a malformed attempt at one).
+def _decode_run_value(raw: str) -> str | None:
+    """Decode a run-marker attribute's backslash escapes, or None when it
+    holds one this grammar does not define."""
+    unknown = False
 
-    Returns True when the line was annotation-shaped and has been handled.
+    def one(m: re.Match[str]) -> str:
+        nonlocal unknown
+        if m.group(1) not in _RUN_ESCAPES:
+            unknown = True
+            return ""
+        return _RUN_ESCAPES[m.group(1)]
+
+    decoded = _RUN_ESCAPE_RE.sub(one, raw)
+    return None if unknown else decoded
+
+
+def parse_run_marker(line: str, lineno: int) -> RunMarker | str | None:
+    """Read *line* as a ``vera:run`` marker.
+
+    Returns the :class:`RunMarker`, a problem string when the line is a run
+    marker that does not follow the grammar, or ``None`` when the line is
+    not a run marker at all.  Every attribute is ``name="value"``; ``fn`` and
+    ``stdout`` are required and ``args`` is optional, and any other name, a
+    repeated name, an unknown escape or text outside the attributes is a
+    problem rather than something to ignore.
+    """
+    m = RUN_MARKER_RE.match(line)
+    if m is None:
+        return None
+    expected = (
+        '(expected <!-- vera:run fn="..." [args="..."] stdout="..." -->)'
+    )
+    body = m.group(1)
+    attrs: dict[str, str] = {}
+    pos = 0
+    while True:
+        am = _RUN_ATTR_RE.match(body, pos)
+        if am is None:
+            break
+        name, raw = am.group(1), am.group(2)
+        if name not in ("fn", "args", "stdout"):
+            return f"line {lineno}: vera:run has an unknown attribute {name!r} {expected}"
+        if name in attrs:
+            return f"line {lineno}: vera:run repeats the attribute {name!r}"
+        value = _decode_run_value(raw)
+        if value is None:
+            return (
+                f"line {lineno}: vera:run attribute {name!r} holds an escape "
+                f"other than \\n, \\t, \\\" or \\\\"
+            )
+        attrs[name] = value
+        pos = am.end()
+    if body[pos:].strip():
+        return f"line {lineno}: malformed vera:run marker: {line.strip()!r} {expected}"
+    missing = [a for a in ("fn", "stdout") if a not in attrs]
+    if missing:
+        return (
+            f"line {lineno}: vera:run is missing "
+            f"{' and '.join(repr(a) for a in missing)} {expected}"
+        )
+    if not _FN_NAME_RE.match(attrs["fn"]):
+        return (
+            f"line {lineno}: vera:run fn={attrs['fn']!r} is not a function "
+            f"name"
+        )
+    try:
+        args = tuple(shlex.split(attrs.get("args", ""), posix=True))
+    except ValueError as exc:
+        return f"line {lineno}: vera:run args do not split: {exc}"
+    return RunMarker(lineno, attrs["fn"], args, attrs["stdout"])
+
+
+def _take_annotation(
+    line: str, lineno: int, pending: _Pending, problems: list[str]
+) -> bool:
+    """Consume *line* as a marker (or a malformed attempt at one).
+
+    Returns True when the line was marker-shaped and has been handled.
     """
     m = ANNOTATION_RE.match(line)
     if m:
         ann = Annotation(lineno, m.group(1), m.group(2), m.group(3))
-        if any(p.stage == ann.stage for p in pending):
+        pending.note(lineno)
+        if ann.category not in CATEGORIES:
+            problems.append(
+                f"line {lineno}: vera:skip-{ann.stage} has the unknown "
+                f"category {ann.category!r} (one of "
+                f"{', '.join(CATEGORIES)})"
+            )
+        if any(p.stage == ann.stage for p in pending.skips):
             problems.append(
                 f"line {lineno}: duplicate vera:skip-{ann.stage} annotation "
                 f"for the same block"
             )
         else:
-            pending.append(ann)
+            pending.skips.append(ann)
+        return True
+    run = parse_run_marker(line, lineno)
+    if run is not None:
+        pending.note(lineno)
+        if isinstance(run, str):
+            problems.append(run)
+        else:
+            pending.runs.append(run)
         return True
     if ANNOTATION_HINT_RE.search(line):
         problems.append(
-            f"line {lineno}: malformed vera:skip annotation: {line.strip()!r} "
-            f'(expected <!-- vera:skip-<stage> category="..." reason="..." -->)'
+            f"line {lineno}: malformed vera marker: {line.strip()!r} "
+            f'(expected <!-- vera:skip-<stage> category="..." reason="..." -->'
+            f' or <!-- vera:run fn="..." [args="..."] stdout="..." -->)'
         )
         return True
     return False
 
 
 def scan_markdown(path: Path) -> tuple[list[CodeBlock], list[str]]:
-    """Extract fenced code blocks (with annotations) from a Markdown file.
+    """Extract fenced code blocks (with markers) from a Markdown file.
 
     Returns ``(blocks, problems)``.  ``problems`` lists malformed, dangling,
-    and duplicate annotations — the gates treat a non-empty list as failure.
+    and duplicate markers — the gate treats a non-empty list as failure.
     """
     lines = path.read_text(encoding="utf-8").splitlines()
     blocks: list[CodeBlock] = []
     problems: list[str] = []
-    pending: list[Annotation] = []
+    pending = _Pending()
     i = 0
     while i < len(lines):
         line = lines[i]
@@ -405,10 +591,10 @@ def scan_markdown(path: Path) -> tuple[list[CodeBlock], list[str]]:
                 )
                 pending.clear()
                 break
+            skips, runs = pending.take()
             blocks.append(
-                CodeBlock(start_line, lang, "\n".join(content_lines), tuple(pending))
+                CodeBlock(start_line, lang, "\n".join(content_lines), skips, runs)
             )
-            pending.clear()
             i += 1
             continue
         _flush_pending(pending, problems, "a code fence")
@@ -418,17 +604,17 @@ def scan_markdown(path: Path) -> tuple[list[CodeBlock], list[str]]:
 
 
 def scan_html(path: Path) -> tuple[list[CodeBlock], list[str]]:
-    """Extract ``<pre>`` code blocks (with annotations) from an HTML file.
+    """Extract ``<pre>`` code blocks (with markers) from an HTML file.
 
     Strips HTML tags and decodes entities to recover plain text content.
-    An annotation applies to the ``<pre>`` block opening on the line
+    A marker applies to the ``<pre>`` block opening on the line
     immediately after it.  Returns ``(blocks, problems)`` like
     :func:`scan_markdown`.
     """
     lines = path.read_text(encoding="utf-8").splitlines()
     blocks: list[CodeBlock] = []
     problems: list[str] = []
-    pending: list[Annotation] = []
+    pending = _Pending()
     i = 0
     while i < len(lines):
         line = lines[i]
@@ -449,14 +635,14 @@ def scan_html(path: Path) -> tuple[list[CodeBlock], list[str]]:
                 content = m.group(1)
                 content = re.sub(r"<[^>]+>", "", content)
                 content = html.unescape(content)
+                skips, runs = pending.take()
                 blocks.append(
-                    CodeBlock(start_line, "", content.strip(), tuple(pending))
+                    CodeBlock(start_line, "", content.strip(), skips, runs)
                 )
-                pending.clear()
             else:
                 # The collect loop only exits without a match when </pre>
                 # never appeared — malformed HTML must fail loudly even
-                # with no annotation pending.
+                # with no marker pending.
                 problems.append(
                     f"line {start_line}: unterminated <pre> block "
                     f"(no closing </pre> before end of file)"
@@ -474,16 +660,16 @@ def evaluate_block(
     block: CodeBlock,
     stage_runners: Sequence[tuple[str, Callable[[str], str | None]]],
 ) -> list[StageOutcome]:
-    """Run a block through ordered pipeline stages, honoring skip annotations.
+    """Run a block through ordered pipeline stages, honoring skip markers.
 
     Each runner takes the block content and returns an error message, or
     ``None`` on success.  For each stage in order:
 
-    - annotated ``skip-<stage>``: the runner still runs, and *failure* is the
-      expected outcome (``"skipped"``); *success* means the annotation is
-      ``"stale"`` and the gate must fail so the annotation gets removed.
-      Either way the pipeline stops at an annotated stage.
-    - unannotated: success (``"ok"``) continues to the next stage; failure
+    - marked ``skip-<stage>``: the runner still runs, and *failure* is the
+      expected outcome (``"skipped"``); *success* means the marker is
+      ``"stale"`` and the gate must fail so the marker gets removed.
+      Either way the pipeline stops at a marked stage.
+    - unmarked: success (``"ok"``) continues to the next stage; failure
       (``"failed"``) stops the pipeline.
     """
     by_stage = {a.stage: a for a in block.annotations}
@@ -502,145 +688,7 @@ def evaluate_block(
     return outcomes
 
 
-def unsupported_stage_annotations(
-    block: CodeBlock, supported: Collection[str]
-) -> list[Annotation]:
-    """Annotations naming stages this gate does not run (e.g. ``skip-check``
-    on a parse-only document) — the gate reports them as problems."""
-    return [a for a in block.annotations if a.stage not in supported]
-
-
 def strip_annotations(text: str) -> str:
-    """Remove vera:skip annotation lines (used by build_site.py so the
-    annotations never leak into generated site assets)."""
+    """Remove vera:skip and vera:run marker lines (used by build_site.py so
+    the markers never leak into generated site assets)."""
     return _ANNOTATION_LINE_RE.sub("", text)
-
-
-def run_parse_only_gate(
-    doc_path: Path,
-    display_name: str,
-    *,
-    parse_label: str,
-    hint_category: str = "FRAGMENT",
-) -> int:
-    """The shared parse-only doc gate (SKILL.md, FAQ.md, README.md, EXAMPLES.md).
-
-    Extracts the ```vera fences from *doc_path*, parses each one, and reports
-    failures, annotation problems, and stale annotations.  The per-document
-    check scripts are thin wrappers over this — only the target file, the
-    parser's ``file=`` label, and the fix-hint category differ.
-
-    Returns the process exit code (0 = gate passes).
-    """
-    import sys
-
-    from vera.parser import parse
-
-    def try_parse(content: str) -> str | None:
-        try:
-            parse(content, file=parse_label)
-            return None
-        except Exception as exc:  # noqa: BLE001 — a failing doc example is reported, not raised
-            return str(exc).split("\n")[0][:200]
-
-    if not doc_path.is_file():
-        print(f"ERROR: {display_name} not found.", file=sys.stderr)
-        return 1
-
-    blocks, problems = scan_markdown(doc_path)
-
-    total_blocks = 0
-    vera_blocks = 0
-    skipped_lang = 0
-    skipped_annotated = 0
-    passed = 0
-    failures: list[tuple[int, str]] = []
-    stale: list[tuple[int, str, str]] = []  # (line, category, reason)
-
-    for block in blocks:
-        total_blocks += 1
-
-        # Only test vera-tagged blocks
-        if block.lang.lower() != "vera":
-            if block.annotations:
-                problems.append(
-                    f"line {block.line}: vera:skip annotation on a "
-                    f"non-vera block (language {block.lang!r}) — remove it"
-                )
-            skipped_lang += 1
-            continue
-
-        vera_blocks += 1
-
-        for ann in unsupported_stage_annotations(block, {"parse"}):
-            problems.append(
-                f"line {ann.line}: vera:skip-{ann.stage} is not supported "
-                f"for {display_name} (parse-only gate)"
-            )
-
-        outcome = evaluate_block(block, [("parse", try_parse)])[-1]
-        if outcome.status == "ok":
-            passed += 1
-        elif outcome.status == "skipped":
-            skipped_annotated += 1
-        elif outcome.status == "stale":
-            if outcome.annotation is None:
-                raise RuntimeError("stale outcome missing its annotation")
-            stale.append(
-                (block.line, outcome.annotation.category, outcome.annotation.reason)
-            )
-        else:
-            failures.append((block.line, outcome.error or ""))
-
-    # Report
-    print(f"{display_name} code blocks: {total_blocks} total")
-    print(f"  Skipped (non-Vera language): {skipped_lang}")
-    print(f"  Vera blocks: {vera_blocks}")
-    print(f"    Parsed OK: {passed}")
-    print(f"    Annotated (vera:skip-parse): {skipped_annotated}")
-    print(f"    FAILED: {len(failures)}")
-
-    exit_code = 0
-
-    if problems:
-        print("\nANNOTATION PROBLEMS:", file=sys.stderr)
-        for problem in problems:
-            print(f"  {display_name} {problem}", file=sys.stderr)
-        exit_code = 1
-
-    if stale:
-        print(
-            "\nSTALE ANNOTATIONS (block parses fine — remove the annotation):",
-            file=sys.stderr,
-        )
-        for line_no, category, reason in stale:
-            print(
-                f"  {display_name} line {line_no} [{category}]: {reason}",
-                file=sys.stderr,
-            )
-        exit_code = 1
-
-    if failures:
-        print("\nFAILURES:", file=sys.stderr)
-        for line_no, error in failures:
-            print(f"\n  {display_name} line {line_no}:", file=sys.stderr)
-            print(f"    {error}", file=sys.stderr)
-        print(
-            f"\n{len(failures)} {display_name} code block(s) failed to parse.",
-            file=sys.stderr,
-        )
-        print(
-            "If a block is intentionally unparseable, annotate the fence:",
-            file=sys.stderr,
-        )
-        print(
-            f'<!-- vera:skip-parse category="{hint_category}" reason="..." -->'
-            " on the line before it (see scripts/doc_annotations.py).",
-            file=sys.stderr,
-        )
-        exit_code = 1
-
-    if exit_code == 0:
-        print(f"\nAll {display_name} Vera code blocks parse successfully.")
-
-    return exit_code

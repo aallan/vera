@@ -34,8 +34,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-# The doc gates' inline <!-- vera:skip-... --> fence annotations (#538) are
-# repo-tooling metadata: strip them from every generated site asset.
+# The doc gate's inline <!-- vera:skip-... --> and <!-- vera:run ... --> fence
+# markers (#538, #1481) are repo-tooling metadata: strip them from every
+# generated site asset.
 from doc_annotations import strip_annotations
 
 # Single-sourced E001 doc example (#954): render_e001_doc_example() is the
@@ -796,8 +797,9 @@ def build_skill_md() -> str:
     generated artefact that makes the language reference available at
     veralang.dev/SKILL.md — same domain as the website, cacheable, stable.
     Relative links are rewritten to absolute GitHub blob URLs because this
-    file is consumed outside the repository context, and the doc gates'
-    vera:skip fence annotations (#538) are stripped for the same reason.
+    file is consumed outside the repository context, and the doc gate's
+    vera:skip and vera:run fence markers (#538, #1481) are stripped for the
+    same reason.
     """
     return _abs_links(
         strip_annotations((ROOT / "SKILL.md").read_text(encoding="utf-8"))

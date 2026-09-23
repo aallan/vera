@@ -175,7 +175,7 @@ Common codes you'll encounter:
 
 Every function has this exact structure. No part is optional except `decreases` and `where`. Visibility (`public` or `private`) is mandatory on every top-level `fn` and `data` declaration.
 
-<!-- vera:skip-parse category="MISMATCH" reason="Function signature template with @ParamType placeholders" -->
+<!-- vera:skip-parse category="FRAGMENT" reason="Function signature template with @ParamType placeholders" -->
 ```vera
 private fn function_name(@ParamType1, @ParamType2 -> @ReturnType)
   requires(precondition_expression)
@@ -537,6 +537,7 @@ private data Option<T> {
 
 With an invariant *(NYI — see [#686](https://github.com/aallan/vera/issues/686); use a refinement type instead, shown below)*:
 
+<!-- vera:skip-check category="FUTURE" reason="the data invariant clause is not implemented yet (#686), so vera check reports E130" -->
 ```vera
 private data Positive invariant(@Int.0 > 0) {
   MkPositive(Int)
@@ -551,6 +552,7 @@ type Positive = { @Int | @Int.0 > 0 };
 
 ## Pattern Matching
 
+<!-- vera:skip-check category="INCOMPLETE" reason="matches on Color, declared in the Data Types block above" -->
 ```vera
 private fn to_int(@Color -> @Int)
   requires(true)
@@ -677,6 +679,7 @@ See `tests/conformance/ch03_typed_holes.vera` for a minimal working example.
 
 Vera has no `for` or `while` loops. Iteration is always expressed as tail-recursive functions. The standard pattern for counted iteration:
 
+<!-- vera:skip-check category="INCOMPLETE" reason="calls fizzbuzz, defined in the Iteration with IO example below" -->
 ```vera
 private fn loop(@Nat, @Nat -> @Unit)
   requires(@Nat.0 <= @Nat.1)
@@ -1519,6 +1522,7 @@ private fn safe_div(@Int, @Int -> @Int)
 
 Handle exceptions with `handle[Exn<E>]`:
 
+<!-- vera:skip-check category="INCOMPLETE" reason="calls safe_div, defined in the block above" -->
 ```vera
 private fn try_div(@Int, @Int -> @Option<Int>)
   requires(true)
@@ -1657,6 +1661,7 @@ private fn classify(@String -> @Result<String, String>)
 
 Compose with `match` to handle the `Result`:
 
+<!-- vera:skip-check category="INCOMPLETE" reason="calls classify, defined in the block above" -->
 ```vera
 public fn safe_classify(@String -> @String)
   requires(string_length(@String.0) > 0)
@@ -1697,6 +1702,7 @@ The Python runtime backs Random onto the `random` module (`random.randint`, `ran
 
 Functions that mix randomness with other effects compose normally:
 
+<!-- vera:skip-check category="INCOMPLETE" reason="calls pick_card, defined in the block above" -->
 ```vera
 public fn print_random_card(-> @Unit)
   requires(true)
@@ -1802,6 +1808,8 @@ Logger.put("message");
 
 The most common State pattern uses a `where` block to define a loop helper with `effects(<State<Int>>)`. The handler wraps the entire computation; the helper calls `get` and `put` directly.
 
+<!-- vera:run fn="sum_with_state" args="5" stdout="15" -->
+<!-- vera:run fn="sum_with_state" args="0" stdout="0" -->
 ```vera
 -- Sum 1..n using State<Int>
 private fn add_value(@Int, @Int -> @Int)
@@ -2094,7 +2102,7 @@ where {
 ### Missing contract block
 
 WRONG:
-<!-- vera:skip-parse category="FRAGMENT" reason="Wrong: missing contracts" -->
+<!-- vera:skip-parse category="WRONG" reason="missing contract block" -->
 ```vera
 private fn add(@Int, @Int -> @Int) {
   @Int.0 + @Int.1
@@ -2115,7 +2123,7 @@ private fn add(@Int, @Int -> @Int)
 ### Missing effects clause
 
 WRONG:
-<!-- vera:skip-parse category="FRAGMENT" reason="Wrong: missing effects clause (with contracts)" -->
+<!-- vera:skip-parse category="WRONG" reason="missing effects clause (with contracts)" -->
 ```vera
 private fn add(@Int, @Int -> @Int)
   requires(true)
@@ -2210,6 +2218,7 @@ private fn factorial(@Nat -> @Nat)
 ### Undeclared effects
 
 WRONG — `IO.print` performs IO but function declares `pure`:
+<!-- vera:skip-check category="WRONG" reason="IO.print in a pure function is E122" -->
 ```vera
 private fn greet(@String -> @Unit)
   requires(true)
@@ -2236,6 +2245,7 @@ private fn greet(@String -> @Unit)
 ### Using `@T.result` outside ensures
 
 WRONG:
+<!-- vera:skip-check category="WRONG" reason="@Int.result in requires is E131" -->
 ```vera
 private fn f(@Int -> @Int)
   requires(@Int.result > 0)
@@ -2297,7 +2307,7 @@ if @Bool.0 then {
 ### Trying to use import aliasing
 
 WRONG — Vera does not support renaming imports:
-<!-- vera:skip-parse category="FRAGMENT" reason="Wrong: import aliasing not supported" -->
+<!-- vera:skip-parse category="WRONG" reason="import aliasing not supported" -->
 ```vera
 import vera.math(magnitude as math_magnitude);
 ```
@@ -2314,7 +2324,7 @@ Note: if two of a namespace's imports supply the same bare name, `vera check` re
 ### Trying to use wildcard exclusion
 
 WRONG — Vera does not support `hiding` syntax:
-<!-- vera:skip-parse category="FRAGMENT" reason="Wrong: import hiding not supported" -->
+<!-- vera:skip-parse category="WRONG" reason="import hiding not supported" -->
 ```vera
 import vera.math hiding(larger);
 ```

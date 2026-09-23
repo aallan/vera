@@ -282,13 +282,17 @@ def test_sitemap_lastmod_refreshes_when_structure_changes(tmp_path, monkeypatch)
 
 
 def test_skill_md_asset_strips_vera_skip_annotations():
-    """SKILL.md carries inline <!-- vera:skip-... --> fence annotations for
-    the doc gates; the on-domain copy must not include them."""
-    # Precondition: the source actually contains annotations (otherwise this
+    """SKILL.md carries inline <!-- vera:skip-... --> and <!-- vera:run ... -->
+    fence markers for the doc gate (#538, #1481); the on-domain copy must not
+    include either."""
+    # Precondition: the source actually contains both kinds (otherwise this
     # test could pass vacuously with the strip deleted).
     source = (_SCRIPT.parent.parent / "SKILL.md").read_text(encoding="utf-8")
     assert "vera:skip-" in source
-    assert "vera:skip" not in _mod.build_skill_md()
+    assert "<!-- vera:run " in source
+    asset = _mod.build_skill_md()
+    assert "vera:skip" not in asset
+    assert "vera:run" not in asset
 
 
 def test_llms_full_txt_strips_vera_skip_annotations():
@@ -298,7 +302,10 @@ def test_llms_full_txt_strips_vera_skip_annotations():
     # (otherwise this test could pass vacuously with the strip deleted).
     skill = (_SCRIPT.parent.parent / "SKILL.md").read_text(encoding="utf-8")
     assert "vera:skip-" in skill
-    assert "vera:skip" not in _mod.build_llms_full_txt("0.0.0")
+    assert "<!-- vera:run " in skill
+    full = _mod.build_llms_full_txt("0.0.0")
+    assert "vera:skip" not in full
+    assert "vera:run" not in full
 
 
 # ---------------------------------------------------------------------------

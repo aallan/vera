@@ -133,7 +133,7 @@ Vera has four built-in abilities:
 
 You use them in generic signatures with `where` clauses:
 
-<!-- vera:skip-parse category="SNIPPET" reason="Abilities example with ellipsis body" -->
+<!-- vera:skip-parse category="FRAGMENT" reason="Abilities example with ellipsis body" -->
 ```vera
 public forall<T where Eq<T>> fn contains(@Array<T>, @T -> @Bool)
   requires(true)
@@ -279,7 +279,7 @@ The reference compiler is under active development. The current release includes
 
 - A seven-stage pipeline: parse, transform, resolve, typecheck, verify, compile, execute
 - A 14-chapter formal specification
-- 16,083 tests, including a 253-program conformance suite
+- 16,166 tests, including a 253-program conformance suite
 - 43 working example programs
 - 164 built-in functions covering strings, arrays, math, parsing, and data types
 - Four built-in abilities (Eq, Ord, Hash, Show) with constrained generics and ADT auto-derivation

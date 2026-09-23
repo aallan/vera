@@ -91,43 +91,20 @@ repos:
         pass_filenames: false
         files: '(examples/README\.md$|examples/.*\.vera$)'
 
-      # The seven doc-block gates below read the inline vera:skip fence
-      # annotations via scripts/doc_annotations.py (#538), so an edit to
-      # that shared module (or the gate script itself) re-runs the gate.
-      - id: readme-examples
-        name: readme examples
-        entry: .venv/bin/python scripts/check_readme_examples.py
+      # #1481 — one gate for every agent-facing document's Vera blocks
+      # (scripts/check_doc_examples.py): each block parses, passes
+      # `vera check` and `vera verify`, and runs every `vera:run` invocation
+      # it names, or carries a vera:skip marker (scripts/doc_annotations.py,
+      # #538) naming the stage it fails.  It also holds every tracked
+      # document with Vera blocks to its DOC_GATES / NOT_GATED lists, so the
+      # trigger is any document, as well as the compiler, the stub modules
+      # the blocks import (examples/vera/), and the gate's own modules.
+      - id: doc-examples
+        name: doc examples
+        entry: .venv/bin/python scripts/check_doc_examples.py
         language: system
         pass_filenames: false
-        files: '(README\.md$|vera/.*\.py$|vera/grammar\.lark$|scripts/(check_readme_examples|doc_annotations)\.py$)'
-
-      - id: examples-doc
-        name: examples doc
-        entry: .venv/bin/python scripts/check_examples_doc.py
-        language: system
-        pass_filenames: false
-        files: '(EXAMPLES\.md$|vera/.*\.py$|vera/grammar\.lark$|scripts/(check_examples_doc|doc_annotations)\.py$)'
-
-      - id: skill-examples
-        name: skill examples
-        entry: .venv/bin/python scripts/check_skill_examples.py
-        language: system
-        pass_filenames: false
-        files: '(SKILL\.md$|vera/.*\.py$|vera/grammar\.lark$|scripts/(check_skill_examples|doc_annotations)\.py$)'
-
-      - id: faq-examples
-        name: faq examples
-        entry: .venv/bin/python scripts/check_faq_examples.py
-        language: system
-        pass_filenames: false
-        files: '(FAQ\.md$|vera/.*\.py$|vera/grammar\.lark$|scripts/(check_faq_examples|doc_annotations)\.py$)'
-
-      - id: debruijn-examples
-        name: de bruijn examples
-        entry: .venv/bin/python scripts/check_debruijn_examples.py
-        language: system
-        pass_filenames: false
-        files: '(DE_BRUIJN\.md$|vera/.*\.py$|vera/grammar\.lark$|scripts/(check_debruijn_examples|doc_annotations)\.py$)'
+        files: '(\.(md|html|txt)$|vera/.*\.py$|vera/grammar\.lark$|examples/vera/.*\.vera$|scripts/(check_doc_examples|check_examples_run|doc_annotations)\.py$)'
 
       - id: diagnostic-examples
         name: diagnostic examples
@@ -136,23 +113,10 @@ repos:
         pass_filenames: false
         files: '(DE_BRUIJN\.md$|vera/.*\.py$|vera/grammar\.lark$|scripts/(check_diagnostic_examples|doc_annotations)\.py$)'
 
-      - id: pypi-readme-examples
-        name: pypi readme examples
-        entry: .venv/bin/python scripts/check_pypi_readme_examples.py
-        language: system
-        pass_filenames: false
-        files: '(PYPI_README\.md$|vera/.*\.py$|vera/grammar\.lark$|scripts/(check_pypi_readme_examples|check_html_examples|doc_annotations)\.py$)'
-
-      - id: html-examples
-        name: html examples
-        entry: .venv/bin/python scripts/check_html_examples.py
-        language: system
-        pass_filenames: false
-        files: '(docs/index\.html$|vera/.*\.py$|vera/grammar\.lark$|scripts/(check_html_examples|doc_annotations)\.py$)'
-
       # #819 — fails when a doc example *defines* a function named after an
-      # opaque built-in (which `vera check` rejects with E151).  The other doc
-      # validators only parse, so such examples would otherwise slip through.
+      # opaque built-in (which `vera check` rejects with E151).  The doc
+      # example gate above catches that in a block it checks; this scan also
+      # reaches the blocks a vera:skip marker stops before the check stage.
       - id: doc-builtin-shadowing
         name: doc builtin shadowing
         entry: .venv/bin/python scripts/check_doc_builtin_shadowing.py
