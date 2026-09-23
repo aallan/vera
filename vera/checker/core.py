@@ -59,7 +59,7 @@ from vera.types import (
 )
 
 from vera.checker.resolution import ResolutionMixin
-from vera.checker.modules import ModulesMixin
+from vera.checker.modules import ModuleRegistration, ModulesMixin
 from vera.checker.registration import RegistrationMixin
 from vera.checker.expressions import ExpressionsMixin
 from vera.checker.calls import CallsMixin
@@ -250,6 +250,7 @@ def typecheck_with_artifacts(
         # re-run a body check the top-level pass has already done.
         module_arts = _collect_module_artifacts(
             resolved_modules, checker._module_body_check_memo,
+            checker._module_registration_cache,
         )
 
     return diagnostics, CheckArtifacts(
@@ -265,6 +266,9 @@ def typecheck_with_artifacts(
 def _collect_module_artifacts(
     resolved_modules: list[ResolvedModule] | None,
     body_check_memo: set[tuple[str, ...]] | None = None,
+    registration_cache: (
+        dict[tuple[str, ...], ModuleRegistration] | None
+    ) = None,
 ) -> ModuleArtifacts:
     """Collect each resolved module's OWN span-keyed side-tables (#987).
 
@@ -305,28 +309,29 @@ def _collect_module_artifacts(
     on the codegen ones.  Two passes deriving the same diagnostics is the #1213
     disease; this one keeps the artifact it alone produces.
 
-    Cost note (PR #997 review, corrected for #1244): THIS pass is quadratic
-    and still codegen-only — N resolved modules each get a full
-    ``check_program`` that re-registers the other N-1, so it is O(N^2)
-    sub-checks (measured ~85ms at 20 modules vs ~4ms for the main-file-only
-    check), and it runs only when a caller asks for artifacts, i.e. for
+    Cost note (PR #997 review): THIS pass is codegen-only — each of the N
+    resolved modules gets a full ``check_program`` of its own program, and
+    the pass runs only when a caller asks for artifacts, i.e. for
     ``vera compile``/``run``/``serve``/``test``.
 
-    What is no longer true is that a module's body is checked only on those
-    paths.  ``ModulesMixin._register_modules`` checks each module's bodies
-    under its own import filter (#1244), and that runs from
-    ``check_program`` — so ``vera check``, ``vera verify`` and the warm
-    ``VerificationSession`` all pay one full sub-check per resolved module,
-    and the session pays it again on every re-check (it calls
-    ``typecheck_with_artifacts`` per verify).  ``body_check_memo`` is that
-    pass's memo, threaded into each sub-checker here so a body check the
-    top-level pass has already run is not repeated per sub-check — without
-    it, this O(N^2) pass would multiply the #1244 pass by N.
+    A module's body is not checked only on those paths.
+    ``ModulesMixin._register_modules`` checks each module's bodies under its
+    own import filter (#1244), and that runs from ``check_program`` — so
+    ``vera check``, ``vera verify`` and the warm ``VerificationSession`` all
+    pay one full sub-check per resolved module, and the session pays it
+    again on every re-check (it calls ``typecheck_with_artifacts`` per
+    verify).  ``body_check_memo`` is that pass's memo, threaded into each
+    sub-checker here so a body check the top-level pass has already run is
+    not repeated per sub-check — without it, this pass would multiply the
+    #1244 pass by N.
 
-    Memoising each module's per-check REGISTRATION (its declarations are
-    re-derived identically every pass) is the optimisation candidate that
-    would collapse both toward O(N); it is tracked as
-    [#1275](https://github.com/aallan/vera/issues/1275).
+    Each module's REGISTRATION, and the export tables read off it, are
+    memoised per path for the whole run (#1275,
+    ``ModulesMixin._module_registrations``) and handed to every sub-check
+    here as *registration_cache*, so a sub-check re-registers none of the
+    other modules and re-reads none of their exports: what each sub-check
+    still does per other module is a handful of table lookups, and the rest
+    of its work is its own program.
     """
     mods = resolved_modules or []
     result: ModuleArtifacts = {}
@@ -345,6 +350,7 @@ def _collect_module_artifacts(
             resolved_modules=sub_resolved,
         )
         sub._module_body_check_memo = body_check_memo
+        sub._module_registration_cache = registration_cache
         sub.expr_types = {}
         sub.expr_semantic_types = sub_semantic
         sub.expr_target_types = sub_target
@@ -527,6 +533,27 @@ class TypeChecker(
         self._module_all_data_types: dict[
             tuple[str, ...], dict[str, AdtInfo]
         ] = {}
+        # #1489: the type and effect names THIS namespace declares, set by
+        # `_register_all` before it registers anything.  A signature may name
+        # a declaration further down the file; during registration that name
+        # is not registered yet, and it is a forward reference, not an
+        # unknown name (E136 / E338).
+        self._forward_type_names: frozenset[str] = frozenset()
+        self._forward_effect_names: frozenset[str] = frozenset()
+        # #1489: each import whose module did not resolve, with its name list
+        # (``None`` for a wildcard), so an E136 on a name it lists can say
+        # which import to fix.  Set by `_register_modules`.
+        self._unresolved_imports: dict[
+            tuple[str, ...], frozenset[str] | None
+        ] = {}
+        # #1489 / #1275: each resolved module's declarations, registered in
+        # the module's OWN namespace — its imports' data types first — and
+        # what they export, once per path for the whole run.  Shared down the
+        # nested checkers with the body-check memo; ``None`` until first
+        # asked.  See `ModulesMixin._module_registrations`.
+        self._module_registration_cache: (
+            dict[tuple[str, ...], ModuleRegistration] | None
+        ) = None
         # De-dup removed-alias errors (emitted once per alias name).
         self._reported_alias_errors: set[str] = set()
         # De-dup reserved-namespace type REFERENCES (E154, #1221) — one
@@ -1043,6 +1070,13 @@ class TypeChecker(
                 spec_ref='Chapter 5, Section 5.5 "Effect Declaration"',
                 error_code="E122",
             )
+
+        # 7b. #1233: a handler-clause State operation code generation cannot
+        #     lower is refused here rather than skipped at compile.  Asked
+        #     while this function's frame is on the scope stack, so a bare
+        #     `get` owned by a declaration of that name is told apart from
+        #     the operation exactly as the call itself was.
+        self._check_clause_op_addressing(decl)
 
         # 8. Check where-block functions.
         #    Pop the parent's VALUE-slot scope FIRST so a helper body cannot

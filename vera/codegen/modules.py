@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 from vera import ast
 from vera.errors import Diagnostic, SourceLocation
+from vera.module_view import import_filters, imported_data_types
 from vera.monomorphize import (
     canonicalize_type_aliases,
     importer_occupied_bare_names,
@@ -27,6 +28,7 @@ from vera.prelude import PRELUDE_NAMESPACE, data_decl_shape, prelude_adt_names
 
 if TYPE_CHECKING:
     from vera.codegen.core import CodeGenerator
+    from vera.resolver import ResolvedModule
 
 
 class _Ambiguous:
@@ -59,38 +61,11 @@ _ENTRY_OWNER: tuple[str, ...] = ()
 
 
 
-def _merged_import_filters(
-    decls: "tuple[ast.ImportDecl, ...] | list[ast.ImportDecl]",
-) -> dict[tuple[str, ...], set[str] | None]:
-    """One filter per imported PATH, unioned across repeated imports.
-
-    A namespace may name a declaration that ANY of its import lists admits,
-    so two statements naming one module contribute the union of their
-    lists and a wildcard dominates every list beside it.  Keying a dict
-    comprehension on the path instead made the LAST statement win and
-    discarded the others (PR review): with
-    ``import liba(aone); import liba(helper);`` the surviving filter admits
-    neither the type nor the signature that carries it, so #1317's flow
-    condition would stop seeing a crossing the entry can actually make and
-    the rename would qualify apart two declarations a value passes between.
-
-    Dedupe is idempotent by construction — repeating one statement adds
-    nothing — which is the semantics this records rather than a diagnostic:
-    a duplicate import is accepted by the checker today, so codegen reading
-    it differently from the checker would be its own divergence.
-    """
-    out: dict[tuple[str, ...], set[str] | None] = {}
-    for imp in decls:
-        names = set(imp.names) if imp.names is not None else None
-        if imp.path not in out:
-            out[imp.path] = names
-            continue
-        existing = out[imp.path]
-        if existing is None or names is None:
-            out[imp.path] = None  # a wildcard admits everything
-        else:
-            out[imp.path] = existing | names
-    return out
+#: One filter per imported PATH, unioned across repeated imports — the one
+#: derivation of what a namespace's import lists admit, shared with the
+#: checker (#1489, #1493).  The name is kept for the #1317 flow condition's
+#: callers and tests, which asked it first.
+_merged_import_filters = import_filters
 
 
 class CrossModuleMixin:
@@ -232,7 +207,6 @@ class CrossModuleMixin:
 
         import dataclasses
 
-        from vera.codegen.core import CodeGenerator
         from vera.monomorphize import (
             collect_nested_generic_decls,
             qualify_nested_generic_decls,
@@ -287,6 +261,14 @@ class CrossModuleMixin:
         # the modules at once, and EMPTY for every program with no contended
         # name, which is why no corpus program's emitted WAT moves.
         adt_renames = self._contended_adt_renames(program, builtin_adt_names)
+        # #1493: every module's program as the checker saw it, BEFORE the
+        # rewrites below.  Import lists keep bare names while the #1317
+        # rename rewrites references, so what a namespace imports is asked
+        # of these and then spelled through that namespace's own renames
+        # (`_module_registrar`).
+        checker_programs = {
+            mod.path: mod.program for mod in self._resolved_modules
+        }
         self._resolved_modules = [
             dataclasses.replace(
                 mod,
@@ -303,17 +285,13 @@ class CrossModuleMixin:
             for mod in self._resolved_modules
         ]
 
-        # 1. Build import filter: path -> set of names (or None for wildcard)
-        import_names: dict[tuple[str, ...], set[str] | None] = {}
-        for imp in program.imports:
-            import_names[imp.path] = (
-                set(imp.names) if imp.names is not None else None
-            )
+        # 1. Build import filter: path -> set of names (or None for wildcard),
+        #    the union over every import of a path — the checker's derivation.
+        import_names = import_filters(program.imports)
 
         # #1253: per-namespace ADT bookkeeping, filled in the harvest loop and
         # folded into membership sets after it.
         declared_adts: dict[tuple[str, ...], frozenset[str]] = {}
-        public_adts: dict[tuple[str, ...], frozenset[str]] = {}
 
         # #814 §8.5.3: names of LOCAL functions in the importing program,
         # INCLUDING (recursively) `where`-fn helpers.  A module fn whose bare
@@ -376,21 +354,12 @@ class CrossModuleMixin:
         transitive_contributed: set[str] = set()
         importer_visible: set[str] = set(local_fn_names)
 
-        # 2. Register each module in isolation
+        # 2. Register each module in ITS OWN namespace (#1493): its own
+        #    declarations, with the data types it imports in scope.
         for mod in self._resolved_modules:
-            # #1189: hand the throwaway registrar the module's OWN file.
-            # ``_register_fn`` stamps every ``_fn_source_map`` entry with
-            # ``self.file``, so without this the harvest below would carry
-            # ``"<unknown>"`` — and the main generator, which registers only
-            # LOCAL declarations, would stamp the importer's path onto
-            # module-local coordinates.  ``ResolvedModule.file_path`` is the
-            # same attribution source ``_module_source_scope`` (#1190) reads,
-            # so the source map and the diagnostics can never disagree about
-            # which file an imported body belongs to.
-            temp = CodeGenerator(
-                source=mod.source, file=str(mod.file_path),
+            temp = self._module_registrar(
+                mod, checker_programs, adt_renames.get(mod.path, ({}, {}))[0],
             )
-            temp._register_all(mod.program)
             # #1317: capture this module's alias namespace BEFORE the ADT
             # harvest below, not after it.  The harvest's collision rails ask
             # `_adt_decls_share_a_layout`, which resolves each declaration's
@@ -421,19 +390,15 @@ class CrossModuleMixin:
                 elif isinstance(tld.decl, ast.DataDecl):
                     vis_map[tld.decl.name] = tld.visibility or "private"
 
-            # #1253: what this module DECLARES as data types, and which of
-            # those it EXPORTS.  The two sets are the input to the membership
-            # rule below — a module's namespace holds its own ADTs whatever
-            # their visibility, and an importer's holds only the public ones
-            # its filter names, which is exactly the checker's view.
+            # #1253: what this module DECLARES as data types — its own, under
+            # any #1317 rename.  With what it imports
+            # (`vera.module_view.imported_data_types`) that is its membership
+            # below: a module's namespace holds its own ADTs whatever their
+            # visibility, which is exactly the checker's view.
             declared_adts[mod.path] = frozenset(
                 tld.decl.name
                 for tld in mod.program.declarations
                 if isinstance(tld.decl, ast.DataDecl)
-            )
-            public_adts[mod.path] = frozenset(
-                name for name in declared_adts[mod.path]
-                if vis_map.get(name) == "public"
             )
 
             # Harvest function sigs — include all (public + private) so
@@ -899,29 +864,85 @@ class CrossModuleMixin:
         # #1253: fold the per-namespace ADT membership sets.
         self._builtin_adt_names = builtin_adt_names
         self._adt_namespace_members = self._build_adt_membership(
-            program, import_names, declared_adts, public_adts,
+            program, declared_adts, checker_programs, adt_renames,
         )
+
+    def _module_registrar(
+        self,
+        mod: ResolvedModule,
+        checker_programs: Mapping[tuple[str, ...], ast.Program],
+        renames: Mapping[str, str],
+    ) -> CodeGenerator:
+        """*mod*'s declarations, registered in *mod*'s own namespace (#1493).
+
+        The registrar measures each signature's WASM widths by asking the
+        resolution spine what every type name means, in the namespace it
+        holds.  It used to hold the module's own declarations alone, so a
+        data type the module IMPORTED — and returns, or takes — was no data
+        type there: ``pick(@Int -> @Colour)`` registered as
+        ``(['i64'], 'unsupported')``, and a direct ``match`` on the call, in
+        the importer or in the module's own bodies, could not type its
+        scrutinee and dropped the enclosing function (E602, then E620 up the
+        call graph).  The same declarations compiled as the ENTRY registered
+        ``(['i64'], 'i32')``, so the verdict depended on which file was the
+        entry.
+
+        What a namespace imports is the ONE derivation the checker's
+        module registration reads (:func:`vera.module_view.imported_data_types`),
+        asked of the programs as the checker saw them.  The #1317 rename
+        rewrites a contended type's references but not the import lists that
+        name it, so each imported name is then spelled through THIS
+        namespace's renames — the symbol its rewritten signatures carry.
+
+        #1189: the registrar is handed the module's OWN file, because
+        ``_register_fn`` stamps every ``_fn_source_map`` entry with
+        ``self.file``; ``ResolvedModule.file_path`` is the attribution source
+        ``_module_source_scope`` (#1190) reads, so the source map and the
+        diagnostics agree about which file an imported body belongs to.
+        """
+        from vera.codegen.core import CodeGenerator
+
+        temp = CodeGenerator(source=mod.source, file=str(mod.file_path))
+        temp._imported_adt_names = frozenset(
+            renames.get(name, name)
+            for name in imported_data_types(
+                checker_programs[mod.path], checker_programs,
+            )
+        )
+        temp._register_all(mod.program)
+        return temp
 
     def _build_adt_membership(
         self,
         program: ast.Program,
-        import_names: dict[tuple[str, ...], set[str] | None],
         declared_adts: dict[tuple[str, ...], frozenset[str]],
-        public_adts: dict[tuple[str, ...], frozenset[str]],
+        checker_programs: Mapping[tuple[str, ...], ast.Program],
+        adt_renames: Mapping[
+            tuple[str, ...], tuple[dict[str, str], dict[str, str]]],
     ) -> dict[tuple[str, ...] | None, frozenset[str]]:
         """Which ADT names are data types in each namespace (#1253).
 
         A namespace holds its OWN declarations, whatever their visibility,
         plus what it IMPORTS — public only, and only the names an explicit
         import list mentions.  That is the checker's view of every module,
-        rebuilt here from the same declarations codegen already harvested, so
-        an unimported (or private) sibling's ADT is as opaque on this side as
-        it is on the checker's.
+        and it is asked of the ONE derivation the checker's module
+        registration and each module's registrar read
+        (:func:`vera.module_view.imported_data_types`, #1493), so the
+        namespace a module's signatures are measured in and the one its
+        bodies are compiled in are the same namespace.  An unimported (or
+        private) sibling's ADT is as opaque on this side as on the checker's.
 
-        Keyed by module path, with ``None`` for the entry program.  Built-ins
-        are NOT included: they belong to every namespace and are added by the
-        reader (`_adt_members_in_scope`), so a namespace's entry stays a
-        statement about source declarations.
+        The derivation reads the programs as the checker saw them, and each
+        imported name is then spelled through that namespace's own #1317
+        renames: the rename rewrites a contended type's references but not
+        the import lists that name it, so filtering the rewritten
+        declarations by the bare list left a module that imports a renamed
+        type — and returns it — without it, and dropped the module's body.
+
+        Keyed by module path, with ``None`` for the entry program, which is
+        never renamed.  Built-ins are NOT included: they belong to every
+        namespace and are added by the reader (`_adt_members_in_scope`), so
+        a namespace's entry stays a statement about source declarations.
 
         Imports are read per namespace, never inherited: §8.6.4 visibility is
         the importer's property, so a module reached transitively from here is
@@ -929,37 +950,26 @@ class CrossModuleMixin:
         THAT module's import list allows.
         """
 
-        def visible(
-            own: frozenset[str],
-            imports: dict[tuple[str, ...], set[str] | None],
+        def imported(
+            ns_program: ast.Program, renames: Mapping[str, str],
         ) -> frozenset[str]:
-            names = set(own)
-            for dep_path, name_filter in imports.items():
-                exported = public_adts.get(dep_path)
-                if exported is None:
-                    continue
-                names |= {
-                    n for n in exported
-                    if name_filter is None or n in name_filter
-                }
-            return frozenset(names)
+            return frozenset(
+                renames.get(name, name)
+                for name in imported_data_types(ns_program, checker_programs)
+            )
 
         main_own = frozenset(
             tld.decl.name for tld in program.declarations
             if isinstance(tld.decl, ast.DataDecl)
         )
         members: dict[tuple[str, ...] | None, frozenset[str]] = {
-            None: visible(main_own, import_names),
+            None: main_own | imported(program, {}),
         }
         for mod in self._resolved_modules:
-            own_imports = {
-                tuple(imp.path): (
-                    set(imp.names) if imp.names is not None else None
-                )
-                for imp in mod.program.imports
-            }
-            members[mod.path] = visible(
-                declared_adts.get(mod.path, frozenset()), own_imports,
+            members[mod.path] = (
+                declared_adts.get(mod.path, frozenset())
+                | imported(checker_programs[mod.path],
+                           adt_renames.get(mod.path, ({}, {}))[0])
             )
         # Every ADT some namespace DECLARES.  `_adt_members_in_scope`
         # subtracts this from the registered layouts to recover the global

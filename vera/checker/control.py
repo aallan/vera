@@ -2,8 +2,18 @@
 
 from __future__ import annotations
 
-from vera import ast
+import dataclasses
+from collections.abc import Mapping
+from dataclasses import dataclass
+
+from vera import ast, naming
 from vera.environment import Binding, FunctionInfo
+from vera.skip import STATE_CLAUSE_INLINE_DEPTH_CAP
+from vera.slots import (
+    bare_call_denotes_user_fn,
+    family_fallback_name,
+    type_expr_slot_name,
+)
 from vera.types import (
     BOOL,
     BYTE,
@@ -27,6 +37,55 @@ from vera.types import (
     substitute,
     types_equal,
 )
+
+
+#: The State operations a bare or ``State.``-qualified call can name.
+_STATE_OPS = frozenset({"get", "put"})
+
+
+@dataclass(frozen=True)
+class _ClauseCell:
+    """The State cell a ``get``/``put`` reaches, as code generation sees it.
+
+    ``family`` is the cell's identity (:func:`vera.naming.family_name`, the
+    name code generation's host intrinsics are keyed by); ``clauses`` the
+    reaching handler's clauses, empty for a cell of the declared row; and
+    ``scope`` the handler's DECLARATION-time scope, which a clause body is
+    resolved in when code generation inlines it (#1211).
+    """
+
+    family: str
+    base: str
+    clauses: Mapping[str, ast.HandlerClause]
+    scope: _OpScope | None
+
+
+@dataclass(frozen=True)
+class _OpScope:
+    """Which cell each State operation reaches here, and from which index of
+    the pushed-cell stack the cells are this scope's own (#1233)."""
+
+    cells: Mapping[str, _ClauseCell]
+    addressable_from: int
+
+
+@dataclass
+class _ClauseWalk:
+    """One E339 walk's results, and the clause inlinings it has walked.
+
+    An inlining is keyed by the clause, the scope it resolves in, the cells
+    pushed and the depth: under the same key the clause body reaches the
+    same operations, so it is walked once rather than once per path to it
+    (a nest whose clauses each perform *k* operations has ``k ** depth``).
+    Each key's clause and scope are held here, so no id in a key is reused
+    while the walk runs.
+    """
+
+    refused: list[tuple[ast.Node, str, _ClauseCell]]
+    inlined: dict[
+        tuple[int, int, tuple[str, ...], int],
+        tuple[ast.HandlerClause, _OpScope],
+    ]
 
 
 # #1315: the built-in ADTs that carry no constructors — the containers
@@ -781,6 +840,11 @@ class ControlFlowMixin:
                 substitute(p, mapping) for p in op_info.param_types)
             for param_te, param_ty in zip(clause.params, op_param_types):
                 self._check_refinement_predicates(param_te)  # #861
+                # #1489: the declared type is otherwise only RENDERED here,
+                # for the slot it binds, so a name in it that nothing
+                # declares was never reported.  Resolved for its
+                # diagnostics; the binding takes the operation's type.
+                self._resolve_type(param_te)
                 tname = self._type_expr_to_slot_name(param_te)
                 self.env.bind(tname, param_ty, "handler")
 
@@ -823,6 +887,10 @@ class ControlFlowMixin:
                         error_code="E333",
                     )
                 else:
+                    # #1489: resolved for its diagnostics, as the clause
+                    # parameters above are — only rendered, an unknown name
+                    # drew nothing but the E334 mismatch below.
+                    self._resolve_type(upd_te)
                     upd_slot = self._type_expr_to_slot_name(upd_te)
                     if upd_slot != state_tname_outer:
                         self._error(
@@ -944,3 +1012,258 @@ class ControlFlowMixin:
         self._effect_ops_used = saved_ops
 
         return body_type
+
+    # -----------------------------------------------------------------
+    # #1233: a clause-body State operation code generation cannot lower
+    # -----------------------------------------------------------------
+
+    def _check_clause_op_addressing(self, decl: ast.FnDecl) -> None:
+        """Refuse a handler-clause State operation codegen cannot lower (E339).
+
+        A bare ``get``/``put`` — or ``State.get``/``State.put`` — written in
+        a handler clause body is an operation of the ENCLOSING context
+        (spec §7.5.2), and code generation lowers it by inlining the
+        clause at each operation that reaches it.  Two shapes cannot be
+        lowered, and each used to pass check and verify and then skip the
+        function at compile (E602, and its callers after it, E620):
+
+        * **The cell is shadowed** (#1233).  The host intrinsics address only
+          the INNERMOST pushed cell of a State family, so when a cell of the
+          operation's own family was pushed between its cell and the point
+          where the clause is inlined — ``handle[State<Int>]`` nested in
+          ``handle[State<Int>]``, a ``handle[State<Int>]`` in a function
+          declaring ``effects(<State<Int>>)``, or deeper, through another
+          clause's inlining — the operation would read or write the wrong
+          cell.
+        * **The re-entry is too deep.**  Each outward re-entry inlines one
+          more clause, so the emitted code is exponential in the depth;
+          code generation stops at ``STATE_CLAUSE_INLINE_DEPTH_CAP``.
+
+        The walk here decides EXACTLY what code generation's gate decides
+        (``_reject_unaddressable_clause_op`` and the depth check in
+        ``_translate_state_clause_op``, vera/wasm/calls_handlers.py), over
+        the same state: the families of the cells pushed so far, the index
+        from which they shadow the scope an operation resolves in, and the
+        declaration-time scope a clause is inlined under.  It walks what
+        code generation walks — a clause body only where an operation
+        inlines it, a lambda body with no cells (a lifted closure has
+        none).  The gate stays in code generation as the backstop, and the
+        two are held together by a differential
+        (``tests/test_check_implies_compile.py``).
+
+        A generic template's cells are named by their type parameters, so a
+        ``State<T>`` shadowed only at one instantiation is not seen here;
+        code generation still refuses that clone.
+        """
+        if not any(isinstance(node, ast.HandleExpr)
+                   for node in _descendants(decl.body)):
+            return
+        walk = _ClauseWalk([], {})
+        root = self._row_op_scope(decl.effect)
+        self._clause_op_walk(decl.body, root, (), 0, walk)
+        seen: set[int] = set()
+        for node, why, cell in walk.refused:
+            if id(node) in seen:
+                continue
+            seen.add(id(node))
+            name = getattr(node, "name", "get")
+            if why == "shadowed":
+                self._error(
+                    node,
+                    f"This '{name}' in a handler clause body cannot reach "
+                    f"its State<{cell.base}> cell: an enclosing "
+                    f"State<{cell.base}> handler shadows it.",
+                    rationale=(
+                        "An operation written in a handler clause body is "
+                        "the ENCLOSING context's (spec §7.5.2), so it reaches "
+                        "a State<" + cell.base + "> cell outside this "
+                        "handler.  Code generation lowers it where the "
+                        "clause is inlined, and its State intrinsics address "
+                        "only the innermost cell of one State type — here a "
+                        "State<" + cell.base + "> cell nested inside the "
+                        "one the operation means.  Outward cell addressing "
+                        "is not implemented yet (#1233)."
+                    ),
+                    fix=(
+                        "Nest handlers over different State types, move "
+                        "the operation into the handled body, or override "
+                        "this handler's own state with 'with @T = ...' on "
+                        "the clause instead of performing the operation."
+                    ),
+                    spec_ref='Chapter 7, Section 7.5.2 "Handler Semantics"',
+                    error_code="E339",
+                )
+            else:
+                self._error(
+                    node,
+                    f"This '{name}' re-enters enclosing handler clauses "
+                    f"more than {STATE_CLAUSE_INLINE_DEPTH_CAP} levels "
+                    f"deep.",
+                    rationale=(
+                        "A State operation in a clause body is the "
+                        "enclosing handler's (spec §7.5.2), so lowering it "
+                        "inlines that handler's clause, whose own "
+                        "operations inline the next one out.  The emitted "
+                        "code grows exponentially with that depth, and "
+                        "code generation stops at "
+                        f"{STATE_CLAUSE_INLINE_DEPTH_CAP} levels."
+                    ),
+                    fix=(
+                        "Reduce the handler nesting, or move the clause-body "
+                        "operations into the handled bodies."
+                    ),
+                    spec_ref='Chapter 7, Section 7.5.2 "Handler Semantics"',
+                    error_code="E339",
+                )
+
+    def _clause_cell(
+        self, te: ast.TypeExpr,
+        clauses: Mapping[str, ast.HandlerClause], scope: _OpScope | None,
+    ) -> _ClauseCell:
+        """The cell ``State<te>`` names, as code generation keys it."""
+        env = self._naming_env()
+        fallback = family_fallback_name(te)
+        return _ClauseCell(
+            family=naming.family_name(te, env, fallback),
+            base=naming.family_base_name(te, env, fallback),
+            clauses=clauses,
+            scope=scope,
+        )
+
+    def _row_op_scope(self, row: ast.EffectRow) -> _OpScope:
+        """The cells a declared row gives ``get``/``put``: its first
+        ``State<T>`` in SOURCE order (spec §7.4), which is how code
+        generation seeds its registries (vera/codegen/functions.py)."""
+        cells: dict[str, _ClauseCell] = {}
+        if isinstance(row, ast.EffectSet):
+            for eff in row.effects:
+                if (isinstance(eff, ast.EffectRef) and eff.name == "State"
+                        and eff.type_args and len(eff.type_args) == 1
+                        and type_expr_slot_name(eff.type_args[0])):
+                    cell = self._clause_cell(eff.type_args[0], {}, None)
+                    for op in _STATE_OPS:
+                        cells.setdefault(op, cell)
+        return _OpScope(cells, 0)
+
+    def _clause_op_walk(
+        self, node: object, scope: _OpScope, pushed: tuple[str, ...],
+        depth: int, walk: _ClauseWalk,
+    ) -> None:
+        """Walk *node* as code generation emits it (see
+        :meth:`_check_clause_op_addressing`)."""
+        if isinstance(node, (ast.TypeExpr, ast.AssumeExpr)):
+            # A type is not emitted, and neither is an `assume`: it is the
+            # verifier's axiom and a no-op at run time, so an operation
+            # inside one is never lowered.
+            return
+        if isinstance(node, ast.AnonFn):
+            # A lifted closure is compiled with no State cells at all.
+            self._clause_op_walk(node.body, _OpScope({}, 0), (), 0, walk)
+            return
+        if isinstance(node, ast.HandleExpr):
+            self._clause_op_walk_handle(node, scope, pushed, depth, walk)
+            return
+        op = (self._state_op_name(node)
+              if isinstance(node, (ast.FnCall, ast.QualifiedCall)) else None)
+        if op is not None and isinstance(node, (ast.FnCall,
+                                                 ast.QualifiedCall)):
+            for arg in node.args:
+                self._clause_op_walk(arg, scope, pushed, depth, walk)
+            cell = scope.cells.get(op)
+            if cell is None:
+                return
+            if cell.family in pushed[scope.addressable_from:]:
+                walk.refused.append((node, "shadowed", cell))
+                return
+            clause = cell.clauses.get(op)
+            if clause is None or cell.scope is None:
+                return
+            if depth >= STATE_CLAUSE_INLINE_DEPTH_CAP:
+                walk.refused.append((node, "depth", cell))
+                return
+            key = (id(clause), id(cell.scope), pushed, depth + 1)
+            if key in walk.inlined:
+                return
+            walk.inlined[key] = (clause, cell.scope)
+            # The clause is inlined HERE: its body resolves in the handler's
+            # declaration scope, under the cells pushed at this point.
+            self._clause_op_walk(clause.body, cell.scope, pushed, depth + 1,
+                                 walk)
+            if clause.state_update is not None:
+                self._clause_op_walk(clause.state_update[1], cell.scope,
+                                     pushed, depth + 1, walk)
+            return
+        if isinstance(node, ast.Node):
+            for f in dataclasses.fields(node):
+                self._clause_op_walk(getattr(node, f.name), scope, pushed,
+                                     depth, walk)
+        elif isinstance(node, (tuple, list)):
+            for item in node:
+                self._clause_op_walk(item, scope, pushed, depth, walk)
+
+    def _clause_op_walk_handle(
+        self, node: ast.HandleExpr, scope: _OpScope, pushed: tuple[str, ...],
+        depth: int, walk: _ClauseWalk,
+    ) -> None:
+        """A ``handle`` expression, as code generation lowers it."""
+        eff = node.effect
+        if node.state is not None:
+            # The init belongs to the ENCLOSING scope: evaluated before the
+            # cell is pushed.
+            self._clause_op_walk(node.state.init_expr, scope, pushed, depth,
+                                 walk)
+        if (isinstance(eff, ast.EffectRef) and eff.name == "State"
+                and eff.type_args and len(eff.type_args) == 1):
+            te = eff.type_args[0]
+            if not isinstance(te, ast.NamedType):
+                # Code generation refuses this handle outright (an inline
+                # refinement as the cell type, spec §7.5.1).
+                return
+            cell = self._clause_cell(
+                te, {c.op_name: c for c in node.clauses}, scope)
+            body_scope = _OpScope(
+                {**scope.cells, **{op: cell for op in _STATE_OPS}},
+                len(pushed) + 1,
+            )
+            # Clause bodies are NOT walked here: code generation emits one
+            # only where an operation inlines it.
+            self._clause_op_walk(node.body, body_scope, (*pushed, cell.family),
+                                 depth, walk)
+            return
+        if isinstance(eff, ast.EffectRef) and eff.name == "Exn":
+            # An Exn clause is compiled once, at the handle, in the scope the
+            # handle is written in; `throw` reaches no State cell.
+            for clause in node.clauses:
+                self._clause_op_walk(clause.body, scope, pushed, depth, walk)
+            self._clause_op_walk(node.body, scope, pushed, depth, walk)
+        # Any other handler is refused by code generation outright.
+
+    def _state_op_name(
+        self, node: ast.FnCall | ast.QualifiedCall,
+    ) -> str | None:
+        """``get``/``put`` when *node* performs that State operation."""
+        if (isinstance(node, ast.QualifiedCall) and node.qualifier == "State"
+                and node.name in _STATE_OPS):
+            return node.name
+        if (isinstance(node, ast.FnCall) and node.name in _STATE_OPS
+                and not bare_call_denotes_user_fn(
+                    node.name, self._user_fn_names)):
+            return node.name
+        return None
+
+
+def _descendants(node: object) -> list[object]:
+    """Every AST node under *node* (iterative, types excluded)."""
+    out: list[object] = []
+    stack: list[object] = [node]
+    while stack:
+        cur = stack.pop()
+        if isinstance(cur, ast.TypeExpr):
+            continue
+        if isinstance(cur, ast.Node):
+            out.append(cur)
+            stack.extend(getattr(cur, f.name)
+                         for f in dataclasses.fields(cur))
+        elif isinstance(cur, (tuple, list)):
+            stack.extend(cur)
+    return out

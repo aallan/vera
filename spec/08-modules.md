@@ -58,7 +58,7 @@ A wildcard import makes all `public` declarations from the imported module avail
 import vera.math(magnitude, larger);
 ```
 
-A selective import makes only the named declarations available. Each name in the parenthesised list must refer to a `public` declaration in the imported module. Attempting to import a `private` declaration is an error:
+A selective import makes only the named declarations available. Each name in the parenthesised list must refer to a `public` declaration in the imported module. A module named by more than one `import` statement is imported once, with the union of their lists; a wildcard admits everything. Attempting to import a `private` declaration is an error:
 
 ```
 Error: Cannot import 'helper' from module 'vera.math': it is private.
@@ -439,9 +439,9 @@ When a program has imports, the type checker performs an additional registration
 
 For each resolved module:
 
-1. Create a temporary type checker instance with the module's source.
-2. Run the registration pass (Pass 1) to populate the temporary type environment with all of the module's declarations.
-3. Harvest the registered declarations, excluding built-in names.
+1. Create a type checker instance with the module's source.
+2. Give it the public data types the module ITSELF imports, as its own import lists admit them (§8.3), taken from those modules' registrations, so that the module's signatures resolve in the module's own namespace (§2.10). Then run the registration pass (Pass 1) over the module's declarations. Modules are registered in dependency order, and each one once for the whole check, whichever file imports it.
+3. Harvest the module's own registered declarations, excluding built-in names; the data types it imports are in scope in its registration, and are not exported by it.
 4. Filter to `public` declarations only.
 5. Check that selective imports do not reference `private` names.
 6. Inject the filtered declarations into the main program's type environment using `setdefault` (so local definitions shadow imports).
@@ -521,7 +521,7 @@ The code generator uses a **flattening** strategy: imported function bodies are 
 
 ### 8.9.1 Compilation Process
 
-1. **Pass 0 — Module registration**: For each resolved module, register all function signatures and ADT layouts into the code generator's state. Imported names are injected via `setdefault` so local definitions shadow imports. Type aliases are **not** merged into the shared state: an alias is module-local (§8.4.1), so each module's aliases are captured in a per-module namespace, and that module's declarations compile and register against `{prelude aliases, module's own aliases}` — never against the importing program's. Harvested return-type expressions are canonicalized (alias references substituted) against the defining module's namespace before entering the shared registries. That same per-module namespace is what slot names, slot-reference keys and `State`/`Exn` cell families are rendered against — in the checker, the verifier and the code generator alike — so a declaration is named in the module that declared it, whichever phase is asking.
+1. **Pass 0 — Module registration**: For each resolved module, register all function signatures and ADT layouts into the code generator's state. A module's signatures are measured in the module's own namespace — its own declarations and the data types its own import lists admit (the same derivation the checker's registration reads, §8.7.1) — so a function returning a data type its module imported has the same WebAssembly signature whichever file is the entry. Imported names are injected via `setdefault` so local definitions shadow imports. Type aliases are **not** merged into the shared state: an alias is module-local (§8.4.1), so each module's aliases are captured in a per-module namespace, and that module's declarations compile and register against `{prelude aliases, module's own aliases}` — never against the importing program's. Harvested return-type expressions are canonicalized (alias references substituted) against the defining module's namespace before entering the shared registries. That same per-module namespace is what slot names, slot-reference keys and `State`/`Exn` cell families are rendered against — in the checker, the verifier and the code generator alike — so a declaration is named in the module that declared it, whichever phase is asking.
 
 2. **Pass 2.5 — Imported function compilation**: After compiling local functions (Pass 2), compile all imported function bodies — both public and private — as internal WASM functions. Private helpers must be compiled because imported public functions may call them.
 

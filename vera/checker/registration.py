@@ -244,6 +244,17 @@ class RegistrationMixin:
         # those stays legal (§8.4.1, §8.5.2); declaring the same name twice
         # HERE does not.
         self._ns_ctor_owners: dict[str, str] = {}
+        # #1489: what this namespace declares, known before any of it is
+        # registered, so a signature naming a declaration further down the
+        # file is a forward reference rather than an unknown name.
+        self._forward_type_names = frozenset(
+            tld.decl.name for tld in program.declarations
+            if isinstance(tld.decl, (ast.DataDecl, ast.TypeAliasDecl))
+        )
+        self._forward_effect_names = frozenset(
+            tld.decl.name for tld in program.declarations
+            if isinstance(tld.decl, ast.EffectDecl)
+        )
         for tld in program.declarations:
             # C7c: require explicit visibility on fn/data declarations
             if (tld.visibility is None

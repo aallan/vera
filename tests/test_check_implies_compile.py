@@ -1,0 +1,1785 @@
+"""A program `vera check` accepts is a program code generation builds.
+
+The class (#1489, #1493, and the family behind #1383): the front end accepts
+a program that code generation then refuses or silently drops.  Two
+mechanisms are closed here.
+
+* **An unresolved name** (#1489).  The checker's last-resort branch turned any
+  type name nothing declares into an opaque type, and any effect name in a
+  row into an effect instance, and reported nothing.  Code generation had no
+  layout for the name and skipped the function (E602 / E603 / E604 / E605) —
+  or, for a qualified effect reference, dropped it without a word.
+* **A module registered without its own imports** (#1493).  Code generation
+  measured each imported module's signatures in a namespace that held none
+  of the module's imports, so a data type the module imported and returned
+  had "no WASM representation", and a direct ``match`` on the call — in the
+  importer or in the module's own bodies — dropped the enclosing function.
+
+THE INSTRUMENT is one differential, run over three inputs: every program the
+checker accepts compiles with no E6xx diagnostic, and every public function
+of the entry file is exported (a drop that reports nothing is still a drop).
+
+(a) :class:`TestUnresolvedNameMatrix` — an unresolved name in every grammar
+    position that carries a type or effect name.  The positions are
+    ENUMERATED from ``vera/grammar.lark`` (:func:`grammar_name_positions`),
+    not listed: a rule that gains a type position fails the coverage cell
+    until a cell exercises it.  Each cell carries a CONTROL — the same
+    program with a declared name in that position — which must check,
+    compile and export cleanly, so the refusal is caused by the name and
+    nothing else in the template.
+(b) :class:`TestModuleEnvironmentMatrix` — module topologies (a module
+    returns a data type it imported; a third module consumes it; the module
+    consumes it in its own body; a diamond) × every expression position the
+    result can reach.  Expression positions are enumerated from the grammar
+    too, plus the one the grammar cannot expose (a string interpolation
+    segment, lexed inside ``STRING_LIT``), found by enumerating the AST's
+    expression-bearing fields.
+(c) :class:`TestCorpusCheckImpliesCompile` — every program under
+    ``examples/``, ``tests/conformance/`` and ``tests/probes/``.  The
+    programs that are check-green and still refused by code generation for
+    a reason outside this class are held in an exact roster, each with the
+    reason; a new one fails, and so does a stale entry.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import itertools
+import typing
+from dataclasses import dataclass
+from pathlib import Path
+
+import pytest
+import wasmtime
+from lark import Tree
+from lark.grammar import NonTerminal
+from lark.load_grammar import GrammarBuilder
+
+from vera import ast
+from vera.checker import typecheck_with_artifacts
+from vera.codegen import compile as codegen_compile
+from vera.codegen import execute
+from vera.codegen.api import CompileResult
+from vera.errors import Diagnostic
+from vera.parser import parse_to_ast
+from vera.resolver import ModuleResolver
+from vera.runtime.traps import WasmTrapError
+from vera.skip import STATE_CLAUSE_INLINE_DEPTH_CAP
+
+_ROOT = Path(__file__).resolve().parent.parent
+_GRAMMAR = _ROOT / "vera" / "grammar.lark"
+
+
+# =====================================================================
+# The harness: one pipeline, the one `vera run` uses
+# =====================================================================
+
+@dataclass
+class Outcome:
+    """What the toolchain did with one program."""
+
+    #: Resolver and checker errors (warnings are not refusals).
+    check_errors: list[Diagnostic]
+    #: The compile result, or ``None`` when the checker refused.
+    result: CompileResult | None
+    #: What code generation refused: every E6xx diagnostic at any severity,
+    #: and every error-severity diagnostic whatever its code (the guard
+    #: rail's "is not defined" error carries none).
+    drops: list[Diagnostic]
+    #: Public, non-generic entry functions missing from the exports — a
+    #: drop that reported nothing (a qualified effect row did exactly that).
+    missing_exports: list[str]
+
+    @property
+    def accepted(self) -> bool:
+        return not self.check_errors
+
+    @property
+    def compiles_clean(self) -> bool:
+        return (self.result is not None and not self.drops
+                and not self.missing_exports)
+
+    @property
+    def signature(self) -> tuple[str, ...]:
+        """The refusal, as sorted codes (``"uncoded"`` for a codeless one)."""
+        codes = [d.error_code or "uncoded" for d in self.drops]
+        codes += ["missing-export"] * len(self.missing_exports)
+        return tuple(sorted(codes))
+
+    def describe(self) -> str:
+        return (
+            f"check_errors={[(d.error_code, d.description) for d in self.check_errors]} "
+            f"drops={[(d.error_code, d.description) for d in self.drops]} "
+            f"missing_exports={self.missing_exports}"
+        )
+
+
+def build(
+    main_path: Path, source: str, root: Path, *, past_check: bool = False,
+) -> Outcome:
+    """Resolve, check and (if accepted) compile, as ``vera run`` does.
+
+    *past_check* compiles a refused program too, so a refusal at check can
+    be compared with what code generation would have done (the #1233
+    differential): the check errors are still reported.
+    """
+    program = parse_to_ast(source)
+    resolver = ModuleResolver(_root=root)
+    resolved = resolver.resolve_imports(program, main_path)
+    diags, arts = typecheck_with_artifacts(
+        program, source, file=str(main_path), resolved_modules=resolved,
+        collect_module_artifacts=True,
+    )
+    errors = list(resolver.errors) + [
+        d for d in diags if d.severity == "error"
+    ]
+    if errors and not past_check:
+        return Outcome(errors, None, [], [])
+    result = codegen_compile(
+        program, source=source, file=str(main_path),
+        resolved_modules=resolved,
+        expr_semantic_types=arts.expr_semantic_types,
+        expr_target_types=arts.expr_target_types,
+        module_artifacts=arts.module_artifacts,
+    )
+    drops = [
+        d for d in result.diagnostics
+        if (d.error_code or "").startswith("E6") or d.severity == "error"
+    ]
+    public = [
+        tld.decl.name for tld in program.declarations
+        if isinstance(tld.decl, ast.FnDecl)
+        and tld.visibility == "public" and not tld.decl.forall_vars
+    ]
+    missing = [name for name in public if name not in result.exports]
+    return Outcome(errors, result, drops, missing)
+
+
+def pipeline(
+    tmp_path: Path, files: dict[str, str], main: str = "main.vera",
+    *, past_check: bool = False,
+) -> Outcome:
+    """Write *files* into *tmp_path* and :func:`build` *main*."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    for name, text in files.items():
+        (tmp_path / name).write_text(text, encoding="utf-8")
+    return build(tmp_path / main, files[main], tmp_path,
+                 past_check=past_check)
+
+
+def run_main(outcome: Outcome) -> tuple[str, object]:
+    """``("ok", value)`` or ``("trap", message)`` for ``main``."""
+    assert outcome.result is not None
+    try:
+        return "ok", execute(outcome.result, fn_name="main").value
+    except (WasmTrapError, wasmtime.WasmtimeError, wasmtime.Trap) as exc:
+        return "trap", str(exc)
+
+
+def locate(source: str, marker: str, occurrence: int = 0) -> tuple[int, int]:
+    """1-based (line, column) of *marker*'s *occurrence*-th match in *source*."""
+    idx = -1
+    for _ in range(occurrence + 1):
+        idx = source.index(marker, idx + 1)
+    line = source.count("\n", 0, idx) + 1
+    col = idx - (source.rfind("\n", 0, idx) + 1) + 1
+    return line, col
+
+
+# =====================================================================
+# Enumerating positions from the grammar
+# =====================================================================
+
+def _grammar_alternatives() -> dict[str, list[tuple[str, frozenset[str]]]]:
+    """Every rule's alternatives: ``(label, nonterminals it references)``.
+
+    Read from the grammar's own definitions (pre-compilation, so a helper
+    rule Lark synthesises for a ``*`` group is not mistaken for a position).
+    An aliased alternative (``-> named_type``) is labelled by its alias; an
+    unaliased one by its rule.
+    """
+    builder = GrammarBuilder()
+    builder.load_grammar(_GRAMMAR.read_text(encoding="utf-8"), "<vera>")
+
+    def refs(node: object, out: set[str]) -> None:
+        if isinstance(node, Tree):
+            for child in node.children:
+                refs(child, out)
+        elif isinstance(node, NonTerminal):
+            out.add(node.name)
+
+    table: dict[str, list[tuple[str, frozenset[str]]]] = {}
+    for name, definition in builder._definitions.items():
+        if definition.is_term:
+            continue
+        alternatives: list[tuple[str, frozenset[str]]] = []
+        for alt in definition.tree.children:
+            found: set[str] = set()
+            if isinstance(alt, Tree) and alt.data == "alias":
+                expansion, alias = alt.children
+                refs(expansion, found)
+                alternatives.append((alias.name, frozenset(found)))
+            else:
+                refs(alt, found)
+                alternatives.append((str(name), frozenset(found)))
+        table[str(name)] = alternatives
+    return table
+
+
+#: The nonterminals that carry a type NAME or an effect NAME.
+NAME_CARRIERS = frozenset({"type_expr", "type_args", "effect_ref",
+                           "effect_clause"})
+
+#: The nonterminals that carry an expression.
+EXPR_CARRIERS = frozenset({"expr", "arg_list", "block_expr", "block_contents",
+                           "handler_body", "implies_expr", "or_expr",
+                           "and_expr", "eq_expr", "cmp_expr", "add_expr",
+                           "mul_expr", "unary_expr", "postfix_expr"})
+
+#: The precedence ladder: an alternative that only forwards to the next rung
+#: holds no position of its own.
+_PASSTHROUGH = frozenset({"expr", "pipe_expr", "implies_expr", "or_expr",
+                          "and_expr", "eq_expr", "cmp_expr", "add_expr",
+                          "mul_expr", "unary_expr", "postfix_expr",
+                          "primary_expr", "block_expr", "fn_body",
+                          "arg_list", "handler_body"})
+
+
+def _parents(
+    table: dict[str, list[tuple[str, frozenset[str]]]],
+) -> dict[str, set[str]]:
+    parents: dict[str, set[str]] = {}
+    for alternatives in table.values():
+        for label, found in alternatives:
+            for name in found:
+                parents.setdefault(name, set()).add(label)
+    return parents
+
+
+def grammar_name_positions() -> frozenset[tuple[str, str, str]]:
+    """Every grammar position that carries a type or effect name.
+
+    A key is ``(alternative, carrier, parent)``: an alternative that
+    references a :data:`NAME_CARRIERS` nonterminal, and each alternative
+    that uses the alternative's rule — the syntactic context.  The three
+    alternatives of ``type_expr`` (a named type, a function type, a
+    refinement) stand everywhere a type does, so their context is ``"*"``:
+    every other position is already a key.
+    """
+    table = _grammar_alternatives()
+    parents = _parents(table)
+    keys: set[tuple[str, str, str]] = set()
+    for rule, alternatives in table.items():
+        for label, found in alternatives:
+            for carrier in found & NAME_CARRIERS:
+                if rule == "type_expr":
+                    keys.add((label, carrier, "*"))
+                    continue
+                for parent in parents.get(rule, set()):
+                    # `fn_type` and `refinement_type` are alternatives of
+                    # `type_expr`, so their context is every type position.
+                    keys.add((label, carrier,
+                              "*" if parent == "type_expr" else parent))
+    return frozenset(keys)
+
+
+def grammar_expression_positions() -> frozenset[str]:
+    """Every grammar alternative that holds an expression position.
+
+    The precedence ladder's pass-through alternatives (``?or_expr:
+    and_expr``) are not positions; the operators on it are.
+    """
+    table = _grammar_alternatives()
+    out: set[str] = set()
+    for alternatives in table.values():
+        for label, found in alternatives:
+            if not found & EXPR_CARRIERS:
+                continue
+            if label in _PASSTHROUGH:
+                continue
+            out.add(label)
+    return frozenset(out)
+
+
+def ast_expression_fields() -> frozenset[tuple[str, str]]:
+    """Every ``(node class, field)`` in :mod:`vera.ast` that holds an Expr.
+
+    The grammar cannot see a string interpolation segment — it is lexed
+    inside ``STRING_LIT`` and split by the transformer — so the AST is the
+    second source, and the one that names that position.
+    """
+    out: set[tuple[str, str]] = set()
+    for name, cls in vars(ast).items():
+        if not (isinstance(cls, type) and dataclasses.is_dataclass(cls)):
+            continue
+        hints = typing.get_type_hints(cls, vars(ast))
+        for f in dataclasses.fields(cls):
+            if _holds_expr(hints.get(f.name)):
+                out.add((name, f.name))
+    return frozenset(out)
+
+
+def _holds_expr(hint: object) -> bool:
+    if isinstance(hint, type):
+        return issubclass(hint, ast.Expr)
+    return any(_holds_expr(arg) for arg in typing.get_args(hint))
+
+
+# =====================================================================
+# (a) Unresolved names in every type and effect position
+# =====================================================================
+
+#: The unresolved type name.  Nothing in the language, the prelude or any
+#: template declares it, so no fallback can coincide with it.
+TYPE_NAME = "Qzt"
+#: The unresolved effect name, and a qualified reference — which names
+#: nothing at all, since no effect declaration takes a qualified name.
+EFFECT_NAME = "Qze"
+QUALIFIED_EFFECT = "Qm.Qze"
+
+_COLOUR = """\
+private data Colour {
+  Red,
+  Green
+}
+
+"""
+
+_MAIN0 = """
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  0
+}
+"""
+
+
+@dataclass(frozen=True)
+class NameCell:
+    """One unresolved name at one grammar position, beside its control."""
+
+    label: str
+    #: The grammar keys (:func:`grammar_name_positions`) this cell exercises.
+    positions: frozenset[tuple[str, str, str]]
+    #: The program, with ``{N}`` where the name goes.
+    template: str
+    #: The unresolved spelling, and the declared spelling of the control.
+    name: str
+    control: str
+    #: ``(code, marker, occurrence)`` diagnostics the variant must draw,
+    #: each located at that occurrence of *marker* in the variant source.
+    expect: tuple[tuple[str, str, int], ...]
+
+    def variant_source(self) -> str:
+        return self.template.replace("{N}", self.name)
+
+    def control_source(self) -> str:
+        return self.template.replace("{N}", self.control)
+
+
+def _p(*keys: tuple[str, str, str]) -> frozenset[tuple[str, str, str]]:
+    return frozenset(keys)
+
+
+def _fn(sig: str, body: str, *, effects: str = "effects(pure)",
+        contracts: str = "requires(true)\n  ensures(true)",
+        where: str = "", forall: str = "") -> str:
+    return (
+        f"public {forall}fn f{sig}\n  {contracts}\n  {effects}\n"
+        f"{{\n  {body}\n}}{where}\n"
+    )
+
+
+_T = TYPE_NAME
+_E = EFFECT_NAME
+_Q = QUALIFIED_EFFECT
+
+UNRESOLVED_NAME_CELLS: tuple[NameCell, ...] = (
+    # --- function signatures -------------------------------------------
+    NameCell(
+        "fn parameter",
+        _p(("fn_params", "type_expr", "fn_signature"),
+           ("named_type", "type_args", "*")),
+        _COLOUR + _fn("(@{N} -> @Int)", "1") + _MAIN0,
+        _T, "Colour", (("E136", _T, 0),),
+    ),
+    NameCell(
+        "fn return",
+        _p(("fn_signature", "type_expr", "fn_decl"),),
+        _COLOUR + _fn("(@Int -> @Option<{N}>)", "None") + _MAIN0,
+        _T, "Colour", (("E136", _T, 0),),
+    ),
+    NameCell(
+        "type argument of a parameter",
+        _p(("type_args", "type_expr", "named_type"),),
+        _COLOUR + _fn("(@Option<{N}> -> @Int)", "1") + _MAIN0,
+        _T, "Colour", (("E136", _T, 0),),
+    ),
+    NameCell(
+        "refinement base",
+        _p(("refinement_type", "type_expr", "*"),),
+        _COLOUR + _fn("(@Array<{ @{N} | true }> -> @Int)", "1") + _MAIN0,
+        _T, "Colour", (("E136", _T, 0),),
+    ),
+    NameCell(
+        "function-type parameter",
+        _p(("param_types", "type_expr", "fn_type"),
+           ("fn_type", "type_expr", "*")),
+        _COLOUR + _fn("(@Array<fn({N} -> Int) effects(pure)> -> @Int)", "1")
+        + _MAIN0,
+        _T, "Colour", (("E136", _T, 0),),
+    ),
+    NameCell(
+        "function-type result",
+        _p(("fn_type", "type_expr", "*"),),
+        _COLOUR + _fn("(@Array<fn(Int -> {N}) effects(pure)> -> @Int)", "1")
+        + _MAIN0,
+        _T, "Colour", (("E136", _T, 0),),
+    ),
+    # --- declarations --------------------------------------------------
+    NameCell(
+        "constructor field",
+        _p(("fields_constructor", "type_expr", "constructor_list"),),
+        _COLOUR + "private data Box {\n  MkBox({N}),\n  Empty\n}\n" + _MAIN0,
+        _T, "Colour", (("E136", _T, 0),),
+    ),
+    NameCell(
+        "type alias body",
+        _p(("type_alias_decl", "type_expr", "top_level_decl"),),
+        _COLOUR + "type Hue = Option<{N}>;\n" + _MAIN0,
+        _T, "Colour", (("E136", _T, 0),),
+    ),
+    NameCell(
+        "effect operation parameter",
+        _p(("param_types", "type_expr", "op_decl"),
+           ("op_decl", "type_expr", "effect_decl")),
+        _COLOUR + "effect Paint {\n  op daub({N} -> Unit);\n}\n" + _MAIN0,
+        _T, "Colour", (("E136", _T, 0),),
+    ),
+    NameCell(
+        "effect operation result",
+        _p(("op_decl", "type_expr", "effect_decl"),),
+        _COLOUR + "effect Paint {\n  op pick(Unit -> {N});\n}\n" + _MAIN0,
+        _T, "Colour", (("E136", _T, 0),),
+    ),
+    NameCell(
+        "ability operation result",
+        _p(("op_decl", "type_expr", "ability_decl"),),
+        _COLOUR + "ability Tint<A> {\n  op tint(A -> {N});\n}\n" + _MAIN0,
+        _T, "Colour", (("E136", _T, 0),),
+    ),
+    NameCell(
+        "ability operation parameter",
+        _p(("param_types", "type_expr", "op_decl"),
+           ("op_decl", "type_expr", "ability_decl")),
+        _COLOUR + "ability Tint<A> {\n  op tint(A, {N} -> Int);\n}\n"
+        + _MAIN0,
+        _T, "Colour", (("E136", _T, 0),),
+    ),
+    # --- effect rows ---------------------------------------------------
+    NameCell(
+        "effect row of a function",
+        _p(("fn_decl", "effect_clause", "fn_top_level"),
+           ("effect_list", "effect_ref", "effect_set")),
+        _fn("(@Int -> @Int)", "@Int.0", effects="effects(<{N}>)") + _MAIN0,
+        _E, "IO", (("E338", _E, 0),),
+    ),
+    NameCell(
+        "qualified effect in a function's row",
+        _p(("fn_decl", "effect_clause", "fn_top_level"),
+           ("effect_list", "effect_ref", "effect_set")),
+        _fn("(@Int -> @Int)", "@Int.0", effects="effects(<{N}>)") + _MAIN0,
+        _Q, "IO", (("E338", _Q, 0),),
+    ),
+    NameCell(
+        "effect row of a where-helper",
+        _p(("fn_decl", "effect_clause", "where_block"),),
+        _fn("(@Int -> @Int)", "helper(@Int.0)", where=(
+            "\nwhere {\n  fn helper(@Int -> @Int)\n    requires(true)\n"
+            "    ensures(true)\n    effects(<{N}>)\n  {\n    @Int.0\n  }\n}"
+        ), effects="effects(<IO>)") + _MAIN0,
+        _E, "IO", (("E338", _E, 0),),
+    ),
+    NameCell(
+        "effect row of a function type",
+        _p(("fn_type", "effect_clause", "*"),),
+        _fn("(@Array<fn(Int -> Int) effects(<{N}>)> -> @Int)", "1") + _MAIN0,
+        _E, "IO", (("E338", _E, 0),),
+    ),
+    NameCell(
+        "type argument of an effect in a row",
+        _p(("effect_ref", "type_args", "effect_list"),
+           ("type_args", "type_expr", "effect_ref")),
+        _COLOUR + _fn("(@Int -> @Int)", "@Int.0",
+                      effects="effects(<Exn<{N}>>)") + _MAIN0,
+        _T, "Colour", (("E136", _T, 0),),
+    ),
+    NameCell(
+        "type argument of a qualified effect in a row",
+        _p(("qualified_effect_ref", "type_args", "effect_list"),
+           ("type_args", "type_expr", "qualified_effect_ref")),
+        _COLOUR + _fn("(@Int -> @Int)", "@Int.0",
+                      effects="effects(<{N}>)") + _MAIN0,
+        f"Qm.Qze<{_T}>", "Exn<Colour>", (("E338", "Qm.Qze", 0), ("E136", _T, 0)),
+    ),
+    # --- expressions that name a type ----------------------------------
+    NameCell(
+        "slot reference type argument",
+        _p(("slot_ref", "type_args", "primary_expr"),
+           ("type_args", "type_expr", "slot_ref")),
+        _COLOUR + _fn("(@Option<Colour> -> @Int)",
+                      "match @Option<{N}>.0 {\n    None -> 1,\n"
+                      "    Some(@Colour) -> 2\n  }") + _MAIN0,
+        _T, "Colour", (("E136", _T, 0),),
+    ),
+    NameCell(
+        "result reference type argument",
+        _p(("result_ref", "type_args", "primary_expr"),
+           ("type_args", "type_expr", "result_ref")),
+        _COLOUR + _fn(
+            "(@Int -> @Option<Colour>)", "None",
+            contracts="requires(true)\n  ensures(@Option<{N}>.result == None)",
+        ) + _MAIN0,
+        _T, "Colour", (("E136", _T, 0),),
+    ),
+    NameCell(
+        "let binding",
+        _p(("let_stmt", "type_expr", "statement"),),
+        _COLOUR + _fn("(@Int -> @Int)",
+                      "let @Option<{N}> = None;\n  @Int.0") + _MAIN0,
+        _T, "Colour", (("E136", _T, 0),),
+    ),
+    NameCell(
+        "tuple destructure component",
+        _p(("tuple_destruct", "type_expr", "let_destruct"),),
+        _COLOUR + _fn(
+            "(@Int -> @Int)",
+            "let Tuple<@Int, @Option<{N}>> = Tuple(@Int.0, None);\n  @Int.0",
+        ) + _MAIN0,
+        _T, "Colour", (("E136", _T, 0),),
+    ),
+    NameCell(
+        "match binder",
+        _p(("binding_pattern", "type_expr", "match_arm"),),
+        _COLOUR + _fn("(@Int -> @Int)",
+                      "match @Int.0 {\n    @{N} -> 1\n  }") + _MAIN0,
+        _T, "Int", (("E136", _T, 0),),
+    ),
+    NameCell(
+        "nested match binder",
+        _p(("binding_pattern", "type_expr", "constructor_pattern"),),
+        _COLOUR + _fn("(@Option<Colour> -> @Int)",
+                      "match @Option<Colour>.0 {\n    None -> 1,\n"
+                      "    Some(@{N}) -> 2\n  }") + _MAIN0,
+        _T, "Colour", (("E136", _T, 0),),
+    ),
+    NameCell(
+        "anonymous function parameter",
+        _p(("fn_params", "type_expr", "anonymous_fn"),),
+        _COLOUR + _fn("(@Array<Int> -> @Int)",
+                      "array_length(array_map(array_map(@Array<Int>.0, "
+                      "fn(@Int -> @Option<Colour>) effects(pure) { None }), "
+                      "fn(@Option<{N}> -> @Int) effects(pure) { 1 }))")
+        + _MAIN0,
+        _T, "Colour", (("E136", _T, 0),),
+    ),
+    NameCell(
+        "anonymous function result",
+        _p(("anonymous_fn", "type_expr", "primary_expr"),),
+        _COLOUR + _fn("(@Array<Int> -> @Int)",
+                      "array_length(array_map(@Array<Int>.0, "
+                      "fn(@Int -> @Option<{N}>) effects(pure) { None }))")
+        + _MAIN0,
+        _T, "Colour", (("E136", _T, 0),),
+    ),
+    NameCell(
+        "anonymous function effect row",
+        _p(("anonymous_fn", "effect_clause", "primary_expr"),),
+        _fn("(@Array<Int> -> @Int)",
+            "array_length(array_map(@Array<Int>.0, "
+            "fn(@Int -> @Int) effects({N}) { @Int.0 }))") + _MAIN0,
+        f"<{_E}>", "pure", (("E338", _E, 0),),
+    ),
+    NameCell(
+        "forall quantifier binder",
+        _p(("forall_expr", "type_expr", "primary_expr"),),
+        _fn("(@Array<Int> -> @Int)", "1", contracts=(
+            "requires(forall(@{N}, array_length(@Array<Int>.0), "
+            "fn(@Nat -> @Bool) effects(pure) { true }))\n  ensures(true)"
+        )) + _MAIN0,
+        _T, "Nat", (("E136", _T, 0),),
+    ),
+    NameCell(
+        "exists quantifier binder",
+        _p(("exists_expr", "type_expr", "primary_expr"),),
+        _fn("(@Array<Int> -> @Int)", "1", contracts=(
+            "requires(true)\n  ensures(exists(@{N}, "
+            "array_length(@Array<Int>.0), "
+            "fn(@Nat -> @Bool) effects(pure) { true }) || true)"
+        )) + _MAIN0,
+        _T, "Nat", (("E136", _T, 0),),
+    ),
+    NameCell(
+        "forall predicate parameter",
+        _p(("anonymous_fn", "type_expr", "forall_expr"),),
+        _fn("(@Array<Int> -> @Int)", "1", contracts=(
+            "requires(forall(@Nat, array_length(@Array<Int>.0), "
+            "fn(@{N} -> @Bool) effects(pure) { true }))\n  ensures(true)"
+        )) + _MAIN0,
+        _T, "Nat", (("E136", _T, 0),),
+    ),
+    NameCell(
+        "forall predicate effect row",
+        _p(("anonymous_fn", "effect_clause", "forall_expr"),),
+        _fn("(@Array<Int> -> @Int)", "1", contracts=(
+            "requires(forall(@Nat, array_length(@Array<Int>.0), "
+            "fn(@Nat -> @Bool) effects({N}) { true }))\n  ensures(true)"
+        )) + _MAIN0,
+        f"<{_E}>", "pure", (("E338", _E, 0),),
+    ),
+    NameCell(
+        "exists predicate parameter",
+        _p(("anonymous_fn", "type_expr", "exists_expr"),),
+        _fn("(@Array<Int> -> @Int)", "1", contracts=(
+            "requires(true)\n  ensures(exists(@Nat, "
+            "array_length(@Array<Int>.0), fn(@{N} -> @Bool) effects(pure) "
+            "{ true }) || true)"
+        )) + _MAIN0,
+        _T, "Nat", (("E136", _T, 0),),
+    ),
+    NameCell(
+        "exists predicate effect row",
+        _p(("anonymous_fn", "effect_clause", "exists_expr"),),
+        _fn("(@Array<Int> -> @Int)", "1", contracts=(
+            "requires(true)\n  ensures(exists(@Nat, "
+            "array_length(@Array<Int>.0), fn(@Nat -> @Bool) "
+            "effects({N}) { true }) || true)"
+        )) + _MAIN0,
+        f"<{_E}>", "pure", (("E338", _E, 0),),
+    ),
+    # --- handlers and state forms --------------------------------------
+    NameCell(
+        "handled effect",
+        _p(("handle_expr", "effect_ref", "primary_expr"),),
+        _fn("(@Int -> @Int)",
+            "handle[{N}](@Int = 0) {\n    get(@Unit) -> { resume(@Int.0) },\n"
+            "    put(@Int) -> { resume(()) }\n  } in {\n    @Int.0\n  }")
+        + _MAIN0,
+        _E, "State<Int>", (("E330", _E, 0),),
+    ),
+    NameCell(
+        "qualified handled effect",
+        _p(("handle_expr", "effect_ref", "primary_expr"),),
+        _fn("(@Int -> @Int)",
+            "handle[{N}](@Int = 0) {\n    get(@Unit) -> { resume(@Int.0) },\n"
+            "    put(@Int) -> { resume(()) }\n  } in {\n    @Int.0\n  }")
+        + _MAIN0,
+        _Q, "State<Int>", (("E330", _Q, 0),),
+    ),
+    NameCell(
+        "type argument of a handled effect",
+        _p(("effect_ref", "type_args", "handle_expr"),),
+        _COLOUR + _fn("(@Int -> @Int)",
+                      "handle[Exn<{N}>] {\n    throw(@Colour) -> 7\n  } in {\n"
+                      "    @Int.0\n  }") + _MAIN0,
+        _T, "Colour", (("E136", _T, 0),),
+    ),
+    NameCell(
+        "type argument of a qualified handled effect",
+        _p(("qualified_effect_ref", "type_args", "handle_expr"),),
+        _COLOUR + _fn("(@Int -> @Int)",
+                      "handle[{N}] {\n    throw(@Colour) -> 7\n  } in {\n"
+                      "    @Int.0\n  }") + _MAIN0,
+        f"Qm.Qze<{_T}>", "Exn<Colour>", (("E136", _T, 0),),
+    ),
+    NameCell(
+        "handler state",
+        _p(("handler_state", "type_expr", "handle_expr"),),
+        _COLOUR + _fn("(@Int -> @Int)",
+                      "handle[State<Int>](@{N} = 0) {\n"
+                      "    get(@Unit) -> { resume(0) },\n"
+                      "    put(@Int) -> { resume(()) }\n  } in {\n    @Int.0\n  }")
+        + _MAIN0,
+        _T, "Int", (("E136", _T, 0),),
+    ),
+    NameCell(
+        "handler clause parameter",
+        _p(("handler_params", "type_expr", "handler_clause"),),
+        _COLOUR + _fn("(@Int -> @Int)",
+                      "handle[Exn<Colour>] {\n    throw(@{N}) -> 7\n  } in {\n"
+                      "    @Int.0\n  }") + _MAIN0,
+        _T, "Colour", (("E136", _T, 0),),
+    ),
+    NameCell(
+        "handler with-clause",
+        _p(("with_clause", "type_expr", "handler_clause"),),
+        _fn("(@Int -> @Int)",
+            "handle[State<Int>](@Int = 0) {\n"
+            "    get(@Unit) -> { resume(@Int.0) },\n"
+            "    put(@Int) -> { resume(()) } with @{N} = @Int.0\n"
+            "  } in {\n    @Int.0\n  }") + _MAIN0,
+        _T, "Int", (("E136", _T, 0),),
+    ),
+    NameCell(
+        "old() effect",
+        _p(("old_expr", "effect_ref", "primary_expr"),),
+        _fn("(@Int -> @Unit)", "put(@Int.0);\n  ()",
+            effects="effects(<State<Int>>)",
+            contracts="requires(true)\n  ensures(old({N}) == old({N}))")
+        + _MAIN0,
+        _E, "State<Int>", (("E177", "old(", 0),),
+    ),
+    NameCell(
+        "new() effect",
+        _p(("new_expr", "effect_ref", "primary_expr"),),
+        _fn("(@Int -> @Unit)", "put(@Int.0);\n  ()",
+            effects="effects(<State<Int>>)",
+            contracts="requires(true)\n  ensures(new({N}) == new({N}))")
+        + _MAIN0,
+        _E, "State<Int>", (("E177", "new(", 0),),
+    ),
+    NameCell(
+        "type argument of an old() effect",
+        _p(("effect_ref", "type_args", "old_expr"),),
+        _fn(
+            "(@Int -> @Unit)", "put(@Int.0);\n  ()",
+            effects="effects(<State<{N}>>)",
+            contracts="requires(true)\n  ensures(old(State<{N}>) "
+                      "== old(State<{N}>))",
+        ) + _MAIN0,
+        _T, "Int", (("E136", _T, 0),),
+    ),
+    NameCell(
+        "type argument of a new() effect",
+        _p(("effect_ref", "type_args", "new_expr"),),
+        _fn(
+            "(@Int -> @Unit)", "put(@Int.0);\n  ()",
+            effects="effects(<State<{N}>>)",
+            contracts="requires(true)\n  ensures(new(State<{N}>) "
+                      "== new(State<{N}>))",
+        ) + _MAIN0,
+        _T, "Int", (("E136", _T, 0),),
+    ),
+    NameCell(
+        "type argument of a qualified old() effect",
+        _p(("qualified_effect_ref", "type_args", "old_expr"),),
+        _fn("(@Int -> @Unit)", "put(@Int.0);\n  ()",
+            effects="effects(<State<Int>>)",
+            contracts="requires(true)\n  ensures(old({N}) == old({N}))")
+        + _MAIN0,
+        f"Qm.Qze<{_T}>", "State<Int>", (("E136", _T, 0),),
+    ),
+    NameCell(
+        "type argument of a qualified new() effect",
+        _p(("qualified_effect_ref", "type_args", "new_expr"),),
+        _fn("(@Int -> @Unit)", "put(@Int.0);\n  ()",
+            effects="effects(<State<Int>>)",
+            contracts="requires(true)\n  ensures(new({N}) == new({N}))")
+        + _MAIN0,
+        f"Qm.Qze<{_T}>", "State<Int>", (("E136", _T, 0),),
+    ),
+)
+
+
+def _single_file_outcome(tmp_path: Path, source: str) -> Outcome:
+    return pipeline(tmp_path, {"main.vera": source})
+
+
+class TestUnresolvedNameMatrix:
+    """(a): an unresolved name in every grammar position that holds one."""
+
+    def test_every_grammar_position_has_a_cell(self) -> None:
+        """The positions come from the grammar; every one needs a cell.
+
+        A grammar change that adds a type or effect position fails here
+        until a cell puts an unresolved name there — which is the point of
+        enumerating rather than listing.  A cell that claims a position the
+        grammar does not have fails too, so the claims cannot rot.
+        """
+        wanted = grammar_name_positions()
+        claimed = frozenset().union(
+            *(cell.positions for cell in UNRESOLVED_NAME_CELLS))
+        assert not wanted - claimed, sorted(wanted - claimed)
+        assert not claimed - wanted, sorted(claimed - wanted)
+
+    def test_the_enumeration_sees_the_positions_the_issue_names(self) -> None:
+        """The enumerator is not vacuous: it finds the reported shapes."""
+        wanted = grammar_name_positions()
+        for key in (
+            ("fn_params", "type_expr", "fn_signature"),      # f(@Nonexistent)
+            ("type_args", "type_expr", "named_type"),        # Option<Nonexistent>
+            ("binding_pattern", "type_expr", "constructor_pattern"),
+            ("fields_constructor", "type_expr", "constructor_list"),
+            ("let_stmt", "type_expr", "statement"),          # let @Colour
+            ("fn_decl", "effect_clause", "fn_top_level"),    # effects(<X>)
+        ):
+            assert key in wanted, key
+        assert len(wanted) >= 40, len(wanted)
+
+    @pytest.mark.parametrize(
+        "cell", UNRESOLVED_NAME_CELLS, ids=lambda c: c.label,
+    )
+    def test_control_checks_compiles_and_exports(
+        self, cell: NameCell, tmp_path: Path,
+    ) -> None:
+        """The template is sound with a declared name in the position.
+
+        So the variant's refusal below is caused by the name and nothing
+        else — and the differential holds on the accepted program.
+        """
+        outcome = _single_file_outcome(tmp_path, cell.control_source())
+        assert outcome.accepted, outcome.describe()
+        assert outcome.compiles_clean, outcome.describe()
+
+    @pytest.mark.parametrize(
+        "cell", UNRESOLVED_NAME_CELLS, ids=lambda c: c.label,
+    )
+    def test_unresolved_name_is_refused_where_it_is_written(
+        self, cell: NameCell, tmp_path: Path,
+    ) -> None:
+        """Every type and effect name resolves, or check refuses it there."""
+        source = cell.variant_source()
+        outcome = _single_file_outcome(tmp_path, source)
+        # The differential, stated first: an accepted program compiles.
+        if outcome.accepted:
+            assert outcome.compiles_clean, outcome.describe()
+        got = {
+            (d.error_code, d.location.line, d.location.column)
+            for d in outcome.check_errors
+        }
+        for code, marker, occurrence in cell.expect:
+            line, col = locate(source, marker, occurrence)
+            assert (code, line, col) in got, (
+                f"expected {code} at {line}:{col} ({marker!r}); "
+                + outcome.describe()
+            )
+
+
+#: Type SHAPES at the quantifier's two type positions (#1506): the binding
+#: type, and the predicate's parameter — the grammar keys
+#: ``(forall_expr|exists_expr, type_expr, primary_expr)`` and
+#: ``(anonymous_fn, type_expr, forall_expr|exists_expr)``.  The name matrix
+#: above puts a declared NAME in each; a refinement, an alias of one, or a
+#: type with no integer representation is a different shape, and at the
+#: predicate's parameter each one used to pass check and verify and then
+#: stop code generation (E699) or leave a module that fails to load.
+QUANTIFIER_SHAPES: tuple[tuple[str, bool], ...] = (
+    # (spelling, whether the PREDICATE may take it)
+    ("Nat", True),
+    ("Int", True),
+    ("Idx", True),                          # an alias of Nat
+    ("{ @Nat | @Nat.0 < 100 }", False),     # an inline refinement
+    ("Small", False),                       # an alias of a refinement
+    ("Byte", False),                        # an integer, but not the index's
+    ("Bool", False),
+    ("Option<Int>", False),
+    ("Colour", False),
+)
+
+_QUANT_PRELUDE = (
+    "private data Colour {\n  Red,\n  Green\n}\n\ntype Idx = Nat;\n"
+    "type Small = { @Nat | @Nat.0 < 2 };\n\n"
+)
+
+
+@dataclass(frozen=True)
+class QuantifierCell:
+    form: str
+    position: str       # "binding" or "predicate"
+    shape: str
+    admissible: bool
+
+    @property
+    def label(self) -> str:
+        return f"{self.form}|{self.position}|{self.shape}"
+
+    def source(self) -> str:
+        binding = self.shape if self.position == "binding" else "Nat"
+        param = self.shape if self.position == "predicate" else "Nat"
+        return (
+            _QUANT_PRELUDE + "public fn main(@Unit -> @Int)\n"
+            "  requires(true)\n  ensures(true)\n  effects(pure)\n{\n"
+            f"  if {self.form}(@{binding}, 5, fn(@{param} -> @Bool) "
+            "effects(pure) { true }) then { 1 } else { 0 }\n}\n"
+        )
+
+
+QUANTIFIER_CELLS: tuple[QuantifierCell, ...] = tuple(
+    QuantifierCell(form, position, shape,
+                   admissible or position == "binding")
+    for form in ("forall", "exists")
+    for position in ("binding", "predicate")
+    for shape, admissible in QUANTIFIER_SHAPES
+)
+
+
+class TestQuantifierShapes:
+    """(a), continued: every type shape at the quantifier's positions."""
+
+    @pytest.mark.parametrize("cell", QUANTIFIER_CELLS, ids=lambda c: c.label)
+    def test_accepted_means_compiled(
+        self, cell: QuantifierCell, tmp_path: Path,
+    ) -> None:
+        outcome = _single_file_outcome(tmp_path, cell.source())
+        if not cell.admissible:
+            assert "E179" in {d.error_code for d in outcome.check_errors}, (
+                outcome.describe())
+            return
+        assert outcome.accepted and outcome.compiles_clean, (
+            outcome.describe())
+        # `forall` over 0..4 of `true` is true; so is `exists`.
+        assert run_main(outcome) == ("ok", 1)
+
+
+# =====================================================================
+# (b) A module's imported data type, through every expression position
+# =====================================================================
+
+#: The value under test: a call into a module whose return type the module
+#: IMPORTED.  ``pick(1)`` is ``Red``; ``paint(Red)`` is ``1``.
+_X = "pick(@Int.0)"
+
+_MB = """\
+module mb;
+
+public data Colour {
+  Red,
+  Green
+}
+"""
+
+_PICK = """
+public fn pick(@Int -> @Colour)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if @Int.0 > 0 then { Red } else { Green }
+}
+"""
+
+_PAINT = """
+public fn paint(@Colour -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Colour.0 {
+    Red -> 1,
+    Green -> 2
+  }
+}
+"""
+
+_MA = "module ma;\n\nimport mb(Colour);\n" + _PICK + _PAINT
+
+_MAIN_CALLS_CONSUME = """
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  consume(1)
+}
+"""
+
+
+def _consume(body: str, contracts: str) -> str:
+    return (
+        "\npublic fn consume(@Int -> @Int)\n"
+        f"  {contracts}\n  effects(pure)\n{{\n  {body}\n}}\n"
+    )
+
+
+@dataclass(frozen=True)
+class Topology:
+    """Where the module result is produced, and where it is consumed."""
+
+    label: str
+    #: The module that supplies ``paint`` for a module-qualified call.
+    paint_module: str
+
+    def files(self, consumer: str) -> dict[str, str]:
+        """The program, with *consumer* (declarations) placed in it."""
+        if self.label == "entry consumes":
+            # A imports B's type and returns it; the entry consumes it.
+            return {
+                "mb.vera": _MB, "ma.vera": _MA,
+                "main.vera": "import ma(pick, paint);\nimport mb(Colour);\n"
+                             + consumer + _MAIN_CALLS_CONSUME,
+            }
+        if self.label == "module consumes":
+            # C imports A: a third module's body consumes it, compiled as
+            # an import.
+            return {
+                "mb.vera": _MB, "ma.vera": _MA,
+                "mc.vera": "module mc;\n\nimport ma(pick, paint);\n"
+                           "import mb(Colour);\n" + consumer,
+                "main.vera": "import mc(consume);\n" + _MAIN_CALLS_CONSUME,
+            }
+        if self.label == "own body consumes":
+            # A's own body consumes its own result, compiled as an import.
+            return {
+                "mb.vera": _MB, "ma.vera": _MA + consumer,
+                "main.vera": "import ma(consume);\n" + _MAIN_CALLS_CONSUME,
+            }
+        if self.label == "diamond":
+            # Two modules import B; the entry imports both and B.  ``paint``
+            # is declared by ``mc`` alone: a second module declaring it too
+            # is #1498's shape (E608 between two modules no namespace can
+            # name together), which is not this class.
+            return {
+                "mb.vera": _MB,
+                "ma.vera": "module ma;\n\nimport mb(Colour);\n" + _PICK,
+                "mc.vera": "module mc;\n\nimport mb(Colour);\n" + _PAINT,
+                "main.vera": "import ma(pick);\nimport mc(paint);\n"
+                             "import mb(Colour);\n"
+                             + consumer + _MAIN_CALLS_CONSUME,
+            }
+        raise AssertionError(self.label)
+
+
+TOPOLOGIES: tuple[Topology, ...] = (
+    Topology("entry consumes", "ma"),
+    Topology("module consumes", "ma"),
+    Topology("own body consumes", "ma"),
+    Topology("diamond", "mc"),
+)
+
+
+@dataclass(frozen=True)
+class FlowCell:
+    """The module result in one expression position."""
+
+    label: str
+    #: Grammar alternatives (:func:`grammar_expression_positions`) and AST
+    #: fields (:func:`ast_expression_fields`) the result sits in directly.
+    grammar: frozenset[str]
+    fields: frozenset[tuple[str, str]]
+    #: ``consume``'s body, with ``{X}`` for the module result and
+    #: ``{PAINT}`` for the module a qualified ``paint`` call names.
+    body: str
+    #: The value ``main`` returns, or the code the checker refuses the
+    #: position with — the result's type does not fit it.  Stated either
+    #: way, so a refused cell says WHY it is refused.
+    expect: int | str
+    #: Declarations placed beside ``consume``.
+    extra: str = ""
+    contracts: str = "requires(true)\n  ensures(true)"
+    #: Per-topology overrides of *expect*.
+    per_topology: tuple[tuple[str, int | str], ...] = ()
+
+    def expected(self, topology: Topology) -> int | str:
+        return dict(self.per_topology).get(topology.label, self.expect)
+
+    def consumer(self, topology: Topology) -> str:
+        def fill(text: str) -> str:
+            return (text.replace("{X}", _X)
+                    .replace("{PAINT}", topology.paint_module))
+        return fill(self.extra) + _consume(fill(self.body),
+                                           fill(self.contracts))
+
+
+def _g(*names: str) -> frozenset[str]:
+    return frozenset(names)
+
+
+def _f(*fields: tuple[str, str]) -> frozenset[tuple[str, str]]:
+    return frozenset(fields)
+
+
+_PAIR = """
+private data Pair {
+  MkPair(Colour, Int)
+}
+"""
+
+_RELAY = """
+private fn relay(@Int -> @Colour)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  pick(@Int.0)
+}
+"""
+
+_STATE_CLAUSES = (
+    "get(@Unit) -> { resume(@Colour.0) },\n"
+    "    put(@Colour) -> { resume(()) }"
+)
+
+FLOW_CELLS: tuple[FlowCell, ...] = (
+    FlowCell("match scrutinee", _g("match_expr"),
+             _f(("MatchExpr", "scrutinee")),
+             "match {X} {\n    Red -> 10,\n    Green -> 20\n  }", 10),
+    FlowCell("match arm", _g("match_arm"), _f(("MatchArm", "body")),
+             "paint(match @Int.0 {\n    0 -> Green,\n    @Int -> {X}\n  })", 1),
+    FlowCell("call argument", _g("func_call"), _f(("FnCall", "args")),
+             "paint({X})", 1),
+    FlowCell("module-qualified call argument", _g("module_call"),
+             _f(("ModuleCall", "args")), "{PAINT}::paint({X})", 1),
+    FlowCell("constructor argument", _g("constructor_call"),
+             _f(("ConstructorCall", "args")),
+             "match Some({X}) {\n    Some(@Colour) -> paint(@Colour.0),\n"
+             "    None -> 0\n  }", 1),
+    FlowCell("user constructor field", _g("constructor_call"),
+             _f(("ConstructorCall", "args")),
+             "match MkPair({X}, 3) {\n"
+             "    MkPair(@Colour, @Int) -> paint(@Colour.0) + @Int.0\n  }", 4,
+             extra=_PAIR),
+    FlowCell("tuple component", _g("constructor_call", "let_destruct"),
+             _f(("ConstructorCall", "args"), ("LetDestruct", "value")),
+             "let Tuple<@Colour, @Int> = Tuple({X}, 5);\n"
+             "  paint(@Colour.0) + @Int.0", 6),
+    FlowCell("let binding", _g("let_stmt"), _f(("LetStmt", "value")),
+             "let @Colour = {X};\n  paint(@Colour.0)", 1),
+    FlowCell("array element", _g("array_literal"),
+             _f(("ArrayLit", "elements")),
+             "let @Array<Colour> = [{X}, Green];\n  paint(@Array<Colour>.0[0])",
+             1),
+    FlowCell("function return", _g("block_contents"),
+             _f(("Block", "expr"), ("FnDecl", "body")),
+             "paint(relay(@Int.0))", 1, extra=_RELAY),
+    FlowCell("block tail", _g("block_contents"), _f(("Block", "expr")),
+             "paint({\n    {X}\n  })", 1),
+    FlowCell("if branch", _g("if_expr"),
+             _f(("IfExpr", "then_branch"), ("IfExpr", "else_branch")),
+             "paint(if @Int.0 > 0 then { {X} } else { Green })", 1),
+    FlowCell("if condition", _g("if_expr"), _f(("IfExpr", "condition")),
+             "if {X} then { 1 } else { 2 }", "E300"),
+    FlowCell("parenthesised", _g("paren_expr"), frozenset(),
+             "paint(({X}))", 1),
+    FlowCell("pipe", _g("pipe"), frozenset(), "{X} |> paint()", 1),
+    FlowCell("equality", _g("eq_op"),
+             _f(("BinaryExpr", "left"), ("BinaryExpr", "right")),
+             "if {X} == Red then { 1 } else { 2 }", 1),
+    FlowCell("inequality", _g("neq_op"),
+             _f(("BinaryExpr", "left"), ("BinaryExpr", "right")),
+             "if Green != {X} then { 1 } else { 2 }", 1),
+    FlowCell("expression statement", _g("expr_stmt"),
+             _f(("ExprStmt", "expr")), "{X};\n  paint({X})", 1),
+    FlowCell("handler state", _g("handler_state", "qualified_call"),
+             _f(("HandlerState", "init_expr"), ("QualifiedCall", "args")),
+             "handle[State<Colour>](@Colour = {X}) {\n    "
+             + _STATE_CLAUSES + "\n  } in {\n    State.put({X});\n"
+             "    paint(State.get(()))\n  }", 1),
+    FlowCell("handler with-clause", _g("with_clause"),
+             _f(("HandlerClause", "state_update")),
+             "handle[State<Colour>](@Colour = Green) {\n"
+             "    get(@Unit) -> { resume(@Colour.0) },\n"
+             "    put(@Colour) -> { resume(()) } with @Colour = {X}\n"
+             "  } in {\n    put(Green);\n    paint(get(()))\n  }", 1),
+    FlowCell("handler clause body", _g("handler_clause"),
+             _f(("HandlerClause", "body")),
+             "paint(handle[Exn<Int>] {\n    throw(@Int) -> {X}\n  } in {\n"
+             "    if @Int.0 > 5 then { Green } else { throw(0) }\n  })", 2),
+    FlowCell("handled body", _g("handle_expr"), _f(("HandleExpr", "body")),
+             "paint(handle[State<Int>](@Int = 0) {\n"
+             "    get(@Unit) -> { resume(@Int.0) },\n"
+             "    put(@Int) -> { resume(()) }\n  } in {\n    {X}\n  })", 1),
+    FlowCell("anonymous function body", frozenset(), _f(("AnonFn", "body")),
+             "paint(array_map([@Int.0], "
+             "fn(@Int -> @Colour) effects(pure) { pick(@Int.0) })[0])", 1),
+    FlowCell("interpolation segment", frozenset(),
+             _f(("InterpolatedString", "parts")),
+             'string_length("\\({X})")', "E148"),
+    FlowCell("interpolation of a result through a call", frozenset(),
+             _f(("InterpolatedString", "parts")),
+             'string_length("colour \\(paint({X}))")', 8),
+    FlowCell("requires clause", _g("requires_clause"),
+             _f(("Requires", "expr")), "1", "E123",
+             contracts="requires({X})\n  ensures(true)"),
+    FlowCell("ensures clause", _g("ensures_clause"),
+             _f(("Ensures", "expr")), "1", "E124",
+             contracts="requires(true)\n  ensures({X})"),
+    FlowCell("a contract calling through the result",
+             _g("func_call"), _f(("FnCall", "args")), "1", 1,
+             contracts="requires(true)\n  ensures(paint({X}) >= 1)"),
+    FlowCell("decreases clause", _g("decreases_clause"),
+             _f(("Decreases", "exprs")), "1", 1,
+             contracts="requires(true)\n  ensures(true)\n  decreases({X})"),
+    FlowCell("assert", _g("assert_expr"), _f(("AssertExpr", "expr")),
+             "assert({X});\n  1", "E172"),
+    FlowCell("assume", _g("assume_expr"), _f(("AssumeExpr", "expr")),
+             "assume({X});\n  1", "E173"),
+    FlowCell("forall domain", _g("forall_expr"),
+             _f(("ForallExpr", "domain"), ("ForallExpr", "predicate")),
+             "1", "E128",
+             contracts="requires(forall(@Nat, {X}, fn(@Nat -> @Bool) "
+                       "effects(pure) { true }))\n  ensures(true)"),
+    FlowCell("exists domain", _g("exists_expr"),
+             _f(("ExistsExpr", "domain"), ("ExistsExpr", "predicate")),
+             "1", "E128",
+             contracts="requires(exists(@Nat, {X}, fn(@Nat -> @Bool) "
+                       "effects(pure) { true }))\n  ensures(true)"),
+    FlowCell("index collection", _g("index_op"),
+             _f(("IndexExpr", "collection")), "{X}[0]", "E161"),
+    FlowCell("index position", _g("index_op"), _f(("IndexExpr", "index")),
+             "[1, 2][{X}]", "E160"),
+    FlowCell("logical not", _g("not_op"), _f(("UnaryExpr", "operand")),
+             "if !{X} then { 1 } else { 2 }", "E146"),
+    FlowCell("negation", _g("neg_op"), _f(("UnaryExpr", "operand")),
+             "-{X}", "E147"),
+    FlowCell("implication", _g("implies"), frozenset(),
+             "if {X} ==> true then { 1 } else { 2 }", "E144"),
+    FlowCell("disjunction", _g("or_op"), frozenset(),
+             "if {X} || true then { 1 } else { 2 }", "E144"),
+    FlowCell("conjunction", _g("and_op"), frozenset(),
+             "if {X} && true then { 1 } else { 2 }", "E144"),
+    *(
+        FlowCell(f"arithmetic {op}", _g(label), frozenset(),
+                 f"{{X}} {op} 1", "E140")
+        for label, op in (("add_op", "+"), ("sub_op", "-"), ("mul_op", "*"),
+                          ("div_op", "/"), ("mod_op", "%"))
+    ),
+    *(
+        FlowCell(f"ordering {op}", _g(label), frozenset(),
+                 f"if {{X}} {op} Red then {{ 1 }} else {{ 2 }}", "E143")
+        for label, op in (("lt_op", "<"), ("gt_op", ">"), ("le_op", "<="),
+                          ("ge_op", ">="))
+    ),
+    FlowCell("data invariant", _g("invariant_clause"),
+             _f(("DataDecl", "invariant"), ("Invariant", "expr")),
+             "1", "E120",
+             extra="\nprivate data Held invariant(pick(1)) {\n"
+                   "  MkHeld(Int)\n}\n"),
+    FlowCell("refinement predicate", _g("refinement_type"),
+             _f(("RefinementType", "predicate")), "1", "E126",
+             extra="\ntype Tagged = { @Int | pick(@Int.0) };\n"),
+)
+
+
+class TestModuleEnvironmentMatrix:
+    """(b): a data type a module imported, through every position."""
+
+    def test_every_expression_position_has_a_cell(self) -> None:
+        """Grammar positions and AST fields both enumerate; both need cells.
+
+        The grammar gives operator granularity (``eq_op`` vs ``add_op``);
+        the AST gives the positions the grammar cannot show — a string
+        interpolation segment is lexed inside ``STRING_LIT``.  A private
+        AST helper (``_WithClause``, the transformer's sentinel) is not a
+        node a program can hold.
+        """
+        grammar = grammar_expression_positions()
+        claimed = frozenset().union(*(c.grammar for c in FLOW_CELLS))
+        assert not grammar - claimed, sorted(grammar - claimed)
+        assert not claimed - grammar, sorted(claimed - grammar)
+        fields = {f for f in ast_expression_fields()
+                  if not f[0].startswith("_")}
+        claimed_fields = frozenset().union(*(c.fields for c in FLOW_CELLS))
+        assert not fields - claimed_fields, sorted(fields - claimed_fields)
+        assert not claimed_fields - fields, sorted(claimed_fields - fields)
+
+    @pytest.mark.parametrize("topology", TOPOLOGIES, ids=lambda t: t.label)
+    @pytest.mark.parametrize("cell", FLOW_CELLS, ids=lambda c: c.label)
+    def test_accepted_means_compiled(
+        self, cell: FlowCell, topology: Topology, tmp_path: Path,
+    ) -> None:
+        """Accepted: compiles clean and runs to the value.  Else: refused."""
+        outcome = pipeline(tmp_path, topology.files(cell.consumer(topology)))
+        expected = cell.expected(topology)
+        if isinstance(expected, str):
+            codes = {d.error_code for d in outcome.check_errors}
+            assert expected in codes, outcome.describe()
+            return
+        assert outcome.accepted, outcome.describe()
+        assert outcome.compiles_clean, outcome.describe()
+        assert run_main(outcome) == ("ok", expected)
+
+
+# =====================================================================
+# (c) The corpus
+# =====================================================================
+
+_CORPUS_DIRS = ("examples", "tests/conformance", "tests/probes")
+
+
+def corpus_programs() -> list[Path]:
+    """Every ``.vera`` source under the corpus roots, at any depth."""
+    found: list[Path] = []
+    for d in _CORPUS_DIRS:
+        found.extend(sorted((_ROOT / d).rglob("*.vera")))
+    return found
+
+
+def corpus_outcome(path: Path) -> Outcome:
+    """*path* through the pipeline, its imports resolved beside it."""
+    return build(path, path.read_text(encoding="utf-8"), path.parent)
+
+
+_USER_EFFECT = (
+    "a user-declared effect in a function's row is not compilable: the "
+    "function is the E603 skip spec §11.17 and SKILL.md name"
+)
+_UNINSTANTIATED_GENERIC = (
+    "a library module compiled as the entry: its `forall` function has no "
+    "instantiation in the program, so there is no concrete signature to emit "
+    "— its clones are emitted where an importer calls it"
+)
+
+#: Corpus programs the checker accepts and code generation still refuses,
+#: for a reason OUTSIDE this class.  Keyed by path; the value is the exact
+#: refusal signature (:attr:`Outcome.signature`), so an entry cannot hide a
+#: new drop in the same file.
+KNOWN_CHECK_GREEN_REFUSALS: dict[str, tuple[tuple[str, ...], str]] = {
+    "examples/effect_handler.vera": (("E603",), _USER_EFFECT),
+    "examples/maximum_syntax.vera": (("E603", "E603"), _USER_EFFECT),
+    "tests/conformance/ch03_typed_holes.vera": (
+        ("E614", "missing-export"),
+        "a typed hole is a W001 warning at check and refused at compile — "
+        "spec §4.17 makes that the contract of `?`",
+    ),
+    "tests/conformance/ch08_module_prelude_adt_contention_rejected.vera": (
+        ("E621", "missing-export", "missing-export"),
+        "a conformance NEGATIVE whose manifest names the compile stage "
+        "(`expected_error_stage: compile`): the checker accepts it by design",
+    ),
+    "tests/conformance/ch08_ambiguous_import_lib_bool.vera": (
+        ("E604",), _UNINSTANTIATED_GENERIC),
+    "tests/conformance/ch08_ambiguous_import_lib_int.vera": (
+        ("E604",), _UNINSTANTIATED_GENERIC),
+    "tests/conformance/ch08_cross_module_generic_lib.vera": (
+        ("E604",), _UNINSTANTIATED_GENERIC),
+    "tests/conformance/ch08_module_generic_diamond_base.vera": (
+        ("E604",), _UNINSTANTIATED_GENERIC),
+    "tests/probes/state_handlers/checker_gates/e533_uninstantiated.vera": (
+        ("E604",), _UNINSTANTIATED_GENERIC),
+    "tests/probes/state_handlers/checker_gates/e533lib.vera": (
+        ("E604",), _UNINSTANTIATED_GENERIC),
+    "tests/probes/state_handlers/checker_gates/loclib.vera": (
+        ("E604",), _UNINSTANTIATED_GENERIC),
+    "tests/probes/state_handlers/checker_gates/e128_unresolved.vera": (
+        ("E602", "missing-export"),
+        "an unresolved FUNCTION name is an E200 warning at check — the "
+        "function half of the unresolved-name family, which #1489's rule for "
+        "type and effect names does not cover",
+    ),
+    "tests/probes/state_handlers/checker_gates/q_unknown.vera": (
+        ("E602",),
+        "an unresolved FUNCTION name, as above (E200 is a warning)",
+    ),
+    "tests/probes/state_handlers/checker_gates/ctrl_unresolved_let.vera": (
+        ("missing-export", "uncoded"),
+        "an unresolved FUNCTION name, as above — refused at compile by the "
+        "cross-module guard rail, whose error carries no code",
+    ),
+    "tests/probes/state_handlers/checker_gates/p2c_matching_refined.vera": (
+        ("E602", "E620", "missing-export", "missing-export"),
+        "an inline refinement literal as a State<T> argument is not "
+        "compilable — spec §7.5 and SKILL.md say to name it with an alias",
+    ),
+    "tests/probes/state_handlers/clause_scoping/p15_resume_in_with.vera": (
+        ("E602", "E620", "missing-export"),
+        "`resume(...)` inside a `with` state-update has no effect, and code "
+        "generation refuses it rather than dropping the resume silently",
+    ),
+    "tests/probes/state_handlers/clause_scoping/p_effparams.vera": (
+        ("E602", "missing-export"),
+        "a handler for a user-declared effect: only State<T> and Exn<E> "
+        "handlers lower (user effects are the E603 limitation)",
+    ),
+    "tests/probes/state_handlers/old_state/p15_old_state_nested_alias.vera": (
+        ("E602", "E602", "missing-export", "missing-export"),
+        "a `let` of a parameterised alias (`let @Id<Nat>`) has no WASM "
+        "representation in code generation, single-file as well — a "
+        "different mechanism from this class's two",
+    ),
+}
+
+
+@pytest.fixture(scope="module")
+def outcomes() -> dict[str, Outcome]:
+    """Every corpus program through the pipeline, once per test run."""
+    return {
+        p.relative_to(_ROOT).as_posix(): corpus_outcome(p)
+        for p in corpus_programs()
+    }
+
+
+class TestCorpusCheckImpliesCompile:
+    """(c): every corpus program the checker accepts, code generation builds."""
+
+    def test_the_sweep_is_not_vacuous(
+        self, outcomes: dict[str, Outcome],
+    ) -> None:
+        """The corpus is large, and most of it is accepted and compiled."""
+        accepted = [k for k, o in outcomes.items() if o.accepted]
+        assert len(outcomes) > 400, len(outcomes)
+        assert len(accepted) > 300, len(accepted)
+
+    def test_every_accepted_program_compiles(
+        self, outcomes: dict[str, Outcome],
+    ) -> None:
+        """No accepted program is refused, unless the roster says why."""
+        unexplained = {
+            path: out.describe()
+            for path, out in outcomes.items()
+            if out.accepted and not out.compiles_clean
+            and path not in KNOWN_CHECK_GREEN_REFUSALS
+        }
+        assert not unexplained, unexplained
+
+    def test_the_roster_is_exact(
+        self, outcomes: dict[str, Outcome],
+    ) -> None:
+        """Every entry is still accepted and refused with exactly its codes.
+
+        A stale entry — a program since fixed, or refused at check now —
+        fails here, so the roster cannot outlive what it explains.
+        """
+        for path, (codes, reason) in KNOWN_CHECK_GREEN_REFUSALS.items():
+            assert reason
+            out = outcomes.get(path)
+            assert out is not None, f"{path}: no longer in the corpus"
+            assert out.accepted, f"{path}: refused at check now"
+            assert out.signature == codes, (path, out.signature, codes)
+
+
+# =====================================================================
+# (d) Handler-clause State operations (#1233)
+# =====================================================================
+#
+# A `get`/`put` in a handler clause body is the ENCLOSING context's
+# operation (spec §7.5.2), lowered by inlining the clause where an
+# operation reaches it.  Code generation refuses the ones it cannot lower
+# — a cell shadowed by a same-family cell pushed since (#1233), and a
+# re-entry chain past STATE_CLAUSE_INLINE_DEPTH_CAP — and the checker now
+# refuses the same ones with E339.  Two derivations of one decision, so the
+# proof is a DIFFERENTIAL: every cell is compiled past the check, and the
+# checker's E339 must coincide with code generation's own refusal, while a
+# cell neither refuses must compile clean.
+
+#: The cell families the nests are built from.  Two integer families, so a
+#: `get(())` result types in every position whichever cell it reaches.
+_FAMILIES = ("Int", "Nat")
+
+#: A clause-body refusal code generation makes for exactly this rule.
+_GATE_MARKERS = ("the host cell intrinsics address only", "nest more than")
+
+
+def _handler(family: str, put_clause: str, body: str,
+             get_clause: str = "resume(@{F}.0)",
+             put_with: str | None = None) -> str:
+    get_clause = get_clause.replace("{F}", family)
+    with_part = f" with @{family} = {put_with}" if put_with else ""
+    return (
+        f"handle[State<{family}>](@{family} = 0) {{\n"
+        f"    get(@Unit) -> {{ {get_clause} }},\n"
+        f"    put(@{family}) -> {{ {put_clause} }}{with_part}\n"
+        f"  }} in {{\n    {body}\n  }}"
+    )
+
+
+@dataclass(frozen=True)
+class NestCell:
+    """One nesting shape: a row, a nest of handlers, an operation's level."""
+
+    row: str
+    families: tuple[str, ...]
+    #: Which handler's `put` clause holds the operation under test.
+    level: int
+    #: `direct`: a `put` in that handler's own body inlines the clause;
+    #: `chain`: every inner handler's `put` clause routes outward, so the
+    #: innermost `put` inlines the clause under every inner cell.
+    trigger: str
+    op: str
+
+    @property
+    def label(self) -> str:
+        return (f"{self.row}|{'/'.join(self.families)}|L{self.level}|"
+                f"{self.trigger}|{self.op}")
+
+    def source(self) -> str:
+        body = "put(1);\n    1"
+        for i in reversed(range(len(self.families))):
+            fam = self.families[i]
+            if i == self.level:
+                clause = f"{self.op};\n resume(())"
+            elif self.trigger == "chain" and i > self.level:
+                clause = "put(1);\n resume(())"
+            else:
+                clause = "resume(())"
+            if i == self.level and self.trigger == "direct":
+                body = f"put(1);\n    {body}"
+            body = _handler(fam, clause, body)
+        return (
+            f"public fn f(@Int -> @Int)\n  requires(true)\n  ensures(true)\n"
+            f"  effects({self.row})\n{{\n  {body}\n}}\n" + _MAIN0
+        )
+
+
+def _nest_cells() -> tuple[NestCell, ...]:
+    cells: list[NestCell] = []
+    nests: list[tuple[str, ...]] = [
+        tuple(fams) for k in (1, 2, 3)
+        for fams in itertools.product(_FAMILIES, repeat=k)
+    ]
+    # The shadowing cell need not be the adjacent one: in an Int/Nat/Int/Nat
+    # nest the third level's clause routes to the second, whose cell the
+    # fourth's shadows through the chain.
+    nests.append(("Int", "Nat", "Int", "Nat"))
+    for row in ("pure", "<State<Int>>"):
+        for fams in nests:
+            for level in range(len(fams)):
+                if row == "pure" and level == 0:
+                    continue  # the outermost clause's op reaches no cell
+                for trigger in ("direct", "chain"):
+                    if trigger == "chain" and level == len(fams) - 1:
+                        continue  # the innermost has nothing to chain from
+                    for op in ("put(1)", "State.put(1)"):
+                        cells.append(NestCell(row, fams, level, trigger, op))
+    return tuple(cells)
+
+
+NEST_CELLS = _nest_cells()
+
+
+@dataclass(frozen=True)
+class ClausePosition:
+    """Where in a clause body the operation sits."""
+
+    label: str
+    fields: frozenset[tuple[str, str]]
+    #: The clause body, with `{OP}` for a `get(())` whose value is used.
+    body: str
+
+
+CLAUSE_POSITIONS: tuple[ClausePosition, ...] = (
+    ClausePosition("let", _f(("LetStmt", "value")),
+                   "let @Int = {OP};\n resume(())"),
+    ClausePosition("statement", _f(("ExprStmt", "expr")),
+                   "{OP};\n resume(())"),
+    ClausePosition("operand", _f(("BinaryExpr", "left"),
+                                 ("BinaryExpr", "right")),
+                   "let @Bool = {OP} > 0;\n resume(())"),
+    ClausePosition("negation", _f(("UnaryExpr", "operand")),
+                   "let @Int = -{OP};\n resume(())"),
+    ClausePosition("if condition", _f(("IfExpr", "condition")),
+                   "let @Int = if {OP} > 0 then { 1 } else { 2 };\n"
+                   " resume(())"),
+    ClausePosition("if branch", _f(("IfExpr", "then_branch"),
+                                   ("IfExpr", "else_branch")),
+                   "let @Int = if true then { {OP} } else { 0 };\n"
+                   " resume(())"),
+    ClausePosition("match scrutinee", _f(("MatchExpr", "scrutinee")),
+                   "let @Int = match {OP} {\n 0 -> 1,\n _ -> 2\n };\n"
+                   " resume(())"),
+    ClausePosition("match arm", _f(("MatchArm", "body")),
+                   "let @Int = match 1 {\n 0 -> 0,\n _ -> {OP}\n };\n"
+                   " resume(())"),
+    ClausePosition("call argument", _f(("FnCall", "args")),
+                   "let @Int = abs({OP});\n resume(())"),
+    ClausePosition("constructor argument", _f(("ConstructorCall", "args")),
+                   "let @Option<Int> = Some({OP});\n resume(())"),
+    ClausePosition("destructured tuple", _f(("LetDestruct", "value"),
+                                            ("ConstructorCall", "args")),
+                   "let Tuple<@Int, @Int> = Tuple({OP}, 1);\n resume(())"),
+    ClausePosition("array element", _f(("ArrayLit", "elements")),
+                   "let @Array<Int> = [{OP}];\n resume(())"),
+    ClausePosition("index", _f(("IndexExpr", "index")),
+                   "let @Array<Int> = [7, 8];\n"
+                   " let @Int = @Array<Int>.0[{OP}];\n resume(())"),
+    ClausePosition("interpolation", _f(("InterpolatedString", "parts")),
+                   'let @String = "\\({OP})";\n resume(())'),
+    ClausePosition("assert", _f(("AssertExpr", "expr")),
+                   "assert({OP} >= 0);\n resume(())"),
+    # Code generation emits nothing for an `assume` (the verifier's axiom),
+    # so an operation inside one is never lowered and never refused.
+    ClausePosition("assume", _f(("AssumeExpr", "expr")),
+                   "assume({OP} >= 0);\n resume(())"),
+    ClausePosition("block", _f(("Block", "expr")),
+                   "let @Int = {\n {OP}\n };\n resume(())"),
+    ClausePosition("nested Exn body", _f(("HandleExpr", "body")),
+                   "let @Int = handle[Exn<Bool>] {\n throw(@Bool) -> 0\n }"
+                   " in {\n {OP}\n };\n resume(())"),
+    ClausePosition("nested Exn clause", _f(("HandlerClause", "body")),
+                   "let @Int = handle[Exn<Bool>] {\n throw(@Bool) -> {OP}\n }"
+                   " in {\n throw(true)\n };\n resume(())"),
+    ClausePosition("nested State init", _f(("HandlerState", "init_expr")),
+                   "let @Int = handle[State<Bool>](@Bool = {OP} > 0) {\n"
+                   " get(@Unit) -> { resume(@Bool.0) },\n"
+                   " put(@Bool) -> { resume(()) }\n } in {\n 0\n };\n"
+                   " resume(())"),
+    ClausePosition("with clause", _f(("HandlerClause", "state_update")),
+                   "{OP} + 0"),
+    ClausePosition("lambda", _f(("AnonFn", "body")),
+                   "let @Array<Int> = array_map([1], fn(@Int -> @Int) "
+                   "effects(pure) { {OP} });\n resume(())"),
+    ClausePosition("resume argument", frozenset(), "resume({OP})"),
+)
+
+#: AST expression fields a clause body cannot hold, and why.
+CLAUSE_POSITION_EXCLUSIONS: dict[tuple[str, str], str] = {
+    ("Requires", "expr"): "a contract, outside every body",
+    ("Ensures", "expr"): "a contract, outside every body",
+    ("Decreases", "exprs"): "a contract, outside every body",
+    ("Invariant", "expr"): "a data invariant, outside every body",
+    ("DataDecl", "invariant"): "a data invariant, outside every body",
+    ("RefinementType", "predicate"): "a type's predicate, not a body",
+    ("FnDecl", "body"): "a declaration's body, not a clause's",
+    ("ForallExpr", "domain"): "a quantifier is contract-only",
+    ("ForallExpr", "predicate"): "a quantifier is contract-only",
+    ("ExistsExpr", "domain"): "a quantifier is contract-only",
+    ("ExistsExpr", "predicate"): "a quantifier is contract-only",
+    ("ModuleCall", "args"): "a single-file cell imports no module",
+    ("QualifiedCall", "args"): "the `State.put` spelling is the shape "
+                               "matrix's dimension",
+    ("IndexExpr", "collection"): "the operation yields an integer, not a "
+                                 "collection",
+}
+
+
+@dataclass(frozen=True)
+class PositionCell:
+    """One clause-body position, in a shadowed or an unshadowed shape."""
+
+    position: ClausePosition
+    shadowed: bool
+    op: str
+
+    @property
+    def label(self) -> str:
+        return (f"{self.position.label}|"
+                f"{'shadowed' if self.shadowed else 'distinct'}|{self.op}")
+
+    def source(self) -> str:
+        # The function's row is the operation's cell; the handler's cell is
+        # the same family (shadowed) or a different one (distinct).
+        row_family = "Int"
+        family = "Int" if self.shadowed else "Nat"
+        clause = self.position.body.replace("{OP}", self.op).replace(
+            "{F}", family)
+        if self.position.label == "resume argument":
+            handler = _handler(family, "resume(())",
+                               "let @Nat = get(());\n    1",
+                               get_clause=clause)
+        elif self.position.label == "with clause":
+            handler = _handler(family, "resume(())", "put(1);\n    1",
+                               put_with=clause)
+        else:
+            handler = _handler(family, clause, "put(1);\n    1")
+        return (
+            f"public fn f(@Int -> @Int)\n  requires(true)\n  ensures(true)\n"
+            f"  effects(<State<{row_family}>>)\n{{\n  {handler}\n}}\n"
+            + _MAIN0
+        )
+
+
+POSITION_CELLS: tuple[PositionCell, ...] = tuple(
+    PositionCell(position, shadowed, op)
+    for position in CLAUSE_POSITIONS
+    for shadowed in (True, False)
+    for op in ("get(())", "State.get(())")
+)
+
+
+def _gate_refused(outcome: Outcome) -> bool:
+    """Whether code generation's own clause-op gate refused ``f``."""
+    return any(
+        d.error_code == "E602" and "'f'" in d.description
+        and any(m in d.description for m in _GATE_MARKERS)
+        for d in outcome.drops
+    )
+
+
+def _differential(outcome: Outcome) -> None:
+    """E339 at check exactly when code generation's gate refuses."""
+    codes = {d.error_code for d in outcome.check_errors}
+    others = codes - {"E339"}
+    assert not others, outcome.describe()
+    refused = "E339" in codes
+    assert refused == _gate_refused(outcome), outcome.describe()
+    if not refused:
+        assert outcome.compiles_clean, outcome.describe()
+
+
+def _depth_chain(levels: int) -> str:
+    """*levels* handlers over distinct cells, each clause re-entering the
+    next one out, so the innermost `put` inlines *levels* clauses."""
+    decls = "".join(f"private data D{i} {{ M{i} }}\n\n"
+                    for i in range(levels))
+    body = f"put(M{levels - 1});\n    1"
+    for i in reversed(range(levels)):
+        clause = "resume(())" if i == 0 else f"put(M{i - 1});\n resume(())"
+        body = (
+            f"handle[State<D{i}>](@D{i} = M{i}) {{\n"
+            f"    get(@Unit) -> {{ resume(@D{i}.0) }},\n"
+            f"    put(@D{i}) -> {{ {clause} }}\n"
+            f"  }} in {{\n    {body}\n  }}"
+        )
+    return (
+        decls + "public fn f(@Int -> @Int)\n  requires(true)\n"
+        "  ensures(true)\n  effects(pure)\n{\n  " + body + "\n}\n" + _MAIN0
+    )
+
+
+class TestClauseOperationMatrix:
+    """(d): #1233 — the checker refuses exactly what code generation can't."""
+
+    @pytest.mark.parametrize("levels", (
+        STATE_CLAUSE_INLINE_DEPTH_CAP, STATE_CLAUSE_INLINE_DEPTH_CAP + 1,
+    ))
+    def test_reentry_depth(self, levels: int, tmp_path: Path) -> None:
+        """At the cap the chain compiles; one level past it both refuse."""
+        outcome = pipeline(tmp_path, {"main.vera": _depth_chain(levels)},
+                           past_check=True)
+        _differential(outcome)
+        refused = "E339" in {d.error_code for d in outcome.check_errors}
+        assert refused == (levels > STATE_CLAUSE_INLINE_DEPTH_CAP)
+
+    def test_every_clause_position_has_a_cell(self) -> None:
+        """Every AST expression field is a cell or an excluded position."""
+        fields = {f for f in ast_expression_fields()
+                  if not f[0].startswith("_")}
+        claimed = frozenset().union(*(p.fields for p in CLAUSE_POSITIONS))
+        excluded = frozenset(CLAUSE_POSITION_EXCLUSIONS)
+        assert not claimed & excluded, sorted(claimed & excluded)
+        assert not fields - claimed - excluded, sorted(
+            fields - claimed - excluded)
+        assert not (claimed | excluded) - fields, sorted(
+            (claimed | excluded) - fields)
+
+    def test_the_matrix_refuses_and_accepts(self, tmp_path: Path) -> None:
+        """Not vacuous: both verdicts occur, and the known shapes land."""
+        verdicts = {}
+        for cell in NEST_CELLS:
+            out = pipeline(tmp_path / str(len(verdicts)),
+                           {"main.vera": cell.source()}, past_check=True)
+            verdicts[cell.label] = "E339" in {
+                d.error_code for d in out.check_errors}
+        assert any(verdicts.values()) and not all(verdicts.values())
+        # The #1233 report: Int in Int, and a handler in a function whose
+        # row declares its own cell.
+        assert verdicts["pure|Int/Int|L1|direct|put(1)"]
+        assert verdicts["<State<Int>>|Int|L0|direct|put(1)"]
+        # Different families never shadow each other.
+        assert not verdicts["pure|Int/Nat|L1|direct|put(1)"]
+        assert not verdicts["<State<Int>>|Nat|L0|direct|put(1)"]
+        # At a distance: Int/Nat/Int/Nat, the third's clause reaches the
+        # second, shadowed by the fourth through the chain.
+        assert verdicts["pure|Int/Nat/Int/Nat|L2|chain|put(1)"]
+
+    @pytest.mark.parametrize("cell", NEST_CELLS, ids=lambda c: c.label)
+    def test_nesting_shape(self, cell: NestCell, tmp_path: Path) -> None:
+        _differential(pipeline(tmp_path, {"main.vera": cell.source()},
+                               past_check=True))
+
+    @pytest.mark.parametrize("cell", POSITION_CELLS, ids=lambda c: c.label)
+    def test_clause_position(self, cell: PositionCell, tmp_path: Path) -> None:
+        outcome = pipeline(tmp_path, {"main.vera": cell.source()},
+                           past_check=True)
+        if cell.position.label == "lambda":
+            # A closure is lifted with no State cells, so the checker refuses
+            # the operation inside it for its own reasons; the rule here is
+            # only that no E339 is claimed for it.
+            assert "E339" not in {d.error_code for d in outcome.check_errors}
+            return
+        _differential(outcome)
+        emitted = cell.position.label != "assume"
+        assert ("E339" in {d.error_code for d in outcome.check_errors}) \
+            == (cell.shadowed and emitted), outcome.describe()

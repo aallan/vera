@@ -7,13 +7,140 @@ single-module checking.
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from vera import ast
-from vera.environment import TypeEnv
+from vera.environment import AdtInfo, ConstructorInfo, FunctionInfo, TypeEnv
+from vera.errors import Diagnostic
+from vera.module_view import (
+    import_filters,
+    imported_data_types,
+    modules_visible_to,
+)
 from vera.monomorphize import namespace_adt_names, namespace_fn_names
 from vera.registration import where_helper_parents
 from vera.resolver import ResolvedModule
+
+if TYPE_CHECKING:
+    from vera.checker.core import TypeChecker
+
+
+#: The registration diagnostics every importer surfaces from a module (see
+#: ``ModulesMixin._register_modules``).
+_SURFACED_REGISTRATION_CODES = frozenset({"E151", "E152", "E153", "E154"})
+
+
+@dataclass(frozen=True)
+class ModuleRegistration:
+    """One module's declarations, registered in its own namespace, and what
+    they export — derived once per path for the whole run (#1489, #1275).
+
+    ``checker`` holds the registration.  The tables are read off it here,
+    once, rather than by every checker that can see the module: a
+    registration carries the whole built-in registry beside the module's own
+    declarations, so a chain re-reading it per checker paid that per
+    (checker, module) pair.  ``all_functions`` and ``all_data_types`` are the
+    module's declarations, private ones included (for the "is private"
+    diagnostics); ``functions``, ``data_types`` and ``constructors`` are what
+    it exports.  ``surfaced`` is the registration's own E151–E154, which
+    every importer reports (see ``ModulesMixin._register_modules``).
+    """
+
+    checker: TypeChecker
+    surfaced: tuple[Diagnostic, ...]
+    all_functions: dict[str, FunctionInfo]
+    all_data_types: dict[str, AdtInfo]
+    functions: dict[str, FunctionInfo]
+    data_types: dict[str, AdtInfo]
+    constructors: dict[str, ConstructorInfo]
+
+
+def _module_exports(
+    temp: TypeChecker, program: ast.Program,
+    builtin_fns: set[str], builtin_types: set[str], builtin_ctors: set[str],
+) -> ModuleRegistration:
+    """Read a module's registration *temp* into its :class:`ModuleRegistration`.
+
+    The data side is read off the module's own declarations: the
+    registration also holds the data types the module IMPORTS (#1489), which
+    it names but does not export.  No function is injected into a
+    registration, so its function table is the module's own.
+    """
+    own_data = {
+        tld.decl.name for tld in program.declarations
+        if isinstance(tld.decl, ast.DataDecl)
+    }
+    all_fns = {
+        k: v for k, v in temp.env.functions.items()
+        if k not in builtin_fns or v.span is not None
+    }
+    all_data = {
+        k: v for k, v in temp.env.data_types.items()
+        if k in own_data and k not in builtin_types
+    }
+    public_fns = {
+        k: v for k, v in all_fns.items() if v.visibility == "public"
+    }
+    public_data = {
+        k: v for k, v in all_data.items() if v.visibility == "public"
+    }
+    # Constructors: only those of the public ADTs.
+    public_ctors: set[str] = set()
+    for dt_info in public_data.values():
+        public_ctors.update(dt_info.constructors)
+    ctors = {
+        k: v for k, v in temp.env.constructors.items()
+        if k not in builtin_ctors and k in public_ctors
+    }
+    return ModuleRegistration(
+        checker=temp,
+        surfaced=tuple(
+            e for e in temp.errors
+            if e.error_code in _SURFACED_REGISTRATION_CODES
+        ),
+        all_functions=all_fns,
+        all_data_types=all_data,
+        functions=public_fns,
+        data_types=public_data,
+        constructors=ctors,
+    )
+
+
+def _dependency_order(
+    by_path: dict[tuple[str, ...], ResolvedModule],
+) -> list[tuple[str, ...]]:
+    """Every path in *by_path*, each after the modules it imports.
+
+    An iterative depth-first post-order, so a module's registration can read
+    its imports' and a deep chain costs no Python frame per hop.  An import
+    that closes a cycle (already an E011) is skipped.  Roots are taken in
+    resolution order and imports in source order, so the order is a function
+    of the program text alone.
+    """
+    def deps(path: tuple[str, ...]) -> list[tuple[str, ...]]:
+        return [
+            p for p in import_filters(by_path[path].program.imports)
+            if p in by_path
+        ]
+
+    order: list[tuple[str, ...]] = []
+    seen: set[tuple[str, ...]] = set()
+    for root in by_path:
+        if root in seen:
+            continue
+        seen.add(root)
+        stack = [(root, iter(deps(root)))]
+        while stack:
+            path, pending = stack[-1]
+            nxt = next(pending, None)
+            if nxt is None:
+                stack.pop()
+                order.append(path)
+            elif nxt not in seen:
+                seen.add(nxt)
+                stack.append((nxt, iter(deps(nxt))))
+    return order
 
 
 class ModulesMixin:
@@ -27,23 +154,29 @@ class ModulesMixin:
         1a. #1304: refuse a bare function, data-type or constructor name
            two of this namespace's imports both supply, and keep it out of
            the environment.
-        2. For each resolved module, run the registration pass in an
-           isolated TypeChecker to populate its ``TypeEnv``, then
-           harvest the declarations into per-module dicts.
-        3. C7c: filter to public declarations only.  Store unfiltered
-           dicts for better "is private" error messages.
+        2. For each resolved module, its registration in an isolated
+           TypeChecker, in the module's own namespace, and the per-module
+           dicts read off it — built once per path for the whole run
+           (:meth:`_module_registrations`).
+        3. C7c: the public declarations, beside the unfiltered dicts kept
+           for better "is private" error messages.
         4. C7c: emit errors when selective imports reference private names.
         5. Inject selectively imported *public* names into ``self.env`` so
            bare calls (``abs(42)`` after ``import vera.math(abs)``)
            resolve through the normal ``_check_call_with_args`` path.
         """
-        from vera.checker.core import TypeChecker
-
-        # 1. Build import filter
-        for imp in program.imports:
-            self._import_names[imp.path] = (
-                set(imp.names) if imp.names is not None else None
-            )
+        # 1. Build import filter — the union over every import of a path
+        #    (`vera.module_view.import_filters`), so a second `import m(b);`
+        #    does not discard the first's list.
+        self._import_names.update(import_filters(program.imports))
+        resolved_paths = {m.path for m in self._resolved_modules}
+        # #1489: an import whose module did not resolve (E011/E012/E013)
+        # supplies nothing; E136 names it when a type it lists is used.
+        self._unresolved_imports = {
+            path: (frozenset(names) if names is not None else None)
+            for path, names in self._import_names.items()
+            if path not in resolved_paths
+        }
 
         # Snapshot builtin names (TypeEnv registers builtins in __post_init__).
         # Hoisted above the #1304 refusal, which needs them: every injection
@@ -60,21 +193,26 @@ class ModulesMixin:
             program, builtin_fn_names, builtin_data_names, builtin_ctor_names,
         )
 
-        # 2. Register each module in isolation, harvest declarations
+        # 2. Each module's own declarations, registered in the module's own
+        #    namespace (#1489), and what they export — both derived once per
+        #    path for the whole run (#1275).
+        registrations = self._module_registrations(
+            builtin_fn_names, builtin_data_names, builtin_ctor_names,
+        )
         for mod in self._resolved_modules:
-            # Pass the module's file path so any harvested diagnostic (e.g. the
-            # E151 below) carries `location.file`, matching every other
-            # diagnostic; `temp` is built with the module's own source/path.
-            temp = TypeChecker(source=mod.source, file=str(mod.file_path))
-            temp._register_all(mod.program)
+            # Registered with the module's own source and file path, so any
+            # surfaced diagnostic (the E151 below) carries `location.file`
+            # matching every other diagnostic.
+            reg = registrations[mod.path]
 
             # #815: surface E151 (a module fn redefining a built-in) into the
-            # importer.  ``temp`` is built with the module's own source, so
-            # these diagnostics already carry the correct module-file location
-            # and source line.  Without this, a module imported but never
-            # checked standalone would let the redefinition through silently —
-            # the importer's verifier reasons with the built-in's model while
-            # the module's body runs (verify proves, run violates).
+            # importer.  The registration is built with the module's own
+            # source, so these diagnostics already carry the correct
+            # module-file location and source line.  Without this, a module
+            # imported but never checked standalone would let the
+            # redefinition through silently — the importer's verifier
+            # reasons with the built-in's model while the module's body runs
+            # (verify proves, run violates).
             # #1149: E152 (a module redeclaring a built-in EFFECT) is surfaced
             # on the same grounds — the block is invisible to codegen, which
             # routes the qualified call to the host import regardless, so an
@@ -83,10 +221,7 @@ class ModulesMixin:
             # or a grammar keyword) likewise — a module imported but never
             # checked standalone would otherwise carry a declaration no
             # importer could ever bare-call.
-            self.errors.extend(
-                e for e in temp.errors
-                if e.error_code in ("E151", "E152", "E153", "E154")
-            )
+            self.errors.extend(reg.surfaced)
 
             # #1244: and CHECK the module's bodies, under ITS OWN import
             # filter.  Registration alone says what a module declares; it
@@ -100,38 +235,19 @@ class ModulesMixin:
             # is the checker catching up.
             self._check_module_bodies(mod)
 
-            # All module-declared names (exclude builtins)
-            all_fns = {
-                k: v for k, v in temp.env.functions.items()
-                if k not in builtin_fn_names or v.span is not None
-            }
-            all_data = {
-                k: v for k, v in temp.env.data_types.items()
-                if k not in builtin_data_names
-            }
-
-            # C7c: keep unfiltered dicts for "is private" error messages
+            # All module-declared names (builtins excluded), unfiltered — C7c
+            # keeps them for the "is private" error messages.
+            all_fns = reg.all_functions
+            all_data = reg.all_data_types
             self._module_all_functions[mod.path] = all_fns
             self._module_all_data_types[mod.path] = all_data
 
-            # 3. C7c: filter to public only
-            mod_fns = {
-                k: v for k, v in all_fns.items()
-                if self._is_public(v.visibility)
-            }
-            mod_data = {
-                k: v for k, v in all_data.items()
-                if self._is_public(v.visibility)
-            }
-            # Constructors: include only from public ADTs
-            public_adt_ctors: set[str] = set()
-            for dt_info in mod_data.values():
-                public_adt_ctors.update(dt_info.constructors)
-            mod_ctors = {
-                k: v for k, v in temp.env.constructors.items()
-                if k not in builtin_ctor_names
-                and k in public_adt_ctors
-            }
+            # 3. C7c: the public ones, and the constructors of public ADTs.
+            #    Shared by every checker that can see the module, and never
+            #    written through: each is read, or copied into `self.env`.
+            mod_fns = reg.functions
+            mod_data = reg.data_types
+            mod_ctors = reg.constructors
 
             self._module_functions[mod.path] = mod_fns
             self._module_data_types[mod.path] = mod_data
@@ -341,7 +457,16 @@ class ModulesMixin:
         two dependencies exporting their own ``option_map`` were reported as
         a clash when a bare ``option_map`` in fact resolves to the prelude's.
         """
-        modules = [(mod.path, mod.program) for mod in self._resolved_modules]
+        # A clash is between THIS namespace's imports, and the tables read
+        # nothing else for it — so only the modules it imports are passed,
+        # not every module it can see (#1275: a module checker sees its whole
+        # transitive closure, and reading it here was one more pass per
+        # (checker, module) pair).
+        imported = {tuple(imp.path) for imp in program.imports}
+        modules = [
+            (mod.path, mod.program) for mod in self._resolved_modules
+            if mod.path in imported
+        ]
         fn_clashes = namespace_fn_names(
             program, modules, prelude=builtin_fns,
         ).ambiguous_in(None)
@@ -453,10 +578,11 @@ class ModulesMixin:
         some of them), so a module reached from two importers, or reported at
         registration and again here, is still described once.
 
-        Kept OFF the ``temp`` used for the harvest above on purpose: checking
-        a program injects its imports into its own ``env.functions``, and the
-        harvest reads that dict to decide what the module EXPORTS — reusing
-        one checker for both would re-export every name the module imported.
+        Kept OFF the module's registration (:class:`ModuleRegistration`) on
+        purpose: checking a program injects its imports into its own
+        ``env.functions``, and the registration's tables are read from that
+        dict to decide what the module EXPORTS — reusing one checker for both
+        would re-export every name the module imported.
 
         Each module is checked once per top-level run, memoised by path
         through the nested checkers.  The memo is entered BEFORE the check, so
@@ -475,9 +601,14 @@ class ModulesMixin:
         checker = TypeChecker(
             source=mod.source,
             file=str(mod.file_path),
-            resolved_modules=self._modules_visible_to(mod),
+            resolved_modules=modules_visible_to(
+                mod.program, self._resolved_modules),
         )
         checker._module_body_check_memo = memo
+        # #1275: the per-path registrations this run has built travel with
+        # the memo, so a nested checker reuses them instead of registering
+        # every module it can see again.
+        checker._module_registration_cache = self._module_registration_cache
         checker.check_program(mod.program)
         seen = {
             (e.error_code, str(e.location.file), e.location.line,
@@ -492,36 +623,78 @@ class ModulesMixin:
             seen.add(key)
             self.errors.append(err)
 
-    def _modules_visible_to(
-        self, mod: ResolvedModule,
-    ) -> list[ResolvedModule]:
-        """The resolved modules *mod* imports, re-scoped to *mod* (#1244).
+    def _module_registrations(
+        self, builtin_fns: set[str], builtin_types: set[str],
+        builtin_ctors: set[str],
+    ) -> dict[tuple[str, ...], ModuleRegistration]:
+        """Each resolved module's declarations, registered in ITS OWN
+        namespace (#1489), once per path for the whole run (#1275).
 
-        The same objects this program resolved, with ``direct`` recomputed
-        against ``mod``'s own import list: what is transitive from here may be
-        a direct import there, and §8.6.4 visibility is a property of the
-        importer, not of the module.  A path this program never resolved is
-        skipped — the resolver reaches every transitive import, so a missing
-        one means the module was unreachable, and the name then misses loudly
-        in the check below rather than binding something else.
+        A module's signatures name the data types it imports, so registering
+        them with none of its imports in scope sent every such name to the
+        checker's last resort, which made an opaque placeholder of it.  The
+        placeholder usually spelled the imported type exactly, and that hid
+        the gap — but not always: a module importing a user ``data
+        Decimal<T>`` registered ``unwrap(@Decimal<Int>)`` as the BUILT-IN
+        ``Decimal``, whose branch drops type arguments, and the importer
+        then refused a valid call (E202) that checked clean with the module
+        as the entry.  So each registration is given the data types its
+        module imports first, from the one derivation of what a namespace
+        imports (:func:`vera.module_view.imported_data_types`), taken from
+        the imported module's own registration.  Only data types: a
+        signature names types, never a function or a constructor, and
+        injecting nothing else keeps the harvest's view of what the module
+        EXPORTS its own declarations.
+
+        That makes a module's registration depend on its imports', so they
+        are built in dependency order — iteratively, since a deep import
+        chain must not cost a Python frame per hop.  A module's registration
+        depends only on the module and its imports, never on who imports
+        it, so it is built once per path and shared with every nested
+        checker through ``_module_registration_cache``, together with what
+        it exports (:class:`ModuleRegistration`).  Before, each checker
+        registered every module it could see, and the #1244 body checks
+        multiplied that into the O(N²) of #1275.
+
+        An import cycle is already an E011; the module on the far side of
+        the back edge is skipped rather than recursed into, so the cycle
+        terminates and its types are simply not in scope there.
         """
+        from vera.checker.core import TypeChecker
+
+        cache = self._module_registration_cache
+        if cache is None:
+            cache = {}
+            self._module_registration_cache = cache
+        if all(m.path in cache for m in self._resolved_modules):
+            # A nested checker: the run's first checker registered them all.
+            return cache
         by_path = {m.path: m for m in self._resolved_modules}
-        direct = {tuple(imp.path) for imp in mod.program.imports}
-        out: list[ResolvedModule] = []
-        seen: set[tuple[str, ...]] = set()
-        frontier = [p for p in direct if p in by_path]
-        while frontier:
-            path = frontier.pop()
-            if path in seen:
+        programs = {m.path: m.program for m in self._resolved_modules}
+        for path in _dependency_order(by_path):
+            if path in cache:
                 continue
-            seen.add(path)
-            dep = by_path[path]
-            out.append(replace(dep, direct=path in direct))
-            frontier.extend(
-                tuple(imp.path) for imp in dep.program.imports
-                if tuple(imp.path) in by_path
+            mod = by_path[path]
+            temp = TypeChecker(source=mod.source, file=str(mod.file_path))
+            for name, suppliers in imported_data_types(
+                    mod.program, programs).items():
+                if len(suppliers) != 1:
+                    # Two imports supply it, so it denotes neither (#1304):
+                    # the module's own check reports E156 at the import.
+                    continue
+                dep = cache.get(suppliers[0])
+                info = (None if dep is None
+                        else dep.checker.env.data_types.get(name))
+                if info is not None:
+                    # `setdefault`, as the importer-side injection does: a
+                    # name the built-in registry holds is never won by an
+                    # import.
+                    temp.env.data_types.setdefault(name, info)
+            temp._register_all(mod.program)
+            cache[path] = _module_exports(
+                temp, mod.program, builtin_fns, builtin_types, builtin_ctors,
             )
-        return out
+        return cache
 
     @staticmethod
     def _find_import_decl(

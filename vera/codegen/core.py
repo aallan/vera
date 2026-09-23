@@ -419,6 +419,14 @@ class CodeGenerator(
         self._adt_namespace_members: dict[
             tuple[str, ...] | None, frozenset[str]
         ] = {}
+        # #1493: the data types an imported module's REGISTRAR must see as
+        # data types though it holds none of their layouts — the ones that
+        # module imports.  Set only on the per-module registrar
+        # `_register_modules` builds (`_module_registrar`), from the one
+        # derivation the checker's module registration reads
+        # (`vera.module_view.imported_data_types`); empty everywhere else,
+        # where imported layouts are absorbed and scoped by membership.
+        self._imported_adt_names: frozenset[str] = frozenset()
         # The builtin ADTs, members of every namespace (they are global
         # infrastructure, owned by no module — the same set `_register_modules`
         # exempts from the E609/E610 collision rails).  A FLOOR, not the whole
@@ -1448,14 +1456,20 @@ class CodeGenerator(
         """
         order = self._decl_order
         members = self._adt_members_in_scope()
+        data_types = {
+            name: self._adt_decl_index(name, order)
+            for name in self._adt_layouts
+            if members is None or name in members
+        }
+        # #1493: a per-module registrar names the data types its module
+        # imports without holding their layouts; they are data types there
+        # all the same, and precede every declaration of the namespace.
+        for name in self._imported_adt_names:
+            data_types.setdefault(name, _BUILTIN_DECL_INDEX)
         self._alias_env = AliasEnv(
             aliases=dict(self._type_aliases),
             alias_params=dict(self._type_alias_params),
-            data_types={
-                name: self._adt_decl_index(name, order)
-                for name in self._adt_layouts
-                if members is None or name in members
-            },
+            data_types=data_types,
             _order={
                 name: order.get(name, _BUILTIN_DECL_INDEX)
                 for name in self._type_aliases

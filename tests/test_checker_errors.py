@@ -1009,12 +1009,19 @@ private forall<E> fn f(@Int -> @Int)
 
     # Lines 123-127: QualifiedEffectRef in effect set
     def test_qualified_effect_ref_in_effect_set(self) -> None:
-        """Module-qualified effect ref in effects(<Mod.Effect>) is accepted."""
-        _check_ok("""
+        """A qualified effect ref in effects(<Mod.Effect>) is refused (E338).
+
+        Effect declarations are module-local (spec §8.4.1), so no effect has a
+        qualified name and ``IO.Write`` names nothing (#1489).
+        """
+        errs = _errors("""
 private fn f(@Int -> @Int)
   requires(true) ensures(true) effects(<IO.Write>)
 { @Int.0 }
 """)
+        assert [e.error_code for e in errs] == ["E338"], \
+            [e.description for e in errs]
+        assert "IO.Write" in errs[0].description, errs[0].description
 
     # Line 130: _resolve_effect_row fallback to PureEffectRow
     # This is a defensive branch for unknown EffectRow types.

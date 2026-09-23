@@ -196,6 +196,8 @@ Where:
 - `@BoundExpr` is the exclusive upper bound (inclusive lower bound is always 0)
 - `@PredicateFn` is an anonymous function returning `Bool`
 
+The predicate is applied to every value of the index, so it takes exactly one parameter — the index, of type `Int` or `Nat`, or an alias of either — and returns `Bool`. A refinement is not a valid parameter type, spelled inline or through an alias: the index takes every value from 0 up to the bound, so a refinement narrower than the index type could not hold for all of them. Test such a condition inside the predicate's body instead. Any other predicate signature is a check-time error (**E179**).
+
 Bounded quantification with concrete literal bounds is decidable via finite unrolling, and symbolic bounds are decidable via inductive reasoning — but **both reach the decidable fragment only via Tier 2 (Z3-guided)**, which is [not yet implemented](https://github.com/aallan/vera/issues/427). At present every `forall` / `exists` in a contract falls to Tier 3 (runtime check) regardless of whether its bound is a literal, a length expression, or symbolic.
 
 The `exists` quantifier uses the same syntax and asserts that at least one value in the range satisfies the predicate:

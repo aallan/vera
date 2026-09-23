@@ -8,7 +8,10 @@ _unify_for_inference methods extracted from TypeChecker.
 from __future__ import annotations
 
 from vera import ast, naming
-from vera.checker.registration import _RESERVED_TYPE_PREFIX_RE
+from vera.checker.registration import (
+    _RESERVED_TYPE_PREFIX_RE,
+    builtin_effect_names,
+)
 from vera.types import (
     PRIMITIVES,
     REMOVED_ALIASES,
@@ -344,10 +347,131 @@ class ResolutionMixin:
                 )
             return UnknownType()
 
-        # Unknown — might be a type from an unresolved import
-        return AdtType(name, tuple(
+        # Nothing in scope declares the name (#1489).  One arrival here is
+        # legitimate: a FORWARD reference met during registration — a
+        # signature naming a `data` or `type` this namespace declares further
+        # down, which `_register_all` has not reached yet.  Its placeholder
+        # is the type the declaration registers under, so nothing changes
+        # once registration reaches it.  Every other name denotes no type,
+        # and code generation — which has no representation for it — used to
+        # drop each function that needed one, on a check-green program.
+        #
+        # What reached here as "a type from an unresolved import" no longer
+        # can: every namespace registers its imports' data types before its
+        # own signatures, the per-module registration included
+        # (`ModulesMixin._module_registrations`).  An import whose module did
+        # not resolve is already an E011/E012/E013, and a name it lists is
+        # reported here with an instruction naming that import.
+        #
+        # The type after the report is the opaque placeholder this branch
+        # always returned — the E135 posture above: the program is already
+        # refused, and `vera.naming._resolve_named` renders the placeholder
+        # for the same expression, so the checker and the renderer stay
+        # byte-identical (`tests/test_slot_naming_differential.py`).
+        placeholder = AdtType(name, tuple(
             self._resolve_type(a) for a in te.type_args
         ) if te.type_args else ())
+        if name not in self._forward_type_names:
+            self._report_unknown_type(te)
+        return placeholder
+
+    def _report_unknown_type(self, te: ast.NamedType) -> None:
+        """E136: a type name that resolves to no declaration in scope."""
+        name = te.name
+        why, fix = self._unknown_type_advice(name)
+        self._error(
+            te,
+            f"Unknown type '{name}': nothing in scope declares it.",
+            rationale=(
+                "A type name must resolve where it is written: to a type "
+                "parameter in scope, a primitive, a built-in or prelude "
+                "type, a `data` or `type` declaration of this module, or a "
+                "public data type this module imports.  A name that "
+                "resolves to none of them names no type, and code "
+                "generation has no representation for it." + why
+            ),
+            fix=fix,
+            spec_ref='Chapter 2, Section 2.10 "Type Names"',
+            error_code="E136",
+        )
+
+    def _unknown_type_advice(self, name: str) -> tuple[str, str]:
+        """(rationale suffix, fix) for an unknown type name (E136).
+
+        The instruction depends on WHY the name is unknown here, and five
+        causes have a better answer than "declare it or import it": the
+        ``Fn`` a function-typed slot is referenced by, a clash between two
+        imports, an import that did not resolve, a module that declares the
+        type (privately, or without this file importing it), and an import
+        list naming a type its module does not declare.
+        """
+        if name == "Fn":
+            # The one spelling a program has seen without writing it: a
+            # function-typed binding's slot is REFERENCED as `@Fn.0`
+            # (spec §3.7), which invites writing `@Fn` where a type goes.
+            return (
+                "  'Fn' is how a function-typed binding's slot is "
+                "referenced (`@Fn.0`); it is not a type.",
+                "Write the function type itself — e.g. "
+                "'@fn(Int -> Int) effects(pure)' — or a type alias for it.",
+            )
+        if name in self._ambiguous_import_type_names:
+            return (
+                "  Here two imports both supply it, so it names no one "
+                "declaration (E156, at the import that completes the clash).",
+                f"Resolve the E156 clash: import at most one supplier of "
+                f"'{name}', or declare '{name}' in this file.",
+            )
+        for path, names in self._unresolved_imports.items():
+            if names is None or name in names:
+                label = ".".join(path)
+                return (
+                    f"  It is imported from module '{label}', which did not "
+                    f"resolve.",
+                    f"Fix the import of '{label}' first (see the diagnostic "
+                    f"at that import); '{name}' is in scope once the module "
+                    f"resolves and declares it public.",
+                )
+        for mod in self._resolved_modules:
+            for tld in mod.program.declarations:
+                decl = tld.decl
+                if not (isinstance(decl, ast.DataDecl) and decl.name == name):
+                    continue
+                label = ".".join(mod.path)
+                if (tld.visibility or "private") != "public":
+                    return (
+                        f"  Module '{label}' declares a data type '{name}', "
+                        f"but privately, so only that module can name it.",
+                        f"Make '{name}' public in module '{label}' and import "
+                        f"it with 'import {label}({name});', or declare a "
+                        f"type of your own.",
+                    )
+                return (
+                    f"  Module '{label}' declares it, but this file does not "
+                    f"import it: a value of the type can reach a file "
+                    f"through a function it imports, and naming the type "
+                    f"takes an import of its own.",
+                    f"Import it where it is declared: "
+                    f"'import {label}({name});' (or add '{name}' to an "
+                    f"existing import of '{label}').",
+                )
+        for path, names in self._import_names.items():
+            if names is not None and name in names:
+                label = ".".join(path)
+                return (
+                    f"  'import {label}(...)' lists it, but module '{label}' "
+                    f"declares no data type of that name.",
+                    f"Correct '{name}' in the import of '{label}' and here "
+                    f"to a data type that module declares public, or "
+                    f"declare '{name}' in this file.",
+                )
+        return (
+            "",
+            f"Declare it in this file ('data {name} {{ ... }}' or "
+            f"'type {name} = ...;'), import it from the module that declares "
+            f"it with 'import <module>({name});' (replace <module> with that "
+            f"module's path), or correct the spelling.",
+        )
 
     def _resolve_effect_row(self, er: ast.EffectRow) -> EffectRowType:
         """Convert an AST EffectRow into a semantic EffectRowType."""
@@ -380,16 +504,91 @@ class ResolutionMixin:
                     args = tuple(
                         self._resolve_type(a) for a in ref.type_args
                     ) if ref.type_args else ()
+                    # #1489: the row's twin of E136.  A declaration further
+                    # down this namespace is a forward reference, not an
+                    # unknown name.  The instance is built exactly as before,
+                    # for the renderer's sake (see `_resolve_named_type`).
+                    if (self.env.lookup_effect(ref.name) is None
+                            and ref.name not in self._forward_effect_names):
+                        self._report_unknown_row_effect(ref)
                     instances.append(EffectInstance(ref.name, args))
                 elif isinstance(ref, ast.QualifiedEffectRef):
                     args = tuple(
                         self._resolve_type(a) for a in ref.type_args
                     ) if ref.type_args else ()
+                    # No effect has a qualified name: a declaration takes a
+                    # single identifier and is module-local (§8.4.1), so this
+                    # reference names nothing — and code generation dropped
+                    # a function whose row carried one without a word.
+                    self._report_unknown_row_effect(ref)
                     instances.append(
                         EffectInstance(f"{ref.module}.{ref.name}", args))
             return (ConcreteEffectRow(frozenset(instances), row_var),
                     tuple(instances))
         return PureEffectRow(), ()
+
+    def _report_unknown_row_effect(
+        self, ref: ast.EffectRef | ast.QualifiedEffectRef,
+    ) -> None:
+        """E338: an effect row names an effect nothing in scope declares."""
+        rationale = (
+            "An effect row lists the effects a function may perform, and "
+            "each name must resolve where it is written: to a built-in "
+            "effect, an effect this module declares, or an effect variable "
+            "of the enclosing 'forall'.  An effect declaration is "
+            "module-local and not importable (Chapter 8, Section 8.4.1), and "
+            "a name that denotes no effect gives code generation nothing to "
+            "lower."
+        )
+        if isinstance(ref, ast.QualifiedEffectRef):
+            self._error(
+                ref,
+                f"Effect reference '{ref.module}.{ref.name}' is qualified, "
+                f"and no effect has a qualified name.",
+                rationale=rationale + (
+                    "  An effect declaration takes a single unqualified "
+                    "name, so a qualified reference names nothing."
+                ),
+                fix=(
+                    f"Name the effect unqualified — 'effects(<{ref.name}>)' "
+                    f"— and declare 'effect {ref.name} {{ ... }}' in this "
+                    f"module if it is not a built-in effect."
+                ),
+                spec_ref='Chapter 7, Section 7.3.1 "Syntax"',
+                error_code="E338",
+            )
+            return
+        name = ref.name
+        owners = sorted(
+            ".".join(mod.path) for mod in self._resolved_modules
+            if any(isinstance(tld.decl, ast.EffectDecl)
+                   and tld.decl.name == name
+                   for tld in mod.program.declarations)
+        )
+        if owners:
+            fix = (
+                f"Declare 'effect {name} {{ ... }}' in this module: module "
+                f"'{owners[0]}' declares an effect of that name, but an "
+                f"effect is module-local, so each module whose effect rows "
+                f"name it declares its own copy."
+            )
+        else:
+            builtin = ", ".join(sorted(builtin_effect_names()))
+            fix = (
+                f"Declare 'effect {name} {{ op ...; }}' in this module, add "
+                f"'{name}' to the enclosing 'forall' as an effect variable, "
+                f"or correct the spelling (the built-in effects are "
+                f"{builtin})."
+            )
+        self._error(
+            ref,
+            f"Unknown effect '{name}' in an effect row: nothing in scope "
+            f"declares it.",
+            rationale=rationale,
+            fix=fix,
+            spec_ref='Chapter 7, Section 7.3.1 "Syntax"',
+            error_code="E338",
+        )
 
     def _resolve_effect_ref(self, ref: ast.EffectRefNode) -> EffectInstance | None:
         """Resolve a single effect reference."""

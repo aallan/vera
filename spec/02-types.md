@@ -376,3 +376,15 @@ This means `Array<PosInt>` is NOT a subtype of `Array<Int>`. Converting between 
 ## 2.9 Type Equality
 
 Two types are equal if and only if they have the same structure after resolving type aliases. Refinement type equality uses logical equivalence: `{ @T | P }` equals `{ @T | Q }` if and only if `P <==> Q` is valid.
+
+## 2.10 Type Names
+
+A type name, wherever a type is written — a parameter or result type, a constructor field, an alias body, an effect or ability operation signature, a `let` or pattern binder, a slot or result reference's type arguments, a handler's state, clause parameters and `with` update, a quantifier's binder or predicate — must resolve where it is written, to one of:
+
+- a type parameter in scope;
+- a primitive type (§2.2);
+- a type alias declared in the same module;
+- a `data` declaration of the same module, a built-in or prelude data type (`Option`, `Result`, `Ordering`, `Future`, …), or a public data type the module imports (§8.3);
+- one of the built-in types `Array`, `Map`, `Set`, `Tuple` and `Decimal`.
+
+A declaration further down the same file is in scope: a signature may name a type declared after it. Any other name is a compile error (`E136`), reported at each place it is written. That includes a data type another module declares but this module does not import: a value of the type can reach a module through a function it imports and be passed along, but the type's name is in scope only where an import admits it (§8.6.4).

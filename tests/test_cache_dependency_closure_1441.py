@@ -1040,11 +1040,11 @@ _ADT_WILDCARD_EDITED = _ADT_WILDCARD_ORIGINAL.replace(
 #: there is architecture — and lives in `_CHECK_PHASE_GUARDS` below rather
 #: than being counted here.
 #:
-#: Two rows are held by the span-sensitive structural hash rather than by
-#: the closure or the context hash, because their edit deletes lines and
-#: every later declaration shifts: `callee_removed` and `adt_removed`.  They
-#: are kept — the invalidation they pin is real — and named so the table
-#: does not claim them for a component that is not carrying them.
+#: One row is held by the span-sensitive structural hash rather than by the
+#: closure or the context hash, because its edit deletes lines and every
+#: later declaration shifts: `callee_removed`.  It is kept — the
+#: invalidation it pins is real — and named so the table does not claim it
+#: for a component that is not carrying it.
 _CLASS_MATRIX = [
     ("callee contract, direct", "contract weakened",
      _DIRECT_ORIGINAL, _DIRECT_EDITED, None, None),
@@ -1087,8 +1087,6 @@ _CLASS_MATRIX = [
      _ALIAS_ORIGINAL, _ALIAS_WIDENED, None, None),
     ("ADT constructors", "definition changed",
      _ADT_WILDCARD_ORIGINAL, _ADT_WILDCARD_EDITED, None, None),
-    ("ADT", "declaration removed",
-     _ADT_ORIGINAL, _ADT_REMOVED, None, None),
     ("imported module contract", "contract weakened",
      _MODULE_MAIN, _MODULE_MAIN, _MODULE_LIB, _MODULE_LIB_WEAKENED),
 ]
@@ -1111,20 +1109,22 @@ _CLASS_MATRIX_IDS = [
     "callee_removed",
     "alias_predicate_changed",
     "adt_variant_added",
-    "adt_removed",
     "module_contract_weakened",
 ]
 
-#: Edits whose kind has no type-correct form: removing a type alias, retyping
-#: an effect operation, withdrawing a module export.  The checker refuses
-#: each, so verification never runs and BOTH paths report an empty obligation
-#: stream — which means these cannot hold the cache key to account, and a
-#: cache key replaced by a constant passes every one of them (#1458 review).
+#: Edits whose kind has no type-correct form: removing a type alias or a data
+#: type a signature still names (E136, #1489), retyping an effect operation,
+#: withdrawing a module export.  The checker refuses each, so verification
+#: never runs and BOTH paths report an empty obligation stream — which means
+#: these cannot hold the cache key to account, and a cache key replaced by a
+#: constant passes every one of them (#1458 review).
 #: They are kept as what they are: agreement across a refusal, pinning that
 #: the checker is not itself replayed.
 _CHECK_PHASE_GUARDS = [
     ("type alias", "declaration removed",
      _ALIAS_ORIGINAL, _ALIAS_REMOVED, None, None),
+    ("ADT", "declaration removed",
+     _ADT_ORIGINAL, _ADT_REMOVED, None, None),
     ("effect operation signature", "definition changed",
      _EFFECT_ORIGINAL, _EFFECT_RETYPED, None, None),
     ("imported module export", "declaration removed",
@@ -1133,6 +1133,7 @@ _CHECK_PHASE_GUARDS = [
 
 _CHECK_PHASE_GUARD_IDS = [
     "alias_removed",
+    "adt_removed",
     "effect_op_retyped",
     "module_export_removed",
 ]
