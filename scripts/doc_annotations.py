@@ -41,8 +41,10 @@ attributes is a problem rather than something to ignore.
   gate stops early never reaches the run.
 - **No-run markers** — ``vera:no-run`` — say why a block that exports a
   public function names no invocation, with a ``category`` from the gate's
-  run-exclusion properties and a ``reason``.  A block the run stage
-  reaches carries run markers or one no-run marker, never neither.
+  run-exclusion properties and a ``reason``.  A block carries at most one
+  no-run marker per category, so exports that need different properties
+  each have one.  A block the run stage reaches carries run markers,
+  no-run markers or both, never neither.
 
 A fence is recognised the way CommonMark recognises one: a run of three or
 more backticks or tildes, indented or not, whose language is the first word
@@ -708,10 +710,11 @@ def _take_annotation(
             problems.append(attrs)
             return True
         if kind == "no-run":
-            if pending.no_runs:
+            if any(m.category == attrs["category"] for m in pending.no_runs):
                 problems.append(
-                    f"line {lineno}: a second vera:no-run marker for the same "
-                    f"block"
+                    f"line {lineno}: a second vera:no-run marker with category "
+                    f"{attrs['category']!r} for the same block — one marker per "
+                    f"category"
                 )
             else:
                 pending.no_runs.append(

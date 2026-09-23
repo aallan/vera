@@ -1180,6 +1180,23 @@ class TestRunDecision:
         findings = _findings(_gate(tmp_path, _fence(_FETCH + _TWO, *markers)))
         assert findings == _MOD.Findings([], [], [])
 
+    def test_exports_needing_two_properties_carry_two_markers(
+        self, tmp_path: Path,
+    ) -> None:
+        """The round-3 re-review's repro: `fetch` needs `network` and
+        `classify` needs `api-key`, so the block carries one marker per
+        category, and each covers its export."""
+        classify = _FETCH.replace("fetch", "classify").replace(
+            "<Http>", "<Inference>"
+        ).replace("Http.get", "Inference.complete")
+        markers = (
+            '<!-- vera:no-run category="network" reason="fetches a URL" -->',
+            '<!-- vera:no-run category="api-key" reason="calls a model" -->',
+        )
+        program = (_FETCH + classify).rstrip()
+        findings = _findings(_gate(tmp_path, _fence(program, *markers)))
+        assert findings == _MOD.Findings([], [], [])
+
     def test_a_property_reaches_through_the_blocks_own_calls(
         self, tmp_path: Path,
     ) -> None:
@@ -1244,13 +1261,15 @@ class TestCodedMarkers:
 
 
 # ---------------------------------------------------------------------------
-# Every example invocation a document names is run
+# Every example invocation a document names is run, or left to the harness
 # ---------------------------------------------------------------------------
 
 
 class TestDocumentedInvocations:
-    """A `vera run examples/...` a document names is run by some gate
-    (#1484 review: EXAMPLES.md named two that no gate ran)."""
+    """A `vera run examples/...` a document names is run here, unless
+    `check_examples_run.py` already runs that exact invocation or skips that
+    example by property (#1484 review: EXAMPLES.md named two that no gate
+    ran)."""
 
     def test_invocations_are_read_in_their_written_forms(self, tmp_path: Path) -> None:
         doc = tmp_path / "doc.md"

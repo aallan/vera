@@ -673,15 +673,28 @@ class TestNoRunMarkers:
         _blocks, problems = scan_markdown(path)
         assert len(problems) == 1 and "blank 'reason'" in problems[0]
 
-    def test_a_second_no_run_marker_is_problem(self, tmp_path: Path) -> None:
+    def test_no_run_markers_of_two_categories_attach(self, tmp_path: Path) -> None:
+        """Exports that need different properties each carry their own
+        marker (PR #1484 round-3 review)."""
         path = _md(
             tmp_path,
             '<!-- vera:no-run category="network" reason="a" -->\n'
             '<!-- vera:no-run category="api-key" reason="b" -->\n'
             "```vera\nx\n```\n",
         )
+        blocks, problems = scan_markdown(path)
+        assert problems == []
+        assert [m.category for m in blocks[0].no_runs] == ["network", "api-key"]
+
+    def test_a_repeated_no_run_category_is_a_problem(self, tmp_path: Path) -> None:
+        path = _md(
+            tmp_path,
+            '<!-- vera:no-run category="network" reason="a" -->\n'
+            '<!-- vera:no-run category="network" reason="b" -->\n'
+            "```vera\nx\n```\n",
+        )
         _blocks, problems = scan_markdown(path)
-        assert len(problems) == 1 and "second vera:no-run" in problems[0]
+        assert len(problems) == 1 and "one marker per category" in problems[0]
 
     def test_no_run_marker_lines_are_stripped(self) -> None:
         text = (
