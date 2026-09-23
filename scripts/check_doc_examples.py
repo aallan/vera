@@ -108,6 +108,7 @@ from typing import Any, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from check_doc_counts import git_env
 from check_examples_run import (
     NEUTRALISED_ENV,
     RUN_SPECS,
@@ -1069,12 +1070,19 @@ def expand_gates(
 def tracked_documents(root: Path) -> list[str]:
     """Every tracked file the coverage rule reads, as repo-relative POSIX
     paths.  Tracked rather than on disk, so a scratch file in a working
-    tree is not asked to justify itself."""
+    tree is not asked to justify itself.
+
+    git runs in *root* with its repository selectors cleared
+    (``check_doc_counts.git_env``): under a hook, git exports ``GIT_DIR``
+    and ``GIT_INDEX_FILE`` for the repository being committed, and they
+    would otherwise decide which repository answers, whatever *root* is.
+    """
     listing = subprocess.run(
         ["git", "ls-files", "-z"],
         cwd=str(root),
         capture_output=True,
         check=True,
+        env=git_env(),
     )
     names = listing.stdout.decode("utf-8").split("\0")
     return sorted(

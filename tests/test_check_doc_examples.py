@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import os
 import re
 import subprocess
 from pathlib import Path
@@ -1344,16 +1343,11 @@ class TestLiveEnumeration:
         assert set(_AGENT_DOCUMENT_SUFFIXES) <= set(_MOD.DOCUMENT_SUFFIXES)
 
     def test_a_tracked_document_of_each_type_must_be_classified(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self, tmp_path: Path,
     ) -> None:
-        # Under a git hook, as when pre-commit runs this suite, git exports
-        # GIT_DIR and GIT_INDEX_FILE for the repository being committed
-        # (githooks(5)).  A `git init` that inherits them re-initialises that
-        # repository as a bare one, and `git ls-files` reads it rather than
-        # the temporary one.  Every git call here must reach the temporary
-        # repository only, so the git variables are cleared first.
-        for name in [n for n in os.environ if n.startswith("GIT_")]:
-            monkeypatch.delenv(name)
+        # The git commands here reach the temporary repository only because
+        # tests/conftest.py clears every inherited GIT_* variable for the
+        # suite; test_git_hermetic.py holds the suite to that.
         repo = tmp_path / "repo"
         repo.mkdir()
         files = {
@@ -1371,6 +1365,30 @@ class TestLiveEnumeration:
         errors = _MOD.check_coverage(repo, [], {}, tracked)
         for name in files:
             assert any(e.startswith(f"{name} has Vera blocks") for e in errors), errors
+
+
+def _repo_with(path: Path, files: dict[str, str]) -> Path:
+    """A git repository at *path* tracking *files*."""
+    path.mkdir()
+    for name, text in files.items():
+        (path / name).write_text(text, encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+    subprocess.run(["git", "add", "--", *files], cwd=path, check=True)
+    return path
+
+
+class TestEnumerationIgnoresAnInheritedRepository:
+    """`tracked_documents` answers for the repository its root names, even
+    when the environment names another, as a git hook's does (PR #1484)."""
+
+    def test_an_inherited_git_dir_does_not_redirect_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        decoy = _repo_with(tmp_path / "decoy", {"decoy.md": _fence(_TWO)})
+        repo = _repo_with(tmp_path / "repo", {"guide.md": _fence(_TWO)})
+        monkeypatch.setenv("GIT_DIR", str(decoy / ".git"))
+        monkeypatch.setenv("GIT_INDEX_FILE", str(decoy / ".git" / "index"))
+        assert _MOD.tracked_documents(repo) == ["guide.md"]
 
 
 class TestInstrumentPieces:
