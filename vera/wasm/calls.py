@@ -734,7 +734,7 @@ class CallsMixin:
 
         # #517 — emit ``return_call $target`` for tail-position
         # calls whose WASM signature matches the current function's.
-        # The analyzer in ``vera/codegen/tail_position.py`` populates
+        # The analyzer in ``vera/tail_position.py`` populates
         # ``self._tail_call_sites`` with ids of syntactically tail-
         # position FnCalls; the type-match guard ensures WASM
         # ``return_call`` semantics are valid (the callee must

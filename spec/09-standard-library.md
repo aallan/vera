@@ -878,7 +878,7 @@ public fn floor(@Float64 -> @Int)
   effects(pure)
 ```
 
-Returns the largest integer less than or equal to the input. Compiles to `f64.floor` followed by `i64.trunc_f64_s`. Traps on NaN or out-of-range values (WASM semantics).
+Returns the largest integer less than or equal to the input. Compiles to `f64.floor` followed by `i64.trunc_f64_s`. Traps on NaN or out-of-range values (WASM semantics), so each call carries the `E529` domain obligation over the rounded value (§6.4.3): decided for a constant argument, checked at run time for a computed one.
 
 ```
 floor(3.7)
@@ -896,7 +896,7 @@ public fn ceil(@Float64 -> @Int)
   effects(pure)
 ```
 
-Returns the smallest integer greater than or equal to the input. Compiles to `f64.ceil` followed by `i64.trunc_f64_s`. Traps on NaN or out-of-range values (WASM semantics).
+Returns the smallest integer greater than or equal to the input. Compiles to `f64.ceil` followed by `i64.trunc_f64_s`. Traps on NaN or out-of-range values (WASM semantics), so each call carries the `E529` domain obligation over the rounded value (§6.4.3): decided for a constant argument, checked at run time for a computed one.
 
 ```
 ceil(3.2)
@@ -914,7 +914,7 @@ public fn round(@Float64 -> @Int)
   effects(pure)
 ```
 
-Rounds to the nearest integer using banker's rounding (IEEE 754 roundTiesToEven). This means `round(2.5)` evaluates to `2`, not `3` — ties round to the nearest even integer. Compiles to `f64.nearest` followed by `i64.trunc_f64_s`. Traps on NaN or out-of-range values (WASM semantics).
+Rounds to the nearest integer using banker's rounding (IEEE 754 roundTiesToEven). This means `round(2.5)` evaluates to `2`, not `3` — ties round to the nearest even integer. Compiles to `f64.nearest` followed by `i64.trunc_f64_s`. Traps on NaN or out-of-range values (WASM semantics), so each call carries the `E529` domain obligation over the rounded value (§6.4.3): decided for a constant argument, checked at run time for a computed one.
 
 ```
 round(3.7)
@@ -1055,7 +1055,7 @@ public fn float_to_int(@Float64 -> @Int)
   effects(pure)
 ```
 
-Truncates a floating-point number toward zero. Traps on NaN or Infinity (consistent with `floor`, `ceil`, and `round`). Compiled to `i64.trunc_f64_s`.
+Truncates a floating-point number toward zero. Traps on NaN, Infinity, or a value whose truncation falls outside the i64 range (consistent with `floor`, `ceil`, and `round`), and each call carries the `E529` domain obligation (§6.4.3). Compiled to `i64.trunc_f64_s`.
 
 ```
 float_to_int(3.9)
@@ -1101,7 +1101,7 @@ match int_to_byte(65) {
 
 This expression evaluates to `65`.
 
-#### float_to_string (total over all Float64 values)
+#### float_to_string
 
 <!-- vera:skip-parse category="FRAGMENT" reason="float_to_string signature (no body)" -->
 ```
@@ -1111,7 +1111,7 @@ public fn float_to_string(@Float64 -> @String)
   effects(pure)
 ```
 
-Renders a `Float64` as its decimal string (up to six fractional digits, trailing zeros trimmed but at least one kept, so `42.0` stays `"42.0"`). This function is **total**: it is defined for every `Float64` value, including the three IEEE 754 non-finite classes, which render as fixed ASCII spellings:
+Renders a `Float64` as its decimal string (up to six fractional digits, trailing zeros trimmed but at least one kept, so `42.0` stays `"42.0"`). It is defined for every non-finite `Float64` and for every finite value whose magnitude is below 2^63. The three IEEE 754 non-finite classes render as fixed ASCII spellings:
 
 | Input | Output |
 |-------|--------|
@@ -1120,6 +1120,8 @@ Renders a `Float64` as its decimal string (up to six fractional digits, trailing
 | `-∞` (e.g. `log(0.0)`, `0.0 - infinity()`) | `"-inf"` |
 
 These spellings are chosen for cross-runtime parity: `float_to_string` compiles to inline WASM (no host import), so the Python host runtime and the browser runtime execute the same module and emit these bytes identically by construction. Because the math built-ins commit to IEEE 754 semantics — `log(0.0)` returns `-∞` and out-of-domain inputs return `NaN` (§9.6.10) — these are ordinary, reachable values, not errors; rendering them never traps ([#857](https://github.com/aallan/vera/issues/857)).
+
+A finite value of magnitude 2^63 or more does trap: the integer part is extracted with `i64.trunc_f64_s`, which that magnitude overflows. Each call therefore carries the `E529` domain obligation (§6.4.3), as does every `show` or string interpolation of a `@Float64`, which lower to this function — decided for a constant argument, checked at run time for a computed one.
 
 ```
 float_to_string(log(0.0))
@@ -1299,10 +1301,10 @@ string_strip("  ")           -- "" (empty)
 <!-- vera:skip-parse category="FRAGMENT" reason="string_char_code signature (no body)" -->
 ```
 public fn string_char_code(@String, @Int -> @Nat)
-  requires(true) ensures(true) effects(pure)
+  requires(@Int.0 >= 0 && @Int.0 < string_length(@String.0)) ensures(true) effects(pure)
 ```
 
-Returns the ASCII code point (as a `Nat`) of the byte at the given index in the string. The index is zero-based. Traps if the index is out of bounds.
+Returns the ASCII code point (as a `Nat`) of the byte at the given index in the string. The index is zero-based and must lie within the string's length in bytes: that is the declared precondition, obligated at each call site like any `requires` (§6.4.2) — proved where the index is bounded against a string literal, `E501` where it may not hold, and checked at run time (`E532`) where the string's byte length is not known statically (§6.4.3). The compiled call compares the index with the byte length and traps outside it.
 
 ```vera
 string_char_code("A", 0)     -- 65
@@ -2657,7 +2659,7 @@ Operation: `show(@T -> @String)`. Returns a human-readable string representation
 
 Satisfied by: Int, Nat, Bool, Float64, String, Byte, Unit, and composite types — ADTs, `Tuple`, `Option`, `Result`, and `Array` — whose fields/elements are themselves `Show`-satisfying (structural auto-derivation, §9.8.2).
 
-`show(@Float64)` is backed by `float_to_string` and is therefore **total** over all `Float64` values: the non-finite classes render as `"nan"`, `"inf"`, and `"-inf"` (§9.6.11, [#857](https://github.com/aallan/vera/issues/857)), with the same spellings in both the Python and browser runtimes.
+`show(@Float64)` is backed by `float_to_string` and shares its domain: the non-finite classes render as `"nan"`, `"inf"`, and `"-inf"` (§9.6.11, [#857](https://github.com/aallan/vera/issues/857)), with the same spellings in both the Python and browser runtimes, and a finite value of magnitude 2^63 or more traps.
 
 ### 9.8.2 ADT Auto-Derivation
 

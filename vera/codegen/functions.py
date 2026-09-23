@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, cast
 from vera import ast
 from vera.skip import AdtEqNotDerivableError, CodegenInvariantError, CodegenSkip
 from vera.codegen.compilability import contract_exprs
-from vera.codegen.tail_position import compute_tail_call_sites
+from vera.tail_position import compute_tail_call_sites
 from vera.monomorphize import mangle_type_name
 from vera.slots import effect_op_result_names, type_expr_slot_name
 from vera.wasm import WasmContext, WasmSlotEnv
@@ -721,7 +721,7 @@ class FunctionCompilationMixin:
         # ``self_ret_wt`` argument is the function's WASM return
         # type, used by the translator's type-match guard to ensure
         # WASM ``return_call`` semantics are valid (callee signature
-        # must match caller).  See ``vera/codegen/tail_position.py``
+        # must match caller).  See ``vera/tail_position.py``
         # for the analyzer rules and ``_translate_call`` in
         # ``vera/wasm/calls.py`` for the emit site.
         tail_sites = compute_tail_call_sites(decl)

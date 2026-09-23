@@ -26,6 +26,8 @@ from vera import ast, naming
 from vera.monomorphize import mangle_type_name, unmangle_type_name
 from vera import carriers
 from vera.regularity import RegularityIndex, adt_names_in
+from vera.builtin_domains import BUILTIN_DOMAIN_NAMES, domain_contract
+from vera.slots import substitute_parameters
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv
 from vera.types import (
     AdtType,
@@ -196,6 +198,23 @@ class CallDemotion:
     Tier-3 obligation (E532) rather than letting the precondition obligation
     silently not exist: DESIGN.md degrades loudly, and the runtime guard
     still enforces the contract.
+    """
+
+    callee_name: str
+    call_node: ast.FnCall | ast.ModuleCall
+    precondition: ast.Requires
+
+
+@dataclass
+class CallDischarge:
+    """A call site whose precondition was DISCHARGED, for a callee whose
+    check sits at the call site (#1480).
+
+    A user callee's `requires` is checked in the callee's own prologue, so a
+    discharged call-site precondition leaves no record (Phase A records the
+    undischarged ones).  A built-in's declared domain is different: the check
+    is emitted inline, at the call, so the call site is where its runtime
+    check is and where its obligation has to be — discharged or not.
     """
 
     callee_name: str
@@ -413,6 +432,15 @@ def _adt_sort_key(
     return f"{adt_name}<{', '.join(arg_strs)}>"
 
 
+def _same_call_site(a: ast.Node, b: ast.Node) -> bool:
+    """Whether two call nodes are one call site: by span, since a pipe is
+    re-desugared into a fresh node on every translation, and by identity for
+    a node with no span (#727's key, shared by every call-outcome list)."""
+    if a.span is not None and b.span is not None:
+        return a.span == b.span
+    return a is b
+
+
 def _sorts_agree(a: z3.ExprRef, b: z3.ExprRef) -> bool:
     """Whether two terms share a Z3 sort, so an ``If`` can join them (#1360)."""
     try:
@@ -611,6 +639,9 @@ class SmtContext:
         # statically (untranslatable ADT-argument, etc.) — demoted to a loud
         # Tier-3 by the verifier rather than silently dropped.
         self._call_demotions: list[CallDemotion] = []
+        # #1480: discharged checks for a callee whose check sits at the call
+        # site (a built-in's declared domain) — see `CallDischarge`.
+        self._call_discharges: list[CallDischarge] = []
         self._fresh_counter: int = 0
         # Path conditions accumulated from if/match branches so that
         # call-site precondition checks can see which branch is active.
@@ -1042,6 +1073,25 @@ class SmtContext:
         demotions = list(self._call_demotions)
         self._call_demotions.clear()
         return demotions
+
+    def drain_call_discharges(self) -> list[CallDischarge]:
+        """Return the discharged call-site checks recorded since the last
+        drain, and clear the list (#1480).
+
+        A site that ALSO has a violation or a demotion pending is left out:
+        the same call is translated by more than one walk, and the record a
+        site keeps is its worst outcome, never a discharge beside a failure.
+        """
+        failed = [
+            *(v.call_node for v in self._call_violations),
+            *(d.call_node for d in self._call_demotions),
+        ]
+        kept = [
+            ok for ok in self._call_discharges
+            if not any(_same_call_site(ok.call_node, n) for n in failed)
+        ]
+        self._call_discharges.clear()
+        return kept
 
     def _record_call_demotion(
         self,
@@ -2247,6 +2297,22 @@ class SmtContext:
         """
         return self._fn_lookup is not None and self._fn_lookup(name) is not None
 
+    def _resolves_to_builtin(self, name: str) -> bool:
+        """Whether a bare call to *name* reaches the BUILT-IN of that name.
+
+        Not `not _is_user_fn(name)`: the lookup falls through to the flat
+        registry, which holds the built-ins, so every built-in name "is
+        registered".  A built-in's entry is the one with no declaration
+        behind it — no span and no parameter type expressions — which is
+        what a user or imported function's entry always has.
+        """
+        if self._fn_lookup is None:
+            return True
+        info = self._fn_lookup(name)
+        return info is None or (
+            getattr(info, "span", None) is None
+            and not getattr(info, "param_type_exprs", ()))
+
     @staticmethod
     def _desugar_compare(call: ast.FnCall) -> ast.Expr:
         """Desugar ``compare(a, b)`` to the canonical Ordering if-chain.
@@ -2343,6 +2409,14 @@ class SmtContext:
                 self._get_or_create_adt_sort("Ordering", ())
             return self.translate_expr(
                 self._desugar_compare(call), env)
+
+        # #1480: a built-in whose compiled translation traps outside a
+        # declared domain has that domain checked here, at every call, the
+        # way a user callee's `requires` is.  The value is translated below
+        # exactly as before: the check adds an obligation, not a model.
+        if (call.name in BUILTIN_DOMAIN_NAMES
+                and self._resolves_to_builtin(call.name)):
+            self._check_builtin_domain(call, env)
 
         # Built-in: array_length()
         if call.name == "array_length" and len(call.args) == 1:
@@ -2566,6 +2640,57 @@ class SmtContext:
         return self._translate_call_with_info(
             callee_info, call.name, call.args, call, env,
         )
+
+    def _check_builtin_domain(self, call: ast.FnCall, env: SlotEnv) -> None:
+        """Obligate *call*'s declared domain at this call site (#1480).
+
+        The domain is :mod:`vera.builtin_domains`' `requires`, with the
+        call's actual arguments substituted for its parameters and the
+        result translated in the CALLER's scope — so a literal string's byte
+        length is exact (#802) and a slot's facts are the caller's.  The
+        outcome goes to the same three lists every call-site precondition
+        uses: a discharge (recorded, since the check is inline here), a
+        violation (E501, on any outcome but a proof — as a user callee's),
+        or a demotion when the domain cannot be stated (E532).
+        """
+        contract = domain_contract(call.name)
+        if contract is None or len(call.args) != len(contract.params):
+            return
+        predicate = substitute_parameters(
+            contract.requires.expr, contract.params, call.args,
+            naming.EMPTY_ALIAS_ENV, None,
+        )
+        goal = (self.translate_expr(predicate, env)
+                if predicate is not None else None)
+        if goal is None or goal.sort() != z3.BoolSort():
+            self._record_call_demotion_for(
+                call.name, call, contract.requires)
+            return
+        result = self.check_valid(goal, [])
+        if result.status == "verified":
+            if not any(ok.precondition is contract.requires
+                       and _same_call_site(ok.call_node, call)
+                       for ok in self._call_discharges):
+                self._call_discharges.append(CallDischarge(
+                    callee_name=call.name, call_node=call,
+                    precondition=contract.requires,
+                ))
+            return
+        if result.status == "disclosed":
+            # Holds only from a disclosed fact: a demotion, never a proof
+            # and never a violation (the #1363 rule `_check_call_preconditions`
+            # applies to a user callee).
+            self._record_call_demotion_for(
+                call.name, call, contract.requires)
+            return
+        if not any(v.precondition is contract.requires
+                   and _same_call_site(v.call_node, call)
+                   for v in self._call_violations):
+            self._call_violations.append(CallViolation(
+                callee_name=call.name, call_node=call,
+                precondition=contract.requires,
+                counterexample=result.counterexample,
+            ))
 
     def _translate_module_call(
         self, call: ast.ModuleCall, env: SlotEnv
@@ -4354,6 +4479,7 @@ class SmtContext:
         self._result_var = None
         self._call_violations.clear()
         self._call_demotions.clear()
+        self._call_discharges.clear()
         self._fresh_counter = 0
         self._opaque_tainted = False
         self._path_conditions.clear()

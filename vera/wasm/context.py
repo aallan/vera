@@ -509,7 +509,7 @@ class WasmContext(
         self._old_state_locals: dict[str, int] = {}
         # #517 — WASM tail-call optimization.  Populated by
         # ``set_tail_call_context`` from the per-fn analyzer in
-        # ``vera/codegen/tail_position.py``: the set of ``id(FnCall)``
+        # ``vera/tail_position.py``: the set of ``id(FnCall)``
         # AST nodes that are syntactically in tail position.  The
         # ``_translate_call`` site emits ``return_call $foo`` instead
         # of ``call $foo`` when the call's id is in this set AND its
@@ -801,7 +801,7 @@ class WasmContext(
         """Configure tail-call optimization for the function being compiled.
 
         ``sites`` is the set of ``id(ast.FnCall)`` AST nodes the
-        per-fn analyzer in ``vera/codegen/tail_position.py``
+        per-fn analyzer in ``vera/tail_position.py``
         identified as syntactically in tail position.  At translate
         time, ``_translate_call`` checks ``id(call) in sites`` plus
         the type-match condition (callee's WASM return type ==

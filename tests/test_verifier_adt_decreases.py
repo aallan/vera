@@ -360,7 +360,7 @@ private fn sum(@List<Int> -> @Int)
         assert result.summary.tier1_verified == 8
 
     def test_overall_tier_counts(self) -> None:
-        """All examples together: 411 T1 / 122 T3 / 533 total (current).
+        """All examples together: 415 T1 / 141 T3 / 556 total (current).
 
         Counts move when examples are added or their contracts become
         more / less verifiable.  Trajectory:
@@ -721,9 +721,19 @@ private fn sum(@List<Int> -> @Int)
         # — eight across the corpus — each Tier 3 with the measure-range
         # guard behind it: 411/122/533 -> 411/130/541.  A measure a
         # `requires` bounds proves at Tier 1 instead and adds nothing.
-        assert t1 == 413, f"Expected 413 T1, got {t1}"
-        assert t3 == 130, f"Expected 130 T3, got {t3}"
-        assert total == 543, f"Expected 543 total, got {total}"
+        #
+        # #1480: a built-in whose compiled translation traps now carries its
+        # domain at every call.  `string_ops.vera`'s `string_char_code("A",
+        # 0)` and `float_to_string(3.14)` prove (+2 T1); `ephemeris.vera`'s
+        # nine `floor` / `round` sites and one `float_to_string`, and
+        # `maximum_syntax.vera`'s one `float_to_string`, all over a computed
+        # float, are left to the truncation trap (+11 T3).  No example's
+        # measure or refinement predicate performs an operation, so the
+        # other two #1480 positions move nothing: 413/130/543 ->
+        # 415/141/556.
+        assert t1 == 415, f"Expected 415 T1, got {t1}"
+        assert t3 == 141, f"Expected 141 T3, got {t3}"
+        assert total == 556, f"Expected 556 total, got {total}"
         # Zero is the load-bearing value, not a vacuous one: every corpus
         # narrowing is now covered by an emitted guard, so any reappearance
         # is a REGRESSION in guard coverage rather than a new example.  The

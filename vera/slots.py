@@ -340,6 +340,66 @@ def slot_table(
     return {tname: list(reversed(pos)) for tname, pos in by_type.items()}
 
 
+def substitute_parameters(
+    expr: ast.Expr,
+    params: tuple[ast.TypeExpr, ...],
+    args: tuple[ast.Expr, ...],
+    env: AliasEnv,
+    forall_vars: Iterable[str] | None,
+) -> ast.Expr | None:
+    """*expr*, written over *params*, with each parameter slot replaced by
+    the argument *args* passes in that position.
+
+    A callee's precondition rendered at a call site: `requires(@Int.0 <
+    string_length(@String.0))` at `string_char_code("abc", @Nat.0)` becomes
+    `@Nat.0 < string_length("abc")`.  The slot table is the one
+    :func:`slot_table` builds, so a reference resolves to the parameter the
+    checker bound it to.  Returns ``None`` when a reference cannot be mapped
+    — a type the table does not hold, an index past its stack, an argument
+    list too short — rather than a partial substitution, which would leave a
+    parameter slot to be resolved against the CALLER's scope.
+    """
+    import dataclasses
+
+    table = slot_table(params, env, forall_vars)
+    scope = fn_slot_scope(env, forall_vars)
+
+    class _Unmapped(Exception):
+        pass
+
+    def rebuild(node: ast.Expr) -> ast.Expr:
+        if isinstance(node, ast.SlotRef):
+            positions = table.get(naming.slot_ref_key(node, scope))
+            if not positions or node.index >= len(positions):
+                raise _Unmapped
+            pos = positions[node.index]
+            if pos > len(args):
+                raise _Unmapped
+            return args[pos - 1]
+        changes: dict[str, object] = {}
+        for f in dataclasses.fields(node):
+            value = getattr(node, f.name)
+            if isinstance(value, ast.Expr):
+                new_value = rebuild(value)
+                if new_value is not value:
+                    changes[f.name] = new_value
+            elif (isinstance(value, tuple) and value
+                    and all(isinstance(x, ast.Expr) for x in value)):
+                new_tuple = tuple(rebuild(x) for x in value)
+                if any(a is not b for a, b in zip(new_tuple, value)):
+                    changes[f.name] = new_tuple
+        if changes:
+            # dataclasses.replace's typeshed overload cannot see the
+            # per-subclass field types through **dict.
+            return dataclasses.replace(node, **changes)  # type: ignore[arg-type]
+        return node
+
+    try:
+        return rebuild(expr)
+    except _Unmapped:
+        return None
+
+
 def format_slot_table(
     fn_name: str,
     params_str: str,

@@ -1,0 +1,1236 @@
+"""Every runtime check the compiled program performs has an obligation (#1480).
+
+The verifier's obligation walks descended a hand-listed set of roots: the
+body, and since #801 each ``requires`` and ``ensures`` (primitive operations
+only).  Code generation evaluates more than that, and every check it emits
+where no walk reached let ``vera verify`` pass a program that traps:
+
+* a ``decreases`` measure, evaluated at entry and again on a self-recursive
+  tail call's captured arguments (#1172);
+* a refinement predicate, evaluated by every §2.6.5 guard (#762);
+* a trapping built-in's argument check (``string_char_code``'s index);
+* a call precondition and an ``@Int``-to-``@Nat`` narrowing inside a
+  ``requires`` or ``ensures`` predicate.
+
+This file holds the issue's own programs as named cells.  Each asserts the
+RECORD (kind, status, error code and location of every obligation the
+position carries) and the RUN on an admitted input, because the claim under
+test is that the two agree.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, replace
+
+import pytest
+
+from vera.checker import typecheck_with_artifacts
+from vera.codegen import compile, execute
+from vera.obligations.core import ProofObligation
+from vera.parser import parse_to_ast
+from vera.runtime.traps import WasmTrapError
+from vera.verifier import verify
+
+
+# =====================================================================
+# Helpers
+# =====================================================================
+
+
+@dataclass(frozen=True)
+class Verified:
+    """One program's verification outcome."""
+
+    obligations: list[ProofObligation]
+    errors: list[tuple[str, int, int]]  # (code, line, column)
+    ok: bool
+
+
+def _verify(source: str) -> Verified:
+    """Parse, type-check (must be clean) and verify *source* in-process."""
+    program = parse_to_ast(source)
+    diags, arts = typecheck_with_artifacts(program, source)
+    check_errors = [d for d in diags if d.severity == "error"]
+    assert not check_errors, (
+        "fixture must type-check cleanly, got: "
+        f"{[(d.error_code, d.description[:80]) for d in check_errors]}"
+    )
+    result = verify(
+        program, source,
+        expr_types=arts.expr_semantic_types,
+        expr_target_types=arts.expr_target_types,
+    )
+    errors = [
+        (d.error_code, d.location.line, d.location.column)
+        for d in result.diagnostics if d.severity == "error"
+    ]
+    return Verified(result.obligations, errors, not errors)
+
+
+@dataclass(frozen=True)
+class Ran:
+    """One run's outcome: a value, or a trap with its kind and message."""
+
+    value: object | None
+    trap_kind: str | None = None
+    trap_message: str = ""
+
+
+def _run(source: str, fn: str, args: list[int | float]) -> Ran:
+    """Compile *source* and call *fn* with *args*, catching a trap.
+
+    Through the pipeline `vera run` uses: the checker's type tables are
+    threaded into code generation, which decides from them where a
+    `@Nat` subtraction or an overflow is guarded.  Without them a guard
+    can be missing that the real artifact carries, and a cell would read
+    the absence as the record's error.
+    """
+    program = parse_to_ast(source)
+    _diags, arts = typecheck_with_artifacts(program, source)
+    compiled = compile(
+        program, source=source,
+        expr_semantic_types=arts.expr_semantic_types,
+        expr_target_types=arts.expr_target_types,
+    )
+    errors = [d for d in compiled.diagnostics if d.severity == "error"]
+    assert not errors, (
+        f"fixture must compile, got: "
+        f"{[(d.error_code, d.description[:80]) for d in errors]}"
+    )
+    try:
+        out = execute(compiled, fn_name=fn, args=args)
+    except WasmTrapError as trap:
+        return Ran(None, trap.kind, str(trap))
+    return Ran(out.value)
+
+
+def _at(source: str, needle: str, occurrence: int = 0) -> tuple[int, int]:
+    """1-based (line, column) of the *occurrence*-th *needle* in *source*."""
+    start = -1
+    for _ in range(occurrence + 1):
+        start = source.index(needle, start + 1)
+    line = source.count("\n", 0, start) + 1
+    column = start - (source.rfind("\n", 0, start) + 1) + 1
+    return line, column
+
+
+def _records(v: Verified, kind: str, where: tuple[int, int]) -> list[str]:
+    """``status[/code]`` of every *kind* obligation located at *where*."""
+    return sorted(
+        f"{o.status}/{o.error_code}" if o.error_code else o.status
+        for o in v.obligations
+        if o.kind == kind and (o.line, o.column) == where
+    )
+
+
+# =====================================================================
+# The issue's three items, as measured on release/v0.2.0 at 82f00584
+# =====================================================================
+
+
+# Item 1: the idiom VeraBench found in every model target.  The last call has
+# `@Nat.0 = n + 1`, so the measure's `@Nat.1 - @Nat.0` is `n - (n + 1)`.
+COUNT_TO = """\
+public fn count_to(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  loop(@Nat.0, 1)
+}
+where {
+  fn loop(@Nat, @Nat -> @Nat)
+    requires(true)
+    ensures(true)
+    decreases(@Nat.1 - @Nat.0 + 1)
+    effects(pure)
+  {
+    if @Nat.0 > @Nat.1 then { @Nat.0 } else { loop(@Nat.1, @Nat.0 + 1) }
+  }
+}
+"""
+
+# The same loop with the invariant stated and the subtraction reordered: the
+# form the Fix text names, which must verify and run.
+COUNT_TO_FIXED = """\
+public fn count_to(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  loop(@Nat.0, 1)
+}
+where {
+  fn loop(@Nat, @Nat -> @Nat)
+    requires(@Nat.0 <= @Nat.1 + 1)
+    ensures(true)
+    decreases(@Nat.1 + 1 - @Nat.0)
+    effects(pure)
+  {
+    if @Nat.0 > @Nat.1 then { @Nat.0 } else { loop(@Nat.1, @Nat.0 + 1) }
+  }
+}
+"""
+
+
+class TestMeasureIsObligated:
+    """Item 1: the measure's operations are obligated where it is evaluated."""
+
+    def test_subtraction_obligated_at_entry_and_at_the_tail_call(self) -> None:
+        v = _verify(COUNT_TO)
+        measure = _at(COUNT_TO, "@Nat.1 - @Nat.0 + 1")
+        tail_call = _at(COUNT_TO, "loop(@Nat.1, @Nat.0 + 1)")
+        assert _records(v, "nat_sub", measure) == ["violated/E502"]
+        assert _records(v, "nat_sub", tail_call) == ["violated/E502"]
+        # The measure's own `+ 1` is a checked add in the WAT at both points.
+        assert _records(v, "int_overflow", measure) == ["tier3"]
+        assert _records(v, "int_overflow", tail_call) == ["tier3"]
+        assert ("E502", *measure) in v.errors
+        assert ("E502", *tail_call) in v.errors
+        assert not v.ok
+
+    def test_the_run_traps_where_the_record_says(self) -> None:
+        ran = _run(COUNT_TO, "count_to", [3])
+        assert ran.trap_kind is not None, f"expected a trap, got {ran.value}"
+        assert ran.trap_kind != "contract_violation", ran.trap_message
+
+    def test_the_stated_invariant_verifies_and_runs(self) -> None:
+        v = _verify(COUNT_TO_FIXED)
+        measure = _at(COUNT_TO_FIXED, "@Nat.1 + 1 - @Nat.0")
+        tail_call = _at(COUNT_TO_FIXED, "loop(@Nat.1, @Nat.0 + 1)")
+        assert _records(v, "nat_sub", measure) == ["verified"]
+        assert _records(v, "nat_sub", tail_call) == ["verified"]
+        assert v.ok, v.errors
+        assert _run(COUNT_TO_FIXED, "count_to", [3]).value == 4
+        assert _run(COUNT_TO_FIXED, "count_to", [0]).value == 1
+
+
+DEC_DIV = """\
+public fn loop(@Nat, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.1 / @Nat.0)
+  effects(pure)
+{
+  if @Nat.1 == 0 then { 0 } else { loop(@Nat.1 - 1, @Nat.0) }
+}
+"""
+
+DEC_CALL_PRE = """\
+public fn pred(@Nat -> @Nat)
+  requires(@Nat.0 > 0)
+  ensures(true)
+  effects(pure)
+{
+  @Nat.0 - 1
+}
+
+public fn loop(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(pred(@Nat.0))
+  effects(pure)
+{
+  if @Nat.0 == 0 then { 0 } else { loop(@Nat.0 - 1) }
+}
+"""
+
+
+class TestMeasureOperations:
+    """The issue's table: division and a call precondition in a measure."""
+
+    def test_division_by_zero_obligated(self) -> None:
+        v = _verify(DEC_DIV)
+        measure = _at(DEC_DIV, "@Nat.1 / @Nat.0")
+        tail_call = _at(DEC_DIV, "loop(@Nat.1 - 1, @Nat.0)")
+        assert _records(v, "div_zero", measure) == ["violated/E526"]
+        assert _records(v, "div_zero", tail_call) == ["violated/E526"]
+        assert not v.ok
+        assert _run(DEC_DIV, "loop", [3, 0]).trap_kind == "divide_by_zero"
+
+    def test_call_precondition_obligated(self) -> None:
+        v = _verify(DEC_CALL_PRE)
+        in_measure = _at(DEC_CALL_PRE, "pred(@Nat.0))")
+        tail_call = _at(DEC_CALL_PRE, "loop(@Nat.0 - 1)")
+        assert _records(v, "call_pre", in_measure) == ["violated/E501"]
+        assert _records(v, "call_pre", tail_call) == ["violated/E501"]
+        assert not v.ok
+        ran = _run(DEC_CALL_PRE, "loop", [3])
+        assert ran.trap_kind == "contract_violation"
+        assert "Precondition violation in pred" in ran.trap_message
+
+
+# Item 2: a guard evaluates the left disjunct first, and `3 - 5` underflows on
+# a value that satisfies the type.
+ODD3 = """\
+type Odd3 = { @Nat | @Nat.0 - 5 > 0 || @Nat.0 == 3 };
+
+public fn mk(@Nat -> @Odd3)
+  requires(@Nat.0 == 3)
+  ensures(true)
+  effects(pure)
+{
+  @Nat.0
+}
+
+public fn take(@Odd3 -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Odd3.0
+}
+"""
+
+# The same membership written so the subtraction is evaluated only where it
+# is defined: the `if` is lazy in the compiled guard.
+ODD3_GUARDED = """\
+type Odd3 = { @Nat | if @Nat.0 >= 5 then { @Nat.0 - 5 > 0 } else { @Nat.0 == 3 } };
+
+public fn mk(@Nat -> @Odd3)
+  requires(@Nat.0 == 3)
+  ensures(true)
+  effects(pure)
+{
+  @Nat.0
+}
+
+public fn take(@Odd3 -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Odd3.0
+}
+"""
+
+# `||` is NOT a guard in the compiled predicate: both operands are evaluated
+# (`i32.or`), so a left operand that decides the result does not stop the
+# right one from trapping.
+ODD3_OR_FIRST = """\
+type Odd3 = { @Nat | @Nat.0 == 3 || @Nat.0 - 5 > 0 };
+
+public fn take(@Odd3 -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Odd3.0
+}
+"""
+
+
+class TestRefinementPredicateIsObligated:
+    """Item 2: a predicate is discharged once, at its declaration."""
+
+    def test_ill_formed_predicate_is_one_error_at_the_declaration(self) -> None:
+        v = _verify(ODD3)
+        sub = _at(ODD3, "@Nat.0 - 5")
+        assert _records(v, "nat_sub", sub) == ["violated/E502"]
+        # Once: neither guard position repeats it.
+        assert [o for o in v.obligations if o.kind == "nat_sub"] == [
+            o for o in v.obligations
+            if o.kind == "nat_sub" and (o.line, o.column) == sub
+        ]
+        assert v.errors.count(("E502", *sub)) == 1
+        assert not v.ok
+
+    def test_both_guards_trap_on_a_value_the_type_admits(self) -> None:
+        assert _run(ODD3, "mk", [3]).trap_kind is not None
+        assert _run(ODD3, "take", [3]).trap_kind is not None
+        assert _run(ODD3, "take", [9]).value == 9
+
+    def test_an_if_in_the_predicate_discharges_it(self) -> None:
+        v = _verify(ODD3_GUARDED)
+        assert _records(v, "nat_sub", _at(ODD3_GUARDED, "@Nat.0 - 5")) == [
+            "verified"]
+        assert v.ok, v.errors
+        assert _run(ODD3_GUARDED, "mk", [3]).value == 3
+        assert _run(ODD3_GUARDED, "take", [3]).value == 3
+        assert _run(ODD3_GUARDED, "take", [9]).value == 9
+
+    def test_an_or_is_not_a_guard(self) -> None:
+        v = _verify(ODD3_OR_FIRST)
+        assert _records(v, "nat_sub", _at(ODD3_OR_FIRST, "@Nat.0 - 5")) == [
+            "violated/E502"]
+        assert _run(ODD3_OR_FIRST, "take", [3]).trap_kind is not None
+
+
+# A call in a predicate, with two uses of the type: its precondition is the
+# declaration's one obligation, not one per function that reads the type.
+PRED_CALL_TWO_USES = """\
+private fn need_pos(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+
+type T = { @Int | need_pos(@Int.0) > 0 };
+
+public fn take(@T -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @T.0
+}
+
+public fn also(@T -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @T.0
+}
+"""
+
+
+def test_a_call_in_a_predicate_is_one_obligation_not_one_per_use() -> None:
+    v = _verify(PRED_CALL_TWO_USES)
+    call = _at(PRED_CALL_TWO_USES, "need_pos(@Int.0) > 0")
+    assert _records(v, "call_pre", call) == ["violated/E501"]
+    assert v.errors.count(("E501", *call)) == 1
+    assert _run(PRED_CALL_TWO_USES, "take", [-3]).trap_kind is not None
+
+
+# Item 3: the index check code generation emits, with nothing behind it.
+CHAR_CODE = """\
+public fn c3(@Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  string_char_code("abc", @Int.0)
+}
+"""
+
+CHAR_CODE_BOUNDED = """\
+public fn c3(@Int -> @Nat)
+  requires(@Int.0 >= 0 && @Int.0 < 3)
+  ensures(true)
+  effects(pure)
+{
+  string_char_code("abc", @Int.0)
+}
+"""
+
+
+class TestBuiltinDomainIsObligated:
+    """Item 3: a trapping built-in declares its domain as a precondition."""
+
+    def test_unbounded_index_is_e501(self) -> None:
+        v = _verify(CHAR_CODE)
+        call = _at(CHAR_CODE, 'string_char_code("abc", @Int.0)')
+        assert _records(v, "call_pre", call) == ["violated/E501"]
+        assert ("E501", *call) in v.errors
+        assert _run(CHAR_CODE, "c3", [7]).trap_kind is not None
+        assert _run(CHAR_CODE, "c3", [-1]).trap_kind is not None
+
+    def test_bounded_index_is_proved_and_recorded(self) -> None:
+        v = _verify(CHAR_CODE_BOUNDED)
+        call = _at(CHAR_CODE_BOUNDED, 'string_char_code("abc", @Int.0)')
+        assert _records(v, "call_pre", call) == ["verified"]
+        assert v.ok, v.errors
+        assert _run(CHAR_CODE_BOUNDED, "c3", [1]).value == 98
+
+
+# =====================================================================
+# Contract predicates: the walks #801 did not extend
+# =====================================================================
+
+
+ENSURES_CALL_PRE = """\
+public fn pred(@Nat -> @Nat)
+  requires(@Nat.0 > 0)
+  ensures(true)
+  effects(pure)
+{
+  @Nat.0 - 1
+}
+
+public fn f(@Nat -> @Nat)
+  requires(true)
+  ensures(pred(@Nat.result) >= 0)
+  effects(pure)
+{
+  @Nat.0
+}
+"""
+
+REQUIRES_NARROWING = """\
+public fn g(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Nat.0
+}
+
+public fn f(@Int -> @Int)
+  requires(g(@Int.0) >= 0)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+"""
+
+ENSURES_NARROWING = """\
+public fn g(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Nat.0
+}
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(g(@Int.result) >= 0)
+  effects(pure)
+{
+  @Int.0
+}
+"""
+
+
+class TestContractPredicates:
+    """A call precondition and an `@Int`->`@Nat` narrowing in a contract."""
+
+    def test_call_precondition_in_ensures(self) -> None:
+        v = _verify(ENSURES_CALL_PRE)
+        call = _at(ENSURES_CALL_PRE, "pred(@Nat.result)")
+        assert _records(v, "call_pre", call) == ["violated/E501"]
+        assert not v.ok
+        ran = _run(ENSURES_CALL_PRE, "f", [0])
+        assert "Precondition violation in pred" in ran.trap_message
+
+    def test_narrowing_in_requires(self) -> None:
+        v = _verify(REQUIRES_NARROWING)
+        arg = _at(REQUIRES_NARROWING, "@Int.0) >= 0")
+        assert _records(v, "nat_bind", arg) == ["violated/E503"]
+        assert not v.ok
+        assert _run(REQUIRES_NARROWING, "f", [-3]).trap_kind is not None
+
+    def test_narrowing_in_ensures(self) -> None:
+        v = _verify(ENSURES_NARROWING)
+        arg = _at(ENSURES_NARROWING, "@Int.result) >= 0")
+        assert _records(v, "nat_bind", arg) == ["violated/E503"]
+        assert not v.ok
+        assert _run(ENSURES_NARROWING, "f", [-3]).trap_kind is not None
+
+
+# Two call-site preconditions at one tail call, spelled alike: the recursive
+# call's own, and the precondition of the call its measure makes there.  They
+# are two obligations, so they are two records — matched by text rather than
+# by the precondition itself, the second was taken for the first.
+SAME_TEXT_AT_A_TAIL_CALL = """\
+private fn need_pos(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+
+public fn f(@Int, @Nat -> @Nat)
+  requires(@Int.0 > 0)
+  ensures(true)
+  decreases(@Nat.0, need_pos(@Int.0))
+  effects(pure)
+{
+  if @Nat.0 == 0 then { 0 } else { f(-3, @Nat.0 - 1) }
+}
+"""
+
+
+def test_two_preconditions_spelled_alike_at_one_call_are_two() -> None:
+    v = _verify(SAME_TEXT_AT_A_TAIL_CALL)
+    call = _at(SAME_TEXT_AT_A_TAIL_CALL, "f(-3, @Nat.0 - 1)")
+    assert _records(v, "call_pre", call) == ["violated/E501", "violated/E501"]
+    ran = _run(SAME_TEXT_AT_A_TAIL_CALL, "f", [1, 1])
+    # The measure is evaluated on the arguments first, so it is
+    # `need_pos`'s precondition that stops the hop, not `f`'s.
+    assert "Precondition violation in need_pos" in ran.trap_message
+
+
+# A predicate is checked where it is declared, whatever the declaration.
+DECLARATION_POSITIONS = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+type OverPos = { @Pos | 10 / @Pos.0 > 0 };
+
+type Unused = { @Nat | @Nat.0 - 1 >= 0 };
+
+private data Box {
+  MkBox({ @Int | 10 / @Int.0 > 0 })
+}
+
+effect Log {
+  op log({ @Nat | @Nat.0 - 2 >= 0 } -> Unit);
+}
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @{ @Int | 100 / @Int.0 > 0 } = 5;
+  @Int.0
+}
+"""
+
+
+class TestDeclarationPositions:
+    """Every place a refinement can be written is a declaration checked."""
+
+    def test_a_refinement_over_a_refinement_assumes_its_base(self) -> None:
+        # `@Pos.0 > 0` is a fact of the base type, so the division is safe.
+        v = _verify(DECLARATION_POSITIONS)
+        assert _records(v, "div_zero",
+                        _at(DECLARATION_POSITIONS, "10 / @Pos.0")) == [
+            "verified"]
+
+    def test_a_call_in_the_predicate_is_checked_under_the_base(self) -> None:
+        """A call's precondition is checked as the SMT layer translates the
+        call, against what the solver holds, so the base type's facts have
+        to be IN it: `need_pos(@Pos.0)` holds because `@Pos.0 > 0` does."""
+        source = _NEED_POS + (
+            "\ntype Pos = { @Int | @Int.0 > 0 };\n\n"
+            "type NeedsPos = { @Pos | need_pos(@Pos.0) > 0 };\n")
+        v = _verify(source)
+        assert v.ok, v.errors
+        assert not [o for o in v.obligations if o.kind == "call_pre"]
+
+    def test_a_type_used_nowhere_is_checked(self) -> None:
+        v = _verify(DECLARATION_POSITIONS)
+        assert _records(v, "nat_sub",
+                        _at(DECLARATION_POSITIONS, "@Nat.0 - 1")) == [
+            "violated/E502"]
+
+    @pytest.mark.parametrize(("kind", "needle", "code"), [
+        ("div_zero", "10 / @Int.0", "E526"),        # a constructor field
+        ("nat_sub", "@Nat.0 - 2", "E502"),          # an operation's formal
+        ("div_zero", "100 / @Int.0", "E526"),       # a `let` annotation
+    ])
+    def test_a_refinement_written_inline(
+        self, kind: str, needle: str, code: str,
+    ) -> None:
+        v = _verify(DECLARATION_POSITIONS)
+        where = _at(DECLARATION_POSITIONS, needle)
+        assert _records(v, kind, where) == [f"violated/{code}"]
+        assert (code, *where) in v.errors
+
+
+@pytest.mark.parametrize("source", [COUNT_TO_FIXED, ODD3_GUARDED,
+                                    CHAR_CODE_BOUNDED])
+def test_fixed_forms_are_verify_clean(source: str) -> None:
+    """The corrected forms carry no error: the fix is not a blanket refusal."""
+    assert _verify(source).ok
+
+
+# =====================================================================
+# The matrix: every evaluated position x every trapping operation
+# =====================================================================
+#
+# Axis 1, the OPERATIONS a compiled check traps on (`_OPS`), each written
+# over a value `{v}` of its base type, with the domain it is defined on, a
+# value inside it, and one outside it that the base type still admits.
+#
+# Axis 2, the POSITIONS code generation evaluates an expression in
+# (`_POSITIONS`), enumerated from its evaluation roots and held to them by
+# `test_every_evaluation_root_is_a_position`.  The refinement predicate is one
+# root reached from every guard position, so its cells are crossed with the
+# guard routes `test_boundary_guard_correctness_1466` holds to
+# `binders.GUARD_SITES`.
+#
+# Each cell names a status and asserts both halves of the claim: the record
+# (the obligation exists, at the operation, with that status and code) and
+# the run (a `verified` cell never traps on an input its premises admit; a
+# `violated` or `tier3` cell traps on a violating one).  No cell is excused:
+# the matrix has no xfail.
+
+_NEED_POS = """
+private fn need_pos(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+"""
+
+_NAT_ID = """
+private fn nat_id(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Nat.0
+}
+"""
+
+# An array whose length the verifier knows, from a call: code generation does
+# not infer the element type of an array LITERAL indexed in place (E602).
+_ARR3 = """
+private fn arr3(@Unit -> @Array<Int>)
+  requires(true)
+  ensures(array_length(@Array<Int>.result) == 3)
+  effects(pure)
+{
+  [1, 2, 3]
+}
+"""
+
+_FLOAT_DOMAIN = (
+    "!float_is_nan({v}) && {v} < 1000000.0 && {v} > 0.0 - 1000000.0"
+)
+
+
+@dataclass(frozen=True)
+class Op:
+    """One trapping operation, written over a value ``{v}`` of *base*."""
+
+    name: str
+    #: The obligation kind the operation is recorded under, and its code
+    #: when refuted.
+    kind: str
+    code: str
+    base: str
+    #: A value-producing expression over ``{v}`` that performs it.
+    value: str
+    #: Over ``{v}``: the values it is defined on.
+    domain: str
+    #: Literals inside and outside that domain, and the same values as
+    #: arguments to a compiled function.  A negative is spelled `-3`, never
+    #: `0 - 3`: the pure-literal subtraction types as `@Nat`, and a tuple
+    #: component or a `Map` value then widens it as a `@Nat` above
+    #: i64.MAX — a trap of its own that would stand in for the cell's.
+    good: str
+    bad: str
+    good_arg: int | float
+    bad_arg: int | float
+    #: How an operand no premise bounds is recorded: ``violated`` for a
+    #: kind discharged by one check, ``tier3`` for a two-check kind or a
+    #: concrete-gated conversion.
+    unbounded: str
+    #: A premise over ``{v}`` under which it provably traps, for a kind
+    #: refuted only when that is provable.
+    provably_bad: str = ""
+    #: Where the obligation sits inside ``value``: a narrowing is located
+    #: at its argument, everything else at the operation.
+    offset: int = 0
+    helpers: str = ""
+    #: The float conversions decide a CONCRETE argument and leave a
+    #: symbolic one to the trap, whatever the premises (#807).
+    concrete_only: bool = False
+    #: The precondition text a `call_pre` obligation carries, to tell it
+    #: from another at the same site.
+    pre_text: str = ""
+    #: Whether a DISCHARGED obligation is recorded.  Phase A records a user
+    #: callee's precondition only when it is not discharged — its check is
+    #: in the callee's prologue, whose own `requires` record stands for it —
+    #: so a `verified` cell of that kind asserts the record ABSENT, and its
+    #: `violated` twin is what shows the walk reaches the position.  A
+    #: built-in's domain is checked inline at the call and IS recorded.
+    records_discharge: bool = True
+
+    def statuses(self) -> tuple[str, ...]:
+        if self.unbounded == "violated":
+            return ("verified", "violated")
+        return ("verified", "violated", "tier3")
+
+
+_OPS: tuple[Op, ...] = (
+    Op("nat_sub", "nat_sub", "E502", "Nat", "{v} - 5", "{v} >= 5",
+       "7", "3", 7, 3, "violated"),
+    Op("div", "div_zero", "E526", "Int", "10 / {v}", "{v} != 0",
+       "2", "0", 2, 0, "violated"),
+    Op("mod", "div_zero", "E526", "Int", "10 % {v}", "{v} != 0",
+       "3", "0", 3, 0, "violated"),
+    Op("index", "index_bounds", "E527", "Int", "arr3(())[{v}]",
+       "{v} >= 0 && {v} < 3", "1", "5", 1, 5, "tier3",
+       provably_bad="{v} == 5", helpers=_ARR3),
+    Op("overflow", "int_overflow", "E528", "Int",
+       "9223372036854775807 + {v}", "{v} >= 0 - 100 && {v} <= 0",
+       "0", "1", 0, 1, "tier3", provably_bad="{v} == 1"),
+    Op("call_pre", "call_pre", "E501", "Int", "need_pos({v})", "{v} >= 1",
+       "2", "-3", 2, -3, "violated", helpers=_NEED_POS,
+       pre_text="@Int.0 > 0", records_discharge=False),
+    Op("nat_bind", "nat_bind", "E503", "Int", "nat_id({v})", "{v} >= 0",
+       "2", "-3", 2, -3, "violated", offset=len("nat_id("),
+       helpers=_NAT_ID),
+    Op("string_char_code", "call_pre", "E501", "Int",
+       'string_char_code("abc", {v})', "{v} >= 0 && {v} < 3",
+       "1", "7", 1, 7, "violated",
+       pre_text="@Int.0 >= 0 && @Int.0 < string_length(@String.0)"),
+    *(
+        Op(name, "float_to_int_domain", "E529", "Float64",
+           f"{name}({{v}})", _FLOAT_DOMAIN, "1.5", "nan()",
+           1.5, float("nan"), "tier3", concrete_only=True)
+        for name in ("float_to_int", "floor", "ceil", "round")
+    ),
+    # Rendering a `@Float64` as text truncates its integer part with the
+    # same instruction: `float_to_string`, and the `show` and the
+    # interpolated part that lower to it.  NaN and the infinities render;
+    # a finite magnitude of 2^63 or more traps.
+    *(
+        Op(name, "float_to_int_domain", "E529", "Float64", value,
+           _FLOAT_DOMAIN, "1.5", "10000000000000000000.0", 1.5, 1e19,
+           "tier3", offset=offset, concrete_only=True)
+        for name, value, offset in (
+            ("float_to_string", "string_length(float_to_string({v}))",
+             len("string_length(")),
+            ("show", "string_length(show({v}))", len("string_length(")),
+            ("interpolation", 'string_length("\\({v})")',
+             len('string_length("\\(')),
+        )
+    ),
+)
+
+
+def _variant(op: Op, status: str) -> tuple[str, str, str, int | float]:
+    """(premise, value, input literal, input argument) for one status.
+
+    The premise is what the position's facts establish about ``{v}``; the
+    input is a value those facts admit, chosen so that a cell which should
+    trap does so and one which should not is tested where it could.
+    """
+    if op.concrete_only:
+        if status == "verified":
+            return ("true", op.value.format(v=op.good), op.good, op.good_arg)
+        if status == "violated":
+            return ("true", op.value.format(v=op.bad), op.good, op.good_arg)
+        return ("true", op.value, op.bad, op.bad_arg)
+    if status == "verified":
+        return (op.domain, op.value, op.good, op.good_arg)
+    if status == "violated" and op.unbounded == "violated":
+        return ("true", op.value, op.bad, op.bad_arg)
+    if status == "violated":
+        return (op.provably_bad, op.value, op.bad, op.bad_arg)
+    return ("true", op.value, op.bad, op.bad_arg)
+
+
+@dataclass(frozen=True)
+class Cell:
+    """One program, the record it must produce, and the run it must make."""
+
+    source: str
+    kind: str
+    status: str
+    code: str
+    #: Where the record is located: the text it starts at, the occurrence,
+    #: and an offset into that text.
+    at: str
+    at_occurrence: int = 0
+    at_offset: int = 0
+    pre_text: str = ""
+    fn: str = "f"
+    args: tuple[int | float, ...] = ()
+    #: `None`: the run returns.  Otherwise a predicate over the trap.
+    trap: object | None = None
+    #: Further (kind, status-or-None, text-at) assertions: `None` status
+    #: means no record of that kind may be located there.
+    also: tuple[tuple[str, str | None, str], ...] = ()
+    #: See `Op.records_discharge`.
+    absent_when_discharged: bool = False
+
+
+def _slot(op: Op, position: str) -> str:
+    # The ensures cell reads the PARAMETER, not `@T.result`: a `@Nat`
+    # subtraction on the result is neither guarded nor obligated (both sides
+    # agree it is not a `@Nat` subtraction), so it is no trapping operation.
+    if op.base == "Nat" and position.startswith("measure"):
+        return "@Nat.1"
+    return f"@{op.base}.0"
+
+
+def _any_trap(ran: Ran) -> bool:
+    return ran.trap_kind is not None
+
+
+def _not_the_callers_precondition(ran: Ran) -> bool:
+    """The trap is the measure's own, not `f`'s precondition: a tail call
+    evaluates the measure on its arguments BEFORE the callee checks its
+    `requires`."""
+    return (ran.trap_kind is not None
+            and "Precondition violation in f(" not in ran.trap_message)
+
+
+def _the_callers_precondition(ran: Ran) -> bool:
+    """The callee's `requires` stopped it: a non-tail call evaluates the
+    measure on the callee's entry, after its `requires` is checked."""
+    return "Precondition violation in f(" in ran.trap_message
+
+
+def _cell_body(op: Op, status: str) -> Cell:
+    premise, value, _lit, arg = _variant(op, status)
+    v = _slot(op, "body")
+    val = value.format(v=v)
+    src = op.helpers + f"""
+public fn f(@{op.base} -> @Bool)
+  requires({premise.format(v=v)})
+  ensures(true)
+  effects(pure)
+{{
+  {val} >= 0 || true
+}}
+"""
+    return Cell(src, op.kind, status, op.code, at=val, at_offset=op.offset,
+                pre_text=op.pre_text, args=(arg,),
+                trap=None if status == "verified" else _any_trap)
+
+
+def _cell_requires(op: Op, status: str) -> Cell:
+    premise, value, _lit, arg = _variant(op, status)
+    v = _slot(op, "requires")
+    val = value.format(v=v)
+    src = op.helpers + f"""
+public fn f(@{op.base} -> @Int)
+  requires({premise.format(v=v)})
+  requires({val} >= 0 || true)
+  ensures(true)
+  effects(pure)
+{{
+  0
+}}
+"""
+    return Cell(src, op.kind, status, op.code, at=val, at_offset=op.offset,
+                pre_text=op.pre_text, args=(arg,),
+                trap=None if status == "verified" else _any_trap)
+
+
+def _cell_ensures(op: Op, status: str) -> Cell:
+    premise, value, _lit, arg = _variant(op, status)
+    p = _slot(op, "body")
+    val = value.format(v=_slot(op, "ensures"))
+    src = op.helpers + f"""
+public fn f(@{op.base} -> @{op.base})
+  requires({premise.format(v=p)})
+  ensures({val} >= 0 || true)
+  effects(pure)
+{{
+  {p}
+}}
+"""
+    return Cell(src, op.kind, status, op.code, at=val, at_offset=op.offset,
+                pre_text=op.pre_text, args=(arg,),
+                trap=None if status == "verified" else _any_trap)
+
+
+def _measure_fn(op: Op, premise: str, val: str, call: str,
+                ret: str = "@Nat") -> str:
+    return op.helpers + f"""
+public fn f(@{op.base}, @Nat -> {ret})
+  requires({premise})
+  ensures(true)
+  decreases(@Nat.0, {val})
+  effects(pure)
+{{
+  if @Nat.0 == 0 then {{ 0 }} else {{ {call} }}
+}}
+"""
+
+
+def _cell_measure_entry(op: Op, status: str) -> Cell:
+    premise, value, _lit, arg = _variant(op, status)
+    v = _slot(op, "measure")
+    val = value.format(v=v)
+    src = _measure_fn(op, premise.format(v=v), val, f"f({v}, @Nat.0 - 1)")
+    return Cell(src, op.kind, status, op.code, at=val, at_offset=op.offset,
+                pre_text=op.pre_text, args=(arg, 0),
+                trap=None if status == "verified" else _any_trap)
+
+
+def _cell_measure_tail(op: Op, status: str) -> Cell:
+    """The measure on a tail call's arguments.  The `violated` cell passes a
+    value outside the domain to a callee whose entry measure is proved: the
+    site is the one evaluation that traps, and it traps before the callee's
+    `requires` could."""
+    v = _slot(op, "measure")
+    if status == "violated":
+        val = op.value.format(v=v)
+        call = f"f({op.bad}, @Nat.0 - 1)"
+        src = _measure_fn(op, op.domain.format(v=v), val, call)
+        return Cell(src, op.kind, status, op.code, at=call,
+                    pre_text=op.pre_text, args=(op.good_arg, 1),
+                    trap=_not_the_callers_precondition)
+    premise, value, _lit, arg = _variant(op, status)
+    val = value.format(v=v)
+    call = f"f({v}, @Nat.0 - 1)"
+    src = _measure_fn(op, premise.format(v=v), val, call)
+    return Cell(src, op.kind, status, op.code, at=call,
+                pre_text=op.pre_text,
+                args=(arg, 0 if status != "verified" else 2),
+                trap=None if status == "verified" else _any_trap)
+
+
+def _cell_measure_nontail(op: Op, status: str) -> Cell:
+    """The measure where a NON-tail call's arguments land: evaluated on the
+    callee's entry, after its `requires`.  Nothing is obligated at the call,
+    and a value outside the domain is stopped by the callee's precondition
+    before its measure is evaluated."""
+    v = _slot(op, "measure")
+    val = op.value.format(v=v)
+    call = f"1 + f({op.bad}, @Nat.0 - 1)"
+    src = _measure_fn(op, op.domain.format(v=v), val, call, ret="@Int")
+    entry = "tier3" if op.concrete_only else "verified"
+    return Cell(src, op.kind, entry, op.code, at=val, at_offset=op.offset,
+                pre_text=op.pre_text, args=(op.good_arg, 1),
+                trap=_the_callers_precondition,
+                also=((op.kind, None, f"f({op.bad}, @Nat.0 - 1)"),))
+
+
+#: The positions, each the verifier-side name of one evaluation root of code
+#: generation (`_ROOTS` below maps every root to one of these).
+_POSITIONS: dict[str, tuple[object, tuple[str, ...] | None]] = {
+    "body": (_cell_body, None),
+    "requires": (_cell_requires, None),
+    "ensures": (_cell_ensures, None),
+    "measure at entry": (_cell_measure_entry, None),
+    "measure at a tail call": (_cell_measure_tail, None),
+    "measure at a non-tail call": (_cell_measure_nontail, ("verified",)),
+}
+
+
+def _plain_cells() -> list[object]:
+    cells = []
+    for position, (build, only) in _POSITIONS.items():
+        for op in _OPS:
+            for status in (only or op.statuses()):
+                cells.append(pytest.param(
+                    position, op, status,
+                    id=f"{position}|{op.name}|{status}"))
+    return cells
+
+
+def _record_matches(v: Verified, cell_kind: str, where: tuple[int, int],
+                    pre_text: str) -> list[str]:
+    return sorted(
+        f"{o.status}/{o.error_code}" if o.error_code else o.status
+        for o in v.obligations
+        if o.kind == cell_kind and (o.line, o.column) == where
+        and (not pre_text or o.expr_text == pre_text)
+    )
+
+
+def _check_cell(cell: Cell) -> Verified:
+    v = _verify(cell.source)
+    line, col = _at(cell.source, cell.at, cell.at_occurrence)
+    where = (line, col + cell.at_offset)
+    want = (f"{cell.status}/{cell.code}" if cell.status == "violated"
+            else cell.status)
+    expected = [] if cell.absent_when_discharged and want == "verified" \
+        else [want]
+    got = _record_matches(v, cell.kind, where, cell.pre_text)
+    assert got == expected, (
+        f"record at {where}: expected [{want}], got {got}\n"
+        f"all: {[(o.kind, o.status, o.error_code, o.line, o.column) for o in v.obligations]}\n"
+        f"{cell.source}"
+    )
+    if cell.status == "violated":
+        assert (cell.code, *where) in v.errors, (cell.code, where, v.errors)
+    for kind, status, text in cell.also:
+        also_at = _at(cell.source, text)
+        also_got = _record_matches(v, kind, also_at, cell.pre_text)
+        assert also_got == ([] if status is None else [status]), (
+            kind, text, also_got)
+    ran = _run(cell.source, cell.fn, list(cell.args))
+    if cell.trap is None:
+        assert ran.trap_kind is None, (
+            f"a {cell.status} cell trapped on an admitted input: "
+            f"{ran.trap_kind}: {ran.trap_message}\n{cell.source}")
+    else:
+        assert cell.trap(ran), (
+            f"expected the run to trap as the record says; got "
+            f"{ran.value!r} / {ran.trap_kind}: {ran.trap_message}\n"
+            f"{cell.source}")
+    return v
+
+
+@pytest.mark.parametrize(("position", "op", "status"), _plain_cells())
+def test_plain_position_cell(position: str, op: Op, status: str) -> None:
+    build, _only = _POSITIONS[position]
+    cell = build(op, status)  # type: ignore[operator]
+    _check_cell(replace(cell,
+                        absent_when_discharged=not op.records_discharge))
+
+
+# ---------------------------------------------------------------------
+# The refinement predicate, at every guard position
+# ---------------------------------------------------------------------
+#
+# One evaluation root (`_emit_refinement_check`) reached from every position
+# a §2.6.5 guard is planted at.  The positions are the routes the #1466
+# instrument holds to `binders.GUARD_SITES`, so a guard position added there
+# is added here.  The predicate is obligated ONCE, at the `type R` line, and
+# the cells assert that: a record there with the cell's status, and none of
+# the operation's kind anywhere else — whatever the route, the obligation is
+# the declaration's.
+
+from tests.test_boundary_guard_correctness_1466 import (  # noqa: E402
+    _ALL_ROUTES,
+    _Instance,
+)
+
+
+def _predicate_cell(op: Op, status: str, route: object) -> Cell:
+    premise, value, _lit, _arg = _variant(op, status)
+    b = f"@{op.base}.0"
+    probe = f"{value.format(v=b)} >= 0 || true"
+    predicate = (
+        probe if premise == "true"
+        else f"if {premise.format(v=b)} then {{ {probe} }} else {{ true }}"
+    )
+    decls = f"type R = {{ @{op.base} | {predicate} }};\n" + op.helpers
+    # The value the guard is handed.  Outside the domain in every cell: a
+    # `verified` predicate must accept it (its `if` keeps the operation from
+    # being evaluated), and a `violated` or `tier3` one must trap on it.
+    x = _Instance(decls, op.bad, op.base, op.good)
+    source = route.build(x)  # type: ignore[attr-defined]
+    return Cell(source, op.kind, status, op.code,
+                at=value.format(v=b), at_offset=op.offset,
+                pre_text=op.pre_text,
+                trap=None if status == "verified" else _any_trap,
+                absent_when_discharged=not op.records_discharge)
+
+
+def _route_cells() -> list[object]:
+    cells = []
+    for position, routes in _ALL_ROUTES.items():
+        for route in routes:
+            for op in _OPS:
+                for status in op.statuses():
+                    name = f"{position}[{route.name}]" if route.name \
+                        else position
+                    cells.append(pytest.param(
+                        op, status, route,
+                        id=f"predicate at {name}|{op.name}|{status}"))
+    return cells
+
+
+def _check_predicate_cell(cell: Cell) -> None:
+    v = _check_cell(cell)
+    decl_line = _at(cell.source, "type R")[0]
+    stray = [
+        (o.kind, o.status, o.line, o.column) for o in v.obligations
+        if o.kind == cell.kind and o.line != decl_line
+        and (not cell.pre_text or o.expr_text == cell.pre_text)
+    ]
+    assert not stray, (
+        f"the predicate's obligation was repeated at a use site: {stray}")
+
+
+@pytest.mark.parametrize(("op", "status", "route"), _route_cells())
+def test_predicate_cell(op: Op, status: str, route: object) -> None:
+    _check_predicate_cell(_predicate_cell(op, status, route))
+
+
+# ---------------------------------------------------------------------
+# The positions are code generation's evaluation roots
+# ---------------------------------------------------------------------
+
+import ast as _pyast  # noqa: E402
+
+from tests import guard_emitter_scan  # noqa: E402
+from vera import binders  # noqa: E402
+from vera.builtin_domains import BUILTIN_DOMAINS  # noqa: E402
+
+#: Every place code generation hands a SOURCE expression to the translator —
+#: an evaluation root — and the matrix position it is.  Everything the
+#: compiled program evaluates is reached from one of these (the translator
+#: recurses from there), so a root with no position is an evaluated
+#: expression no walk is held to, which is the class #1480 is.
+_ROOTS: dict[tuple[str, str, str], str] = {
+    ("functions.py", "_compile_fn", "decl.body"): "body",
+    # A closure body is walked by the body walks' fresh-scope descent (#779).
+    ("closures.py", "_compile_lifted_closure", "anon_fn.body"): "body",
+    ("contracts.py", "_compile_preconditions", "contract.expr"): "requires",
+    ("contracts.py", "_compile_postconditions", "ensures.expr"): "ensures",
+    ("contracts.py", "_dec_translate_measure", "expr"): "measure",
+    # The range check where the chain guard is declined (#1222).
+    ("contracts.py", "_dec_bound_checks_only", "contract.exprs[k]"):
+        "measure at entry",
+    ("contracts.py", "_emit_refinement_check", "predicate"):
+        "refinement predicate",
+}
+
+#: `_dec_translate_measure` is reached from two places, which are two
+#: positions: the entry check, and a self-recursive tail call's site check.
+#: A NON-tail call reaches the callee's entry check, after its `requires` —
+#: the matrix's "measure at a non-tail call" position is that root, reached
+#: that way.
+_MEASURE_CALLERS: dict[str, str] = {
+    "_compile_decreases_entry": "measure at entry",
+    "_dec_self_tail_prefix": "measure at a tail call",
+}
+
+
+def _codegen_calls(method: str, receiver: str) -> set[tuple[str, str, str]]:
+    """``(file, enclosing function, first argument)`` of every call to
+    ``<receiver>.<method>`` in the code-generation layer, enumerated as
+    `guard_emitter_scan` enumerates it."""
+    found: set[tuple[str, str, str]] = set()
+    for path in guard_emitter_scan.codegen_sources():
+        tree = _pyast.parse(path.read_text(encoding="utf-8"))
+        for fn in _pyast.walk(tree):
+            if not isinstance(fn, (_pyast.FunctionDef,
+                                   _pyast.AsyncFunctionDef)):
+                continue
+            for node in _pyast.walk(fn):
+                if (isinstance(node, _pyast.Call)
+                        and isinstance(node.func, _pyast.Attribute)
+                        and node.func.attr == method
+                        and isinstance(node.func.value, _pyast.Name)
+                        and node.func.value.id == receiver):
+                    first = (_pyast.unparse(node.args[0])
+                             if node.args else "")
+                    found.add((path.name, fn.name, first))
+    return found
+
+
+def test_every_evaluation_root_is_a_position() -> None:
+    """The roster above IS code generation's set of roots, both ways.
+
+    A root added to code generation without a position here reddens this
+    cell, and so does a roster entry whose root is gone.
+    """
+    found = (_codegen_calls("translate_expr", "ctx")
+             | _codegen_calls("translate_block", "ctx"))
+    assert found == set(_ROOTS), (
+        f"unrostered roots: {sorted(found - set(_ROOTS))}; "
+        f"stale entries: {sorted(set(_ROOTS) - found)}")
+    callers = {fn for _f, fn, _a in _codegen_calls(
+        "_dec_translate_measure", "self")}
+    assert callers == set(_MEASURE_CALLERS), callers
+
+
+def test_every_position_is_reached_from_a_root() -> None:
+    """Each position the matrix crosses is an evaluation root, and each
+    root's position is one the matrix crosses."""
+    positions = {p for p in _ROOTS.values() if p != "measure"} | set(
+        _MEASURE_CALLERS.values())
+    crossed = (set(_POSITIONS) - {"measure at a non-tail call"}) | {
+        "refinement predicate"}
+    assert positions == crossed, (positions ^ crossed)
+
+
+def test_the_predicate_is_crossed_with_every_guard_position() -> None:
+    """The refinement-predicate root is reached from every guard position,
+    and the routes this file borrows cover `binders.GUARD_SITES`."""
+    assert set(binders.GUARD_SITES) <= set(_ALL_ROUTES)
+
+
+def test_every_declared_domain_is_an_operation() -> None:
+    """A built-in given a domain has a row on the operation axis.
+
+    The axis reads what the compiler declares, so a domain added to
+    `vera.builtin_domains` without a matrix row reddens here.
+    """
+    ops = {op.name for op in _OPS}
+    declared = {d.name for d in BUILTIN_DOMAINS}
+    assert declared <= ops, declared - ops
+    from vera.verifier import _FLOAT_CONVERSIONS
+    assert set(_FLOAT_CONVERSIONS) <= ops, set(_FLOAT_CONVERSIONS) - ops
