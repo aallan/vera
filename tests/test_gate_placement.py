@@ -130,12 +130,22 @@ def _command(line: str) -> list[str]:
 
 
 def _runs_pytest(entry: str) -> list[str] | None:
-    """The arguments of a command whose command word is pytest, or None.
+    """The arguments of a command that runs pytest, or None.
 
-    The command word, not any token: `echo pytest` runs no tests."""
+    Pytest as the command word (`pytest`, `.venv/bin/pytest`) or as the
+    module a Python runs (`python -m pytest`, `.venv/bin/python3 -X dev -m
+    pytest`).  The command word, not any token: `echo pytest` runs no
+    tests."""
     tokens = _command(entry)
-    if tokens and (tokens[0] == "pytest" or tokens[0].endswith("/pytest")):
+    if not tokens:
+        return None
+    word = tokens[0].rsplit("/", 1)[-1]
+    if word in ("pytest", "py.test"):
         return tokens[1:]
+    if re.fullmatch(r"python[\d.]*", word):
+        for index in range(1, len(tokens) - 1):
+            if tokens[index] == "-m":
+                return tokens[index + 2:] if tokens[index + 1] == "pytest" else None
     return None
 
 
@@ -228,30 +238,33 @@ def evaluate(expr: str, context: dict[str, object]) -> object:
             return context.get(text)
         raise SyntaxError(f"unexpected {text!r} in {expr!r}")
 
-    def comparison() -> object:
-        nonlocal pos
-        left = atom()
-        token = peek()
-        if token in (("op", "=="), ("op", "!=")):
-            pos += 1
-            right = atom()
-            same = equal(left, right)
-            return same if token == ("op", "==") else not same
-        return left
-
+    # Precedence as Actions defines it: `!` binds tighter than `==` and
+    # `!=`, which bind tighter than `&&`, then `||`.  So `!a != 'y'` is
+    # `(!a) != 'y'`.
     def negation() -> object:
         nonlocal pos
         if peek() == ("op", "!"):
             pos += 1
             return not truthy(negation())
-        return comparison()
+        return atom()
+
+    def comparison() -> object:
+        nonlocal pos
+        left = negation()
+        token = peek()
+        if token in (("op", "=="), ("op", "!=")):
+            pos += 1
+            right = negation()
+            same = equal(left, right)
+            return same if token == ("op", "==") else not same
+        return left
 
     def conjunction() -> object:
         nonlocal pos
-        value = negation()
+        value = comparison()
         while peek() == ("op", "&&"):
             pos += 1
-            right = negation()
+            right = comparison()
             value = right if truthy(value) else value
         return value
 
@@ -422,6 +435,9 @@ class TestTheEvaluator:
             ("always()", {}, True),
             ("success() && a == 'x'", {"a": "x"}, True),
             ("failure() || cancelled()", {}, False),
+            ("!a != 'y'", {"a": "x"}, True),
+            ("!(a != 'y')", {"a": "x"}, False),
+            ("!a == false", {"a": "x"}, True),
         ],
     )
     def test_it_evaluates(
@@ -443,6 +459,27 @@ class TestTheEvaluator:
 
 
 class TestThePreCommitHookIsFast:
+    @pytest.mark.parametrize(
+        ("entry", "args"),
+        [
+            ("pytest -q", ["-q"]),
+            (".venv/bin/pytest tests/ -q", ["tests/", "-q"]),
+            ("python -m pytest tests/", ["tests/"]),
+            (".venv/bin/python3.12 -m pytest -q", ["-q"]),
+            ("python -X dev -m pytest .", ["."]),
+            ("env VERA_EAGER_GC=1 .venv/bin/python -m pytest", []),
+            ("echo pytest", None),
+            ("python scripts/check_conformance.py", None),
+            ("python -m mypy vera/", None),
+        ],
+    )
+    def test_every_spelling_of_pytest_is_recognised(
+        self, entry: str, args: list[str] | None
+    ) -> None:
+        """A pytest invocation the reader missed would be skipped by the
+        whole-suite check below, so each spelling is pinned."""
+        assert _runs_pytest(entry) == args
+
     def test_the_hook_set_is_pinned(self) -> None:
         hooks = _hooks()
         assert [hook["id"] for hook in hooks] == [*COMMIT_STAGE, *PUSH_STAGE]
