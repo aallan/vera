@@ -1378,6 +1378,18 @@ class TestTypecheckFile:
 # =====================================================================
 
 
+# One program per way `vera verify` stops before verifying: an import nothing
+# resolves, a bare or module-qualified call to nothing, and a type error.  Each
+# is (imports, body) of a function with a contract, so a verify_file that went
+# on past the error would report obligations for it.
+_VERIFY_REFUSED: dict[str, tuple[str, str]] = {
+    "unresolved_import": ("import nosuch(g);\n\n", "1"),
+    "unresolved_call": ("", "no_such_fn(1)"),
+    "unresolved_module_call": ("", "nomod::g(1)"),
+    "type_error": ("", "true"),
+}
+
+
 class TestVerifyFile:
     """Tests for the verify_file convenience function."""
 
@@ -1407,4 +1419,63 @@ class TestVerifyFile:
         )
         result = verify_file(str(src))
         assert result.summary is not None
+        assert result.summary.total > 0
+
+    @staticmethod
+    def _vera_verify_errors(path: Path) -> list[str]:
+        """The error codes `vera verify --json` stops with, run in process."""
+        import contextlib
+        import io
+        import json
+
+        from vera.cli import cmd_verify
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(io.StringIO()):
+            rc = cmd_verify(str(path), as_json=True)
+        assert rc == 1
+        return [d["error_code"]
+                for d in json.loads(out.getvalue())["diagnostics"]]
+
+    @pytest.mark.parametrize("case", sorted(_VERIFY_REFUSED))
+    def test_verify_file_stops_where_vera_verify_stops(
+        self, case: str, tmp_path: Path,
+    ) -> None:
+        """verify_file returns the errors `vera verify` stops with, and
+        verifies nothing past them.  It verified past them, so a program
+        `vera verify` refuses came back verified, or with an E522 warning
+        for the call it could not see (#1513)."""
+        imports, body = _VERIFY_REFUSED[case]
+        src = tmp_path / "prog.vera"
+        src.write_text(
+            imports
+            + "public fn f(@Unit -> @Int)\n"
+            "  requires(true) ensures(@Int.result == 1) effects(pure)\n"
+            "{ " + body + " }\n",
+            encoding="utf-8",
+        )
+        result = verify_file(src)
+        errors = [d.error_code for d in result.diagnostics
+                  if d.severity == "error"]
+        assert errors, result.diagnostics
+        assert errors == self._vera_verify_errors(src)
+        assert result.obligations == []
+        assert result.summary.total == 0
+
+    def test_verify_file_returns_the_checkers_warnings(
+        self, tmp_path: Path,
+    ) -> None:
+        """A program that checks with a warning is verified, and the
+        warning comes back with the result, as `vera verify` reports it."""
+        src = tmp_path / "warn.vera"
+        src.write_text(
+            "public fn f(@Unit -> @Int)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{\n  match 3 {\n    _ -> 1,\n    3 -> 2\n  }\n}\n",
+            encoding="utf-8",
+        )
+        result = verify_file(src)
+        assert [(d.severity, d.error_code) for d in result.diagnostics] == [
+            ("warning", "E310")]
         assert result.summary.total > 0

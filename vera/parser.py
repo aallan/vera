@@ -143,32 +143,50 @@ def parse_to_ast(source: str, file: str | None = None) -> Any:
 def verify_file(path: str | Path) -> "VerifyResult":
     """Parse, transform, type-check, and verify a .vera file.
 
+    Imports are resolved and the program type-checked as `vera verify` does,
+    and only a program that passes is verified: the verifier requires a
+    type-checked program.  A resolver or type error comes back as the
+    result's diagnostics, with an empty summary and no obligations.
+
     Args:
         path: Path to the .vera file.
 
     Returns:
-        A VerifyResult with diagnostics and a verification summary.
+        A VerifyResult with diagnostics (the resolver's and the checker's
+        first) and a verification summary.
 
     Raises:
         ParseError: If the file contains syntax errors.
         TransformError: If the parse tree cannot be transformed.
         FileNotFoundError: If the file does not exist.
     """
-    from vera.checker import typecheck
+    from vera.checker import typecheck_with_artifacts
     from vera.resolver import ModuleResolver
     from vera.transform import transform
-    from vera.verifier import verify
+    from vera.verifier import VerifyResult, VerifySummary, verify
 
     path = Path(path)
     source = path.read_text(encoding="utf-8")
     tree = parse(source, file=str(path))
     ast = transform(tree)
-    # Resolve imports as `vera verify` does, so an imported name means the
-    # declaration it names here too (#1513).
-    resolved = ModuleResolver(_root=path.parent).resolve_imports(ast, path)
-    # Type-check first (verify expects a valid AST)
-    typecheck(ast, source, file=str(path), resolved_modules=resolved)
-    return verify(ast, source, file=str(path), resolved_modules=resolved)
+    # Resolve and check as `vera verify` does (#1513), and stop where it
+    # stops: verifying past a resolver or type error reported a program
+    # `vera verify` refuses as verified.
+    resolver = ModuleResolver(_root=path.parent)
+    resolved = resolver.resolve_imports(ast, path)
+    check_diags, artifacts = typecheck_with_artifacts(
+        ast, source, file=str(path), resolved_modules=resolved,
+    )
+    type_diags = resolver.errors + check_diags
+    if any(d.severity == "error" for d in type_diags):
+        return VerifyResult(diagnostics=type_diags, summary=VerifySummary())
+    result = verify(
+        ast, source, file=str(path), resolved_modules=resolved,
+        expr_types=artifacts.expr_semantic_types,
+        expr_target_types=artifacts.expr_target_types,
+    )
+    result.diagnostics = type_diags + result.diagnostics
+    return result
 
 
 def typecheck_file(path: str | Path) -> list[Diagnostic]:

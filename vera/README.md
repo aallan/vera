@@ -72,7 +72,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | Module | Lines | Stage | Purpose | Key API |
 |--------|------:|-------|---------|---------|
 | `grammar.lark` | 344 | Parse | LALR(1) grammar definition | *(consumed by Lark)* |
-| `parser.py` | 191 | Parse | Lark frontend, error diagnosis | `parse()`, `parse_file()` |
+| `parser.py` | 220 | Parse | Lark frontend, error diagnosis | `parse()`, `parse_file()` |
 | `lexical.py` | 329 | Parse | Shared lexical scanning (comment spans, blanking) | `scan_comments()`, `blank_block_comments()` |
 | `transform.py` | 1,572 | Transform | Lark tree → AST transformer | `transform()` |
 | `ast.py` | 917 | Transform | Frozen dataclass AST nodes, source formatting | `Program`, `Node`, `Expr`, `format_expr` |

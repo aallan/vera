@@ -35,8 +35,10 @@ class TestExampleVerification:
         # Resolve the example's imports as `vera verify` does: an import
         # nothing resolves leaves its calls unresolved, an error since #1513
         # (`modules.vera` imports `vera.math`).
-        resolved = ModuleResolver(_root=EXAMPLES_DIR).resolve_imports(
-            ast, path)
+        resolver = ModuleResolver(_root=EXAMPLES_DIR)
+        resolved = resolver.resolve_imports(ast, path)
+        assert resolver.errors == [], (
+            f"Resolver errors: {[e.description for e in resolver.errors]}")
         type_diags = typecheck(ast, source, file=filename,
                                resolved_modules=resolved)
         type_errors = [d for d in type_diags if d.severity == "error"]
