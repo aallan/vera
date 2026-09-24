@@ -1304,7 +1304,7 @@ public fn string_char_code(@String, @Int -> @Nat)
   requires(@Int.0 >= 0 && @Int.0 < string_length(@String.0)) ensures(true) effects(pure)
 ```
 
-Returns the ASCII code point (as a `Nat`) of the byte at the given index in the string. The index is zero-based and must lie within the string's length in bytes: that is the declared precondition, obligated at each call site like any `requires` (§6.4.2) — proved where the index is bounded against a string literal, `E501` where it may not hold, and checked at run time (`E532`) where the string's byte length is not known statically (§6.4.3). The compiled call compares the index with the byte length and traps outside it.
+Returns the ASCII code point (as a `Nat`) of the byte at the given index in the string. The index is zero-based and must lie within the string's length in bytes: that is the declared precondition, obligated at each call site like any `requires` (§6.4.2) — proved where the index is bounded against a string literal, `E501` where it may not hold, and checked at run time (`E532`) where the string's byte length is not known statically (§6.4.3) or where it is refuted only over a value the verifier cannot state, such as an effect operation's result (§6.4.2). The compiled call compares the index with the byte length and traps outside it.
 
 ```vera
 string_char_code("A", 0)     -- 65

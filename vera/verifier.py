@@ -143,6 +143,15 @@ _U64_MAX = 2**64 - 1
 #: layer cannot project (#1251).  Nothing about the predicate or its base is at
 #: fault there — the field the predicate is about was never formed — so saying
 #: "outside Z3's decidable fragment" pointed the reader at the wrong thing.
+#: Why a `@Nat` narrowing refuted only over a placeholder is Tier 3 (#1480
+#: review): the E504/`tier3` record's reason, beside the #1460 refinement one.
+_PLACEHOLDER_NARROWING_REASON = (
+    "the value being narrowed is, or embeds, a placeholder for a `let`, "
+    "destructure or `match` binder the SMT layer could not translate, and "
+    "some value that placeholder could take is non-negative, so the "
+    "countermodel names no value the program can produce"
+)
+
 _OPAQUE_SCRUTINEE_REASON = (
     "the matched value is opaque to the SMT layer, so its field could not be "
     "projected and the predicate was never given a value to reason about"
@@ -1046,6 +1055,13 @@ class ContractVerifier:
         # untranslatable let/destructure rebinds it.  A div/sub operand that IS
         # one falls to Tier-3 (the shadowed value is unknown).  Reset per fn.
         self._opaque_shadows: list[z3.ExprRef] = []
+        # #1480 review: while a position #1480 obligates is walked for its
+        # narrowings (a `requires`, an `ensures`, a measure, a predicate),
+        # every placeholder `_fresh_slot_var` mints is tracked there too, so
+        # a narrowing refuted only over one is Tier 3 rather than a refusal.
+        # The body's narrowing walk leaves its `let` placeholders untracked,
+        # as it did before #1480 (their refutations are #1470's).
+        self._track_fresh_placeholders = False
         # #1480: the evaluated position a walk is running over when it is not
         # the body — see `EvaluatedAt`.  None outside `_walk_evaluated`.
         self._evaluated_at: EvaluatedAt | None = None
@@ -2190,6 +2206,13 @@ class ContractVerifier:
         # answered here and asked once, by `SmtContext._refinement_statable`.
         smt._refinement_statable_hook = partial(
             self._refinement_predicate_statable, smt)
+        # #1480 review: and let a call-site check ask whether its goal rests
+        # on a placeholder one of the walks bound.  A bound method, so it
+        # reads the live `_opaque_shadows`, which each walk resets.
+        smt._placeholder_hook = self._contains_opaque_shadow
+        # #1480 review: and let the SMT `match` translation bind an arm's
+        # guarded refined binders the way the walks do (`_enter_match_arm`).
+        smt._guarded_binder_hook = self._guarded_binder_values
         # Register all known ADTs with the SMT context.  Idempotent on
         # the warm path (same AdtInfo re-registered into the persistent
         # registry); kept per-function so cold and warm stay identical.
@@ -4602,9 +4625,10 @@ class ContractVerifier:
                     # formal receives an `@Int` traps in the precondition
                     # check exactly as it would in the body.
                     self._walk_handled_effects = []
-                    self._walk_for_nat_binding_obligations(
-                        decl, contract.expr, smt, slot_env, assumptions,
-                    )
+                    with self._placeholders_tracked():
+                        self._walk_for_nat_binding_obligations(
+                            decl, contract.expr, smt, slot_env, assumptions,
+                        )
                     z3_pre = smt.translate_expr(contract.expr, slot_env)
                 finally:
                     del smt._path_conditions[pc_depth:]
@@ -4666,8 +4690,12 @@ class ContractVerifier:
                     smt, slot_env, assumptions, EvaluatedAt("measure"),
                 )
 
-        # 5. Translate function body
-        body_expr = smt.translate_expr(decl.body, slot_env)
+        # 5. Translate function body.  Its call checks are the ones recorded
+        #    before #1480, and keep #804's strict rule over an opaque value
+        #    (`SmtContext.strict_preconditions`); every other position's are
+        #    #1480's, and do not refuse on a value it cannot state.
+        with smt.strict_preconditions():
+            body_expr = smt.translate_expr(decl.body, slot_env)
 
         # 5.05. #1407: does this function HAND ON a disclosed value?  A
         #       forwarding wrapper makes no claim that needs the disclosed
@@ -4774,9 +4802,10 @@ class ContractVerifier:
             # #1480: the narrowings the compiled postcondition guards, under
             # the same premises (#801 extended only the primitive-op walk).
             self._walk_handled_effects = []
-            self._walk_for_nat_binding_obligations(
-                decl, contract.expr, smt, slot_env, assumptions,
-            )
+            with self._placeholders_tracked():
+                self._walk_for_nat_binding_obligations(
+                    decl, contract.expr, smt, slot_env, assumptions,
+                )
         smt.set_result_var(None)
 
         # 6. Report the call sites of the body (and of the ensures walk just
@@ -6321,6 +6350,7 @@ class ContractVerifier:
                                 smt._fresh_name("shadow"), resolved)
                 if val is not None:
                     self._opaque_shadows.append(val)
+            self._guarded_binder_value(smt, stmt.type_expr, val)
         if val is not None and type_name is not None:
             return env.push(type_name, val)
         return env
@@ -6383,7 +6413,13 @@ class ContractVerifier:
                 self._fresh_pattern_env(pattern, env, smt, track=True),
                 None, (),
             )
-        bound = smt._bind_pattern(scrutinee_z3, pattern, env)
+        condition = smt._pattern_condition(scrutinee_z3, pattern)
+        bound = smt._bind_pattern(
+            scrutinee_z3, pattern, env,
+            self._guarded_binder_values(
+                scrutinee, scrutinee_z3, pattern, smt,
+                [*smt._path_conditions,
+                 *([condition] if condition is not None else [])]))
         if bound is None:
             # The scrutinee translated but the pattern cannot be bound to
             # it: its ADT has no SMT sort (a `Map` field, say), so the value
@@ -6401,8 +6437,7 @@ class ContractVerifier:
         if isinstance(pattern, ast.ConstructorPattern):
             facts = tuple(self._subpattern_source_facts(
                 scrutinee, scrutinee_z3, pattern, smt))
-        return ArmContext(
-            arm_env, smt._pattern_condition(scrutinee_z3, pattern), facts)
+        return ArmContext(arm_env, condition, facts)
 
     @contextlib.contextmanager
     def _under_arm(self, smt: SmtContext, arm: ArmContext) -> Iterator[None]:
@@ -6498,6 +6533,7 @@ class ContractVerifier:
             if slot_val is None:
                 continue
             self._opaque_shadows.append(slot_val)
+            self._guarded_binder_value(smt, te, slot_val)
             pushed.append((type_name, slot_val))
         for tn, sv in pushed:
             env = env.push(tn, sv)
@@ -7007,8 +7043,9 @@ class ContractVerifier:
                 self._walk_for_primitive_op_obligations(
                     decl, expr, smt, env, assumptions)
                 self._walk_handled_effects = []
-                self._walk_for_nat_binding_obligations(
-                    decl, expr, smt, env, assumptions)
+                with self._placeholders_tracked():
+                    self._walk_for_nat_binding_obligations(
+                        decl, expr, smt, env, assumptions)
                 smt.translate_expr(expr, env)
             self._record_call_obligations(decl, smt)
         finally:
@@ -7839,6 +7876,7 @@ class ContractVerifier:
                             if slot_val is None:
                                 continue
                             self._opaque_shadows.append(slot_val)
+                            self._guarded_binder_value(smt, te, slot_val)
                         pushed.append((type_name, slot_val))
                     for tn, sv in pushed:
                         cur_env = cur_env.push(tn, sv)
@@ -9862,6 +9900,33 @@ class ContractVerifier:
             return True
         return any(self._contains_opaque_shadow(c) for c in term.children())
 
+    def _refuted_only_over_a_placeholder(
+        self,
+        smt: SmtContext,
+        value: object,
+        violation: object,
+        result: SmtResult,
+        assumptions: list[object],
+    ) -> bool:
+        """Whether a failed narrowing of *value* was refuted only over a
+        placeholder, so it is Tier 3 rather than a violation (#1480 review).
+
+        The `@Nat` narrowing's twin of the #1460 re-ask
+        `_check_refined_binding_obligation` makes: a *value* that is, or
+        embeds, a placeholder a walk bound for a `let`, destructure or
+        `match` binder whose value does not translate (`_opaque_shadows`)
+        names no value the program produces, so its countermodel is not a
+        violation unless *violation* holds for EVERY value the placeholder
+        could take.  The narrowing's own runtime guard is the check.  #1480
+        records narrowings in a `requires`, an `ensures` and a measure, where
+        a `match` over a value that does not translate reaches one.
+        """
+        if result.status == "verified" or not self._contains_opaque_shadow(
+                value):
+            return False
+        return smt.check_valid(
+            violation, list(assumptions)).status != "verified"
+
     def _check_subtraction_obligation(
         self,
         decl: ast.FnDecl,
@@ -10446,6 +10511,156 @@ class ContractVerifier:
             self._report_float_to_int_domain(
                 decl, call, conversion, is_nan, is_inf)
 
+    def _guarded_binder_value(
+        self, smt: SmtContext, te: ast.TypeExpr, value: object | None,
+    ) -> object | None:
+        """*value*, a placeholder for a binder declared *te*, recorded as
+        satisfying the binder's refinement (#1480 review).
+
+        A binder whose value does not translate is bound to a fresh value:
+        a `let`, a destructured component, a `match` arm's binder under a
+        scrutinee that does not translate.  Codegen guards every refined
+        bind (§2.6.5, `_emit_bind_refine_guard`) before anything in the
+        binder's scope runs, so wherever the value can be read its
+        predicate holds, and a call precondition or an `assert` over it is
+        discharged under that predicate.  Left as a
+        bare value of the base sort, `need_pos(@Pos.0)` under
+        `match get(()) { Some(@Pos) -> … }` was refused E501 on a program
+        whose call cannot fail.
+
+        Only where the guard exists: `_refined_boundary_codegen_guardable`
+        is codegen's own bail (an erased base, a refinement over a
+        refinement), mirrored.  The predicate is read through
+        `_established_facts`, the one gate for a declared-type fact, and
+        recorded on the value (`SmtContext.assume_of_value`), so a query
+        reads it exactly when it reads the value.  The bind's own
+        obligation is over the SOURCE value, which never mentions this
+        placeholder, so the fact never proves the guard it stands behind.
+        """
+        if value is None:
+            return None
+        ty = self._resolve_type(te)
+        if not self._refined_boundary_codegen_guardable(ty):
+            return value
+        pred = self._translate_refined_predicate(smt, ty, value)
+        if pred is None:
+            return value
+        for fact in self._established_facts(
+                [pred], source=None, term=value, smt=smt):
+            smt.assume_of_value(value, fact)
+        return value
+
+    def _guarded_binder_values(
+        self,
+        scrutinee: ast.Expr,
+        scrutinee_z3: object,
+        pattern: ast.Pattern,
+        smt: SmtContext,
+        taken: list[object],
+    ) -> dict[int, object]:
+        """The fresh values a `match` arm binds its guarded refined binders
+        to, keyed by the id of the value each would otherwise receive
+        (#1480 review).
+
+        The translated twin of :py:meth:`_guarded_binder_value`.  A binder
+        declared at a refinement its value's type does not establish NARROWS,
+        and codegen guards that bind (§2.6.5) before anything in the arm runs,
+        so inside the arm the binder's predicate holds whether or not the
+        scrutinee translates: `match mk(x) { Some(@Pos) -> need_pos(@Pos.0),
+        … }` cannot fail the call, and a violating payload traps at the bind.
+        Read as the bare projection, the binder knew nothing, and the call
+        was refused E501.
+
+        The projection is what the bind's OWN obligation is over
+        (`_obligate_subpattern_narrowings`), so the predicate is never
+        recorded on it: that would prove the guard from itself.  The binder
+        is bound to a fresh value instead, and `taken ⟹ (fresh == projection
+        ∧ P(fresh))` is given only to a query that reads the fresh value
+        (`SmtContext.assume_of_value`).  *taken* is what the arm's bind runs
+        under: the path to the `match`, and the arm's pattern (after every
+        earlier arm's failing, in the translation's If-chain).  The guard is
+        there because a fresh value can outlive the arm inside the `match`'s
+        own translated value, where a query about the result reads it on
+        paths the arm was not taken.  Only where the guard exists
+        (`_refined_boundary_codegen_guardable`); a `@Nat` binder is not a
+        refinement and is left as it is.
+        """
+        out: dict[int, object] = {}
+        if scrutinee_z3 is None:
+            return out
+        guard = z3.And(*taken) if taken else z3.BoolVal(True)
+
+        def bind_fresh(term: z3.ExprRef, target: Type) -> None:
+            if not self._refined_boundary_codegen_guardable(target):
+                return
+            fresh = z3.FreshConst(term.sort(), "guarded")
+            pred = self._translate_refined_predicate(smt, target, fresh)
+            if pred is None:
+                return
+            facts = self._established_facts(
+                [pred], source=None, term=fresh, smt=smt)
+            if not facts:  # pragma: no cover — a fresh value is never disclosed
+                return
+            smt.assume_of_value(
+                fresh, z3.Implies(guard, z3.And(fresh == term, *facts)))
+            if smt.term_is_disclosed(term):
+                # The fresh value IS the projection's value, so it carries
+                # the projection's disclosure (#1406, `_inherit_disclosure`'s
+                # rule): a function forwarding it still forwards a disclosed
+                # value.  Its predicate is the guard's, not the producer's,
+                # which is why it was established above first.
+                smt._disclosed_terms.append(fresh)
+                sites = smt.disclosed_term_sites(term)
+                if sites:
+                    smt._disclosed_term_sites.setdefault(
+                        fresh.get_id(), []).extend(sites)
+            out[term.get_id()] = fresh
+
+        if isinstance(pattern, ast.BindingPattern):
+            target = self._resolve_type(pattern.type_expr)
+            if (self._is_refined_type(target)
+                    and self._narrows_into_refined(scrutinee, target)):
+                bind_fresh(scrutinee_z3, target)
+        elif isinstance(pattern, ast.ConstructorPattern):
+            self._guarded_subpattern_values(
+                self._resolved_type_of(scrutinee), scrutinee_z3, pattern,
+                smt, bind_fresh)
+        return out
+
+    def _guarded_subpattern_values(
+        self,
+        scrut_ty: Type | None,
+        scrut_term: z3.ExprRef,
+        pattern: ast.ConstructorPattern,
+        smt: SmtContext,
+        bind_fresh: Callable[[z3.ExprRef, Type], None],
+    ) -> None:
+        """Visit each refined sub-pattern binder that narrows its field, at
+        any depth, with its projected field — exactly the binders
+        :py:meth:`_obligate_subpattern_narrowings` obligates as a refinement
+        bind, which are the ones codegen guards."""
+        field_types = self._instantiated_field_types(pattern.name, scrut_ty)
+        if field_types is None:
+            return
+        try:
+            sort = scrut_term.sort()
+            idx = smt._find_ctor_index(sort, pattern.name)
+        except Exception:  # pragma: no cover — non-datatype scrutinee  # noqa: BLE001
+            return
+        if idx is None:
+            return
+        for i, (sub, field_ty) in enumerate(
+                zip(pattern.sub_patterns, field_types)):
+            term = sort.accessor(idx, i)(scrut_term)
+            if isinstance(sub, ast.ConstructorPattern):
+                self._guarded_subpattern_values(
+                    field_ty, term, sub, smt, bind_fresh)
+            elif isinstance(sub, ast.BindingPattern):
+                target = self._resolve_type(sub.type_expr)
+                if (self._is_refined_type(target)
+                        and self._refined_field_narrows(target, field_ty)):
+                    bind_fresh(term, target)
+
     def _fresh_slot_var(
         self, smt: SmtContext, te: ast.TypeExpr,
     ) -> object | None:
@@ -10476,7 +10691,29 @@ class ContractVerifier:
             result = smt.declare_float64(fresh)
         elif self._is_string_type(resolved):
             result = smt.declare_string(fresh)
+        if result is not None and self._track_fresh_placeholders:
+            self._opaque_shadows.append(result)
         return result
+
+    @contextlib.contextmanager
+    def _placeholders_tracked(self) -> Iterator[None]:
+        """Walk a position #1480 obligates with its placeholders tracked
+        (#1480 review; `_track_fresh_placeholders`).
+
+        Every obligation #1480 records is a check the compiled program makes
+        where it evaluates it, so none of them may be refused on a value the
+        verifier cannot state.  The narrowing walk binds a `let` or a
+        destructured component it cannot translate to a fresh value, and in
+        the body leaves it untracked; in a `requires`, an `ensures`, a
+        measure or a predicate, the narrowings are #1480's own, so the value
+        is tracked and `_refuted_only_over_a_placeholder` reads it.
+        """
+        saved = self._track_fresh_placeholders
+        self._track_fresh_placeholders = True
+        try:
+            yield
+        finally:
+            self._track_fresh_placeholders = saved
 
     def _fresh_pattern_env(
         self, pattern: ast.Pattern, env: SlotEnv, smt: SmtContext,
@@ -10506,7 +10743,9 @@ class ContractVerifier:
             slot_name = smt._type_expr_to_slot_name(pattern.type_expr)
             if slot_name is None:
                 return env
-            fresh = self._fresh_slot_var(smt, pattern.type_expr)
+            fresh = self._guarded_binder_value(
+                smt, pattern.type_expr,
+                self._fresh_slot_var(smt, pattern.type_expr))
             if fresh is None:
                 # Non-scalar slot: `_fresh_slot_var` can't type it, but if an
                 # outer binding of the same slot exists a nested projection in
@@ -10673,6 +10912,12 @@ class ContractVerifier:
         obligation = val >= 0
         result = smt.check_valid(obligation, list(assumptions))
 
+        if self._refuted_only_over_a_placeholder(
+                smt, val, val < 0, result, assumptions):
+            self._record_nat_bind_tier3(
+                decl, value_node, site, "tier3", guarded=guarded,
+                reason=_PLACEHOLDER_NARROWING_REASON)
+            return
         if result.status == "verified":
             self._record_obligation(decl.name, "nat_bind", value_node, "verified")
         elif result.status == "violated":
@@ -10721,6 +10966,13 @@ class ContractVerifier:
         """
         obligation = term >= 0  # type: ignore[operator]
         result = smt.check_valid(obligation, list(assumptions))
+        if self._refuted_only_over_a_placeholder(
+                smt, term, term < 0,  # type: ignore[operator]
+                result, assumptions):
+            self._record_nat_bind_tier3(
+                decl, node, site, "tier3", guarded=True,
+                reason=_PLACEHOLDER_NARROWING_REASON)
+            return
         if result.status == "verified":
             self._record_obligation(decl.name, "nat_bind", node, "verified")
         elif result.status == "violated":
@@ -12377,6 +12629,13 @@ class ContractVerifier:
         # answered here and asked once, by `SmtContext._refinement_statable`.
         smt._refinement_statable_hook = partial(
             self._refinement_predicate_statable, smt)
+        # #1480 review: and let a call-site check ask whether its goal rests
+        # on a placeholder one of the walks bound.  A bound method, so it
+        # reads the live `_opaque_shadows`, which each walk resets.
+        smt._placeholder_hook = self._contains_opaque_shadow
+        # #1480 review: and let the SMT `match` translation bind an arm's
+        # guarded refined binders the way the walks do (`_enter_match_arm`).
+        smt._guarded_binder_hook = self._guarded_binder_values
         slot_env = SlotEnv()
         assumptions: list[object] = []
         for param_te in decl.params:
@@ -15015,7 +15274,12 @@ class ContractVerifier:
                           "sort until the call is monomorphized; or the "
                           "callee's contract calls a name that resolves to no "
                           "function in the module that declared it, which is "
-                          "every name outside that module's own imports.",
+                          "every name outside that module's own imports; or "
+                          "an argument is a value the verifier cannot state "
+                          "(an effect operation's result, or a let, "
+                          "destructure or match binder whose value does not "
+                          "translate), and the precondition holds for some "
+                          "value it could take.",
                 spec_ref='Chapter 6, Section 6.8 "Summary of Verification Tiers"',
                 error_code="E532",
                 tier=3,

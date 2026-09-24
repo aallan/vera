@@ -1448,10 +1448,9 @@ def _matrix_cell(tmp_path: Path, shape: str, consumer: str, *,
 #: The whole map, and the reason each entry is what it is.
 #:
 #: A `call_pre` entry of `[]` is the ABSENCE of an unproved precondition: a
-#: discharged one records no obligation, so the rows that make this
-#: non-vacuous are `narrowing` (`violated`/E501) and `disclosed`
-#: (`tier3`/E532) — the same cell, same consumer, showing what a failure
-#: looks like.
+#: discharged one records no obligation, so the row that makes this
+#: non-vacuous is `disclosed` (`tier3`/E532) — the same cell, same consumer,
+#: showing what a failure looks like.
 #:
 #: `ensures` carries one entry per function in the program (`needs_pos`,
 #: `mk`, `use_it`), so the list is read whole rather than filtered; the last
@@ -1474,15 +1473,20 @@ _MATRIX_EXPECTED: dict[tuple[str, str], tuple[bool, list]] = {
     ("chain", "ensures"): (True, [("verified", None)] * 3),
     ("chain", "store"): (True, [("verified", None)] * 2),
     ("chain", "call_pre"): (True, []),
-    # --- a genuine NARROWING establishes nothing: the bind stays obligated,
-    #     and each consumer answers with its own refusal.  The payload's
-    #     declared type is `Int`, so no fact exists to hand over, and the
-    #     countermodel names a value the type really permits.
-    ("narrowing", "assert"): (False, [("tier3", "E535")]),
-    ("narrowing", "ensures"): (
-        False, [("verified", None), ("verified", None), ("violated", None)]),
-    ("narrowing", "store"): (False, [("violated", "E505")] * 2),
-    ("narrowing", "call_pre"): (False, [("violated", "E501")]),
+    # --- a genuine NARROWING: the payload's declared type is `Int`, so the
+    #     scrutinee establishes nothing and the bind stays obligated, refuted
+    #     (E505) because `mk`'s contract does not say its payload is
+    #     positive.  But code generation guards that bind (§2.6.5) before the
+    #     arm runs, so every consumer that reads the binder, in the arm or in
+    #     a postcondition over what the arm returns, reads its predicate
+    #     (#1480 review).  The binder is a fresh value carrying it, never the
+    #     projection the bind's own obligation is over, which is why that
+    #     obligation is still refuted rather than proved from itself.
+    ("narrowing", "assert"): (False, [("verified", None)]),
+    ("narrowing", "ensures"): (False, [("verified", None)] * 3),
+    ("narrowing", "store"): (
+        False, [("violated", "E505"), ("verified", None)]),
+    ("narrowing", "call_pre"): (False, []),
     # --- a DISCLOSED producer: the fact exists but the run has no word for
     #     it, so every consumer demotes, and says so.  Each says so in its
     #     OWN code, which is deliberate and worth reading off the table
@@ -1519,10 +1523,12 @@ def test_1403_the_class_instrument_shape_x_consumer(tmp_path: Path) -> None:
 
     Each row is labelled by what it can hold to account.  The establishing
     rows are the proof direction; `narrowing` and `disclosed` are the two
-    ways an arm establishes nothing, and they are not controls in the weak
-    sense — each has a DIFFERENT right answer (a refutation versus a
-    demotion), so a fix that withheld everything or assumed everything moves
-    them in opposite directions.
+    ways a scrutinee establishes nothing, and they are not controls in the
+    weak sense — each has a DIFFERENT right answer.  Under `narrowing` the
+    bind is refuted and every consumer proves from the predicate the bind's
+    guard establishes; under `disclosed` every consumer demotes.  A fix that
+    withheld everything, or that proved the bind from its own predicate,
+    moves them apart.
     """
     measured = {
         (shape, consumer): _matrix_cell(
@@ -1551,25 +1557,52 @@ _MATRIX_EXPECTED_UNTRANSLATABLE: dict[tuple[str, str], tuple[bool, list]] = {
         (shape, consumer): verdict
         for shape in ("direct", "nested", "tuple", "chain")
         for consumer, verdict in (
-            ("assert", (True, [("tier3", "E535")])),
             ("ensures", (True, [("verified", None), ("tier3", "E522")])),
             ("store", (True, [("verified", None),
                               ("tier3_unguarded", "E506"),
                               ("tier3_unguarded", "E506")])),
-            ("call_pre", (False, [("violated", "E501")])),
         )
     },
-    # A chain-typed binder is one the walk cannot represent: the call's
-    # argument does not translate, which is #882's E532, and no `assume`
-    # over it translates either.
+    # The binder is declared `@Pos`, whose bind code generation guards
+    # (§2.6.5), so its placeholder carries that predicate (#1480 review): an
+    # assertion and a call precondition it entails are discharged.
+    **{
+        (shape, consumer): verdict
+        for shape in ("direct", "nested", "tuple", "narrowing")
+        for consumer, verdict in (
+            ("assert", (True, [("verified", None)])),
+            ("call_pre", (True, [])),
+        )
+    },
+    # A chain-typed binder is one the walk cannot represent, and its bind
+    # has no guard: the assertion is not proved, and the call's argument
+    # does not translate, which is #882's E532, since no `assume` over it
+    # translates either.
+    ("chain", "assert"): (True, [("tier3", "E535")]),
     ("chain", "call_pre"): (True, [("tier3", "E532")]),
-    ("narrowing", "assert"): (True, [("tier3", "E535")]),
     ("narrowing", "ensures"): (
         True, [("verified", None), ("tier3", "E522")]),
     ("narrowing", "store"): (
         True, [("tier3", "E506"), ("tier3_unguarded", "E506")]),
-    ("narrowing", "call_pre"): (False, [("violated", "E501")]),
 }
+
+
+def _guarded_binder(shape: str) -> bool:
+    """Whether the shape's payload binder is `@Pos`, a refinement whose bind
+    code generation guards — the one fact a placeholder carries."""
+    return _MATRIX_SHAPES[shape]["payload"] == "@Pos.0"
+
+
+def _bind_guarded(tmp_path: Path, shape: str, consumer: str) -> bool:
+    """Whether the untranslatable cell records its bind as a runtime guard
+    (`refine_bind` Tier 3) — the check a discharged consumer stands behind."""
+    src = _matrix_program(shape, consumer, untranslatable=True)
+    result = _verify(_tree(tmp_path / f"bind_{shape}_{consumer}",
+                           {"p": src})["p"])
+    return ("tier3", "E506") in [
+        (o["status"], o.get("error_code"))
+        for o in result["obligations"] if o["kind"] == "refine_bind"
+    ]
 
 
 def _payload_entry(obls: list) -> tuple | None:
@@ -1595,27 +1628,31 @@ def test_1403_an_untranslatable_scrutinee_is_never_more_permissive(
     relation between the two grids is then asserted over the payload entry
     of each:
 
-    1. nothing that reads the payload is `verified` here.  That is the
-       direction that used to fail: the call walk kept the OUTER env under
-       an untranslatable scrutinee, so a recursive call's argument
-       translated against the enclosing parameter and a `decreases` measure
-       was proved about a value the arm never binds — `verified` for a
-       function whose runtime measure guard traps on its first call.
-    2. a refutation the translatable twin reports is either still refuted or
-       DEMOTED WITH A DIAGNOSTIC.  `narrowing`/`store` demotes
-       `violated`/E505 to `tier3_unguarded`/E506, which is a disclosure
-       rather than silence.
+    1. nothing that reads the payload is `verified` here but what the
+       binder's own refinement establishes.  The placeholder a binder gets
+       here carries one fact, the predicate of a refinement whose bind code
+       generation guards (§2.6.5, #1480 review), so a `verified` payload
+       entry is allowed only where the binder is such a refinement, and the
+       `chain` row, whose bind has no guard, has none.  The direction that
+       used to fail: the call walk kept the OUTER env under an
+       untranslatable scrutinee, so a recursive call's argument translated
+       against the enclosing parameter and a `decreases` measure was proved
+       about a value the arm never binds — `verified` for a function whose
+       runtime measure guard traps on its first call.
+    2. a refutation the translatable twin reports is either still refuted,
+       or DEMOTED WITH A DIAGNOSTIC.  The twin's `narrowing` row refutes
+       only the bind itself, and here that bind is the `refine_bind` Tier 3
+       a violating value traps on, before anything in the arm runs.
 
-    `call_pre` is recorded `violated`/E501 here.  The walk reaches the call
-    in the arm whatever the scrutinee (#1480), and a precondition over the
-    arm's placeholder is the caller's to establish (§6.4.2): an `assume`
-    about the binder is the repair.  That is the twin's verdict where the
-    twin refutes, and worse where the binder's refinement discharges the
-    twin's, never better.  A `chain` binder, which the walk cannot represent
+    `call_pre` is discharged here where the binder's refinement entails the
+    precondition, as the twin's is, since both binders carry the predicate
+    their bind's guard establishes.  A value the placeholder carries no fact
+    for is refuted only over the placeholder, so a precondition #1480
+    records over it is `tier3`/E532 (§6.4.2), with an `assume` about the
+    binder as the repair.  A `chain` binder, which the walk cannot represent
     at all, is an argument that does not translate: `tier3`/E532, as #882
-    has it, since no `assume` over it translates either.  Before #1480 it
-    recorded nothing, because the
-    obligation was a side effect of translating the enclosing expression and
+    has it.  Before #1480 it recorded nothing, because the obligation was a
+    side effect of translating the enclosing expression and
     `_translate_match` bails at the scrutinee.
     """
     measured = {
@@ -1638,11 +1675,14 @@ def test_1403_an_untranslatable_scrutinee_is_never_more_permissive(
     verified_here = {
         k for k, (_ok, obls) in measured.items()
         if _payload_entry(obls) == ("verified", None)
+        and not _guarded_binder(k[0])
     }
     refutation_lost = {
         k for k, (_ok, obls) in measured.items()
         if (_MATRIX_EXPECTED[k][1][-1:] or [("", "")])[0][0] == "violated"
         and _payload_entry(obls) is None
+        and not (_guarded_binder(k[0])
+                 and _bind_guarded(tmp_path, k[0], k[1]))
     }
     assert (verified_here, refutation_lost) == (set(), set()), (
         f"an untranslatable scrutinee bought a better verdict:\n"
@@ -2391,7 +2431,7 @@ def test_1403_the_reason_map_is_keyed_the_way_the_set_is() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Where the refutation gate is NOT consulted, and why that is not reachable
+# A placeholder at a refutation site: the gate, and where it is not needed
 # ---------------------------------------------------------------------------
 
 _PLACEHOLDER_ENSURES = """\
@@ -2444,39 +2484,34 @@ public fn probe(@Unit -> @Int)
     [
         pytest.param(_PLACEHOLDER_ENSURES, "ensures", ("tier3", "E522"),
                      id="postcondition-demotes-first"),
-        pytest.param(_PLACEHOLDER_CALL_PRE, "call_pre", ("violated", "E501"),
-                     id="call-precondition-is-the-callers"),
+        pytest.param(_PLACEHOLDER_CALL_PRE, "call_pre", ("tier3", "E532"),
+                     id="call-precondition-is-tier3"),
     ],
 )
 def test_1403_a_placeholder_never_becomes_a_counterexample(
     tmp_path: Path, source: str, kind: str, verdict: tuple | None,
 ) -> None:
-    """The two refutation sites with no gate, pinned at WHY they are safe.
+    """A tracked placeholder reaching a refutation site as a counterexample,
+    pinned at WHY neither of these becomes a refusal.
 
     `_contains_opaque_shadow` and the satisfiability re-ask behind it are
-    consulted at the `refine_bind` and primitive-operation sites, and NOT at
-    the postcondition's `violated` branch or at the call-precondition
-    violation the SMT layer drains.  That unevenness would matter if a
-    tracked placeholder could reach either as a counterexample.  Measured,
-    neither can, and for two different reasons — which is the thing worth
-    pinning, since "no cell fails" would otherwise be the only evidence:
+    consulted at the `refine_bind`, `@Nat` narrowing and primitive-operation
+    sites, and at a call precondition #1480 records
+    (`SmtContext._rests_on_unknown`, #1480 review) — NOT at the
+    postcondition's `violated` branch.  So the two readings differ:
 
     * the postcondition path has its own opaque detection and demotes to
       `tier3`/**E522** ("the function body binds an effect-operation value
       the verifier models opaquely") before any refutation is attempted; and
-    * the arm's call precondition is recorded `violated`/**E501**, and that
-      is not a counterexample claim: the walk reaches the call (#1480), and
-      a precondition over a value the walk cannot know is the caller's to
-      establish (§6.4.2) — "may violate", repaired by an `assume`.
+    * the arm's call precondition is one only the obligation walk reaches,
+      refuted only over the arm's placeholder, so it is the `tier3`/**E532**
+      demotion, with the callee's own check behind it.
 
-    If either verdict ever becomes `violated`, the gate is needed at that
-    site and the question is no longer local to this class.
+    If the postcondition's verdict ever becomes `violated`, the gate is
+    needed at that site too.
     """
     result = _verify(_tree(tmp_path, {"p": source})["p"])
-    # Accepted, except where the verdict is the call precondition's strict
-    # E501 (§6.4.2), which refuses until an `assume` establishes it.
-    assert result["ok"] is (verdict != ("violated", "E501")), (
-        result["diagnostics"])
+    assert result["ok"] is True, result["diagnostics"]
     hits = [
         (o["status"], o.get("error_code")) for o in result["obligations"]
         if o["kind"] == kind and o["status"] != "verified"

@@ -928,8 +928,10 @@ def test_a_built_in_domain_in_an_interpolated_part() -> None:
 
 
 # A call over a value the walk cannot know — an arm's binder under a
-# scrutinee that does not translate — is the caller's to establish (§6.4.2):
-# E501 until an `assume` about the binder says otherwise.
+# scrutinee that does not translate — is a check #1480 records, and it is not
+# refused on a placeholder (§6.4.2): Tier 3 (E532), the callee's own check
+# stopping a violating value, until an `assume` about the binder discharges
+# it.
 OPAQUE_ARGUMENT = """\
 private fn need_pos(@Int -> @Int)
   requires(@Int.0 > 0)
@@ -968,12 +970,13 @@ public fn g(@Int -> @Nat)
     ("g", 'string_char_code("abc", @Int.0)', "@Int.0 >= 0 && @Int.0 < 3",
      7, 1),
 ])
-def test_a_call_over_an_unknown_arm_binder_is_the_callers(
+def test_a_call_over_an_unknown_arm_binder_is_tier3(
         fn: str, call: str, dom: str, bad: int, good: int) -> None:
     v = _verify(OPAQUE_ARGUMENT)
     where = _at(OPAQUE_ARGUMENT, call)
-    assert _records(v, "call_pre", where) == ["violated/E501"]
-    assert ("E501", *where) in v.errors
+    assert _records(v, "call_pre", where) == ["tier3/E532"]
+    assert v.ok, v.errors
+    assert _run(OPAQUE_ARGUMENT, fn, [good]).trap_kind is None
     assert _run(OPAQUE_ARGUMENT, fn, [bad]).trap_kind is not None
     assumed = OPAQUE_ARGUMENT.replace(
         f"Some(@Int) -> {call},", f"Some(@Int) -> {{ assume({dom}); {call} }},")
@@ -1018,8 +1021,9 @@ def test_an_assumed_let_value_discharges_the_call() -> None:
 def test_an_unassumed_let_value_leaves_the_call_refuted() -> None:
     """The twin that makes the cell above non-vacuous: without the `assume`
     the call is reached and its precondition is NOT established.  It is
-    E501: a precondition over a value an `assume` can reach is the caller's
-    to establish (§6.4.2), the posture the `assume` is the repair for."""
+    E501: the call sits where the function body's own translation checks
+    it, which recorded it before #1480 and keeps #804's strict posture
+    (§6.4.2, `SmtContext.strict_preconditions`)."""
     src = ASSUMED_LET.replace("  assume(@Int.0 > 0);\n", "")
     assert "assume" not in src
     v = _verify(src)
@@ -1059,11 +1063,13 @@ def test_an_assumed_array_let_discharges_the_call() -> None:
     twin = ASSUMED_ARRAY_LET.replace(
         "  assume(array_length(@Array<Int>.0) > 0);\n", "")
     assert "assume" not in twin
-    # Without it the call is reached, over a value an `assume` can reach,
-    # and so is the caller's to establish (§6.4.2).
+    # Without it the call is reached, over the array's placeholder, which
+    # only the obligation walk binds: a check #1480 records, refuted only
+    # over a value the verifier cannot state, so Tier 3 (§6.4.2).
     tv = _verify(twin)
     assert _records(tv, "call_pre", _at(twin, "need_len(@Array<Int>.0)")) \
-        == ["violated/E501"]
+        == ["tier3/E532"]
+    assert tv.ok, tv.errors
 
 
 # The termination proof reads the same walk, so every binder it crossed
@@ -1982,19 +1988,22 @@ def test_sub_position_cell(sub: SubPosition, op: Op, position: str,
 
 
 # ---------------------------------------------------------------------
-# Where an `assume` can reach the value, the precondition stays strict
+# A check #1480 records is not refused on a value it cannot state
 # ---------------------------------------------------------------------
 #
-# Spec §6.4.2: a call's precondition over a value the verifier cannot know,
-# but an `assume` can reach, is the caller's to establish.  It is E501 until
-# it is established, and an `assume` about the value is the repair.  That
-# holds however deeply the call is nested: the value here is an effect
-# operation's result, and the call sits at the top of the `let`'s body, in an
-# argument of a built-in the SMT layer does not model, in an interpolated
-# part, in a pipe, or in an arm whose binder is the unknown value.  E532 is
-# left to the one place no `assume` can reach: a binder of a closure, of a
-# quantifier's predicate or of a handler clause, whose scope the walk enters
-# without its values.
+# Spec §6.4.2.  The value here is an effect operation's result, which the
+# verifier cannot know.  Where the function body's own translation checks a
+# user callee's precondition over it (the call at the top of the `let`'s
+# body), the check predates #1480 and keeps #804's strict posture: E501, and
+# an `assume` about the value is the repair.  Every other check is one #1480
+# records, and the compiled program makes it at the call, so a refutation
+# that rests only on the value's placeholder is Tier 3 (E532), never a
+# refusal: in an argument of a built-in the SMT layer does not model, in an
+# interpolated part, in a pipe, in an arm whose binder is the unknown value,
+# and `string_char_code`'s declared domain wherever the call sits.  The
+# `assume` discharges either.  A binder of a closure, of a quantifier's
+# predicate or of a handler clause is read without its value at all, and its
+# call is E532 as well.
 
 _UNKNOWN_PRELUDE = """\
 private fn need_pos(@Int -> @Int)
@@ -2085,18 +2094,30 @@ def _unknown_cells() -> list[object]:
     return cells
 
 
+#: The one cell the function body's own translation checks, which keeps
+#: #804's E501 (`SmtContext.strict_preconditions`).
+_BODY_TRANSLATION_CHECKS = {("top of the let's body", "call_pre")}
+
+
 @pytest.mark.parametrize(("position", "op"), _unknown_cells())
-def test_an_unknown_value_an_assume_can_reach_is_the_callers(
+def test_an_unknown_value_is_tier3_where_1480_records_the_check(
         position: str, op: str) -> None:
     _call, _piped, _dom, good, bad = _UNKNOWN_OPS[op]
     src, at = _unknown_program(position, op, assumed=False, state=bad)
     v = _verify(src)
     where = _at(src, at)
-    assert _records(v, "call_pre", where) == ["violated/E501"], (
+    strict = (position, op) in _BODY_TRANSLATION_CHECKS
+    assert _records(v, "call_pre", where) == (
+        ["violated/E501"] if strict else ["tier3/E532"]), (
         [(o.kind, o.status, o.error_code, o.line, o.column)
          for o in v.obligations], src)
-    assert ("E501", *where) in v.errors
+    assert (("E501", *where) in v.errors) is strict
+    assert v.ok is not strict, v.errors
+    # The check the compiled program makes at the call stops a violating
+    # value and passes one inside the domain, recorded either way.
     assert _run(src, "main", []).trap_kind is not None
+    good_src, _ = _unknown_program(position, op, assumed=False, state=good)
+    assert _run(good_src, "main", []).trap_kind is None
     # ... and the `assume` about the value discharges it, wherever it sits.
     src, at = _unknown_program(position, op, assumed=True, state=good)
     v = _verify(src)
@@ -2104,6 +2125,325 @@ def test_an_unknown_value_an_assume_can_reach_is_the_callers(
         ["verified"] if op == "string_char_code" else [])
     assert v.ok, v.errors
     assert _run(src, "main", []).trap_kind is None
+
+
+# ---------------------------------------------------------------------
+# Every kind #1480 records, over a placeholder
+# ---------------------------------------------------------------------
+#
+# Each obligation #1480 records is a check the compiled program makes where
+# it evaluates it, so a refutation of one that rests on a value the verifier
+# cannot state (a placeholder for a `let`, destructure or `match` binder
+# whose value does not translate) is Tier 3, never a refusal.  One program
+# per kind that can meet one: a correct program records Tier 3 and runs, and
+# the same program given a violating value traps on that check.
+#
+# The kinds that cannot meet one, and why, stated rather than counted: an
+# array index and an overflow are refused only when the violation holds for
+# every value (their two-check), and a float truncation only on a constant
+# argument, so a placeholder never refutes them.  The float cell below pins
+# the second.  A `let` or `match` written inside a measure or a refinement
+# predicate reaches the same gates as one in a body.
+
+_ARRAY_LET_CALL = """\
+private fn head_of(@Array<Int> -> @Int)
+  requires(array_length(@Array<Int>.0) > 0)
+  ensures(true)
+  effects(pure)
+{
+  @Array<Int>.0[0]
+}
+
+public fn f(@Array<Int> -> @Int)
+  requires(array_length(@Array<Int>.0) > 0)
+  ensures(true)
+  effects(pure)
+{
+  let @Array<Int> = apply_fn(fn(@Unit -> @Array<Int>) effects(pure) { [1, 2, 3] }, ());
+  head_of(@Array<Int>.0)
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  f([9])
+}
+"""
+
+_REQUIRES_CALL = """\
+private fn need_pos(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+
+public fn f(@Int -> @Bool)
+  requires(match map_get(map_insert(map_new(), 1, @Int.0), 1) {
+    Some(@Int) -> need_pos(@Int.0) > 0,
+    None -> true
+  })
+  ensures(true)
+  effects(pure)
+{
+  true
+}
+"""
+
+_MEASURE_CHAR_CODE = """\
+public fn f(@Nat, @Int -> @Nat)
+  requires(@Int.0 >= 0 && @Int.0 < 3)
+  ensures(true)
+  decreases(@Nat.0 + string_char_code("abc", @Int.0))
+  effects(<State<Option<Int>>>)
+{
+  if @Nat.0 == 0 then {
+    0
+  } else {
+    match get(()) {
+      Some(@Int) -> f(@Nat.0 - 1, @Int.0),
+      None -> 0
+    }
+  }
+}
+
+public fn main(@Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Option<Int>>](@Option<Int> = Some(@Int.0)) {
+    get(@Unit) -> { resume(@Option<Int>.0) },
+    put(@Option<Int>) -> { resume(()) }
+  } in {
+    f(3, 1)
+  }
+}
+"""
+
+_MEASURE_DIVISION = """\
+public fn f(@Nat, @Nat -> @Nat)
+  requires(@Nat.0 > 0)
+  ensures(true)
+  decreases(@Nat.1, 100 / @Nat.0)
+  effects(<State<Option<Nat>>>)
+{
+  if @Nat.1 == 0 then {
+    0
+  } else {
+    match get(()) {
+      Some(@Nat) -> f(@Nat.2 - 1, @Nat.0),
+      None -> 0
+    }
+  }
+}
+
+public fn main(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Option<Nat>>](@Option<Nat> = Some(@Nat.0)) {
+    get(@Unit) -> { resume(@Option<Nat>.0) },
+    put(@Option<Nat>) -> { resume(()) }
+  } in {
+    f(3, 1)
+  }
+}
+"""
+
+_REQUIRES_NAT = """\
+private fn nat_id(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Nat.0
+}
+
+public fn f(@Int -> @Bool)
+  requires(match map_get(map_insert(map_new(), 1, @Int.0), 1) {
+    Some(@Int) -> nat_id(@Int.0) >= 0,
+    None -> true
+  })
+  ensures(true)
+  effects(pure)
+{
+  true
+}
+"""
+
+_REQUIRES_LET_NAT = """\
+private fn nat_id(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Nat.0
+}
+
+public fn f(@Int -> @Bool)
+  requires({
+    let @Int = apply_fn(fn(@Int -> @Int) effects(pure) { @Int.0 * 2 }, @Int.0);
+    nat_id(@Int.0) >= 0
+  })
+  ensures(true)
+  effects(pure)
+{
+  true
+}
+"""
+
+_ENSURES_NAT = """\
+private fn nat_id(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Nat.0
+}
+
+public fn f(@Int -> @Bool)
+  requires(true)
+  ensures(match map_get(map_insert(map_new(), 1, @Int.0), 1) {
+    Some(@Int) -> nat_id(@Int.0) >= 0,
+    None -> true
+  })
+  effects(pure)
+{
+  true
+}
+"""
+
+_REQUIRES_REFINEMENT = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+private fn take_pos(@Pos -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Pos.0
+}
+
+public fn f(@Int -> @Bool)
+  requires(match map_get(map_insert(map_new(), 1, @Int.0), 1) {
+    Some(@Int) -> take_pos(@Int.0) > 0,
+    None -> true
+  })
+  ensures(true)
+  effects(pure)
+{
+  true
+}
+"""
+
+_COMPUTED_FLOOR = """\
+public fn f(@Float64 -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Float64 = apply_fn(fn(@Float64 -> @Float64) effects(pure) { @Float64.0 * 2.0 }, @Float64.0);
+  floor(@Float64.0)
+}
+"""
+
+
+#: name -> (program, the record's needle and its occurrence, kind, the
+#: records there, the function run, a correct call's arguments and the
+#: violating program and arguments, the violating run's trap message).
+_PLACEHOLDER_KINDS = {
+    "call precondition, after an array let": (
+        _ARRAY_LET_CALL, ("head_of(@Array<Int>.0)", 0), "call_pre",
+        ["tier3/E532"], "main", [],
+        (_ARRAY_LET_CALL.replace("[1, 2, 3]", "[]"), []),
+        "Precondition violation in head_of"),
+    "call precondition, in a requires": (
+        _REQUIRES_CALL, ("need_pos(", 1), "call_pre", ["tier3/E532"],
+        "f", [5], (_REQUIRES_CALL, [-5]), "Precondition violation in need_pos"),
+    "built-in domain, in a measure at a tail call": (
+        _MEASURE_CHAR_CODE, ("f(@Nat.0 - 1", 0), "call_pre",
+        ["tier3/E532", "tier3/E532"], "main", [1],
+        (_MEASURE_CHAR_CODE, [7]), "unreachable"),
+    "division, in a measure at a tail call": (
+        _MEASURE_DIVISION, ("f(@Nat.2 - 1", 0), "div_zero", ["tier3"],
+        "main", [5], (_MEASURE_DIVISION, [0]), "division by zero"),
+    "@Nat narrowing, in a requires": (
+        _REQUIRES_NAT, ("@Int.0) >= 0", 0), "nat_bind", ["tier3"],
+        "f", [5], (_REQUIRES_NAT, [-5]), "Negative value bound"),
+    "@Nat narrowing, over a let in a requires": (
+        _REQUIRES_LET_NAT, ("@Int.0) >= 0", 0), "nat_bind", ["tier3"],
+        "f", [5], (_REQUIRES_LET_NAT, [-5]), "Negative value bound"),
+    "@Nat narrowing, in an ensures": (
+        _ENSURES_NAT, ("@Int.0) >= 0", 0), "nat_bind", ["tier3"],
+        "f", [5], (_ENSURES_NAT, [-5]), "Negative value bound"),
+    "refinement narrowing, in a requires": (
+        _REQUIRES_REFINEMENT, ("@Int.0) > 0", 0), "refine_bind",
+        ["tier3/E506"], "f", [5], (_REQUIRES_REFINEMENT, [-5]),
+        "Refinement violation"),
+    "float truncation, of a computed value": (
+        _COMPUTED_FLOOR, ("floor(", 0), "float_to_int_domain", ["tier3"],
+        "f", [2.5], (_COMPUTED_FLOOR, [1e300]), "overflow"),
+}
+
+
+@pytest.mark.parametrize("name", list(_PLACEHOLDER_KINDS))
+def test_a_check_1480_records_is_not_refused_on_a_placeholder(
+        name: str) -> None:
+    (src, (needle, occurrence), kind, records, fn, args, (bad_src, bad_args),
+     trap) = _PLACEHOLDER_KINDS[name]
+    v = _verify(src)
+    assert _records(v, kind, _at(src, needle, occurrence)) == records, (
+        [(o.kind, o.status, o.error_code, o.line, o.column)
+         for o in v.obligations])
+    assert v.ok, v.errors
+    assert _run(src, fn, args).trap_kind is None
+    assert trap in _run(bad_src, fn, bad_args).trap_message
+
+
+#: The other half of the gate: a check refuted for EVERY value the
+#: placeholder could take is still refused, by the negated re-ask #1460's
+#: refinement gate makes.  name -> (the body over the unknown `@Int.0` in
+#: `_UNKNOWN_PRELUDE`'s `f`, the refused text, kind, code).
+_REFUTED_FOR_EVERY_VALUE = {
+    "call precondition": (
+        "string_length(show(need_pos(@Int.0 * 0))) >= 0 || true",
+        "need_pos(@Int.0 * 0)", "call_pre", "E501"),
+    "built-in domain": (
+        'string_length(show(string_char_code("abc", @Int.0 * 0 + 7))) >= 0'
+        " || true",
+        "string_char_code(", "call_pre", "E501"),
+}
+
+
+@pytest.mark.parametrize("name", list(_REFUTED_FOR_EVERY_VALUE))
+def test_a_check_refuted_for_every_placeholder_value_is_refused(
+        name: str) -> None:
+    body, at, kind, code = _REFUTED_FOR_EVERY_VALUE[name]
+    src = (_UNKNOWN_PRELUDE + f"  {body}\n}}\n"
+           + _UNKNOWN_MAIN.replace("{state}", "5"))
+    v = _verify(src)
+    where = _at(src, at)
+    assert _records(v, kind, where) == [f"violated/{code}"], (
+        [(o.kind, o.status, o.error_code, o.line, o.column)
+         for o in v.obligations])
+    assert (code, *where) in v.errors
+    assert _run(src, "main", []).trap_kind is not None
+
+
+def test_a_narrowing_refuted_for_every_placeholder_value_is_refused() -> None:
+    src = _REQUIRES_NAT.replace("nat_id(@Int.0)", "nat_id(@Int.0 * 0 - 1)")
+    assert src != _REQUIRES_NAT
+    v = _verify(src)
+    where = _at(src, "@Int.0 * 0 - 1")
+    assert _records(v, "nat_bind", where) == ["violated/E503"], (
+        [(o.kind, o.status, o.error_code, o.line, o.column)
+         for o in v.obligations])
+    assert "Negative value bound" in _run(src, "f", [5]).trap_message
 
 
 #: A call over a binder the walk reads without its value: E532, with the
@@ -2227,6 +2567,400 @@ def test_a_module_call_is_obligated(tmp_path, fn: str, occurrence: int,
     assert got == [status], out["obligations"]
     _out, ran = _cli_json("run", str(main), "--fn", fn, "--", "-3")
     assert "need_pos" in ran, ran
+
+
+# A binder whose value does not translate is bound to a value the verifier
+# cannot know, but a binder DECLARED at a refinement type is not unknown in
+# that respect: code generation guards every refined bind (spec §2.6.5)
+# before anything in the binder's scope runs, so its predicate holds wherever
+# the value can be read.  The strict posture above is for what no guard
+# establishes; a precondition the binder's own refinement entails is
+# discharged, and a violating value traps at the bind, never at the call.
+_REFINED_BINDER_TYPES = """\
+type Pos = { @Int | @Int.0 > 0 };
+type Idx = { @Int | @Int.0 >= 0 && @Int.0 < 3 };
+type Small = { @Pos | @Pos.0 < 10 };
+type Never = { @Int | @Int.0 > 0 && @Int.0 < 0 };
+"""
+
+
+def _refined_binder_program(sty: str, init: str, body: str) -> str:
+    """*body* over a state of type *sty*, whose value no query can read."""
+    return (_REFINED_BINDER_TYPES + _NEED_POS + f"""
+public fn f(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  handle[State<{sty}>](@{sty} = {init}) {{
+    get(@Unit) -> {{ resume(@{sty}.0) }},
+    put(@{sty}) -> {{ resume(()) }}
+  }} in {{
+    {body}
+  }}
+}}
+""")
+
+
+def _arm(pattern: str, use: str, *others: str) -> str:
+    arms = [f"{pattern} -> {use}", *(f"{o} -> 0" for o in others)]
+    return "match get(()) {\n      " + ",\n      ".join(arms) + "\n    }"
+
+
+#: binder position -> (state type, a state inside the binder's refinement,
+#: one outside it or None where the state's own type rules that out, the
+#: body, and the call whose record is asserted).
+_REFINED_BINDERS = {
+    "constructor sub-pattern": (
+        "Option<Pos>", "Some(5)", None,
+        _arm("Some(@Pos)", "need_pos(@Pos.0)", "None"), "need_pos("),
+    "narrowing sub-pattern": (
+        "Option<Int>", "Some(5)", "Some(-5)",
+        _arm("Some(@Pos)", "need_pos(@Pos.0)", "None"), "need_pos("),
+    "nested sub-pattern": (
+        "Option<Option<Int>>", "Some(Some(5))", "Some(Some(-5))",
+        _arm("Some(Some(@Pos))", "need_pos(@Pos.0)", "Some(None)", "None"),
+        "need_pos("),
+    "tuple sub-pattern": (
+        "Option<Tuple<Int, Int>>", "Some(Tuple(5, 7))", "Some(Tuple(-5, 7))",
+        _arm("Some(Tuple(@Pos, @Int))", "need_pos(@Pos.0)", "None"),
+        "need_pos("),
+    "match binding": (
+        "Int", "5", "-5", _arm("@Pos", "need_pos(@Pos.0)"), "need_pos("),
+    "let": ("Int", "5", "-5", "let @Pos = get(());\n    need_pos(@Pos.0)",
+            "need_pos("),
+    "destructure": (
+        "Tuple<Int, Int>", "Tuple(5, 7)", "Tuple(-5, 7)",
+        "let Tuple<@Pos, @Int> = get(());\n    need_pos(@Pos.0)", "need_pos("),
+    "call only the walk reaches": (
+        "Option<Int>", "Some(5)", "Some(-5)",
+        _arm("Some(@Pos)",
+             "nat_to_int(string_length(show(need_pos(@Pos.0))))", "None"),
+        "need_pos("),
+    "built-in domain": (
+        "Option<Int>", "Some(1)", "Some(7)",
+        _arm("Some(@Idx)", 'string_char_code("abc", @Idx.0)', "None"),
+        "string_char_code("),
+}
+
+
+@pytest.mark.parametrize("position", list(_REFINED_BINDERS))
+def test_a_refined_binder_carries_its_refinement(position: str) -> None:
+    sty, good, bad, body, call = _REFINED_BINDERS[position]
+    src = _refined_binder_program(sty, good, body)
+    v = _verify(src)
+    # A discharged user callee's precondition is not recorded (its check is
+    # the callee's prologue); a built-in's domain is, since its check is at
+    # the call.
+    discharged = ["verified"] if call == "string_char_code(" else []
+    # `need_pos(` first occurs in its own declaration.
+    where = _at(src, call, 1 if call == "need_pos(" else 0)
+    assert _records(v, "call_pre", where) == discharged, (
+        [(o.kind, o.status, o.error_code, o.line, o.column)
+         for o in v.obligations], src)
+    assert v.ok, v.errors
+    assert _run(src, "f", []).trap_kind is None
+    if bad is None:
+        return
+    # The bind's own obligation is over the state, which the fact never
+    # mentions: it stays a runtime guard, and that guard is what stops a
+    # violating value, before the call can see it.
+    bind_line = _at(src, "get(())")[0]
+    assert "tier3" in [o.status for o in v.obligations
+                       if o.kind == "refine_bind" and o.line == bind_line]
+    ran = _run(_refined_binder_program(sty, bad, body), "f", [])
+    assert "Refinement violation" in ran.trap_message, ran
+
+
+#: What the binder's refinement does NOT establish stays unproved: a Tier-3
+#: record, since each call here is one only the obligation walk reaches and
+#: its value is a placeholder, never a discharge.  position -> (state type,
+#: state, body, the call or assertion, its kind, and the record).
+_REFINED_BINDER_CONTROLS = {
+    "unrefined binder": (
+        "Option<Int>", "Some(5)",
+        _arm("Some(@Int)", "need_pos(@Int.0)", "None"), "need_pos(",
+        "call_pre", ["tier3/E532"]),
+    "refinement over a refinement": (
+        "Option<Small>", "Some(5)",
+        _arm("Some(@Small)", "need_pos(@Small.0)", "None"), "need_pos(",
+        "call_pre", ["tier3/E532"]),
+    "a goal beyond the refinement": (
+        "Option<Int>", "Some(5)",
+        _arm("Some(@Pos)", "{ assert(@Pos.0 < 10); 1 }", "None"), "assert(",
+        "assert", ["tier3/E535"]),
+    "a call outside an empty refinement's arm": (
+        "Option<Int>", "None",
+        "let @Int = " + _arm("Some(@Never)", "1", "None")
+        + ";\n    need_pos(@Int.0)", "need_pos(@Int.0)",
+        "call_pre", ["tier3/E532"]),
+    # Code generation does not guard a bind of a refinement over a
+    # refinement (`_emit_bind_refine_guard`), so nothing establishes the
+    # predicate there: the second `let` shadows the first, and a violating
+    # state reaches the call.
+    "a refinement whose bind has no guard": (
+        "Int", "-5",
+        "let @Small = 5;\n    let @Small = get(());\n    need_pos(@Small.0)",
+        "need_pos(", "call_pre", ["tier3/E532"]),
+}
+
+
+@pytest.mark.parametrize("position", list(_REFINED_BINDER_CONTROLS))
+def test_what_a_binders_refinement_does_not_establish(position: str) -> None:
+    sty, init, body, at, kind, want = _REFINED_BINDER_CONTROLS[position]
+    src = _refined_binder_program(sty, init, body)
+    v = _verify(src)
+    occurrence = 1 if at == "need_pos(" else 0
+    assert _records(v, kind, _at(src, at, occurrence)) == want, (
+        [(o.kind, o.status, o.error_code, o.line, o.column)
+         for o in v.obligations], src)
+    if position == "a refinement whose bind has no guard":
+        assert "need_pos" in _run(src, "f", []).trap_message
+
+
+# ---------------------------------------------------------------------
+# A narrowing arm binder under a scrutinee that DOES translate
+# ---------------------------------------------------------------------
+#
+# The binder would read the projection of the scrutinee, which is what the
+# bind's own obligation is over, so the predicate cannot be recorded on it
+# without proving the guard from itself.  It is bound to a fresh value equal
+# to the projection instead, and that value's predicate is given only to a
+# query that reads it (`ContractVerifier._guarded_binder_values`).
+
+_MK_NARROWING = """\
+type Pos = { @Int | @Int.0 > 0 };
+type Idx = { @Int | @Int.0 >= 0 && @Int.0 < 3 };
+type Small = { @Pos | @Pos.0 < 10 };
+""" + _NEED_POS + """
+private fn mk(@Int -> @Option<Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Some(@Int.0 - 5)
+}
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(POST)
+  effects(pure)
+{
+  match mk(@Int.0) {
+    PATTERN -> USE,
+    None -> 1
+  }
+}
+"""
+
+
+def _mk_narrowing(post: str, pattern: str, use: str) -> str:
+    return (_MK_NARROWING.replace("POST", post)
+            .replace("PATTERN", pattern).replace("USE", use))
+
+_LET_NARROWING = """\
+type Pos = { @Int | @Int.0 > 0 };
+""" + _NEED_POS + """
+public fn f(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<State<Option<Int>>>)
+{
+  let @Option<Int> = get(());
+  match @Option<Int>.0 {
+    Some(@Pos) -> need_pos(@Pos.0),
+    None -> 0
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Option<Int>>](@Option<Int> = STATE) {
+    get(@Unit) -> { resume(@Option<Int>.0) },
+    put(@Option<Int>) -> { resume(()) }
+  } in {
+    f(())
+  }
+}
+"""
+
+
+def test_a_let_bound_scrutinees_narrowing_binder_carries_its_refinement(
+) -> None:
+    """The coordinator's program: the scrutinee is a `let`'s placeholder,
+    which translates, so the binder is a projection of it.  The call cannot
+    fail, because the bind is guarded before the arm runs; the bind's own
+    obligation stays the runtime guard, `tier3`, never proved."""
+    src = _LET_NARROWING.replace("STATE", "Some(5)")
+    v = _verify(src)
+    assert _records(v, "call_pre", _at(src, "need_pos(", 1)) == []
+    assert v.ok, v.errors
+    bind = [o.status for o in v.obligations if o.kind == "refine_bind"
+            and o.line == _at(src, "match @Option<Int>.0")[0]]
+    assert bind == ["tier3"], bind
+    assert _run(src, "main", []).value == 5
+    bad = _run(_LET_NARROWING.replace("STATE", "Some(-5)"), "main", [])
+    assert "Refinement violation" in bad.trap_message, bad
+
+
+#: arm -> (pattern, what the arm does with the binder, the text its record
+#: is located at, the record's kind, and the record once discharged).
+_MK_ARMS = {
+    "call": ("Some(@Pos)", "need_pos(@Pos.0)", "need_pos(@Pos.0)",
+             "call_pre", []),
+    "call only the walk reaches": (
+        "Some(@Pos)", "nat_to_int(string_length(show(need_pos(@Pos.0))))",
+        "need_pos(@Pos.0)", "call_pre", []),
+    "built-in domain": (
+        "Some(@Idx)", 'nat_to_int(string_char_code("abc", @Idx.0))',
+        "string_char_code(", "call_pre", ["verified"]),
+    "assertion": ("Some(@Pos)", "{ assert(@Pos.0 > 0); 1 }", "assert(",
+                  "assert", ["verified"]),
+}
+
+
+@pytest.mark.parametrize("arm", list(_MK_ARMS))
+def test_a_call_scrutinees_narrowing_binder_carries_its_refinement(
+        arm: str) -> None:
+    """`match mk(..)`: the arm's use of the binder is discharged, and the
+    bind's own obligation is still refuted (E505: `mk`'s contract does not
+    say its payload is positive), because it reads the projection and never
+    the fresh value.  A payload the refinement forbids traps at the bind."""
+    pattern, use, at, kind, record = _MK_ARMS[arm]
+    src = _mk_narrowing("true", pattern, use)
+    v = _verify(src)
+    assert _records(v, kind, _at(src, at)) == record, (
+        [(o.kind, o.status, o.error_code, o.line, o.column)
+         for o in v.obligations], src)
+    match_line = _at(src, "match mk(")[0]
+    assert [(e[0], e[1]) for e in v.errors] == [("E505", match_line)], (
+        v.errors)
+    assert _run(src, "f", [6]).trap_kind is None
+    assert "Refinement violation" in _run(src, "f", [2]).trap_message
+
+
+def test_a_postcondition_over_what_the_arm_returns_reads_the_refinement(
+) -> None:
+    """The fresh value outlives the arm inside the `match`'s own value, where
+    its fact is guarded by the arm being taken: returned through the arm, it
+    is positive, since a payload that is not traps at the bind."""
+    src = _mk_narrowing("@Int.result > 0", "Some(@Pos)", "@Pos.0")
+    v = _verify(src)
+    assert _records(v, "ensures", _at(src, "ensures(@Int.result")) == [
+        "verified"]
+    assert _run(src, "f", [6]).value == 1
+
+
+#: Where the arm's bind does NOT run, its binder's predicate must say
+#: nothing.  Each postcondition is false, and each program returns a value
+#: that breaks it: name -> (the program, the call, its argument).
+_UNTAKEN_ARM_CONTROLS = {
+    # The fact is guarded by the path to the `match`: the other branch reads
+    # the same payload unrefined.
+    "another branch": ("""\
+type Pos = { @Int | @Int.0 > 0 };
+
+public fn f(@Bool, @Option<Int> -> @Int)
+  requires(true)
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  if @Bool.0 then {
+    match @Option<Int>.0 {
+      Some(@Pos) -> @Pos.0,
+      None -> 1
+    }
+  } else {
+    match @Option<Int>.0 {
+      Some(@Int) -> @Int.0,
+      None -> 1
+    }
+  }
+}
+
+public fn g(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  f(false, Some(0 - 3))
+}
+""", "g"),
+    # ... and by no earlier arm matching.
+    "an earlier arm": ("""\
+type Pos = { @Int | @Int.0 > 0 };
+
+public fn f(@Option<Int> -> @Int)
+  requires(true)
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  match @Option<Int>.0 {
+    Some(@Int) -> @Int.0,
+    Some(@Pos) -> @Pos.0,
+    None -> 1
+  }
+}
+
+public fn g(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  f(Some(0 - 3))
+}
+""", "g"),
+    # A nested pattern's If-chain condition is its outer constructor alone,
+    # which holds of `Some(None)` too, so its arm binds no fresh value.
+    "a nested pattern": ("""\
+type Pos = { @Int | @Int.0 > 0 };
+
+public fn f(@Option<Option<Int>> -> @Int)
+  requires(true)
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  match @Option<Option<Int>>.0 {
+    Some(Some(@Pos)) -> @Pos.0,
+    Some(None) -> 0 - 7,
+    None -> 1
+  }
+}
+
+public fn g(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  f(Some(None))
+}
+""", "g"),
+}
+
+
+def test_a_binder_whose_bind_has_no_guard_carries_nothing() -> None:
+    """Code generation does not guard the bind of a refinement over a
+    refinement, so its binder is left the projection: the call stays
+    refuted, and a violating payload reaches the callee's own check."""
+    src = _mk_narrowing("true", "Some(@Small)", "need_pos(@Small.0)")
+    v = _verify(src)
+    assert _records(v, "call_pre", _at(src, "need_pos(@Small.0)")) == [
+        "violated/E501"]
+    assert "need_pos" in _run(src, "f", [2]).trap_message
+
+
+@pytest.mark.parametrize("name", list(_UNTAKEN_ARM_CONTROLS))
+def test_an_untaken_arms_refinement_says_nothing(name: str) -> None:
+    src, fn = _UNTAKEN_ARM_CONTROLS[name]
+    v = _verify(src)
+    assert _records(v, "ensures", _at(src, "ensures(@Int.result")) == [
+        "violated"], (
+        [(o.kind, o.status, o.error_code, o.line, o.column)
+         for o in v.obligations])
+    assert "Postcondition violation" in _run(src, fn, []).trap_message
 
 
 # ---------------------------------------------------------------------
