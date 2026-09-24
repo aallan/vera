@@ -925,12 +925,15 @@ class TestRelativePathDocument:
 class TestModuleAwareDiagnosticsReachTheEditor:
     """The module-aware check's errors must be published (#1282).
 
-    `analyze` type-checks module-BLIND and then calls `verify_source`,
-    which type-checks module-AWARE.  Only the second sees resolver
-    errors and module-typed errors, and it returns them as
-    `check_diagnostics` — which `analyze` discarded.  So a real type
-    error in a cross-module call produced a document with a warning, no
-    obligations, and no sign that anything had failed.
+    `analyze` type-checked module-BLIND and then called `verify_source`,
+    which type-checks module-AWARE.  Only the second saw resolver errors
+    and module-typed errors, and it returned them as `check_diagnostics`
+    — which `analyze` discarded.  So a real type error in a cross-module
+    call produced a document with a warning, no obligations, and no sign
+    that anything had failed.  Since #1513 the first check is
+    module-aware too (an unresolved call is an error, so a blind one
+    would refuse every imported call); these cells hold either design to
+    publishing the module-aware errors.
     """
 
     HDR = "  requires(true)\n  ensures(true)\n  effects(pure)\n"
@@ -974,8 +977,8 @@ class TestModuleAwareDiagnosticsReachTheEditor:
     ) -> None:
         """Appending must not double-report what was already published.
 
-        The module-aware check re-derives the same warnings the
-        module-blind one produced, so a blind append shows each twice.
+        `verify_source`'s check re-derives the diagnostics `analyze`'s
+        own check produced, so a blind append shows each twice.
         """
         codes = self._codes(
             tmp_path, self.LIB,
