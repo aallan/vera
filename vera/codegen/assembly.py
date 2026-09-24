@@ -6,6 +6,8 @@ memory, data sections, and closure infrastructure.
 
 from __future__ import annotations
 
+import re
+
 from vera.envflags import flag_enabled
 from vera.monomorphize import mangle_type_name
 from vera.skip import CodegenInvariantError
@@ -46,9 +48,54 @@ def heap_trap(indent: str) -> str:
     return "".join(
         f"{indent}{instr}\n" for instr in signal_instructions("heap_exhausted"))
 
+# #1433: the two ways a module BINDS a function identifier — a definition,
+# `(func $name ...)` opening its line, and a function import,
+# `(import "m" "f" (func $name ...))`.  Both are in the one function index
+# space, so any two binding one name is wasm-tools' `duplicate func
+# identifier`.  An export `(export "x" (func $name))`, an `elem` segment's
+# `func $a $b` and a `call $name` REFERENCE an identifier and bind none.
+_WAT_FUNC_DEF_RE = re.compile(r"^[ \t]*\(func \$([^\s()]+)", re.MULTILINE)
+_WAT_FUNC_IMPORT_RE = re.compile(
+    r'^[ \t]*\(import "[^"]*" "[^"]*" \(func \$([^\s()]+)', re.MULTILINE,
+)
+
 
 class AssemblyMixin:
     """Methods for assembling the WAT module."""
+
+    @staticmethod
+    def _assert_unique_func_names(wat: str) -> None:
+        """Refuse a module that binds one function identifier twice (#1433).
+
+        Run over the ASSEMBLED module — every definition and every function
+        import, user code and generated code alike — because that is the
+        whole set wasm-tools will bind, and nothing short of it is.  Two
+        declarations of one name are refused at check (E184); this is the
+        backstop behind that rule, because the failure it replaces was
+        reached with ``check`` and ``verify`` both passing, and surfaced as
+        ``duplicate func identifier`` against a symbol the author never
+        wrote.
+
+        It raises :class:`~vera.skip.CodegenInvariantError`, which
+        ``_compile_program`` reports as E699: reaching here is a compiler bug
+        rather than a property of the program — the posture `vera/skip.py`
+        documents for codegen invariants.
+        """
+        seen: set[str] = set()
+        for match in (*_WAT_FUNC_IMPORT_RE.finditer(wat),
+                      *_WAT_FUNC_DEF_RE.finditer(wat)):
+            name = match.group(1)
+            if name in seen:
+                raise CodegenInvariantError(
+                    f"the module binds the function identifier ${name} "
+                    f"twice, which WebAssembly refuses as a duplicate func "
+                    f"identifier. Two declarations of one name in one "
+                    f"namespace are refused at check (E184), so a module "
+                    f"reaching here either bypassed the checker or has a "
+                    f"declaration named after a symbol code generation also "
+                    f"emits."
+                )
+            seen.add(name)
 
     def _assemble_module(self, functions: list[str]) -> str:
         """Assemble a complete WAT module from compiled functions."""

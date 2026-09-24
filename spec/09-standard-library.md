@@ -2617,7 +2617,7 @@ Returns the value of the named attribute if the node is an `HtmlElement` with th
 
 Vera supports restricted abilities for constraining type variables in generic functions. To support practical generic programming — sorting, hashing, serialisation — type variables need constraints. Vera adopts restricted abilities rather than full typeclasses:
 
-<!-- vera:no-run category="non-scalar-entry" reason="its exported functions take Array, T parameters" -->
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E185 E185" reason="the built-in Eq and Ord abilities' interfaces, shown as declarations beside a use; a program declaring either is refused" -->
 ```
 ability Eq<T> {
   op eq(T, T -> Bool);
@@ -2652,12 +2652,15 @@ Key design points:
 
 This design draws on Roc's abilities (deliberately no HKTs, auto-derivable) and Gleam's validation that useful languages need not have typeclasses.
 
+Ability **operation** names form one namespace across every ability in scope, the built-in abilities included: a bare call `size(x)` names the operation and not its ability. A second declaration of an operation name, in the same ability or another, is refused (**E184**, §8.5.5). A user ability named after a built-in ability, or an operation named after a built-in ability's operation, is refused as well (**E185**): code generation compiles `eq`, `compare`, `hash` and `show` against the built-in whatever a declaration says.
+
 ### 9.8.1 Built-in Abilities
 
-Four abilities are built into the language. Each is auto-satisfied for primitive types and (where noted) for ADTs composed of satisfying types.
+Four abilities are built into the language. Each is auto-satisfied for primitive types and (where noted) for ADTs composed of satisfying types. The declarations below show their interfaces; the abilities are in scope in every program, and a program that declares one of them is refused (**E185**).
 
 **Eq\<T\>** — Equality comparison.
 
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E185" reason="the built-in Eq ability's interface; a program declaring it is refused" -->
 ```
 ability Eq<T> {
   op eq(T, T -> Bool);
@@ -2670,6 +2673,7 @@ Satisfied by: Int, Nat, Bool, Float64, String, Byte, Unit, and ADTs whose constr
 
 **Ord\<T\>** — Ordering comparison.
 
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E185" reason="the built-in Ord ability's interface; a program declaring it is refused" -->
 ```
 ability Ord<T> {
   op compare(T, T -> Ordering);
@@ -2692,6 +2696,7 @@ Satisfied by: Int, Nat, Float64, Byte, String — exactly the orderable types on
 
 **Hash\<T\>** — Hashing.
 
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E185" reason="the built-in Hash ability's interface; a program declaring it is refused" -->
 ```
 ability Hash<T> {
   op hash(T -> Int);
@@ -2704,6 +2709,7 @@ Satisfied by: Int, Nat, Bool, Float64, String, Byte, Unit, and composite types �
 
 **Show\<T\>** — String representation.
 
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E185" reason="the built-in Show ability's interface; a program declaring it is refused" -->
 ```
 ability Show<T> {
   op show(T -> String);

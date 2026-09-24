@@ -488,10 +488,14 @@ class TestAbilities:
     """Ability declarations, constraint validation, and operation resolution."""
 
     def test_ability_decl_accepted(self) -> None:
-        """Ability declaration is accepted without errors."""
+        """Ability declaration is accepted without errors.
+
+        Named apart from the built-ins: a user ability named after a
+        built-in ability is E185 (#1433).
+        """
         _check_ok("""
-        ability Eq<T> {
-          op eq(T, T -> Bool);
+        ability Same<T> {
+          op same(T, T -> Bool);
         }
 
         private fn main(@Unit -> @Int)
@@ -534,17 +538,21 @@ class TestAbilities:
         """)
 
     def test_user_defined_ability_op_call(self) -> None:
-        """User-defined ability operation resolves in constrained function."""
+        """User-defined ability operation resolves in constrained function.
+
+        Named apart from the built-ins: `Show` and `show` are the built-in
+        ability and its operation, and redeclaring either is E185 (#1433).
+        """
         _check_ok("""
-        ability Show<T> {
-          op show(T -> String);
+        ability Render<T> {
+          op render(T -> String);
         }
 
-        private forall<T where Show<T>> fn display(@T -> @String)
+        private forall<T where Render<T>> fn display(@T -> @String)
           requires(true)
           ensures(true)
           effects(pure)
-        { show(@T.0) }
+        { render(@T.0) }
         """)
 
     def test_unknown_ability_in_constraint(self) -> None:

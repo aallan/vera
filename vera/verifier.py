@@ -60,6 +60,7 @@ from vera.obligations.core import (
     expr_text_for,
 )
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv, alias_env_from_environment
+from vera.resolver import merged_import_filters
 from vera.slots import effect_op_result_names, fn_slot_scope, slot_table
 from vera.smt import (
     AxiomKind,
@@ -1556,11 +1557,9 @@ class ContractVerifier:
         if not self._resolved_modules:
             return
 
-        # 1. Build import filter
-        for imp in program.imports:
-            self._import_names[imp.path] = (
-                set(imp.names) if imp.names is not None else None
-            )
+        # 1. Build import filter, unioned across repeated imports of one
+        # path (#1433) — the one derivation the checker and codegen read too.
+        self._import_names.update(merged_import_filters(program.imports))
 
         # Snapshot builtin function names
         _builtins = TypeEnv()
