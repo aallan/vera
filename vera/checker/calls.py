@@ -17,6 +17,7 @@ from vera.checker.sql import (
 from vera.environment import (
     DB_SQL_OP_NAMES,
     STRING,
+    AdtInfo,
     ConstructorInfo,
     FunctionInfo,
     OpInfo,
@@ -1295,11 +1296,15 @@ class CallsMixin:
         Returns every module whose public types declare *name*, sorted by
         path, and the one constructor the name denotes, or
         ``None`` when it denotes no single declaration.  It denotes one only
-        when exactly one module declares it, when that type's name is
-        declared by no other module this file can see, and when nothing in
-        scope here already holds the type's name — the name a value of it
-        is typed by, so a second meaning would let one value pass for
-        another type's.
+        when exactly one module declares it and its type is one
+        `_stranger_data_type` resolves: a value of it is typed by the bare
+        type name, so a second meaning of that name would let one value pass
+        for another type's.
+
+        A construction and a pattern resolve through here alike, so a
+        pattern is typed by the same declaration: its fields bind at their
+        declared types, and its match is judged against that type's
+        constructors.
         """
         # Sorted by path: a module checker's `_resolved_modules` is built by
         # walking a set of import paths, so its order follows the hash seed.
@@ -1312,16 +1317,33 @@ class CallsMixin:
         if len(candidates) != 1:
             return candidates, None
         ci = candidates[0][1]
-        parent = ci.parent_type
-        if parent in self.env.data_types:
-            return candidates, None
-        declarers = [
-            path for path, types in self._module_all_data_types.items()
-            if parent in types
-        ]
-        if len(declarers) != 1:
+        if self._stranger_data_type(ci.parent_type) is None:
             return candidates, None
         return candidates, ci
+
+    def _stranger_data_type(self, type_name: str) -> AdtInfo | None:
+        """The declaration a data type name this file does not import
+        denotes (#1513), or ``None``.
+
+        A value of such a type reaches the file through an imported
+        signature (`pick(1)` returning `mb`'s `Colour`), typed by the bare
+        name.  The name denotes one declaration only when no data type of
+        that name is in scope here — declared or imported — and exactly one
+        module this file can see declares a type of that name, public or
+        private: two would give one bare name two types.  The pattern rules
+        read it for such a value: which constructors a match on it must
+        cover, and which ones can match it at all.
+        """
+        if type_name in self.env.data_types:
+            return None
+        declared = [
+            types[type_name]
+            for _path, types in sorted(self._module_all_data_types.items())
+            if type_name in types
+        ]
+        if len(declared) != 1:
+            return None
+        return declared[0]
 
     def _unknown_ctor_fix(
         self, name: str,
@@ -1344,9 +1366,10 @@ class CallsMixin:
                 f"import the type of the one you mean.")
 
     # The stranger-constructor warning's text (#1513), shared by E210 and
-    # E214, whose `_error` calls each carry their code as a literal so the
-    # warning-site scans (`check_diagnostic_fields.py`, the doc gate's
-    # plant table, `test_warning_severity_1513.py`) can read it.
+    # E214 in a construction and E320 and E322 in a pattern, whose `_error`
+    # calls each carry their code as a literal so the warning-site scans
+    # (`check_diagnostic_fields.py`, the doc gate's plant table,
+    # `test_warning_severity_1513.py`) can read it.
     _STRANGER_CTOR_RATIONALE = (
         "Importing a data type is what brings its constructors into scope.  "
         "This one reaches the file only through another declaration's "

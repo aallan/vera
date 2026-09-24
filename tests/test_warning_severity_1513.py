@@ -10,12 +10,15 @@ Check did not imply compile.
 Each is now an error with a fix a reader can follow, except for the one
 shape that compiled: a constructor of a data type the file does not import
 (`paint(Green)`, with `Colour` reaching the entry only through `paint`'s
-signature).  That compiled until #1454 scoped code generation's constructor
-tables to the namespace that uses them; it compiles again, through a
-fallback class in `_namespace_ctor_projection` that answers the question
-the checker's `_stranger_constructor` answers, and E210/E214 stay warnings
-for it — naming the module to import from.  A pattern on such a constructor
-never compiled, so E320/E322 are errors there too.
+signature), in a construction or in a pattern.  That compiled until #1454
+scoped code generation's constructor tables to the namespace that uses
+them; it compiles again, through a fallback class in
+`_namespace_ctor_projection` that answers the question the checker's
+`_stranger_constructor` answers, and E210/E214/E320/E322 stay warnings for
+it — naming the module to import from.  The pattern is typed by the
+constructor's own declaration, so it binds its fields and its match is
+held to the coverage and scrutinee rules the imported type gets
+(`TestThePatternMatrix`).
 
 The instrument:
 
@@ -33,6 +36,10 @@ The instrument:
 - **The fallback's conditions** (`TestTheStrangerFallback`): the cases
   where a constructor of an unimported type denotes no single declaration
   are errors, and the module-body case compiles by the same rule.
+- **The pattern matrix** (`TestThePatternMatrix`): a pattern on such a
+  constructor, in every position a pattern takes, placed in the entry and
+  in a module, checks and runs exactly as the same program with the type
+  imported, plus the warnings naming the import.
 - **The fixes** (`TestTheFixesWork`): applying the fix a diagnostic gives
   makes the program check clean and run.
 """
@@ -204,6 +211,88 @@ public fn via_mid(@Int -> @Int)
 _PAINT = {"ma.vera": _MA, "mb.vera": _MB}
 _BOX = {"boxa.vera": _BOXA, "boxb.vera": _BOXB}
 
+# Functions and a wrapper type whose signatures carry `Colour` and `Box`,
+# for patterns that meet a constructor of those types below the top level.
+_MB2 = """\
+module mb2;
+
+import mb(Colour);
+
+public data Wrap {
+  W(Colour)
+}
+
+public fn some_colour(@Int -> @Option<Colour>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if @Int.0 == 0 then {
+    None
+  } else {
+    Some(Green)
+  }
+}
+
+public fn ok_colour(@Int -> @Result<Colour, Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if @Int.0 == 0 then {
+    Err(5)
+  } else {
+    Ok(Green)
+  }
+}
+
+public fn pick(@Int -> @Colour)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if @Int.0 == 0 then {
+    Red
+  } else {
+    Green
+  }
+}
+"""
+
+_BOXC = """\
+module boxc;
+
+import boxb(Box);
+
+public data BWrap {
+  BW(Box)
+}
+
+public fn some_box(@Int -> @Option<Box>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if @Int.0 == 0 then {
+    None
+  } else {
+    Some(MkBox(@Int.0 + 5))
+  }
+}
+
+public fn ok_box(@Int -> @Result<Box, Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if @Int.0 == 0 then {
+    Err(5)
+  } else {
+    Ok(MkBox(@Int.0 + 5))
+  }
+}
+"""
+
 
 class Cell(NamedTuple):
     """One program and what `vera check` and `vera run` must do with it.
@@ -268,17 +357,18 @@ CELLS: dict[str, tuple[Cell, ...]] = {
         _cell("unknown", _main("match 1 {\n    MkNope(@Int) -> 0,\n    _ -> 1\n  }"),
               "error"),
         _cell("unimported_type",
-              _main("match mkbox(3) {\n    MkBox(@Int) -> @Int.0\n  }",
-                    imports="import boxa(mkbox);\n\n"),
-              "error", _BOX),
+              _main("match some_box(2) {\n    Some(MkBox(@Int)) -> @Int.0,\n"
+                    "    None -> 0\n  }",
+                    imports="import boxc(some_box);\n\n"),
+              "runs", {"boxc.vera": _BOXC, "boxb.vera": _BOXB}, value=7),
     ),
     "E322": (
         _cell("unknown", _main("match 1 {\n    Nope -> 0,\n    _ -> 1\n  }"),
               "error"),
         _cell("unimported_type",
-              _main("match pick(1) {\n    Red -> 10,\n    Green -> 20\n  }",
-                    imports="import ma(pick);\n\n"),
-              "error", _PAINT),
+              _main("match W(Green) {\n    W(Red) -> 1,\n    W(Green) -> 2\n  }",
+                    imports="import mb2(Wrap);\n\n"),
+              "runs", {"mb2.vera": _MB2, "mb.vera": _MB}, value=2),
     ),
     "E310": (
         _cell("unreachable_arm", _main("match 3 {\n    _ -> 1,\n    3 -> 2\n  }"),
@@ -411,11 +501,12 @@ class TestTheEnumeration:
         assert sorted(needed - set(CELLS)) == []
 
     def test_the_warning_set_is_the_one_this_fix_leaves(self) -> None:
-        """The eight are warnings only where they compile: E210 and E214 for
-        a constructor of an unimported type.  A code that becomes a warning
-        again must bring a cell that compiles and runs (the matrix below)."""
+        """The eight are warnings only where they compile: E210, E214, E320
+        and E322 for a constructor of an unimported type, in a construction
+        or a pattern.  A code that becomes a warning again must bring a cell
+        that compiles and runs (the matrix below)."""
         assert _check_stage_warning_codes() == {
-            "E210", "E214", "E310", "W001", "W002"}
+            "E210", "E214", "E310", "E320", "E322", "W001", "W002"}
 
 
 # ---------------------------------------------------------------------------
@@ -573,6 +664,36 @@ class TestTheStrangerFallback:
         # `mc` is already imported for `blue`, so its line extends that list.
         assert "'import mc(Hue, blue);'" in e214["fix"]
 
+    def test_a_pattern_name_two_modules_declare_is_an_error_naming_both(
+        self, tmp_path: Path,
+    ) -> None:
+        """The pattern form of the cell above: `Green` in a pattern denotes
+        no single declaration either, so it is an error, not a warning."""
+        files = {"main.vera": _main(
+            "match some_colour(1) {\n    Some(Green) -> 2,\n    _ -> 0\n  }"
+            " + blue(())",
+            imports="import mb2(some_colour);\nimport mc(blue);\n\n"),
+            "mb2.vera": _MB2, "mb.vera": _MB, "mc.vera": _MC_GREEN}
+        check = self._check(tmp_path, files)
+        assert _pairs(check, "diagnostics") == [("error", "E322")], check
+        assert _pairs(check, "warnings") == [], check
+        (e322,) = check["diagnostics"]
+        assert "'import mb(Colour);'" in e322["fix"]
+        assert "'import mc(Hue, blue);'" in e322["fix"]
+
+    def test_a_pattern_type_name_bound_here_is_not_overridden(
+        self, tmp_path: Path,
+    ) -> None:
+        """The pattern form of the bound-type-name cell: this file's own
+        `Colour` means `Colour` here, so `Green` in a pattern is refused."""
+        main = ("import mb2(some_colour);\n\nprivate data Colour {\n  Blue\n}"
+                "\n\n" + _main("match some_colour(1) {\n    Some(Green) -> 2,"
+                               "\n    _ -> 0\n  }"))
+        check = self._check(tmp_path, {"main.vera": main, "mb2.vera": _MB2,
+                                       "mb.vera": _MB})
+        assert ("error", "E322") in _pairs(check, "diagnostics"), check
+        assert ("warning", "E322") not in _pairs(check, "warnings"), check
+
     def test_a_private_type_is_not_a_candidate(self, tmp_path: Path) -> None:
         main = _main("four(())", imports="import md(four);\n\n")
         files = {"main.vera": main.replace("four(())", "match Blue {\n    _ -> four(())\n  }"),
@@ -656,6 +777,222 @@ class TestTheStrangerFallback:
         assert codegen_view == checker_view
         assert codegen_view[("mx",)] == {("ma",), ("mb",)}
         assert ("mc",) in codegen_view[None]
+
+
+# ---------------------------------------------------------------------------
+# A pattern on a constructor of an unimported type, in every position
+# ---------------------------------------------------------------------------
+
+
+class PatternCell(NamedTuple):
+    """A match whose patterns name a constructor the file does not import.
+
+    ``imports`` is what the file holding the match imports (module -> names);
+    ``types`` is what the CONTROL adds to make it import every pattern's type.
+    ``errors`` is the check's error codes, the same for the file and its
+    control.  ``value`` is what both print, or ``None`` where the cell pins
+    only that they agree.  ``main`` is what `main` (6dc41d40), where the
+    constructor tables were flat, did with the file: the value it printed,
+    or the code it stopped at.
+    """
+
+    name: str
+    body: str
+    imports: dict[str, tuple[str, ...]]
+    types: dict[str, tuple[str, ...]]
+    errors: tuple[str, ...]
+    value: int | None
+    main: str
+
+
+_COLOUR = {"mb": ("Colour",)}
+_BOXED = {"boxb": ("Box",)}
+_COLOUR_LIGHT = {"mb": ("Colour",), "light": ("Light",)}
+
+_PATTERN_CELLS: tuple[PatternCell, ...] = (
+    # A nullary constructor at the top level, and the coverage rule over it.
+    PatternCell("nullary_top_wildcard",
+                "match Green {\n    Green -> 2,\n    _ -> 0\n  }",
+                {"mb2": ("Wrap",)}, _COLOUR, (), 2, "2"),
+    PatternCell("nullary_top_exhaustive",
+                "match Green {\n    Red -> 1,\n    Green -> 2\n  }",
+                {"mb2": ("Wrap",)}, _COLOUR, (), 2,
+                "E313: the scrutinee was untyped"),
+    PatternCell("nullary_top_missing_case",
+                "match Green {\n    Red -> 1\n  }",
+                {"mb2": ("Wrap",)}, _COLOUR, ("E311",), None,
+                "E313: the scrutinee was untyped"),
+    # A constructor with a field at the top level.
+    PatternCell("fields_top_binder",
+                "match MkBox(7) {\n    MkBox(@Int) -> @Int.0\n  }",
+                {"boxc": ("BWrap",)}, _BOXED, (), 7,
+                "E130: the pattern bound nothing"),
+    PatternCell("fields_top_wildcard",
+                "match MkBox(7) {\n    MkBox(_) -> 1\n  }",
+                {"boxc": ("BWrap",)}, _BOXED, (), 1,
+                "E313: the scrutinee was untyped"),
+    PatternCell("fields_top_arity",
+                "match MkBox(7) {\n    MkBox(@Int, @Int) -> 1\n  }",
+                {"boxc": ("BWrap",)}, _BOXED, ("E321",), None,
+                "E313: the scrutinee was untyped"),
+    # Nested in another constructor's field.
+    PatternCell("nested_in_constructor",
+                "match W(Green) {\n    W(Red) -> 1,\n    W(Green) -> 2\n  }",
+                {"mb2": ("Wrap",)}, _COLOUR, (), 2, "2"),
+    PatternCell("nested_in_constructor_wildcard",
+                "match W(Green) {\n    W(Green) -> 2,\n    _ -> 0\n  }",
+                {"mb2": ("Wrap",)}, _COLOUR, (), 2, "2"),
+    PatternCell("nested_fields_in_constructor",
+                "match BW(MkBox(7)) {\n    BW(MkBox(@Int)) -> @Int.0\n  }",
+                {"boxc": ("BWrap",)}, _BOXED, (), 7,
+                "E130: the pattern bound nothing"),
+    # #1540: a case missing below the top level is not judged, for an
+    # imported type either.  Pinned as agreement only, so this cell neither
+    # depends on nor hides the fix for that issue.
+    PatternCell("nested_missing_case_1540",
+                "match W(Green) {\n    W(Red) -> 1\n  }",
+                {"mb2": ("Wrap",)}, _COLOUR, (), None,
+                "1, the wrong arm (#1540)"),
+    # Inside Option and Result.
+    PatternCell("inside_option_wildcard",
+                "match some_colour(1) {\n    Some(Green) -> 2,\n    _ -> 0\n  }",
+                {"mb2": ("some_colour",)}, _COLOUR, (), 2, "2"),
+    PatternCell("inside_option_every_case",
+                "match some_colour(1) {\n    Some(Red) -> 1,\n"
+                "    Some(Green) -> 2,\n    None -> 0\n  }",
+                {"mb2": ("some_colour",)}, _COLOUR, (), 2, "2"),
+    PatternCell("fields_inside_option_wildcard",
+                "match some_box(2) {\n    Some(MkBox(_)) -> 1,\n    _ -> 0\n  }",
+                {"boxc": ("some_box",)}, _BOXED, (), 1, "1"),
+    PatternCell("fields_inside_option_binder",
+                "match some_box(2) {\n    Some(MkBox(@Int)) -> @Int.0,\n"
+                "    None -> 0\n  }",
+                {"boxc": ("some_box",)}, _BOXED, (), 7,
+                "E130: the pattern bound nothing"),
+    PatternCell("fields_binder_beside_an_outer_one",
+                "let @Int = 3;\n  match some_box(@Int.0) {\n"
+                "    Some(MkBox(@Int)) -> @Int.0 + @Int.1,\n    None -> 0\n  }",
+                {"boxc": ("some_box",)}, _BOXED, (), 11,
+                "E130: the pattern bound nothing"),
+    PatternCell("inside_result",
+                "match ok_colour(1) {\n    Ok(Green) -> 2,\n    _ -> 0\n  }",
+                {"mb2": ("ok_colour",)}, _COLOUR, (), 2, "2"),
+    PatternCell("fields_inside_result",
+                "match ok_box(3) {\n    Ok(MkBox(@Int)) -> @Int.0,\n"
+                "    Err(@Int) -> @Int.0\n  }",
+                {"boxc": ("ok_box",)}, _BOXED, (), 8,
+                "E130: the pattern bound nothing"),
+    # A match directly on a module function's result: #1493 drops it at
+    # compile, with the import as without it, so the cell pins agreement.
+    PatternCell("scrutinee_a_module_call_1493",
+                "match pick(1) {\n    Red -> 10,\n    Green -> 20\n  }",
+                {"mb2": ("pick",)}, _COLOUR, (), None,
+                "E602 (#1493), as with the import"),
+    PatternCell("scrutinee_a_module_call_missing_case",
+                "match pick(1) {\n    Red -> 10\n  }",
+                {"mb2": ("pick",)}, _COLOUR, ("E311",), None,
+                "coverage unjudged; E602 (#1493)"),
+    # A constructor of ANOTHER type than the scrutinee's.
+    PatternCell("another_types_constructor_nested",
+                "match some_colour(1) {\n    Some(Amber) -> 2,\n    _ -> 0\n  }",
+                {"mb2": ("some_colour",), "light": ("amber",)}, _COLOUR_LIGHT,
+                ("E314",), None, "0: `Amber`'s tag compared with a `Colour`"),
+    PatternCell("another_types_constructor_top",
+                "match Green {\n    Amber -> 1,\n    _ -> 0\n  }",
+                {"mb2": ("Wrap",), "light": ("amber",)}, _COLOUR_LIGHT,
+                ("E314",), None, "0: `Amber`'s tag compared with a `Colour`"),
+)
+
+_PATTERN_MODULES = {"mb.vera": _MB, "mb2.vera": _MB2, "boxb.vera": _BOXB,
+                    "boxc.vera": _BOXC, "light.vera": _LIGHT}
+
+
+def _import_lines(imports: dict[str, tuple[str, ...]]) -> str:
+    return "".join(f"import {mod}({', '.join(sorted(names))});\n"
+                   for mod, names in sorted(imports.items())) + "\n"
+
+
+def _pattern_files(cell: PatternCell, placement: str,
+                   *, control: bool) -> dict[str, str]:
+    """*cell*'s program with the match in the entry (``program``) or in a
+    module's function the entry calls (``module``); the control imports the
+    pattern's types as well."""
+    imports = {mod: tuple(names) for mod, names in cell.imports.items()}
+    if control:
+        for mod, names in cell.types.items():
+            imports[mod] = tuple(sorted({*imports.get(mod, ()), *names}))
+    head = _import_lines(imports)
+    if placement == "program":
+        return {**_PATTERN_MODULES, "main.vera": _main(cell.body, imports=head)}
+    module = (f"module mp;\n\n{head}public fn run_p(@Unit -> @Int)\n{_HDR}"
+              f"{{\n  {cell.body}\n}}\n")
+    return {**_PATTERN_MODULES, "mp.vera": module,
+            "main.vera": _main("run_p(())", imports="import mp(run_p);\n\n")}
+
+
+def _run_outcome(run: dict[str, Any]) -> tuple[object, ...]:
+    if run["ok"]:
+        return ("ran", run["value"], run["stdout"])
+    return ("refused", sorted(d.get("error_code") or ""
+                              for d in run["diagnostics"]))
+
+
+_STRANGER_CODES = frozenset({"E210", "E214", "E320", "E322"})
+
+
+class TestThePatternMatrix:
+    """A pattern resolves a constructor of an unimported type the way a
+    construction does (#1513): a warning naming the import where the name
+    denotes one declaration, and the program then checks and runs exactly
+    as it does with the type imported.
+
+    The control is the same program with the import, so each cell is a
+    differential that no fallback value can satisfy: the pattern is typed
+    by its own declaration, so its binders bind (the `binder` cells printed
+    nothing on `main`, where the pattern bound nothing), its match is held
+    to the coverage rule the imported type is (the `missing_case` cells),
+    and a constructor of another type is refused as it is with the import
+    (the `another_types` cells, which `main` compiled by comparing tags).
+    Every value `main` printed is printed again.
+    """
+
+    @pytest.mark.parametrize("placement", ["program", "module"])
+    @pytest.mark.parametrize(
+        "cell", _PATTERN_CELLS, ids=[c.name for c in _PATTERN_CELLS])
+    def test_the_pattern_behaves_as_with_the_import(
+        self, cell: PatternCell, placement: str, tmp_path: Path,
+    ) -> None:
+        (tmp_path / "stranger").mkdir()
+        (tmp_path / "control").mkdir()
+        stranger = _write(tmp_path / "stranger",
+                          _pattern_files(cell, placement, control=False))
+        control = _write(tmp_path / "control",
+                         _pattern_files(cell, placement, control=True))
+        s_check, c_check = _cli("check", stranger), _cli("check", control)
+        # The same errors, in the same order: the stranger's pattern draws no
+        # error its control does not, and loses none it draws.
+        assert _pairs(s_check, "diagnostics") == _pairs(c_check, "diagnostics")
+        assert [code for sev, code in _pairs(c_check, "diagnostics")] == list(
+            cell.errors), c_check
+        # The control's warnings, plus one per unimported constructor naming
+        # an import of its type.
+        s_warn = [d.get("error_code") for d in s_check["warnings"]]
+        c_warn = [d.get("error_code") for d in c_check["warnings"]]
+        extra = list(s_warn)
+        for code in c_warn:
+            extra.remove(code)
+        assert extra and set(extra) <= _STRANGER_CODES, s_check["warnings"]
+        assert any(code in ("E320", "E322") for code in extra), extra
+        for d in s_check["warnings"]:
+            if d.get("error_code") in _STRANGER_CODES:
+                assert any(f"'import {mod}(" in d["fix"]
+                           for mod in cell.types), d
+        s_run, c_run = _cli("run", stranger), _cli("run", control)
+        assert _run_outcome(s_run) == _run_outcome(c_run), (s_run, c_run)
+        if cell.value is not None:
+            assert s_run["ok"] is True and s_run["value"] == cell.value, s_run
+        if cell.errors:
+            assert s_run["ok"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -795,14 +1132,26 @@ class TestTheFixesWork:
     def test_a_pattern_on_an_unimported_type_names_the_import(
         self, tmp_path: Path,
     ) -> None:
+        """Both of a pattern's warnings give the one import, and following
+        it clears them and still prints 2."""
+        body = "match some_colour(1) {\n    Some(Red) -> 1,\n    Some(Green) -> 2,\n    None -> 0\n  }"
+        files = {"mb2.vera": _MB2, "mb.vera": _MB}
         path = _write(tmp_path, {
-            "main.vera": _main(
-                "match pick(1) {\n    Red -> 10,\n    Green -> 20\n  }",
-                imports="import ma(pick);\n\n"),
-            **_PAINT})
-        errors = _cli("check", path)["diagnostics"]
-        assert [d["error_code"] for d in errors] == ["E322", "E322"]
-        assert all("'import mb(Colour);'" in d["fix"] for d in errors)
+            "main.vera": _main(body, imports="import mb2(some_colour);\n\n"),
+            **files})
+        check = _cli("check", path)
+        assert check["ok"] is True, check
+        warnings = check["warnings"]
+        assert [d["error_code"] for d in warnings] == ["E322", "E322"]
+        assert all(d["fix"] == "Add the import: 'import mb(Colour);'."
+                   for d in warnings), warnings
+        path.write_text(_main(
+            body, imports="import mb2(some_colour);\nimport mb(Colour);\n\n"),
+            encoding="utf-8")
+        check = _cli("check", path)
+        assert check["ok"] is True and check["warnings"] == [], check
+        run = _cli("run", path)
+        assert run["ok"] is True and run["value"] == 2, run
 
     def test_importing_a_transitive_function_makes_it_callable(
         self, tmp_path: Path,
@@ -820,3 +1169,48 @@ class TestTheFixesWork:
             encoding="utf-8")
         run = _cli("run", path)
         assert run["ok"] is True and run["value"] == 41, run
+
+
+# ---------------------------------------------------------------------------
+# The guard rail's account of how a call reaches it
+# ---------------------------------------------------------------------------
+
+
+# #1499: a bare call to an operation of a user-declared ability checks clean
+# and has no function for code generation to compile.
+_ABILITY_CALL = "ability Sz<T> {\n  op size(T -> Int);\n}\n\n" + _main("size(1)")
+
+
+class TestTheGuardRail:
+    """Code generation's rail for a call to no function, and spec §8.9.3,
+    describe how such a call reaches code generation.
+
+    The checker refuses a call that names nothing (E200, E230, E233), but a
+    call it ACCEPTS can still name nothing code generation compiles: a user
+    ability's operation (#1499).  Neither text may say a checked program
+    never gets there.
+    """
+
+    def test_a_checked_call_reaches_the_rail_and_its_rationale_says_how(
+        self, tmp_path: Path,
+    ) -> None:
+        path = _write(tmp_path, {"main.vera": _ABILITY_CALL})
+        check = _cli("check", path)
+        # The premise, #1499: the call checks clean.  Once that issue is
+        # fixed this turns red, and the two texts can drop the case.
+        assert check["ok"] is True and check["warnings"] == [], check
+        run = _cli("run", path)
+        assert run["ok"] is False, run
+        (rail,) = [d for d in run["diagnostics"]
+                   if "is not defined in this module" in d["description"]]
+        assert "reached only by a program compiled without" not in (
+            rail["rationale"])
+        assert "ability" in rail["rationale"], rail
+        assert "#1499" in rail["rationale"], rail
+
+    def test_spec_8_9_3_names_the_checked_case(self) -> None:
+        spec = (ROOT / "spec" / "08-modules.md").read_text(encoding="utf-8")
+        start = spec.index("### 8.9.3 Guard Rail")
+        section = spec[start:spec.index("\n## ", start)]
+        assert "never calls an undefined function" not in section
+        assert "ability" in section and "issues/1499" in section, section

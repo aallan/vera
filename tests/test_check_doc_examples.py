@@ -724,15 +724,21 @@ public fn f(@Int -> @Int)
 """
 
 # One block per warning the checker gives, drawing exactly that warning.
-# E210 and E214 are warnings only for a constructor whose data type the file
-# does not import, which needs modules beside the block
-# (`_WARNING_PLANT_MODULES`); every other use of an unknown name is an error
-# since #1513.
+# E210, E214, E320 and E322 are warnings only for a constructor whose data
+# type the file does not import, in a construction or a pattern, which needs
+# modules beside the block (`_WARNING_PLANT_MODULES`); every other use of an
+# unknown name is an error since #1513.
 _WARNING_PLANTS: dict[str, str] = {
     "E210": "import wpa(unbox);\n\n" + _WARNING_PLANT_HEAD
     + "  unbox(MkBox(@Int.0))\n}",
     "E214": "import wpa(paint);\n\n" + _WARNING_PLANT_HEAD
     + "  paint(Green)\n}",
+    "E320": "import wpa(some_box);\n\n" + _WARNING_PLANT_HEAD
+    + "  match some_box(@Int.0) {\n    Some(MkBox(@Int)) -> @Int.0,\n"
+    "    _ -> 0\n  }\n}",
+    "E322": "import wpa(some_colour);\n\n" + _WARNING_PLANT_HEAD
+    + "  match some_colour(@Int.0) {\n    Some(Green) -> 2,\n    _ -> 0\n"
+    "  }\n}",
     "E310": _WARNING_PLANT_HEAD + "  match @Int.0 {\n    _ -> 1,\n    0 -> 2\n  }\n}",
     "W001": _WARNING_PLANT_HEAD + "  ?\n}",
     "W002": """\
@@ -793,12 +799,28 @@ public fn paint(@Colour -> @Int)
     Green -> 2
   }
 }
+
+public fn some_box(@Int -> @Option<Box>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Some(MkBox(@Int.0))
+}
+
+public fn some_colour(@Int -> @Option<Colour>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Some(Green)
+}
 """
 
 # The modules a plant imports, written beside the block.
 _WARNING_PLANT_MODULES: dict[str, dict[str, str]] = {
-    "E210": {"wpa.vera": _WPA, "wpb.vera": _WPB},
-    "E214": {"wpa.vera": _WPA, "wpb.vera": _WPB},
+    code: {"wpa.vera": _WPA, "wpb.vera": _WPB}
+    for code in ("E210", "E214", "E320", "E322")
 }
 
 

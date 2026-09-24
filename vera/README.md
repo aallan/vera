@@ -90,7 +90,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `  eq_ability.py` | 226 | | Eq ability derivation checks | |
 | `  sql.py` | 309 | | SQL literal-provenance resolution + placeholder counting (#309) | `resolve_literal_string()`, `count_placeholders()` |
 | `  calls.py` | 1,902 | | Function/constructor/module/ability calls | |
-| `  control.py` | 929 | | If/match, patterns, effect handlers | |
+| `  control.py` | 1,040 | | If/match, patterns, effect handlers | |
 | `resolver.py` | 373 | Resolve | Module path resolution, parse cache, the one import-filter derivation | `ModuleResolver`, `merged_import_filters()` |
 | `disclosure.py` | 536 | Verify | Per-module disclosed-function manifests: each module's own verification emits the set `disclosed_fn_names` derives, keyed by owner path and carrying the `DisclosureSite` the importer's E534 cites, so the #1363 demotion crosses an import (#1399); computed BOTTOM-UP over the import DAG so each module is verified once and nothing nests, and content-addressed on the module's own source + its closure's + the budget, which is what makes an edit to an imported module invalidate it | `ModuleDisclosureIndex`, `DisclosureSite` |
 | `monomorphize.py` | 4,368 | Resolve | Shared generic instantiation discovery + AST substitution (verifier and codegen); each clone's De Bruijn recount renders its binder names under the **origin module's** `AliasEnv`, the one its consumers rebuild the clone's scope with (#1208) | `substitute_type_vars()`, `resolve_type_alias()`, `canonicalize_type_aliases()` |

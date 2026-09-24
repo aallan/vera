@@ -255,7 +255,10 @@ class ControlFlowMixin:
 
         # --- ADT exhaustiveness ---
         if isinstance(raw_ty, AdtType):
-            adt_info = self.env.data_types.get(raw_ty.name)
+            # #1513: a type this file does not import is judged by its own
+            # declaration, as its constructors are resolved by it.
+            adt_info = (self.env.data_types.get(raw_ty.name)
+                        or self._stranger_data_type(raw_ty.name))
             if adt_info is None:
                 return  # unknown ADT, can't check
             all_ctors = set(adt_info.constructors.keys())
@@ -389,7 +392,10 @@ class ControlFlowMixin:
             return scrut
         if isinstance(scrut, AdtType) and (
                 scrut.name in self.env.data_types
-                or scrut.name in _CONSTRUCTORLESS_BUILTIN_TYPES):
+                or scrut.name in _CONSTRUCTORLESS_BUILTIN_TYPES
+                # #1513: a type this file does not import, whose own
+                # declaration types the constructors a pattern names.
+                or self._stranger_data_type(scrut.name) is not None):
             return scrut
         return None
 
@@ -455,6 +461,11 @@ class ControlFlowMixin:
 
         if isinstance(pat, (ast.ConstructorPattern, ast.NullaryPattern)):
             ci = self.env.lookup_constructor(pat.name)
+            if ci is None and pat.name not in self._refused_ctor_names:
+                # #1513: a constructor of a type this file does not import
+                # is typed by its own declaration, so one of another type
+                # cannot match this scrutinee here either.
+                _candidates, ci = self._stranger_constructor(pat.name)
             if ci is None:
                 return False  # E320/E322 own an unknown constructor name
             if isinstance(scrut, AdtType) and scrut.name == ci.parent_type:
@@ -486,7 +497,8 @@ class ControlFlowMixin:
         scrut_name = pretty_type(scrut)
         alternatives = [f"a binding pattern '@{scrut_name}'", "a wildcard '_'"]
         if isinstance(scrut, AdtType):
-            info = self.env.data_types.get(scrut.name)
+            info = (self.env.data_types.get(scrut.name)
+                    or self._stranger_data_type(scrut.name))
             if info is not None and info.constructors:
                 ctors = ", ".join(sorted(info.constructors))
                 alternatives.insert(0, f"a constructor of {scrut_name} "
@@ -526,10 +538,26 @@ class ControlFlowMixin:
                 refused.extend(self._check_pattern(sub_pat, UnknownType()))
             return refused
         if ci is None:
-            # An error (#1513), including for a constructor of a type this
-            # file does not import: unlike a construction, a pattern on one
-            # never compiled, so the import is required here.
-            candidates, _ = self._stranger_constructor(pat.name)
+            # #1513: a constructor of a type this file does not import is
+            # resolved as a construction of it is — a warning naming the
+            # import where the name denotes one declaration, which then
+            # types the pattern's fields below.
+            candidates, ci = self._stranger_constructor(pat.name)
+            if ci is not None:
+                message, fix = self._stranger_ctor_message(
+                    pat.name, ci, candidates)
+                self._error(
+                    pat, message,
+                    rationale=self._STRANGER_CTOR_RATIONALE,
+                    fix=fix,
+                    severity="warning",
+                    spec_ref='Chapter 8, Section 8.5.4 '
+                             '"Constructor Resolution"',
+                    error_code="E320",
+                )
+        if ci is None:
+            # An error (#1513): the arm names no constructor, so it has no
+            # tag to test and cannot be compiled.
             self._error(
                 pat,
                 f"Unknown constructor '{pat.name}' in pattern.",
@@ -609,8 +637,22 @@ class ControlFlowMixin:
         if ci is None and pat.name in self._refused_ctor_names:
             return []  # #1497: see `_check_ctor_pattern`
         if ci is None:
+            # #1513: see `_check_ctor_pattern`.
+            candidates, ci = self._stranger_constructor(pat.name)
+            if ci is not None:
+                message, fix = self._stranger_ctor_message(
+                    pat.name, ci, candidates)
+                self._error(
+                    pat, message,
+                    rationale=self._STRANGER_CTOR_RATIONALE,
+                    fix=fix,
+                    severity="warning",
+                    spec_ref='Chapter 8, Section 8.5.4 '
+                             '"Constructor Resolution"',
+                    error_code="E322",
+                )
+        if ci is None:
             # An error (#1513); see `_check_ctor_pattern`.
-            candidates, _ = self._stranger_constructor(pat.name)
             self._error(
                 pat,
                 f"Unknown constructor '{pat.name}' in pattern.",

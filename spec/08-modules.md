@@ -381,14 +381,17 @@ for the same in a pattern. One case is a warning instead. When the constructor
 belongs to a `public` data type of a module this file reaches through its
 imports, but the file does not import the type — typically one that reaches it
 only through an imported function's signature, as in `paint(Green)` after
-`import ma(paint);` where `ma` imports `Colour` from `mb` — a *construction* of
-it compiles and is reported as **E210** or **E214** at warning severity, with
-the import that names it (`import mb(Colour);`) as the fix. It resolves this way
-only when it denotes exactly one declaration: one module's public type declares
-the name, no other module the file can see declares a type of the same name, and
-the type's name means nothing else in this file. Otherwise it is an error. A
-*pattern* on such a constructor is always an error (**E320**, **E322**): the
-file must import the type to match on it.
+`import ma(paint);` where `ma` imports `Colour` from `mb` — it compiles and is
+reported at warning severity, with the import that names it
+(`import mb(Colour);`) as the fix: **E210** or **E214** for a construction,
+**E320** or **E322** for a pattern such as `Some(Green)`. It is typed by its own
+declaration either way, so a pattern's fields bind at their declared types, a
+`match` on the type must cover that declaration's constructors (§4.9.2), and a
+constructor of another type cannot match the scrutinee (**E314**), exactly as
+when the type is imported. It resolves this way only when it denotes exactly one
+declaration: one module's public type declares the name, no other module the
+file can see declares a type of the same name, and no data type of that name is
+in scope in this file. Otherwise it is an error.
 
 Constructors differ from functions in one respect, and it is a property of
 compilation rather than of resolution: what two modules of one program may
@@ -693,9 +696,9 @@ Imported functions are **not** exported from the WASM module. Only the importing
 
 ### 8.9.3 Guard Rail
 
-A call that resolves to no function is an error at type-check time — **E200** for a bare call, **E230** for a module-qualified call to a module this file does not import, **E233** for a function the named module does not declare — so a program `vera check` accepts never calls an undefined function. A bare call to a name two imports supply is refused at the import instead (**E155**, §8.5.2.2).
+A call that resolves to no function is an error at type-check time — **E200** for a bare call, **E230** for a module-qualified call to a module this file does not import, **E233** for a function the named module does not declare. A bare call to a name two imports supply is refused at the import instead (**E155**, §8.5.2.2). A call the checker accepts can still have no function behind it: a bare call to an operation of a user-declared ability is one, which code generation does not yet compile ([#1499](https://github.com/aallan/vera/issues/1499)).
 
-The code generator keeps a guard rail for the same condition, for a program compiled without being checked first. After module registration populates the known-function set, the guard rail only flags truly unknown calls — imported functions are recognised as known.
+The code generator keeps a guard rail for the same condition, which such a call reaches, and so does a program compiled without being checked first. After module registration populates the known-function set, the guard rail only flags truly unknown calls — imported functions are recognised as known.
 
 If a function call cannot be resolved against either local definitions or imported modules, the guard rail reports:
 

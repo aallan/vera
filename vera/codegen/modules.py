@@ -19,6 +19,7 @@ from vera.monomorphize import (
     module_qualified_generic_names,
     module_qualified_generic_targets,
     namespace_fn_names,
+    namespace_module_reach,
     public_generic_names,
     qualify_contended_data_decls,
 )
@@ -873,31 +874,17 @@ class CrossModuleMixin:
     ) -> dict[tuple[str, ...] | None, frozenset[tuple[str, ...]]]:
         """The modules each namespace's checker can see (#1513).
 
-        The entry program's checker is handed every resolved module; a
-        module's bodies are checked by a fresh checker handed the modules
-        its own imports reach (``ModulesMixin._modules_visible_to``).  The
-        constructor fallback in `_namespace_ctor_projection` asks this, so
-        a constructor the checker resolves among the modules it can see is
-        resolved here among the same modules, and one outside them cannot
-        make a name ambiguous on this side alone.
+        The constructor fallback in `_namespace_ctor_projection` asks this,
+        so a constructor the checker resolves among the modules it can see
+        is resolved here among the same modules, and one outside them cannot
+        make a name ambiguous on this side alone.  The derivation is the
+        shared :func:`vera.monomorphize.namespace_module_reach`, which the
+        verifier's :func:`~vera.monomorphize.namespace_ctor_owners` reads
+        too, so the two sides of the #732 differential resolve a stranger
+        constructor among the same modules.
         """
-        by_path = {m.path: m for m in self._resolved_modules}
-        reach: dict[tuple[str, ...] | None, frozenset[tuple[str, ...]]] = {
-            None: frozenset(by_path),
-        }
-        for mod in self._resolved_modules:
-            seen: set[tuple[str, ...]] = set()
-            frontier = [tuple(imp.path) for imp in mod.program.imports]
-            while frontier:
-                path = frontier.pop()
-                if path in seen or path not in by_path:
-                    continue
-                seen.add(path)
-                frontier.extend(
-                    tuple(imp.path) for imp in by_path[path].program.imports
-                )
-            reach[mod.path] = frozenset(seen)
-        return reach
+        return namespace_module_reach(
+            (mod.path, mod.program) for mod in self._resolved_modules)
 
     def _build_adt_membership(
         self,
@@ -2125,8 +2112,11 @@ class CrossModuleMixin:
         rationale = (
             "The WASM code generator compiles imported functions into the "
             "same binary.  An unresolved call has no target to compile "
-            "against.  The checker refuses one (E200, E230, E233), so this "
-            "is reached only by a program compiled without being checked."
+            "against.  The checker refuses a call that names nothing (E200, "
+            "E230, E233), so a call reaching this was either compiled "
+            "without being checked, or accepted by the checker as something "
+            "code generation does not yet compile as a call: a bare call to "
+            "an operation of a user-declared ability is one (#1499)."
         )
         source_line = self._get_source_line(loc.line)
         # A module-qualified call (`m::f`) and a bare call (`f`) fail for
