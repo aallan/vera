@@ -33,9 +33,145 @@ let wasm = null;       // WebAssembly instance exports
 let stdoutBuf = '';    // Captured IO.print output
 let stderrBuf = '';    // Captured IO.stderr output (#463)
 let lastViolation = ''; // Last contract violation message
-let lastOverflow = false; // #808: #798 integer-overflow guard fired this call
-let lastNatGuard = false; // #754: @Int -> @Nat narrowing guard fired this call
-let lastWiden = false; // #1438: @Nat -> @Int widening guard fired this call
+let lastTrap = null; // #1479: { code, message } a named check passed to vera.trap
+
+// BEGIN GENERATED TRAP TABLE: vera/trap_registry.py browser_trap_table().
+// tests/test_named_traps_1479.py requires this block to equal that function's
+// output, so this runtime names every trap exactly as wasmtime and the WASI
+// host do.  Regenerate it from there rather than editing it here.
+const TRAP_TABLE = {
+  "kinds": {
+    "assertion_failed": {
+      "code": 5,
+      "description": "Assertion failed",
+      "fix": "An `assert(...)` evaluated to false at run time: the property it states did not hold at that point, so either the property or the code reaching it is wrong \u2014 the message quotes the assertion.  When the property follows from the function's inputs, state it as a `requires(...)` so every caller must establish it and `vera verify` proves the assertion at compile time (Tier 1); `vera verify` also reports an assertion it can prove false as E507.",
+      "siteMessage": true
+    },
+    "contract_violation": {
+      "code": 0,
+      "description": "Contract violation",
+      "fix": "",
+      "siteMessage": true
+    },
+    "divide_by_zero": {
+      "code": 0,
+      "description": "Integer division by zero",
+      "fix": "Add a precondition `requires(divisor != 0)` on the function performing the division, or guard the division site with a non-zero check.  The Z3 verifier will then prove the division is safe at every call site at compile time.",
+      "siteMessage": false
+    },
+    "float_conversion": {
+      "code": 8,
+      "description": "Float64 value outside the @Int range",
+      "fix": "A `Float64` \u2192 `Int` conversion (`float_to_int`, `floor`, `ceil` or `round`) was given NaN, an infinity, or a value whose integer part lies outside `@Int`'s range `[-2^63, 2^63)`, none of which an `@Int` can hold.  Check the value first \u2014 `float_is_nan(x)`, `float_is_infinite(x)` and a range bound \u2014 in a `requires(...)` or an explicit branch; `vera verify` reports a constant argument it can prove out of the domain as E529.",
+      "siteMessage": true
+    },
+    "heap_exhausted": {
+      "code": 9,
+      "description": "Heap exhausted",
+      "fix": "The program ran out of heap memory.  The heap has a 2 GiB ceiling \u2014 one allocation, and all live data together, must stay below 2^31 bytes (`$alloc` in `vera/codegen/assembly.py`) \u2014 and the host may refuse to grow memory before that.  The collector has already reclaimed everything unreachable when this fires, so the live data itself is too large: build smaller values (a very long `string_repeat`, `array_range` or accumulated string is the usual cause), or process the input in pieces instead of holding it all at once.  Under `--target wasi-p2`, one host result (an argument list, a line of input) must also fit the adapter's 64 KiB arena.",
+      "siteMessage": false
+    },
+    "host_error": {
+      "code": 0,
+      "description": "Host binding error",
+      "fix": "",
+      "siteMessage": true
+    },
+    "index_out_of_bounds": {
+      "code": 6,
+      "description": "Array index out of bounds",
+      "fix": "An array index fell outside `[0, array_length(arr))`, so the read would have been outside the array.  Add a precondition naming the index and the array \u2014 `requires(i >= 0 && i < array_length(arr))` \u2014 or guard the access with an explicit branch, and `vera verify` proves the index in bounds at compile time (Tier 1); it reports an index it can prove out of bounds as E527.",
+      "siteMessage": true
+    },
+    "nat_guard": {
+      "code": 2,
+      "description": "Negative value bound into a @Nat slot",
+      "fix": "A negative `@Int` was bound into a `@Nat` slot \u2014 a `let @Nat = <@Int>`, a match or tuple-destructure binding, a constructor field, or a call / effect-operation argument whose formal is `@Nat`.  The verifier could not prove the value non-negative, so it left a runtime check here (Tier 3).  Add a `requires(... >= 0)` precondition, or narrow through an explicit branch (`if x >= 0 then { ... }`), so Z3 discharges it at compile time and the check becomes dead.",
+      "siteMessage": false
+    },
+    "nat_underflow": {
+      "code": 4,
+      "description": "@Nat subtraction would be negative",
+      "fix": "A `@Nat` subtraction's right operand was larger than its left, so the result would have been negative, which no `@Nat` can hold.  The verifier could not prove the operands ordered, so it left a runtime check here (Tier 3).  Add the `requires(lhs >= rhs)` the message names to the enclosing function, or branch on the comparison first (`if lhs >= rhs then { lhs - rhs } else { ... }`), or compute in `@Int` where a negative result means something; `vera verify` then discharges the `nat_sub` obligation at compile time.",
+      "siteMessage": true
+    },
+    "out_of_bounds": {
+      "code": 0,
+      "description": "Out-of-bounds memory access",
+      "fix": "A linear-memory load or store fell outside the module's memory.  Every array index and `string_char_code` index is bounds-checked before its access and reports `index_out_of_bounds` or `string_index_out_of_bounds` instead, and `string_slice` clamps its indices, so no check on a value your program computed reaches this kind: a runtime helper (`gc_collect`, `alloc`, a host binding) read or wrote outside memory, which is a bug in Vera rather than in the program \u2014 please file a minimal reproducer at https://github.com/aallan/vera/issues/new.",
+      "siteMessage": false
+    },
+    "overflow": {
+      "code": 1,
+      "description": "Integer overflow",
+      "fix": "Integer arithmetic produced a value outside the representable range \u2014 the signed i64 range `[-2^63, 2^63)` for `@Int`, or the unsigned u64 range `[0, 2^64)` for `@Nat` (#808 routes `@Nat` overflows here too).  Add a `requires` precondition that constrains the operands so Z3 can prove the result is representable, or change the operation to a saturating / checked variant via a helper function.",
+      "siteMessage": false
+    },
+    "stack_exhausted": {
+      "code": 0,
+      "description": "WASM call stack exhausted",
+      "fix": "Vera compiles tail-position calls to WASM `return_call` (#517, shipped in v0.0.126; allocating tail calls covered by GC-aware TCO in #549, v0.0.154), so iteration-shaped recursion runs in constant stack space \u2014 if you're still hitting this trap the recursion isn't actually in tail position.  Restructure with an accumulator parameter so the recursive call is the LAST thing the function does (no work after it, no `let`-binding of its result, no enclosing arithmetic).  One remaining exception: functions with a non-trivial runtime postcondition (`ensures` that emits a Tier-3 check) revert to plain `call` so the post-check runs after each call \u2014 either simplify the postcondition to one the verifier can discharge statically (Tier 1), or iterate via `array_fold` / `array_map` (which compile to WASM loops rather than recursion).",
+      "siteMessage": false
+    },
+    "string_index_out_of_bounds": {
+      "code": 7,
+      "description": "String index out of bounds",
+      "fix": "`string_char_code(s, i)` reads the byte at index `i`, so `i` must lie in `[0, string_length(s))`.  `string_length` counts the BYTES of the UTF-8 encoding, not characters, so a string holding non-ASCII text is longer than its character count.  Add `requires(i >= 0 && i < string_length(s))`, or guard the call with an explicit branch.",
+      "siteMessage": true
+    },
+    "uncaught_exception": {
+      "code": 10,
+      "description": "Uncaught exception",
+      "fix": "An `Exn<T>` was thrown and no `handle[Exn<T>]` caught it before the call returned to the host: the entry point declares `Exn<T>` in its effect row, which lets the exception leave it.  Catch it where the program starts \u2014 wrap the throwing call in `handle[Exn<T>] { throw(@T) -> ... } in { ... }` inside `main`, or inside the function `vera run --fn` or `vera test` called \u2014 or stop declaring `Exn<T>` on that function once nothing in it throws.",
+      "siteMessage": true
+    },
+    "unknown": {
+      "code": 0,
+      "description": "Unclassified trap",
+      "fix": "",
+      "siteMessage": false
+    },
+    "unreachable": {
+      "code": 0,
+      "description": "Reached `unreachable` WASM instruction",
+      "fix": "Five causes reach this trap, and none of them is a check on a value the program computed \u2014 every such check reports its own kind.  (1) GC shadow-stack overflow, which is what a DEEP RECURSION through a function holding heap references hits: every live frame roots its pointer parameters, its allocations, and the values it binds out of them, and the shadow stack holds 4 096 roots in total (16 KiB \u2014 `GC_STACK_SIZE` in `vera/codegen/assembly.py`).  A recursion that traps at a depth close to 4 096 divided by a small integer is this one: reduce the heap values live across the recursive call, or restructure so the call is in tail position (#549 GC-aware TCO restores `$gc_sp` at each hop, so the chain runs in constant shadow space).  (2) The collector's mark worklist overflowed: more heap objects were waiting to be marked at one time than its 16 384 entries hold (`GC_WORKLIST_SIZE` in `vera/codegen/assembly.py`), which one very wide live structure \u2014 an array or map holding more heap values than that \u2014 can reach.  Split the structure, or hold fewer heap values in it at once.  (3) More than 4 096 host-backed values \u2014 `Decimal` values and pending async requests \u2014 were alive at once, and a collection freed none of them, so the table that tracks their host handles had no room for another.  Let values you no longer need become unreachable, and hold fewer of them at once.  (4) Under `--target wasi-p2`, a standard stream, file or HTTP body the host provides failed part-way through an operation \u2014 a write to a closed stdout, a read error on stdin \u2014 and the adapter stopped the program rather than lose data.  The host's I/O failed, not the program's logic: check what the program's input and output are connected to.  (5) An internal consistency check failed: a garbage-collector invariant (`VERA_GC_CHECK_MARKS`), a runtime tripwire, or code the compiler places where execution cannot arrive \u2014 after a call that never returns (`IO.exit`, a handler that always throws) or in a function it dropped.  A well-typed program cannot reach any of these, so reaching one is a bug in Vera: please file a minimal reproducer at https://github.com/aallan/vera/issues/new.",
+      "siteMessage": false
+    },
+    "widen_guard": {
+      "code": 3,
+      "description": "@Nat value above i64.MAX widened into an @Int slot",
+      "fix": "A `@Nat` value above `i64.MAX` was widened into an `@Int` slot \u2014 a return, a `let`, a call argument, a constructor field, an array element or a tuple component whose target is `@Int`.  `Nat` (u64) and `Int` (i64) share one machine representation, so such a value REINTERPRETS as a negative `@Int` (`u64.MAX` becomes `-1`); the verifier could not prove it in range, so it left a runtime check here (Tier 3).  Add a `requires(... <= i64.MAX)` precondition, or keep the value in `@Nat` and widen only where a bound is known, so Z3 discharges it at compile time and the check becomes dead.",
+      "siteMessage": false
+    }
+  },
+  "native": [
+    [
+      "divide by zero",
+      "divide_by_zero"
+    ],
+    [
+      "remainder by zero",
+      "divide_by_zero"
+    ],
+    [
+      "divide result unrepresentable",
+      "overflow"
+    ],
+    [
+      "float unrepresentable in integer range",
+      "float_conversion"
+    ],
+    [
+      "memory access out of bounds",
+      "out_of_bounds"
+    ],
+    [
+      "unreachable",
+      "unreachable"
+    ]
+  ]
+};
+// END GENERATED TRAP TABLE
 const stateCells = {}; // State<T> stacks: { TypeName: [value, ...] } — top is [-1]
 // #920: the WASM value type (`i32`/`i64`/`f64`) of each State<T> cell, keyed
 // by the mangled type suffix — the SAME key as `stateCells`.  Populated from
@@ -484,34 +620,68 @@ function hostContractFail(ptr, len) {
 }
 
 /**
- * vera.overflow_trap() → signal an integer overflow; WASM executes unreachable.
- * #808: the #798 `@Int` / `@Nat` arithmetic-overflow guard calls this right
- * before its `unreachable`, so `call()` reports "Integer overflow" instead of
- * the generic trap (mirrors `hostContractFail`; parameterless — the message is
- * fixed, not interned).
+ * vera.trap(code, ptr, len) → a named check failed; WASM executes unreachable.
+ * #1479: the one signal every named check raises — the kind as a code in
+ * TRAP_TABLE, and the check's own message (when it carries one) as an interned
+ * (ptr, len) — so `call()` reports that kind, message and Fix paragraph instead
+ * of V8's bare "unreachable" (mirrors `host_trap` in vera/codegen/api.py).
  */
-function hostOverflowTrap() {
-  lastOverflow = true;
+function hostTrap(code, ptr, len) {
+  lastTrap = { code, message: len ? readString(ptr, len) : '' };
+}
+
+/** A runtime trap, named: `kind`, the message, and the kind's Fix paragraph. */
+class VeraTrap extends Error {
+  constructor(kind, message, fix) {
+    super(message);
+    this.name = 'VeraTrap';
+    this.kind = kind;
+    this.fix = fix;
+  }
+}
+
+function trapOfKind(kind, message) {
+  const row = TRAP_TABLE.kinds[kind];
+  return new VeraTrap(kind, message || row.description, row.fix);
 }
 
 /**
- * vera.nat_guard_trap() → signal that an @Int -> @Nat narrowing guard caught a
- * negative; WASM executes unreachable.
- * #754: the narrowing twin of `hostOverflowTrap`, so `call()` reports the
- * boundary that failed rather than the instruction both guards share.
+ * Name what escaped an export the way `execute()` does on the native host:
+ * the contract channel first, then the kind `vera.trap` signalled, then V8's
+ * own message for an instruction that trapped by itself.  An exception that
+ * left an export no boundary catches is `uncaught_exception`; anything else
+ * is a host binding's own refusal, `host_error` with the binding's message —
+ * so every error leaving `call()` carries a kind (#1479).
  */
-function hostNatGuardTrap() {
-  lastNatGuard = true;
-}
-
-/**
- * vera.widen_trap() → signal that a @Nat -> @Int widening guard caught a value
- * above i64.MAX; WASM executes unreachable.
- * #1438: the widening twin of `hostNatGuardTrap`, for the same reason — the
- * two guards share an instruction and have different remedies.
- */
-function hostWidenTrap() {
-  lastWiden = true;
+function classifyTrap(e) {
+  if (e instanceof RangeError && /call stack/i.test(String(e.message))) {
+    // V8 reports call-stack exhaustion, WASM frames included, as a
+    // RangeError ("Maximum call stack size exceeded"); any other RangeError
+    // is a host binding's own.
+    return trapOfKind('stack_exhausted', '');
+  }
+  if (typeof WebAssembly.Exception === 'function'
+      && e instanceof WebAssembly.Exception) {
+    return trapOfKind('uncaught_exception', '');
+  }
+  if (!(e instanceof WebAssembly.RuntimeError)) {
+    const message = e && typeof e === 'object'
+      ? (e.message || e.name || String(e)) : String(e);
+    return trapOfKind('host_error', message);
+  }
+  if (lastViolation) return trapOfKind('contract_violation', lastViolation);
+  if (lastTrap) {
+    for (const [name, row] of Object.entries(TRAP_TABLE.kinds)) {
+      if (row.code && row.code === lastTrap.code) {
+        return trapOfKind(name, lastTrap.message);
+      }
+    }
+  }
+  const msg = String(e.message).toLowerCase();
+  for (const [needle, kind] of TRAP_TABLE.native) {
+    if (msg.includes(needle)) return trapOfKind(kind, '');
+  }
+  return new VeraTrap('unknown', e.message, '');
 }
 
 // ---------------------------------------------------------------------------
@@ -1807,19 +1977,9 @@ function buildImportObject(module, moduleBytes) {
     imports.vera.contract_fail = hostContractFail;
   }
 
-  // #808: integer-overflow trap signal (declared by the #798 overflow guard)
-  if (needed.has('overflow_trap')) {
-    imports.vera.overflow_trap = hostOverflowTrap;
-  }
-
-  // #754: @Int -> @Nat narrowing trap signal (declared by the bind guard)
-  if (needed.has('nat_guard_trap')) {
-    imports.vera.nat_guard_trap = hostNatGuardTrap;
-  }
-
-  // #1438: @Nat -> @Int widening trap signal (declared by the widen guard)
-  if (needed.has('widen_trap')) {
-    imports.vera.widen_trap = hostWidenTrap;
+  // #1479: the one trap signal every named check (and the allocator) calls
+  if (needed.has('trap')) {
+    imports.vera.trap = hostTrap;
   }
 
   // State<T> bindings — dynamically created from import names.
@@ -3970,9 +4130,7 @@ export function call(fnName, ...args) {
   }
   exitCode = null;
   lastViolation = '';
-  lastOverflow = false;
-  lastNatGuard = false;
-  lastWiden = false;
+  lastTrap = null;
   try {
     return fn(...args);
   } catch (e) {
@@ -3980,23 +4138,8 @@ export function call(fnName, ...args) {
       exitCode = e.code;
       return undefined;
     }
-    // Check for contract violation message
-    if (lastViolation && e instanceof WebAssembly.RuntimeError) {
-      throw new Error(lastViolation);
-    }
-    // #808: integer-overflow guard fired before the trap
-    if (lastOverflow && e instanceof WebAssembly.RuntimeError) {
-      throw new Error('Integer overflow');
-    }
-    // #754: the @Int -> @Nat narrowing guard fired before the trap
-    if (lastNatGuard && e instanceof WebAssembly.RuntimeError) {
-      throw new Error('Negative value bound into a @Nat slot');
-    }
-    // #1438: the @Nat -> @Int widening guard fired before the trap
-    if (lastWiden && e instanceof WebAssembly.RuntimeError) {
-      throw new Error('@Nat value above i64.MAX widened into an @Int slot');
-    }
-    throw e;
+    // #1479: everything leaves here named — kind, message and Fix.
+    throw classifyTrap(e);
   }
 }
 
@@ -4047,9 +4190,7 @@ export function reset() {
   stdoutBuf = '';
   stderrBuf = '';
   lastViolation = '';
-  lastOverflow = false;
-  lastNatGuard = false;
-  lastWiden = false;
+  lastTrap = null;
   exitCode = null;
   resetState();
   stdinQueue = [];
@@ -4064,5 +4205,5 @@ export function getExports() {
     .filter(k => k !== 'alloc');
 }
 
-export { VeraExit };
+export { VeraExit, VeraTrap };
 export default init;

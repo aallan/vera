@@ -12,8 +12,9 @@ sign bit is set, i.e. when the i64 reads as negative.  So the guard traps when
 ``(i64 value) < 0`` — the same sign check as the #552 nat-bind guard.  At #813
 the branch was a bare ``unreachable`` (``kind="unreachable"``), which named
 neither the guard nor its remedy; #1438 supplied the precise trap kind that was
-left as a follow-up, so the branch now calls ``vera.widen_trap`` before the
-``unreachable`` and the trap reports ``kind="widen_guard"`` with a
+left as a follow-up, so the branch now signals ``widen_guard`` through
+``vera.trap`` (#1479) before the ``unreachable`` and the trap reports
+``kind="widen_guard"`` with a
 ``requires(... <= i64.MAX)`` Fix paragraph.  The cells below assert only THAT a
 trap occurs (the #813 property); the kind and its message are pinned in
 ``test_widen_trap_kind_1438``.

@@ -240,7 +240,7 @@ let @Array<Int> = [1, 2, 3];
 - Fixed size: the length is determined at creation and cannot change.
 - Immutable: elements cannot be modified after creation.
 - Zero-indexed: the first element is at index 0.
-- Bounds-checked: indexing with an out-of-range index causes a runtime trap (see Chapter 12).
+- Bounds-checked: indexing with an out-of-range index causes an `index_out_of_bounds` runtime trap (Section 11.12.3).
 
 **Element types:** Arrays can contain any type for which a WASM representation exists, including primitives (`Int`, `Nat`, `Bool`, `Byte`, `Float64`), ADT types (`Option<Int>`, `Result<Nat, String>`), `String`, and nested arrays (`Array<Array<Int>>`).
 
@@ -888,7 +888,7 @@ public fn floor(@Float64 -> @Int)
   effects(pure)
 ```
 
-Returns the largest integer less than or equal to the input. Compiles to `f64.floor` followed by `i64.trunc_f64_s`. Traps on NaN or out-of-range values (WASM semantics).
+Returns the largest integer less than or equal to the input. Compiles to `f64.floor` followed by `i64.trunc_f64_s`, behind a domain check: NaN, an infinity, or a result outside `[-2^63, 2^63)` traps as `float_conversion` (Section 11.8.5).
 
 ```
 floor(3.7)
@@ -906,7 +906,7 @@ public fn ceil(@Float64 -> @Int)
   effects(pure)
 ```
 
-Returns the smallest integer greater than or equal to the input. Compiles to `f64.ceil` followed by `i64.trunc_f64_s`. Traps on NaN or out-of-range values (WASM semantics).
+Returns the smallest integer greater than or equal to the input. Compiles to `f64.ceil` followed by `i64.trunc_f64_s`, behind a domain check: NaN, an infinity, or a result outside `[-2^63, 2^63)` traps as `float_conversion` (Section 11.8.5).
 
 ```
 ceil(3.2)
@@ -924,7 +924,7 @@ public fn round(@Float64 -> @Int)
   effects(pure)
 ```
 
-Rounds to the nearest integer using banker's rounding (IEEE 754 roundTiesToEven). This means `round(2.5)` evaluates to `2`, not `3` — ties round to the nearest even integer. Compiles to `f64.nearest` followed by `i64.trunc_f64_s`. Traps on NaN or out-of-range values (WASM semantics).
+Rounds to the nearest integer using banker's rounding (IEEE 754 roundTiesToEven). This means `round(2.5)` evaluates to `2`, not `3` — ties round to the nearest even integer. Compiles to `f64.nearest` followed by `i64.trunc_f64_s`, behind a domain check: NaN, an infinity, or a result outside `[-2^63, 2^63)` traps as `float_conversion` (Section 11.8.5).
 
 ```
 round(3.7)
@@ -1066,7 +1066,7 @@ public fn float_to_int(@Float64 -> @Int)
   effects(pure)
 ```
 
-Truncates a floating-point number toward zero. Traps on NaN or Infinity (consistent with `floor`, `ceil`, and `round`). Compiled to `i64.trunc_f64_s`.
+Truncates a floating-point number toward zero. Traps as `float_conversion` on NaN, an infinity, or a value outside `[-2^63, 2^63)` (consistent with `floor`, `ceil`, and `round`; Section 11.8.5). Compiled to `i64.trunc_f64_s` behind that domain check.
 
 ```
 float_to_int(3.9)
@@ -1322,7 +1322,7 @@ public fn string_char_code(@String, @Int -> @Nat)
   requires(true) ensures(true) effects(pure)
 ```
 
-Returns the ASCII code point (as a `Nat`) of the byte at the given index in the string. The index is zero-based. Traps if the index is out of bounds.
+Returns the unsigned byte value (as a `Nat`) at the given index in the string. The index is zero-based, and counts bytes: it must lie in `[0, string_length(s))`, the string's length in BYTES, or the call traps as `string_index_out_of_bounds` (Section 11.8.5).
 
 <!-- vera:skip-parse category="FRAGMENT" reason="bare string_char_code calls with their results in comments" -->
 ```vera

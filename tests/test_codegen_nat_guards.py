@@ -20,6 +20,10 @@ from tests.codegen_helpers import (
     _run,
 )
 from tests.module_fixture_helpers import fake_resolved_module
+from vera.trap_registry import signal_call_pattern
+
+#: The nat_sub guard's own signal (#1479).
+_NAT_UNDERFLOW = signal_call_pattern("nat_underflow")
 
 
 # =====================================================================
@@ -95,7 +99,7 @@ public fn main(@Unit -> @Nat)
     def test_safe_subtraction_returns_correct_result(self) -> None:
         """safe(5, 3) returns 2 — guard passes through cleanly.
 
-        The guard is `if (i64.lt_s lhs rhs) then unreachable end`, so
+        The guard is `if (i64.lt_u lhs rhs) then <signal> unreachable end`, so
         when lhs >= rhs the branch is not taken and the subtraction
         proceeds normally.  Confirms the guard doesn't introduce a
         regression on the happy path.
@@ -103,12 +107,14 @@ public fn main(@Unit -> @Nat)
         assert _run(self._SAFE_SUB) == 2
 
     def test_guard_emitted_in_wat_for_nat_sub(self) -> None:
-        """The guarded WAT contains `i64.lt_s` and `unreachable`.
+        """The guarded WAT contains `i64.lt_u` and `unreachable`.
 
         Structural assertion that the codegen actually inserted the
         guard sequence rather than emitting a bare `i64.sub`.  The
         unguarded WAT (e.g. for `@Int - @Int`) would contain
-        `i64.sub` but no `i64.lt_s` paired with `unreachable`.
+        `i64.sub` but no `i64.lt_u` paired with `unreachable`.  Unsigned,
+        because a `@Nat` is a u64 (#1479): a signed compare read one above
+        i64.MAX as negative.
         """
         result = _compile_ok(self._GUARDED_SUB)
         wat = result.wat
@@ -121,8 +127,8 @@ public fn main(@Unit -> @Nat)
         if body_end < 0:
             body_end = len(wat)
         body = wat[unsafe_idx:body_end]
-        assert "i64.lt_s" in body, (
-            f"Expected `i64.lt_s` in unsafe body for underflow guard, "
+        assert "i64.lt_u" in body, (
+            f"Expected `i64.lt_u` in unsafe body for underflow guard, "
             f"got: {body!r}"
         )
         assert "unreachable" in body, (
@@ -145,10 +151,10 @@ public fn main(@Unit -> @Nat)
         not fire on ``5 - 10`` (in range), so the runtime behaviour this test
         cares about (no spurious trap on a negative Int result) is unchanged.
         The discriminator below is therefore the *shape*: the #520 guard
-        compares the two operands directly (``i64.lt_s`` on lhs/rhs straight
+        compares the two operands directly (``i64.lt_u`` on lhs/rhs straight
         after loading them, no ``i64.xor``), whereas the #798 overflow guard
         is XOR-based.  We assert the overflow-guard shape is present and the
-        nat-sub shape (an ``i64.lt_s`` not preceded by the XOR sign-test) is
+        nat-sub shape (an ``i64.lt_u`` not preceded by the XOR sign-test) is
         not the mechanism, by pinning runtime behaviour: ``5 - 10 = -5`` must
         return cleanly, never trap.
         """
@@ -299,10 +305,12 @@ public fn main(@Unit -> @Nat)
         if body_end < 0:
             body_end = len(wat)
         body = wat[countdown_idx:body_end]
-        assert "i64.lt_s" in body and "unreachable" in body, (
+        # The guard's own comparison and signal (#1479), not tokens another
+        # check in the body could supply.
+        assert "i64.lt_u" in body and _NAT_UNDERFLOW.search(body), (
             f"Expected the @Nat.0 - 1 underflow guard "
-            f"(i64.lt_s + unreachable) inside countdown body, got: "
-            f"{body!r}"
+            f"(i64.lt_u + the nat_underflow signal) inside countdown body, "
+            f"got: {body!r}"
         )
 
     def test_modulecall_provenance_emits_guard_and_traps(self) -> None:
@@ -354,7 +362,7 @@ public fn main(@Unit -> @Nat)
         if body_end < 0:
             body_end = len(wat)
         body = wat[fn_idx:body_end]
-        assert "i64.lt_s" in body and "unreachable" in body, (
+        assert "i64.lt_u" in body and _NAT_UNDERFLOW.search(body), (
             f"Expected the underflow guard for ModuleCall-provenance "
             f"@Nat - @Nat inside unsafe_modcall body, got: {body!r}"
         )
@@ -434,7 +442,7 @@ public fn main(@Unit -> @Nat)
         if body_end < 0:
             body_end = len(wat)
         body = wat[fn_idx:body_end]
-        assert "i64.lt_s" in body and "unreachable" in body, (
+        assert "i64.lt_u" in body and _NAT_UNDERFLOW.search(body), (
             f"Expected the underflow guard for rhs-only-provenance "
             f"`0 - @Nat.0` inside lit_minus_slot body, got:\n{body}"
         )
