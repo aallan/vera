@@ -1651,6 +1651,7 @@ def cmd_test(
                                 "args": t.args,
                                 "status": t.status,
                                 "message": t.message,
+                                "trap_kind": t.trap_kind or None,
                             }
                             for t in f.failures[:5]
                         ],

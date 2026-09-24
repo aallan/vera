@@ -8,6 +8,7 @@
 
 **Vera** (v-ERR-a) is a programming language designed for large language models to write. The name comes from the Latin *veritas* (truth). Programs compile to WebAssembly and run at the command line, in the browser, or — experimentally — on stock WASI Preview 2 hosts.
 
+<!-- vera:run fn="safe_divide" args="2 10" stdout="5" -->
 ```vera
 public fn safe_divide(@Int, @Int -> @Int)
   requires(@Int.1 != 0)
@@ -38,6 +39,7 @@ Four examples that show what makes Vera different. For the full tour — contrac
 
 A precondition like `requires(@Int.1 != 0)` becomes a static obligation: the SMT solver proves it holds at every call site, or refuses to compile.  A program that calls `safe_divide` with a divisor the verifier can't prove non-zero is a compile error, not a runtime error.
 
+<!-- vera:run fn="safe_divide" args="2 10" stdout="5" -->
 ```vera
 public fn safe_divide(@Int, @Int -> @Int)
   requires(@Int.1 != 0)
@@ -54,6 +56,7 @@ The compiler synthesises the same obligations for primitive operations themselve
 
 Vera is pure by default. A function that calls an LLM says so in its signature. A caller that doesn't permit `<Inference>` cannot invoke it. A caller that doesn't permit `<Http>` cannot invoke it either. Both callers must declare the full effect row.
 
+<!-- vera:no-run category="network" reason="calls Http, so a run would reach the network" -->
 ```vera
 public fn research_topic(@String -> @Result<String, String>)
   requires(string_length(@String.0) > 0)
@@ -76,6 +79,7 @@ Six lines of logic. The signature carries all the ceremony — parameter types, 
 
 Nearly every SQL injection starts the same way: a query assembled from a value that came from outside the program. Vera makes that unwriteable. The SQL text of `DB.query` / `DB.execute` has to be written into the source, so the query is fixed when the program compiles, and outside data can only reach the database through the `?` placeholders and the params array.
 
+<!-- vera:no-run category="fixture" reason="queries a users table the block does not create" -->
 ```vera
 public fn find_user(@String -> @Result<Array<Array<Option<String>>>, String>)
   requires(string_length(@String.0) > 0)
@@ -261,7 +265,7 @@ cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md
 
 ## Project status
 
-Vera is in **active development** at v0.1.13: 2,000+ commits, 211 releases, 17,216 tests, 95% Python code coverage, 253 conformance programs, 43 examples, and a 14-chapter specification. Known bugs and limitations are tracked in **[KNOWN_ISSUES.md](KNOWN_ISSUES.md)**. See **[HISTORY.md](HISTORY.md)** for how the compiler was built.
+Vera is in **active development** at v0.1.13: 2,000+ commits, 211 releases, 16,978 tests, 95% Python code coverage, 254 conformance programs, 43 examples, and a 14-chapter specification. Known bugs and limitations are tracked in **[KNOWN_ISSUES.md](KNOWN_ISSUES.md)**. See **[HISTORY.md](HISTORY.md)** for how the compiler was built.
 
 The reference compiler — parser, AST, type checker, contract verifier (Z3), WASM code generator, module system, browser runtime, and runtime contract insertion — is working. The language specification is in draft across [14 chapters](spec/).
 

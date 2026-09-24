@@ -50,10 +50,10 @@ from vera.verifier import verify
 _KIND = "nat_bind"
 
 #: The `@Int` -> `@Nat` narrowing guard's trap kind.  It was the generic
-#: `unreachable` until #754 gave the guard its own `vera.nat_guard_trap`
-#: signal; pinning the dedicated kind is a STRONGER reading, since
-#: `unreachable` is also what a non-exhaustive match and a shadow-stack
-#: overflow produce and either would have read as "the guard fired".
+#: `unreachable` until #754 gave the guard a signal of its own (`nat_guard`,
+#: through `vera.trap` since #1479); pinning the dedicated kind is a STRONGER
+#: reading, since `unreachable` is also what a shadow-stack overflow produces
+#: and it would have read as "the guard fired".
 _NAT_GUARD_KIND = "nat_guard"
 
 # u64.MAX stored in an i64 slot reads back as -1; used by the #984 closure

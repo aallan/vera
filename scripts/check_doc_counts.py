@@ -25,6 +25,17 @@ Runs in a few seconds — fast enough for a pre-commit hook.  Everything it
 does is local: the one check that needs the GitHub API, the Bugs table
 against the open `bug`-labelled issues, is opt-in behind --check-bug-issues,
 for the release PR.  A commit hook must not depend on a network call.
+
+Two modes, which differ only in the HEADLINE test totals (see the section
+of that name below for the rule that decides which counts are headline).
+By default — the pre-commit hook, and CI on pull requests into
+``release/**`` — each headline figure is read and checked against the other
+citations of the same figure, but not against the live collection: every
+fix PR moves those totals, so gating them on every PR would make each merge
+conflict with every other open PR.  ``--release`` — the release PR, which CI runs in
+this mode on pull requests into ``main`` and on pushes to ``main`` — checks
+them against the live collection as well, so a stale headline is caught when
+the release is cut.  Every other count is checked in both modes.
 """
 
 import argparse
@@ -34,6 +45,7 @@ import re
 import subprocess
 import sys
 import tomllib
+from collections.abc import Callable
 from pathlib import Path
 from typing import NamedTuple
 from urllib.request import Request, urlopen
@@ -92,8 +104,14 @@ _TESTS_BREAKDOWN = re.compile(
 )
 
 
-def check_tests_breakdown(testing_text: str, live_total: int) -> list[str]:
+def check_tests_breakdown(
+    testing_text: str, total: int, against: str = "the collected total"
+) -> list[str]:
     """Check that TESTING.md's tests breakdown sums to the gated total.
+
+    `total` is the collected count in release mode and the row's own
+    stated total by default (see `check_headline_totals`); `against` names
+    which, for the message.
 
     All three parts name a pytest *disposition*, which is what makes the
     sum readable: the 26 are deselected before the run by
@@ -129,14 +147,14 @@ def check_tests_breakdown(testing_text: str, live_total: int) -> list[str]:
             " reworded, so the breakdown is no longer gated"
         ]
     parts = [int(g.replace(",", "")) for g in m.groups()]
-    total = sum(parts)
-    if total != live_total:
+    summed = sum(parts)
+    if summed != total:
         passed, stress, skipped = parts
         return [
             f"TESTING.md tests breakdown: {passed:,} passed"
             f" + {stress:,} stress-deselected + {skipped:,} skipped"
-            f" = {total:,},"
-            f" but the collected total is {live_total:,}"
+            f" = {summed:,},"
+            f" but {against} is {total:,}"
         ]
     return []
 
@@ -170,14 +188,28 @@ def _test_suite_section(readme_text: str) -> str | None:
     return rest if nxt is None else rest[: nxt.start()]
 
 
+def _vera_readme_test_suite(readme_text: str) -> re.Match[str] | None:
+    """The Test Suite paragraph's four counts, read from that section only."""
+    section = _test_suite_section(readme_text)
+    return None if section is None else _VERA_README_TESTS.search(section)
+
+
+_VERA_README_UNREADABLE = (
+    "vera/README.md: the Test Suite paragraph's counts did not match"
+    " ('N tests across N files … (N programs in `tests/conformance/`"
+    " …) … (N end-to-end demos)') under a '## Test Suite' heading —"
+    " the heading or the sentence moved or was reworded, so it is"
+    " no longer gated"
+)
+
+
 def check_vera_readme_test_counts(
     readme_text: str,
-    live_total_tests: int,
-    live_test_files: int,
     live_conformance: int,
     live_examples: int,
 ) -> list[str]:
-    """Pin the four counts in vera/README.md's "Test Suite" paragraph.
+    """Pin the conformance and example counts in vera/README.md's "Test
+    Suite" paragraph.
 
     Only the module map is otherwise gated in that file, which leaves this
     sentence free to drift release after release — the same class as
@@ -186,21 +218,15 @@ def check_vera_readme_test_counts(
     from the "## Test Suite" section alone (see :func:`_test_suite_section`),
     never from the file at large.  A missing heading or a missing pattern
     is an error, not a skip.
+
+    The paragraph's other two counts, the total tests and the test files,
+    are headline totals: `check_headline_totals` owns them.
     """
-    section = _test_suite_section(readme_text)
-    m = None if section is None else _VERA_README_TESTS.search(section)
+    m = _vera_readme_test_suite(readme_text)
     if m is None:
-        return [
-            "vera/README.md: the Test Suite paragraph's counts did not match"
-            " ('N tests across N files … (N programs in `tests/conformance/`"
-            " …) … (N end-to-end demos)') under a '## Test Suite' heading —"
-            " the heading or the sentence moved or was reworded, so it is"
-            " no longer gated"
-        ]
+        return [_VERA_README_UNREADABLE]
     errors: list[str] = []
     for label, cited_s, live in (
-        ("total tests", m.group(1), live_total_tests),
-        ("test file count", m.group(2), live_test_files),
         ("conformance programs", m.group(3), live_conformance),
         ("example programs", m.group(4), live_examples),
     ):
@@ -857,8 +883,11 @@ def check_module_map(readme_text: str, root: Path) -> list[str]:
 # ---------------------------------------------------------------------------
 
 _STATUS_LINE = re.compile(r"^.*?\btests, \d+% Python code coverage.*$", re.M)
+_STATUS_LINE_MISSING = (
+    "README.md: could not find the project-status line "
+    "(`… tests, N% Python code coverage …`)"
+)
 _STATUS_FIGURES = (
-    (r"([\d,]+) tests,", "tests"),
     (r"([\d,]+) conformance programs", "conformance programs"),
     (r"([\d,]+) examples", "examples"),
     (r"(\d+)-chapter specification", "spec chapters"),
@@ -867,19 +896,19 @@ _STATUS_FIGURES = (
 
 def check_project_status(
     readme_text: str,
-    live_tests: int,
     live_conformance: int,
     live_examples: int,
     live_chapters: int,
 ) -> list[str]:
-    """Check every count on README.md's project-status line."""
+    """Check every count on README.md's project-status line.
+
+    Except its test total, which is a headline total and read by
+    `check_headline_totals`.
+    """
     line = _STATUS_LINE.search(readme_text)
     if line is None:
-        return [
-            "README.md: could not find the project-status line "
-            "(`… tests, N% Python code coverage …`)"
-        ]
-    expected = (live_tests, live_conformance, live_examples, live_chapters)
+        return [_STATUS_LINE_MISSING]
+    expected = (live_conformance, live_examples, live_chapters)
     errors: list[str] = []
     for (pattern, label), live in zip(_STATUS_FIGURES, expected, strict=True):
         found = re.search(pattern, line.group(0))
@@ -893,6 +922,167 @@ def check_project_status(
             errors.append(
                 f"README.md project-status {label}: doc says {cited}, live is {live}"
             )
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# The headline test totals
+#
+# The rule that makes a count HEADLINE: every independent fix PR necessarily
+# changes it.  Such a count sits on a line every open PR edits, so each merge
+# makes every other open PR conflict there and need a hand rebase.  Two
+# figures meet the rule — the total test count, which a fix PR moves because it
+# adds the test that proves the fix, and the test-FILE count, which a fix PR
+# moves whenever its test lands in a new issue-numbered file, as most do —
+# together with TESTING.md's passed/stress-deselected/skipped breakdown, which
+# sums to the total.  Five documents state them: TESTING.md's overview row,
+# README.md's project-status line, FAQ.md's by-the-numbers list, ROADMAP.md's
+# "Where we are" line and vera/README.md's Test Suite paragraph.
+#
+# No other count meets the rule, so every other check here runs in both modes.
+# A per-file row belongs to the PR that touches its file.  The conformance,
+# example and corpus counts move only when a PR adds a program, so two open PRs
+# rarely meet on those lines — even where one shares a line with a headline
+# total, as the conformance count does on README's status line.
+#
+# By default the headline figures are READ — one reworded away is an error in
+# both modes — and checked against each other: every citation of the total
+# states one number, both citations of the file count state one number, and
+# the breakdown sums to the total beside it.  A fix PR leaves them alone, so
+# they keep agreeing at the values the last release set.  `--release` checks
+# each against the live collection instead; that is where a stale headline is
+# caught, on the PR that cuts the release.
+# ---------------------------------------------------------------------------
+
+HEADLINE_DOCS = ("TESTING.md", "README.md", "FAQ.md", "ROADMAP.md", "vera/README.md")
+
+
+class HeadlineFigure(NamedTuple):
+    """One citation of a headline total."""
+
+    where: str
+    figure: str  # "tests" or "test files"
+    cited: int
+
+
+_HEADLINE_OVERVIEW = re.compile(
+    r"\*\*Tests\*\*\s*\|\s*([\d,]+)\s+across\s+([\d,]+)\s+files"
+)
+_HEADLINE_FAQ = re.compile(r"([\d,]+) tests, including")
+_HEADLINE_TESTS = re.compile(r"([\d,]+) tests,")
+_ROADMAP_WHERE_WE_ARE = re.compile(r"## Where we are\n(.*?)(?=\n##|\Z)", re.DOTALL)
+
+
+def _count(text: str) -> int:
+    return int(text.replace(",", ""))
+
+
+def read_headline_figures(
+    docs: dict[str, str],
+) -> tuple[list[HeadlineFigure], list[str]]:
+    """Every headline citation in `HEADLINE_DOCS`, and every one not found.
+
+    A citation that cannot be found is an error in both modes: the default
+    mode compares the citations with one another, and one it cannot read
+    would drop out of that comparison in silence.
+    """
+    figures: list[HeadlineFigure] = []
+    errors: list[str] = []
+
+    m = _HEADLINE_OVERVIEW.search(docs["TESTING.md"])
+    if m is None:
+        errors.append(
+            "TESTING.md: could not find the overview row's headline totals"
+            " ('| **Tests** | N across N files …') — it moved or was"
+            " reworded, so they are no longer gated"
+        )
+    else:
+        figures.append(HeadlineFigure("TESTING.md overview row", "tests", _count(m.group(1))))
+        figures.append(HeadlineFigure("TESTING.md overview row", "test files", _count(m.group(2))))
+
+    line = _STATUS_LINE.search(docs["README.md"])
+    m = None if line is None else _HEADLINE_TESTS.search(line.group(0))
+    if line is None:
+        errors.append(_STATUS_LINE_MISSING)
+    elif m is None:
+        errors.append("README.md project-status line: could not find the tests count")
+    else:
+        figures.append(HeadlineFigure("README.md project-status line", "tests", _count(m.group(1))))
+
+    m = _HEADLINE_FAQ.search(docs["FAQ.md"])
+    if m is None:
+        errors.append(
+            "FAQ.md: headline test-count line ('N tests, including ...') not found"
+        )
+    else:
+        figures.append(HeadlineFigure("FAQ.md by-the-numbers list", "tests", _count(m.group(1))))
+
+    section = _ROADMAP_WHERE_WE_ARE.search(docs["ROADMAP.md"])
+    m = None if section is None else _HEADLINE_TESTS.search(section.group(1))
+    if section is None:
+        errors.append("ROADMAP.md: could not find '## Where we are' section")
+    elif m is None:
+        errors.append(
+            "ROADMAP.md: could not find the test count ('N tests,') in the"
+            " 'Where we are' section"
+        )
+    else:
+        figures.append(HeadlineFigure("ROADMAP.md 'Where we are' line", "tests", _count(m.group(1))))
+
+    m = _vera_readme_test_suite(docs["vera/README.md"])
+    if m is None:
+        errors.append(_VERA_README_UNREADABLE)
+    else:
+        figures.append(HeadlineFigure("vera/README.md Test Suite paragraph", "tests", _count(m.group(1))))
+        figures.append(HeadlineFigure("vera/README.md Test Suite paragraph", "test files", _count(m.group(2))))
+    return figures, errors
+
+
+def check_headline_totals(
+    docs: dict[str, str],
+    live_tests: int,
+    live_test_files: int,
+    *,
+    release: bool,
+) -> list[str]:
+    """The headline test totals, in the mode the run asked for.
+
+    `release` checks every citation against the live collection.  Without
+    it every citation must agree with every other citation of the same
+    figure, and the breakdown must sum to the total its own row states.
+    """
+    figures, errors = read_headline_figures(docs)
+    testing = docs["TESTING.md"]
+    if release:
+        live = {"tests": live_tests, "test files": live_test_files}
+        for fig in figures:
+            if fig.cited != live[fig.figure]:
+                errors.append(
+                    f"{fig.where} {fig.figure}: doc says {fig.cited:,},"
+                    f" live is {live[fig.figure]:,}"
+                )
+        errors.extend(check_tests_breakdown(testing, live_tests))
+        return errors
+
+    for figure in ("tests", "test files"):
+        cited = [fig for fig in figures if fig.figure == figure]
+        if len({fig.cited for fig in cited}) > 1:
+            errors.append(
+                f"the headline {figure} count disagrees across documents ("
+                + "; ".join(f"{fig.where} says {fig.cited:,}" for fig in cited)
+                + ") — a fix PR leaves every headline total alone, and the"
+                " release PR sets them all against the live collection"
+                " (`scripts/check_doc_counts.py --release`)"
+            )
+    own = next(
+        (fig.cited for fig in figures
+         if fig.where.startswith("TESTING.md") and fig.figure == "tests"),
+        None,
+    )
+    # With no readable total the row is already reported above, and the
+    # breakdown has nothing to be summed against.
+    if own is not None:
+        errors.extend(check_tests_breakdown(testing, own, "the row's own total"))
     return errors
 
 
@@ -2046,7 +2236,7 @@ def check_error_codes_count(readme_text: str, registry: dict[str, object]) -> li
     return errors
 
 
-def main() -> int:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--check-bug-issues",
@@ -2057,83 +2247,51 @@ def main() -> int:
             "not for pre-commit)"
         ),
     )
-    args = parser.parse_args()
-    root = Path(__file__).resolve().parent.parent
-    # This script's several `from vera...` imports below are IN-PROCESS,
-    # unlike the pytest/subprocess calls above that already pin
-    # `root / ".venv/bin/pytest"` (falling back to PATH only if that venv
-    # is absent).  A plain `import vera` instead falls through to
-    # whichever venv's editable-install finder answers first — a
-    # `__editable__.veralang-*.pth` file pinned to WHATEVER checkout `pip
-    # install -e` last ran in, which can be a different worktree entirely
-    # (that finder only engages when nothing earlier on `sys.path` already
-    # resolved `vera`).  Inserting `root` here — ahead of site-packages,
-    # so ahead of that finder — makes `vera` resolve as the plain on-disk
-    # package under `root/vera/` instead: unambiguously the tree this
-    # script's own `__file__` lives in, regardless of which interpreter or
-    # editable install happens to be active.  The equivalent trap on the
-    # pytest side (a test file measuring the wrong checkout because
-    # pytest's OWN rootdir detection wins) is documented in TESTING.md's
-    # "Running against ANOTHER checkout" section — a different mechanism
-    # with a different remedy (relocate the test file into the target
-    # tree), not this one.
-    sys.path.insert(0, str(root))
-    errors: list[str] = []
-
-    # ------------------------------------------------------------------
-    # 1. Derive live counts from the filesystem + pytest collection
-    # ------------------------------------------------------------------
-
-    # Conformance programs: count manifest entries
-    manifest = json.loads(
-        (root / "tests/conformance/manifest.json").read_text(encoding="utf-8")
+    parser.add_argument(
+        "--release",
+        action="store_true",
+        help=(
+            "also check the headline test totals against the live collection "
+            "(the release PR; CI passes it on pull requests into main and on "
+            "pushes to main, never on pull requests into release/**)"
+        ),
     )
-    errors.extend(check_manifest_entries(manifest))
-    live_conformance = len(manifest)
+    return parser.parse_args(argv)
 
-    # Conformance level breakdown.  A malformed entry is reported above
-    # rather than raised here.
-    level_counts = level_counts_of(manifest)
 
-    # Examples: count .vera files
-    live_examples = len(list((root / "examples").glob("*.vera")))
+# A TESTING.md per-file row: `| `test_x.py` | <tests> | <lines> | ...`.
+_TEST_FILE_ROW = re.compile(r"\| `(test_\w+\.py)` \| ([\d,]+) \| ([\d,]+) \|")
 
-    # Test files: count test_*.py
-    test_files = sorted((root / "tests").glob("test_*.py"))
-    live_test_files = len(test_files)
 
-    # Per-file line counts
-    file_lines: dict[str, int] = {}
-    for f in test_files:
-        file_lines[f.name] = len(f.read_text(encoding="utf-8").splitlines())
+class Live(NamedTuple):
+    """What the tree measures: gathered once by `gather`, read by `check_all`.
 
-    # Pre-commit hooks: parse YAML manually (avoid PyYAML dependency)
-    precommit_text = (root / ".pre-commit-config.yaml").read_text(encoding="utf-8")
-    live_hooks = len(re.findall(r"^\s+- id:\s", precommit_text, re.MULTILINE))
+    Kept apart from the checks so a test can drive every check, in both
+    modes, against the real documents and measurements it chose — the way
+    to show which checks the mode reaches and which it leaves alone.
+    """
 
-    # CI jobs: count top-level keys under "jobs:"
-    ci_text = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-    in_jobs = False
-    live_ci_jobs = 0
-    for line in ci_text.splitlines():
-        if line.rstrip() == "jobs:":
-            in_jobs = True
-            continue
-        if in_jobs:
-            # A top-level job is a line with exactly 2-space indent + name + colon
-            if re.match(r"^  [a-zA-Z_-]+:", line):
-                live_ci_jobs += 1
-            # Stop at next top-level key
-            elif re.match(r"^[a-z]", line):
-                break
+    manifest: list[dict[str, object]]
+    examples: int
+    test_files: list[Path]
+    file_lines: dict[str, int]
+    hooks: int
+    ci_jobs: int
+    total_tests: int
+    file_tests: dict[str, int]
+    tags: list[str] | None
+    dual_target: DualTargetSplit | None
 
-    # Pytest collection: total tests + per-file counts.
-    # `-o addopts=""` overrides the default `-m 'not stress'`
-    # from pyproject.toml (#596 stress-marker registration) so
-    # the collection sees every test file including
-    # `test_stress.py`.  Without this override the per-file
-    # counter wouldn't see stress tests and would report them
-    # as a missing row in TESTING.md.
+
+def collect_tests(root: Path) -> tuple[int, dict[str, int]] | str:
+    """The collected total and each file's count, or why collection failed.
+
+    `-o addopts=""` overrides the default `-m 'not stress'` from
+    pyproject.toml (#596 stress-marker registration) so the collection sees
+    every test file including `test_stress.py`.  Without this override the
+    per-file counter wouldn't see stress tests and would report them as a
+    missing row in TESTING.md.
+    """
     pytest_bin = root / ".venv/bin/pytest"
     if not pytest_bin.exists():
         pytest_bin = Path("pytest")  # fall back to PATH
@@ -2147,15 +2305,11 @@ def main() -> int:
         check=False,
     )
     if result.returncode != 0:
-        print(
-            f"ERROR: pytest collection failed:\n{result.stderr}",
-            file=sys.stderr,
-        )
-        return 1
+        return f"pytest collection failed:\n{result.stderr}"
 
     # Parse "N tests collected"
     m = re.search(r"(\d+) tests? collected", result.stdout)
-    live_total_tests = int(m.group(1)) if m else 0
+    total = int(m.group(1)) if m else 0
 
     # Per-file test counts from collection output
     file_tests: dict[str, int] = {}
@@ -2163,6 +2317,102 @@ def main() -> int:
         if "::" in line:
             fname = line.split("::")[0].replace("tests/", "")
             file_tests[fname] = file_tests.get(fname, 0) + 1
+    return total, file_tests
+
+
+def gather(
+    root: Path,
+    *,
+    collect: Callable[[Path], tuple[int, dict[str, int]] | str] = collect_tests,
+    tags: Callable[[Path], list[str] | None] = release_tags,
+    dual_target: Callable[[Path], DualTargetSplit | None] = dual_target_split,
+) -> Live | str:
+    """Measure the tree under `root`, or say why it could not be measured.
+
+    The three measurements that run a subprocess — the pytest collection,
+    `git tag`, and the dual-target differential — are parameters, so a test
+    can supply its own without spawning one.
+    """
+    # Conformance programs: count manifest entries
+    manifest = json.loads(
+        (root / "tests/conformance/manifest.json").read_text(encoding="utf-8")
+    )
+
+    # Examples: count .vera files
+    examples = len(list((root / "examples").glob("*.vera")))
+
+    # Test files and their line counts
+    test_files = sorted((root / "tests").glob("test_*.py"))
+    file_lines = {
+        f.name: len(f.read_text(encoding="utf-8").splitlines())
+        for f in test_files
+    }
+
+    # Pre-commit hooks: parse YAML manually (avoid PyYAML dependency)
+    precommit_text = (root / ".pre-commit-config.yaml").read_text(encoding="utf-8")
+    hooks = len(re.findall(r"^\s+- id:\s", precommit_text, re.MULTILINE))
+
+    # CI jobs: count top-level keys under "jobs:"
+    ci_text = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    in_jobs = False
+    ci_jobs = 0
+    for line in ci_text.splitlines():
+        if line.rstrip() == "jobs:":
+            in_jobs = True
+            continue
+        if in_jobs:
+            # A top-level job is a line with exactly 2-space indent + name + colon
+            if re.match(r"^  [a-zA-Z_-]+:", line):
+                ci_jobs += 1
+            # Stop at next top-level key
+            elif re.match(r"^[a-z]", line):
+                break
+
+    collected = collect(root)
+    if isinstance(collected, str):
+        return collected
+    total_tests, file_tests = collected
+    return Live(
+        manifest=manifest,
+        examples=examples,
+        test_files=test_files,
+        file_lines=file_lines,
+        hooks=hooks,
+        ci_jobs=ci_jobs,
+        total_tests=total_tests,
+        file_tests=file_tests,
+        tags=tags(root),
+        dual_target=dual_target(root),
+    )
+
+
+def check_all(root: Path, live: Live, args: argparse.Namespace) -> list[str]:
+    """Every check: the documents under `root` against the measurements in
+    `live`, in the mode `args` asks for.  Returns the errors found."""
+    errors: list[str] = []
+    m: re.Match[str] | None
+
+    # ------------------------------------------------------------------
+    # 1. Unpack the live counts
+    # ------------------------------------------------------------------
+
+    manifest = live.manifest
+    errors.extend(check_manifest_entries(manifest))
+    live_conformance = len(manifest)
+
+    # Conformance level breakdown.  A malformed entry is reported above
+    # rather than raised here.
+    level_counts = level_counts_of(manifest)
+
+    live_examples = live.examples
+    test_files = live.test_files
+    live_test_files = len(test_files)
+    file_lines = live.file_lines
+    live_hooks = live.hooks
+    live_ci_jobs = live.ci_jobs
+    ci_text = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    live_total_tests = live.total_tests
+    file_tests = live.file_tests
 
     # ------------------------------------------------------------------
     # 2. Check TESTING.md overview table
@@ -2181,16 +2431,8 @@ def main() -> int:
                 f"TESTING.md {label}: doc says {doc_val}, live is {expected}"
             )
 
-    check_testing(
-        r"\*\*Tests\*\*\s*\|\s*([\d,]+)\s+across",
-        live_total_tests,
-        "total tests",
-    )
-    check_testing(
-        r"\*\*Tests\*\*\s*\|.*across\s+(\d+)\s+files",
-        live_test_files,
-        "test file count",
-    )
+    # The overview row's test total, file count and breakdown are headline
+    # totals, checked in section 2a with their citations elsewhere.
     check_testing(
         r"\*\*Conformance programs\*\*\s*\|\s*(\d+)",
         live_conformance,
@@ -2201,15 +2443,25 @@ def main() -> int:
         live_examples,
         "example programs",
     )
-    errors.extend(check_tests_breakdown(testing_md, live_total_tests))
+
+    # ------------------------------------------------------------------
+    # 2a. The headline test totals, in all five documents that state them
+    # ------------------------------------------------------------------
+
+    errors.extend(
+        check_headline_totals(
+            {name: (root / name).read_text(encoding="utf-8") for name in HEADLINE_DOCS},
+            live_total_tests,
+            live_test_files,
+            release=args.release,
+        )
+    )
 
     # ------------------------------------------------------------------
     # 3. Check TESTING.md per-file test table
     # ------------------------------------------------------------------
 
-    for m in re.finditer(
-        r"\| `(test_\w+\.py)` \| ([\d,]+) \| ([\d,]+) \|", testing_md
-    ):
+    for m in _TEST_FILE_ROW.finditer(testing_md):
         name = m.group(1)
         doc_tests = int(m.group(2).replace(",", ""))
         doc_lines = int(m.group(3).replace(",", ""))
@@ -2406,13 +2658,13 @@ def main() -> int:
     readme_md = (root / "README.md").read_text(encoding="utf-8")
 
     # One sentence carries six live figures.  Its four countable ones are
-    # gated together, each an error when it goes missing: the four patterns
-    # that used to sit here beside the tests one matched no README text at
-    # all, and returned silently rather than saying so.
+    # gated, each an error when it goes missing: the four patterns that used
+    # to sit here beside the tests one matched no README text at all, and
+    # returned silently rather than saying so.  Three are checked here; the
+    # tests figure is a headline total, read in section 2a.
     errors.extend(
         check_project_status(
             readme_md,
-            live_total_tests,
             live_conformance,
             live_examples,
             len(list((root / "spec").glob("*.md"))),
@@ -2509,24 +2761,8 @@ def main() -> int:
                 f" live is {live_conformance}"
             )
 
-    # The by-the-numbers test count ("8,840 tests, including a ...").
-    # This line drifted silently through two releases because only the
-    # conformance half of the sentence was pinned.  A missing pattern is
-    # an error, not a skip — otherwise rewording the line disables the
-    # check and reopens the same blind spot one level up.
-    m = re.search(r"([\d,]+) tests, including", faq_md)
-    if not m:
-        errors.append(
-            "FAQ.md: headline test-count line"
-            " ('N tests, including ...') not found"
-        )
-    else:
-        doc_tests = int(m.group(1).replace(",", ""))
-        if doc_tests != live_total_tests:
-            errors.append(
-                f"FAQ.md: tests count: doc says {doc_tests},"
-                f" live is {live_total_tests}"
-            )
+    # The by-the-numbers test count ("8,840 tests, including a ...") is a
+    # headline total, read in section 2a.
 
     errors.extend(check_faq_example_count(faq_md, live_examples))
 
@@ -2582,33 +2818,21 @@ def main() -> int:
 
     roadmap_md = (root / "ROADMAP.md").read_text(encoding="utf-8")
 
-    where_m = re.search(
-        r"## Where we are\n(.*?)(?=\n##|\Z)", roadmap_md, re.DOTALL
-    )
+    # The line's test count is a headline total, read in section 2a.
+    where_m = _ROADMAP_WHERE_WE_ARE.search(roadmap_md)
     if not where_m:
         errors.append(
             "ROADMAP.md: could not find '## Where we are' section"
         )
     else:
-        where_section = where_m.group(1)
-        m = re.search(
-            r"([\d,]+) tests,.*?(\d+) conformance programs",
-            where_section,
-            re.DOTALL,
-        )
+        m = re.search(r"(\d+) conformance programs", where_m.group(1))
         if not m:
             errors.append(
-                "ROADMAP.md: could not find test/conformance count"
-                " pattern in 'Where we are' section"
+                "ROADMAP.md: could not find the conformance count"
+                " ('N conformance programs') in the 'Where we are' section"
             )
         else:
-            doc_tests = int(m.group(1).replace(",", ""))
-            doc_conf = int(m.group(2))
-            if doc_tests != live_total_tests:
-                errors.append(
-                    f"ROADMAP.md: test count: doc says {doc_tests},"
-                    f" live is {live_total_tests}"
-                )
+            doc_conf = int(m.group(1))
             if doc_conf != live_conformance:
                 errors.append(
                     f"ROADMAP.md: conformance count: doc says {doc_conf},"
@@ -2634,7 +2858,7 @@ def main() -> int:
     # both.  They are checked against each other AND against `git tag`,
     # because agreeing with each other is what they did all the way from
     # v0.1.8 while both were two behind the repository.
-    tags = release_tags(root)
+    tags = live.tags
     if tags is None:
         print(
             "NOTE: no release tags in this checkout — the release count"
@@ -2656,8 +2880,6 @@ def main() -> int:
     errors.extend(
         check_vera_readme_test_counts(
             vera_readme_md,
-            live_total_tests,
-            live_test_files,
             live_conformance,
             live_examples,
         )
@@ -2686,7 +2908,7 @@ def main() -> int:
     # 20. Check TESTING.md's dual-target row against a live run
     # ------------------------------------------------------------------
 
-    split = dual_target_split(root)
+    split = live.dual_target
     if split is None:
         errors.append(
             f"TESTING.md: the dual-target differential ({_DUAL_TARGET_TEST}) "
@@ -2729,6 +2951,39 @@ def main() -> int:
             except BugQueryError as exc:
                 errors.append(f"KNOWN_ISSUES.md: {exc}")
 
+    return errors
+
+
+def main() -> int:
+    args = parse_args()
+    root = Path(__file__).resolve().parent.parent
+    # This script's several `from vera...` imports, in `check_all` and the
+    # checks it calls, are IN-PROCESS, unlike the pytest/subprocess calls in
+    # `gather` that already pin `root / ".venv/bin/pytest"` (falling back to
+    # PATH only if that venv is absent).  A plain `import vera` instead
+    # falls through to whichever venv's editable-install finder answers
+    # first — a `__editable__.veralang-*.pth` file pinned to WHATEVER
+    # checkout `pip install -e` last ran in, which can be a different
+    # worktree entirely (that finder only engages when nothing earlier on
+    # `sys.path` already resolved `vera`).  Inserting `root` here — ahead of
+    # site-packages, so ahead of that finder, and before `check_all` runs
+    # any of those imports — makes `vera` resolve as the plain on-disk
+    # package under `root/vera/` instead: unambiguously the tree this
+    # script's own `__file__` lives in, regardless of which interpreter or
+    # editable install happens to be active.  The equivalent trap on the
+    # pytest side (a test file measuring the wrong checkout because
+    # pytest's OWN rootdir detection wins) is documented in TESTING.md's
+    # "Running against ANOTHER checkout" section — a different mechanism
+    # with a different remedy (relocate the test file into the target
+    # tree), not this one.
+    sys.path.insert(0, str(root))
+
+    live = gather(root)
+    if isinstance(live, str):
+        print(f"ERROR: {live}", file=sys.stderr)
+        return 1
+    errors = check_all(root, live, args)
+
     # ------------------------------------------------------------------
     # Report
     # ------------------------------------------------------------------
@@ -2744,10 +2999,16 @@ def main() -> int:
 
     print(
         f"Documentation counts are consistent"
-        f" ({live_total_tests} tests, {live_test_files} files,"
-        f" {live_conformance} conformance, {live_examples} examples,"
-        f" {live_hooks} hooks, {live_ci_jobs} CI jobs)."
+        f" ({live.total_tests} tests, {len(live.test_files)} files,"
+        f" {len(live.manifest)} conformance, {live.examples} examples,"
+        f" {live.hooks} hooks, {live.ci_jobs} CI jobs)."
     )
+    if not args.release:
+        print(
+            "The headline test totals were checked against one another, not"
+            " against the live collection; the release PR checks them with"
+            " --release."
+        )
     return 0
 
 

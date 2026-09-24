@@ -59,13 +59,14 @@ The module imports host functions from the runtime for two distinct reasons. The
 | `vera.state_get_{T}` | `() -> {wasm_t}` | Program uses `State<T>.get` |
 | `vera.state_put_{T}` | `({wasm_t}) -> ()` | Program uses `State<T>.put` |
 | `vera.contract_fail` | `(i32, i32) -> ()` | Program has runtime contracts |
+| `vera.trap` | `(i32, i32, i32) -> ()` | Program has a named runtime check (Section 12.4.6), or allocates |
 | `vera.md_parse` | `(i32, i32) -> (i32)` | Program uses `md_parse` |
 | `vera.md_render` | `(i32) -> (i32, i32)` | Program uses `md_render` |
 | `vera.md_has_heading` | `(i32, i64) -> (i32)` | Program uses `md_has_heading` |
 | `vera.md_has_code_block` | `(i32, i32, i32) -> (i32)` | Program uses `md_has_code_block` |
 | `vera.md_extract_code_blocks` | `(i32, i32, i32) -> (i32, i32)` | Program uses `md_extract_code_blocks` |
 
-Imports are only emitted when the program actually uses the corresponding host-backed feature — either an effect operation (`IO.*`, `Http.*`, `State.*`, `Random.*`, …) or a pure host-backed built-in (`vera.log`, `vera.sin`, `vera.atan2`, …). A pure program that uses only inlined built-ins (`pi()`, `sign`, `clamp`, arithmetic operators) produces a module with no imports.
+Imports are only emitted when the program actually uses the corresponding host-backed feature — either an effect operation (`IO.*`, `Http.*`, `State.*`, `Random.*`, …) or a pure host-backed built-in (`vera.log`, `vera.sin`, `vera.atan2`, …). A pure program that uses only inlined built-ins (`pi()`, `sign`, `clamp`, arithmetic operators) imports no effect operation and no host-backed built-in; the only imports it can carry are the two trap signals, `vera.contract_fail` and `vera.trap`, and each only when a runtime check calls it — an arithmetic operator the verifier cannot prove in range, for instance, carries an overflow check that signals through `vera.trap`.
 
 ### 12.2.3 Linear Memory
 
@@ -429,11 +430,25 @@ The `Random` effect provides three host-backed operations for non-deterministic 
 
 **Behaviour:** Both runtimes derive the bit from a uniform draw (`random.random() < 0.5` and `Math.random() < 0.5` respectively). No determinism / seeding API is offered; a seeding API remains future work.
 
+### 12.4.6 Named Traps
+
+**Import:** `(import "vera" "trap" (func $vera.trap (param i32 i32 i32)))`
+
+**Parameters:**
+- `kind` (i32): the trap kind's code — `1` `overflow`, `2` `nat_guard`, `3` `widen_guard`, `4` `nat_underflow`, `5` `assertion_failed`, `6` `index_out_of_bounds`, `7` `string_index_out_of_bounds`, `8` `float_conversion`, `9` `heap_exhausted`, `10` `uncaught_exception` (`TRAP_KINDS` in `vera/trap_registry.py`).
+- `ptr` (i32), `len` (i32): the check's own message in linear memory, as for `contract_fail`; both zero for a kind whose checks carry no message of their own.
+
+**Behaviour:**
+1. When `len` is non-zero, read `len` bytes from linear memory at `ptr` and decode them as UTF-8.
+2. Store the kind and the message for later reporting.
+
+As with `contract_fail`, the WASM code always follows a `call $vera.trap` with `unreachable`, and the host reports the trap under the stored kind: its message, or the kind's own description when it carries none, and the kind's Fix paragraph (Section 12.7.1).  One import carries every kind, so a new named check needs a code rather than an import of its own.  The import is emitted when the program contains a named runtime check (Chapter 11, Section 11.8.5) or allocates: the allocator reports heap exhaustion through it.
+
 ## 12.5 Memory Model
 
 ### 12.5.1 Linear Memory Layout
 
-![Linear memory layout: string constants, the 4 KiB GC shadow stack, the 4 KiB mark worklist, and the heap growing toward higher addresses inside a growable 64 KiB page.](../assets/diagrams/memory-layout.svg)
+![Linear memory layout: string constants, the 16 KiB GC shadow stack, the 64 KiB mark worklist, the 64 KiB wrapper table a program holding host-backed values carries, and the heap growing toward higher addresses in memory that memory.grow extends.](../assets/diagrams/memory-layout.svg)
 
 <details>
 <summary>Text version</summary>
@@ -442,21 +457,24 @@ The `Random` effect provides three host-backed operations for non-deterministic 
 ┌──────────────────────────────────┐  offset 0
 │  String constants (data section) │
 ├──────────────────────────────────┤  data_end
-│  GC shadow stack (4096 bytes)    │
-├──────────────────────────────────┤  data_end + 4096
-│  GC mark worklist (4096 bytes)   │
-├──────────────────────────────────┤  data_end + 8192 = $heap_ptr (initial)
+│  GC shadow stack (16384 bytes)   │
+├──────────────────────────────────┤  data_end + 16384
+│  GC mark worklist (65536 bytes)  │
+├──────────────────────────────────┤  data_end + 81920
+│  GC wrapper table (65536 bytes)  │
+│  (only with host-backed values)  │
+├──────────────────────────────────┤  data_end + 147456
 │  Heap-allocated data             │
 │  (ADTs, closures, arrays)        │
 │  ↓ grows toward higher addresses │
 ├──────────────────────────────────┤
 │  (unused)                        │
-└──────────────────────────────────┘  65536+ (64 KiB, growable)
+└──────────────────────────────────┘  grows with memory.grow
 ```
 
 </details>
 
-String constants occupy the lowest addresses. The GC shadow stack and mark worklist each occupy 4096 bytes after the string data. The heap grows toward higher addresses from `data_end + 8192`. The GC infrastructure (shadow stack, worklist, and heap offset) is only emitted when the program allocates heap data.
+String constants occupy the lowest addresses, with the scratch an entry point's exception boundary builds its message in (Chapter 11, Section 11.8.5). The GC shadow stack follows the string data: 16384 bytes, 4096 roots. The mark worklist follows it: 65536 bytes, 16384 entries. A program that holds host-backed values — `Decimal` values or pending async requests — carries the wrapper table next: 65536 bytes, 4096 entries of 16 bytes. The heap grows toward higher addresses from `$heap_ptr`'s initial value: `data_end + 81920`, or `data_end + 147456` with the wrapper table. The GC infrastructure (shadow stack, worklist, wrapper table and heap offset) is only emitted when the program allocates heap data.
 
 ### 12.5.2 Allocator
 
@@ -503,7 +521,7 @@ The runtime implements a conservative mark-sweep garbage collector entirely in W
 |--------|------|---------|
 | `$gc_sp` | `mut i32` | Shadow stack pointer (current top) |
 | `$gc_stack_base` | `i32` | Shadow stack base address (`data_end`) |
-| `$gc_heap_start` | `i32` | Heap start address (`data_end + 8192`) |
+| `$gc_heap_start` | `i32` | Heap start address (`data_end + 81920`, or `data_end + 147456` with the wrapper table; Section 12.5.1) |
 | `$gc_free_head` | `mut i32` | Free list head pointer |
 
 **Collection phases.** The `$gc_collect` function performs three phases:
@@ -514,7 +532,7 @@ The runtime implements a conservative mark-sweep garbage collector entirely in W
 
 **Conservative scanning.** The collector treats any i32 word whose value falls within the heap range and has correct payload alignment as a potential pointer. This eliminates the need for type descriptors or GC maps. False positives merely retain dead objects (harmless for mark-sweep).
 
-**Memory growth.** If collection does not free enough space, `$alloc` calls `memory.grow` to extend linear memory beyond the initial 64 KiB page. If memory growth fails, the program traps.
+**Memory growth.** If collection does not free enough space, `$alloc` calls `memory.grow` to extend linear memory beyond the initial 64 KiB page. If memory growth fails, the program traps as `heap_exhausted` (Section 12.4.6).
 
 ## 12.6 Execution Flow
 
@@ -566,26 +584,30 @@ The CLI prints `ExecuteResult.stdout` to the terminal after execution completes.
 
 WASM traps are unrecoverable runtime errors. The following conditions cause traps:
 
-| Condition | WASM Instruction | Source |
-|-----------|-----------------|--------|
-| Integer division by zero | `i64.div_s` | `/` operator on Int |
-| Unreachable code | `unreachable` | `assert` failure, bounds check failure |
-| Out-of-bounds memory access | `i64.load`, etc. | Invalid pointer dereference |
-| Integer overflow (in `i64.div_s`) | — | `Int.min_value / -1` |
+| Condition | WASM Instruction | Source | Kind |
+|-----------|-----------------|--------|------|
+| Integer division by zero | `i64.div_s`, `i64.rem_s` | `/` or `%` on `Int` or `Nat` | `divide_by_zero` |
+| Integer overflow (in `i64.div_s`) | `i64.div_s` | `Int.min_value / -1` | `overflow` |
+| Float-to-integer truncation of NaN, an infinity or a value past its range | `i64.trunc_f64_s`, etc. | `float_to_string` of a finite value of magnitude 2^63 or more ([#1482](https://github.com/aallan/vera/issues/1482)); every other conversion is checked before it truncates (Chapter 11, Section 11.8.5) | `float_conversion` |
+| A failed runtime check | `unreachable`, after a `vera.contract_fail` or `vera.trap` call | A contract, arithmetic overflow, a `@Nat` narrowing or widening, `@Nat` subtraction, an `assert`, an array or `string_char_code` index, a `Float64` to `Int` conversion, heap exhaustion, an exception leaving an entry point (Chapter 11, Section 11.8.5) | The kind the call names (Sections 12.4.3, 12.4.6) |
+| An exception leaving an export no boundary wraps | `throw` | A module not compiled from Vera; every Vera entry point declaring `Exn<T>` has a boundary | `uncaught_exception` |
+| A runtime-internal limit | `unreachable`, with no call before it | GC shadow-stack overflow, a collector limit, a WASI host I/O failure | `unreachable` |
+| Out-of-bounds memory access | `i64.load`, etc. | Invalid pointer dereference by a runtime helper | `out_of_bounds` |
+| Call stack exhaustion | — | Recursion deeper than the engine's stack | `stack_exhausted` |
 
-When a trap occurs, the wasmtime engine raises a `WasmtimeError` or `Trap` exception. The CLI reports this as a runtime error and exits with a non-zero status.
+When a trap occurs, the wasmtime engine raises a `WasmtimeError` or `Trap` exception. The CLI reports this as a runtime error and exits with a non-zero status.  The report names the trap by its kind — the kind a signal stored, or, for an instruction that trapped by itself, the kind its trap message identifies — with a message and the kind's Fix paragraph, the same on the browser runtime and under WASI 0.2 (Chapter 11, Section 11.8.5).  No check on a value the program computed reaches the generic `unreachable` kind.
 
 ### 12.7.2 Runtime Contract Violations
 
-Contracts that the verifier could not prove statically (Tier 3) are compiled as runtime assertions. A failed runtime precondition or postcondition executes `unreachable`, causing a WASM trap.
+Contracts that the verifier could not prove statically (Tier 3) are compiled as runtime assertions. A failed runtime precondition or postcondition reports the contract through `vera.contract_fail` and executes `unreachable`, causing a WASM trap.
 
 For the contract insertion strategy, see Chapter 11, Section 11.8.
 
-The `assert` expression also compiles to a conditional trap: if the condition is false, the program traps (see Chapter 11, Section 11.14).
+The `assert` expression also compiles to a conditional trap: if the condition is false, the program traps as `assertion_failed`, with the assertion's own text (see Chapter 11, Section 11.14).
 
 ### 12.7.3 Array Bounds Checking
 
-Array index expressions are bounds-checked at runtime. If the index is negative or greater than or equal to the array length, the program traps via `unreachable`.
+Array index expressions are bounds-checked at runtime. If the index is negative or greater than or equal to the array length, the program traps as `index_out_of_bounds`, with a message naming the access and its bound.  The check reads the full 64-bit index, before it is narrowed for the address arithmetic, so no index wraps into range.
 
 For the bounds checking implementation, see Chapter 11, Section 11.12.
 
@@ -629,6 +651,8 @@ resetState();
 ```
 
 The `init()` function follows the **init-then-use pattern**: async initialization, synchronous calls after. The module is cached — calling `init()` again with the same URL is a no-op.
+
+A WASM trap leaves `call()` as a thrown `VeraTrap`: an `Error` whose message is the trap's, carrying `kind` and `fix` beside it, named from the same kind table as the reference runtime (Section 12.7.1).  So does everything else that leaves it: an escaping `WebAssembly.Exception` as `uncaught_exception`, and an error a host binding throws as `host_error` with the binding's own message, as on the reference runtime.
 
 ### 12.9.3 IO Adaptations
 

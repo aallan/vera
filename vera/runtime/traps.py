@@ -10,7 +10,16 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import re
 from dataclasses import dataclass
+
+from vera.trap_registry import (
+    NATIVE_TRAP_OPCODES,
+    TRAP_KINDS,
+    WASMTIME_NATIVE_TRAPS,
+    kind_for_code,
+    native_trap_kind,
+)
 
 if TYPE_CHECKING:
     pass
@@ -99,13 +108,30 @@ class WasmTrapError(RuntimeError):
         * ``out_of_bounds`` — WASM memory access outside the linear
           memory bounds.
         * ``stack_exhausted`` — WASM call stack overflow (#517-class).
-        * ``unreachable`` — ``unreachable`` instruction executed (the
-          WASM panic primitive — typically a non-exhaustive match).
+        * ``unreachable`` — an ``unreachable`` no signal named: one of the
+          internal causes ``vera.trap_registry.INTERNAL_TRAPS`` lists
+          (shadow-stack overflow, a collector limit, a WASI host I/O
+          failure, a compiler bug), never a check on a program value.
         * ``overflow`` — integer overflow trap.
         * ``widen_guard`` — a ``@Nat`` above ``i64.MAX`` was widened into
           an ``@Int`` slot, where it would reinterpret as negative (#1438).
         * ``nat_guard`` — a negative ``@Int`` was bound into a ``@Nat``
           slot and the narrowing guard caught it (#754).
+        * ``nat_underflow`` — a ``@Nat`` subtraction would have gone
+          negative (#1479).
+        * ``assertion_failed`` — a body ``assert(...)`` was false (#1479).
+        * ``index_out_of_bounds`` — an array index outside
+          ``[0, array_length)`` (#1479).
+        * ``string_index_out_of_bounds`` — a ``string_char_code`` index
+          outside ``[0, string_length)`` (#1479).
+        * ``float_conversion`` — ``float_to_int`` / ``floor`` / ``ceil`` /
+          ``round`` given NaN, an infinity or a value outside the ``@Int``
+          range (#1479).
+        * ``heap_exhausted`` — an allocation the heap could not satisfy
+          (#1479).
+        * ``uncaught_exception`` — an ``Exn<T>`` no ``handle[Exn<T>]``
+          caught left the entry point; the message names its type and,
+          where printable, the value thrown (#1479).
         * ``host_error`` — a host import (an effect operation
           implemented outside WASM) raised rather than trapping; the
           message is the host binding's own (#1302).  Everything
@@ -341,106 +367,16 @@ def _resolve_trap_frames(
     return resolved
 
 
-# #516 Stage 3 (#547) — per-kind Fix paragraphs.  Keyed by the
-# stable trap kind so consumers can look up the suggestion text
-# without having to re-parse the trap reason.  Stage 3 splits the
-# previous (kind, message) pair into (kind, description, fix), so
-# a contract-violated description like "Out-of-bounds memory
-# access" is no longer crowded with an inline Fix-shaped clause —
-# the suggestion lives in its own field, formatted alongside the
-# rest of the toolchain's compile-time `Diagnostic` shape
-# (description / rationale / fix / spec_ref) for consistency.
-#
-# Empty string for `contract_violation` (the host import already
-# wrote a precise message into ``last_violation``; the user
-# already knows which contract failed and where, so adding a
-# generic "fix your contract" paragraph would be patronising) and
-# for `unknown` (by definition we don't know what to suggest).
+# #516 Stage 3 (#547) — per-kind Fix paragraphs, keyed by the stable trap
+# kind so consumers can look up the suggestion text without re-parsing the
+# trap reason.  Derived from `vera.trap_registry.TRAP_KINDS` (#1479), the one
+# table every host names a trap from, so the wasmtime, WASI and browser hosts
+# cannot give one kind two remedies.  Empty for `contract_violation` and
+# `host_error` (the message is itself the instruction) and for `unknown`
+# (nothing general to suggest); the `unreachable` paragraph is derived from
+# the internal roster and names exactly the causes that can reach it.
 _TRAP_FIX_PARAGRAPHS: dict[str, str] = {
-    "divide_by_zero": (
-        "Add a precondition `requires(divisor != 0)` on the function "
-        "performing the division, or guard the division site with a "
-        "non-zero check.  The Z3 verifier will then prove the division "
-        "is safe at every call site at compile time."
-    ),
-    "out_of_bounds": (
-        "Most often caused by `Array<T>[i]` with `i` outside `[0, "
-        "array_length(arr))` or by `string_slice(s, start, end)` with "
-        "out-of-range indices.  Add a `requires(i < "
-        "array_length(arr))` precondition or guard the access "
-        "explicitly.  If the trapping frame is `gc_collect`, "
-        "`alloc`, or another runtime helper this is a compiler bug "
-        "rather than a user error — please file a minimal reproducer "
-        "at https://github.com/aallan/vera/issues/new."
-    ),
-    "stack_exhausted": (
-        "Vera compiles tail-position calls to WASM `return_call` (#517, "
-        "shipped in v0.0.126; allocating tail calls covered by GC-aware "
-        "TCO in #549, v0.0.154), so iteration-shaped recursion runs in "
-        "constant stack space — if you're still hitting this trap the "
-        "recursion isn't actually in tail position.  Restructure with "
-        "an accumulator parameter so the recursive call is the LAST "
-        "thing the function does (no work after it, no `let`-binding "
-        "of its result, no enclosing arithmetic).  One remaining "
-        "exception: functions with a non-trivial runtime "
-        "postcondition (`ensures` that emits a Tier-3 check) revert "
-        "to plain `call` so the post-check runs after each call — "
-        "either simplify the postcondition to one the verifier can "
-        "discharge statically (Tier 1), or iterate via `array_fold` / "
-        "`array_map` (which compile to WASM loops rather than "
-        "recursion)."
-    ),
-    "unreachable": (
-        "Three causes reach this trap.  (1) A non-exhaustive `match` "
-        "whose missing arm would have required user code — add the "
-        "missing arm explicitly rather than relying on a wildcard; the "
-        "type checker will tell you which constructors are uncovered.  "
-        "(2) A compiler-generated assertion, e.g. an ADT field offset "
-        "that didn't resolve.  (3) GC shadow-stack overflow, which is "
-        "what a DEEP RECURSION through a function holding heap "
-        "references hits: every live frame roots its pointer "
-        "parameters, its allocations, and the values it binds out of "
-        "them, and the shadow stack holds 4 096 roots in total (16 KiB "
-        "— `GC_STACK_SIZE` in `vera/codegen/assembly.py`).  A recursion "
-        "that traps at a depth close to 4 096 divided by a small "
-        "integer is this one: reduce the heap values live across the "
-        "recursive call, or restructure so the call is in tail position "
-        "(#549 GC-aware TCO restores `$gc_sp` at each hop, so the chain "
-        "runs in constant shadow space)."
-    ),
-    "overflow": (
-        "Integer arithmetic produced a value outside the representable "
-        "range — the signed i64 range `[-2^63, 2^63)` for `@Int`, or the "
-        "unsigned u64 range `[0, 2^64)` for `@Nat` (#808 routes `@Nat` "
-        "overflows here too).  Add a `requires` precondition that "
-        "constrains the operands so Z3 can prove the result is "
-        "representable, or change the operation to a saturating / checked "
-        "variant via a helper function."
-    ),
-    "nat_guard": (
-        "A negative `@Int` was bound into a `@Nat` slot — a `let @Nat = "
-        "<@Int>`, a match or tuple-destructure binding, a constructor field, "
-        "or a call / effect-operation argument whose formal is `@Nat`.  The "
-        "verifier could not prove the value non-negative, so it left a "
-        "runtime check here (Tier 3).  Add a `requires(... >= 0)` "
-        "precondition, or narrow through an explicit branch "
-        "(`if x >= 0 then { ... }`), so Z3 discharges it at compile time and "
-        "the check becomes dead."
-    ),
-    "widen_guard": (
-        "A `@Nat` value above `i64.MAX` was widened into an `@Int` slot — a "
-        "return, a `let`, a call argument, a constructor field, an array "
-        "element or a tuple component whose target is `@Int`.  `Nat` (u64) "
-        "and `Int` (i64) share one machine representation, so such a value "
-        "REINTERPRETS as a negative `@Int` (`u64.MAX` becomes `-1`); the "
-        "verifier could not prove it in range, so it left a runtime check "
-        "here (Tier 3).  Add a `requires(... <= i64.MAX)` precondition, or "
-        "keep the value in `@Nat` and widen only where a bound is known, so "
-        "Z3 discharges it at compile time and the check becomes dead."
-    ),
-    "contract_violation": "",
-    "host_error": "",
-    "unknown": "",
+    name: kind.fix for name, kind in TRAP_KINDS.items()
 }
 
 
@@ -478,46 +414,103 @@ def _classify_host_error(exc: BaseException) -> tuple[str, str, str]:
     )
 
 
+#: How wasmtime renders a trap: its backtrace, then ``Caused by:`` and the
+#: engine's own reason, usually as ``wasm trap: <reason>``.
+_CAUSED_BY = re.compile(r"^\s*Caused by:\s*$", re.MULTILINE)
+_TRAP_REASON = re.compile(r"^\s*wasm trap:\s*(.*?)\s*$", re.MULTILINE)
+_BACKTRACE_LINE = re.compile(r"^\s*\d+:\s+0x[0-9a-f]+\s+-\s", re.MULTILINE)
+
+
+def trap_reason(message: str) -> str:
+    """The engine's own reason for a trap, from wasmtime's rendering of it.
+
+    The first line under the last ``Caused by:`` (without its ``wasm
+    trap:``), or a ``wasm trap:`` line — never the backtrace above them,
+    whose frames name the program's functions: a function called
+    ``unreachable`` must not be read as the reason an ``INT_MIN / -1``
+    trapped (#1479).  A message with no backtrace is all reason; one with a
+    backtrace and no cause has none a host can trust."""
+    causes = list(_CAUSED_BY.finditer(message))
+    if causes:
+        for line in message[causes[-1].end():].splitlines():
+            if line.strip():
+                return line.strip().removeprefix("wasm trap:").strip()
+        return ""
+    reasons = _TRAP_REASON.findall(message)
+    if reasons:
+        return str(reasons[-1])
+    return "" if _BACKTRACE_LINE.search(message) else message
+
+
+def trap_code_name(exc: BaseException) -> str | None:
+    """wasmtime's structured trap code for *exc* (its ``TrapCode`` member's
+    name), found through the exception chain; None where there is none —
+    a component call, a host error, a synthetic exception."""
+    seen: set[int] = set()
+    cursor: BaseException | None = exc
+    while cursor is not None and id(cursor) not in seen:
+        seen.add(id(cursor))
+        code = getattr(cursor, "trap_code", None)
+        name = getattr(code, "name", None)
+        if isinstance(name, str):
+            return name
+        cursor = cursor.__cause__ or cursor.__context__
+    return None
+
+
+def trapping_instruction(
+    exc: BaseException, wasm_bytes: bytes | bytearray,
+) -> str | None:
+    """The natively trapping instruction a wasmtime trap stopped at, or None.
+
+    The innermost frame's offset into the module is the trapping
+    instruction's, so the opcode there says which instruction it was
+    (#1479) — needed because wasmtime gives a truncation past its range and
+    ``INT_MIN / -1`` the same reason, "integer overflow".  The frames are
+    found through the exception chain, as the backtrace's are: some call
+    paths raise a ``WasmtimeError`` whose cause is the ``Trap`` holding
+    them."""
+    try:
+        frames = _find_frames_in_exception_chain(exc)
+        offset = frames[0].module_offset if frames else None  # type: ignore[index]
+    except (AttributeError, IndexError, TypeError, ValueError):
+        return None
+    if offset is None or not 0 <= offset < len(wasm_bytes):
+        return None
+    return NATIVE_TRAP_OPCODES.get(wasm_bytes[offset])
+
+
 def _classify_trap(
     exc: BaseException,
     last_violation: list[str],
-    last_overflow: list[object] | None = None,
-    last_nat_guard: list[object] | None = None,
-    last_widen: list[object] | None = None,
+    last_trap: list[tuple[int, str]] | None = None,
+    instruction: str | None = None,
 ) -> tuple[str, str, str]:
     """Classify a wasmtime trap into ``(kind, description, fix)``.
 
-    A contract-violation host-import (``host_contract_fail``) writes
-    the precise contract message into ``last_violation`` before WASM
-    traps. When that channel is populated, it always wins over the
-    wasmtime trap reason: the host-import path is more specific and
-    already Vera-native.
+    Two host-import channels are consulted before the trap reason, because
+    each is more specific than the ``unreachable`` a check executes after
+    signalling:
 
-    For everything else we inspect ``str(exc)`` for the wasmtime trap
-    reason substring — wasmtime renders these as ``wasm trap: <reason>``
-    in the exception message. The mapping is intentionally narrow:
-    only reasons we can describe in Vera-native terms, with a known
-    cause, get classified. Unknown reasons fall through to ``unknown``
-    and surface verbatim so the user is never left without a message.
+    * ``last_violation`` — the contract message ``host_contract_fail``
+      stored.  It always wins: the host import gave the precise contract.
+    * ``last_trap`` — the ``(code, message)`` a named check passed to
+      ``vera.trap`` (#1479).  The code names the kind in
+      ``vera.trap_registry.TRAP_KINDS``; the message, when the check
+      carries one, is the description, and the kind's canonical
+      description stands in when it does not.
 
-    The third return value is the per-kind Fix paragraph (#547,
-    Stage 3), keyed by ``kind`` in ``_TRAP_FIX_PARAGRAPHS``.
-    Empty string for ``contract_violation`` and ``unknown`` —
-    those kinds either already have specific information in the
-    description (the contract message) or have no actionable
-    suggestion possible by definition.
-
-    Stage 1 (v0.0.120) established the kind taxonomy.  Stage 2
-    (v0.0.124, #546) added the source backtrace via
-    ``WasmTrapError.frames``.  Stage 3 (this version) adds the
-    Fix paragraph so the runtime-trap surface matches the rest of
-    the toolchain's diagnostic style (compile-time errors have
-    description / rationale / fix / spec_ref; runtime traps now
-    have description / fix / kind / frames).
+    Otherwise the trap is the engine's own: its kind comes from
+    ``native_trap_kind`` — the trapping *instruction*, where the host can
+    report it (``trapping_instruction``); wasmtime's structured trap code,
+    where the exception carries one (``trap_code_name``); and the trap
+    reason (``trap_reason``: the engine's words only, never the backtrace's
+    function names) matched against ``WASMTIME_NATIVE_TRAPS`` (first match
+    wins).  An
+    unrecognised reason is ``unknown`` and surfaces verbatim so the user is
+    never left without a message.  The third element is the kind's Fix
+    paragraph (#547).
     """
-    # Contract violation takes precedence — the host import gave us
-    # the precise message; wasmtime's trap reason is just "unreachable
-    # executed" in that path and would lose detail.
     if last_violation:
         return (
             "contract_violation",
@@ -525,71 +518,22 @@ def _classify_trap(
             _TRAP_FIX_PARAGRAPHS["contract_violation"],
         )
 
-    # #808: the #798 integer-overflow guard calls the ``vera.overflow_trap``
-    # host import (which signals this channel) immediately before its
-    # ``unreachable``, so the trap classifies as the precise ``overflow`` kind
-    # with its Fix paragraph rather than the generic ``unreachable`` a bare
-    # instruction produces.  Checked before the ``str(exc)`` substring scan
-    # below — that scan would otherwise match the trailing ``unreachable``
-    # first (the host signals but the WASM still traps via ``unreachable``).
-    if last_overflow:
-        return (
-            "overflow",
-            "Integer overflow",
-            _TRAP_FIX_PARAGRAPHS["overflow"],
-        )
+    # Checked before the reason scan, which would otherwise match the
+    # trailing `unreachable` every signalled trap executes.
+    if last_trap:
+        code, message = last_trap[0]
+        named = kind_for_code(code)
+        if named is not None:
+            return (named.name, message or named.description, named.fix)
 
-    # #754: the @Int -> @Nat narrowing guard signals the same way, for the
-    # same reason — its trap is also a bare `unreachable`, and the generic
-    # paragraph that instruction earns lists three causes, none of which is
-    # a narrowing.  Checked after the overflow channel and before the
-    # substring scan, on the same ordering argument.
-    if last_nat_guard:
-        return (
-            "nat_guard",
-            "Negative value bound into a @Nat slot",
-            _TRAP_FIX_PARAGRAPHS["nat_guard"],
-        )
-
-    # #1438: the @Nat -> @Int WIDENING guard, on the same terms as its
-    # narrowing twin above.  The two share the `unreachable` and have
-    # different remedies — `>= 0` on one side, `<= i64.MAX` on the other —
-    # so a reader told only that an `unreachable` was reached is told
-    # nothing they can act on.
-    if last_widen:
-        return (
-            "widen_guard",
-            "@Nat value above i64.MAX widened into an @Int slot",
-            _TRAP_FIX_PARAGRAPHS["widen_guard"],
-        )
-
-    msg = str(exc).lower()
-    kind: str
-    description: str
-    if "integer divide by zero" in msg:
-        kind = "divide_by_zero"
-        description = "Integer division by zero"
-    elif "out of bounds memory access" in msg:
-        kind = "out_of_bounds"
-        description = "Out-of-bounds memory access"
-    elif "call stack exhausted" in msg:
-        kind = "stack_exhausted"
-        description = "WASM call stack exhausted"
-    elif "unreachable" in msg:
-        kind = "unreachable"
-        description = "Reached `unreachable` WASM instruction"
-    elif "integer overflow" in msg:
-        kind = "overflow"
-        description = "Integer overflow"
-    else:
-        # Couldn't classify — surface the raw wasmtime message
-        # verbatim so the user still sees something diagnostic.
-        # Use ``str(exc)`` directly rather than `f"WASM trap: {exc}"`
-        # because the wasmtime exception text already contains the
-        # "wasm trap:" substring (in its "Caused by:" tail), and a
-        # synthetic mock that begins with "wasm trap: ..." would
-        # otherwise produce a double-prefix message
-        # ("WASM trap: wasm trap: ...").
-        return ("unknown", str(exc), _TRAP_FIX_PARAGRAPHS["unknown"])
-
-    return (kind, description, _TRAP_FIX_PARAGRAPHS[kind])
+    native = native_trap_kind(
+        trap_reason(str(exc)).lower(), instruction, WASMTIME_NATIVE_TRAPS,
+        code=trap_code_name(exc))
+    if native is not None:
+        return (native, TRAP_KINDS[native].description,
+                _TRAP_FIX_PARAGRAPHS[native])
+    # Couldn't classify — surface the raw wasmtime message verbatim so the
+    # user still sees something diagnostic.  `str(exc)` directly rather than
+    # `f"WASM trap: {exc}"`: the wasmtime text already contains "wasm trap:"
+    # in its "Caused by:" tail, and a prefix would double it.
+    return ("unknown", str(exc), _TRAP_FIX_PARAGRAPHS["unknown"])

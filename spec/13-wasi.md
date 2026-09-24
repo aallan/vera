@@ -109,10 +109,18 @@ Host data larger than the arena (for example an argv list over
 | `IO.time` | `wasi:clocks/wall-clock.now` |
 | `Random.random_int` / `random_float` / `random_bool` | `wasi:random/random.get-random-u64` (rejection-sampled for unbiased ranges) |
 
-The runtime trap channels (`contract_fail`, `overflow_trap`) are also
-implemented by the adapter: a contract-violation message is written to
-WASI stderr before the trap fires, and integer-overflow traps keep
-their classification (Section 13.6).
+The runtime trap channels (`contract_fail`, `trap`; Section 11.8.5)
+are also implemented by the adapter: a contract-violation message, or a
+named check's own message, is written to WASI stderr before the trap
+fires, after a one-byte mark — a newline, as a write of its own — that
+says where the message starts, and a named check traps inside an adapter
+function named for its kind, so every kind keeps its classification
+(Section 13.6).  The host takes the message from the last such mark that
+another write follows: every chunk of a message but its last is a full
+4096 bytes, the most one write carries, so the message arrives whole
+however long it is, and what the program itself wrote to stderr stays
+the program's.  Under another host the mark shows only as the message
+starting on a line of its own.
 
 ## 13.5 Entry Points
 
@@ -141,9 +149,11 @@ pinned by tests:
 - **No structured trap frames.**  A trap's backtrace does not cross
   the component boundary as data (spike check 5 in `WASI.md`); the
   trap *kind* and message are preserved — contract violations
-  classify as `contract_violation` with the full violation text,
-  overflow as `overflow` — but the `frames` list in the JSON trap
-  envelope is empty.
+  classify as `contract_violation` with the full violation text, and
+  every check `vera.trap` names as its own kind with its own message,
+  read from the innermost frame's whole name in the adapter module and
+  never from a program function's — but the `frames` list in the JSON
+  trap envelope is empty.
 - **Environment is a launch-time snapshot.**  The component receives
   its environment once via `get-environment`; the core target reads
   `os.environ` live.  Observable only if the host environment mutates

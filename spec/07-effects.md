@@ -92,6 +92,7 @@ The same effect with the same type parameters MUST NOT appear twice (it would be
 
 Within a function that declares an effect, operations are called like regular functions:
 
+<!-- vera:run fn="increment" stdout="" -->
 ```
 public fn increment(@Unit -> @Unit)
   requires(true)
@@ -104,6 +105,7 @@ public fn increment(@Unit -> @Unit)
 }
 ```
 
+<!-- vera:run fn="hello" stdout="hello, world" -->
 ```
 public fn hello(-> @Unit)
   requires(true)
@@ -183,6 +185,7 @@ For the builtin `State` effect the state declaration **is** the `State<T>` cell:
 
 **Cell identity is the RESOLVED `T`, not the spelling.** `State<T>` is one effect instance per resolved `T`, so every spelling that resolves to the same type names the same cell — whether that type is scalar or composite, and whether the alias is plain or parameterized. A `handle[State<MaybeInt>]` under `type MaybeInt = Option<Int>` therefore handles a callee declaring `effects(<State<Option<Int>>>)`, and the two share one cell:
 
+<!-- vera:run fn="main" stdout="7" -->
 ```vera
 type MaybeInt = Option<Int>;
 
@@ -485,6 +488,7 @@ The argument to `old` and `new` MUST be an *effect reference* — the name of a 
 
 When a function calls other functions, the effects compose via row union:
 
+<!-- vera:skip-check category="INCOMPLETE" code="E200 E200" reason="calls bar and baz, which the example describes but does not define" -->
 ```
 private fn foo(@Unit -> @Unit)
   requires(true)

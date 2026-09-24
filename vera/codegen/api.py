@@ -61,6 +61,7 @@ from vera.runtime.traps import (
     _classify_host_error,
     _classify_trap,
     _resolve_trap_frames,
+    trapping_instruction,
 )
 
 if TYPE_CHECKING:
@@ -68,6 +69,7 @@ if TYPE_CHECKING:
 
     from vera.errors import Diagnostic
     from vera.resolver import ResolvedModule
+    from vera.trap_registry import EmittedCheck
     from vera.types import ModuleArtifacts, Type
 
 
@@ -184,6 +186,14 @@ class CompileResult:
     # Names are the emitted WASM symbol names, so they compare directly
     # against `exports` and against a `--fn` request.
     dropped_fns: dict[str, "Diagnostic | None"] = field(default_factory=dict)
+    # #1479 — the per-module record of runtime checks: one
+    # `vera.trap_registry.EmittedCheck` per check the module contains, with
+    # the trap kind it reports, the verifier obligation kinds it is the
+    # runtime half of, the WASM function it sits in and its source span.
+    # Read back from the assembled module's text, so it lists exactly the
+    # checks the module holds.  Empty for a compile that failed before
+    # assembly.
+    emitted_checks: list["EmittedCheck"] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -891,52 +901,30 @@ def execute(
         host_contract_fail, access_caller=True,
     )
 
-    # Host function: vera.overflow_trap() -> ()  (#808)
-    # Signals that the #798 integer-overflow guard fired, so `_classify_trap`
-    # reports the precise `kind="overflow"` (with its Fix paragraph) instead of
-    # the generic `unreachable` a bare trap instruction yields.  Mirrors
-    # `host_contract_fail`'s store-then-trap channel; parameterless because the
-    # diagnostic is per-kind — there is no dynamic message to intern.
-    last_overflow: list[object] = []
+    # Host function: vera.trap(kind: i32, ptr: i32, len: i32) -> ()  (#1479)
+    # The one signal every named check calls immediately before its
+    # `unreachable`: the kind as a code (`vera.trap_registry.TRAP_KINDS`) and
+    # the check's own message, when it carries one, as an interned
+    # (ptr, len).  `_classify_trap` then reports that kind, message and Fix
+    # instead of the generic `unreachable` the instruction alone produces —
+    # the channel #808 opened for overflow, carrying every kind at once so
+    # naming a trap never needs an import of its own.
+    last_trap: list[tuple[int, str]] = []
 
-    def host_overflow_trap() -> None:
-        last_overflow.append(True)
+    def host_trap(
+        caller: wasmtime.Caller, code: int, ptr: int, length: int,
+    ) -> None:
+        last_trap.clear()
+        message = _read_wasm_string(caller, ptr, length) if length else ""
+        last_trap.append((code, message))
 
-    overflow_trap_type = wasmtime.FuncType([], [])
-    linker.define_func(
-        "vera", "overflow_trap", overflow_trap_type, host_overflow_trap,
+    trap_type = wasmtime.FuncType(
+        [wasmtime.ValType.i32(), wasmtime.ValType.i32(),
+         wasmtime.ValType.i32()],
+        [],
     )
-
-    # Host function: vera.nat_guard_trap() -> ()  (#754)
-    # The narrowing twin of the channel above: signals that an @Int -> @Nat
-    # binding guard caught a negative, so the trap reports
-    # `kind="nat_guard"` and a Fix naming the `requires(... >= 0)` that would
-    # discharge it — rather than the generic `unreachable` paragraph, whose
-    # three stated causes are a non-exhaustive match, a compiler assertion,
-    # and shadow-stack overflow, none of which is this.
-    last_nat_guard: list[object] = []
-
-    def host_nat_guard_trap() -> None:
-        last_nat_guard.append(True)
-
-    nat_guard_trap_type = wasmtime.FuncType([], [])
     linker.define_func(
-        "vera", "nat_guard_trap", nat_guard_trap_type, host_nat_guard_trap,
-    )
-
-    # Host function: vera.widen_trap() -> ()  (#1438)
-    # The WIDENING twin: a `@Nat` above `i64.MAX` reinterprets to a negative
-    # `@Int`, and the guard that catches it shared the bare `unreachable`
-    # with everything else until this channel existed.  Its remedy is a
-    # `requires(... <= i64.MAX)`, which the generic paragraph never named.
-    last_widen: list[object] = []
-
-    def host_widen_trap() -> None:
-        last_widen.append(True)
-
-    widen_trap_type = wasmtime.FuncType([], [])
-    linker.define_func(
-        "vera", "widen_trap", widen_trap_type, host_widen_trap,
+        "vera", "trap", trap_type, host_trap, access_caller=True,
     )
 
     # State<T> host functions
@@ -1405,8 +1393,8 @@ def execute(
             # don't admit a generic suggestion: contract_violation /
             # unknown).
             kind, message, fix = _classify_trap(
-                exc, last_violation, last_overflow, last_nat_guard,
-                last_widen,
+                exc, last_violation, last_trap,
+                instruction=trapping_instruction(exc, result.wasm_bytes),
             )
         else:
             # Diagnostic escape hatch (ENVIRONMENT.md,

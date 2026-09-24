@@ -84,6 +84,7 @@ Yes. Nearly every SQL injection starts the same way: a query assembled from a va
 
 The SQL argument of `DB.query` / `DB.execute` must have **literal provenance**. It can be a string literal, or a `string_concat`, an interpolation, or a `let` chain — but every part of that chain has to trace back to a literal. A query built from a parameter, a call result, or a `\(expr)` interpolation of one is rejected at compile time with `E207`. Data from outside the program reaches the database only through the `?` placeholders and the params array:
 
+<!-- vera:no-run category="fixture" reason="queries a users table the block does not create" -->
 ```vera
 public fn find_user(@String -> @Result<Array<Array<Option<String>>>, String>)
   requires(string_length(@String.0) > 0)
@@ -133,7 +134,7 @@ Vera has four built-in abilities:
 
 You use them in generic signatures with `where` clauses:
 
-<!-- vera:skip-parse category="SNIPPET" reason="Abilities example with ellipsis body" -->
+<!-- vera:skip-parse category="FRAGMENT" reason="Abilities example with ellipsis body" -->
 ```vera
 public forall<T where Eq<T>> fn contains(@Array<T>, @T -> @Bool)
   requires(true)
@@ -236,7 +237,7 @@ None of this is Vera-specific, but it validates the design choices. The thesis i
 
 This is a real concern. LLMs are trained on trillions of tokens of Python, TypeScript, and JavaScript. A MojoBench study (NAACL 2025) found that even fine-tuned models achieved only 30–35% improvement over base models on Mojo code generation, illustrating the cold-start problem for new languages.
 
-Vera's approach has three parts. First, the agent-facing documentation (SKILL.md) is designed to be dropped into a model's context window, so the model works from the language specification rather than training data recall. Second, Vera's syntax is deliberately simple and regular (fewer constructs, each with one preferred surface spelling `vera fmt` produces deterministically), which reduces the surface area a model needs to learn. Third, the conformance test suite (253 programs covering every language feature) gives models concrete examples to learn from and conform to. Simon Willison's December 2025 JustHTML write-up illustrates the same point in practice: an LLM-assisted implementation, guided by the html5lib conformance suite, conformed to the HTML parsing spec by running against its tests, and a comprehensive test suite is a strong scaffold for a model implementing to a specification.
+Vera's approach has three parts. First, the agent-facing documentation (SKILL.md) is designed to be dropped into a model's context window, so the model works from the language specification rather than training data recall. Second, Vera's syntax is deliberately simple and regular (fewer constructs, each with one preferred surface spelling `vera fmt` produces deterministically), which reduces the surface area a model needs to learn. Third, the conformance test suite (254 programs covering every language feature) gives models concrete examples to learn from and conform to. Simon Willison's December 2025 JustHTML write-up illustrates the same point in practice: an LLM-assisted implementation, guided by the html5lib conformance suite, conformed to the HTML parsing spec by running against its tests, and a comprehensive test suite is a strong scaffold for a model implementing to a specification.
 
 
 ## How does Vera compare to Dafny / Lean / Koka / F*?
@@ -279,7 +280,7 @@ The reference compiler is under active development. The current release includes
 
 - A seven-stage pipeline: parse, transform, resolve, typecheck, verify, compile, execute
 - A 14-chapter formal specification
-- 17,216 tests, including a 253-program conformance suite
+- 16,978 tests, including a 254-program conformance suite
 - 43 working example programs
 - 164 built-in functions covering strings, arrays, math, parsing, and data types
 - Four built-in abilities (Eq, Ord, Hash, Show) with constrained generics and ADT auto-derivation

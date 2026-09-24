@@ -13,13 +13,12 @@ declarations with none of the module's own imports in scope, so a data type
 the module imported fell through to an opaque placeholder (#1489); code
 generation registered them the same way, so the same type came out with no
 WASM representation and a direct ``match`` on the module's result dropped its
-caller (#1493).  The import list itself was keyed by path with the last
-statement winning, so ``import m(a); import m(b);`` admitted ``b`` alone.
+caller (#1493).  Both read a namespace's import lists through
+:func:`vera.resolver.merged_import_filters` — per imported path, the UNION
+over every ``import`` of that path, ``None`` for a wildcard (#1433).
 
-Three functions, each the only place its question is answered:
+Two functions, each the only place its question is answered:
 
-* :func:`import_filters` — per imported path, the names a namespace admits:
-  the UNION over every ``import`` of that path, ``None`` for a wildcard.
 * :func:`modules_visible_to` — the resolved modules a namespace can reach,
   with ``direct`` re-derived against its own import list.
 * :func:`imported_data_types` — which module each data type name a namespace
@@ -28,47 +27,16 @@ Three functions, each the only place its question is answered:
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 
 from vera import ast
-from vera.resolver import ResolvedModule
+from vera.resolver import ResolvedModule, merged_import_filters
 
 __all__ = [
-    "import_filters",
     "imported_data_types",
     "modules_visible_to",
 ]
-
-
-def import_filters(
-    imports: Iterable[ast.ImportDecl],
-) -> dict[tuple[str, ...], set[str] | None]:
-    """One filter per imported PATH, unioned across repeated imports.
-
-    A namespace may name a declaration that ANY of its import lists admits,
-    so two statements naming one module contribute the union of their lists
-    and a wildcard dominates every list beside it.  Keying a dict on the path
-    instead made the LAST statement win and discarded the others: with
-    ``import m(a); import m(b);`` the surviving filter admits ``b`` alone.
-
-    Repeating one statement adds nothing, so the result is idempotent in
-    the repetition.  Paths keep their first-appearance order, which is the
-    order every consumer walks them in.
-    """
-    out: dict[tuple[str, ...], set[str] | None] = {}
-    for imp in imports:
-        path = tuple(imp.path)
-        names = set(imp.names) if imp.names is not None else None
-        if path not in out:
-            out[path] = names
-            continue
-        existing = out[path]
-        if existing is None or names is None:
-            out[path] = None  # a wildcard admits everything
-        else:
-            out[path] = existing | names
-    return out
 
 
 def modules_visible_to(
@@ -87,7 +55,7 @@ def modules_visible_to(
     Walked in import order, so the list is a function of the source alone.
     """
     by_path = {m.path: m for m in resolved}
-    direct = [path for path in import_filters(program.imports)
+    direct = [path for path in merged_import_filters(program.imports)
               if path in by_path]
     direct_set = set(direct)
     out: list[ResolvedModule] = []
@@ -101,7 +69,7 @@ def modules_visible_to(
         dep = by_path[path]
         out.append(replace(dep, direct=path in direct_set))
         frontier.extend(reversed([
-            p for p in import_filters(dep.program.imports) if p in by_path
+            p for p in merged_import_filters(dep.program.imports) if p in by_path
         ]))
     return out
 
@@ -114,7 +82,7 @@ def imported_data_types(
 
     A name is imported when a module *program* imports DIRECTLY declares it
     ``public`` and *program*'s filter for that module admits it
-    (:func:`import_filters`).  Suppliers are listed in import order.  A module
+    (:func:`vera.resolver.merged_import_filters`).  Suppliers are listed in import order.  A module
     *program* imports that is not in *modules* did not resolve, and supplies
     nothing.
 
@@ -129,7 +97,7 @@ def imported_data_types(
     disagree about which data types a module's declarations may name.
     """
     suppliers: dict[str, list[tuple[str, ...]]] = {}
-    for path, name_filter in import_filters(program.imports).items():
+    for path, name_filter in merged_import_filters(program.imports).items():
         dep = modules.get(path)
         if dep is None:
             continue

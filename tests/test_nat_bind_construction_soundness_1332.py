@@ -170,25 +170,29 @@ def _run(tmp_path: Path, source: str, arg: int,
 
 
 #: What a tripped `@Int` -> `@Nat` narrowing guard says.  Since #754 the guard
-#: signals `vera.nat_guard_trap` before its `unreachable`, so the trap carries
-#: its own kind and its own message instead of the generic instruction name —
-#: which is a STRONGER reading here, not merely a different one: "unreachable"
-#: also matches a non-exhaustive match and a shadow-stack overflow, either of
-#: which would have read as "the narrowing guard fired".
+#: signals `nat_guard` before its `unreachable` (through `vera.trap` since
+#: #1479), so the trap carries its own kind and its own message instead of the
+#: generic instruction name — which is a STRONGER reading here, not merely a
+#: different one: "unreachable" also matches a shadow-stack overflow, which
+#: would have read as "the narrowing guard fired".
 _NAT_GUARD_TRAP = "Negative value bound into a @Nat slot"
 
 
 def _traps(proc: subprocess.CompletedProcess[str]) -> bool:
-    """ANY trap — for the cells asserting that none occurs.
+    """ANY failed run — for the cells asserting that none occurs.
 
     Deliberately broad on that side: a cell claiming a proved narrowing does
     not trap must fail on an unexpected trap of any kind, so widening this
-    predicate makes those assertions stronger, not weaker.
+    predicate makes those assertions stronger, not weaker.  So it reads the
+    exit status, the one thing every trap shares: since #1479 each runtime
+    check reports its own kind and message, and the word "unreachable" names
+    only the runtime's internal limits, so a predicate keyed on that word
+    missed a `@Nat` subtraction underflow, a failed `assert` or an index out
+    of bounds (and a refinement guard's `contract_violation` before that).
+    A verify-clean program that fails to run for any other reason contradicts
+    the claim just as much, so nothing is lost by counting it.
     """
-    out = proc.stdout + proc.stderr
-    return proc.returncode != 0 and (
-        _NAT_GUARD_TRAP in out or "unreachable" in out
-    )
+    return proc.returncode != 0
 
 
 def _traps_on_the_narrowing_guard(
@@ -196,11 +200,11 @@ def _traps_on_the_narrowing_guard(
 ) -> bool:
     """The NARROWING guard specifically — for the cells expecting it.
 
-    `_traps` accepts a bare `unreachable`, which is also what a
-    non-exhaustive match, a compiler assertion and a shadow-stack overflow
-    produce.  Used on the expecting side it would let a regression that
-    removes the `vera.nat_guard_trap` signal — the exact thing #754 added —
-    pass as a guard that fired (PR review).
+    `_traps` accepts any failed run, which includes a bare `unreachable`
+    from a shadow-stack overflow and every other kind of trap.  Used on the
+    expecting side it would let a regression that removes the `nat_guard`
+    signal — the exact thing #754 added — pass as a guard that fired (PR
+    review).
     """
     out = proc.stdout + proc.stderr
     return proc.returncode != 0 and _NAT_GUARD_TRAP in out

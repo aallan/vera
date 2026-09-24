@@ -396,22 +396,8 @@ class TestRegistrationIsMemoised:
 # The shared derivation
 # =====================================================================
 
-def _imports(src: str) -> tuple[ast.ImportDecl, ...]:
-    return parse_to_ast(src + "\npublic fn f(@Int -> @Int)\n" + _CONTRACT
-                        + "{\n  1\n}\n").imports
-
-
 class TestOneDerivation:
     """`vera.module_view`: what one namespace can see through its imports."""
-
-    def test_filters_union_every_import_of_a_path(self) -> None:
-        from vera.module_view import import_filters
-
-        filt = import_filters(_imports(
-            "import ma(a);\nimport ma(b);\nimport mb(c);\n"))
-        assert filt == {("ma",): {"a", "b"}, ("mb",): {"c"}}
-        assert import_filters(_imports("import ma(a);\nimport ma;\n")) == {
-            ("ma",): None}
 
     def test_imported_data_types_lists_every_supplier(self) -> None:
         from vera.module_view import imported_data_types

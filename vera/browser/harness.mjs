@@ -13,7 +13,8 @@
 //
 // Output: JSON on stdout:
 //   { "stdout": "...", "stderr": "...", "state": { "Int": 0 },
-//     "exitCode": null, "error": null, "value": null, "exports": [...] }
+//     "exitCode": null, "error": null, "trapKind": null, "fix": null,
+//     "value": null, "exports": [...] }
 
 import { readFileSync } from 'fs';
 import { initFromBytes, call, getStdout, getStderr, getState, getExitCode, getExports } from './runtime.mjs';
@@ -76,12 +77,19 @@ async function main() {
 
   const fnName = config.fn || 'main';
   let error = null;
+  let trapKind = null;
+  let fix = null;
   let value = undefined;
 
   try {
     value = call(fnName, ...config.fnArgs);
   } catch (e) {
     error = e.message || String(e);
+    // #1479: a named trap carries its kind and Fix paragraph.
+    if (e && typeof e.kind === 'string') {
+      trapKind = e.kind;
+      fix = e.fix;
+    }
   }
 
   // Serialize BigInt values for JSON
@@ -93,6 +101,8 @@ async function main() {
     state: getState(),
     exitCode: getExitCode(),
     error,
+    trapKind,
+    fix,
     value: serializedValue,
     exports: getExports(),
   };

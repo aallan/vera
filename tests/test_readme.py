@@ -1,7 +1,7 @@
-"""Tests for README.md code samples — ensures all Vera blocks parse.
+"""Tests for README.md code samples — the parse stage of every Vera block.
 
-Mirrors scripts/check_readme_examples.py but integrates with pytest for
-the regular test suite. Every ```vera code block in README.md must parse
+The parse stage of scripts/check_doc_examples.py's README.md gate, in the
+regular test suite. Every ```vera code block in README.md must parse
 successfully, or carry an inline `<!-- vera:skip-parse ... -->` annotation
 on the line before its fence (#538; see scripts/doc_annotations.py).
 Annotated blocks are still parsed: one that parses fine is a stale

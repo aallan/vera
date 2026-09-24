@@ -99,13 +99,56 @@ class CallsMathMixin:
         instructions.append("select")
         return instructions
 
+    #: The two ends of the domain `i64.trunc_f64_s` converts without
+    #: trapping: every value in ``[-2^63, 2^63)``, both bounds being exact
+    #: in f64.  NaN compares false against both, so it falls outside.
+    _TRUNC_LOW = "-9223372036854775808"
+    _TRUNC_HIGH = "9223372036854775808"
+
+    def _trunc_after_domain_check(self, trap: list[str]) -> list[str]:
+        """``i64.trunc_f64_s`` behind the check that makes it total (#1479).
+
+        With the f64 on the stack: trap through *trap* — the caller's own
+        ``float_conversion`` signal — unless the value lies in
+        ``[-2^63, 2^63)``, then truncate.  The native instruction traps on
+        exactly the values outside that range (and NaN), so it can no longer
+        trap here; before this check it did, as ``unknown`` for NaN and as
+        ``overflow`` — whose Fix is about integer arithmetic — for a value
+        too large."""
+        tmp = self.alloc_local("f64")
+        return [
+            f"local.tee {tmp}",
+            f"f64.const {self._TRUNC_LOW}",
+            "f64.ge",
+            f"local.get {tmp}",
+            f"f64.const {self._TRUNC_HIGH}",
+            "f64.lt",
+            "i32.and",
+            "i32.eqz",
+            "if",
+            *(f"  {i}" for i in trap),
+            "end",
+            f"local.get {tmp}",
+            "i64.trunc_f64_s",
+        ]
+
+    def _float_conversion_message(self, at: ast.Node | None) -> str:
+        """The `float_conversion` message: the conversion, and its domain."""
+        call = ast.format_expr(at) if isinstance(at, ast.Expr) else "the call"
+        return (
+            f"Float64 to Int conversion out of range{self._at_line(at)}: "
+            f"`{call}` needs a finite value in [-2^63, 2^63); it was NaN, "
+            "infinite, or outside that range."
+        )
+
     def _translate_floor(
-        self, arg: ast.Expr, env: WasmSlotEnv,
+        self, arg: ast.Expr, env: WasmSlotEnv, *, at: ast.Node | None,
     ) -> list[str] | None:
         """Translate floor(@Float64) → @Int.
 
         WASM: ``f64.floor`` then ``i64.trunc_f64_s``.
-        Traps on NaN or values outside the i64 range.
+        Signals ``float_conversion`` and traps on NaN, an infinity or a
+        value outside the i64 range (#1479).
         """
         arg_instrs = self.translate_expr(arg, env)
         if arg_instrs is None:
@@ -113,16 +156,19 @@ class CallsMathMixin:
         instructions: list[str] = []
         instructions.extend(arg_instrs)
         instructions.append("f64.floor")
-        instructions.append("i64.trunc_f64_s")
+        instructions.extend(self._trunc_after_domain_check(self._emit_trap(
+            "wasm/calls_math.py:_translate_floor", at=at,
+            message=self._float_conversion_message(at))))
         return instructions
 
     def _translate_ceil(
-        self, arg: ast.Expr, env: WasmSlotEnv,
+        self, arg: ast.Expr, env: WasmSlotEnv, *, at: ast.Node | None,
     ) -> list[str] | None:
         """Translate ceil(@Float64) → @Int.
 
         WASM: ``f64.ceil`` then ``i64.trunc_f64_s``.
-        Traps on NaN or values outside the i64 range.
+        Signals ``float_conversion`` and traps on NaN, an infinity or a
+        value outside the i64 range (#1479).
         """
         arg_instrs = self.translate_expr(arg, env)
         if arg_instrs is None:
@@ -130,17 +176,20 @@ class CallsMathMixin:
         instructions: list[str] = []
         instructions.extend(arg_instrs)
         instructions.append("f64.ceil")
-        instructions.append("i64.trunc_f64_s")
+        instructions.extend(self._trunc_after_domain_check(self._emit_trap(
+            "wasm/calls_math.py:_translate_ceil", at=at,
+            message=self._float_conversion_message(at))))
         return instructions
 
     def _translate_round(
-        self, arg: ast.Expr, env: WasmSlotEnv,
+        self, arg: ast.Expr, env: WasmSlotEnv, *, at: ast.Node | None,
     ) -> list[str] | None:
         """Translate round(@Float64) → @Int.
 
         WASM: ``f64.nearest`` (IEEE 754 roundTiesToEven, aka banker's
         rounding) then ``i64.trunc_f64_s``.
-        Traps on NaN or values outside the i64 range.
+        Signals ``float_conversion`` and traps on NaN, an infinity or a
+        value outside the i64 range (#1479).
         """
         arg_instrs = self.translate_expr(arg, env)
         if arg_instrs is None:
@@ -148,7 +197,9 @@ class CallsMathMixin:
         instructions: list[str] = []
         instructions.extend(arg_instrs)
         instructions.append("f64.nearest")
-        instructions.append("i64.trunc_f64_s")
+        instructions.extend(self._trunc_after_domain_check(self._emit_trap(
+            "wasm/calls_math.py:_translate_round", at=at,
+            message=self._float_conversion_message(at))))
         return instructions
 
     def _translate_sqrt(
@@ -267,19 +318,21 @@ class CallsMathMixin:
         return instructions
 
     def _translate_float_to_int(
-        self, arg: ast.Expr, env: WasmSlotEnv,
+        self, arg: ast.Expr, env: WasmSlotEnv, *, at: ast.Node | None,
     ) -> list[str] | None:
         """Translate float_to_int(@Float64) → @Int.
 
-        WASM: i64.trunc_f64_s (truncation toward zero).
-        Traps on NaN/Infinity, consistent with floor/ceil/round.
+        WASM: i64.trunc_f64_s (truncation toward zero), behind the same
+        ``float_conversion`` domain check as floor/ceil/round (#1479).
         """
         arg_instrs = self.translate_expr(arg, env)
         if arg_instrs is None:
             return None
         instructions: list[str] = []
         instructions.extend(arg_instrs)
-        instructions.append("i64.trunc_f64_s")
+        instructions.extend(self._trunc_after_domain_check(self._emit_trap(
+            "wasm/calls_math.py:_translate_float_to_int", at=at,
+            message=self._float_conversion_message(at))))
         return instructions
 
     def _translate_nat_to_int(
@@ -299,7 +352,7 @@ class CallsMathMixin:
         """
         instrs = self.translate_expr(arg, env)
         if instrs is not None and self._narrows_into_nat(arg):
-            instrs = self._emit_nat_bind_guard(instrs)
+            instrs = self._emit_nat_bind_guard(instrs, at=arg)
         return instrs
 
     def _translate_int_to_nat(

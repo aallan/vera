@@ -29,6 +29,7 @@ import pytest
 from vera.checker import typecheck_with_artifacts
 from vera.codegen import compile
 from vera.parser import parse_to_ast
+from vera.trap_registry import signal_call_pattern
 from vera.wasm.operators import OperatorsMixin
 
 _ADD = """\
@@ -83,7 +84,7 @@ def test_an_unnameable_width_is_guarded_as_int(
         lambda self, expr: None,
     )
     wat = _wat()
-    assert "overflow_trap" in wat, (
+    assert signal_call_pattern("overflow").search(wat), (
         "an arithmetic site whose width the classifier could not name "
         "emitted no overflow guard, so it wraps in silence while the "
         "obligation claims a runtime check:\n" + wat[:800]
@@ -92,7 +93,7 @@ def test_an_unnameable_width_is_guarded_as_int(
     # emitted, and `_emit_overflow_guard` dispatches on it: the `Int` guard
     # tests the sign-agreement with `i64.xor`, the `Nat` one an unsigned
     # wrap with `i64.lt_u`.  A regression to `Nat` would still emit an
-    # `overflow_trap` and satisfy the assertion above while range-checking
+    # overflow signal and satisfy the assertion above while range-checking
     # the site against the wrong bound (CR PR-review).
     assert "i64.xor" in wat, (
         "the guard emitted is not the signed `Int` one, so the unknown "
@@ -166,7 +167,7 @@ def test_the_table_less_fallback_still_names_a_width(
     it, and get a green that measures the ordinary path.
 
     The CLASSIFIER's answer is what this cell is about, so it is read
-    directly rather than inferred from the WAT.  `overflow_trap` appears
+    directly rather than inferred from the WAT.  The overflow signal appears
     either way — the fail-closed emitter emits the same guard when the
     answer is `None` — so a cell asserting only the guard cannot tell a
     width that was named from one that was defaulted, and would stay green
@@ -191,7 +192,7 @@ def test_the_table_less_fallback_still_names_a_width(
     assert set(seen) == {"Int"}, (
         f"the AST-only fallback named a width other than `Int`: {seen}"
     )
-    assert "overflow_trap" in wat
+    assert signal_call_pattern("overflow").search(wat)
 
 
 def test_the_module_still_loads_and_exports_its_entry(

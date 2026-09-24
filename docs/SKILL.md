@@ -1212,7 +1212,7 @@ sqrt(@Float64.0)                    -- returns Float64 (square root)
 pow(@Float64.0, @Int.0)             -- returns Float64 (exponentiation)
 ```
 
-`abs` returns `Nat` because absolute values are non-negative. `floor`, `ceil`, and `round` convert `Float64` to `Int`; they trap on NaN or out-of-range values (WASM semantics). `round` uses IEEE 754 roundTiesToEven (banker's rounding): `round(2.5)` is `2`, not `3`. `pow` takes an `Int` exponent — negative exponents produce reciprocals (`pow(2.0, -1)` is `0.5`). The integer builtins (`abs`, `min`, `max`) are fully verifiable by the SMT solver (Tier 1). The float builtins fall to Tier 3 (runtime).
+`abs` returns `Nat` because absolute values are non-negative. `floor`, `ceil`, and `round` convert `Float64` to `Int`; they trap as `float_conversion` on NaN, an infinity, or a value outside the `Int` range `[-2^63, 2^63)`. `round` uses IEEE 754 roundTiesToEven (banker's rounding): `round(2.5)` is `2`, not `3`. `pow` takes an `Int` exponent — negative exponents produce reciprocals (`pow(2.0, -1)` is `0.5`). The integer builtins (`abs`, `min`, `max`) are fully verifiable by the SMT solver (Tier 1). The float builtins fall to Tier 3 (runtime).
 
 ### Logarithmic, trigonometric, and numeric utility functions
 
@@ -1784,9 +1784,9 @@ public fn sum_with_state(@Nat -> @Int)
 }
 where {
   fn sum_loop(@Nat, @Nat -> @Int)
-    requires(true)
+    requires(@Nat.0 <= @Nat.1 + 1)
     ensures(true)
-    decreases(@Nat.1 - @Nat.0 + 1)
+    decreases(@Nat.1 + 1 - @Nat.0)
     effects(<State<Int>>)
   {
     if @Nat.0 > @Nat.1 then {
@@ -1799,13 +1799,15 @@ where {
 }
 ```
 
+`vera run file.vera --fn sum_with_state -- 5` prints `15`, and `-- 0` prints `0`.
+
 Key points:
 - The outer function `sum_with_state` is **pure** — the handler discharges the State effect
 - The `where` block helper `sum_loop` has `effects(<State<Int>>)` — it uses `get`/`put` directly
 - Functions inside `where` blocks do NOT take `public`/`private` visibility
 - The `put` clause stores its argument as the new state intrinsically — no `with` clause is needed for the common "store the value" case (a `with` clause is only for *transforming* the stored value; see the handler-syntax notes above)
 - Pure helper functions (like `add_value`) can be called from the `where` block helper (`sum_loop`)
-- The `decreases` clause on the loop helper ensures termination
+- The `decreases` clause on the loop helper ensures termination. The runtime guard evaluates a measure on every call, so a `@Nat` subtraction inside it needs the same bound a body would. Here the bound is `requires(@Nat.0 <= @Nat.1 + 1)`: it holds on the last call too, where the counter has passed the limit, and the measure adds before it subtracts. `decreases(@Nat.1 - @Nat.0 + 1)` computes `n - (n + 1)` on that last call and traps. A count-down loop, `decreases(@Nat.0)`, has no subtraction to bound
 
 ## Where Blocks (Mutual Recursion)
 
@@ -1852,7 +1854,7 @@ private forall<T> fn identity(@T -> @T)
 
 ## Abilities (Type Constraints)
 
-Abilities constrain type variables in generic functions. An ability declares operations that a type must support:
+Abilities constrain type variables in generic functions. An ability declares operations that a type must support. `Eq` is one of the four built-in abilities, so the block below only shows its interface: a program never declares it, and declaring a built-in ability is an error (E185).
 
 ```vera
 ability Eq<T> {
@@ -2197,10 +2199,10 @@ private fn f(@Int -> @Int)
 }
 ```
 
-CORRECT — `@T.result` is only valid in `ensures`:
+CORRECT — `@T.result` is only valid in `ensures`, and the input bound that makes it hold goes in `requires`:
 ```vera
 private fn f(@Int -> @Int)
-  requires(true)
+  requires(@Int.0 > 0)
   ensures(@Int.result > 0)
   effects(pure)
 {
@@ -2419,7 +2421,7 @@ public fn main(@Unit -> @Unit)
 
 ## Conformance Suite
 
-The `tests/conformance/` directory contains 253 small programs — most self-contained, with the Chapter 8 module-system programs and a few cross-module Chapter 7 and 9 programs importing companion `_lib.vera` / `_mid.vera` modules — that validate every language feature against the spec — often one program per feature, though some features (slot references, match, contracts) span several. These are the best minimal working examples of Vera syntax and semantics.
+The `tests/conformance/` directory contains 254 small programs — most self-contained, with the Chapter 8 module-system programs and a few cross-module Chapter 7 and 9 programs importing companion `_lib.vera` / `_mid.vera` modules — that validate every language feature against the spec — often one program per feature, though some features (slot references, match, contracts) span several. These are the best minimal working examples of Vera syntax and semantics.
 
 Each program is organized by spec chapter (`ch01_int_literals.vera`, `ch04_match_basic.vera`, `ch07_state_handler.vera`, etc.) and the `manifest.json` file maps features to programs. When you need to see how a specific construct works, check the conformance program before reading the spec.
 
@@ -2456,7 +2458,7 @@ These are known limitations in the current reference implementation. Most are tr
 
 No known bugs.
 
-When a Vera program type-checks cleanly, compiles without errors, and then produces a runtime trap you can't explain, runtime trap diagnostics are now Vera-native end-to-end: each trap carries a `kind` label (`divide_by_zero` / `out_of_bounds` / `stack_exhausted` / `unreachable` / `overflow` / `contract_violation` / `host_error` / `unknown`), a per-kind `Fix:` paragraph naming the canonical remediation (omitted for `contract_violation` and `host_error`, whose descriptions already carry the specific instruction, and for `unknown`, where there is nothing general to suggest), and a source backtrace pointing at the offending Vera function and line — not just `wasm trap: <reason>`.  Tail-recursive iteration runs in constant WASM stack space for both non-allocating ([#517](https://github.com/aallan/vera/issues/517), v0.0.126) and allocating ([#549](https://github.com/aallan/vera/issues/549), v0.0.154) tail calls — the latter prepends a `$gc_sp` restore before each `return_call` to keep the shadow stack bounded across iterations.
+When a Vera program type-checks cleanly, compiles without errors, and then produces a runtime trap you can't explain, runtime trap diagnostics are now Vera-native end-to-end: each trap carries a `kind` label naming its cause — `contract_violation`, `overflow`, `nat_guard`, `widen_guard`, `nat_underflow`, `assertion_failed`, `index_out_of_bounds`, `string_index_out_of_bounds`, `float_conversion`, `heap_exhausted`, `uncaught_exception` (an `Exn<T>` no `handle[Exn<T>]` caught before it left the entry point), `divide_by_zero`, `out_of_bounds`, `stack_exhausted`, `host_error`, or `unreachable` for the runtime's own internal limits (shadow-stack overflow and the like), and `unknown` — a message describing the failure, which names the failing site wherever the check carries one (the assertion's text, the index and its bound, the subtraction and the `requires` that discharges it), a per-kind `Fix:` paragraph naming the canonical remediation (omitted for `contract_violation` and `host_error`, whose descriptions already carry the specific instruction, and for `unknown`, where there is nothing general to suggest), and, under the default `vera run` host, a source backtrace pointing at the offending Vera function and line — not just `wasm trap: <reason>` (a `--target wasi-p2` trap keeps its kind, message and `Fix:`, but its `frames` list is empty, because frames do not cross the component boundary, spec §13.6).  Tail-recursive iteration runs in constant WASM stack space for both non-allocating ([#517](https://github.com/aallan/vera/issues/517), v0.0.126) and allocating ([#549](https://github.com/aallan/vera/issues/549), v0.0.154) tail calls — the latter prepends a `$gc_sp` restore before each `return_call` to keep the shadow stack bounded across iterations.
 
 ## Specification Reference
 

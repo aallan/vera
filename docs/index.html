@@ -291,6 +291,7 @@
 
       <div class="sample">
         <div class="code">
+<!-- vera:run fn="safe_divide" args="2 10" stdout="5" -->
 <pre><span class="kw">public</span> <span class="kw">fn</span> safe_divide(<span class="sl">@Int</span>, <span class="sl">@Int</span> -> <span class="sl">@Int</span>)
   <span class="ct">requires</span>(<span class="sl">@Int.1</span> != <span class="num">0</span>)
   <span class="ct">ensures</span>(<span class="sl">@Int.result</span> == <span class="sl">@Int.0</span> / <span class="sl">@Int.1</span>)
@@ -306,6 +307,7 @@
 
       <div class="sample">
         <div class="code">
+<!-- vera:run fn="fizzbuzz" args="15" stdout="FizzBuzz" -->
 <pre><span class="kw">public</span> <span class="kw">fn</span> fizzbuzz(<span class="sl">@Nat</span> -> <span class="sl">@String</span>)
   <span class="ct">requires</span>(<span class="num">true</span>)
   <span class="ct">ensures</span>(<span class="num">true</span>)
@@ -333,6 +335,7 @@
 
       <div class="sample">
         <div class="code">
+<!-- vera:no-run category="api-key" reason="calls Inference, which needs a provider key" -->
 <pre><span class="kw">public</span> <span class="kw">fn</span> classify_sentiment(<span class="sl">@String</span> -> <span class="sl">@Result&lt;String, String&gt;</span>)
   <span class="ct">requires</span>(string_length(<span class="sl">@String.0</span>) > <span class="num">0</span>)
   <span class="ct">ensures</span>(<span class="num">true</span>)
@@ -349,6 +352,7 @@
 
       <div class="sample">
         <div class="code">
+<!-- vera:no-run category="network" reason="calls Http, so a run would reach the network" -->
 <pre><span class="kw">public</span> <span class="kw">fn</span> research_topic(<span class="sl">@String</span> -> <span class="sl">@Result&lt;String, String&gt;</span>)
   <span class="ct">requires</span>(string_length(<span class="sl">@String.0</span>) > <span class="num">0</span>)
   <span class="ct">ensures</span>(<span class="num">true</span>)
@@ -369,6 +373,7 @@
 
       <div class="sample">
         <div class="code">
+<!-- vera:no-run category="fixture" reason="queries a users table the block does not create" -->
 <pre><span class="kw">public</span> <span class="kw">fn</span> find_user(<span class="sl">@String</span> -> <span class="sl">@Result&lt;Array&lt;Array&lt;Option&lt;String&gt;&gt;&gt;, String&gt;</span>)
   <span class="ct">requires</span>(string_length(<span class="sl">@String.0</span>) > <span class="num">0</span>)
   <span class="ct">ensures</span>(<span class="num">true</span>)
@@ -698,7 +703,7 @@ cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md</pre>
         Vera is under <a href="https://github.com/aallan/vera/blob/main/ROADMAP.md" style="color:inherit;text-decoration:underline;text-decoration-color:var(--flame-400);text-underline-offset:2px">active development</a>
       </div>
       <p class="status-text">
-        A complete compiler with 164 built-in functions, ten algebraic effects (IO, Http, HttpServer, State, Exceptions, Async, Inference, DB, Random, Diverge), contract-driven testing via <a href="https://www.microsoft.com/en-us/research/project/z3-3/">Z3</a>, a language server with agent-facing proof deltas, and a 14-chapter specification. A 253-program conformance suite and 43 worked examples are validated against the spec on every pull request. All of it is developed openly on <a href="https://github.com/aallan/vera">GitHub</a> and released under the MIT licence.
+        A complete compiler with 164 built-in functions, ten algebraic effects (IO, Http, HttpServer, State, Exceptions, Async, Inference, DB, Random, Diverge), contract-driven testing via <a href="https://www.microsoft.com/en-us/research/project/z3-3/">Z3</a>, a language server with agent-facing proof deltas, and a 14-chapter specification. A 254-program conformance suite and 43 worked examples are validated against the spec on every pull request. All of it is developed openly on <a href="https://github.com/aallan/vera">GitHub</a> and released under the MIT licence.
       </p>
     </div>
   </section>

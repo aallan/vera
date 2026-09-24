@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 
 from vera import ast
 from vera.errors import Diagnostic, SourceLocation
-from vera.module_view import import_filters, imported_data_types
+from vera.module_view import imported_data_types
 from vera.monomorphize import (
     canonicalize_type_aliases,
     importer_occupied_bare_names,
@@ -25,6 +25,7 @@ from vera.monomorphize import (
 )
 from vera.naming import display_adt_name
 from vera.prelude import PRELUDE_NAMESPACE, data_decl_shape, prelude_adt_names
+from vera.resolver import merged_import_filters
 
 if TYPE_CHECKING:
     from vera.codegen.core import CodeGenerator
@@ -58,14 +59,6 @@ _NOTHING = object()
 # which is the point: the entry's own `data` is E623's business (#1312) and
 # is only ever COUNTED here, never renamed.
 _ENTRY_OWNER: tuple[str, ...] = ()
-
-
-
-#: One filter per imported PATH, unioned across repeated imports — the one
-#: derivation of what a namespace's import lists admit, shared with the
-#: checker (#1489, #1493).  The name is kept for the #1317 flow condition's
-#: callers and tests, which asked it first.
-_merged_import_filters = import_filters
 
 
 class CrossModuleMixin:
@@ -286,8 +279,9 @@ class CrossModuleMixin:
         ]
 
         # 1. Build import filter: path -> set of names (or None for wildcard),
-        #    the union over every import of a path — the checker's derivation.
-        import_names = import_filters(program.imports)
+        # unioned across repeated imports of one path (#1433) — the one
+        # derivation the checker and the verifier read too.
+        import_names = merged_import_filters(program.imports)
 
         # #1253: per-namespace ADT bookkeeping, filled in the harvest loop and
         # folded into membership sets after it.
@@ -1195,7 +1189,7 @@ class CrossModuleMixin:
         surface: dict[tuple[str, ...], dict[str, frozenset[str]]] = {}
         imports: dict[tuple[str, ...] | None, dict[
             tuple[str, ...], set[str] | None]] = {
-            None: _merged_import_filters(program.imports),
+            None: merged_import_filters(program.imports),
         }
         for mod in self._resolved_modules:
             own: dict[str, ast.DataDecl] = {}
@@ -1228,7 +1222,7 @@ class CrossModuleMixin:
                 name for name in pub if name in own
             }
             surface[mod.path] = surf
-            imports[mod.path] = _merged_import_filters(mod.program.imports)
+            imports[mod.path] = merged_import_filters(mod.program.imports)
         # The ENTRY is an owner like any other (#1423).  Its declarations
         # and its own alias namespace are read off `program` for the same
         # reason the modules' are read off theirs: Pass 1 has not registered

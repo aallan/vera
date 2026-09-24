@@ -13,14 +13,10 @@ from typing import TYPE_CHECKING
 from vera import ast
 from vera.environment import AdtInfo, ConstructorInfo, FunctionInfo, TypeEnv
 from vera.errors import Diagnostic
-from vera.module_view import (
-    import_filters,
-    imported_data_types,
-    modules_visible_to,
-)
+from vera.module_view import imported_data_types, modules_visible_to
 from vera.monomorphize import namespace_adt_names, namespace_fn_names
 from vera.registration import where_helper_parents
-from vera.resolver import ResolvedModule
+from vera.resolver import ResolvedModule, merged_import_filters
 
 if TYPE_CHECKING:
     from vera.checker.core import TypeChecker
@@ -120,7 +116,7 @@ def _dependency_order(
     """
     def deps(path: tuple[str, ...]) -> list[tuple[str, ...]]:
         return [
-            p for p in import_filters(by_path[path].program.imports)
+            p for p in merged_import_filters(by_path[path].program.imports)
             if p in by_path
         ]
 
@@ -165,10 +161,9 @@ class ModulesMixin:
            bare calls (``abs(42)`` after ``import vera.math(abs)``)
            resolve through the normal ``_check_call_with_args`` path.
         """
-        # 1. Build import filter — the union over every import of a path
-        #    (`vera.module_view.import_filters`), so a second `import m(b);`
-        #    does not discard the first's list.
-        self._import_names.update(import_filters(program.imports))
+        # 1. Build import filter, unioned across repeated imports of one
+        # path (#1433) — the one derivation the verifier and codegen read too.
+        self._import_names.update(merged_import_filters(program.imports))
         resolved_paths = {m.path for m in self._resolved_modules}
         # #1489: an import whose module did not resolve (E011/E012/E013)
         # supplies nothing; E136 names it when a type it lists is used.

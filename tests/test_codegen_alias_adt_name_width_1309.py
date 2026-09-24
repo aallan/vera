@@ -206,14 +206,15 @@ class TestBuiltinContainerNameShadow:
     def test_primitive_shadow_runs_at_the_primitive_width(self) -> None:
         """The behavioural half, and the one that can go wrong silently.
 
-        ``type Bool = Int;`` then using ``@Bool`` AS a Bool is check-green
-        and runs: the primitive branch wins, so the slot stays i32.  Hoist
-        the alias branch above the primitives and ``@Bool`` becomes i64 —
-        which is why the unit assertions below are not the whole story, and
-        why the claim they once carried (that the checker refuses every
-        program exercising this) was simply false.  ``@Bool.0 + @Bool.0``
-        is indeed E140 and ``type Int = Int;`` is E132, but reading the
-        slot as the primitive it resolves to is neither.
+        ``type Bool = Int;`` then using ``@Bool`` AS a Bool.  The checker
+        refuses the alias (E158, #1497: a primitive's name could never be
+        named), so this drives a compile that skips the checker, and code
+        generation must still resolve the primitive first: the primitive
+        branch wins, so the slot stays i32.  Hoist the alias branch above
+        the primitives and ``@Bool`` becomes i64 — which is why the unit
+        assertions below are not the whole story.  The check-time refusal
+        does not make this test redundant: code generation is reachable
+        without the checker, and its width must not depend on it.
         """
         source = """\
 type Bool = Int;

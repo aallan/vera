@@ -368,17 +368,33 @@ class CallsStringsMixin:
         instructions.append(f"local.get {new_len}")
         return instructions
 
+    def _char_code_message(
+        self, arg_s: ast.Expr, arg_idx: ast.Expr, at: ast.Node | None,
+    ) -> str:
+        """The `string_index_out_of_bounds` message: the call, and the bound
+        its index must fall under — the string's length in BYTES."""
+        s_text = ast.format_expr(arg_s)
+        i_text = ast.format_expr(arg_idx)
+        return (
+            f"String index out of bounds{self._at_line(at)}: "
+            f"`string_char_code({s_text}, {i_text})` needs `0 <= {i_text}` "
+            f"and `{i_text} < string_length({s_text})`, the string's length "
+            "in bytes."
+        )
+
     def _translate_char_code(
         self,
         arg_s: ast.Expr,
         arg_idx: ast.Expr,
         env: WasmSlotEnv,
+        *,
+        at: ast.Node | None,
     ) -> list[str] | None:
         """Translate char_code(s, idx) → Nat (i64).
 
         Returns the byte value at the given index in the string.
-        Traps with ``unreachable`` when the index is out of range
-        (negative or >= ``string_length(s)``).  Pre-#475 there was
+        Signals ``string_index_out_of_bounds`` and traps when the index is
+        out of range (negative or >= ``string_length(s)``, #1479).  Pre-#475 there was
         no bounds check at all — out-of-range indices read arbitrary
         WASM linear memory at ``ptr_s + (wrapped index)``, which is
         a real memory-safety hole.  The bounds check operates in i64
@@ -416,18 +432,17 @@ class CallsStringsMixin:
         # Bounds check #475 finding 3: trap on idx < 0 || idx >= len_s_i64
         # while still in i64 — narrowing first would let huge
         # positive i64 values wrap to small (possibly in-range) i32
-        # values and silently bypass the check.
-        instructions.append(f"local.get {idx_i64}")
-        instructions.append("i64.const 0")
-        instructions.append("i64.lt_s")
-        instructions.append("if")
-        instructions.append("  unreachable")
-        instructions.append("end")
+        # values and silently bypass the check.  One condition and one
+        # trap (#1479): `(u64)idx >= (u64)len` is false exactly for
+        # 0 <= idx < len, a negative i64 reading as a huge unsigned one.
         instructions.append(f"local.get {idx_i64}")
         instructions.append(f"local.get {len_s_i64}")
-        instructions.append("i64.ge_s")
+        instructions.append("i64.ge_u")
         instructions.append("if")
-        instructions.append("  unreachable")
+        instructions.extend(
+            f"  {i}" for i in self._emit_trap(
+                "wasm/calls_strings.py:_translate_char_code", at=at,
+                message=self._char_code_message(arg_s, arg_idx, at)))
         instructions.append("end")
 
         # Now safe to narrow to i32.
@@ -458,7 +473,7 @@ class CallsStringsMixin:
         # #757: runtime-guard an @Int -> @Nat narrowing of the char code
         # before it is wrapped to i32 and stored as a byte (CR #756).
         if self._narrows_into_nat(arg):
-            n_instrs = self._emit_nat_bind_guard(n_instrs)
+            n_instrs = self._emit_nat_bind_guard(n_instrs, at=arg)
 
         self.needs_alloc = True
 
@@ -508,7 +523,7 @@ class CallsStringsMixin:
         # a huge i32 and overallocate).  Builtin translators bypass
         # `_fn_nat_params`, so the guard is applied per-translator (CR #756).
         if self._narrows_into_nat(arg_n):
-            n_instrs = self._emit_nat_bind_guard(n_instrs)
+            n_instrs = self._emit_nat_bind_guard(n_instrs, at=arg_n)
 
         self.needs_alloc = True
 
@@ -3348,7 +3363,8 @@ class CallsStringsMixin:
         # would wrap to a huge i32 and overallocate).  Per-translator because
         # builtins bypass `_fn_nat_params` (CR #756).
         if self._narrows_into_nat(arg_target):
-            target_instrs = self._emit_nat_bind_guard(target_instrs)
+            target_instrs = self._emit_nat_bind_guard(
+                target_instrs, at=arg_target)
 
         self.needs_alloc = True
 
