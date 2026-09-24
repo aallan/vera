@@ -94,38 +94,81 @@ def register_html(linker: wasmtime.Linker, ops_used: set[str]) -> None:
                  .replace(">", "&gt;").replace('"', "&quot;"))
 
     def _html_to_string_py(node: dict[str, Any]) -> str:
-        """Serialize Python HtmlNode dict to HTML string."""
-        tag = node.get("tag", "text")
-        if tag == "text":
-            return _html_escape(str(node.get("content", "")))
-        if tag == "comment":
-            content = str(node.get("content", "")).replace("-->", "-- >")
-            return f"<!--{content}-->"
-        # element
-        name = node.get("name", "div")
-        attrs: dict[str, str] = node.get("attrs", {})
-        children: list[Any] = node.get("children", [])
-        attr_str = ""
-        for k, v in attrs.items():
-            attr_str += f' {k}="{_html_escape_attr(v)}"'
-        if str(name).lower() in (
-            "area", "base", "br", "col", "embed", "hr", "img",
-            "input", "link", "meta", "param", "source", "track",
-            "wbr",
-        ):
-            return f"<{name}{attr_str}>"
-        inner = "".join(_html_to_string_py(c) for c in children)
-        return f"<{name}{attr_str}>{inner}</{name}>"
+        """Serialize Python HtmlNode dict to HTML string.
+
+        #1502: iterative — a tree built in Vera can nest past Python's
+        recursion limit, and ``html_to_string`` has a total signature.
+        The stack holds nodes still to render and the closing tags (plain
+        ``str``) an element queued behind its children.
+        """
+        parts: list[str] = []
+        stack: list[dict[str, Any] | str] = [node]
+        while stack:
+            current = stack.pop()
+            if isinstance(current, str):
+                parts.append(current)
+                continue
+            tag = current.get("tag", "text")
+            if tag == "text":
+                parts.append(_html_escape(str(current.get("content", ""))))
+                continue
+            if tag == "comment":
+                content = str(current.get("content", "")).replace(
+                    "-->", "-- >",
+                )
+                parts.append(f"<!--{content}-->")
+                continue
+            # element
+            name = current.get("name", "div")
+            attrs: dict[str, str] = current.get("attrs", {})
+            children: list[Any] = current.get("children", [])
+            attr_str = ""
+            for k, v in attrs.items():
+                attr_str += f' {k}="{_html_escape_attr(v)}"'
+            if str(name).lower() in (
+                "area", "base", "br", "col", "embed", "hr", "img",
+                "input", "link", "meta", "param", "source", "track",
+                "wbr",
+            ):
+                parts.append(f"<{name}{attr_str}>")
+                continue
+            parts.append(f"<{name}{attr_str}>")
+            stack.append(f"</{name}>")
+            stack.extend(reversed(children))
+        return "".join(parts)
 
     def _html_query_py(
         node: dict[str, Any], selector: str,
     ) -> list[dict[str, Any]]:
-        """Simple CSS selector query on HtmlNode tree."""
+        """Simple CSS selector query on HtmlNode tree.
+
+        Descendant combinator semantics: at an element matching the
+        selector part it is looking for, a walk either records the element
+        (last part) or continues into the children looking for the next
+        part, and then, regardless, restarts from the first part in every
+        child.  #1502: the walk is iterative, an explicit stack popped in
+        exactly the order the recursive walk visited, so the matches and
+        their order are unchanged.
+        """
         results: list[dict[str, Any]] = []
         parts = selector.strip().split()
         if not parts:
             return results
-        _html_query_walk(node, parts, 0, results)
+        stack: list[tuple[dict[str, Any], int]] = [(node, 0)]
+        while stack:
+            current, depth = stack.pop()
+            if current.get("tag") != "element":
+                continue
+            children: list[dict[str, Any]] = current.get("children", [])
+            continue_into: list[tuple[dict[str, Any], int]] = []
+            if _html_matches_selector(current, parts[depth]):
+                if depth == len(parts) - 1:
+                    results.append(current)
+                else:
+                    continue_into = [(c, depth + 1) for c in children]
+            # LIFO: the restarts run after every continuation.
+            stack.extend((c, 0) for c in reversed(children))
+            stack.extend(reversed(continue_into))
         return results
 
     def _html_matches_selector(
@@ -146,59 +189,40 @@ def register_html(linker: wasmtime.Linker, ops_used: set[str]) -> None:
             return bool(attr_name in attrs)
         return bool(name == sel)
 
-    def _html_query_walk(
-        node: dict[str, Any],
-        parts: list[str],
-        depth: int,
-        results: list[dict[str, Any]],
-    ) -> None:
-        """Walk tree matching descendant combinator selectors."""
-        if node.get("tag") != "element":
-            return
-        if _html_matches_selector(node, parts[depth]):
-            if depth == len(parts) - 1:
-                results.append(node)
-            else:
-                # Continue matching remaining parts in descendants
-                for child in node.get("children", []):
-                    _html_query_walk(child, parts, depth + 1, results)
-        # Always try matching from the start in all descendants
-        for child in node.get("children", []):
-            _html_query_walk(child, parts, 0, results)
-
     def _html_text_py(node: dict[str, Any]) -> str:
-        """Extract text content recursively from HtmlNode."""
-        tag = node.get("tag", "text")
-        if tag == "text":
-            return str(node.get("content", ""))
-        if tag == "comment":
-            return ""
-        # element — concatenate children text
-        children: list[Any] = node.get("children", [])
-        return "".join(
-            _html_text_py(c) for c in children
-        )
+        """Extract the text content of an HtmlNode, in document order.
+
+        #1502: iterative, for the same reason as ``_html_to_string_py``.
+        """
+        parts: list[str] = []
+        stack: list[dict[str, Any]] = [node]
+        while stack:
+            current = stack.pop()
+            tag = current.get("tag", "text")
+            if tag == "text":
+                parts.append(str(current.get("content", "")))
+            elif tag != "comment":
+                stack.extend(reversed(current.get("children", [])))
+        return "".join(parts)
 
     if "html_parse" in ops_used:
         def host_html_parse(
             caller: wasmtime.Caller, ptr: int, length: int,
         ) -> int:
             text = _read_wasm_string(caller, ptr, length)
-            # Parse-domain errors → Result.Err.  Narrow catch:
-            # parser failures (lenient HTMLParser raising on a
-            # genuinely malformed input) surface as
-            # ``Result.Err(str(exc))``.  We deliberately do NOT
-            # catch invariant violations (e.g. the
-            # ``_wrap_handle`` RuntimeError from #578 for an
-            # out-of-range handle, or any AssertionError from
-            # internal compiler bugs); those propagate as
-            # wasmtime traps so the diagnostic text reaches
-            # the user instead of being repackaged.
+            # Parse-domain errors → Result.Err.  #1502: ``html_parse``
+            # returns a ``Result``, so EVERY failure of the parse on
+            # this text is its ``Err`` — not only the three exception
+            # classes this used to list.  The parse touches no WASM
+            # memory, so nothing raised here is a runtime-invariant
+            # violation; those live in the marshalling below, which
+            # stays outside the ``try`` and now has no input-dependent
+            # failure of its own.
             try:
                 parser = _VeraHTMLParser()
                 parser.feed(text)
                 root = parser.get_root()
-            except (ValueError, TypeError, AttributeError) as exc:
+            except Exception as exc:  # noqa: BLE001 — host boundary; any parse failure becomes Result.Err
                 return _alloc_result_err_string(caller, str(exc))
             # #692: hold the shadow-stack window open across
             # the full tree marshalling AND the final
@@ -266,9 +290,12 @@ def register_html(linker: wasmtime.Linker, ops_used: set[str]) -> None:
             if count > 0:
                 # #692: same shadow-stack-rooting concern as
                 # ``host_html_parse`` — arr_ptr would otherwise
-                # be reclaimed if a recursive write_html grew
-                # the heap mid-walk.  Push arr_ptr; each child
-                # write also routes through ``guard``.  The
+                # be reclaimed if write_html grew the heap
+                # mid-walk.  Push arr_ptr; each match is written
+                # through ``guard``, and (#1502) ``write_html``
+                # releases its own roots before returning, so the
+                # window's use no longer grows with the matches'
+                # subtrees.  The
                 # returned (arr_ptr, count) pair is unrooted
                 # at the point of return (``__exit__`` resets
                 # ``$gc_sp`` before the function returns); the

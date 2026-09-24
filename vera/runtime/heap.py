@@ -249,8 +249,10 @@ _BUCKET_INITIAL_CAPACITY = 8
 #
 # ``_ShadowGuard`` provides exception-safe push/pop discipline.
 # Used by ``write_html`` / ``write_json`` / markdown serde to
-# root intermediate ``arr_ptr`` / ``name_ptr`` / ``wrapper_ptr``
-# across sub-tree recursion and the final Result wrapper alloc.
+# root a node's intermediate ``arr_ptr`` / ``name_ptr`` /
+# ``wrapper_ptr`` until the node is stored in a reachable slot
+# (``mark`` / ``release`` scope them per node, #1502), and across
+# the final Result wrapper alloc.
 #
 # Design: ``__enter__`` snapshots the current ``$gc_sp``;
 # ``__exit__`` resets ``$gc_sp`` to that snapshot, atomically
@@ -345,6 +347,36 @@ class _ShadowGuard:
         # Advance gc_sp by 4 (i32 width).
         self._sp_global.set_value(self._caller, sp + 4)
         return ptr
+
+    def mark(self) -> int:
+        """The current ``$gc_sp``, for a later :meth:`release`.
+
+        #1502: a walker that writes a tree node by node scopes each
+        node's temporaries with ``mark``/``release`` instead of letting
+        them accumulate under the one guard until the whole walk ends.
+        Once a node's pointer is stored in a slot that is already
+        reachable, its temporaries are dead weight on a window of 4,096
+        roots, and a flat document of a few thousand nodes used to
+        exhaust it (``json_parse`` of 2,500 small objects).
+        """
+        sp = self._sp_global.value(self._caller)
+        assert isinstance(sp, int)  # noqa: S101
+        return sp
+
+    def release(self, mark: int) -> None:
+        """Pop every root pushed since :meth:`mark` returned ``mark``.
+
+        The mark must lie inside this guard's own window: releasing
+        below the entry snapshot would pop roots an enclosing guard
+        still owns.
+        """
+        assert self._initial_sp is not None  # noqa: S101
+        if mark < self._initial_sp:
+            raise RuntimeError(
+                f"#1502: shadow-stack release to {mark} is below this "
+                f"guard's entry mark {self._initial_sp}",
+            )
+        self._sp_global.set_value(self._caller, mark)
 
     def __exit__(
         self,

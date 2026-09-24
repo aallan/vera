@@ -46,6 +46,7 @@ Json ADT layouts (from prelude injection → registration.py):
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -205,6 +206,73 @@ def non_finite_number_message(name: str) -> str:
 _INT_ROUNDS_TO_INFINITY = 2**1024 - 2**970
 
 
+# ---------------------------------------------------------------------------
+# Nesting depth (spec §9.7.1, #1502)
+# ---------------------------------------------------------------------------
+#
+# RFC 8259 §9 lets an implementation "set limits on the maximum depth of
+# nesting", and Vera sets one: 512.  The limit is Vera's, not a host
+# parser's.  Python's ``json.loads`` recurses in C once per level, bounded
+# by the interpreter's recursion limit (shared with Python frames on 3.11),
+# while ``JSON.parse`` in V8 does not recurse at all.  So without a stated
+# limit the same text parsed on one host and ended the program on the other.
+#
+# The depth is measured by a lexical scan of the TEXT before any parser
+# runs, with one rule on both hosts (the browser's twin is
+# ``jsonDepthViolation`` in ``vera/browser/runtime.mjs``): ``[`` and ``{``
+# outside a string literal open a level, ``]`` and ``}`` close one (never
+# below zero), and a backslash inside a string skips the next character.
+# Running first means a text that is both too deep and malformed reports
+# the depth, identically on both hosts, whatever each parser would have
+# said about the rest.
+
+JSON_MAX_DEPTH = 512
+
+# One token per string literal (escapes consumed as pairs, an unterminated
+# literal runs to the end of the text) or per bracket.  Equivalent to the
+# character loop the browser runs, and much faster in CPython.
+_DEPTH_TOKEN = re.compile(r'"(?:[^"\\]|\\.)*"?|[\[\]{}]', re.DOTALL)
+
+
+def json_depth_message(limit: int = JSON_MAX_DEPTH) -> str:
+    """The single sentence both runtimes return for text nested too deeply."""
+    return (
+        f"json_parse: the text nests arrays and objects more than {limit} "
+        f"levels deep — RFC 8259 §9 lets an implementation set a maximum "
+        f"nesting depth, and Vera's is {limit}.  Flatten the structure, or "
+        f"split the document."
+    )
+
+
+def json_depth_violation(
+    text: str, limit: int = JSON_MAX_DEPTH,
+) -> str | None:
+    """The depth refusal for ``text``, or ``None`` if it nests within ``limit``.
+
+    A text at exactly ``limit`` levels is accepted; one more is refused.
+    """
+    depth = 0
+    for match in _DEPTH_TOKEN.finditer(text):
+        lexeme = match.group(0)
+        if lexeme == "[" or lexeme == "{":
+            depth += 1
+            if depth > limit:
+                return json_depth_message(limit)
+        elif lexeme == "]" or lexeme == "}":
+            if depth > 0:
+                depth -= 1
+    return None
+
+
+class _Key:
+    """An object key queued for the domain walk, ahead of its value."""
+
+    __slots__ = ("text",)
+
+    def __init__(self, text: object) -> None:
+        self.text = text
+
+
 def first_domain_violation(value: Any) -> str | None:
     """The ``Err`` message for the first out-of-domain value, or ``None``.
 
@@ -220,6 +288,10 @@ def first_domain_violation(value: Any) -> str | None:
     Keys are checked as well as values: a key crosses the WASM boundary
     as a string exactly like a value does, and the key position is the
     one #1308's own reproduction used.
+
+    The walk is iterative, with an explicit stack popped in document
+    order (#1502): a recursive walk ended the program with Python's
+    recursion limit on a text the parser had already accepted.
 
     Returning the sentence rather than the offending code point or float
     keeps the violation-to-message mapping in one place — a caller
@@ -246,42 +318,46 @@ def first_domain_violation(value: Any) -> str | None:
     returned the shared sentence all along.  ``bool`` subclasses ``int``
     and is excluded explicitly: a JSON boolean is not a number.
     """
-    if isinstance(value, str):
-        code_point = _first_lone_surrogate_in_str(value)
-        if code_point is None:
-            return None
-        return lone_surrogate_message(code_point)
-    if isinstance(value, float):
-        if value != value or value in (float("inf"), float("-inf")):
-            return non_finite_number_message(_NON_FINITE_NAMES[repr(value)])
-        return None
-    if isinstance(value, int) and not isinstance(value, bool):
-        # ``bool`` subclasses ``int``; a boolean is a JSON boolean and
-        # is never range-checked.  The comparisons below stay in integer
-        # arithmetic all the way down, so a 400-digit literal is refused
-        # rather than raising on its way to being measured.
-        if value >= _INT_ROUNDS_TO_INFINITY:
-            return non_finite_number_message("Infinity")
-        if value <= -_INT_ROUNDS_TO_INFINITY:
-            return non_finite_number_message("-Infinity")
-        return None
-    if isinstance(value, list):
-        for item in value:
-            found = first_domain_violation(item)
-            if found is not None:
-                return found
-        return None
-    if isinstance(value, dict):
-        for key, item in value.items():
-            if isinstance(key, str):
-                code_point = _first_lone_surrogate_in_str(key)
+    stack: list[Any] = [value]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, _Key):
+            if isinstance(node.text, str):
+                code_point = _first_lone_surrogate_in_str(node.text)
                 if code_point is not None:
                     return lone_surrogate_message(code_point)
-            found = first_domain_violation(item)
-            if found is not None:
-                return found
-        return None
+            continue
+        if isinstance(node, str):
+            code_point = _first_lone_surrogate_in_str(node)
+            if code_point is not None:
+                return lone_surrogate_message(code_point)
+        elif isinstance(node, float):
+            if node != node or node in (float("inf"), float("-inf")):
+                return non_finite_number_message(
+                    _NON_FINITE_NAMES[repr(node)],
+                )
+        elif isinstance(node, int) and not isinstance(node, bool):
+            # ``bool`` subclasses ``int``; a boolean is a JSON boolean
+            # and is never range-checked.  The comparisons below stay in
+            # integer arithmetic all the way down, so a 400-digit
+            # literal is refused rather than raising on its way to
+            # being measured.
+            if node >= _INT_ROUNDS_TO_INFINITY:
+                return non_finite_number_message("Infinity")
+            if node <= -_INT_ROUNDS_TO_INFINITY:
+                return non_finite_number_message("-Infinity")
+        elif isinstance(node, list):
+            stack.extend(reversed(node))
+        elif isinstance(node, dict):
+            for key, item in reversed(list(node.items())):
+                stack.append(item)
+                stack.append(_Key(key))
     return None
+
+
+# Task tags for the iterative writers below.
+_WRITE_NODE = 0
+_FINISH_OBJECT = 1
 
 
 def write_json(
@@ -298,133 +374,144 @@ def write_json(
 
     Returns the heap pointer to the allocated Json node.
 
-    *guard* is a ``_ShadowGuard`` (defined in
-    ``vera.codegen.api``).  Intermediate WASM heap pointers
-    (string body, array backing, map wrapper) are pushed onto
-    its shadow-stack window before any subsequent alloc that
-    could trigger ``$gc_collect``.  See #692 + the analogous
-    notes in ``html_serde.write_html`` for the bug class.
+    *guard* is a ``_ShadowGuard`` (defined in ``vera.runtime.heap``).
+    The returned root pointer is NOT pushed — the caller is responsible
+    for rooting it before the next alloc.
 
-    The returned root pointer is NOT pushed — the caller is
-    responsible for rooting it before the next alloc.
+    #1502: the walk is iterative and its shadow-stack use does not grow
+    with the tree.  Each node is written into a DESTINATION slot that is
+    already reachable — the root cell (pushed once, below) or a slot of
+    a block linked into the tree — so a node is reachable the moment it
+    is stored, and only its own temporaries (a string body, a backing
+    array, a map wrapper) need rooting, released by ``guard.mark`` /
+    ``guard.release`` as soon as the store lands.  An array allocates its
+    zero-filled backing and its node, links the node, then queues its
+    elements into the backing's slots.  An object cannot be linked
+    first: its ``Map`` wrapper is built from the finished values.  So its
+    slot holds a zero-filled HOLDING block of value pointers while the
+    values are written, and a finishing task, queued beneath the values,
+    builds the map from the holding block and overwrites the slot with
+    the ``JObject`` node.  Every in-progress value is therefore reachable
+    through the tree itself, and the old failure — a flat array of 2,500
+    small objects exhausting the 4,096-root window because every
+    element's roots stayed pushed until the walk ended — cannot recur at
+    any width or depth.
     """
-    if value is None:
-        # JNull — tag=0, total=8.  Single alloc, no cross-pointer
-        # holding, no rooting needed.
-        ptr = alloc(caller, 8)
-        write_i32(caller, ptr, _TAG_JNULL)
-        return ptr
+    base = guard.mark()
+    cell = alloc(caller, 4)
+    write_i32(caller, cell, 0)
+    guard.push(cell)
 
-    if isinstance(value, bool):
-        # JBool(Bool) — tag=1, i32 at offset 4, total=8.  Single
-        # alloc, no rooting needed.
-        ptr = alloc(caller, 8)
-        write_i32(caller, ptr, _TAG_JBOOL)
-        write_i32(caller, ptr + 4, 1 if value else 0)
-        return ptr
+    tasks: list[tuple[Any, ...]] = [(_WRITE_NODE, value, cell)]
+    while tasks:
+        task = tasks.pop()
+        if task[0] == _FINISH_OBJECT:
+            _, keys, holding, dest = task
+            map_dict: dict[object, object] = {
+                key: _read_slot(caller, holding + j * 4)
+                for j, key in enumerate(keys)
+            }
+            # The holding block stays linked at ``dest`` (and so keeps
+            # every value alive) until the node below replaces it.
+            mark = guard.mark()
+            wrapper_ptr = map_alloc(caller, map_dict)
+            guard.push(wrapper_ptr)
+            ptr = alloc(caller, 8)
+            write_i32(caller, ptr, _TAG_JOBJECT)
+            write_i32(caller, ptr + 4, wrapper_ptr)
+            write_i32(caller, dest, ptr)
+            guard.release(mark)
+            continue
 
-    if isinstance(value, (int, float)):
-        # JNumber(Float64) — tag=2, f64 at offset 8, total=16.
-        # Single alloc, no rooting needed.
-        ptr = alloc(caller, 16)
-        write_i32(caller, ptr, _TAG_JNUMBER)
-        write_f64(caller, ptr + 8, float(value))
-        return ptr
-
-    if isinstance(value, str):
-        # JString(String) — tag=3, i32_pair at offset 4, total=16.
-        # Allocate the string FIRST and root it before the body
-        # alloc; the original order (body alloc then string alloc)
-        # could trigger GC mid-construction while the body is in
-        # a Python local with only the tag written.
-        s_ptr, s_len = alloc_string(caller, value)
-        if s_ptr != 0:
-            guard.push(s_ptr)
-        ptr = alloc(caller, 16)
-        write_i32(caller, ptr, _TAG_JSTRING)
-        write_i32(caller, ptr + 4, s_ptr)
-        write_i32(caller, ptr + 8, s_len)
-        return ptr
-
-    if isinstance(value, list):
-        # JArray(Array<Json>) — tag=4, i32_pair at offset 4,
-        # total=16.  Root arr_ptr before recursing into children
-        # (each sub-write may trigger GC) and across the final
-        # body alloc.  Child pointers become reachable via the
-        # rooted arr_ptr's slots as soon as we ``write_i32`` them.
-        count = len(value)
-        if count > 0:
-            arr_ptr = alloc(caller, count * 4)
-            guard.push(arr_ptr)
-            for i, elem in enumerate(value):
-                elem_ptr = write_json(
-                    caller, alloc, write_i32, write_f64,
-                    alloc_string, map_alloc, guard, elem,
-                )
-                write_i32(caller, arr_ptr + i * 4, elem_ptr)
-        else:
+        _, node, dest = task
+        if node is None:
+            # JNull — tag=0, total=8.
+            ptr = alloc(caller, 8)
+            write_i32(caller, ptr, _TAG_JNULL)
+            write_i32(caller, dest, ptr)
+        elif isinstance(node, bool):
+            # JBool(Bool) — tag=1, i32 at offset 4, total=8.
+            ptr = alloc(caller, 8)
+            write_i32(caller, ptr, _TAG_JBOOL)
+            write_i32(caller, ptr + 4, 1 if node else 0)
+            write_i32(caller, dest, ptr)
+        elif isinstance(node, (int, float)):
+            # JNumber(Float64) — tag=2, f64 at offset 8, total=16.
+            ptr = alloc(caller, 16)
+            write_i32(caller, ptr, _TAG_JNUMBER)
+            write_f64(caller, ptr + 8, float(node))
+            write_i32(caller, dest, ptr)
+        elif isinstance(node, list):
+            # JArray(Array<Json>) — tag=4, i32_pair at offset 4, total=16.
+            count = len(node)
+            mark = guard.mark()
             arr_ptr = 0
-        ptr = alloc(caller, 16)
-        write_i32(caller, ptr, _TAG_JARRAY)
-        write_i32(caller, ptr + 4, arr_ptr)
-        write_i32(caller, ptr + 8, count)
-        return ptr
+            if count > 0:
+                arr_ptr = alloc(caller, count * 4)
+                _zero_fill(caller, arr_ptr, count * 4)
+                guard.push(arr_ptr)
+            ptr = alloc(caller, 16)
+            write_i32(caller, ptr, _TAG_JARRAY)
+            write_i32(caller, ptr + 4, arr_ptr)
+            write_i32(caller, ptr + 8, count)
+            write_i32(caller, dest, ptr)
+            guard.release(mark)
+            for i in range(count - 1, -1, -1):
+                tasks.append((_WRITE_NODE, node[i], arr_ptr + i * 4))
+        elif isinstance(node, dict):
+            # JObject(Map<String, Json>) — tag=5, i32 at offset 4, total=8.
+            # #706: the map is a bucket-as-truth wrapper built by
+            # ``map_alloc`` (``_alloc_map_wrapper``); keys are strings.
+            keys = [str(k) for k in node]
+            values = list(node.values())
+            count = len(keys)
+            if count == 0:
+                tasks.append((_FINISH_OBJECT, keys, 0, dest))
+                continue
+            holding = alloc(caller, count * 4)
+            _zero_fill(caller, holding, count * 4)
+            write_i32(caller, dest, holding)
+            tasks.append((_FINISH_OBJECT, keys, holding, dest))
+            for j in range(count - 1, -1, -1):
+                tasks.append((_WRITE_NODE, values[j], holding + j * 4))
+        else:
+            # JString(String) — tag=3, i32_pair at offset 4, total=16.
+            # Anything else (never produced by ``json.loads``) is
+            # written as its string form, as before.
+            text = node if isinstance(node, str) else str(node)
+            mark = guard.mark()
+            s_ptr, s_len = alloc_string(caller, text)
+            if s_ptr != 0:
+                guard.push(s_ptr)
+            ptr = alloc(caller, 16)
+            write_i32(caller, ptr, _TAG_JSTRING)
+            write_i32(caller, ptr + 4, s_ptr)
+            write_i32(caller, ptr + 8, s_len)
+            write_i32(caller, dest, ptr)
+            guard.release(mark)
 
-    if isinstance(value, dict):
-        # JObject(Map<String, Json>) — tag=5, i32 at offset 4, total=8
-        # Build a Map<String, Json> as a bucket-as-truth wrapper (#706).
-        # Keys are stored as Python strings (matching map_contains$ks
-        # which reads WASM strings and compares against Python strings).
-        # Values are i32 Json heap pointers.
-        #
-        # #706: ``map_alloc`` is ``_alloc_map_wrapper`` (in
-        # ``vera/codegen/api.py``), which encodes this Python dict
-        # into a fresh bucket-as-truth wrapper + bucket and returns
-        # the wrapper pointer.  That makes the JObject's i32 field
-        # type-compatible with user-level ``map_get`` /
-        # ``map_contains`` calls, which take the wrapper pointer
-        # directly.  The JObject's Map is reclaimed by ordinary
-        # mark-sweep when the wrapper becomes unreachable — there is
-        # no host store to evict.
-        #
-        # #692: each iteration's val_ptr is pushed onto the
-        # shadow stack BEFORE the next iteration's recursive
-        # ``write_json`` (which may GC).  Without this, the
-        # Python dict (``map_dict``) holds val_ptrs as ints that
-        # the conservative scan can't see; the WASM blocks they
-        # point to would be freed by the very next sub-alloc.
-        #
-        # Exception-safety note: if a recursive ``write_json``
-        # raises mid-loop, the outer ``__exit__`` resets
-        # ``$gc_sp`` and pops every prior ``val_ptr`` push.
-        # ``map_dict`` still holds those ints as plain Python
-        # values when the exception unwinds — but that's safe:
-        # the function exits via the raise BEFORE the
-        # ``map_alloc(caller, map_dict)`` call below, so the
-        # stale ints never reach WASM.  A future maintainer
-        # should NOT try to recover ``map_dict`` partial state
-        # — the val_ptrs are guaranteed-invalid after the
-        # guard exit.
-        map_dict: dict[object, object] = {}
-        for k, v in value.items():
-            val_ptr = write_json(
-                caller, alloc, write_i32, write_f64,
-                alloc_string, map_alloc, guard, v,
-            )
-            guard.push(val_ptr)
-            map_dict[str(k)] = val_ptr
-        wrapper_ptr = map_alloc(caller, map_dict)
-        guard.push(wrapper_ptr)
-        ptr = alloc(caller, 8)
-        write_i32(caller, ptr, _TAG_JOBJECT)
-        write_i32(caller, ptr + 4, wrapper_ptr)
-        return ptr
+    root = _read_slot(caller, cell)
+    guard.release(base)
+    return root
 
-    # Fallback: treat as string
-    return write_json(
-        caller, alloc, write_i32, write_f64,
-        alloc_string, map_alloc, guard, str(value),
-    )
+
+def _read_slot(caller: wasmtime.Caller, addr: int) -> int:
+    """Read back an i32 pointer a writer stored at ``addr``."""
+    from vera.runtime.heap import _read_i32_at
+
+    return _read_i32_at(caller, addr)
+
+
+def _zero_fill(caller: wasmtime.Caller, ptr: int, nbytes: int) -> None:
+    """Zero a freshly allocated block before anything else can allocate.
+
+    The conservative collector scans a reachable block's words as
+    candidate pointers; zeroing its unfilled slots first means a slot
+    not yet written holds nothing a scan could mistake for a root.
+    """
+    from vera.runtime.heap import _write_bytes
+
+    _write_bytes(caller, ptr, bytes(nbytes))
 
 
 def read_json(
@@ -442,58 +529,59 @@ def read_json(
     #706: ``decode_jobject(caller, wrapper_ptr)`` decodes a JObject's
     ``Map<String, Json>`` from its bucket-as-truth wrapper (there is no
     ``_map_store`` to look up by handle anymore).
+
+    #1502: iterative.  The tree is built in Vera and can be nested far
+    deeper than Python's recursion limit; each container is created
+    empty and filled in place as the stack reaches its children.
     """
-    tag = read_i32(caller, ptr)
+    holder: list[Any] = [None]
+    # Each task fills ``container[key]`` from the Json node at ``node_ptr``.
+    tasks: list[tuple[int, Any, Any]] = [(ptr, holder, 0)]
+    while tasks:
+        node_ptr, container, key = tasks.pop()
+        tag = read_i32(caller, node_ptr)
 
-    if tag == _TAG_JNULL:
-        return None
-
-    if tag == _TAG_JBOOL:
-        return read_i32(caller, ptr + 4) != 0
-
-    if tag == _TAG_JNUMBER:
-        return read_f64(caller, ptr + 8)
-
-    if tag == _TAG_JSTRING:
-        s_ptr = read_i32(caller, ptr + 4)
-        s_len = read_i32(caller, ptr + 8)
-        return read_string(caller, s_ptr, s_len)
-
-    if tag == _TAG_JARRAY:
-        arr_ptr = read_i32(caller, ptr + 4)
-        arr_len = read_i32(caller, ptr + 8)
-        items: list[Any] = []
-        for i in range(arr_len):
-            elem_ptr = read_i32(caller, arr_ptr + i * 4)
-            items.append(read_json(
-                caller, elem_ptr, read_i32, read_f64,
-                read_string, decode_jobject,
-            ))
-        return items
-
-    if tag == _TAG_JOBJECT:
-        # #706: JObject's i32 field at offset 4 is a Map wrapper
-        # pointer whose bucket IS the map (bucket-as-truth).  Decode
-        # the ``Map<String, Json>`` directly from the bucket — the
-        # values are i32 Json heap pointers.
-        wrapper_ptr = read_i32(caller, ptr + 4)
-        raw_map = decode_jobject(caller, wrapper_ptr)
-        obj: dict[str, Any] = {}
-        for k, v in raw_map.items():
-            obj[str(k)] = read_json(
-                caller, int(v), read_i32, read_f64,
-                read_string, decode_jobject,
+        if tag == _TAG_JNULL:
+            container[key] = None
+        elif tag == _TAG_JBOOL:
+            container[key] = read_i32(caller, node_ptr + 4) != 0
+        elif tag == _TAG_JNUMBER:
+            container[key] = read_f64(caller, node_ptr + 8)
+        elif tag == _TAG_JSTRING:
+            s_ptr = read_i32(caller, node_ptr + 4)
+            s_len = read_i32(caller, node_ptr + 8)
+            container[key] = read_string(caller, s_ptr, s_len)
+        elif tag == _TAG_JARRAY:
+            arr_ptr = read_i32(caller, node_ptr + 4)
+            arr_len = read_i32(caller, node_ptr + 8)
+            items: list[Any] = [None] * arr_len
+            container[key] = items
+            for i in range(arr_len - 1, -1, -1):
+                tasks.append((read_i32(caller, arr_ptr + i * 4), items, i))
+        elif tag == _TAG_JOBJECT:
+            # #706: JObject's i32 field at offset 4 is a Map wrapper
+            # pointer whose bucket IS the map (bucket-as-truth).  Decode
+            # the ``Map<String, Json>`` directly from the bucket — the
+            # values are i32 Json heap pointers.
+            wrapper_ptr = read_i32(caller, node_ptr + 4)
+            raw_map = decode_jobject(caller, wrapper_ptr)
+            obj: dict[str, Any] = {}
+            container[key] = obj
+            entries = [(str(k), int(v)) for k, v in raw_map.items()]
+            for k, _v in entries:
+                obj[k] = None  # fix insertion order before filling
+            for k, v in reversed(entries):
+                tasks.append((v, obj, k))
+        else:
+            import warnings
+            warnings.warn(
+                f"read_json: unknown tag {tag} at pointer {node_ptr}; "
+                "possible memory corruption or unsupported Json layout",
+                RuntimeWarning,
+                stacklevel=2,
             )
-        return obj
-
-    import warnings
-    warnings.warn(
-        f"read_json: unknown tag {tag} at pointer {ptr}; "
-        "possible memory corruption or unsupported Json layout",
-        RuntimeWarning,
-        stacklevel=2,
-    )
-    return None  # Unknown tag — should not happen
+            container[key] = None  # Unknown tag — should not happen
+    return holder[0]
 
 
 # =====================================================================
@@ -604,10 +692,19 @@ def dumps_canonical(value: Any) -> str:
     """
     import json as _json
 
+    # #1502: iterative.  A value read from a tree built in Vera can be
+    # nested far deeper than Python's recursion limit, and
+    # ``json_stringify`` has a total signature.  The stack holds either a
+    # value still to render or a literal fragment (a ``_Literal``) that a
+    # container queued behind its children: its separators and its
+    # closing bracket.
     parts: list[str] = []
-
-    def emit(node: Any) -> None:
-        if node is None:
+    stack: list[Any] = [value]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, _Literal):
+            parts.append(node.text)
+        elif node is None:
             parts.append("null")
         elif node is True:
             parts.append("true")
@@ -619,25 +716,40 @@ def dumps_canonical(value: Any) -> str:
             parts.append(_json.dumps(node, ensure_ascii=False))
         elif isinstance(node, list):
             parts.append("[")
-            for i, item in enumerate(node):
+            stack.append(_CLOSE_ARRAY)
+            for i in range(len(node) - 1, -1, -1):
+                stack.append(node[i])
                 if i:
-                    parts.append(",")
-                emit(item)
-            parts.append("]")
+                    stack.append(_COMMA)
         elif isinstance(node, dict):
             parts.append("{")
-            for i, (key, item) in enumerate(node.items()):
+            stack.append(_CLOSE_OBJECT)
+            items = list(node.items())
+            for i in range(len(items) - 1, -1, -1):
+                key, item = items[i]
+                stack.append(item)
+                stack.append(_Literal(
+                    _json.dumps(str(key), ensure_ascii=False) + ":",
+                ))
                 if i:
-                    parts.append(",")
-                parts.append(_json.dumps(str(key), ensure_ascii=False))
-                parts.append(":")
-                emit(item)
-            parts.append("}")
+                    stack.append(_COMMA)
         else:
             raise TypeError(
                 f"json_stringify: read_json produced {type(node).__name__}, "
                 f"which is not a Json value; the ADT walk is wrong"
             )
-
-    emit(value)
     return "".join(parts)
+
+
+class _Literal:
+    """A fragment of output text queued on :func:`dumps_canonical`'s stack."""
+
+    __slots__ = ("text",)
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+
+_COMMA = _Literal(",")
+_CLOSE_ARRAY = _Literal("]")
+_CLOSE_OBJECT = _Literal("}")

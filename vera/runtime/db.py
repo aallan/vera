@@ -87,12 +87,17 @@ def _db_query(
 ) -> int:
     """Run a row-returning statement; marshal ``Result.Ok(rows)`` or
     ``Result.Err(message)`` and return the ADT pointer."""
+    # #1502: ``DB.query`` returns a ``Result``, so every failure of the
+    # statement is its ``Err`` — not only the ``sqlite3.Error`` family:
+    # the rule is the signature's, not the driver's exception hierarchy.
+    # The marshalling stays outside the ``try``: a guest trap from
+    # ``$alloc`` is not a SQL error.
     try:
         cursor = conn.execute(sql, params)
         rows = [[_cell(v) for v in row] for row in cursor.fetchall()]
-        return _alloc_result_ok_rows(caller, rows)
-    except (sqlite3.Error, sqlite3.Warning) as exc:
+    except Exception as exc:  # noqa: BLE001 — host boundary; any failure becomes Result.Err
         return _alloc_result_err_string(caller, str(exc))
+    return _alloc_result_ok_rows(caller, rows)
 
 
 def _db_execute(
@@ -103,12 +108,14 @@ def _db_execute(
 ) -> int:
     """Run a non-row statement; commit and marshal ``Result.Ok(rowcount)`` or
     ``Result.Err(message)`` and return the ADT pointer."""
+    # #1502: as ``_db_query`` — every failure of the statement is ``Err``.
     try:
         cursor = conn.execute(sql, params)
         conn.commit()
-        return _alloc_result_ok_i64(caller, cursor.rowcount)
-    except (sqlite3.Error, sqlite3.Warning) as exc:
+        rowcount = cursor.rowcount
+    except Exception as exc:  # noqa: BLE001 — host boundary; any failure becomes Result.Err
         return _alloc_result_err_string(caller, str(exc))
+    return _alloc_result_ok_i64(caller, rowcount)
 
 
 def register_db(
@@ -140,7 +147,7 @@ def register_db(
     try:
         conn = _open_connection(env_vars)
         open_error: str | None = None
-    except (sqlite3.Error, sqlite3.Warning) as exc:
+    except Exception as exc:  # noqa: BLE001 — host boundary; any failure becomes Result.Err
         conn = None
         open_error = f"cannot open database: {exc}"
 

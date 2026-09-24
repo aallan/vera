@@ -255,6 +255,32 @@ function gcGuard(fn) {
   }
 }
 
+// #1502: per-child root scoping for the multi-alloc tree builders.
+// ``gcMark`` reads $gc_sp before one child is written and ``gcRelease``
+// restores it once that child's pointer is stored in a slot of a block
+// that is already reachable, popping every temporary root the child
+// pushed.  Without it a builder's roots grew with the WIDTH of the tree
+// — every sibling's intermediates stayed pushed until the whole walk
+// ended — so a flat document of a few thousand elements overflowed the
+// shadow stack.  -1 means the module has no GC globals, in which case
+// nothing was pushed and $alloc cannot collect.
+function gcMark() {
+  return (wasm && wasm.gc_sp) ? wasm.gc_sp.value : -1;
+}
+function gcRelease(mark) {
+  if (mark >= 0) wasm.gc_sp.value = mark;
+}
+
+// #1502: zero a freshly allocated backing block before the next
+// allocation.  A block recycled from the free list still holds its old
+// words, and the conservative mark phase reads every word of a
+// reachable block as a candidate pointer — so a partially filled
+// backing must hold zeros, not stale addresses, in the slots not yet
+// written.
+function zeroFill(ptr, size) {
+  if (ptr !== 0 && size > 0) new Uint8Array(mem().buffer, ptr, size).fill(0);
+}
+
 /**
  * SameValueZero equality (the semantics native JS Map/Set use): like
  * ===, but NaN equals NaN.  Used for Float64 Map-key / Set-element
@@ -609,7 +635,8 @@ function mdIsBlank(line) {
  * three-long run whose leftover delimiter is resolved after the strong
  * span closes, instead of being read as `**` plus a stray `*`.
  */
-function parseInlines(text) {
+function parseInlines(text, depth) {
+  if (depth > MD_MAX_NESTING) throw new Error(mdNestingMessage(MD_MAX_NESTING));
   const result = [];
   let i = 0;
   let buf = '';  // accumulator for plain text
@@ -679,7 +706,7 @@ function parseInlines(text) {
         if (closeParen !== -1) {
           flushText();
           result.push(new MdLink(
-            parseInlines(text.slice(i + 1, closeBracket)),
+            parseInlines(text.slice(i + 1, closeBracket), depth + 1),
             text.slice(closeBracket + 2, closeParen),
           ));
           i = closeParen + 1;
@@ -703,14 +730,14 @@ function parseInlines(text) {
         const closeIdx = text.indexOf(delim + delim, i);
         if (closeIdx !== -1) {
           flushText();
-          result.push(new MdStrong(parseInlines(text.slice(i, closeIdx))));
+          result.push(new MdStrong(parseInlines(text.slice(i, closeIdx), depth + 1)));
           i = closeIdx + 2;
           // Handle remaining delimiters from the opening run.
           const remaining = runLen - 2;
           if (remaining > 0) {
             const closeSingle = text.indexOf(delim, i);
             if (remaining === 1 && closeSingle !== -1) {
-              result.push(new MdEmph(parseInlines(text.slice(i, closeSingle))));
+              result.push(new MdEmph(parseInlines(text.slice(i, closeSingle), depth + 1)));
               i = closeSingle + 1;
             } else {
               buf += delim.repeat(remaining);
@@ -727,7 +754,7 @@ function parseInlines(text) {
         const closeIdx = text.indexOf(delim, i);
         if (closeIdx !== -1) {
           flushText();
-          result.push(new MdEmph(parseInlines(text.slice(i, closeIdx))));
+          result.push(new MdEmph(parseInlines(text.slice(i, closeIdx), depth + 1)));
           i = closeIdx + 1;
         } else {
           buf += delim;
@@ -790,7 +817,8 @@ function isBlockStart(line) {
  * vera/markdown.py — including the ORDER the constructs are tried in,
  * which decides which branch claims a line two of them could open.
  */
-function parseBlocks(lines, start, end) {
+function parseBlocks(lines, start, end, depth) {
+  if (depth > MD_MAX_NESTING) throw new Error(mdNestingMessage(MD_MAX_NESTING));
   const blocks = [];
   let i = start;
 
@@ -807,7 +835,7 @@ function parseBlocks(lines, start, end) {
     const heading = MD_RE.atx_heading.exec(line);
     if (heading) {
       blocks.push(new MdHeading(
-        heading[1].length, parseInlines(mdTrim(heading[2])),
+        heading[1].length, parseInlines(mdTrim(heading[2]), depth),
       ));
       i++;
       continue;
@@ -854,17 +882,17 @@ function parseBlocks(lines, start, end) {
         }
         i++;
       }
-      blocks.push(new MdBlockQuote(parseBlocks(bqLines, 0, bqLines.length)));
+      blocks.push(new MdBlockQuote(parseBlocks(bqLines, 0, bqLines.length, depth + 1)));
       continue;
     }
 
     // GFM table (must have header + separator row)
     if (MD_RE.table_row.test(line) && i + 1 < end
         && MD_RE.table_sep.test(lines[i + 1])) {
-      const rows = [parseTableRow(line)];
+      const rows = [parseTableRow(line, depth)];
       i += 2;  // skip separator
       while (i < end && MD_RE.table_row.test(lines[i])) {
-        rows.push(parseTableRow(lines[i]));
+        rows.push(parseTableRow(lines[i], depth));
         i++;
       }
       blocks.push(new MdTable(rows));
@@ -894,7 +922,7 @@ function parseBlocks(lines, start, end) {
           i++;
           if (i < end && !MD_RE.unordered_item.test(lines[i])) break;
         }
-        items.push(parseBlocks(itemLines, 0, itemLines.length));
+        items.push(parseBlocks(itemLines, 0, itemLines.length, depth + 1));
       }
       blocks.push(new MdList(false, items));
       continue;
@@ -918,7 +946,7 @@ function parseBlocks(lines, start, end) {
           i++;
           if (i < end && !MD_RE.ordered_item.test(lines[i])) break;
         }
-        items.push(parseBlocks(itemLines, 0, itemLines.length));
+        items.push(parseBlocks(itemLines, 0, itemLines.length, depth + 1));
       }
       blocks.push(new MdList(true, items));
       continue;
@@ -938,23 +966,45 @@ function parseBlocks(lines, start, end) {
       // text" — so a paragraph's internal breaks have to go somewhere at
       // parse time or they survive into MdText, where no renderer can
       // tell them from text the author wrote.
-      blocks.push(new MdParagraph(parseInlines(paraLines.join(' '))));
+      blocks.push(new MdParagraph(parseInlines(paraLines.join(' '), depth)));
     }
   }
   return blocks;
 }
 
-function parseTableRow(line) {
+function parseTableRow(line, depth) {
   // Strip leading/trailing pipes and split
   let content = mdTrim(line);
   if (content.startsWith('|')) content = content.slice(1);
   if (content.endsWith('|')) content = content.slice(0, -1);
-  return content.split('|').map(cell => parseInlines(mdTrim(cell)));
+  return content.split('|').map(cell => parseInlines(mdTrim(cell), depth));
+}
+
+// #1502: md_parse's nesting limit, pinned identically on both hosts
+// (the reference parser in vera/markdown.py counts the same way).  The
+// parser recurses once per block quote, list item, and inline span, so
+// without a bound a deeply nested document exhausted the host's own
+// stack on text md_parse's signature accepts — here V8's RangeError
+// came back as an Err carrying the engine's sentence, which no other
+// host produces.  The counter is the number of enclosing
+// containers — block quotes, list items, inline spans — so it is 0 for
+// the document, and a heading's, paragraph's or table cell's inlines
+// sit at the depth of the block holding them.  `parseBlocks` and
+// `parseInlines` each refuse, as their first statement, a depth past
+// the limit: 512 nested quotes parse, 513 do not.
+const MD_MAX_NESTING = 512;
+const MD_START_DEPTH = 0;
+
+function mdNestingMessage(limit) {
+  return (
+    `md_parse: the text nests blocks and inline spans more than ${limit} ` +
+    `levels deep, which is Vera's limit.  Flatten the structure.`
+  );
 }
 
 function parseMarkdown(text) {
   const lines = text.split('\n');
-  return new MdDocument(parseBlocks(lines, 0, lines.length));
+  return new MdDocument(parseBlocks(lines, 0, lines.length, MD_START_DEPTH));
 }
 
 // Exported for the cross-runtime `md_parse` parity gate (#1301), which
@@ -965,89 +1015,164 @@ function parseMarkdown(text) {
 export { parseMarkdown };
 
 // -- Renderer --
+//
+// #1502: every walk below runs on an explicit stack.  The trees reach
+// them from `readMdBlock`, i.e. from values BUILT IN VERA, whose depth
+// no parse limit bounds — a 20,000-deep MdBlockQuote chain is an
+// ordinary value of the type — so a walk that recursed once per level
+// ran out of JS stack on input the signature accepts.  Each is the
+// recursive walk it replaces with the call stack made explicit: same
+// visiting order, same output.
 
-function renderInline(node) {
-  switch (node.tag) {
-    case 'MdText': return node.text;
-    case 'MdCode': {
-      // One backtick longer than the content's longest run, padded only
-      // when the content starts or ends with one — mirrors
-      // _render_code_span.  A fixed two-backtick fence terminates on
-      // the content's own `` and loses the rest.
-      let longest = 0;
-      let run = 0;
-      for (const ch of node.text) {
-        run = ch === '`' ? run + 1 : 0;
-        if (run > longest) longest = run;
-      }
-      const fence = '`'.repeat(longest + 1);
-      // #1303 review: also pad when the content itself starts AND ends
-      // with a space.  parseInlines strips one such pair whenever the
-      // fenced text is two characters or longer, so without a pad the
-      // strip eats the content's own spaces and `MdCode(' x ')` comes
-      // back as `MdCode('x')` — and `MdCode(' `x` ')` rendered to the
-      // same bytes as `MdCode('`x`')`.  Mirrors _render_code_span.
-      const stripsOwnSpaces = node.text.length >= 2
-        && node.text.startsWith(' ') && node.text.endsWith(' ');
-      const pad = (node.text.startsWith('`') || node.text.endsWith('`')
-        || stripsOwnSpaces) ? ' ' : '';
-      return fence + pad + node.text + pad + fence;
+/** An MdCode span's rendering — mirrors _render_code_span. */
+function renderCodeSpan(node) {
+  // One backtick longer than the content's longest run, padded only
+  // when the content starts or ends with one — mirrors
+  // _render_code_span.  A fixed two-backtick fence terminates on
+  // the content's own `` and loses the rest.
+  let longest = 0;
+  let run = 0;
+  for (const ch of node.text) {
+    run = ch === '`' ? run + 1 : 0;
+    if (run > longest) longest = run;
+  }
+  const fence = '`'.repeat(longest + 1);
+  // #1303 review: also pad when the content itself starts AND ends
+  // with a space.  parseInlines strips one such pair whenever the
+  // fenced text is two characters or longer, so without a pad the
+  // strip eats the content's own spaces and `MdCode(' x ')` comes
+  // back as `MdCode('x')` — and `MdCode(' `x` ')` rendered to the
+  // same bytes as `MdCode('`x`')`.  Mirrors _render_code_span.
+  const stripsOwnSpaces = node.text.length >= 2
+    && node.text.startsWith(' ') && node.text.endsWith(' ');
+  const pad = (node.text.startsWith('`') || node.text.endsWith('`')
+    || stripsOwnSpaces) ? ' ' : '';
+  return fence + pad + node.text + pad + fence;
+}
+
+/**
+ * Render a sequence of inlines to one string — the concatenation of
+ * each node's rendering.  A work item is either a node to expand or a
+ * literal string to emit; a container emits its opening delimiter,
+ * then queues its closing delimiter beneath its children, so the output
+ * is in document order without recursion.
+ */
+function renderInlines(nodes) {
+  const out = [];
+  const work = [];
+  for (let k = nodes.length - 1; k >= 0; k--) work.push(nodes[k]);
+  while (work.length > 0) {
+    const item = work.pop();
+    if (typeof item === 'string') {
+      out.push(item);
+      continue;
     }
-    case 'MdEmph': return '*' + node.children.map(renderInline).join('') + '*';
-    case 'MdStrong': return '**' + node.children.map(renderInline).join('') + '**';
-    case 'MdLink': return '[' + node.children.map(renderInline).join('') + '](' + node.url + ')';
-    case 'MdImage': return '![' + node.alt + '](' + node.url + ')';
-    default: return '';
+    let children = null;
+    switch (item.tag) {
+      case 'MdText': out.push(item.text); break;
+      case 'MdCode': out.push(renderCodeSpan(item)); break;
+      case 'MdEmph':
+        out.push('*');
+        work.push('*');
+        children = item.children;
+        break;
+      case 'MdStrong':
+        out.push('**');
+        work.push('**');
+        children = item.children;
+        break;
+      case 'MdLink':
+        out.push('[');
+        work.push('](' + item.url + ')');
+        children = item.children;
+        break;
+      case 'MdImage': out.push('![' + item.alt + '](' + item.url + ')'); break;
+      default: break;
+    }
+    if (children !== null) {
+      for (let k = children.length - 1; k >= 0; k--) work.push(children[k]);
+    }
+  }
+  return out.join('');
+}
+
+/** The lines of a block that holds no blocks — mirrors `_render_block`. */
+function renderLeafBlockLines(node) {
+  switch (node.tag) {
+    case 'MdParagraph':
+      return [renderInlines(node.children)];
+    case 'MdHeading':
+      return ['#'.repeat(node.level) + ' ' + renderInlines(node.children)];
+    case 'MdCodeBlock':
+      return ['```' + node.lang, ...node.code.split('\n'), '```'];
+    case 'MdThematicBreak':
+      return ['---'];
+    case 'MdTable': {
+      if (node.rows.length === 0) return [];
+      const cell = cells => renderInlines(cells);
+      const out = ['| ' + node.rows[0].map(cell).join(' | ') + ' |'];
+      out.push('| ' + node.rows[0].map(() => '---').join(' | ') + ' |');
+      for (const row of node.rows.slice(1)) {
+        out.push('| ' + row.map(cell).join(' | ') + ' |');
+      }
+      return out;
+    }
+    default:
+      return [];
+  }
+}
+
+/** The child blocks of a container block, in order; null for a leaf. */
+function mdBlockKids(node) {
+  switch (node.tag) {
+    case 'MdBlockQuote':
+    case 'MdDocument':
+      return node.children;
+    case 'MdList':
+      // Every item's blocks, flattened in order; `combineBlockLines`
+      // regroups the results by item.
+      return node.items.flat();
+    default:
+      return null;
   }
 }
 
 /**
- * Render a block to an array of LINES, mirroring `_render_block` in
- * vera/markdown.py.
- *
- * #1294: the previous version returned one string and threaded a prefix
- * down as an `indent` argument, which a container could only apply to
- * the *first* line of each child — a fenced block inside a blockquote
- * lost the `> ` on its body, and re-rendering that output moved the
- * body out of the quote.  Lines are the unit a container prefixes, so
- * they are the unit this returns: every caller re-applies its own
- * prefix to every line it receives, which is what makes the render a
- * fixed point.
+ * A container block's lines from its children's, in order — the
+ * combining step of `_render_block` for a block quote, a list and a
+ * document.
  */
-function renderBlockLines(node) {
+function combineBlockLines(node, results) {
   switch (node.tag) {
-    case 'MdParagraph':
-      return [node.children.map(renderInline).join('')];
-    case 'MdHeading':
-      return ['#'.repeat(node.level) + ' ' + node.children.map(renderInline).join('')];
-    case 'MdCodeBlock':
-      return ['```' + node.lang, ...node.code.split('\n'), '```'];
     case 'MdBlockQuote': {
       // An empty quote still occupies a line; rendering it as nothing
       // makes the block vanish on re-parse (mirrors _render_block).
       if (node.children.length === 0) return ['>'];
       const out = [];
-      node.children.forEach((child, i) => {
-        const childLines = renderBlockLines(child);
+      for (let i = 0; i < results.length; i++) {
+        const childLines = results[i];
         // A child that renders nothing must not leave a bare '>'
         // standing for it (#1303 review; mirrors _render_block).
-        if (childLines.length === 0) return;
+        if (childLines.length === 0) continue;
         // A bare '>' between children, mirroring _render_block: without
         // it a quote holding two paragraphs re-parses as one.
         if (i > 0 && out.length > 0) out.push('>');
         for (const line of childLines) {
           out.push(line ? '> ' + line : '>');
         }
-      });
+      }
       return out;
     }
     case 'MdList': {
       const out = [];
+      let k = 0;
       node.items.forEach((item, idx) => {
         const marker = node.ordered ? `${idx + 1}.` : '-';
         const indent = ' '.repeat(marker.length + 1);
         const itemLines = [];
-        for (const child of item) itemLines.push(...renderBlockLines(child));
+        for (let c = 0; c < item.length; c++) {
+          for (const line of results[k++]) itemLines.push(line);
+        }
         if (itemLines.length === 0) {
           // #1303 review: an item with no blocks is a value the PARSER
           // produces — '- ' reads back as one empty item — so dropping
@@ -1064,22 +1189,9 @@ function renderBlockLines(node) {
       });
       return out;
     }
-    case 'MdThematicBreak':
-      return ['---'];
-    case 'MdTable': {
-      if (node.rows.length === 0) return [];
-      const cell = cells => cells.map(renderInline).join('');
-      const out = ['| ' + node.rows[0].map(cell).join(' | ') + ' |'];
-      out.push('| ' + node.rows[0].map(() => '---').join(' | ') + ' |');
-      for (const row of node.rows.slice(1)) {
-        out.push('| ' + row.map(cell).join(' | ') + ' |');
-      }
-      return out;
-    }
     case 'MdDocument': {
       const out = [];
-      for (const child of node.children) {
-        const childLines = renderBlockLines(child);
+      for (const childLines of results) {
         // #1303 review: a child that renders to NOTHING — an MdList
         // with no items, an MdTable with no rows — must not drag a
         // separator in with it, or the blank line survives as a stray
@@ -1087,12 +1199,52 @@ function renderBlockLines(node) {
         // stops being a fixed point.  Mirrors _render_block.
         if (childLines.length === 0) continue;
         if (out.length > 0) out.push('');
-        out.push(...childLines);
+        for (const line of childLines) out.push(line);
       }
       return out;
     }
     default:
       return [];
+  }
+}
+
+/**
+ * Render a block to an array of LINES, mirroring `_render_block` in
+ * vera/markdown.py.
+ *
+ * #1294: the previous version returned one string and threaded a prefix
+ * down as an `indent` argument, which a container could only apply to
+ * the *first* line of each child — a fenced block inside a blockquote
+ * lost the `> ` on its body, and re-rendering that output moved the
+ * body out of the quote.  Lines are the unit a container prefixes, so
+ * they are the unit this returns: every caller re-applies its own
+ * prefix to every line it receives, which is what makes the render a
+ * fixed point.
+ *
+ * #1502: a post-order walk on an explicit stack.  A frame is one open
+ * container collecting its children's line arrays; when the last child
+ * is done the frame combines them and hands the result to its parent.
+ */
+function renderBlockLines(root) {
+  const kids = mdBlockKids(root);
+  if (kids === null) return renderLeafBlockLines(root);
+  const stack = [{ node: root, kids, i: 0, results: [] }];
+  for (;;) {
+    const frame = stack[stack.length - 1];
+    if (frame.i < frame.kids.length) {
+      const child = frame.kids[frame.i++];
+      const childKids = mdBlockKids(child);
+      if (childKids === null) {
+        frame.results.push(renderLeafBlockLines(child));
+      } else {
+        stack.push({ node: child, kids: childKids, i: 0, results: [] });
+      }
+      continue;
+    }
+    stack.pop();
+    const lines = combineBlockLines(frame.node, frame.results);
+    if (stack.length === 0) return lines;
+    stack[stack.length - 1].results.push(lines);
   }
 }
 
@@ -1102,55 +1254,62 @@ function renderMarkdown(doc) {
 }
 
 // -- Query helpers --
+//
+// #1502: explicit-stack pre-order walks (see the Renderer note above).
+// Each visits exactly the nodes the recursive version did, in the same
+// order: a node's `children` (or, for a list, `items`), where an array
+// entry — a list item — stands for its own elements.
+
+/** Queue `node`'s children on `work` so they pop in document order. */
+function queueMdChildren(node, work) {
+  const children = node.children || node.items;
+  if (!Array.isArray(children)) return;
+  for (let k = children.length - 1; k >= 0; k--) {
+    const child = children[k];
+    if (Array.isArray(child)) {
+      for (let j = child.length - 1; j >= 0; j--) work.push(child[j]);
+    } else if (child && child.tag) {
+      work.push(child);
+    }
+  }
+}
 
 function hasHeading(block, level) {
-  if (block.tag === 'MdHeading') return block.level === level;
-  const children = block.children || block.items;
-  if (Array.isArray(children)) {
-    for (const child of children) {
-      if (Array.isArray(child)) {
-        for (const c of child) { if (hasHeading(c, level)) return true; }
-      } else if (child && child.tag) {
-        if (hasHeading(child, level)) return true;
-      }
+  const work = [block];
+  while (work.length > 0) {
+    const node = work.pop();
+    if (node.tag === 'MdHeading') {
+      if (node.level === level) return true;
+      continue;
     }
+    queueMdChildren(node, work);
   }
   return false;
 }
 
 function hasCodeBlock(block, lang) {
-  if (block.tag === 'MdCodeBlock') return block.lang === lang;
-  const children = block.children || block.items;
-  if (Array.isArray(children)) {
-    for (const child of children) {
-      if (Array.isArray(child)) {
-        for (const c of child) { if (hasCodeBlock(c, lang)) return true; }
-      } else if (child && child.tag) {
-        if (hasCodeBlock(child, lang)) return true;
-      }
+  const work = [block];
+  while (work.length > 0) {
+    const node = work.pop();
+    if (node.tag === 'MdCodeBlock') {
+      if (node.lang === lang) return true;
+      continue;
     }
+    queueMdChildren(node, work);
   }
   return false;
 }
 
 function extractCodeBlocks(block, lang) {
   const result = [];
-  function walk(node) {
+  const work = [block];
+  while (work.length > 0) {
+    const node = work.pop();
     if (node.tag === 'MdCodeBlock' && node.lang === lang) {
       result.push(node.code);
     }
-    const children = node.children || node.items;
-    if (Array.isArray(children)) {
-      for (const child of children) {
-        if (Array.isArray(child)) {
-          child.forEach(walk);
-        } else if (child && child.tag) {
-          walk(child);
-        }
-      }
-    }
+    queueMdChildren(node, work);
   }
-  walk(block);
   return result;
 }
 
@@ -1175,9 +1334,13 @@ function extractCodeBlocks(block, lang) {
 // helpers push their backing buffer before recursing into
 // children; element pointers are stored into the (rooted) backing
 // immediately on return, making them reachable via the
-// conservative scan without a per-element push.  Pushes are NOT
-// popped here — the entry point (``hostMdParse``) runs the whole
-// walk under ``gcGuard``, which restores ``$gc_sp`` wholesale.
+// conservative scan without a per-element push.  #1502: once a
+// child's pointer is in that backing, every temporary root the child
+// pushed is popped (``gcMark`` / ``gcRelease``), so the roots held at
+// any moment are those of the open containers on the current path —
+// O(depth), which md_parse's nesting limit bounds — never one set per
+// sibling.  The entry point (``hostMdParse``) still runs the whole walk
+// under ``gcGuard``, which restores ``$gc_sp`` wholesale on exit.
 // The returned root pointer is NOT pushed — the caller roots it
 // before its next alloc (see ``hostMdParse``).
 
@@ -1185,10 +1348,15 @@ function writeInlineArray(inlines) {
   const count = inlines.length;
   if (count === 0) return [0, 0];
   const backingPtr = alloc(count * 4);
+  zeroFill(backingPtr, count * 4);
   gcShadowPush(backingPtr);
   for (let i = 0; i < count; i++) {
+    // #1502: pop the child's temporaries once its pointer is in the
+    // rooted backing, so the roots grow with depth, not width.
+    const mark = gcMark();
     const ptr = writeMdInline(inlines[i]);
     writeI32(backingPtr + i * 4, ptr);
+    gcRelease(mark);
   }
   return [backingPtr, count];
 }
@@ -1264,10 +1432,14 @@ function writeBlockArray(blocks) {
   const count = blocks.length;
   if (count === 0) return [0, 0];
   const backingPtr = alloc(count * 4);
+  zeroFill(backingPtr, count * 4);
   gcShadowPush(backingPtr);
   for (let i = 0; i < count; i++) {
+    // #1502: same per-child scoping as writeInlineArray.
+    const mark = gcMark();
     const ptr = writeMdBlock(blocks[i]);
     writeI32(backingPtr + i * 4, ptr);
+    gcRelease(mark);
   }
   return [backingPtr, count];
 }
@@ -1323,11 +1495,14 @@ function writeMdBlock(node) {
       if (count > 0) {
         // Each element is an i32_pair (ptr, len) = 8 bytes
         backingPtr = alloc(count * 8);
+        zeroFill(backingPtr, count * 8);
         gcShadowPush(backingPtr);
         for (let i = 0; i < count; i++) {
+          const mark = gcMark();  // #1502: per-item root scoping
           const [itemPtr, itemLen] = writeBlockArray(node.items[i]);
           writeI32(backingPtr + i * 8, itemPtr);
           writeI32(backingPtr + i * 8 + 4, itemLen);
+          gcRelease(mark);
         }
       }
       const ptr = alloc(16);
@@ -1351,23 +1526,29 @@ function writeMdBlock(node) {
       if (rowCount > 0) {
         // Each row is Array<Array<MdInline>> — i32_pair (ptr, len) = 8 bytes
         rowsPtr = alloc(rowCount * 8);
+        zeroFill(rowsPtr, rowCount * 8);
         gcShadowPush(rowsPtr);
         for (let ri = 0; ri < rowCount; ri++) {
+          const rowMark = gcMark();  // #1502: per-row root scoping
           const row = node.rows[ri];
           const cellCount = row.length;
           let cellsPtr = 0;
           if (cellCount > 0) {
             // Each cell is Array<MdInline> — i32_pair = 8 bytes
             cellsPtr = alloc(cellCount * 8);
+            zeroFill(cellsPtr, cellCount * 8);
             gcShadowPush(cellsPtr);
             for (let ci = 0; ci < cellCount; ci++) {
+              const cellMark = gcMark();  // #1502: per-cell root scoping
               const [cPtr, cLen] = writeInlineArray(row[ci]);
               writeI32(cellsPtr + ci * 8, cPtr);
               writeI32(cellsPtr + ci * 8 + 4, cLen);
+              gcRelease(cellMark);
             }
           }
           writeI32(rowsPtr + ri * 8, cellsPtr);
           writeI32(rowsPtr + ri * 8 + 4, cellCount);
+          gcRelease(rowMark);
         }
       }
       const ptr = alloc(12);
@@ -1390,25 +1571,37 @@ function writeMdBlock(node) {
 }
 
 // -- Read MdBlock/MdInline from WASM memory --
+//
+// #1502: an explicit-stack walk.  md_render / md_has_heading /
+// md_has_code_block / md_extract_code_blocks take trees BUILT IN VERA,
+// which no parse limit bounds, so a reader that recursed once per level
+// ran out of JS stack on a value the signature accepts.  Each node is
+// read into a fresh object whose child arrays are filled in place by
+// later work items, queued so they pop in document order — the same
+// nodes the recursive reader built, read in the same order.
 
-function readInlineArray(ptr, len) {
-  const result = [];
-  for (let i = 0; i < len; i++) {
-    const nodePtr = readI32(ptr + i * 4);
-    result.push(readMdInline(nodePtr));
+/**
+ * Queue the `len` node pointers of the i32 array at `ptr`, to be read
+ * into `out` (a fresh array by default), and return `out`.  A work
+ * item is four entries: pointer, target array, index, and whether the
+ * node is a block.
+ */
+function queueMdArray(ptr, len, isBlock, work, out = []) {
+  for (let i = len - 1; i >= 0; i--) {
+    work.push(readI32(ptr + i * 4), out, i, isBlock);
   }
-  return result;
+  return out;
 }
 
-function readMdInline(ptr) {
+function readMdInlineNode(ptr, work) {
   const tag = readI32(ptr);
   switch (tag) {
     case 0: return new MdText(readString(readI32(ptr + 4), readI32(ptr + 8)));
     case 1: return new MdCode(readString(readI32(ptr + 4), readI32(ptr + 8)));
-    case 2: return new MdEmph(readInlineArray(readI32(ptr + 4), readI32(ptr + 8)));
-    case 3: return new MdStrong(readInlineArray(readI32(ptr + 4), readI32(ptr + 8)));
+    case 2: return new MdEmph(queueMdArray(readI32(ptr + 4), readI32(ptr + 8), false, work));
+    case 3: return new MdStrong(queueMdArray(readI32(ptr + 4), readI32(ptr + 8), false, work));
     case 4: return new MdLink(
-      readInlineArray(readI32(ptr + 4), readI32(ptr + 8)),
+      queueMdArray(readI32(ptr + 4), readI32(ptr + 8), false, work),
       readString(readI32(ptr + 12), readI32(ptr + 16))
     );
     case 5: return new MdImage(
@@ -1419,37 +1612,30 @@ function readMdInline(ptr) {
   }
 }
 
-function readBlockArray(ptr, len) {
-  const result = [];
-  for (let i = 0; i < len; i++) {
-    const nodePtr = readI32(ptr + i * 4);
-    result.push(readMdBlock(nodePtr));
-  }
-  return result;
-}
-
-function readMdBlock(ptr) {
+function readMdBlockNode(ptr, work) {
   const tag = readI32(ptr);
   switch (tag) {
-    case 0: return new MdParagraph(readInlineArray(readI32(ptr + 4), readI32(ptr + 8)));
+    case 0: return new MdParagraph(queueMdArray(readI32(ptr + 4), readI32(ptr + 8), false, work));
     case 1: return new MdHeading(
       Number(readI64(ptr + 8)),
-      readInlineArray(readI32(ptr + 16), readI32(ptr + 20))
+      queueMdArray(readI32(ptr + 16), readI32(ptr + 20), false, work)
     );
     case 2: return new MdCodeBlock(
       readString(readI32(ptr + 4), readI32(ptr + 8)),
       readString(readI32(ptr + 12), readI32(ptr + 16))
     );
-    case 3: return new MdBlockQuote(readBlockArray(readI32(ptr + 4), readI32(ptr + 8)));
+    case 3: return new MdBlockQuote(queueMdArray(readI32(ptr + 4), readI32(ptr + 8), true, work));
     case 4: {
       const ordered = readI32(ptr + 4) !== 0;
       const arrPtr = readI32(ptr + 8);
       const arrLen = readI32(ptr + 12);
       const items = [];
-      for (let i = 0; i < arrLen; i++) {
+      for (let i = 0; i < arrLen; i++) items.push([]);
+      // Last item first, so the first item's blocks pop first.
+      for (let i = arrLen - 1; i >= 0; i--) {
         const itemPtr = readI32(arrPtr + i * 8);
         const itemLen = readI32(arrPtr + i * 8 + 4);
-        items.push(readBlockArray(itemPtr, itemLen));
+        queueMdArray(itemPtr, itemLen, true, work, items[i]);
       }
       return new MdList(ordered, items);
     }
@@ -1459,21 +1645,44 @@ function readMdBlock(ptr) {
       const rowCount = readI32(ptr + 8);
       const rows = [];
       for (let ri = 0; ri < rowCount; ri++) {
-        const cellsPtr = readI32(rowsPtr + ri * 8);
         const cellCount = readI32(rowsPtr + ri * 8 + 4);
         const row = [];
-        for (let ci = 0; ci < cellCount; ci++) {
+        for (let ci = 0; ci < cellCount; ci++) row.push([]);
+        rows.push(row);
+      }
+      // Last row and cell first, so the first cell's inlines pop first.
+      for (let ri = rowCount - 1; ri >= 0; ri--) {
+        const cellsPtr = readI32(rowsPtr + ri * 8);
+        const row = rows[ri];
+        for (let ci = row.length - 1; ci >= 0; ci--) {
           const inlPtr = readI32(cellsPtr + ci * 8);
           const inlLen = readI32(cellsPtr + ci * 8 + 4);
-          row.push(readInlineArray(inlPtr, inlLen));
+          queueMdArray(inlPtr, inlLen, false, work, row[ci]);
         }
-        rows.push(row);
       }
       return new MdTable(rows);
     }
-    case 7: return new MdDocument(readBlockArray(readI32(ptr + 4), readI32(ptr + 8)));
+    case 7: return new MdDocument(queueMdArray(readI32(ptr + 4), readI32(ptr + 8), true, work));
     default: throw new Error(`Unknown MdBlock tag: ${tag}`);
   }
+}
+
+/** Read a tree rooted at `ptr`; `isBlock` says which ADT the root is. */
+function readMdTree(ptr, isBlock) {
+  const holder = [null];
+  const work = [ptr, holder, 0, isBlock];
+  while (work.length > 0) {
+    const block = work.pop();
+    const idx = work.pop();
+    const target = work.pop();
+    const p = work.pop();
+    target[idx] = block ? readMdBlockNode(p, work) : readMdInlineNode(p, work);
+  }
+  return holder[0];
+}
+
+function readMdBlock(ptr) {
+  return readMdTree(ptr, true);
 }
 
 // -- Markdown host bindings --
@@ -2790,88 +2999,98 @@ function buildImportObject(module, moduleBytes) {
   // are host imports; utility functions are compiled Vera source.
 
   // Write a JS value into WASM memory as a Json ADT, returns heap pointer.
+  //
+  // #1502: a top-down walk on an explicit stack.  Each node's block is
+  // allocated, zero-filled and linked into its parent's slot BEFORE
+  // anything beneath it is allocated, so every block written so far is
+  // reachable from the root, which is the walk's only shadow-stack push.
+  // The roots are therefore O(1) whatever the tree's width or depth —
+  // the recursive builder held a root per JObject value until its object
+  // was finished, and a JS frame per level — and the ``gcGuard`` still
+  // restores ``$gc_sp`` wholesale on exit (#708, mirroring the CLI
+  // ``write_json`` ``_ShadowGuard``).  The layouts are unchanged:
+  //   JNull   tag=0, total=8
+  //   JBool   tag=1, i32 at +4, total=8
+  //   JNumber tag=2, f64 at +8, total=16
+  //   JString tag=3, i32_pair at +4, total=16
+  //   JArray  tag=4, i32_pair (backing, count) at +4, total=16
+  //   JObject tag=5, i32 Map-wrapper ptr at +4 (#573), total=8
   function writeJson(value) {
-    // #708 (PR #707): wrap in gcGuard so intermediates
-    // (arrPtr, recursive results, string ptrs) can be shadow-pushed
-    // and atomically popped at function exit.  Mirrors the CLI
-    // ``write_json`` ``_ShadowGuard`` discipline from v0.0.158 (#692).
-    return gcGuard(() => writeJsonImpl(value));
+    return gcGuard(() => {
+      const work = [];   // pending (value, slot address) pairs
+      const rootPtr = writeJsonNode(value, 0, work);
+      while (work.length > 0) {
+        const slot = work.pop();
+        const v = work.pop();
+        writeJsonNode(v, slot, work);
+      }
+      return rootPtr;
+    });
   }
-  function writeJsonImpl(value) {
+
+  // Allocate ``value``'s node and link it — into ``slot`` when non-zero
+  // (a word of a block already reachable from the root), else onto the
+  // shadow stack, as the root.  A container's children are queued on
+  // ``work`` with the address of the slot each is to fill, last child
+  // first, so they are written in document order.
+  function writeJsonNode(value, slot, work) {
+    const link = (ptr) => {
+      if (slot !== 0) writeI32(slot, ptr);
+      else gcShadowPush(ptr);
+    };
     if (value === null || value === undefined) {
-      // JNull — tag=0, total=8
       const ptr = alloc(8);
       writeI32(ptr, 0);
+      writeI32(ptr + 4, 0);
+      link(ptr);
       return ptr;
     }
     if (typeof value === "boolean") {
-      // JBool(Bool) — tag=1, i32 at offset 4, total=8
       const ptr = alloc(8);
       writeI32(ptr, 1);
       writeI32(ptr + 4, value ? 1 : 0);
+      link(ptr);
       return ptr;
     }
     if (typeof value === "number") {
-      // JNumber(Float64) — tag=2, f64 at offset 8, total=16
       const ptr = alloc(16);
       writeI32(ptr, 2);
+      writeI32(ptr + 4, 0);
       writeF64(ptr + 8, value);
+      link(ptr);
       return ptr;
     }
     if (typeof value === "string") {
-      // JString(String) — tag=3, i32_pair at offset 4, total=16
-      //
-      // #708: allocate the JString body first, push it onto the
-      // shadow stack, then allocate the string buffer.  The
-      // ``allocString`` call below can fire ``$gc_collect``; without
-      // rooting the body, it gets reclaimed and the writes scribble
-      // freed memory.
+      // Linked (so reachable) before ``allocString`` can fire
+      // ``$gc_collect`` — the #708 hazard this branch always had.
       const ptr = alloc(16);
       writeI32(ptr, 3);
-      gcShadowPush(ptr);
+      writeI32(ptr + 4, 0);
+      writeI32(ptr + 8, 0);
+      link(ptr);
       const [sp, sl] = allocString(value);
       writeI32(ptr + 4, sp);
       writeI32(ptr + 8, sl);
       return ptr;
     }
     if (Array.isArray(value)) {
-      // JArray(Array<Json>) — tag=4, i32_pair at offset 4, total=16
-      //
-      // #708: explicitly root ``arrPtr`` (the array backing) and
-      // each element's heap ptr before storing into the backing.
-      // Without these pushes, EAGER_GC reclaims ``arrPtr`` between
-      // the recursive ``writeJson(value[i])`` calls and the writes
-      // into it, leaving a JArray with a dangling backing pointer
-      // — the failure mode observed on the browser-side
-      // ``test_eager_gc_set_of_json_browser``.
       const count = value.length;
-      let arrPtr = 0;
-      if (count > 0) {
-        arrPtr = alloc(count * 4);
-        gcShadowPush(arrPtr);
-        for (let i = 0; i < count; i++) {
-          const ep = writeJson(value[i]);
-          // PR #707 review: push ep to root it across writeI32, then
-          // pop immediately after the store — once ep lives at
-          // ``arrPtr + i * 4`` and arrPtr is rooted, the conservative
-          // scan reaches ep via arrPtr's block, so the per-iteration
-          // push is no longer needed.  Without the matching pop the
-          // shadow stack grew O(count) and risked overflowing
-          // ``gc_stack_limit`` on large arrays.
-          gcShadowPush(ep);
-          writeI32(arrPtr + i * 4, ep);
-          gcShadowPop();
-        }
-      }
       const ptr = alloc(16);
       writeI32(ptr, 4);
-      writeI32(ptr + 4, arrPtr);
+      writeI32(ptr + 4, 0);
       writeI32(ptr + 8, count);
+      link(ptr);
+      if (count > 0) {
+        const arrPtr = alloc(count * 4);
+        zeroFill(arrPtr, count * 4);
+        writeI32(ptr + 4, arrPtr);
+        for (let i = count - 1; i >= 0; i--) {
+          work.push(value[i], arrPtr + i * 4);
+        }
+      }
       return ptr;
     }
     if (typeof value === "object") {
-      // JObject(Map<String, Json>) — tag=5, i32 wrapper ptr at offset 4 (#573)
-      //
       // #1293: the entry source is a ``Map`` for anything
       // ``parseJsonOrdered`` built, and iterating one yields insertion
       // order.  ``Object.entries`` is kept for a plain object reaching
@@ -2879,38 +3098,38 @@ function buildImportObject(module, moduleBytes) {
       // array-index keys come out first, ascending — so nothing on the
       // json_parse path may hand this branch one.
       //
-      // #708: each recursive ``writeJson(v)`` call returns a heap
-      // ptr stored in the JS-side Map ``m`` only.  Between
-      // returning ep and ``m.set(k, ep)``, the result is in a JS
-      // local — invisible to the conservative scan.  Push each ep
-      // before storing in m, then push wrapperPtr before the
-      // final 8-byte alloc.
-      const entries = value instanceof Map ? value : Object.entries(value);
-      const m = new Map();
-      for (const [k, v] of entries) {
-        const ep = writeJson(v);
-        // PR #707 review: no matching pop here — unlike the JArray
-        // branch above, ``m`` is a JS Map (not WASM memory), so
-        // ``m.set(k, ep)`` does NOT make ep reachable from the
-        // conservative scan.  ep stays on the shadow stack until
-        // ``allocMapWrapper(m)`` below builds the WAT-resident bucket
-        // array and writes ep into it.  Stack depth is therefore
-        // O(n_keys) inside this loop; bounded by the same
-        // ``gc_stack_limit`` guard as everything else.  Tracked as
-        // a refactor opportunity under #706 (move-to-truth would let
-        // allocMapWrapper take a pre-rooted bucket).
-        gcShadowPush(ep);
-        m.set(k, ep);
-      }
-      const wrapperPtr = allocMapWrapper(m);
-      gcShadowPush(wrapperPtr);
+      // The Map<String, Json> is the bucket-as-truth wrapper
+      // ``allocMapWrapper`` builds (#706) — wrapper, then bucket, the
+      // entries in slots 0..n-1 in order, each key a String and each
+      // value a Json heap pointer ("b": i32, then a zero word) — laid
+      // out here directly so the bucket is linked, and so reachable,
+      // before any key or value beneath it is allocated.
+      const entries = value instanceof Map ? [...value] : Object.entries(value);
+      const count = entries.length;
       const ptr = alloc(8);
       writeI32(ptr, 5);
+      writeI32(ptr + 4, 0);
+      link(ptr);
+      const wrapperPtr = allocBktWrapper(1, 0);
       writeI32(ptr + 4, wrapperPtr);
+      const bucketPtr = allocBucket(bktCapacity(count));   // zero-filled
+      writeI32(wrapperPtr + 8, bucketPtr);
+      const slotsBase = bucketPtr + _BKT_HEADER;
+      for (let i = 0; i < count; i++) {
+        const base = slotsBase + i * _BKT_SLOT;
+        writeI32(base, 1);
+        const [kp, kl] = allocString(String(entries[i][0]));
+        writeI32(base + 4, kp);
+        writeI32(base + 8, kl);
+      }
+      writeI32(bucketPtr + 4, count);
+      for (let i = count - 1; i >= 0; i--) {
+        work.push(entries[i][1], slotsBase + i * _BKT_SLOT + 12);
+      }
       return ptr;
     }
     // Fallback: stringify
-    return writeJson(String(value));
+    return writeJsonNode(String(value), slot, work);
   }
 
   // Read a Json ADT from WASM memory back to a JS value.  A JObject
@@ -2928,7 +3147,28 @@ function buildImportObject(module, moduleBytes) {
   //
   // Both are silent, so the Map is not a stylistic preference: it is
   // the only JS shape that round-trips the ADT.
+  //
+  // #1502: an explicit-stack walk.  json_stringify takes a Json BUILT IN
+  // VERA, which no parse limit bounds, so a reader that recursed once
+  // per level ran out of JS stack on a value the signature accepts.  A
+  // container is created empty and filled by later work items: an array
+  // by index, a Map by re-setting a key placed in bucket order up front
+  // (``Map.prototype.set`` on an existing key keeps its position).
   function readJson(ptr) {
+    const holder = [null];
+    const work = [ptr, holder, 0];   // (pointer, target, key) triples
+    while (work.length > 0) {
+      const key = work.pop();
+      const target = work.pop();
+      const p = work.pop();
+      const v = readJsonNode(p, work);
+      if (target instanceof Map) target.set(key, v);
+      else target[key] = v;
+    }
+    return holder[0];
+  }
+
+  function readJsonNode(ptr, work) {
     const tag = readI32(ptr);
     if (tag === 0) return null;
     if (tag === 1) return readI32(ptr + 4) !== 0;
@@ -2938,8 +3178,8 @@ function buildImportObject(module, moduleBytes) {
       const arrPtr = readI32(ptr + 4);
       const arrLen = readI32(ptr + 8);
       const result = [];
-      for (let i = 0; i < arrLen; i++) {
-        result.push(readJson(readI32(arrPtr + i * 4)));
+      for (let i = arrLen - 1; i >= 0; i--) {
+        work.push(readI32(arrPtr + i * 4), result, i);
       }
       return result;
     }
@@ -2952,8 +3192,14 @@ function buildImportObject(module, moduleBytes) {
       // keeps the bucket's order, which is the ADT's order.
       const wrapperPtr = readI32(ptr + 4);
       const result = new Map();
+      const pending = [];
       for (const [k, v] of decodeMap(wrapperPtr, 's', 'b')) {
-        result.set(String(k), readJson(Number(v)));
+        const key = String(k);
+        result.set(key, null);
+        pending.push(Number(v), key);
+      }
+      for (let i = pending.length - 2; i >= 0; i -= 2) {
+        work.push(pending[i], result, pending[i + 1]);
       }
       return result;
     }
@@ -2975,6 +3221,10 @@ function buildImportObject(module, moduleBytes) {
   // its own slice rather than decoded a second way.  This scanner only
   // finds token boundaries and builds containers, so a throw from it is
   // an internal bug, not bad input.
+  //
+  // #1502: the open containers live on an explicit stack rather than
+  // the JS call stack.  Each frame is a container still being filled
+  // and, for an object, the key its next value belongs to.
   function parseJsonOrdered(text) {
     let i = 0;
     const fail = (what) => {
@@ -3009,10 +3259,24 @@ function buildImportObject(module, moduleBytes) {
       if (i === start) fail("expected a value");
       return JSON.parse(text.slice(start, i));
     };
-    const scanValue = () => {
+    // An object member's key and colon, leaving ``i`` at its value.
+    const scanKey = (frame) => {
+      skipWs();
+      if (text[i] !== '"') fail("expected a key");
+      frame.key = scanString();
+      skipWs();
+      if (text[i] !== ":") fail("expected ':'");
+      i++;
+    };
+    const stack = [];
+    for (;;) {
+      // A value starts here.  A non-empty container opens a frame and
+      // goes round again for its first member; anything else is a
+      // complete value, handed to the enclosing frames below.
       skipWs();
       if (i >= text.length) fail("unexpected end of input");
       const c = text[i];
+      let value;
       if (c === "{") {
         i++;
         // A Map, so the order below is the document's.  A repeated key
@@ -3021,44 +3285,63 @@ function buildImportObject(module, moduleBytes) {
         // does here, so the two agree on the duplicate case too.
         const out = new Map();
         skipWs();
-        if (text[i] === "}") { i++; return out; }
-        for (;;) {
-          skipWs();
-          if (text[i] !== '"') fail("expected a key");
-          const k = scanString();
-          skipWs();
-          if (text[i] !== ":") fail("expected ':'");
+        if (text[i] === "}") {
           i++;
-          out.set(k, scanValue());
-          skipWs();
-          if (text[i] === ",") { i++; continue; }
-          if (text[i] === "}") { i++; return out; }
-          fail("expected ',' or '}'");
+          value = out;
+        } else {
+          const frame = { out, isObject: true, key: null };
+          stack.push(frame);
+          scanKey(frame);
+          continue;
         }
-      }
-      if (c === "[") {
+      } else if (c === "[") {
         i++;
         const out = [];
         skipWs();
-        if (text[i] === "]") { i++; return out; }
-        for (;;) {
-          out.push(scanValue());
-          skipWs();
-          if (text[i] === ",") { i++; continue; }
-          if (text[i] === "]") { i++; return out; }
-          fail("expected ',' or ']'");
+        if (text[i] === "]") {
+          i++;
+          value = out;
+        } else {
+          stack.push({ out, isObject: false, key: null });
+          continue;
         }
+      } else if (c === '"') {
+        value = scanString();
+      } else if (text.startsWith("true", i)) {
+        i += 4; value = true;
+      } else if (text.startsWith("false", i)) {
+        i += 5; value = false;
+      } else if (text.startsWith("null", i)) {
+        i += 4; value = null;
+      } else {
+        value = scanNumber();
       }
-      if (c === '"') return scanString();
-      if (text.startsWith("true", i)) { i += 4; return true; }
-      if (text.startsWith("false", i)) { i += 5; return false; }
-      if (text.startsWith("null", i)) { i += 4; return null; }
-      return scanNumber();
-    };
-    const value = scanValue();
-    skipWs();
-    if (i !== text.length) fail("trailing text");
-    return value;
+      // Store the finished value in its container; a container that
+      // this closes is itself a finished value for the next one out.
+      for (;;) {
+        if (stack.length === 0) {
+          skipWs();
+          if (i !== text.length) fail("trailing text");
+          return value;
+        }
+        const frame = stack[stack.length - 1];
+        if (frame.isObject) frame.out.set(frame.key, value);
+        else frame.out.push(value);
+        skipWs();
+        if (text[i] === ",") {
+          i++;
+          if (frame.isObject) scanKey(frame);
+          break;
+        }
+        if (text[i] === (frame.isObject ? "}" : "]")) {
+          i++;
+          stack.pop();
+          value = frame.out;
+          continue;
+        }
+        fail(frame.isObject ? "expected ',' or '}'" : "expected ',' or ']'");
+      }
+    }
   }
 
   // Serialize a value ``readJson`` produced into canonical JSON text
@@ -3077,12 +3360,23 @@ function buildImportObject(module, moduleBytes) {
   // coerced, matching ``dumps_canonical``'s TypeError: a value that is
   // not a Json value means the ADT walk went wrong, and a
   // plausible-looking string would hide it.
+  //
+  // #1502: an explicit-stack walk (see ``readJson``).  A work item is a
+  // pair — ``true`` and a value to emit, or ``false`` and literal text —
+  // and a container emits its opening delimiter, then queues its
+  // members, separators and closing delimiter so they pop in document
+  // order.  The first refusal is therefore the first in document order,
+  // as before.
   function stringifyCanonical(value) {
     const parts = [];
-    const emit = (node) => {
-      if (node === null) { parts.push("null"); return; }
-      if (node === true) { parts.push("true"); return; }
-      if (node === false) { parts.push("false"); return; }
+    const work = [value, true];   // (payload, isValue) pairs
+    while (work.length > 0) {
+      const isValue = work.pop();
+      const node = work.pop();
+      if (!isValue) { parts.push(node); continue; }
+      if (node === null) { parts.push("null"); continue; }
+      if (node === true) { parts.push("true"); continue; }
+      if (node === false) { parts.push("false"); continue; }
       if (typeof node === "number") {
         // RFC 8259 has no NaN and no Infinity, so there is no right
         // value to return for one — only a right way to fail.  Bare
@@ -3099,37 +3393,35 @@ function buildImportObject(module, moduleBytes) {
           );
         }
         parts.push(String(node));
-        return;
+        continue;
       }
-      if (typeof node === "string") { parts.push(JSON.stringify(node)); return; }
+      if (typeof node === "string") { parts.push(JSON.stringify(node)); continue; }
       if (Array.isArray(node)) {
         parts.push("[");
-        node.forEach((item, idx) => {
-          if (idx) parts.push(",");
-          emit(item);
-        });
-        parts.push("]");
-        return;
+        work.push("]", false);
+        for (let idx = node.length - 1; idx >= 0; idx--) {
+          work.push(node[idx], true);
+          if (idx) work.push(",", false);
+        }
+        continue;
       }
       if (node instanceof Map) {
         parts.push("{");
-        let first = true;
-        for (const [k, v] of node) {
-          if (!first) parts.push(",");
-          first = false;
-          parts.push(JSON.stringify(String(k)));
-          parts.push(":");
-          emit(v);
+        work.push("}", false);
+        const entries = [...node];
+        for (let idx = entries.length - 1; idx >= 0; idx--) {
+          const [k, v] = entries[idx];
+          work.push(v, true);
+          work.push(JSON.stringify(String(k)) + ":", false);
+          if (idx) work.push(",", false);
         }
-        parts.push("}");
-        return;
+        continue;
       }
       throw new Error(
         `json_stringify: readJson produced ${typeof node}, which is not a ` +
         `Json value; the ADT walk is wrong`
       );
-    };
-    emit(value);
+    }
     return parts.join("");
   }
 
@@ -3283,48 +3575,107 @@ function buildImportObject(module, moduleBytes) {
   // valid RFC 8259 that JSON.parse accepts, decoding to Infinity, which
   // the bare-constant gate above never sees because the text IS valid
   // JSON.  Same exclusion, a different entry route, its own sentence.
-  function firstDomainViolation(node) {
-    if (typeof node === "string") {
-      const codePoint = firstLoneSurrogateInString(node);
-      return codePoint === null ? null : loneSurrogateMessage(codePoint);
-    }
-    if (typeof node === "number") {
-      if (Number.isFinite(node)) return null;
-      // NaN is unreachable from here — JSON.parse rejects the bare
-      // constant before this walk runs, and no numeric literal decodes
-      // to one — but it is named rather than folded into the negative
-      // branch, because ``node > 0`` is false for NaN and would report
-      // "-Infinity".  The reference host's twin gets the name from
-      // ``_NON_FINITE_NAMES``, which covers all three; a host that
-      // answers differently on a case neither can reach today is a
-      // divergence waiting for the day one of them can.
-      const name = Number.isNaN(node)
-        ? "NaN"
-        : (node > 0 ? "Infinity" : "-Infinity");
-      return nonFiniteNumberMessage(name);
-    }
-    if (Array.isArray(node)) {
-      for (const item of node) {
-        const found = firstDomainViolation(item);
-        if (found !== null) return found;
-      }
-      return null;
-    }
-    if (node instanceof Map) {
-      for (const [key, item] of node) {
-        const codePoint = firstLoneSurrogateInString(String(key));
+  //
+  // #1502: an explicit-stack walk, so a violation is still the FIRST in
+  // document order: a container's members are queued last-first, and an
+  // object queues each key (a string, checked exactly as a string value
+  // is) above its own value.
+  function firstDomainViolation(root) {
+    const work = [root];
+    while (work.length > 0) {
+      const node = work.pop();
+      if (typeof node === "string") {
+        const codePoint = firstLoneSurrogateInString(node);
         if (codePoint !== null) return loneSurrogateMessage(codePoint);
-        const found = firstDomainViolation(item);
-        if (found !== null) return found;
+        continue;
       }
-      return null;
+      if (typeof node === "number") {
+        if (Number.isFinite(node)) continue;
+        // NaN is unreachable from here — JSON.parse rejects the bare
+        // constant before this walk runs, and no numeric literal decodes
+        // to one — but it is named rather than folded into the negative
+        // branch, because ``node > 0`` is false for NaN and would report
+        // "-Infinity".  The reference host's twin gets the name from
+        // ``_NON_FINITE_NAMES``, which covers all three; a host that
+        // answers differently on a case neither can reach today is a
+        // divergence waiting for the day one of them can.
+        const name = Number.isNaN(node)
+          ? "NaN"
+          : (node > 0 ? "Infinity" : "-Infinity");
+        return nonFiniteNumberMessage(name);
+      }
+      if (Array.isArray(node)) {
+        for (let k = node.length - 1; k >= 0; k--) work.push(node[k]);
+        continue;
+      }
+      if (node instanceof Map) {
+        const entries = [...node];
+        for (let k = entries.length - 1; k >= 0; k--) {
+          work.push(entries[k][1]);
+          work.push(String(entries[k][0]));
+        }
+      }
     }
     return null;
+  }
+
+  // ── json_parse's nesting-depth limit (#1502) ───────────────────
+  //
+  // RFC 8259 §9 lets an implementation set a maximum nesting depth, and
+  // without one the hosts disagreed about a text neither could decode:
+  // the reference host's recursive decoder raised RecursionError where
+  // this one's did not, and the recursive walks after the parse ran out
+  // of stack on either.  The limit and its sentence are pinned,
+  // identical on both hosts, and decided on the raw text BEFORE either
+  // host's parser sees it, by one scan whose only state is
+  // whether it is inside a string and how many brackets are open —
+  // so a text over the limit is refused with the same sentence however
+  // else it is malformed.
+
+  const JSON_MAX_DEPTH = 512;
+
+  function jsonDepthMessage(limit) {
+    return (
+      `json_parse: the text nests arrays and objects more than ${limit} ` +
+      `levels deep — RFC 8259 §9 lets an implementation set a maximum ` +
+      `nesting depth, and Vera's is ${limit}.  Flatten the structure, or ` +
+      `split the document.`
+    );
+  }
+
+  // Does ``text`` open more than ``limit`` brackets at once?  One UTF-16
+  // code unit at a time: inside a string a backslash skips the next unit
+  // and a quote ends it; outside, a quote starts one, '[' / '{' opens a
+  // level and ']' / '}' closes one (never below zero).
+  function exceedsJsonDepth(text, limit) {
+    let inString = false;
+    let depth = 0;
+    for (let i = 0; i < text.length; i++) {
+      const c = text.charCodeAt(i);
+      if (inString) {
+        if (c === 0x5c) i++;                 // backslash: skip next unit
+        else if (c === 0x22) inString = false;
+      } else if (c === 0x22) {
+        inString = true;
+      } else if (c === 0x5b || c === 0x7b) {
+        depth++;
+        if (depth > limit) return true;
+      } else if (c === 0x5d || c === 0x7d) {
+        if (depth > 0) depth--;
+      }
+    }
+    return false;
   }
 
   if (needed.has("json_parse")) {
     imports.vera.json_parse = (ptr, len) => {
       const text = readString(ptr, len);
+      // #1502: the depth limit is decided first, on the raw text, so
+      // nothing downstream — JSON.parse, the ordered re-scan, the domain
+      // walk, writeJson — ever sees a text nested past it.
+      if (exceedsJsonDepth(text, JSON_MAX_DEPTH)) {
+        return allocResultErrString(jsonDepthMessage(JSON_MAX_DEPTH));
+      }
       // Same failure-domain split as hostMdParse: only JSON.parse
       // errors become Err(String); gcGuard-walk failures trap loudly.
       try {
@@ -3639,37 +3990,52 @@ function buildImportObject(module, moduleBytes) {
   // HtmlElement: tag=0, String(name)+4, Map handle+12, Array(ptr,len)+16, total=24
   // HtmlText: tag=1, String(content)+4, total=16
   // HtmlComment: tag=2, String(content)+4, total=16
+  //
+  // #1502: a top-down walk on an explicit stack with O(1) shadow-stack
+  // roots, whatever the tree's depth or width.  An element's name
+  // string, attrs map, zero-filled children backing and 24-byte node are
+  // all allocated up front — the three temporaries rooted only until the
+  // node that holds them is stored in its parent's already-reachable
+  // backing slot — and the node is linked there BEFORE any child is
+  // written.  Everything written so far is then reachable from the top
+  // node, the walk's one lasting root.  The recursive builder held a
+  // JS frame and three roots per open element, so a deep tree ran out
+  // of JS stack or shadow stack.
   function writeHtml(node) {
     // #708 (PR #707): same gcGuard discipline as writeJson.
-    return gcGuard(() => writeHtmlImpl(node));
+    return gcGuard(() => writeHtmlTree(node, 0));
   }
-  function writeHtmlImpl(node) {
-    if (node.tag === 'comment') {
-      // #708: root the comment body's ptr before allocString fires GC.
-      const ptr = alloc(16);
-      writeI32(ptr, 2);
-      gcShadowPush(ptr);
-      const [sp, sl] = allocString(node.content || '');
-      writeI32(ptr + 4, sp);
-      writeI32(ptr + 8, sl);
-      return ptr;
+
+  // Write the tree under ``root`` and link its top node into
+  // ``rootSlot`` — a word of a block the caller keeps reachable — or,
+  // when that is 0, onto the shadow stack (the caller's guard pops it).
+  function writeHtmlTree(root, rootSlot) {
+    const work = [];   // pending (node, slot address) pairs
+    const rootPtr = writeHtmlNode(root, rootSlot, work);
+    while (work.length > 0) {
+      const slot = work.pop();
+      const n = work.pop();
+      writeHtmlNode(n, slot, work);
     }
-    if (node.tag === 'text') {
-      // Same #708 discipline as the comment branch.
+    return rootPtr;
+  }
+
+  function writeHtmlNode(node, slot, work) {
+    if (node.tag === 'comment' || node.tag === 'text') {
+      // Linked (so reachable) before ``allocString`` can fire GC.
       const ptr = alloc(16);
-      writeI32(ptr, 1);
-      gcShadowPush(ptr);
+      writeI32(ptr, node.tag === 'comment' ? 2 : 1);
+      writeI32(ptr + 4, 0);
+      writeI32(ptr + 8, 0);
+      if (slot !== 0) writeI32(slot, ptr);
+      else gcShadowPush(ptr);
       const [sp, sl] = allocString(node.content || '');
       writeI32(ptr + 4, sp);
       writeI32(ptr + 8, sl);
       return ptr;
     }
     // element
-    //
-    // #708: root each intermediate before any alloc that could
-    // fire GC.  The CLI ``write_html`` uses ``_ShadowGuard``
-    // pushing for the same set of intermediates (np, wrapperPtr,
-    // arrPtr, and each recursive child result).
+    const mark = gcMark();
     const [np, nl] = allocString(node.name || '');
     gcShadowPush(np);
     // Attributes as Map<String, String>
@@ -3690,18 +4056,8 @@ function buildImportObject(module, moduleBytes) {
     let arrPtr = 0;
     if (count > 0) {
       arrPtr = alloc(count * 4);
+      zeroFill(arrPtr, count * 4);
       gcShadowPush(arrPtr);
-      for (let i = 0; i < count; i++) {
-        const cp = writeHtml(children[i]);
-        // PR #707 review: same push+pop pairing as the JArray loop in
-        // writeJson.  Once cp is stored at ``arrPtr + i * 4`` and
-        // arrPtr is rooted, the conservative scan reaches cp via
-        // arrPtr's block, so the per-iteration push can be popped.
-        // Keeps shadow stack depth O(1) instead of O(count).
-        gcShadowPush(cp);
-        writeI32(arrPtr + i * 4, cp);
-        gcShadowPop();
-      }
     }
     const ptr = alloc(24);
     writeI32(ptr, 0);
@@ -3710,11 +4066,35 @@ function buildImportObject(module, moduleBytes) {
     writeI32(ptr + 12, wrapperPtr);
     writeI32(ptr + 16, arrPtr);
     writeI32(ptr + 20, count);
+    if (slot !== 0) writeI32(slot, ptr);
+    // The name, attrs and backing are reachable through ptr now.
+    gcRelease(mark);
+    if (slot === 0) gcShadowPush(ptr);
+    for (let i = count - 1; i >= 0; i--) {
+      work.push(children[i], arrPtr + i * 4);
+    }
     return ptr;
   }
 
   // Read an HtmlNode ADT from WASM memory to a JS object.
+  //
+  // #1502: an explicit-stack walk — html_to_string / html_text /
+  // html_query take trees BUILT IN VERA, which no parse limit bounds.
+  // An element's ``children`` array is created empty and filled by
+  // later work items, queued so they pop in document order.
   function readHtml(ptr) {
+    const holder = [null];
+    const work = [ptr, holder, 0];   // (pointer, target array, index)
+    while (work.length > 0) {
+      const idx = work.pop();
+      const target = work.pop();
+      const p = work.pop();
+      target[idx] = readHtmlNode(p, work);
+    }
+    return holder[0];
+  }
+
+  function readHtmlNode(ptr, work) {
     const tag = readI32(ptr);
     if (tag === 1) {
       const sp = readI32(ptr + 4);
@@ -3740,14 +4120,27 @@ function buildImportObject(module, moduleBytes) {
       attrs[String(k)] = String(v);
     }
     const children = [];
-    for (let i = 0; i < arrLen; i++) {
-      children.push(readHtml(readI32(arrPtr + i * 4)));
+    for (let i = arrLen - 1; i >= 0; i--) {
+      work.push(readI32(arrPtr + i * 4), children, i);
     }
     return { tag: 'element', name, attrs, children };
   }
 
-  // Convert DOM node tree to HtmlNode JS object
-  function domToHtml(domNode) {
+  // Convert DOM node tree to HtmlNode JS object (#1502: explicit stack,
+  // children filled in place as in readHtml).
+  function domToHtml(rootDom) {
+    const holder = [null];
+    const work = [rootDom, holder, 0];
+    while (work.length > 0) {
+      const idx = work.pop();
+      const target = work.pop();
+      const domNode = work.pop();
+      target[idx] = domToHtmlNode(domNode, work);
+    }
+    return holder[0];
+  }
+
+  function domToHtmlNode(domNode, work) {
     if (domNode.nodeType === 8) {
       return { tag: 'comment', content: domNode.textContent || '' };
     }
@@ -3759,9 +4152,10 @@ function buildImportObject(module, moduleBytes) {
       for (const attr of domNode.attributes) {
         attrs[attr.name] = attr.value;
       }
+      const kids = Array.from(domNode.childNodes);
       const children = [];
-      for (const child of domNode.childNodes) {
-        children.push(domToHtml(child));
+      for (let i = kids.length - 1; i >= 0; i--) {
+        work.push(kids[i], children, i);
       }
       return { tag: 'element', name: domNode.tagName.toLowerCase(), attrs, children };
     }
@@ -3777,30 +4171,51 @@ function buildImportObject(module, moduleBytes) {
     return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
 
-  function htmlToString(node) {
-    if (node.tag === 'text') return escapeHtml(node.content || '');
-    if (node.tag === 'comment') {
-      const c = (node.content || '').replace(/-->/g, '-- >');
-      return `<!--${c}-->`;
-    }
-    const name = node.name || 'div';
-    let attrStr = '';
-    if (node.attrs) {
-      for (const [k, v] of Object.entries(node.attrs)) {
-        attrStr += ` ${k}="${escapeAttr(v)}"`;
+  const HTML_VOID_ELEMENTS = new Set(['area','base','br','col','embed','hr','img','input','link','meta','param','source','track','wbr']);
+
+  // #1502: explicit stack.  A work item is a node to render or a
+  // literal string (an element's closing tag, queued beneath its
+  // children), so the output comes out in document order.
+  function htmlToString(root) {
+    const out = [];
+    const work = [root];
+    while (work.length > 0) {
+      const node = work.pop();
+      if (typeof node === 'string') { out.push(node); continue; }
+      if (node.tag === 'text') { out.push(escapeHtml(node.content || '')); continue; }
+      if (node.tag === 'comment') {
+        const c = (node.content || '').replace(/-->/g, '-- >');
+        out.push(`<!--${c}-->`);
+        continue;
       }
+      const name = node.name || 'div';
+      let attrStr = '';
+      if (node.attrs) {
+        for (const [k, v] of Object.entries(node.attrs)) {
+          attrStr += ` ${k}="${escapeAttr(v)}"`;
+        }
+      }
+      out.push(`<${name}${attrStr}>`);
+      if (HTML_VOID_ELEMENTS.has(name.toLowerCase())) continue;
+      work.push(`</${name}>`);
+      const children = node.children || [];
+      for (let i = children.length - 1; i >= 0; i--) work.push(children[i]);
     }
-    const voidElems = new Set(['area','base','br','col','embed','hr','img','input','link','meta','param','source','track','wbr']);
-    if (voidElems.has(name.toLowerCase())) return `<${name}${attrStr}>`;
-    const inner = (node.children || []).map(htmlToString).join('');
-    return `<${name}${attrStr}>${inner}</${name}>`;
+    return out.join('');
   }
 
-  // Extract text content recursively
-  function htmlText(node) {
-    if (node.tag === 'text') return node.content || '';
-    if (node.tag === 'comment') return '';
-    return (node.children || []).map(htmlText).join('');
+  // Extract text content (#1502: explicit stack, document order)
+  function htmlText(root) {
+    const out = [];
+    const work = [root];
+    while (work.length > 0) {
+      const node = work.pop();
+      if (node.tag === 'text') { out.push(node.content || ''); continue; }
+      if (node.tag === 'comment') continue;
+      const children = node.children || [];
+      for (let i = children.length - 1; i >= 0; i--) work.push(children[i]);
+    }
+    return out.join('');
   }
 
   // Simple CSS selector matcher
@@ -3813,22 +4228,37 @@ function buildImportObject(module, moduleBytes) {
   }
 
   // CSS selector query (descendant combinator)
+  //
+  // #1502: the recursive pre-order walk
+  //
+  //   walk(n, d): if n matches parts[d] — push n when d is the last
+  //               part, else walk each child with d + 1; then, either
+  //               way, walk each child with 0
+  //
+  // run on an explicit stack of (node, part-index) visits.  A visit
+  // queues the calls it would have made in reverse, so they pop in the
+  // order it made them, each finishing its whole subtree before the next
+  // pops — the same visits in the same order, so the same matches with
+  // the same order and multiplicity.
   function htmlQuery(node, selector) {
     const parts = selector.trim().split(/\s+/);
     if (!parts.length) return [];
     const results = [];
-    function walk(n, depth) {
-      if (n.tag !== 'element') return;
+    const work = [node, 0];   // (node, part index) pairs
+    while (work.length > 0) {
+      const depth = work.pop();
+      const n = work.pop();
+      if (n.tag !== 'element') continue;
+      const children = n.children || [];
+      for (let i = children.length - 1; i >= 0; i--) work.push(children[i], 0);
       if (htmlMatchesSelector(n, parts[depth])) {
         if (depth === parts.length - 1) {
           results.push(n);
         } else {
-          for (const c of (n.children || [])) walk(c, depth + 1);
+          for (let i = children.length - 1; i >= 0; i--) work.push(children[i], depth + 1);
         }
       }
-      for (const c of (n.children || [])) walk(c, 0);
     }
-    walk(node, 0);
     return results;
   }
 
@@ -3881,10 +4311,15 @@ function buildImportObject(module, moduleBytes) {
       let arrPtr = 0;
       if (count > 0) {
         arrPtr = alloc(count * 4);
+        zeroFill(arrPtr, count * 4);
         // GC-rooting (#706): root arrPtr across writeHtml's allocations.
+        // #1502: each match's top node is linked straight into its slot
+        // of this rooted array before anything beneath it is written, and
+        // each match gets its own guard, so the roots stay O(1) however
+        // deep the matched subtree is.
         gcRooted(arrPtr, () => {
           for (let i = 0; i < count; i++) {
-            writeI32(arrPtr + i * 4, writeHtml(matches[i]));
+            gcGuard(() => writeHtmlTree(matches[i], arrPtr + i * 4));
           }
         });
       }

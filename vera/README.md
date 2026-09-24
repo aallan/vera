@@ -117,8 +117,8 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | ` ├ calls_strings.py` | 4,185 | | All string ops (length, concat, slice, search, transform, split, join, chars/lines/words, reverse, trim_start/end, pad_start/end, char_to_upper/lower, classifiers) + to-string conversions; `_translate_strip` delegates to the trim helper to keep the whitespace predicate consistent | |
 | ` ├ closures.py` | 582 | | Closures, anonymous functions, free variable analysis | |
 | ` ├ data.py` | 2,119 | | Constructors, match expressions (incl. nested patterns), arrays, indexing | |
-| ` ├ markdown.py` | 651 | | WASM memory marshalling for MdInline/MdBlock ADTs | |
-| ` ├ json_serde.py` | 631 | | WASM memory marshalling for Json ADT | |
+| ` ├ markdown.py` | 573 | | WASM memory marshalling for MdInline/MdBlock ADTs | |
+| ` ├ json_serde.py` | 755 | | WASM memory marshalling for Json ADT | |
 | ` └ html_serde.py` | 261 | | WASM memory marshalling for HtmlNode ADT | |
 | `markdown.py` | 751 | Compile | Python Markdown parser/renderer (§9.7.3 subset) | `parse_markdown()`, `render_markdown()`, `has_heading()`, `has_code_block()`, `extract_code_blocks()` |
 | `markdown_grammar.py` | 147 | Compile | The §9.7.3 grammar, read by BOTH runtimes: patterns, character classes, continuation widths, and the generated copy `runtime.mjs` carries | `PATTERNS`, `CONTINUATION_INDENT`, `fence_close()`, `trim()`, `js_grammar_block()` |
@@ -164,7 +164,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `_since.py` | 376 | All | Best-effort `since` version attribution for built-ins, effects, abilities | |
 | `browser/` | 138 | Execute | Browser runtime for compiled WASM (package) | `emit_browser_bundle()` |
 | ` ├ emit.py` | 137 | | Browser bundle emission (wasm + runtime + html) | `emit_browser_bundle()` |
-| ` ├ runtime.mjs` | 3,877 | | Self-contained JS runtime: IO, State, Http, Inference, contracts, Markdown, Json, Html | |
+| ` ├ runtime.mjs` | 4,503 | | Self-contained JS runtime: IO, State, Http, Inference, contracts, Markdown, Json, Html | |
 | ` └ harness.mjs` | 106 | | Node.js test harness for parity testing | |
 | `cli.py` | 2,224 | All | CLI commands | `main()` |
 | `registration.py` | 158 | Type check | Shared function registration | `register_fn()` |
@@ -773,7 +773,7 @@ The `ERROR_CODES` dict in `errors.py` maps every code to a short description (17
 
 ## Test Suite
 
-Testing spans a **pytest suite** of 16,307 tests across 224 files: compiler-internals unit tests plus a **conformance suite** (253 programs in `tests/conformance/` validating every language feature against the spec) and **example programs** (43 end-to-end demos). The conformance suite is the definitive specification artifact; most programs target a single feature, though some (slot references, match, contracts) span several, and each serves as a minimal working example.
+Testing spans a **pytest suite** of 16,393 tests across 225 files: compiler-internals unit tests plus a **conformance suite** (253 programs in `tests/conformance/` validating every language feature against the spec) and **example programs** (43 end-to-end demos). The conformance suite is the definitive specification artifact; most programs target a single feature, though some (slot references, match, contracts) span several, and each serves as a minimal working example.
 
 See **[TESTING.md](../TESTING.md)** for the comprehensive testing reference -- test file table, conformance suite details, compiler code coverage, language feature coverage, helper conventions, validation scripts, CI pipeline, and guidelines for adding tests.
 

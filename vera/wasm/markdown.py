@@ -56,6 +56,7 @@ from vera.markdown import (
     MdThematicBreak,
 )
 from vera.runtime.heap import _require_readable, _slice_and_decode
+from vera.runtime.heap import _write_bytes as _heap_write_bytes
 
 # Type aliases for the helper functions passed from api.py
 AllocFn = Callable[["wasmtime.Caller", int], int]
@@ -88,88 +89,12 @@ def write_md_inline(
       MdLink(Array, String)    tag=4  (4, i32_pair) (12, i32_pair)  total=24
       MdImage(String, String)  tag=5  (4, i32_pair) (12, i32_pair)  total=24
 
-    #692: every branch allocates field contents first, roots them
-    via ``guard``, then allocates the body last.  This means the
-    body pointer is never held in a Python local across another
-    alloc, eliminating the GC-rooting hazard.
+    See :func:`_write_md_tree` for the walk and its rooting discipline.
     """
-    if isinstance(inline, MdText):
-        s_ptr, s_len = alloc_string(caller, inline.text)
-        if s_ptr != 0:
-            guard.push(s_ptr)
-        ptr = alloc(caller, 16)
-        write_i32(caller, ptr, 0)  # tag
-        write_i32(caller, ptr + 4, s_ptr)
-        write_i32(caller, ptr + 8, s_len)
-        return ptr
-
-    if isinstance(inline, MdCode):
-        s_ptr, s_len = alloc_string(caller, inline.code)
-        if s_ptr != 0:
-            guard.push(s_ptr)
-        ptr = alloc(caller, 16)
-        write_i32(caller, ptr, 1)  # tag
-        write_i32(caller, ptr + 4, s_ptr)
-        write_i32(caller, ptr + 8, s_len)
-        return ptr
-
-    if isinstance(inline, MdEmph):
-        # ``_write_inline_array`` already roots its backing
-        # buffer via ``guard.push(backing)`` internally — no
-        # second push needed here (would double the shadow-stack
-        # footprint without protecting anything additional).
-        arr_ptr, arr_len = _write_inline_array(
-            caller, alloc, write_i32, alloc_string, guard, inline.children,
-        )
-        ptr = alloc(caller, 16)
-        write_i32(caller, ptr, 2)  # tag
-        write_i32(caller, ptr + 4, arr_ptr)
-        write_i32(caller, ptr + 8, arr_len)
-        return ptr
-
-    if isinstance(inline, MdStrong):
-        arr_ptr, arr_len = _write_inline_array(
-            caller, alloc, write_i32, alloc_string, guard, inline.children,
-        )
-        ptr = alloc(caller, 16)
-        write_i32(caller, ptr, 3)  # tag
-        write_i32(caller, ptr + 4, arr_ptr)
-        write_i32(caller, ptr + 8, arr_len)
-        return ptr
-
-    if isinstance(inline, MdLink):
-        arr_ptr, arr_len = _write_inline_array(
-            caller, alloc, write_i32, alloc_string, guard, inline.children,
-        )
-        # ``alloc_string`` does NOT push — root u_ptr explicitly
-        # before the final body alloc.
-        u_ptr, u_len = alloc_string(caller, inline.url)
-        if u_ptr != 0:
-            guard.push(u_ptr)
-        ptr = alloc(caller, 24)
-        write_i32(caller, ptr, 4)  # tag
-        write_i32(caller, ptr + 4, arr_ptr)
-        write_i32(caller, ptr + 8, arr_len)
-        write_i32(caller, ptr + 12, u_ptr)
-        write_i32(caller, ptr + 16, u_len)
-        return ptr
-
-    if isinstance(inline, MdImage):
-        a_ptr, a_len = alloc_string(caller, inline.alt)
-        if a_ptr != 0:
-            guard.push(a_ptr)
-        s_ptr, s_len = alloc_string(caller, inline.src)
-        if s_ptr != 0:
-            guard.push(s_ptr)
-        ptr = alloc(caller, 24)
-        write_i32(caller, ptr, 5)  # tag
-        write_i32(caller, ptr + 4, a_ptr)
-        write_i32(caller, ptr + 8, a_len)
-        write_i32(caller, ptr + 12, s_ptr)
-        write_i32(caller, ptr + 16, s_len)
-        return ptr
-
-    raise ValueError(f"Unknown MdInline type: {type(inline)}")  # pragma: no cover
+    return _write_md_tree(
+        caller, alloc, write_i32, _heap_write_bytes, alloc_string, guard,
+        inline,
+    )
 
 
 def write_md_block(
@@ -193,127 +118,202 @@ def write_md_block(
       MdTable(Array<Array<Array<MdInline>>>)  tag=6  (4, i32_pair)     total=16
       MdDocument(Array<MdBlock>)          tag=7  (4, i32_pair)         total=16
 
-    #692: fields-first-then-body convention as in ``write_md_inline``.
+    See :func:`_write_md_tree` for the walk and its rooting discipline.
     """
-    if isinstance(block, MdParagraph):
-        # See note in ``write_md_inline``'s MdEmph branch:
-        # ``_write_inline_array`` already roots its backing buffer.
-        arr_ptr, arr_len = _write_inline_array(
-            caller, alloc, write_i32, alloc_string, guard, block.children,
-        )
-        ptr = alloc(caller, 16)
-        write_i32(caller, ptr, 0)  # tag
-        write_i32(caller, ptr + 4, arr_ptr)
-        write_i32(caller, ptr + 8, arr_len)
-        return ptr
-
-    if isinstance(block, MdHeading):
-        arr_ptr, arr_len = _write_inline_array(
-            caller, alloc, write_i32, alloc_string, guard, block.children,
-        )
-        ptr = alloc(caller, 24)
-        write_i32(caller, ptr, 1)  # tag
-        # Nat at offset 8 as i64 (8-byte aligned)
-        _write_i64(caller, write_bytes, ptr + 8, block.level)
-        write_i32(caller, ptr + 16, arr_ptr)
-        write_i32(caller, ptr + 20, arr_len)
-        return ptr
-
-    if isinstance(block, MdCodeBlock):
-        l_ptr, l_len = alloc_string(caller, block.language)
-        if l_ptr != 0:
-            guard.push(l_ptr)
-        c_ptr, c_len = alloc_string(caller, block.code)
-        if c_ptr != 0:
-            guard.push(c_ptr)
-        ptr = alloc(caller, 24)
-        write_i32(caller, ptr, 2)  # tag
-        write_i32(caller, ptr + 4, l_ptr)
-        write_i32(caller, ptr + 8, l_len)
-        write_i32(caller, ptr + 12, c_ptr)
-        write_i32(caller, ptr + 16, c_len)
-        return ptr
-
-    if isinstance(block, MdBlockQuote):
-        # ``_write_block_array`` already roots its backing.
-        arr_ptr, arr_len = _write_block_array(
-            caller, alloc, write_i32, write_bytes, alloc_string,
-            guard, block.children,
-        )
-        ptr = alloc(caller, 16)
-        write_i32(caller, ptr, 3)  # tag
-        write_i32(caller, ptr + 4, arr_ptr)
-        write_i32(caller, ptr + 8, arr_len)
-        return ptr
-
-    if isinstance(block, MdList):
-        # Array<Array<MdBlock>> — outer array of inner arrays.
-        # ``_write_array_of_block_arrays`` already roots its backing.
-        arr_ptr, arr_len = _write_array_of_block_arrays(
-            caller, alloc, write_i32, write_bytes, alloc_string,
-            guard, block.items,
-        )
-        ptr = alloc(caller, 16)
-        write_i32(caller, ptr, 4)  # tag
-        write_i32(caller, ptr + 4, 1 if block.ordered else 0)  # Bool
-        write_i32(caller, ptr + 8, arr_ptr)
-        write_i32(caller, ptr + 12, arr_len)
-        return ptr
-
-    if isinstance(block, MdThematicBreak):
-        ptr = alloc(caller, 8)
-        write_i32(caller, ptr, 5)  # tag
-        return ptr
-
-    if isinstance(block, MdTable):
-        # Array<Array<Array<MdInline>>> — rows of cells of inlines.
-        # ``_write_table_data`` already roots its backing.
-        arr_ptr, arr_len = _write_table_data(
-            caller, alloc, write_i32, alloc_string, guard, block.rows,
-        )
-        ptr = alloc(caller, 16)
-        write_i32(caller, ptr, 6)  # tag
-        write_i32(caller, ptr + 4, arr_ptr)
-        write_i32(caller, ptr + 8, arr_len)
-        return ptr
-
-    if isinstance(block, MdDocument):
-        # ``_write_block_array`` already roots its backing.
-        arr_ptr, arr_len = _write_block_array(
-            caller, alloc, write_i32, write_bytes, alloc_string,
-            guard, block.children,
-        )
-        ptr = alloc(caller, 16)
-        write_i32(caller, ptr, 7)  # tag
-        write_i32(caller, ptr + 4, arr_ptr)
-        write_i32(caller, ptr + 8, arr_len)
-        return ptr
-
-    raise ValueError(f"Unknown MdBlock type: {type(block)}")  # pragma: no cover
+    return _write_md_tree(
+        caller, alloc, write_i32, write_bytes, alloc_string, guard, block,
+    )
 
 
-# -----------------------------------------------------------------
-# Array writing helpers
-# -----------------------------------------------------------------
-#
-# #692: each helper pushes ``backing`` onto ``guard`` before
-# recursing into children — without this, sub-allocs during the
-# recursion can free the backing.  After the helper returns,
-# ``backing`` remains pushed (the caller is the one who decides
-# whether to pop it via the outer ``with`` boundary); the caller
-# can rely on the conservative scan finding the backing's slots.
-#
-# Allocation order in each helper is ``backing = alloc(...)``
-# followed immediately by ``guard.push(backing)``.  If
-# ``guard.push`` itself raises (shadow-stack overflow on
-# pathologically deep walks), the just-allocated ``backing``
-# block is unrooted.  This is the correct semantics: the
-# exception propagates as a wasmtime trap, the entire walk is
-# abandoned, and the next GC reclaims the leaked block.  A
-# future "fix" must NOT try to push BEFORE alloc (impossible
-# without a ptr) or wrap the push in try/except — both would
-# break the trap-on-overflow invariant the WAT-side helper
-# preserves.
+def _write_md_tree(
+    caller: wasmtime.Caller,
+    alloc: AllocFn,
+    write_i32: WriteI32Fn,
+    write_bytes: WriteBytesFn,
+    alloc_string: AllocStringFn,
+    guard: Any,
+    root: MdBlock | MdInline,
+) -> int:
+    """Write a Markdown tree into WASM memory; return the root pointer.
+
+    The returned pointer is NOT rooted — the caller roots it before its
+    next allocation.
+
+    #1502: iterative and pre-order, with shadow-stack use that does not
+    grow with the tree.  Each node is written into a DESTINATION slot
+    that is already reachable — a root cell pushed once for the whole
+    walk, or a slot in an array block linked into the tree — so a node is
+    reachable the moment it is stored.  A node allocates its strings and
+    its zero-filled child arrays first, rooted only until the node itself
+    is allocated and stored, then queues its children into those arrays'
+    slots.  The recursive writer this replaces kept every intermediate
+    pointer pushed until the whole walk ended: a flat document of 5,000
+    paragraphs exhausted the 4,096-root window, and the recursion itself
+    ended the program at a few hundred levels.
+    """
+    base = guard.mark()
+    cell = alloc(caller, 4)
+    write_i32(caller, cell, 0)
+    guard.push(cell)
+
+    def child_array(count: int, stride: int = 4) -> int:
+        # A zero-filled array of ``count`` slots, rooted until the node
+        # that owns it is stored.  Empty arrays are (0, 0), as before.
+        if count == 0:
+            return 0
+        arr = alloc(caller, count * stride)
+        write_bytes(caller, arr, bytes(count * stride))
+        guard.push(arr)
+        return arr
+
+    def string_field(text: str) -> tuple[int, int]:
+        s_ptr, s_len = alloc_string(caller, text)
+        if s_ptr != 0:
+            guard.push(s_ptr)
+        return s_ptr, s_len
+
+    tasks: list[tuple[MdBlock | MdInline, int]] = [(root, cell)]
+    while tasks:
+        node, dest = tasks.pop()
+        mark = guard.mark()
+        pending: list[tuple[MdBlock | MdInline, int]] = []
+
+        if isinstance(node, (MdText, MdCode)):
+            text = node.text if isinstance(node, MdText) else node.code
+            s_ptr, s_len = string_field(text)
+            ptr = alloc(caller, 16)
+            write_i32(caller, ptr, 0 if isinstance(node, MdText) else 1)
+            write_i32(caller, ptr + 4, s_ptr)
+            write_i32(caller, ptr + 8, s_len)
+
+        elif isinstance(node, (MdEmph, MdStrong)):
+            arr = child_array(len(node.children))
+            ptr = alloc(caller, 16)
+            write_i32(caller, ptr, 2 if isinstance(node, MdEmph) else 3)
+            write_i32(caller, ptr + 4, arr)
+            write_i32(caller, ptr + 8, len(node.children))
+            pending = [(c, arr + i * 4) for i, c in enumerate(node.children)]
+
+        elif isinstance(node, MdLink):
+            arr = child_array(len(node.children))
+            u_ptr, u_len = string_field(node.url)
+            ptr = alloc(caller, 24)
+            write_i32(caller, ptr, 4)
+            write_i32(caller, ptr + 4, arr)
+            write_i32(caller, ptr + 8, len(node.children))
+            write_i32(caller, ptr + 12, u_ptr)
+            write_i32(caller, ptr + 16, u_len)
+            pending = [(c, arr + i * 4) for i, c in enumerate(node.children)]
+
+        elif isinstance(node, MdImage):
+            a_ptr, a_len = string_field(node.alt)
+            s_ptr, s_len = string_field(node.src)
+            ptr = alloc(caller, 24)
+            write_i32(caller, ptr, 5)
+            write_i32(caller, ptr + 4, a_ptr)
+            write_i32(caller, ptr + 8, a_len)
+            write_i32(caller, ptr + 12, s_ptr)
+            write_i32(caller, ptr + 16, s_len)
+
+        elif isinstance(node, MdParagraph):
+            arr = child_array(len(node.children))
+            ptr = alloc(caller, 16)
+            write_i32(caller, ptr, 0)
+            write_i32(caller, ptr + 4, arr)
+            write_i32(caller, ptr + 8, len(node.children))
+            pending = [(c, arr + i * 4) for i, c in enumerate(node.children)]
+
+        elif isinstance(node, MdHeading):
+            arr = child_array(len(node.children))
+            ptr = alloc(caller, 24)
+            write_i32(caller, ptr, 1)
+            # Nat at offset 8 as i64 (8-byte aligned)
+            _write_i64(caller, write_bytes, ptr + 8, node.level)
+            write_i32(caller, ptr + 16, arr)
+            write_i32(caller, ptr + 20, len(node.children))
+            pending = [(c, arr + i * 4) for i, c in enumerate(node.children)]
+
+        elif isinstance(node, MdCodeBlock):
+            l_ptr, l_len = string_field(node.language)
+            c_ptr, c_len = string_field(node.code)
+            ptr = alloc(caller, 24)
+            write_i32(caller, ptr, 2)
+            write_i32(caller, ptr + 4, l_ptr)
+            write_i32(caller, ptr + 8, l_len)
+            write_i32(caller, ptr + 12, c_ptr)
+            write_i32(caller, ptr + 16, c_len)
+
+        elif isinstance(node, (MdBlockQuote, MdDocument)):
+            arr = child_array(len(node.children))
+            ptr = alloc(caller, 16)
+            write_i32(caller, ptr, 3 if isinstance(node, MdBlockQuote) else 7)
+            write_i32(caller, ptr + 4, arr)
+            write_i32(caller, ptr + 8, len(node.children))
+            pending = [(c, arr + i * 4) for i, c in enumerate(node.children)]
+
+        elif isinstance(node, MdList):
+            # Array<Array<MdBlock>>: each outer slot is an i32_pair.  The
+            # inner arrays are linked into the rooted outer array as soon
+            # as each is allocated, so they need no roots of their own.
+            outer = child_array(len(node.items), 8)
+            for i, item in enumerate(node.items):
+                inner = 0
+                if item:
+                    inner = alloc(caller, len(item) * 4)
+                    write_bytes(caller, inner, bytes(len(item) * 4))
+                write_i32(caller, outer + i * 8, inner)
+                write_i32(caller, outer + i * 8 + 4, len(item))
+                pending.extend(
+                    (c, inner + k * 4) for k, c in enumerate(item)
+                )
+            ptr = alloc(caller, 16)
+            write_i32(caller, ptr, 4)
+            write_i32(caller, ptr + 4, 1 if node.ordered else 0)  # Bool
+            write_i32(caller, ptr + 8, outer)
+            write_i32(caller, ptr + 12, len(node.items))
+
+        elif isinstance(node, MdThematicBreak):
+            ptr = alloc(caller, 8)
+            write_i32(caller, ptr, 5)
+
+        elif isinstance(node, MdTable):
+            # Array<Array<Array<MdInline>>>: rows of cells of inlines,
+            # each level linked into the rooted level above it.
+            rows = child_array(len(node.rows), 8)
+            for i, row in enumerate(node.rows):
+                cells = 0
+                if row:
+                    cells = alloc(caller, len(row) * 8)
+                    write_bytes(caller, cells, bytes(len(row) * 8))
+                write_i32(caller, rows + i * 8, cells)
+                write_i32(caller, rows + i * 8 + 4, len(row))
+                for j, cell_inlines in enumerate(row):
+                    inl = 0
+                    if cell_inlines:
+                        inl = alloc(caller, len(cell_inlines) * 4)
+                        write_bytes(
+                            caller, inl, bytes(len(cell_inlines) * 4),
+                        )
+                    write_i32(caller, cells + j * 8, inl)
+                    write_i32(caller, cells + j * 8 + 4, len(cell_inlines))
+                    pending.extend(
+                        (c, inl + k * 4) for k, c in enumerate(cell_inlines)
+                    )
+            ptr = alloc(caller, 16)
+            write_i32(caller, ptr, 6)
+            write_i32(caller, ptr + 4, rows)
+            write_i32(caller, ptr + 8, len(node.rows))
+
+        else:  # pragma: no cover — the parser builds no other node
+            raise ValueError(f"Unknown Markdown node type: {type(node)}")
+
+        write_i32(caller, dest, ptr)
+        guard.release(mark)
+        tasks.extend(reversed(pending))
+
+    root_ptr = _read_i32(caller, cell)
+    guard.release(base)
+    return root_ptr
 
 
 def _write_i64(
@@ -324,136 +324,6 @@ def _write_i64(
 ) -> None:
     """Write a little-endian i64 (unsigned) into WASM memory."""
     write_bytes(caller, offset, struct.pack("<Q", value & 0xFFFF_FFFF_FFFF_FFFF))
-
-
-def _write_inline_array(
-    caller: wasmtime.Caller,
-    alloc: AllocFn,
-    write_i32: WriteI32Fn,
-    alloc_string: AllocStringFn,
-    guard: Any,
-    inlines: tuple[MdInline, ...],
-) -> tuple[int, int]:
-    """Write Array<MdInline> — backing buffer of i32 element pointers.
-
-    Pushes ``backing`` onto ``guard`` before iterating, so it
-    remains visible to GC across the recursive sub-walks; the
-    push stays in place after the helper returns (the caller's
-    outer ``with`` is what unwinds it).
-    """
-    count = len(inlines)
-    if count == 0:
-        return (0, 0)  # pragma: no cover
-    # Each element is an i32 pointer (4 bytes)
-    backing = alloc(caller, count * 4)
-    guard.push(backing)
-    for i, inline in enumerate(inlines):
-        elem_ptr = write_md_inline(
-            caller, alloc, write_i32, alloc_string, guard, inline,
-        )
-        write_i32(caller, backing + i * 4, elem_ptr)
-    return (backing, count)
-
-
-def _write_block_array(
-    caller: wasmtime.Caller,
-    alloc: AllocFn,
-    write_i32: WriteI32Fn,
-    write_bytes: WriteBytesFn,
-    alloc_string: AllocStringFn,
-    guard: Any,
-    blocks: tuple[MdBlock, ...],
-) -> tuple[int, int]:
-    """Write Array<MdBlock> — backing buffer of i32 element pointers.
-
-    Same rooting contract as ``_write_inline_array``: backing
-    is pushed onto ``guard`` and remains pushed after return.
-    """
-    count = len(blocks)
-    if count == 0:
-        return (0, 0)  # pragma: no cover
-    backing = alloc(caller, count * 4)
-    guard.push(backing)
-    for i, block in enumerate(blocks):
-        elem_ptr = write_md_block(
-            caller, alloc, write_i32, write_bytes, alloc_string,
-            guard, block,
-        )
-        write_i32(caller, backing + i * 4, elem_ptr)
-    return (backing, count)
-
-
-def _write_array_of_block_arrays(
-    caller: wasmtime.Caller,
-    alloc: AllocFn,
-    write_i32: WriteI32Fn,
-    write_bytes: WriteBytesFn,
-    alloc_string: AllocStringFn,
-    guard: Any,
-    items: tuple[tuple[MdBlock, ...], ...],
-) -> tuple[int, int]:
-    """Write Array<Array<MdBlock>> — each inner array is an i32_pair.
-
-    Pushes the outer backing onto ``guard``; inner backings are
-    pushed by the recursive ``_write_block_array`` calls.
-    """
-    count = len(items)
-    if count == 0:
-        return (0, 0)  # pragma: no cover
-    # Each element is an i32_pair (ptr, len) = 8 bytes
-    backing = alloc(caller, count * 8)
-    guard.push(backing)
-    for i, item in enumerate(items):
-        inner_ptr, inner_len = _write_block_array(
-            caller, alloc, write_i32, write_bytes, alloc_string,
-            guard, item,
-        )
-        write_i32(caller, backing + i * 8, inner_ptr)
-        write_i32(caller, backing + i * 8 + 4, inner_len)
-    return (backing, count)
-
-
-def _write_table_data(
-    caller: wasmtime.Caller,
-    alloc: AllocFn,
-    write_i32: WriteI32Fn,
-    alloc_string: AllocStringFn,
-    guard: Any,
-    rows: tuple[tuple[tuple[MdInline, ...], ...], ...],
-) -> tuple[int, int]:
-    """Write Array<Array<Array<MdInline>>> — table rows.
-
-    Pushes the outer ``backing`` AND each row's ``cell_backing``
-    onto ``guard`` so all three levels of nesting stay rooted
-    during the inline-array recursion.
-    """
-    row_count = len(rows)
-    if row_count == 0:
-        return (0, 0)  # pragma: no cover
-    # Each row is an i32_pair (ptr to Array<Array<MdInline>>, len)
-    backing = alloc(caller, row_count * 8)
-    guard.push(backing)
-    for i, row in enumerate(rows):
-        # Each row is Array<Array<MdInline>> — cells
-        cell_count = len(row)
-        if cell_count == 0:  # pragma: no cover
-            write_i32(caller, backing + i * 8, 0)
-            write_i32(caller, backing + i * 8 + 4, 0)
-            continue
-        # Each cell is an i32_pair (ptr to Array<MdInline>, len).
-        # Root cell_backing before iterating — sub-allocations
-        # during the inline-array recursion can pressure GC.
-        cell_backing = alloc(caller, cell_count * 8)
-        guard.push(cell_backing)
-        for j, cell in enumerate(row):
-            inline_ptr, inline_len = _write_inline_array(
-                caller, alloc, write_i32, alloc_string, guard, cell,
-            )
-            write_i32(caller, cell_backing + j * 8, inline_ptr)
-            write_i32(caller, cell_backing + j * 8 + 4, inline_len)
-        write_i32(caller, backing + i * 8, cell_backing)
-        write_i32(caller, backing + i * 8 + 4, cell_count)
-    return (backing, row_count)
 
 
 # =====================================================================
@@ -530,143 +400,174 @@ def _read_string_pair(caller: wasmtime.Caller, offset: int) -> str:
 
 def read_md_inline(caller: wasmtime.Caller, ptr: int) -> MdInline:
     """Read an MdInline ADT node from WASM memory."""
-    tag = _read_i32(caller, ptr)
-
-    if tag == 0:  # MdText(String)
-        text = _read_string_pair(caller, ptr + 4)
-        return MdText(text)
-
-    if tag == 1:  # MdCode(String)
-        code = _read_string_pair(caller, ptr + 4)
-        return MdCode(code)
-
-    if tag == 2:  # MdEmph(Array<MdInline>)
-        children = _read_inline_array(caller, ptr + 4)
-        return MdEmph(children)
-
-    if tag == 3:  # MdStrong(Array<MdInline>)
-        children = _read_inline_array(caller, ptr + 4)
-        return MdStrong(children)
-
-    if tag == 4:  # MdLink(Array<MdInline>, String)
-        children = _read_inline_array(caller, ptr + 4)
-        url = _read_string_pair(caller, ptr + 12)
-        return MdLink(children, url)
-
-    if tag == 5:  # MdImage(String, String)
-        alt = _read_string_pair(caller, ptr + 4)
-        src = _read_string_pair(caller, ptr + 12)
-        return MdImage(alt, src)
-
-    raise ValueError(f"Unknown MdInline tag: {tag}")  # pragma: no cover
+    node = _read_md_tree(caller, ptr, _INLINE)
+    assert not isinstance(node, _BLOCK_TYPES)  # noqa: S101
+    return node
 
 
 def read_md_block(caller: wasmtime.Caller, ptr: int) -> MdBlock:
     """Read an MdBlock ADT node from WASM memory."""
-    tag = _read_i32(caller, ptr)
-
-    if tag == 0:  # MdParagraph(Array<MdInline>)
-        inlines_0 = _read_inline_array(caller, ptr + 4)
-        return MdParagraph(inlines_0)
-
-    if tag == 1:  # MdHeading(Nat, Array<MdInline>)
-        level = _read_i64(caller, ptr + 8)
-        inlines_1 = _read_inline_array(caller, ptr + 16)
-        return MdHeading(level, inlines_1)
-
-    if tag == 2:  # MdCodeBlock(String, String)
-        language = _read_string_pair(caller, ptr + 4)
-        code = _read_string_pair(caller, ptr + 12)
-        return MdCodeBlock(language, code)
-
-    if tag == 3:  # MdBlockQuote(Array<MdBlock>)
-        blocks_3 = _read_block_array(caller, ptr + 4)
-        return MdBlockQuote(blocks_3)
-
-    if tag == 4:  # MdList(Bool, Array<Array<MdBlock>>)
-        ordered = _read_i32(caller, ptr + 4) != 0
-        items = _read_array_of_block_arrays(caller, ptr + 8)
-        return MdList(ordered, items)
-
-    if tag == 5:  # MdThematicBreak
-        return MdThematicBreak()
-
-    if tag == 6:  # MdTable(Array<Array<Array<MdInline>>>)
-        rows = _read_table_data(caller, ptr + 4)
-        return MdTable(rows)
-
-    if tag == 7:  # MdDocument(Array<MdBlock>)
-        blocks_7 = _read_block_array(caller, ptr + 4)
-        return MdDocument(blocks_7)
-
-    raise ValueError(f"Unknown MdBlock tag: {tag}")  # pragma: no cover
+    node = _read_md_tree(caller, ptr, _BLOCK)
+    return node  # type: ignore[return-value]
 
 
-# -----------------------------------------------------------------
-# Array reading helpers
-# -----------------------------------------------------------------
+_BLOCK = 0
+_INLINE = 1
+_BLOCK_TYPES = (
+    MdParagraph, MdHeading, MdCodeBlock, MdBlockQuote, MdList,
+    MdThematicBreak, MdTable, MdDocument,
+)
 
 
-def _read_inline_array(
-    caller: wasmtime.Caller, offset: int,
-) -> tuple[MdInline, ...]:
-    """Read Array<MdInline> from an i32_pair at the given offset."""
+def _array_elements(caller: wasmtime.Caller, offset: int) -> list[int]:
+    """The element pointers of the Array whose i32_pair is at ``offset``."""
     arr_ptr = _read_i32(caller, offset)
     arr_len = _read_i32(caller, offset + 4)
-    if arr_len == 0:
-        return ()  # pragma: no cover
-    result: list[MdInline] = []
-    for i in range(arr_len):
-        elem_ptr = _read_i32(caller, arr_ptr + i * 4)
-        result.append(read_md_inline(caller, elem_ptr))
-    return tuple(result)
+    return [_read_i32(caller, arr_ptr + i * 4) for i in range(arr_len)]
 
 
-def _read_block_array(
-    caller: wasmtime.Caller, offset: int,
-) -> tuple[MdBlock, ...]:
-    """Read Array<MdBlock> from an i32_pair at the given offset."""
-    arr_ptr = _read_i32(caller, offset)
-    arr_len = _read_i32(caller, offset + 4)
-    if arr_len == 0:
-        return ()  # pragma: no cover
-    result: list[MdBlock] = []
-    for i in range(arr_len):
-        elem_ptr = _read_i32(caller, arr_ptr + i * 4)
-        result.append(read_md_block(caller, elem_ptr))
-    return tuple(result)
+def _read_md_tree(
+    caller: wasmtime.Caller, root_ptr: int, root_kind: int,
+) -> MdBlock | MdInline:
+    """Read a Markdown tree out of WASM memory, iteratively (#1502).
 
+    The node dataclasses are immutable, so a node is built after its
+    children: each is visited once to read its own fields and queue its
+    children, and built once their values sit, in order, on ``built``.
+    A tree built in Vera can nest far deeper than Python's recursion
+    limit, and every Markdown query and ``md_render`` reads the tree
+    first.
+    """
+    built: list[Any] = []
+    # (pointer, kind) to visit, or (builder, child count) to build.
+    stack: list[tuple[Any, int, bool]] = [(root_ptr, root_kind, False)]
+    while stack:
+        item, count_or_kind, is_build = stack.pop()
+        if is_build:
+            n = count_or_kind
+            kids = built[len(built) - n:] if n else []
+            if n:
+                del built[len(built) - n:]
+            built.append(item(kids))
+            continue
 
-def _read_array_of_block_arrays(
-    caller: wasmtime.Caller, offset: int,
-) -> tuple[tuple[MdBlock, ...], ...]:
-    """Read Array<Array<MdBlock>> from an i32_pair at the given offset."""
-    arr_ptr = _read_i32(caller, offset)
-    arr_len = _read_i32(caller, offset + 4)
-    if arr_len == 0:
-        return ()  # pragma: no cover
-    result: list[tuple[MdBlock, ...]] = []
-    for i in range(arr_len):
-        inner = _read_block_array(caller, arr_ptr + i * 8)
-        result.append(inner)
-    return tuple(result)
+        ptr, kind = item, count_or_kind
+        tag = _read_i32(caller, ptr)
+        children: list[tuple[int, int]] = []
+        builder: Callable[[list[Any]], Any]
 
+        if kind == _INLINE:
+            if tag == 0:  # MdText(String)
+                built.append(MdText(_read_string_pair(caller, ptr + 4)))
+                continue
+            if tag == 1:  # MdCode(String)
+                built.append(MdCode(_read_string_pair(caller, ptr + 4)))
+                continue
+            if tag == 2 or tag == 3:  # MdEmph / MdStrong(Array<MdInline>)
+                ctor = MdEmph if tag == 2 else MdStrong
+                children = [
+                    (p, _INLINE) for p in _array_elements(caller, ptr + 4)
+                ]
 
-def _read_table_data(
-    caller: wasmtime.Caller, offset: int,
-) -> tuple[tuple[tuple[MdInline, ...], ...], ...]:
-    """Read Array<Array<Array<MdInline>>> from an i32_pair."""
-    arr_ptr = _read_i32(caller, offset)
-    arr_len = _read_i32(caller, offset + 4)
-    if arr_len == 0:
-        return ()  # pragma: no cover
-    rows: list[tuple[tuple[MdInline, ...], ...]] = []
-    for i in range(arr_len):
-        cell_ptr = _read_i32(caller, arr_ptr + i * 8)
-        cell_len = _read_i32(caller, arr_ptr + i * 8 + 4)
-        cells: list[tuple[MdInline, ...]] = []
-        for j in range(cell_len):
-            inline_arr = _read_inline_array(caller, cell_ptr + j * 8)
-            cells.append(inline_arr)
-        rows.append(tuple(cells))
-    return tuple(rows)
+                def builder(kids: list[Any], ctor: Any = ctor) -> Any:
+                    return ctor(tuple(kids))
+            elif tag == 4:  # MdLink(Array<MdInline>, String)
+                children = [
+                    (p, _INLINE) for p in _array_elements(caller, ptr + 4)
+                ]
+                url = _read_string_pair(caller, ptr + 12)
+
+                def builder(kids: list[Any], url: str = url) -> Any:
+                    return MdLink(tuple(kids), url)
+            elif tag == 5:  # MdImage(String, String)
+                alt = _read_string_pair(caller, ptr + 4)
+                src = _read_string_pair(caller, ptr + 12)
+                built.append(MdImage(alt, src))
+                continue
+            else:
+                raise ValueError(f"Unknown MdInline tag: {tag}")  # pragma: no cover
+        else:
+            if tag == 0:  # MdParagraph(Array<MdInline>)
+                children = [
+                    (p, _INLINE) for p in _array_elements(caller, ptr + 4)
+                ]
+
+                def builder(kids: list[Any]) -> Any:
+                    return MdParagraph(tuple(kids))
+            elif tag == 1:  # MdHeading(Nat, Array<MdInline>)
+                level = _read_i64(caller, ptr + 8)
+                children = [
+                    (p, _INLINE) for p in _array_elements(caller, ptr + 16)
+                ]
+
+                def builder(kids: list[Any], level: int = level) -> Any:
+                    return MdHeading(level, tuple(kids))
+            elif tag == 2:  # MdCodeBlock(String, String)
+                language = _read_string_pair(caller, ptr + 4)
+                code = _read_string_pair(caller, ptr + 12)
+                built.append(MdCodeBlock(language, code))
+                continue
+            elif tag == 3 or tag == 7:  # MdBlockQuote / MdDocument
+                container: Any = MdBlockQuote if tag == 3 else MdDocument
+                children = [
+                    (p, _BLOCK) for p in _array_elements(caller, ptr + 4)
+                ]
+
+                def builder(kids: list[Any], ctor: Any = container) -> Any:
+                    return ctor(tuple(kids))
+            elif tag == 4:  # MdList(Bool, Array<Array<MdBlock>>)
+                ordered = _read_i32(caller, ptr + 4) != 0
+                outer = _read_i32(caller, ptr + 8)
+                outer_len = _read_i32(caller, ptr + 12)
+                sizes: list[int] = []
+                for i in range(outer_len):
+                    item = _array_elements(caller, outer + i * 8)
+                    sizes.append(len(item))
+                    children.extend((p, _BLOCK) for p in item)
+
+                def builder(
+                    kids: list[Any], ordered: bool = ordered,
+                    sizes: list[int] = sizes,
+                ) -> Any:
+                    items: list[tuple[MdBlock, ...]] = []
+                    pos = 0
+                    for size in sizes:
+                        items.append(tuple(kids[pos:pos + size]))
+                        pos += size
+                    return MdList(ordered, tuple(items))
+            elif tag == 5:  # MdThematicBreak
+                built.append(MdThematicBreak())
+                continue
+            elif tag == 6:  # MdTable(Array<Array<Array<MdInline>>>)
+                rows_ptr = _read_i32(caller, ptr + 4)
+                rows_len = _read_i32(caller, ptr + 8)
+                shape: list[list[int]] = []
+                for i in range(rows_len):
+                    cell_ptr = _read_i32(caller, rows_ptr + i * 8)
+                    cell_len = _read_i32(caller, rows_ptr + i * 8 + 4)
+                    row_shape: list[int] = []
+                    for j in range(cell_len):
+                        inlines = _array_elements(caller, cell_ptr + j * 8)
+                        row_shape.append(len(inlines))
+                        children.extend((p, _INLINE) for p in inlines)
+                    shape.append(row_shape)
+
+                def builder(
+                    kids: list[Any], shape: list[list[int]] = shape,
+                ) -> Any:
+                    rows: list[tuple[tuple[MdInline, ...], ...]] = []
+                    pos = 0
+                    for row_shape in shape:
+                        cells: list[tuple[MdInline, ...]] = []
+                        for size in row_shape:
+                            cells.append(tuple(kids[pos:pos + size]))
+                            pos += size
+                        rows.append(tuple(cells))
+                    return MdTable(tuple(rows))
+            else:
+                raise ValueError(f"Unknown MdBlock tag: {tag}")  # pragma: no cover
+
+        stack.append((builder, len(children), True))
+        for child_ptr, child_kind in reversed(children):
+            stack.append((child_ptr, child_kind, False))
+    return built[0]  # type: ignore[no-any-return]

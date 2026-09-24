@@ -12,7 +12,7 @@ import re
 from decimal import MAX_EMAX, MIN_EMIN, ROUND_HALF_EVEN
 from decimal import Context as PyContext
 from decimal import Decimal as PyDecimal
-from decimal import InvalidOperation, Overflow
+from decimal import InvalidOperation, Overflow, localcontext
 
 import wasmtime
 
@@ -43,6 +43,13 @@ _DECIMAL_STRING_RE = re.compile(
     r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE]([+-]?[0-9]+))?"
 )
 _DECIMAL_EXP_TOKEN_MAX = 999999
+# The bound as a digit count, so the token is measured as a STRING and
+# never handed to ``int()`` (#1502): a grammar-valid token of 5,000
+# leading zeros is the exponent 0, but ``int()`` refuses a string that
+# long (CPython's 4,300-digit integer-string limit) and the refusal
+# ended the program.  The browser's ``decExpTokenInRange`` has always
+# measured the token this way.
+_DECIMAL_EXP_TOKEN_DIGITS = len(str(_DECIMAL_EXP_TOKEN_MAX))
 
 # The whitespace §9.7.2 says the grammar is applied "after ignoring
 # surrounding whitespace", stated explicitly rather than inherited from
@@ -55,20 +62,38 @@ _DECIMAL_EXP_TOKEN_MAX = 999999
 # language has: tab, LF, VT, FF, CR, space.
 _ASCII_WS = "\t\n\v\f\r "
 
-# Binary arithmetic runs in a context whose exponent range is widened to
-# the library maximum (``MAX_EMAX`` / ``MIN_EMIN`` ~= ±1e18) while keeping
-# the default precision (28 significant digits) and rounding
-# (``ROUND_HALF_EVEN``).  ``decimal_from_string`` bounds INPUT exponent
-# tokens to |exp| <= 999999, but exact arithmetic can grow the exponent
+# Decimal arithmetic, negation, absolute value and comparison run in ONE
+# fixed context (#1502), stated here and in spec §9.7.2: the default
+# precision (28 significant digits) and rounding (``ROUND_HALF_EVEN``),
+# the exponent range widened to the library maximum (``MAX_EMAX`` /
+# ``MIN_EMIN`` ~= ±1e18), and no trapped signals.
+# ``decimal_from_string`` bounds INPUT exponent tokens to
+# |exp| <= 999999, but exact arithmetic can grow the exponent
 # (``1e999999 * 1e999999`` -> ``1E+1999998``); under the default Emax of
 # 999999 that raised a raw ``decimal.Overflow`` traceback on a check-green
 # program, and diverged from the unbounded browser scaled-BigInt engine.
 # The widened range is comfortably above any result reachable from
-# grammar-conforming operands (worst case ~±2e6), so these ops never
-# overflow and return the SAME exact value the browser produces (#856 /
-# PR #877 CodeRabbit finding 3518540519).
+# grammar-conforming operands (worst case ~±2e6), so these ops return the
+# SAME exact value the browser produces (#856 / PR #877 CodeRabbit
+# finding 3518540519).
+#
+# No signal traps, because every one of those operations has a total
+# signature and the values it is given include the non-finite ones
+# ``decimal_from_float`` makes from ``nan()`` and ``infinity()``.  With
+# ``InvalidOperation`` trapped, ``∞ − ∞``, ``∞ × 0``, ``∞ ÷ ∞`` and an
+# ordering comparison against NaN raised instead of returning, and the
+# unary operators, which ran in the DEFAULT context, raised ``Overflow``
+# on a grammar-valid ``12345e999999``.  Untrapped, each returns the IEEE
+# 754 / General Decimal Arithmetic answer: NaN for an invalid operation,
+# a signed infinity past the (unreachable) exponent range.
+#
+# ``decimal_round`` is the exception, and deliberately so: its quantize
+# runs in the default context, whose trapped ``InvalidOperation`` and
+# ``Overflow`` are exactly what its return-the-value-unchanged fallback
+# catches (and what the browser engine mirrors).
 _DECIMAL_WIDE_CTX = PyContext(
     prec=28, rounding=ROUND_HALF_EVEN, Emax=MAX_EMAX, Emin=MIN_EMIN,
+    traps=[],
 )
 
 
@@ -134,11 +159,14 @@ def register_decimal(
             m = _DECIMAL_STRING_RE.fullmatch(s)
             if m is None:
                 return _alloc_option_none(caller)
-            # Exponent-token bound (|exp| <= 999999); Python int() is
-            # arbitrary-precision, so this check is exact.
+            # Exponent-token bound (|exp| <= 999999), measured on the
+            # token's significant digits so no ``int()`` is ever asked
+            # to convert an arbitrarily long string (#1502).
             exp_tok = m.group(1)
-            if exp_tok is not None and abs(int(exp_tok)) > _DECIMAL_EXP_TOKEN_MAX:
-                return _alloc_option_none(caller)
+            if exp_tok is not None:
+                exp_digits = exp_tok.lstrip("+-").lstrip("0") or "0"
+                if len(exp_digits) > _DECIMAL_EXP_TOKEN_DIGITS:
+                    return _alloc_option_none(caller)
             try:
                 d = PyDecimal(s)
                 # #573 phase 3: wrap the Decimal handle so the
@@ -265,7 +293,9 @@ def register_decimal(
         def host_decimal_neg(
             _caller: wasmtime.Caller, h: int,
         ) -> int:
-            return _decimal_alloc(-decimal_store[h])
+            # The fixed context (#1502): the default one overflowed on a
+            # grammar-valid ``12345e999999``.
+            return _decimal_alloc(_DECIMAL_WIDE_CTX.minus(decimal_store[h]))
         linker.define_func(
             "vera", "decimal_neg",
             wasmtime.FuncType([wasmtime.ValType.i32()],
@@ -278,12 +308,19 @@ def register_decimal(
             caller: wasmtime.Caller, a: int, b: int,
         ) -> int:
             da, db = decimal_store[a], decimal_store[b]
-            if da < db:
-                tag = 0  # Less
-            elif da == db:
-                tag = 1  # Equal
-            else:
-                tag = 2  # Greater
+            # #1502: the ordering operators take their context from the
+            # thread, so they run under the fixed one.  An ordering
+            # comparison involving a NaN is unordered: it signals
+            # ``InvalidOperation``, which is untrapped there, and
+            # ``<`` and ``==`` are both false, so the answer is
+            # ``Greater`` (spec §9.7.2) rather than a raise.
+            with localcontext(_DECIMAL_WIDE_CTX):
+                if da < db:
+                    tag = 0  # Less
+                elif da == db:
+                    tag = 1  # Equal
+                else:
+                    tag = 2  # Greater
             return _alloc_ordering(caller, tag)
         linker.define_func(
             "vera", "decimal_compare",
@@ -335,7 +372,7 @@ def register_decimal(
         def host_decimal_abs(
             _caller: wasmtime.Caller, h: int,
         ) -> int:
-            return _decimal_alloc(abs(decimal_store[h]))
+            return _decimal_alloc(_DECIMAL_WIDE_CTX.abs(decimal_store[h]))
         linker.define_func(
             "vera", "decimal_abs",
             wasmtime.FuncType([wasmtime.ValType.i32()],

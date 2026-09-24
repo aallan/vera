@@ -30,12 +30,30 @@ def register_json(linker: wasmtime.Linker, ops_used: set[str]) -> None:
     import json as _json
 
     from vera.wasm.json_serde import (
+        json_depth_message,
+        json_depth_violation,
         non_finite_parse_message,
         dumps_canonical,
         first_domain_violation,
         read_json,
         write_json,
     )
+
+    def parse_json_int(digits: str) -> int | float:
+        # #1502.  ``json.loads`` hands an integer literal to ``int()``,
+        # which refuses more than 4,300 digits (CPython's integer-string
+        # limit) with a message telling a Vera author to call
+        # ``sys.set_int_max_str_digits()``.  RFC 8259 forbids leading
+        # zeros, so a literal of more than 4,000 characters has a
+        # magnitude of at least 10**3998 and can only overflow the
+        # Float64 a ``JNumber`` holds: ``float()`` of it
+        # gives the signed infinity, which ``first_domain_violation``
+        # below turns into the pinned overflow sentence (spec §9.7.1),
+        # the same one a 400-digit literal gets.  Shorter literals keep
+        # the exact ``int`` path the integer arm of that walk measures.
+        if len(digits) > 4000:
+            return float(digits)
+        return int(digits)
 
     if "json_parse" in ops_used:
         def host_json_parse(
@@ -75,9 +93,29 @@ def register_json(linker: wasmtime.Linker, ops_used: set[str]) -> None:
                     seen_constant.append(name)
                 return 0.0
 
+            # #1502: nesting depth first, by the lexical rule both hosts
+            # share (``json_depth_violation``), so a text too deep for
+            # the limit is refused identically whatever else is wrong
+            # with it.
+            too_deep = json_depth_violation(text)
+            if too_deep is not None:
+                return _alloc_result_err_string(caller, too_deep)
+            # #1502: ``json_parse`` returns a ``Result``, so every failure
+            # of the parse on this text is its ``Err`` — not only the
+            # ``ValueError`` a malformed text raises.  A recursion error
+            # can only come from nesting, which the scan above has
+            # already bounded; it is mapped to the same sentence in case
+            # the interpreter's stack was already deep when this host was
+            # called.
             try:
-                parsed = _json.loads(text, parse_constant=record_non_finite)
-            except (ValueError, TypeError) as exc:
+                parsed = _json.loads(
+                    text,
+                    parse_constant=record_non_finite,
+                    parse_int=parse_json_int,
+                )
+            except RecursionError:
+                return _alloc_result_err_string(caller, json_depth_message())
+            except Exception as exc:  # noqa: BLE001 — host boundary; any parse failure becomes Result.Err
                 return _alloc_result_err_string(caller, str(exc))
             if seen_constant:
                 return _alloc_result_err_string(
@@ -105,7 +143,8 @@ def register_json(linker: wasmtime.Linker, ops_used: set[str]) -> None:
             # full tree marshalling AND the final Result.Ok
             # wrapper alloc.  ``guard.__exit__`` restores
             # ``$gc_sp`` on the way out — pops everything we
-            # pushed.
+            # pushed.  #1502: ``write_json`` scopes each node's roots
+            # itself, so the window's use no longer grows with the tree.
             with _ShadowGuard(caller) as guard:
                 json_ptr = write_json(
                     caller, _call_alloc, _write_i32, _write_f64,

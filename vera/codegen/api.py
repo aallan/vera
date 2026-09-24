@@ -351,6 +351,12 @@ def dropped_entry_message(
     return "\n".join(lines)
 
 
+# The longest single ``time.sleep`` the ``IO.sleep`` host makes: one day.
+# Far inside what ``time.sleep`` accepts, so a ``Nat`` of any size is
+# slept out in slices rather than refused (#1502).
+_SLEEP_SLICE_MS = 86_400_000
+
+
 def execute(
     result: CompileResult,
     fn_name: str | None = None,
@@ -588,8 +594,16 @@ def execute(
     # clean exit code 130 (#599).  Pre-45 this needed a per-import
     # `_VeraExit(130)` launder; see that handler for the full history.
     def host_sleep(_caller: wasmtime.Caller, ms: int) -> None:
-        if ms > 0:
-            time.sleep(ms / 1000.0)
+        # #1502: ``time.sleep`` refuses more than about 9.2e9 seconds (its
+        # nanosecond clock is an int64) with an ``OverflowError``, which
+        # ended the program on a ``Nat`` duration it accepts.  Sleep a
+        # long duration out in day-long slices instead.  A value that
+        # arrives negative is still a no-op, as it always was.
+        remaining = ms
+        while remaining > 0:
+            chunk = min(remaining, _SLEEP_SLICE_MS)
+            time.sleep(chunk / 1000.0)
+            remaining -= chunk
 
     sleep_type = wasmtime.FuncType(
         [wasmtime.ValType.i64()],
