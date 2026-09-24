@@ -3141,7 +3141,19 @@ class Monomorphizer:
         ctor_to_adt: dict[str, str],
         generic_decls: dict[str, ast.FnDecl] | None = None,
     ) -> str | None:
-        """Infer the simple Vera type name of an expression, syntactically."""
+        """Infer the simple Vera type name of an expression, syntactically.
+
+        #1509: with no *generic_decls*, the context's.  The argument-shape
+        helpers (`_get_arg_type_info` naming a constructor's fields,
+        `_array_elem_type_name`, …) call this without any, and without them
+        a generic call's arm was the non-generic one, which answered the
+        callee's RAW declared return — its own type variable
+        (`option_unwrap_or`'s `VeraT`) — so `idg(option_unwrap_or(Some(
+        option_unwrap_or(Some(2), 0)), 0))` instantiated `idg` at `VeraT`.
+        The rewrite twin instantiates the nested call wherever it meets it.
+        """
+        if generic_decls is None:
+            generic_decls = self.ctx.generic_decls or None
         if isinstance(expr, ast.IntLit):
             return "Int"
         if isinstance(expr, ast.BoolLit):
@@ -3401,8 +3413,14 @@ class Monomorphizer:
             if inner and inner.startswith("Future<") and inner.endswith(">"):
                 return inner[7:-1]
             return inner
-        if call.name in generic_decls:
-            decl = generic_decls[call.name]
+        # #1509: a generic the walk was not handed is still a generic.  A
+        # scan keyed on a subset of the generics (a module's qualified-only
+        # ones) passes only those, and a prelude combinator nested in its
+        # arguments was then named from its RAW declared return — the
+        # combinator's own type variable.
+        decl = generic_decls.get(call.name) or (
+            self.ctx.generic_decls or {}).get(call.name)
+        if decl is not None and decl.forall_vars:
             named = self._generic_return_name(
                 decl, self._infer_type_args_from_call(
                     decl, call, ctor_to_adt, generic_decls,

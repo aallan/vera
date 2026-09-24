@@ -427,6 +427,12 @@ class CodeGenerator(
         # (`vera.module_view.imported_data_types`); empty everywhere else,
         # where imported layouts are absorbed and scoped by membership.
         self._imported_adt_names: frozenset[str] = frozenset()
+        # #1511: the data types a mono clone's TYPE ARGUMENTS name, while that
+        # clone is registered or compiled (`_clone_type_scope`).  A clone is
+        # measured in the namespace its generic was declared in, and its type
+        # arguments are named in the namespace that instantiated it; empty
+        # everywhere else.
+        self._clone_adt_members: frozenset[str] = frozenset()
         # The builtin ADTs, members of every namespace (they are global
         # infrastructure, owned by no module — the same set `_register_modules`
         # exempts from the E609/E610 collision rails).  A FLOOR, not the whole
@@ -1554,6 +1560,7 @@ class CodeGenerator(
         if self._active_module_path == PRELUDE_NAMESPACE:
             return (
                 infrastructure | self._builtin_adt_names | prelude_adt_names()
+                | self._clone_adt_members
             )
         if not self._adt_namespace_members:
             return None
@@ -1563,8 +1570,38 @@ class CodeGenerator(
         return (
             members | infrastructure
             | self._builtin_adt_names | prelude_adt_names()
+            | self._clone_adt_members
         )
 
+    @contextlib.contextmanager
+    def _clone_type_scope(self, decl: ast.FnDecl) -> Iterator[None]:
+        """Make the data types *decl* names members while it is measured
+        and compiled (#1511).
+
+        A mono clone is registered and compiled in the namespace its generic
+        was DECLARED in (#1111, #1316) — the prelude's for a combinator — but
+        its type arguments were named in the namespace that INSTANTIATED it:
+        `option_unwrap_or` at the entry file's `Shape`, or at a module's
+        `mod$liba$Shape`.  The declaring namespace's membership does not hold
+        that type, so the substituted `@Shape` parameter had no WASM
+        representation there, and the clone was skipped (E604) with every
+        caller after it (E620), on a check-green program — in a single file
+        as much as across modules.  A clone can name another namespace's type
+        only through its type arguments, and after the #1317 renames a data
+        type's name has one owner, so the names are added as they stand;
+        only names with a registered layout are data types.
+        """
+        names = frozenset(
+            name for name in _type_names_in(decl) if name in self._adt_layouts
+        )
+        saved = self._clone_adt_members
+        self._clone_adt_members = names
+        self._sync_alias_env()
+        try:
+            yield
+        finally:
+            self._clone_adt_members = saved
+            self._sync_alias_env()
 
     def _namespace_ctor_projection(
         self,
@@ -2508,6 +2545,7 @@ class CodeGenerator(
                 self._module_alias_scope(
                     self._declaration_namespace(mdecl.name, origin_path)),
                 self._module_source_scope(origin_path),
+                self._clone_type_scope(mdecl),
             ):
                 self._register_fn(mdecl)
                 if origin_path is not None:
@@ -2738,6 +2776,7 @@ class CodeGenerator(
                 self._module_alias_scope(
                     self._declaration_namespace(mdecl.name, origin)),
                 self._module_source_scope(origin),
+                self._clone_type_scope(mdecl),
             ):
                 fn_wat = self._compile_fn_tracked(
                     mdecl, export=is_public,
@@ -4078,3 +4117,21 @@ class CodeGenerator(
             if new_expr is not stmt.expr:
                 return _replace(stmt, expr=new_expr)
         return stmt
+
+
+def _type_names_in(node: object) -> set[str]:
+    """Every type name *node* spells in a type position: its ``NamedType``
+    heads and arguments (#1511).  A slot reference's type is always spelled
+    by the binding it refers to as well, so the bindings suffice."""
+    out: set[str] = set()
+    stack: list[object] = [node]
+    while stack:
+        cur = stack.pop()
+        if isinstance(cur, ast.NamedType):
+            out.add(cur.name)
+        if isinstance(cur, ast.Node):
+            stack.extend(
+                getattr(cur, f.name) for f in dataclasses.fields(cur))
+        elif isinstance(cur, (tuple, list)):
+            stack.extend(cur)
+    return out

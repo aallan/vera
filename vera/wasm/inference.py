@@ -1281,13 +1281,30 @@ class InferenceMixin:
             for pt, arg in zip(param_types, call.args):
                 self._unify_param_arg_wasm(
                     pt, arg, forall_vars, mapping, constrained_vars)
-            # Use the first param's type to determine return type
-            # (Generic fn return type is typically a type var)
-            # We need to figure out the return type from forall info
-            # Actually, look at the monomorphized fn sig
+            # #769: prefer the callee's DECLARED return TypeExpr substituted
+            # with the inferred instantiation — exactly the substitution
+            # discovery performs (Monomorphizer._generic_return_name), so
+            # both sides mangle the same clone for a generic call in
+            # argument position.  The WAT collapse below names an i32-handle
+            # return "Bool" and a declared-Nat i64 return "Int" — names
+            # discovery never emits (dangling-E602 desyncs pre-#769).
+            # #1509: only a variable the return MENTIONS has to be bound.  A
+            # phantom one no argument determines (`E` in
+            # `result_unwrap_or(Ok(2), 0)`) left this branch answering
+            # nothing, so a generic call nested in a constructor argument
+            # fell to the checker's `Nat` where discovery names the bound
+            # return (`Int`), and the two named different clones for the
+            # call around it.
+            decl_ret = self._fn_ret_type_exprs.get(call.name)
+            if isinstance(decl_ret, ast.RefinementType):
+                decl_ret = decl_ret.base_type
+            if isinstance(decl_ret, ast.NamedType):
+                if decl_ret.name in forall_vars:
+                    return mapping.get(decl_ret.name)
+                return decl_ret.name
             parts = []
             for tv in forall_vars:
-                if tv not in mapping:  # pragma: no cover
+                if tv not in mapping:
                     return None
                 parts.append(mapping[tv])
             # Shared injective mangler (#775) — the registry below is keyed
@@ -1295,19 +1312,6 @@ class InferenceMixin:
             # built by the same encoding.  (The pre-#775 site joined RAW
             # type names with "_", which additionally missed every
             # parameterized instantiation like Map<String, Int>.)
-            # #769: prefer the callee's DECLARED return TypeExpr substituted
-            # with the inferred instantiation — exactly the substitution
-            # discovery performs (Monomorphizer._infer_fncall_vera_type), so
-            # both sides mangle the same clone for a generic call in
-            # argument position.  The WAT collapse below names an i32-handle
-            # return "Bool" and a declared-Nat i64 return "Int" — names
-            # discovery never emits (dangling-E602 desyncs pre-#769).
-            decl_ret = self._fn_ret_type_exprs.get(call.name)
-            if isinstance(decl_ret, ast.RefinementType):
-                decl_ret = decl_ret.base_type
-            if isinstance(decl_ret, ast.NamedType):
-                sub_map = dict(zip(forall_vars, parts))
-                return sub_map.get(decl_ret.name, decl_ret.name)
             mangled = Monomorphizer._mangle_fn_name(call.name, tuple(parts))
             # Look up WASM return type and map back
             ret_wt = self._fn_ret_types.get(mangled)

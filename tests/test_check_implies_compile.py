@@ -2016,6 +2016,59 @@ NESTED_CALL_CELLS: tuple[NestedCallCell, ...] = tuple(
 )
 
 
+def _ctor_nested_cells() -> tuple[NestedCallCell, ...]:
+    """Every producer, unwrapped to its payload (2) and passed through a
+    constructor argument of `option_unwrap_or`, inside a user generic."""
+    cells = []
+    producers = {
+        head: {**_USER_PRODUCERS[head]} for head in _USER_PRODUCERS
+    }
+    for name, call in _PRELUDE_PRODUCERS.items():
+        head = _head(prelude_generics()[name].return_type)
+        assert head is not None
+        producers[head][name] = call
+    unwrap = {"Option": "option_unwrap_or", "Result": "result_unwrap_or"}
+    for head in sorted(producers):
+        for producer, call in sorted(producers[head].items()):
+            expr = (f"idg(option_unwrap_or(Some({unwrap[head]}({call}, 0)), "
+                    "0))")
+            for place in NEST_PLACES:
+                for in_module in (False, True):
+                    cells.append(NestedCallCell(
+                        "idg(option_unwrap_or(Some(...)))", producer, expr,
+                        2, place, in_module))
+    return tuple(cells)
+
+
+CTOR_NESTED_CELLS: tuple[NestedCallCell, ...] = _ctor_nested_cells()
+
+
+def _unwrapped_cells() -> tuple[NestedCallCell, ...]:
+    """Every producer, unwrapped to its payload (2) by the prelude and
+    passed straight to a user generic's bare variable (#1515): `idg`'s `T`
+    is bound by a call whose own `E` no argument determines."""
+    producers: dict[str, dict[str, str]] = {
+        "Option": {**_USER_PRODUCERS["Option"], "Some": "Some(2)"},
+        "Result": {**_USER_PRODUCERS["Result"], "Ok": "Ok(2)"},
+    }
+    for name, call in _PRELUDE_PRODUCERS.items():
+        head = _head(prelude_generics()[name].return_type)
+        assert head is not None
+        producers[head][name] = call
+    unwrap = {"Option": "option_unwrap_or", "Result": "result_unwrap_or"}
+    return tuple(
+        NestedCallCell(f"idg({unwrap[head]}(...))", producer,
+                       f"idg({unwrap[head]}({call}, 0))", 2, place, in_module)
+        for head in sorted(producers)
+        for producer, call in sorted(producers[head].items())
+        for place in NEST_PLACES
+        for in_module in (False, True)
+    )
+
+
+UNWRAPPED_CELLS: tuple[NestedCallCell, ...] = _unwrapped_cells()
+
+
 def _emitted_and_discovered(
     tmp_path: Path, files: dict[str, str],
 ) -> tuple[set[tuple[str, tuple[str, ...]]], set[tuple[str, tuple[str, ...]]]]:
@@ -2074,10 +2127,19 @@ def uncovered_instances(
     collapse = {"Nat": "Int", "Byte": "Bool"}
 
     def norm(types: tuple[str, ...]) -> tuple[str, ...]:
-        return tuple(collapse.get(t, t) for t in types)
+        # Code generation names a module's data type whose name another
+        # namespace also declares by its owner-qualified symbol
+        # (`mod$mb$Shape`, #1317); the verifier names it as its module
+        # spells it.  Both denote the one type.
+        return tuple(
+            collapse.get(t, t) for t in (_OWNER_PREFIX.sub("", t) for t in types)
+        )
 
     seen = {(name, norm(types)) for name, types in discovered}
     return {(n, t) for n, t in emitted if (n, norm(t)) not in seen}
+
+
+_OWNER_PREFIX = re.compile(r"mod\$(?:\w+\$)+")
 
 
 class TestNestedGenericCalls:
@@ -2112,6 +2174,43 @@ class TestNestedGenericCalls:
         assert not uncovered_instances(emitted, discovered), (
             f"emitted {sorted(emitted)}, discovered {sorted(discovered)}")
 
+    @pytest.mark.parametrize("cell", CTOR_NESTED_CELLS, ids=lambda c: c.label)
+    def test_nested_in_a_constructor_argument(
+        self, cell: NestedCallCell, tmp_path: Path,
+    ) -> None:
+        """A generic call nested inside a CONSTRUCTOR argument of another
+        (#1509).  Discovery named it without the generics it knows, so the
+        nested call answered its callee's raw return — the prelude's own
+        type variable — and the call site's rewrite, whose generic arm gave
+        up on a phantom variable, answered the checker's `Nat`; neither was
+        the clone the other emitted.  In the entry file as in a module."""
+        outcome = pipeline(tmp_path, cell.files())
+        assert outcome.accepted and outcome.compiles_clean, (
+            outcome.describe())
+        assert run_main(outcome) == ("ok", cell.value)
+        emitted, discovered = _emitted_and_discovered(
+            tmp_path / "differential", cell.files())
+        assert not uncovered_instances(emitted, discovered), (
+            f"emitted {sorted(emitted)}, discovered {sorted(discovered)}")
+
+    @pytest.mark.parametrize("cell", UNWRAPPED_CELLS, ids=lambda c: c.label)
+    def test_unwrapped_into_a_bare_variable(
+        self, cell: NestedCallCell, tmp_path: Path,
+    ) -> None:
+        """#1515's shape: `idg(result_unwrap_or(Ok(3), 0))`.  The call site
+        named `idg` from the checker's `Nat` (its generic arm gave up on the
+        phantom `E`) where discovery named it from the bound return, `Int`.
+        The call site now names a generic call's result as discovery does;
+        the two derivations of the type arguments remain two (#1515)."""
+        outcome = pipeline(tmp_path, cell.files())
+        assert outcome.accepted and outcome.compiles_clean, (
+            outcome.describe())
+        assert run_main(outcome) == ("ok", cell.value)
+        emitted, discovered = _emitted_and_discovered(
+            tmp_path / "differential", cell.files())
+        assert not uncovered_instances(emitted, discovered), (
+            f"emitted {sorted(emitted)}, discovered {sorted(discovered)}")
+
     def test_the_differential_can_fail(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -2131,4 +2230,247 @@ class TestNestedGenericCalls:
         monkeypatch.setattr(ContractVerifier, "__init__", entry_table_only)
         emitted, discovered = _emitted_and_discovered(tmp_path, cell.files())
         assert uncovered_instances(emitted, discovered), (
+            f"emitted {sorted(emitted)}, discovered {sorted(discovered)}")
+
+
+# =====================================================================
+# (f) Generics instantiated at a user data type (#1511)
+# =====================================================================
+#
+# A mono clone is registered and compiled in the namespace its generic was
+# DECLARED in — the prelude's for a combinator, the module's for a module's
+# generic — while its type arguments are named in the namespace that
+# instantiated it.  The declaring namespace's data-type membership did not
+# hold the instantiating namespace's types, so `option_unwrap_or` at a user
+# `Shape` had a parameter with no WASM representation and was skipped
+# (E604), taking every caller with it (E620), on a check-green program: in a
+# single file, in a module, and at a module's owner-qualified type
+# (`mod$mb$Shape`, when the entry declares a `Shape` of its own).
+#
+# The cells: every prelude generic (enumerated from the prelude) producing a
+# `Shape`, flat and nested (the same value passed through
+# `option_unwrap_or` and a user generic), written in the entry file, in a
+# module, and in a module whose `Shape` is owner-qualified; and a library
+# module's generics instantiated at the entry's type and at a module's.
+
+_SHAPE_DECLS = (
+    "private data Shape {\n  Circle(Int),\n  Square(Int)\n}\n\n"
+    "private fn size(@Shape -> @Int)\n" + _NC
+    + "{\n  match @Shape.0 {\n    Circle(@Int) -> @Int.0,\n"
+    "    Square(@Int) -> @Int.0 * 10\n  }\n}\n\n"
+)
+
+_TO_SHAPE = "fn(@Int -> @Shape) effects(pure) { Circle(@Int.0) }"
+
+#: Each prelude generic as a `Shape`-valued expression whose value is
+#: `Circle(4)` (so `size` of it is 4).
+_PRELUDE_AT_SHAPE: dict[str, str] = {
+    "option_unwrap_or": "option_unwrap_or(Some(Circle(4)), Square(3))",
+    "option_map":
+        f"option_unwrap_or(option_map(Some(4), {_TO_SHAPE}), Square(3))",
+    "option_and_then":
+        "option_unwrap_or(option_and_then(Some(4), fn(@Int -> @Option<Shape>) "
+        "effects(pure) { Some(Circle(@Int.0)) }), Square(3))",
+    "result_unwrap_or": "result_unwrap_or(Ok(Circle(4)), Square(3))",
+    "result_map":
+        f'result_unwrap_or(result_map(parse_int("4"), {_TO_SHAPE}), '
+        "Square(3))",
+}
+
+#: A library module's generics, called qualified at the namespace's `Shape`.
+_GL_AT_SHAPE: dict[str, str] = {
+    "gl::idg": "gl::idg(Circle(4))",
+    "gl::justg": "option_unwrap_or(gl::justg(Circle(4)), Square(3))",
+}
+
+AT_TYPE_PLACES = ("entry", "module", "module, owner-qualified")
+
+
+@dataclass(frozen=True)
+class AtTypeCell:
+    generic: str
+    shape: str          # "flat", "nested" or "scrutinee"
+    place: str
+
+    @property
+    def nested(self) -> bool:
+        return self.shape == "nested"
+
+    @property
+    def label(self) -> str:
+        return f"{self.place}|{self.shape}|{self.generic}"
+
+    def expr(self) -> str:
+        inner = {**_PRELUDE_AT_SHAPE, **_GL_AT_SHAPE}[self.generic]
+        if self.shape == "scrutinee":
+            # The release-branch regression's shape: a direct `match` on the
+            # instantiated call.
+            return (f"match {inner} {{\n    Circle(@Int) -> @Int.0,\n"
+                    "    Square(@Int) -> @Int.0 * 10\n  }")
+        if self.nested:
+            inner = f"idg(option_unwrap_or(Some({inner}), Square(3)))"
+        return f"size({inner})"
+
+    def files(self) -> dict[str, str]:
+        imports = "import gl;\n\n" if "gl::" in self.generic else ""
+        library = {"gl.vera": _GL} if imports else {}
+        # An entry file's generic nothing instantiates is its own E604, so
+        # `idg` is declared only where the nesting calls it.
+        idg = _USER_GENERICS["idg"] if self.nested else ""
+        body = (_SHAPE_DECLS + idg + "public fn probe(@Unit -> @Int)\n" + _NC
+                + "{\n  " + self.expr() + "\n}\n")
+        if self.place == "entry":
+            return {**library,
+                    "main.vera": imports + body + "\n" + _NEST_MAIN}
+        entry_shape = (
+            "private data Shape {\n  Tri(Int)\n}\n\n"
+            if self.place == "module, owner-qualified" else ""
+        )
+        return {
+            **library,
+            "mb.vera": "module mb;\n\n" + imports + body,
+            "main.vera": "import mb(probe);\n\n" + entry_shape + _NEST_MAIN,
+        }
+
+
+AT_TYPE_CELLS: tuple[AtTypeCell, ...] = tuple(
+    AtTypeCell(generic, shape, place)
+    for generic in (*sorted(_PRELUDE_AT_SHAPE), *sorted(_GL_AT_SHAPE))
+    for shape in ("flat", "nested", "scrutinee")
+    for place in AT_TYPE_PLACES
+)
+
+
+class TestGenericsAtUserTypes:
+    """(f): a generic compiles at a data type its instantiator names (#1511)."""
+
+    def test_every_prelude_generic_has_a_cell(self) -> None:
+        assert set(_PRELUDE_AT_SHAPE) == set(prelude_generics())
+
+    @pytest.mark.parametrize("cell", AT_TYPE_CELLS, ids=lambda c: c.label)
+    def test_compiles_and_runs(
+        self, cell: AtTypeCell, tmp_path: Path,
+    ) -> None:
+        outcome = pipeline(tmp_path, cell.files())
+        assert outcome.accepted and outcome.compiles_clean, (
+            outcome.describe())
+        assert run_main(outcome) == ("ok", 4)
+        emitted, discovered = _emitted_and_discovered(
+            tmp_path / "differential", cell.files())
+        assert emitted, "no specialisation emitted: the cell is vacuous"
+        assert not uncovered_instances(emitted, discovered), (
+            f"emitted {sorted(emitted)}, discovered {sorted(discovered)}")
+
+    def test_the_owner_qualified_cell_is_owner_qualified(
+        self, tmp_path: Path,
+    ) -> None:
+        """Not vacuous: the collision renames the module's `Shape`, so the
+        clone is named for `mod$mb$Shape`."""
+        cell = next(c for c in AT_TYPE_CELLS
+                    if c.label == "module, owner-qualified|flat|option_unwrap_or")
+        emitted, _discovered = _emitted_and_discovered(tmp_path, cell.files())
+        assert ("option_unwrap_or", ("mod$mb$Shape",)) in emitted, emitted
+
+
+#: A module that declares `Shape` for another namespace to use, and the
+#: functions a namespace that never imports the type reaches it through.
+_MS = (
+    "module ms;\n\npublic data Shape {\n  Circle(Int),\n  Square(Int)\n}\n\n"
+    "public fn size(@Shape -> @Int)\n" + _NC
+    + "{\n  match @Shape.0 {\n    Circle(@Int) -> @Int.0,\n"
+    "    Square(@Int) -> @Int.0 * 10\n  }\n}\n\n"
+    "public fn mk(@Int -> @Shape)\n" + _NC + "{\n  Circle(@Int.0)\n}\n"
+)
+
+#: Each generic, by where it is declared and where its type variable sits,
+#: as a `Shape`-valued expression over `{V}` (a `Shape`) and `{W}` (another).
+_ORIGIN_GENERICS: dict[str, tuple[str, str]] = {
+    # the prelude: a bare type variable as parameter and result
+    "option_unwrap_or": ("", "option_unwrap_or(Some({V}), {W})"),
+    # the prelude: the variable inside a pointer-represented type
+    "option_map": ("", "option_unwrap_or(option_map(Some(4), "
+                       "fn(@Int -> @Shape) effects(pure) { {V} }), {W})"),
+    # a library module's generic, called qualified
+    "gl::idg": ("import gl;\n", "gl::idg({V})"),
+    # a library module's generic, imported by name
+    "justg": ("import gl(justg);\n", "option_unwrap_or(justg({V}), {W})"),
+    # the instantiating file's own generic
+    "idg": ("", "idg({V})"),
+}
+
+#: Where the instantiating namespace gets `Shape` from.
+_ORIGINS: dict[str, tuple[str, str, str]] = {
+    # (import line, the value, the other value)
+    "imported from a third module": (
+        "import ms(Shape, size);\n", "Circle(4)", "Square(3)"),
+    "never imported": ("import ms(mk, size);\n", "mk(4)", "mk(3)"),
+}
+
+
+@dataclass(frozen=True)
+class TypeOriginCell:
+    """A generic at a `Shape` the instantiating namespace did not declare."""
+
+    generic: str
+    origin: str
+    place: str          # "entry" or "module"
+
+    @property
+    def label(self) -> str:
+        return f"{self.place}|{self.origin}|{self.generic}"
+
+    def files(self) -> dict[str, str]:
+        gl_import, template = _ORIGIN_GENERICS[self.generic]
+        ms_import, value, other = _ORIGINS[self.origin]
+        expr = template.replace("{V}", value).replace("{W}", other)
+        own = _USER_GENERICS["idg"] if self.generic == "idg" else ""
+        body = (ms_import + gl_import + "\n" + own
+                + "public fn probe(@Unit -> @Int)\n" + _NC
+                + "{\n  size(" + expr + ")\n}\n")
+        files = {"ms.vera": _MS}
+        if gl_import:
+            files["gl.vera"] = _GL
+        if self.place == "entry":
+            files["main.vera"] = body + "\n" + _NEST_MAIN
+        else:
+            files["mb.vera"] = "module mb;\n\n" + body
+            files["main.vera"] = "import mb(probe);\n\n" + _NEST_MAIN
+        return files
+
+
+TYPE_ORIGIN_CELLS: tuple[TypeOriginCell, ...] = tuple(
+    TypeOriginCell(generic, origin, place)
+    for generic in _ORIGIN_GENERICS
+    for origin in _ORIGINS
+    for place in ("entry", "module")
+    # `option_map`'s closure has to name `Shape`, which a namespace that
+    # never imported it cannot (E136); the variable's position inside a
+    # pointer-represented type is `justg`'s there.
+    if not (generic == "option_map" and origin == "never imported")
+)
+
+
+class TestGenericsAtAnotherNamespacesType:
+    """(f), continued: the type argument's namespace is a third one.
+
+    The declaring namespace (the prelude, a library module, or the
+    instantiating file itself) holds the type neither as its own nor as an
+    import, and neither need the instantiating namespace: a value of a type
+    a module declares reaches it through that module's functions.  Every
+    one of these was skipped with E604 at the release branch's head, the
+    instantiating file's own generic included (#1511).
+    """
+
+    @pytest.mark.parametrize("cell", TYPE_ORIGIN_CELLS, ids=lambda c: c.label)
+    def test_compiles_and_runs(
+        self, cell: TypeOriginCell, tmp_path: Path,
+    ) -> None:
+        outcome = pipeline(tmp_path, cell.files())
+        assert outcome.accepted and outcome.compiles_clean, (
+            outcome.describe())
+        assert run_main(outcome) == ("ok", 4)
+        emitted, discovered = _emitted_and_discovered(
+            tmp_path / "differential", cell.files())
+        assert emitted, "no specialisation emitted: the cell is vacuous"
+        assert not uncovered_instances(emitted, discovered), (
             f"emitted {sorted(emitted)}, discovered {sorted(discovered)}")
