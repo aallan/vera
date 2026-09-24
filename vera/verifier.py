@@ -957,8 +957,9 @@ class ContractVerifier:
         # discovery key `_instances` / `generic_decls` use.  A key absent from
         # here is a main-file generic.
         self._generic_origins: dict[str, tuple[str, ...]] = {}
-        # Per module path, its functions the entry displaces in the flat
-        # tables, to their `mod$` symbols (`displaced_module_fns`); filled by
+        # Per module path, the functions its bare calls mean (its own, or
+        # ones it imports) that the entry displaces in the flat tables, to
+        # their `mod$` symbols (`displaced_module_fns`); filled by
         # `_collect_instantiations` for its discovery context.
         self._displaced_fn_symbols: dict[
             tuple[str, ...], dict[str, str]] = {}
@@ -2438,7 +2439,10 @@ class ContractVerifier:
         # A module's function the entry displaces is registered under its
         # `mod$` symbol, as code generation registers it: discovery resolves a
         # bare call to it through `displaced_fn_symbols`, and must then find
-        # the module's declaration there and not the entry's.
+        # the module's declaration there and not the entry's.  A module's call
+        # to a function it IMPORTS maps to the symbol the function's own
+        # module holds here, so registering each module's own entries
+        # registers every symbol a call can name.
         displaced = self._displaced_fn_symbols
         for mod in self._resolved_modules:
             symbols = displaced.get(mod.path, {})
@@ -2889,13 +2893,16 @@ class ContractVerifier:
             return {}
 
         qualified_only = self._qualified_only_generic_decls(program)
-        # Each module's functions the entry displaces, from the one
-        # derivation code generation renames their calls by.  Read off the
-        # entry as written, before the prelude was injected, as codegen's is.
+        # The functions each module's bare calls mean that the entry
+        # displaces — its own, or one it imports — from the one derivation
+        # code generation renames their calls by.  Read off the entry as
+        # written, before the prelude was injected, as codegen's is.
         importer_names = self._local_fn_names(program)
+        module_programs = {
+            mod.path: mod.program for mod in self._resolved_modules}
         self._displaced_fn_symbols = {
             mod.path: displaced_module_fns(
-                mod.program, mod.path, importer_names)
+                mod.program, mod.path, importer_names, module_programs)
             for mod in self._resolved_modules
         }
         ctx = self._build_mono_context(disc, generic_decls, qualified_only)

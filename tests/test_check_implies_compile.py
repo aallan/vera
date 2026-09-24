@@ -1464,13 +1464,13 @@ class TestModuleEnvironmentMatrix:
         if (cell.label == "module-qualified call argument"
                 and topology.label == "own body consumes"):
             # `ma::paint(...)` in `ma`'s own body: a module's call to itself,
-            # qualified.  `main` and this branch's base run it; since #1513
-            # the checker refuses it (E230, "Module 'ma' not found"), a
-            # regression of the release branch outside this class.  Strict,
-            # so the cell turns red when that is fixed.
+            # qualified.  `main` and this branch's base run it; the release
+            # branch refuses it at check (E230, "Module 'ma' not found"),
+            # #1558, outside this class.  Strict, so the cell turns red when
+            # that is fixed.
             request.node.add_marker(pytest.mark.xfail(
                 strict=True,
-                reason="a module's self-qualified call is E230 since #1513"))
+                reason="#1558: a module's self-qualified call is E230"))
         outcome = pipeline(tmp_path, topology.files(cell.consumer(topology)))
         expected = cell.expected(topology)
         if isinstance(expected, str):
@@ -3259,7 +3259,10 @@ _ENTRY_FOO: dict[str, tuple[str, str]] = {
     "nothing in the entry": ("", ""),
 }
 
-#: `bar`'s body over `{F}`, the module's call `foo(@Int.0)` (a `Bool`).
+#: `bar`'s body over `{F}`, the module's call `foo(@Int.0)` (a `Bool`).  The
+#: module's `foo` is false at 1, so `bar(1)` is 2: a call that reaches the
+#: entry's `foo` instead yields a nonzero `Int`, which reads as `true` (1)
+#: where the module still loads, and 2 cannot coincide with it.
 _FOO_POSITIONS: dict[str, str] = {
     "a private generic's argument": "if idm({F}) then { 1 } else { 2 }",
     "a prelude generic's argument":
@@ -3271,7 +3274,32 @@ _FOO_POSITIONS: dict[str, str] = {
         "else { 2 },\n    None -> 3\n  }",
     "a let binding": "let @Bool = {F};\n  if @Bool.0 then { 1 } else { 2 }",
     "a condition": "if {F} then { 1 } else { 2 }",
+    "piped": "if @Int.0 |> foo() then { 1 } else { 2 }",
+    "nested in two generics": "if idm(idm({F})) then { 1 } else { 2 }",
+    "an array element":
+        "let @Array<Bool> = [{F}];\n  if @Array<Bool>.0[0] then { 1 } else { 2 }",
+    "a closure body":
+        "if option_unwrap_or(option_map(Some(@Int.0), fn(@Int -> @Bool) "
+        "effects(pure) { {F} }), false) then { 1 } else { 2 }",
 }
+
+
+def _callers_of_the_entrys_foo(wat: str) -> set[str]:
+    """Every emitted function but `main` that calls the entry's `foo`.
+
+    The entry's `foo` is `$foo`, or a clone `$foo$…` of it; a module's
+    `foo` the entry displaces is `$mod$<path>$foo`.  Only `main` calls the
+    entry's.  A `Bool` read of the wrong call's result can still land on
+    the right answer (an `Int` payload read at a `Bool`'s offset is zero),
+    so each cell asserts the call's target as well as its value.
+    """
+    callers: set[str] = set()
+    for chunk in re.split(r"^  \(func ", wat, flags=re.M)[1:]:
+        name = chunk.split(None, 1)[0].lstrip("$")
+        if name != "main" and re.search(
+                r"\bcall \$foo(?:\$[^\s)]*)?(?=[\s)])", chunk):
+            callers.add(name)
+    return callers
 
 
 @dataclass(frozen=True)
@@ -3286,13 +3314,13 @@ class DisplacedCell:
 
     @property
     def value(self) -> int:
-        return 11 if self.entry == "an entry function" else 1
+        return 12 if self.entry == "an entry function" else 2
 
     def files(self) -> dict[str, str]:
         decl, call = _ENTRY_FOO[self.entry]
         body = _FOO_POSITIONS[self.position].replace("{F}", "foo(@Int.0)")
         ma = ("module ma;\n\nimport gl;\n\n" + self.visibility
-              + " fn foo(@Int -> @Bool)\n" + _NC + "{\n  @Int.0 > 0\n}\n\n"
+              + " fn foo(@Int -> @Bool)\n" + _NC + "{\n  @Int.0 > 5\n}\n\n"
               + "private forall<T> fn idm(@T -> @T)\n" + _NC
               + "{\n  @T.0\n}\n\npublic fn bar(@Int -> @Int)\n" + _NC
               + "{\n  " + body + "\n}\n")
@@ -3321,6 +3349,9 @@ class TestAModulesFunctionTheEntryDisplaces:
         assert outcome.accepted and outcome.compiles_clean, (
             outcome.describe())
         assert run_main(outcome) == ("ok", cell.value)
+        assert outcome.result is not None
+        if cell.entry != "nothing in the entry":
+            assert not _callers_of_the_entrys_foo(outcome.result.wat)
         emitted, discovered = _emitted_and_discovered(
             tmp_path / "differential", cell.files())
         assert not uncovered_instances(emitted, discovered), (
@@ -3337,7 +3368,7 @@ class TestAModulesFunctionTheEntryDisplaces:
         ).files()
         files["ma.vera"] = files["ma.vera"].replace(
             "fn foo(@Int -> @Bool)", "fn foo(@Int -> @Option<Int>)").replace(
-            "@Int.0 > 0\n}", "Some(@Int.0)\n}").replace(
+            "@Int.0 > 5\n}", "Some(@Int.0)\n}").replace(
             "if idm(foo(@Int.0)) then { 1 } else { 2 }",
             "option_unwrap_or(idm(foo(@Int.0)), 7)")
         outcome = pipeline(tmp_path, files)
@@ -3353,8 +3384,8 @@ class TestAModulesFunctionTheEntryDisplaces:
         self, tmp_path: Path,
     ) -> None:
         """The rename is shadow-aware: inside `bar`, whose `where` helper is
-        also `foo`, the bare call is the helper's (1 > 5 is false, so 2),
-        not the module's top-level `foo` (1 > 0, which would give 1).  The
+        also `foo`, the bare call is the helper's (1 > 0, so 1), not the
+        module's top-level `foo` (1 > 5 is false, which would give 2).  The
         run only: the verifier's discovery names the helper's call from the
         entry's generic, as it did before this change."""
         files = DisplacedCell(
@@ -3362,8 +3393,250 @@ class TestAModulesFunctionTheEntryDisplaces:
         ).files()
         files["ma.vera"] = files["ma.vera"].rstrip("\n") + (
             "\nwhere {\n  fn foo(@Int -> @Bool)\n    requires(true)\n"
-            "    ensures(true)\n    effects(pure)\n  {\n    @Int.0 > 5\n  }\n}\n")
+            "    ensures(true)\n    effects(pure)\n  {\n    @Int.0 > 0\n  }\n}\n")
+        outcome = pipeline(tmp_path, files)
+        assert outcome.accepted and outcome.compiles_clean, (
+            outcome.describe())
+        assert run_main(outcome) == ("ok", 1)
+
+
+# =====================================================================
+# (h), imported: a function the module imports, under a name the entry
+# also declares
+# =====================================================================
+#
+# The same flat namespace, and a module's bare call that means a function
+# the module IMPORTED (§8.5.2).  Its own module emits that function under
+# `mod$<path>$name` while the entry holds the bare name, and §8.9.1 says a
+# call from another module's body is compiled to that name too.  It was
+# compiled against the ENTRY's declaration instead: the entry's function
+# beside a non-generic one, a silent wrong value, and beside a generic one
+# its clone, a module that fails to load (PR #1508 review).  Each cell runs
+# to its value and holds against the verifier's discovery.
+
+#: `ma`'s `foo`, and how `mb` imports it.  An imported generic reaches the
+#: same rule by #1274's reroute, and stands beside the functions as the
+#: control that the class is the name, not the genericity.
+_IMPORTED_FOO: dict[str, tuple[str, str]] = {
+    "a function, imported by name": (
+        "public fn foo(@Int -> @Bool)\n" + _NC + "{\n  @Int.0 > 5\n}\n",
+        "import ma(foo);\n"),
+    "a function, imported by wildcard": (
+        "public fn foo(@Int -> @Bool)\n" + _NC + "{\n  @Int.0 > 5\n}\n",
+        "import ma;\n"),
+    "a generic, imported by name": (
+        "public forall<T> fn foo(@T -> @Bool)\n" + _NC + "{\n  false\n}\n",
+        "import ma(foo);\n"),
+}
+
+
+def _importing_module(imp: str, bar: str) -> str:
+    """`mb`: imports `foo` by *imp*, and declares `idm` and *bar*."""
+    return ("module mb;\n\nimport gl;\n" + imp + "\n"
+            + "private forall<T> fn idm(@T -> @T)\n" + _NC
+            + "{\n  @T.0\n}\n\n" + bar)
+
+
+@dataclass(frozen=True)
+class ImportedDisplacedCell:
+    entry: str
+    supplier: str       # `ma`'s `foo`, and `mb`'s import of it
+    position: str
+
+    @property
+    def label(self) -> str:
+        return f"{self.entry}|{self.supplier}|{self.position}"
+
+    @property
+    def value(self) -> int:
+        return 12 if self.entry == "an entry function" else 2
+
+    def files(self) -> dict[str, str]:
+        decl, call = _ENTRY_FOO[self.entry]
+        foo, imp = _IMPORTED_FOO[self.supplier]
+        body = _FOO_POSITIONS[self.position].replace("{F}", "foo(@Int.0)")
+        bar = ("public fn bar(@Int -> @Int)\n" + _NC
+               + "{\n  " + body + "\n}\n")
+        main = ("import mb(bar);\n\n" + decl + "public fn main(@Unit -> @Int)\n"
+                + _NC + "{\n  bar(1)" + call + "\n}\n")
+        return {"gl.vera": _GL, "ma.vera": "module ma;\n\n" + foo,
+                "mb.vera": _importing_module(imp, bar), "main.vera": main}
+
+
+IMPORTED_DISPLACED_CELLS: tuple[ImportedDisplacedCell, ...] = tuple(
+    ImportedDisplacedCell(entry, supplier, position)
+    for entry in _ENTRY_FOO
+    for supplier in _IMPORTED_FOO
+    for position in _FOO_POSITIONS
+)
+
+#: The silent half.  `ma`'s `foo` adds 100, which neither of the entry's
+#: `foo`s does, so a call that reaches the entry's declaration is a wrong
+#: value rather than a module that fails to load, and `bar`'s `ensures`,
+#: which the verifier proves from `ma`'s contract, fails when it runs.
+_INT_FOO = ("public fn foo(@Int -> @Int)\n  requires(true)\n"
+            "  ensures(@Int.result == @Int.0 + 100)\n  effects(pure)\n"
+            "{\n  @Int.0 + 100\n}\n")
+
+#: `bar`'s body over the call in each of `_FOO_POSITIONS`' positions, and
+#: bare, each computing `@Int.0 + 100`.
+_INT_POSITIONS: dict[str, str] = {
+    "a bare call": "{F}",
+    "a private generic's argument": "idm({F})",
+    "a prelude generic's argument": "option_unwrap_or(Some({F}), 0)",
+    "a library generic's argument, qualified": "gl::idg({F})",
+    "a constructor argument":
+        "match Some({F}) {\n    Some(@Int) -> @Int.0,\n    None -> 0\n  }",
+    "a let binding": "let @Int = {F};\n  @Int.0",
+    "a condition": "if {F} > 100 then { @Int.0 + 100 } else { 0 }",
+    "piped": "@Int.0 |> foo()",
+    "nested in two generics": "idm(idm({F}))",
+    "an array element": "let @Array<Int> = [{F}];\n  @Array<Int>.0[0]",
+    "a closure body":
+        "option_unwrap_or(option_map(Some(@Int.0), fn(@Int -> @Int) "
+        "effects(pure) { {F} }), 0)",
+}
+
+
+@dataclass(frozen=True)
+class ImportedValueCell:
+    entry: str
+    imp: str            # `mb`'s import of `ma`
+    position: str
+
+    @property
+    def label(self) -> str:
+        return f"{self.entry}|{self.imp.strip()}|{self.position}"
+
+    @property
+    def value(self) -> int:
+        """`bar(1)` is 101; `main` adds the entry's `foo(0)`: 0 or 10."""
+        return 111 if self.entry == "an entry function" else 101
+
+    def files(self) -> dict[str, str]:
+        decl, call = _ENTRY_FOO[self.entry]
+        bar = ("public fn bar(@Int -> @Int)\n  requires(true)\n"
+               "  ensures(@Int.result == @Int.0 + 100)\n  effects(pure)\n"
+               "{\n  " + _INT_POSITIONS[self.position].replace(
+                   "{F}", "foo(@Int.0)") + "\n}\n")
+        main = ("import mb(bar);\n\n" + decl + "public fn main(@Unit -> @Int)\n"
+                + _NC + "{\n  bar(1)" + call + "\n}\n")
+        return {"gl.vera": _GL, "ma.vera": "module ma;\n\n" + _INT_FOO,
+                "mb.vera": _importing_module(self.imp, bar),
+                "main.vera": main}
+
+
+IMPORTED_VALUE_CELLS: tuple[ImportedValueCell, ...] = tuple(
+    ImportedValueCell(entry, imp, position)
+    for entry in _ENTRY_FOO
+    for imp in ("import ma(foo);\n", "import ma;\n")
+    for position in _INT_POSITIONS
+)
+
+
+class TestAFunctionTheModuleImportsTheEntryDisplaces:
+    """(h), imported: a module's bare call to a function it imports means
+    that function, whatever the entry declares under the name."""
+
+    def test_both_halves_hold_the_call_in_every_position(self) -> None:
+        """The value half covers every position the `Bool` half does, and
+        the bare call besides."""
+        assert set(_INT_POSITIONS) == set(_FOO_POSITIONS) | {"a bare call"}
+
+    @pytest.mark.parametrize(
+        "cell", IMPORTED_DISPLACED_CELLS, ids=lambda c: c.label)
+    def test_the_module_calls_the_function_it_imports(
+        self, cell: ImportedDisplacedCell, tmp_path: Path,
+    ) -> None:
+        outcome = pipeline(tmp_path, cell.files())
+        assert outcome.accepted and outcome.compiles_clean, (
+            outcome.describe())
+        assert run_main(outcome) == ("ok", cell.value)
+        assert outcome.result is not None
+        if cell.entry != "nothing in the entry":
+            assert not _callers_of_the_entrys_foo(outcome.result.wat)
+        emitted, discovered = _emitted_and_discovered(
+            tmp_path / "differential", cell.files())
+        assert not uncovered_instances(emitted, discovered), (
+            f"emitted {sorted(emitted)}, discovered {sorted(discovered)}")
+
+    @pytest.mark.parametrize(
+        "cell", IMPORTED_VALUE_CELLS, ids=lambda c: c.label)
+    def test_the_value_is_the_imported_functions(
+        self, cell: ImportedValueCell, tmp_path: Path,
+    ) -> None:
+        """101 from `bar(1)`, never the entry's 1 or 11, and `bar`'s
+        postcondition holds when it runs, as the verifier proves it."""
+        outcome = pipeline(tmp_path, cell.files())
+        assert outcome.accepted and outcome.compiles_clean, (
+            outcome.describe())
+        assert run_main(outcome) == ("ok", cell.value)
+        assert outcome.result is not None
+        if cell.entry != "nothing in the entry":
+            assert not _callers_of_the_entrys_foo(outcome.result.wat)
+        emitted, discovered = _emitted_and_discovered(
+            tmp_path / "differential", cell.files())
+        assert not uncovered_instances(emitted, discovered), (
+            f"emitted {sorted(emitted)}, discovered {sorted(discovered)}")
+
+    def test_the_module_function_under_the_name_is_its_own(
+        self, tmp_path: Path,
+    ) -> None:
+        """The module's own declaration shadows its import (§8.5.2): with a
+        wildcard import of `ma` and its own `foo` (1 > 0, so 1), `bar` calls
+        its own, not the import (1 > 5 is false, which would give 2)."""
+        files = ImportedDisplacedCell(
+            "an entry generic", "a function, imported by wildcard",
+            "a condition").files()
+        files["mb.vera"] = files["mb.vera"].replace(
+            "public fn bar(", "private fn foo(@Int -> @Bool)\n" + _NC
+            + "{\n  @Int.0 > 0\n}\n\npublic fn bar(")
+        outcome = pipeline(tmp_path, files)
+        assert outcome.accepted and outcome.compiles_clean, (
+            outcome.describe())
+        assert run_main(outcome) == ("ok", 1)
+
+    @pytest.mark.parametrize(("mc_foo", "mc_import"), [
+        pytest.param("public", "import mc(other);\n",
+                     id="outside-the-import-filter"),
+        pytest.param("private", "import mc;\n", id="private"),
+    ])
+    def test_a_foo_the_module_cannot_name_supplies_nothing(
+        self, mc_foo: str, mc_import: str, tmp_path: Path,
+    ) -> None:
+        """A second module `mc` declares a `foo` that `mb` cannot name:
+        outside `mb`'s filter for `mc`, or private.  `mb`'s `foo` is still
+        `ma`'s alone (1 > 5 is false, so 2), and a call counted to `mc`'s
+        too would name no single function and reach the entry's."""
+        files = ImportedDisplacedCell(
+            "an entry generic", "a function, imported by name",
+            "a condition").files()
+        files["mc.vera"] = (
+            "module mc;\n\n" + mc_foo + " fn foo(@Int -> @Bool)\n" + _NC
+            + "{\n  @Int.0 > 0\n}\n\npublic fn other(@Int -> @Int)\n" + _NC
+            + "{\n  if foo(@Int.0) then { 7 } else { 8 }\n}\n")
+        files["mb.vera"] = files["mb.vera"].replace(
+            "import ma(foo);\n", "import ma(foo);\n" + mc_import)
         outcome = pipeline(tmp_path, files)
         assert outcome.accepted and outcome.compiles_clean, (
             outcome.describe())
         assert run_main(outcome) == ("ok", 2)
+        assert outcome.result is not None
+        assert not _callers_of_the_entrys_foo(outcome.result.wat)
+
+    def test_a_where_helper_of_the_name_owns_the_call(
+        self, tmp_path: Path,
+    ) -> None:
+        """Shadow-aware as for the module's own function: inside `bar`,
+        whose `where` helper is `foo`, the bare call is the helper's (1 > 0,
+        so 1), not the imported `foo` (1 > 5 is false, which gives 2)."""
+        files = ImportedDisplacedCell(
+            "an entry generic", "a function, imported by name",
+            "a private generic's argument").files()
+        files["mb.vera"] = files["mb.vera"].rstrip("\n") + (
+            "\nwhere {\n  fn foo(@Int -> @Bool)\n    requires(true)\n"
+            "    ensures(true)\n    effects(pure)\n  {\n    @Int.0 > 0\n  }\n}\n")
+        outcome = pipeline(tmp_path, files)
+        assert outcome.accepted and outcome.compiles_clean, (
+            outcome.describe())
+        assert run_main(outcome) == ("ok", 1)

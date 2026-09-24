@@ -781,31 +781,71 @@ def displaced_module_fns(
     module_program: ast.Program,
     path: Sequence[str],
     importer_names: Collection[str],
+    modules: Mapping[tuple[str, ...], ast.Program],
 ) -> dict[str, str]:
-    """The module's top-level NON-generic functions whose bare name the
-    importer's own declarations occupy, each to the symbol it is emitted and
-    registered under (:func:`module_qualified_symbol`), for the module at
-    *path*.
+    """Each bare name a call in the module at *path* resolves to a
+    NON-generic function whose bare name the importer's own declarations
+    occupy, to the symbol that function is emitted and registered under
+    (:func:`module_qualified_symbol`).
 
     Code generation has one flat function namespace, where the importer's
-    declaration holds the bare name, so the module's function is emitted
-    under its ``mod$`` symbol (``_register_shadowed_import``).  A bare call
-    in the module's own bodies still means the module's function (§8.5.2),
-    and codegen redirected only the call's target: discovery, in code
+    declaration holds the bare name, so a module's non-generic function of
+    that name is emitted under its ``mod$`` symbol
+    (``_register_shadowed_import``).  A bare call in a module's bodies still
+    means what the MODULE's namespace holds (§8.5.2): its own function of
+    the name, or else the one it imports.  Codegen redirected only the call's
+    target of the first, and nothing of the second: discovery, in code
     generation and in the verifier, and the call site's type inference named
     the call from the IMPORTER's declaration, so a generic called on its
-    result was specialised at the wrong type — a module that fails to load,
-    and, beside an importer's generic of the same name, a call to that
-    generic's clone (PR #1508 review).  Both sides read this one derivation
-    (*importer_names* is :func:`importer_occupied_bare_names` of the entry
-    program), so each resolves such a call to the same symbol.
+    result was specialised at the wrong type (a module that fails to load),
+    beside an importer's generic of the name the call reached that generic's
+    clone, and beside a non-generic one the importer's function ran in its
+    place — a silent wrong value, under a postcondition the verifier proved
+    from the right callee (PR #1508 review).  Both sides read this one
+    derivation (*importer_names* is :func:`importer_occupied_bare_names` of
+    the entry program), so each resolves such a call to the same symbol.
+
+    *modules* maps each resolved module's path to its program, as the checker
+    saw it.  An imported name is a public non-generic function of a module
+    *module_program* imports, admitted by its import filters
+    (:func:`vera.resolver.merged_import_filters`).  It maps to the symbol its
+    own module emits it under, the one that module's own entry here holds.
+    It is mapped only where exactly one import supplies it (two is the
+    checker's E155), and never over a top-level function the module declares
+    itself, which shadows every import of the name.  An imported GENERIC is
+    not here: #1274's reroute (:func:`module_qualified_generic_targets`)
+    sends its calls to the owner's clone.
     """
-    return {
+    from vera.resolver import merged_import_filters
+
+    displaced = {
         tld.decl.name: module_qualified_symbol(path, tld.decl.name)
         for tld in module_program.declarations
         if isinstance(tld.decl, ast.FnDecl) and not tld.decl.forall_vars
         and tld.decl.name in importer_names
     }
+    declared = {
+        tld.decl.name for tld in module_program.declarations
+        if isinstance(tld.decl, ast.FnDecl)
+    }
+    suppliers: dict[str, list[tuple[str, ...]]] = {}
+    for dep_path, name_filter in merged_import_filters(
+            module_program.imports).items():
+        dep = modules.get(dep_path)
+        if dep is None:
+            continue
+        for tld in dep.declarations:
+            decl = tld.decl
+            if (isinstance(decl, ast.FnDecl) and not decl.forall_vars
+                    and (tld.visibility or "private") == "public"
+                    and (name_filter is None or decl.name in name_filter)
+                    and decl.name in importer_names
+                    and decl.name not in declared):
+                suppliers.setdefault(decl.name, []).append(dep_path)
+    for name, paths in suppliers.items():
+        if len(paths) == 1:
+            displaced[name] = module_qualified_symbol(paths[0], name)
+    return displaced
 
 
 def module_qualified_generic_names(
@@ -2386,13 +2426,13 @@ class MonoContext:
     # generic came from ``path`` (:meth:`Monomorphizer._module_call_generic_decl`).
     generic_origins: Mapping[str, tuple[str, ...]] = field(
         default_factory=dict)
-    # Per module path, each of its top-level functions whose bare name the
-    # entry program's declaration holds in the flat tables, to the symbol the
-    # module's function is registered under there
-    # (:func:`displaced_module_fns`).  A bare call walked in that module's
-    # namespace is resolved through it before any flat table is read.  Code
-    # generation's bodies arrive with those calls already renamed; the
-    # verifier's keep the source spelling.
+    # Per module path, each non-generic function a bare call there means —
+    # the module's own, or one it imports — whose bare name the entry
+    # program's declaration holds in the flat tables, to the symbol that
+    # function is registered under there (:func:`displaced_module_fns`).  A
+    # bare call walked in that module's namespace is resolved through it
+    # before any flat table is read.  Code generation's bodies arrive with
+    # those calls already renamed; the verifier's keep the source spelling.
     displaced_fn_symbols: Mapping[tuple[str, ...], Mapping[str, str]] = (
         field(default_factory=dict))
 
@@ -2575,12 +2615,12 @@ class Monomorphizer:
     def _call_symbol(self, call: ast.FnCall) -> ast.FnCall:
         """*call* as the walked namespace resolves it.
 
-        A bare call to one of a module's own functions that the entry
-        program's declaration displaces in the flat tables names the symbol
-        the module's function is registered under
+        A bare call to a function the entry program's declaration displaces
+        in the flat tables — one of the module's own, or one it imports —
+        names the symbol that function is registered under
         (:func:`displaced_module_fns`), so every table lookup below answers
-        for the module's declaration and not the entry's.  Any other call is
-        returned as it is.
+        for the declaration the module means and not the entry's.  Any other
+        call is returned as it is.
         """
         symbol = self._scope_displaced.get(call.name)
         return call if symbol is None else replace(call, name=symbol)

@@ -313,13 +313,15 @@ class CrossModuleMixin:
         # against; the two agree on every `$`-free name, which is asserted
         # directly rather than assumed (tests/test_module_generic_namespace_1274).
         importer_bare_names = importer_occupied_bare_names(program)
-        # Each module's own functions whose bare name the entry's
-        # declarations hold, to the `mod$` symbol they are emitted under.  A
-        # module body's bare call to one is renamed to that symbol below,
-        # before anything names or resolves it (PR #1508 review).
+        # The functions each module's bare calls mean — its own, or one it
+        # imports — whose bare name the entry's declarations hold, to the
+        # `mod$` symbol each is emitted under.  A module body's bare call to
+        # one is renamed to that symbol below, before anything names or
+        # resolves it (PR #1508 review).  What a module imports is read from
+        # the programs as the checker saw them.
         self._displaced_fn_symbols = {
             mod.path: displaced_module_fns(
-                mod.program, mod.path, importer_bare_names)
+                mod.program, mod.path, importer_bare_names, checker_programs)
             for mod in self._resolved_modules
         }
 
@@ -786,16 +788,18 @@ class CrossModuleMixin:
                 routed = self._reroute_module_qualified_generic_calls(
                     tld.decl, module_qualified_targets,
                 )
-                # A bare call to one of this module's functions that the
-                # entry displaces means the module's function (§8.5.2), so
-                # it calls that function's `mod$` symbol, in every body the
-                # module compiles and every discovery walk over them.  Only
-                # the call target was redirected before, at the call site:
-                # its type was named from the entry's declaration, so a
-                # generic called on its result was specialised at the wrong
-                # type, and beside an entry GENERIC of the same name the
-                # generic rewrite took the call first.  Shadow-aware like the
-                # generic reroute: a `where` helper of the name owns it.
+                # A bare call to a function the entry displaces means what
+                # this module's namespace holds (§8.5.2) — its own function,
+                # or else the one it imports — so it calls that function's
+                # `mod$` symbol, in every body the module compiles and every
+                # discovery walk over them.  Before, only an own function's
+                # call target was redirected, at the call site: its type was
+                # named from the entry's declaration, so a generic called on
+                # its result was specialised at the wrong type, and beside an
+                # entry GENERIC of the same name the generic rewrite took the
+                # call first; an imported function's call reached the entry's
+                # declaration outright.  Shadow-aware like the generic
+                # reroute: a `where` helper of the name owns it.
                 routed = self._reroute_displaced_calls(
                     routed, self._displaced_fn_symbols[mod.path])
                 # #774: an imported PUBLIC generic is monomorphized by the
