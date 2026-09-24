@@ -203,11 +203,19 @@ class ControlFlowMixin:
         return result_type or UnknownType()
 
     def _names_refused_ctor(self, pat: ast.Pattern) -> bool:
-        """Whether *pat* names a constructor of a refused declaration."""
-        if isinstance(pat, ast.NullaryPattern):
-            return pat.name in self._refused_ctor_names
+        """Whether *pat* names a constructor of a refused declaration.
+
+        Only a name nothing registered answers: a refused `data Int
+        { Some(Bool) }` leaves the prelude's `Some` resolvable, and a match
+        on it must still be judged for coverage — the guard the pattern and
+        call sites apply too.
+        """
+        if isinstance(pat, (ast.NullaryPattern, ast.ConstructorPattern)) and (
+                pat.name in self._refused_ctor_names
+                and self.env.lookup_constructor(pat.name) is None):
+            return True
         if isinstance(pat, ast.ConstructorPattern):
-            return pat.name in self._refused_ctor_names or any(
+            return any(
                 self._names_refused_ctor(sub) for sub in pat.sub_patterns)
         return False
 

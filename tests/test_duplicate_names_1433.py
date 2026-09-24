@@ -1404,6 +1404,33 @@ def test_a_refused_primitive_declaration_is_not_registered(
     assert "I" not in checker.env.constructors
 
 
+# A refused declaration's constructor name that a REGISTERED constructor
+# also answers — the prelude's `Some`, or another data type's `A` — still
+# names that constructor, so a match on it is judged for coverage.
+_REFUSED_NAME_STILL_REGISTERED = {
+    "prelude-constructor": (
+        "public data Int {\n  Some(Bool)\n}\n\n"
+        + _fn("f", sig="@Option<Nat> -> @Nat",
+              body="match @Option<Nat>.0 {\n    Some(@Nat) -> @Nat.0\n  }")
+        + "\n" + _fn("main", "@Unit -> @Nat", "f(Some(3))")),
+    "another-data-type": (
+        "public data Int {\n  A\n}\n\npublic data Foo {\n  A,\n  B\n}\n\n"
+        + _fn("g", sig="@Foo -> @Nat", body="match @Foo.0 {\n    A -> 1\n  }")
+        + "\n" + _fn("main", "@Unit -> @Nat", "g(B)")),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_REFUSED_NAME_STILL_REGISTERED))
+def test_a_refused_constructor_name_that_still_resolves_is_judged(
+    tmp_path: Path, case: str,
+) -> None:
+    source = _REFUSED_NAME_STILL_REGISTERED[case]
+    errors = _check(tmp_path, {"main.vera": source})
+    assert [d.error_code for d in errors] == ["E158", "E311"], (
+        case, [(d.error_code, d.location.line, d.description)
+               for d in errors])
+
+
 def test_a_refused_primitive_alias_leaves_one_reading_of_its_name(
     tmp_path: Path,
 ) -> None:
