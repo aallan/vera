@@ -443,12 +443,13 @@ class CodeGenerator(
         # (`vera.module_view.imported_data_types`); empty everywhere else,
         # where imported layouts are absorbed and scoped by membership.
         self._imported_adt_names: frozenset[str] = frozenset()
-        # Each imported module's program as the checker saw it, captured by
-        # `_register_modules` before its rewrites.  Pass 1.2 asks the
+        # Each imported module's program as the checker saw it, by path,
+        # captured by `_register_modules` before its rewrites.  Pass 1.2 asks the
         # prelude's demand of them (`inject_prelude(..., modules=)`), and the
         # verifier's discovery asks it of the same programs, so the two sides
         # inject one prelude (PR #1508 review).
-        self._module_programs_as_checked: tuple[ast.Program, ...] = ()
+        self._module_programs_as_checked: dict[
+            tuple[str, ...], ast.Program] = {}
         # #1511: the data types a mono clone's TYPE ARGUMENTS name, while that
         # clone is registered or compiled (`_clone_type_scope`).  A clone is
         # measured in the namespace its generic was declared in, and its type

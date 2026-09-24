@@ -2782,7 +2782,8 @@ class ContractVerifier:
         # prelude they demand is injected here as code generation injects
         # it (Pass 1.2), from the same programs as the checker saw them.
         inject_prelude(
-            disc, modules=[mod.program for mod in self._resolved_modules],
+            disc,
+            modules={mod.path: mod.program for mod in self._resolved_modules},
         )
         self._disc_prelude_fn_names = frozenset(
             tld.decl.name for tld in disc.declarations

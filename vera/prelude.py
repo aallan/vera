@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import functools
 import re
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Mapping
 from types import MappingProxyType
 
 from vera import ast
@@ -637,6 +637,41 @@ def _user_defined_names(program: ast.Program) -> set[str]:
     return names
 
 
+#: The names through which a program uses each demand-injected block: its
+#: type, its constructors, and the built-ins whose signatures carry it.
+_JSON_NAMES = frozenset({
+    "Json", "JNull", "JBool", "JNumber", "JString", "JArray", "JObject",
+    "json_parse", "json_stringify",
+    "json_get", "json_has_field", "json_type",
+    "json_keys", "json_array_get", "json_array_length",
+    # #366 — typed accessors and compound field accessors
+    "json_as_string", "json_as_number", "json_as_bool", "json_as_int",
+    "json_as_array", "json_as_object",
+    "json_get_string", "json_get_number", "json_get_bool",
+    "json_get_int", "json_get_array",
+})
+_HTML_NAMES = frozenset({
+    "HtmlNode", "HtmlElement", "HtmlText", "HtmlComment",
+    "html_parse", "html_to_string", "html_query", "html_text",
+    "html_attr",
+})
+_HTTP_SERVER_NAMES = frozenset({"Request", "Response", "HttpServer"})
+#: Per HttpServer type, the names that use that type: the type (which is
+#: also its constructor's name) and the effect a handler declares.  The
+#: entry's demand reads the block's names together (`_HTTP_SERVER_NAMES`);
+#: a module's is per type (:func:`_modules_demand`).
+_HTTP_SERVER_TYPE_NAMES = {
+    "Request": frozenset({"Request", "HttpServer"}),
+    "Response": frozenset({"Response", "HttpServer"}),
+}
+
+
+def _mentions(program: ast.Program, names: frozenset[str]) -> bool:
+    """Whether any declaration of *program* names one of *names*: a type,
+    a slot reference, a call or a constructor (:func:`_node_mentions`)."""
+    return any(_node_mentions(tld.decl, names) for tld in program.declarations)
+
+
 def _source_mentions_json(program: ast.Program) -> bool:
     """Check if user code references Json types or constructors.
 
@@ -645,66 +680,75 @@ def _source_mentions_json(program: ast.Program) -> bool:
     field scan).  This catches modules that use Json values imported
     from other modules or received as parameters.
     """
-    json_names = frozenset({
-        "Json", "JNull", "JBool", "JNumber", "JString", "JArray", "JObject",
-        "json_parse", "json_stringify",
-        "json_get", "json_has_field", "json_type",
-        "json_keys", "json_array_get", "json_array_length",
-        # #366 — typed accessors and compound field accessors
-        "json_as_string", "json_as_number", "json_as_bool", "json_as_int",
-        "json_as_array", "json_as_object",
-        "json_get_string", "json_get_number", "json_get_bool",
-        "json_get_int", "json_get_array",
-    })
-    for tld in program.declarations:
-        decl = tld.decl
-        if _node_mentions(decl, json_names):
-            return True
-    return False
+    return _mentions(program, _JSON_NAMES)
 
 
 def _source_mentions_html(program: ast.Program) -> bool:
     """Check if user code references HtmlNode types or constructors."""
-    html_names = frozenset({
-        "HtmlNode", "HtmlElement", "HtmlText", "HtmlComment",
-        "html_parse", "html_to_string", "html_query", "html_text",
-        "html_attr",
-    })
-    for tld in program.declarations:
-        decl = tld.decl
-        if _node_mentions(decl, html_names):
-            return True
-    return False
+    return _mentions(program, _HTML_NAMES)
 
 
 def _source_mentions_http_server(program: ast.Program) -> bool:
     """Check if user code references the HttpServer handler types (#305)."""
-    names = frozenset({"Request", "Response", "HttpServer"})
-    for tld in program.declarations:
-        decl = tld.decl
-        if _node_mentions(decl, names):
-            return True
-    return False
+    return _mentions(program, _HTTP_SERVER_NAMES)
+
+
+def _imported_type_names(
+    program: ast.Program,
+    modules: Mapping[tuple[str, ...], ast.Program],
+) -> set[str]:
+    """The data type names *program* imports, and their constructors'.
+
+    Importing a type brings its constructors with it (§8.4.2), so each of
+    these names means the imported declaration in *program*, whatever the
+    prelude calls by the same name.  What *program* imports is the one
+    derivation the checker reads (:func:`vera.module_view.imported_data_types`).
+    """
+    from vera.module_view import imported_data_types
+
+    names: set[str] = set()
+    for type_name, suppliers in imported_data_types(program, modules).items():
+        names.add(type_name)
+        for path in suppliers:
+            for tld in modules[path].declarations:
+                decl = tld.decl
+                if isinstance(decl, ast.DataDecl) and decl.name == type_name:
+                    names.update(c.name for c in decl.constructors or ())
+    return names
 
 
 def _modules_demand(
-    modules: Iterable[ast.Program],
-    mentions: Callable[[ast.Program], bool],
+    modules: Mapping[tuple[str, ...], ast.Program],
+    names: frozenset[str],
     block_types: set[str],
 ) -> bool:
     """Whether an imported module uses a demand-injected prelude block.
 
-    A module that declares a data type of one of the block's names means
-    its OWN declaration by the names it writes (spec §8.4.1), so its
-    mentions demand nothing: counting them would inject the prelude's
-    type beside it, and the two would contend for one layout (#1277) in
-    a program that never used the prelude's.
+    A module demands the block when it writes one of the block's *names*
+    that means the PRELUDE's declaration there.  Two kinds of mention mean
+    something else, and demand nothing:
+
+    * every mention in a module that declares a data type of one of the
+      block's type names (*block_types*): it means its OWN declaration by
+      the names it writes (spec §8.4.1);
+    * a type name the module imports, and a constructor of such a type: a
+      module that imports `a`'s `Json` means `a`'s by `Json` (PR #1508
+      review).
+
+    Counting either would inject the prelude's type beside the module's,
+    and the two would contend for one layout (#1277, E621) in a program
+    that never used the prelude's.  Every other mention demands the block,
+    even in a module that imports a type of its name: `json_parse`, or a
+    constructor only the prelude's type declares, makes a value of the
+    prelude's type, and a program that holds it beside a differently
+    shaped `Json` of a module's cannot be built with one layout per name.
     """
-    return any(
-        mentions(module)
-        and not block_types & _user_defined_data_names(module)
-        for module in modules
-    )
+    for module in modules.values():
+        if block_types & _user_defined_data_names(module):
+            continue
+        if _mentions(module, names - _imported_type_names(module, modules)):
+            return True
+    return False
 
 
 def _has_standard_html(program: ast.Program) -> bool:
@@ -961,7 +1005,8 @@ def _type_shape_key(te: object, slots: dict[str, str]) -> str:
 
 
 def inject_prelude(
-    program: ast.Program, modules: Iterable[ast.Program] = (),
+    program: ast.Program,
+    modules: Mapping[tuple[str, ...], ast.Program] = MappingProxyType({}),
 ) -> str:
     """Inject prelude ADTs, combinators, and array operations.
 
@@ -1001,20 +1046,18 @@ def inject_prelude(
       isn't a subset of user names, so adding a future recursive
       helper stays a one-line change.
 
-    *modules* are the programs of the modules *program* imports, as the
-    checker saw them.  The demand-injected blocks (``Json``, ``HtmlNode``
-    and the HttpServer types) are asked of them too, because their bodies
-    are compiled into the same WASM module as *program*'s: a module that
-    uses ``Json`` in a program whose entry never names it compiled against
-    no ``Json`` at all (PR #1508 review).  A module that declares a data
-    type of the block's name means its own declaration by it, so it
-    demands nothing (:func:`_modules_demand`).  Code generation and the
-    verifier's monomorphization discovery pass the same programs, so the
-    two sides inject the same prelude.
+    *modules* maps the path of each module *program* imports, directly or
+    not, to its program as the checker saw it.  The demand-injected blocks
+    (``Json``, ``HtmlNode`` and the HttpServer types) are asked of them
+    too, because their bodies are compiled into the same WASM module as
+    *program*'s: a module that uses ``Json`` in a program whose entry never
+    names it compiled against no ``Json`` at all (PR #1508 review).  A
+    module's mention demands a block only where it means the prelude's
+    declaration there, which its own or an imported type of the name does
+    not (:func:`_modules_demand`).  Code generation and the verifier's
+    monomorphization discovery pass the same programs, so the two sides
+    inject the same prelude.
     """
-    # Every block below asks the modules, so an iterator of them is read
-    # once, here, rather than exhausted by the first (PR #1508 review).
-    modules = tuple(modules)
     user_names = _user_defined_names(program)
     user_data_names = _user_defined_data_names(program)
 
@@ -1089,7 +1132,7 @@ def inject_prelude(
         or (user_names & _json_ctors)
         or (user_names & _json_builtins)
         or _source_mentions_json(program)
-        or _modules_demand(modules, _source_mentions_json, {"Json"})
+        or _modules_demand(modules, _JSON_NAMES, {"Json"})
     )
     if user_uses_json:
         user_has_json = "Json" in user_data_names
@@ -1115,7 +1158,7 @@ def inject_prelude(
         or (user_names & _html_ctors)
         or (user_names & _html_builtins)
         or _source_mentions_html(program)
-        or _modules_demand(modules, _source_mentions_html, {"HtmlNode"})
+        or _modules_demand(modules, _HTML_NAMES, {"HtmlNode"})
     )
     if user_uses_html:
         user_has_html = "HtmlNode" in user_data_names
@@ -1130,13 +1173,14 @@ def inject_prelude(
     # HttpServer handler types (#305) — inject only when referenced;
     # a user-defined data Request / data Response shadows the prelude
     # (the extraction loop below skips user-defined names).  A module's
-    # demand is per type: one declaring its own `Request` means its own by
-    # that name, and still needs the prelude's `Response` (PR #1508 review).
+    # demand is per type: one declaring or importing its own `Request` means
+    # that one by the name, and still needs the prelude's `Response`
+    # (PR #1508 review).
     entry_http = _source_mentions_http_server(program)
     for http_type, http_source in _HTTP_SERVER_TYPES.items():
         if http_type not in user_data_names and (
             entry_http or _modules_demand(
-                modules, _source_mentions_http_server, {http_type})
+                modules, _HTTP_SERVER_TYPE_NAMES[http_type], {http_type})
         ):
             source_parts.append(http_source)
 

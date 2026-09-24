@@ -266,7 +266,7 @@ class CrossModuleMixin:
         checker_programs = {
             mod.path: mod.program for mod in self._resolved_modules
         }
-        self._module_programs_as_checked = tuple(checker_programs.values())
+        self._module_programs_as_checked = dict(checker_programs)
         self._resolved_modules = [
             dataclasses.replace(
                 mod,
