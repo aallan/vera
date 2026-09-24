@@ -24,6 +24,7 @@ from vera.monomorphize import (
 )
 from vera.naming import display_adt_name
 from vera.prelude import PRELUDE_NAMESPACE, data_decl_shape, prelude_adt_names
+from vera.resolver import merged_import_filters
 
 if TYPE_CHECKING:
     from vera.codegen.core import CodeGenerator
@@ -57,40 +58,6 @@ _NOTHING = object()
 # is only ever COUNTED here, never renamed.
 _ENTRY_OWNER: tuple[str, ...] = ()
 
-
-
-def _merged_import_filters(
-    decls: "tuple[ast.ImportDecl, ...] | list[ast.ImportDecl]",
-) -> dict[tuple[str, ...], set[str] | None]:
-    """One filter per imported PATH, unioned across repeated imports.
-
-    A namespace may name a declaration that ANY of its import lists admits,
-    so two statements naming one module contribute the union of their
-    lists and a wildcard dominates every list beside it.  Keying a dict
-    comprehension on the path instead made the LAST statement win and
-    discarded the others (PR review): with
-    ``import liba(aone); import liba(helper);`` the surviving filter admits
-    neither the type nor the signature that carries it, so #1317's flow
-    condition would stop seeing a crossing the entry can actually make and
-    the rename would qualify apart two declarations a value passes between.
-
-    Dedupe is idempotent by construction — repeating one statement adds
-    nothing — which is the semantics this records rather than a diagnostic:
-    a duplicate import is accepted by the checker today, so codegen reading
-    it differently from the checker would be its own divergence.
-    """
-    out: dict[tuple[str, ...], set[str] | None] = {}
-    for imp in decls:
-        names = set(imp.names) if imp.names is not None else None
-        if imp.path not in out:
-            out[imp.path] = names
-            continue
-        existing = out[imp.path]
-        if existing is None or names is None:
-            out[imp.path] = None  # a wildcard admits everything
-        else:
-            out[imp.path] = existing | names
-    return out
 
 
 class CrossModuleMixin:
@@ -303,12 +270,9 @@ class CrossModuleMixin:
             for mod in self._resolved_modules
         ]
 
-        # 1. Build import filter: path -> set of names (or None for wildcard)
-        import_names: dict[tuple[str, ...], set[str] | None] = {}
-        for imp in program.imports:
-            import_names[imp.path] = (
-                set(imp.names) if imp.names is not None else None
-            )
+        # 1. Build import filter: path -> set of names (or None for wildcard),
+        # unioned across repeated imports of one path (#1433).
+        import_names = merged_import_filters(program.imports)
 
         # #1253: per-namespace ADT bookkeeping, filled in the harvest loop and
         # folded into membership sets after it.
@@ -952,12 +916,7 @@ class CrossModuleMixin:
             None: visible(main_own, import_names),
         }
         for mod in self._resolved_modules:
-            own_imports = {
-                tuple(imp.path): (
-                    set(imp.names) if imp.names is not None else None
-                )
-                for imp in mod.program.imports
-            }
+            own_imports = merged_import_filters(mod.program.imports)
             members[mod.path] = visible(
                 declared_adts.get(mod.path, frozenset()), own_imports,
             )
@@ -1185,7 +1144,7 @@ class CrossModuleMixin:
         surface: dict[tuple[str, ...], dict[str, frozenset[str]]] = {}
         imports: dict[tuple[str, ...] | None, dict[
             tuple[str, ...], set[str] | None]] = {
-            None: _merged_import_filters(program.imports),
+            None: merged_import_filters(program.imports),
         }
         for mod in self._resolved_modules:
             own: dict[str, ast.DataDecl] = {}
@@ -1218,7 +1177,7 @@ class CrossModuleMixin:
                 name for name in pub if name in own
             }
             surface[mod.path] = surf
-            imports[mod.path] = _merged_import_filters(mod.program.imports)
+            imports[mod.path] = merged_import_filters(mod.program.imports)
         # The ENTRY is an owner like any other (#1423).  Its declarations
         # and its own alias namespace are read off `program` for the same
         # reason the modules' are read off theirs: Pass 1 has not registered

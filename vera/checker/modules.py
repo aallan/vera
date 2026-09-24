@@ -13,7 +13,7 @@ from vera import ast
 from vera.environment import TypeEnv
 from vera.monomorphize import namespace_adt_names, namespace_fn_names
 from vera.registration import where_helper_parents
-from vera.resolver import ResolvedModule
+from vera.resolver import ResolvedModule, merged_import_filters
 
 
 class ModulesMixin:
@@ -39,11 +39,9 @@ class ModulesMixin:
         """
         from vera.checker.core import TypeChecker
 
-        # 1. Build import filter
-        for imp in program.imports:
-            self._import_names[imp.path] = (
-                set(imp.names) if imp.names is not None else None
-            )
+        # 1. Build import filter, unioned across repeated imports of one
+        # path (#1433) — the one derivation the verifier and codegen read too.
+        self._import_names.update(merged_import_filters(program.imports))
 
         # Snapshot builtin names (TypeEnv registers builtins in __post_init__).
         # Hoisted above the #1304 refusal, which needs them: every injection

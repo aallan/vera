@@ -949,6 +949,20 @@
     ]
   },
   {
+    "id": "ch05_where_helper_duplicate_rejected",
+    "file": "ch05_where_helper_duplicate_rejected.vera",
+    "chapter": 5,
+    "title": "Two `where` helpers of one name in one block are a checker error (#1433)",
+    "level": "check",
+    "spec_ref": "Section 5.6.2",
+    "expected_error": "E184",
+    "features": [
+      "where_block",
+      "duplicate_helper_name",
+      "check_error"
+    ]
+  },
+  {
     "id": "ch05_reserved_keyword_fn_rejected",
     "file": "ch05_reserved_keyword_fn_rejected.vera",
     "chapter": 5,

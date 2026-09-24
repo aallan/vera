@@ -85,13 +85,13 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `  core.py` | 1,410 | | TypeChecker class, orchestration, contracts, constraint validation | |
 | `  resolution.py` | 535 | | AST TypeExpr → semantic Type, inference | |
 | `  modules.py` | 534 | | Cross-module registration (C7b/C7c), plus the per-module body check that makes a module's diagnostics independent of which file `vera check` was given (#1244) and the #1304 refusal of a bare function, data-type or constructor name two imports both supply (E155/E156/E157) | |
-| `  registration.py` | 1,188 | | Pass 1 forward declarations, ability registration | |
+| `  registration.py` | 1,598 | | Pass 1 forward declarations, ability registration | |
 | `  expressions.py` | 1,485 | | Expression synthesis (bidirectional), operators, statements | |
 | `  eq_ability.py` | 226 | | Eq ability derivation checks | |
 | `  sql.py` | 309 | | SQL literal-provenance resolution + placeholder counting (#309) | `resolve_literal_string()`, `count_placeholders()` |
 | `  calls.py` | 1,631 | | Function/constructor/module/ability calls | |
 | `  control.py` | 929 | | If/match, patterns, effect handlers | |
-| `resolver.py` | 332 | Resolve | Module path resolution, parse cache | `ModuleResolver` |
+| `resolver.py` | 373 | Resolve | Module path resolution, parse cache, the one import-filter derivation | `ModuleResolver`, `merged_import_filters()` |
 | `disclosure.py` | 536 | Verify | Per-module disclosed-function manifests: each module's own verification emits the set `disclosed_fn_names` derives, keyed by owner path and carrying the `DisclosureSite` the importer's E534 cites, so the #1363 demotion crosses an import (#1399); computed BOTTOM-UP over the import DAG so each module is verified once and nothing nests, and content-addressed on the module's own source + its closure's + the budget, which is what makes an edit to an imported module invalidate it | `ModuleDisclosureIndex`, `DisclosureSite` |
 | `monomorphize.py` | 4,368 | Resolve | Shared generic instantiation discovery + AST substitution (verifier and codegen); each clone's De Bruijn recount renders its binder names under the **origin module's** `AliasEnv`, the one its consumers rebuild the clone's scope with (#1208) | `substitute_type_vars()`, `resolve_type_alias()`, `canonicalize_type_aliases()` |
 | `regularity.py` | 413 | Type check / Verify | The ONE regular-recursion derivation (#1429), read PER TYPE ARGUMENT of a recursive occurrence: each must be a bare parameter of the enclosing declaration, passed along unchanged, or closed with respect to those parameters — an argument that wraps one inside another type constructor grows at every level and is refused; an occurrence of the declaration's own name must also keep its parameters in their original positions.  Asked by TWO consumers that must not disagree — the checker refuses the declaration (`E129`), and the SMT layer declines to MODEL it, because `verify()` is a public entry point whose check-clean precondition a library caller can violate and the datatype-group closure has no fixed point when it is.  A second copy would be free to drift into one consumer refusing what the other models.  Groups are the strongly connected components of one field-reference graph, so `RegularityIndex` answers for a whole module from a single pass; `recursive_group()` is the straightforward reachability walk it is differentially tested against | `RegularityIndex`, `is_regular()`, `irregular_occurrence()`, `recursive_group()` |
@@ -771,11 +771,11 @@ Every diagnostic has a unique code grouped by compiler phase:
 | E5xx | Verification | `verifier.py` |
 | E6xx | Codegen | `codegen/` |
 
-The `ERROR_CODES` dict in `errors.py` maps every code to a short description (177 entries — 174 `E` codes and 3 `W` warning codes). Codes are stable across versions — they can be used for programmatic filtering, suppression, and documentation lookups. Formatted output shows the code in brackets: `[E130] Error at line 5, column 3:`.
+The `ERROR_CODES` dict in `errors.py` maps every code to a short description (179 entries — 176 `E` codes and 3 `W` warning codes). Codes are stable across versions — they can be used for programmatic filtering, suppression, and documentation lookups. Formatted output shows the code in brackets: `[E130] Error at line 5, column 3:`.
 
 ## Test Suite
 
-Testing spans a **pytest suite** of 16,822 tests across 226 files: compiler-internals unit tests plus a **conformance suite** (253 programs in `tests/conformance/` validating every language feature against the spec) and **example programs** (43 end-to-end demos). The conformance suite is the definitive specification artifact; most programs target a single feature, though some (slot references, match, contracts) span several, and each serves as a minimal working example.
+Testing spans a **pytest suite** of 16,978 tests across 227 files: compiler-internals unit tests plus a **conformance suite** (254 programs in `tests/conformance/` validating every language feature against the spec) and **example programs** (43 end-to-end demos). The conformance suite is the definitive specification artifact; most programs target a single feature, though some (slot references, match, contracts) span several, and each serves as a minimal working example.
 
 See **[TESTING.md](../TESTING.md)** for the comprehensive testing reference -- test file table, conformance suite details, compiler code coverage, language feature coverage, helper conventions, validation scripts, CI pipeline, and guidelines for adding tests.
 

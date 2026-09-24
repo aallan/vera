@@ -1242,6 +1242,12 @@ class CallsMixin:
             return self._check_tuple_constructor(expr)
 
         ci = self.env.lookup_constructor(expr.name)
+        if ci is None and expr.name in self._refused_ctor_names:
+            # #1497: a constructor of a declaration refused as E158, whose
+            # E158 is the one error the program owes.
+            for arg in expr.args:
+                self._synth_expr(arg)
+            return UnknownType()
         if ci is None:
             self._error(
                 expr,
@@ -1451,6 +1457,8 @@ class CallsMixin:
                                     expected: Type | None = None) -> Type | None:
         """Type-check a nullary constructor: None, Nil, etc."""
         ci = self.env.lookup_constructor(expr.name)
+        if ci is None and expr.name in self._refused_ctor_names:
+            return UnknownType()  # #1497: see `_check_constructor_call`
         if ci is None:
             self._error(
                 expr,

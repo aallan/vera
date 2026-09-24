@@ -265,30 +265,26 @@ def _test_suite_para(
 
 
 class TestVeraReadmeTestCounts:
+    """The paragraph's conformance and example counts.  Its test total and
+    test-file count are headline totals, gated by `TestHeadlineTotals`."""
+
     def test_matching_counts_pass(self) -> None:
         text = _test_suite_para(9382, 143, 196, 42)
-        assert _MOD.check_vera_readme_test_counts(
-            text, 9382, 143, 196, 42
-        ) == []
+        assert _MOD.check_vera_readme_test_counts(text, 196, 42) == []
 
     def test_every_count_is_checked_independently(self) -> None:
         text = _test_suite_para(1, 2, 3, 4)
-        errors = _MOD.check_vera_readme_test_counts(text, 9382, 143, 196, 42)
-        # Four separate citations, four separate errors — a single
-        # aggregate would let three stay wrong after one is fixed.
-        assert len(errors) == 4
+        errors = _MOD.check_vera_readme_test_counts(text, 196, 42)
+        # Two separate citations, two separate errors — a single
+        # aggregate would let one stay wrong after the other is fixed.
+        assert len(errors) == 2
         joined = " ".join(errors)
-        for label in (
-            "total tests",
-            "test file count",
-            "conformance programs",
-            "example programs",
-        ):
+        for label in ("conformance programs", "example programs"):
             assert label in joined
 
     def test_stale_example_count_alone_fails(self) -> None:
         text = _test_suite_para(9382, 143, 196, 37)
-        errors = _MOD.check_vera_readme_test_counts(text, 9382, 143, 196, 42)
+        errors = _MOD.check_vera_readme_test_counts(text, 196, 42)
         assert len(errors) == 1
         assert "example programs" in errors[0]
 
@@ -297,7 +293,7 @@ class TestVeraReadmeTestCounts:
             "## Test Suite\n\nTesting spans 9,382 tests in 143 modules,"
             " 196 conformance programs and 42 demos.\n"
         )
-        errors = _MOD.check_vera_readme_test_counts(text, 9382, 143, 196, 42)
+        errors = _MOD.check_vera_readme_test_counts(text, 196, 42)
         assert len(errors) == 1
         assert "no longer gated" in errors[0]
 
@@ -314,9 +310,16 @@ class TestVeraReadmeTestCounts:
             " every language feature against the spec) and **example"
             " programs** (1,042 end-to-end demos).\n"
         )
-        assert _MOD.check_vera_readme_test_counts(
-            text, 12345, 1143, 1196, 1042
-        ) == []
+        assert _MOD.check_vera_readme_test_counts(text, 1196, 1042) == []
+        figures, errors = _MOD.read_headline_figures(
+            _headline_docs(9382, 143) | {"vera/README.md": text}
+        )
+        assert errors == []
+        assert [
+            (fig.figure, fig.cited)
+            for fig in figures
+            if fig.where.startswith("vera/README.md")
+        ] == [("tests", 12345), ("test files", 1143)]
 
     def test_counts_are_read_from_the_test_suite_section_only(self) -> None:
         # The pattern spans several sentences, so it matches with DOTALL.
@@ -335,7 +338,7 @@ class TestVeraReadmeTestCounts:
             " `tests/conformance/` validating every feature) and (42"
             " end-to-end demos).\n"
         )
-        errors = _MOD.check_vera_readme_test_counts(text, 9382, 143, 196, 42)
+        errors = _MOD.check_vera_readme_test_counts(text, 196, 42)
         assert len(errors) == 1
         assert "no longer gated" in errors[0]
 
@@ -345,7 +348,7 @@ class TestVeraReadmeTestCounts:
         text = _test_suite_para(9382, 143, 196, 42).replace(
             "## Test Suite", "## Testing"
         )
-        errors = _MOD.check_vera_readme_test_counts(text, 9382, 143, 196, 42)
+        errors = _MOD.check_vera_readme_test_counts(text, 196, 42)
         assert len(errors) == 1
         assert "no longer gated" in errors[0]
 
@@ -688,20 +691,23 @@ _STATUS = (
 
 
 class TestProjectStatusLine:
+    """The line's conformance, example and chapter counts.  Its test total
+    is a headline total, gated by `TestHeadlineTotals`."""
+
     def test_the_shipped_line_is_consistent(self) -> None:
-        assert _MOD.check_project_status(_STATUS, 11134, 229, 42, 14) == []
+        assert _MOD.check_project_status(_STATUS, 229, 42, 14) == []
 
     def test_every_count_on_the_line_is_gated(self) -> None:
         """One error per wrong figure, and the conformance one is among them."""
-        errors = _MOD.check_project_status(_STATUS, 1, 2, 3, 4)
-        assert len(errors) == 4
+        errors = _MOD.check_project_status(_STATUS, 2, 3, 4)
+        assert len(errors) == 3
         assert any("conformance" in e for e in errors)
         assert any("examples" in e for e in errors)
         assert any("chapter" in e for e in errors)
 
     def test_the_conformance_count_alone_is_caught(self) -> None:
         """The measured drift: tests right, conformance stale beside it."""
-        errors = _MOD.check_project_status(_STATUS, 11134, 230, 42, 14)
+        errors = _MOD.check_project_status(_STATUS, 230, 42, 14)
         assert len(errors) == 1
         assert "229" in errors[0] and "230" in errors[0]
 
@@ -709,13 +715,13 @@ class TestProjectStatusLine:
         # Same true numbers, phrasing the pattern cannot see.  Returning []
         # here is what let four of the five README gates sit dead.
         text = "Vera has 11,134 tests and 229 conformance programs.\n"
-        errors = _MOD.check_project_status(text, 11134, 229, 42, 14)
+        errors = _MOD.check_project_status(text, 229, 42, 14)
         assert len(errors) == 1
         assert "could not find" in errors[0]
 
     def test_a_count_dropped_from_the_line_is_an_error_not_a_skip(self) -> None:
         text = _STATUS.replace("229 conformance programs, ", "")
-        errors = _MOD.check_project_status(text, 11134, 229, 42, 14)
+        errors = _MOD.check_project_status(text, 229, 42, 14)
         assert len(errors) == 1
         # Both branches say "could not find", so the phrase alone cannot
         # tell "the line is gone" from "one figure on it is gone" — and
@@ -730,7 +736,267 @@ class TestProjectStatusLine:
     def test_the_counts_are_read_from_the_status_line_only(self) -> None:
         """A decoy elsewhere in the file must not satisfy the gate."""
         text = "Elsewhere: 999 conformance programs.\n\n" + _STATUS
-        assert _MOD.check_project_status(text, 11134, 229, 42, 14) == []
+        assert _MOD.check_project_status(text, 229, 42, 14) == []
+
+
+# ---------------------------------------------------------------------------
+# The headline test totals: checked against the live collection only with
+# --release (the release PR), and against one another always.  Every fix PR
+# moves the total, so gating it on every PR would make each merge conflict
+# with every other open PR on the same five lines.
+# ---------------------------------------------------------------------------
+
+
+def _headline_docs(
+    tests: int,
+    files: int,
+    breakdown: tuple[int, int, int] | None = None,
+    **per_doc: int,
+) -> dict[str, str]:
+    """The five headline documents, each stating `tests` (unless `per_doc`
+    gives that document its own figure) and the two file-count citations
+    stating `files`.  The breakdown defaults to parts that sum to the
+    TESTING.md total."""
+    def cited(doc: str) -> int:
+        return per_doc.get(doc, tests)
+
+    total = cited("TESTING")
+    passed, stress, skipped = breakdown or (total - 26 - 121, 26, 121)
+    return {
+        "TESTING.md": (
+            "| Metric | Value |\n|--------|-------|\n"
+            f"| **Tests** | {total:,} across {per_doc.get('TESTING_files', files):,}"
+            f" files (~108,000 lines of test code; {passed:,} passed"
+            f" + {stress} stress-deselected, {skipped} skipped) |\n"
+            "| **Conformance programs** | 229 |\n"
+        ),
+        "README.md": (
+            "Vera is in **active development** at v0.1.11: 2,000+ commits,"
+            f" 209 releases, {cited('README'):,} tests, 95% Python code"
+            " coverage, 229 conformance programs, 42 examples, and a"
+            " 14-chapter specification.\n"
+        ),
+        "FAQ.md": (
+            "## By the numbers\n\n"
+            f"- {cited('FAQ'):,} tests, including a 229-program conformance"
+            " suite\n- 42 working example programs\n"
+        ),
+        "ROADMAP.md": (
+            "# Roadmap\n\n## Where we are\n\n"
+            f"{cited('ROADMAP'):,} tests, 229 conformance programs, 42"
+            " examples, 14 spec chapters.\n\n## Next\n"
+        ),
+        "vera/README.md": _test_suite_para(
+            cited("VERA_README"), per_doc.get("VERA_README_files", files), 229, 42
+        ),
+    }
+
+
+class TestHeadlineTotals:
+    """`check_headline_totals` in the two modes."""
+
+    def test_a_stale_headline_that_agrees_passes_by_default(self) -> None:
+        """What a fix PR leaves behind: it added tests and a test file, and
+        touched none of the five headline lines."""
+        docs = _headline_docs(9382, 143)
+        assert _MOD.check_headline_totals(docs, 9400, 144, release=False) == []
+
+    def test_the_same_headline_fails_in_release_mode(self) -> None:
+        docs = _headline_docs(9382, 143)
+        errors = _MOD.check_headline_totals(docs, 9400, 144, release=True)
+        # Five test-total citations, two file-count citations, and the
+        # breakdown, which no longer sums to the collected total.
+        assert len(errors) == 8, errors
+        for doc in _MOD.HEADLINE_DOCS:
+            assert any(e.startswith(doc) for e in errors), doc
+        assert sum("doc says 9,382, live is 9,400" in e for e in errors) == 5
+        assert sum("doc says 143, live is 144" in e for e in errors) == 2
+        assert any("but the collected total is 9,400" in e for e in errors)
+
+    def test_a_current_headline_passes_in_release_mode(self) -> None:
+        docs = _headline_docs(9382, 143)
+        assert _MOD.check_headline_totals(docs, 9382, 143, release=True) == []
+
+    @pytest.mark.parametrize("doc", ["TESTING", "README", "FAQ", "ROADMAP", "VERA_README"])
+    def test_each_test_total_citation_is_read(self, doc: str) -> None:
+        """One citation stale beside four current ones is caught in both
+        modes, and names its document — so every citation is really read,
+        not only the first that matches."""
+        docs = _headline_docs(9382, 143, **{doc: 9400})
+        name = {"VERA_README": "vera/README.md"}.get(doc, f"{doc}.md")
+        release = _MOD.check_headline_totals(docs, 9382, 143, release=True)
+        assert [e for e in release if "doc says 9,400" in e] and all(
+            e.startswith(name) for e in release if "doc says 9,400" in e
+        ), release
+        default = _MOD.check_headline_totals(docs, 9382, 143, release=False)
+        assert len(default) == 1, default
+        assert "disagrees across documents" in default[0]
+        assert "9,400" in default[0] and "9,382" in default[0]
+        assert "--release" in default[0]
+
+    @pytest.mark.parametrize("doc", ["TESTING_files", "VERA_README_files"])
+    def test_each_file_count_citation_is_read(self, doc: str) -> None:
+        docs = _headline_docs(9382, 143, **{doc: 144})
+        default = _MOD.check_headline_totals(docs, 9382, 143, release=False)
+        assert len(default) == 1, default
+        assert "test files count disagrees" in default[0]
+        release = _MOD.check_headline_totals(docs, 9382, 143, release=True)
+        assert len(release) == 1, release
+        assert "doc says 144, live is 143" in release[0]
+
+    def test_the_breakdown_is_summed_against_its_own_row_by_default(self) -> None:
+        """A partial edit of the overview row — its total moved, its parts
+        not — is caught without the live collection."""
+        docs = _headline_docs(9382, 143, breakdown=(9230, 26, 121))
+        errors = _MOD.check_headline_totals(docs, 9400, 144, release=False)
+        assert len(errors) == 1, errors
+        assert "= 9,377, but the row's own total is 9,382" in errors[0]
+
+    @pytest.mark.parametrize("release", [False, True])
+    @pytest.mark.parametrize(
+        ("doc", "old", "new"),
+        [
+            ("TESTING.md", "| **Tests** |", "| **Test count** |"),
+            ("README.md", " tests, 95%", " unit tests and 95%"),
+            ("FAQ.md", " tests, including", " tests including"),
+            ("ROADMAP.md", " tests, 229", " tests and 229"),
+            ("vera/README.md", "**pytest suite**", "**suite**"),
+        ],
+    )
+    def test_a_reworded_citation_is_an_error_in_both_modes(
+        self, release: bool, doc: str, old: str, new: str
+    ) -> None:
+        """The default mode compares the citations with one another, so one
+        it cannot read would drop out of that comparison in silence."""
+        docs = _headline_docs(9382, 143)
+        assert old in docs[doc]
+        docs[doc] = docs[doc].replace(old, new)
+        errors = _MOD.check_headline_totals(docs, 9382, 143, release=release)
+        assert errors, f"{doc} reworded: no error in {release=}"
+        assert all(e.startswith(doc) for e in errors), errors
+
+    def test_thousands_separators_are_read_in_every_citation(self) -> None:
+        docs = _headline_docs(12345, 1143)
+        figures, errors = _MOD.read_headline_figures(docs)
+        assert errors == []
+        assert {(fig.figure, fig.cited) for fig in figures} == {
+            ("tests", 12345), ("test files", 1143)
+        }
+        assert len(figures) == 7
+
+
+_ROOT_FOR_MODES = Path(__file__).parent.parent
+
+
+def _live_for_modes(**changes: Any) -> Any:
+    """The tree's own measurements, taken by the script's `gather`, except
+    the three it would spawn a subprocess for: the collection is read back
+    from TESTING.md's per-file rows and its overview total, the tags are
+    absent, and the dual-target split is read back from its row.  So the
+    documents and the measurements agree wherever a test does not say
+    otherwise, and nothing here spawns pytest or git."""
+    testing = (_ROOT_FOR_MODES / "TESTING.md").read_text(encoding="utf-8")
+    rows = {
+        m.group(1): int(m.group(2).replace(",", ""))
+        for m in _MOD._TEST_FILE_ROW.finditer(testing)
+    }
+    total = next(
+        fig.cited
+        for fig in _MOD.read_headline_figures(
+            {
+                name: (_ROOT_FOR_MODES / name).read_text(encoding="utf-8")
+                for name in _MOD.HEADLINE_DOCS
+            }
+        )[0]
+        if fig.where.startswith("TESTING.md") and fig.figure == "tests"
+    )
+    split = _MOD.DualTargetSplit(
+        **{
+            name: int(re.search(pattern, testing).group(1))  # type: ignore[union-attr]
+            for name, pattern in _MOD._DUAL_TARGET_FIGURES
+        }
+    )
+    live = _MOD.gather(
+        _ROOT_FOR_MODES,
+        collect=lambda root: (total, rows),
+        tags=lambda root: None,
+        dual_target=lambda root: split,
+    )
+    assert not isinstance(live, str), live
+    return live._replace(**changes)
+
+
+def _check(argv: list[str], live: Any) -> list[str]:
+    return list(_MOD.check_all(_ROOT_FOR_MODES, live, _MOD.parse_args(argv)))
+
+
+class TestTheModeReachesOnlyTheHeadline:
+    """`check_all` — what `main()` runs — over the real documents, with the
+    mode chosen through the real argument parser.  Each test compares a
+    measurement it moved against the same measurement unmoved, so whatever
+    the tree's documents already say cancels out and only the difference
+    the move makes is asserted."""
+
+    def test_a_stale_headline_passes_by_default(self) -> None:
+        live = _live_for_modes()
+        stale = live._replace(total_tests=live.total_tests + 7)
+        assert _check([], stale) == _check([], live)
+
+    def test_a_stale_headline_fails_with_release(self) -> None:
+        live = _live_for_modes()
+        stale = live._replace(total_tests=live.total_tests + 7)
+        before = _check(["--release"], live)
+        added = [e for e in _check(["--release"], stale) if e not in before]
+        # The five documents' test totals and the breakdown.
+        assert len(added) == 6, added
+        for doc in _MOD.HEADLINE_DOCS:
+            assert any(e.startswith(doc) for e in added), (doc, added)
+
+    def test_the_test_file_count_is_headline_and_its_row_is_not(self) -> None:
+        """A new test file with no TESTING.md row: the missing row is
+        reported in both modes, the file count only with --release."""
+        live = _live_for_modes()
+        grown = live._replace(
+            test_files=[*live.test_files, _ROOT_FOR_MODES / "tests" / "test_zz_new_9999.py"]
+        )
+        added = {}
+        for argv in ([], ["--release"]):
+            before = _check(argv, live)
+            added[bool(argv)] = [e for e in _check(argv, grown) if e not in before]
+        assert added[False] == ["TESTING.md table: missing row for test_zz_new_9999.py"]
+        extra = [e for e in added[True] if e not in added[False]]
+        assert len(extra) == 2, extra
+        assert all("test files" in e for e in extra), extra
+
+    @pytest.mark.parametrize("change", ["examples", "conformance", "per-file row"])
+    def test_a_stale_non_headline_count_fails_identically_in_both_modes(
+        self, change: str
+    ) -> None:
+        """The mode reaches the headline totals and nothing else: a count
+        no fix PR necessarily moves reports the same errors either way."""
+        live = _live_for_modes()
+        if change == "examples":
+            moved = live._replace(examples=live.examples + 1)
+        elif change == "conformance":
+            moved = live._replace(
+                manifest=[*live.manifest, {"file": "ch99_new_9999.vera", "level": "run"}]
+            )
+        else:
+            file_tests = dict(live.file_tests)
+            file_tests["test_parser.py"] += 1
+            moved = live._replace(file_tests=file_tests)
+        added = {}
+        for argv in ([], ["--release"]):
+            before = _check(argv, live)
+            added[bool(argv)] = [e for e in _check(argv, moved) if e not in before]
+        assert added[False], f"{change} moved: no error by default"
+        assert added[False] == added[True]
+        if change == "per-file row":
+            assert added[False] == [
+                "TESTING.md table: test_parser.py tests: doc says"
+                f" {live.file_tests['test_parser.py']},"
+                f" live is {live.file_tests['test_parser.py'] + 1}"
+            ]
 
 
 # ---------------------------------------------------------------------------
@@ -2768,24 +3034,36 @@ class TestCrossCheckoutImportIsolation:
         """Structural pin on the real fix: `main()` must insert `root`
         at sys.path BEFORE any `from vera` import STATEMENT runs, not
         after — inserting it after the first one already executed
-        would be a no-op for that import.  Matches an actual `from
-        vera.x import y` statement (line-anchored, optional leading
-        whitespace) rather than a bare substring search, which would
-        also match this very requirement described in a comment."""
+        would be a no-op for that import.
+
+        The imports sit inside functions (`check_all` and the checks it
+        calls), so they run when `main()` calls them, never at module
+        import time: the insert must precede `main()`'s first call into
+        them, and no `from vera` statement may sit at module level.
+        Matches an actual `from vera.x import y` statement (line-anchored,
+        optional leading whitespace) rather than a bare substring search,
+        which would also match this very requirement described in a
+        comment."""
         source = _SCRIPT.read_text(encoding="utf-8")
-        main_start = source.index("\ndef main() -> int:")
-        main_body = source[main_start:]
-        insert_idx = main_body.index("sys.path.insert(0, str(root))")
-        import_match = re.search(r"^[ \t]*from vera\.\w+ import\b", main_body, re.M)
-        assert import_match is not None, (
-            "main() no longer imports anything from vera — this test's "
+        imports = re.findall(r"^([ \t]*)from vera\.\w+ import\b", source, re.M)
+        assert imports, (
+            "the script no longer imports anything from vera — this test's "
             "premise (there is a from-vera import to race against) no "
             "longer holds; re-check whether the ordering still matters"
         )
-        assert insert_idx < import_match.start(), (
-            "sys.path.insert(0, str(root)) must appear before the first "
-            "`from vera.<x> import ...` statement in main() — found it "
-            "after instead"
+        assert all(indent for indent in imports), (
+            "a `from vera.<x> import ...` statement sits at module level, "
+            "so it runs before main() can insert root at sys.path"
+        )
+        main_body = source[source.index("\ndef main() -> int:"):]
+        insert_idx = main_body.index("sys.path.insert(0, str(root))")
+        first_call = min(
+            main_body.index(call) for call in ("gather(root", "check_all(root")
+        )
+        assert insert_idx < first_call, (
+            "sys.path.insert(0, str(root)) must appear before main() calls "
+            "gather()/check_all(), whose checks import from vera — found "
+            "it after instead"
         )
 
 

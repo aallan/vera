@@ -195,8 +195,29 @@ class ControlFlowMixin:
                         error_code="E302",
                     )
 
-        self._check_exhaustiveness(expr, scrutinee_ty)
+        # #1497: a match naming a refused declaration's constructor was
+        # written against that declaration, so its coverage is not judged.
+        if not (self._refused_ctor_names and any(
+                self._names_refused_ctor(arm.pattern) for arm in expr.arms)):
+            self._check_exhaustiveness(expr, scrutinee_ty)
         return result_type or UnknownType()
+
+    def _names_refused_ctor(self, pat: ast.Pattern) -> bool:
+        """Whether *pat* names a constructor of a refused declaration.
+
+        Only a name nothing registered answers: a refused `data Int
+        { Some(Bool) }` leaves the prelude's `Some` resolvable, and a match
+        on it must still be judged for coverage — the guard the pattern and
+        call sites apply too.
+        """
+        if isinstance(pat, (ast.NullaryPattern, ast.ConstructorPattern)) and (
+                pat.name in self._refused_ctor_names
+                and self.env.lookup_constructor(pat.name) is None):
+            return True
+        if isinstance(pat, ast.ConstructorPattern):
+            return any(
+                self._names_refused_ctor(sub) for sub in pat.sub_patterns)
+        return False
 
     def _check_exhaustiveness(
         self, expr: ast.MatchExpr, scrutinee_ty: Type
@@ -496,6 +517,14 @@ class ControlFlowMixin:
             return self._check_tuple_pattern(pat, expected)
 
         ci = self.env.lookup_constructor(pat.name)
+        if ci is None and pat.name in self._refused_ctor_names:
+            # #1497: a constructor of a declaration refused as E158.  Its
+            # E158 is the one error the program owes, so the sub-patterns
+            # bind quietly and nothing more is reported here.
+            refused: list[Binding] = []
+            for sub_pat in pat.sub_patterns:
+                refused.extend(self._check_pattern(sub_pat, UnknownType()))
+            return refused
         if ci is None:
             self._error(
                 pat,
@@ -574,6 +603,8 @@ class ControlFlowMixin:
                                expected: Type | None) -> list[Binding]:
         """Check a nullary constructor pattern."""
         ci = self.env.lookup_constructor(pat.name)
+        if ci is None and pat.name in self._refused_ctor_names:
+            return []  # #1497: see `_check_ctor_pattern`
         if ci is None:
             self._error(
                 pat,
@@ -756,7 +787,25 @@ class ControlFlowMixin:
         self._handler_body_state_tnames = []
 
         # Check handler clauses
+        first_clauses: dict[str, ast.HandlerClause] = {}
         for clause in expr.clauses:
+            # #1433: a handler is a namespace of clauses, one per operation.
+            # Two clauses for one operation compiled to a handler that ran
+            # the LATER one whenever the body performed it — a choice made by
+            # clause order, which the program does not state.  The surplus
+            # is refused, and its body not checked.
+            first_clause = first_clauses.setdefault(clause.op_name, clause)
+            if first_clause is not clause:
+                self._report_duplicate_name(
+                    clause, noun="handler clause", name=clause.op_name,
+                    scope="this handler", first=first_clause,
+                    fix=(
+                        f"Delete this clause, or merge the two into the one "
+                        f"clause for '{clause.op_name}': each operation has "
+                        f"exactly one clause in a handler."
+                    ),
+                )
+                continue
             op_info = eff_info.operations.get(clause.op_name)
             if op_info is None:
                 self._error(

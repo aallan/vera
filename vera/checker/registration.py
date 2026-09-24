@@ -5,6 +5,7 @@ from __future__ import annotations
 import functools
 import re
 from collections.abc import Iterator
+from typing import ClassVar
 
 from vera import ast
 from vera.environment import (
@@ -15,7 +16,7 @@ from vera.environment import (
     OpInfo,
     TypeAliasInfo,
 )
-from vera.types import TypeVar
+from vera.types import PRIMITIVES, TypeVar
 
 # #1191: the prelude's generated-declaration namespace — "Vera" + an
 # uppercase letter or digit ("VeraOptionMapFn", "VeraA").  Anchored, so
@@ -66,6 +67,32 @@ def builtin_effect_names() -> frozenset[str]:
     from vera.introspect import builtin_effect_names as _registry_names
 
     return _registry_names()
+
+
+@functools.lru_cache(maxsize=1)
+def builtin_ability_ops() -> dict[str, str]:
+    """Each built-in ability's operations, as ``{operation: ability}`` (E185).
+
+    Read from the abilities ``TypeEnv`` registers itself, never a hand-list,
+    so a future built-in ability is gated the moment it is registered.
+    Cached: the registry is static.  The keys of the value are the built-in
+    ABILITY names as well, via :func:`builtin_ability_names`.
+    """
+    from vera.environment import TypeEnv
+
+    return {
+        op: ability
+        for ability, info in TypeEnv().abilities.items()
+        for op in info.operations
+    }
+
+
+@functools.lru_cache(maxsize=1)
+def builtin_ability_names() -> frozenset[str]:
+    """Built-in ability names a user ``ability`` must not redeclare (E185)."""
+    from vera.environment import TypeEnv
+
+    return frozenset(TypeEnv().abilities)
 
 
 # Identifiers unavailable as function names (E153).  For pieces 1 and 2 the
@@ -244,6 +271,16 @@ class RegistrationMixin:
         # those stays legal (§8.4.1, §8.5.2); declaring the same name twice
         # HERE does not.
         self._ns_ctor_owners: dict[str, str] = {}
+        # #1433: the first declaration of each name in each of the four
+        # top-level namespaces this pass holds (see `_DECL_NAMESPACES`).  The
+        # same scope as `_ns_ctor_owners` and for the same reason: `env`
+        # already holds the prelude's and the imports' entries, and
+        # shadowing those stays legal (§8.4.1, §8.5.2).
+        self._ns_first_decls: dict[tuple[str, str], ast.Decl] = {}
+        # #1433: the ability operations this pass declares, with the ability
+        # declaring each — one namespace across every ability in scope, the
+        # built-in ones included (spec §9.8).
+        self._ns_ability_ops: dict[str, tuple[str, ast.OpDecl]] = {}
         for tld in program.declarations:
             # C7c: require explicit visibility on fn/data declarations
             if (tld.visibility is None
@@ -288,7 +325,25 @@ class RegistrationMixin:
             # cascading arity errors from the invalid declaration.
             if (isinstance(tld.decl, ast.EffectDecl)
                     and self._check_builtin_effect_redeclaration(tld.decl)):
+                self._refused_decl_ids.add(id(tld.decl))
                 continue
+            # #1433: and for abilities (E185).  The built-in stays canonical:
+            # code generation compiles `eq`, `compare`, `hash` and `show`
+            # against the built-in whatever a declaration says.
+            if (isinstance(tld.decl, ast.AbilityDecl)
+                    and self._check_builtin_ability_redeclaration(tld.decl)):
+                self._refused_decl_ids.add(id(tld.decl))
+                continue
+            # #1433: a name this file has already declared in the same
+            # namespace.  After the two built-in gates, so a declaration
+            # those refuse is not ALSO reported here: it was never going to
+            # be registered, so it holds no name for a later one to repeat.
+            if self._refuse_surplus_declaration(tld.decl):
+                continue
+            if isinstance(tld.decl, ast.FnDecl):
+                # #1433: and the namespaces a function opens inside itself —
+                # each `where` block, and each `forall` list.
+                self._check_duplicate_names_in_fn(tld.decl)
             self._register_decl(tld.decl, visibility=tld.visibility)
 
         # Post-registration cycle detection on type aliases (#648).
@@ -319,7 +374,7 @@ class RegistrationMixin:
         """
         rejected = decl.name in _builtin_reject_names()
         if rejected:
-            self._rejected_builtin_redefs.add(id(decl))
+            self._refused_decl_ids.add(id(decl))
             bn = decl.name
             self._error(
                 decl,
@@ -356,9 +411,12 @@ class RegistrationMixin:
         # built-in and cascades bogus arity/type errors. Mark the parent so its
         # body is skipped in the check phase too. The return value still
         # reflects only whether ``decl``'s own name shadows a built-in, so the
-        # parent itself is still registered under its (legitimate) name.
+        # parent itself is still registered under its (legitimate) name — and
+        # keeps it (#1433): the mark is not a refusal, so a bare call still
+        # reaches the parent and a second declaration of its name is still a
+        # duplicate.
         if nested_rejected:
-            self._rejected_builtin_redefs.add(id(decl))
+            self._unchecked_body_ids.add(id(decl))
         return rejected
 
     def _check_reserved_type_name(
@@ -666,6 +724,311 @@ class RegistrationMixin:
         for wfn in decl.where_fns or ():
             self._check_reserved_fn_name(wfn)
 
+    # -----------------------------------------------------------------
+    # #1433: one declaration per name per namespace (spec §8.5.5)
+    # -----------------------------------------------------------------
+    #
+    # Every namespace the checker registers a declared name into was a
+    # table written last-wins, with no duplicate check: a second declaration
+    # replaced the first, the first became unreachable, and the program
+    # failed later and elsewhere — two `where` helpers or two top-level
+    # functions as wasm-tools' `duplicate func identifier` against a symbol
+    # the author never wrote, two clauses for one operation as a handler that
+    # silently ran the later one, two `data` declarations of one name as an
+    # exhaustiveness error describing the wrong one.  Each namespace now
+    # refuses the second and later declarations of a name with E184, at the
+    # surplus declaration, and the FIRST stays the one every use resolves
+    # against: the surplus is not registered, and (for a declaration with a
+    # body) not checked, so no diagnostic reports it against the first's
+    # signature.  That is the posture E151 takes for a built-in redefinition,
+    # and it keeps the report to one error per surplus declaration.
+    #
+    # `tests/test_duplicate_names_1433.py` enumerates the namespaces from the
+    # tables registration writes (`TypeEnv`, the Info records, the AST's
+    # declaration lists) and holds a row for each; a namespace added without
+    # one fails there.
+
+    #: The namespace a top-level declaration's name goes in, and the noun an
+    #: E184 calls it.  `data` and `type` share one: `_resolve_named_type`
+    #: answers a type position's name from the aliases before the data
+    #: types, so a `data Foo` beside a `type Foo` was unreachable in every
+    #: type position whichever came first.
+    _DECL_NAMESPACES: ClassVar[dict[type[ast.Decl], tuple[str, str]]] = {
+        ast.FnDecl: ("function", "function"),
+        ast.DataDecl: ("type", "data type"),
+        ast.TypeAliasDecl: ("type", "type alias"),
+        ast.EffectDecl: ("effect", "effect"),
+        ast.AbilityDecl: ("ability", "ability"),
+    }
+
+    def _refuse_surplus_declaration(self, decl: ast.Decl) -> bool:
+        """E184 for a top-level name this file has already declared.
+
+        Returns ``True`` when ``decl`` is the surplus, so the caller skips
+        registering it; its id joins ``_refused_decl_ids`` so the check
+        phase skips its body too.  A duplicate across FILES is not this
+        rule: a local declaration shadows an import (§8.5.2), and two
+        imports supplying one name are E155/E156/E157 (§8.5.2.2).
+        """
+        entry = self._DECL_NAMESPACES.get(type(decl))
+        name = getattr(decl, "name", None)
+        if entry is None or not isinstance(name, str):
+            return False
+        namespace, noun = entry
+        first = self._ns_first_decls.get((namespace, name))
+        if first is None:
+            self._ns_first_decls[(namespace, name)] = decl
+            return False
+        first_noun = self._DECL_NAMESPACES[type(first)][1]
+        self._report_duplicate_name(
+            decl, noun=noun, name=name, scope="this file", first=first,
+            first_noun=None if first_noun == noun else first_noun,
+        )
+        self._refused_decl_ids.add(id(decl))
+        return True
+
+    def _check_duplicate_names_in_fn(self, decl: ast.FnDecl) -> None:
+        """E184 inside the namespaces ``decl`` opens: its ``where`` block and
+        its ``forall`` list, and — recursively — its helpers' own.
+
+        A ``where`` block is a namespace per BLOCK (§5.6.2): a helper may
+        carry a block of its own, and a name there is not a collision with
+        the enclosing block's, because codegen names the two
+        ``f$where$h$where$k`` and ``f$where$k`` and the scoped lookup finds
+        the nearer.  The scoped lookup takes the FIRST same-named helper of
+        a frame, so a surplus helper was unreachable, and codegen emitted
+        both as ``$f$where$h``.  A surplus helper is refused whole — its own
+        block and ``forall`` list are not inspected, since its body will not
+        be checked either.
+
+        A helper's own ``forall`` list is a namespace of its own: a binder
+        there shadows an enclosing function's parameter of the same name
+        inside the helper (§5.6.2), so only a repeat WITHIN one list is a
+        duplicate.
+        """
+        self._check_duplicate_type_params(decl, f"function '{decl.name}'")
+        seen: dict[str, ast.FnDecl] = {}
+        for wfn in decl.where_fns or ():
+            # A helper refused already — redefining a built-in (E151) — is
+            # not registered, so it holds no name for a later one to repeat,
+            # the posture `_register_all` takes for a top-level declaration.
+            if id(wfn) in self._refused_decl_ids:
+                continue
+            first = seen.get(wfn.name)
+            if first is None:
+                seen[wfn.name] = wfn
+                continue
+            self._report_duplicate_name(
+                wfn, noun="'where' helper", name=wfn.name,
+                scope=f"the 'where' block of '{decl.name}'", first=first,
+            )
+            self._refused_decl_ids.add(id(wfn))
+        for wfn in decl.where_fns or ():
+            if id(wfn) not in self._refused_decl_ids:
+                self._check_duplicate_names_in_fn(wfn)
+
+    def _check_duplicate_type_params(
+        self,
+        decl: (ast.FnDecl | ast.DataDecl | ast.TypeAliasDecl
+               | ast.EffectDecl | ast.AbilityDecl),
+        owner: str,
+    ) -> None:
+        """E184 for a type parameter bound twice in one list.
+
+        Twice in one list — ``forall<T, T>`` — binds one name twice into
+        ``env.type_params``, so every ``@T`` names both and the list's arity
+        is not the number of types a use supplies.  The binders of one list
+        share the declaration's position, so each report names its binder's
+        place in the list: two identical reports would be one after the
+        checker's exact-duplicate dedup, and ``forall<T, T, T>`` has two
+        surplus binders to remove.
+        """
+        binders = (
+            decl.forall_vars if isinstance(decl, ast.FnDecl)
+            else decl.type_params
+        ) or ()
+        first_at: dict[str, int] = {}
+        for at, tv in enumerate(binders, start=1):
+            if tv in first_at:
+                self._report_duplicate_name(
+                    decl, noun="type parameter", name=tv,
+                    scope=f"{owner} (position {at} of its list)",
+                    first=None,
+                    first_scope=f"{owner} (position {first_at[tv]})",
+                )
+            first_at.setdefault(tv, at)
+
+    def _distinct_ops(
+        self, decl: ast.EffectDecl | ast.AbilityDecl, kind: str,
+    ) -> list[ast.OpDecl]:
+        """``decl``'s operations, with E184 for each surplus one.
+
+        An effect or ability is a namespace of operations: a second ``op a``
+        replaced the first in the registry, so every call and every handler
+        clause for ``a`` met only the later signature.  The surplus is
+        reported and left out, so the first is the one registered.
+        """
+        first_ops: dict[str, ast.OpDecl] = {}
+        distinct: list[ast.OpDecl] = []
+        for op in decl.operations:
+            first = first_ops.setdefault(op.name, op)
+            if first is not op:
+                self._report_duplicate_name(
+                    op, noun="operation", name=op.name,
+                    scope=f"{kind} '{decl.name}'", first=first,
+                )
+                self._refused_decl_ids.add(id(op))
+                continue
+            distinct.append(op)
+        return distinct
+
+    def _check_builtin_ability_redeclaration(
+        self, decl: ast.AbilityDecl,
+    ) -> bool:
+        """E185 when ``decl`` redeclares a built-in ability (#1433).
+
+        Returns ``True`` when refused, so the caller does not register it
+        over the built-in in ``env.abilities``.  Name-keyed and
+        unconditional, like E152 for effects: code generation compiles every
+        ``eq``, ``compare``, ``hash`` and ``show`` against the built-in and
+        never reads the declaration, so a changed signature was checked
+        against the declaration and run against the built-in — a ``@Nat``
+        result held -7 — and a faithful copy is a second spelling of the
+        built-in, which spec §0.2.3 forbids.
+        """
+        if decl.name not in builtin_ability_names():
+            return False
+        self._report_builtin_ability(
+            decl, what=f"Ability '{decl.name}' redeclares",
+            builtin=decl.name,
+            fix=(
+                f"Delete this 'ability {decl.name}' declaration: the built-in "
+                f"'{decl.name}' is always in scope, in constraints such as "
+                f"'forall<T where {decl.name}<T>>'. If you mean a different "
+                f"ability, give it a distinct name."
+            ),
+        )
+        return True
+
+    def _claim_ability_op(
+        self, decl: ast.AbilityDecl, op: ast.OpDecl,
+    ) -> bool:
+        """Register ``op``'s name in the one ability-operation namespace.
+
+        A bare call names an ability operation without its ability, and
+        ``lookup_ability_op`` answered it with the FIRST ability declaring
+        the name — the built-ins first — so a second declaration was
+        unreachable and the binding was chosen by declaration order.  An
+        operation named after a built-in ability's is E185; one another
+        ability in this file already declares is E184.  Returns ``False``
+        for a refused operation, which is not registered.
+        """
+        builtin = builtin_ability_ops().get(op.name)
+        if builtin is not None:
+            self._report_builtin_ability(
+                op, what=f"Operation '{op.name}' of ability '{decl.name}' "
+                         f"redeclares an operation of",
+                builtin=builtin,
+                fix=(
+                    f"Rename the operation: '{op.name}' is the built-in "
+                    f"ability '{builtin}'s, and a bare call "
+                    f"'{op.name}(...)' always reaches the built-in."
+                ),
+            )
+            self._refused_decl_ids.add(id(op))
+            return False
+        prior = self._ns_ability_ops.get(op.name)
+        if prior is not None:
+            owner, first = prior
+            self._report_duplicate_name(
+                op, noun="ability operation", name=op.name,
+                scope=f"ability '{decl.name}'", first=first,
+                first_scope=f"ability '{owner}'",
+                why=(
+                    f"Ability operations share one namespace across every "
+                    f"ability in scope: a bare call '{op.name}(...)' names "
+                    f"the operation and not its ability, so it could reach "
+                    f"only one of the two — chosen by declaration order, "
+                    f"which the program does not state — and the other "
+                    f"could never be called."
+                ),
+            )
+            self._refused_decl_ids.add(id(op))
+            return False
+        self._ns_ability_ops[op.name] = (decl.name, op)
+        return True
+
+    def _report_builtin_ability(
+        self, node: ast.Node, *, what: str, builtin: str, fix: str,
+    ) -> None:
+        """The one E185 site: a declaration takes a built-in ability's name,
+        or one of its operations'."""
+        self._error(
+            node,
+            f"{what} the built-in ability '{builtin}'.",
+            rationale=(
+                f"'{builtin}' is a built-in ability (spec §9.8.1), always in "
+                f"scope. Code generation compiles its operations against the "
+                f"built-in and never reads a declaration, so a declaration "
+                f"that changes a signature is checked against one meaning "
+                f"and run against another, and one that repeats it is a "
+                f"second spelling of the built-in."
+            ),
+            fix=fix,
+            spec_ref='Chapter 9, Section 9.8.1 "Built-in Abilities"',
+            error_code="E185",
+        )
+
+    def _report_duplicate_name(
+        self,
+        node: ast.Node,
+        *,
+        noun: str,
+        name: str,
+        scope: str,
+        first: ast.Node | None,
+        first_scope: str | None = None,
+        first_noun: str | None = None,
+        why: str | None = None,
+        fix: str | None = None,
+    ) -> None:
+        """The one E184 site: ``name`` is declared twice in one namespace.
+
+        Located on the SURPLUS declaration, with the first's line in the
+        rationale so the pair can be found from either end: the earlier is
+        the one a reader takes as intended, and it is the one every use
+        resolves against.  ``first`` is ``None`` for a type parameter
+        repeated in one list, whose binders share a line and carry no
+        position of their own.  ``first_scope`` names where the first
+        declaration is when that is not ``scope`` itself — another ability's
+        operation list, or another place in one type-parameter list — and
+        ``why``, when given, says why the two are one namespace.
+        """
+        line = first.span.line if first is not None and first.span else 0
+        at = f" at line {line}" if line else ""
+        as_ = f", as a {first_noun}" if first_noun else ""
+        reason = why or (
+            f"A name is declared once per namespace: two declarations of it "
+            f"have no distinguishing spelling, so every use of '{name}' "
+            f"would reach only one of them — chosen by declaration order, "
+            f"which the program does not state — and the other could never "
+            f"be used."
+        )
+        self._error(
+            node,
+            f"Duplicate {noun} '{name}' in {scope}.",
+            rationale=(
+                f"'{name}' is already declared in {first_scope or scope}"
+                f"{at}{as_}. {reason}"
+            ),
+            fix=fix or (
+                f"Rename this {noun} and update the uses that mean it, or "
+                f"delete it if the two are meant to be the same {noun}."
+            ),
+            spec_ref='Chapter 8, Section 8.5.5 "One Declaration per Name"',
+            error_code="E184",
+        )
+
     def _check_builtin_effect_redeclaration(
         self, decl: ast.EffectDecl,
     ) -> bool:
@@ -744,7 +1107,12 @@ class RegistrationMixin:
         """
         alias_decls: dict[str, ast.TypeAliasDecl] = {}
         for tld in program.declarations:
-            if isinstance(tld.decl, ast.TypeAliasDecl):
+            # #1433: a surplus declaration (E184) was not registered, so it
+            # is not part of the alias graph either — and an alias that
+            # repeats a `data` name would otherwise be the first alias of
+            # that name here, and report a second error against itself.
+            if (isinstance(tld.decl, ast.TypeAliasDecl)
+                    and id(tld.decl) not in self._refused_decl_ids):
                 alias_decls.setdefault(tld.decl.name, tld.decl)
 
         # Standard three-colour DFS: `on_stack` (grey) holds the current
@@ -916,7 +1284,7 @@ class RegistrationMixin:
 
     def _check_special_cased_builtin_adt(
         self, node: ast.Node, name: str, kind: str,
-    ) -> None:
+    ) -> bool:
         """Refuse a declaration whose name the compiler special-cases (#1397).
 
         The same rule E151 applies to built-in FUNCTIONS and E152 to built-in
@@ -941,10 +1309,31 @@ class RegistrationMixin:
           ``@Nat`` above ``i64.MAX`` stored and read back negative, no trap),
           while the verifier stopped obligating it because
           ``_lookup_constructor_info`` found the user's constructor.
+
+        A PRIMITIVE type name (#1497) is refused as a ``data`` type and as a
+        ``type`` alias alike: ``_resolve_named_type`` answers ``Int``,
+        ``Bool``, ``String`` and the rest from :data:`~vera.types.PRIMITIVES`
+        before it consults any declaration, so ``type Int = Bool;`` or
+        ``data Int { I(Bool) }`` was accepted and could never be named — every
+        ``@Int`` still meant the primitive.
+
+        Returns ``True`` for that primitive case, so the caller does not
+        register the declaration: registered, it drew secondary errors that
+        named the same type on both sides ("has type Int, expected Int").
         """
-        if name not in self._SPECIAL_CASED_BUILTIN_ADTS:
-            return
-        if kind == "data type":
+        primitive = name in PRIMITIVES and kind in ("data type", "type alias")
+        if primitive:
+            subject = f"declared as a {kind}"
+            rationale = (
+                f"'{name}' is a primitive type. Every type position resolves "
+                f"'{name}' to the primitive before it consults any "
+                f"declaration, so this {kind} could never be named: each "
+                f"'@{name}' in the program would still mean the primitive."
+            )
+        elif (name not in self._SPECIAL_CASED_BUILTIN_ADTS
+                or kind == "type alias"):
+            return False
+        elif kind == "data type":
             subject = "redeclared as a data type"
             rationale = (
                 f"Unlike the prelude's data types, which a program may "
@@ -978,6 +1367,7 @@ class RegistrationMixin:
             spec_ref='Chapter 8, Section 8.4.1 "Visibility Rules"',
             error_code="E158",
         )
+        return primitive
 
     def _check_sibling_ctor_collision(
         self, ctor: ast.Constructor, owner: str,
@@ -1008,7 +1398,11 @@ class RegistrationMixin:
             self._ns_ctor_owners[ctor.name] = owner
             return
         if first == owner:
-            return  # the same declaration listing it twice is E211's job
+            # One declaration listing a constructor twice is E184, reported
+            # (and skipped) by `_register_data` before this runs, and a
+            # second declaration of the TYPE is refused before registration
+            # (#1433) — so neither reaches here as a sibling collision.
+            return
         self._error(
             ctor,
             f"Constructor '{ctor.name}' is already declared by data type "
@@ -1034,9 +1428,17 @@ class RegistrationMixin:
         self, decl: ast.DataDecl, visibility: str | None = None,
     ) -> None:
         """Register an ADT and its constructors."""
-        self._check_special_cased_builtin_adt(decl, decl.name, "data type")
+        if self._check_special_cased_builtin_adt(decl, decl.name, "data type"):
+            # #1497: refused, and not registered: every `@Int` means the
+            # primitive, so a registered `data Int` could only draw errors
+            # naming one type twice.  Its constructors are remembered, so a
+            # use of one reports nothing further (the E151 posture).
+            self._refused_decl_ids.add(id(decl))
+            self._refused_ctor_names.update(c.name for c in decl.constructors)
+            return
         self._check_reserved_type_name(decl)
         self._check_reserved_type_params(decl)
+        self._check_duplicate_type_params(decl, f"data type '{decl.name}'")
         # #1208: allocate the declaration index BEFORE resolving anything, so
         # data and alias registrations interleave in source order.
         decl_index = self.env.next_decl_index()
@@ -1047,7 +1449,20 @@ class RegistrationMixin:
                 self.env.type_params[tv] = TypeVar(tv)
 
         ctors: dict[str, ConstructorInfo] = {}
+        first_ctors: dict[str, ast.Constructor] = {}
         for ctor in decl.constructors:
+            # #1433: one declaration listing a constructor twice.  Refused
+            # and not registered, so the first stays the constructor every
+            # call and pattern resolves to; E159 is the sibling for two
+            # DECLARATIONS sharing one.
+            first_ctor = first_ctors.setdefault(ctor.name, ctor)
+            if first_ctor is not ctor:
+                self._report_duplicate_name(
+                    ctor, noun="constructor", name=ctor.name,
+                    scope=f"data type '{decl.name}'", first=first_ctor,
+                )
+                self._refused_decl_ids.add(id(ctor))
+                continue
             self._check_reserved_decl_name(
                 ctor, ctor.name, "constructor", prelude_occupies=False,
             )
@@ -1061,6 +1476,7 @@ class RegistrationMixin:
                 # not land in `env.constructors` — nothing downstream should
                 # be able to resolve a name the checker has just rejected
                 # (PR #1404 review).
+                self._refused_decl_ids.add(id(ctor))
                 continue
             field_types = None
             if ctor.fields is not None:
@@ -1087,8 +1503,12 @@ class RegistrationMixin:
 
     def _register_alias(self, decl: ast.TypeAliasDecl) -> None:
         """Register a type alias."""
+        if self._check_special_cased_builtin_adt(decl, decl.name, "type alias"):
+            self._refused_decl_ids.add(id(decl))  # #1497, as for `data`
+            return
         self._check_reserved_type_name(decl)
         self._check_reserved_type_params(decl)
+        self._check_duplicate_type_params(decl, f"type alias '{decl.name}'")
         decl_index = self.env.next_decl_index()
         saved_params = dict(self.env.type_params)
         if decl.type_params:
@@ -1112,13 +1532,14 @@ class RegistrationMixin:
             decl, decl.name, "effect", prelude_occupies=False,
         )
         self._check_reserved_type_params(decl)
+        self._check_duplicate_type_params(decl, f"effect '{decl.name}'")
         saved_params = dict(self.env.type_params)
         if decl.type_params:
             for tv in decl.type_params:
                 self.env.type_params[tv] = TypeVar(tv)
 
         ops: dict[str, OpInfo] = {}
-        for op in decl.operations:
+        for op in self._distinct_ops(decl, "effect"):
             param_types = tuple(self._resolve_type(p) for p in op.param_types)
             ret_type = self._resolve_type(op.return_type)
             ops[op.name] = OpInfo(
@@ -1142,13 +1563,16 @@ class RegistrationMixin:
             decl, decl.name, "ability", prelude_occupies=False,
         )
         self._check_reserved_type_params(decl)
+        self._check_duplicate_type_params(decl, f"ability '{decl.name}'")
         saved_params = dict(self.env.type_params)
         if decl.type_params:
             for tv in decl.type_params:
                 self.env.type_params[tv] = TypeVar(tv)
 
         ops: dict[str, OpInfo] = {}
-        for op in decl.operations:
+        for op in self._distinct_ops(decl, "ability"):
+            if not self._claim_ability_op(decl, op):
+                continue
             param_types = tuple(
                 self._resolve_type(p) for p in op.param_types)
             ret_type = self._resolve_type(op.return_type)

@@ -7,6 +7,7 @@ types across modules (C7b) or enforce visibility (C7c).
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -330,3 +331,43 @@ class ModuleResolver:
             return ""
         idx = node.span.line - 1
         return lines[idx] if 0 <= idx < len(lines) else ""
+
+
+def merged_import_filters(
+    decls: Iterable[ast.ImportDecl],
+) -> dict[tuple[str, ...], set[str] | None]:
+    """One filter per imported PATH, unioned across repeated imports (#1433).
+
+    The ONE derivation of what a namespace's import list admits from each
+    module: ``None`` for a whole-module import, else the set of names.  The
+    checker, the verifier and code generation all read it, so they cannot
+    disagree about a program that imports one module twice — each used to
+    key its own table on the path, the last statement winning, and a
+    qualified call to a name only the FIRST list admitted was refused with
+    E231 while its bare call ran.
+
+    A namespace may name a declaration that ANY of its import lists admits,
+    so two statements naming one module contribute the union of their
+    lists and a wildcard dominates every list beside it.  Keying a dict
+    comprehension on the path instead made the LAST statement win and
+    discarded the others (PR review): with
+    ``import liba(aone); import liba(helper);`` the surviving filter admits
+    neither the type nor the signature that carries it, so #1317's flow
+    condition would stop seeing a crossing the entry can actually make and
+    the rename would qualify apart two declarations a value passes between.
+
+    Dedupe is idempotent by construction: repeating one statement adds
+    nothing (spec §8.5.5).
+    """
+    out: dict[tuple[str, ...], set[str] | None] = {}
+    for imp in decls:
+        names = set(imp.names) if imp.names is not None else None
+        if imp.path not in out:
+            out[imp.path] = names
+            continue
+        existing = out[imp.path]
+        if existing is None or names is None:
+            out[imp.path] = None  # a wildcard admits everything
+        else:
+            out[imp.path] = existing | names
+    return out
