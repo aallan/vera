@@ -1,7 +1,7 @@
 -- Conformance: private same-named generic beside an imported one (Chapter 8, #1281)
 -- Tests: this module declares its OWN `gen` and also imports one, so §8.5.2
 -- gives its bare call to the local declaration.  Private, so the entry program
--- can never name it: qualified-only, `mod$…$mid1$gen$Bool`.
+-- can never name it: qualified-only, `…mid1::gen$Bool`.
 module ch08_module_generic_diamond_mid1;
 
 import ch08_module_generic_diamond_base;

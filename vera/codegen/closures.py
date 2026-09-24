@@ -425,7 +425,7 @@ class ClosureLiftingMixin:
         )
         # #814/#774: a qualified call inside a closure body must resolve the
         # same way it does in a top-level body — to the module's function
-        # (`mod$…` for a shadowed fn) and, for a shadowed imported generic, to
+        # (`path::…` for a shadowed fn) and, for a shadowed imported generic, to
         # the module generic's clone rather than the local shadow.
         ctx.set_module_qualified_targets(self._module_qualified_targets)
         ctx.set_module_qualified_generic_bases(

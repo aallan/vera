@@ -543,8 +543,8 @@ class TestImportedNestedGenericOriginEnv:
     """A generic nested under an imported NON-generic function (#1208 round 2).
 
     ``_generic_origins`` records such a generic under the lexical chain that
-    names it (``mod$ng$outer$where$mid``) — there is no entry for the bare
-    ancestor ``mod$ng$outer``.  Both the discovery-time recount and the
+    names it (``ng::outer$where$mid``) — there is no entry for the bare
+    ancestor ``ng::outer``.  Both the discovery-time recount and the
     verification-time clone looked the origin up under a key that could never
     hit (the chain's first segment; the helper's bare name), fell back to the
     IMPORTER's env, and rendered the helper's alias-typed parameters in a

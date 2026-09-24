@@ -991,8 +991,8 @@ class CallsHandlersMixin:
             # The name is baked into the DATA SECTION and reaches stdout, so
             # it is the user's spelling and not the registry key: #1317 gives
             # a contended module ADT's constructors an owner-qualified
-            # `mod$<path>$Sq` symbol, and `show(Sq(3))` printed exactly that
-            # (measured: `mod$liba$Sq(3)`, and `string_length` of it 14 where
+            # `<path>::Sq` symbol, and `show(Sq(3))` printed exactly that
+            # (measured: `liba::Sq(3)`, and `string_length` of it 14 where
             # 5 is right).  `display_adt_name` is the ONE strip, shared with
             # the diagnostic boundary; a name that was never qualified passes
             # through unchanged, so nothing else about this rendering moves.

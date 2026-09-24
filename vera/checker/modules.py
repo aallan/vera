@@ -11,7 +11,11 @@ from dataclasses import replace
 
 from vera import ast
 from vera.environment import TypeEnv
-from vera.monomorphize import namespace_adt_names, namespace_fn_names
+from vera.monomorphize import (
+    merged_import_filters,
+    namespace_adt_names,
+    namespace_fn_names,
+)
 from vera.registration import where_helper_parents
 from vera.resolver import ResolvedModule
 
@@ -39,10 +43,15 @@ class ModulesMixin:
         """
         from vera.checker.core import TypeChecker
 
-        # 1. Build import filter
-        for imp in program.imports:
-            self._import_names[imp.path] = (
-                set(imp.names) if imp.names is not None else None
+        # 1. Build import filter.  #1494: a namespace may name a
+        # declaration that ANY of its import lists admits, so repeated
+        # imports of one module are unioned, and a wildcard dominates.
+        # Read through the one helper code generation and the verifier
+        # read too, so no layer takes the last statement alone — which
+        # left `import liba(f, gen); import liba(g);` with only `g`.
+        for path, names in merged_import_filters(program.imports).items():
+            self._import_names[path] = (
+                set(names) if names is not None else None
             )
 
         # Snapshot builtin names (TypeEnv registers builtins in __post_init__).
@@ -141,12 +150,16 @@ class ModulesMixin:
             name_filter = self._import_names.get(mod.path)
             mod_label = ".".join(mod.path)
             if name_filter is not None:
-                imp_node = self._find_import_decl(program, mod.path)
                 mod_helpers = where_helper_parents(
                     tld.decl for tld in mod.program.declarations
                     if isinstance(tld.decl, ast.FnDecl)
                 )
                 for name in sorted(name_filter):
+                    # The filter is the union of every import of the
+                    # path, so report at the statement that lists it.
+                    imp_node = self._find_import_decl(
+                        program, mod.path, name,
+                    )
                     priv_fn = all_fns.get(name)
                     priv_dt = all_data.get(name)
                     if (priv_fn is not None
@@ -246,7 +259,12 @@ class ModulesMixin:
                 if fn_name in self._ambiguous_import_fn_names:
                     continue
                 if name_filter is None or fn_name in name_filter:
-                    self.env.functions.setdefault(fn_name, fn_info)
+                    # #1494: record which module supplied the name, where
+                    # the injection wins — never over a built-in or the
+                    # prelude, which hold their names in every namespace.
+                    if fn_name not in self.env.functions:
+                        self.env.functions[fn_name] = fn_info
+                        self._imported_fn_origins[fn_name] = mod.path
             # #1304, data side: same rule and same reason as the functions
             # above.  A type name two imports supply denotes nothing here, and
             # so does a constructor name — which is filtered by its PARENT
@@ -325,7 +343,7 @@ class ModulesMixin:
         declaring the type locally made such a program compile and these
         diagnostics prescribed renaming alone.  Per-owner ADT identity
         changed that: a ``data`` declaration no namespace can reach is
-        compiled under ``mod$<path>$<Name>``, so both remedies carry
+        compiled under ``<path>::<Name>``, so both remedies carry
         through — while the two declarations cannot MEET, by name or
         through an imported signature that carries a value of the type.
         :meth:`_ambiguous_data_fix` states the condition rather than
@@ -478,7 +496,14 @@ class ModulesMixin:
             resolved_modules=self._modules_visible_to(mod),
         )
         checker._module_body_check_memo = memo
+        if self._module_call_targets is not None:
+            # #1494: the module's own call targets, collected by its own
+            # checker over its own namespace, into the one shared table.
+            checker.call_targets = {}
+            checker._module_call_targets = self._module_call_targets
         checker.check_program(mod.program)
+        if self._module_call_targets is not None and checker.call_targets:
+            self._module_call_targets[mod.path] = checker.call_targets
         seen = {
             (e.error_code, str(e.location.file), e.location.line,
              e.location.column, e.severity, e.description)
@@ -526,8 +551,20 @@ class ModulesMixin:
     @staticmethod
     def _find_import_decl(
         program: ast.Program, path: tuple[str, ...],
+        name: str | None = None,
     ) -> ast.Node:
-        """Find the ImportDecl node for a given module path."""
+        """Find the ImportDecl node for a given module path.
+
+        With *name*, the first import of *path* whose list names it: a
+        path imported more than once is read as the union of its lists
+        (#1494), so a diagnostic about one listed name belongs at the
+        statement that lists it.
+        """
+        if name is not None:
+            for imp in program.imports:
+                if imp.path == path and imp.names is not None \
+                        and name in imp.names:
+                    return imp
         for imp in program.imports:
             if imp.path == path:
                 return imp

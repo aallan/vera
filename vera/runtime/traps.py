@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING
 
 from dataclasses import dataclass
 
+from vera import symbols
+
 if TYPE_CHECKING:
     pass
 
@@ -237,11 +239,11 @@ def _resolve_trap_frames(
 
     # The runtime's own functions (`$rt.alloc`, `$rt.gc_collect`, the
     # derived `$rt.eq_<T>` / `$rt.show_<T>` helpers, …) and the host imports
-    # (`$vera.print`, …).  Both namespaces contain a `.`, which no Vera
-    # identifier and no compiler mangling of one can, so a prefix test is
-    # exact and a user function can never be mistaken for either (#1494).
-    _BUILTIN_PREFIXES = ("rt.", "vera.")
-
+    # (`$vera.print`, …) are told apart by DECODING the symbol
+    # (`vera.symbols.is_runtime`), never by a prefix test: a module whose path
+    # begins `rt` has symbols reading `rt.util::f`, which are the program's.
+    # No Vera identifier can spell either namespace, so a user function is
+    # never mistaken for one (#1494).
     resolved: list[TrapFrame] = []
     try:
         # raw_frames is `object | None` from the chain walker (we
@@ -299,15 +301,10 @@ def _resolve_trap_frames(
         if prelude_fn_names is not None:
             if name in prelude_fn_names:
                 is_prelude = True
-            elif "$" in name:
-                base = name.rsplit("$", 1)[0]
-                if base in prelude_fn_names:
-                    is_prelude = True
+            elif symbols.strip_clone(name) in prelude_fn_names:
+                is_prelude = True
 
-        is_builtin = (
-            any(name.startswith(p) for p in _BUILTIN_PREFIXES)
-            or is_prelude
-        )
+        is_builtin = symbols.is_runtime(name) or is_prelude
         if is_builtin:
             resolved.append(TrapFrame(
                 func=name,
@@ -318,13 +315,11 @@ def _resolve_trap_frames(
             ))
             continue
 
-        # The exact name missed above; try the base name (the part
-        # before the rightmost `$`) for monomorphized generics.  `$`
-        # cannot appear in user-written Vera identifiers, so any `$` in
-        # a WAT name was inserted by the compiler's manglers.
+        # The exact name missed above; try the generic's own name for a
+        # monomorphized clone (`vera.symbols.strip_clone`).
         loc = None
-        if "$" in name:
-            base = name.rsplit("$", 1)[0]
+        base = symbols.strip_clone(name)
+        if base != name:
             loc = fn_source_map.get(base)
 
         if loc is None:

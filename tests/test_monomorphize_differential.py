@@ -997,10 +997,10 @@ def test_imported_fn_nested_generic_symmetric_between_codegen_and_verifier(
     codegen_set, verifier_set = _cross_module_sets(main_src, [mod])
 
     # #1029: the imported nested generic's base is namespaced by the module path
-    # (``mod$lib_nested$compute$where$gid``), byte-identical to
+    # (``lib_nested::compute$where$gid``), byte-identical to
     # ``_module_qualified_wasm_name`` — so two imported modules' same-named nested
     # generics stay distinct instead of collapsing first-seen-wins.
-    assert ("mod$lib_nested$compute$where$gid", ("Int",)) in codegen_set, (
+    assert ("lib_nested::compute$where$gid", ("Int",)) in codegen_set, (
         f"codegen must emit the imported nested generic's clone under its "
         f"module-qualified base, got {sorted(codegen_set)}"
     )
@@ -1015,15 +1015,15 @@ def test_shadowed_imported_generic_symmetric_between_codegen_and_verifier(
 ) -> None:
     """`#814` asymmetric variant: an imported generic (`gen`) shadowed by a
     LOCAL non-generic AND module-qualified called (`g::gen`) is monomorphized by
-    codegen under a ``mod$…`` name and recorded in ``_emitted_instances`` under
-    that ``mod$g$gen`` base (NOT the bare `gen`, which a same-named local owns —
+    codegen under a ``<path>::…`` name and recorded in ``_emitted_instances`` under
+    that ``g::gen`` base (NOT the bare `gen`, which a same-named local owns —
     CR 3519156263), so the verifier must discover the SAME qualified
     instantiation under the SAME base — else the pre-fix false Tier-1 returns
     (verify resolved the module generic's contract while codegen ran the local
     shadow).
 
     Pins the shadowed-side lockstep: the differential must catch a desync where
-    only one of the two discovers the qualified `mod$g$gen<Int>` instantiation.
+    only one of the two discovers the qualified `g::gen<Int>` instantiation.
     """
     mod_a = _resolved_module(("g",), (
         "public forall<T> fn gen(@T -> @T)\n"
@@ -1041,8 +1041,8 @@ def test_shadowed_imported_generic_symmetric_between_codegen_and_verifier(
     )
     codegen_set, verifier_set = _cross_module_sets(b_src, [mod_a])
 
-    assert ("mod$g$gen", ("Int",)) in codegen_set, (
-        f"codegen must emit the shadowed generic's clone under its mod$… base, "
+    assert ("g::gen", ("Int",)) in codegen_set, (
+        f"codegen must emit the shadowed generic's clone under its qualified base, "
         f"got {sorted(codegen_set)}"
     )
     assert verifier_set == codegen_set, (
@@ -1061,8 +1061,8 @@ def test_transitive_shadowed_generic_symmetric(inner_shadowed: bool) -> None:
 
     `outer<T>` (shadowed, calls `inner(@T.0)`) → `inner<T>`.  The parametrization
     covers `inner` unshadowed (a normal clone keyed `inner`) and `inner` ALSO
-    shadowed (a same-module sibling keyed `mod$g$inner` — CR 3519156263: a
-    shadowed clone is namespaced by its `mod$…` base so it never collides with a
+    shadowed (a same-module sibling keyed `g::inner` — CR 3519156263: a
+    shadowed clone is namespaced by its `<path>::…` base so it never collides with a
     same-named local generic).  Both must appear on both sides — a desync of the
     transitive scan (codegen or verifier) flips the equality.
     """
@@ -1091,15 +1091,15 @@ def test_transitive_shadowed_generic_symmetric(inner_shadowed: bool) -> None:
     )
     codegen_set, verifier_set = _cross_module_sets(b_src, [mod_a])
 
-    # The shadowed outer is keyed under its mod$… base; the transitive inner is
-    # keyed `mod$g$inner` when a local shadows it, else the bare `inner`.
-    inner_key = ("mod$g$inner", ("Int",)) if inner_shadowed else (
+    # The shadowed outer is keyed under its qualified base; the transitive inner is
+    # keyed `g::inner` when a local shadows it, else the bare `inner`.
+    inner_key = ("g::inner", ("Int",)) if inner_shadowed else (
         ("inner", ("Int",))
     )
-    assert ("mod$g$outer", ("Int",)) in codegen_set and (
+    assert ("g::outer", ("Int",)) in codegen_set and (
         inner_key in codegen_set
     ), (
-        f"codegen must emit mod$g$outer<Int> and its transitive {inner_key[0]}"
+        f"codegen must emit g::outer<Int> and its transitive {inner_key[0]}"
         f"<Int>, got {sorted(codegen_set)}"
     )
     assert verifier_set == codegen_set, (
@@ -1114,7 +1114,7 @@ def test_unshadowed_generic_calling_shadowed_sibling_symmetric() -> None:
     body qualified-calls a SHADOWED `g::gen` reaches that shadowed generic only
     through its clone (`caller$Int`) — codegen scans the emitted normal clones
     for shadowed ModuleCalls, and the verifier must mirror that scan, or it
-    discovers a strict subset (the `mod$g$gen<Int>` clone runs unverified: a
+    discovers a strict subset (the `g::gen<Int>` clone runs unverified: a
     false Tier-1).
     """
     mod_a = _resolved_module(("g",), (
@@ -1137,9 +1137,9 @@ def test_unshadowed_generic_calling_shadowed_sibling_symmetric() -> None:
     codegen_set, verifier_set = _cross_module_sets(b_src, [mod_a])
 
     assert ("caller", ("Int",)) in codegen_set and (
-        ("mod$g$gen", ("Int",)) in codegen_set
+        ("g::gen", ("Int",)) in codegen_set
     ), (
-        f"codegen must emit caller<Int> and the shadowed mod$g$gen<Int> it "
+        f"codegen must emit caller<Int> and the shadowed g::gen<Int> it "
         f"reaches, got {sorted(codegen_set)}"
     )
     assert verifier_set == codegen_set, (
@@ -1152,12 +1152,12 @@ def test_unshadowed_generic_calling_shadowed_sibling_symmetric() -> None:
 def test_private_module_generic_symmetric_between_codegen_and_verifier() -> None:
     """`#1000`: a PRIVATE module generic (`inner`) reached transitively by a
     PUBLIC imported generic (`outer`) must be discovered by BOTH sides under the
-    SAME module-qualified key (`mod$lib_priv$inner`), NEVER a bare `inner`.
+    SAME module-qualified key (`lib_priv::inner`), NEVER a bare `inner`.
 
     Codegen harvests the private generic into the shadowed-generic machinery and
     reroutes `outer`'s clone body call onto the module-qualified base; the
     verifier mirrors the harvest + reroute so it discovers the identical
-    `mod$lib_priv$inner<Int>` instantiation and verifies it (a lying private
+    `lib_priv::inner<Int>` instantiation and verifies it (a lying private
     contract must E500 at the importer).  A bare-name key would hijack a
     same-named local fn and collapse two modules' private generics — the exact
     #1000 trap this equality pins.
@@ -1179,10 +1179,10 @@ def test_private_module_generic_symmetric_between_codegen_and_verifier() -> None
     codegen_set, verifier_set = _cross_module_sets(main_src, [mod])
 
     assert ("outer", ("Int",)) in codegen_set and (
-        ("mod$lib_priv$inner", ("Int",)) in codegen_set
+        ("lib_priv::inner", ("Int",)) in codegen_set
     ), (
         f"codegen must emit outer<Int> and its transitive private "
-        f"mod$lib_priv$inner<Int> under the module-qualified base, "
+        f"lib_priv::inner<Int> under the module-qualified base, "
         f"got {sorted(codegen_set)}"
     )
     assert ("inner", ("Int",)) not in codegen_set, (
@@ -1202,7 +1202,7 @@ def test_local_shadowing_private_module_generic_symmetric() -> None:
     `caller` must stay separate on both sides.
 
     The local `dup` keeps its bare identity (main's `dup(5)` runs it); the
-    module's `dup` is keyed `mod$lib$dup` (caller's clone body reaches it).  A
+    module's `dup` is keyed `lib::dup` (caller's clone body reaches it).  A
     bare-name harvest would collapse the two — the draft-PR #1026 hijack this
     pins against.
     """
@@ -1224,15 +1224,15 @@ def test_local_shadowing_private_module_generic_symmetric() -> None:
     codegen_set, verifier_set = _cross_module_sets(main_src, [mod])
 
     assert ("caller", ("Int",)) in codegen_set and (
-        ("mod$lib$dup", ("Int",)) in codegen_set
+        ("lib::dup", ("Int",)) in codegen_set
     ), (
         f"codegen must emit caller<Int> and the module's private "
-        f"mod$lib$dup<Int>, got {sorted(codegen_set)}"
+        f"lib::dup<Int>, got {sorted(codegen_set)}"
     )
     assert verifier_set == codegen_set, (
         f"verifier ({sorted(verifier_set)}) must discover exactly codegen's "
         f"emitted set ({sorted(codegen_set)}) — local/private-generic collision "
-        f"(#1000); the module's dup stays under its mod$… key, distinct from the "
+        f"(#1000); the module's dup stays under its qualified key, distinct from the "
         f"bare local dup"
     )
 
@@ -1240,12 +1240,12 @@ def test_local_shadowing_private_module_generic_symmetric() -> None:
 def test_nongeneric_caller_of_private_generic_symmetric_1029() -> None:
     """`#1029` (R1): a NON-generic imported fn (`use_it`) that calls a PRIVATE
     module generic (`inner`) must have `inner`'s instantiation discovered by BOTH
-    sides under the module-qualified base `mod$lib$inner`.
+    sides under the module-qualified base `lib::inner`.
 
     Pre-fix only the PUBLIC-generic branch rerouted private-generic calls, so
     `use_it`'s bare `inner(@Int.0)` kept a bare name: codegen emitted `use_it`'s
     body with a `call $inner` that dangled at run (`unknown func`), and neither
-    side seeded `mod$lib$inner<Int>`.  The loop-top reroute (codegen) + the
+    side seeded `lib::inner<Int>`.  The loop-top reroute (codegen) + the
     non-generic-body seed (`_monomorphize_shadowed_module_generics`) / the
     module-body reroute (verifier discovery) make both discover the identical
     instantiation — a lockstep that also proves the clone codegen now emits IS
@@ -1267,9 +1267,9 @@ def test_nongeneric_caller_of_private_generic_symmetric_1029() -> None:
     )
     codegen_set, verifier_set = _cross_module_sets(main_src, [mod])
 
-    assert ("mod$lib$inner", ("Int",)) in codegen_set, (
+    assert ("lib::inner", ("Int",)) in codegen_set, (
         f"codegen must emit the private generic's clone reached from a "
-        f"non-generic caller under its mod$… base, got {sorted(codegen_set)}"
+        f"non-generic caller under its qualified base, got {sorted(codegen_set)}"
     )
     assert ("inner", ("Int",)) not in codegen_set, (
         f"the private generic must NOT be keyed bare (hijack risk), "
@@ -1285,12 +1285,12 @@ def test_nongeneric_caller_of_private_generic_symmetric_1029() -> None:
 def test_shadowed_generic_private_sibling_symmetric_1029() -> None:
     """`#1029` (R4): a locally-shadowed PUBLIC generic (`g::gen`) whose body calls
     a PRIVATE sibling generic (`sib`) must have BOTH clones discovered on both
-    sides — `mod$g$gen<Int>` and its transitive `mod$g$sib<Int>`.
+    sides — `g::gen<Int>` and its transitive `g::sib<Int>`.
 
     Codegen harvests both into the shadowed-generic machinery and reaches `sib`
     through `gen`'s rerouted clone body; pre-fix the verifier built its shadowed
     map from PUBLIC-shadowed generics only, so `sib` had no base in the
-    transitive scan and `mod$g$sib<Int>` ran unverified (a false Tier-1).  The
+    transitive scan and `g::sib<Int>` ran unverified (a false Tier-1).  The
     equality pins that the verifier now discovers the private sibling too.
     """
     mod = _resolved_module(("g",), (
@@ -1312,11 +1312,11 @@ def test_shadowed_generic_private_sibling_symmetric_1029() -> None:
     )
     codegen_set, verifier_set = _cross_module_sets(main_src, [mod])
 
-    assert ("mod$g$gen", ("Int",)) in codegen_set and (
-        ("mod$g$sib", ("Int",)) in codegen_set
+    assert ("g::gen", ("Int",)) in codegen_set and (
+        ("g::sib", ("Int",)) in codegen_set
     ), (
         f"codegen must emit the shadowed generic AND its private sibling under "
-        f"their mod$… bases, got {sorted(codegen_set)}"
+        f"their qualified bases, got {sorted(codegen_set)}"
     )
     assert verifier_set == codegen_set, (
         f"verifier ({sorted(verifier_set)}) must discover exactly codegen's "
@@ -1329,11 +1329,11 @@ def test_nested_generic_under_private_generic_symmetric_1029() -> None:
     """`#1029` (R3/R5): a nested `forall` where-helper (`ginner`) under a PRIVATE
     module generic (`priv_outer`) reached through a public entry must be keyed by
     the SAME concrete-FREE, module-qualified lexical chain on both sides —
-    `mod$lib1$priv_outer$where$ginner`.
+    `lib1::priv_outer$where$ginner`.
 
     This is the canonical-key lockstep: codegen's emitted WASM clone carries a
     per-instantiation concrete-INCLUDING name
-    (`mod$lib1$priv_outer$Int$where$ginner$Int`), but its `_emitted_instances`
+    (`lib1::priv_outer$Int$where$ginner$Int`), but its `_emitted_instances`
     key must be the concrete-FREE chain — which the R3 `_clone_base_chain`
     population on the shadowed path produces, and which the verifier's discovery
     (`record_nested`) and enclosing-chain reconstruction rebuild identically.  A
@@ -1361,7 +1361,7 @@ def test_nested_generic_under_private_generic_symmetric_1029() -> None:
     )
     codegen_set, verifier_set = _cross_module_sets(main_src, [mod])
 
-    assert ("mod$lib1$priv_outer$where$ginner", ("Int",)) in codegen_set, (
+    assert ("lib1::priv_outer$where$ginner", ("Int",)) in codegen_set, (
         f"codegen must key the nested generic under the concrete-FREE, "
         f"module-qualified chain, got {sorted(codegen_set)}"
     )
@@ -1380,11 +1380,11 @@ def test_nested_generic_under_private_generic_symmetric_1029() -> None:
 
 def test_private_to_private_generic_chain_symmetric_1029() -> None:
     """`#1029` (R1): a public generic → private `aa` → private `bb` chain must
-    have EVERY link discovered on both sides under its mod$… base
-    (`mod$m$aa`, `mod$m$bb`).
+    have EVERY link discovered on both sides under its qualified base
+    (`m::aa`, `m::bb`).
 
     Pre-fix a private generic's own body was harvested RAW, so `aa`'s bare
-    `bb(@T.0)` call was not rerouted onto `mod$m$bb`: the verifier discovered a
+    `bb(@T.0)` call was not rerouted onto `m::bb`: the verifier discovered a
     strict subset (`bb`'s clone ran unverified).  The loop-top reroute of the
     private decls themselves closes the chain.
     """
@@ -1407,10 +1407,10 @@ def test_private_to_private_generic_chain_symmetric_1029() -> None:
     )
     codegen_set, verifier_set = _cross_module_sets(main_src, [mod])
 
-    assert ("mod$m$aa", ("Int",)) in codegen_set and (
-        ("mod$m$bb", ("Int",)) in codegen_set
+    assert ("m::aa", ("Int",)) in codegen_set and (
+        ("m::bb", ("Int",)) in codegen_set
     ), (
-        f"codegen must emit both private links of the chain under their mod$… "
+        f"codegen must emit both private links of the chain under their qualified "
         f"bases, got {sorted(codegen_set)}"
     )
     assert verifier_set == codegen_set, (
@@ -1435,7 +1435,7 @@ def test_module_generic_qualified_only_symmetric_1274(
 ) -> None:
     """#1274: EVERY qualified-only module generic — the ones that do not own the
     importer's bare name — is emitted and discovered under the SAME
-    ``mod$<path>$name`` base by both sides.
+    ``<path>::name`` base by both sides.
 
     Pre-fix only the PRIVATE family was routed that way, so codegen collapsed a
     public module generic's clone onto the importer's bare ``gen2$Bool`` while
@@ -1471,7 +1471,7 @@ def test_module_generic_qualified_only_symmetric_1274(
     )
     codegen_set, verifier_set = _cross_module_sets(main_src, [mod])
 
-    assert ("mod$lib$gen2", ("Bool",)) in codegen_set, (
+    assert ("lib::gen2", ("Bool",)) in codegen_set, (
         f"codegen must emit the module generic's clone under its owning "
         f"module's base, got {sorted(codegen_set)}"
     )
@@ -1514,7 +1514,7 @@ def test_module_generic_owning_bare_name_stays_unqualified_1274() -> None:
         f"an unshadowed in-filter public module generic must keep the bare "
         f"clone name, got {sorted(codegen_set)}"
     )
-    assert not any(n.startswith("mod$lib$gen2") for n, _ in codegen_set), (
+    assert not any(n.startswith("lib::gen2") for n, _ in codegen_set), (
         f"it must NOT be renamed — it owns the importer's bare name, "
         f"got {sorted(codegen_set)}"
     )
@@ -1708,7 +1708,7 @@ def test_imported_private_shadow_fn_return_stays_symmetric() -> None:
     Module ``a`` has a private ``mk -> Bool`` and module ``b`` a public
     ``mk -> Int``; the entry imports both and calls ``id_g(mk(()))``.  The
     entry's bare ``mk`` is ``b``'s — ``a``'s is private, so it does not own
-    the entry's bare name (#1498) and is keyed under ``mod$a$mk`` on both
+    the entry's bare name (#1498) and is keyed under ``a::mk`` on both
     sides.  Both therefore discover ``id_g<Int>``.
 
     Before #1498 both sides seeded every module function under its bare name,
@@ -2081,7 +2081,7 @@ def test_nested_helper_clone_walks_in_its_chains_module() -> None:
     Asserted directly rather than through the equality above, because that
     comparison is keyed by declaration NAME and the two sides name this one
     clone differently by design: codegen hoists it per instantiation
-    (``mod$nh$priv_outer$Int$where$ginner$Int``) while the verifier keeps the
+    (``nh::priv_outer$Int$where$ginner$Int``) while the verifier keeps the
     mangled bare name (``ginner$Int``).  Not a scope divergence — a naming
     scheme difference — so the equality cell cannot see this site, and it
     gets its own discriminator: ``onlyhere`` is module-PRIVATE, so it is in
@@ -2118,7 +2118,7 @@ def test_codegen_helper_family_leaf_walks_in_its_parents_module() -> None:
 
     ``collect_generic_helper_instances`` is the one walk both sides drive
     directly, and codegen hoists the clone it produces under a per-clone name
-    (``mod$nh$priv_outer$Int$where$ginner$Int``) where the verifier keeps the
+    (``nh::priv_outer$Int$where$ginner$Int``) where the verifier keeps the
     mangled bare one — so the two are never a shared key and the equality
     cell cannot compare them.  Each side therefore gets a direct
     discriminator: ``onlyhere`` is module-private, in scope only if the leaf
@@ -2139,7 +2139,7 @@ def test_codegen_helper_family_leaf_walks_in_its_parents_module() -> None:
     finally:
         os.unlink(mp)
 
-    walked = [n for n in cg if n.startswith("mod$nh$") and "$where$" in n]
+    walked = [n for n in cg if n.startswith("nh::") and "$where$" in n]
     assert walked, (
         f"codegen walked no hoisted helper clone — the assertion would be "
         f"vacuous; keys were {sorted(cg)}"
@@ -2195,7 +2195,7 @@ def test_a_module_generic_fed_by_a_qualified_only_function_agrees() -> None:
 
     Module ``a``'s private ``mk -> Int`` does not own the entry's bare name
     (it is private, and the entry declares its own ``mk -> Bool``), so codegen
-    emits it as ``mod$a$mk`` and renames ``door``'s call to it.  The private
+    emits it as ``a::mk`` and renames ``door``'s call to it.  The private
     generic ``gid`` takes its type argument from that call alone.  The
     verifier's discovery copy has to see the same renamed call AND a return
     type keyed under the same symbol, or it types the call by the entry's
@@ -2253,7 +2253,7 @@ def test_a_module_generic_fed_by_a_qualified_only_function_agrees() -> None:
     finally:
         os.unlink(mp)
 
-    assert cg == {("mod$a$gid", ("Int",))}, cg
+    assert cg == {("a::gid", ("Int",))}, cg
     assert cg <= ver, (
         f"codegen emits {cg} and the verifier discovers {ver}: a clone the "
         f"verifier does not discover runs unverified"

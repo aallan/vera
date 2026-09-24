@@ -1894,7 +1894,7 @@ private fn f(@Int -> @Box<Nat>)
         `mb`'s private `inner` has ``ensures(@Int.result == 9)`` over body `0`.
         It is unimportable and NOT in ``env.functions`` — pre-fix the importer
         never harvested it, so its clone ran with a contract neither module
-        proved.  Harvesting it under the module-qualified ``mod$mb$inner`` key
+        proved.  Harvesting it under the module-qualified ``mb::inner`` key
         and verifying its instantiations catches the lie.  `ma`'s TRUTHFUL
         namesake must NOT also error — the two must be kept under DISTINCT keys
         (a single bare-name entry would collapse them)."""
@@ -1935,10 +1935,10 @@ private fn f(@Int -> @Box<Nat>)
         `g::gen` is shadowed by a local non-generic `gen`; it is reached via the
         qualified `g::gen(5)` and its body calls the private `sib`, whose
         ``ensures(@Int.result == 999)`` lies over body `11`.  Codegen emits the
-        `mod$g$sib<Int>` clone (it traps at run), but pre-fix the verifier built
+        `g::sib<Int>` clone (it traps at run), but pre-fix the verifier built
         its shadowed map from public-shadowed generics only, so `sib` was never
         discovered and its lying contract ran unverified — a false Tier-1.
-        Discovering the private sibling and verifying it under `mod$g$sib` catches
+        Discovering the private sibling and verifying it under `g::sib` catches
         the lie."""
         g_mod = self._resolved(("g",), (
             "private forall<T> fn sib(@T -> @Int)"
@@ -1969,11 +1969,11 @@ private fn f(@Int -> @Box<Nat>)
         `pub_entry` (public) calls the private `priv_outer`, whose nested
         `ginner` has ``ensures(@Int.result == 999)`` over body `1`.  Pre-fix the
         three surfaces disagreed on the key: codegen emitted a concrete-INCLUDING
-        `mod$lib1$priv_outer$Int$where$ginner`, discovery recorded the
-        concrete-FREE `mod$lib1$priv_outer$where$ginner`, and the verify-walk
+        `lib1::priv_outer$Int$where$ginner`, discovery recorded the
+        concrete-FREE `lib1::priv_outer$where$ginner`, and the verify-walk
         rebuilt a BARE `priv_outer$where$ginner` — so the helper fell to the
         uninstantiated E520 path and its lie ran unverified (a false Tier-1).  One
-        canonical concrete-free `mod$…`-prefixed key on all three surfaces
+        canonical concrete-free `<path>::…`-prefixed key on all three surfaces
         instantiates it and catches the lie."""
         lib_mod = self._resolved(("lib1",), (
             "private forall<T> fn priv_outer(@T -> @Int)"
@@ -2015,7 +2015,7 @@ private fn f(@Int -> @Box<Nat>)
         the bare `compute$where$gid` and collapsed first-seen-wins, so only `ma`'s
         truthful helper was verified and `mb`'s lie was a false Tier-1.
         Namespacing the qualification by module path
-        (`mod$ma$compute$where$gid` vs `mod$mb$compute$where$gid`) keeps them
+        (`ma::compute$where$gid` vs `mb::compute$where$gid`) keeps them
         distinct and catches the lie."""
         ma = self._resolved(("ma",), (
             "public fn compute(@Int -> @Int)"

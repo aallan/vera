@@ -6,7 +6,7 @@ declarations would overwrite each other.  A GENERIC emits nothing under its
 bare name — only clones — and since #1274 those clones live in a namespace
 chosen per OWNER: a generic that owns the importer's bare name mangles to
 ``gen$Bool``, and one that does not (private, outside the filter, shadowed,
-or reached only transitively) mangles to ``mod$<path>$gen$Bool``.  Two
+or reached only transitively) mangles to ``<path>::gen$Bool``.  Two
 generics in different owner namespaces cannot overwrite each other, and the
 rail refused them anyway.
 
@@ -63,7 +63,7 @@ public forall<T> fn gen(@T -> @Int)
 
 # `mid1` declares its OWN `gen`, so its bare call is its own (spec §8.5.2)
 # even though it also imports `base`.  Private, so the importer can never
-# name it: qualified-only, `mod$mid1$gen$Bool`.
+# name it: qualified-only, `mid1::gen$Bool`.
 _MID1 = f"""\
 module mid1;
 
@@ -84,7 +84,7 @@ public fn door1(@Bool -> @Int)
 
 # `mid2` declares no generic; its bare `gen` is `base`'s, reached through a
 # wildcard import.  `base` is TRANSITIVE from the entry program, so its
-# generic owns no bare name there either: `mod$base$gen$Bool`.
+# generic owns no bare name there either: `base::gen$Bool`.
 _MID2 = f"""\
 module mid2;
 
@@ -255,10 +255,10 @@ class TestDiamond:
             f"a generic was emitted in the ENTRY's bare clone namespace, "
             f"where neither owner belongs; emitted: {emitted}"
         )
-        # Presence, so matched EXACTLY — `"(func $mod$mid1$gen$Bool" in wat`
+        # Presence, so matched EXACTLY — `"(func $mid1::gen$Bool" in wat`
         # is a prefix test a longer mangled clone would satisfy.
-        assert "mod$mid1$gen$Bool" in emitted, emitted
-        assert "mod$base$gen$Bool" in emitted, emitted
+        assert "mid1::gen$Bool" in emitted, emitted
+        assert "base::gen$Bool" in emitted, emitted
 
 
 class TestTwoTransitiveImporters:
@@ -318,7 +318,7 @@ class TestQualifiedOnlyGenericsAreKeyedPerOwner:
     the REGISTRATION would swap a loud refusal for a silent pick-a-winner.
 
     A qualified-only generic emits nothing under its bare name — its clones
-    are ``mod$<path>$name$…`` — but it used to inject a bare entry into the
+    are ``<path>::name$…`` — but it used to inject a bare entry into the
     shared registries anyway, first-module-wins, and two families of
     consumer read those per NAME: ``MonoContext.fn_names`` (the #1207 shadow
     guard) and the return-type registries the call-rewrite and discovery
@@ -458,7 +458,7 @@ public fn main(@Unit -> @Int)
             "a qualified-only generic injected a bare signature key; a "
             "per-name consumer would take whichever module got there first"
         )
-        assert {"mod$mid1$gen$Bool", "mod$base$gen$Bool"} <= sigs, (
+        assert {"mid1::gen$Bool", "base::gen$Bool"} <= sigs, (
             f"the per-owner clones must still be registered, got "
             f"{sorted(n for n in sigs if 'gen' in n)}"
         )
@@ -477,7 +477,7 @@ public fn main(@Unit -> @Int)
         assert "gen" not in ret_exprs, (
             "a qualified-only generic injected a bare return-type key"
         )
-        assert any("$gen$" in n for n in ret_exprs), (
+        assert any("::gen$" in n for n in ret_exprs), (
             f"the per-owner clones must still carry return types, got "
             f"{sorted(n for n in ret_exprs if 'gen' in n)}"
         )
@@ -529,7 +529,7 @@ class TestTheRailStillRefusesRealCollisions:
     """What E608 still refuses, and what it no longer does.
 
     Since #1498 every module declaration that does not own the entry's bare
-    name is emitted as ``mod$<path>$name`` — generic or not — so E608 is left
+    name is emitted as ``<path>::name`` — generic or not — so E608 is left
     exactly where two declarations share one symbol: both own the bare name,
     or some namespace can name both.  Both are the ambiguity §8.5.2.2 refuses
     (E155), and the rail stays behind that refusal.
@@ -643,7 +643,7 @@ public fn main(@Unit -> @Int)
         NON-generic (#1498).
 
         Both are private, so neither owns the entry's bare name: the generic's
-        clone is ``mod$liba$gen$Bool`` and the non-generic ``mod$libb$gen``.
+        clone is ``liba::gen$Bool`` and the non-generic ``libb::gen``.
         This was refused while the ownership classification spoke only about
         generics, which left a non-generic counted as an owner whatever its
         visibility.  Each door answers its own module's body.
@@ -728,7 +728,7 @@ public fn main(@Unit -> @Int)
 
         # Both own the entry's bare name: the second collides with the first.
         assert rail(("a", True), ("b", True)) == [None, ("a",)]
-        # One owner: the other has its own `mod$…` symbol, so no collision,
+        # One owner: the other has its own `<path>::…` symbol, so no collision,
         # in either order.
         assert rail(("a", True), ("b", False)) == [None, None]
         assert rail(("a", False), ("b", True)) == [None, None]
@@ -798,7 +798,7 @@ public fn main(@Unit -> @Int)
     ) -> None:
         """Two modules' same-named NON-generics that the entry cannot name —
         outside its import filter when public, private otherwise — each have
-        their own ``mod$<path>$plain`` (#1498), and each door runs its own
+        their own ``<path>::plain`` (#1498), and each door runs its own
         module's body.  This was refused while a non-generic counted as an
         owner whatever its visibility."""
         # `{{n}}` stays doubled — it is the literal `{n}` placeholder the
@@ -893,7 +893,7 @@ class TestPrescribedRemedyCompiles:
 
     No bare-name collision exists in that shape: with a local `pick`
     declared, BOTH modules' functions are shadowed and
-    `_register_shadowed_import` emits each under its own `mod$<path>$pick`.
+    `_register_shadowed_import` emits each under its own `<path>::pick`.
     The rail fired on provenance alone, before that ran — the over-breadth
     #1281 removed for generics, still in place for non-generics, which land
     in distinct namespaces by exactly the same rule.
@@ -924,8 +924,8 @@ class TestPrescribedRemedyCompiles:
             {"liba.vera": _LIBA_PICK, "libb.vera": _LIBB_PICK,
              "main.vera": _ENTRY_LOCAL_PLUS_QUALIFIED},
         )
-        assert "$mod$liba$pick" in result.wat, "liba's body is missing"
-        assert "$mod$libb$pick" in result.wat, "libb's body is missing"
+        assert "$liba::pick" in result.wat, "liba's body is missing"
+        assert "$libb::pick" in result.wat, "libb's body is missing"
 
     def test_without_a_local_declaration_the_checker_still_refuses(
         self, tmp_path: Path,

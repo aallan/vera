@@ -11,7 +11,7 @@ instances from ``ast.ModuleCall`` sites inside a module's own bodies via
 argument like ``get(())`` fell through to the phantom-type-variable ``Bool``
 default. The WASM call-site rewrite (``CallsMixin._resolve_generic_call``),
 which runs with the real handler context during actual codegen, still named
-the correct clone (``mod$mlib5$idg$Int``), so discovery silently emitted a
+the correct clone (``mlib5::idg$Int``), so discovery silently emitted a
 clone nothing calls, the real one was never registered, and the caller
 (``outer``, then ``main``) was dropped with E602/E620 on check-green,
 verify-clean source.
@@ -37,7 +37,7 @@ The differential does NOT reuse cells 1/2's fixtures, and this is measured,
 not a style choice: ``idg``/``idg2`` are called BARE from inside their OWN
 declaring module, and the verifier's ``ContractVerifier._collect_instantiations``
 reroutes exactly that call shape to a mangled bare ``FnCall`` (name
-``mod$mlib5$idg``) via the pre-existing, #1310-unrelated
+``mlib5::idg``) via the pre-existing, #1310-unrelated
 ``_reroute_to_module_qualified`` machinery (#1000/#1029) BEFORE
 ``_collect_shadowed_qualified_instances``'s ``walk_seed`` ever sees it, so
 ``walk_seed``'s own ``ast.ModuleCall`` match, and the ``HandleExpr`` merge
@@ -45,7 +45,7 @@ guarding it, never fire for cells 1/2's call shape.  Reverting the merge only
 from ``walk_seed`` while keeping cells 1/2's fixtures leaves BOTH
 ``_emitted_instances`` and ``_instances`` at ``Int`` (verified: the private
 self-reference is discovered instead through the ordinary unshadowed
-worklist over ``generic_decls["mod$mlib5$idg"]``, which already carried
+worklist over ``generic_decls["mlib5::idg"]``, which already carried
 #1207's fix and was never broken), so a differential built on cells 1/2 alone
 would stay green under a verifier-only revert, silently failing to be a
 differential at all.  Codegen's ``_collect_shadowed_qualified_calls`` has no
@@ -256,11 +256,11 @@ def test_module_generic_instantiated_from_effect_op_result(tmp_path) -> None:
     assert not cg_errors, f"codegen errors: {cg_errors}"
     assert not verify_errors, f"verify errors: {verify_errors}"
     names = wat_fn_names(result.wat)
-    assert "mod$mlib5$idg$Int" in names, (
+    assert "mlib5::idg$Int" in names, (
         "discovery and the call-rewrite named different clones for the "
         f"module generic; emitted: {names}"
     )
-    assert "mod$mlib5$idg$Bool" not in names, (
+    assert "mlib5::idg$Bool" not in names, (
         "the effect-op-result argument was still defaulted to the phantom "
         f"Bool type variable; emitted: {names}"
     )
@@ -286,10 +286,10 @@ def test_shadowed_generic_op_registry_merges_not_replaces(tmp_path) -> None:
     assert not cg_errors, f"codegen errors: {cg_errors}"
     assert not verify_errors, f"verify errors: {verify_errors}"
     names = wat_fn_names(result.wat)
-    assert "mod$mlib6$idg2$Int" in names, (
+    assert "mlib6::idg2$Int" in names, (
         f"expected the inner cell's clone in the emitted WAT; got {names}"
     )
-    assert "mod$mlib6$idg2$Nat" not in names, (
+    assert "mlib6::idg2$Nat" not in names, (
         "the outer handler's State<Nat> leaked into the inner call's "
         f"discovery instead of the inner State<Int> cell; emitted: {names}"
     )
@@ -347,28 +347,28 @@ def _discovered_sets(
 
 def test_shadowed_generic_effect_op_discovery_differential() -> None:
     """External qualified call: codegen and the verifier must discover the
-    identical ``mod$mlib7$idg3`` instantiation from ``mlib7::idg3(get(()))``.
+    identical ``mlib7::idg3`` instantiation from ``mlib7::idg3(get(()))``.
 
     ``idg3`` is PUBLIC in ``mlib7`` but shadowed at the importer by a
     same-named private local declaration, so the call must be qualified,
     exactly the shape ``walk_seed``'s ``ast.ModuleCall`` match (and the
     ``HandleExpr`` merge guarding it) exists for.  Deleting the merge from
     only one of the two discovery walks turns this red: codegen would keep
-    emitting ``mod$mlib7$idg3$Int`` while the verifier fell back to
-    ``mod$mlib7$idg3$Bool`` (or vice versa), so the sets would disagree even
+    emitting ``mlib7::idg3$Int`` while the verifier fell back to
+    ``mlib7::idg3$Bool`` (or vice versa), so the sets would disagree even
     though each one, read alone, looks self-consistent.  Measured directly
     (not just asserted): reverting codegen's merge alone yields
-    ``{('mod$mlib7$idg3', ('Bool',))}`` vs the verifier's unchanged
-    ``{('mod$mlib7$idg3', ('Int',))}``; reverting the verifier's merge alone
+    ``{('mlib7::idg3', ('Bool',))}`` vs the verifier's unchanged
+    ``{('mlib7::idg3', ('Int',))}``; reverting the verifier's merge alone
     yields the mirror image.  Both were executed against this exact fixture
     before this test was written.
     """
     codegen_set, verifier_set = _discovered_sets(("mlib7",), _MLIB7, _MAIN7)
-    assert ("mod$mlib7$idg3", ("Int",)) in codegen_set, (
+    assert ("mlib7::idg3", ("Int",)) in codegen_set, (
         f"codegen must emit the shadowed generic's clone at Int, "
         f"got {sorted(codegen_set)}"
     )
-    assert ("mod$mlib7$idg3", ("Bool",)) not in codegen_set, (
+    assert ("mlib7::idg3", ("Bool",)) not in codegen_set, (
         f"codegen fell through to the phantom Bool default, "
         f"got {sorted(codegen_set)}"
     )
@@ -386,20 +386,20 @@ def test_shadowed_generic_effect_op_discovery_differential_nested() -> None:
     ``idg4`` is called via ``mlib8::idg4(get(()))`` from the INNER
     ``handle[State<Int>]`` body, nested inside an OUTER
     ``handle[State<Nat>]`` in the IMPORTER's own code: the merge-not-replace
-    scoping must still land both sides on ``mod$mlib8$idg4$Int``, never
+    scoping must still land both sides on ``mlib8::idg4$Int``, never
     ``$Nat`` (the outer cell leaking in) nor a desync between the two
     discovery walks.  Measured directly: reverting codegen's merge alone
-    yields ``{('mod$mlib8$idg4', ('Bool',))}`` vs the verifier's unchanged
-    ``{('mod$mlib8$idg4', ('Int',))}``; reverting the verifier's merge alone
+    yields ``{('mlib8::idg4', ('Bool',))}`` vs the verifier's unchanged
+    ``{('mlib8::idg4', ('Int',))}``; reverting the verifier's merge alone
     yields the mirror image.  Both executed against this exact fixture
     before this test was written.
     """
     codegen_set, verifier_set = _discovered_sets(("mlib8",), _MLIB8, _MAIN8)
-    assert ("mod$mlib8$idg4", ("Int",)) in codegen_set, (
+    assert ("mlib8::idg4", ("Int",)) in codegen_set, (
         f"codegen must emit the inner cell's clone at Int, "
         f"got {sorted(codegen_set)}"
     )
-    assert ("mod$mlib8$idg4", ("Nat",)) not in codegen_set, (
+    assert ("mlib8::idg4", ("Nat",)) not in codegen_set, (
         f"the outer handler's Nat leaked into discovery, "
         f"got {sorted(codegen_set)}"
     )

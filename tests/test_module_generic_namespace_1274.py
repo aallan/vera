@@ -1,5 +1,5 @@
 """#1274: a module generic that does not own the importer's bare name must be
-reached under its module-qualified ``mod$<path>$name`` identity.
+reached under its module-qualified ``<path>::name`` identity.
 
 Pre-fix, only a PRIVATE module generic was rerouted onto that identity (#1000 /
 #1029).  A PUBLIC one was rerouted never — so a module's own body calling its
@@ -18,7 +18,7 @@ all reproduced below:
 
 The rule the fix installs is the one every module function follows
 (:func:`vera.monomorphize.owns_entry_bare_name`): a module function is reached
-under ``mod$<path>$name`` exactly when its bare name in the importer's flat
+under ``<path>::name`` exactly when its bare name in the importer's flat
 namespace does not denote that module's declaration — public **and** in-filter
 **and** not a name the importer holds.  Generic and non-generic share that one
 predicate (#1498).
@@ -36,17 +36,13 @@ from pathlib import Path
 import pytest
 import wasmtime
 
-from vera.ast import Program
 from vera.checker import typecheck_with_artifacts
 from vera.codegen import compile as codegen_compile
 from vera.codegen import execute
 from vera.codegen.api import CompileResult
 from vera.codegen.core import CodeGenerator
-from vera.monomorphize import (
-    importer_occupied_bare_names,
-    module_qualified_generic_names,
-    qualify_nested_generic_decls,
-)
+from vera.checker.core import resolve_calls
+from vera.monomorphize import fn_ownership
 from vera.parser import parse_to_ast
 from vera.resolver import ModuleResolver, ResolvedModule
 from vera.runtime.traps import WasmTrapError
@@ -283,8 +279,8 @@ class TestModuleToModuleHop:
     where the declaring module answers 111).
 
     The reroute now consults each module's imports under the SAME predicate,
-    keyed by owner, because ``mod$<path>$name`` is per-owner: ``mid``'s call
-    must reach ``mod$deep$gen``.
+    keyed by owner, because ``<path>::name`` is per-owner: ``mid``'s call
+    must reach ``deep::gen``.
     """
 
     _DEEP = f"""\
@@ -427,7 +423,7 @@ public fn main(@Unit -> @Int)
         verifier_set = {
             (n, ct) for n, cts in verifier._instances.items() for ct in cts
         }
-        assert ("mod$deep$gen", ("Bool",)) in codegen_set, (
+        assert ("deep::gen", ("Bool",)) in codegen_set, (
             f"the hop's clone must be emitted under its OWNING module's base, "
             f"got {sorted(codegen_set)}"
         )
@@ -506,7 +502,7 @@ class TestTransitiveVisibility:
     every public generic of a transitive module was read as a bare-name owner.
     Latent rather than live: the checker refuses a bare call to it from the
     entry (`E200`), and two transitive namesakes each take their own
-    ``mod$<path>$name`` (#1498), so no program observed the
+    ``<path>::name`` (#1498), so no program observed the
     misclassification.  It is
     corrected for parity, because the predicate is supposed to BE §8.6.4 and a
     reader who trusts it should not have to know which rail happens to cover a
@@ -576,21 +572,13 @@ public fn main(@Unit -> @Int)
     ) -> None:
         """`deep`'s public generic must NOT own the entry's bare name."""
         program, resolved = self._resolve(tmp_path)
-        import_names = {
-            imp.path: (set(imp.names) if imp.names is not None else None)
-            for imp in program.imports
-        }
-        bare = importer_occupied_bare_names(program)
-        deep = next(m for m in resolved if m.path == ("deep",))
-        qualified = module_qualified_generic_names(
-            deep.program, import_names.get(deep.path), bare,
-            direct=deep.direct,
+        ownership = fn_ownership(resolve_calls(program, resolved, self._MAIN))
+        assert not ownership.owns(("deep",), "gen"), (
+            "a transitive module's generics are all qualified-only — the "
+            "entry's namespace does not hold them at all (§8.6.4); got "
+            f"{dict(ownership.owners)}"
         )
-        assert qualified == {"gen"}, (
-            f"a transitive module's generics are all qualified-only — the "
-            f"entry's namespace does not hold them at all (§8.6.4); "
-            f"got {sorted(qualified)}"
-        )
+        assert ownership.symbol(("deep",), "gen") == "deep::gen"
 
     def test_hop_through_the_transitive_module_still_runs(
         self, tmp_path: Path,
@@ -686,7 +674,7 @@ public fn main(@Unit -> @Int)
         verifier_set = {
             (n, ct) for n, cts in verifier._instances.items() for ct in cts
         }
-        assert ("mod$deep$gen", ("Bool",)) in codegen_set, (
+        assert ("deep::gen", ("Bool",)) in codegen_set, (
             f"the qualified call's clone belongs to `deep`, got "
             f"{sorted(codegen_set)}"
         )
@@ -708,7 +696,7 @@ class TestImporterBareNamesAreOneSet:
     pre-transform AST.  A private walk on each side counted `where`-helpers
     differently, so an imported ``gen2`` owned the bare name for codegen and was
     qualified-only for the verifier: codegen emitted ``gen2$Bool`` while the
-    verifier verified ``mod$lib$gen2$Bool`` — each side's clone uncovered by the
+    verifier verified ``lib::gen2$Bool`` — each side's clone uncovered by the
     other, which is a false Tier-1 in the direction the #732 differential exists
     to catch.
     """
@@ -856,67 +844,40 @@ public fn main(@Unit -> @Int)
 {{ door(true) }}
 """
 
-    @staticmethod
-    def _bare(program: Program) -> set[str]:
-        return {
-            n for n in importer_occupied_bare_names(program)
-            if "$" not in n
-        }
-
-    def test_bare_name_set_is_idempotent_across_pass0_transforms(self) -> None:
-        """The property that lets ONE derivation serve both sides: run it on a
-        post-transform program and the answer this predicate consumes — the
-        ``$``-free names — is unchanged.  Only mangled entries are added, and a
-        mangled name can never equal a module's source identifier.
-
-        Asserted for BOTH Pass-0 transforms and for their composition in the
-        order codegen applies them, over a program carrying every helper shape
-        the derivation distinguishes — a fixture with only a plain helper would
-        let a one-legged assertion pass while the generic leg was untested.
-        """
-        pre = parse_to_ast(self._ALL_HELPER_SHAPES)
-        gen = CodeGenerator(source=self._ALL_HELPER_SHAPES, file="m.vera")
-        qualified = qualify_nested_generic_decls(pre)
-        hoisted = gen._hoist_nongeneric_where_helpers(pre)
-        composed = gen._hoist_nongeneric_where_helpers(qualified)
-
-        expected = self._bare(pre)
-        for label, transformed in (
-            ("qualify_nested_generic_decls", qualified),
-            ("_hoist_nongeneric_where_helpers", hoisted),
-            ("qualify then hoist", composed),
-        ):
-            assert self._bare(transformed) == expected, (
-                f"the derivation is not idempotent across {label}: "
-                f"pre={sorted(expected)} post={sorted(self._bare(transformed))}"
-            )
-
-    def test_each_helper_shape_is_classified_as_the_transforms_leave_it(
-        self,
+    def test_no_helper_takes_the_entry_s_bare_name_from_an_import(
+        self, tmp_path: Path,
     ) -> None:
-        """The positional half: idempotence alone would hold for a derivation
-        that answered the same WRONG set every time, so each shape's membership
-        is pinned individually against what the transforms actually do."""
-        bare = self._bare(parse_to_ast(self._ALL_HELPER_SHAPES))
-        assert "plainHelper" not in bare, (
-            "a non-generic helper under a non-generic parent is hoisted to a "
-            "$-qualified top-level decl, so it occupies no bare name"
+        """A ``where`` helper is local to its parent, whatever the parent's
+        genericity, so an import still owns the entry's bare name beside a
+        helper of that name.  Read off the checker's resolution, which code
+        generation and the verifier both bind to (#1494).  The name-set
+        derivation this replaces counted a non-generic helper under a generic
+        parent as a namespace-wide declaration (R-1507 round 1, finding 2),
+        and this program then ran the entry's helper for a module's call."""
+        helpers = ("plainHelper", "genHelper", "underGeneric",
+                   "underGenHelper")
+        lib = "module lib;\n\n" + "".join(
+            f"public fn {name}(@Unit -> @Int)\n  requires(true)\n"
+            f"  ensures(true)\n  effects(pure)\n{{ {LIB_ANSWER} }}\n\n"
+            for name in helpers
+        ) + _lib("public").split("\n", 2)[2]
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        (tmp_path / "lib.vera").write_text(lib, encoding="utf-8")
+        (tmp_path / "main.vera").write_text(
+            self._ALL_HELPER_SHAPES, encoding="utf-8",
         )
-        assert "genHelper" not in bare, (
-            "a generic helper is renamed to parent$where$genHelper by the "
-            "qualification, so it occupies no bare name"
+        program = parse_to_ast(self._ALL_HELPER_SHAPES)
+        resolved = ModuleResolver(_root=tmp_path).resolve_imports(
+            program, tmp_path / "main.vera",
         )
-        assert "underGeneric" in bare, (
-            "a non-generic helper under a GENERIC parent is touched by neither "
-            "transform — the hoist skips generic subtrees — so it keeps its "
-            "bare name and does shadow an import"
+        ownership = fn_ownership(
+            resolve_calls(program, resolved, self._ALL_HELPER_SHAPES),
         )
-        assert "underGenHelper" in bare, (
-            "same for a non-generic helper under a generic HELPER"
-        )
-        assert {"plainParent", "genParent", "main"} <= bare, (
-            "every top-level function occupies its own bare name"
-        )
+        for name in helpers:
+            assert ownership.owns(("lib",), name), (
+                f"the helper `{name}` took the entry's bare name from the "
+                f"import: {dict(ownership.owners)}"
+            )
 
 
 class TestTypeDiscriminating:
@@ -993,19 +954,19 @@ public fn main(@Unit -> @Bool)
 
     def test_wat_has_distinct_clone_symbols(self, tmp_path) -> None:
         """The naming rule, read straight off the emitted WAT: the module's
-        clone carries its ``mod$lib$`` qualification, so the two ``gen2<Bool>``
+        clone carries its ``lib::`` qualification, so the two ``gen2<Bool>``
         clones are two symbols, not one."""
         _, result, cg_errors = _build(
             tmp_path, {"lib.vera": self._LIB, "main.vera": self._MAIN},
         )
         assert not cg_errors, f"codegen errors: {cg_errors}"
-        symbols = set(re.findall(r"\(func (\$[\w$]+)", result.wat))
+        symbols = set(re.findall(r"\(func (\$[\w$:.<>]+)", result.wat))
         gen2_syms = sorted(x for x in symbols if "gen2" in x)
         # WHOLE-symbol matches: `$gen2$Bool` is a suffix of
-        # `$mod$lib$gen2$Bool`, so a substring test for the bare clone is
+        # `$lib::gen2$Bool`, so a substring test for the bare clone is
         # satisfied by the qualified one alone and the "two distinct
         # symbols" claim would be vacuous.
-        assert "$mod$lib$gen2$Bool" in symbols, (
+        assert "$lib::gen2$Bool" in symbols, (
             f"the module generic's clone must be qualified by its owning "
             f"module, like every other shadowed module function — "
             f"got {gen2_syms}"

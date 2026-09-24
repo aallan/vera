@@ -991,7 +991,7 @@ class DataMixin:
         the #774-reviewed source of truth that CONSUMES ``path`` — no wrong
         same-name-local lookup, mirroring ``_infer_vera_type``'s ModuleCall
         arm) and recurses with the resolved-name ``FnCall``: the bare or
-        ``mod$…`` name of a non-generic import is in ``_fn_ret_type_exprs``,
+        ``path::…`` name of a non-generic import is in ``_fn_ret_type_exprs``,
         a shadowed generic resolves to its per-instantiation clone whose
         registered declared return is already substituted, and anything
         unregistered falls through to the sound LOUD-skip.

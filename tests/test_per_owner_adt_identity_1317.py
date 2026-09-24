@@ -10,7 +10,7 @@ hatch at all, and renaming in a dependency's source was the only remedy —
 and #187 named the mechanism that closes it.
 
 The fix is one rename, in one place.  A CONTENDED module declaration and
-its constructors are renamed to ``mod$<path>$<Name>`` at absorb time
+its constructors are renamed to ``<path>::<Name>`` at absorb time
 (``CrossModuleMixin._register_modules``), inside every namespace that can
 name them, so ADT identity is ``(owner, name)`` BY CONSTRUCTION and each of
 the downstream registries is correct without knowing the rule exists.  That
@@ -43,10 +43,12 @@ is not a per-owner lookup threaded through every name-keyed consumer.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
 
+from vera import symbols
 from vera.codegen.core import CodeGenerator
 from vera.parser import parse_file
 from vera.resolver import ModuleResolver
@@ -120,6 +122,12 @@ _ENTRY_LOCAL = _ENTRY.replace(
 
 _ENTRY_NAMES_LIBA = _ENTRY.replace(
     "import liba(aone);", "import liba(aone, Shape);")
+
+#: A qualified DATA name, ``<path>::<Name>`` (#1317, spelled by
+#: :mod:`vera.symbols`): a module path, the owner qualifier, then an
+#: upper-case name.  Source never writes a data name qualified, so any match
+#: in text shown to a person is a leak of the internal symbol.
+_QUALIFIED_DATA = re.compile(r"[a-z_][A-Za-z0-9_.]*::[A-Z]")
 
 
 def _codes(errors: list[tuple[str, str]]) -> list[str]:
@@ -272,8 +280,8 @@ class TestTheThreeRemedies:
         )
         assert "Shape" in gen._adt_layouts, sorted(gen._adt_layouts)
         assert gen._adt_layout_owners.get("Shape") == ("liba",)
-        assert "mod$libb$Shape" in gen._adt_layouts, sorted(gen._adt_layouts)
-        assert "mod$liba$Shape" not in gen._adt_layouts
+        assert "libb::Shape" in gen._adt_layouts, sorted(gen._adt_layouts)
+        assert "liba::Shape" not in gen._adt_layouts
 
 
 # =====================================================================
@@ -290,10 +298,10 @@ class TestTwoOwnersOneEntry:
             tmp_path / "two",
             {"liba.vera": _LIBA, "libb.vera": _LIBB, "main.vera": _ENTRY},
         )
-        assert "mod$liba$Shape" in gen._adt_layouts
-        assert "mod$libb$Shape" in gen._adt_layouts
-        assert list(gen._adt_layouts["mod$liba$Shape"]) == ["mod$liba$Sq"]
-        assert list(gen._adt_layouts["mod$libb$Shape"]) == ["mod$libb$Cr"]
+        assert "liba::Shape" in gen._adt_layouts
+        assert "libb::Shape" in gen._adt_layouts
+        assert list(gen._adt_layouts["liba::Shape"]) == ["liba::Sq"]
+        assert list(gen._adt_layouts["libb::Shape"]) == ["libb::Cr"]
 
     def test_the_bare_name_is_left_to_nobody(self, tmp_path: Path) -> None:
         """No keeper, so no registry anywhere holds the bare spelling.
@@ -692,14 +700,14 @@ class TestANestedChain:
             {"deep.vera": _DEEP, "mid.vera": _MID, "other.vera": _OTHER,
              "main.vera": _ENTRY_CHAIN},
         )
-        assert "mod$deep$Shape" in gen._adt_layouts
-        assert "mod$other$Shape" in gen._adt_layouts
-        assert gen._adt_layout_owners["mod$deep$Shape"] == ("deep",)
-        assert gen._adt_layout_owners["mod$other$Shape"] == ("other",)
+        assert "deep::Shape" in gen._adt_layouts
+        assert "other::Shape" in gen._adt_layouts
+        assert gen._adt_layout_owners["deep::Shape"] == ("deep",)
+        assert gen._adt_layout_owners["other::Shape"] == ("other",)
         # `mid` was rewritten against `deep`'s rename, not given one of its
         # own — it declares nothing.
         assert not any(
-            key.startswith("mod$mid$") and key.endswith(("Shape", "Sq"))
+            key.startswith("mid::") and key.endswith(("Shape", "Sq"))
             for key in gen._adt_layouts
         )
 
@@ -748,8 +756,8 @@ class TestTheConstructorAxis:
             tmp_path / "ctor-sym",
             {"liba.vera": _ALPHA, "libb.vera": _BETA, "main.vera": _ENTRY},
         )
-        assert list(gen._adt_layouts["mod$liba$Alpha"]) == ["mod$liba$Sq"]
-        assert list(gen._adt_layouts["mod$libb$Beta"]) == ["mod$libb$Sq"]
+        assert list(gen._adt_layouts["liba::Alpha"]) == ["liba::Sq"]
+        assert list(gen._adt_layouts["libb::Beta"]) == ["libb::Sq"]
         assert "Alpha" not in gen._adt_layouts
         assert "Beta" not in gen._adt_layouts
 
@@ -1129,7 +1137,7 @@ class TestRestatementIsStillNotAContention:
         equivalent restatement contended, and renamed it apart while
         ``_adt_decls_share_a_layout`` (which sees the populated maps) would
         have called the same pair compatible.  Measured: two layouts,
-        ``mod$liba$Shape`` and ``mod$libb$Shape``, where one belongs.
+        ``liba::Shape`` and ``libb::Shape``, where one belongs.
 
         No FLOW between the two modules, deliberately: with one
         (``aone(@Int -> @Shape)`` into ``bone(@Shape -> @Int)``, which is
@@ -1160,7 +1168,7 @@ public fn bone(@Int -> @Int)
         )
         assert gen._contended_adt_display_names == {}
         assert "Shape" in gen._adt_layouts
-        assert not [k for k in gen._adt_layouts if k.startswith("mod$")]
+        assert not [k for k in gen._adt_layouts if "::" in k]
         assert module_value(
             gen._result,  # type: ignore[attr-defined]
         ) == ("ok", 7)
@@ -1256,13 +1264,13 @@ class TestOneSymbolPerOwnerEverywhere:
         """The positive half: for each qualified name, the registries that
         hold an entry for it hold the SAME owner's answer."""
         gen = _generator(tmp_path / "diff-owner", _DIFFERENTIAL_FILES)
-        for mangled in ("mod$liba$Shape", "mod$libb$Shape"):
-            owner = tuple(mangled.split("$")[1:-1])
+        for mangled in ("liba::Shape", "libb::Shape"):
+            owner = symbols.decode(mangled).path
             assert gen._adt_layout_owners[mangled] == owner, mangled
             ctors = gen._adt_layouts[mangled]
             assert ctors, mangled
             for ctor in ctors:
-                assert ctor.startswith(f"mod${owner[0]}$"), (mangled, ctor)
+                assert ctor.startswith(f"{owner[0]}::"), (mangled, ctor)
 
     def test_the_two_owners_answer_differently(
         self, tmp_path: Path,
@@ -1275,11 +1283,11 @@ class TestOneSymbolPerOwnerEverywhere:
         distinct constructors.
         """
         gen = _generator(tmp_path / "diff-two", _DIFFERENTIAL_FILES)
-        a = gen._adt_layouts["mod$liba$Shape"]
-        b = gen._adt_layouts["mod$libb$Shape"]
+        a = gen._adt_layouts["liba::Shape"]
+        b = gen._adt_layouts["libb::Shape"]
         assert set(a) != set(b), (sorted(a), sorted(b))
-        assert gen._adt_layout_owners["mod$liba$Shape"] != (
-            gen._adt_layout_owners["mod$libb$Shape"]
+        assert gen._adt_layout_owners["liba::Shape"] != (
+            gen._adt_layout_owners["libb::Shape"]
         )
 
     def test_both_bodies_run_against_their_own_layout(
@@ -1383,7 +1391,7 @@ class TestTheSymbolIsInternal:
     This class was DEFENCE IN DEPTH and was wrong to be.  Adversarial
     review found the leak that made it load-bearing: ``show``'s constructor
     head is baked into the DATA SECTION from the registry key, so
-    ``show(Sq(3))`` printed ``mod$liba$Sq(3)`` and
+    ``show(Sq(3))`` printed ``liba::Sq(3)`` and
     ``string_length(show(Sq(3)))`` was 14 where 5 is right — a wrong string
     and a wrong number on a program with no diagnostics at all.  The three
     original cells could not see it: they read the diagnostic stream of
@@ -1393,7 +1401,8 @@ class TestTheSymbolIsInternal:
     and every surface that renders an ADT or constructor name to a PERSON
     goes through it, while no WAT symbol does.  The battery below drives
     each surface over the two-``Shape`` programs and greps its whole output
-    for ``mod$``: runtime stdout, the codegen diagnostic stream, `vera
+    for a qualified data name (``<path>::<Name>``, :data:`_QUALIFIED_DATA`):
+    runtime stdout, the codegen diagnostic stream, `vera
     check` / `vera verify` JSON, `vera ast --json`, `vera parse`, and the
     browser bundle.  A surface that starts rendering an ADT name without
     the strip is caught by the grep rather than by someone reading it.
@@ -1440,7 +1449,7 @@ class TestTheSymbolIsInternal:
         strip applied unevenly across the arms is invisible to them: making
         it conditional on the constructor having fields
         (``display_adt_name(cname) if fields else cname``) leaves all of
-        them green and renders the nullary arm as ``mod$liba$Bz``.  This
+        them green and renders the nullary arm as ``liba::Bz``.  This
         concatenates all three arms of one renamed type and pins the whole
         string, so a leak anywhere in the dispatch is a wrong value rather
         than a wrong-looking substring nothing reads.
@@ -1532,7 +1541,7 @@ public fn main(@Unit -> @String)
             ("ast --json", cli("ast", "--json")),
             ("parse", cli("parse")),
         ):
-            assert "mod$" not in out, (surface, out[:400])
+            assert not _QUALIFIED_DATA.search(out), (surface, out[:400])
 
         # And the in-process diagnostic stream, which the CLI surfaces above
         # only show when something goes wrong.
@@ -1540,7 +1549,9 @@ public fn main(@Unit -> @String)
         for diag in gen._result.diagnostics:  # type: ignore[attr-defined]
             for attr in ("description", "rationale", "fix"):
                 text = getattr(diag, attr, None) or ""
-                assert "mod$" not in text, (diag.error_code, attr, text)
+                assert not _QUALIFIED_DATA.search(text), (
+                    diag.error_code, attr, text,
+                )
 
         # The BROWSER leg, which renders from the same compiled artefact.
         # Two halves: the emitted bundle's text assets, and the DATA
@@ -1558,13 +1569,13 @@ public fn main(@Unit -> @String)
             if path.suffix == ".wasm":
                 continue  # the binary legitimately carries WAT symbols
             text = path.read_text(encoding="utf-8")
-            assert "mod$" not in text, (path.name, text[:300])
+            assert not _QUALIFIED_DATA.search(text), (path.name, text[:300])
         wasm = (tmp_path / "bundle" / "module.wasm").read_bytes()
         for mangled in gen._contended_adt_display_names:
             # The constructor STRINGS live in the data section; the symbol
             # may appear elsewhere in the binary as a WAT identifier, which
             # is the identity itself.  What must not be there is a rendered
-            # head — `mod$liba$Sq(` — since that is what a browser viewer
+            # head — `liba::Sq(` — since that is what a browser viewer
             # would read.
             assert mangled.encode() + b"(" not in wasm, mangled
 
@@ -1591,14 +1602,16 @@ public fn main(@Unit -> @String)
             {"liba.vera": liba, "libb.vera": libb, "main.vera": _ENTRY},
         )
         wat = gen._result.wat  # type: ignore[attr-defined]
-        # `mangle_type_name` escapes `$` for a WAT identifier, so the
-        # qualified identity appears as `mod_U24_<path>_U24_<Name>` — which
-        # is also why no WAT symbol can ever read as a `mod$` leak in text
-        # output, and why the battery's grep and this assertion do not
+        # `mangle_type_name` escapes `:` for a WAT identifier, so the
+        # qualified identity appears as `<path>_U3a__U3a_<Name>` — which is
+        # also why no WAT symbol can ever read as a qualified-data leak in
+        # text output, and why the battery's grep and this assertion do not
         # contradict each other.
-        assert "mod_U24_liba_U24_" in wat, wat[-400:]
-        assert "mod_U24_libb_U24_" in wat, wat[-400:]
-        assert "mod$" not in wat
+        assert "liba_U3a__U3a_" in wat, wat[-400:]
+        assert "libb_U3a__U3a_" in wat, wat[-400:]
+        # A WAT comment may cite a pytest node id (`file.py::TestX`), which
+        # the detector cannot tell from a qualified data name, so comments go.
+        assert not _QUALIFIED_DATA.search(re.sub(r";;[^\n]*", "", wat))
 
     def test_the_strip_and_the_rename_table_are_one_derivation(
         self, tmp_path: Path,
@@ -1625,8 +1638,8 @@ public fn main(@Unit -> @String)
 
         for name in ("Sq", "Shape", "Option", "Some", "MdText"):
             assert display_adt_name(name) == name
-        assert display_adt_name("mod$a$b$Shape") == "Shape"
-        assert display_adt_name(display_adt_name("mod$liba$Sq")) == "Sq"
+        assert display_adt_name("a.b::Shape") == "Shape"
+        assert display_adt_name(display_adt_name("liba::Sq")) == "Sq"
 
     def test_the_strip_uses_the_rename_table_not_a_pattern(
         self, tmp_path: Path,
@@ -1638,12 +1651,12 @@ public fn main(@Unit -> @String)
 
         gen = _generator(tmp_path / "unmangle", _DIFFERENTIAL_FILES)
         diag = Diagnostic(
-            description="Type 'mod$liba$Shape' and fn 'mod$liba$aone'.",
+            description="Type 'liba::Shape' and fn 'liba::aone'.",
             location=SourceLocation(file="x.vera"),
-            fix="Rename 'mod$libb$Cr'.",
+            fix="Rename 'libb::Cr'.",
         )
         gen._unmangle_adt_names([diag])
-        assert diag.description == "Type 'Shape' and fn 'mod$liba$aone'."
+        assert diag.description == "Type 'Shape' and fn 'liba::aone'."
         assert diag.fix == "Rename 'Cr'."
 
     def test_it_is_a_no_op_without_a_rename(self, tmp_path: Path) -> None:
@@ -1656,11 +1669,11 @@ public fn main(@Unit -> @String)
         )
         assert gen._contended_adt_display_names == {}
         diag = Diagnostic(
-            description="mod$liba$Shape",
+            description="liba::Shape",
             location=SourceLocation(file="x.vera"),
         )
         gen._unmangle_adt_names([diag])
-        assert diag.description == "mod$liba$Shape"
+        assert diag.description == "liba::Shape"
 
 
 # =====================================================================
@@ -2034,7 +2047,9 @@ public fn broken(@Int -> @Int)
         for diag in result.diagnostics:
             for attr in ("description", "rationale", "fix"):
                 text = getattr(diag, attr, None) or ""
-                assert "mod$" not in text, (diag.error_code, attr, text)
+                assert not _QUALIFIED_DATA.search(text), (
+                    diag.error_code, attr, text,
+                )
 
     def test_a_diagnostic_that_names_a_renamed_type_reads_the_users_name(
         self, tmp_path: Path,
@@ -2048,7 +2063,7 @@ public fn broken(@Int -> @Int)
         that DOES name the type — ``liba``'s ``Shape`` has an ``Array``
         field, so codegen's structural-``Eq`` rail reports E613 about it —
         on a program where ``Shape`` is contended and therefore renamed.
-        Measured with the call deleted: ``Type 'mod$liba$Shape' does not
+        Measured with the call deleted: ``Type 'liba::Shape' does not
         satisfy ability 'Eq'``.
 
         Driven through ``build_multi_module_past_check`` because the
@@ -2081,7 +2096,7 @@ public fn aone(@Int -> @Int)
             for d in e613 for a in ("description", "rationale", "fix")
         )
         assert "Shape" in described, described[:200]
-        assert "mod$" not in described, described[:200]
+        assert not _QUALIFIED_DATA.search(described), described[:200]
 
 
 # =====================================================================
@@ -2118,8 +2133,8 @@ class TestOneRuleDecidesBothPairs:
         )
         assert "Shape" in gen._adt_layouts
         assert list(gen._adt_layouts["Shape"]) == ["Own"]
-        assert "mod$liba$Shape" in gen._adt_layouts
-        assert "mod$libb$Shape" in gen._adt_layouts
+        assert "liba::Shape" in gen._adt_layouts
+        assert "libb::Shape" in gen._adt_layouts
 
     def test_a_module_restating_the_entrys_type_still_shares_the_slot(
         self, tmp_path: Path,
@@ -2300,5 +2315,5 @@ public fn main(@Unit -> @Int)
             {"liba.vera": liba, "main.vera": entry},
         )
         assert list(gen._adt_layouts["Own"]) == ["Sq"]
-        assert "mod$liba$Alpha" in gen._adt_layouts
-        assert list(gen._adt_layouts["mod$liba$Alpha"]) == ["mod$liba$Sq"]
+        assert "liba::Alpha" in gen._adt_layouts
+        assert list(gen._adt_layouts["liba::Alpha"]) == ["liba::Sq"]

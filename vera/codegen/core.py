@@ -23,7 +23,8 @@ from typing import TYPE_CHECKING
 
 import wasmtime
 
-from vera import ast, naming
+from vera import ast, naming, symbols
+from vera.call_targets import CallResolution
 from vera.codegen.api import CompileResult
 from vera.codegen.memory import ConstructorLayout
 from vera.errors import Diagnostic, SourceLocation
@@ -156,10 +157,16 @@ class CodeGenerator(
             dict[tuple[int, int, int, int], Type] | None
         ) = None,
         module_artifacts: ModuleArtifacts | None = None,
+        call_resolution: CallResolution | None = None,
     ) -> None:
         self.source = source
         self.file = file
         self.diagnostics: list[Diagnostic] = []
+        # #1494: the checker's resolution of every module body's calls and
+        # of the entry's bare names — code generation binds calls to it
+        # (`_register_modules`).  Computed by `compile_program` from the
+        # checker itself when a caller compiles without having checked.
+        self._call_resolution: CallResolution | None = call_resolution
         self.string_pool = StringPool()
         # #798: the checker's resolved-type side-table (keyed by
         # ``ast.span_key``).  Threaded into every ``WasmContext`` so the
@@ -441,7 +448,7 @@ class CodeGenerator(
         # declaration ordering: that one is first-wins because a slot has
         # one winner, while contention is a property of each declaration.
         self._module_adt_declarers: dict[str, tuple[tuple[str, ...], ...]] = {}
-        # #1317: `mod$<path>$<Name>` -> the bare name the user wrote, for
+        # #1317: `<path>::<Name>` -> the bare name the user wrote, for
         # every ADT type and constructor the per-owner rename qualified.  The
         # mangled spelling is a WASM symbol, never a name the reader is asked
         # to know (#187's own design note), so `_unmangle_adt_names` strips it
@@ -482,7 +489,7 @@ class CodeGenerator(
         self._dec_rank_helpers: dict[str, str] = {}
         # #1172: names of EVERY decreases-carrying function that can be a
         # ``return_call`` target — locals (with where-helpers), imported
-        # bodies, mono clones, and shadowed ``mod$…`` emissions — built
+        # bodies, mono clones, and shadowed ``path::…`` emissions — built
         # by the pre-pass in ``compile_program`` before Pass 2, so the
         # tail-call discipline can classify a target that compiles later.
         self._dec_guarded_names: set[str] = set()
@@ -564,7 +571,7 @@ class CodeGenerator(
         # module's declarations into a throwaway `CodeGenerator` — so
         # `_register_modules` harvests that generator's map (stamped with
         # the MODULE's own file), and `_register_shadowed_import` mirrors
-        # the entry onto the `mod$…` name a locally-shadowed import is
+        # the entry onto the `path::…` name a locally-shadowed import is
         # emitted under.  Every other mangled name — a mono clone whose
         # own entry was dropped, say — falls back at trap time: the
         # resolver (`_resolve_trap_frames` in `vera/runtime/traps.py`)
@@ -649,7 +656,7 @@ class CodeGenerator(
         # #814 §8.5.3: WASM target name for a module-qualified call
         # ``m::f`` keyed by (module path, fn name).  Normally the bare name;
         # for a module fn whose bare name is shadowed by a LOCAL definition
-        # it is a distinct ``mod$…`` name so the qualified call reaches the
+        # it is a distinct ``path::…`` name so the qualified call reaches the
         # module's body while bare calls keep resolving to the local shadow.
         self._module_qualified_targets: dict[
             tuple[tuple[str, ...], str], str
@@ -660,8 +667,8 @@ class CodeGenerator(
             tuple[tuple[str, ...], str, ast.FnDecl]
         ] = []
         # Per-module intra-module call rename map: module path → {bare name →
-        # mod$ name} for that module's locally-shadowed functions.  Applied
-        # ONLY inside an emitted ``mod$…`` body so an intra-module call lands
+        # qualified name} for that module's locally-shadowed functions.  Applied
+        # ONLY inside an emitted ``path::…`` body so an intra-module call lands
         # on the module's version, not the main program's local shadow (#814
         # C2 — the residual the verifier↔codegen review found).
         self._module_intra_renames: dict[
@@ -674,7 +681,7 @@ class CodeGenerator(
         self._local_shadowed_fn_names: set[str] = set()
         # #1498: (module path, name) of every module function that does NOT
         # own the entry's bare name.  Each is emitted only as
-        # `mod$<path>$name` (Pass 2.6); Pass 2.5, which emits the bare-name
+        # `<path>::name` (Pass 2.6); Pass 2.5, which emits the bare-name
         # owners, skips them.
         self._qualified_module_fns: set[tuple[tuple[str, ...], str]] = set()
         # #890: fn/ADT/ctor names contributed ONLY by a transitively-reached
@@ -687,6 +694,15 @@ class CodeGenerator(
         # transitive symbol from a *main-program* body fails loudly at compile
         # instead of silently resolving to the emitted-for-a-sibling body.
         self._transitive_only_names: set[str] = set()
+        # #1494: function names E608 refused.  The unresolved-call scan
+        # does not report them again: such a name IS in two imported
+        # modules, so "not found in any imported module" would be false.
+        self._collided_fn_names: set[str] = set()
+        # The paths the ENTRY imports directly: the only modules its
+        # qualified calls may name (§8.6.4).
+        self._entry_direct_paths: frozenset[tuple[str, ...]] = (
+            frozenset()
+        )
         # #1299: namespace path (``None`` = the main program) → the bare
         # SOURCE function names a body compiled in that namespace can NAME.
         # Codegen absorbs every module into one flat WASM namespace, so
@@ -730,8 +746,8 @@ class CodeGenerator(
         #   * `_shadowed_imported_generic_decls` — a local non-generic shadows
         #     the bare name (#814 asymmetric variant), so ONLY the qualified
         #     form may reach the module's generic; the bare name stays on the
-        #     local.  These are monomorphized under a distinct ``mod$…$`` mono
-        #     prefix and reached via `_module_qualified_generic_targets`.
+        #     local.  These are monomorphized under a distinct ``path::`` mono
+        #     prefix and reached through the calls `bind_module_calls` binds.
         self._imported_generic_decls: dict[str, ast.FnDecl] = {}
         self._shadowed_imported_generic_decls: dict[
             tuple[str, ...], dict[str, ast.FnDecl]
@@ -739,7 +755,7 @@ class CodeGenerator(
         # #998: bare name → origin module path for `_imported_generic_decls`
         # entries (same first-seen-wins order), and clone WASM name → origin
         # module path for every emitted clone of an imported generic
-        # (unshadowed, shadowed `mod$…`, and their hoisted where-helpers).
+        # (unshadowed, shadowed `path::…`, and their hoisted where-helpers).
         # Monomorphization preserves node spans, so a clone's body is keyed by
         # its TEMPLATE module's span tables — the mono compile loop threads
         # `_module_artifacts[origin]` for these so the #820 widen guards fire
@@ -763,7 +779,7 @@ class CodeGenerator(
         # #814/#774: (module path, generic name) → mono base name the qualified
         # call must mangle against, for a generic whose bare name a local
         # shadows.  The ModuleCall desugar consults this so `m::gen(5)` resolves
-        # to the module generic's clone (`mod$m$gen$Int`) instead of falling
+        # to the module generic's clone (`m::gen$Int`) instead of falling
         # back to the local shadow's bare `gen`.
         self._module_qualified_generic_bases: dict[
             tuple[tuple[str, ...], str], str
@@ -822,7 +838,7 @@ class CodeGenerator(
         Two spellings, one owner: a prelude function the program does not
         override keeps its bare name (and its clones ``base$Types``), and one
         the program does override keeps its own identity under
-        :func:`vera.prelude.prelude_symbol` (#1495), whose ``mod$<prelude>$``
+        :func:`vera.prelude.prelude_symbol` (#1495), whose ``<prelude>::``
         prefix nothing else can spell.
         """
         return (
@@ -1128,7 +1144,7 @@ class CodeGenerator(
 
         Mechanics: the scan works on the emitted WAT text — the exact
         symbol stream wasmtime resolves — so mono-mangled (`f$Int`),
-        module-qualified (`mod$f`), and where-helper (`p$where$h`)
+        module-qualified (`m::f`), and where-helper (`p$where$h`)
         call targets are matched without re-deriving any renaming logic.
         Lifted closures are nodes too: a closure body holding the only
         `call $skipped` dooms its parent through the `_closure_parents`
@@ -1989,7 +2005,7 @@ class CodeGenerator(
         test E609 is decided by (#1423).  The entry file is an owner like
         any other: per-owner ADT identity qualifies a module declaration
         the entry cannot MEET — cannot name, and cannot be handed a value
-        of through an imported signature — to ``mod$<path>$<Name>``, so
+        of through an imported signature — to ``<path>::<Name>``, so
         that pair is not in ``_module_adt_declarers`` when this runs and
         there is nothing here to refuse.  What is left is exactly the pairs
         that meet, and this rail refuses them.  It is not a second opinion
@@ -2142,13 +2158,22 @@ class CodeGenerator(
 
         A thin wrapper over :meth:`_compile_program`, and it exists for one
         reason: #1317's per-owner ADT rename gives a contended `data` type
-        an internal ``mod$<path>$<Name>`` symbol, and that symbol must never
+        an internal ``<path>::<Name>`` symbol, and that symbol must never
         reach the reader (#187's own design note — the mangled name is a
         WASM detail, not a spelling the user is asked to know).  The
         compiler has four exits and a diagnostic can be appended from any
         pass along the way, so the strip is done ONCE here, over the whole
         stream, rather than at each of the dozens of appends.
         """
+        if self._call_resolution is None and self._resolved_modules:
+            # #1494: the checker's answer, never a second derivation of it —
+            # a caller that did not type-check first gets it from the checker.
+            from vera.checker.core import resolve_calls
+
+            self._call_resolution = resolve_calls(
+                program, self._resolved_modules,
+                source=self.source, file=self.file,
+            )
         result = self._compile_program(program)
         self._unmangle_adt_names(result.diagnostics)
         return result
@@ -2158,7 +2183,7 @@ class CodeGenerator(
 
         Rewrites in place, over the exact table the rename built
         (``_contended_adt_display_names``) rather than by pattern-matching
-        ``mod$…`` — so a FUNCTION mangled by #814's rerouting, which is a
+        ``path::…`` — so a FUNCTION mangled by #814's rerouting, which is a
         different rename with its own reporting, is left exactly as it was,
         and no user identifier that merely resembles the scheme can be
         rewritten by accident.  A no-op for every program with no contended
@@ -2521,7 +2546,7 @@ class CodeGenerator(
                     # the clone's RAW return-type expression under the
                     # CLONE key in the shared bare-name registry — the
                     # third door into `_fn_ret_type_exprs` after the
-                    # Pass-0 harvest and the shadowed `mod$…` mirror,
+                    # Pass-0 harvest and the shadowed `path::…` mirror,
                     # and a main-file consumer resolving the clone key
                     # (index-element inference on a call to the clone,
                     # the fused-await classifier) would do so against
@@ -2576,7 +2601,7 @@ class CodeGenerator(
                 _dec_collect(tld.decl, tld.decl.name)
         for _path, idecl in self._imported_fn_decls:
             # #1498: a qualified-only declaration is emitted (and guarded)
-            # under its `mod$…` name, collected from `_shadowed_module_fns`
+            # under its `path::…` name, collected from `_shadowed_module_fns`
             # below; its bare name belongs to another owner.
             if (_path, idecl.name) not in self._qualified_module_fns:
                 _dec_collect(idecl, idecl.name)
@@ -2627,7 +2652,7 @@ class CodeGenerator(
         # `$`-suffix (the single type-args vector `_mangle_fn_name` appends;
         # the vector itself can't contain `$` — type names can't lex it), so
         # an entry whose base is itself `$`-qualified (a shadowed module
-        # clone `mod$path$gen$Int`, a per-clone hoisted helper
+        # clone `path::gen$Int`, a per-clone hoisted helper
         # `gen$Int$where$h$…`) reduces to that qualified base, which can
         # never equal a bare helper name — a first-`$` split would collapse
         # them all to their first segment and could false-match a bare
@@ -2786,7 +2811,7 @@ class CodeGenerator(
             # that does not own the entry's bare name — shadowed by an entry
             # declaration, private, outside the filter, named after a prelude
             # function, reached only transitively, or a hoisted helper of one
-            # of those — is emitted as ``mod$<path>$name`` in Pass 2.6 instead
+            # of those — is emitted as ``<path>::name`` in Pass 2.6 instead
             # (#814, widened by #1498).  The ``fn_visibility`` test stays as
             # the entry-side statement of the same rule.
             if (idecl.name in fn_visibility
@@ -2795,7 +2820,7 @@ class CodeGenerator(
             imported_seen.add(idecl.name)
             # #814 C2 (Pass 2.5 mirror): pass the originating module's
             # intra-rename map so a bare sibling call inside this imported
-            # body resolves to the module's version (its `mod$…` emission)
+            # body resolves to the module's version (its `path::…` emission)
             # rather than a local shadow of that name.
             # #1111: resolve type aliases against THIS module's own
             # namespace (spec §8.4.1: aliases are module-local) — the flat
@@ -2824,13 +2849,13 @@ class CodeGenerator(
                 functions_wat.append(fn_wat)
 
         # Pass 2.6: emit shadowed module functions under their qualified
-        # ('mod$…') WASM name (#814 §8.5.3).  The plain Pass 2.5 above skips
+        # ('path::…') WASM name (#814 §8.5.3).  The plain Pass 2.5 above skips
         # any imported fn whose bare name a local redefines (so bare calls
         # resolve to the local, §8.5.2); here we additionally emit the
         # module's body under a distinct name so a module-qualified call
         # ``m::f`` reaches it.  ``dataclasses.replace`` only renames the WASM
         # function; the body's intra-module calls are redirected to their own
-        # ``mod$`` targets via ``module_renames`` (C2) so a sibling call
+        # ``::`` targets via ``module_renames`` (C2) so a sibling call
         # inside the body also lands on the module's version, not a local
         # shadow.
         for path, mangled, idecl in self._shadowed_module_fns:
@@ -2838,9 +2863,9 @@ class CodeGenerator(
                 continue
             imported_seen.add(mangled)
             # #1111: same per-module alias namespace as Pass 2.5 — the
-            # ``mod$…`` rename does not change which module's aliases
+            # ``path::…`` rename does not change which module's aliases
             # the body's type expressions belong to.
-            # #1186: likewise the ``mod$…`` rename does not move the body's
+            # #1186: likewise the ``path::…`` rename does not move the body's
             # spans, so its diagnostics still belong to the module's file.
             with self._module_alias_scope(path), self._module_source_scope(path):
                 fn_wat = self._compile_fn_tracked(
@@ -2848,12 +2873,12 @@ class CodeGenerator(
                     export=False,
                     module_renames=self._module_intra_renames.get(path, {}),
                     imported=True,  # #986: don't consult main-file span tables
-                    # #987: the ``mod$…`` rename only changes the WASM
+                    # #987: the ``path::…`` rename only changes the WASM
                     # function name; the body's node spans are unchanged, so
                     # THIS module's table still keys them correctly and its
                     # widen guard fires.
                     module_tables=self._module_artifacts.get(path),
-                    # #1299: the ``mod$…`` rename moves the body into no other
+                    # #1299: the ``path::…`` rename moves the body into no other
                     # namespace, and adds no helper — same reasoning, and the
                     # same door invariant, as the Pass-2.5 emission above.
                 )
@@ -3507,7 +3532,7 @@ class CodeGenerator(
         # generic onto the ancestor's hoisted helper — at base a loud
         # duplicate-identifier crash, silently the wrong body here).
         this_level = {
-            wfn.name: f"{prefix}$where${wfn.name}"
+            wfn.name: symbols.helper_symbol(prefix, wfn.name)
             for wfn in where_fns
             if not wfn.forall_vars
         }
@@ -3601,7 +3626,7 @@ class CodeGenerator(
         Every ``$``-bearing key is admitted unconditionally.  ``$`` cannot
         occur in a Vera identifier (``LOWER_IDENT``), so a mangled name is
         never what a bare source call spells; what admitting it DOES is keep
-        a mono clone (``pick$Int``), a rerouted module body (``mod$lib$f``),
+        a mono clone (``pick$Int``), a rerouted module body (``lib::f``),
         and a hoisted helper (``outer$where$h``) answering "user-owned" at
         the sites that see a call name the rewrite already resolved.
 

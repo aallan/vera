@@ -1,8 +1,8 @@
 -- Conformance: two modules' same-named generics in one program (Chapter 8, #1281)
 -- Tests: a diamond where `mid1` declares a private `forall<T> fn gen` and
 -- `mid2` bare-calls the public `gen` of the shared `base` both import.  After
--- #1274 the two are in different clone namespaces (`mod$…$mid1$gen$Bool` and
--- `mod$…$base$gen$Bool`) and nothing is emitted under a generic's bare name at
+-- #1274 the two are in different clone namespaces (`…mid1::gen$Bool` and
+-- `…base::gen$Bool`) and nothing is emitted under a generic's bare name at
 -- all, so the flat-namespace overwrite [E608] guards cannot occur — the rail
 -- now reads that ownership classification instead of the bare name alone.
 -- Each door must answer its OWN module's generic: 555 + 111 == 666.

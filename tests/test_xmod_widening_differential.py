@@ -112,7 +112,7 @@ def _scenarios() -> list[tuple[str, dict[str, str], str, str, str]]:
 
     # Shadowed import (Pass 2.6): the importer defines a local `widen` that
     # shadows the import, and reaches the module's widening body via a qualified
-    # `lib::widen` call (emitted under a `mod$…` name).
+    # `lib::widen` call (emitted under a `<path>::…` name).
     scen.append((
         "shadowed",
         {

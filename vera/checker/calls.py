@@ -147,6 +147,7 @@ class CallsMixin:
         if bare_call_denotes_user_fn(name, self._user_fn_names):
             fn_info = self._lookup_function_scoped(name)
             if fn_info is not None:
+                self._record_call_target(node, name)
                 return self._check_fn_call_with_info(fn_info, args, node)
 
         # Maybe it's an effect operation

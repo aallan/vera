@@ -86,9 +86,9 @@ public fn generic_entry(-> @Int) requires(true) ensures(true) effects(pure) {
 """
 
 # A local `scaled` shadows the import (spec §8.5.2), so the module's body is
-# emitted under `mod$chinchilla$scaled` and reached by a qualified call.  The
-# mangled name is its own `fn_source_map` key: the resolver's rightmost-`$`
-# strip yields `mod$chinchilla`, which is nobody's entry.
+# emitted under `chinchilla::scaled` and reached by a qualified call.  The
+# qualified name is its own `fn_source_map` key: it is not a clone, so the
+# resolver's clone strip leaves it as it is, and the exact entry must exist.
 _SHADOWING_IMPORTER = """\
 import chinchilla(scaled);
 
@@ -227,7 +227,7 @@ class TestImportedTrapNamesTheModuleFile:
     def test_shadowed_import_frame_names_the_module(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """The `mod$…` emission of a locally-shadowed import (#814)."""
+        """The `<path>::…` emission of a locally-shadowed import (#814)."""
         path = _write(
             tmp_path,
             {_MODULE_NAME: _MODULE, _IMPORTER_NAME: _SHADOWING_IMPORTER},
@@ -236,7 +236,7 @@ class TestImportedTrapNamesTheModuleFile:
         err = capsys.readouterr().err
 
         assert rc != 0
-        frame = _frame_line(err, "mod$chinchilla$scaled")
+        frame = _frame_line(err, "chinchilla::scaled")
         assert _MODULE_NAME in frame, (
             f"qualified module emission must name its module's file; "
             f"got {frame!r}"

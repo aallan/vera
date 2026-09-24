@@ -344,7 +344,8 @@ def cmd_verify(path: str, as_json: bool = False, quiet: bool = False,
                         timeout_ms=timeout_ms,
                         resolved_modules=resolved,
                         expr_types=artifacts.expr_semantic_types,
-                        expr_target_types=artifacts.expr_target_types)
+                        expr_target_types=artifacts.expr_target_types,
+                        call_resolution=artifacts.call_resolution)
 
         errors = [d for d in result.diagnostics if d.severity == "error"]
         warnings = [d for d in result.diagnostics if d.severity == "warning"]
@@ -685,6 +686,7 @@ def cmd_compile(
             expr_semantic_types=artifacts.expr_semantic_types,
             expr_target_types=artifacts.expr_target_types,
             module_artifacts=artifacts.module_artifacts,
+            call_resolution=artifacts.call_resolution,
         )
 
         errors = [d for d in result.diagnostics if d.severity == "error"]
@@ -907,6 +909,7 @@ def cmd_serve(
             expr_semantic_types=artifacts.expr_semantic_types,
             expr_target_types=artifacts.expr_target_types,
             module_artifacts=artifacts.module_artifacts,
+            call_resolution=artifacts.call_resolution,
         )
         errors = [d for d in result.diagnostics if d.severity == "error"]
         if errors:  # pragma: no cover — codegen errors after typecheck pass
@@ -1047,6 +1050,7 @@ def cmd_run(
             expr_semantic_types=artifacts.expr_semantic_types,
             expr_target_types=artifacts.expr_target_types,
             module_artifacts=artifacts.module_artifacts,
+            call_resolution=artifacts.call_resolution,
         )
 
         if not result.ok:  # pragma: no cover — codegen errors after typecheck pass
@@ -1625,6 +1629,7 @@ def cmd_test(
             expr_target_types=artifacts.expr_target_types,
             module_artifacts=artifacts.module_artifacts,
             alias_env=artifacts.alias_env,
+            call_resolution=artifacts.call_resolution,
         )
 
         has_errors = any(d.severity == "error" for d in result.diagnostics)

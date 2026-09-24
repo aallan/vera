@@ -494,7 +494,7 @@ class TestTheDataSideFlapShapes:
         silent.  Codegen used to refuse the program anyway, which is why
         `_ambiguous_data_fix` once prescribed renaming alone; #1317's
         per-owner ADT identity compiles each declaration under its own
-        `mod$<path>$<Name>` symbol, so all three now carry through to the
+        `<path>::<Name>` symbol, so all three now carry through to the
         runtime value.  `doorc` matches `Sq(3)` against `liba`'s `Shape`
         (the `local` remedy against `midc`'s own, which is the same layout),
         so the answer is 3 in every arm.

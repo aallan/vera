@@ -21,7 +21,7 @@ the guarded differential (it replaces the honest pin that documented the gap):
   widen guard's own ``widen_guard`` kind (#1438; before it, the guard was a bare
   ``unreachable`` and the pin could not tell it from a non-exhaustive match) —
   never the silent ``-1`` — for both the unshadowed (bare-call) and shadowed
-  (``lib::wrap`` -> ``mod$…``) doors,
+  (``lib::wrap`` -> ``<path>::…``) doors,
 - in-range values round-trip unchanged, and
 - a LOCAL generic's clones keep their same-file guard (the provenance tagging
   must not mis-route local clones onto a module table or suppressed lookups).
@@ -83,7 +83,7 @@ public fn callInt(@Nat -> @Int)
 
 # The shadowed door (#814 §8.5.2): a local non-generic `wrap` owns the bare
 # name; the module generic is reached only via the qualified call and its
-# clones are emitted under the per-module ``mod$…`` mono base.
+# clones are emitted under the per-module ``<path>::…`` mono base.
 _SHADOWED_MAIN = """\
 import lib(wrap);
 public fn wrap(@Nat -> @Nat)
@@ -231,7 +231,7 @@ class TestImportedGenericWidenDifferential:
 
 
 class TestShadowedGenericWidenDifferential:
-    """The shadowed door: ``lib::wrap`` reaches the module generic's ``mod$…``
+    """The shadowed door: ``lib::wrap`` reaches the module generic's ``<path>::…``
     clone, which needs the module table exactly like the unshadowed twin."""
 
     _FILES: ClassVar[dict[str, str]] = {"lib.vera": _GENERIC_LIB_ARRAY, "main.vera": _SHADOWED_MAIN}
@@ -241,7 +241,7 @@ class TestShadowedGenericWidenDifferential:
         kind = _trap_kind(result, "callQualified", U64_MAX)
         assert kind == "widen_guard", (
             f"callQualified(u64.MAX) trap kind {kind!r} — the shadowed "
-            f"(mod$…) clone compiled without its module table"
+            f"(<path>::…) clone compiled without its module table"
         )
 
     def test_shadowed_generic_in_range_passes(self, tmp_path) -> None:

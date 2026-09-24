@@ -239,6 +239,7 @@ class VerificationSession:
             shared_smt=smt,
             expr_types=artifacts.expr_semantic_types,
             expr_target_types=artifacts.expr_target_types,
+            call_resolution=artifacts.call_resolution,
         )
         verifier.register_program(program)
 

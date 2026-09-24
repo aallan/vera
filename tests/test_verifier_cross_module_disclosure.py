@@ -748,7 +748,7 @@ def test_1399_warm_equals_cold_across_the_boundary(tmp_path: Path) -> None:
 
 #: A qualified-only imported generic: `gmain` declares its own `gen`, so the
 #: module's version owns no bare name here and its clones are verified under
-#: the `mod$<path>$<name>` base.
+#: the `<path>::<name>` base.
 _GENERIC_LIB = """\
 module glib;
 
@@ -792,7 +792,7 @@ public fn use_it(@Int -> @Int)
 def test_1399_imported_generic_clone_is_named_by_its_module(
     tmp_path: Path,
 ) -> None:
-    """A shadowed imported generic's clone records under `mod$<path>$<name>`.
+    """A shadowed imported generic's clone records under `<path>::<name>`.
 
     This is the fact that makes a bare-name lookup wrong (CR 3519156263, cited
     in #1399): the importer DOES verify this clone — its obligations are in
@@ -1236,10 +1236,14 @@ def _checked(entry: Path):
 def _verify_checked(entry: Path, source, program, resolved, artifacts):
     from vera.verifier import verify
 
+    # Every artifact the entry's check produced, the call resolution among
+    # them (#1494): a verify handed all of them does not type-check again,
+    # which is what keeps the entry's own check outside the budget below.
     return verify(
         program, source, file=str(entry), resolved_modules=resolved,
         expr_types=artifacts.expr_semantic_types,
         expr_target_types=artifacts.expr_target_types,
+        call_resolution=artifacts.call_resolution,
     )
 
 

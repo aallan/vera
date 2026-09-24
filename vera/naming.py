@@ -102,12 +102,11 @@ is what makes the iterative resolution's dependency graph a DAG.
 from __future__ import annotations
 
 import enum
-import re
 import sys
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 
-from vera import ast
+from vera import ast, symbols
 from vera.types import (
     PRIMITIVES,
     REMOVED_ALIASES,
@@ -278,22 +277,20 @@ def with_type_params(env: AliasEnv, params: Iterable[str]) -> AliasEnv:
 # Display — the one spelling a USER is shown for a compiler-minted symbol
 # =====================================================================
 
-_OWNER_QUALIFIED = re.compile(r"^mod\$(?:[A-Za-z_][A-Za-z_0-9]*\$)+")
-
-
 def display_adt_name(name: str) -> str:
     """The spelling a USER sees for an ADT or constructor name (#1317).
 
     #1317 gives a CONTENDED module ``data`` declaration and its
-    constructors an owner-qualified symbol, ``mod$<path>$<Name>``, so two
-    modules' ``Shape``s stop contending for one registry slot.  That symbol
+    constructors an owner-qualified symbol, ``<path>::<Name>`` (built by
+    :mod:`vera.symbols`), so two modules' ``Shape``s stop contending for one
+    registry slot.  That symbol
     is a WASM detail and is never a spelling the reader is asked to know
     (#187's own design note), so every surface that renders such a name TO
     A PERSON strips the prefix here — and nothing else does it, so the
     answer cannot differ between two of them.
 
     The surfaces, and they are the ones a battery in
-    ``tests/test_per_owner_adt_identity_1317.py`` greps for ``mod$``:
+    ``tests/test_per_owner_adt_identity_1317.py`` greps for the qualifier:
     ``show``'s constructor head, which is baked into the data section and
     is the one that reaches STDOUT; and codegen's diagnostics, through
     ``CodeGenerator._unmangle_adt_names``, which rewrites inside prose and
@@ -306,13 +303,13 @@ def display_adt_name(name: str) -> str:
     never passed through here — they are the identity the rename exists to
     make unique.
 
-    Total and idempotent: a name with no prefix is returned unchanged, and
-    the prefix cannot be forged, since ``$`` is illegal in a Vera
-    identifier.  Applied to a function's ``mod$…`` mangling it would strip
-    too much (``mod$lib$compute$where$g`` is not an ADT name), which is why
-    it is documented as the ADT/constructor renderer and called only there.
+    Total and idempotent: a name with no qualifier is returned unchanged,
+    and the qualifier cannot be forged, since ``:`` is illegal in a Vera
+    identifier.  A FUNCTION's symbol is rendered by
+    :func:`vera.symbols.display` instead, which keeps the module and drops a
+    helper's or a clone's steps; this one is the ADT/constructor renderer.
     """
-    return _OWNER_QUALIFIED.sub("", name, count=1)
+    return symbols.display_data_name(name)
 
 
 # =====================================================================

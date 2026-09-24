@@ -545,7 +545,7 @@ class FunctionCompilationMixin:
         ctx.set_closure_sigs(self._closure_sigs)
         # #814 §8.5.3: module-qualified call target table, so a ``m::f`` call
         # whose bare name is shadowed by a local resolves to the module's
-        # body (emitted under a distinct ``mod$…`` name) rather than the local.
+        # body (emitted under a distinct ``path::…`` name) rather than the local.
         ctx.set_module_qualified_targets(self._module_qualified_targets)
         # #814/#774: shadowed imported-generic qualified-call bases, so a
         # `m::gen(…)` whose bare name a local shadows resolves to the module
@@ -554,7 +554,7 @@ class FunctionCompilationMixin:
             self._module_qualified_generic_bases,
         )
         # #814 C2: intra-module call renames, set ONLY when compiling a
-        # ``mod$…`` body, so a bare sibling call inside it reaches the
+        # ``path::…`` body, so a bare sibling call inside it reaches the
         # module's version rather than the main program's local shadow.
         ctx.set_intra_module_renames(module_renames or {})
         env = WasmSlotEnv()

@@ -51,6 +51,7 @@ import hashlib
 
 from dataclasses import dataclass, replace
 
+from vera.call_targets import CallTarget, SpanKey
 from vera.resolver import ResolvedModule
 
 
@@ -175,6 +176,12 @@ class ModuleDisclosureIndex:
         # are checked once for the whole closure rather than once per module
         # verified.  See `typecheck_with_artifacts(body_check_memo=...)`.
         self._body_check_memo: set[tuple[str, ...]] = set()
+        # #1494: and the call targets those body checks record, which
+        # verification binds calls to — shared with the memo, or a module an
+        # earlier sub-check reached would have none.
+        self._module_call_targets: dict[
+            tuple[str, ...], dict[SpanKey, CallTarget]
+        ] = {}
 
     def disclosed_in(self, path: tuple[str, ...]) -> ModuleManifest:
         """The disclosed-function set of the module at *path*.
@@ -375,6 +382,7 @@ class ModuleDisclosureIndex:
             return cached
         result = _verify_for_disclosure(
             mod, sub, self._timeout_ms, self._body_check_memo,
+            self._module_call_targets,
         )
         if key not in _CACHE and len(_CACHE) >= _MAX_ENTRIES:
             del _CACHE[next(iter(_CACHE))]
@@ -407,6 +415,9 @@ def _verify_for_disclosure(
     sub: list[ResolvedModule],
     timeout_ms: int,
     body_check_memo: set[tuple[str, ...]] | None = None,
+    module_call_targets: (
+        dict[tuple[str, ...], dict[SpanKey, CallTarget]] | None
+    ) = None,
 ) -> ModuleManifest:
     """Run *mod*'s own verification and return what it disclosed.
 
@@ -436,6 +447,7 @@ def _verify_for_disclosure(
     check_diags, artifacts = typecheck_with_artifacts(
         mod.program, mod.source, file=file, resolved_modules=sub,
         body_check_memo=body_check_memo,
+        module_call_targets=module_call_targets,
     )
     if any(d.severity == "error" for d in check_diags):
         return _all_fn_names(mod)
@@ -445,6 +457,7 @@ def _verify_for_disclosure(
         resolved_modules=sub,
         expr_types=artifacts.expr_semantic_types,
         expr_target_types=artifacts.expr_target_types,
+        call_resolution=artifacts.call_resolution,
     )
     # WHICH functions is the shared derivation's answer; the walk below only
     # decorates it with the obligation that earned each one, selected by the

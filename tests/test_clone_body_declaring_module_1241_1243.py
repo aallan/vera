@@ -10,7 +10,7 @@ IMPORTER's namespace:
   naming env and the source buffer but not the function registry; and
 * codegen (#1243) — the clone-emission door was the one door that did not
   thread the module's intra-rename map, so a bare sibling call landed on
-  the importer's same-named function rather than the module's own `mod$…`
+  the importer's same-named function rather than the module's own `<path>::…`
   emission.
 
 The checker's answer is the module's own (spec §8.5.1), proven by a

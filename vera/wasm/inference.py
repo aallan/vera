@@ -264,7 +264,7 @@ class InferenceMixin:
         # out offsets.  Resolve the qualified target through the SAME single
         # resolver the desugar and the statement-position result-shape predicates
         # (`_is_void_expr` / `_is_pair_result_expr`) already use —
-        # `_resolve_module_call_wasm_name` returns the bare name, the `mod$…`
+        # `_resolve_module_call_wasm_name` returns the bare name, the `path::…`
         # name when a local shadows it, or a shadowed generic's per-
         # instantiation clone — then reuse the FnCall inference on that resolved
         # target.  This does NOT drop the path (the earlier #597 concern): the

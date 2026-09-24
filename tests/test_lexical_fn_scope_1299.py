@@ -245,9 +245,9 @@ class TestPrivateImportRoute:
         assert not wat_calls(main_body, "get")
         # The module's own body is the control: its private helper is still
         # in ITS scope, so that call must survive — to the helper's own
-        # symbol, `mod$lib$get`, since a private declaration does not own the
+        # symbol, `lib::get`, since a private declaration does not own the
         # entry's bare name (#1498).
-        assert wat_calls(wat_fn_body(result.wat, "touch"), "mod$lib$get")
+        assert wat_calls(wat_fn_body(result.wat, "touch"), "lib::get")
 
     def test_rename_control_answers_the_same(self, tmp_path: Path) -> None:
         """The same program with the invisible declaration renamed.  It must
@@ -862,7 +862,7 @@ class TestTableInvariants:
         """The narrowing touches only names a source program can SPELL.
 
         ``$`` is outside ``LOWER_IDENT``, so a ``$``-bearing registry key is
-        compiler-minted — a mono clone, a ``mod$…`` reroute, a hoisted
+        compiler-minted — a mono clone, a ``<path>::…`` reroute, a hoisted
         helper — and is never what a bare call in the source wrote.  Every
         one is admitted unconditionally, so the ownership predicate keeps
         answering "user-owned" at the sites that see a name the rewrite
@@ -922,7 +922,7 @@ class TestTableInvariants:
 
         The fixture set covers all four doors — a local generic template
         with a nested helper tree, a monomorphized clone, an imported body,
-        and a ``mod$…``-renamed shadowed one.
+        and a ``<path>::…``-renamed shadowed one.
         """
         seen: list[tuple[str, frozenset[str], frozenset[str]]] = []
         original = CodeGenerator._compile_fn_tracked
@@ -960,7 +960,7 @@ class TestTableInvariants:
             CodeGenerator._compile_fn_tracked = original  # type: ignore[method-assign]
 
         assert any("$" in name for name, _, _ in seen), (
-            "no mangled symbol was compiled — the mono / mod$ doors were "
+            "no mangled symbol was compiled — the mono / qualified doors were "
             "never reached and the invariant is vacuous there"
         )
         assert any(scope for _, _, scope in seen), (
@@ -1124,8 +1124,8 @@ where {{
             f"the Pass-2.5 door would then need the scope the mono door does "
             f"not; emitted: {emitted}"
         )
-        clone = wat_fn_body(result.wat, "mod$lib$holder$Bool")
-        assert wat_calls(clone, "mod$lib$holder$Bool$where$get")
+        clone = wat_fn_body(result.wat, "lib::holder$Bool")
+        assert wat_calls(clone, "lib::holder$Bool$where$get")
         assert not wat_calls(clone, "vera.state_get_Int")
         assert module_value(result) == ("ok", LIB)
 
@@ -1190,12 +1190,12 @@ class TestGuardRailKeepsTheFlatTable:
     """The other half of the split: ``_known_fns`` must stay flat.
 
     ``_translate_call``'s guard rail asks whether a RESOLVED target has a
-    symbol — after mono mangling and ``mod$…`` rerouting — which is a
+    symbol — after mono mangling and ``<path>::…`` rerouting — which is a
     question about the whole emitted module, not about one namespace.
     Narrowing that set too would turn a cross-module call into a
     ``CodegenSkip``, so a module-qualified call through a SHADOWED name is
     kept here as the live proof it did not happen: the module's body is
-    emitted as ``mod$lib$touch``, a name in no namespace's source scope.
+    emitted as ``lib::touch``, a name in no namespace's source scope.
     """
 
     _SHADOWED_LIB = f"""\

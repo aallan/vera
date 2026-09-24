@@ -19,7 +19,7 @@ from __future__ import annotations
 import contextlib
 from collections.abc import Iterator
 
-from vera import ast
+from vera import ast, symbols
 from vera.monomorphize import (
     MonoContext,
     Monomorphizer,
@@ -369,13 +369,13 @@ class MonomorphizationMixin:
         # non-generic shadows is reachable ONLY via a qualified call `m::gen`,
         # so it can't join `generic_decls` (that would hijack the bare `gen`
         # to the module generic).  Discover its qualified instantiations and
-        # emit each clone under a distinct ``mod$<path>$…`` mono name so the
+        # emit each clone under a distinct ``<path>::…`` mono name so the
         # ModuleCall desugar reaches the module's generic body rather than
         # falling back to the local shadow (the false-Tier-1: verify resolves
         # the module contract, codegen ran the local shadow).  ``generic_decls``
         # + ``seen`` are threaded so a shadowed clone body that calls ANOTHER
         # generic (unshadowed → a normal clone; a same-module shadowed sibling →
-        # another ``mod$…`` clone) gets that transitive clone emitted too — a
+        # another ``path::…`` clone) gets that transitive clone emitted too — a
         # shadowed clone body is scanned exactly like a normal clone body.
         self._register_shadowed_generic_bases(shadowed_imported)
         for path, decls_by_name in shadowed_imported.items():
@@ -695,8 +695,12 @@ class MonomorphizationMixin:
             base_chain = self._clone_base_chain.get(
                 parent_clone_name, parent_clone_name,
             )
-            helper_bare = gen.name[len(parent_clone_name) + len("$where$"):]
-            chain_keys[gen.name] = f"{base_chain}$where${helper_bare}"
+            helper_bare = gen.name[
+                len(parent_clone_name) + len(symbols.HELPER_STEP):
+            ]
+            chain_keys[gen.name] = symbols.helper_symbol(
+                base_chain, helper_bare,
+            )
         # Origin: a nested clone of an imported base is the module's own code.
         origin = self._mono_clone_origins.get(parent_clone_name)
         emitted: set[tuple[str, tuple[str, ...]]] = set()
@@ -769,7 +773,7 @@ class MonomorphizationMixin:
 
         where_fns = fn.where_fns or ()
         rename = {
-            wfn.name: f"{prefix}$where${wfn.name}"
+            wfn.name: symbols.helper_symbol(prefix, wfn.name)
             for wfn in where_fns
         }
         # This level's names shadow same-named ancestors for this subtree.
@@ -853,7 +857,7 @@ class MonomorphizationMixin:
         self,
         shadowed_imported: dict[tuple[str, ...], dict[str, ast.FnDecl]],
     ) -> None:
-        """Record the ``mod$…`` qualified-call base for every shadowed generic.
+        """Record the ``path::…`` qualified-call base for every shadowed generic.
 
         Done up front — before any body scanning — so both the ModuleCall
         desugar and ``_resolve_generic_call`` can resolve a shadowed generic
@@ -873,7 +877,7 @@ class MonomorphizationMixin:
                 )
                 # #772: the qualified base needs the same constrained-var set as
                 # a bare generic, so a `ConstructorCall`-inferred Eq call through
-                # the `mod$…` clone recovers its type argument too.
+                # the `path::…` clone recovers its type argument too.
                 self._generic_constrained_vars[qual_base] = frozenset(
                     c.type_var for c in (gdecl.forall_constraints or ())
                 )
@@ -893,8 +897,8 @@ class MonomorphizationMixin:
 
         Discovers the concrete instantiations of each shadowed generic from the
         importer's ``ast.ModuleCall`` sites (targeting this module path), emits
-        each clone renamed to ``mod$<path>$gen$<types>`` (composing the #814
-        ``mod$`` qualified-call prefix with the mono suffix so it can never
+        each clone renamed to ``<path>::gen$<types>`` (composing the #814
+        ``::`` qualified-call prefix with the mono suffix so it can never
         collide with the local shadow's bare ``gen`` nor a normal clone), and
         runs a transitive worklist over the clone bodies exactly like the normal
         path — a shadowed generic whose body calls ANOTHER generic (unshadowed
@@ -911,7 +915,7 @@ class MonomorphizationMixin:
         # (`caller$Int`), which the main worklist already emitted into
         # `mono_decls`.  Scanning those clones here is the reverse direction of
         # the shadowed→normal transitive scan — without it `caller$Int`'s
-        # `g::gen(...)` has no `mod$g$gen$Int` target (`unknown func` at run).
+        # `g::gen(...)` has no `g::gen$Int` target (`unknown func` at run).
         instances: dict[str, set[tuple[str, ...]]] = {
             name: set() for name in decls_by_name
         }
@@ -926,7 +930,7 @@ class MonomorphizationMixin:
         # where-helpers), which after the loop-top reroute carry a
         # ``path::inner(...)`` ModuleCall for each qualified-only generic call.
         # Without this a NON-generic caller of a private generic (`use_it` →
-        # `inner`) never seeds `mod$<path>$inner$Int`, so Pass 2.5 emits
+        # `inner`) never seeds `<path>::inner$Int`, so Pass 2.5 emits
         # `use_it`'s body with a `call $inner` that dangles (`unknown func`) at
         # run.  These decls already live in `_imported_fn_decls` (rerouted).
         #
@@ -934,7 +938,7 @@ class MonomorphizationMixin:
         # can call a DIFFERENT module's qualified-only generic — `mid`'s body
         # calling `deep`'s `gen` — and that reroute lands a `deep::gen(...)`
         # ModuleCall inside a decl registered under `mid`.  Filtering by the
-        # OWNING path skipped it, so no `mod$deep$gen$Bool` was emitted and
+        # OWNING path skipped it, so no `deep::gen$Bool` was emitted and
         # `mid`'s body was dropped.  The walk itself already matches on the call
         # node's own `path`, so widening the scan cannot pick up a foreign one.
         for _mp, fdecl in self._imported_fn_decls:
@@ -953,7 +957,7 @@ class MonomorphizationMixin:
             )
 
         # Transitive worklist over shadowed clones.  Each popped shadowed
-        # instance is monomorphized under its `mod$…` name; its body is then
+        # instance is monomorphized under its `path::…` name; its body is then
         # scanned two ways:
         #   * against `generic_decls` (unshadowed generics) — a discovered
         #     instance is queued into the MAIN worklist's `seen`/`mono_decls`
@@ -1007,10 +1011,10 @@ class MonomorphizationMixin:
                         worklist.append((s_name, s_ct))
 
             # A bare call to a same-module shadowed sibling inside this module
-            # body must reach the sibling's ``mod$…`` clone, NOT the importer's
+            # body must reach the sibling's ``path::…`` clone, NOT the importer's
             # local shadow of that name.  The bare sibling name isn't in
-            # `_generic_fn_info` (only its `mod$…` base is), so rewrite each such
-            # `FnCall.name` to the sibling's `mod$…` base — then the WASM
+            # `_generic_fn_info` (only its `path::…` base is), so rewrite each such
+            # `FnCall.name` to the sibling's `path::…` base — then the WASM
             # call-site rewriter mangles it to the sibling's clone.
             sibling_bases = {
                 s_name: self._module_qualified_generic_bases[(path, s_name)]
@@ -1019,20 +1023,20 @@ class MonomorphizationMixin:
             clone = self._rewrite_sibling_generic_calls(clone, sibling_bases)
             mono_decls.append(_replace(clone, name=mangled))
             # #1029 (R3/R5): record this shadowed clone's concrete-FREE chain
-            # base (the ``mod$<path>$gen`` qualified base, NOT the concrete-
+            # base (the ``<path>::gen`` qualified base, NOT the concrete-
             # including emission name).  The per-clone where-tree hoister
             # (`_instantiate_hoisted_generic`) reads `_clone_base_chain` to key a
             # nested generic-under-this-generic helper's `_emitted_instances`
             # entry — so a lying `ginner` under a shadowed/private generic keys
-            # `mod$<path>$gen$where$ginner`, byte-identical to what the verifier
+            # `<path>::gen$where$ginner`, byte-identical to what the verifier
             # discovers and reconstructs from its enclosing chain.  Without it the
-            # fallback keyed the concrete-including `mod$<path>$gen$Int$where$…`,
+            # fallback keyed the concrete-including `<path>::gen$Int$where$…`,
             # desyncing the #732 differential and leaving the liar a false Tier-1.
             self._clone_base_chain[mangled] = qual_base
             # #998: a shadowed module generic's clone body is the MODULE's
             # code — compile it against that module's own span tables.
             self._mono_clone_origins[mangled] = path
-            # Record the shadowed MODULE clone under its `mod$…` base, NOT the
+            # Record the shadowed MODULE clone under its `path::…` base, NOT the
             # bare `gen_name` — a same-named LOCAL generic owns the bare key, and
             # collapsing both onto it would let the verifier's #732 differential
             # count the module clone as "covered" by the local generic's
@@ -1055,7 +1059,7 @@ class MonomorphizationMixin:
 
         The main worklist has already drained by the time shadowed emission
         runs, so a normal generic reached ONLY from a shadowed clone body (e.g.
-        `mod$g$outer$Int` → `inner` → `helper`) would otherwise never be
+        `g::outer$Int` → `inner` → `helper`) would otherwise never be
         emitted — an ``unknown func`` at run.  This re-runs the normal path's
         body-scan worklist rooted at ``root_fn`` (itself already emitted),
         feeding the shared ``seen`` set so nothing is emitted twice.
@@ -1063,7 +1067,7 @@ class MonomorphizationMixin:
         *root_namespace* (#1299) is the module ``root_fn`` belongs to.  It is
         passed rather than looked up because a shadowed clone reaches here
         under its PRE-rename name (``gen$Bool``, not
-        ``mod$lib$gen$Bool``), which is in no origin registry — and the
+        ``lib::gen$Bool``), which is in no origin registry — and the
         caller has the path in hand.  Clones reached transitively from it get
         their own base's origin, which they are registered under.
         """
@@ -1109,11 +1113,11 @@ class MonomorphizationMixin:
     def _mono_shadowed_name(
         qual_base: str, gen_name: str, clone_name: str,
     ) -> str:
-        """Compose the ``mod$…`` qualified prefix with the mono suffix.
+        """Compose the ``path::…`` qualified prefix with the mono suffix.
 
         ``monomorphize_fn`` mangles the clone under the bare generic name
         (``gen$Int``); a shadowed generic must live under the module-qualified
-        base (``mod$<path>$gen``) instead, so swap the ``gen`` prefix for
+        base (``<path>::gen``) instead, so swap the ``gen`` prefix for
         ``qual_base`` while preserving the exact mono suffix (``$Int`` /
         ``$Int_JBool`` / …).  ``clone_name`` always starts with ``gen$`` (the
         mangler joins name + ``$`` + suffix), so this is a straight prefix
@@ -1129,12 +1133,12 @@ class MonomorphizationMixin:
     ) -> ast.FnDecl:
         """Rewrite bare ``FnCall``s to same-module shadowed-generic siblings.
 
-        Inside a shadowed generic's clone body (a ``mod$…`` function), a bare
+        Inside a shadowed generic's clone body (a ``path::…`` function), a bare
         call to a sibling generic from the SAME module refers to the module's
         sibling — but the importer's flat namespace binds that bare name to the
-        LOCAL shadow.  Renaming the ``FnCall.name`` to the sibling's ``mod$…``
+        LOCAL shadow.  Renaming the ``FnCall.name`` to the sibling's ``path::…``
         base (a ``_generic_fn_info`` key) makes the WASM call-site rewriter
-        mangle it to the sibling's clone (``mod$g$inner$Int``) instead of
+        mangle it to the sibling's clone (``g::inner$Int``) instead of
         resolving the bare name to the local shadow.  Only the ``.name`` field
         of a matching ``FnCall`` changes; the total dataclass walk leaves every
         other node — including nested ``AnonFn`` bodies — structurally intact.
@@ -1274,7 +1278,7 @@ class MonomorphizationMixin:
         # #1327/#1366: this walker is a THROWAWAY built per qualified call, so
         # its fail-closed records would be dropped on the floor.  Carry them to
         # the codegen-level accumulator `_monomorphize` drains, or the shadowed
-        # /qualified spelling of a shape (`mod$plib$gen2$Int`) would keep
+        # /qualified spelling of a shape (`plib::gen2$Int`) would keep
         # guessing where the unshadowed one refuses.
         self._shadowed_uninferred_type_args.extend(m.uninferred_type_args)
         return result

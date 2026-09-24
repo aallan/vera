@@ -27,7 +27,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from vera.resolver import ResolvedModule
 
-from vera import ast, naming
+from vera import ast, call_targets, naming
+from vera.call_targets import CallResolution, CallTarget
 from vera.errors import (
     Diagnostic,
     SourceLocation,
@@ -168,6 +169,11 @@ class CheckArtifacts:
     # consumer downstream of the check renders against exactly the table the
     # checker keyed its bindings by rather than rebuilding an approximation.
     alias_env: AliasEnv
+    # #1494: which declaration each call resolved to — every module body's
+    # calls, and the owner of each bare name the entry reaches through an
+    # import — so code generation and the verifier bind calls to the
+    # checker's answer instead of deriving their own.
+    call_resolution: CallResolution = CallResolution()
 
 
 def typecheck_with_artifacts(
@@ -177,6 +183,9 @@ def typecheck_with_artifacts(
     resolved_modules: list[ResolvedModule] | None = None,
     collect_module_artifacts: bool = False,
     body_check_memo: set[tuple[str, ...]] | None = None,
+    module_call_targets: (
+        dict[tuple[str, ...], dict[call_targets.SpanKey, CallTarget]] | None
+    ) = None,
 ) -> tuple[list[Diagnostic], CheckArtifacts]:
     """Type-check and additionally collect LSP artifacts (#222 Phase D).
 
@@ -196,6 +205,9 @@ def typecheck_with_artifacts(
     sound for the manifest, whose caller has already gated on the entry's own
     check (which body-checks every resolved module, #1244), and whose gate is
     about the module it is verifying rather than about that module's imports.
+    A caller sharing the memo shares ``module_call_targets`` too (#1494): a
+    module's call targets are recorded by the call that checks its bodies,
+    and every later call of the batch reads them from there.
 
     ``collect_module_artifacts`` (#987, opt-in per PR #997 review) gates the
     per-resolved-module side-table pass.  Only the codegen-bound callers
@@ -231,6 +243,13 @@ def typecheck_with_artifacts(
     checker.expr_semantic_types = {}
     checker.expr_target_types = {}
     checker.hole_sites = []
+    checker.call_targets = {}
+    # #1494: a BATCH caller sharing ``body_check_memo`` shares this table
+    # too, so a module whose bodies an earlier call already checked still
+    # has its call targets here.
+    checker._module_call_targets = (
+        module_call_targets if module_call_targets is not None else {}
+    )
     try:
         checker.check_program(program)
     except BaseException as exc:
@@ -259,7 +278,50 @@ def typecheck_with_artifacts(
         expr_target_types=checker.expr_target_types,
         module_artifacts=module_arts,
         alias_env=naming.alias_env_from_environment(checker.env),
+        call_resolution=_call_resolution(checker),
     )
+
+
+def _call_resolution(checker: TypeChecker) -> CallResolution:
+    """The resolution *checker* recorded, as code generation reads it.
+
+    An entry name that its own top-level declaration shadows is not an
+    import's: the import was injected first (the registry is filled before
+    the program's own declarations, which then replace it), but every bare
+    call to the name resolves to the entry's declaration.
+    """
+    return CallResolution(
+        entry_owners={
+            name: path
+            for name, path in checker._imported_fn_origins.items()
+            if name not in checker._top_level_fn_infos
+        },
+        module_targets=dict(checker._module_call_targets or {}),
+    )
+
+
+def resolve_calls(
+    program: ast.Program,
+    resolved_modules: list[ResolvedModule] | None,
+    source: str = "",
+    file: str | None = None,
+) -> CallResolution:
+    """Run the checker's resolution for a caller that has no artifacts.
+
+    Code generation and the verifier bind calls to the checker's answer
+    (#1494); a caller that compiled or verified without type-checking first
+    — a test, an API user — gets that answer from here rather than from a
+    second derivation.  Diagnostics are the caller's business and are not
+    returned: a program the checker refuses resolves only as far as it can,
+    and the calls it could not resolve stay unbound.
+    """
+    checker = TypeChecker(
+        source=source, file=file, resolved_modules=resolved_modules,
+    )
+    checker.call_targets = {}
+    checker._module_call_targets = {}
+    checker.check_program(program)
+    return _call_resolution(checker)
 
 
 def _collect_module_artifacts(
@@ -475,6 +537,20 @@ class TypeChecker(
             dict[tuple[int, int, int, int], Type] | None
         ) = None
         self.hole_sites: list[HoleSite] | None = None
+        # #1494: what each bare call in this program resolved to, keyed by
+        # the call's span, and — shared across the nested module checkers —
+        # the same for every resolved module's bodies.  Co-enabled with the
+        # tables above by typecheck_with_artifacts; ``None`` is off.
+        self.call_targets: dict[call_targets.SpanKey, CallTarget] | None = None
+        self._module_call_targets: (
+            dict[tuple[str, ...], dict[call_targets.SpanKey, CallTarget]]
+            | None
+        ) = None
+        # #1494: each bare function name an import supplied to this
+        # program's flat registry, and the module it came from.  Filled by
+        # ``_register_modules`` only where the injection won — a built-in,
+        # the prelude or an ambiguous name is never recorded.
+        self._imported_fn_origins: dict[str, tuple[str, ...]] = {}
         # Resolved modules (C7a: paths for diagnostics, C7b: full list
         # for cross-module type merging).
         self._resolved_modules: list[ResolvedModule] = (
@@ -1165,18 +1241,56 @@ class TypeChecker(
         other reserved names need no such carve-out: nothing resolves to
         ``old`` or ``match`` at all.
         """
+        return self._resolve_function_scoped(name)[0]
+
+    def _resolve_function_scoped(
+        self, name: str,
+    ) -> tuple[FunctionInfo | None, CallTarget | None]:
+        """:meth:`_lookup_function_scoped`, and WHICH declaration it found.
+
+        The one resolution routine: the second half is the tier the name
+        resolved in — a ``where`` helper, this namespace's own top-level
+        declaration, an import (with its module), the prelude, or a built-in
+        — which code generation and the verifier read to bind each call to
+        the declaration the checker bound it to (#1494).  ``None`` when the
+        name resolves to nothing.
+        """
         from vera.checker.registration import _HANDLER_OPERATOR_FN_NAMES
         if name in _HANDLER_OPERATOR_FN_NAMES:
-            return self.env.lookup_function(name)
+            info = self.env.lookup_function(name)
+            return info, (CallTarget(call_targets.BUILTIN) if info else None)
         for frame in reversed(self._fn_scope_stack):
             for wfn in frame.where_fns or ():
                 if (wfn.name == name
                         and id(wfn) not in self._rejected_builtin_redefs):
-                    return self._fn_info_for_decl(wfn)
+                    return (
+                        self._fn_info_for_decl(wfn),
+                        CallTarget(call_targets.HELPER),
+                    )
         top = self._top_level_fn_infos.get(name)
         if top is not None:
-            return top
-        return self.env.lookup_function(name)
+            return top, CallTarget(call_targets.TOP)
+        info = self.env.lookup_function(name)
+        if info is None:
+            return None, None
+        origin = self._imported_fn_origins.get(name)
+        if origin is not None:
+            return info, CallTarget(call_targets.IMPORT, origin)
+        from vera.prelude import overridable_builtin_names
+        if name in overridable_builtin_names():
+            return info, CallTarget(call_targets.PRELUDE)
+        return info, CallTarget(call_targets.BUILTIN)
+
+    def _record_call_target(self, node: ast.Node, name: str) -> None:
+        """Record what the bare call *node* resolved to, when collecting."""
+        if self.call_targets is None:
+            return
+        key = ast.span_key(node)
+        if key is None:
+            return
+        target = self._resolve_function_scoped(name)[1]
+        if target is not None:
+            self.call_targets[key] = target
 
     @property
     def _user_fn_names(self) -> Container[str]:

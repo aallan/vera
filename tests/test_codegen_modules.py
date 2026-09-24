@@ -21,6 +21,7 @@ from vera.codegen import (
 from vera.parser import parse_file
 from vera.transform import transform
 from vera.monomorphize import resolve_fn_type_alias
+from vera.symbols import module_symbol
 
 from tests.module_fixture_helpers import resolved_module
 
@@ -237,7 +238,11 @@ public fn wrap(@Int -> @Int)
 { abs(@Int.0) }
 """, [mod])
         assert result.ok, [d.description for d in result.diagnostics]
-        assert "$abs" in result.wat
+        # `abs` is a built-in, which holds its name in every namespace
+        # (§8.5.2.2): the checker resolves the entry's bare `abs` to it and
+        # never to an import, so math's declaration owns no bare name and is
+        # emitted under its own module's symbol (#1494).
+        assert f"(func ${module_symbol(('math',), 'abs')} " in result.wat
 
     def test_imported_function_executes(self) -> None:
         """abs(-5) returns 5 via cross-module call."""
@@ -372,7 +377,7 @@ public fn main(@Unit -> @Int)
             Path(path).unlink(missing_ok=True)
 
     def test_qualified_call_body_reaches_module_siblings(self) -> None:
-        """#814 C2: inside a qualified-reached ``mod$`` body, an intra-module
+        """#814 C2: inside a qualified-reached qualified body, an intra-module
         call lands on the module's sibling, not a local shadow of its name.
 
         Module ``outer`` calls ``inner``; the importer shadows BOTH locally.
@@ -492,7 +497,7 @@ public fn main(-> @Int)
         The importer's `main` has a `where` helper `helper`, and the module
         also exports `helper`.  A `where`-fn flattens to a bare ``$helper``, so
         the imported `helper` must be recognized as shadowed (emitted only
-        under its ``mod$…`` name, never a second bare ``$helper``).  Before the
+        under its ``<path>::…`` name, never a second bare ``$helper``).  Before the
         fix, `local_fn_names` collected only top-level names, so the imported
         `helper` was emitted bare too → a duplicate-`$helper` WASM module that
         wasmtime rejects.
@@ -551,7 +556,7 @@ public fn main(-> @Int)
         must resolve the qualified target through ``_module_qualified_targets``
         to recognize a pair-returning (``@String`` / ``@Array``) callee.  The
         local ``make_str`` where-shadow forces resolution through the mangled
-        ``mod$…`` target (not the bare-name fallback), so this also pins the
+        ``<path>::…`` target (not the bare-name fallback), so this also pins the
         shadowed branch of the classifier.  If the ModuleCall clause is
         missing, only one of the two i32 values is dropped and wasmtime
         rejects the module as invalid WASM.
@@ -579,11 +584,11 @@ where {
 
     def test_nat_param_guard_mirrored_on_shadowed_qualified_call(self) -> None:
         """#814: the @Nat-parameter narrowing guard is mirrored onto a
-        shadowed module fn's mangled ``mod$…`` target.
+        shadowed module fn's mangled ``<path>::…`` target.
 
         A qualified call ``m::f(0 - 1)`` to a *shadowed* module fn whose
         parameter is ``@Nat`` must still emit the call-site ``value >= 0``
-        narrowing guard, which keys on the resolved ``mod$…`` target via
+        narrowing guard, which keys on the resolved ``<path>::…`` target via
         ``_fn_nat_params``.  The ``0 - 1`` underflow idiom is Tier-3-deferred
         by the verifier (so ``vera verify`` is clean) and must TRAP at
         runtime.  If the guard bitmap is *not* mirrored onto the mangled name
@@ -921,9 +926,9 @@ public fn bare_probe(@Unit -> @Int)
         non-generic `outer` (adds 100); `inner<T>` is an unshadowed sibling.
         `g::outer(7)` must run the module generic — `inner(7) == 7` — so the
         transitive `inner$Int` clone MUST be emitted.  Pre-fix the shadowed path
-        appended `mod$g$outer$Int` without scanning its body, so `inner$Int` was
+        appended `g::outer$Int` without scanning its body, so `inner$Int` was
         never emitted and the run failed WASM validation at
-        `unknown func $mod$g$outer$Int` (the clone body couldn't compile its
+        `unknown func $g::outer$Int` (the clone body couldn't compile its
         missing `inner$Int` call).  A bare `outer(7)` must still hit the local
         shadow (107), proving the qualified transitive fix didn't leak.
         """
@@ -983,7 +988,7 @@ public fn probe(@Unit -> @Int)
 
     def test_shadowed_generic_calling_shadowed_sibling(self) -> None:
         """When a shadowed generic's body calls a SAME-MODULE shadowed sibling,
-        the intra-module call must reach the sibling's `mod$…` clone, not the
+        the intra-module call must reach the sibling's `<path>::…` clone, not the
         importer's local shadow of that name.
 
         Both `outer` and `inner` are shadowed by locals (adding 100 / 200).
@@ -1204,9 +1209,9 @@ public fn probe(@Unit -> @Int)
         `caller$Int` calls `g::gen` → the MODULE generic (identity) → `5`.
         Pre-fix the shadowed emission seeded only from `program.declarations`
         non-generic bodies, never from the emitted `caller$Int` clone, so
-        `mod$g$gen$Int` was missing → `unknown func $caller$Int` at run.  A
+        `g::gen$Int` was missing → `unknown func $caller$Int` at run.  A
         lying module `gen` reached this way is caught at verify (E500), and
-        both sides discover `mod$g$gen<Int>` (the differential pins it).
+        both sides discover `g::gen<Int>` (the differential pins it).
         """
         from vera.verifier import verify
 
@@ -1484,7 +1489,7 @@ public fn main(@Int -> @Int)
         """Two modules' private ``helper`` each keep their own symbol (#1498).
 
         Neither owns the entry's bare name, so each is emitted as
-        ``mod$<path>$helper`` and each module's bare call reaches its own.
+        ``<path>::helper`` and each module's bare call reaches its own.
         This was E608, although spec §11.16 says two declarations neither of
         which owns the bare name cannot overwrite each other.  The two bodies
         differ, so a call bound to the other module's helper shows.
@@ -2743,7 +2748,7 @@ public fn main(@Unit -> @Int)
         assert self._run_mod(main_src, [mod], fn="main") == 116
 
     def test_shadowed_imported_fn_nested_helpers_run(self) -> None:
-        """A locally-shadowed imported fn (Pass 2.6, `mod$…` emission) whose
+        """A locally-shadowed imported fn (Pass 2.6, `<path>::…` emission) whose
         body reaches a nested grandchild helper: the module-qualified call
         must run the module's version through the full helper chain while the
         bare call resolves to the local shadow (#814 §8.5.3).
@@ -3035,7 +3040,7 @@ public fn main(@Unit -> @Int)
 
     def test_nongeneric_caller_of_private_generic_runs_1029(self) -> None:
         """#1029 (R1): a NON-generic imported fn (`use_it`) that calls a private
-        module generic (`inner`) must reach the module's own `mod$lib$inner`
+        module generic (`inner`) must reach the module's own `lib::inner`
         clone.  Pre-fix only the public-generic branch rerouted, so `use_it`'s
         bare `inner(@Int.0)` compiled to a `call $inner` that dangled at run
         (`unknown func`).  `inner` is identity, so `use_it(4) = 4 + 1 = 5`."""
@@ -3304,7 +3309,7 @@ public fn main(@Unit -> @Int)
     def test_mono_clone_registry_entry_canonical(self) -> None:
         """The CLONE key's entry in the shared bare-name registry is
         canonicalized too — the third door after the Pass-0 harvest and
-        the shadowed ``mod$…`` mirror (PR #1175 review).  ``pick$Bool``
+        the shadowed ``<path>::…`` mirror (PR #1175 review).  ``pick$Bool``
         returns the module's ``G = Int``; the stored expression must be
         the canonical ``Int``, not a raw ``G`` a main-file consumer
         would re-resolve against the flat maps."""
@@ -3345,7 +3350,7 @@ public fn main(@Unit -> @Int)
         )
 
     def test_shadowed_qualified_door_registry_entry_canonical(self) -> None:
-        """The mangled ``mod$…`` registry entry for a SHADOWED module fn
+        """The mangled ``<path>::…`` registry entry for a SHADOWED module fn
         is canonicalized too — the qualified-door mirror of the bare-name
         harvest (PR #1175 review).  The invariant is registry-level:
         nothing enters ``_fn_ret_type_exprs`` carrying a module-local
@@ -3386,9 +3391,9 @@ public fn main(@Unit -> @Int)
         result = gen.compile_program(prog)
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert not errors, [e.description for e in errors]
-        mangled = [k for k in gen._fn_ret_type_exprs if k.startswith("mod$")]
+        mangled = [k for k in gen._fn_ret_type_exprs if "::" in k]
         assert mangled, (
-            f"expected a mod$ entry for the shadowed import, got keys: "
+            f"expected a qualified entry for the shadowed import, got keys: "
             f"{sorted(gen._fn_ret_type_exprs)}"
         )
         te = gen._fn_ret_type_exprs[mangled[0]]

@@ -11,7 +11,7 @@ defined declarations with the same name shadow the prelude versions:
 - A user ``data Option<T>`` replaces the prelude's ``data Option<T>``.
 - A user ``fn option_map`` takes the program's bare name ``option_map``;
   the prelude's combinator stays in the program under its own identity,
-  ``mod$<prelude>$option_map`` (:func:`prelude_symbol`), and the prelude's
+  ``<prelude>::option_map`` (:func:`prelude_symbol`), and the prelude's
   own bodies — and a module that does not declare the name — call that one
   (#1495).  Every emitted function symbol has exactly one owner.
 - Option/Result combinators are skipped entirely if the user defines
@@ -27,7 +27,7 @@ from dataclasses import replace
 from types import MappingProxyType
 from typing import cast
 
-from vera import ast
+from vera import ast, symbols
 from vera.monomorphize import canonicalize_type_aliases, rewrite_fn_call_names
 
 
@@ -38,7 +38,7 @@ from vera.monomorphize import canonicalize_type_aliases, rewrite_fn_call_names
 # synthetic file and resolve source lines against that buffer, so a
 # prelude line number is never rendered against user source (#851's
 # misattribution defect).
-PRELUDE_FILE = "<prelude>"
+PRELUDE_FILE = symbols.PRELUDE_OWNER  # "<prelude>", the prelude's owner token
 
 # The prelude's NAMESPACE token (#1316).  Spec §8.4.1 scopes the alias
 # namespace to the declaring module, and the prelude is a namespace like any
@@ -50,12 +50,12 @@ PRELUDE_FILE = "<prelude>"
 # identifiers), so it can never collide with a real module.
 PRELUDE_NAMESPACE: tuple[str, ...] = (PRELUDE_FILE,)
 
-# The prelude's OWNER-QUALIFIED symbol prefix (#1495): the module-qualified
-# spelling `mod$<path>$` over the prelude's namespace token, so it is the
-# name codegen's `_module_qualified_wasm_name(PRELUDE_NAMESPACE, name)` builds
-# and no other owner's symbol can ever spell it (`<` starts no identifier and
-# no module-path segment).
-PRELUDE_SYMBOL_PREFIX: str = "mod$" + "$".join(PRELUDE_NAMESPACE) + "$"
+# The prelude's OWNER-QUALIFIED symbol prefix (#1495): the owner qualifier
+# over the prelude's namespace token, `<prelude>::`, so it is the name codegen's
+# `_module_qualified_wasm_name(PRELUDE_NAMESPACE, name)` builds, and no other
+# owner's symbol can ever spell it (`<` starts no identifier and no module-path
+# segment, so even a module called `prelude` reads `prelude::…`).
+PRELUDE_SYMBOL_PREFIX: str = symbols.owner_prefix(PRELUDE_NAMESPACE)
 
 
 def prelude_symbol(name: str) -> str:
@@ -66,12 +66,12 @@ def prelude_symbol(name: str) -> str:
     the prelude's bodies — and any module whose namespace resolves ``name``
     to the prelude — still reach the prelude's function (#1495).
     """
-    return PRELUDE_SYMBOL_PREFIX + name
+    return symbols.prelude_symbol(name)
 
 
 def is_prelude_symbol(symbol: str) -> bool:
     """Whether *symbol* is a prelude-qualified name (or a clone of one)."""
-    return symbol.startswith(PRELUDE_SYMBOL_PREFIX)
+    return symbols.is_prelude(symbol)
 
 
 # =====================================================================
@@ -565,65 +565,6 @@ def entry_overridden_prelude_fns(program: ast.Program) -> frozenset[str]:
     )
 
 
-def entry_held_bare_names(program: ast.Program) -> frozenset[str]:
-    """The bare function names the ENTRY holds before any import supplies one.
-
-    Its own declarations (§8.5.2) and the prelude's functions, which are the
-    incumbent in every namespace and are never won by an import (§8.5.2.2).
-    A module declaration of one of these names does not own the entry's bare
-    name, so it is emitted as ``mod$<path>$name`` (#1498).  Codegen and the
-    verifier ask the same question of the same program, so the two sides
-    classify every module generic identically (#732).
-    """
-    from vera.monomorphize import importer_occupied_bare_names
-
-    return frozenset(importer_occupied_bare_names(program)) | (
-        overridable_builtin_names()
-    )
-
-
-def prelude_call_targets(
-    module_program: ast.Program, overridden: frozenset[str],
-) -> dict[str, str]:
-    """Bare name -> prelude symbol, for a module's calls to an overridden
-    prelude function (#1495).
-
-    A module's bare call resolves in the module's own namespace: a name the
-    module declares is its own, and otherwise a prelude function outranks
-    anything the module imports (§8.5.2.2, the incumbent holds the name).  So
-    every prelude function the ENTRY overrides and the module does not declare
-    is, in the module, the PRELUDE's — which the entry's override has moved
-    to :func:`prelude_symbol`.
-    """
-    from vera.monomorphize import importer_occupied_bare_names
-
-    own = importer_occupied_bare_names(module_program)
-    return {
-        name: prelude_symbol(name)
-        for name in sorted(overridden - own)
-    }
-
-
-def reroute_prelude_calls(
-    decl: ast.FnDecl, targets: Mapping[str, str],
-) -> ast.FnDecl:
-    """Rename *decl*'s bare calls in *targets* to the prelude's symbols.
-
-    The shared shadow-aware walk (a ``where`` helper of the same name owns the
-    bare call in its scope, spec §5), driven identically by codegen's module
-    registration and the verifier's discovery copy so the #732 differential
-    sees the same calls on both sides.
-    """
-    if not targets:
-        return decl
-    from vera.monomorphize import reroute_module_qualified_generic_calls
-
-    return reroute_module_qualified_generic_calls(
-        decl, frozenset(targets),
-        lambda call, args: replace(call, name=targets[call.name], args=args),
-    )
-
-
 # =====================================================================
 # Detection helpers
 # =====================================================================
@@ -1064,8 +1005,9 @@ def inject_prelude(program: ast.Program) -> str:
       own identity, :func:`prelude_symbol` (#1495): the program's
       declaration takes the bare name, and every prelude body's call to it
       is rewritten to the prelude's symbol, so a prelude body never runs the
-      program's override.  Codegen reroutes a module's calls the same way
-      (:func:`prelude_call_targets`).
+      program's override.  A module's call to it is bound to the prelude's
+      symbol from the checker's resolution
+      (:func:`vera.monomorphize.bind_module_calls`).
     - The closure-parameter type aliases the injected combinators
       resolve through (``VeraOptionMapFn``, ``VeraArrayMapFn``, …) —
       injected exactly when those bodies are, and never skipped for a

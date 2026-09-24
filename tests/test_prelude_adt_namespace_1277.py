@@ -786,7 +786,7 @@ def test_two_modules_declaring_a_NON_prelude_name_are_admitted(
     injected and nothing reaches the Pass-1.2 rail.  What is left is the
     module-versus-module pair, which is E609's — and since #1317 that rail
     admits two PRIVATE, differently-shaped declarations no namespace can
-    reach, compiling each under `mod$<path>$Widget`.
+    reach, compiling each under `<path>::Widget`.
 
     Read against `test_a_differing_module_declaration_contends_for_every_name`
     above, which is the SAME shape under a prelude name and still reports

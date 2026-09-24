@@ -10,7 +10,7 @@ stayed a raw ``FnCall`` codegen cannot lower, the body was dropped
 
 Covers ``eq`` in an imported top-level fn, in its direct where-helper, in a
 nested grandchild, ``compare`` (the other ability op), and the shadowed
-(``mod$…``, Pass 2.6) door.
+(``<path>::…``, Pass 2.6) door.
 """
 
 from __future__ import annotations
@@ -133,7 +133,7 @@ public fn check(@Int -> @Bool)
 
     def test_eq_in_shadowed_module_fn(self, tmp_path) -> None:
         # Pass 2.6: a local `check` shadows the import; the module body is
-        # reached via the qualified call and emitted under `mod$…` — it
+        # reached via the qualified call and emitted under `<path>::…` — it
         # needs the rewrite too.
         main = """\
 import lib(check);

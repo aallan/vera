@@ -1,7 +1,7 @@
 -- Conformance: shared base of the same-named-generic diamond (Chapter 8, #1281)
 -- Tests: a public generic two sibling modules both reach.  From the entry
 -- program it is reached only TRANSITIVELY, so it owns no bare name there and
--- its clones live under `mod$…$gen$Bool`.
+-- its clones live under `…base::gen$Bool`.
 module ch08_module_generic_diamond_base;
 
 public forall<T> fn gen(@T -> @Int)

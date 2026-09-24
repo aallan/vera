@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 import wasmtime
 
 from vera import ast
+from vera.call_targets import CallResolution
 from vera.runtime.async_http import register_async
 from vera.wasm.helpers import CellNames
 from vera.runtime.decimal import register_decimal
@@ -250,6 +251,7 @@ def compile(
     expr_semantic_types: dict[tuple[int, int, int, int], Type] | None = None,
     expr_target_types: dict[tuple[int, int, int, int], Type] | None = None,
     module_artifacts: ModuleArtifacts | None = None,
+    call_resolution: CallResolution | None = None,
 ) -> CompileResult:
     """Compile a type-checked Vera Program AST to WebAssembly.
 
@@ -292,6 +294,12 @@ def compile(
     argument) falls back to the pre-#987 behaviour: that imported body's
     span-keyed lookups are suppressed (never wrong-file-keyed), so those
     component sites stay unguarded rather than risk a spurious guard.
+
+    ``call_resolution`` (#1494) is the checker's resolution of the program's
+    calls (``CheckArtifacts.call_resolution``): which module declaration each
+    of the entry's bare names denotes, and what every call in every module
+    body resolved to.  Code generation binds calls to it.  When omitted and
+    the program imports modules, code generation asks the checker for it.
     """
     from vera.codegen.core import CodeGenerator
 
@@ -300,6 +308,7 @@ def compile(
         expr_semantic_types=expr_semantic_types,
         expr_target_types=expr_target_types,
         module_artifacts=module_artifacts,
+        call_resolution=call_resolution,
     )
     return gen.compile_program(program)
 

@@ -30,7 +30,7 @@ Both are now the same question, asked through the same
   so relaxing E609 alone would close nothing.
 
 Two modules whose declarations describe DIFFERENT layouts each get their
-OWN layout, under an owner-qualified ``mod$<path>$<Name>`` symbol (#1317) —
+OWN layout, under an owner-qualified ``<path>::<Name>`` symbol (#1317) —
 both modules' bodies are compiled into the one WASM module (Passes 2.5/2.6)
 and each needs its own layout for its own constructor sites, which per-owner
 identity gives them.  What still refuses is a pair some namespace can MEET:
@@ -691,7 +691,7 @@ class TestDifferingShapesAdmittedWhenNothingMeetsThem:
     could only have one, so the refusal was the flat namespace speaking
     rather than the language.  Each was ``E609`` / ``E610`` on a
     check-green, verify-green program, and each is now compiled under
-    per-owner symbols (``mod$<path>$<Name>``) and RUN, because "no longer
+    per-owner symbols (``<path>::<Name>``) and RUN, because "no longer
     refused" and "right answer" are different claims.
 
     They stay in this file, opposite :class:`TestMeetingStillRefused`, so

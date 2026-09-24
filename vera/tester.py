@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 import z3
 
 from vera import ast, naming
+from vera.call_targets import CallResolution
 from vera.errors import Diagnostic, SourceLocation
 from vera.obligations.core import ProofObligation
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv
@@ -184,6 +185,7 @@ def test(
     expr_target_types: dict[tuple[int, int, int, int], Type] | None = None,
     module_artifacts: ModuleArtifacts | None = None,
     alias_env: AliasEnv = EMPTY_ALIAS_ENV,
+    call_resolution: CallResolution | None = None,
 ) -> TestResult:
     """Test a type-checked Vera program by generating inputs from contracts.
 
@@ -219,6 +221,7 @@ def test(
         expr_target_types=expr_target_types,
         module_artifacts=module_artifacts,
         alias_env=alias_env,
+        call_resolution=call_resolution,
     )
     return engine.run()
 
@@ -244,6 +247,7 @@ class _TestEngine:
             dict[tuple[int, int, int, int], Type] | None) = None,
         module_artifacts: ModuleArtifacts | None = None,
         alias_env: AliasEnv = EMPTY_ALIAS_ENV,
+        call_resolution: CallResolution | None = None,
     ) -> None:
         self.program = program
         self.source = source
@@ -262,6 +266,9 @@ class _TestEngine:
         # #1208: the checked program's naming environment, threaded into the
         # Z3 input generator so its slot names are the checker's.
         self.alias_env = alias_env
+        # #1494: the checker's resolution of the program's calls, which both
+        # the verifier's discovery and codegen bind calls to.
+        self.call_resolution = call_resolution
 
     def run(self) -> TestResult:
         """Execute the full test pipeline."""
@@ -276,6 +283,7 @@ class _TestEngine:
             resolved_modules=self.resolved_modules,
             expr_types=self.expr_semantic_types,
             expr_target_types=self.expr_target_types,
+            call_resolution=self.call_resolution,
         )
         classification = _classify_functions(
             self.program, verify_result.diagnostics,
@@ -297,6 +305,7 @@ class _TestEngine:
             expr_semantic_types=self.expr_semantic_types,
             expr_target_types=self.expr_target_types,
             module_artifacts=self.module_artifacts,
+            call_resolution=self.call_resolution,
         )
         compile_errors = [
             d for d in compile_result.diagnostics

@@ -59,6 +59,7 @@ from tests.module_fixture_helpers import (
     module_value,
 )
 from vera import ast
+from vera.checker import typecheck_with_artifacts
 from vera.codegen import execute
 from vera.codegen.api import CompileResult
 from vera.parser import parse_to_ast
@@ -67,6 +68,7 @@ from vera.prelude import (
     overridable_builtin_names,
     prelude_symbol,
 )
+from vera.resolver import ModuleResolver
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -1083,6 +1085,203 @@ def test_a_repeated_import_admits_the_union_of_its_lists(
         tmp_path, {"liba.vera": lib, "main.vera": main}, {"main": 101201301},
     )
 
+    # The checker reads the union too, so the program it accepted is the one
+    # that runs: `f` and `gen` were unresolved (E200) under a last-wins read.
+    (tmp_path / "main.vera").write_text(main, encoding="utf-8")
+    program = parse_to_ast(main)
+    resolved = ModuleResolver(_root=tmp_path).resolve_imports(
+        program, tmp_path / "main.vera",
+    )
+    diagnostics, _ = typecheck_with_artifacts(
+        program, main, file=str(tmp_path / "main.vera"),
+        resolved_modules=resolved,
+    )
+    unresolved = [d.description for d in diagnostics
+                  if d.error_code == "E200"]
+    assert not unresolved, unresolved
+
+
+# ---------------------------------------------------------------------------
+# A where helper binds only inside its parent (R-1507 round 1, finding 2)
+# ---------------------------------------------------------------------------
+
+
+def _with_helper(
+    vis: str, name: str, body: str, helper: str, helper_body: str,
+    *, sig: str = "@T -> @Int", helper_sig: str = "@Int -> @Int",
+    forall: str = "T",
+) -> str:
+    """A (generic) function whose `where` block declares *helper*."""
+    head = f"{vis} forall<{forall}> fn" if forall else f"{vis} fn"
+    return (
+        f"{head} {name}({sig})\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        f"{{\n  {body}\n}}\nwhere {{\n"
+        f"  fn {helper}({helper_sig})\n"
+        "    requires(true)\n    ensures(true)\n    effects(pure)\n"
+        f"  {{\n    {helper_body}\n  }}\n}}\n\n"
+    )
+
+
+_MID_HELPER_UNDER_GENERIC = (
+    "import dep;\n\n"
+    + _with_helper("public", "gx", "f(5)", "f", "@Int.0 + 7000")
+    + _fn("public", "y", "f(@Int.0)")
+)
+
+
+def test_a_module_helper_under_a_generic_parent_binds_only_there(
+    tmp_path: Path,
+) -> None:
+    """`mid`'s `y` calls its import's `f`; the helper `f` is `gx`'s alone.
+
+    The entry declares its own `f` too.  Counting the helper as a
+    namespace-wide declaration took the import away from `y`, which then
+    ran the ENTRY's `f`: 270051 for 10170051.
+    """
+    files = {
+        "dep.vera": _fn("public", "f", "@Int.0 + 100"),
+        "mid.vera": _MID_HELPER_UNDER_GENERIC,
+        "main.vera": "import mid(y, gx);\n\n"
+        + _fn("private", "f", "@Int.0 + 1")
+        + _probe("main", "y(1) * 100000 + gx(true) * 10 + f(0)"),
+    }
+    _run_cell(tmp_path, files, {"main": 10170051})
+
+
+def test_a_module_helper_under_a_generic_parent_without_an_entry_namesake(
+    tmp_path: Path,
+) -> None:
+    """The same `mid` with no entry `f`: `y` was dropped (E602) at head, and
+    the program refused with E608 at the base."""
+    files = {
+        "dep.vera": _fn("public", "f", "@Int.0 + 100"),
+        "mid.vera": _MID_HELPER_UNDER_GENERIC,
+        "main.vera": "import mid(y, gx);\n\n"
+        + _probe("main", "y(1) * 100000 + gx(true)"),
+    }
+    _run_cell(tmp_path, files, {"main": 10107005})
+
+
+def test_a_module_helper_named_after_a_prelude_function(
+    tmp_path: Path,
+) -> None:
+    """The #1495 twin: `mid`'s `y` calls the PRELUDE's `option_unwrap_or`,
+    beside `gx`'s helper of that name and the entry's override."""
+    sig = "@Option<Int>, @Int -> @Int"
+    files = {
+        "mid.vera": _with_helper(
+            "public", "gx", "option_unwrap_or(Some(5), 0)",
+            "option_unwrap_or", "7000", helper_sig=sig,
+        )
+        + _fn("public", "y", "option_unwrap_or(None, @Int.0)"),
+        "main.vera": "import mid(y, gx);\n\n"
+        + _fn("private", "option_unwrap_or", "42", sig=sig)
+        + _probe(
+            "main",
+            "y(1) * 100000 + gx(true) * 10 + option_unwrap_or(None, 0)",
+        ),
+    }
+    _run_cell(tmp_path, files, {"main": 170042})
+
+
+def test_an_entry_helper_under_a_generic_parent_binds_only_there(
+    tmp_path: Path,
+) -> None:
+    """The entry side: `main`'s bare `f` is the import's, the helper `gx`'s.
+    Both revisions before this failed to assemble (`unknown func $f`)."""
+    files = {
+        "lib.vera": _fn("public", "f", "@Int.0 + 100"),
+        "main.vera": "import lib;\n\n"
+        + _with_helper("private", "gx", "f(5)", "f", "@Int.0 + 7000")
+        + _probe("main", "f(1) * 100000 + gx(true)"),
+    }
+    _run_cell(tmp_path, files, {"main": 10107005})
+
+
+# ---------------------------------------------------------------------------
+# A qualified call reaches a declaration the prelude's name keeps
+# qualified-only (R-1507 round 1, findings 3 and 4)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("name", "value"), [("json_get", 12), ("html_attr", 26)],
+)
+def test_a_qualified_call_to_a_module_function_named_after_the_prelude(
+    tmp_path: Path, name: str, value: int,
+) -> None:
+    """`lib::json_get(5)` names lib's declaration, whether or not the program
+    mentions `Json` (which is when the prelude's block is injected)."""
+    files = {
+        "lib.vera": _fn("public", name, "@Int.0 + 7")
+        + _fn("public", "via", f"{name}(@Int.0)"),
+        "main.vera": "import lib;\n\n"
+        + _probe("main", f"via(1) * 1000 + lib::{name}(5) + {value - 12}"),
+    }
+    _run_cell(tmp_path, files, {"main": 8000 + value})
+
+
+def test_two_modules_prelude_named_exports_met_only_qualified(
+    tmp_path: Path,
+) -> None:
+    """`la` and `lb` each export `json_get`; `mid` names both qualified; the
+    entry mentions `Json`, so the prelude's `json_get` is emitted too.  No
+    namespace can name both by bare name, so this is not the E608 shape."""
+    files = {
+        "la.vera": _fn("public", "json_get", "@Int.0 + 100")
+        + _fn("public", "use_la", "json_get(@Int.0)"),
+        "lb.vera": _fn("public", "json_get", "@Int.0 + 200")
+        + _fn("public", "use_lb", "json_get(@Int.0)"),
+        "mid.vera": "import la;\nimport lb;\n\n"
+        + _fn("public", "both",
+              "la::json_get(@Int.0) * 1000 + lb::json_get(@Int.0)"),
+        "main.vera": "import mid;\n\n"
+        + _probe(
+            "main",
+            'match json_parse("1") {\n    Ok(@Json) -> both(1),\n'
+            "    Err(@String) -> 0\n  }",
+        ),
+    }
+    _run_cell(tmp_path, files, {"main": 101201})
+
+
+def test_a_qualified_call_into_a_transitive_module_stays_refused(
+    tmp_path: Path,
+) -> None:
+    """§8.6.4: the entry can neither bare-call nor qualified-call a module it
+    reaches only through another module's imports.  The checker only warns
+    (E230), so the code generator refuses it, qualified-only symbol or not."""
+    files = {
+        "deep.vera": _fn("public", "f", "@Int.0 + 100"),
+        "mid.vera": "import deep;\n\n"
+        + _fn("public", "g", "deep::f(@Int.0) + 10"),
+        "main.vera": "import mid;\n\n" + _probe("main", "deep::f(1) + g(1)"),
+    }
+    _, _, cg_errors = build_multi_module(tmp_path, files)
+    assert any("deep::f" in msg for _, msg in cg_errors), cg_errors
+
+
+def test_e608_in_a_transitive_module_points_at_the_import_that_reaches_it(
+    tmp_path: Path,
+) -> None:
+    """#1498: `mid` imports two modules that both export `h`, which the
+    checker refuses in `mid` (E155).  The E608 backstop names a module the
+    entry reaches only through `import mid;`, and points there."""
+    files = {
+        "la.vera": _fn("public", "h", "@Int.0 + 100"),
+        "lb.vera": _fn("public", "h", "@Int.0 + 200"),
+        "mid.vera": "import la;\nimport lb;\n\n"
+        + _fn("public", "both", "h(@Int.0)"),
+        "main.vera": "import mid;\n\n" + _probe("main", "both(1)"),
+    }
+    _, result, cg_errors = build_multi_module_past_check(tmp_path, files)
+    e608 = [d for d in result.diagnostics if d.error_code == "E608"]
+    assert e608, cg_errors
+    assert all(d.location.line == 1 for d in e608), [
+        (d.location.line, d.location.column) for d in e608
+    ]
+
 
 _WHERE = (
     "{vis} fn x(@Int -> @Int)\n  requires(true)\n  ensures(true)\n"
@@ -1126,7 +1325,7 @@ def test_a_where_helper_takes_its_parents_symbol(
     ``liba``'s ``x`` either owns the entry's bare name (public, imported by
     name) or does not (private, reached through ``ax``), and its helper
     ``h`` is emitted as ``<x's symbol>$where$h`` either way: ``x$where$h``
-    beside a bare ``x``, ``mod$liba$x$where$h`` beside ``mod$liba$x``.
+    beside a bare ``x``, ``liba::x$where$h`` beside ``liba::x``.
     Behaviour cannot tell the two spellings apart, because the parent's body
     reaches its helper through its module's own renames whichever it is, so
     the symbols are asserted directly.
@@ -1142,7 +1341,7 @@ def test_a_where_helper_takes_its_parents_symbol(
     }
     verify_errors, result, cg_errors = build_multi_module(tmp_path, files)
     assert not cg_errors and not verify_errors, (cg_errors, verify_errors)
-    parent_symbol = "x" if parent == "owner" else "mod$liba$x"
+    parent_symbol = "x" if parent == "owner" else "liba::x"
     names = wat_fn_names(result.wat)
     assert parent_symbol in names, names
     assert f"{parent_symbol}$where$h" in names, names
@@ -1266,6 +1465,53 @@ def test_interface_browser(tmp_path: Path) -> None:
     assert int(outs["main"]["value"]) == _INTERFACE_MAIN
     assert int(outs["twice"]["value"]) == 42
     assert set(outs["main"]["exports"]) >= {"main", "twice"}
+
+
+@pytest.mark.skipif(
+    not _node_supports_exnref(),
+    reason="Node.js not available or lacks --experimental-wasm-exnref support",
+)
+def test_interface_browser_lists_exactly_the_program_s_functions(
+    tmp_path: Path,
+) -> None:
+    """`getExports()` is the program's public functions, no more and no less.
+
+    The program allocates, so the runtime's own `vera.alloc` is exported too,
+    and it declares a `public fn alloc` of its own.  Filtering the bare name
+    `alloc` instead of the runtime's namespace hides the program's function
+    and lists every `vera.*` export as the program's (R-1507 round 1,
+    finding 6).
+    """
+    main = (
+        _fn("public", "alloc", "@Int.0 + 1")
+        + _fn("public", "twice", "@Int.0 * 2")
+        + "public fn main(-> @Int)\n  requires(true)\n  ensures(true)\n"
+        "  effects(pure)\n{\n  alloc(0) + string_length(int_to_string(40))"
+        "\n}\n"
+    )
+    _, result, cg_errors = build_multi_module(tmp_path, {"main.vera": main})
+    assert not cg_errors, cg_errors
+    assert "vera.alloc" in wat_export_names(result.wat)
+    wasm = tmp_path / "m.wasm"
+    wasm.write_bytes(result.wasm_bytes)
+    outs = {}
+    for fn, args in (("main", []), ("alloc", ["41"])):
+        proc = subprocess.run(
+            [_NODE or "node", "--experimental-wasm-exnref", str(_HARNESS),
+             str(wasm), "--fn", fn, "--", *args],
+            capture_output=True, text=True, encoding="utf-8", timeout=60,
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
+        outs[fn] = json.loads(proc.stdout)
+    assert int(outs["main"]["value"]) == 3
+    assert int(outs["alloc"]["value"]) == 42
+    assert sorted(outs["main"]["exports"]) == ["alloc", "main", "twice"]
+
+
+def wat_export_names(wat: str) -> set[str]:
+    """Every export name the module's WAT declares."""
+    return set(re.findall(r'\(export "([^"]+)"', wat))
 
 
 def _run_wasi_cli(result: CompileResult) -> object:
