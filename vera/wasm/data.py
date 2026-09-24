@@ -809,51 +809,78 @@ class DataMixin:
 
     def _declared_path_type(
         self, leaf: narrowing.ComponentSource,
-    ) -> object | None:
+    ) -> str | None:
         """The declared type of the composite an opaque component source
-        names — the verifier's ``_declared_path_type``, read from the same
-        resolved type by the same steps: the checker's type of the leaf,
-        then each ``(constructor, field)`` step of its ``path`` where the
-        field IS one of the type's arguments (a `Tuple` component, a field
-        declared as a bare type parameter).  ``None`` anywhere else."""
-        ty = self._checker_resolved_type(leaf.expr)
+        names, spelled as a layout spells a field's type — the verifier's
+        ``_declared_path_type``, read from the same resolved type by the
+        same steps: the checker's type of the leaf, then each
+        ``(constructor, field)`` step of its ``path`` into that field's
+        declared type, instantiated against the type reached so far
+        (:py:meth:`_resolve_nested_scrutinee_type`; a `Tuple` component is
+        its type argument).  A concrete field is a step like any other:
+        `O(I(@Int, @Int))` over a `data Outer { O(Inner) }` reaches `Inner`,
+        and `P(W(@Int), @Int)` over a `Pair<Nat>` whose `P` holds a
+        `Wrap<A>` reaches `Wrap<Nat>`.  ``None`` where a step cannot be
+        followed."""
+        ty = self._layout_type_name(self._checker_resolved_type(leaf.expr))
         for ctor_name, index in leaf.path:
-            ty = getattr(ty, "base", ty)
-            args = getattr(ty, "type_args", None)
-            position = (index if ctor_name == "Tuple"
-                        else self._ctor_field_tp_index(ctor_name, index))
-            if position is None or not args or position >= len(args):
+            if ty is None:
                 return None
-            ty = args[position]
+            if ctor_name == "Tuple":
+                head, args = self._split_param_type(ty)
+                ty = (self._canonical_field_type(args[index])
+                      if head == "Tuple" and index < len(args) else None)
+            else:
+                ty = self._resolve_nested_scrutinee_type(ctor_name, index, ty)
         return ty
+
+    @classmethod
+    def _layout_type_name(cls, ty: object) -> str | None:
+        """*ty*, a type the checker resolved, spelled as a constructor
+        layout spells a field's type (`Wrap<Nat>`), a refinement by its
+        base.  ``None`` for no type, or one with no such spelling; a type
+        argument with none (a function type) is spelled ``?``, which names
+        no `@Nat` and no constructor's type."""
+        from vera.types import AdtType, PrimitiveType, RefinedType, TypeVar
+
+        while isinstance(ty, RefinedType):
+            ty = ty.base
+        if isinstance(ty, (PrimitiveType, TypeVar)):
+            return ty.name
+        if not isinstance(ty, AdtType):
+            return None
+        if not ty.type_args:
+            return ty.name
+        args = ", ".join(cls._layout_type_name(arg) or "?"
+                         for arg in ty.type_args)
+        return f"{ty.name}<{args}>"
 
     def _declared_component_is_nat(
         self, leaf: narrowing.ComponentSource, index: int, ctor: str | None,
     ) -> bool:
         """The leaf oracle of the component classifier: component *index* of
         an opaque composite is a @Nat iff its declaration says so — *ctor*'s
-        field *index*: for a type-parameter field, the matching argument of
-        the checker's resolved type of the leaf (a refinement over it
-        unwrapped); for a concrete field, the layout's own flag.  Field
-        *index* is type argument *index* only for a `Tuple`: read that way,
-        `MkBox(Int, T)` bound from a `Box<Nat>` guarded its `Int` field as a
-        `@Nat` and trapped on a valid -5 (PR #1537 review).  A leaf under
-        enclosing patterns is read down its ``path``
-        (:py:meth:`_declared_path_type`)."""
-        ty = self._declared_path_type(leaf)
-        if ty is None and leaf.path:
-            return False
-        ty = getattr(ty, "base", ty)
-        if ctor == "Tuple":
-            return self._adt_arg_is_nat(ty, index)
+        field *index*: for a concrete field, the layout's own flag, wherever
+        the composite sits; for a type-parameter field, the matching
+        argument of the composite's declared type, the one its ``path``
+        reaches from the checker's resolved type of the leaf
+        (:py:meth:`_declared_path_type`).  Field *index* is type argument
+        *index* only for a `Tuple`: read that way, `MkBox(Int, T)` bound
+        from a `Box<Nat>` guarded its `Int` field as a `@Nat` and trapped on
+        a valid -5 (PR #1537 review).  The verifier's
+        ``_declared_component_is_nat`` answers the same way."""
         if ctor is None:
             return False
-        position = self._ctor_field_tp_index(ctor, index)
-        if position is not None:
-            return self._adt_arg_is_nat(ty, position)
-        layout = self._owned_ctor_layout(None, ctor)
-        return bool(layout is not None and index < len(layout.nat_fields)
-                    and layout.nat_fields[index])
+        position = (index if ctor == "Tuple"
+                    else self._ctor_field_tp_index(ctor, index))
+        if position is None:
+            layout = self._owned_ctor_layout(None, ctor)
+            return bool(layout is not None and index < len(layout.nat_fields)
+                        and layout.nat_fields[index])
+        _head, args = self._split_param_type(
+            self._declared_path_type(leaf) or "")
+        return (position < len(args)
+                and self._resolve_base_type_name(args[position]) == "Nat")
 
     def _destructure_ctor_name(self, stmt: ast.LetDestruct) -> str | None:
         """The constructor whose fields *stmt* binds, in order — the

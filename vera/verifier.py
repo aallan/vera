@@ -12887,22 +12887,15 @@ class ContractVerifier:
     ) -> Type | None:
         """The declared type of the composite an opaque component source
         names: its expression's resolved type, then each ``(constructor,
-        field)`` step of its ``path``.
-
-        A step is followed only where the field's type IS one of the type's
-        arguments — a `Tuple` component, or a field declared as a bare type
-        parameter — which is every step code generation can follow from the
-        same resolved type (``DataMixin._declared_path_type``); anywhere else
-        the answer is ``None``, and the component is claimed neither way on
-        either side."""
+        field)`` step of its ``path`` into that field's declared type,
+        instantiated against the type reached so far
+        (:py:meth:`_instantiated_field_types`).  A concrete field is a step
+        like any other — `O(I(@Int, @Int))` over a `data Outer { O(Inner) }`
+        reaches `Inner` — which is the walk code generation takes from the
+        same resolved type (``DataMixin._declared_path_type``).  ``None``
+        where a step cannot be followed."""
         ty = self._resolved_type_of(leaf.expr)
         for ctor_name, index in leaf.path:
-            if ctor_name != "Tuple":
-                info = self._lookup_constructor_info(ctor_name)
-                if (info is None or info.field_types is None
-                        or index >= len(info.field_types)
-                        or not isinstance(info.field_types[index], TypeVar)):
-                    return None
             fields = self._instantiated_field_types(ctor_name, ty)
             if fields is None or index >= len(fields):
                 return None
@@ -12938,26 +12931,30 @@ class ContractVerifier:
         up on its own.  A type's name can also be ANOTHER type's
         constructor — `let Box<…>` over a `Box<Nat>` beside
         `data Other { Box(Nat, Nat) }` — and read as that constructor it
-        described fields the source does not have.  ``None`` when nothing
-        resolves: the bindings are then left unclassified, as they were
-        when the type had no argument to read.
+        described fields the source does not have.  A type's constructors
+        are read where :py:meth:`_adt_constructor_names` reads them, the
+        module table included: an imported `Wrap` is in neither local
+        registry, and looked up in those alone `let Wrap<@PosInt> =
+        W(0 - 5)` would record no obligation while its guard still traps.
+        ``None`` when nothing resolves: the bindings are then left
+        unclassified, as they were when the type had no argument to read.
         """
         if stmt.constructor == "Tuple":
             return "Tuple"
         base = source_ty.base if isinstance(source_ty, RefinedType) else source_ty
         if isinstance(base, AdtType):
-            adt = self.env.data_types.get(base.name)
-            if adt is not None:
-                if stmt.constructor in adt.constructors:
+            names = self._adt_constructor_names(base)
+            if names:
+                if stmt.constructor in names:
                     return stmt.constructor
-                if len(adt.constructors) == 1:
-                    return next(iter(adt.constructors))
+                if len(names) == 1:
+                    return names[0]
                 return None
         if self._lookup_constructor_info(stmt.constructor) is not None:
             return stmt.constructor
-        adt = self.env.data_types.get(stmt.constructor)
-        if adt is not None and len(adt.constructors) == 1:
-            return next(iter(adt.constructors))
+        names = self._adt_constructor_names(AdtType(stmt.constructor, ()))
+        if len(names) == 1 and names[0] != "Tuple":
+            return names[0]
         return None
 
     def _record_nat_bind_tier3(

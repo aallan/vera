@@ -130,7 +130,11 @@ class OperatorsMixin:
             # safety net for `vera compile` / `vera run` paths that
             # skipped verification.
             if op == ast.BinOp.SUB and self._is_nat_subtraction(expr):
-                return self._emit_nat_sub_guard(left, right, at=expr)
+                return self._emit_nat_sub_guard(
+                    left, right, at=expr,
+                    signed=(narrowing.holds_negative_literal(expr.left)
+                            or narrowing.holds_negative_literal(expr.right)),
+                )
             # #798: @Int/@Nat add/sub/mul wrap at the i64/u64 boundary; emit a
             # runtime overflow guard mirroring the verifier's `int_overflow`
             # obligation (vera/verifier.py:_check_overflow_obligation).  The
@@ -1925,28 +1929,10 @@ class OperatorsMixin:
         that's Path B (#552) territory, which generalises the
         verifier check to every binding-site narrowing.
         """
-        return (self._is_nat_operand(expr.left)
-                and self._is_nat_operand(expr.right)
+        return (self._is_static_nat_typed(expr.left)
+                and self._is_static_nat_typed(expr.right)
                 and (self._has_nat_origin_codegen(expr.left)
                      or self._has_nat_origin_codegen(expr.right)))
-
-    def _is_nat_operand(self, expr: ast.Expr) -> bool:
-        """The verifier's ``_is_nat_typed``, read the same way: the
-        checker's resolved type for the operand where the table has one,
-        and the shared static rule where it does not (#1503).
-
-        The static rule alone has no arm for an index, an effect operation
-        or a call whose `@Nat` return this side's walker reads as `Int`, so
-        `@Array<Nat>.0[0] - @Nat.0` was obligated `nat_sub` by the verifier
-        and compiled with no underflow guard; once the widening rule reads
-        an index's declared `@Nat`, the return's narrowing guard stood down
-        for it too, and -3 came back from a `@Nat` function (PR #1537
-        review).  A pure-literal operand is still exempt: its provenance
-        (:py:meth:`_has_nat_origin_codegen`) is no `@Nat`'s."""
-        resolved = self._resolved_codegen_type(expr)
-        if resolved is not None:
-            return resolved == "Nat"
-        return self._is_static_nat_typed(expr)
 
     def _is_static_nat_typed(self, expr: ast.Expr) -> bool:
         """Return True iff *expr* has static type @Nat.
@@ -2098,16 +2084,12 @@ class OperatorsMixin:
         """
         if isinstance(expr, ast.SlotRef):
             return expr.type_name == "Nat"
-        if isinstance(expr, (ast.FnCall, ast.ModuleCall)):
-            # The verifier's reading: the checker's resolved type of the
-            # call, then its declaration (`_declared_result_is_nat`).  The
-            # walker alone maps an i64 return to "Int" and never answers
-            # "Nat".
-            return self._declared_result_is_nat(expr)
-        if isinstance(expr, ast.IndexExpr):
-            # `arr[i]` has @Nat provenance iff its element type is @Nat, read
-            # from the checker's table as the verifier reads it.
-            return self._resolved_codegen_type(expr) == "Nat"
+        if isinstance(expr, ast.FnCall):
+            return self._infer_fncall_vera_type(expr) == "Nat"
+        if isinstance(expr, ast.ModuleCall):
+            return self._infer_fncall_vera_type(
+                ast.FnCall(name=expr.name, args=expr.args, span=expr.span),
+            ) == "Nat"
         if isinstance(expr, ast.BinaryExpr):
             return (self._has_nat_origin_codegen(expr.left)
                     or self._has_nat_origin_codegen(expr.right))
@@ -2131,6 +2113,7 @@ class OperatorsMixin:
 
     def _emit_nat_sub_guard(
         self, left: list[str], right: list[str], *, at: ast.Node | None,
+        signed: bool = False,
     ) -> list[str]:
         """Emit a guarded `i64.sub` that traps on underflow.
 
@@ -2156,6 +2139,14 @@ class OperatorsMixin:
         ``@Nat`` is a u64 (spec §2.2.1), and a signed compare read one above
         i64.MAX as negative — trapping ``2^63 - 1`` with a message saying its
         right operand was the larger, and passing ``1 - 2^63``.
+
+        *signed* is for an operand holding a literal-only part that can be
+        negative (:func:`vera.narrowing.holds_negative_literal`).  The static
+        rule calls `0 - 3` a `@Nat`, so such an operand reaches this guard
+        with a value that can be negative, which an unsigned comparison
+        reads as a u64 above `i64.MAX`: `@Nat.0 - (0 - 3)`, proved at Tier
+        1, would trap.  That value is an `i64`, so it is compared signed
+        (#1503).
         """
         lhs_tmp = self.alloc_local("i64")
         rhs_tmp = self.alloc_local("i64")
@@ -2168,7 +2159,7 @@ class OperatorsMixin:
             f"local.set {rhs_tmp}",
             f"local.tee {lhs_tmp}",
             f"local.get {rhs_tmp}",
-            "i64.lt_u",
+            "i64.lt_s" if signed else "i64.lt_u",
             "if",
             *(f"  {i}" for i in trap),
             "end",
@@ -2344,10 +2335,12 @@ class OperatorsMixin:
 
         A leaf narrows exactly when ``_narrows_into_nat`` says binding it into a
         @Nat slot needs a ``>= 0`` guard AND it is not intrinsically @Nat
-        (`_result_is_nat` — a genuine @Nat->@Nat tail call resolves its callee's
-        @Nat return here and so is NOT collected), the per-leaf form of the
-        whole-body ``narrow_guarded`` gate.  Descends ``Block`` / ``IfExpr`` /
-        ``MatchExpr`` joins exactly as the verifier does.
+        (the shared rule read through
+        :data:`vera.narrowing.NARROWING_EXEMPTION_READING` — a genuine
+        @Nat->@Nat tail call resolves its callee's @Nat return there and so is
+        NOT collected), the per-leaf form of the whole-body ``narrow_guarded``
+        gate.  Descends ``Block`` / ``IfExpr`` / ``MatchExpr`` joins exactly as
+        the verifier does.
         """
         leaves: set[int] = set()
         self._collect_narrowing_return_leaves_into(body, leaves)
@@ -2370,7 +2363,9 @@ class OperatorsMixin:
             for arm in expr.arms:
                 self._collect_narrowing_return_leaves_into(arm.body, leaves)
             return
-        if self._narrows_into_nat(expr) and not self._result_is_nat(expr):
+        if self._narrows_into_nat(expr) and not narrowing.result_is_nat(
+                expr, self._declared_result_is_nat,
+                narrowing.NARROWING_EXEMPTION_READING):
             leaves.add(id(expr))
 
     def _guard_nat_return_leaf(

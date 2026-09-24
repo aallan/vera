@@ -12,11 +12,11 @@ Ordering derives from the design principles ([DESIGN.md](DESIGN.md)): verificati
 
 ## Where we are
 
-17,708 tests, 253 conformance programs, 43 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs (burndown material rather than stage work), plus the *limitations* the stages below retire.
+17,746 tests, 253 conformance programs, 43 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs (burndown material rather than stage work), plus the *limitations* the stages below retire.
 
 ## The v0.2.0 burndown
 
-*Eight open bugs, driven to zero.*
+*Nine open bugs, driven to zero.*
 
 A bug class outranks stage work, so the next release takes the open `bug`-labelled set as its queue.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) carries each row's full account and stays the one place the detail lives; this table is the order of attack.
 
@@ -30,6 +30,7 @@ A bug class outranks stage work, so the next release takes the open `bug`-labell
 | [#1544](https://github.com/aallan/vera/issues/1544) | Mixed-sign arithmetic runs at the unsigned width: a false overflow trap, and an `int_overflow` proved at Tier 1 that traps. |
 | [#1545](https://github.com/aallan/vera/issues/1545) | A destructuring `let` is not checked against its source: `let Tuple<@Int, @String> = Tuple(1, 2)` passes check and verify. |
 | [#1546](https://github.com/aallan/vera/issues/1546) | A heterogeneous `@Nat`/`@Int` join read into an `@Int` is unguarded as a tuple component or a `handle`. |
+| [#1557](https://github.com/aallan/vera/issues/1557) | A `@Nat` subtraction over a call to a non-generic `@Nat` function is claimed `nat_sub` `tier3` and compiled with no underflow check. |
 
 ## Stage 19 — The verification completeness sprint
 

@@ -29,6 +29,7 @@ from vera.types import (
     ConcreteEffectRow,
     FunctionType,
     PureEffectRow,
+    RefinedType,
     Type,
     TypeVar,
     UnknownType,
@@ -104,6 +105,32 @@ def _compatible_modulo_typevars(
     # accept a subtype relationship either way (Nat vs Int).
     return is_subtype(a, b) or is_subtype(b, a)
 
+
+
+def _type_var_names(ty: Type) -> frozenset[str]:
+    """The names of the type variables *ty* mentions, at any depth."""
+    if isinstance(ty, TypeVar):
+        return frozenset({ty.name})
+    if isinstance(ty, AdtType):
+        return frozenset().union(*(_type_var_names(a) for a in ty.type_args))
+    if isinstance(ty, FunctionType):
+        return frozenset().union(
+            _type_var_names(ty.return_type),
+            *(_type_var_names(p) for p in ty.params))
+    if isinstance(ty, RefinedType):
+        return _type_var_names(ty.base)
+    return frozenset()
+
+
+def _result_type_var_names(fn_info: FunctionInfo) -> frozenset[str]:
+    """The type variables through which a call's instantiation reaches
+    past the call: its declared return type and its effect row."""
+    names = _type_var_names(fn_info.return_type)
+    if isinstance(fn_info.effect, ConcreteEffectRow):
+        for inst in fn_info.effect.effects:
+            for arg in inst.type_args:
+                names |= _type_var_names(arg)
+    return names
 
 
 def _names(name: str) -> Callable[[str], bool]:
@@ -445,11 +472,37 @@ class CallsMixin:
                 # check (Int <: Nat holds).  Record the instantiated
                 # formal as each argument's target now, so the verifier's
                 # @Nat narrowing walker can obligate it.
+                #
+                # #1503: except a COMPOSITE argument carrying a pure-literal
+                # subtraction at a formal whose type variables the call's
+                # result does not mention.  `array_length([0 - 1, 5])`
+                # infers `T = Nat` from the literal itself, because the
+                # checker types `0 - 1` bottom-up as `Nat`; recorded as the
+                # literal's target, it has the construction-position element
+                # leg (#1440) obligate and guard -1 against it — E503 and a
+                # trap on a program whose value is 2.  That instantiation
+                # ends at this call: nothing past it is typed by it, so
+                # declining it declines no fact anything downstream reads.
+                # A formal whose variables reach the result
+                # (`array_reverse`, `id`) keeps its target, as a scalar
+                # argument does since #747: its instantiation leaves through
+                # the call and is read as a declaration there (#1541).
                 if self.expr_target_types is not None:
-                    for c_arg, c_pt in zip(args, param_types):
+                    result_vars = _result_type_var_names(fn_info)
+                    for c_arg, c_pt, declared_pt in zip(
+                            args, param_types, fn_info.param_types):
                         key = ast.span_key(c_arg)
-                        if key is not None and not contains_typevar(c_pt):
-                            self.expr_target_types[key] = c_pt
+                        if key is None or contains_typevar(c_pt):
+                            continue
+                        formal_vars = _type_var_names(declared_pt)
+                        if (formal_vars
+                                and not formal_vars & result_vars
+                                and narrowing.carries_literal_subtraction(
+                                    c_arg)
+                                and not narrowing.holds_literal_subtraction(
+                                    c_arg)):
+                            continue
+                        self.expr_target_types[key] = c_pt
 
         # Check each argument.  When a type-argument conflict was already
         # reported (#898), skip the per-argument subtype check: the merged
@@ -1524,12 +1577,26 @@ class CallsMixin:
     def _pattern_binding_type(self, te: ast.TypeExpr) -> Type | None:
         """A pattern binding's type, resolved without reporting: the
         pattern is checked, and its diagnostics raised, where it is bound;
-        this looks ahead to it."""
+        this looks ahead to it.
+
+        Resolution reports through state that outlives the diagnostic:
+        `_error`'s duplicate collapse (`_seen_diag_keys`) and the one-shot
+        E154 and removed-alias sets.  Kept while only the diagnostic is
+        dropped, that state would deduplicate the binding's own resolution
+        away — `match W([()]) { W(@Array<Unit>) -> 1 }` would lose its
+        E135, pass `vera check` and `vera verify`, and fail to compile — so
+        all of it is restored."""
         before = len(self.errors)
+        seen = set(self._seen_diag_keys)
+        aliases = set(self._reported_alias_errors)
+        reserved = set(self._reported_reserved_type_refs)
         try:
             return self._resolve_type(te)
         finally:
             del self.errors[before:]
+            self._seen_diag_keys = seen
+            self._reported_alias_errors = aliases
+            self._reported_reserved_type_refs = reserved
 
     def _record_nested_ctor_targets(
         self, ctor: ast.ConstructorCall, target: Type,

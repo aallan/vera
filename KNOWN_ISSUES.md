@@ -16,6 +16,7 @@ Defects in shipped compiler, runtime, or tooling behaviour — this table matche
 | Mixed-sign arithmetic runs at the unsigned width: `@Nat.0 + (0 - 1)` traps on overflow for every `@Nat.0 >= 1`, and `18446744073709551615 + (0 - 1)` proves `int_overflow` at Tier 1 and traps. | [#1544](https://github.com/aallan/vera/issues/1544) |
 | A destructuring `let` is not checked against its source: `let Tuple<@Int, @String> = Tuple(1, 2)` passes check and verify and binds the integer 2 at `@String`. | [#1545](https://github.com/aallan/vera/issues/1545) |
 | A heterogeneous `@Nat`/`@Int` join read into an `@Int` is guarded per arm only as a scalar `if` or `match`: built as a tuple component, or produced by a `handle`, u64.MAX comes back as -1. | [#1546](https://github.com/aallan/vera/issues/1546) |
+| A `@Nat` subtraction over a call to a non-generic function or built-in declared to return `@Nat` is recorded `nat_sub` `tier3` and compiled with no underflow check: code generation reads such a call as `Int`.  `string_length(catch_text(())) - 16` in `ch07_exn_string_alias.vera` is claimed runtime-checked and unchecked, and `nat_id(@Nat.1) - @Nat.0` returns -3 from a `@Nat` function (verify refuses it with E502). | [#1557](https://github.com/aallan/vera/issues/1557) |
 
 ## Limitations
 

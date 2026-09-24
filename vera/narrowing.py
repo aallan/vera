@@ -453,6 +453,30 @@ def carries_literal_subtraction(expr: ast.Expr) -> bool:
     return False
 
 
+def holds_negative_literal(expr: ast.Expr) -> bool:
+    """True iff a literal-only part of *expr*'s VALUE can be negative: a
+    maximal pure-literal subexpression (:func:`is_pure_literal`) whose
+    folded value (:func:`literal_range`) can fall below zero, reached
+    through arithmetic and the arms of a join (:func:`flow_arms`).
+
+    The `@Nat`-subtraction guard asks it of each operand.  Its static rule
+    calls `0 - 3` a `@Nat` (two non-negative literals), so an operand
+    holding one reaches the guard with a value that can be negative; an
+    unsigned comparison reads that value as a u64 above `i64.MAX` and traps
+    `@Nat.0 - (0 - 3)`, which the verifier proves at Tier 1 and whose value
+    is `@Nat.0 + 3`.  Such an operand is compared signed, and every other
+    one unsigned."""
+    if is_pure_literal(expr):
+        folded = literal_range(expr)
+        return folded is None or folded[0] < 0
+    if isinstance(expr, ast.BinaryExpr):
+        return expr.op in _INT_ARITH_OPS and (
+            holds_negative_literal(expr.left)
+            or holds_negative_literal(expr.right))
+    arms = flow_arms(expr)
+    return arms is not None and any(holds_negative_literal(a) for a in arms)
+
+
 def literal_operation_width(expr: ast.Expr) -> str | None:
     """The width an arithmetic operation of two literal-only operands runs
     at, read from their VALUES — ``"Int"`` when either can be negative —
@@ -604,6 +628,24 @@ RESULT_IS_NAT_READING: dict[type, str] = {
     ast.ExistsExpr: "never",
 }
 
+#: The forms whose `@Nat` reading may stand a NARROWING guard DOWN — code
+#: generation's #758 exemption at a `@Nat` return, which drops the
+#: return's `>= 0` check for a leaf read as a genuine `@Nat`.  Every other
+#: reader of :func:`result_is_nat` ADDS a guard (a widening's) when it
+#: answers `@Nat`, so it may read a form from its declaration; this one
+#: removes a guard, and trusts only a literal, a `@Nat` slot, a call's
+#: declared return, arithmetic and the `Block` / `if` / `match` joins over
+#: them.  Read through the full table, an index, an effect operation or a
+#: `handle` would stand the check down for `@Array<Nat>.0[0] - @Nat.0`,
+#: whose underflow the `@Nat`-subtraction guard does not see, and -3 would
+#: come back from a `@Nat` function.  A form left out reads ``"never"``:
+#: the return keeps its check.
+NARROWING_EXEMPTION_READING: dict[type, str] = {
+    form: RESULT_IS_NAT_READING[form]
+    for form in (ast.IntLit, ast.BinaryExpr, ast.Block, ast.IfExpr,
+                 ast.MatchExpr, ast.SlotRef, ast.FnCall, ast.ModuleCall)
+}
+
 
 def flow_arms(expr: ast.Expr) -> tuple[ast.Expr, ...] | None:
     """The arms a ``"flow"`` form's value is one of, or ``None`` for any
@@ -660,7 +702,11 @@ def element_sources(collection: ast.Expr) -> tuple["ComponentSource", ...]:
     return (ComponentSource(collection, is_argument=False),)
 
 
-def result_is_nat(expr: ast.Expr, declared_is_nat: DeclaredIsNatOracle) -> bool:
+def result_is_nat(
+    expr: ast.Expr,
+    declared_is_nat: DeclaredIsNatOracle,
+    readings: dict[type, str] | None = None,
+) -> bool:
     """True iff the VALUE of *expr* is a genuine runtime `@Nat` — one that
     can exceed `i64.MAX`, so binding it into an `@Int` slot is a widening
     that needs the `nat_to_int_coerce` obligation and its guard (#813).
@@ -685,22 +731,29 @@ def result_is_nat(expr: ast.Expr, declared_is_nat: DeclaredIsNatOracle) -> bool:
     a literal.  `nat_to_int(x)` is the explicit conversion built-in, whose
     value is its argument's.  A negation, and a non-integer, is not a
     `@Nat`.
+
+    *readings* replaces :data:`RESULT_IS_NAT_READING` for a caller that
+    trusts fewer forms; a form it omits reads ``"never"``
+    (:data:`NARROWING_EXEMPTION_READING`).
     """
+    table = RESULT_IS_NAT_READING if readings is None else readings
     if is_pure_literal(expr):
         folded = literal_range(expr)
         return folded is not None and folded[0] >= 0 and folded[1] > I64_MAX
-    reading = RESULT_IS_NAT_READING.get(type(expr), "never")
+    reading = table.get(type(expr), "never")
     if reading == "flow":
         arms = flow_arms(expr) or ()
         return (
             bool(arms)
-            and all(arm_nat_compatible(arm, declared_is_nat) for arm in arms)
-            and any(result_is_nat(arm, declared_is_nat) for arm in arms)
+            and all(arm_nat_compatible(arm, declared_is_nat, readings)
+                    for arm in arms)
+            and any(result_is_nat(arm, declared_is_nat, readings)
+                    for arm in arms)
         )
     if reading == "arith" and isinstance(expr, ast.BinaryExpr):
         if expr.op in _INT_ARITH_OPS:
-            return (result_is_nat(expr.left, declared_is_nat)
-                    and result_is_nat(expr.right, declared_is_nat))
+            return (result_is_nat(expr.left, declared_is_nat, readings)
+                    and result_is_nat(expr.right, declared_is_nat, readings))
         return False
     if reading == "index" and isinstance(expr, ast.IndexExpr):
         sources = element_sources(expr.collection)
@@ -710,7 +763,7 @@ def result_is_nat(expr: ast.Expr, declared_is_nat: DeclaredIsNatOracle) -> bool:
         genuine = False
         for source in sources:
             if source.is_argument:
-                nat = result_is_nat(source.expr, declared_is_nat)
+                nat = result_is_nat(source.expr, declared_is_nat, readings)
                 compatible = compatible and (
                     nat or is_nonneg_literal_value(source.expr))
             else:
@@ -723,7 +776,7 @@ def result_is_nat(expr: ast.Expr, declared_is_nat: DeclaredIsNatOracle) -> bool:
             return True
         if (isinstance(expr, ast.FnCall) and expr.name == "nat_to_int"
                 and expr.args
-                and result_is_nat(expr.args[0], declared_is_nat)):
+                and result_is_nat(expr.args[0], declared_is_nat, readings)):
             return True
         return declared_is_nat(expr)
     return False
@@ -731,6 +784,7 @@ def result_is_nat(expr: ast.Expr, declared_is_nat: DeclaredIsNatOracle) -> bool:
 
 def arm_nat_compatible(
     expr: ast.Expr, declared_is_nat: DeclaredIsNatOracle,
+    readings: dict[type, str] | None = None,
 ) -> bool:
     """A join's arm is `@Nat`-compatible if its value is a genuine `@Nat`
     (:func:`result_is_nat`) or a literal-only value that cannot be negative
@@ -748,7 +802,7 @@ def arm_nat_compatible(
     it is the heterogeneous per-arm case — obligated through the verifier's
     `_is_hetero_int_widen_join` and guarded per-arm by codegen (#820), not a
     boundary widening."""
-    return (result_is_nat(expr, declared_is_nat)
+    return (result_is_nat(expr, declared_is_nat, readings)
             or is_nonneg_literal_value(expr))
 
 

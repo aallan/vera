@@ -1048,26 +1048,187 @@ class TestANestedPatternReadsItsPath:
         assert len(widenings) == 1, low.obligations
 
 
-class TestANatSubtractionIsGuardedWhereItIsObligated:
-    """The `@Nat` subtraction's underflow guard reads the verifier's
-    classification of its operands: an index into an `Array<Nat>` and a
-    call returning `@Nat` are `@Nat` operands with `@Nat` provenance (PR
-    #1537 review).  Code generation read neither — its static rule has no
-    index arm and its call walker answers `Int` for an i64 return — so the
-    verifier's `nat_sub` had no guard behind it: `nat_id(@Nat.1) - @Nat.0`
-    returned -3 from a `@Nat` function on `main`, the release branch and
-    16c25c9e, and the index form did once the widening rule read an
-    index's declaration."""
+_NESTED_THROUGH = """private data Wrap<A> { W(A) }
 
-    _PROGRAM = """private fn nat_id(@Nat -> @Nat)
+private data Inner { I(Int, Nat) }
+
+private data Outer { O(Inner) }
+
+private data OuterW { OW(Wrap<Nat>) }
+
+private data OuterT { OT(Tuple<Int, Nat>) }
+
+private data Pair<A> { P(Wrap<A>, Int) }
+
+private fn mk(@Nat -> @Outer)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  @Nat.0
+  O(I(1, @Nat.0))
 }
 
-public fn f(@Nat, @Nat -> @Nat)
+public fn f(@Nat -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  BODY
+}
+"""
+
+#: A nested pattern whose path steps through a field that is NOT a type
+#: argument: a concrete field (`O(Inner)`), a concrete field of a generic
+#: type (`OW(Wrap<Nat>)`, `OT(Tuple<Int, Nat>)`), and a generic field that
+#: is not a bare parameter (`P(Wrap<A>, Int)` over a `Pair<Nat>`).
+_NESTED_THROUGH_BODIES = {
+    "a concrete field, slot scrutinee":
+        "let @Outer = O(I(1, @Nat.0));\n"
+        "  match @Outer.0 { O(I(@Int, @Int)) -> @Int.0 }",
+    "a concrete field, constructor scrutinee":
+        "match O(I(1, @Nat.0)) { O(I(@Int, @Int)) -> @Int.0 }",
+    "a concrete field, call scrutinee":
+        "match mk(@Nat.0) { O(I(@Int, @Int)) -> @Int.0 }",
+    "a concrete Wrap<Nat> field":
+        "let @OuterW = OW(W(@Nat.0));\n"
+        "  match @OuterW.0 { OW(W(@Int)) -> @Int.0 }",
+    "a concrete Tuple<Int, Nat> field":
+        "let @OuterT = OT(Tuple(1, @Nat.0));\n"
+        "  match @OuterT.0 { OT(Tuple(@Int, @Int)) -> @Int.0 }",
+    "a Wrap<A> field of a Pair<Nat>":
+        "let @Pair<Nat> = P(W(@Nat.0), 1);\n"
+        "  match @Pair<Nat>.0 { P(W(@Int), @Int) -> @Int.1 }",
+}
+
+
+class TestANestedPatternFollowsEveryField:
+    """A nested pattern's path steps through each field's declared type,
+    instantiated against the type reached so far — a concrete field as
+    well as a type argument — on both sides (PR #1537 review).  Followed
+    only through `Tuple` components and bare type parameters, the verifier
+    still claimed the concrete `O(Inner)` step's `tier3` widening while
+    code generation emitted no guard, and u64.MAX came back as -1; a
+    `Wrap<Nat>` or `Wrap<A>` step was claimed and guarded by neither.
+    `main` and the release branch guard the first shape."""
+
+    @pytest.mark.parametrize("body", sorted(_NESTED_THROUGH_BODIES))
+    def test_the_nat_component_is_claimed_and_guarded(self, body: str) -> None:
+        source = _NESTED_THROUGH.replace("BODY", _NESTED_THROUGH_BODIES[body])
+        high = _observe(source, "f", [_U64_MAX])
+        assert _WIDEN_GUARD in high.run, high.run
+        assert ("nat_to_int_coerce", "tier3") in {
+            (o[0], o[1]) for o in high.obligations}, high.obligations
+        assert "wasm/operators.py:_emit_int_widen_guard" in {
+            c[0] for c in high.checks}, high.checks
+        assert _observe(source, "f", [42]).run == "ran:42"
+
+    def test_an_int_field_through_a_concrete_step_is_neither(self) -> None:
+        """`I`'s `Int` field reached through `O`: -7 comes back, and the
+        one widening claimed is the `Nat` field's."""
+        source = _NESTED_THROUGH.replace(
+            "BODY", "let @Outer = O(I(0 - 7, @Nat.0));\n"
+            "  match @Outer.0 { O(I(@Int, @Int)) -> @Int.1 }")
+        low = _observe(source, "f", [5])
+        assert low.run == "ran:-7", low.run
+        assert len([o for o in low.obligations
+                    if o[0] == "nat_to_int_coerce"]) == 1, low.obligations
+
+
+class TestANatSubtractionTrapsOnlyAGenuineUnderflow:
+    """The `@Nat` subtraction guard fires where the static rule reads both
+    operands `@Nat`, and compares them as u64s — except an operand holding
+    a literal-only part that can be negative, which it compares signed
+    (#1503).  Read from the checker's table, as it was at cd3591b5, the
+    guard trapped every program below: the table types `0 - 3`, a `handle`
+    whose body is `0 - 3` and a generic call instantiated from
+    `Some(0 - 3)` as `@Nat`, the unsigned comparison read the negative
+    right operand as a u64 above `i64.MAX`, and `2 - (-3)` trapped as an
+    underflow (PR #1537 review).  The release branch's unsigned comparison
+    trapped the pure-literal forms the same way, `@Nat.0 - (0 - 3)`
+    included, which the verifier proves at Tier 1.  `main` runs every one
+    of them to its value."""
+
+    _PROGRAM = """private forall<T> fn first_or(@Option<T>, @T -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  option_unwrap_or(@Option<T>.0, @T.0)
+}
+
+public fn f(@Nat, @Nat, @Bool -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  BODY
+}
+"""
+
+    @pytest.mark.parametrize(("body", "value"), [
+        ("@Nat.0 - option_unwrap_or(Some(0 - 3), 0)", 5),
+        ("let @Int = @Nat.0 - option_unwrap_or(Some(0 - 1), 0);\n  @Int.0",
+         3),
+        ("10 - option_unwrap_or(Some(0 - 1), 0)", 11),
+        ("@Nat.0 - first_or(Some(0 - 3), 0)", 5),
+        ("@Nat.0 - (handle[Exn<Int>] {\n    throw(@Int) -> 0\n  } in {\n"
+         "    0 - 3\n  })", 5),
+        ("@Nat.0 - (0 - 3)", 5),
+        ("@Nat.0 - { 0 - 1 }", 3),
+        ("@Nat.0 - (if @Bool.0 then { 0 - 3 } else { 5 })", 5),
+        ("@Nat.0 - (@Nat.1 + (0 - 3))", 4),
+        ("@Nat.0 - (if @Bool.0 then { 0 - 3 } else { @Nat.1 })", 5),
+    ], ids=["a generic built-in over Some(0 - 3)", "the 0 - 1 form",
+            "a literal less a generic call", "a user generic",
+            "a handle", "a pure-literal subtraction", "a block over one",
+            "an if over one", "arithmetic over one",
+            "an if joining one with a slot"])
+    def test_a_negative_right_operand_runs_to_its_value(
+        self, body: str, value: int,
+    ) -> None:
+        """@Nat.0 is 2 and @Nat.1 is 1; the right operand is negative."""
+        source = self._PROGRAM.replace("BODY", body)
+        assert _observe(source, "f", [1, 2, 1]).run == f"ran:{value}"
+
+    def test_a_genuine_underflow_beside_a_literal_arm_still_traps(
+        self,
+    ) -> None:
+        """The signed comparison keeps the guard: with the `if` taking its
+        `5` arm, `2 - 5` is an underflow, and `main` trapped it too."""
+        source = self._PROGRAM.replace(
+            "BODY", "@Nat.0 - (if @Bool.0 then { 0 - 3 } else { 5 })")
+        assert "would be negative" in _observe(source, "f", [1, 2, 0]).run
+
+    @pytest.mark.parametrize(("right", "value"), [
+        ("@Nat.1", 2 ** 63 - 1),
+        ("(5 - 5)", 2 ** 63),
+    ], ids=["a slot", "a literal subtraction folding to zero"])
+    def test_genuine_operands_compare_as_u64s(
+        self, right: str, value: int,
+    ) -> None:
+        """An operand that cannot be negative keeps the unsigned
+        comparison: `2^63 - 1` and `2^63 - 0` are valid `@Nat`
+        subtractions, which a signed one refuses, reading `2^63` as
+        negative."""
+        source = self._PROGRAM.replace(
+            "BODY", f"if @Nat.0 - {right} == {value} then {{ 1 }} "
+            "else { 0 }")
+        assert _observe(source, "f", [1, 2 ** 63, 1]).run == "ran:1"
+
+
+class TestANatReturnRefusesAnUnderflowItDoesNotGuard:
+    """At a `@Nat` return, the #758 narrowing guard stands down only for a
+    value read as a `@Nat` from a form the exemption trusted before #1503 —
+    a slot, a call's declared return, arithmetic and joins over them
+    (`vera.narrowing.NARROWING_EXEMPTION_READING`).  The widening rule reads
+    an index, an effect operation and a `handle` from their declarations
+    too; read that way here, the guard stood down for
+    `@Array<Nat>.0[0] - @Nat.0`, whose underflow the `@Nat`-subtraction
+    guard does not see (its static rule has no index arm), and -3 came
+    back from a `@Nat` function (PR #1537 review).  `main` refuses every
+    one of these at the return."""
+
+    _PROGRAM = """public fn f(@Nat, @Nat -> @Nat)
   requires(true)
   ensures(true)
   effects(pure)
@@ -1078,20 +1239,48 @@ public fn f(@Nat, @Nat -> @Nat)
 
     @pytest.mark.parametrize("body", [
         "let @Array<Nat> = [@Nat.1];\n  @Array<Nat>.0[0] - @Nat.0",
-        "nat_id(@Nat.1) - @Nat.0",
         "let @Array<Nat> = [@Nat.1];\n  @Array<Nat>.0[0] - 5",
-        "nat_id(@Nat.1) - 5",
-    ], ids=["an index", "a call", "an index less a literal",
-            "a call less a literal"])
-    def test_the_underflow_is_refused_where_it_happens(self, body: str) -> None:
-        """The last two keep a slot out of the subtraction's operands, so
-        its `@Nat` provenance can come only from the index or the call."""
+        "handle[State<Nat>](@Nat = @Nat.1) {\n"
+        "    get(@Unit) -> { resume(@Nat.0) },\n"
+        "    put(@Nat) -> { resume(()) }\n"
+        "  } in {\n    State.get(()) - @Nat.0\n  }",
+        "(handle[Exn<Int>] {\n    throw(@Int) -> 7\n  } in {\n"
+        "    @Nat.1\n  }) - @Nat.0",
+    ], ids=["an index", "an index less a literal", "an effect operation",
+            "a handle"])
+    def test_the_return_refuses_it(self, body: str) -> None:
         source = self._PROGRAM.replace("BODY", body)
-        low = _observe(source, "f", [2, 5])
-        assert "would be negative" in low.run, low.run
-        assert "nat_sub" in {o[0] for o in low.obligations}, low.obligations
-        assert "wasm/operators.py:_emit_nat_sub_guard" in {
-            c[0] for c in low.checks}, low.checks
+        assert _NAT_GUARD in _observe(source, "f", [2, 5]).run
+        assert _observe(source, "f", [8, 5]).run == "ran:3"
+
+    def test_an_effect_operation_leaf_is_refused_by_its_own_return(
+        self,
+    ) -> None:
+        """`State.get(()) - @Nat.0` as the return leaf of an effectful
+        callee: its own return refuses the -3, rather than the caller's
+        `@Int` widening reading it as a u64 above `i64.MAX`."""
+        source = """private fn g(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(<State<Nat>>)
+{
+  State.get(()) - @Nat.0
+}
+
+public fn f(@Nat, @Nat -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Nat>](@Nat = @Nat.1) {
+    get(@Unit) -> { resume(@Nat.0) },
+    put(@Nat) -> { resume(()) }
+  } in {
+    g(@Nat.0)
+  }
+}
+"""
+        assert _NAT_GUARD in _observe(source, "f", [2, 5]).run
         assert _observe(source, "f", [8, 5]).run == "ran:3"
 
 
@@ -1259,6 +1448,275 @@ class TestAScalarLiteralAboveI64MaxIsANat:
     def test_both_halves_refuse(self, body: str) -> None:
         observed = _observe(_shape_program(body), "f", [0, 0, 1])
         assert "E530" in observed.errors, observed.obligations
+        assert _WIDEN_GUARD in observed.run, observed.run
+
+
+def _observe_modules(
+    tmp_path: Path, files: dict[str, str], fn: str, args: list[object],
+) -> Observed:
+    """:func:`_observe` for an entry module ``main.vera`` beside *files*,
+    resolved, checked, verified and compiled as `vera run` does."""
+    for name, text in files.items():
+        (tmp_path / name).write_text(text, encoding="utf-8")
+    path = tmp_path / "main.vera"
+    source = path.read_text(encoding="utf-8")
+    program = parse_to_ast(source)
+    resolver = ModuleResolver(_root=path.parent)
+    resolved = resolver.resolve_imports(program, path)
+    assert not resolver.errors, resolver.errors
+    diags, arts = typecheck_with_artifacts(
+        program, source, file=str(path), resolved_modules=resolved,
+        collect_module_artifacts=True,
+    )
+    errors = [d for d in diags if d.severity == "error"]
+    assert not errors, [(d.error_code, d.description[:80]) for d in errors]
+    result = verify(
+        program, source, file=str(path), resolved_modules=resolved,
+        expr_types=arts.expr_semantic_types,
+        expr_target_types=arts.expr_target_types,
+    )
+    compiled = codegen_compile(
+        program, source=source, file=str(path), resolved_modules=resolved,
+        expr_semantic_types=arts.expr_semantic_types,
+        expr_target_types=arts.expr_target_types,
+        module_artifacts=arts.module_artifacts,
+    )
+    assert not [d for d in compiled.diagnostics if d.severity == "error"]
+    try:
+        run = f"ran:{execute(compiled, fn_name=fn, args=args).value}"
+    except Exception as exc:  # noqa: BLE001 — the trap IS the observation
+        run = str(exc)
+    return Observed(
+        errors=tuple(sorted(
+            d.error_code for d in result.diagnostics
+            if d.severity == "error"
+        )),
+        obligations=tuple(sorted(
+            (o.kind, o.status, o.line, o.column)
+            for o in result.obligations
+        )),
+        run=run,
+        checks=tuple(sorted(
+            (c.emitter, c.line, c.column) for c in compiled.emitted_checks
+        )),
+    )
+
+
+_WLIB = "module wlib;\n\npublic data Wrap<A> {\n  W(A)\n}\n"
+_NATLIB = ("public fn big(@Nat -> @Nat)\n  requires(true)\n  ensures(true)\n"
+           "  effects(pure)\n{\n  @Nat.0\n}\n")
+
+
+def _main_module(imports: str, params: str, body: str) -> str:
+    return (
+        f"{imports}\n\ntype PosInt = {{ @Int | @Int.0 > 0 }};\n\n"
+        f"public fn f({params})\n  requires(true)\n  ensures(true)\n"
+        f"  effects(pure)\n{{\n  {body}\n}}\n"
+    )
+
+
+class TestAGenericFunctionDoorDeclinesALiteralsInstantiation:
+    """The generic function door records no target for a composite argument
+    carrying a pure-literal subtraction when the instantiation it inferred
+    from that argument ends at the call — the constructor door's rule, at
+    the door #747 opened (PR #1537 review).  `array_length([0 - 1, 5])`
+    infers `T = Nat` from `0 - 1`, which the checker types bottom-up as
+    `Nat`; recorded as the literal's target, the construction-position
+    element leg (#1440) refused -1 with E503 and trapped on it, where
+    `main` returns 2."""
+
+    _PROGRAM = """private forall<T> fn count(@Array<T> -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_length(@Array<T>.0)
+}
+
+public fn f(@Nat, @Bool -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  BODY
+}
+"""
+
+    @pytest.mark.parametrize(("body", "value"), [
+        ("array_length([0 - 1, 5])", 2),
+        ("count([0 - 1, 5])", 2),
+        ("array_length([Tuple(1, 0 - 1)])", 1),
+        ("array_length([[0 - 1], [2]])", 2),
+        ("array_length(if @Bool.0 then { [0 - 1] } else { [2, 3] })", 1),
+    ], ids=["a built-in", "a user generic", "a tuple element",
+            "a nested array", "an if over arrays"])
+    def test_it_verifies_and_runs(self, body: str, value: int) -> None:
+        observed = _observe(self._PROGRAM.replace("BODY", body), "f", [0, 1])
+        assert observed.errors == (), observed.obligations
+        assert observed.run == f"ran:{value}", observed.run
+
+    @pytest.mark.parametrize("call", ["id(0 - 3)", "one(0 - 3)"],
+                             ids=["reaching the result", "ending at the call"])
+    def test_a_scalar_argument_keeps_its_target(self, call: str) -> None:
+        """A scalar literal subtraction keeps the instantiated formal as its
+        target, as it has since #747, and E503 refuses the -3 into it, as on
+        `main`.  At `id`, declined, the program would verify and return -3
+        from a `@Nat` function.  At `one(@T -> @Nat)` the refusal is
+        #1541's to lift, with the checker's typing of the literal: this
+        door declines a composite's instantiation only."""
+        source = self._PROGRAM.replace(
+            "private forall<T> fn count",
+            "private forall<T> fn id(@T -> @T)\n  requires(true)\n"
+            "  ensures(true)\n  effects(pure)\n{\n  @T.0\n}\n\n"
+            "private forall<T> fn one(@T -> @Nat)\n  requires(true)\n"
+            "  ensures(true)\n  effects(pure)\n{\n  1\n}\n\n"
+            "private forall<T> fn count").replace("BODY", call)
+        assert "E503" in _observe(source, "f", [0, 1]).errors
+
+    def test_an_instantiation_that_leaves_the_call_keeps_its_target(
+        self,
+    ) -> None:
+        """`array_reverse`'s `T` reaches its result, where the
+        instantiation is read as the result's declaration, so the door
+        records it as the base does: the -1 a `@Nat` array would hold is
+        refused."""
+        observed = _observe(self._PROGRAM.replace(
+            "BODY", "let @Array<Nat> = array_reverse([0 - 1, 5]);\n"
+            "  @Array<Nat>.0[0]"), "f", [0, 1])
+        assert "E503" in observed.errors, observed.obligations
+
+
+class TestALookAheadKeepsTheBindingsDiagnostics:
+    """A composite pattern's binding types are resolved ahead of the
+    construction they read, to give it its context; the look-ahead restores
+    the diagnostic state it used, so the binding's own resolution reports
+    (PR #1537 review).  Keeping `_error`'s duplicate collapse from the
+    look-ahead deduplicated the binding's E135 away, and
+    `W(@Array<Unit>)` passed `vera check` and `vera verify` and failed to
+    compile."""
+
+    @pytest.mark.parametrize("body", [
+        "match W([()]) {\n    W(@Array<Unit>) -> 1\n  }",
+        "let Tuple<@Array<Unit>, @Int> = Tuple([()], 1);\n  @Int.0",
+    ], ids=["a constructor sub-pattern", "a tuple destructure"])
+    def test_e135_is_reported(self, body: str) -> None:
+        source = (
+            "private data Wrap<A> { W(A) }\n\n"
+            "public fn f(@Int -> @Int)\n  requires(true)\n  ensures(true)\n"
+            "  effects(pure)\n{\n  " + body + "\n}\n"
+        )
+        diags, _arts = typecheck_with_artifacts(
+            parse_to_ast(source), source, file="p.vera")
+        assert "E135" in {d.error_code for d in diags}, [
+            (d.error_code, d.description[:60]) for d in diags]
+
+
+class TestAnImportedTypeNamesItsConstructor:
+    """A destructure that names an imported type (`let Wrap<…>`) reads the
+    type's constructor from the module table, as the verifier's other
+    constructor readers do (PR #1537 review).  Looked up in the local
+    registries alone, it found none: the bindings were classified neither
+    way and the verifier recorded no obligation, while code generation
+    still guarded them."""
+
+    def test_the_refinement_is_obligated(self, tmp_path: Path) -> None:
+        observed = _observe_modules(tmp_path, {
+            "wlib.vera": _WLIB,
+            "main.vera": _main_module(
+                "import wlib;", "@Int -> @Int",
+                "let Wrap<@PosInt> = W(0 - 5);\n  @PosInt.0"),
+        }, "f", [0])
+        assert "refine_bind" in {o[0] for o in observed.obligations}, (
+            observed.obligations)
+        assert "Refinement violation" in observed.run, observed.run
+
+    def test_an_imported_type_name_is_not_another_type_s_constructor(
+        self, tmp_path: Path,
+    ) -> None:
+        """`let Box<…>` over an imported `Box<Nat>`, beside a local
+        constructor `Box` of another type: the source's type decides,
+        through the module table, so `MkBox`'s `Int` field is read as
+        `Int` — one widening claimed, for the `T` field — and -5 comes
+        back."""
+        blib = ("module blib;\n\npublic data Box<T> {\n  MkBox(Int, T)\n}"
+                "\n")
+        main = _main_module(
+            "import blib;", "@Int, @Nat -> @Int",
+            "let @Box<Nat> = MkBox(@Int.0, @Nat.0);\n"
+            "  let Box<@Int, @Int> = @Box<Nat>.0;\n  @Int.1",
+        ).replace("type PosInt", "private data Other { Box(Nat, Nat) }\n\n"
+                  "type PosInt")
+        observed = _observe_modules(
+            tmp_path, {"blib.vera": blib, "main.vera": main}, "f", [-5, 7])
+        assert observed.run == "ran:-5", observed.run
+        assert len([o for o in observed.obligations
+                    if o[0] == "nat_to_int_coerce"]) == 1, (
+            observed.obligations)
+
+    def test_the_widening_is_claimed_and_guarded(self, tmp_path: Path) -> None:
+        observed = _observe_modules(tmp_path, {
+            "wlib.vera": _WLIB,
+            "main.vera": _main_module(
+                "import wlib;", "@Nat -> @Int",
+                "let @Wrap<Nat> = W(@Nat.0);\n"
+                "  let Wrap<@Int> = @Wrap<Nat>.0;\n  @Int.0"),
+        }, "f", [_U64_MAX])
+        assert ("nat_to_int_coerce", "tier3") in {
+            (o[0], o[1]) for o in observed.obligations}, observed.obligations
+        assert _WIDEN_GUARD in observed.run, observed.run
+
+
+class TestEveryReadingTheReviewFoundUnpinned:
+    """Three readings a mutation left green (PR #1537 review): a `handle`'s
+    non-resuming clause value, a zero literal in a component join, and a
+    module-qualified call.  Each is a genuine `@Nat` source here, so a
+    mutant that drops the reading returns u64.MAX as -1."""
+
+    def test_a_handle_clause_value(self) -> None:
+        source = """private fn check(@Nat -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<Exn<Nat>>)
+{
+  if @Nat.0 == 7 then { () } else { throw(@Nat.0) }
+}
+
+public fn f(@Nat -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let Tuple<@Int, @Int> = handle[Exn<Nat>] {
+    throw(@Nat) -> Tuple(1, @Nat.0)
+  } in {
+    check(@Nat.0);
+    Tuple(1, 2)
+  };
+  @Int.0
+}
+"""
+        high = _observe(source, "f", [_U64_MAX])
+        assert _WIDEN_GUARD in high.run, high.run
+        assert ("nat_to_int_coerce", "tier3") in {
+            (o[0], o[1]) for o in high.obligations}, high.obligations
+        assert _observe(source, "f", [7]).run == "ran:2"
+
+    def test_a_zero_literal_in_a_component_join(self) -> None:
+        source = _shape_program(
+            "let Tuple<@Int, @Int> = if @Bool.0 then { Tuple(1, @Nat.0) } "
+            "else { Tuple(2, 0) };\n  @Int.0")
+        assert _WIDEN_GUARD in _observe(source, "f", [0, _U64_MAX, 1]).run
+        assert _observe(source, "f", [0, 42, 0]).run == "ran:0"
+
+    def test_a_module_qualified_call(self, tmp_path: Path) -> None:
+        observed = _observe_modules(tmp_path, {
+            "natlib.vera": _NATLIB,
+            "main.vera": _main_module(
+                "import natlib;", "@Nat -> @Int",
+                "let @Int = natlib::big(@Nat.0);\n  @Int.0"),
+        }, "f", [_U64_MAX])
+        assert ("nat_to_int_coerce", "tier3") in {
+            (o[0], o[1]) for o in observed.obligations}, observed.obligations
         assert _WIDEN_GUARD in observed.run, observed.run
 
 
@@ -1668,7 +2126,10 @@ class TestTypeSourceDifferential:
     @pytest.mark.parametrize("body", [
         "let @Int = (0 - 3) - @Nat.0;\n  @Int.0",
         "let @Nat = @Nat.0 + (0 - 1);\n  @Nat.0",
-    ])
+        "let @Int = @Nat.0 - (handle[Exn<Int>] {\n    throw(@Int) -> 0\n"
+        "  } in {\n    0 - 3\n  });\n  @Int.0",
+    ], ids=["a literal less a nat", "a nat plus a literal",
+            "a nat less a handle over a literal"])
     def test_the_mixed_sign_operation_is_the_residual(
         self, body: str, tmp_path: Path,
     ) -> None:
@@ -1676,14 +2137,18 @@ class TestTypeSourceDifferential:
         checker's `@Nat` where the value can be negative.
 
         An operation mixing a genuine `@Nat` operand with a negative
-        literal-only one — the `@Nat`-subtraction test for `(0 - 3) -
-        @Nat.0`, the width of `@Nat.0 + (0 - 1)` — keeps the checker's
+        literal-derived one — the verifier's `@Nat`-subtraction test for
+        `(0 - 3) - @Nat.0` and for `@Nat.0` less a `handle` whose body is
+        `0 - 3`, the width of `@Nat.0 + (0 - 1)` — keeps the checker's
         answer, because the classifier has no correct one to give: the
         signed width would reinterpret a `@Nat` above `i64.MAX`
         (`TestAnOperationWithAGenuineNatKeepsItsWidth`).  So replacing the
         checker's `@Nat` for the literal part MOVES these programs, and this
         cell says so; it goes red, to be flipped, when mixed-sign arithmetic
-        gains the operand-widening check that decides it.
+        gains the operand-widening check that decides it (#1544).  The
+        subtraction's guard does not read the table: it compares an
+        operand holding a negative literal signed
+        (`TestANatSubtractionTrapsOnlyAGenuineUnderflow`).
         """
         path = tmp_path / "p.vera"
         path.write_text(_shape_program(body), encoding="utf-8")
@@ -1781,17 +2246,6 @@ _READERS: dict[tuple[str, str, str], str] = {
      "_resolved_codegen_type"): _LEAF,
     ("vera/wasm/operators.py", "OperatorsMixin._checker_resolved_type",
      "_expr_semantic_types"): "the accessor",
-    ("vera/wasm/operators.py", "OperatorsMixin._has_nat_origin_codegen",
-     "_resolved_codegen_type"): "an index's element type as `@Nat` "
-                                "provenance, the verifier's "
-                                "`_has_nat_origin`; a literal is never a "
-                                "leaf of it",
-    ("vera/wasm/operators.py", "OperatorsMixin._is_nat_operand",
-     "_resolved_codegen_type"): "the static half of the `@Nat`-subtraction "
-                                "test, the verifier's `_is_nat_typed`; the "
-                                "pure-literal case is exempted by "
-                                "provenance, and the mixed-sign one is the "
-                                "pinned residual",
     ("vera/wasm/operators.py", "OperatorsMixin._overflow_codegen_type",
      "_resolved_codegen_type"): _WIDTH,
     ("vera/wasm/operators.py", "OperatorsMixin._resolved_codegen_type",
