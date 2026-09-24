@@ -107,11 +107,11 @@ dependencies. CI enforces that `uv.lock` stays current.
 
 ### Pre-commit Hooks
 
-The repository configures 39 hooks across two stages: 37 run at the commit stage (after `pre-commit install`), and 2 (`check-changelog-updated` and `uv-lock-check`, described below) run at the push stage (after `pre-commit install --hook-type pre-push`). Most commit-stage hooks have per-hook `files:` / `types:` filters — the `python` type-check only runs when Python files are staged; `check_readme_examples.py` only runs when `README.md` or Vera sources change, etc. A plain-text commit touching only one markdown file triggers a small subset; a compiler-level commit triggers most of them.
+The repository configures 33 hooks across two stages: 31 run at the commit stage (after `pre-commit install`), and 2 (`check-changelog-updated` and `uv-lock-check`, described below) run at the push stage (after `pre-commit install --hook-type pre-push`). Most commit-stage hooks have per-hook `files:` / `types:` filters — the `python` type-check only runs when Python files are staged; `check_diagnostic_examples.py` only runs when `DE_BRUIJN.md` or compiler sources change, etc. A plain-text commit touching only one markdown file triggers a small subset; a compiler-level commit triggers most of them.
 
 ![The gate pipeline: file-filtered commit-stage hooks, the push-stage CHANGELOG and uv.lock gates, and CI re-running everything against the platform matrix before anything lands on protected main.](assets/diagrams/ci-gates.svg)
 
-The **commit-stage** hooks — 37 total, of which 36 are gated to relevant `files:`/`types:` filters and one (`check-added-large-files`, a general `--maxkb=500` size check) applies unconditionally — include:
+The **commit-stage** hooks — 31 total, of which 30 are gated to relevant `files:`/`types:` filters and one (`check-added-large-files`, a general `--maxkb=500` size check) applies unconditionally — include:
 
 - Trailing whitespace and file endings
 - YAML/TOML validity
@@ -123,7 +123,7 @@ The **commit-stage** hooks — 37 total, of which 36 are gated to relevant `file
 - All conformance programs hold at their declared level — positives pass; the negatives fail at the stage their `expected_error_stage` names (`check` by default, or `compile` for a diagnostic the checker accepts and codegen refuses) with their `expected_error` E-code
 - The same conformance programs hold again under `VERA_EAGER_GC=1`, which forces a collection at every allocation so that a GC-rooting bug fails deterministically instead of by timing
 - All `.vera` examples type-check and verify cleanly
-- README, EXAMPLES.md, SKILL.md, HTML, and spec code blocks parse correctly
+- Every Vera block in the agent-facing documents (SKILL.md, README, FAQ, EXAMPLES.md, DE_BRUIJN.md, PYPI_README, the spec, and the landing page) parses, checks and verifies, and prints what each `vera:run` marker expects, or carries a `vera:skip` marker naming the stage and codes it fails; a block that exports a function names an invocation or a `vera:no-run` property
 - Documentation counts match live codebase
 - Site assets (`docs/llms.txt`, `docs/llms-full.txt`, etc.) regenerated and up-to-date
 - Spec EBNF and Lark grammar agree on rule names
@@ -184,18 +184,13 @@ mypy vera/
 
 ### Validation Scripts
 
-Every Vera code block in the documentation is gated: the `check_*_examples` family replays each fence through the compiler — parsing at minimum, and for the spec, `docs/index.html` and `PYPI_README.md` the whole pipeline — so a fence cannot drift from the language it demonstrates.  The `examples/` corpus is held harder still: `check_examples.py` type-checks and verifies all of it, and `check_examples_run.py` runs it, so an example is gated as a program and not merely as text.
+Every Vera code block in the agent-facing documentation is gated by one checker, `check_doc_examples.py`: each block parses, passes `vera check` with no warning outside a named benign set, passes `vera verify`, and runs every `vera:run` invocation it names, printing exactly the output the marker states. A block that exports a function names at least one invocation, or carries a `<!-- vera:no-run category="..." reason="..." -->` whose property holds of each export it does not run. A block that is deliberately wrong or partial carries a `<!-- vera:skip-<stage> category="..." code="..." reason="..." -->` marker on the line before its fence; the gate still runs that stage, fails if the block passes it, and fails unless the block fails with exactly the codes the marker names, one per diagnostic, so a marker cannot outlive its reason or excuse a second defect (`scripts/doc_annotations.py` defines the markers and the vocabularies). Every `vera run examples/...` a document names is run, unless `check_examples_run.py` already runs that exact invocation or skips that example by property, and a tracked document with Vera blocks that the gate neither reads nor lists as exempt fails the gate too. The `examples/` corpus is held to the same standard as programs: `check_examples.py` type-checks and verifies all of it, and `check_examples_run.py` runs it.
 
 ```bash
 python scripts/check_conformance.py      # verify all conformance programs
 python scripts/check_examples.py         # verify all .vera examples
-python scripts/check_spec_examples.py    # verify spec code blocks parse
-python scripts/check_readme_examples.py  # verify README code blocks parse
-python scripts/check_examples_doc.py     # verify EXAMPLES.md code blocks parse
-python scripts/check_skill_examples.py   # verify SKILL.md code blocks parse
-python scripts/check_faq_examples.py    # verify FAQ code blocks parse
-python scripts/check_debruijn_examples.py  # verify DE_BRUIJN.md code blocks parse
-python scripts/check_html_examples.py   # verify HTML code blocks parse, check, verify
+python scripts/check_doc_examples.py     # every doc's Vera blocks: parse, check, verify, run
+python scripts/check_doc_examples.py SKILL.md  # the same, for named documents only
 python scripts/check_version_sync.py     # verify version consistency
 python scripts/check_doc_counts.py       # verify documentation counts match codebase
 ```

@@ -12,6 +12,7 @@ Contracts serve as executable specifications. They are the source of truth about
 
 A precondition is a predicate that MUST hold when the function is called. It is the caller's responsibility to ensure preconditions are met.
 
+<!-- vera:run fn="safe_divide" args="2 10" stdout="5" -->
 ```
 public fn safe_divide(@Int, @Int -> @Int)
   requires(@Int.1 != 0)
@@ -28,6 +29,7 @@ At every call site of `safe_divide`, the compiler verifies that the first argume
 
 A postcondition is a predicate that MUST hold when the function returns. It is the function's responsibility to ensure postconditions are met.
 
+<!-- vera:run fn="absolute_value" args="3" stdout="3" -->
 ```
 public fn absolute_value(@Int -> @Nat)
   requires(true)
@@ -53,7 +55,7 @@ Postconditions on stateful functions also have `old(State<T>)` and `new(State<T>
 
 An invariant is a predicate declared on a data type that MUST hold for all values of that type:
 
-<!-- vera:skip-check category="INCOMPLETE" reason="is_sorted_impl in SortedArray" -->
+<!-- vera:skip-check category="FUTURE" code="E130 E200" reason="the data invariant clause is not implemented yet (#686), so vera check reports E130; is_sorted_impl is defined elsewhere (E200)" -->
 ```
 private data SortedArray
   invariant(is_sorted_impl(@SortedArray.0))
@@ -89,6 +91,7 @@ private fn sum_to(@Nat -> @Nat)
 
 An assertion is a predicate that MUST hold at the point where it appears in the function body:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="an unnamed signature with its contracts, not a declaration" -->
 ```
 fn(@Int, @Int -> @Int)
   requires(@Int.0 > 0 && @Int.1 > 0)
@@ -119,6 +122,7 @@ One boundary is worth stating, because the Tier-1 claim inherits whatever the pr
 
 An assumption is a predicate that the compiler MUST accept as true without proof:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="an unnamed signature with its contracts, not a declaration" -->
 ```
 fn(@Int -> @Int)
   requires(true)
@@ -175,6 +179,7 @@ Note that array element access (`@Array<T>.0[i]`) and array literals (`[a, b, c]
 
 Vera supports bounded quantification in contracts:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="a quantifier expression, not a declaration" -->
 ```
 forall(@Nat, array_length(@Array<Int>.0), fn(@Nat -> @Bool) effects(pure) {
   @Array<Int>.0[@Nat.0] > 0
@@ -185,6 +190,7 @@ This reads: "for all `@Nat.0` in `[0, array_length(@Array<Int>.0))`, the array e
 
 The syntax is:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="the quantifier's form, with placeholder slots" -->
 ```
 forall(@IndexType, @BoundExpr, @PredicateFn)
 ```

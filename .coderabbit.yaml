@@ -158,13 +158,13 @@ reviews:
       instructions: |
         CI validation and utility scripts.
 
-        ALLOWLIST PATTERN: scripts/check_spec_examples.py and
-        scripts/check_skill_examples.py contain intentional
-        duplicate-looking dict patterns keyed by line numbers (allowlist
-        dicts). These are NOT accidental duplicates — they map specific
-        line numbers to expected behaviours. Flag actual duplicate keys
-        within a single dict, but do not flag the pattern itself as
-        suspicious or suggest refactoring it.
+        DOCUMENTATION GATE: scripts/check_doc_examples.py is the one gate
+        for the Vera blocks in the agent-facing documents. A block's
+        exemption from a stage lives beside the block, as a vera:skip
+        marker in the document (grammar in scripts/doc_annotations.py),
+        not as a list in the script; the script's own lists are the
+        documents it gates (DOC_GATES) and the ones it exempts with a
+        reason (NOT_GATED).
 
         Allow sys.exit() calls and broad exception handlers in these
         scripts — they are operational tooling, not library code.
@@ -182,7 +182,8 @@ reviews:
         code examples. Do NOT review for prose style, grammar, or
         formatting — the spec uses precise technical language with
         mathematical notation that is intentional. Vera code blocks
-        are validated by scripts/check_spec_examples.py in CI.
+        are validated by scripts/check_doc_examples.py (parse, check,
+        verify, and each vera:run invocation) in pre-commit and CI.
 
     - path: "**/*.md"
       instructions: |
@@ -330,9 +331,10 @@ reviews:
           Fail if language semantics changed in the compiler (parser,
           checker, verifier, codegen under vera/) without a matching update
           to the formal spec (spec/), or if the spec changed without the
-          implementation following. scripts/check_spec_examples.py only
-          validates that spec code blocks still parse/check/verify — it does
-          NOT catch silent prose-vs-behaviour drift, which this targets.
+          implementation following. scripts/check_doc_examples.py only
+          validates that spec code blocks still parse/check/verify (and run,
+          where a block names an invocation) — it does NOT catch silent
+          prose-vs-behaviour drift, which this targets.
       - name: "Diagnostics carry an error code"
         mode: "warning"
         instructions: |

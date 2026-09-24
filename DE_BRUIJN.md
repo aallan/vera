@@ -466,6 +466,7 @@ Passing `@Option<Int>.0` to a helper that declares `@Option<T>` is an `E202`. Th
 
 A `State<T>` or `Exn<E>` cell is identified by the *resolved* `T`, not by its spelling. `State<MaybeInt>` under `type MaybeInt = Option<Int>` is the same cell as `State<Option<Int>>`, so a helper declaring one and a handler spelling the other share their state:
 
+<!-- vera:run fn="main" stdout="7" -->
 ```vera
 type MaybeInt = Option<Int>;
 

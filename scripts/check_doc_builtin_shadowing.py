@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
 """Fail if a documentation example *defines* a function named after a built-in.
 
-Background (#819, root-caused in #817): the other doc validators
-(``check_skill_examples.py``, ``check_spec_examples.py``, …) only **parse**
-example code blocks — they never run ``vera check``. So an example that defines
-``fn clamp`` / ``fn abs`` / ``fn sign`` parses cleanly but would fail
-``vera check`` with **E151** (redefining a built-in, added in #815/v0.0.185).
-Several such examples drifted into ``SKILL.md`` and ``DE_BRUIJN.md`` after the
-E151 work and were caught only by a manual audit. This gate is the automated
+Background (#819, root-caused in #817): an example that defines ``fn clamp`` /
+``fn abs`` / ``fn sign`` parses cleanly but fails ``vera check`` with **E151**
+(redefining a built-in, added in #815/v0.0.185). Several such examples drifted
+into ``SKILL.md`` and ``DE_BRUIJN.md`` after the E151 work, when the doc gates
+only parsed, and were caught only by a manual audit. This gate is the automated
 backstop.
 
-It deliberately does **not** run a full ``vera check`` on every block: many doc
-snippets are intentional fragments (no ``main``, undefined references) that do
-not fully check, so a blanket ``vera check`` would drown the real signal in
-false positives. Instead it scans for the one mechanical signature of the E151
-class — a ``fn <name>`` definition whose name is an *opaque* (non-overridable)
-built-in.
+``check_doc_examples.py`` now runs ``vera check`` on every gated block, so it
+reports E151 in any block that reaches the check stage.  This scan still earns
+its place on the rest: a block a ``vera:skip`` marker stops before the check
+stage (a fragment, a deliberately wrong example) is never checked there, and
+a definition inside it would otherwise go unseen.  It scans for the one
+mechanical signature of the E151 class — a ``fn <name>`` definition whose name
+is an *opaque* (non-overridable) built-in.
 
 ``spec/09-standard-library.md`` is exempt: it documents the built-in
 *signatures themselves* (``fn abs(@Int -> @Int)`` …) as reference material, so

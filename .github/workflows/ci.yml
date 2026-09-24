@@ -147,32 +147,14 @@ jobs:
       - name: Check version numbers are in sync
         run: python scripts/check_version_sync.py
 
-      - name: Check spec code blocks parse correctly
-        run: python scripts/check_spec_examples.py
+      - name: Check every agent-facing document's Vera blocks parse, check, verify and run (#1481)
+        run: python scripts/check_doc_examples.py
 
       - name: Check spec EBNF and Lark grammar agree on rule names (#683)
         run: python scripts/check_grammar_alignment.py
 
-      - name: Check README code blocks parse correctly
-        run: python scripts/check_readme_examples.py
-
-      - name: Check SKILL.md code blocks parse correctly
-        run: python scripts/check_skill_examples.py
-
-      - name: Check FAQ code blocks parse correctly
-        run: python scripts/check_faq_examples.py
-
-      - name: Check DE_BRUIJN.md code blocks parse correctly
-        run: python scripts/check_debruijn_examples.py
-
       - name: Check vera:diagnostic examples match live output
         run: python scripts/check_diagnostic_examples.py
-
-      - name: Check PYPI_README code blocks parse, check, and verify
-        run: python scripts/check_pypi_readme_examples.py
-
-      - name: Check HTML code blocks parse, check, and verify
-        run: python scripts/check_html_examples.py
 
       - name: Check no doc example redefines a built-in (E151)
         run: python scripts/check_doc_builtin_shadowing.py

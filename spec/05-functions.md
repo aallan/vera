@@ -57,6 +57,7 @@ The same one-canonical-form reasoning rejects redefining a built-in function (**
 
 ### 5.2.1 Complete Example
 
+<!-- vera:run fn="absolute_value" args="3" stdout="3" -->
 ```
 public fn absolute_value(@Int -> @Nat)
   requires(true)
@@ -75,7 +76,7 @@ public fn absolute_value(@Int -> @Nat)
 
 Multiple `requires` and `ensures` clauses may be specified. They are conjunctive (all must hold):
 
-<!-- vera:skip-verify category="ILLUSTRATIVE" reason="safe_divide with imprecise ensures" -->
+<!-- vera:skip-verify category="ILLUSTRATIVE" code="E500" reason="safe_divide with imprecise ensures" -->
 ```
 public fn safe_divide(@Int, @Int -> @Int)
   requires(@Int.1 != 0)
@@ -94,6 +95,7 @@ Multiple `requires` clauses are equivalent to a single `requires` with `&&`. The
 
 Parameters are bound left-to-right, with the leftmost parameter having the highest De Bruijn index and the rightmost parameter having index 0:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="a signature shape, not a declaration" -->
 ```
 fn(@Int, @String, @Int -> @Bool)
 ```
@@ -138,6 +140,7 @@ Effect syntax and semantics are detailed in Chapter 7.
 
 Recursive functions are functions that call themselves (directly or mutually). A recursive function MUST declare a `decreases` clause:
 
+<!-- vera:run fn="factorial" args="5" stdout="120" -->
 ```
 public fn factorial(@Nat -> @Nat)
   requires(true)
@@ -195,6 +198,7 @@ The tuple `(@Nat.1, @Nat.0)` decreases lexicographically on each recursive call.
 
 Mutually recursive functions are declared together in a `where` block. Each must have its own `decreases` clause:
 
+<!-- vera:run fn="is_even" args="4" stdout="1" -->
 ```
 public fn is_even(@Nat -> @Bool)
   requires(true)
@@ -232,6 +236,7 @@ A `where`-helper is a closed, param-rooted scope: its body resolves slot referen
 
 Anonymous functions (lambdas/closures) use the same `fn` keyword without a name:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="an anonymous function, an expression rather than a declaration" -->
 ```
 fn(@Int -> @Int) effects(pure) {
   @Int.0 + 1
@@ -281,6 +286,7 @@ private fn filter_positive(@Array<Int> -> @Array<Int>)
 
 Every top-level `fn` and `data` declaration MUST have an explicit visibility modifier: either `public` or `private`. There is no default visibility. Omitting the modifier is a compile error. This enforces design principle 3 ("one canonical form"): every declaration has exactly one valid shape, eliminating ambiguity about whether an unadorned `fn` is public or private.
 
+<!-- vera:run fn="add" args="3 3" stdout="6" -->
 ```
 public fn add(@Int, @Int -> @Int)
   requires(true)
@@ -396,6 +402,7 @@ Functions are first-class values. They can be:
 
 A Vera program's entry point is a function named `main`:
 
+<!-- vera:run fn="main" stdout="Hello, Vera!" -->
 ```
 public fn main(@Unit -> @Unit)
   requires(true)

@@ -36,6 +36,7 @@ Vera supports three comment forms:
 
 They serve as optional human-readable labels for bindings, recovering the readability that structural slot references leave implicit — `@Int.0` records where a value comes from, never what it means:
 
+<!-- vera:run fn="area" args="3 3" stdout="9" -->
 ```
 public fn area(@Int /* width */, @Int /* height */ -> @Int /* area */)
   requires(@Int.1 > 0)
@@ -53,7 +54,7 @@ A label written on a **function parameter** or on the **return slot** is preserv
 
 The following identifiers are reserved keywords and MUST NOT be used as function names:
 
-<!-- vera:skip-parse category="FRAGMENT" reason="'fn  let  if  then ...'" -->
+<!-- vera:skip-parse category="FRAGMENT" reason="the reserved-keyword table, not a program" -->
 ```
 fn          let         if          then        else
 match       data        type        module      import
@@ -257,6 +258,7 @@ Rules:
 
 1. **Indentation**: 2 spaces per level. No tabs.
 2. **Braces**: opening brace on the same line, closing brace on its own line aligned with the construct:
+   <!-- vera:skip-parse category="FRAGMENT" reason="canonical formatting of an unnamed signature and its contracts, not a declaration" -->
    ```
    fn(@Int -> @Int)
      requires(@Int.0 > 0)

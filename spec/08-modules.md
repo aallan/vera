@@ -80,6 +80,7 @@ Import names can be lowercase (functions) or uppercase (data type names). Import
 
 Every top-level `fn` and `data` declaration must have an explicit visibility modifier: `public` or `private`. Omitting the modifier is a compile error.
 
+<!-- vera:run fn="magnitude" args="3" stdout="3" -->
 ```
 public fn magnitude(@Int -> @Int)
   requires(true)
@@ -132,6 +133,7 @@ When a `public` data type is imported, all of its constructors are also availabl
 
 For generic functions, the visibility modifier precedes `forall`:
 
+<!-- vera:no-run category="non-scalar-entry" reason="its exported functions take T parameters" -->
 ```
 public forall<T> fn identity(@T -> @T)
   requires(true)
@@ -148,6 +150,7 @@ public forall<T> fn identity(@T -> @T)
 
 Imported declarations are available as **bare calls** — the importer does not need to qualify the name with the module path:
 
+<!-- vera:run fn="abs_max" args="-3 -5" stdout="3" -->
 ```
 module vera.examples.modules;
 
@@ -485,6 +488,7 @@ This is the standard modular verification approach: each module verifies its own
 
 Given an imported function:
 
+<!-- vera:run fn="magnitude" args="3" stdout="3" -->
 ```
 public fn magnitude(@Int -> @Int)
   requires(true)
@@ -501,6 +505,7 @@ public fn magnitude(@Int -> @Int)
 
 A caller in another module can rely on `magnitude(x) >= 0`:
 
+<!-- vera:run fn="non_negative" args="3" stdout="3" -->
 ```
 import vera.math(magnitude);
 
@@ -551,6 +556,7 @@ A complete multi-module example demonstrating all features:
 
 **`vera/math.vera`** — a utility module:
 
+<!-- vera:run fn="magnitude" args="3" stdout="3" -->
 ```
 module vera.math;
 
@@ -598,6 +604,7 @@ public data Option<T> {
 
 **`modules.vera`** — the importing program:
 
+<!-- vera:run fn="clamp_to_range" args="10 1 5" stdout="5" -->
 ```
 module vera.examples.modules;
 
