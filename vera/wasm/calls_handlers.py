@@ -67,7 +67,10 @@ class CallsHandlersMixin:
     _addressable_from: int
     _clause_inline_depth: int
     _refinement_guard_emitter: (
-        Callable[[ast.TypeExpr, int, str, WasmSlotEnv], list[str] | None]
+        Callable[
+            [ast.TypeExpr, int, str, WasmSlotEnv, ast.Node | None],
+            list[str] | None,
+        ]
         | None
     )
 
@@ -1601,10 +1604,12 @@ class CallsHandlersMixin:
                 "State cell init", env)
             if (family_base == "Nat"
                     and self._narrows_into_nat(expr.state.init_expr)):
-                init_instrs = self._emit_nat_bind_guard(init_instrs)
+                init_instrs = self._emit_nat_bind_guard(
+                    init_instrs, at=expr.state.init_expr)
             elif (family_base == "Int"
                     and self._result_is_nat(expr.state.init_expr)):
-                init_instrs = self._emit_int_widen_guard(init_instrs)
+                init_instrs = self._emit_int_widen_guard(
+                    init_instrs, at=expr.state.init_expr)
             instructions.extend(init_instrs)
 
         # 2. Push a fresh state cell (isolates this handler from any outer
@@ -2021,10 +2026,12 @@ class CallsHandlersMixin:
                 "State put(…) write", env)
             if (family_base == "Nat"
                     and self._narrows_into_nat(call.args[0])):
-                arg_instrs = self._emit_nat_bind_guard(arg_instrs)
+                arg_instrs = self._emit_nat_bind_guard(
+                    arg_instrs, at=call.args[0])
             elif (family_base == "Int"
                     and self._result_is_nat(call.args[0])):
-                arg_instrs = self._emit_int_widen_guard(arg_instrs)
+                arg_instrs = self._emit_int_widen_guard(
+                    arg_instrs, at=call.args[0])
             arg_local = self.alloc_local(state_wt)
             instructions.extend(arg_instrs)
             instructions.append(f"local.set {arg_local}")
@@ -2159,10 +2166,12 @@ class CallsHandlersMixin:
             if resume_arg is not None:
                 if (family_base == "Nat"
                         and self._narrows_into_nat(resume_arg)):
-                    body_instrs = self._emit_nat_bind_guard(body_instrs)
+                    body_instrs = self._emit_nat_bind_guard(
+                        body_instrs, at=resume_arg)
                 elif (family_base == "Int"
                         and self._result_is_nat(resume_arg)):
-                    body_instrs = self._emit_int_widen_guard(body_instrs)
+                    body_instrs = self._emit_int_widen_guard(
+                        body_instrs, at=resume_arg)
         instructions.extend(body_instrs)
         if clause.state_update is not None:
             if upd_instrs is None:
@@ -2174,10 +2183,12 @@ class CallsHandlersMixin:
                 "State with(…) override", env)
             if (family_base == "Nat"
                     and self._narrows_into_nat(clause.state_update[1])):
-                upd_instrs = self._emit_nat_bind_guard(upd_instrs)
+                upd_instrs = self._emit_nat_bind_guard(
+                    upd_instrs, at=clause.state_update[1])
             elif (family_base == "Int"
                     and self._result_is_nat(clause.state_update[1])):
-                upd_instrs = self._emit_int_widen_guard(upd_instrs)
+                upd_instrs = self._emit_int_widen_guard(
+                    upd_instrs, at=clause.state_update[1])
             instructions.extend(upd_instrs)
             instructions.append(f"call {put_import}")
         return instructions
@@ -2293,7 +2304,7 @@ class CallsHandlersMixin:
             self._type_expr_to_slot_name(te) or "")
         if base == "Nat" and family_base != "Nat":
             guard.extend(self._emit_nat_bind_guard(
-                [f"local.get {value_local}"]))
+                [f"local.get {value_local}"], at=node))
             guard.append("drop")
         guard.extend(self._emit_bind_refine_guard(
             te, value_local, where, node, env))
@@ -2507,12 +2518,13 @@ class CallsHandlersMixin:
             # written out again here.
             binding = bind_slot_value_from_stack(
                 self.alloc_local, "i32_pair")
-            guard = emitter(payload_te, binding.slot_local, head, env)
+            guard = emitter(
+                payload_te, binding.slot_local, head, env, call.args[0])
             if guard is None:
                 return value
             return [*value, *binding.load, *guard, *binding.push]
         value_local = self.alloc_local(self._type_name_to_wasm(cell.base))
-        guard = emitter(payload_te, value_local, head, env)
+        guard = emitter(payload_te, value_local, head, env, call.args[0])
         if guard is None:
             return value
         return [

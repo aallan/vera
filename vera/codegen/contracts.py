@@ -221,6 +221,8 @@ class ContractsMixin:
         value_local: int,
         message: str,
         base_env: WasmSlotEnv,
+        *,
+        at: ast.Node | None,
     ) -> list[str] | None:
         """Compile a refinement-predicate runtime guard over *value_local*
         (#746).
@@ -265,19 +267,10 @@ class ContractsMixin:
             return None
         if cond is None:
             return None
-        ptr, length = self.string_pool.intern(message)
-        self._needs_contract_fail = True
-        self._needs_memory = True
-        return [
-            *cond,
-            "i32.eqz",
-            "if",
-            f"  i32.const {ptr}",
-            f"  i32.const {length}",
-            "  call $vera.contract_fail",
-            "  unreachable",
-            "end",
-        ]
+        trap = ctx._emit_trap(
+            "codegen/contracts.py:_emit_refinement_check", at=at,
+            message=message)
+        return [*cond, "i32.eqz", "if", *(f"  {i}" for i in trap), "end"]
 
     def _emit_boundary_refinement_guard(
         self,
@@ -286,6 +279,7 @@ class ContractsMixin:
         value_local: int,
         message_head: str,
         env: WasmSlotEnv,
+        at: ast.Node | None,
     ) -> list[str] | None:
         """The two guard halves — classify then lower — as ONE call, for a
         boundary that reaches this layer from inside expression translation
@@ -313,6 +307,8 @@ class ContractsMixin:
         *message_head* is everything before the predicate in the trap text,
         so the message reads in the same shape as every other boundary's
         (``Refinement violation in <where>\\n  <role>: <predicate> failed``).
+        *at* is the node the per-module record locates the check at (#1479):
+        the value the boundary binds.
         """
         parts = self._refinement_guard_parts(te)
         if parts is None:
@@ -320,7 +316,7 @@ class ContractsMixin:
         predicate, base_name = parts
         message = f"{message_head}: {ast.format_expr(predicate)} failed"
         return self._emit_refinement_check(
-            ctx, predicate, base_name, value_local, message, env,
+            ctx, predicate, base_name, value_local, message, env, at=at,
         )
 
     def _resolve_type_alias(self, te: ast.TypeExpr) -> ast.TypeExpr:
@@ -512,7 +508,7 @@ class ContractsMixin:
                 f"{ast.format_expr(site.predicate)} failed"
             )
             check = self._emit_refinement_check(
-                ctx, site.predicate, site.base_name, elem, msg, env)
+                ctx, site.predicate, site.base_name, elem, msg, env, at=te)
             if check is None:
                 return []
             prepared.append((site, idx, elem, check))
@@ -770,7 +766,8 @@ class ContractsMixin:
                     f"{ast.format_expr(predicate)} failed"
                 )
                 guard = self._emit_refinement_check(
-                    ctx, predicate, base_name, binding.slot_local, msg, env)
+                    ctx, predicate, base_name, binding.slot_local, msg, env,
+                    at=te)
                 if guard is not None:
                     instrs.extend(guard)
             if site.nested is not None:
@@ -970,14 +967,10 @@ class ContractsMixin:
 
             # Report which contract failed before trapping
             msg = self._format_contract_message(decl, contract)
-            ptr, length = self.string_pool.intern(msg)
-            self._needs_contract_fail = True
-            self._needs_memory = True
-            instrs.append(f"  i32.const {ptr}")
-            instrs.append(f"  i32.const {length}")
-            instrs.append("  call $vera.contract_fail")
-
-            instrs.append("  unreachable")
+            instrs.extend(
+                f"  {i}" for i in ctx._emit_trap(
+                    "codegen/contracts.py:_compile_preconditions",
+                    at=contract, message=msg))
             instrs.append("end")
         return instrs
 
@@ -1055,7 +1048,8 @@ class ContractsMixin:
                 msg = self._format_refinement_message(
                     decl, decl.return_type, "return value")
                 top = self._emit_refinement_check(
-                    ctx, predicate, base_name, ptr_l, msg, env)
+                    ctx, predicate, base_name, ptr_l, msg, env,
+                    at=decl.return_type)
                 if top is None and not pair_guard:
                     return []
                 if top is not None:
@@ -1108,7 +1102,8 @@ class ContractsMixin:
                 msg = self._format_refinement_message(
                     decl, decl.return_type, "return value")
                 guard = self._emit_refinement_check(
-                    ctx, predicate, base_name, result_local, msg, env)
+                    ctx, predicate, base_name, result_local, msg, env,
+                    at=decl.return_type)
                 if guard is not None:
                     instrs.extend(guard)
 
@@ -1122,14 +1117,10 @@ class ContractsMixin:
                 instrs.append("if")
 
                 msg = self._format_contract_message(decl, ensures)
-                ptr, length = self.string_pool.intern(msg)
-                self._needs_contract_fail = True
-                self._needs_memory = True
-                instrs.append(f"  i32.const {ptr}")
-                instrs.append(f"  i32.const {length}")
-                instrs.append("  call $vera.contract_fail")
-
-                instrs.append("  unreachable")
+                instrs.extend(
+                    f"  {i}" for i in ctx._emit_trap(
+                        "codegen/contracts.py:_compile_postconditions",
+                        at=ensures, message=msg))
                 instrs.append("end")
 
             # Push result back
@@ -1145,14 +1136,10 @@ class ContractsMixin:
                 instrs.append("if")
 
                 msg = self._format_contract_message(decl, ensures)
-                ptr, length = self.string_pool.intern(msg)
-                self._needs_contract_fail = True
-                self._needs_memory = True
-                instrs.append(f"  i32.const {ptr}")
-                instrs.append(f"  i32.const {length}")
-                instrs.append("  call $vera.contract_fail")
-
-                instrs.append("  unreachable")
+                instrs.extend(
+                    f"  {i}" for i in ctx._emit_trap(
+                        "codegen/contracts.py:_compile_postconditions",
+                        at=ensures, message=msg))
                 instrs.append("end")
 
         return instrs
@@ -1364,13 +1351,17 @@ class ContractsMixin:
             measured[k] for k in self._dec_nat_measure_indices(ctx, contract)
             if k < len(measured)
         ]
-        return self._dec_bound_check_pairs(locals_, name, indent)
+        return self._dec_bound_check_pairs(
+            locals_, name, indent, ctx=ctx, at=contract)
 
     def _dec_bound_check_pairs(
         self,
         locals_: list[int],
         name: str,
         indent: str = "",
+        *,
+        ctx: WasmContext,
+        at: ast.Node | None,
     ) -> list[str]:
         """The emission itself: one range check per component local.
 
@@ -1386,18 +1377,15 @@ class ContractsMixin:
                 f"the termination check compares in: a @Nat above i64.MAX "
                 f"reads as negative, so the metric cannot be compared"
             )
-            ptr, length = self.string_pool.intern(msg)
-            self._needs_contract_fail = True
-            self._needs_memory = True
+            trap = ctx._emit_trap(
+                "codegen/contracts.py:_dec_bound_check_pairs", at=at,
+                message=msg)
             checks.extend([
                 f"{indent}local.get {local}",
                 f"{indent}i64.const 0",
                 f"{indent}i64.lt_s",
                 f"{indent}if",
-                f"{indent}  i32.const {ptr}",
-                f"{indent}  i32.const {length}",
-                f"{indent}  call $vera.contract_fail",
-                f"{indent}  unreachable",
+                *(f"{indent}  {i}" for i in trap),
                 f"{indent}end",
             ])
         return checks
@@ -1476,7 +1464,8 @@ class ContractsMixin:
             instrs.extend(value)
             instrs.append(f"local.set {local}")
             locals_.append(local)
-        return instrs + self._dec_bound_check_pairs(locals_, name)
+        return instrs + self._dec_bound_check_pairs(
+            locals_, name, ctx=ctx, at=contract)
 
     def _compile_decreases_entry(
         self,
@@ -1622,13 +1611,10 @@ class ContractsMixin:
             f"termination metric must strictly decrease and stay "
             f"non-negative on every recursive call"
         )
-        ptr, length = self.string_pool.intern(msg)
-        self._needs_contract_fail = True
-        self._needs_memory = True
-        entry.append(f"    i32.const {ptr}")
-        entry.append(f"    i32.const {length}")
-        entry.append("    call $vera.contract_fail")
-        entry.append("    unreachable")
+        entry.extend(
+            f"    {i}" for i in ctx._emit_trap(
+                "codegen/contracts.py:_compile_decreases_entry",
+                at=contract, message=msg))
         entry.append("  end")
         entry.append("end")
 
@@ -1718,8 +1704,8 @@ class ContractsMixin:
             prefix.append(f"local.set {measured[k]}")
         # #1222, at the site too: a self-tail hop evaluates the measure here
         # and compares it the same way, so it needs the same backstop.
-        prefix.extend(self._dec_measure_bound_check(
-            ctx, contract, measured, name))
+        prefix.extend(
+            self._dec_measure_bound_check(ctx, contract, measured, name))
         prefix.append(f"global.get $dec_active_{name}")
         prefix.append("if")
 
@@ -1753,11 +1739,15 @@ class ContractsMixin:
             f"termination metric must strictly decrease and stay "
             f"non-negative on every recursive call"
         )
-        ptr, length = self.string_pool.intern(msg)
-        prefix.append(f"    i32.const {ptr}")
-        prefix.append(f"    i32.const {length}")
-        prefix.append("    call $vera.contract_fail")
-        prefix.append("    unreachable")
+        # `_compile_fn` splices this prefix before every self-recursive
+        # `return_call` — possibly never, possibly several times — and the
+        # record counts every copy of its checks' markers, so each check in
+        # it, this one and those its measure lowered, is recorded here once
+        # and listed once per splice (#1479).
+        prefix.extend(
+            f"    {i}" for i in ctx._emit_trap(
+                "codegen/contracts.py:_dec_self_tail_prefix",
+                at=contract, message=msg))
         prefix.append("  end")
         prefix.append("end")
         prefix.extend(restore)

@@ -232,6 +232,15 @@ class StringPool:
         self._offset += len(encoded)
         return entry
 
+    def reserve(self, size: int) -> int:
+        """Offset of *size* zero bytes in the data region that no interned
+        string shares — scratch a module may write at run time (#1479: the
+        message an entry point's exception boundary builds).  Never emitted
+        as a data segment; linear memory starts zeroed."""
+        offset = self._offset
+        self._offset += size
+        return offset
+
     def entries(self) -> list[tuple[str, int, int]]:
         """Return all (value, offset, length) sorted by offset."""
         return [

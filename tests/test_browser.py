@@ -1983,9 +1983,10 @@ class TestBrowserContracts:
         """#808: an @Int overflow traps in BOTH runtimes with an
         overflow-flavoured message, and the browser bundle still instantiates.
 
-        The #798 guard now declares the `vera.overflow_trap` host import, so
-        `runtime.mjs`'s dynamic import builder must provide a binding — without
-        it `WebAssembly.instantiate` raises a `LinkError` on *any* arithmetic
+        The #798 guard declares the trap-signal host import (`vera.trap`,
+        one import for every kind since #1479), so `runtime.mjs`'s dynamic
+        import builder must provide a binding — without it
+        `WebAssembly.instantiate` raises a `LinkError` on *any* arithmetic
         program.  This is the cross-runtime parity for the wasmtime-side
         `TestOverflowTrapKind808` (which classifies `kind="overflow"`)."""
         source = (
@@ -2013,7 +2014,7 @@ class TestBrowserContracts:
         assert py_error is not None, "Python should trap on overflow"
         assert py_kind == "overflow", py_kind
         assert "overflow" in py_error.lower(), py_error
-        # Node must instantiate (overflow_trap import provided) and surface the
+        # Node must instantiate (trap import provided) and surface the
         # overflow as an error, not a silent wrap.
         assert node_result["error"] is not None, (
             "Node should report the overflow trap"
@@ -2031,8 +2032,9 @@ class TestBrowserContracts:
         the browser bundle, and the bundle still instantiates.
 
         The exact twin of the narrowing cell below, for the same reason: the
-        guard declares a new `vera.widen_trap` host import, and an unbound
-        import is a `LinkError` on instantiate rather than a wrong message —
+        guard declares the trap-signal host import (`vera.trap` since
+        #1479), and an unbound import is a `LinkError` on instantiate rather
+        than a wrong message —
         so the failure would take down every program containing a widening,
         which is most of them, and it would not look like a diagnostics bug
         at all.
@@ -2082,8 +2084,9 @@ class TestBrowserContracts:
         """#754: the `@Int` -> `@Nat` narrowing guard's own trap kind reaches
         the browser bundle, and the bundle still instantiates.
 
-        The guard declares a new `vera.nat_guard_trap` host import, so
-        `runtime.mjs`'s dynamic import builder must bind it — without the
+        The guard declares the trap-signal host import (`vera.trap` since
+        #1479), so `runtime.mjs`'s dynamic import builder must bind it —
+        without the
         binding `WebAssembly.instantiate` raises a `LinkError` on any program
         containing a narrowing bind, which is most of them.  The wasmtime
         side is covered by `test_guard_completeness`; this is the leg that

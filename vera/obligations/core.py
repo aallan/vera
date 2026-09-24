@@ -69,7 +69,8 @@ ObligationKind = Literal[
                      # precondition / path condition); loud E527 when the
                      # index is provably out of bounds; else honest tier3
                      # (length is uninterpreted — beyond Tier 1, see #427 —
-                     # and codegen's `out_of_bounds` trap is the guard).
+                     # and codegen's `index_out_of_bounds` check is the
+                     # guard).
     "int_overflow",  # @Int/@Nat `+`/`-`/`*` range obligation at one site
                      # (#798).  Two-check like index_bounds: result provably in
                      # i64 (@Int) / u64 (@Nat) range -> tier-1; provably out of
@@ -79,13 +80,13 @@ ObligationKind = Literal[
     "assert",     # a body `assert(P)` predicate (#800, spec §6.2.5).  Two-
                   # check like index_bounds: prove P -> tier-1, prove ¬P ->
                   # loud E507 (always traps at runtime), else tier3 (the
-                  # §11.14.1 `unreachable` trap is the guard).
+                  # §11.14.1 `assertion_failed` check is the guard).
     "float_to_int_domain",  # float_to_int(x) domain obligation at one site
-                  # (#807).  `i64.trunc_f64_s` traps on NaN / +/-Inf /
-                  # out-of-i64-range.  Concrete-gated: a concrete finite
-                  # in-range arg -> tier-1; a concrete NaN/Inf/out-of-range arg
-                  # -> loud E529; a symbolic arg -> honest tier3 (Z3's FP<->Real
-                  # reasoning is unreliable; the codegen trunc trap is the
+                  # (#807).  NaN / +/-Inf / out-of-i64-range trap.
+                  # Concrete-gated: a concrete finite in-range arg -> tier-1;
+                  # a concrete NaN/Inf/out-of-range arg -> loud E529; a
+                  # symbolic arg -> honest tier3 (Z3's FP<->Real reasoning is
+                  # unreliable; codegen's `float_conversion` check is the
                   # guard).
     "nat_to_int_coerce",  # @Nat value widening into an @Int slot at one
                   # coercion site (#813) — the dual of `nat_bind`.  @Nat is u64

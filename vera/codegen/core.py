@@ -43,6 +43,12 @@ from vera.prelude import (
 )
 from vera.skip import CodegenInvariantError
 from vera.slots import family_fallback_name
+from vera.trap_registry import (
+    TRAP_EMITTERS,
+    EmittedCheck,
+    find_check_markers,
+    strip_check_markers,
+)
 from vera.wasm import StringPool
 from vera.wasm.helpers import CellNames
 from vera.wasm.async_fusion import (
@@ -61,7 +67,7 @@ from vera.codegen.compilability import CompilabilityMixin
 if TYPE_CHECKING:
     from vera.resolver import ResolvedModule
     from vera.types import ModuleArtifacts, SpanTypeTable, Type
-    from vera.wasm.context import WasmContext
+    from vera.wasm.context import CheckRecord, WasmContext
 
 
 # #1100: WAT-text scanning for the skip-propagation pass
@@ -74,6 +80,13 @@ if TYPE_CHECKING:
 # function symbol); `throw $tag` references an exception tag, not a
 # function; `ref.func` is never emitted.
 _WAT_FN_NAME_RE = re.compile(r"\s*\(func \$([^\s()]+)")
+# #1479: every function DEFINITION in the assembled module, which is how the
+# per-module record attributes each check marker to the function holding it.
+_WAT_FN_DEF_RE = re.compile(r"^\s*\(func \$([^\s()]+)(.*)$", re.MULTILINE)
+# The whole body of a closure whose enclosing function was dropped: its table
+# slot must survive, and nothing can construct it.  Named so the trap roster
+# (`vera.trap_registry.INTERNAL_TRAPS`) can list the stub's `unreachable`.
+_DROPPED_CLOSURE_BODY = "unreachable"
 _WAT_CALL_RE = re.compile(r"\b(?:return_call|call)\s+\$([^\s()]+)")
 # #1185: an INDIRECT call names no function symbol at all — it dispatches
 # on the module's function table — so `_WAT_CALL_RE` is blind to it and
@@ -232,16 +245,17 @@ class CodeGenerator(
         # Track which effect operations are needed
         self._io_ops_used: set[str] = set()
         self._needs_contract_fail: bool = False
-        # #808: set when an overflow guard emits a `vera.overflow_trap` call,
-        # so assembly.py declares the host import.
-        self._needs_overflow_trap: bool = False
-        # #754: set when a @Int -> @Nat narrowing guard emits a
-        # `vera.nat_guard_trap` call, so `_assemble_module` declares the
-        # host import.
-        self._needs_nat_guard_trap: bool = False
-        # #1438: the widening guard's twin, on the generator that
-        # assembles the module.
-        self._needs_widen_trap: bool = False
+        # #1479: set (merged from each `WasmContext` at the per-scope seams)
+        # when any check calls `vera.trap`, the one signal every named check
+        # raises, so `_assemble_module` declares the import.  The allocator
+        # calls it too, so an allocating module declares it whatever this
+        # says (see `_assemble_module`).
+        self._needs_trap: bool = False
+        # #1479: every check emitted into this module, by record entry id —
+        # one record, shared with every `WasmContext` compiling the module.
+        # `CompileResult.emitted_checks` is read back from the assembled text,
+        # whose instructions carry the entries' markers.
+        self._emitted_checks: CheckRecord = {}
         self._needs_memory: bool = False
         # (cell, wasm_type).  `CellNames` rather than a bare family
         # (#1238 review F2): the wasi target names the unsupported
@@ -920,6 +934,59 @@ class CodeGenerator(
         self._error(
             node, description, rationale=rationale, error_code=error_code)
 
+    def _assemble_emitted_checks(self, wat: str) -> list[EmittedCheck]:
+        """The per-module record, read back from the assembled module *wat*
+        (#1479): one entry for every record marker the text holds, under the
+        function whose body holds it.
+
+        Every recorded check's instruction carries its entry's marker
+        (``vera.trap_registry.CHECK_MARKER_RE``), so the text is the record;
+        a string literal or comment that spells a marker is not one.
+        A translation thrown away and redone, a function dropped after it
+        compiled, a closure stubbed to ``unreachable``, a failed closure
+        worklist, a self-tail prefix spliced zero or several times — each is
+        counted by what the module holds, with no bookkeeping to keep in step
+        with the compile.
+        """
+        headers = list(_WAT_FN_DEF_RE.finditer(wat))
+        out: list[EmittedCheck] = []
+        for position, header in enumerate(headers):
+            function = header.group(1)
+            end = (headers[position + 1].start()
+                   if position + 1 < len(headers) else len(wat))
+            prelude = function.split("$")[0] in self._prelude_fn_names
+            source = (self._fn_source_map.get(function)
+                      or self._fn_source_map.get(function.rsplit("$", 1)[0]))
+            for marker in find_check_markers(wat, header.start(), end):
+                entry = self._emitted_checks.get(int(marker.group(1)))
+                if entry is None:
+                    raise CodegenInvariantError(
+                        f"${function} carries record marker "
+                        f"{marker.group(0).strip()!r}, which names no entry "
+                        "of this module's record", None,
+                    )
+                emitter, node = entry
+                row = TRAP_EMITTERS[emitter]
+                span = node.span if node is not None else None
+                out.append(EmittedCheck(
+                    emitter=emitter,
+                    kind=row.kind,
+                    obligations=row.obligations,
+                    function=function,
+                    line=span.line if span is not None else 0,
+                    column=span.column if span is not None else 0,
+                    end_line=span.end_line if span is not None else 0,
+                    end_column=span.end_column if span is not None else 0,
+                    file=(None if prelude
+                          else source[0] if source is not None else self.file),
+                    prelude=prelude,
+                ))
+        stray = sum(1 for _ in find_check_markers(wat)) - len(out)
+        if stray:
+            raise CodegenInvariantError(
+                f"{stray} record marker(s) outside every function body", None)
+        return out
+
     def _get_source_line(self, line: int) -> str:
         """Extract a line from the source text."""
         lines = self.source.splitlines()
@@ -1360,7 +1427,7 @@ class CodeGenerator(
         exports[:] = [e for e in exports if e not in dropped_set]
         self._closure_fns_wat = [
             (
-                f"  (func ${match.group(1)} unreachable)"
+                f"  (func ${match.group(1)} {_DROPPED_CLOSURE_BODY})"
                 if (match := _WAT_FN_NAME_RE.match(closure_wat)) is not None
                 and match.group(1) in direct_cause
                 else closure_wat
@@ -3029,6 +3096,11 @@ class CodeGenerator(
 
         # Assemble the module
         wat = self._assemble_module(functions_wat)
+        # #1479: read the per-module record back from the assembled text, then
+        # take its markers out — the WAT a caller sees carries none, and the
+        # binary never did (they are comments).
+        emitted_checks = self._assemble_emitted_checks(wat)
+        wat = strip_check_markers(wat)
 
         # Convert WAT to WASM binary
         try:
@@ -3150,6 +3222,7 @@ class CodeGenerator(
             fn_source_map=dict(self._fn_source_map),
             prelude_fn_names=set(self._prelude_fn_names),
             dropped_fns=dropped_fns,
+            emitted_checks=emitted_checks,
         )
 
     def _user_dropped_fns(
