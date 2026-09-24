@@ -60,7 +60,7 @@ Generic type variables are resolved via monomorphization — each concrete insta
 The one operation that can violate the non-negativity invariant despite well-typed operands is unsigned subtraction (`@Nat - @Nat`). At every such site whose result is statically `@Nat` AND at least one operand has `@Nat` *provenance* (a slot reference, function call returning `@Nat`, or a sub-expression containing one — pure-literal subtractions like `0 - 1` are intentionally exempt because they're commonly consumed at `@Int` positions), the compiler emits a Tier-1 proof obligation `lhs >= rhs` — discharged at Tier 1 when a precondition or path condition proves it, else dropped to Tier 3. The codegen is type-driven, not tier-driven: it emits the guarded subtraction at *every* such site regardless of the verifier's tier (a Tier-1 discharge means the guard provably never fires, but it is still emitted):
 
 ```wat
-(if (i64.lt_s lhs rhs)
+(if (i64.lt_u lhs rhs)    ;; unsigned: a @Nat is a u64 (Section 2.2.1)
   (then
     (call $vera.trap (i32.const 4) (i32.const <msg>) (i32.const <len>))
     unreachable))       ;; traps with WasmTrapError(kind="nat_underflow")
@@ -370,7 +370,7 @@ end
 
 ### 11.8.5 Trap Handling
 
-A failed runtime check ends in the WASM `unreachable` instruction, and the instruction alone says nothing about which check failed.  So every check first signals its own cause through one of two host imports, and the host reports the trap as a `trap_kind`, a message and a per-kind Fix paragraph ([#1479](https://github.com/aallan/vera/issues/1479)):
+A failed runtime check ends in the WASM `unreachable` instruction, and the instruction alone says nothing about which check failed.  So every check first signals its own cause through one of two host imports, and the host reports the trap as a `trap_kind`, a message and, where the kind defines one, its Fix paragraph — none for `contract_violation` and `host_error`, whose message already says what to do, or for `unknown`, where there is nothing general to suggest ([#1479](https://github.com/aallan/vera/issues/1479)):
 
 - **`vera.contract_fail(ptr, len)`** — a `requires`, `ensures`, `decreases` or refinement check, carrying the contract's own text.  The kind is `contract_violation`.
 - **`vera.trap(kind, ptr, len)`** — every other check, its kind as a code and, where the check carries one, its own message as an interned `(ptr, len)` (zero for a kind whose sites carry none): `overflow`, `nat_guard`, `widen_guard`, `nat_underflow` (Section 11.2.1), `assertion_failed` (Section 11.14.1), `index_out_of_bounds` (Section 11.12.3), `string_index_out_of_bounds` (`string_char_code`), `float_conversion` (`float_to_int`, `floor`, `ceil`, `round`), `heap_exhausted` (the allocator), and `uncaught_exception` (below).  One import carries every kind, so naming a new check costs a row in the kind table rather than an import of its own.

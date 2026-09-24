@@ -646,8 +646,9 @@ Memory is managed automatically. The allocator and garbage collector are impleme
 ```
 [0, data_end)            String constants (data section)
 [data_end, +16K)         GC shadow stack (4096 root slots)
-[data_end+16K, +32K)     GC mark worklist (4096 entries)
-[data_end+32K, ...)      Heap (objects with 4-byte headers)
+[data_end+16K, +80K)     GC mark worklist (16384 entries)
+[data_end+80K, +144K)    GC wrapper table (4096 entries; only with host-backed values)
+[data_end+80K or +144K, ...)  Heap (objects with 4-byte headers)
 ```
 
 **Allocator** (`$alloc` in `assembly.py`): Bump allocator with free-list overlay. Each allocation prepends a 4-byte header (`mark_bit | size << 1`). Allocation tries free-list first-fit, then bump, triggers GC on OOM, falls back to `memory.grow`.

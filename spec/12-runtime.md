@@ -521,7 +521,7 @@ The runtime implements a conservative mark-sweep garbage collector entirely in W
 |--------|------|---------|
 | `$gc_sp` | `mut i32` | Shadow stack pointer (current top) |
 | `$gc_stack_base` | `i32` | Shadow stack base address (`data_end`) |
-| `$gc_heap_start` | `i32` | Heap start address (`data_end + 8192`) |
+| `$gc_heap_start` | `i32` | Heap start address (`data_end + 81920`, or `data_end + 147456` with the wrapper table; Section 12.5.1) |
 | `$gc_free_head` | `mut i32` | Free list head pointer |
 
 **Collection phases.** The `$gc_collect` function performs three phases:

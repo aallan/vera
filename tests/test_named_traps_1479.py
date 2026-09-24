@@ -402,6 +402,23 @@ def test_the_runtime_chapter_states_the_regions_the_code_sets() -> None:
     def spelled(n: int) -> str:
         return f"{n:,}".replace(",", " ")
 
+    # The chapter's other statement of the heap start (the globals table)
+    # and the module map's layout say the same.
+    assert (f"(`data_end + {heap}`, or `data_end + "
+            f"{heap + GC_WRAPTABLE_SIZE}` with the wrapper table") in chapter
+    readme = (ROOT / "vera" / "README.md").read_text(encoding="utf-8")
+    k = 1024
+    for text in (f"[data_end, +{GC_STACK_SIZE // k}K)",
+                 f"[data_end+{GC_STACK_SIZE // k}K, +{heap // k}K)     GC mark "
+                 f"worklist ({GC_WORKLIST_SIZE // 4} entries)",
+                 f"[data_end+{heap // k}K, "
+                 f"+{(heap + GC_WRAPTABLE_SIZE) // k}K)    GC wrapper table",
+                 f"[data_end+{heap // k}K or "
+                 f"+{(heap + GC_WRAPTABLE_SIZE) // k}K, ...)"):
+        assert text in readme, text
+    for stale in (r"data_end \+ 8192(?!\d)", r"\+32K\)"):
+        assert not re.search(stale, chapter + readme), stale
+
     for text in (f"{spelled(GC_STACK_SIZE)} bytes · "
                  f"{spelled(GC_STACK_SIZE // 4)} roots",
                  f"{spelled(GC_WORKLIST_SIZE)} bytes · "
