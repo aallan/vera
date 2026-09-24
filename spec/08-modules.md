@@ -493,9 +493,10 @@ program reaches. The same name in a *different* namespace is not a duplicate:
   its parent's, and inside the helper the name is the helper's (§5.6.2). A
   `handle` expression nested inside another handler for the same effect has
   its own clauses.
-- **A sibling scope.** Two functions' `where` blocks, two effects' or two
-  abilities' operation lists, and two declarations' type-parameter lists are
-  different namespaces.
+- **A sibling scope.** Two functions' `where` blocks, two effects' operation
+  lists, and two declarations' type-parameter lists are different namespaces.
+  Two abilities' operation lists are not: ability operations share one
+  namespace across every ability in scope (§9.8).
 - **Another kind of namespace.** A `data` type and its constructors are
   two namespaces, so `data Box { Box(Int) }` declares each name once; an
   effect, an ability and a data type may likewise share a name.
