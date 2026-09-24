@@ -2659,6 +2659,106 @@ TYPE_ORIGIN_CELLS: tuple[TypeOriginCell, ...] = tuple(
 )
 
 
+#: #1511's class through a match: a module generic matching on its argument,
+#: called from the entry at a type the module does not import.  The second
+#: program adds a module that does import the type.
+_COLOUR_SHARED = {
+    "gboxb.vera": 'module gboxb;\n\npublic data GBox<T> {\n  GMk(T)\n}\n',
+    "mb.vera": 'module mb;\n\npublic data Colour {\n  Red,\n  Green\n}\n',
+    "ga.vera": (
+        'module ga;\n'
+        '\n'
+        'import gboxb(GBox);\n'
+        '\n'
+        'public forall<T> fn gcount(@GBox<T> -> @Int)\n'
+        '  requires(true)\n'
+        '  ensures(@Int.result == 1)\n'
+        '  effects(pure)\n'
+        '{\n'
+        '  match @GBox<T>.0 {\n'
+        '    GMk(@T) -> 1\n'
+        '  }\n'
+        '}\n'
+        '\n'
+        'public forall<T> fn gget(@GBox<T> -> @T)\n'
+        '  requires(true)\n'
+        '  ensures(true)\n'
+        '  effects(pure)\n'
+        '{\n'
+        '  match @GBox<T>.0 {\n'
+        '    GMk(@T) -> @T.0\n'
+        '  }\n'
+        '}\n'
+    ),
+}
+_COLOUR_MIN = {**_COLOUR_SHARED, "main.vera": (
+    'import ga(gcount);\n'
+    'import gboxb(GBox);\n'
+    'import mb(Colour);\n'
+    '\n'
+    'public fn main(@Unit -> @Int)\n'
+    '  requires(true)\n'
+    '  ensures(true)\n'
+    '  effects(pure)\n'
+    '{\n'
+    '  gcount(GMk(Green))\n'
+    '}\n'
+)}
+_COLOUR_ARG_CTL = {
+    **_COLOUR_SHARED,
+    "ma.vera": (
+        'module ma;\n'
+        '\n'
+        'import mb(Colour);\n'
+        '\n'
+        'public fn paint(@Colour -> @Int)\n'
+        '  requires(true)\n'
+        '  ensures(true)\n'
+        '  effects(pure)\n'
+        '{\n'
+        '  match @Colour.0 {\n'
+        '    Red -> 1,\n'
+        '    Green -> 2\n'
+        '  }\n'
+        '}\n'
+        '\n'
+        'public fn pick(@Int -> @Colour)\n'
+        '  requires(true)\n'
+        '  ensures(true)\n'
+        '  effects(pure)\n'
+        '{\n'
+        '  if @Int.0 == 0 then {\n'
+        '    Red\n'
+        '  } else {\n'
+        '    Green\n'
+        '  }\n'
+        '}\n'
+        '\n'
+        'public fn count(@Array<Colour> -> @Int)\n'
+        '  requires(true)\n'
+        '  ensures(true)\n'
+        '  effects(pure)\n'
+        '{\n'
+        '  array_length(@Array<Colour>.0)\n'
+        '}\n'
+    ),
+    "main.vera": (
+        'import ga(gcount, gget);\n'
+        'import gboxb(GBox);\n'
+        'import mb(Colour);\n'
+        'import ma(paint);\n'
+        '\n'
+        'public fn main(@Unit -> @Int)\n'
+        '  requires(true)\n'
+        '  ensures(true)\n'
+        '  effects(pure)\n'
+        '{\n'
+        '  gcount(GMk(Green)) + paint(Green)\n'
+        '}\n'
+    ),
+}
+
+
 class TestGenericsAtAnotherNamespacesType:
     """(f), continued: the type argument's namespace is a third one.
 
@@ -2685,8 +2785,27 @@ class TestGenericsAtAnotherNamespacesType:
             f"emitted {sorted(emitted)}, discovered {sorted(discovered)}")
 
 
-#: A `data` type named like each built-in container (§8.4.1 lets a
-#: declaration take the name), and a value of that container's own type.
+    @pytest.mark.parametrize(("files", "value"), [
+        pytest.param(_COLOUR_MIN, 1, id="the-entry-imports-the-type"),
+        pytest.param(_COLOUR_ARG_CTL, 3,
+                     id="and-a-module-that-imports-it-too"),
+    ])
+    def test_a_module_generic_matching_on_its_argument(
+        self, files: dict[str, str], value: int, tmp_path: Path,
+    ) -> None:
+        """``ga``'s generic matches on a ``GBox<T>`` and is called from the
+        entry at ``Colour``, a type ``ga`` does not import.  ``main``
+        (6dc41d40) prints the value; the release branch (cc61fb9c) skipped
+        ``gcount$Colour`` (E602) and dropped ``main`` (E620)."""
+        outcome = pipeline(tmp_path, files)
+        assert outcome.accepted and outcome.compiles_clean, (
+            outcome.describe())
+        assert run_main(outcome) == ("ok", value)
+
+
+#: A `data` type named like each built-in container, and a value of that
+#: container's own type.  The declaration is refused at check (E158, #1547),
+#: so only the control place compiles.
 _CONTAINER_DECLS: dict[str, tuple[str, str, str, str]] = {
     # (declaration, a container value, its size)
     "Array": ("data Array {\n  MkArr(Int)\n}\n\n", "[1, 2, 3]",
@@ -2787,6 +2906,10 @@ class TestAContainerNamedDataType:
     fails to load.  A container's name in a type argument keeps the
     container's reading, since a clone is named after a container's bare
     head (#772) and the argument cannot say whose `Array` it is.
+
+    A declaration of a container's name is now refused at check (E158,
+    #1547), in the entry and in a module alike, so those places are
+    refusal cells; the place that declares nothing still runs.
     """
 
     @pytest.mark.parametrize("cell", CONTAINER_CELLS, ids=lambda c: c.label)
@@ -2794,6 +2917,10 @@ class TestAContainerNamedDataType:
         self, cell: ContainerCell, tmp_path: Path,
     ) -> None:
         outcome = pipeline(tmp_path, cell.files())
+        if cell.place != "nothing declares it":
+            assert [d.error_code for d in outcome.check_errors] == ["E158"], (
+                outcome.describe())
+            return
         assert outcome.accepted and outcome.compiles_clean, (
             outcome.describe())
         assert run_main(outcome) == ("ok", cell.value)
@@ -2851,24 +2978,21 @@ class TestAContainerNamedDataType:
             outcome.describe())
         assert run_main(outcome) == ("ok", 5)
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "#1519: an argument spelled with a container's name is read as the "
-        "container in the declaring namespace, whose name captures the "
-        "caller's type"))
     def test_a_container_named_data_type_as_a_type_argument(
         self, tmp_path: Path,
     ) -> None:
         """The other reading of the same spelling: the entry's own
         `data Array` passed through the prelude's generic.  The argument is
-        `Array` whichever type it is, and the prelude reads the container."""
+        `Array` whichever type it is, and the prelude reads the container
+        (#1519's mechanism), so the declaration is refused at check instead
+        (E158, #1547)."""
         main = ("private data Array {\n  MkArr(Int)\n}\n\n"
                 "public fn main(@Unit -> @Int)\n" + _NC
                 + "{\n  match option_unwrap_or(Some(MkArr(5)), MkArr(6)) {\n"
                 "    MkArr(@Int) -> @Int.0\n  }\n}\n")
         outcome = pipeline(tmp_path, {"main.vera": main})
-        assert outcome.accepted and outcome.compiles_clean, (
+        assert [d.error_code for d in outcome.check_errors] == ["E158"], (
             outcome.describe())
-        assert run_main(outcome) == ("ok", 5)
 
 
 # =====================================================================
@@ -3081,14 +3205,16 @@ class TestQualifiedCallsNameTheirOwnTarget:
         assert not uncovered_instances(emitted, discovered), (
             f"emitted {sorted(emitted)}, discovered {sorted(discovered)}")
 
+    @pytest.mark.parametrize("call", ("idg(get(()))", "get(()) |> idg()"))
     def test_an_operation_in_a_module_private_generics_argument(
-        self, tmp_path: Path,
+        self, call: str, tmp_path: Path,
     ) -> None:
         """Inside a module, `get(())` under the module's own `State<Int>`
         handler is the operation, though the ENTRY declares a function
         `get`.  The qualified-only discovery for the module's private
         generic read the flat table, took the entry's `get`, and named a
-        clone the call site does not call."""
+        clone the call site does not call.  The piped spelling walks the
+        desugared call, in the same namespace (PR #1508 review)."""
         files = {
             "mb.vera": (
                 "module mb;\n\n" + _USER_GENERICS["idg"]
@@ -3096,7 +3222,7 @@ class TestQualifiedCallsNameTheirOwnTarget:
                 + "{\n  handle[State<Int>](@Int = 42) {\n"
                 "    get(@Unit) -> { resume(@Int.0) },\n"
                 "    put(@Int) -> { resume(()) }\n"
-                "  } in {\n    idg(get(()))\n  }\n}\n"),
+                f"  }} in {{\n    {call}\n  }}\n}}\n"),
             "main.vera": (
                 "import mb(probe);\n\n"
                 "private fn get(@Unit -> @Bool)\n" + _NC + "{\n  true\n}\n\n"

@@ -23,7 +23,11 @@ where the value was made:
 Where the two spellings take the SAME number of arguments (a built-in
 ``Decimal`` beside ``data Decimal``, an array beside ``data Array<T>``) the
 checker gives both the one type ``AdtType(name, args)``, so the value's type
-does not say which it is; those cells are strict xfails on #1547.
+does not say which it is.  So the container names are reserved (#1547): a
+``data`` declaration of ``Array``, ``Map``, ``Set`` or ``Decimal`` is
+refused at check (E158), and #1539's program with it.  A prelude data
+type's name stays declarable, and its same-arity cell (``UrlParts``) is a
+strict xfail on #1496.
 
 * :class:`TestTheReportedPrograms` — both issues' reproductions, at the
   output ``main`` (6dc41d40) prints.
@@ -34,8 +38,8 @@ does not say which it is; those cells are strict xfails on #1547.
   control that imports the types too.
 * :class:`TestABuiltInValueBesideADeclarationOfItsName` — #1539's class,
   over every container name code generation branches on
-  (``_CONTAINER_NAMES``), against the control without the declaration; the
-  declaration's own values keep rendering as the declaration (#1331).
+  (``_CONTAINER_NAMES``): refused at check whatever sits beside the
+  declaration, while the control without it runs.
 * :class:`TestABuiltInAdtName` — the built-in data type names the live
   registries hold: a built-in value beside a declaration of its name
   renders as in the control or is refused loudly, never as the declaration.
@@ -59,8 +63,11 @@ _CONTRACT = "  requires(true)\n  ensures(true)\n  effects(pure)\n"
 
 #: The checker gives a built-in type and a same-named declaration of the same
 #: arity one type, so neither the WASM layer's string nor the checker's
-#: record says which a value is.
-_CONFLATION = "#1547: the checker gives a built-in and a same-named declaration one type"
+#: record says which a value is.  For a container name the declaration is
+#: refused (#1547); a prelude data type's name is #1496's.
+_CONFLATION = (
+    "#1496: the checker gives a prelude data type and a same-named "
+    "declaration one type")
 
 
 def _fn(name: str, sig: str, body: str) -> str:
@@ -88,6 +95,16 @@ def _run(tmp_path: Path, files: dict[str, str]) -> tuple[str, object]:
     assert out.accepted, out.describe()
     assert out.compiles_clean, out.describe()
     return run_main(out)
+
+
+def _refused(tmp_path: Path, files: dict[str, str]) -> None:
+    """Refused at check with one E158, on the ``data`` line (#1547)."""
+    out = pipeline(tmp_path, files)
+    assert [d.error_code for d in out.check_errors] == ["E158"], (
+        out.describe())
+    source = files["main.vera"]
+    line = source[:source.index("private data")].count("\n") + 1
+    assert out.check_errors[0].location.line == line
 
 
 # =====================================================================
@@ -136,9 +153,13 @@ class TestTheReportedPrograms:
         ("show(Tuple([1, 2], 3))", "([1, 2], 3)"),
     ])
     def test_1539(self, tmp_path: Path, body: str, expected: str) -> None:
+        """The program is refused at check: ``Array`` is reserved (#1547).
+        Without the declaration it prints what ``main`` printed."""
         decl = "private data Array {\n  MkArr(Int)\n}\n\n"
-        assert _run(tmp_path, {
-            "main.vera": _entry("", "String", body, decl),
+        _refused(tmp_path / "variant", {
+            "main.vera": _entry("", "String", body, decl)})
+        assert _run(tmp_path / "control", {
+            "main.vera": _entry("", "String", body),
         }) == ("ok", expected)
 
 
@@ -271,66 +292,60 @@ _CONTAINER_VALUES: dict[str, tuple[tuple[str, str], ...]] = {
     ),
 }
 
-#: The container whose built-in type takes as many arguments as the
-#: declaration below: nothing tells their values apart (#1547).
-_SAME_ARITY = frozenset({"Decimal"})
-
 _SHADOW = "private data {N} {{\n  MkShadow(Int)\n}}\n\n"
 
 
 def _container_cells() -> list[object]:
-    cells: list[object] = []
-    for name in sorted(_CONTAINER_VALUES):
-        for ret, body in _CONTAINER_VALUES[name]:
-            marks = (
-                [pytest.mark.xfail(strict=True, reason=_CONFLATION)]
-                if name in _SAME_ARITY else [])
-            cells.append(pytest.param(name, ret, body, marks=marks,
-                                      id=f"{name}|{body}"))
-    return cells
+    return [
+        pytest.param(name, ret, body, id=f"{name}|{body}")
+        for name in sorted(_CONTAINER_VALUES)
+        for ret, body in _CONTAINER_VALUES[name]
+    ]
 
 
 class TestABuiltInValueBesideADeclarationOfItsName:
-    """#1539: declaring a type named like a container must not change what
-    the container's values do.  The control is the same program without
-    the declaration."""
+    """#1539's class, at check: a declaration named like a container is
+    refused (E158, #1547), whatever sits beside it, and the same program
+    without the declaration runs.
+
+    Before the reservation the variant compiled, and matched the control
+    only where the declaration took a different number of type arguments
+    from the container: beside ``data Decimal`` the value rendered as the
+    declaration, and beside ``data Array<T>`` the module failed to load.
+    """
 
     def test_every_container_has_values(self) -> None:
         assert set(_CONTAINER_VALUES) == set(_CONTAINER_NAMES)
 
     @pytest.mark.parametrize("name,ret,body", _container_cells())
-    def test_same_as_without_the_declaration(
+    def test_refused_beside_the_value(
         self, tmp_path: Path, name: str, ret: str, body: str,
     ) -> None:
         control = _run(tmp_path / "control", {
             "main.vera": _entry("", ret, body)})
-        variant = _run(tmp_path / "variant", {
-            "main.vera": _entry("", ret, body, _SHADOW.format(N=name))})
         assert control[0] == "ok", control
-        assert variant == control
+        _refused(tmp_path / "variant", {
+            "main.vera": _entry("", ret, body, _SHADOW.format(N=name))})
 
     @pytest.mark.parametrize("name", sorted(_CONTAINER_NAMES))
-    @pytest.mark.parametrize("body,expected", [
-        ("show(MkShadow(3))", "MkShadow(3)"),
-        ("show([MkShadow(3)])", "[MkShadow(3)]"),
-        ("show(Some(MkShadow(3)))", "Some(MkShadow(3))"),
+    @pytest.mark.parametrize("body", [
+        "show(MkShadow(3))", "show([MkShadow(3)])", "show(Some(MkShadow(3)))",
     ])
-    def test_the_declarations_own_values(
-        self, tmp_path: Path, name: str, body: str, expected: str,
+    def test_refused_beside_its_own_values(
+        self, tmp_path: Path, name: str, body: str,
     ) -> None:
-        """#1331 stays fixed: the declaration's values are the declaration."""
-        assert _run(tmp_path, {
-            "main.vera": _entry("", "String", body, _SHADOW.format(N=name)),
-        }) == ("ok", expected)
+        """The declaration's own values do not make it legal."""
+        _refused(tmp_path, {
+            "main.vera": _entry("", "String", body, _SHADOW.format(N=name))})
 
-    @pytest.mark.xfail(strict=True, reason=_CONFLATION)
     def test_a_generic_declaration_of_the_same_arity(
         self, tmp_path: Path,
     ) -> None:
+        """#1547's second program: ``main`` printed ``[1, 2]``, and the
+        release branch built a module that fails to load."""
         decl = "private data Array<T> {\n  MkArr(T)\n}\n\n"
-        assert _run(tmp_path, {
-            "main.vera": _entry("", "String", "show([1, 2])", decl),
-        }) == ("ok", "[1, 2]")
+        _refused(tmp_path, {
+            "main.vera": _entry("", "String", "show([1, 2])", decl)})
 
 
 # =====================================================================
@@ -348,7 +363,8 @@ _ADT_VALUES = {
 }
 #: A built-in data type whose instances take as many arguments as the
 #: declaration below, so the value renders by the declaration's layout,
-#: on main and the release branch alike (#1547).
+#: on main and the release branch alike.  A prelude data type's name is not
+#: reserved, so this stays a strict xfail on #1496.
 _SAME_ARITY_ADTS = frozenset({"UrlParts"})
 _NO_SHOWN_VALUE = {
     "Json": "show refuses a Json value in any program (E602)",

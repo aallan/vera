@@ -8,6 +8,7 @@ _unify_for_inference methods extracted from TypeChecker.
 from __future__ import annotations
 
 from vera import ast, naming
+from vera.lexical import blank_comments
 from vera.checker.registration import (
     _RESERVED_TYPE_PREFIX_RE,
     builtin_effect_names,
@@ -804,11 +805,17 @@ class ResolutionMixin:
 
 
 def _declaration_text(source: str, decl: ast.Node) -> str | None:
-    """*decl*'s source text on one line, or ``None`` without a span."""
+    """*decl*'s source text on one line, or ``None`` without a span.
+
+    Read with its comments blanked: joined onto one line, a ``--`` comment
+    inside a declaration written across lines would swallow the rest of it
+    (PR #1508 review).  :func:`~vera.lexical.blank_comments` shares the
+    parser's scanner, so a ``--`` inside a string literal stays.
+    """
     span = decl.span
     if span is None:
         return None
-    lines = source.splitlines()[span.line - 1:span.end_line]
+    lines = blank_comments(source).splitlines()[span.line - 1:span.end_line]
     if not lines:
         return None
     if len(lines) == 1:

@@ -1817,16 +1817,14 @@ class OperatorsMixin:
             return None  # pragma: no cover
 
         # The index type's refinement, each layer of it: `P(counter)` as an
-        # i32, the layers conjoined.
-        domain_instrs_p: list[str] = []
+        # i32, outermost first.
+        layer_conds: list[list[str]] = []
         for layer in self._index_refinement_layers(expr.binding_type):
             cond = self.translate_expr(
                 layer.predicate, env.push(layer.binder_name, counter_local))
             if cond is None:
                 return None  # pragma: no cover — the [E615] channel above
-            domain_instrs_p.extend(cond)
-            if len(domain_instrs_p) > len(cond):
-                domain_instrs_p.append("i32.and")
+            layer_conds.append(cond)
 
         # Unique labels
         qid = self._next_quant_id
@@ -1865,9 +1863,14 @@ class OperatorsMixin:
         else:
             step += ["if", "  i32.const 1",
                      f"  local.set {result_local}", f"  br {brk}", "end"]
-        if domain_instrs_p:
-            # An index outside the refinement is not in the range.
-            step = [*domain_instrs_p, "if", *(f"  {i}" for i in step), "end"]
+        # An index outside the refinement is not in the range.  Each layer
+        # guards the step, wrapped outermost first so the INNERMOST is
+        # tested first and each outer layer only where the ones inside it
+        # hold: an outer predicate may be defined only there (`12 / @Pos.0`
+        # over a `Pos` that excludes 0), which an eager `i32.and` of the
+        # layers would evaluate at every index (PR #1508 review).
+        for cond in layer_conds:
+            step = [*cond, "if", *(f"  {i}" for i in step), "end"]
         for instr in step:
             instructions.append(f"    {instr}")
 

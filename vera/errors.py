@@ -946,7 +946,7 @@ ERROR_CODES: dict[str, str] = {
     "E155": "Bare function name supplied by two imports",
     "E156": "Bare data type name supplied by two imports",
     "E157": "Bare constructor name supplied by two imports",
-    "E158": "Declaration reuses a primitive or special-cased built-in type name",
+    "E158": "Declaration takes a reserved built-in type name",
     "E159": "Two data declarations share a constructor name",
     "E160": "Array index must be Int or Nat",
     "E161": "Cannot index non-array type",

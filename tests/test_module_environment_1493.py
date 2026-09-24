@@ -382,6 +382,51 @@ class TestPreludeTypesInAModule:
         assert _generator(tmp_path / "ma.vera")._fn_sigs["mk"] == (
             ["i64"], "i32")
 
+    @pytest.mark.parametrize(("declared", "used"), (
+        ("Request", "Response"), ("Response", "Request"),
+    ))
+    def test_a_module_declaring_one_http_type_uses_the_other(
+        self, declared: str, used: str, tmp_path: Path,
+    ) -> None:
+        """The HttpServer block holds two types, and a module's demand is
+        per type: one that declares its own ``Request`` still demands the
+        prelude's ``Response`` (PR #1508 review).  Refusing the whole block
+        left it compiled against no ``Response`` at all (E602, E620), on
+        ``main`` as on the release branch."""
+        ty = next(t for t in PRELUDE_TYPES if t.name == used)
+        out = pipeline(tmp_path, {
+            "ma.vera": (
+                f"module ma;\n\npublic data {declared} {{\n  Mine(Int)\n}}\n\n"
+                "public fn use(@Int -> @Int)\n" + _CONTRACT + "{\n  "
+                + ty.use.replace("{X}", ty.make) + "\n}\n"),
+            "main.vera": _main("import ma(use);\n", "use(1)"),
+        })
+        assert out.accepted and out.compiles_clean, out.describe()
+        assert run_main(out) == ("ok", ty.value)
+
+    def test_every_block_reads_every_module(self) -> None:
+        """The modules are read once per demand-injected block, so an
+        iterator of them must reach the last block as well as the first
+        (PR #1508 review)."""
+        from vera.prelude import inject_prelude
+
+        module = parse_to_ast(
+            "module ma;\n\npublic fn t(@Int -> @Int)\n" + _CONTRACT
+            + "{\n  match Response(200 + @Int.0, map_new(), \"ok\") {\n"
+            "    Response(@Int, @Map<String, String>, @String) -> @Int.0\n"
+            "  }\n}\n")
+        entry_src = _main("import ma(t);\n", "t(1)")
+
+        def data_names(modules: object) -> set[str]:
+            entry = parse_to_ast(entry_src)
+            inject_prelude(entry, modules)  # type: ignore[arg-type]
+            return {tld.decl.name for tld in entry.declarations
+                    if isinstance(tld.decl, ast.DataDecl)}
+
+        listed = data_names((module,))
+        assert "Response" in listed
+        assert data_names(m for m in (module,)) == listed
+
     @pytest.mark.parametrize("ty", PRELUDE_TYPES, ids=lambda t: t.name)
     def test_the_differential_can_fail(
         self, ty: PreludeType, tmp_path: Path,

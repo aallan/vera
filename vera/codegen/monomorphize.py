@@ -1292,10 +1292,11 @@ class MonomorphizationMixin:
             # its first element and registered the phantom `$Bool` clone
             # instead of the one the call site needs — while the DIRECT
             # spelling of the same call was discovered correctly.  Walk the
-            # desugared call, which carries the same children.
+            # desugared call, which carries the same children, in the same
+            # module's namespace (PR #1508 review).
             self._collect_shadowed_qualified_calls(
                 piped, path, decls_by_name, ctor_to_adt, instances,
-                op_result_types,
+                op_result_types, origin,
             )
             return
 

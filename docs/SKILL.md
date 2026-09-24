@@ -1268,7 +1268,7 @@ infinity()                         -- returns Float64 (positive infinity)
 
 **Redefining a built-in is an error (E151)**: a function whose name matches a built-in (e.g. `abs`, `array_length`, `clamp`, `to_string`) is rejected at `vera check`. Built-ins are always in scope as the single canonical definition, so a second one is both redundant (one canonical form) and — for the verifier-modelled built-ins — silently unsound: the verifier would reason with the built-in's model while codegen runs your body. Call the built-in directly (no import needed), or give your function a distinct name (e.g. `magnitude`) for genuinely different behaviour. The one exception is the prelude's Option/Result/Json/Html *combinators* (`option_map`, `option_and_then`, `option_unwrap_or`, `result_map`, `result_unwrap_or`, `json_*`, `html_attr`): these are ordinary Vera functions the prelude injects, so a same-named user definition soundly replaces them.
 
-**Redefining a special-cased built-in ADT is an error (E158)**: `data Future { ... }` and `data Tuple { ... }` are rejected at `vera check`, at the entry file and inside a module alike. These two names the compiler recognises *by name* throughout code generation — how a value is rendered, compared and laid out — so a declaration of one could not be told apart from the built-in, and accepting it was silent: `show(MkShadow(7))` under a `data Tuple` printed `(7)`, dropping the constructor name, and `data Future` compiled to a module that fails to load. It is the same rule that reserves built-in function names (E151) and built-in effect names (E152), and it covers both namespaces a declaration can put the name in: the `data` type name and a **constructor** name inside any ADT (`data Box { Tuple(Bool) }` is also E158, because code generation flattens constructor layouts by name and the user's would displace the built-in carrier's). Only those two: the prelude's data types (`Option`, `Result`, `Ordering`, `UrlParts`, `Json`, `HtmlNode`, `MdBlock`, `MdInline`, `Request`, `Response`) are ordinary declarations a program may shadow — `examples/vera/collections.vera` ships a `public data Option<T>` — and so are the container names `Array`, `Map`, `Set` and `Decimal`. A `type Future = ...` / `type Tuple = ...` alias is unaffected: an alias names a binding, not a layout. Rename the declaration, or use the built-in directly.
+**Declaring a data type with a built-in type's name is an error (E158)**: `data Array { ... }`, `data Map { ... }`, `data Set { ... }`, `data Decimal { ... }`, `data Future { ... }` and `data Tuple { ... }` are rejected at `vera check`, with any number of type parameters, at the entry file and inside a module alike. The compiler recognises `Future` and `Tuple` *by name* throughout code generation — how a value is rendered, compared and laid out — so a declaration of one could not be told apart from the built-in: under a `data Tuple`, `show(MkShadow(7))` would print `(7)`, dropping the constructor name. A declaration of a container's name with the container's number of type parameters is the same type as the container to the type checker, so a built-in value would be accepted where the declaration's is expected and read through the wrong layout: `show(decimal_from_int(5))` beside a `data Decimal { MkShadow(Int) }` would print the declaration's constructor. It is the same rule that reserves built-in function names (E151) and built-in effect names (E152). For `Future` and `Tuple` it also covers a **constructor** name inside any ADT (`data Box { Tuple(Bool) }` is also E158, because code generation flattens constructor layouts by name and the user's would displace the built-in carrier's); a constructor may still be called `Array`, `Map`, `Set` or `Decimal`. The prelude's data types (`Option`, `Result`, `Ordering`, `UrlParts`, `Json`, `HtmlNode`, `MdBlock`, `MdInline`, `Request`, `Response`) are not reserved: they are ordinary declarations a program may shadow — `examples/vera/collections.vera` ships a `public data Option<T>`. A `type Future = ...` / `type Tuple = ...` alias is unaffected: an alias names a binding, not a layout. Rename the declaration (`data Money`, not `data Decimal`), or use the built-in directly.
 
 **Two declarations may not share a constructor name (E159)**: within one file, two `data` declarations may not both declare a constructor of the same name — `private data A1 { Pair(Int, Int) }` beside `private data A2 { Pair(Bool, Bool) }` is rejected at `vera check`, located at the second declaration and naming the first. Constructor names are resolved by name alone, so one namespace cannot hold two, and accepting the pair produced diagnostics describing whichever declaration registered last rather than the collision. It is the single-file sibling of E610 (two modules) and E157 (two imports). Shadowing a *prelude* constructor is a different shape and stays legal — a program may restate `Option`, `Result` or `Ordering` — as is shadowing an *imported* constructor (§8.5.2), though see §11.16 for the compilation caveat on that pair.
 
@@ -2301,6 +2301,22 @@ let @Set<Int> = set_new();
 set_add(set_new(), 1)
 ```
 
+### Declaring a data type with a built-in type's name
+
+WRONG — `Array`, `Map`, `Set`, `Decimal`, `Future` and `Tuple` are reserved built-in type names:
+```vera
+private data Decimal {
+  Cents(Int)
+}
+```
+
+CORRECT — give the type a name of its own:
+```vera
+private data Money {
+  Cents(Int)
+}
+```
+
 ## Complete Program Examples
 
 ### Pure function with postconditions
@@ -2421,7 +2437,7 @@ public fn main(@Unit -> @Unit)
 
 ## Conformance Suite
 
-The `tests/conformance/` directory contains 254 small programs — most self-contained, with the Chapter 8 module-system programs and a few cross-module Chapter 7 and 9 programs importing companion `_lib.vera` / `_mid.vera` modules — that validate every language feature against the spec — often one program per feature, though some features (slot references, match, contracts) span several. These are the best minimal working examples of Vera syntax and semantics.
+The `tests/conformance/` directory contains 255 small programs — most self-contained, with the Chapter 8 module-system programs and a few cross-module Chapter 7 and 9 programs importing companion `_lib.vera` / `_mid.vera` modules — that validate every language feature against the spec — often one program per feature, though some features (slot references, match, contracts) span several. These are the best minimal working examples of Vera syntax and semantics.
 
 Each program is organized by spec chapter (`ch01_int_literals.vera`, `ch04_match_basic.vera`, `ch07_state_handler.vera`, etc.) and the `manifest.json` file maps features to programs. When you need to see how a specific construct works, check the conformance program before reading the spec.
 

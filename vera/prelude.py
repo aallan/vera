@@ -61,10 +61,15 @@ data UrlParts { UrlParts(String, String, String, String, String) }
 # mentions them (same conditional pattern as Json / HtmlNode: the Map
 # headers field pulls heap/bucket machinery, which must not leak into
 # pure programs' WAT).
-_HTTP_SERVER_DATA = """\
-data Request { Request(String, String, Map<String, String>, String) }
-data Response { Response(Int, Map<String, String>, String) }
-"""
+# One block per HttpServer type: a module's demand for each is its own, so
+# one that declares its own `Request` still takes the prelude's `Response`.
+_HTTP_SERVER_TYPES = {
+    "Request": (
+        "data Request { Request(String, String, Map<String, String>, "
+        "String) }\n"),
+    "Response": "data Response { Response(Int, Map<String, String>, String) }\n",
+}
+_HTTP_SERVER_DATA = "".join(_HTTP_SERVER_TYPES.values())
 
 _JSON_DATA = """\
 data Json { JNull, JBool(Bool), JNumber(Float64), JString(String), JArray(Array<Json>), JObject(Map<String, Json>) }
@@ -1007,6 +1012,9 @@ def inject_prelude(
     verifier's monomorphization discovery pass the same programs, so the
     two sides inject the same prelude.
     """
+    # Every block below asks the modules, so an iterator of them is read
+    # once, here, rather than exhausted by the first (PR #1508 review).
+    modules = tuple(modules)
     user_names = _user_defined_names(program)
     user_data_names = _user_defined_data_names(program)
 
@@ -1121,12 +1129,16 @@ def inject_prelude(
 
     # HttpServer handler types (#305) — inject only when referenced;
     # a user-defined data Request / data Response shadows the prelude
-    # (the extraction loop below skips user-defined names).
-    if _source_mentions_http_server(program) or _modules_demand(
-        modules, _source_mentions_http_server, {"Request", "Response"},
-    ):
-        if not {"Request", "Response"} <= user_data_names:
-            source_parts.append(_HTTP_SERVER_DATA)
+    # (the extraction loop below skips user-defined names).  A module's
+    # demand is per type: one declaring its own `Request` means its own by
+    # that name, and still needs the prelude's `Response` (PR #1508 review).
+    entry_http = _source_mentions_http_server(program)
+    for http_type, http_source in _HTTP_SERVER_TYPES.items():
+        if http_type not in user_data_names and (
+            entry_http or _modules_demand(
+                modules, _source_mentions_http_server, {http_type})
+        ):
+            source_parts.append(http_source)
 
     full_source = "\n".join(source_parts)
     parsed = _parse_source(full_source)

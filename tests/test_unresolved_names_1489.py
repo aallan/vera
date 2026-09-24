@@ -345,6 +345,29 @@ class TestTheInstructionNamesTheCause:
         assert fixed.accepted and fixed.compiles_clean, fixed.describe()
         assert run_main(fixed) == ("ok", 2)
 
+    def test_another_modules_alias_across_lines(self, tmp_path: Path) -> None:
+        """A declaration written across lines is quoted on one, so a ``--``
+        comment inside it is left out: joined as written, it swallowed the
+        rest of the copy, which then did not parse (PR #1508 review).  A
+        ``--`` inside a string literal is text, and stays."""
+        mb = ("module mb;\n\ntype Score =\n  -- a count of points\n"
+              "  { @String | @String.0 != \"--\" };\n\n"
+              "public fn s(@Int -> @Score)\n" + _CONTRACT
+              + "{\n  \"ab\"\n}\n")
+        body = ("public fn main(@Unit -> @Int)\n" + _CONTRACT
+                + "{\n  let @Score = s(1);\n  string_length(@Score.0)\n}\n")
+        out = pipeline(tmp_path / "bare", {
+            "mb.vera": mb, "main.vera": "import mb(s);\n\n" + body,
+        })
+        copy = 'type Score = { @String | @String.0 != "--" };'
+        assert f"'{copy}'" in _diag(out, "E136").fix
+        fixed = pipeline(tmp_path / "fixed", {
+            "mb.vera": mb,
+            "main.vera": f"import mb(s);\n\n{copy}\n\n" + body,
+        })
+        assert fixed.accepted and fixed.compiles_clean, fixed.describe()
+        assert run_main(fixed) == ("ok", 2)
+
     def test_another_modules_effect(self, tmp_path: Path) -> None:
         """Effects are module-local: the fix says to declare a copy."""
         out = pipeline(tmp_path, {
@@ -393,9 +416,14 @@ class TestTheReportItself:
 # =====================================================================
 
 class TestModuleRegistrationSeesItsImports:
-    """The Decimal case: a placeholder that did NOT spell the import."""
+    """The Decimal case: a placeholder that did NOT spell the import.
 
-    def test_an_imported_user_decimal_keeps_its_arguments(
+    A user type named ``Decimal`` read as the built-in lost its type
+    arguments.  The name is reserved now (E158, #1547), so the module's
+    declaration is refused at check, in the module that writes it.
+    """
+
+    def test_an_imported_user_decimal_is_refused(
         self, tmp_path: Path,
     ) -> None:
         out = pipeline(tmp_path, {
@@ -408,8 +436,9 @@ class TestModuleRegistrationSeesItsImports:
                          "public fn main(@Unit -> @Int)\n" + _CONTRACT
                          + "{\n  unwrap(Dec(41)) + 1\n}\n",
         })
-        assert out.accepted and out.compiles_clean, out.describe()
-        assert run_main(out) == ("ok", 42)
+        assert [d.error_code for d in out.check_errors] == ["E158"], (
+            out.describe())
+        assert Path(out.check_errors[0].location.file or "").name == "mb.vera"
 
 
 # =====================================================================
@@ -488,6 +517,30 @@ class TestQuantifierPredicate:
         out = _check(tmp_path, _quantifier(
             f"fn(@Nat -> @Bool) effects(pure) {{ {body} }}",
             binder=binder, prelude=_SMALL, form=form))
+        assert out.accepted and out.compiles_clean, out.describe()
+        assert run_main(out) == ("ok", value)
+
+    @pytest.mark.parametrize(("form", "binder", "body", "value"), (
+        ("forall", "@Q", "12 / @Nat.0 > 2", 1),
+        ("forall", "@Q", "@Nat.0 > 0", 1),
+        ("exists", "@Q", "@Nat.0 == 4", 1),
+        ("exists", "@Q", "@Nat.0 == 0", 0),
+        ("forall", "@{ @Pos | 12 / @Pos.0 > 2 }", "@Nat.0 < 5", 1),
+    ))
+    def test_an_outer_layer_is_tested_only_where_the_inner_holds(
+        self, form: str, binder: str, body: str, value: int,
+        tmp_path: Path,
+    ) -> None:
+        """A refinement of a refinement: ``Q``'s predicate divides by the
+        index, which ``Pos`` keeps from being 0.  The layers are tested
+        innermost first and each only where the one inside it holds, as the
+        type means; conjoined eagerly, index 0 divided by zero (PR #1508
+        review)."""
+        nested = ("type Pos = { @Nat | @Nat.0 > 0 };\n"
+                  "type Q = { @Pos | 12 / @Pos.0 > 2 };\n\n")
+        out = _check(tmp_path, _quantifier(
+            f"fn(@Nat -> @Bool) effects(pure) {{ {body} }}",
+            binder=binder, prelude=nested, form=form))
         assert out.accepted and out.compiles_clean, out.describe()
         assert run_main(out) == ("ok", value)
 
