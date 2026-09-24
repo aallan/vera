@@ -59,6 +59,7 @@ Use `python -m pip install -e ".[lsp]"` for the language server or
 
 ## Try it
 
+<!-- vera:run fn="main" stdout="5" -->
 ```vera
 public fn safe_divide(@Int, @Int -> @Int)
   requires(@Int.1 != 0)

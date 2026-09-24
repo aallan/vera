@@ -1,8 +1,9 @@
 """Tests for docs/index.html code samples — parse, check, and verify.
 
-Mirrors scripts/check_html_examples.py but integrates with pytest for
-the regular test suite. Every Vera code block in docs/index.html must
-pass the full pipeline: parse → type-check → verify.
+Mirrors scripts/check_doc_examples.py's docs/index.html gate (its parse,
+check and verify stages) in the regular test suite. Every Vera code block
+in docs/index.html must pass the full pipeline: parse → type-check →
+verify.
 
 A block that intentionally fails a stage carries an inline
 `<!-- vera:skip-<stage> ... -->` annotation on the line before its <pre>

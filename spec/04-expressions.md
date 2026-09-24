@@ -442,6 +442,7 @@ A hole is a development aid, not a runtime value:
 
 For example, a hole can stand in for an unwritten sub-expression:
 
+<!-- vera:no-run category="typed-hole" reason="it holds a typed hole, which vera run refuses (E614)" -->
 ```vera
 public fn scale(@Int -> @Int)
   requires(true)

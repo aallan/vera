@@ -52,6 +52,7 @@ These rules key on representation, not on the name `Unit`: a `Future` transparen
 
 The legal side of the line — a `@Unit` parameter declared and satisfied with the unit literal:
 
+<!-- vera:run fn="main" stdout="7" -->
 ```vera
 private fn poll(@Unit -> @Int)
   requires(true)
@@ -177,7 +178,7 @@ Rules:
 
 An ADT may declare an invariant that all values must satisfy:
 
-<!-- vera:skip-check category="INCOMPLETE" reason="is_sorted in SortedList invariant" -->
+<!-- vera:skip-check category="FUTURE" code="E130 E200" reason="the data invariant clause is not implemented yet (#686), so vera check reports E130; is_sorted is defined elsewhere (E200)" -->
 ```
 private data SortedList<T>
   invariant(is_sorted(@SortedList<T>.0))
@@ -187,7 +188,7 @@ private data SortedList<T>
 }
 ```
 
-When implemented, the invariant will be checked by the contract verifier at every construction site.  At present (per the status callout above) the form is unparseable in the reference compiler, so no checking occurs and refinement types (§2.6) are the working alternative.
+When implemented, the invariant will be checked by the contract verifier at every construction site.  At present (per the status callout above) the form parses but fails type checking with E130 in the reference compiler, so no checking occurs and refinement types (§2.6) are the working alternative.
 
 ## 2.5 Function Types
 
@@ -329,14 +330,15 @@ The guard is *defense in depth* for the unverified path: a `vera verify`-clean p
 
 Functions and data types may be parameterised by type variables:
 
-<!-- vera:skip-check category="INCOMPLETE" reason="forall<A,B> fn swap uses Tuple" -->
 ```
 private forall<A, B> fn swap(@Tuple<A, B> -> @Tuple<B, A>)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  Tuple(@B.0, @A.0)
+  match @Tuple<A, B>.0 {
+    Tuple(@A, @B) -> Tuple(@B.0, @A.0)
+  }
 }
 ```
 
