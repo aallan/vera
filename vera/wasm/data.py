@@ -671,21 +671,6 @@ class DataMixin:
         instrs: list[str] = list(val_instrs)
         instrs.append(f"local.set {scr_local}")
 
-        # #820: a @Nat component destructured into an @Int binding
-        # (`let Tuple<@Int> = Tuple(@Nat.0)`) widens it — the tuple-component
-        # dual of construction.  The widening reinterprets its bit pattern above
-        # i64.MAX (u64.MAX -> -1) at the read into the @Int slot.  Mirror the
-        # verifier's literal-source tuple-destructure path EXACTLY (a literal
-        # ``Tuple(...)`` whose i-th arg `_result_is_nat` and whose i-th binding
-        # is @Int): guard the field load.  A non-literal source is NOT obligated
-        # by the verifier here, so codegen leaves it unguarded (no mismatch).
-        destr_lit_args: tuple[ast.Expr, ...] = (
-            stmt.value.args
-            if isinstance(stmt.value, ast.ConstructorCall)
-            and stmt.value.name == stmt.constructor
-            else ()
-        )
-
         # Extract each field through the same layout rule construction lays
         # the object out by (`helpers.field_layout`), rather than a second
         # copy of its sizes and alignments.
@@ -757,23 +742,17 @@ class DataMixin:
             if self._resolve_base_type_name(type_name) == "Nat":
                 load = self._emit_nat_bind_guard(load, at=te)
             # #820: a @Nat component destructured into an @Int slot
-            # (`let Tuple<@Int> = Tuple(@Nat.0)`) is a tuple-component widening —
-            # guard the field load when the target binding is @Int and the
-            # literal source arg is provably @Nat, mirroring the verifier's
-            # literal-source tuple-destructure obligation (was E531-disclosed).
-            # #1416: and for a NON-literal source too.  The literal arm
-            # above reads the argument expression; a destructure whose source
-            # is a call, a slot or an `if` has no argument to read, and the
-            # widening went unguarded — `let Tuple<@Int, @Int> = <Tuple<Nat,
-            # Nat>>` returned a reinterpreted -1 at u64.MAX.  The source
-            # component's type is in the checker's table against the VALUE
-            # expression, which is the same table the construction site's
-            # component guard reads.
+            # (`let Tuple<@Int> = Tuple(@Nat.0)`) is a tuple-component
+            # widening, reinterpreting its bit pattern above i64.MAX at the
+            # read.  #1416 extended the guard to a NON-literal source (a
+            # call, a slot, an `if`), and #1503 made every source answer
+            # through ONE classifier: the component's value where the source
+            # shows it, the declaration's type where it does not.  Reading
+            # the checker's type for the whole value instead guarded the -3
+            # of `Tuple(1, 0 - 3)` as a `@Nat`, because the checker types
+            # `0 - 3` bottom-up as one.
             elif (self._resolve_base_type_name(type_name) == "Int"
-                    and ((idx < len(destr_lit_args)
-                          and self._result_is_nat(destr_lit_args[idx]))
-                         or self._adt_arg_is_nat(
-                             self._checker_resolved_type(stmt.value), idx))):
+                    and self._destructure_component_is_nat(stmt, idx)):
                 load = self._emit_int_widen_guard(load, at=te)
             instrs.extend(load)
             instrs.append(f"local.set {local_idx}")
@@ -799,6 +778,41 @@ class DataMixin:
             new_env = new_env.push(type_name, local_idx)
 
         return (instrs, new_env)
+
+    def _destructure_component_is_nat(
+        self, stmt: ast.LetDestruct, index: int,
+    ) -> bool:
+        """Whether component *index* of *stmt*'s source is a genuine @Nat —
+        the widening question for an @Int binding, asked of THE classifier
+        (:func:`vera.narrowing.component_is_nat`, #1503).
+
+        The source is read the way its value flows: a block's tail, an
+        `if`'s branches, a `match`'s arms, down to the constructor
+        applications that build the destructured shape, whose arguments are
+        the components themselves.  Only an opaque source — a slot, a call —
+        is answered from the checker's table, because there the type is the
+        declaration's: the source's resolved type, argument *index*.  The
+        verifier's destructure leg asks the same question the same way, so
+        the `nat_to_int_coerce` it records and the guard emitted here cannot
+        part.
+        """
+        tuple_shape = stmt.constructor == "Tuple"
+        sources = narrowing.component_sources(
+            stmt.value, index,
+            lambda name: (name == "Tuple") == tuple_shape,
+        )
+        return narrowing.component_is_nat(
+            sources, index, self._call_result_is_nat,
+            self._declared_component_is_nat,
+        )
+
+    def _declared_component_is_nat(self, leaf: ast.Expr, index: int) -> bool:
+        """The leaf oracle of the component classifier: component *index* of
+        an opaque composite is a @Nat iff its declared type says so — the
+        checker's resolved type of the leaf, a refinement over it unwrapped,
+        argument *index*."""
+        ty = self._checker_resolved_type(leaf)
+        return self._adt_arg_is_nat(getattr(ty, "base", ty), index)
 
     # -----------------------------------------------------------------
     # Match expressions
@@ -1477,6 +1491,7 @@ class DataMixin:
                 )
             return self._extract_constructor_fields(
                 pattern, scr_local, layout, env, scrutinee_type,
+                scrutinee=scrutinee,
             )
 
         raise CodegenSkip(
@@ -1491,6 +1506,8 @@ class DataMixin:
         layout: ConstructorLayout,
         env: WasmSlotEnv,
         scrutinee_type: str | None = None,
+        *,
+        scrutinee: ast.Expr | None = None,
     ) -> tuple[list[str], WasmSlotEnv] | None:
         """Extract fields from a constructor match into locals.
 
@@ -1502,6 +1519,15 @@ class DataMixin:
         field consults it to recover the field's instantiation-aware width; a
         nested constructor sub-pattern recurses with the field's own resolved
         concrete type so deeper type-parameter wildcards stay correct too.
+
+        *scrutinee* (#1503) is the expression the value came from, when this
+        is the top-level pattern of a `match`.  The widening guard reads a
+        component's sign from it through the shared component classifier —
+        the argument itself where the scrutinee is built by a constructor
+        application, the declaration where it is opaque — exactly the answer
+        the verifier's sub-pattern leg records.  Without it (a nested
+        sub-pattern) the guard falls back to the field's declared and
+        instantiated type.
         """
         # Every advance below goes through `helpers.field_layout`, the ONE
         # layout rule construction lays an object out by.  `"unit"` (a
@@ -1597,12 +1623,8 @@ class DataMixin:
                 # scrutinee's own type args, resolved through the same #1060
                 # field-type recomputation the wildcard walk uses.
                 elif (self._resolve_base_type_name(type_name) == "Int"
-                        and ((i < len(layout.nat_fields)
-                              and layout.nat_fields[i])
-                             or self._resolve_base_type_name(
-                                 self._resolve_nested_scrutinee_type(
-                                     pattern.name, i, scrutinee_type) or "",
-                             ) == "Nat")):
+                        and self._subpattern_field_is_nat(
+                            pattern, i, layout, scrutinee, scrutinee_type)):
                     load = self._emit_int_widen_guard(load, at=sub_pat)
                 instrs.extend(load)
                 instrs.append(f"local.set {local_idx}")
@@ -1839,6 +1861,59 @@ class DataMixin:
                 f"at an offset that depends on this field's erased width",
             )
         return generic_wt
+
+    def _subpattern_field_is_nat(
+        self,
+        pattern: ast.ConstructorPattern,
+        index: int,
+        layout: ConstructorLayout,
+        scrutinee: ast.Expr | None,
+        scrutinee_type: str | None,
+    ) -> bool:
+        """Whether field *index* bound by *pattern* is a genuine @Nat — the
+        widening question for an @Int sub-pattern binding (#813, #757).
+
+        With the scrutinee EXPRESSION in hand the answer comes from the
+        shared component classifier (#1503): a type-parameter field built
+        by a constructor application in the scrutinee is its argument, so
+        `match Tuple(1, @Nat.0) { Tuple(@Int, @Int) -> … }` is guarded and
+        `match W(0 - 3) { W(@Int) -> … }` is not.  Reading the scrutinee's
+        type string instead missed the first: codegen's own rendering of a
+        constructor application carries no component types, so u64.MAX came
+        back as -1 while the verifier recorded the guard it expected.  An
+        opaque scrutinee — and a nested sub-pattern, which has no
+        expression — answers from the field's declared and instantiated
+        type, as before.
+        """
+        def declared(scrutinee_type_name: str | None) -> bool:
+            if pattern.name == "Tuple":
+                # The built-in carrier registers no field types to
+                # instantiate, so the component IS the type argument — the
+                # reading the verifier's `_instantiated_field_types` takes.
+                # Without it `match @Tuple<Int, Nat>.0 { Tuple(@Int, @Int)
+                # -> … }` recorded a `tier3` widening and emitted no guard.
+                _head, args = self._split_param_type(scrutinee_type_name or "")
+                return (index < len(args)
+                        and self._resolve_base_type_name(args[index]) == "Nat")
+            return ((index < len(layout.nat_fields)
+                     and layout.nat_fields[index])
+                    or self._resolve_base_type_name(
+                        self._resolve_nested_scrutinee_type(
+                            pattern.name, index, scrutinee_type_name) or "",
+                    ) == "Nat")
+
+        if scrutinee is None:
+            return declared(scrutinee_type)
+        sources = narrowing.component_sources(
+            scrutinee, index,
+            lambda name: name == pattern.name,
+            lambda name, i: (name == "Tuple"
+                             or self._ctor_field_tp_index(name, i) is not None),
+        )
+        return narrowing.component_is_nat(
+            sources, index, self._call_result_is_nat,
+            lambda leaf, _i: declared(self._match_scrutinee_vera_type(leaf)),
+        )
 
     def _resolve_nested_scrutinee_type(
         self,

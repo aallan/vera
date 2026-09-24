@@ -7,7 +7,7 @@ orchestration.
 
 from __future__ import annotations
 
-from vera import ast
+from vera import ast, narrowing
 from vera.slots import bare_call_denotes_user_fn
 from vera.checker.sql import (
     count_placeholders,
@@ -1383,11 +1383,34 @@ class CallsMixin:
         # consults the return, so overwriting lost the `nat_bind` that
         # conformance program exists to pin (the one corpus mover on the
         # first shape of this change).
+        #
+        # #1503: except where the instantiation is the argument's OWN
+        # bottom-up type and that type is the one the shared classifier
+        # refutes.  `W(0 - 3)` infers `A = Nat` because `0 - 3` is two
+        # non-negative literals; recording that `Nat` as the argument's
+        # target turned a store of -3 into a field of its own type into a
+        # narrowing — E503 at verify and a trapping guard at run time, on a
+        # program that reads the field back at `@Int` and was valid on
+        # `main`.  A target the context forced is untouched (it was recorded
+        # above, through `expected`), and so is an inferred one whose
+        # argument carries no pure-literal subtraction, where the checker's
+        # type is the value's type.  The narrowing such a value can meet is
+        # obligated where it is BOUND, by the reader that knows the type it
+        # is bound at (the pattern's own classifier, `vera.narrowing`).
         if self.expr_target_types is not None:
-            for c_arg, c_ft in zip(expr.args, field_types):
+            for c_arg, c_ft, declared_ft in zip(
+                    expr.args, field_types, ci.field_types):
                 key = ast.span_key(c_arg)
-                if key is not None and not contains_typevar(c_ft):
-                    self.expr_target_types.setdefault(key, c_ft)
+                if key is None or contains_typevar(c_ft):
+                    continue
+                if (contains_typevar(substitute(declared_ft,
+                                                expected_mapping))
+                        and narrowing.carries_literal_subtraction(c_arg)):
+                    continue
+                recorded = self.expr_target_types.setdefault(key, c_ft)
+                if (isinstance(c_arg, ast.ConstructorCall)
+                        and c_arg.name != "Tuple"):
+                    self._record_nested_ctor_targets(c_arg, recorded)
 
         for i, (arg_ty, field_ty) in enumerate(zip(arg_types, field_types)):
             if arg_ty is None or isinstance(arg_ty, UnknownType):
@@ -1420,6 +1443,46 @@ class CallsMixin:
                 )
 
         return self._ctor_result_type(ci, arg_types, expected=expected)
+
+    def _record_nested_ctor_targets(
+        self, ctor: ast.ConstructorCall, target: Type,
+    ) -> None:
+        """Carry a target recorded for a constructor application DOWN to
+        its own arguments (#1503).
+
+        A constructor argument is synthesized before its parent records the
+        field type it is placed in, so a nested application —
+        `MkBox(Some(0 - 5))` into a declared `Option<Pos>` field — instantiated
+        its type parameters from its own argument alone.  The gap fill above
+        now declines to record such an instantiation when the argument holds
+        a pure-literal subtraction (the checker's `Nat` for it is the claim
+        the shared classifier refutes), and the parent's field type is the
+        instantiation the value is in fact placed at, so it is recorded here
+        instead: `0 - 5` is obligated against `Pos`, where it goes.  A gap is
+        filled, never displaced — an entry already present came from the
+        argument's own expected type or its own inference, and stays.  A
+        `Tuple` carrier is left alone: its readers take a component's target
+        from the tuple's own node, which the parent has just recorded.
+        """
+        if self.expr_target_types is None:
+            return
+        info = self.env.lookup_constructor(ctor.name)
+        base = base_type(target)
+        if (info is None or not info.parent_type_params
+                or info.field_types is None
+                or not isinstance(base, AdtType)
+                or base.name != info.parent_type
+                or len(base.type_args) != len(info.parent_type_params)):
+            return
+        mapping = dict(zip(info.parent_type_params, base.type_args))
+        for arg, field_ty in zip(ctor.args, info.field_types):
+            instantiated = substitute(field_ty, mapping)
+            key = ast.span_key(arg)
+            if key is None or contains_typevar(instantiated):
+                continue
+            recorded = self.expr_target_types.setdefault(key, instantiated)
+            if isinstance(arg, ast.ConstructorCall) and arg.name != "Tuple":
+                self._record_nested_ctor_targets(arg, recorded)
 
     def _check_tuple_constructor(
         self, expr: ast.ConstructorCall

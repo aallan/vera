@@ -1956,123 +1956,68 @@ class OperatorsMixin:
         return None
 
     def _result_is_nat(self, expr: ast.Expr) -> bool:
-        """Codegen mirror of ``ContractVerifier._result_is_nat`` (#813).
+        """Whether *expr*'s VALUE is a genuine @Nat — the #813 widening
+        question, answered by THE rule every guard and every obligation reads
+        (:func:`vera.narrowing.result_is_nat`, #1503).
 
-        The *precise* result type — the join over a ``Block`` trailing expr,
-        ``IfExpr`` branches, and ``MatchExpr`` arms — used to decide whether a
-        value widening into an @Int slot needs the @Nat->@Int coercion guard.
-
-        Unlike :py:meth:`_is_static_nat_typed`, a non-negative ``IntLit`` is NOT
-        @Nat here (a literal in an @Int context is just an @Int literal, already
-        range-checked) and arithmetic is @Nat only when *both* operands are — so
-        a single @Int component makes the result @Int.  Must agree with the
-        verifier's ``_result_is_nat`` so the codegen guard fires at exactly the
-        sites the verifier obligates (the verifier<->codegen differential).
-
-        Caveat (no-side-table fallback): when the checker's resolved-type table
-        is absent (an unverified ``transform -> compile``), the ``FnCall`` arm
-        recovers a callee's @Nat return from its *declared* return type — the
-        same coarse basis as :py:meth:`_is_static_nat_typed`, NOT the verifier's
-        precise ``_result_is_nat``.  This is deliberate: the precise join is
-        unavailable without the side-table, and over-classifying a call result
-        as @Nat here only ever suppresses a (dead) guard on a provably-@Nat
-        value — never a wrong runtime verdict — so a verified build (which
-        supplies the table) still matches the verifier site-for-site.
+        Codegen's guard fires at exactly the sites the verifier obligates only
+        if the two ask one rule, so the rule is not written here; this side
+        supplies the call leaf (:py:meth:`_call_result_is_nat`) and nothing
+        else.  A non-negative literal is not a genuine @Nat (it is
+        range-checked against its target, #812) unless it exceeds `i64.MAX`,
+        and arithmetic is @Nat only when both operands are.
         """
-        if isinstance(expr, ast.Block):
-            return expr.expr is not None and self._result_is_nat(expr.expr)
-        if isinstance(expr, ast.IfExpr):
-            # #813 follow-up site 2a: a non-negative literal arm is @Nat-
-            # compatible (always <= i64.MAX, so it never out-of-range-widens nor
-            # false-traps the boundary guard).  Keep a heterogeneous-with-literal
-            # if (`if c then { @Nat.0 } else { 0 }`) classified @Nat so the
-            # boundary guard fires on the real @Nat arm — must mirror the
-            # verifier's `_result_is_nat` exactly (the widening differential).
-            if expr.else_branch is None:
-                return False
-            return (
-                self._arm_nat_compatible(expr.then_branch)
-                and self._arm_nat_compatible(expr.else_branch)
-                and (self._result_is_nat(expr.then_branch)
-                     or self._result_is_nat(expr.else_branch))
-            )
-        if isinstance(expr, ast.MatchExpr):
-            return (
-                bool(expr.arms)
-                and all(self._arm_nat_compatible(a.body) for a in expr.arms)
-                and any(self._result_is_nat(a.body) for a in expr.arms)
-            )
-        if isinstance(expr, ast.SlotRef):
-            return expr.type_name == "Nat"
-        if isinstance(expr, ast.BinaryExpr):
-            if expr.op in (
-                ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL,
-                ast.BinOp.DIV, ast.BinOp.MOD,
-            ):
-                return (self._result_is_nat(expr.left)
-                        and self._result_is_nat(expr.right))
+        return narrowing.result_is_nat(expr, self._call_result_is_nat)
+
+    def _call_result_is_nat(self, expr: ast.Expr) -> bool:
+        """The call leaf of the shared widening rule, codegen's reading.
+
+        Consults the checker's resolved-type side-table first — the answer
+        the verifier's leaf reads, so a verified build matches it
+        site-for-site.  A call's @Nat return cannot come from
+        `_infer_fncall_vera_type` alone: it maps the i64 WASM return back to
+        "Int" (both @Nat and @Int lower to i64) and so NEVER yields "Nat",
+        which left every @Nat-returning call result unguarded while the
+        verifier obligated it `tier3` (#813 review).
+
+        Caveat (no-side-table fallback): an unverified `transform -> compile`
+        has no table, so a user callee's DECLARED @Nat return is recovered
+        from `_fn_ret_type_exprs`, mirroring the verifier's
+        `env.lookup_function().return_type` path — `_infer_fncall_vera_type`
+        would make a genuine @Nat -> @Nat tail call (`count_down(@Nat.0 - 1)`)
+        look like a narrowing and break its return_call TCO (#758).
+        Over-classifying a call result as @Nat here only ever suppresses a
+        (dead) guard on a provably-@Nat value — never a wrong runtime verdict.
+        """
+        resolved = self._resolved_codegen_type(expr)
+        if resolved is not None:
+            return resolved == "Nat"
+        if not isinstance(expr, (ast.FnCall, ast.ModuleCall)):
             return False
-        if isinstance(expr, (ast.FnCall, ast.ModuleCall)):
-            # Mirror the verifier: `nat_to_int(x)` explicitly widens its @Nat
-            # argument to @Int.  Its declared @Int return hides the @Nat source
-            # from the side-table, so special-case it so the result is guarded
-            # at every widening boundary (#813 follow-up audit site 1).
-            if (
-                isinstance(expr, ast.FnCall)
-                and expr.name == "nat_to_int"
-                and expr.args
-                and self._result_is_nat(expr.args[0])
-            ):
-                return True
-            # Match the verifier's `_result_is_nat` FnCall branch, which reads
-            # the checker's resolved-type side-table (`_resolved_type_of`).  A
-            # call's @Nat return cannot be recovered from
-            # `_infer_fncall_vera_type`: it maps the i64 WASM return back to
-            # "Int" (both @Nat and @Int lower to i64) and so NEVER yields "Nat",
-            # which left every @Nat-returning call result unguarded at the
-            # return / let / call-argument sites while the verifier obligated it
-            # `tier3` — an unsound silent reinterpretation (#813 review).
-            # Consult the side-table first; fall back to `_infer_fncall_vera_type`
-            # for built-in @Nat returns when codegen runs without the table.
-            resolved = self._resolved_codegen_type(expr)
-            if resolved is not None:
-                return resolved == "Nat"
-            # No side-table (an unverified `vera compile`): recover a user
-            # callee's declared @Nat return from `_fn_ret_type_exprs`, mirroring
-            # the verifier's `env.lookup_function().return_type` path.
-            # `_infer_fncall_vera_type` cannot — it maps the erased i64 return
-            # back to "Int" (both @Nat and @Int lower to i64), which would make
-            # a genuine @Nat -> @Nat tail call (`count_down(@Nat.0 - 1)`) look
-            # like a narrowing and break its return_call TCO (#758).
-            decl_ret = self._fn_ret_type_exprs.get(expr.name)
-            if isinstance(decl_ret, ast.RefinementType):
-                decl_ret = decl_ret.base_type
-            if (isinstance(decl_ret, ast.NamedType)
-                    and not decl_ret.type_args
-                    and self._resolve_base_type_name(decl_ret.name) == "Nat"):
-                return True
-            call = (
-                expr if isinstance(expr, ast.FnCall)
-                else ast.FnCall(name=expr.name, args=expr.args, span=expr.span)
-            )
-            return self._infer_fncall_vera_type(call) == "Nat"
-        # IntLit (literal in target context), UnaryExpr (negation -> @Int), else.
-        return False
+        decl_ret = self._fn_ret_type_exprs.get(expr.name)
+        if isinstance(decl_ret, ast.RefinementType):
+            decl_ret = decl_ret.base_type
+        if (isinstance(decl_ret, ast.NamedType)
+                and not decl_ret.type_args
+                and self._resolve_base_type_name(decl_ret.name) == "Nat"):
+            return True
+        call = (
+            expr if isinstance(expr, ast.FnCall)
+            else ast.FnCall(name=expr.name, args=expr.args, span=expr.span)
+        )
+        return self._infer_fncall_vera_type(call) == "Nat"
 
     def _arm_nat_compatible(self, expr: ast.Expr) -> bool:
-        """Codegen mirror of ``ContractVerifier._arm_nat_compatible`` (#813 site
-        2a): an if/match arm is @Nat-compatible if intrinsically @Nat or a
-        non-negative literal (always <= i64.MAX, so safe at a widening join)."""
-        return self._result_is_nat(expr) or self._is_nonneg_int_literal(expr)
+        """Codegen's reading of :func:`vera.narrowing.arm_nat_compatible` —
+        an if/match arm is @Nat-compatible if intrinsically @Nat or a
+        non-negative literal (#813 site 2a)."""
+        return narrowing.arm_nat_compatible(expr, self._call_result_is_nat)
 
     @staticmethod
     def _is_nonneg_int_literal(expr: ast.Expr) -> bool:
-        """Codegen mirror: (a block trailing into) a non-negative int literal."""
-        while isinstance(expr, ast.Block):
-            if expr.expr is None:
-                return False
-            expr = expr.expr
-        return isinstance(expr, ast.IntLit) and expr.value >= 0
+        """(A block trailing into) a non-negative int literal — the shared
+        rule, :func:`vera.narrowing.is_nonneg_int_literal`."""
+        return narrowing.is_nonneg_int_literal(expr)
 
     def _is_hetero_int_widen_join(self, expr: ast.Expr) -> bool:
         """Codegen mirror of ``ContractVerifier._is_hetero_int_widen_join``
@@ -2549,6 +2494,11 @@ class OperatorsMixin:
         either operand is ``@Int``, else ``@Nat``), NOT the narrowed result
         type.  Keeps the runtime guard in lockstep with the verifier's
         obligation at every ``+``/``-``/``*`` site (#798)."""
+        # #1503: two literal-only operands take their width from their
+        # values, the rule the verifier's width reads first too.
+        literal = narrowing.literal_operation_width(expr)
+        if literal is not None:
+            return literal
         lt = self._overflow_codegen_type(expr.left)
         rt = self._overflow_codegen_type(expr.right)
         if lt is None or rt is None:
