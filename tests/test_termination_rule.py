@@ -14,7 +14,8 @@ can answer the rule, and where the cycle is written:
   call in a handler clause;
 * rows — ``pure``, ``<IO>``, ``<State<Int>>`` and ``<Exn<Int>>``;
 * answers — every cycle member declares ``decreases``; none does; every
-  function declares ``Diverge``;
+  function declares ``Diverge``, which is guarded only where it also
+  declares ``decreases``;
 * flavours — plain functions, and generic ones (``forall<T>``, whose
   ``where`` helpers are written over the parent's ``T``);
 * placements — the program itself, and a module the program imports.
@@ -51,6 +52,7 @@ from __future__ import annotations
 import dataclasses
 import importlib.util
 import json
+import re
 import sys
 import tempfile
 import typing
@@ -68,6 +70,7 @@ from vera.codegen import CompileResult, compile, execute
 from vera.errors import Diagnostic
 from vera.parser import parse_file, parse_to_ast
 from vera.resolver import ResolvedModule
+from vera.runtime.traps import WasmTrapError
 from vera.transform import transform
 from vera.verifier import ContractVerifier, verify
 
@@ -305,6 +308,40 @@ def test_caller_of_diverge_must_declare_it() -> None:
         "  ensures(true)\n  effects(pure)\n{\n  f(3)\n}\n"
     )
     assert "E125" in {d.error_code for d in _check(source)}
+
+
+_DIVERGE_GROWING = """
+public fn f(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  {measure}effects(<Diverge>)
+{
+  if @Nat.0 > 5 then { 0 } else { f(@Nat.0 + 1) }
+}
+"""
+
+
+@pytest.mark.parametrize("measure", [False, True])
+def test_diverge_function_is_guarded_only_with_a_measure(
+        measure: bool) -> None:
+    """Spec §7.7.3: a `Diverge` function compiles like any other, and has a
+    termination guard only if it also declares `decreases`.
+
+    The recursion grows towards its base case.  Without a measure nothing
+    checks it and it returns; with one, the guard follows the clause and
+    traps on the first growing call.
+    """
+    source = _DIVERGE_GROWING.replace(
+        "{measure}", "decreases(@Nat.0)\n  " if measure else "")
+    result = _compile(source)
+    assert not [d for d in result.diagnostics if d.severity == "error"]
+    guarded = re.search(r"\$dec_active_f(?![A-Za-z0-9_])", result.wat)
+    assert (guarded is not None) == measure, result.wat[:400]
+    if measure:
+        with pytest.raises(WasmTrapError, match="failed to decrease"):
+            execute(result, fn_name="f", args=[1])
+    else:
+        assert execute(result, fn_name="f", args=[1]).value == 0
 
 
 # =====================================================================

@@ -758,10 +758,11 @@ class TypeChecker(
                     f"loop that counts @Nat.0 up to a limit @Nat.1, "
                     f"measure the distance left: requires(@Nat.0 <= @Nat.1) "
                     f"and decreases(@Nat.1 - @Nat.0). Every function on the "
-                    f"cycle needs its own. If the recursion is not meant to "
-                    f"end, as in a server or read-eval loop, declare it: "
-                    f"effects(<Diverge>), or effects(<Diverge, IO>) with IO; "
-                    f"every function that calls it must declare Diverge too."
+                    f"cycle needs its own measure unless it declares Diverge. "
+                    f"If the recursion is not meant to end, as in a server or "
+                    f"read-eval loop, declare it: effects(<Diverge>), or "
+                    f"effects(<Diverge, IO>) with IO; every function that "
+                    f"calls it must declare Diverge too."
                 ),
                 spec_ref='Chapter 5, Section 5.6 "Recursive Functions"',
                 error_code="E137",
