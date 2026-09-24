@@ -17,8 +17,12 @@ caller (#1493).  Both read a namespace's import lists through
 :func:`vera.resolver.merged_import_filters` — per imported path, the UNION
 over every ``import`` of that path, ``None`` for a wildcard (#1433).
 
-Two functions, each the only place its question is answered:
+Each function below is the only place its question is answered:
 
+* :func:`reachable_paths` — the module paths a namespace's imports reach,
+  transitively.  The checker's module view reads it, and so does the
+  constructor fallback's reach in code generation and the verifier
+  (:func:`vera.monomorphize.namespace_module_reach`, #1513).
 * :func:`modules_visible_to` — the resolved modules a namespace can reach,
   with ``direct`` re-derived against its own import list.
 * :func:`imported_data_types` — which module each data type name a namespace
@@ -36,7 +40,36 @@ from vera.resolver import ResolvedModule, merged_import_filters
 __all__ = [
     "imported_data_types",
     "modules_visible_to",
+    "reachable_paths",
 ]
+
+
+def reachable_paths(
+    program: ast.Program,
+    programs: Mapping[tuple[str, ...], ast.Program],
+) -> list[tuple[str, ...]]:
+    """The paths of the modules *program*'s imports reach, transitively.
+
+    *programs* maps each resolved module's path to its program.  A path
+    missing from it did not resolve and is skipped.  The walk goes in import
+    order, depth first, so the list is a function of the source alone.
+    """
+    out: list[tuple[str, ...]] = []
+    seen: set[tuple[str, ...]] = set()
+    frontier = list(reversed([
+        path for path in merged_import_filters(program.imports)
+        if path in programs]))
+    while frontier:
+        path = frontier.pop()
+        if path in seen:
+            continue
+        seen.add(path)
+        out.append(path)
+        frontier.extend(reversed([
+            p for p in merged_import_filters(programs[path].imports)
+            if p in programs
+        ]))
+    return out
 
 
 def modules_visible_to(
@@ -55,23 +88,12 @@ def modules_visible_to(
     Walked in import order, so the list is a function of the source alone.
     """
     by_path = {m.path: m for m in resolved}
-    direct = [path for path in merged_import_filters(program.imports)
-              if path in by_path]
-    direct_set = set(direct)
-    out: list[ResolvedModule] = []
-    seen: set[tuple[str, ...]] = set()
-    frontier = list(reversed(direct))
-    while frontier:
-        path = frontier.pop()
-        if path in seen:
-            continue
-        seen.add(path)
-        dep = by_path[path]
-        out.append(replace(dep, direct=path in direct_set))
-        frontier.extend(reversed([
-            p for p in merged_import_filters(dep.program.imports) if p in by_path
-        ]))
-    return out
+    direct = set(merged_import_filters(program.imports))
+    return [
+        replace(by_path[path], direct=path in direct)
+        for path in reachable_paths(
+            program, {m.path: m.program for m in resolved})
+    ]
 
 
 def imported_data_types(

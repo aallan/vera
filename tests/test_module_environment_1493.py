@@ -836,3 +836,30 @@ class TestOneDerivation:
         seen = modules_visible_to(root, resolved)
         assert [(m.path, m.direct) for m in seen] == [
             (("mid",), True), (("deep",), False)]
+
+    def test_every_reach_is_one_walk(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The modules a module's checker sees and the modules the
+        constructor fallback resolves among (#1513) are one walk,
+        ``reachable_paths``: taken away, both see nothing."""
+        from vera import module_view
+        from vera.monomorphize import namespace_module_reach
+        from vera.resolver import ResolvedModule
+
+        root = parse_to_ast("module r;\n\nimport mid;\n")
+        mids = parse_to_ast("module mid;\n\nimport deep;\n")
+        deep = parse_to_ast("module deep;\n")
+        resolved = [
+            ResolvedModule(("deep",), Path("/x/deep.vera"), deep, "", True),
+            ResolvedModule(("mid",), Path("/x/mid.vera"), mids, "", False),
+            ResolvedModule(("r",), Path("/x/r.vera"), root, "", False),
+        ]
+        pairs = [(m.path, m.program) for m in resolved]
+        assert namespace_module_reach(pairs)[("r",)] == {("mid",), ("deep",)}
+        monkeypatch.setattr(
+            module_view, "reachable_paths", lambda program, programs: [])
+        assert module_view.modules_visible_to(root, resolved) == []
+        reach = namespace_module_reach(pairs)
+        assert all(not paths for key, paths in reach.items()
+                   if key is not None), reach

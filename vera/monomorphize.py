@@ -1307,24 +1307,20 @@ def namespace_module_reach(
     those modules by the checker (`_stranger_constructor`), so codegen's
     ``_namespace_ctor_projection`` and :func:`namespace_ctor_owners` resolve
     it among the modules this returns — one derivation for both, keyed by
-    module path with ``None`` for the entry program, and asserted equal to
-    the checker's view by ``tests/test_warning_severity_1513.py``.
+    module path with ``None`` for the entry program.  A module's reach is
+    :func:`vera.module_view.reachable_paths`, the walk the checker's view of
+    that module is built from, and the two are asserted equal by
+    ``tests/test_warning_severity_1513.py``.
     """
+    from vera.module_view import reachable_paths
+
     module_list = list(modules)
     by_path = dict(module_list)
     reach: dict[tuple[str, ...] | None, frozenset[tuple[str, ...]]] = {
         None: frozenset(by_path),
     }
     for path, prog in module_list:
-        seen: set[tuple[str, ...]] = set()
-        frontier = [tuple(imp.path) for imp in prog.imports]
-        while frontier:
-            dep = frontier.pop()
-            if dep in seen or dep not in by_path:
-                continue
-            seen.add(dep)
-            frontier.extend(tuple(imp.path) for imp in by_path[dep].imports)
-        reach[path] = frozenset(seen)
+        reach[path] = frozenset(reachable_paths(prog, by_path))
     return reach
 
 
