@@ -48,8 +48,10 @@ def uri_to_path(uri: str) -> str:
     contradicting LSP_SERVER.md's "module imports resolve from disk").
 
     **Total by construction.**  Every caller is on the didOpen/didChange
-    path, where a raised exception escapes the request handler, so this
-    returns a string for every input and never raises.  When a URI names
+    path.  ``analyze_and_publish`` reports an exception from the analysis
+    as an ``E699``, but builds that report with ``analysis_failure``,
+    which calls this too -- so a raise here would escape the handler all
+    the same.  It returns a string for every input and never raises.  When a URI names
     no path this process can open, the URI is returned unchanged — an
     opaque document label the pipeline carries but never opens, which is
     the pre-existing behaviour and exactly what an unsaved buffer needs.
