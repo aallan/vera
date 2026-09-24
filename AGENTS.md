@@ -220,4 +220,4 @@ A bug fix closes the **class** the report belongs to, not the reported instance:
 
 ### Contributing
 
-See `CONTRIBUTING.md` for guidelines. Pre-commit hooks run mypy, pytest, trailing whitespace checks, and validate all examples on every commit.
+See `CONTRIBUTING.md` for guidelines. Pre-commit hooks run the fast gates on every commit — ruff, mypy, trailing whitespace checks, the doc gates, and the test files the commit stages; CI runs the full test suite, the conformance suite and every example on every pull request.

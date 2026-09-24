@@ -93,7 +93,15 @@ The release-prep PR must:
 2. Turn the accumulated `[Unreleased]` notes into a dated `## [X.Y.Z]`
    section with at least one bullet and update the CHANGELOG compare links.
 3. Add the release's one-line HISTORY entry and regenerate site assets.
-4. Reconcile `KNOWN_ISSUES.md`'s Bugs table with the tracker, by running
+4. Set the headline test totals to the live collection: the suite total and
+   test-file count in `TESTING.md`'s overview row (with its passed /
+   stress-deselected / skipped breakdown), `README.md`'s project-status line,
+   `FAQ.md`'s by-the-numbers list, `ROADMAP.md`'s "Where we are" line and
+   `vera/README.md`'s Test Suite paragraph.  Confirm with
+   `python scripts/check_doc_counts.py --release`.  Fix PRs leave these
+   alone, since every one of them moves them; CI runs this mode on the
+   release PR (a pull request into `main`) and on pushes to `main`.
+5. Reconcile `KNOWN_ISSUES.md`'s Bugs table with the tracker, by running
    `python scripts/check_doc_counts.py --check-bug-issues`.  The convention
    is one row per open `bug`-labelled issue, and the check needs the GitHub
    API — it sends `GH_TOKEN` or `GITHUB_TOKEN` when either is set, and is
@@ -102,7 +110,7 @@ The release-prep PR must:
    the two legitimately disagree, since a bug filed against an open PR's
    branch has an issue before it has a row.  At release time they should
    agree — that is the point at which the file is the published list.
-5. Pass the ordinary protected-branch CI and review process.
+6. Pass the ordinary protected-branch CI and review process.
 
 After merge, `release.yml` detects the version increase on `main`. It then:
 
