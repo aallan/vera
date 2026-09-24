@@ -782,7 +782,7 @@ public fn fetch_and_print(@String -> @Unit)
   requires(true) ensures(true) effects(<Http, IO>)
 {
   let @Result<String, String> = Http.get(@String.0);
-  IO.println("done")
+  IO.print("done")
 }
 """)
 
@@ -829,7 +829,7 @@ public fn classify_and_print(@String -> @Unit)
   requires(true) ensures(true) effects(<Inference, IO>)
 {
   let @Result<String, String> = Inference.complete(@String.0);
-  IO.println("done")
+  IO.print("done")
 }
 """)
 

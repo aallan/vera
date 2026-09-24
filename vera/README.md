@@ -72,7 +72,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | Module | Lines | Stage | Purpose | Key API |
 |--------|------:|-------|---------|---------|
 | `grammar.lark` | 344 | Parse | LALR(1) grammar definition | *(consumed by Lark)* |
-| `parser.py` | 191 | Parse | Lark frontend, error diagnosis | `parse()`, `parse_file()` |
+| `parser.py` | 220 | Parse | Lark frontend, error diagnosis | `parse()`, `parse_file()` |
 | `lexical.py` | 329 | Parse | Shared lexical scanning (comment spans, blanking) | `scan_comments()`, `blank_block_comments()` |
 | `transform.py` | 1,572 | Transform | Lark tree → AST transformer | `transform()` |
 | `ast.py` | 917 | Transform | Frozen dataclass AST nodes, source formatting | `Program`, `Node`, `Expr`, `format_expr` |
@@ -81,7 +81,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `naming.py` | 1,106 | Type check | The ONE slot / slot-reference-key / State-Exn-family renderer (#1208, #1209) — the checker's rendering, as a total pure function over an `AliasEnv`, consumed by the checker, the monomorphizer, the verifier, the SMT layer, codegen, the tester, the LSP, and `vera check --explain-slots`.  Also the ONE refinement-binder derivation, from the type expression for codegen's runtime guard (`refinement_binder_parts`) and from the predicate's own reference for the verifier and SMT layers (`predicate_binder_key`, #1226), both rendering through `slot_name`; and each consumer is handed the env of the module that DECLARED what it is rendering.  Also the ONE name-resolution SPINE (`classify_named`, #1316/#1321/#1331): which branch a type name takes — type parameter, primitive, alias, declared ADT, built-in — asked by `resolve_type_expr` and by every codegen and WASM derivation that turns a name into a representation, so no consumer can hold a different branch order | `classify_named()`, `slot_name()`, `slot_ref_key()`, `family_name()`, `resolve_type_expr()`, `AliasEnv` |
 | `slots.py` | 427 | Type check | Presentation over `naming.py`: slot resolution tables and their text/JSON rendering, plus the two scope walks the tables need (`forall` narrowing, `where`-helper nesting).  The walks here that are NOT naming say so in their docstrings — the alias-opaque syntactic spelling for WASM representation questions, the last-resort name for a State/Exn cell family that resolves to none, and the bare-call ownership predicate the checker, codegen, and mono discovery all resolve a `get`/`put` call site through | `slot_table()`, `format_slot_table()`, `fn_slot_scope()`, `fn_scopes()`, `type_expr_slot_name()`, `family_fallback_name()`, `bare_call_denotes_user_fn()` |
 | `environment.py` | 2,327 | Type check | Type environment, scope stacks, ability registry, all built-in registrations | `TypeEnv`, `AbilityInfo` |
-| `checker/` | 8,110 | Type check | Two-pass type checker (mixin package) | `typecheck()` |
+| `checker/` | 9,177 | Type check | Two-pass type checker (mixin package) | `typecheck()` |
 | `  core.py` | 1,410 | | TypeChecker class, orchestration, contracts, constraint validation | |
 | `  resolution.py` | 535 | | AST TypeExpr → semantic Type, inference | |
 | `  modules.py` | 534 | | Cross-module registration (C7b/C7c), plus the per-module body check that makes a module's diagnostics independent of which file `vera check` was given (#1244) and the #1304 refusal of a bare function, data-type or constructor name two imports both supply (E155/E156/E157) | |
@@ -89,8 +89,8 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `  expressions.py` | 1,485 | | Expression synthesis (bidirectional), operators, statements | |
 | `  eq_ability.py` | 226 | | Eq ability derivation checks | |
 | `  sql.py` | 309 | | SQL literal-provenance resolution + placeholder counting (#309) | `resolve_literal_string()`, `count_placeholders()` |
-| `  calls.py` | 1,631 | | Function/constructor/module/ability calls | |
-| `  control.py` | 929 | | If/match, patterns, effect handlers | |
+| `  calls.py` | 1,902 | | Function/constructor/module/ability calls | |
+| `  control.py` | 1,040 | | If/match, patterns, effect handlers | |
 | `resolver.py` | 373 | Resolve | Module path resolution, parse cache, the one import-filter derivation | `ModuleResolver`, `merged_import_filters()` |
 | `disclosure.py` | 536 | Verify | Per-module disclosed-function manifests: each module's own verification emits the set `disclosed_fn_names` derives, keyed by owner path and carrying the `DisclosureSite` the importer's E534 cites, so the #1363 demotion crosses an import (#1399); computed BOTTOM-UP over the import DAG so each module is verified once and nothing nests, and content-addressed on the module's own source + its closure's + the budget, which is what makes an edit to an imported module invalidate it | `ModuleDisclosureIndex`, `DisclosureSite` |
 | `monomorphize.py` | 4,368 | Resolve | Shared generic instantiation discovery + AST substitution (verifier and codegen); each clone's De Bruijn recount renders its binder names under the **origin module's** `AliasEnv`, the one its consumers rebuild the clone's scope with (#1208) | `substitute_type_vars()`, `resolve_type_alias()`, `canonicalize_type_aliases()` |

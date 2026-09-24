@@ -2045,38 +2045,50 @@ def test_a_pair_state_cell_is_refused_and_says_so(
     )
 
 
-#: An initialiser no `ensures` describes, for the cells that have no
-#: constructible value at all.
-_NO_VALUE = "unreachable_value()"
+#: A value of `Never` for the cells whose type has no other value to write:
+#: a declared function that throws.  An UNDECLARED call stood here until
+#: #1513 made an unresolved call an error, so a program holding one no
+#: longer reaches the verifier at all.
+_NEVER_FN = (
+    "private fn never_value(@Unit -> @Never)\n"
+    "  requires(true)\n  ensures(true)\n  effects(<Exn<Int>>)\n"
+    "{\n  Exn.throw(0)\n}\n\n"
+)
+_NEVER = "never_value(())"
+_THROWS = "<Exn<Int>>"
 
 #: Cell types whose REPRESENTATION decides whether code generation
-#: registers a `State<T>` cell, each with the value written into it.  The
-#: initialiser is load-bearing, not decoration: `unreachable_value()` is
-#: UNDECLARED, so code generation drops the whole function before
-#: `_register_state_cell` is reached, and the registered rows then compared
+#: registers a `State<T>` cell, each with the value written into it, the
+#: declarations it needs, the enclosing function's effect row, and whether
+#: the record must DISCLOSE the write.  A row the backend REGISTERS carries
+#: a real literal and the cell asserts the artifact exists: an undeclared
+#: initialiser made code generation drop the whole function before
+#: `_register_state_cell` was reached, and the registered rows then compared
 #: a `tier3` claim against a module containing no `$f` at all — the #1268
-#: shape inside the cell that exists to detect it, and a cell that cannot
-#: fail reading as coverage (PR #1478 review, F12).  So a row the backend
-#: REGISTERS carries a real literal and the cell asserts the artifact
-#: exists.  `Never` and its transparent wrappers have no value to write, so
-#: the opaque spelling is the only one there — and those rows are refused
-#: before any artifact is due, which is what they are here to say.
+#: shape inside the cell that exists to detect it (PR #1478 review, F12).
+#: A row the backend REFUSES must never be recorded `tier3`, a claim of a
+#: runtime check the refused registration never emits.  Its write is
+#: disclosed (`tier3_unguarded`) where the verifier cannot state the
+#: predicate over the cell's type; a `String` literal against `true` it
+#: proves outright, so that row's record is Tier 1 and discloses nothing.
 #:
 #: `Future<Future<Never>>` and an ALIAS to `Never` are listed because the
 #: shared rule answers for them too and nothing said so: both recorded
 #: `tier3` at `8557dc24` beside `Never` itself (PR #1478 review).
-_CELL_REPRESENTATIONS: dict[str, tuple[bool, str, str]] = {
-    # cell type: (registered, initial value, extra declarations)
-    "Int": (True, "5", ""),
-    "Float64": (True, "1.0", ""),
-    "Option<Int>": (True, "Some(1)", ""),
-    "String": (False, _NO_VALUE, ""),      # a pair: no way through a
-    "Array<Int>": (False, _NO_VALUE, ""),  #   one-word import
-    "Unit": (False, _NO_VALUE, ""),        # zero-size
-    "Never": (False, _NO_VALUE, ""),       # no representation at all
-    "Future<Never>": (False, _NO_VALUE, ""),          # transparently same
-    "Future<Future<Never>>": (False, _NO_VALUE, ""),  # and again
-    "NeverAlias": (False, _NO_VALUE, "type NeverAlias = Never;\n\n"),
+_CELL_REPRESENTATIONS: dict[str, tuple[bool, str, str, str, bool]] = {
+    # cell type: (registered, initial value, extra declarations,
+    #             effect row, disclosed)
+    "Int": (True, "5", "", "pure", False),
+    "Float64": (True, "1.0", "", "pure", False),
+    "Option<Int>": (True, "Some(1)", "", "pure", False),
+    "String": (False, '"s"', "", "pure", False),      # a pair: no way
+    "Array<Int>": (False, "[1]", "", "pure", True),   #   through a one-word
+    "Unit": (False, "()", "", "pure", True),          # zero-size
+    "Never": (False, _NEVER, _NEVER_FN, _THROWS, True),  # no representation
+    "Future<Never>": (False, _NEVER, _NEVER_FN, _THROWS, True),  # the same
+    "Future<Future<Never>>": (False, _NEVER, _NEVER_FN, _THROWS, True),
+    "NeverAlias": (False, _NEVER, "type NeverAlias = Never;\n\n" + _NEVER_FN,
+                   _THROWS, True),
 }
 
 
@@ -2098,11 +2110,12 @@ def test_the_record_and_registration_agree_about_a_state_cell(
     `State<Future<Never>>` recorded `tier3` while registration dropped the
     function with E607, because the verifier asked only about erasure.
     """
-    expected, init, prelude = _CELL_REPRESENTATIONS[cell_type]
+    expected, init, prelude, effects, disclosed = (
+        _CELL_REPRESENTATIONS[cell_type])
     source = (
         f"{prelude}type R = {{ @{cell_type} | true }};\n\n"
         "public fn f(@Unit -> @Int)\n"
-        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        f"  requires(true)\n  ensures(true)\n  effects({effects})\n"
         "{\n"
         f"  handle[State<R>](@R = {init}) {{\n"
         "    put(@R) -> { resume(()) }\n"
@@ -2148,10 +2161,17 @@ def test_the_record_and_registration_agree_about_a_state_cell(
             f"`State<{cell_type}>` is refused at registration and the "
             f"module carries `$f` anyway"
         )
-        assert "tier3_unguarded" in statuses and "tier3" not in statuses, (
+        assert "tier3" not in statuses, (
             f"`State<{cell_type}>` is refused at registration and the record "
-            f"says {sorted(statuses)}"
+            f"claims a runtime check: {sorted(statuses)}"
         )
+        if disclosed:
+            assert "tier3_unguarded" in statuses, (
+                f"`State<{cell_type}>` is refused at registration and the "
+                f"record says {sorted(statuses)}"
+            )
+        else:
+            assert statuses == {"verified"}, sorted(statuses)
 
 
 #: What the module docstring says the `@Byte` literal tally is, as

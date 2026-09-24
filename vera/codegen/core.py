@@ -455,6 +455,17 @@ class CodeGenerator(
         # declaration ordering: that one is first-wins because a slot has
         # one winner, while contention is a property of each declaration.
         self._module_adt_declarers: dict[str, tuple[tuple[str, ...], ...]] = {}
+        # #1513: module path -> the ADT names that module declares PUBLIC,
+        # the set the checker's `_module_constructors` is built from.  The
+        # namespace projection reads it to resolve a constructor of a type
+        # the namespace does not import (`paint(Green)` with `Colour` reached
+        # only through `paint`'s signature) exactly where the checker does.
+        self._module_public_adts: dict[tuple[str, ...], frozenset[str]] = {}
+        # #1513: namespace -> the modules that namespace's checker can see,
+        # so the same fallback resolves among the same declarations.
+        self._namespace_module_reach: dict[
+            tuple[str, ...] | None, frozenset[tuple[str, ...]]
+        ] = {}
         # #1317: `mod$<path>$<Name>` -> the bare name the user wrote, for
         # every ADT type and constructor the per-owner rename qualified.  The
         # mangled spelling is a WASM symbol, never a name the reader is asked
@@ -1646,14 +1657,24 @@ class CodeGenerator(
           §8.5.2 says it does.
 
         A declaration the namespace cannot NAME is in none of the three: it
-        is dropped before the classes are applied, because a name it cannot
-        write must not answer for one it can.  That covers the entry file's
-        declarations while a module compiles, a sibling module's that this
-        one never imports, and a module reached only transitively from the
-        entry — each measured taking the prelude's `Some` away from a body
-        that renders `Some(42)` without it.  Dropped rather than demoted to
-        `foreign`: `foreign` is applied after `infra`, so a stranger placed
-        there would still shadow the prelude.
+        is kept out of them, because a name it cannot write must not answer
+        for one it can.  That covers the entry file's declarations while a
+        module compiles, a sibling module's that this one never imports, and
+        a module reached only transitively from the entry — each measured
+        taking the prelude's `Some` away from a body that renders `Some(42)`
+        without it.  Kept out rather than demoted to `foreign`: `foreign` is
+        applied after `infra`, so a stranger placed there would still shadow
+        the prelude.
+
+        One use of a stranger remains (#1513): a body that constructs a
+        PUBLIC type of a module its checker sees without importing the type
+        — `paint(Green)`, with `Colour` reaching the entry only through
+        `paint`'s signature.  A **fallback** applied after the three fills
+        each constructor name that no class holds and exactly one such
+        stranger declares, which is the question the checker's
+        `_stranger_constructor` answers before it accepts the name with a
+        warning.  It fills and never displaces, so the guarantee above
+        holds for every name the three classes resolve.
 
         Returns the constructor layouts, the ownership map, and the
         type-parameter index table, all three built from the same ordering
@@ -1676,6 +1697,10 @@ class CodeGenerator(
         infra: list[str] = []
         foreign: list[str] = []
         own: list[str] = []
+        # #1513: the strangers a body may still NAME a constructor of — a
+        # PUBLIC type of a module the compilation absorbs, which this
+        # namespace does not import.  See the fallback class below.
+        strangers: list[str] = []
         for adt_name in self._adt_layouts:
             bare = display.get(adt_name, adt_name)
             if bare not in declared:
@@ -1734,6 +1759,12 @@ class CodeGenerator(
                 # away with it — measured as an E602 in the entry for
                 # `HtmlNode`, `Request` and `Response`, whose blocks the
                 # prelude injects on demand.
+                if (owner is not None
+                        and owner in self._namespace_module_reach.get(
+                            active, frozenset())
+                        and bare in self._module_public_adts.get(
+                            owner, frozenset())):
+                    strangers.append(adt_name)
                 continue
             elif owner is None:
                 # An ENTRY-file declaration while a module compiles, with no
@@ -1773,6 +1804,34 @@ class CodeGenerator(
         # The namespace's OWN declarations shadow both, which is §8.5.2.
         for adt_name in own:
             apply(adt_name, keep_infra=False)
+        # #1513: a constructor of a type this namespace does NOT import —
+        # `paint(Green)` where `Colour` reaches the entry only through
+        # `paint`'s signature.  The checker accepts it, with a warning that
+        # names the module to import from, when exactly one module's public
+        # type declares the name, that type's name is declared by no other
+        # module, and nothing in scope here already holds either name
+        # (`_stranger_constructor`).  This class answers the same question
+        # the same way, so the program the checker accepts is the one that
+        # compiles.  It FILLS gaps and never displaces: a name any class
+        # above holds keeps its meaning, which is what keeps #1436's
+        # guarantee that a declaration this namespace cannot name never
+        # answers for one it can.  A name two strangers declare is left
+        # out, and the checker has already refused it.
+        stranger_sources: dict[str, list[str]] = {}
+        for adt_name in strangers:
+            for ctor_name in self._adt_layouts[adt_name]:
+                if ctor_name not in ctor_layouts:
+                    stranger_sources.setdefault(ctor_name, []).append(
+                        adt_name)
+        for ctor_name, sources in stranger_sources.items():
+            if len(sources) != 1:
+                continue
+            (adt_name,) = sources
+            ctor_layouts[ctor_name] = self._adt_layouts[adt_name][ctor_name]
+            ctor_to_adt[ctor_name] = adt_name
+            owned_tp = self._adt_ctor_tp_indices.get(adt_name, {})
+            if ctor_name in owned_tp:
+                tp_indices[ctor_name] = owned_tp[ctor_name]
         return ctor_layouts, ctor_to_adt, tp_indices
 
     def _adt_decl_index(self, name: str, order: dict[str, int]) -> int:

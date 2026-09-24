@@ -19,6 +19,7 @@ from vera.monomorphize import (
     module_qualified_generic_names,
     module_qualified_generic_targets,
     namespace_fn_names,
+    namespace_module_reach,
     public_generic_names,
     qualify_contended_data_decls,
 )
@@ -862,9 +863,28 @@ class CrossModuleMixin:
 
         # #1253: fold the per-namespace ADT membership sets.
         self._builtin_adt_names = builtin_adt_names
+        self._module_public_adts = dict(public_adts)
+        self._namespace_module_reach = self._build_namespace_module_reach()
         self._adt_namespace_members = self._build_adt_membership(
             program, import_names, declared_adts, public_adts,
         )
+
+    def _build_namespace_module_reach(
+        self,
+    ) -> dict[tuple[str, ...] | None, frozenset[tuple[str, ...]]]:
+        """The modules each namespace's checker can see (#1513).
+
+        The constructor fallback in `_namespace_ctor_projection` asks this,
+        so a constructor the checker resolves among the modules it can see
+        is resolved here among the same modules, and one outside them cannot
+        make a name ambiguous on this side alone.  The derivation is the
+        shared :func:`vera.monomorphize.namespace_module_reach`, which the
+        verifier's :func:`~vera.monomorphize.namespace_ctor_owners` reads
+        too, so the two sides of the #732 differential resolve a stranger
+        constructor among the same modules.
+        """
+        return namespace_module_reach(
+            (mod.path, mod.program) for mod in self._resolved_modules)
 
     def _build_adt_membership(
         self,
@@ -2092,8 +2112,11 @@ class CrossModuleMixin:
         rationale = (
             "The WASM code generator compiles imported functions into the "
             "same binary.  An unresolved call has no target to compile "
-            "against; the checker only warns (E200) on it, so the program "
-            "still reaches code generation."
+            "against.  The checker refuses a call that names nothing (E200, "
+            "E230, E233), so a call reaching this was either compiled "
+            "without being checked, or accepted by the checker as something "
+            "code generation does not yet compile as a call: a bare call to "
+            "an operation of a user-declared ability is one (#1499)."
         )
         source_line = self._get_source_line(loc.line)
         # A module-qualified call (`m::f`) and a bare call (`f`) fail for

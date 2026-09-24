@@ -193,15 +193,17 @@ def _verify(tmp_path: Path, source: str, name: str = "p.vera") -> dict:
             f"verify emitted no envelope (exit {proc.returncode})\n"
             f"{proc.stdout[:400]}\n{proc.stderr[-600:]}"
         ) from None
-    # An UNRESOLVED call verifies "clean" with only an E200 warning, and its
-    # result is opaque — so a fixture that forgot to declare its producer
-    # exhibits a plausible-looking demotion for a reason that has nothing to
-    # do with disclosure.  That is not hypothetical: two cells in this file
-    # were written without `mk` and passed.  Every fixture here is checked for
-    # it before its verdict is read.
-    assert "E200" not in [w.get("error_code") for w in result["warnings"]], (
-        f"fixture calls an undeclared function, so its obligations are opaque "
-        f"for a reason unrelated to disclosure:\n{source}"
+    # A fixture that forgot to declare its producer calls nothing: an E200
+    # error, after which verify reports no obligation at all, so a cell
+    # would read a verdict about a program that was never verified.  (While
+    # E200 was a warning the call verified with an opaque result instead,
+    # and two cells in this file were written without `mk` and passed.)
+    # Every fixture here is checked for it, on both channels, before its
+    # verdict is read.
+    reported = [*result.get("diagnostics", []), *result.get("warnings", [])]
+    assert "E200" not in [d.get("error_code") for d in reported], (
+        f"fixture calls an undeclared function, so its verdict is about "
+        f"nothing it declares:\n{source}"
     )
     return result
 

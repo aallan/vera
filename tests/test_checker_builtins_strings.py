@@ -9,7 +9,7 @@ import pytest
 from tests.checker_helpers import (
     _check_err,
     _check_ok,
-    _warnings,
+    _errors,
 )
 
 
@@ -659,12 +659,14 @@ private fn f(@Nat -> @String)
 """, "Unresolved"),
     ])
     def test_removed_builtin_names_fail(self, src: str, match: str) -> None:
-        """Pre-#288 names must not resolve after the naming audit."""
-        _check_ok(src)  # must produce no errors (warning-only)
-        warns = _warnings(src)
-        assert any(match.lower() in w.description.lower() for w in warns), \
-            f"Expected warning matching '{match}', got: " \
-            f"{[w.description for w in warns]}"
+        """Pre-#288 names must not resolve after the naming audit: each is
+        an unresolved call, an E200 error since #1513."""
+        errs = _errors(src)
+        assert [e.error_code for e in errs] == ["E200"], \
+            [e.description for e in errs]
+        assert match.lower() in errs[0].description.lower(), \
+            f"Expected an error matching '{match}', got: " \
+            f"{[e.description for e in errs]}"
 
 
 # =====================================================================
