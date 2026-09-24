@@ -1441,9 +1441,10 @@ effects(<Diverge, IO>)           -- divergent with IO
 effect row signals that the function may not terminate. Functions without
 `Diverge` must be proven total (via `decreases` clauses on recursion). Use it
 for a loop with no bound, such as a server or read-eval loop: a function that
-declares it needs no `decreases` and compiles with no termination guard. Like
-any effect, it propagates: every function that calls a `Diverge` function must
-declare `Diverge` too (`E125`), up to `main`.
+declares it needs no `decreases`, and compiles like any other; it has a
+termination guard only if it also declares `decreases`. Like any effect, it
+propagates: every function that calls a `Diverge` function must declare
+`Diverge` too (`E125`), up to `main`.
 
 ### Effect declarations
 

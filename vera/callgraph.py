@@ -29,11 +29,16 @@ and a constructor call through its field types.
 is a value no declaration names; a module-qualified call, because the module
 graph is acyclic (E011); built-ins, and effect and ability operations.  Spec
 §5.6 states the first as the recursion this analysis cannot see.
+
+The calls themselves are enumerated once, by :func:`iter_calls`.  The graph
+draws its edges from it, and the verifier holds its measure proof to it
+(:func:`computation_calls`), so the two cannot disagree about where a call
+can be written.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, fields, is_dataclass
 
 from vera import ast
@@ -60,6 +65,64 @@ class CallSite:
     callee: ast.FnDecl
     call: ast.FnCall
     spec: bool
+
+
+def iter_calls(
+    root: object,
+    spec: bool = False,
+    expand: Callable[[ast.Node], object] | None = None,
+) -> Iterator[tuple[ast.FnCall, bool]]:
+    """Every bare call under *root*, with whether it is a specification call.
+
+    THE enumeration of where a call can be written.  It is a generic walk
+    over every dataclass field, not a dispatch on expression kinds, so a node
+    kind that no list names is still walked.  A nested declaration is not
+    entered: it is its own node of the graph, with its own frame.
+
+    A call inside a contract or a refinement predicate is a specification
+    call, and so is every call under what *expand* returns for a node: the
+    type text the node contributes (an alias's definition, a constructor's
+    field types), whose predicates the compiled program evaluates as guards.
+
+    An explicit stack, not recursion: an alias chain or a nested expression
+    is as deep as the program makes it, and a walk with a Python frame per
+    level would raise `RecursionError` on a program the checker accepts (the
+    #1208 depth lesson).  Children are pushed in reverse, so calls are met
+    in source order.
+    """
+    stack: list[tuple[object, bool]] = [(root, spec)]
+    while stack:
+        node, in_spec = stack.pop()
+        if isinstance(node, ast.FnDecl):
+            continue
+        if isinstance(node, tuple):
+            stack.extend((item, in_spec) for item in reversed(node))
+            continue
+        if not (is_dataclass(node) and isinstance(node, ast.Node)):
+            continue
+        if isinstance(node, ast.FnCall):
+            yield node, in_spec
+        elif isinstance(node, (ast.Contract, ast.RefinementType)):
+            in_spec = True
+        expansion = expand(node) if expand is not None else None
+        stack.extend(reversed([
+            (getattr(node, f.name), in_spec)
+            for f in fields(node) if f.name != "span"
+        ]))
+        if expansion is not None:
+            stack.append((expansion, True))
+
+
+def computation_calls(root: object) -> list[ast.FnCall]:
+    """The calls under *root* that run as computation, in source order.
+
+    Those the graph's body edges are drawn from: every call outside a
+    contract and a refinement predicate.  The verifier checks its measure
+    walk against this list (#1524 review), because a call that walk does not
+    reach would otherwise be left out of a termination proof while the
+    runtime guard still meets it.
+    """
+    return [call for call, spec in iter_calls(root) if not spec]
 
 
 def declares_diverge(decl: ast.FnDecl) -> bool:
@@ -154,52 +217,30 @@ class CallGraph:
     ) -> None:
         """Record every call reachable from *root* as an edge of *caller*.
 
-        An explicit stack, not recursion: an alias chain or a nested
-        expression is as deep as the program makes it, and a walk with a
-        Python frame per level would raise `RecursionError` on a program the
-        checker accepts (the #1208 depth lesson).  Children are pushed in
-        reverse, so edges are met in source order.
+        The calls are :func:`iter_calls`'s.  What this adds is the type
+        expansion: a type contributes the calls in its refinement
+        predicates, which the compiled program evaluates as guards, an alias
+        through its definition and a constructor through its fields.  Each
+        is expanded once per declaration (*seen*), so a recursive type ends.
         """
-        stack: list[tuple[object, bool]] = [(root, spec)]
-        while stack:
-            node, in_spec = stack.pop()
-            if isinstance(node, ast.FnDecl):
-                # A nested declaration is its own node, with its own frame.
-                continue
-            if isinstance(node, tuple):
-                stack.extend((item, in_spec) for item in reversed(node))
-                continue
-            if not (is_dataclass(node) and isinstance(node, ast.Node)):
-                continue
-            if isinstance(node, ast.FnCall):
-                callee = self._resolve(node.name, frames)
-                if callee is not None:
-                    self.sites.append(CallSite(caller, callee, node, in_spec))
-            elif isinstance(node, (ast.Contract, ast.RefinementType)):
-                in_spec = True
-            # A type contributes the calls in its refinement predicates,
-            # which the compiled program evaluates as guards: an alias
-            # through its definition, a constructor through its fields.
-            # Every call reached that way is inside a predicate.
-            expansion: object = None
+        def expand(node: ast.Node) -> object:
             if isinstance(node, ast.NamedType):
                 key = f"type:{node.name}"
                 if node.name in self._aliases and key not in seen:
                     seen.add(key)
-                    expansion = self._aliases[node.name]
+                    return self._aliases[node.name]
             elif isinstance(node, (ast.ConstructorCall,
                                    ast.NullaryConstructor)):
                 key = f"ctor:{node.name}"
                 if node.name in self._ctor_fields and key not in seen:
                     seen.add(key)
-                    expansion = self._ctor_fields[node.name]
-            children = [
-                (getattr(node, f.name), in_spec)
-                for f in fields(node) if f.name != "span"
-            ]
-            stack.extend(reversed(children))
-            if expansion is not None:
-                stack.append((expansion, True))
+                    return self._ctor_fields[node.name]
+            return None
+
+        for call, in_spec in iter_calls(root, spec, expand):
+            callee = self._resolve(call.name, frames)
+            if callee is not None:
+                self.sites.append(CallSite(caller, callee, call, in_spec))
 
     # -- queries -----------------------------------------------------------
 

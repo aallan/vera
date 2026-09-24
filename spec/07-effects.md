@@ -400,7 +400,7 @@ Like `IO`, `Exn<E>` is built-in — no `effect Exn<E> { ... }` declaration is ne
 
 The `Diverge` effect has no operations. Declaring `effects(<Diverge>)` means the function may not terminate. Functions without `Diverge` in their effect row MUST be proven to terminate (via `decreases` clauses on recursion); a recursive function with neither is rejected with `E137` (Chapter 5, Section 5.6).
 
-A function that declares `Diverge` needs no `decreases` clause and compiles like any other, with no termination guard. `Diverge` propagates like any effect: a function that calls one declaring `Diverge` must declare it too (`E125`), so a program whose `main` reaches an unbounded loop declares `effects(<Diverge, IO>)` on `main`. It is the row for a loop with no bound, such as a server or a read-eval loop; a loop that counts to a bound takes a measure instead.
+A function that declares `Diverge` needs no `decreases` clause, and compiles like any other; it has a termination guard only if it also declares `decreases`. `Diverge` propagates like any effect: a function that calls one declaring `Diverge` must declare it too (`E125`), so a program whose `main` reaches an unbounded loop declares `effects(<Diverge, IO>)` on `main`. It is the row for a loop with no bound, such as a server or a read-eval loop; a loop that counts to a bound takes a measure instead.
 
 ### 7.7.4 `Random`
 

@@ -25,7 +25,7 @@ from functools import lru_cache, partial
 from typing import TYPE_CHECKING, ClassVar, cast
 
 from vera import ast, binders, carriers, narrowing, naming
-from vera.callgraph import CallGraph
+from vera.callgraph import CallGraph, computation_calls
 from vera.environment import ConstructorInfo, FunctionInfo, TypeEnv
 from vera.monomorphize import (
     MonoContext,
@@ -245,7 +245,13 @@ class BlockBindingPolicy(enum.Enum):
     """
 
     FRESH_VAR = "fresh_var"
-    """Always mint a fresh var carrying the declared type's invariant.
+    """Mint a fresh var for the binding, of whatever type it has.
+
+    A scalar's carries the declared type's invariant.  A type with no scalar
+    sort (an ADT, `Array`, `Tuple` or `Map`) takes a fresh const of the sort
+    of the outer binding it shadows, which has the same slot name and so the
+    same sort (#1524 review).  With no outer binding nothing is pushed,
+    because no later reference can then name a wrong value.
 
     For `_walk_for_nat_binding_obligations`, which needs a slot to exist for
     every binding whether or not the RHS translated, so a later `@Nat`
@@ -5847,6 +5853,19 @@ class ContractVerifier:
                 return None
             if policy is BlockBindingPolicy.FRESH_VAR:
                 val = self._fresh_slot_var(smt, stmt.type_expr)
+                if val is None and type_name is not None:
+                    # #1524 review: `_fresh_slot_var` has a sort only for a
+                    # scalar, so an ADT, `Array`, `Tuple` or `Map` binding
+                    # was left out of the env, and a later `@T.0` read the
+                    # outer value it shadows: `decreases(@NList.0)` was
+                    # proved over the parameter's tail while the program
+                    # recursed on the tail of a longer list.  The outer has
+                    # this binding's slot name, so its sort is this
+                    # binding's sort.  With no outer there is nothing a
+                    # later reference could read in its place.
+                    stale = env.resolve(type_name, 0)
+                    if stale is not None:
+                        val = z3.FreshConst(stale.sort(), "fresh")
             elif (policy is BlockBindingPolicy.OPAQUE_SHADOW
                     and type_name is not None):
                 stale = env.resolve(type_name, 0)
@@ -6376,34 +6395,27 @@ class ContractVerifier:
             return False
 
         # Collect all recursive call sites (self + mutual) with path conds.
-        # #1520: the calls that stay on the cycle are the call graph's, by
-        # site, when the graph holds this very declaration.  A clone (a
-        # monomorphized generic) is a copy the graph never saw, so its calls
-        # are matched by name against the group instead.
-        orig = self._graph_decl(decl)
-        expected: dict[int, ast.FnDecl] = {}
-        if orig is decl:
-            expected = {
-                id(site.call): site.callee
-                for site in self._graph_of[id(decl)].cycle_sites(decl)
-            }
+        # Which calls stay on the cycle is settled before the walk, and not
+        # by it: see `_decreases_expected`.
+        expected = self._decreases_expected(decl, group_decls)
 
-            def match(call: ast.FnCall) -> ast.FnDecl | None:
-                return expected.get(id(call))
-        else:
-            def match(call: ast.FnCall) -> ast.FnDecl | None:
-                return group_decls.get(call.name)
+        def match(call: ast.FnCall) -> ast.FnDecl | None:
+            return expected.get(id(call))
+
         calls = self._collect_recursive_calls(
             decl.body, smt, slot_env, match,
         )
         if not calls:
             # No recursive calls found → can't verify
             return False
-        # #1520: every call the graph puts on the cycle has to be one the
-        # walk compared with the measure.  A call the walk cannot reach
-        # would otherwise be missing from the proof while the runtime guard
-        # still meets it, which is the false Tier 1 this closes.
-        if orig is decl and not set(expected) <= {id(c[4]) for c in calls}:
+        # #1520: every call on the cycle has to be one the walk compared
+        # with the measure.  A call the walk cannot reach would otherwise be
+        # missing from the proof while the runtime guard still meets it,
+        # which is the false Tier 1 this closes — for a monomorphized clone
+        # as much as for the declaration the graph holds (#1524 review: a
+        # generic's clone had no such check, so a call in a position the
+        # walk skipped was proved away).
+        if not set(expected) <= {id(c[4]) for c in calls}:
             return False
 
         import z3 as z3mod
@@ -6504,6 +6516,36 @@ class ContractVerifier:
         self._walk_for_calls(match, expr, [], results, smt, slot_env)
         return results
 
+    def _decreases_expected(
+        self, decl: ast.FnDecl, group_decls: dict[str, ast.FnDecl],
+    ) -> dict[int, ast.FnDecl]:
+        """The calls in *decl*'s body that stay on its cycle, by call node.
+
+        Each maps to the declaration it calls, whose measure the call is
+        compared against.  For a declaration the call graph holds, these are
+        the graph's own cycle sites (#1520).  A monomorphized clone is a copy
+        the graph never saw, so its calls are every computation call that
+        names a member of *group_decls*, the clone's `where` group, which
+        `_decreases_group` has checked holds the original's whole cycle.
+
+        Both come from :func:`vera.callgraph.iter_calls`, a generic walk
+        over every field, and never from `_walk_for_calls`, the walk the
+        measure is compared on.  That independence is the point: a position
+        the measure walk does not read shows up as an expected call it did
+        not compare, so `_verify_decreases` withholds the proof instead of
+        proving the calls it happened to reach.
+        """
+        if self._graph_decl(decl) is decl:
+            return {
+                id(site.call): site.callee
+                for site in self._graph_of[id(decl)].cycle_sites(decl)
+            }
+        return {
+            id(call): group_decls[call.name]
+            for call in computation_calls(decl.body)
+            if call.name in group_decls
+        }
+
     def _register_call_graphs(self, program: ast.Program) -> None:
         """Build the call graph of *program* and of every module it reads."""
         graphs = [CallGraph(tld.decl for tld in program.declarations)]
@@ -6581,7 +6623,58 @@ class ContractVerifier:
         smt: SmtContext,
         slot_env: SlotEnv,
     ) -> None:
-        """Recursively walk AST, tracking Z3 path conditions and slot env."""
+        """Recursively walk AST, tracking Z3 path conditions and slot env.
+
+        The `decreases` walk: it records each call *match* puts on the cycle
+        with the path conditions and slot env its arguments are read in.
+        `_verify_decreases` holds what it records to the call graph's own
+        enumeration (`_decreases_expected`), so a position missing here
+        withholds a proof rather than making one; a position walked with the
+        wrong env is the failure that check cannot see, and each branch
+        below says which env it reads a position in.
+
+        # WALKER_COVERAGE: (#597 — every Expr subclass has a disposition;
+        # check_walker_coverage.py enforces completeness.  #1524 review:
+        # ForallExpr and ExistsExpr were leaves here, so a recursive call in a
+        # quantifier was proved away on the path with no other check.)
+        #
+        # Handled (explicit isinstance branch — record and/or recurse):
+        #   FnCall             → record if on the cycle; recurse args
+        #   IfExpr             → condition (enclosing path), branches under it
+        #   Block              → let / destructure values, statements, tail,
+        #                        with each binding pushed on the env
+        #   BinaryExpr         → recurse operands
+        #   UnaryExpr          → recurse operand
+        #   MatchExpr          → scrutinee; arm bodies in the arm's env
+        #   HandleExpr         → state init + body (enclosing env); clause
+        #                        bodies and updates (empty env, no path facts)
+        #   AnonFn             → body (empty env, no path facts)
+        #   ForallExpr         → domain (enclosing env) + predicate (AnonFn)
+        #   ExistsExpr         → domain (enclosing env) + predicate (AnonFn)
+        #   ConstructorCall    → recurse args
+        #   QualifiedCall      → recurse args (effect operation)
+        #   ModuleCall         → recurse args (never an edge: E011)
+        #   IndexExpr          → recurse collection + index
+        #   ArrayLit           → recurse elements
+        #   InterpolatedString → recurse interpolated parts
+        #   AssertExpr         → recurse condition
+        #   AssumeExpr         → recurse condition
+        #
+        # Leaf — no sub-expression, walk terminates:
+        #   IntLit             → literal
+        #   BoolLit            → literal
+        #   StringLit          → literal
+        #   FloatLit           → literal
+        #   UnitLit            → literal
+        #   SlotRef            → bound slot, no sub-expression
+        #   ResultRef          → @result reference, no sub-expression
+        #   NullaryConstructor → nullary ADT tag, no sub-expression
+        #   OldExpr            → contract state operator (effect_ref only)
+        #   NewExpr            → contract state operator (effect_ref only)
+        #
+        # Cannot occur — rejected before this walk:
+        #   HoleExpr           → check time rejects (E170)
+        """
         if isinstance(expr, ast.FnCall):
             callee = match(expr)
             if callee is not None:
@@ -6733,6 +6826,17 @@ class ContractVerifier:
                                  results, smt, SlotEnv())
             return
 
+        if isinstance(expr, (ast.ForallExpr, ast.ExistsExpr)):
+            # #1524 review: the domain is an operand evaluated in this
+            # activation, so it is read like one.  The predicate is a
+            # closure, and the branch above reads it as one: its calls are
+            # found and none is proved.
+            self._walk_for_calls(match, expr.domain, z3_path_conds,
+                                 results, smt, slot_env)
+            self._walk_for_calls(match, expr.predicate, z3_path_conds,
+                                 results, smt, slot_env)
+            return
+
         if isinstance(expr, (ast.ConstructorCall, ast.QualifiedCall,
                              ast.ModuleCall)):
             for arg in expr.args:
@@ -6765,8 +6869,7 @@ class ContractVerifier:
                                  results, smt, slot_env)
             return
 
-        # Other expression types (literals, slot refs, quantifiers) — no
-        # calls a body can reach.
+        # Leaves (the checklist above): no sub-expression to hold a call.
         return
 
     # -----------------------------------------------------------------

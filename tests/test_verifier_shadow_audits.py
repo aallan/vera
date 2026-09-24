@@ -370,8 +370,9 @@ private fn use2(@Int, @Bool -> @Int)
 
         `monomorphize_fn` mangles the clone name (for codegen WAT symbols), but
         `_verify_generic_instances` renames it back to `decl.name` ("keep the
-        source name").  Recursion/`decreases` resolution is purely by name
-        (`_collect_recursive_calls` matches `FnCall.name`), so without that
+        source name").  A clone is a copy the call graph never saw, so its
+        recursive calls are matched by name (`_decreases_expected` keys the
+        clone's `where` group by `FnCall.name`), and without that
         rename the clone `countdown$Int` whose body still calls `countdown`
         would have NO recognized recursive call → no `decreases` obligation → a
         terminating function's measure silently unchecked.  Pin that the
