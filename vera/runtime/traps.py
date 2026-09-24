@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import re
 from dataclasses import dataclass
 
 from vera.trap_registry import (
@@ -128,6 +129,9 @@ class WasmTrapError(RuntimeError):
           range (#1479).
         * ``heap_exhausted`` — an allocation the heap could not satisfy
           (#1479).
+        * ``uncaught_exception`` — an ``Exn<T>`` no ``handle[Exn<T>]``
+          caught left the entry point; the message names its type and,
+          where printable, the value thrown (#1479).
         * ``host_error`` — a host import (an effect operation
           implemented outside WASM) raised rather than trapping; the
           message is the host binding's own (#1302).  Everything
@@ -410,6 +414,50 @@ def _classify_host_error(exc: BaseException) -> tuple[str, str, str]:
     )
 
 
+#: How wasmtime renders a trap: its backtrace, then ``Caused by:`` and the
+#: engine's own reason, usually as ``wasm trap: <reason>``.
+_CAUSED_BY = re.compile(r"^\s*Caused by:\s*$", re.MULTILINE)
+_TRAP_REASON = re.compile(r"^\s*wasm trap:\s*(.*?)\s*$", re.MULTILINE)
+_BACKTRACE_LINE = re.compile(r"^\s*\d+:\s+0x[0-9a-f]+\s+-\s", re.MULTILINE)
+
+
+def trap_reason(message: str) -> str:
+    """The engine's own reason for a trap, from wasmtime's rendering of it.
+
+    The first line under the last ``Caused by:`` (without its ``wasm
+    trap:``), or a ``wasm trap:`` line — never the backtrace above them,
+    whose frames name the program's functions: a function called
+    ``unreachable`` must not be read as the reason an ``INT_MIN / -1``
+    trapped (#1479).  A message with no backtrace is all reason; one with a
+    backtrace and no cause has none a host can trust."""
+    causes = list(_CAUSED_BY.finditer(message))
+    if causes:
+        for line in message[causes[-1].end():].splitlines():
+            if line.strip():
+                return line.strip().removeprefix("wasm trap:").strip()
+        return ""
+    reasons = _TRAP_REASON.findall(message)
+    if reasons:
+        return str(reasons[-1])
+    return "" if _BACKTRACE_LINE.search(message) else message
+
+
+def trap_code_name(exc: BaseException) -> str | None:
+    """wasmtime's structured trap code for *exc* (its ``TrapCode`` member's
+    name), found through the exception chain; None where there is none —
+    a component call, a host error, a synthetic exception."""
+    seen: set[int] = set()
+    cursor: BaseException | None = exc
+    while cursor is not None and id(cursor) not in seen:
+        seen.add(id(cursor))
+        code = getattr(cursor, "trap_code", None)
+        name = getattr(code, "name", None)
+        if isinstance(name, str):
+            return name
+        cursor = cursor.__cause__ or cursor.__context__
+    return None
+
+
 def trapping_instruction(
     exc: BaseException, wasm_bytes: bytes | bytearray,
 ) -> str | None:
@@ -454,8 +502,11 @@ def _classify_trap(
 
     Otherwise the trap is the engine's own: its kind comes from
     ``native_trap_kind`` — the trapping *instruction*, where the host can
-    report it (``trapping_instruction``), and the wasmtime trap reason
-    matched against ``WASMTIME_NATIVE_TRAPS`` (first match wins).  An
+    report it (``trapping_instruction``); wasmtime's structured trap code,
+    where the exception carries one (``trap_code_name``); and the trap
+    reason (``trap_reason``: the engine's words only, never the backtrace's
+    function names) matched against ``WASMTIME_NATIVE_TRAPS`` (first match
+    wins).  An
     unrecognised reason is ``unknown`` and surfaces verbatim so the user is
     never left without a message.  The third element is the kind's Fix
     paragraph (#547).
@@ -476,7 +527,8 @@ def _classify_trap(
             return (named.name, message or named.description, named.fix)
 
     native = native_trap_kind(
-        str(exc).lower(), instruction, WASMTIME_NATIVE_TRAPS)
+        trap_reason(str(exc)).lower(), instruction, WASMTIME_NATIVE_TRAPS,
+        code=trap_code_name(exc))
     if native is not None:
         return (native, TRAP_KINDS[native].description,
                 _TRAP_FIX_PARAGRAPHS[native])

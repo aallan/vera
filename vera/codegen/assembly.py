@@ -30,6 +30,10 @@ GC_STACK_SIZE = 16384  # 16 KiB shadow stack (4 096 roots)
 # trap entirely via iterative deepening or dynamic worklist growth is
 # tracked separately for follow-up.
 GC_WORKLIST_SIZE = 65536  # 64 KiB worklist (16 384 entries)
+# #573: the wrapper table — 16 bytes per entry (obj_ptr / kind / handle /
+# reserved), 4 096 entries.
+GC_WRAPTABLE_SIZE = 65536
+GC_WRAPTABLE_ENTRY_SIZE = 16
 
 
 def heap_trap(indent: str) -> str:
@@ -433,11 +437,10 @@ class AssemblyMixin:
             # cost — `_needs_wrap_table` gates inclusion of both
             # this region and the corresponding sweep pass.
             #
-            # Note: only Map<K, V> migrates in this release
-            # (#573 phase 1 — Plan B).  Set / Decimal / JSON / HTML
-            # follow in tracked follow-ups so each migration's
-            # design choices can be reviewed independently.
-            gc_wraptable_size = 65536  # 64 KiB / 4 096 wrapper entries
+            # It holds the values `vera.trap_registry.WRAP_TABLE_VALUES`
+            # lists — `Decimal` values and pending async requests; `Map`
+            # and `Set` values are plain heap objects since #706.
+            gc_wraptable_size = GC_WRAPTABLE_SIZE
             wrap_enabled = self._needs_wrap_table
             wraptable_overhead = gc_wraptable_size if wrap_enabled else 0
             gc_wraptable_base = (

@@ -119,6 +119,12 @@ const TRAP_TABLE = {
       "fix": "`string_char_code(s, i)` reads the byte at index `i`, so `i` must lie in `[0, string_length(s))`.  `string_length` counts the BYTES of the UTF-8 encoding, not characters, so a string holding non-ASCII text is longer than its character count.  Add `requires(i >= 0 && i < string_length(s))`, or guard the call with an explicit branch.",
       "siteMessage": true
     },
+    "uncaught_exception": {
+      "code": 10,
+      "description": "Uncaught exception",
+      "fix": "An `Exn<T>` was thrown and no `handle[Exn<T>]` caught it before the call returned to the host: the entry point declares `Exn<T>` in its effect row, which lets the exception leave it.  Catch it where the program starts \u2014 wrap the throwing call in `handle[Exn<T>] { throw(@T) -> ... } in { ... }` inside `main`, or inside the function `vera run --fn` or `vera test` called \u2014 or stop declaring `Exn<T>` on that function once nothing in it throws.",
+      "siteMessage": true
+    },
     "unknown": {
       "code": 0,
       "description": "Unclassified trap",
@@ -128,7 +134,7 @@ const TRAP_TABLE = {
     "unreachable": {
       "code": 0,
       "description": "Reached `unreachable` WASM instruction",
-      "fix": "Five causes reach this trap, and none of them is a check on a value the program computed \u2014 every such check reports its own kind.  (1) GC shadow-stack overflow, which is what a DEEP RECURSION through a function holding heap references hits: every live frame roots its pointer parameters, its allocations, and the values it binds out of them, and the shadow stack holds 4 096 roots in total (16 KiB \u2014 `GC_STACK_SIZE` in `vera/codegen/assembly.py`).  A recursion that traps at a depth close to 4 096 divided by a small integer is this one: reduce the heap values live across the recursive call, or restructure so the call is in tail position (#549 GC-aware TCO restores `$gc_sp` at each hop, so the chain runs in constant shadow space).  (2) The collector's mark worklist overflowed: more heap objects were waiting to be marked at one time than its 16 384 entries hold (`GC_WORKLIST_SIZE` in `vera/codegen/assembly.py`), which one very wide live structure \u2014 an array or map holding more heap values than that \u2014 can reach.  Split the structure, or hold fewer heap values in it at once.  (3) More than 4 096 host-backed values \u2014 `Map`, `Set`, `Decimal`, a parsed JSON or HTML map, a pending async request \u2014 were alive at once, and a collection freed none of them, so the table that tracks their host handles had no room for another.  Let values you no longer need become unreachable, or combine many small containers into fewer larger ones.  (4) Under `--target wasi-p2`, a standard stream, file or HTTP body the host provides failed part-way through an operation \u2014 a write to a closed stdout, a read error on stdin \u2014 and the adapter stopped the program rather than lose data.  The host's I/O failed, not the program's logic: check what the program's input and output are connected to.  (5) An internal consistency check failed: a garbage-collector invariant (`VERA_GC_CHECK_MARKS`), a runtime tripwire, or code the compiler places where execution cannot arrive \u2014 after a call that never returns (`IO.exit`, a handler that always throws) or in a function it dropped.  A well-typed program cannot reach any of these, so reaching one is a bug in Vera: please file a minimal reproducer at https://github.com/aallan/vera/issues/new.",
+      "fix": "Five causes reach this trap, and none of them is a check on a value the program computed \u2014 every such check reports its own kind.  (1) GC shadow-stack overflow, which is what a DEEP RECURSION through a function holding heap references hits: every live frame roots its pointer parameters, its allocations, and the values it binds out of them, and the shadow stack holds 4 096 roots in total (16 KiB \u2014 `GC_STACK_SIZE` in `vera/codegen/assembly.py`).  A recursion that traps at a depth close to 4 096 divided by a small integer is this one: reduce the heap values live across the recursive call, or restructure so the call is in tail position (#549 GC-aware TCO restores `$gc_sp` at each hop, so the chain runs in constant shadow space).  (2) The collector's mark worklist overflowed: more heap objects were waiting to be marked at one time than its 16 384 entries hold (`GC_WORKLIST_SIZE` in `vera/codegen/assembly.py`), which one very wide live structure \u2014 an array or map holding more heap values than that \u2014 can reach.  Split the structure, or hold fewer heap values in it at once.  (3) More than 4 096 host-backed values \u2014 `Decimal` values and pending async requests \u2014 were alive at once, and a collection freed none of them, so the table that tracks their host handles had no room for another.  Let values you no longer need become unreachable, and hold fewer of them at once.  (4) Under `--target wasi-p2`, a standard stream, file or HTTP body the host provides failed part-way through an operation \u2014 a write to a closed stdout, a read error on stdin \u2014 and the adapter stopped the program rather than lose data.  The host's I/O failed, not the program's logic: check what the program's input and output are connected to.  (5) An internal consistency check failed: a garbage-collector invariant (`VERA_GC_CHECK_MARKS`), a runtime tripwire, or code the compiler places where execution cannot arrive \u2014 after a call that never returns (`IO.exit`, a handler that always throws) or in a function it dropped.  A well-typed program cannot reach any of these, so reaching one is a bug in Vera: please file a minimal reproducer at https://github.com/aallan/vera/issues/new.",
       "siteMessage": false
     },
     "widen_guard": {
@@ -640,20 +646,29 @@ function trapOfKind(kind, message) {
 }
 
 /**
- * Name a trap the way `_classify_trap` does on the native host: the contract
- * channel first, then the kind `vera.trap` signalled, then V8's own message
- * for an instruction that trapped by itself.  Returns null for an exception
- * that is not a WASM trap (a host binding's own refusal), which propagates
- * unchanged.
+ * Name what escaped an export the way `execute()` does on the native host:
+ * the contract channel first, then the kind `vera.trap` signalled, then V8's
+ * own message for an instruction that trapped by itself.  An exception that
+ * left an export no boundary catches is `uncaught_exception`; anything else
+ * is a host binding's own refusal, `host_error` with the binding's message —
+ * so every error leaving `call()` carries a kind (#1479).
  */
 function classifyTrap(e) {
   if (e instanceof RangeError && /call stack/i.test(String(e.message))) {
     // V8 reports call-stack exhaustion, WASM frames included, as a
     // RangeError ("Maximum call stack size exceeded"); any other RangeError
-    // is a host binding's own and propagates unchanged.
+    // is a host binding's own.
     return trapOfKind('stack_exhausted', '');
   }
-  if (!(e instanceof WebAssembly.RuntimeError)) return null;
+  if (typeof WebAssembly.Exception === 'function'
+      && e instanceof WebAssembly.Exception) {
+    return trapOfKind('uncaught_exception', '');
+  }
+  if (!(e instanceof WebAssembly.RuntimeError)) {
+    const message = e && typeof e === 'object'
+      ? (e.message || e.name || String(e)) : String(e);
+    return trapOfKind('host_error', message);
+  }
   if (lastViolation) return trapOfKind('contract_violation', lastViolation);
   if (lastTrap) {
     for (const [name, row] of Object.entries(TRAP_TABLE.kinds)) {
@@ -4123,10 +4138,8 @@ export function call(fnName, ...args) {
       exitCode = e.code;
       return undefined;
     }
-    // #1479: every WASM trap leaves here named — kind, message and Fix.
-    const trap = classifyTrap(e);
-    if (trap) throw trap;
-    throw e;
+    // #1479: everything leaves here named — kind, message and Fix.
+    throw classifyTrap(e);
   }
 }
 

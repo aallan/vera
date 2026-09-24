@@ -61,7 +61,9 @@ from vera.trap_registry import (
     NATIVE_TRAPPING_INSTRUCTIONS,
     SAFE_NATIVE_SITES,
     SIGNAL_SITES,
+    THROW_SITES,
     TRAP_EMITTERS,
+    WRAP_TABLE_VALUES,
     TRAP_KINDS,
     UNREACHABLE_CAUSES,
     NativeTrapCondition,
@@ -77,6 +79,11 @@ ROOT = Path(__file__).resolve().parent.parent
 # ---------------------------------------------------------------------------
 
 _UNREACHABLE = re.compile(r"(?<![\w$.])unreachable(?![\w])")
+#: A WAT ``throw``: the instruction with its tag, or an f-string's constant
+#: part ending where the tag is substituted — never the effect operation's
+#: bare name, which the lowering compares ``call.name`` against.  ``throw_ref``
+#: counts too, with or without an operand.
+_THROW = re.compile(r"(?<![\w$.])(throw(?= +(?:\$|$))|throw_ref(?![\w]))")
 _NATIVE = re.compile(
     r"(?<![\w$.])(" + "|".join(
         re.escape(i) for i in sorted(NATIVE_TRAPPING_INSTRUCTIONS)) + r")(?![\w.])")
@@ -154,6 +161,8 @@ def literal_sites_for_tree(
                 found[(site, "unreachable")] += 1
             for match in _NATIVE.finditer(code):
                 found[(site, match.group(1))] += 1
+            for match in _THROW.finditer(code):
+                found[(site, match.group(1))] += 1
     return found
 
 
@@ -201,7 +210,8 @@ def _expected_sites() -> Counter[tuple[str, str]]:
         expected[(entry.site, "unreachable")] += entry.count
     for site, count in SIGNAL_SITES:
         expected[(site, "unreachable")] += count
-    for native in (*NATIVE_TRAP_SITES, *SAFE_NATIVE_SITES, *KNOWN_TRAP_DEFECTS):
+    for native in (*NATIVE_TRAP_SITES, *SAFE_NATIVE_SITES, *KNOWN_TRAP_DEFECTS,
+                   *THROW_SITES):
         expected[(native.site, native.instruction)] += native.count
     return expected
 
@@ -283,8 +293,9 @@ def test_every_registry_row_is_emitted() -> None:
 
 def test_the_scan_sees_a_planted_bare_trap() -> None:
     """The seam the scan reads through reports a bare `unreachable`, a
-    natively trapping instruction and an unregistered emission — and not a
-    WAT comment or a docstring that merely mentions one."""
+    natively trapping instruction, a WAT `throw` and an unregistered
+    emission — and not a WAT comment, a docstring that merely mentions one,
+    or the effect operation's bare name."""
     tree = pyast.parse(
         'def emit():\n'
         '    """Traps with ``unreachable`` when the index is bad."""\n'
@@ -292,10 +303,14 @@ def test_the_scan_sees_a_planted_bare_trap() -> None:
         '            "i64.div_s ;; trap on zero", ";; unreachable here"]\n'
         'def other(self):\n'
         '    return self._emit_trap("wasm/x.py:elsewhere", at=None)\n'
+        'def raise_it(call, tag):\n'
+        '    if call.name == "throw":\n'
+        '        return [f"throw {tag}", "throw $exn_Int", "a throw payload"]\n'
     )
     sites = literal_sites_for_tree(tree, "wasm/x.py")
     assert sites == Counter({("wasm/x.py:emit", "unreachable"): 1,
-                             ("wasm/x.py:emit", "i64.div_s"): 1}), sites
+                             ("wasm/x.py:emit", "i64.div_s"): 1,
+                             ("wasm/x.py:raise_it", "throw"): 2}), sites
     calls = emission_calls_for_tree(tree, "wasm/x.py")
     assert calls == [("_emit_trap", "wasm/x.py:other", "wasm/x.py:elsewhere")]
 
@@ -317,6 +332,188 @@ def test_the_generic_paragraph_names_exactly_the_rosters_causes() -> None:
     for number, cause in enumerate(UNREACHABLE_CAUSES, start=1):
         assert paragraph.count(cause.text) == 1, cause.key
         assert f"({number}) {cause.text}" in paragraph
+
+
+#: An English count word, and the number it names — independent of the
+#: registry's own table, so a derivation that picks the wrong word is seen.
+_COUNT = {"One": 1, "Two": 2, "Three": 3, "Four": 4, "Five": 5, "Six": 6,
+          "Seven": 7, "Eight": 8, "Nine": 9}
+
+
+def test_the_generic_paragraph_counts_its_causes_right() -> None:
+    """The paragraph opens with how many causes reach the trap, and that word
+    is the number of causes it goes on to list."""
+    paragraph = unreachable_fix_paragraph()
+    word = paragraph.split(" ", 1)[0]
+    listed = re.findall(r"\((\d+)\) ", paragraph)
+    assert _COUNT.get(word) == len(UNREACHABLE_CAUSES) == len(listed), (
+        word, len(UNREACHABLE_CAUSES), listed)
+    assert listed == [str(n) for n in range(1, len(listed) + 1)]
+
+
+def test_the_cause_texts_state_the_limits_the_code_sets() -> None:
+    """Each capacity a cause names is the one `vera/codegen/assembly.py`
+    sets: 4-byte shadow-stack roots and worklist entries, 16-byte wrapper
+    table entries."""
+    from vera.codegen.assembly import (
+        GC_STACK_SIZE, GC_WORKLIST_SIZE, GC_WRAPTABLE_ENTRY_SIZE,
+        GC_WRAPTABLE_SIZE,
+    )
+    texts = {cause.key: cause.text for cause in UNREACHABLE_CAUSES}
+
+    def spelled(n: int) -> str:
+        return f"{n:,}".replace(",", " ")
+
+    assert spelled(GC_STACK_SIZE // 4) in texts["shadow_stack_overflow"]
+    assert f"{GC_STACK_SIZE // 1024} KiB" in texts["shadow_stack_overflow"]
+    assert spelled(GC_WORKLIST_SIZE // 4) in texts["gc_worklist_overflow"]
+    assert spelled(GC_WRAPTABLE_SIZE // GC_WRAPTABLE_ENTRY_SIZE) in texts[
+        "wrap_table_overflow"]
+
+
+def test_the_runtime_chapter_states_the_regions_the_code_sets() -> None:
+    """Spec §12.5.1's layout — its text version, its prose and its diagram —
+    gives each GC region the size `vera/codegen/assembly.py` sets, and the
+    heap the start those sizes add up to."""
+    from vera.codegen.assembly import (
+        GC_STACK_SIZE, GC_WORKLIST_SIZE, GC_WRAPTABLE_ENTRY_SIZE,
+        GC_WRAPTABLE_SIZE,
+    )
+    chapter = (ROOT / "spec" / "12-runtime.md").read_text(encoding="utf-8")
+    start = chapter.index("### 12.5.1 Linear Memory Layout")
+    section = chapter[start:chapter.index("### 12.5.2", start)]
+    diagram = (ROOT / "assets" / "diagrams" / "memory-layout.svg").read_text(
+        encoding="utf-8")
+    heap = GC_STACK_SIZE + GC_WORKLIST_SIZE
+    for text in (f"GC shadow stack ({GC_STACK_SIZE} bytes)",
+                 f"GC mark worklist ({GC_WORKLIST_SIZE} bytes)",
+                 f"GC wrapper table ({GC_WRAPTABLE_SIZE} bytes)",
+                 f"data_end + {GC_STACK_SIZE}\n", f"data_end + {heap}\n",
+                 f"data_end + {heap + GC_WRAPTABLE_SIZE}\n",
+                 f"{GC_STACK_SIZE} bytes, {GC_STACK_SIZE // 4} roots",
+                 f"{GC_WORKLIST_SIZE} bytes, {GC_WORKLIST_SIZE // 4} entries",
+                 f"{GC_WRAPTABLE_SIZE} bytes, "
+                 f"{GC_WRAPTABLE_SIZE // GC_WRAPTABLE_ENTRY_SIZE} entries of "
+                 f"{GC_WRAPTABLE_ENTRY_SIZE} bytes",
+                 f"`data_end + {heap}`, or `data_end + "
+                 f"{heap + GC_WRAPTABLE_SIZE}` with the wrapper table"):
+        assert text in section, text
+
+    def spelled(n: int) -> str:
+        return f"{n:,}".replace(",", " ")
+
+    for text in (f"{spelled(GC_STACK_SIZE)} bytes · "
+                 f"{spelled(GC_STACK_SIZE // 4)} roots",
+                 f"{spelled(GC_WORKLIST_SIZE)} bytes · "
+                 f"{spelled(GC_WORKLIST_SIZE // 4)} entries",
+                 f"{spelled(GC_WRAPTABLE_SIZE)} bytes · only with",
+                 f"data_end + {spelled(GC_STACK_SIZE)}<",
+                 f"data_end + {spelled(heap)}<",
+                 f"data_end + {spelled(heap + GC_WRAPTABLE_SIZE)} = "):
+        assert text in diagram, text
+
+
+def _wrap_kinds_registered() -> set[str]:
+    """Every wrap kind a registration with the collector's wrapper table is
+    made with: the first argument of code generation's `_emit_wrap_handle`,
+    and the second of the host's `_wrap_handle`."""
+    positions = {"_emit_wrap_handle": 0, "_wrap_handle": 1}
+    kinds: set[str] = set()
+    for package in ("wasm", "codegen", "runtime"):
+        for path in sorted((ROOT / "vera" / package).rglob("*.py")):
+            tree = pyast.parse(path.read_text(encoding="utf-8"))
+            for node in pyast.walk(tree):
+                if not isinstance(node, pyast.Call):
+                    continue
+                func = node.func
+                name = (func.attr if isinstance(func, pyast.Attribute)
+                        else func.id if isinstance(func, pyast.Name) else None)
+                position = positions.get(name or "")
+                if position is None or len(node.args) <= position:
+                    continue
+                arg = node.args[position]
+                kinds.add(arg.id if isinstance(arg, pyast.Name)
+                          else pyast.dump(arg))
+    return kinds
+
+
+def test_the_wrapper_table_cause_names_what_the_table_holds() -> None:
+    """The cause names the values that enter the wrapper table, derived from
+    the kinds every registration passes — and no other: a `Map` or `Set` is
+    a plain heap object and cannot fill it."""
+    assert _wrap_kinds_registered() == set(WRAP_TABLE_VALUES)
+    text = next(cause.text for cause in UNREACHABLE_CAUSES
+                if cause.key == "wrap_table_overflow")
+    for value in WRAP_TABLE_VALUES.values():
+        assert value in text, value
+    for absent in ("`Map`", "`Set`", "JSON", "HTML", "container"):
+        assert absent not in text, absent
+
+
+def test_every_wrapper_registration_goes_through_the_two_wrappers() -> None:
+    """The table is reached only through the two functions the kinds above
+    are read from: the WAT `call $register_wrapper` sits in
+    `_emit_wrap_handle`, and the host's `_call_register_wrapper` is called
+    only from `_wrap_handle`."""
+    wat_sites: set[str] = set()
+    for path in codegen_sources():
+        tree = pyast.parse(path.read_text(encoding="utf-8"))
+        owner = _owner_map(tree)
+        for node in pyast.walk(tree):
+            if (isinstance(node, pyast.Constant) and isinstance(node.value, str)
+                    and "call $register_wrapper" in node.value):
+                wat_sites.add(f"{_rel(path)}:{owner.get(id(node), '<module>')}")
+    assert wat_sites == {"wasm/calls_containers.py:_emit_wrap_handle"}, wat_sites
+    heap = ROOT / "vera" / "runtime" / "heap.py"
+    tree = pyast.parse(heap.read_text(encoding="utf-8"))
+    owner = _owner_map(tree)
+    callers = {owner.get(id(node), "<module>") for node in pyast.walk(tree)
+               if isinstance(node, pyast.Call)
+               and isinstance(node.func, pyast.Name)
+               and node.func.id == "_call_register_wrapper"}
+    assert callers == {"_wrap_handle"}, callers
+
+
+#: A non-tail recursion holding heap values: every frame roots its four
+#: `String`s, so the shadow stack's bound is reached long before any
+#: engine's own call stack is — V8's included — the commonest way to the
+#: generic kind.
+_SHADOW_STACK_DEEP = (
+    "private fn deep(@Nat, @String, @String, @String, @String -> @String)\n"
+    "  requires(true) ensures(true) decreases(@Nat.0) effects(pure)\n"
+    "{\n  if @Nat.0 == 0 then { @String.0 } else {\n"
+    "    string_concat(deep(@Nat.0 - 1, @String.3, @String.2, @String.1,"
+    " @String.0), @String.3)\n  }\n}\n"
+    "public fn main(-> @Nat)\n"
+    "  requires(true) ensures(true) effects(pure)\n"
+    '{\n  string_length(deep(20000, "a", "b", "c", "d"))\n}\n')
+
+
+@pytest.mark.parametrize("host", ["wasmtime", "wasi", "browser"])
+def test_every_host_prints_the_derived_generic_paragraph(
+    host: str, tmp_path: Path,
+) -> None:
+    """A trap that reaches the generic kind carries, on every host, exactly
+    the paragraph the registry derives — not a copy of it."""
+    result = _compile(_SHADOW_STACK_DEEP)
+    if host == "wasmtime":
+        with pytest.raises(WasmTrapError) as info:
+            execute(result, fn_name="main")
+        kind, fix = info.value.kind, info.value.fix
+    elif host == "wasi":
+        from vera.runtime.wasi_host import execute_wasi_p2
+        with pytest.raises(WasmTrapError) as info:
+            execute_wasi_p2(result)
+        kind, fix = info.value.kind, info.value.fix
+    else:
+        if _NODE is None:
+            pytest.skip("Node.js not available or lacks exnref support")
+        wasm = tmp_path / "deep.wasm"
+        wasm.write_bytes(result.wasm_bytes)
+        out = _NODE(wasm, fn="main")
+        kind, fix = out["trapKind"], out["fix"]
+    assert kind == "unreachable", kind
+    assert fix == unreachable_fix_paragraph()
 
 
 def test_no_check_on_a_program_value_reaches_the_generic_kind() -> None:
@@ -354,8 +551,10 @@ def test_the_browser_runtime_carries_the_same_kind_table() -> None:
 def test_every_signalled_kind_has_a_wasi_trap_function() -> None:
     """The WASI adapter traps a named kind inside a function named for it —
     the one channel a component has — so every signalled kind needs one."""
-    from vera.codegen.wasi import _op_trap
-    text = _op_trap(None)  # type: ignore[arg-type]  # uses no layout field
+    from vera.codegen.wasi import _Layout, _op_trap
+    text = _op_trap(_Layout(
+        arena_base=0, bump_start=0, arena_end=0, has_alloc=False,
+        statics={}, errtab=0, main_results=()))
     for kind in TRAP_KINDS.values():
         if kind.code:
             assert f"(func $trap_kind_{kind.name} unreachable)" in text
@@ -423,6 +622,15 @@ KIND_CASES: dict[str, tuple[str, tuple[str, ...]]] = {
         "  requires(@Int.0 > 0) ensures(true) effects(pure)\n"
         "{\n  @Int.0\n}\n", "pos(0 - 1)"),
         ("Precondition violation", "requires(@Int.0 > 0) failed")),
+    "uncaught_exception": (
+        "private fn fail(@Int -> @Int)\n"
+        "  requires(true) ensures(true) effects(<Exn<Int>>)\n"
+        "{\n  throw(0 - @Int.0)\n}\n"
+        "public fn main(-> @Int)\n"
+        "  requires(true) ensures(true) effects(<Exn<Int>>)\n"
+        "{\n  fail(9223372036854775807) - 1\n}\n",
+        ("An `Exn<Int>` escaped `main`", "no `handle[Exn<Int>]` caught it",
+         "the value thrown was -9223372036854775807")),
 }
 
 
@@ -494,6 +702,77 @@ def test_vera_run_wasi_p2_names_the_trap(kind: str, tmp_path: Path) -> None:
     [diag] = envelope["diagnostics"]
     _assert_named(kind, diag["trap_kind"], diag["description"], diag["fix"])
 
+
+
+# --- A message longer than one write reaches the WASI host whole -----------
+#
+# A component can send a trap's message only on stderr, 4096 bytes a write.
+# The adapter marks where the message starts with a write of its own, and
+# the host takes everything after that mark — so a message quoting a long
+# literal arrives whole, as on wasmtime, and the program's own stderr
+# (a lone newline included, the mark's own byte) stays the program's.
+
+_LONG = "x" * 5000
+
+#: A trap whose message is longer than one write, on each message channel:
+#: the kinds whose sites carry their own message, and the contract channel.
+LONG_MESSAGES: dict[str, str] = {
+    "assertion_failed": (
+        "public fn main(-> @Int)\n"
+        "  requires(true) ensures(true) effects(<IO>)\n"
+        '{\n  IO.stderr("before\\n");\n  IO.stderr("\\n");\n'
+        '  assert(string_length("' + _LONG + '") == 0);\n  1\n}\n'),
+    "string_index_out_of_bounds": (
+        "public fn main(-> @Nat)\n"
+        "  requires(true) ensures(true) effects(<IO>)\n"
+        '{\n  IO.stderr("before\\n");\n  IO.stderr("\\n");\n'
+        '  string_char_code("' + _LONG + '", 9000)\n}\n'),
+    "contract_violation": (
+        "private fn p(@String -> @Int)\n"
+        '  requires(@String.0 != "' + _LONG + '") ensures(true) effects(pure)\n'
+        "{\n  0\n}\n"
+        "public fn main(-> @Int)\n"
+        "  requires(true) ensures(true) effects(<IO>)\n"
+        '{\n  IO.stderr("before\\n");\n  IO.stderr("\\n");\n'
+        '  p("' + _LONG + '")\n}\n'),
+}
+
+
+@pytest.mark.parametrize("kind", sorted(LONG_MESSAGES))
+def test_the_wasi_host_takes_a_long_message_whole(kind: str) -> None:
+    from vera.runtime.wasi_host import execute_wasi_p2
+    result = _compile(LONG_MESSAGES[kind])
+    with pytest.raises(WasmTrapError) as native:
+        execute(result, fn_name="main")
+    with pytest.raises(WasmTrapError) as wasi:
+        execute_wasi_p2(result)
+    assert len(str(native.value).encode("utf-8")) > 4096
+    assert (wasi.value.kind, str(wasi.value)) == (kind, str(native.value))
+    assert wasi.value.stderr == "before\n\n"
+
+
+def test_the_mark_is_the_last_lone_one_that_more_writes_follow() -> None:
+    """The host reads the mark from the write boundaries: a program's own
+    newline writes come before it, every chunk of the message but the last
+    is a full 4096 bytes, and a last chunk that is itself a lone newline
+    has nothing after it."""
+    from vera.runtime.wasi_host import message_mark
+
+    def mark(*chunks: bytes) -> int | None:
+        buf, writes = bytearray(), []
+        for chunk in chunks:
+            writes.append((len(buf), len(chunk)))
+            buf += chunk
+        return message_mark(buf, writes)
+
+    msg = b"m" * 4096
+    assert mark(b"out\n", b"\n", b"\n", b"short message") == 5
+    assert mark(b"\n", msg, msg, b"tail") == 0
+    assert mark(b"\n", b"\n", msg, b"\n") == 1
+    assert mark(b"\n", b"\n") == 0
+    assert mark(b"no mark here", b"message") is None
+    assert mark(b"\n") is None
+    assert mark(b"\n", b"x" * 100, b"tail") is None
 
 
 # --- The WASI host lets go of its store before it returns ------------------
@@ -731,7 +1010,7 @@ def _wasi_kind(cell: NativeTrapCondition) -> str:
         with pytest.raises(wasmtime.WasmtimeError) as info:
             func(store)
         return _component_trap_error(
-            info.value, bytearray(), bytearray(), b"", binary).kind
+            info.value, bytearray(), bytearray(), None, binary).kind
     finally:
         store.close()
 
@@ -851,6 +1130,384 @@ def test_a_planted_native_site_joins_the_matrix_and_is_named(
                 else _wasi_kind(cell) if host == "wasi"
                 else _browser_kind(cell, tmp_path))
         assert kind == cell.kind, (_cell_id(cell), kind)
+
+
+# ---------------------------------------------------------------------------
+# A program's own names cannot decide the kind
+# ---------------------------------------------------------------------------
+#
+# A host that names a trap from text must read only text no program can
+# write: the engine's reason, and the frames of the adapter's own functions
+# (`Adapter!op_contract_fail`, `Adapter!trap_kind_<kind>`).  A backtrace also
+# names every program function on the stack, so a function called
+# `contract_fail`, `trap_kind_<kind>` or `unreachable` — each a string a host
+# once searched the whole text for (#1518) — holds a DIFFERENT trap here, and
+# every host must report that trap.
+
+#: Every name a host has read a trap's cause from — and ones that merely
+#: contain such a name, as a backtrace line does.
+_HOST_READ_NAMES = ["contract_fail", "check_contract_fail", "unreachable",
+                    "unreachable_div",
+                    *(f"trap_kind_{kind}" for kind in sorted(TRAP_KINDS))]
+
+#: The traps planted inside a function of each name: two the engine raises
+#: itself — one whose reason a host's table matches before `unreachable`,
+#: one after it — and one a named check signals.
+_INNER_TRAPS: dict[str, tuple[str, str, str]] = {
+    "divide_by_zero": ("@Int, @Int", "@Int.1 / @Int.0", "7, 0"),
+    "overflow": ("@Int, @Int", "@Int.1 / @Int.0",
+                 "0 - 9223372036854775807 - 1, 0 - 1"),
+    "index_out_of_bounds": (
+        "@Int, @Int", "let @Array<Int> = [1, 2, 3];\n  @Array<Int>.0[@Int.1]",
+        "7, 0"),
+}
+
+
+def _forged_name_program(name: str, inner: str) -> str:
+    params, body, args = _INNER_TRAPS[inner]
+    return (
+        f"private fn {name}({params} -> @Int)\n" + _HEAD
+        + "{\n  " + body + "\n}\n"
+        + "public fn main(-> @Int)\n" + _HEAD
+        + "{\n  " + f"{name}({args})" + "\n}\n")
+
+
+def test_the_core_host_reads_the_trap_code_and_not_the_text() -> None:
+    """Where wasmtime gives a structured trap code, the core host reads it
+    and nothing else: here the text claims an `unreachable`, the code says
+    division by zero, and the code wins; a code no row names is `unknown`
+    rather than whatever the text suggests."""
+    from types import SimpleNamespace
+    from vera.runtime.traps import _classify_trap
+
+    class _Coded(Exception):
+        def __init__(self, code: str) -> None:
+            super().__init__(
+                "error while executing at wasm backtrace:\n"
+                "    0:     0x2c - <unknown>!f\n\nCaused by:\n"
+                "    wasm trap: wasm `unreachable` instruction executed\n")
+            self.trap_code = SimpleNamespace(name=code)
+
+    assert _classify_trap(_Coded("INTEGER_DIVISION_BY_ZERO"), [])[0] == (
+        "divide_by_zero")
+    assert _classify_trap(_Coded("TABLE_OUT_OF_BOUNDS"), [])[0] == "unknown"
+
+
+_FORGED_CELLS = [
+    (name, inner) for name in _HOST_READ_NAMES for inner in _INNER_TRAPS
+    if name != f"trap_kind_{inner}"
+]
+
+
+@pytest.mark.parametrize("host", ["wasmtime", "wasi", "browser"])
+@pytest.mark.parametrize(("name", "inner"), _FORGED_CELLS,
+                         ids=[f"{n}-holds-{i}" for n, i in _FORGED_CELLS])
+def test_a_function_named_like_a_host_read_frame_cannot_forge_the_kind(
+    name: str, inner: str, host: str, tmp_path: Path,
+) -> None:
+    result = _compile(_forged_name_program(name, inner))
+    if host == "wasmtime":
+        with pytest.raises(WasmTrapError) as info:
+            execute(result, fn_name="main")
+        kind = info.value.kind
+    elif host == "wasi":
+        from vera.runtime.wasi_host import execute_wasi_p2
+        with pytest.raises(WasmTrapError) as info:
+            execute_wasi_p2(result)
+        kind = info.value.kind
+    else:
+        if _NODE is None:
+            pytest.skip("Node.js not available or lacks exnref support")
+        wasm = tmp_path / "forged.wasm"
+        wasm.write_bytes(result.wasm_bytes)
+        out = _NODE(wasm, fn="main")
+        assert out["error"], out
+        kind = str(out["trapKind"])
+    assert kind == inner, (name, inner, host, kind)
+
+
+# ---------------------------------------------------------------------------
+# `vera test` reads the kind, not the message
+# ---------------------------------------------------------------------------
+
+def test_vera_test_classifies_a_trial_by_its_trap_kind() -> None:
+    """A trial fails only on a broken contract.  A site message quotes the
+    program's text, so a message that reads "contract" is not one: an index
+    into the string "contract" is an `error`, whatever its message says."""
+    from vera.tester import test as run_trials
+    source = (
+        "public fn code(@Int -> @Nat)\n"
+        "  requires(true) ensures(@Nat.result < 256) effects(pure)\n"
+        '{\n  string_char_code("contract", @Int.0)\n}\n')
+    program = parse_to_ast(source)
+    diags, _ = typecheck_with_artifacts(program, source)
+    assert not [d for d in diags if d.severity == "error"]
+    result = run_trials(program, source=source, file="t.vera", trials=40)
+    [function] = [f for f in result.functions if f.fn_name == "code"]
+    statuses = {failure.status for failure in function.failures}
+    assert statuses == {"error"}, [
+        (f.status, f.message[:80]) for f in function.failures]
+    assert any("contract" in f.message for f in function.failures)
+
+
+# ---------------------------------------------------------------------------
+# An exception leaving an entry point
+# ---------------------------------------------------------------------------
+#
+# An export whose effect row declares `Exn<T>` is called through a boundary
+# that catches what leaves it and signals `uncaught_exception`, naming the
+# exception's type and, where printable, the value thrown — at every entry
+# point: `main`, a `vera run --fn` target, a `vera serve` handler and a
+# `vera test` trial.  The engine alone says only that an exception was
+# thrown, which every host reported as `unknown` with no Fix.
+
+def _escape_program(payload: str, throw: str) -> str:
+    """`g` throws; the entry points `f` (a `--fn` target, taking the
+    argument) and `main` reach it without a handler."""
+    row = f"  requires(true) ensures(true) effects(<Exn<{payload}>>)\n"
+    return ("type Pos = { @Int | @Int.0 > 0 };\n"
+            "private fn g(@Int -> @Int)\n" + row + "{\n  " + throw + "\n}\n"
+            "public fn f(@Int -> @Int)\n" + row + "{\n  g(@Int.0)\n}\n"
+            "public fn main(-> @Int)\n" + row + "{\n  f(ARG)\n}\n")
+
+
+def _escaped(payload: str, entry: str, value: str | None) -> str:
+    stated = (f"An `Exn<{payload}>` escaped `{entry}`: no "
+              f"`handle[Exn<{payload}>]` caught it before the call returned")
+    return stated + (f", and the value thrown was {value}"
+                     if value is not None else ".")
+
+
+#: One escape per payload shape the boundary formats:
+#: ``(payload type, the throw, the argument, the value as quoted)``.
+ESCAPES: dict[str, tuple[str, str, int, str | None]] = {
+    "Int": ("Int", "throw(0 - @Int.0 - 1)", 9223372036854775807,
+            "-9223372036854775808"),
+    "Nat": ("Nat", "throw(18446744073709551615)", 0, "18446744073709551615"),
+    "Byte": ("Byte", "match int_to_byte(@Int.0) {\n"
+             "    Some(@Byte) -> throw(@Byte.0),\n    None -> 0\n  }",
+             200, "200"),
+    "Bool": ("Bool", "throw(@Int.0 > 0)", 1, "true"),
+    "String": ("String", 'throw("disk full")', 0, '"disk full"'),
+    "long String": ("String", 'throw(string_repeat("ab", 40))', 0,
+                    '"' + "ab" * 32 + '…"'),
+    "Float64": ("Float64", "throw(1.5)", 0, None),
+    "Tuple": ("Tuple<Int, Int>", "throw(Tuple(@Int.0, 2))", 1, None),
+    # Named as the row spells it, not as the refinement it resolves to, so
+    # the `handle[Exn<Pos>]` the Fix asks for is one the reader can write.
+    "refined alias": ("Pos", "throw(@Int.0 + 1)", 6, "7"),
+}
+
+
+def _escape_source(case: str) -> str:
+    payload, throw, arg, _ = ESCAPES[case]
+    return _escape_program(payload, throw).replace("ARG", str(arg))
+
+
+def _assert_escape(case: str, entry: str, kind: str, message: str,
+                   fix: str) -> None:
+    payload, _throw, _arg, value = ESCAPES[case]
+    assert (kind, message) == (
+        "uncaught_exception", _escaped(payload, entry, value))
+    assert fix == TRAP_KINDS["uncaught_exception"].fix
+
+
+@pytest.mark.parametrize("entry", ["main", "f"])
+@pytest.mark.parametrize("case", sorted(ESCAPES))
+def test_wasmtime_names_an_exception_leaving_an_entry_point(
+    case: str, entry: str,
+) -> None:
+    result = _compile(_escape_source(case))
+    args = [ESCAPES[case][2]] if entry == "f" else None
+    with pytest.raises(WasmTrapError) as info:
+        execute(result, fn_name=entry, args=args)
+    _assert_escape(case, entry, info.value.kind, str(info.value),
+                   info.value.fix)
+
+
+@pytest.mark.parametrize("case", sorted(ESCAPES))
+def test_the_wasi_host_names_an_exception_leaving_main(case: str) -> None:
+    from vera.runtime.wasi_host import execute_wasi_p2
+    result = _compile(_escape_source(case))
+    with pytest.raises(WasmTrapError) as info:
+        execute_wasi_p2(result)
+    _assert_escape(case, "main", info.value.kind, str(info.value),
+                   info.value.fix)
+    assert "escaped" not in info.value.stderr
+
+
+@browser
+@pytest.mark.parametrize("entry", ["main", "f"])
+@pytest.mark.parametrize("case", sorted(ESCAPES))
+def test_the_browser_names_an_exception_leaving_an_entry_point(
+    case: str, entry: str, tmp_path: Path,
+) -> None:
+    result = _compile(_escape_source(case))
+    wasm = tmp_path / "escape.wasm"
+    wasm.write_bytes(result.wasm_bytes)
+    assert _NODE is not None
+    out = _NODE(wasm, fn=entry,
+                fn_args=[str(ESCAPES[case][2])] if entry == "f" else None)
+    _assert_escape(case, entry, out["trapKind"], out["error"], out["fix"])
+
+
+def test_a_handled_exception_still_reaches_its_handler() -> None:
+    """The boundary wraps the export only: a `handle[Exn<T>]` below the
+    entry point catches as it did, on the direct call the handler's body
+    makes."""
+    source = (
+        "private fn g(@Int -> @Int)\n"
+        "  requires(true) ensures(true) effects(<Exn<Int>>)\n"
+        "{\n  throw(@Int.0 + 1)\n}\n"
+        "public fn f(@Int -> @Int)\n"
+        "  requires(true) ensures(true) effects(<Exn<Int>>)\n"
+        "{\n  g(@Int.0)\n}\n"
+        "public fn main(-> @Int)\n"
+        "  requires(true) ensures(true) effects(pure)\n"
+        "{\n  handle[Exn<Int>] {\n    throw(@Int) -> @Int.0 * 10\n"
+        "  } in {\n    f(4)\n  }\n}\n")
+    result = _compile(source)
+    assert execute(result, fn_name="main").value == 50
+
+
+def test_vera_serve_answers_an_escaped_exception_with_its_kind() -> None:
+    """A `vera serve` handler is an entry point too: the 500 it answers
+    carries the kind and the message naming the exception."""
+    import urllib.error
+    import urllib.request
+    from vera.runtime.server import make_server
+    source = (
+        "public fn handle(@Request -> @Response)\n"
+        "  requires(true) ensures(true) effects(<HttpServer, Exn<String>>)\n"
+        "{\n  match @Request.0 {\n"
+        "    Request(@String, @String, @Map<String, String>, @String) ->\n"
+        "      throw(@String.1)\n  }\n}\n")
+    httpd = make_server(_compile(source), host="127.0.0.1", port=0)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{httpd.server_address[1]}/no/such/page"
+        with pytest.raises(urllib.error.HTTPError) as info:
+            urllib.request.urlopen(url, timeout=30)
+        payload = json.loads(info.value.read().decode("utf-8"))
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+    assert info.value.code == 500
+    assert payload["trap_kind"] == "uncaught_exception"
+    assert payload["error"] == (
+        "An `Exn<String>` escaped `handle`: no `handle[Exn<String>]` caught it "
+        'before the call returned, and the value thrown was "/no/such/page"')
+
+
+def test_vera_test_names_an_exception_a_trial_leaves_by() -> None:
+    """A `vera test` trial calls the function through its export, so an
+    exception its inputs provoke is the trial's `error`, named — and
+    `vera test --json` carries the kind beside the message."""
+    source = (
+        "public fn picky(@Int -> @Int)\n"
+        "  requires(true) ensures(true) decreases(0) effects(<Exn<Int>>)\n"
+        "{\n  if @Int.0 > 3 then {\n    throw(@Int.0)\n  } else {\n"
+        "    @Int.0\n  }\n}\n")
+    from vera.tester import test as run_trials
+    program = parse_to_ast(source)
+    diags, _ = typecheck_with_artifacts(program, source)
+    assert not [d for d in diags if d.severity == "error"]
+    result = run_trials(program, source=source, file="t.vera", trials=40)
+    [function] = [f for f in result.functions if f.fn_name == "picky"]
+    assert function.failures, function
+    for failure in function.failures:
+        assert failure.status == "error", failure
+        assert failure.trap_kind == "uncaught_exception", failure
+        [value] = failure.args.values()
+        assert failure.message == _escaped("Int", "picky", str(value))
+
+
+# --- The hosts name an exception no boundary catches ------------------------
+#
+# Every export a module compiled from Vera declares its `Exn<T>` and has a
+# boundary.  A module built another way can still let one out, and each host
+# names it from what the engine itself reports rather than `unknown`: the
+# reason wasmtime gives it (it carries no trap code), and the
+# `WebAssembly.Exception` V8 raises.
+
+_BARE_THROW = (
+    '(module (tag $t (param i64)) (func (export "t") (result i64) '
+    "i64.const 5 throw $t))")
+
+
+def test_wasmtime_names_an_exception_no_boundary_catches() -> None:
+    import wasmtime
+    result = CompileResult(
+        wat=_BARE_THROW, wasm_bytes=bytes(wasmtime.wat2wasm(_BARE_THROW)),
+        exports=["t"], diagnostics=[])
+    with pytest.raises(WasmTrapError) as info:
+        execute(result, fn_name="t")
+    assert info.value.kind == "uncaught_exception"
+    assert info.value.fix == TRAP_KINDS["uncaught_exception"].fix
+
+
+def test_the_wasi_host_names_an_exception_no_boundary_catches() -> None:
+    import wasmtime
+    from wasmtime.component import Component, Linker
+    from vera.runtime.wasi_host import _component_trap_error
+    binary = bytes(wasmtime.wat2wasm(
+        "(component\n"
+        "  (core module $M (tag $t (param i64)) (func (export \"t\") "
+        "(result i64) i64.const 5 throw $t))\n"
+        "  (core instance $m (instantiate $M))\n"
+        '  (func (export "t") (result s64) (canon lift (core func $m "t")))\n'
+        ")\n"))
+    config = wasmtime.Config()
+    config.wasm_exceptions = True
+    engine = wasmtime.Engine(config)
+    store = wasmtime.Store(engine)
+    try:
+        instance = Linker(engine).instantiate(
+            store, Component(engine, binary))
+        func = instance.get_func(store, "t")
+        assert func is not None
+        with pytest.raises(wasmtime.WasmtimeError) as info:
+            func(store)
+        error = _component_trap_error(
+            info.value, bytearray(), bytearray(), None, binary)
+    finally:
+        store.close()
+    assert error.kind == "uncaught_exception", str(error)
+
+
+@browser
+def test_the_browser_names_an_exception_no_boundary_catches(
+    tmp_path: Path,
+) -> None:
+    import wasmtime
+    wasm = tmp_path / "bare.wasm"
+    wasm.write_bytes(bytes(wasmtime.wat2wasm(_BARE_THROW)))
+    assert _NODE is not None
+    out = _NODE(wasm, fn="t")
+    assert out["trapKind"] == "uncaught_exception", out
+    assert out["fix"] == TRAP_KINDS["uncaught_exception"].fix
+
+
+@browser
+def test_the_browser_names_a_host_bindings_refusal(tmp_path: Path) -> None:
+    """A host binding that refuses (here `json_stringify` of a non-finite
+    number) leaves `call()` as `host_error` with the binding's own message,
+    as it does on wasmtime — not as the binding's bare `Error`."""
+    source = (
+        "public fn main(-> @Int)\n"
+        "  requires(true) ensures(true) effects(pure)\n"
+        "{\n  string_length(json_stringify(JNumber(nan())))\n}\n")
+    result = _compile(source)
+    with pytest.raises(WasmTrapError) as native:
+        execute(result, fn_name="main")
+    wasm = tmp_path / "host.wasm"
+    wasm.write_bytes(result.wasm_bytes)
+    assert _NODE is not None
+    out = _NODE(wasm, fn="main")
+    assert native.value.kind == "host_error"
+    assert out["trapKind"] == "host_error", out
+    assert out["error"] and out["fix"] == ""
 
 
 # ---------------------------------------------------------------------------
@@ -1169,6 +1826,31 @@ def test_an_array_index_is_checked_before_it_is_narrowed(
     arg: int, expected: object,
 ) -> None:
     assert _outcome(_INDEX, "at", arg) == expected
+
+
+_NAT_SUB = (
+    "public fn sub(@Nat, @Nat -> @Nat)\n" + _HEAD + "{\n  @Nat.1 - @Nat.0\n}\n")
+
+
+@pytest.mark.parametrize(("lhs", "rhs", "expected"), [
+    (5, 3, 2),
+    (3, 5, "nat_underflow"),
+    # Past i64.MAX: a `@Nat` is a u64, so the guard compares unsigned.  A
+    # signed compare read 2^63 as negative, trapping the first with a
+    # message saying the right operand was larger and passing the second.
+    (2 ** 63, 1, 2 ** 63 - 1),
+    (1, 2 ** 63, "nat_underflow"),
+    (2 ** 64 - 1, 2 ** 64 - 1, 0),
+])
+def test_a_nat_subtraction_is_checked_unsigned(
+    lhs: int, rhs: int, expected: object,
+) -> None:
+    try:
+        outcome: object = execute(
+            _compile(_NAT_SUB), fn_name="sub", args=[lhs, rhs]).value
+    except WasmTrapError as exc:
+        outcome = exc.kind
+    assert outcome == expected, (lhs, rhs, outcome)
 
 
 @pytest.mark.parametrize(("arg", "expected"), [

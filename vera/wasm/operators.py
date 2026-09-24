@@ -2170,7 +2170,7 @@ class OperatorsMixin:
             local.set $rhs_tmp     ;; pop rhs into temp
             local.tee $lhs_tmp     ;; pop lhs into temp, leave on stack
             local.get $rhs_tmp     ;; push rhs back (stack: [lhs, rhs])
-            i64.lt_s               ;; lhs < rhs?
+            i64.lt_u               ;; lhs < rhs, as the u64s @Nat is?
             if
               <vera.trap nat_underflow> unreachable
             end
@@ -2181,7 +2181,11 @@ class OperatorsMixin:
         The trap names itself (#1479): it signals ``nat_underflow`` with a
         message quoting the two operands and the ``requires(lhs >= rhs)``
         that discharges the site's ``nat_sub`` obligation, so a reader is
-        handed the clause to add rather than a bare ``unreachable``.
+        handed the clause to add rather than a bare ``unreachable``.  The
+        comparison is unsigned, as the ``@Nat`` overflow guards are: a
+        ``@Nat`` is a u64 (spec §2.2.1), and a signed compare read one above
+        i64.MAX as negative — trapping ``2^63 - 1`` with a message saying its
+        right operand was the larger, and passing ``1 - 2^63``.
         """
         lhs_tmp = self.alloc_local("i64")
         rhs_tmp = self.alloc_local("i64")
@@ -2194,7 +2198,7 @@ class OperatorsMixin:
             f"local.set {rhs_tmp}",
             f"local.tee {lhs_tmp}",
             f"local.get {rhs_tmp}",
-            "i64.lt_s",
+            "i64.lt_u",
             "if",
             *(f"  {i}" for i in trap),
             "end",

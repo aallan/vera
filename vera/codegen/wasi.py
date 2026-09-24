@@ -87,6 +87,7 @@ _SLAB: dict[str, int] = {
     "env": 80,     # 8 B  — get-environment list header
     "args": 88,    # 8 B  — get-arguments list header
     "dirs": 96,    # 8 B  — get-directories list header
+    "mark": 104,   # 1 B  — the message-start mark's byte (#1479)
 }
 _SLAB_SIZE = 128
 
@@ -210,6 +211,17 @@ _OPS: dict[str, _OpSpec] = {
         ("get-stderr", "bwf"), ("error",),
     ),
 }
+
+#: The core module the adapter's functions live in.  A component trap's
+#: backtrace names every frame ``<module>!<function>``, and no program
+#: function can live in this module, so a host reads a trap's cause only from
+#: frames named with it (``vera.runtime.wasi_host``; #1479).
+ADAPTER_MODULE = "Adapter"
+
+#: The adapter function a contract violation traps in, and the prefix of the
+#: one a named check of kind ``K`` traps in, ``trap_kind_K``.
+CONTRACT_FAIL_FUNCTION = "op_contract_fail"
+TRAP_KIND_FUNCTION_PREFIX = "trap_kind_"
 
 #: The ops whose adapter implementation writes to stderr, and so needs the
 #: cached stderr handle and the chunked write loop.
@@ -607,7 +619,11 @@ _GC_HEAP_START_RE = re.compile(
     r'^  \(global \$gc_heap_start i32 \(i32\.const (\d+)\)\)$'
 )
 _DATA_RE = re.compile(r'^  \(data \(i32\.const (\d+)\) "(.*)"\)$')
-_MAIN_FN_RE = re.compile(r'^  \(func \$main \(export "main"\)(.*)$')
+#: The function exported as `main`: `$main` itself, or — when `main`
+#: declares `Exn<T>` — the boundary that names an exception escaping it
+#: (#1479), which `__wasi_run` must call in its place.
+_MAIN_FN_RE = re.compile(
+    r'^  \(func \$(main|main\$exn_boundary) \(export "main"\)(.*)$')
 
 
 def _expected_sig(spec: _OpSpec) -> str:
@@ -808,6 +824,7 @@ def _transform_main(
     gc_start_val = -1
     data_end = 0
     main_fn_line = ""
+    main_symbol = "main"
     for line in body:
         if _IMPORT_RE.match(line):
             continue  # replaced by shims below
@@ -835,6 +852,7 @@ def _transform_main(
         m = _MAIN_FN_RE.match(line)
         if m:
             main_fn_line = line
+            main_symbol = m.group(1)
         if "$gc_wrap_base" in line:
             raise RuntimeError(
                 "wrap-table region present despite the family gate — "
@@ -910,7 +928,7 @@ def _transform_main(
     out.append(_emit_cabi_realloc(arena_end, signal="trap" in used))
     for name in sorted(used, key=lambda n: _OPS[n].slot):
         out.append(_emit_shim(name, _OPS[name]))
-    out.append(_emit_wasi_run(len(main_results)))
+    out.append(_emit_wasi_run(len(main_results), main_symbol))
     return out, layout
 
 
@@ -1000,7 +1018,7 @@ def _emit_shim(name: str, spec: _OpSpec) -> str:
     )
 
 
-def _emit_wasi_run(n_results: int) -> str:
+def _emit_wasi_run(n_results: int, main_symbol: str = "main") -> str:
     """``wasi:cli/run`` core wrapper: call main, discard, report ok.
 
     A Vera ``main`` return value is not an exit status (that is
@@ -1010,7 +1028,7 @@ def _emit_wasi_run(n_results: int) -> str:
     drops = "    drop\n" * n_results
     return (
         '  (func $__wasi_run (export "__wasi_run") (result i32)\n'
-        "    call $main\n"
+        f"    call ${main_symbol}\n"
         f"{drops}"
         "    i32.const 0\n"
         "  )"
@@ -1239,10 +1257,39 @@ def _write_or_trap(lay: _Layout) -> str:
 
     For Vera's infallible output ops (print/stderr/contract_fail) a
     stream error traps; the owned error resource is dropped first so
-    even the trap path leaks nothing.
+    even the trap path leaks nothing.  ``$write_chunk`` is one write,
+    of up to 4096 bytes; ``$write_or_trap`` writes a whole message
+    through it, every chunk but the last a full 4096 bytes — which is
+    what lets the WASI host find a trap's message after the mark
+    :func:`_message_start_write` makes (#1479).
     """
     bwf = lay.slab("bwf")
     return (
+        "  (func $write_chunk (param $h i32) (param $ptr i32) "
+        "(param $n i32)\n"
+        "    local.get $h\n"
+        "    local.get $ptr\n"
+        "    local.get $n\n"
+        f"    i32.const {bwf}\n"
+        "    call $l_bwf\n"
+        # Variant discriminants are u8 in the canonical-ABI memory
+        # representation; a full i32.load would pick up stale slab
+        # bytes as "discriminant" (found live: an EOF err(closed)
+        # misread as last-operation-failed with a garbage handle).
+        f"    i32.const {bwf}\n"
+        "    i32.load8_u\n"
+        "    if\n"
+        f"      i32.const {bwf}\n"
+        "      i32.load8_u offset=4\n"
+        "      i32.eqz\n"
+        "      if\n"
+        f"        i32.const {bwf}\n"
+        "        i32.load offset=8\n"
+        "        call $drop_err\n"
+        "      end\n"
+        "      unreachable\n"
+        "    end\n"
+        "  )\n"
         "  (func $write_or_trap (param $h i32) (param $ptr i32) "
         "(param $len i32)\n"
         "    (local $n i32)\n"
@@ -1263,25 +1310,7 @@ def _write_or_trap(lay: _Layout) -> str:
         "      local.get $h\n"
         "      local.get $ptr\n"
         "      local.get $n\n"
-        f"      i32.const {bwf}\n"
-        "      call $l_bwf\n"
-        # Variant discriminants are u8 in the canonical-ABI memory
-        # representation; a full i32.load would pick up stale slab
-        # bytes as "discriminant" (found live: an EOF err(closed)
-        # misread as last-operation-failed with a garbage handle).
-        f"      i32.const {bwf}\n"
-        "      i32.load8_u\n"
-        "      if\n"
-        f"        i32.const {bwf}\n"
-        "        i32.load8_u offset=4\n"
-        "        i32.eqz\n"
-        "        if\n"
-        f"          i32.const {bwf}\n"
-        "          i32.load offset=8\n"
-        "          call $drop_err\n"
-        "        end\n"
-        "        unreachable\n"
-        "      end\n"
+        "      call $write_chunk\n"
         "      local.get $ptr\n"
         "      local.get $n\n"
         "      i32.add\n"
@@ -1547,14 +1576,40 @@ def _op_stderr(lay: _Layout) -> str:
     )
 
 
-def _op_contract_fail(lay: _Layout) -> str:
-    # Best-effort violation message to stderr, then trap.  The
-    # component path loses structured trap frames (spike check 5);
-    # the stderr write preserves the message for diagnostics.
+#: The byte of the mark each message channel writes on stderr, as a write
+#: of its own, just before its message (#1479): a newline, so an outside
+#: host shows the message on a line of its own.
+MESSAGE_START_MARK = b"\n"
+
+
+def _message_start_write(lay: _Layout) -> str:
+    """The write that marks where a trap's message starts on stderr: the
+    one byte :data:`MESSAGE_START_MARK`, written alone.  Every chunk of the
+    message after it but the last is a full 4096 bytes, so the WASI host
+    finds the mark as the last one-byte write of that byte that another
+    write follows, and takes the message from there to the trap — whole,
+    however many chunks it spans (``vera.runtime.wasi_host``)."""
+    mark = lay.slab("mark")
     return (
-        "  (func $op_contract_fail (param $p i32) (param $l i32)\n"
+        f"    i32.const {mark}\n"
+        f"    i32.const {MESSAGE_START_MARK[0]}\n"
+        "    i32.store8\n"
         "    call $ensure_stderr\n"
         "    global.get $stderr_h\n"
+        f"    i32.const {mark}\n"
+        "    i32.const 1\n"
+        "    call $write_chunk\n"
+    )
+
+
+def _op_contract_fail(lay: _Layout) -> str:
+    # The violation message to stderr, then trap.  The component path
+    # loses structured trap frames (spike check 5); the stderr write
+    # carries the message, after the mark that says where it starts.
+    return (
+        f"  (func ${CONTRACT_FAIL_FUNCTION} (param $p i32) (param $l i32)\n"
+        + _message_start_write(lay)
+        + "    global.get $stderr_h\n"
         "    local.get $p\n"
         "    local.get $l\n"
         "    call $write_or_trap\n"
@@ -1565,7 +1620,8 @@ def _op_contract_fail(lay: _Layout) -> str:
 
 def _op_trap(lay: _Layout) -> str:
     """#1479: the adapter's ``vera.trap``.  Writes the check's message, when
-    it carries one, to stderr — as ``contract_fail`` does — then traps inside
+    it carries one, to stderr after the mark that says where it starts
+    (:func:`_message_start_write`) — as ``contract_fail`` does — then traps inside
     a function NAMED for the kind, ``$trap_kind_<name>``: a component has no
     host-side channel for the core path's ``last_trap``, so the name in the
     wasmtime backtrace is what ``vera.runtime.wasi_host`` reads the kind
@@ -1578,19 +1634,20 @@ def _op_trap(lay: _Layout) -> str:
         f"    i32.const {kind.code}\n"
         "    i32.eq\n"
         "    if\n"
-        f"      call $trap_kind_{kind.name}\n"
+        f"      call ${TRAP_KIND_FUNCTION_PREFIX}{kind.name}\n"
         "    end\n"
         for kind in kinds
     )
     per_kind = "".join(
-        f"\n  (func $trap_kind_{kind.name} unreachable)" for kind in kinds
+        f"\n  (func ${TRAP_KIND_FUNCTION_PREFIX}{kind.name} unreachable)"
+        for kind in kinds
     )
     return (
         "  (func $op_trap (param $k i32) (param $p i32) (param $l i32)\n"
         "    local.get $l\n"
         "    if\n"
-        "      call $ensure_stderr\n"
-        "      global.get $stderr_h\n"
+        + _message_start_write(lay)
+        + "      global.get $stderr_h\n"
         "      local.get $p\n"
         "      local.get $l\n"
         "      call $write_or_trap\n"
@@ -2547,7 +2604,7 @@ def _assemble_component(
         parts.append(_DROPS[key][0])
 
     if used:
-        parts.append("  (core module $Adapter")
+        parts.append(f"  (core module ${ADAPTER_MODULE}")
         parts.extend(
             "  " + line if line else line
             for line in _adapter_fields(used, lay)
@@ -2564,7 +2621,7 @@ def _assemble_component(
                 '      (export "gc_sp" (global $g_sp))',
                 '      (export "gc_stack_limit" (global $g_lim))',
             ]
-        parts.append("  (core instance $adapter (instantiate $Adapter")
+        parts.append(f"  (core instance $adapter (instantiate ${ADAPTER_MODULE}")
         parts.append('    (with "env" (instance')
         parts.extend(env_exports)
         parts.append("    ))")
@@ -2706,6 +2763,7 @@ _SERVER_SLAB: dict[str, int] = {
     "flist": 72,     # 8 B  — from-list result
     "finish": 80,    # 40 B — outgoing-body.finish result (8-aligned)
     "bwf": 120,      # 12 B — blocking-write-and-flush result
+    "mark": 132,     # 1 B  — the message-start mark's byte (#1479)
     "rb": 136,       # 8 B  — outgoing-response.body / outgoing-body.write
     "now": 144,      # 16 B — wall-clock datetime record (8-aligned)
 }
@@ -4837,13 +4895,13 @@ def _assemble_server_component(
     for key in _SERVER_DROP_ORDER:
         parts.append(_SERVER_DROPS[key][0])
 
-    parts.append("  (core module $Adapter")
+    parts.append(f"  (core module ${ADAPTER_MODULE}")
     parts.extend(
         "  " + line if line else line
         for line in _server_adapter_fields(used, lay, req, resp)
     )
     parts.append("  )")
-    parts.append("  (core instance $adapter (instantiate $Adapter")
+    parts.append(f"  (core instance $adapter (instantiate ${ADAPTER_MODULE}")
     parts.append('    (with "env" (instance')
     parts.append('      (export "memory" (memory $mem))')
     parts.append('      (export "tbl" (table $tbl))')

@@ -15,6 +15,7 @@ from vera.codegen.compilability import contract_exprs
 from vera.codegen.tail_position import compute_tail_call_sites
 from vera.monomorphize import mangle_type_name
 from vera.slots import effect_op_result_names, type_expr_slot_name
+from vera.trap_registry import signal_instructions
 from vera.wasm import WasmContext, WasmSlotEnv
 from vera.wasm.helpers import (
     CellNames,
@@ -26,8 +27,221 @@ if TYPE_CHECKING:
     from vera.types import SpanTypeTable
 
 
+#: The most bytes of a thrown `String` an escaped exception's message
+#: quotes; a longer one is cut there and marked with an ellipsis.
+_EXN_BOUNDARY_STRING_BYTES = 64
+
+#: The locals the exception boundary uses for a caught payload and the
+#: message it builds from it.
+_EXN_BOUNDARY_LOCALS = (
+    "(local $xb_i64 i64) (local $xb_i32 i32) "
+    "(local $xb_ptr i32) (local $xb_len i32) (local $xb_mag i64) "
+    "(local $xb_t i64) (local $xb_k i32) (local $xb_n i32) "
+    "(local $xb_pos i32) (local $xb_at i32) (local $xb_total i32)"
+)
+
+
+def _exn_boundary_digits(dst: int) -> list[str]:
+    """Write the decimal digits of the u64 in ``$xb_mag`` at ``dst + $xb_n``
+    and add their count to ``$xb_n`` — the formatter the exception boundary
+    quotes an integer payload with, into scratch that belongs to no heap
+    object, so building the message never allocates (#1479).  Divides only
+    by the constant 10."""
+    return [
+        # Count the digits: at least one.
+        "local.get $xb_mag", "local.set $xb_t",
+        "i32.const 0", "local.set $xb_k",
+        "block $xb_counted", "  loop $xb_count",
+        "    local.get $xb_k", "    i32.const 1", "    i32.add",
+        "    local.set $xb_k",
+        "    local.get $xb_t", "    i64.const 10", "    i64.div_u",
+        "    local.tee $xb_t", "    i64.eqz", "    br_if $xb_counted",
+        "    br $xb_count", "  end", "end",
+        # Write them from the last one back.
+        "local.get $xb_n", "local.get $xb_k", "i32.add", "local.set $xb_n",
+        f"i32.const {dst}", "local.get $xb_n", "i32.add",
+        "i32.const 1", "i32.sub", "local.set $xb_pos",
+        "local.get $xb_mag", "local.set $xb_t",
+        "block $xb_written", "  loop $xb_write",
+        "    local.get $xb_pos",
+        "    local.get $xb_t", "    i64.const 10", "    i64.rem_u",
+        "    i32.wrap_i64", "    i32.const 48", "    i32.add",
+        "    i32.store8",
+        "    local.get $xb_pos", "    i32.const 1", "    i32.sub",
+        "    local.set $xb_pos",
+        "    local.get $xb_t", "    i64.const 10", "    i64.div_u",
+        "    local.tee $xb_t", "    i64.eqz", "    br_if $xb_written",
+        "    br $xb_write", "  end", "end",
+    ]
+
+
 class FunctionCompilationMixin:
     """Methods for compiling function bodies to WAT."""
+
+    def _exn_boundary(
+        self, decl: ast.FnDecl, param_parts: list[str], result_part: str,
+    ) -> str | None:
+        """The export that names an exception escaping *decl* (#1479).
+
+        An entry point whose effect row declares ``Exn<T>`` can let an
+        exception leave it, and the engine then reports only that one was
+        thrown.  So *decl* is exported through this wrapper instead of
+        directly: it calls *decl*, catches every tag the row declares (and
+        any other), and signals ``uncaught_exception`` with a message
+        naming the exception's type and — for an `Int`, `Nat`, `Byte`,
+        `Bool` or `String` payload — the value thrown.  The message is built
+        in scratch that belongs to no heap object, so no allocation runs on
+        the way to the trap.  Internal calls still reach *decl* itself, so a
+        `handle[Exn<T>]` anywhere below the entry point catches as before.
+        Returns None when *decl* declares no ``Exn``.
+        """
+        if not isinstance(decl.effect, ast.EffectSet):
+            return None
+        tags: list[tuple[str, list[str], str, str]] = []
+        for eff in decl.effect.effects:
+            if not (isinstance(eff, ast.EffectRef) and eff.name == "Exn"
+                    and eff.type_args and len(eff.type_args) == 1):
+                continue
+            te = eff.type_args[0]
+            family = self._family_name_te(te)
+            wt = self._type_expr_to_wasm_type(te)
+            if not family or wt is None or wt == "unsupported":
+                continue
+            params = ["i32", "i32"] if wt == "i32_pair" else [wt]
+            tag = f"$exn_{mangle_type_name(family)}"
+            if any(t[0] == tag for t in tags):
+                continue
+            # The message names the type as the row spells it — `Exn<Pos>`,
+            # not the refinement it resolves to (the slot form without its
+            # `@`s) — so the `handle[Exn<T>]` the Fix asks for is one the
+            # reader can write.
+            tags.append((tag, params,
+                         ast.format_type_expr(te).replace("@", ""),
+                         self._family_base_te(te) or family))
+        if not tags:
+            return None
+        self._needs_trap = True
+        self._needs_memory = True
+        name = decl.name
+        n_params = sum(part.count("(param ") for part in param_parts)
+        result_spec = result_part.strip()
+        lines = [f'  (func ${name}$exn_boundary (export "{name}")'
+                 + (" " + " ".join(param_parts) if param_parts else "")
+                 + result_part,
+                 f"    {_EXN_BOUNDARY_LOCALS}"]
+        # Each catch lands after its own block's `end` with the payload on
+        # the stack; its report leaves the message in $xb_at / $xb_total and
+        # branches to the one signal below.  `catch_all` (an exception of a
+        # type the row does not declare, which a checked program never
+        # throws here) lands after $xb_any with a message of its own.
+        any_ptr, any_len = self.string_pool.intern(
+            f"An exception escaped `{name}`: no `handle[Exn<T>]` caught it "
+            "before the call returned.")
+        body: list[str] = ["block $xb_signal", "block $xb_any"]
+        for i, (_tag, params, _family, _base) in enumerate(tags):
+            body.append(f"block $xb_{i} (result {' '.join(params)})")
+        catches = " ".join(
+            f"(catch {tag} $xb_{i})" for i, (tag, *_rest) in enumerate(tags))
+        body.append(f"try_table {result_spec} {catches} (catch_all $xb_any)"
+                    .replace("  ", " "))
+        body.extend(f"  local.get {k}" for k in range(n_params))
+        body.append(f"  call ${name}")
+        body.append("end")
+        body.append("return")
+        for i in reversed(range(len(tags))):
+            body.append("end")
+            body.extend(self._exn_boundary_report(name, *tags[i][1:]))
+            body.append("br $xb_signal")
+        body += ["end", f"i32.const {any_ptr}", "local.set $xb_at",
+                 f"i32.const {any_len}", "local.set $xb_total", "end"]
+        body.extend(signal_instructions(
+            "uncaught_exception",
+            operands=("local.get $xb_at", "local.get $xb_total")))
+        lines.extend(f"    {instr}" for instr in body)
+        lines.append("  )")
+        return "\n".join(lines)
+
+    def _exn_boundary_report(
+        self, name: str, params: list[str], shown: str, base: str,
+    ) -> list[str]:
+        """With one tag's payload on the stack, leave the message naming it
+        escaping *name* in ``$xb_at`` / ``$xb_total``, for the one signal
+        :meth:`_exn_boundary` raises.  *shown* is the payload type as the
+        effect row spells it; *base*, the type its value is printed as."""
+        exn = f"`Exn<{shown}>`"
+        stated = (f"An {exn} escaped `{name}`: no `handle[Exn<{shown}>]` "
+                  "caught it before the call returned")
+        printable = base in ("Int", "Nat", "Byte", "Bool", "String")
+        prefix = stated + (", and the value thrown was " if printable else ".")
+        ptr, length = self.string_pool.intern(prefix)
+        if not printable:
+            return ["drop"] * len(params) + [
+                f"i32.const {ptr}", "local.set $xb_at",
+                f"i32.const {length}", "local.set $xb_total"]
+        room = _EXN_BOUNDARY_STRING_BYTES + 8 if base == "String" else 24
+        scratch = self.string_pool.reserve(length + room)
+        dst = scratch + length
+        out: list[str] = []
+        if base == "String":
+            out += ["local.set $xb_len", "local.set $xb_ptr"]
+        elif params == ["i64"]:
+            out += ["local.set $xb_i64"]
+        else:
+            out += ["local.set $xb_i32"]
+        out += [f"i32.const {scratch}", f"i32.const {ptr}",
+                f"i32.const {length}", "memory.copy",
+                "i32.const 0", "local.set $xb_n"]
+        if base == "Int":
+            out += [
+                "local.get $xb_i64", "i64.const 0", "i64.lt_s", "if",
+                f"  i32.const {dst}", "  i32.const 45", "  i32.store8",
+                "  i64.const 0", "  local.get $xb_i64", "  i64.sub",
+                "  local.set $xb_mag", "  i32.const 1", "  local.set $xb_n",
+                "else", "  local.get $xb_i64", "  local.set $xb_mag", "end",
+                *_exn_boundary_digits(dst),
+            ]
+        elif base == "Nat":
+            out += ["local.get $xb_i64", "local.set $xb_mag",
+                    *_exn_boundary_digits(dst)]
+        elif base == "Byte":
+            out += ["local.get $xb_i32", "i64.extend_i32_u",
+                    "local.set $xb_mag", *_exn_boundary_digits(dst)]
+        elif base == "Bool":
+            true_ptr, true_len = self.string_pool.intern("true")
+            false_ptr, false_len = self.string_pool.intern("false")
+            out += [
+                f"i32.const {dst}", "local.get $xb_i32", "if (result i32)",
+                f"  i32.const {true_ptr}", "else", f"  i32.const {false_ptr}",
+                "end", "local.get $xb_i32", "if (result i32)",
+                f"  i32.const {true_len}", "else", f"  i32.const {false_len}",
+                "end", "local.tee $xb_n", "memory.copy",
+            ]
+        else:  # String: quoted, cut at a fixed length
+            cut = _EXN_BOUNDARY_STRING_BYTES
+            ellipsis_ptr, ellipsis_len = self.string_pool.intern("…")
+            out += [
+                f"i32.const {dst}", "i32.const 34", "i32.store8",
+                "local.get $xb_len", f"i32.const {cut}", "i32.gt_u",
+                "if (result i32)", f"  i32.const {cut}", "else",
+                "  local.get $xb_len", "end", "local.set $xb_k",
+                f"i32.const {dst + 1}", "local.get $xb_ptr",
+                "local.get $xb_k", "memory.copy",
+                "local.get $xb_k", "i32.const 1", "i32.add",
+                "local.set $xb_n",
+                "local.get $xb_len", f"i32.const {cut}", "i32.gt_u", "if",
+                f"  i32.const {dst}", "  local.get $xb_n", "  i32.add",
+                f"  i32.const {ellipsis_ptr}", f"  i32.const {ellipsis_len}",
+                "  memory.copy",
+                "  local.get $xb_n", f"  i32.const {ellipsis_len}", "  i32.add",
+                "  local.set $xb_n", "end",
+                f"i32.const {dst}", "local.get $xb_n", "i32.add",
+                "i32.const 34", "i32.store8",
+                "local.get $xb_n", "i32.const 1", "i32.add",
+                "local.set $xb_n",
+            ]
+        return out + [f"i32.const {scratch}", "local.set $xb_at",
+                      f"i32.const {length}", "local.get $xb_n", "i32.add",
+                      "local.set $xb_total"]
 
     def _emit_adt_eq_not_derivable(
         self, ctx: WasmContext, nde: AdtEqNotDerivableError,
@@ -1465,8 +1679,12 @@ class FunctionCompilationMixin:
                 gc_epilogue.append(f"local.get {gc_sp_save}")
                 gc_epilogue.append("global.set $gc_sp")
 
-        # Assemble function WAT
-        export_part = f' (export "{decl.name}")' if export else ""
+        # Assemble function WAT.  #1479: an entry point declaring `Exn<T>`
+        # is exported through the boundary that names an escaping exception.
+        boundary = (self._exn_boundary(decl, param_parts, result_part)
+                    if export else None)
+        export_part = (f' (export "{decl.name}")'
+                       if export and boundary is None else "")
         header = f"  (func ${decl.name}{export_part}"
         if param_parts:
             header += " " + " ".join(param_parts)
@@ -1518,4 +1736,6 @@ class FunctionCompilationMixin:
             lines.append(f"    {instr}")
 
         lines.append("  )")
+        if boundary is not None:
+            lines.append(boundary)
         return "\n".join(lines)

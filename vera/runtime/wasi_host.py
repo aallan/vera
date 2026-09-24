@@ -52,29 +52,47 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Protocol
 
 from vera.codegen.api import ExecuteResult, WasmTrapError
-from vera.codegen.wasi import emit_wasi_component
+from vera.codegen.wasi import (
+    ADAPTER_MODULE,
+    CONTRACT_FAIL_FUNCTION,
+    MESSAGE_START_MARK,
+    TRAP_KIND_FUNCTION_PREFIX,
+    emit_wasi_component,
+)
 from vera.runtime.text import safe_utf8_decode
 from vera.runtime.traps import _classify_trap
 from vera.trap_registry import NATIVE_TRAP_OPCODES, TRAP_KINDS
 
-#: The adapter function a named trap executes its ``unreachable`` in, as the
-#: wasmtime backtrace renders it (``Adapter!trap_kind_nat_underflow``).
-_TRAP_KIND_FRAME = re.compile(r"!trap_kind_([a-z_]+)")
+#: The innermost frame of a component trap's rendered backtrace,
+#: ``    0:    0xf9e - Adapter!trap_kind_index_out_of_bounds``: the offset is
+#: into the component binary, and the name is ``<module>!<function>``.
+_INNERMOST_FRAME = re.compile(
+    r"^\s*0:\s+0x([0-9a-f]+)\s+-\s+(\S+)", re.MULTILINE)
 
-#: The innermost frame of a component trap's rendered backtrace
-#: (``    0:    0x840 - Main!main``): its offset is into the component
-#: binary, which is how the trapping instruction is read (#1479).
-_INNERMOST_FRAME_OFFSET = re.compile(r"^\s*0:\s+0x([0-9a-f]+)\s", re.MULTILINE)
+#: The frame a contract violation traps in, and the frames a named check
+#: traps in — the adapter's own functions (#1479).  Matched against the
+#: WHOLE innermost frame name, and only it: every program function on the
+#: stack is in the backtrace too, as ``Main!<name>``, and a program function
+#: may be called ``contract_fail`` or ``trap_kind_overflow``; none can live
+#: in the adapter module.
+_CONTRACT_FRAME = f"{ADAPTER_MODULE}!{CONTRACT_FAIL_FUNCTION}"
+_TRAP_KIND_FRAME = re.compile(
+    re.escape(f"{ADAPTER_MODULE}!{TRAP_KIND_FUNCTION_PREFIX}") + r"([a-z_]+)")
 
 
-def _component_trap_instruction(message: str, binary: bytes) -> str | None:
-    """The natively trapping instruction a component trap stopped at, read
-    from *binary* — the component the trap came from — at the innermost
-    frame's offset; None when the backtrace names no frame there."""
-    frame = _INNERMOST_FRAME_OFFSET.search(message)
+def _innermost_frame(message: str) -> tuple[int, str] | None:
+    """The innermost frame of a component trap's backtrace, as its offset
+    into the component binary and its ``<module>!<function>`` name; None
+    when the backtrace names none."""
+    frame = _INNERMOST_FRAME.search(message)
     if frame is None:
         return None
-    offset = int(frame.group(1), 16)
+    return int(frame.group(1), 16), frame.group(2)
+
+
+def _component_trap_instruction(offset: int, binary: bytes) -> str | None:
+    """The natively trapping instruction at *offset* in *binary* — the
+    component the trap came from — or None."""
     if not 0 <= offset < len(binary):
         return None
     return NATIVE_TRAP_OPCODES.get(binary[offset])
@@ -168,11 +186,11 @@ def execute_wasi_p2(
     config = wasmtime.WasiConfig()
     out_buf = bytearray()
     err_buf = bytearray()
-    # The adapter writes a contract-violation message as ONE stderr
-    # write immediately before trapping, and messages are far below the
-    # 4096-byte chunking cap — so the last chunk seen here IS the
-    # violation text when a contract_fail trap fires.
-    last_err_chunk: list[bytes] = [b""]
+    # Every stderr write, as its (offset, length) in err_buf: a trap's
+    # message starts after the adapter's mark, which only the write
+    # boundaries can tell from the same byte in the program's output
+    # (`message_start`, #1479).
+    err_writes: list[tuple[int, int]] = []
 
     if tee_stdout:
         # Incremental decoder: the 4096-byte write cap can split a
@@ -192,8 +210,8 @@ def execute_wasi_p2(
             out_buf.extend(chunk)
 
     def _on_stderr(chunk: bytes) -> None:
+        err_writes.append((len(err_buf), len(chunk)))
         err_buf.extend(chunk)
-        last_err_chunk[0] = bytes(chunk)
 
     # wasmtime owns each callback until it drops the stream that writes
     # through it; each event is set when it lets go, which `_release_store`
@@ -207,7 +225,7 @@ def execute_wasi_p2(
     try:
         return _run_component(
             store, config, linker, component,
-            out_buf, err_buf, last_err_chunk,
+            out_buf, err_buf, err_writes,
             argv=[argv0, *(cli_args or [])], binary=binary,
         )
     finally:
@@ -223,7 +241,7 @@ def _run_component(
     component: "Component",
     out_buf: bytearray,
     err_buf: bytearray,
-    last_err_chunk: list[bytes],
+    err_writes: list[tuple[int, int]],
     *,
     argv: list[str],
     binary: bytes,
@@ -279,7 +297,8 @@ def _run_component(
         exit_code = trap.code if trap.code is not None else 1
     except wasmtime.WasmtimeError as trap:
         raise _component_trap_error(
-            trap, out_buf, err_buf, last_err_chunk[0], binary,
+            trap, out_buf, err_buf, message_mark(err_buf, err_writes),
+            binary,
         ) from trap
 
     return ExecuteResult(
@@ -290,26 +309,56 @@ def _run_component(
     )
 
 
+def message_mark(
+    err_buf: bytes | bytearray, writes: list[tuple[int, int]],
+) -> int | None:
+    """The offset in *err_buf* of the mark a trap's message follows, or
+    None.
+
+    Each of the adapter's message channels writes its mark — the one byte
+    ``MESSAGE_START_MARK``, as a write of its own — and then the message,
+    every chunk of it but the last a full 4096 bytes (#1479).  So the mark
+    is the last one-byte write of that byte that another write follows: no
+    chunk of the message is one byte except possibly its last, which
+    nothing follows, and everything the program wrote came before.  What
+    precedes the mark is the program's own stderr, and everything after it
+    is the message; *writes* holds each write's ``(offset, length)``.  None
+    when no write is the mark, or when the writes after it are not a
+    message's chunks.
+    """
+    for i in range(len(writes) - 2, -1, -1):
+        offset, length = writes[i]
+        if length == 1 and err_buf[offset] == MESSAGE_START_MARK[0]:
+            chunks = [n for _, n in writes[i + 1:-1]]
+            return offset if all(n == 4096 for n in chunks) else None
+    return None
+
+
 def _component_trap_error(
     trap: BaseException,
     out_buf: bytearray,
     err_buf: bytearray,
-    last_err_chunk: bytes,
+    mark: int | None,
     binary: bytes = b"",
 ) -> WasmTrapError:
     """Wrap a component trap in the core path's ``WasmTrapError`` shape.
 
     The core path's host-import side channels (``last_violation``,
-    ``last_trap``) don't exist inside a component, so the adapter function
-    names in the wasmtime backtrace text identify the same conditions:
-    ``contract_fail`` for a contract, and ``trap_kind_<name>`` for a check
-    ``vera.trap`` named (#1479) — the adapter traps inside a function named
-    for the kind precisely so this can read it.  A message travels the one
+    ``last_trap``) don't exist inside a component, so the adapter function a
+    trap happened in identifies the same conditions: the innermost frame is
+    ``Adapter!op_contract_fail`` for a contract, and ``Adapter!trap_kind_<name>``
+    for a check ``vera.trap`` named (#1479) — the adapter traps inside a
+    function named for the kind precisely so this can read it.  Only the
+    innermost frame's whole name is read, and only the adapter module's: the
+    backtrace names every program function on the stack too, and a program
+    function's name must not decide the kind.  A message travels the one
     way a component can send one: the adapter writes it to WASI stderr as
-    its last act before trapping, so the last chunk seen here IS the
-    message for a contract and for any kind whose sites carry their own
-    (``TrapKind.site_message``).  It is removed from the program's stderr
-    transcript, which restores the core path's stream separation.
+    its last act before trapping, after a mark saying where it starts —
+    *mark*, the mark's offset in *err_buf* (:func:`message_mark`) — so
+    everything after the mark IS the message, whole, for a contract and for
+    any kind whose sites carry their own (``TrapKind.site_message``).  The
+    mark and the message are removed from the program's stderr transcript,
+    which restores the core path's stream separation.
     """
     msg = str(trap)
     stdout = safe_utf8_decode(bytes(out_buf))
@@ -317,13 +366,16 @@ def _component_trap_error(
 
     def _take_message(fallback: str) -> str:
         nonlocal stderr
-        text = safe_utf8_decode(last_err_chunk) or fallback
-        if text and stderr.endswith(text):
-            stderr = stderr[: -len(text)]
-        return text
+        if mark is None:
+            return fallback
+        stderr = safe_utf8_decode(bytes(err_buf[:mark]))
+        text = err_buf[mark + len(MESSAGE_START_MARK):]
+        return safe_utf8_decode(bytes(text)) or fallback
 
-    named = _TRAP_KIND_FRAME.search(msg)
-    if "contract_fail" in msg:
+    frame = _innermost_frame(msg)
+    frame_name = frame[1] if frame is not None else ""
+    named = _TRAP_KIND_FRAME.fullmatch(frame_name)
+    if frame_name == _CONTRACT_FRAME:
         violation = _take_message("Contract violation")
         kind, description, fix = _classify_trap(trap, [violation])
     elif named is not None and named.group(1) in TRAP_KINDS:
@@ -335,8 +387,10 @@ def _component_trap_error(
     else:
         # A trap the engine raised itself: its kind needs the instruction
         # where wasmtime's reason is shared (#1479), read from *binary*.
+        instruction = (_component_trap_instruction(frame[0], binary)
+                       if frame is not None else None)
         kind, description, fix = _classify_trap(
-            trap, [], instruction=_component_trap_instruction(msg, binary))
+            trap, [], instruction=instruction)
     return WasmTrapError(
         description,
         stdout=stdout,

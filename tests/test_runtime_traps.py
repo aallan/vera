@@ -1595,11 +1595,12 @@ public fn main(@Unit -> @Int)
         the user — the test catches the omission immediately.  The
         canonical kind list comes from the ``WasmTrapError``
         docstring; if a future kind is added there, the table must
-        gain a row to keep this test passing.  The six #1479 rows
+        gain a row to keep this test passing.  The seven #1479 rows
         are the most recent: each check that trapped as a bare
         ``unreachable`` (or, for a Float64 conversion, as ``unknown``)
         now signals its own kind through ``vera.trap`` and needs, and
-        here must have, its own remedy.
+        here must have, its own remedy — as does an exception escaping
+        an entry point, which was reported as ``unknown``.
         """
         from vera.runtime.traps import _TRAP_FIX_PARAGRAPHS
         expected_kinds = {
@@ -1620,6 +1621,8 @@ public fn main(@Unit -> @Int)
             "string_index_out_of_bounds",
             "float_conversion",
             "heap_exhausted",
+            # #1479: an `Exn<T>` that escapes an entry point.
+            "uncaught_exception",
             "unknown",
         }
         assert set(_TRAP_FIX_PARAGRAPHS.keys()) == expected_kinds, (

@@ -1421,6 +1421,19 @@ public fn handle(@Request -> @Response)
 }
 """
 
+#: #1479: a handler that lets an `Exn<String>` escape — the path it was
+#: asked for, so the message quotes a value the request chose.
+EXN_HANDLER = """\
+public fn handle(@Request -> @Response)
+  requires(true) ensures(true) effects(<HttpServer, Exn<String>>)
+{
+  match @Request.0 {
+    Request(@String, @String, @Map<String, String>, @String) ->
+      throw(@String.1)
+  }
+}
+"""
+
 FORBIDDEN_HEADER_HANDLER = """\
 public fn handle(@Request -> @Response)
   requires(true) ensures(true) effects(<HttpServer>)
@@ -1739,14 +1752,16 @@ class _WasmtimeServe:
     assertions)."""
 
     def __init__(self, component_text: str, tmp_path: Path,
-                 name: str = "component.wat") -> None:
+                 name: str = "component.wat",
+                 flags: tuple[str, ...] = ()) -> None:
         import subprocess
         import threading
 
         wat_file = tmp_path / name
         wat_file.write_text(component_text, encoding="utf-8")
         self._proc = subprocess.Popen(
-            ["wasmtime", "serve", "--addr", "127.0.0.1:0", str(wat_file)],
+            ["wasmtime", "serve", *flags, "--addr", "127.0.0.1:0",
+             str(wat_file)],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, encoding="utf-8",
         )
@@ -1967,6 +1982,29 @@ class TestWasmtimeServeSmoke:
         assert "worker failed" in log
         assert "Main!handle" in log
         assert "requires" in log
+
+    def test_an_escaped_exception_is_named_by_the_served_component(
+        self, tmp_path: Path,
+    ) -> None:
+        """#1479: `handle` is an entry point, so an `Exn<T>` it lets escape
+        is named as one leaving `main` is — the component answers 500, and
+        the trap is the adapter's `uncaught_exception` above the export's
+        boundary, with the message on the adapter's stderr.  A program
+        that throws uses the exceptions proposal, which stock `wasmtime
+        serve` enables with `-W exceptions=y`."""
+        wat = _emit_server(EXN_HANDLER)
+        with _WasmtimeServe(wat, tmp_path,
+                            flags=("-W", "exceptions=y")) as srv:
+            status, _, _ = _serve_request(
+                srv.port, "GET", "/no/such/page", [], "")
+            assert status == 500
+            log = srv.settled_log()
+        assert "Adapter!trap_kind_uncaught_exception" in log
+        assert "Main!handle$exn_boundary" in log
+        assert (
+            "An `Exn<String>` escaped `handle`: no `handle[Exn<String>]` "
+            "caught it before the call returned, and the value thrown was "
+            '"/no/such/page"') in log
 
     def test_forbidden_response_header_is_a_graceful_500(
         self, tmp_path: Path,

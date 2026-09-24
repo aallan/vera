@@ -104,6 +104,18 @@ class UnreachableCause:
     """The sentences the paragraph carries for this cause."""
 
 
+#: What the collector's wrapper table holds: every value whose registration
+#: passes one of these wrap kinds (``vera/wasm/calls_containers.py``'s
+#: ``_WRAP_KIND_*``), and nothing else.  The ``wrap_table_overflow`` cause
+#: names exactly these; ``tests/test_named_traps_1479.py`` holds the keys to
+#: the kinds every registration — code generation's ``_emit_wrap_handle`` and
+#: the host's ``_wrap_handle`` — is made with.  (``Map`` and ``Set`` values
+#: are plain heap objects since #706 and never enter it.)
+WRAP_TABLE_VALUES: dict[str, str] = {
+    "_WRAP_KIND_DECIMAL": "`Decimal` values",
+    "_WRAP_KIND_FUTURE": "pending async requests",
+}
+
 UNREACHABLE_CAUSES: tuple[UnreachableCause, ...] = (
     UnreachableCause(
         "shadow_stack_overflow",
@@ -129,12 +141,12 @@ UNREACHABLE_CAUSES: tuple[UnreachableCause, ...] = (
     ),
     UnreachableCause(
         "wrap_table_overflow",
-        "More than 4 096 host-backed values — `Map`, `Set`, `Decimal`, a "
-        "parsed JSON or HTML map, a pending async request — were alive at "
-        "once, and a collection freed none of them, so the table that "
-        "tracks their host handles had no room for another.  Let values you "
-        "no longer need become unreachable, or combine many small "
-        "containers into fewer larger ones.",
+        "More than 4 096 host-backed values — "
+        + " and ".join(WRAP_TABLE_VALUES.values())
+        + " — were alive at once, and a collection freed none of them, so "
+        "the table that tracks their host handles had no room for another.  "
+        "Let values you no longer need become unreachable, and hold fewer "
+        "of them at once.",
     ),
     UnreachableCause(
         "wasi_io_failure",
@@ -331,6 +343,17 @@ TRAP_KINDS: dict[str, TrapKind] = _kinds(
         "unreachable", 0, "Reached `unreachable` WASM instruction",
         unreachable_fix_paragraph(),
     ),
+    TrapKind(
+        "uncaught_exception", 10, "Uncaught exception",
+        "An `Exn<T>` was thrown and no `handle[Exn<T>]` caught it before the "
+        "call returned to the host: the entry point declares `Exn<T>` in its "
+        "effect row, which lets the exception leave it.  Catch it where the "
+        "program starts — wrap the throwing call in `handle[Exn<T>] { throw(@T) "
+        "-> ... } in { ... }` inside `main`, or inside the function `vera run "
+        "--fn` or `vera test` called — or stop declaring `Exn<T>` on that "
+        "function once nothing in it throws.",
+        site_message=True,
+    ),
     TrapKind("host_error", 0, "Host binding error", "", site_message=True),
     TrapKind("unknown", 0, "Unclassified trap", ""),
 )
@@ -377,8 +400,9 @@ class TrapEmitter:
 
     per_site: bool = True
     """Whether each emission is recorded in ``CompileResult.emitted_checks``.
-    False for a runtime function (the allocator) that is emitted once per
-    module and belongs to no source site."""
+    False for what checks no value at a source site: a runtime function
+    (the allocator) emitted once per module, and an entry point's exception
+    boundary, emitted once per export."""
 
 
 def _emitters(*rows: TrapEmitter) -> dict[str, TrapEmitter]:
@@ -497,6 +521,13 @@ TRAP_EMITTERS: dict[str, TrapEmitter] = _emitters(
         "none: the WASI host-data arena is a runtime function",
         per_site=False,
     ),
+    # --- entry points: one per export whose row declares `Exn<T>` ---------
+    TrapEmitter(
+        "codegen/functions.py:_exn_boundary", "uncaught_exception", (),
+        "signal",
+        "none: the export an entry point is called through, which catches an "
+        "exception leaving it; it checks no value", per_site=False,
+    ),
 )
 
 
@@ -513,6 +544,7 @@ TRAP_IMPORT_WAT = (
 
 def signal_instructions(
     kind: str, ptr: int = 0, length: int = 0, marker: str = "",
+    *, operands: tuple[str, str] | None = None,
 ) -> list[str]:
     """The instructions that raise trap *kind*: the signal, then the trap.
 
@@ -525,13 +557,17 @@ def signal_instructions(
     check's condition — and raise the import's ``_needs_...`` flag beside
     the splice; ``WasmContext._emit_trap`` does both and records the check,
     passing the record's *marker* (:func:`check_marker`) for the signal's
-    ``call`` to carry.
+    ``call`` to carry.  *operands* replaces the two constants with the
+    instructions that push a message built at run time — the one message
+    that is: an exception escaping an entry point, which quotes the value
+    thrown.
     """
     row = TRAP_KINDS[kind]
+    message = (list(operands) if operands is not None
+               else [f"i32.const {ptr}", f"i32.const {length}"])
     if kind == "contract_violation":
         return [
-            f"i32.const {ptr}",
-            f"i32.const {length}",
+            *message,
             f"call $vera.{CONTRACT_SIGNAL}{marker}",
             "unreachable",
         ]
@@ -539,8 +575,7 @@ def signal_instructions(
         raise ValueError(f"trap kind {kind!r} is not raised by a signal")
     return [
         f"i32.const {row.code}",
-        f"i32.const {ptr}",
-        f"i32.const {length}",
+        *message,
         f"call $vera.{TRAP_SIGNAL}{marker}",
         "unreachable",
     ]
@@ -807,6 +842,14 @@ SAFE_NATIVE_SITES: tuple[NativeSite, ...] = (
         "caller signals as float_conversion",
     ),
     NativeSite(
+        "codegen/functions.py:_exn_boundary_digits", "i64.div_u", 2,
+        "divides by the constant 10",
+    ),
+    NativeSite(
+        "codegen/functions.py:_exn_boundary_digits", "i64.rem_u", 1,
+        "divides by the constant 10",
+    ),
+    NativeSite(
         "codegen/wasi.py:_op_time", "i64.div_u", 1,
         "divides by the constant 10^6",
     ),
@@ -829,9 +872,33 @@ KNOWN_TRAP_DEFECTS: tuple[NativeSite, ...] = (
     ),
 )
 
+#: Every ``throw`` code generation emits.  A thrown exception that no
+#: ``handle[Exn<T>]`` catches leaves the entry point it was called through,
+#: and the engine alone would report only that an exception was thrown; so
+#: every export whose effect row declares ``Exn<T>`` is called through the
+#: boundary :data:`TRAP_EMITTERS` lists, which names it
+#: ``uncaught_exception``.  A new ``throw`` is a failure of the static scan
+#: until it is entered here.
+THROW_SITES: tuple[NativeSite, ...] = (
+    NativeSite(
+        "wasm/calls.py:_translate_call", "throw", 1,
+        "a bare `throw(...)`: caught by the nearest `handle[Exn<T>]`, or "
+        "named by the boundary of the entry point it escapes",
+        kind="uncaught_exception", emitter="codegen/functions.py:_exn_boundary",
+    ),
+    NativeSite(
+        "wasm/calls.py:_translate_qualified_call", "throw", 1,
+        "a qualified `Exn.throw(...)`: caught by the nearest "
+        "`handle[Exn<T>]`, or named by the boundary of the entry point it "
+        "escapes",
+        kind="uncaught_exception", emitter="codegen/functions.py:_exn_boundary",
+    ),
+)
+
 #: The WASM instructions that trap by themselves on an operand, which the
-#: static scan looks for.  Memory accesses, `call_indirect` and `throw`
-#: trap only on a compiler or runtime bug and are out of its scope.
+#: static scan looks for.  Memory accesses and `call_indirect` trap only on
+#: a compiler or runtime bug and are out of its scope; a ``throw`` has its
+#: own census, :data:`THROW_SITES`.
 NATIVE_TRAPPING_INSTRUCTIONS: frozenset[str] = frozenset({
     "i32.div_s", "i32.div_u", "i32.rem_s", "i32.rem_u",
     "i64.div_s", "i64.div_u", "i64.rem_s", "i64.rem_u",
@@ -849,8 +916,11 @@ NATIVE_TRAPPING_INSTRUCTIONS: frozenset[str] = frozenset({
 #: first match wins (wasmtime and the WASI 0.2 host).  "integer overflow" is
 #: also what wasmtime says for a truncation past its range or of an
 #: infinity, so a host that can read the trapping instruction consults it
-#: first (:func:`native_trap_kind`).
+#: first (:func:`native_trap_kind`).  An exception leaving an export carries
+#: no trap code; "thrown Wasm exception" is wasmtime's whole statement of
+#: it, for an export no exception boundary wraps.
 WASMTIME_NATIVE_TRAPS: tuple[tuple[str, str], ...] = (
+    ("thrown wasm exception", "uncaught_exception"),
     ("integer divide by zero", "divide_by_zero"),
     ("invalid conversion to integer", "float_conversion"),
     ("out of bounds memory access", "out_of_bounds"),
@@ -858,6 +928,20 @@ WASMTIME_NATIVE_TRAPS: tuple[tuple[str, str], ...] = (
     ("unreachable", "unreachable"),
     ("integer overflow", "overflow"),
 )
+
+#: wasmtime's structured trap code (the ``wasmtime.TrapCode`` member's name)
+#: to the kind it is — read before any text wherever the host has it (the
+#: core runtime), so no program text can decide the kind.  Two spellings of
+#: the unreachable code cover the wasmtime-py releases in use.
+WASMTIME_TRAP_CODES: dict[str, str] = {
+    "INTEGER_DIVISION_BY_ZERO": "divide_by_zero",
+    "INTEGER_OVERFLOW": "overflow",
+    "BAD_CONVERSION_TO_INTEGER": "float_conversion",
+    "MEMORY_OUT_OF_BOUNDS": "out_of_bounds",
+    "STACK_OVERFLOW": "stack_exhausted",
+    "UNREACHABLE": "unreachable",
+    "UNREACHABLE_CODE_REACHED": "unreachable",
+}
 
 #: V8's ``WebAssembly.RuntimeError`` message to the kind it is (the browser
 #: runtime).  A ``RangeError`` from call-stack exhaustion is
@@ -891,10 +975,14 @@ def native_trap_kind(
     reason: str,
     instruction: str | None,
     table: tuple[tuple[str, str], ...],
+    code: str | None = None,
 ) -> str | None:
-    """The kind of a trap the WASM engine raised itself, from its *reason*
-    (lower-cased, matched against *table*, first match wins) and — where the
-    host can report it — the *instruction* that trapped.
+    """The kind of a trap the WASM engine raised itself, from — in order —
+    the *instruction* that trapped, where the host can report it; the
+    engine's structured trap *code* (a ``WASMTIME_TRAP_CODES`` key), where it
+    has one — and then nothing else; and otherwise its *reason*
+    (lower-cased, the engine's own words only, matched against *table*,
+    first match wins).
 
     A float-to-integer truncation traps only on a value it cannot convert:
     NaN, an infinity, or a finite value past its target range.  That is a
@@ -905,6 +993,10 @@ def native_trap_kind(
     """
     if instruction is not None and ".trunc_" in instruction:
         return "float_conversion"
+    if code is not None:
+        # The code is the engine's own statement of what happened; where
+        # there is one, no text is read at all.
+        return WASMTIME_TRAP_CODES.get(code)
     for needle, kind in table:
         if needle in reason:
             return kind
@@ -1003,9 +1095,12 @@ def _validate() -> None:
     for site in (*NATIVE_TRAP_SITES, *KNOWN_TRAP_DEFECTS):
         if site.kind not in TRAP_KINDS:
             raise ValueError(f"{site.site}: unknown trap kind {site.kind!r}")
-    for site in NATIVE_TRAP_SITES:
+    for site in (*NATIVE_TRAP_SITES, *THROW_SITES):
         if site.emitter not in TRAP_EMITTERS:
             raise ValueError(f"{site.site}: unknown emitter {site.emitter!r}")
+        if TRAP_EMITTERS[site.emitter].kind != site.kind:
+            raise ValueError(
+                f"{site.site}: kind {site.kind!r} is not its emitter's")
 
 
 _validate()
