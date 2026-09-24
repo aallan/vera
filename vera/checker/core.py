@@ -446,6 +446,11 @@ class TypeChecker(
         # holds its name (#1433): a bare call reaches it, and a second
         # declaration of the name is a duplicate.
         self._unchecked_body_ids: set[int] = set()
+        # #1497: the constructors of a `data` declaration refused as E158 for
+        # taking a primitive's name.  It is not registered, so a use of one
+        # would otherwise report an unknown constructor the program never
+        # meant: the declaration's own E158 is the one error it owes.
+        self._refused_ctor_names: set[str] = set()
         # #991 checker leg (PR #1013 review): lexically-scoped where-helper
         # resolution, mirroring the verifier and codegen.  ``env.functions``
         # is flat and last-wins, so a bare call to a same-named helper in a

@@ -1284,7 +1284,7 @@ class RegistrationMixin:
 
     def _check_special_cased_builtin_adt(
         self, node: ast.Node, name: str, kind: str,
-    ) -> None:
+    ) -> bool:
         """Refuse a declaration whose name the compiler special-cases (#1397).
 
         The same rule E151 applies to built-in FUNCTIONS and E152 to built-in
@@ -1316,6 +1316,10 @@ class RegistrationMixin:
         before it consults any declaration, so ``type Int = Bool;`` or
         ``data Int { I(Bool) }`` was accepted and could never be named — every
         ``@Int`` still meant the primitive.
+
+        Returns ``True`` for that primitive case, so the caller does not
+        register the declaration: registered, it drew secondary errors that
+        named the same type on both sides ("has type Int, expected Int").
         """
         primitive = name in PRIMITIVES and kind in ("data type", "type alias")
         if primitive:
@@ -1328,7 +1332,7 @@ class RegistrationMixin:
             )
         elif (name not in self._SPECIAL_CASED_BUILTIN_ADTS
                 or kind == "type alias"):
-            return
+            return False
         elif kind == "data type":
             subject = "redeclared as a data type"
             rationale = (
@@ -1363,6 +1367,7 @@ class RegistrationMixin:
             spec_ref='Chapter 8, Section 8.4.1 "Visibility Rules"',
             error_code="E158",
         )
+        return primitive
 
     def _check_sibling_ctor_collision(
         self, ctor: ast.Constructor, owner: str,
@@ -1423,7 +1428,14 @@ class RegistrationMixin:
         self, decl: ast.DataDecl, visibility: str | None = None,
     ) -> None:
         """Register an ADT and its constructors."""
-        self._check_special_cased_builtin_adt(decl, decl.name, "data type")
+        if self._check_special_cased_builtin_adt(decl, decl.name, "data type"):
+            # #1497: refused, and not registered: every `@Int` means the
+            # primitive, so a registered `data Int` could only draw errors
+            # naming one type twice.  Its constructors are remembered, so a
+            # use of one reports nothing further (the E151 posture).
+            self._refused_decl_ids.add(id(decl))
+            self._refused_ctor_names.update(c.name for c in decl.constructors)
+            return
         self._check_reserved_type_name(decl)
         self._check_reserved_type_params(decl)
         self._check_duplicate_type_params(decl, f"data type '{decl.name}'")
@@ -1491,7 +1503,9 @@ class RegistrationMixin:
 
     def _register_alias(self, decl: ast.TypeAliasDecl) -> None:
         """Register a type alias."""
-        self._check_special_cased_builtin_adt(decl, decl.name, "type alias")
+        if self._check_special_cased_builtin_adt(decl, decl.name, "type alias"):
+            self._refused_decl_ids.add(id(decl))  # #1497, as for `data`
+            return
         self._check_reserved_type_name(decl)
         self._check_reserved_type_params(decl)
         self._check_duplicate_type_params(decl, f"type alias '{decl.name}'")

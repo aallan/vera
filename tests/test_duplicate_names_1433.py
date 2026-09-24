@@ -103,6 +103,18 @@ _GET = "    get(@Unit) -> { resume(@Int.0) }"
 _GET_PLUS_ONE = "    get(@Unit) -> { resume(@Int.0 + 1) }"
 _PUT = "    put(@Int) -> { resume(()) }"
 
+# #1497's two reproductions, verbatim.
+_ISSUE_1497_DATA = (
+    "public data Int {\n  I(Bool)\n}\n\n"
+    + _fn("f", sig="@Int -> @Nat",
+          body="match @Int.0 {\n    I(@Bool) -> 1\n  }")
+    + "\n" + _fn("main", "@Unit -> @Nat", "f(I(true))"))
+_ISSUE_1497_ALIAS = (
+    "type Int = Bool;\n\n"
+    + _fn("f", sig="@Int -> @Nat",
+          body="if @Int.0 then {\n    1\n  } else {\n    0\n  }")
+    + "\n" + _fn("main", "@Unit -> @Nat", "f(true)"))
+
 _LIBF = _module("libf", _fn("f", body="@Int.0 + 100"),
                 _fn("g", body="@Int.0 + 200"))
 _LIBG = _module("libg", _fn("f", body="@Int.0 + 200"))
@@ -692,6 +704,21 @@ CELLS: list[Cell] = [
        "E158"),
     _c("type/alias-named-after-a-primitive", "type", "builtin",
        "type Bool = Int;\n\n" + _main("1"),
+       "E158"),
+    # #1497's own program.  The refused declaration is not registered, so
+    # nothing reports against it a second time: not the self-contradicting
+    # "has type Int, expected Int" the issue quotes, not an unknown
+    # constructor at each use of its `I`, and not the non-exhaustive match
+    # written against it.
+    _c("type/data-named-after-a-primitive-in-use", "type", "builtin",
+       _ISSUE_1497_DATA, "E158"),
+    # Nor is the refused declaration itself checked: a refinement predicate
+    # that is not Bool drew an E126 beside the E158.
+    _c("type/data-named-after-a-primitive-with-a-predicate", "type",
+       "builtin", "public data Nat { N({ @Int | 5 }) }\n\n" + _main("1"),
+       "E158"),
+    _c("type/alias-named-after-a-primitive-with-a-predicate", "type",
+       "builtin", "type Int = { @Nat | 5 };\n\n" + _main("1"),
        "E158"),
     _c("type/data-named-Tuple", "type", "builtin",
        "public data Tuple { T1(Int) }\n\n" + _main("1"),
@@ -1343,6 +1370,55 @@ _REFUSED_MEMBER_CASES = {
         f"effect IO {{\n  op print({_NOT_BOOL} -> Unit);\n}}",
         "E152"),
 }
+
+
+def test_a_refused_primitive_data_type_reports_nothing_at_its_uses(
+    tmp_path: Path,
+) -> None:
+    """#1497's `data` program, warnings included: with the declaration
+    unregistered, each use of its constructor `I`, in a pattern and in a
+    call, would report an unknown constructor (E320, E210) in place of the
+    errors it drew registered.  Its E158 is the one diagnostic it owes."""
+    main_path = _write(tmp_path, {"main.vera": _ISSUE_1497_DATA})
+    program = parse_to_ast(_ISSUE_1497_DATA)
+    diags = typecheck(program, _ISSUE_1497_DATA, file=str(main_path))
+    assert [(d.error_code, d.severity) for d in diags] == [
+        ("E158", "error")], [(d.error_code, d.severity, d.description)
+                             for d in diags]
+
+
+@pytest.mark.parametrize("source", [
+    "public data Int {\n  I(Bool)\n}\n\n" + _main("1"),
+    "type Int = Bool;\n\n" + _main("1"),
+], ids=["data", "alias"])
+def test_a_refused_primitive_declaration_is_not_registered(
+    source: str,
+) -> None:
+    """Refused means not registered, as for every other refused
+    declaration: the primitive stays the only `Int` in the environment."""
+    checker = TypeChecker(source=source)
+    checker.check_program(parse_to_ast(source))
+    assert [e.error_code for e in checker.errors] == ["E158"]
+    assert "Int" not in checker.env.data_types
+    assert "Int" not in checker.env.type_aliases
+    assert "I" not in checker.env.constructors
+
+
+def test_a_refused_primitive_alias_leaves_one_reading_of_its_name(
+    tmp_path: Path,
+) -> None:
+    """#1497's alias program.  The alias is refused and not registered, the
+    way the `data` declaration is, so every `@Int` means the primitive: the
+    E300 and E202 that follow are the program's own type errors under that
+    one reading, and none names one type on both sides, as the registered
+    declaration's "has type Int, expected Int" did."""
+    errors = _check(tmp_path, {"main.vera": _ISSUE_1497_ALIAS})
+    assert [(d.error_code, d.location.line) for d in errors] == [
+        ("E158", 1), ("E300", 8), ("E202", 20)], [
+        (d.error_code, d.location.line, d.description) for d in errors]
+    for d in errors:
+        assert not re.search(r"type (\w+), expected \1\b", d.description), (
+            d.description)
 
 
 @pytest.mark.parametrize("case", sorted(_REFUSED_MEMBER_CASES))

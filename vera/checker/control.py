@@ -195,8 +195,21 @@ class ControlFlowMixin:
                         error_code="E302",
                     )
 
-        self._check_exhaustiveness(expr, scrutinee_ty)
+        # #1497: a match naming a refused declaration's constructor was
+        # written against that declaration, so its coverage is not judged.
+        if not (self._refused_ctor_names and any(
+                self._names_refused_ctor(arm.pattern) for arm in expr.arms)):
+            self._check_exhaustiveness(expr, scrutinee_ty)
         return result_type or UnknownType()
+
+    def _names_refused_ctor(self, pat: ast.Pattern) -> bool:
+        """Whether *pat* names a constructor of a refused declaration."""
+        if isinstance(pat, ast.NullaryPattern):
+            return pat.name in self._refused_ctor_names
+        if isinstance(pat, ast.ConstructorPattern):
+            return pat.name in self._refused_ctor_names or any(
+                self._names_refused_ctor(sub) for sub in pat.sub_patterns)
+        return False
 
     def _check_exhaustiveness(
         self, expr: ast.MatchExpr, scrutinee_ty: Type
@@ -496,6 +509,14 @@ class ControlFlowMixin:
             return self._check_tuple_pattern(pat, expected)
 
         ci = self.env.lookup_constructor(pat.name)
+        if ci is None and pat.name in self._refused_ctor_names:
+            # #1497: a constructor of a declaration refused as E158.  Its
+            # E158 is the one error the program owes, so the sub-patterns
+            # bind quietly and nothing more is reported here.
+            refused: list[Binding] = []
+            for sub_pat in pat.sub_patterns:
+                refused.extend(self._check_pattern(sub_pat, UnknownType()))
+            return refused
         if ci is None:
             self._error(
                 pat,
@@ -574,6 +595,8 @@ class ControlFlowMixin:
                                expected: Type | None) -> list[Binding]:
         """Check a nullary constructor pattern."""
         ci = self.env.lookup_constructor(pat.name)
+        if ci is None and pat.name in self._refused_ctor_names:
+            return []  # #1497: see `_check_ctor_pattern`
         if ci is None:
             self._error(
                 pat,
