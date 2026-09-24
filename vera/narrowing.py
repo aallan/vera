@@ -294,10 +294,12 @@ _INT_ARITH_OPS = frozenset({
     ast.BinOp.MOD,
 })
 
-#: Answers "is this call's result a genuine `@Nat`?" for a `FnCall` /
-#: `ModuleCall` — the one leaf of :func:`result_is_nat` whose answer comes
-#: from a declaration rather than from the expression's own shape.
-CallIsNatOracle = Callable[[ast.Expr], bool]
+#: Answers "is this expression's value a genuine `@Nat`?" from its
+#: DECLARATION — the checker's resolved type of a slot, a call, an index into
+#: an opaque array, an effect operation — for every form
+#: :func:`result_is_nat` does not decompose (:data:`RESULT_IS_NAT_READING`
+#: ``"declared"``, and an opaque ``"index"``).
+DeclaredIsNatOracle = Callable[[ast.Expr], bool]
 
 
 def is_pure_literal(expr: ast.Expr) -> bool:
@@ -477,8 +479,14 @@ def literal_operation_width(expr: ast.Expr) -> str | None:
         return None
     if not (is_pure_literal(expr.left) and is_pure_literal(expr.right)):
         return None
-    for operand in (expr.left, expr.right):
-        folded = literal_range(operand)
+    ranges = [literal_range(operand) for operand in (expr.left, expr.right)]
+    # A literal above `i64.MAX` is a `@Nat`-only value, so beside a negative
+    # one it is mixed-sign arithmetic in literal form: the signed width would
+    # reinterpret it (`18446744073709551615 + (0 - 1)` came back as -2), and
+    # the checker's unsigned width refuses instead.
+    if any(r is not None and r[1] > I64_MAX for r in ranges):
+        return None
+    for folded in ranges:
         if folded is None or folded[0] < 0:
             return "Int"
     return None
@@ -494,72 +502,244 @@ def is_nonneg_int_literal(expr: ast.Expr) -> bool:
     return isinstance(expr, ast.IntLit) and expr.value >= 0
 
 
-def result_is_nat(expr: ast.Expr, call_is_nat: CallIsNatOracle) -> bool:
+def is_nonneg_literal_value(expr: ast.Expr) -> bool:
+    """True iff *expr* is literal-only and its folded value cannot be
+    negative — `5`, and equally `2 + 3` or `if c then { 1 } else { 2 }`.
+
+    Every join's notion of a `@Nat`-compatible literal: an arm of an `if`,
+    a `match` or a `handle` (:func:`arm_nat_compatible`), a component's
+    argument (:func:`component_is_nat`), an array element.  Counting only
+    a bare `IntLit` left `2 + 3` out, and an arm left out drops the guard on
+    its genuine `@Nat` sibling wherever no per-arm guard stands in —
+    `if c then { Tuple(1, @Nat.0) } else { Tuple(1, 2 + 3) }` read out at
+    `@Int` returned u64.MAX as -1.
+    """
+    if not is_pure_literal(expr):
+        return False
+    folded = literal_range(expr)
+    return folded is not None and folded[0] >= 0
+
+
+def is_resume(expr: ast.Expr) -> bool:
+    """True iff *expr* is a handler clause's `resume(...)` — whose value is
+    the rest of the handled body's, so it supplies no value of its own to
+    the `handle` expression the clause belongs to."""
+    return isinstance(expr, ast.FnCall) and expr.name == "resume"
+
+
+def handle_value_exprs(expr: ast.HandleExpr) -> tuple[ast.Expr, ...]:
+    """The expressions whose value a `handle` expression takes: its body's,
+    and each clause's where the clause does not resume — `throw(@Int) ->
+    Tuple(0, 0)` makes `Tuple(0, 0)` the whole expression's value.  A
+    clause's value is read through its own blocks, `if`s and `match`es, and
+    a `resume(...)` there supplies nothing new (:func:`is_resume`)."""
+    out: list[ast.Expr] = [expr.body]
+    for clause in expr.clauses:
+        out.extend(_clause_value_exprs(clause.body))
+    return tuple(out)
+
+
+def _clause_value_exprs(expr: ast.Expr) -> tuple[ast.Expr, ...]:
+    if is_resume(expr):
+        return ()
+    if isinstance(expr, ast.Block):
+        return () if expr.expr is None else _clause_value_exprs(expr.expr)
+    if isinstance(expr, ast.IfExpr):
+        if expr.else_branch is None:
+            return ()
+        return (_clause_value_exprs(expr.then_branch)
+                + _clause_value_exprs(expr.else_branch))
+    if isinstance(expr, ast.MatchExpr):
+        out: tuple[ast.Expr, ...] = ()
+        for arm in expr.arms:
+            out += _clause_value_exprs(arm.body)
+        return out
+    return (expr,)
+
+
+#: How :func:`result_is_nat` reads each expression form: EVERY `ast.Expr`
+#: subclass, so a form the rule does not decompose is answered from its
+#: declaration rather than falling through to "not a `@Nat`" unread
+#: (`tests/test_one_classifier_1503.py` checks the keys against the AST).
+#:
+#: - ``"fold"``: a literal-only value, classified by its folded value.
+#: - ``"flow"``: its value is one of its arms' — a block's tail, an `if`'s
+#:   branches, a `match`'s arms, a `handle`'s body and non-resuming clauses —
+#:   so it is a join over them.
+#: - ``"arith"``: an arithmetic operator, a `@Nat` iff both operands are.
+#: - ``"index"``: an array element — the elements themselves where the
+#:   array is built here, the declared element type where it is opaque.
+#: - ``"declared"``: its type is a declaration's (a slot, a call, an effect
+#:   operation, `old` / `new`, a `@T.result`, a hole) — the side's oracle.
+#: - ``"never"``: a negation (an `@Int`), or not an integer value at all.
+RESULT_IS_NAT_READING: dict[type, str] = {
+    ast.IntLit: "fold",
+    ast.BinaryExpr: "arith",
+    ast.Block: "flow",
+    ast.IfExpr: "flow",
+    ast.MatchExpr: "flow",
+    ast.HandleExpr: "flow",
+    ast.IndexExpr: "index",
+    ast.SlotRef: "declared",
+    ast.ResultRef: "declared",
+    ast.FnCall: "declared",
+    ast.ModuleCall: "declared",
+    ast.QualifiedCall: "declared",
+    ast.OldExpr: "declared",
+    ast.NewExpr: "declared",
+    ast.HoleExpr: "declared",
+    ast.UnaryExpr: "never",
+    ast.ConstructorCall: "never",
+    ast.NullaryConstructor: "never",
+    ast.ArrayLit: "never",
+    ast.StringLit: "never",
+    ast.InterpolatedString: "never",
+    ast.BoolLit: "never",
+    ast.FloatLit: "never",
+    ast.UnitLit: "never",
+    ast.AnonFn: "never",
+    ast.AssertExpr: "never",
+    ast.AssumeExpr: "never",
+    ast.ForallExpr: "never",
+    ast.ExistsExpr: "never",
+}
+
+
+def flow_arms(expr: ast.Expr) -> tuple[ast.Expr, ...] | None:
+    """The arms a ``"flow"`` form's value is one of, or ``None`` for any
+    other form.  An `if` without an `else`, and a block with no tail, have
+    no value to join and give ``()``."""
+    if isinstance(expr, ast.Block):
+        return () if expr.expr is None else (expr.expr,)
+    if isinstance(expr, ast.IfExpr):
+        if expr.else_branch is None:
+            return ()
+        return (expr.then_branch, expr.else_branch)
+    if isinstance(expr, ast.MatchExpr):
+        return tuple(arm.body for arm in expr.arms)
+    if isinstance(expr, ast.HandleExpr):
+        return handle_value_exprs(expr)
+    return None
+
+
+def value_leaves(expr: ast.Expr) -> tuple[ast.Expr, ...]:
+    """The expressions *expr*'s value is one of, read through the
+    ``"flow"`` forms (:func:`flow_arms`); *expr* itself for any other
+    form."""
+    arms = flow_arms(expr)
+    if arms is None:
+        return (expr,)
+    out: tuple[ast.Expr, ...] = ()
+    for arm in arms:
+        out += value_leaves(arm)
+    return out
+
+
+def element_sources(collection: ast.Expr) -> tuple["ComponentSource", ...]:
+    """The expressions that can supply an element of *collection*'s value:
+    read the way the value flows (:func:`flow_arms`) down to the array
+    literals built here, whose elements ARE the values, and through an
+    index into such an array.  Anything else is an opaque collection whose
+    element type its declaration states (``is_argument`` False)."""
+    arms = flow_arms(collection)
+    if arms is not None:
+        out: tuple[ComponentSource, ...] = ()
+        for arm in arms:
+            out += element_sources(arm)
+        return out
+    if isinstance(collection, ast.ArrayLit):
+        return tuple(ComponentSource(e, is_argument=True)
+                     for e in collection.elements)
+    if isinstance(collection, ast.IndexExpr):
+        inner = element_sources(collection.collection)
+        if inner and all(s.is_argument for s in inner):
+            out = ()
+            for s in inner:
+                out += element_sources(s.expr)
+            return out
+    return (ComponentSource(collection, is_argument=False),)
+
+
+def result_is_nat(expr: ast.Expr, declared_is_nat: DeclaredIsNatOracle) -> bool:
     """True iff the VALUE of *expr* is a genuine runtime `@Nat` — one that
     can exceed `i64.MAX`, so binding it into an `@Int` slot is a widening
     that needs the `nat_to_int_coerce` obligation and its guard (#813).
 
     THE rule, read by the verifier's obligation legs and by code
-    generation's guards alike; before #1503 each side carried a copy.
+    generation's guards alike; before #1503 each side carried a copy.  Each
+    form is read as :data:`RESULT_IS_NAT_READING` says.
 
-    A `@Nat` slot, a `@Nat`-returning call, and arithmetic whose operands are
-    BOTH genuine carry the invariant forward.  A literal-only expression does
-    not — its value is known (:func:`literal_range`), and a value no greater
-    than `i64.MAX` needs no widening check: in an `@Int` context the literal
-    is range-checked against its target (#812) — EXCEPT a value above
-    `i64.MAX`, which only a `@Nat` can hold.  Such a value reaches an `@Int`
-    slot only where no `@Int` context range-checked it (a component whose
-    type the checker inferred bottom-up), and there it is a widening that
-    cannot succeed.  A join (`Block` tail, `if` branches, `match` arms) is
-    `@Nat` iff every arm is `@Nat`-compatible — a genuine `@Nat` or a
-    non-negative literal — and at least one is genuine (#813 site 2a).
-    `nat_to_int(x)` is the explicit conversion built-in, whose value is its
-    argument's.  Negation, and anything unrecognised, is not a `@Nat`.
+    Only what is LITERAL-DERIVED is classified by its value: a literal-only
+    expression's value is known (:func:`literal_range`), and one no greater
+    than `i64.MAX` needs no widening check — in an `@Int` context it is
+    range-checked against its target (#812) — while one above `i64.MAX` is a
+    value only a `@Nat` holds, a widening that cannot succeed.  A value
+    built here is read where it is built: arithmetic is a `@Nat` iff BOTH
+    operands are genuine, a join (:func:`flow_arms`) iff every arm is
+    `@Nat`-compatible — a genuine `@Nat` or a non-negative literal — and at
+    least one is genuine (#813 site 2a), an array element iff the elements
+    of an array built here are (:func:`element_sources`).  Every other form
+    — a slot, a call, an index into an opaque array, an effect operation —
+    has a declaration, and *declared_is_nat* answers from it: that is the
+    checker's resolved type, which is right for every shape not built from
+    a literal.  `nat_to_int(x)` is the explicit conversion built-in, whose
+    value is its argument's.  A negation, and a non-integer, is not a
+    `@Nat`.
     """
     if is_pure_literal(expr):
         folded = literal_range(expr)
         return folded is not None and folded[0] >= 0 and folded[1] > I64_MAX
-    if isinstance(expr, ast.Block):
-        return expr.expr is not None and result_is_nat(expr.expr, call_is_nat)
-    if isinstance(expr, ast.IfExpr):
-        if expr.else_branch is None:
-            return False
+    reading = RESULT_IS_NAT_READING.get(type(expr), "never")
+    if reading == "flow":
+        arms = flow_arms(expr) or ()
         return (
-            arm_nat_compatible(expr.then_branch, call_is_nat)
-            and arm_nat_compatible(expr.else_branch, call_is_nat)
-            and (result_is_nat(expr.then_branch, call_is_nat)
-                 or result_is_nat(expr.else_branch, call_is_nat))
+            bool(arms)
+            and all(arm_nat_compatible(arm, declared_is_nat) for arm in arms)
+            and any(result_is_nat(arm, declared_is_nat) for arm in arms)
         )
-    if isinstance(expr, ast.MatchExpr):
-        return (
-            bool(expr.arms)
-            and all(arm_nat_compatible(a.body, call_is_nat)
-                    for a in expr.arms)
-            and any(result_is_nat(a.body, call_is_nat) for a in expr.arms)
-        )
-    if isinstance(expr, ast.SlotRef):
-        return expr.type_name == "Nat"
-    if isinstance(expr, ast.BinaryExpr):
+    if reading == "arith" and isinstance(expr, ast.BinaryExpr):
         if expr.op in _INT_ARITH_OPS:
-            return (result_is_nat(expr.left, call_is_nat)
-                    and result_is_nat(expr.right, call_is_nat))
+            return (result_is_nat(expr.left, declared_is_nat)
+                    and result_is_nat(expr.right, declared_is_nat))
         return False
-    if isinstance(expr, (ast.FnCall, ast.ModuleCall)):
+    if reading == "index" and isinstance(expr, ast.IndexExpr):
+        sources = element_sources(expr.collection)
+        if not any(s.is_argument for s in sources):
+            return declared_is_nat(expr)
+        compatible = True
+        genuine = False
+        for source in sources:
+            if source.is_argument:
+                nat = result_is_nat(source.expr, declared_is_nat)
+                compatible = compatible and (
+                    nat or is_nonneg_literal_value(source.expr))
+            else:
+                nat = declared_is_nat(expr)
+                compatible = compatible and nat
+            genuine = genuine or nat
+        return compatible and genuine
+    if reading == "declared":
+        if isinstance(expr, ast.SlotRef) and expr.type_name == "Nat":
+            return True
         if (isinstance(expr, ast.FnCall) and expr.name == "nat_to_int"
                 and expr.args
-                and result_is_nat(expr.args[0], call_is_nat)):
+                and result_is_nat(expr.args[0], declared_is_nat)):
             return True
-        return call_is_nat(expr)
+        return declared_is_nat(expr)
     return False
 
 
-def arm_nat_compatible(expr: ast.Expr, call_is_nat: CallIsNatOracle) -> bool:
-    """An `if` / `match` arm is `@Nat`-compatible if its value is a genuine
-    `@Nat` (:func:`result_is_nat`) or a non-negative literal (#813 site 2a).
+def arm_nat_compatible(
+    expr: ast.Expr, declared_is_nat: DeclaredIsNatOracle,
+) -> bool:
+    """A join's arm is `@Nat`-compatible if its value is a genuine `@Nat`
+    (:func:`result_is_nat`) or a literal-only value that cannot be negative
+    (#813 site 2a; :func:`is_nonneg_literal_value`, so `2 + 3` counts as
+    `5` does).
 
-    A non-negative literal is always ``<= i64.MAX`` (#812 range-checks it), so
-    it can neither out-of-range-widen nor false-trap the boundary widen
-    guard.  Treating it as compatible keeps a heterogeneous-with-literal join
+    Such a literal no greater than ``i64.MAX`` (#812 range-checks it) can
+    neither out-of-range-widen nor false-trap the boundary widen guard, and
+    one above it is a genuine `@Nat`, which the guard refuses.  Treating it as compatible keeps a heterogeneous-with-literal join
     (``if c then { @Nat.0 } else { 0 }``) classified `@Nat`, so the REAL
     `@Nat` arm is obligated and guarded at the single boundary site without
     the per-arm join type, which the checker's side-tables do not record.  A
@@ -568,7 +748,8 @@ def arm_nat_compatible(expr: ast.Expr, call_is_nat: CallIsNatOracle) -> bool:
     it is the heterogeneous per-arm case — obligated through the verifier's
     `_is_hetero_int_widen_join` and guarded per-arm by codegen (#820), not a
     boundary widening."""
-    return result_is_nat(expr, call_is_nat) or is_nonneg_int_literal(expr)
+    return (result_is_nat(expr, declared_is_nat)
+            or is_nonneg_literal_value(expr))
 
 
 # ---------------------------------------------------------------------
@@ -585,10 +766,17 @@ class ComponentSource:
     composite — a slot, a call, anything whose component type is the one
     its declaration gives it — so the component's type comes from that
     declaration and not from the expression's shape.
+
+    ``path`` places an opaque source under enclosing constructor patterns:
+    the ``(constructor, field)`` steps from the expression's declared type
+    down to the composite whose component is asked.  Empty at a pattern's
+    top level, where the expression's value IS that composite
+    (:func:`subcomponent_sources` extends it).
     """
 
     expr: ast.Expr
     is_argument: bool
+    path: tuple[tuple[str, int], ...] = ()
 
 
 def component_sources(
@@ -599,12 +787,15 @@ def component_sources(
 ) -> tuple[ComponentSource, ...]:
     """The expressions that can supply component *index* of *expr*'s value.
 
-    Reads the value the way it flows: a block's tail, both branches of an
-    `if`, every arm of a `match`.  A constructor application accepted by
-    *ctor_matches* contributes its *index*-th argument; one it rejects — a
-    different constructor of the same type, which the pattern does not match
-    — contributes nothing, and so does a nullary constructor.  Anything else
-    is an opaque source whose component type its declaration states.
+    Reads the value the way it flows: through the ``"flow"`` forms
+    (:func:`flow_arms` — a block's tail, both branches of an `if`, every arm
+    of a `match`, a `handle`'s body and non-resuming clauses) and an index
+    into an array built here (:func:`element_sources`).  A constructor
+    application accepted by *ctor_matches* contributes its *index*-th
+    argument; one it rejects — a different constructor of the same type,
+    which the pattern does not match — contributes nothing, and so does a
+    nullary constructor.  Anything else is an opaque source whose component
+    type its declaration states.
 
     *field_is_generic* narrows the argument case to the fields whose type
     the construction takes FROM the argument — a type-parameter field, whose
@@ -617,24 +808,24 @@ def component_sources(
     the whole: `Tuple(1, 0 - 3)` supplies `0 - 3`, which the classifier calls
     an `@Int`, where the checker's `Tuple<Nat, Nat>` says `@Nat`.
     """
-    if isinstance(expr, ast.Block):
-        if expr.expr is None:
-            return ()
-        return component_sources(
-            expr.expr, index, ctor_matches, field_is_generic)
-    if isinstance(expr, ast.IfExpr):
-        if expr.else_branch is None:
-            return ()
-        return (component_sources(expr.then_branch, index, ctor_matches,
-                                  field_is_generic)
-                + component_sources(expr.else_branch, index, ctor_matches,
-                                    field_is_generic))
-    if isinstance(expr, ast.MatchExpr):
+    arms = flow_arms(expr)
+    if arms is not None:
         out: tuple[ComponentSource, ...] = ()
-        for arm in expr.arms:
-            out += component_sources(
-                arm.body, index, ctor_matches, field_is_generic)
+        for arm in arms:
+            out += component_sources(arm, index, ctor_matches, field_is_generic)
         return out
+    if isinstance(expr, ast.IndexExpr):
+        elements = element_sources(expr.collection)
+        if any(s.is_argument for s in elements):
+            out = ()
+            for element in elements:
+                if element.is_argument:
+                    out += component_sources(
+                        element.expr, index, ctor_matches, field_is_generic)
+                else:
+                    out += (ComponentSource(expr, is_argument=False),)
+            return out
+        return (ComponentSource(expr, is_argument=False),)
     if isinstance(expr, ast.ConstructorCall):
         if not ctor_matches(expr.name):
             return ()
@@ -649,35 +840,66 @@ def component_sources(
     return (ComponentSource(expr, is_argument=False),)
 
 
-#: Answers "is component *index* of this opaque composite a `@Nat`?" from the
-#: composite's DECLARED type — a slot's, a call's return — never from its
-#: shape.  ``None`` when the declaration does not say (no type argument at
-#: that position), which is neither answer: such a component is claimed
-#: neither a widening nor a narrowing.
-LeafComponentIsNat = Callable[[ast.Expr, int], "bool | None"]
+def subcomponent_sources(
+    sources: tuple[ComponentSource, ...],
+    step: tuple[str, int],
+    index: int,
+    ctor_matches: Callable[[str], bool],
+    field_is_generic: Callable[[str, int], bool] | None = None,
+) -> tuple[ComponentSource, ...]:
+    """The step into a NESTED constructor pattern: *sources* supply the
+    component ``step`` = ``(constructor, field)`` of an outer pattern, which
+    the nested pattern matches; this is the sources of that nested value's
+    component *index*.
+
+    An argument source is the nested composite's own expression, read the
+    way :func:`component_sources` reads a top-level one.  An opaque source
+    stays opaque one level deeper: its ``path`` gains *step*, so its leaf
+    oracle answers from the declared type reached through it —
+    `match W(Tuple(1, 0 - 3)) { W(Tuple(@Int, @Int)) -> … }` supplies
+    `0 - 3`, while `match @Wrap<Tuple<Int, Nat>>.0 { … }` supplies the slot's
+    `Tuple<Int, Nat>` field."""
+    out: tuple[ComponentSource, ...] = ()
+    for source in sources:
+        if source.is_argument:
+            out += component_sources(
+                source.expr, index, ctor_matches, field_is_generic)
+        else:
+            out += (ComponentSource(source.expr, is_argument=False,
+                                    path=source.path + (step,)),)
+    return out
+
+
+#: Answers "is component *index* of this opaque source a `@Nat`?" from the
+#: composite's DECLARED type — a slot's, a call's return, followed down the
+#: source's ``path`` — never from its shape.  ``None`` when the declaration
+#: does not say (no such field), which is neither answer: such a component
+#: is claimed neither a widening nor a narrowing.
+LeafComponentIsNat = Callable[[ComponentSource, int], "bool | None"]
 
 
 def component_is_nat(
     sources: tuple[ComponentSource, ...],
     index: int,
-    call_is_nat: CallIsNatOracle,
+    declared_is_nat: DeclaredIsNatOracle,
     leaf_component_is_nat: LeafComponentIsNat,
 ) -> bool:
     """True iff the component *sources* supply is a genuine `@Nat` — the
     widening question for an `@Int` binding, joined over the sources the
     way :func:`result_is_nat` joins the arms of an `if`: every source
-    `@Nat`-compatible, at least one genuine."""
+    `@Nat`-compatible (a genuine `@Nat`, or a literal-only value that cannot
+    be negative, :func:`is_nonneg_literal_value`), at least one genuine."""
     if not sources:
         return False
     compatible = True
     genuine = False
     for source in sources:
         if source.is_argument:
-            nat = result_is_nat(source.expr, call_is_nat)
+            nat = result_is_nat(source.expr, declared_is_nat)
             compatible = compatible and (
-                nat or is_nonneg_int_literal(source.expr))
+                nat or is_nonneg_literal_value(source.expr))
         else:
-            nat = leaf_component_is_nat(source.expr, index) is True
+            nat = leaf_component_is_nat(source, index) is True
             compatible = compatible and nat
         genuine = genuine or nat
     return compatible and genuine
@@ -696,9 +918,18 @@ def component_narrows(
     something other than a `@Nat`, and not when it does not say."""
     return any(
         narrows(source.expr) if source.is_argument
-        else leaf_component_is_nat(source.expr, index) is False
+        else leaf_component_is_nat(source, index) is False
         for source in sources
     )
+
+
+def all_sources_opaque(sources: tuple[ComponentSource, ...]) -> bool:
+    """True iff every source of a component is opaque — the only case in
+    which the component's DECLARED type is a fact about its value, and so
+    one a refined binding may assume (PR #1537 review).  A component built
+    here from `0 - 5` has the checker's `Nat` for its type and -5 for its
+    value."""
+    return bool(sources) and all(not s.is_argument for s in sources)
 
 
 def measure_component_needs_range_check(resolved_ty: object) -> bool:

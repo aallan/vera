@@ -7,6 +7,8 @@ orchestration.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from vera import ast, narrowing
 from vera.slots import bare_call_denotes_user_fn
 from vera.checker.sql import (
@@ -102,6 +104,13 @@ def _compatible_modulo_typevars(
     # accept a subtype relationship either way (Nat vs Int).
     return is_subtype(a, b) or is_subtype(b, a)
 
+
+
+def _names(name: str) -> Callable[[str], bool]:
+    """The constructor-name test a pattern of constructor *name* makes."""
+    def matches(ctor_name: str) -> bool:
+        return ctor_name == name
+    return matches
 
 class CallsMixin:
     """Methods for checking function calls, constructors, and qualified calls."""
@@ -1395,8 +1404,10 @@ class CallsMixin:
         # above, through `expected`), and so is an inferred one whose
         # argument carries no pure-literal subtraction, where the checker's
         # type is the value's type.  The narrowing such a value can meet is
-        # obligated where it is BOUND, by the reader that knows the type it
-        # is bound at (the pattern's own classifier, `vera.narrowing`).
+        # obligated where a pattern binds it at a scalar position, by the
+        # legs that know the type it is bound at (`vera.narrowing`); a
+        # pattern that binds it within a COMPOSITE is the context of the
+        # construction instead (`_register_pattern_reads`).
         if self.expr_target_types is not None:
             for c_arg, c_ft, declared_ft in zip(
                     expr.args, field_types, ci.field_types):
@@ -1443,6 +1454,82 @@ class CallsMixin:
                 )
 
         return self._ctor_result_type(ci, arg_types, expected=expected)
+
+    def _register_arm_pattern_reads(
+        self, scrutinee: ast.Expr, pattern: ast.Pattern,
+    ) -> None:
+        """:py:meth:`_register_pattern_reads` for one `match` arm: a
+        constructor pattern reads the scrutinee's components; a binding
+        pattern at a composite type binds the whole scrutinee there, which
+        is then the context of every construction the scrutinee's value
+        flows from."""
+        if isinstance(pattern, ast.ConstructorPattern):
+            self._register_pattern_reads(
+                scrutinee, list(pattern.sub_patterns), _names(pattern.name),
+            )
+        elif isinstance(pattern, ast.BindingPattern):
+            ty = self._pattern_binding_type(pattern.type_expr)
+            if ty is None or not isinstance(base_type(ty), AdtType):
+                return
+            for leaf in narrowing.value_leaves(scrutinee):
+                key = ast.span_key(leaf)
+                if key is not None:
+                    self._pattern_arg_targets.setdefault(key, ty)
+
+    def _register_pattern_reads(
+        self,
+        source: ast.Expr,
+        fields: list[ast.Pattern | ast.TypeExpr],
+        ctor_matches: Callable[[str], bool],
+    ) -> None:
+        """Record the COMPOSITE types a pattern binds the constructor
+        arguments its *source* builds at, BEFORE the source is synthesized
+        (#1503).
+
+        *fields* are the pattern's positions — a destructure's binding
+        types, or a constructor pattern's sub-patterns — and each one's
+        argument sources are found the way the pattern's legs find them
+        (:func:`vera.narrowing.component_sources`), through nested
+        constructor patterns.  An argument bound at a scalar position is
+        classified where it is bound, by the pattern's own legs.  One bound
+        at a composite type — `W(@Array<Nat>)`, a `@Wrap<Nat>` component —
+        is classified by nothing downstream (a composite binding obligates
+        no component), and the constructor door records no type it inferred
+        from a literal subtraction; so the binding's type is the
+        construction's context (``_pattern_arg_targets``, threaded as its
+        expected type by ``_synth_expr``).  `match W([0 - 3]) {
+        W(@Array<Nat>) -> … }` obligates the `0 - 3` it stores in a `Nat`
+        array, and `W(@Array<Int>)` does not."""
+        for index, field in enumerate(fields):
+            for source_ in narrowing.component_sources(
+                    source, index, ctor_matches):
+                if not source_.is_argument:
+                    continue
+                arg = source_.expr
+                key = ast.span_key(arg)
+                if key is None:
+                    continue
+                if isinstance(field, ast.ConstructorPattern):
+                    self._register_pattern_reads(
+                        arg, list(field.sub_patterns),
+                        _names(field.name),
+                    )
+                    continue
+                te = (field.type_expr if isinstance(field, ast.BindingPattern)
+                      else field if isinstance(field, ast.TypeExpr) else None)
+                ty = self._pattern_binding_type(te) if te is not None else None
+                if ty is not None and isinstance(base_type(ty), AdtType):
+                    self._pattern_arg_targets.setdefault(key, ty)
+
+    def _pattern_binding_type(self, te: ast.TypeExpr) -> Type | None:
+        """A pattern binding's type, resolved without reporting: the
+        pattern is checked, and its diagnostics raised, where it is bound;
+        this looks ahead to it."""
+        before = len(self.errors)
+        try:
+            return self._resolve_type(te)
+        finally:
+            del self.errors[before:]
 
     def _record_nested_ctor_targets(
         self, ctor: ast.ConstructorCall, target: Type,

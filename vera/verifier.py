@@ -8567,7 +8567,8 @@ class ContractVerifier:
                     # #746: alongside the rebind, seed the bound slot's *source*
                     # component type fact into the block assumptions so a later
                     # re-narrowing of that slot can discharge.  The fact is read
-                    # from the RHS's resolved tuple type (`type_args[i]`) and is
+                    # from the RHS's resolved type — its constructor's field
+                    # `i`, instantiated against it (`src_args`) — and is
                     # only seeded when (a) the source value PROVABLY has that
                     # type and (b) the component is non-literal — see the gate
                     # below.  It is never the (possibly-unproven) target
@@ -8582,11 +8583,20 @@ class ContractVerifier:
                         # E505 for want of the invariant the source carries (CR
                         # PR-review).
                         src_tuple_ty = src_tuple_ty.base
+                    # Binding i is the constructor's field i: its type is
+                    # the field's declared type instantiated against the
+                    # source's arguments, not argument i — which it is only
+                    # for a `Tuple`.  Read by index, `MkBox(Int, T)` bound
+                    # from a `Box<Nat>` seeded the `Int` field with `Nat`'s
+                    # `>= 0` and PROVED a later `let @Nat = @Int.0` at Tier 1
+                    # (PR #1537 review).
+                    src_ctor = self._destructure_ctor_name(stmt, src_tuple_ty)
                     src_args = (
-                        src_tuple_ty.type_args
-                        if isinstance(src_tuple_ty, AdtType)
-                        else ()
-                    )
+                        self._instantiated_field_types(src_ctor, src_tuple_ty)
+                        if src_ctor is not None
+                        and isinstance(src_tuple_ty, AdtType)
+                        else None
+                    ) or ()
                     # A source whose declared type the value PROVABLY has — a
                     # `SlotRef` (a param/let access, guaranteed by R1's param-
                     # assume / the let's own checked binding) or a call (its
@@ -12314,6 +12324,8 @@ class ContractVerifier:
         pattern: ast.ConstructorPattern,
         smt: SmtContext,
         assumptions: list[object],
+        sources: tuple[narrowing.ComponentSource, ...],
+        step: tuple[str, int],
     ) -> None:
         """Term-keyed recursive obligation for a NESTED constructor sub-pattern
         (``Some(Some(@PosInt))``): obligate each refined / ``@Nat`` narrowing
@@ -12327,7 +12339,16 @@ class ContractVerifier:
         (codegen binds only direct sub-patterns), so a verified program is sound
         while an unverified compile is honestly unchecked at the nested site.
         No depth cap: the recursion descends the (finite) pattern AST — each step
-        is a strict sub-pattern — so it terminates without a backstop (CR)."""
+        is a strict sub-pattern — so it terminates without a backstop (CR).
+
+        *sources* supply the composite *pattern* matches — component *step*
+        of the enclosing pattern (#1503).  Each bind's sign legs read the
+        component classifier over them (:func:`vera.narrowing.
+        subcomponent_sources`), as the top-level legs do: *field_ty* is the
+        checker's instantiation down the pattern, which for
+        `match W(Tuple(1, 0 - 3)) { W(Tuple(@Int, @Int)) -> … }` is the
+        `Tuple<Nat, Nat>` it built from the literal, and read raw it claimed
+        a `tier3` widening of -3 (PR #1537 review)."""
         if scrut_term is None:
             return
         field_types = self._instantiated_field_types(pattern.name, scrut_ty)
@@ -12340,13 +12361,24 @@ class ContractVerifier:
             return
         if idx is None:
             return
+
+        def ctor_matches(name: str) -> bool:
+            return name == pattern.name
+
+        def leaf_is_nat(
+            leaf: narrowing.ComponentSource, index: int,
+        ) -> bool | None:
+            return self._declared_component_is_nat(leaf, index, pattern.name)
+
         for i, (sub_pat, field_ty) in enumerate(
                 zip(pattern.sub_patterns, field_types)):
             field_term = sort.accessor(idx, i)(scrut_term)
+            field_sources = narrowing.subcomponent_sources(
+                sources, step, i, ctor_matches, self._field_is_generic)
             if isinstance(sub_pat, ast.ConstructorPattern):
                 self._obligate_subpattern_term(
                     decl, diag_node, field_ty, field_term, sub_pat, smt,
-                    assumptions)
+                    assumptions, field_sources, (pattern.name, i))
                 continue
             if not isinstance(sub_pat, ast.BindingPattern):
                 continue
@@ -12356,16 +12388,22 @@ class ContractVerifier:
                 self._check_refined_binding_obligation_term(
                     decl, field_term, target, smt, assumptions,
                     site="ADT sub-pattern bind", node=diag_node,
-                    source_ty=field_ty,
+                    source_ty=(field_ty
+                               if narrowing.all_sources_opaque(field_sources)
+                               else None),
                 )
             elif (self._is_nat_type(target)
-                    and not self._is_nat_type(field_ty)):
+                    and narrowing.component_narrows(
+                        field_sources, i, self._narrows_into_nat,
+                        leaf_is_nat)):
                 self._check_nat_binding_obligation_term(
                     decl, field_term, smt, assumptions,
                     site="ADT sub-pattern bind", node=diag_node,
                 )
             elif (self._is_int_type(target)
-                    and self._is_nat_type(field_ty)):
+                    and narrowing.component_is_nat(
+                        field_sources, i, self._declared_result_is_nat,
+                        leaf_is_nat)):
                 # #813: dual — a @Nat field extracted into an @Int sub-pattern
                 # slot widens it; codegen guards the concrete @Nat-field
                 # extraction (`layout.nat_fields`), so this is tier3_runtime.
@@ -12429,21 +12467,12 @@ class ContractVerifier:
         def ctor_matches(name: str) -> bool:
             return name == pattern.name
 
-        def field_is_generic(name: str, index: int) -> bool:
-            if name == "Tuple":
-                return True
-            info = self._lookup_constructor_info(name)
-            if (info is None or info.field_types is None
-                    or index >= len(info.field_types)):
-                return False
-            return contains_typevar(info.field_types[index])
+        field_is_generic = self._field_is_generic
 
-        def leaf_is_nat(leaf: ast.Expr, index: int) -> bool | None:
-            leaf_fields = self._instantiated_field_types(
-                pattern.name, self._resolved_type_of(leaf))
-            if leaf_fields is None or index >= len(leaf_fields):
-                return None
-            return self._is_nat_type(leaf_fields[index])
+        def leaf_is_nat(
+            leaf: narrowing.ComponentSource, index: int,
+        ) -> bool | None:
+            return self._declared_component_is_nat(leaf, index, pattern.name)
 
         # A literal-constructor scrutinee (`match Some(@Int.0) { ... }`)
         # binds the constructor's own arguments — translatable AST nodes,
@@ -12463,6 +12492,8 @@ class ContractVerifier:
                 sort = idx = None
         for i, (sub_pat, field_ty) in enumerate(
                 zip(pattern.sub_patterns, field_types)):
+            sources = narrowing.component_sources(
+                scrutinee, i, ctor_matches, field_is_generic)
             if isinstance(sub_pat, ast.ConstructorPattern):
                 # Nested constructor pattern (`Some(Some(@PosInt))` on
                 # `Option<Option<Int>>`): recurse so the inner narrowing is
@@ -12477,7 +12508,7 @@ class ContractVerifier:
                     self._obligate_subpattern_term(
                         decl, scrutinee, field_ty,
                         sort.accessor(idx, i)(scrutinee_z3), sub_pat, smt,
-                        assumptions)
+                        assumptions, sources, (pattern.name, i))
                 else:
                     # PR #1202 silent-failure review: an UNPROJECTABLE
                     # scrutinee (no sort/index — under the #779 fresh-scope
@@ -12491,7 +12522,8 @@ class ContractVerifier:
                     # honest fallbacks, statically: field types come from
                     # the registry instantiation, no Z3 terms needed.
                     self._record_nested_subpattern_fallbacks(
-                        decl, scrutinee, sub_pat, field_ty)
+                        decl, scrutinee, sub_pat, field_ty,
+                        sources, (pattern.name, i))
                 continue
             if not isinstance(sub_pat, ast.BindingPattern):
                 continue
@@ -12510,10 +12542,17 @@ class ContractVerifier:
                         )
                 elif sort is not None and idx is not None:
                     field_term = sort.accessor(idx, i)(scrutinee_z3)
+                    # The field's type is a fact the value carries only
+                    # where every source of it is opaque (PR #1537 review):
+                    # `if c then Tuple(0 - 5, 1) else Tuple(3, 1)` is a
+                    # `Tuple<Nat, Nat>` to the checker, and that `Nat`'s
+                    # `>= 0` is exactly the claim the classifier refutes.
                     self._check_refined_binding_obligation_term(
                         decl, field_term, target, smt, assumptions,
                         site="ADT sub-pattern bind", node=scrutinee,
-                        source_ty=field_ty,
+                        source_ty=(field_ty
+                                   if narrowing.all_sources_opaque(sources)
+                                   else None),
                     )
                 else:
                     # Opaque, unprojectable scrutinee: an internal narrowing with
@@ -12523,8 +12562,6 @@ class ContractVerifier:
                         decl, scrutinee, "ADT sub-pattern bind",
                         refined_ty=target, reason=_OPAQUE_SCRUTINEE_REASON)
                 continue
-            sources = narrowing.component_sources(
-                scrutinee, i, ctor_matches, field_is_generic)
             if (self._is_nat_type(target)
                     and narrowing.component_narrows(
                         sources, i, self._narrows_into_nat, leaf_is_nat)):
@@ -12552,7 +12589,7 @@ class ContractVerifier:
                         guarded=True)
             elif (self._is_int_type(target)
                     and narrowing.component_is_nat(
-                        sources, i, self._call_result_is_nat, leaf_is_nat)):
+                        sources, i, self._declared_result_is_nat, leaf_is_nat)):
                 # #813: dual — a @Nat field bound into an @Int sub-pattern slot
                 # widens it.  Codegen guards the extraction from the same
                 # component classifier, so an unbounded widening is Tier-3.
@@ -12579,6 +12616,8 @@ class ContractVerifier:
         scrutinee: ast.Expr,
         pattern: ast.ConstructorPattern,
         parent_field_ty: Type | None,
+        sources: tuple[narrowing.ComponentSource, ...],
+        step: tuple[str, int],
     ) -> None:
         """Record honest Tier-3 fallbacks for every narrowing bind inside a
         nested constructor sub-pattern whose scrutinee the SMT layer cannot
@@ -12595,15 +12634,30 @@ class ContractVerifier:
         a refined narrowing records the unguarded E506 disclosure, and a
         `@Nat`→`@Int` widening records ``tier3`` guarded.  Recursion
         descends further nested constructor patterns; termination follows
-        the finite pattern AST."""
+        the finite pattern AST.  The narrowing and widening legs read the
+        component classifier over *sources*, as
+        :py:meth:`_obligate_subpattern_term` does (#1503)."""
         field_types = self._instantiated_field_types(
             pattern.name, parent_field_ty)
         if field_types is None:
             return
-        for sub_pat, field_ty in zip(pattern.sub_patterns, field_types):
+
+        def ctor_matches(name: str) -> bool:
+            return name == pattern.name
+
+        def leaf_is_nat(
+            leaf: narrowing.ComponentSource, index: int,
+        ) -> bool | None:
+            return self._declared_component_is_nat(leaf, index, pattern.name)
+
+        for i, (sub_pat, field_ty) in enumerate(
+                zip(pattern.sub_patterns, field_types)):
+            field_sources = narrowing.subcomponent_sources(
+                sources, step, i, ctor_matches, self._field_is_generic)
             if isinstance(sub_pat, ast.ConstructorPattern):
                 self._record_nested_subpattern_fallbacks(
-                    decl, scrutinee, sub_pat, field_ty)
+                    decl, scrutinee, sub_pat, field_ty,
+                    field_sources, (pattern.name, i))
                 continue
             if not isinstance(sub_pat, ast.BindingPattern):
                 continue
@@ -12614,12 +12668,16 @@ class ContractVerifier:
                     decl, scrutinee, "ADT sub-pattern bind",
                     refined_ty=target, reason=_OPAQUE_SCRUTINEE_REASON)
             elif (self._is_nat_type(target)
-                    and not self._is_nat_type(field_ty)):
+                    and narrowing.component_narrows(
+                        field_sources, i, self._narrows_into_nat,
+                        leaf_is_nat)):
                 self._record_nat_bind_tier3(
                     decl, scrutinee, "ADT sub-pattern bind", "tier3",
                     guarded=True)
             elif (self._is_int_type(target)
-                    and self._is_nat_type(field_ty)):
+                    and narrowing.component_is_nat(
+                        field_sources, i, self._declared_result_is_nat,
+                        leaf_is_nat)):
                 self._record_int_widen_tier3(
                     decl, scrutinee, "ADT sub-pattern bind", "tier3",
                     guarded=True)
@@ -12660,9 +12718,18 @@ class ContractVerifier:
             rhs_ty = rhs_ty.base  # `{ @Tuple<...> | P }` → the tuple (CR)
         if not isinstance(rhs_ty, AdtType):
             return  # source tuple type unknown — leave bindings unchecked
-        source_args = rhs_ty.type_args
+        # Binding i is the constructor's FIELD i, whose type is the field's
+        # declared type instantiated against the source's type arguments —
+        # not type argument i, which it is only for a `Tuple` (PR #1537
+        # review: `MkBox(Int, T)` bound from a `Box<Nat>` read field 0 as
+        # the `Nat`).
+        ctor_name = self._destructure_ctor_name(stmt, rhs_ty)
+        field_types = (
+            self._instantiated_field_types(ctor_name, rhs_ty)
+            if ctor_name is not None else None
+        ) or ()
         # #1503: the SIGN of a component is read from THE classifier, not
-        # from `source_args`.  The checker builds the source's type bottom-up,
+        # from `field_types`.  The checker builds the source's type bottom-up,
         # so `Tuple(1, 0 - 3)` — and an `if` whose branches build one — is a
         # `Tuple<Nat, Nat>` whose second component is -3: read raw, that
         # component was a @Nat widening proved at Tier 1 (`-3 <= i64.MAX`)
@@ -12676,28 +12743,40 @@ class ContractVerifier:
         def ctor_matches(name: str) -> bool:
             return (name == "Tuple") == tuple_shape
 
+        def leaf_is_nat(
+            leaf: narrowing.ComponentSource, index: int,
+        ) -> bool | None:
+            return self._declared_component_is_nat(leaf, index, ctor_name)
+
         # Refined-first (#746, R9): a refined component (incl. a refinement
         # over @Nat) discharges its predicate against the projected source;
         # the rest fall to the @Nat `>= 0` path.  The two lists stay disjoint.
         refined_narrowing: list[tuple[int, Type]] = []
         nat_narrowing: list[int] = []
         int_widening: list[int] = []  # #813: @Nat source -> @Int target
+        # The components whose every source is opaque: only there is the
+        # checker's field type a DECLARATION's, and so a fact the value
+        # carries (PR #1537 review).  `if b then Tuple(0 - 5, 1) else
+        # Tuple(3, 1)` is a `Tuple<Nat, Nat>` to the checker; seeding that
+        # `Nat`'s `>= 0` over the projected component forced `b` false and
+        # PROVED a `@PosInt` bind the refinement guard then refused.
+        declared_source: set[int] = set()
         for i, te in enumerate(stmt.type_bindings):
             target = self._resolve_type(te)
             sources = narrowing.component_sources(stmt.value, i, ctor_matches)
+            if narrowing.all_sources_opaque(sources):
+                declared_source.add(i)
             if (self._is_refined_type(target)
-                    and i < len(source_args)
-                    and self._refined_field_narrows(target, source_args[i])):
+                    and i < len(field_types)
+                    and self._refined_field_narrows(target, field_types[i])):
                 refined_narrowing.append((i, target))
             elif (self._is_nat_type(target)
                     and narrowing.component_narrows(
-                        sources, i, self._narrows_into_nat,
-                        self._declared_component_is_nat)):
+                        sources, i, self._narrows_into_nat, leaf_is_nat)):
                 nat_narrowing.append(i)
             elif (self._is_int_type(target)
                     and narrowing.component_is_nat(
-                        sources, i, self._call_result_is_nat,
-                        self._declared_component_is_nat)):
+                        sources, i, self._declared_result_is_nat, leaf_is_nat)):
                 int_widening.append(i)
         if not refined_narrowing and not nat_narrowing and not int_widening:
             return
@@ -12765,7 +12844,7 @@ class ContractVerifier:
             self._check_refined_binding_obligation_term(
                 decl, comp_term, target, smt, assumptions,
                 site="tuple destructure", node=stmt.value,
-                source_ty=source_args[i],
+                source_ty=field_types[i] if i in declared_source else None,
             )
         for i in int_widening:
             # #813 / #1416: a @Nat component destructured into an @Int slot
@@ -12782,21 +12861,104 @@ class ContractVerifier:
             )
 
     def _declared_component_is_nat(
-        self, leaf: ast.Expr, index: int,
+        self,
+        leaf: narrowing.ComponentSource,
+        index: int,
+        ctor_name: str | None,
     ) -> bool | None:
         """The leaf oracle of the component classifier (#1503): component
         *index* of an opaque composite — a slot, a call — is a @Nat iff its
-        DECLARED type says so.  The checker's resolved type of the leaf, a
-        refinement over it unwrapped, argument *index*: the reading codegen's
-        destructure guard takes of the same leaf.  ``None`` where the type
-        has no argument at *index* — the position this leg left unchecked
-        before the classifier, and still does."""
-        ty = self._resolved_type_of(leaf)
-        if isinstance(ty, RefinedType):
-            ty = ty.base
-        if not isinstance(ty, AdtType) or index >= len(ty.type_args):
+        DECLARED type says so: *ctor_name*'s field *index*, instantiated
+        against the checker's resolved type of the leaf followed down its
+        ``path`` (:py:meth:`_declared_path_type`).  The reading codegen's
+        destructure and sub-pattern guards take of the same leaf.  ``None``
+        where the declaration does not say — no constructor, no such
+        field."""
+        if ctor_name is None:
             return None
-        return self._is_nat_type(ty.type_args[index])
+        fields = self._instantiated_field_types(
+            ctor_name, self._declared_path_type(leaf))
+        if fields is None or index >= len(fields):
+            return None
+        return self._is_nat_type(fields[index])
+
+    def _declared_path_type(
+        self, leaf: narrowing.ComponentSource,
+    ) -> Type | None:
+        """The declared type of the composite an opaque component source
+        names: its expression's resolved type, then each ``(constructor,
+        field)`` step of its ``path``.
+
+        A step is followed only where the field's type IS one of the type's
+        arguments — a `Tuple` component, or a field declared as a bare type
+        parameter — which is every step code generation can follow from the
+        same resolved type (``DataMixin._declared_path_type``); anywhere else
+        the answer is ``None``, and the component is claimed neither way on
+        either side."""
+        ty = self._resolved_type_of(leaf.expr)
+        for ctor_name, index in leaf.path:
+            if ctor_name != "Tuple":
+                info = self._lookup_constructor_info(ctor_name)
+                if (info is None or info.field_types is None
+                        or index >= len(info.field_types)
+                        or not isinstance(info.field_types[index], TypeVar)):
+                    return None
+            fields = self._instantiated_field_types(ctor_name, ty)
+            if fields is None or index >= len(fields):
+                return None
+            ty = fields[index]
+        return ty
+
+    def _field_is_generic(self, ctor_name: str, index: int) -> bool:
+        """Whether *ctor_name*'s field *index* takes its type from the
+        argument — a field declared as a bare type parameter, or any
+        component of the built-in `Tuple` carrier — rather than from a
+        declaration the construction enforces
+        (:func:`vera.narrowing.component_sources`).  The layout's parameter
+        indices give code generation exactly this set
+        (``DataMixin._field_is_generic``)."""
+        if ctor_name == "Tuple":
+            return True
+        info = self._lookup_constructor_info(ctor_name)
+        if (info is None or info.field_types is None
+                or index >= len(info.field_types)):
+            return False
+        return isinstance(info.field_types[index], TypeVar)
+
+    def _destructure_ctor_name(
+        self, stmt: ast.LetDestruct, source_ty: Type | None,
+    ) -> str | None:
+        """The constructor whose fields *stmt* binds, in order.
+
+        A destructure names its shape by the constructor (`let MkBox<…>`)
+        or by the type (`let Wrap<…>`, `let Tuple<…>`), and the checker
+        resolves neither, so the SOURCE's type decides: the named
+        constructor when it is one of that type's, else the type's single
+        constructor.  Only a source with no known type has its name looked
+        up on its own.  A type's name can also be ANOTHER type's
+        constructor — `let Box<…>` over a `Box<Nat>` beside
+        `data Other { Box(Nat, Nat) }` — and read as that constructor it
+        described fields the source does not have.  ``None`` when nothing
+        resolves: the bindings are then left unclassified, as they were
+        when the type had no argument to read.
+        """
+        if stmt.constructor == "Tuple":
+            return "Tuple"
+        base = source_ty.base if isinstance(source_ty, RefinedType) else source_ty
+        if isinstance(base, AdtType):
+            adt = self.env.data_types.get(base.name)
+            if adt is not None:
+                if stmt.constructor in adt.constructors:
+                    return stmt.constructor
+                if len(adt.constructors) == 1:
+                    return next(iter(adt.constructors))
+                return None
+        if self._lookup_constructor_info(stmt.constructor) is not None:
+            return stmt.constructor
+        adt = self.env.data_types.get(stmt.constructor)
+        if adt is not None and len(adt.constructors) == 1:
+            return next(iter(adt.constructors))
+        return None
 
     def _record_nat_bind_tier3(
         self,
@@ -13532,24 +13694,29 @@ class ContractVerifier:
         THE rule is :func:`vera.narrowing.result_is_nat`, shared with code
         generation's guards (#1503): a rule written twice is two things that
         can drift, and the verifier's status is a claim about what codegen
-        does.  This side supplies only the call leaf — the checker's resolved
-        type of a call, which is a declaration's answer rather than the
-        bottom-up type of an expression.  Distinct from
+        does.  This side supplies only the declaration leaf — the checker's
+        resolved type of a slot, a call, an index into an opaque array or an
+        effect operation, a declaration's answer rather than the bottom-up
+        type of an expression built from literals.  Distinct from
         :py:meth:`_is_nat_typed`, which over-approximates ("could any
         sub-position be @Nat").
         """
-        return narrowing.result_is_nat(expr, self._call_result_is_nat)
+        return narrowing.result_is_nat(expr, self._declared_result_is_nat)
 
-    def _call_result_is_nat(self, expr: ast.Expr) -> bool:
-        """The call leaf of the shared widening rule: a call's result is a
-        genuine @Nat iff the checker resolved its type to one.
+    def _declared_result_is_nat(self, expr: ast.Expr) -> bool:
+        """The declaration leaf of the shared widening rule (#1503): the
+        value of a form :func:`vera.narrowing.result_is_nat` does not
+        decompose — a slot, a call, an index into an opaque array, an effect
+        operation — is a genuine @Nat iff the checker resolved its type to
+        one.
 
-        The callee's return type cannot be resolved robustly from the
+        A callee's return type cannot be resolved robustly from the
         environment here — `env.lookup_function` resolves a bare name to the
         *built-in* rather than an imported or shadowing definition — so the
-        checker's resolved type for the call node is the answer: a
-        declaration's (or an instantiation's) return type, never a type the
-        checker assembled from literals.  An unrecorded call is not @Nat.
+        checker's resolved type for the node is the answer: a declaration's
+        (or an instantiation's), never a type the checker assembled from
+        literals, since the rule reads literal-derived forms by value before
+        it asks.  An unrecorded node is not @Nat.
         """
         resolved = self._resolved_type_of(expr)
         return resolved is not None and self._is_nat_type(resolved)
@@ -13558,7 +13725,7 @@ class ContractVerifier:
         """An if/match arm is @Nat-*compatible* if its value is intrinsically
         @Nat or a non-negative literal (#813 site 2a) — the shared rule,
         :func:`vera.narrowing.arm_nat_compatible`."""
-        return narrowing.arm_nat_compatible(expr, self._call_result_is_nat)
+        return narrowing.arm_nat_compatible(expr, self._declared_result_is_nat)
 
     @staticmethod
     def _is_nonneg_int_literal(expr: ast.Expr) -> bool:

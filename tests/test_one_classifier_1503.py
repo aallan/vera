@@ -54,13 +54,14 @@ from pathlib import Path
 
 import pytest
 
-from vera import ast
+from vera import ast, narrowing
 from vera.checker import typecheck_with_artifacts
 from vera.codegen import compile as codegen_compile
 from vera.codegen import execute
 from vera.parser import parse_to_ast
 from vera.resolver import ModuleResolver
-from vera.types import INT, NAT, AdtType, Type
+from vera.environment import TypeEnv
+from vera.types import INT, NAT, AdtType, RefinedType, Type, TypeVar
 from vera.verifier import verify
 
 _U64_MAX = 18446744073709551615
@@ -165,7 +166,11 @@ def _observe(
 # The composite-construction matrix
 # =====================================================================
 
-_PRELUDE = "private data Wrap<A> { W(A) }\n\n"
+_PRELUDE = (
+    "private data Wrap<A> { W(A) }\n\n"
+    "private data P<A, B> { MkP(B, A) }\n\n"
+    "private data Box<T> { MkBox(Int, T) }\n\n"
+)
 
 #: position -> the function body, over ``{V}`` (the value) and ``{T}`` (the
 #: numeric type the value is bound at).  The function is
@@ -208,6 +213,70 @@ _POSITIONS: dict[str, str] = {
     "nested, array in ADT":
         "match W([{V}]) {{ W(@Array<{T}>) -> @Array<{T}>.0[0] }}",
 }
+
+#: How each form `vera.narrowing` reads as a JOIN builds a value from two
+#: alternatives ``{X}`` / ``{Y}`` — keyed by the forms themselves, so the
+#: matrix's source axis is the code's own list of value-flow forms
+#: (`RESULT_IS_NAT_READING`'s ``"flow"``), and a new one without a template
+#: fails `TestTheSourceAxisIsTheCodes`.  `@Bool.0` is true in every run, so
+#: each form yields ``{X}``.
+_FLOW_TEMPLATES: dict[type, tuple[str, str]] = {
+    ast.Block: ("block", "{{ {X} }}"),
+    ast.IfExpr: ("if", "if @Bool.0 then {{ {X} }} else {{ {Y} }}"),
+    ast.MatchExpr: ("match",
+                    "match @Bool.0 {{ true -> {X}, false -> {Y} }}"),
+    ast.HandleExpr: ("handle",
+                     "handle[Exn<Int>] {{ throw(@Int) -> {Y} }} in {{ {X} }}"),
+}
+
+#: shape -> (the body over ``{S}``, the source; ``{X}``; ``{Y}``).
+_FLOW_SHAPES: dict[str, tuple[str, str, str]] = {
+    "tuple destructure": ("let Tuple<@Int, @{T}> = {S};\n  @{T}.0",
+                          "Tuple(1, {V})", "Tuple(2, {V})"),
+    "ADT destructure": ("let Wrap<@{T}> = {S};\n  @{T}.0",
+                        "W({V})", "W({V})"),
+    "tuple match": ("match {S} {{ Tuple(@Int, @{T}) -> @{T}.0 }}",
+                    "Tuple(1, {V})", "Tuple(2, {V})"),
+    "ADT match": ("match {S} {{ W(@{T}) -> @{T}.0 }}", "W({V})", "W({V})"),
+}
+
+
+def _flow_position(shape: str, form: type) -> tuple[str, str]:
+    label, template = _FLOW_TEMPLATES[form]
+    body, x, y = _FLOW_SHAPES[shape]
+    source = template.replace("{X}", x).replace("{Y}", y)
+    return f"{shape}, {label}-produced", body.replace("{S}", source)
+
+
+for _shape in _FLOW_SHAPES:
+    for _form in _FLOW_TEMPLATES:
+        _name, _body = _flow_position(_shape, _form)
+        _POSITIONS.setdefault(_name, _body)
+
+_POSITIONS.update({
+    # A nested constructor PATTERN reads the argument inside the argument.
+    "tuple pattern in ADT pattern":
+        "match W(Tuple(1, {V})) {{ W(Tuple(@Int, @{T})) -> @{T}.0 }}",
+    "Option pattern in Option pattern":
+        "match Some(Some({V})) {{ Some(Some(@{T})) -> @{T}.0, "
+        "Some(None) -> 7, None -> 7 }}",
+    # ... and over a scrutinee the SMT layer projects rather than reads as
+    # a constructor application, which takes the nested walk's term path.
+    "tuple pattern in ADT pattern, block-produced":
+        "match {{ W(Tuple(1, {V})) }} {{ W(Tuple(@Int, @{T})) -> @{T}.0 }}",
+    "tuple pattern in ADT pattern, if-produced":
+        "match if @Bool.0 then {{ W(Tuple(1, {V})) }} "
+        "else {{ W(Tuple(2, {V})) }} {{ W(Tuple(@Int, @{T})) -> @{T}.0 }}",
+    # A generic constructor's field i is not type argument i: `MkP(B, A)`.
+    "generic field 0 of MkP(B, A)":
+        "let P<@{T}, @Bool> = MkP({V}, true);\n  @{T}.0",
+    "generic field 1 of MkP(B, A)":
+        "let P<@Bool, @{T}> = MkP(true, {V});\n  @{T}.0",
+    "generic field 0 of MkP(B, A), matched":
+        "match MkP({V}, true) {{ MkP(@{T}, @Bool) -> @{T}.0 }}",
+    "generic field after a concrete one, MkBox(Int, T)":
+        "let Box<@Int, @{T}> = MkBox(1, {V});\n  @{T}.0",
+})
 
 #: The positions where the value reaches the binding through a composite
 #: pattern bind or a container's element — the NESTED ones.  No reader
@@ -473,6 +542,559 @@ class TestAnOpaqueSourceAnswersFromItsDeclaration:
         assert _WIDEN_GUARD in _observe(source, "f", [_U64_MAX]).run
 
 
+class TestTheComponentReadsOfTheReview:
+    """Four component readings PR #1537's review found, each a place where a
+    decision still took a component's type from the wrong source."""
+
+    def test_a_folded_literal_arm_does_not_hide_a_genuine_nat(self) -> None:
+        """`2 + 3` is a non-negative literal-only value, as `5` is: an arm
+        built from it is `@Nat`-compatible, or the join drops the guard its
+        `@Nat.0` sibling needs and u64.MAX comes back as -1."""
+        source = _program(
+            "tuple destructure, if-produced", "@Nat.0", "Int").replace(
+            "Tuple(2, @Nat.0)", "Tuple(2, 2 + 3)")
+        assert "Tuple(2, 2 + 3)" in source
+        assert _WIDEN_GUARD in _observe(source, "f", [0, _U64_MAX, 1]).run
+        assert _observe(source, "f", [0, _U64_MAX, 0]).run == "ran:5"
+        assert _observe(source, "f", [0, 42, 1]).run == "ran:42"
+
+    @pytest.mark.parametrize("body", [
+        "let Tuple<@PosInt, @Int> = if @Bool.0 then {{ Tuple(0 - 5, 1) }} "
+        "else {{ Tuple(3, 1) }};\n  @PosInt.0",
+        "match if @Bool.0 then {{ Tuple(0 - 5, 1) }} else {{ Tuple(3, 1) }} "
+        "{{ Tuple(@PosInt, @Int) -> @PosInt.0 }}",
+    ], ids=["destructure", "sub-pattern"])
+    def test_a_refined_bind_is_not_proved_from_a_literal_s_type(
+        self, body: str,
+    ) -> None:
+        """The refined legs took the component's SOURCE fact from the
+        checker's type: `Tuple<Nat, Nat>`'s `>= 0` over `ite(b, -5, 3)` forced
+        `b` false and PROVED the `@PosInt` bind the guard then refused.  Only
+        an opaque source seeds its declaration's fact now."""
+        source = ("type PosInt = { @Int | @Int.0 > 0 };\n\n"
+                  + _shape_program(body.format()))
+        observed = _observe(source, "f", [0, 0, 1])
+        binds = [o[1] for o in observed.obligations if o[0] == "refine_bind"]
+        assert binds and "verified" not in binds, observed.obligations
+        assert "Refinement violation" in observed.run, observed.run
+
+    _BOX = """private data Box<T> { MkBox(Int, T) }
+
+private fn mk(@Int, @Nat -> @Box<Nat>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  MkBox(@Int.0, @Nat.0)
+}
+
+public fn f(@Int, @Nat -> @T0)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  BODY
+}
+"""
+
+    def _box(self, target: str, body: str) -> str:
+        return self._BOX.replace("@T0", f"@{target}").replace("BODY", body)
+
+    def test_a_field_is_read_as_its_constructor_declares_it(self) -> None:
+        """Binding i is field i, whose type is the constructor's — `Int`,
+        then `T` — and not type argument i.  Read by index, the `Int` field
+        was guarded as a `@Nat` and a valid -5 trapped as "above i64.MAX"."""
+        source = self._box("Int", "let Box<@Int, @Int> = mk(@Int.0, @Nat.0);"
+                                  "\n  @Int.1")
+        assert _observe(source, "f", [-5, 7]).run == "ran:-5"
+        high = _observe(source, "f", [3, _U64_MAX])
+        assert _WIDEN_GUARD in high.run, high.run
+
+    def test_a_type_name_is_not_read_as_another_type_s_constructor(
+        self,
+    ) -> None:
+        """`let Box<…>` names the TYPE of its source.  A constructor `Box`
+        of another type does not describe that source: read by the name,
+        both fields took `Other.Box`'s `Nat` flags and a valid -5 trapped."""
+        source = "private data Other { Box(Nat, Nat) }\n\n" + self._box(
+            "Int", "let Box<@Int, @Int> = mk(@Int.0, @Nat.0);\n  @Int.1")
+        observed = _observe(source, "f", [-5, 7])
+        assert observed.run == "ran:-5", observed.run
+        widenings = [o for o in observed.obligations
+                     if o[0] == "nat_to_int_coerce"]
+        assert len(widenings) == 1, observed.obligations
+        high = _observe(source, "f", [3, _U64_MAX])
+        assert _WIDEN_GUARD in high.run, high.run
+
+    def test_the_int_field_narrowed_into_nat_is_on_the_record(self) -> None:
+        source = self._box("Nat", "let Box<@Nat, @Nat> = mk(@Int.0, @Nat.0);"
+                                  "\n  @Nat.1")
+        observed = _observe(source, "f", [-5, 7])
+        assert ("nat_bind", "tier3") in {
+            (o[0], o[1]) for o in observed.obligations}, observed.obligations
+        assert _NAT_GUARD in observed.run, observed.run
+
+    def test_the_int_field_seeds_no_nat_fact(self) -> None:
+        """The destructure seeds each bound component with its source's
+        type; seeded with type argument 0 (`Nat`), the `Int` field's
+        `>= 0` PROVED a later `let @Nat = @Int.0` that the guard refuses."""
+        source = self._box(
+            "Nat", "let Box<@Int, @Nat> = mk(@Int.0, @Nat.0);\n"
+                   "  let @Nat = @Int.0;\n  @Nat.0")
+        observed = _observe(source, "f", [-5, 7])
+        binds = [(o[1], o[2]) for o in observed.obligations
+                 if o[0] == "nat_bind"]
+        assert binds and all(status != "verified" for status, _ in binds), (
+            observed.obligations)
+        assert _NAT_GUARD in observed.run, observed.run
+
+
+class TestTheSourceAxisIsTheCodes:
+    """The matrix's axes come from the code, not from a list kept beside it
+    (PR #1537 review): a form the classifier reads that the matrix does not
+    exercise fails here."""
+
+    def test_every_expression_form_has_a_reading(self) -> None:
+        forms = {cls for cls in vars(ast).values()
+                 if isinstance(cls, type) and issubclass(cls, ast.Expr)
+                 and cls is not ast.Expr}
+        assert set(narrowing.RESULT_IS_NAT_READING) == forms, (
+            sorted(c.__name__ for c in
+                   forms ^ set(narrowing.RESULT_IS_NAT_READING)))
+
+    def test_every_flow_form_builds_a_source(self) -> None:
+        flows = {form for form, reading
+                 in narrowing.RESULT_IS_NAT_READING.items()
+                 if reading == "flow"}
+        assert set(_FLOW_TEMPLATES) == flows
+        for shape in _FLOW_SHAPES:
+            for form in flows:
+                name, _body = _flow_position(shape, form)
+                assert name in _POSITIONS, name
+
+
+#: A genuine `@Nat` in every form the classifier answers from a declaration
+#: or reads through: name -> (the value, a statement put before the body,
+#: a wrapper around it).  `@Nat.0` is u64.MAX in the trapping runs.
+_GENUINE_NAT_SOURCES: dict[str, tuple[str, str, str]] = {
+    "slot": ("@Nat.0", "", "{BODY}"),
+    "index": ("@Array<Nat>.0[0]", "let @Array<Nat> = [@Nat.0];\n  ",
+              "{BODY}"),
+    "call": ("nat_id(@Nat.0)", "", "{BODY}"),
+    "effect operation": (
+        "State.get(())", "",
+        "handle[State<Nat>](@Nat = @Nat.0) {\n"
+        "    get(@Unit) -> { resume(@Nat.0) },\n"
+        "    put(@Nat) -> { resume(()) }\n"
+        "  } in {\n  {BODY}\n  }"),
+    "join with a folded literal": (
+        "if @Bool.0 then { @Nat.0 } else { 2 + 3 }", "", "{BODY}"),
+    "handle": ("handle[Exn<Int>] { throw(@Int) -> 5 } in { @Nat.0 }",
+               "", "{BODY}"),
+}
+
+_NAT_ID = """private fn nat_id(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Nat.0
+}
+
+"""
+
+
+def _genuine_program(position: str, source: str) -> str:
+    value, before, wrapper = _GENUINE_NAT_SOURCES[source]
+    body = before + _POSITIONS[position].format(
+        V=value.replace("{", "{{").replace("}", "}}"), T="Int")
+    body = body.replace("{{", "{").replace("}}", "}")
+    return (
+        _PRELUDE + _NAT_ID
+        + "public fn f(@Int, @Nat, @Bool -> @Int)\n"
+        + "  requires(true)\n  ensures(true)\n  effects(pure)\n{\n  "
+        + wrapper.replace("{BODY}", body) + "\n}\n"
+    )
+
+
+_GENUINE_CELLS = [(p, g) for p in _DIRECT for g in _GENUINE_NAT_SOURCES]
+
+
+class TestEveryGenuineNatFormWidensThroughTheGuard:
+    """A genuine `@Nat` read into an `@Int` is claimed and guarded whatever
+    form supplies it — a slot, an index, a call, an effect operation, a join
+    with a folded literal, a `handle` — at every direct position (PR #1537
+    review).  The classifier answers each from its declaration or reads
+    through it; answering "not a `@Nat`" for any of them dropped the guard
+    the release branch emitted, and u64.MAX came back as -1."""
+
+    @pytest.mark.parametrize(("position", "source"), _GENUINE_CELLS,
+                             ids=[f"{p} / {g}" for p, g in _GENUINE_CELLS])
+    def test_claimed_guarded_and_42_comes_back(
+        self, position: str, source: str,
+    ) -> None:
+        """Claimed and guarded at the binding, and never a false refusal
+        of an in-range value.  At u64.MAX the run is refused — by the
+        widening guard, or first by a generic constructor's narrowing guard
+        on the way in, whose signed compare reads a `@Nat` above
+        `i64.MAX` as negative (#1504); neither returns -1."""
+        program = _genuine_program(position, source)
+        high = _observe(program, "f", [0, _U64_MAX, 1])
+        assert _WIDEN_GUARD in high.run or _NAT_GUARD in high.run, (
+            f"u64.MAX came back from an `@Int` binding: {high.run}")
+        assert "nat_to_int_coerce" in {o[0] for o in high.obligations}, (
+            high.obligations)
+        assert "wasm/operators.py:_emit_int_widen_guard" in {
+            c[0] for c in high.checks}, high.checks
+        assert _observe(program, "f", [0, 42, 1]).run == "ran:42"
+
+    @pytest.mark.parametrize("position", [
+        p for p in _DIRECT
+        if p.startswith(("tuple destructure", "tuple match"))])
+    @pytest.mark.parametrize("source", list(_GENUINE_NAT_SOURCES))
+    def test_at_a_tuple_the_widening_guard_is_what_refuses(
+        self, position: str, source: str,
+    ) -> None:
+        """A `Tuple` is built with no narrowing guard of its own, so there
+        the refusal of u64.MAX is the widening guard's."""
+        high = _observe(_genuine_program(position, source), "f",
+                        [0, _U64_MAX, 1])
+        assert _WIDEN_GUARD in high.run, high.run
+
+
+def _nat_results() -> list[tuple[str, tuple[str, ...]]]:
+    """Every built-in function whose declared result is a `@Nat`, with its
+    parameter types' names — read from the checker's own registry."""
+    out = []
+    for name, info in sorted(TypeEnv().functions.items()):
+        ret = info.return_type
+        ret = ret.base if isinstance(ret, RefinedType) else ret
+        if getattr(ret, "name", None) == "Nat":
+            out.append((name, tuple(getattr(p, "name", "?")
+                                    for p in info.param_types)))
+    return out
+
+
+def _nat_ops() -> list[tuple[str, str]]:
+    """Every effect operation whose result is a `@Nat`, or its effect's type
+    parameter (a `@Nat` when the effect is instantiated at one)."""
+    out = []
+    for effect, info in sorted(TypeEnv().effects.items()):
+        for op_name, op in sorted(info.operations.items()):
+            ret = op.return_type
+            if isinstance(ret, TypeVar) or getattr(ret, "name", None) == "Nat":
+                out.append((effect, op_name))
+    return out
+
+
+_ARGUMENT_FOR = {"String": '"ab"', "Int": "1", "Nat": "1", "Unit": "()"}
+
+#: How a program reaches each effect operation with a `@Nat` result.
+_OP_PROGRAMS: dict[tuple[str, str], tuple[str, str]] = {
+    ("IO", "time"): ("effects(<IO>)", "let @Int = IO.time(());\n  @Int.0"),
+    ("State", "get"): (
+        "effects(pure)",
+        "handle[State<Nat>](@Nat = 1) {\n"
+        "    get(@Unit) -> { resume(@Nat.0) },\n"
+        "    put(@Nat) -> { resume(()) }\n"
+        "  } in {\n    let @Int = State.get(());\n    @Int.0\n  }"),
+}
+
+
+class TestEveryNatResultIsDeclared:
+    """Every built-in function and effect operation whose result is a `@Nat`
+    is a widening where an `@Int` binds it: claimed, and guarded.  The list
+    is the checker's registry, so a new one is covered the day it lands."""
+
+    def _assert_widens(self, body: str, effects: str = "effects(pure)"):
+        program = ("public fn f(@Int -> @Int)\n  requires(true)\n"
+                   f"  ensures(true)\n  {effects}\n{{\n  {body}\n}}\n")
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".vera", delete=False, encoding="utf-8",
+        ) as handle:
+            handle.write(program)
+            path = handle.name
+        try:
+            parsed, arts = _artifacts(program, path)
+            result = verify(parsed, program, file=path,
+                            expr_types=arts.expr_semantic_types,
+                            expr_target_types=arts.expr_target_types)
+            compiled = codegen_compile(
+                parsed, source=program, file=path,
+                expr_semantic_types=arts.expr_semantic_types,
+                expr_target_types=arts.expr_target_types)
+        finally:
+            Path(path).unlink(missing_ok=True)
+        assert "nat_to_int_coerce" in {o.kind for o in result.obligations}, (
+            body)
+        assert "wasm/operators.py:_emit_int_widen_guard" in {
+            c.emitter for c in compiled.emitted_checks}, body
+
+    @pytest.mark.parametrize(("name", "params"), _nat_results(),
+                             ids=[n for n, _ in _nat_results()])
+    def test_a_builtin(self, name: str, params: tuple[str, ...]) -> None:
+        missing = [p for p in params if p not in _ARGUMENT_FOR]
+        assert not missing, f"no argument written for {name}'s {missing}"
+        args = ", ".join(_ARGUMENT_FOR[p] for p in params)
+        self._assert_widens(f"let @Int = {name}({args});\n  @Int.0")
+
+    @pytest.mark.parametrize(("effect", "op"), _nat_ops(),
+                             ids=[f"{e}.{o}" for e, o in _nat_ops()])
+    def test_an_effect_operation(self, effect: str, op: str) -> None:
+        assert (effect, op) in _OP_PROGRAMS, (
+            f"no program written reaching {effect}.{op}")
+        effects, body = _OP_PROGRAMS[(effect, op)]
+        self._assert_widens(body, effects)
+
+
+class TestAScalarReadsEveryNatForm:
+    """#1538: at a scalar `let` and a return, an index into an `Array<Nat>`
+    and `State.get` at `State<Nat>` are widenings too.  On `main`, the
+    release branch and 16c25c9e alike neither was obligated or guarded:
+    u64.MAX read as -1, and an `ensures(@Int.result >= 0)` proved at Tier 1
+    failed at run time."""
+
+    _INDEX = ("let @Array<Nat> = [@Nat.0];\n  let @Int = @Array<Nat>.0[0];"
+              "\n  @Int.0")
+    _RETURN = "let @Array<Nat> = [@Nat.0];\n  @Array<Nat>.0[0]"
+    _STATE = ("handle[State<Nat>](@Nat = @Nat.0) {\n"
+              "    get(@Unit) -> { resume(@Nat.0) },\n"
+              "    put(@Nat) -> { resume(()) }\n"
+              "  } in {\n    let @Int = State.get(());\n    @Int.0\n  }")
+
+    _ALIAS = "let @Int = @Count.0;\n  @Int.0"
+    _ALIAS_COMPONENT = ("let Tuple<@Int, @Int> = Tuple(1, @Count.0);\n"
+                        "  @Int.0")
+
+    @pytest.mark.parametrize("ensures", ["true", "@Int.result >= 0"])
+    @pytest.mark.parametrize("body", [
+        _INDEX, _RETURN, _STATE, _ALIAS, _ALIAS_COMPONENT,
+    ], ids=["let an index", "return an index", "let State.get",
+            "let a Nat alias's slot", "a Nat alias's slot as a component"])
+    def test_u64_max_traps_on_the_widening(
+        self, body: str, ensures: str,
+    ) -> None:
+        """An alias of `Nat` is a `@Nat` too: its slot's name is not
+        `Nat`, and read by name it returned u64.MAX as -1 unobligated."""
+        param = "@Count" if "@Count" in body else "@Nat"
+        program = ("type Count = Nat;\n\n"
+                   f"public fn f({param} -> @Int)\n  requires(true)\n"
+                   f"  ensures({ensures})\n  effects(pure)\n{{\n  {body}\n}}\n")
+        high = _observe(program, "f", [_U64_MAX])
+        assert _WIDEN_GUARD in high.run, high.run
+        assert ("nat_to_int_coerce", "tier3") in {
+            (o[0], o[1]) for o in high.obligations}, high.obligations
+        assert _observe(program, "f", [42]).run == "ran:42"
+
+
+_GET_NAT = """private fn get_nat(@Wrap<Nat> -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Wrap<Nat>.0 { W(@Nat) -> @Nat.0 }
+}
+
+"""
+
+
+class TestACompositeBindingIsTheConstructionsContext:
+    """A pattern that binds a constructor argument at a COMPOSITE type —
+    `W(@Array<Nat>)`, a `@Wrap<Nat>` component — obligates none of its
+    components, and the constructor door records no type it inferred from
+    a literal subtraction; so the binding's type is the construction's
+    context, and the construction is obligated against it (PR #1537
+    review).  Without it `match W([0 - 3]) { W(@Array<Nat>) -> … }` put -3
+    in a `Nat` array with nothing on the record."""
+
+    @pytest.mark.parametrize(("body", "target"), [
+        ("match W([0 - 3]) { W(@Array<Nat>) -> @Array<Nat>.0[0] }", "Nat"),
+        ("let Tuple<@Wrap<Nat>, @Int> = Tuple(W(0 - 3), 1);\n"
+         "  get_nat(@Wrap<Nat>.0)", "Nat"),
+        ("match W(0 - 3) { @Wrap<Nat> -> get_nat(@Wrap<Nat>.0) }", "Nat"),
+    ], ids=["array in a pattern", "a destructured component",
+            "the whole scrutinee"])
+    def test_at_nat_the_construction_is_refused(
+        self, body: str, target: str,
+    ) -> None:
+        program = (_PRELUDE + _GET_NAT
+                   + f"public fn f(@Int -> @{target})\n  requires(true)\n"
+                   "  ensures(true)\n  effects(pure)\n{\n  "
+                   + body + "\n}\n")
+        observed = _observe(program, "f", [0])
+        assert "E503" in observed.errors, observed.obligations
+        assert _NAT_GUARD in observed.run, observed.run
+
+    @pytest.mark.parametrize("body", [
+        "match W([0 - 3]) { W(@Array<Int>) -> @Array<Int>.0[0] }",
+        "let Tuple<@Wrap<Int>, @Int> = Tuple(W(0 - 3), 1);\n"
+        "  match @Wrap<Int>.0 { W(@Int) -> @Int.0 }",
+        "match W(0 - 3) { @Wrap<Int> -> match @Wrap<Int>.0 "
+        "{ W(@Int) -> @Int.0 } }",
+    ], ids=["array in a pattern", "a destructured component",
+            "the whole scrutinee"])
+    def test_at_int_it_comes_back(self, body: str) -> None:
+        program = (_PRELUDE + "public fn f(@Int -> @Int)\n  requires(true)\n"
+                   "  ensures(true)\n  effects(pure)\n{\n  " + body + "\n}\n")
+        observed = _observe(program, "f", [0])
+        assert observed.errors == (), observed.obligations
+        assert observed.run == "ran:-3", observed.run
+
+
+_REFINED_SHAPES: dict[str, str] = {
+    "destructure": "let Tuple<@PosInt, @Int> = {S};\n  @PosInt.0",
+    "match": "match {S} {{ Tuple(@PosInt, @Int) -> @PosInt.0 }}",
+}
+
+
+class TestARefinedComponentAssumesOnlyADeclaration:
+    """A refined binding of a component assumes its source's type only
+    where every source is opaque, through every form a value flows by
+    (PR #1537 review): the checker's `Tuple<Nat, Nat>` for a value built
+    from `0 - 5` forced its own premise and proved a `@PosInt` bind at
+    Tier 1 that the guard then refused."""
+
+
+    @pytest.mark.parametrize("form", list(_FLOW_TEMPLATES),
+                             ids=[_FLOW_TEMPLATES[f][0]
+                                  for f in _FLOW_TEMPLATES])
+    @pytest.mark.parametrize("shape", ["destructure", "match"])
+    def test_not_proved_and_refused(self, shape: str, form: type) -> None:
+        _label, template = _FLOW_TEMPLATES[form]
+        source = (template.replace("{X}", "Tuple(0 - 5, 1)")
+                  .replace("{Y}", "Tuple(3, 1)"))
+        body = _REFINED_SHAPES[shape].replace("{S}", source).replace(
+            "{{", "{").replace("}}", "}")
+        program = ("type PosInt = { @Int | @Int.0 > 0 };\n\n"
+                   + _shape_program(body))
+        observed = _observe(program, "f", [0, 0, 1])
+        binds = [o[1] for o in observed.obligations if o[0] == "refine_bind"]
+        assert binds and "verified" not in binds, observed.obligations
+        assert "Refinement violation" in observed.run, observed.run
+
+
+def _verify_only(source: str) -> tuple[tuple[str, str], ...]:
+    """``(kind, status)`` of every obligation `vera verify` records for
+    *source* — for shapes code generation does not compile."""
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".vera", delete=False, encoding="utf-8",
+    ) as handle:
+        handle.write(source)
+        path = handle.name
+    try:
+        program, arts = _artifacts(source, path)
+        result = verify(program, source, file=path,
+                        expr_types=arts.expr_semantic_types,
+                        expr_target_types=arts.expr_target_types)
+    finally:
+        Path(path).unlink(missing_ok=True)
+    return tuple(sorted((o.kind, o.status) for o in result.obligations))
+
+
+class TestAnIndexReadsTheArrayItIndexes:
+    """An index into an array built here is one of its elements: read by
+    value where the elements are literal-only, by declaration where they
+    are genuine — not by the checker's element type for the literal, which
+    calls `[0 - 3]` an `Array<Nat>`."""
+
+    @pytest.mark.parametrize("body", [
+        "let @Int = [0 - 3][0];\n  @Int.0",
+        "let Tuple<@Int, @Int> = [Tuple(1, 0 - 3)][0];\n  @Int.0",
+        "match [W(0 - 3)][0] { W(@Int) -> @Int.0 }",
+    ], ids=["scalar", "tuple component", "ADT field"])
+    def test_a_literal_element_claims_no_widening(self, body: str) -> None:
+        kinds = {k for k, _s in _verify_only(_PRELUDE + _shape_program(body))}
+        assert "nat_to_int_coerce" not in kinds, kinds
+
+    def test_a_genuine_element_is_claimed(self) -> None:
+        kinds = {k for k, _s in _verify_only(_shape_program(
+            "let @Int = [@Nat.0, 5][@Nat.0 % 2];\n  @Int.0"))}
+        assert "nat_to_int_coerce" in kinds, kinds
+
+
+_NESTED_OPAQUE = """private data Wrap<A> { W(A) }
+
+public fn f(@Int, @Nat -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Wrap<Tuple<Int, Nat>> = W(Tuple(@Int.0, @Nat.0));
+  match @Wrap<Tuple<Int, Nat>>.0 { W(Tuple(@Int, @Int)) -> @Int.ARG }
+}
+"""
+
+
+class TestANestedPatternReadsItsPath:
+    """A nested pattern over an opaque scrutinee reads each component's
+    declaration down the pattern's path — `Wrap<Tuple<Int, Nat>>`, then
+    `W`'s field, then the tuple's component — on both sides, so the
+    `@Nat` component is claimed and guarded and the `@Int` one is not."""
+
+    def test_the_nat_component_is_claimed_and_guarded(self) -> None:
+        source = _NESTED_OPAQUE.replace("ARG", "0")
+        high = _observe(source, "f", [-5, _U64_MAX])
+        assert _WIDEN_GUARD in high.run, high.run
+        assert ("nat_to_int_coerce", "tier3") in {
+            (o[0], o[1]) for o in high.obligations}, high.obligations
+        assert _observe(source, "f", [-5, 42]).run == "ran:42"
+
+    def test_the_int_component_is_neither(self) -> None:
+        source = _NESTED_OPAQUE.replace("ARG", "1")
+        low = _observe(source, "f", [-5, 42])
+        assert low.run == "ran:-5", low.run
+        widenings = [o for o in low.obligations
+                     if o[0] == "nat_to_int_coerce"]
+        assert len(widenings) == 1, low.obligations
+
+
+class TestANatSubtractionIsGuardedWhereItIsObligated:
+    """The `@Nat` subtraction's underflow guard reads the verifier's
+    classification of its operands: an index into an `Array<Nat>` and a
+    call returning `@Nat` are `@Nat` operands with `@Nat` provenance (PR
+    #1537 review).  Code generation read neither — its static rule has no
+    index arm and its call walker answers `Int` for an i64 return — so the
+    verifier's `nat_sub` had no guard behind it: `nat_id(@Nat.1) - @Nat.0`
+    returned -3 from a `@Nat` function on `main`, the release branch and
+    16c25c9e, and the index form did once the widening rule read an
+    index's declaration."""
+
+    _PROGRAM = """private fn nat_id(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Nat.0
+}
+
+public fn f(@Nat, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  BODY
+}
+"""
+
+    @pytest.mark.parametrize("body", [
+        "let @Array<Nat> = [@Nat.1];\n  @Array<Nat>.0[0] - @Nat.0",
+        "nat_id(@Nat.1) - @Nat.0",
+        "let @Array<Nat> = [@Nat.1];\n  @Array<Nat>.0[0] - 5",
+        "nat_id(@Nat.1) - 5",
+    ], ids=["an index", "a call", "an index less a literal",
+            "a call less a literal"])
+    def test_the_underflow_is_refused_where_it_happens(self, body: str) -> None:
+        """The last two keep a slot out of the subtraction's operands, so
+        its `@Nat` provenance can come only from the index or the call."""
+        source = self._PROGRAM.replace("BODY", body)
+        low = _observe(source, "f", [2, 5])
+        assert "would be negative" in low.run, low.run
+        assert "nat_sub" in {o[0] for o in low.obligations}, low.obligations
+        assert "wasm/operators.py:_emit_nat_sub_guard" in {
+            c[0] for c in low.checks}, low.checks
+        assert _observe(source, "f", [8, 5]).run == "ran:3"
+
+
 class TestALiteralAboveI64MaxIsANat:
     """`18446744073709551615` is a value only a `@Nat` holds.
 
@@ -590,6 +1212,15 @@ class TestAnOperationWithAGenuineNatKeepsItsWidth:
         source = _shape_program("@Nat.0 + (5 - 3)").replace(
             "-> @Int)", "-> @Nat)")
         assert _observe(source, "f", [0, 7, 1]).run == "ran:9"
+
+    def test_a_literal_above_i64_max_beside_a_negative_one_too(self) -> None:
+        """The mixed-sign case in literal form: `18446744073709551615` is a
+        `@Nat`-only value, so `18446744073709551615 + (0 - 1)` keeps the
+        unsigned width and refuses, where the signed one returned -2 with
+        nothing on the record (PR #1537 review)."""
+        source = _shape_program(f"{_U64_MAX} + (0 - 1)").replace(
+            "-> @Int)", "-> @Nat)")
+        assert "overflow" in _observe(source, "f", [0, 0, 1]).run
 
 
 class TestTheFoldIsTheMachine:
@@ -726,7 +1357,35 @@ def _literal_underflow(expr: ast.Expr) -> bool:
                      or _literal_underflow(expr.else_branch)))
     if isinstance(expr, ast.MatchExpr):
         return any(_literal_underflow(a.body) for a in expr.arms)
+    if isinstance(expr, ast.HandleExpr):
+        # A `handle`'s value is its body's, or a clause's that does not
+        # resume (a `resume(...)` is a call, and no literal).
+        return (_literal_underflow(expr.body)
+                or any(_literal_underflow(c.body) for c in expr.clauses))
+    if isinstance(expr, ast.IndexExpr):
+        return any(_literal_underflow(e)
+                   for e in _element_exprs(expr.collection))
     return False
+
+
+def _element_exprs(expr: ast.Expr) -> list:
+    """The elements an array value can come from, built here: through
+    blocks, `if`s, `match`es and `handle`s to the array literals."""
+    if isinstance(expr, ast.ArrayLit):
+        return list(expr.elements)
+    if isinstance(expr, ast.Block):
+        return [] if expr.expr is None else _element_exprs(expr.expr)
+    if isinstance(expr, ast.IfExpr):
+        if expr.else_branch is None:
+            return []
+        return (_element_exprs(expr.then_branch)
+                + _element_exprs(expr.else_branch))
+    if isinstance(expr, ast.MatchExpr):
+        return [e for a in expr.arms for e in _element_exprs(a.body)]
+    if isinstance(expr, ast.HandleExpr):
+        return (_element_exprs(expr.body)
+                + [e for c in expr.clauses for e in _element_exprs(c.body)])
+    return []
 
 
 _ARITH = frozenset({
@@ -761,7 +1420,8 @@ def _ctor_table(program: ast.Program) -> dict:
 
 def _component_exprs(expr: ast.Expr, position: int, ctors: dict) -> list:
     """The expressions that supply type argument *position* of *expr*'s
-    value, reached through `if` / `match` / block tails."""
+    value, reached through `if` / `match` / `handle` / block tails and an
+    index into an array built here."""
     if isinstance(expr, ast.Block):
         return ([] if expr.expr is None
                 else _component_exprs(expr.expr, position, ctors))
@@ -775,6 +1435,14 @@ def _component_exprs(expr: ast.Expr, position: int, ctors: dict) -> list:
         for arm in expr.arms:
             out.extend(_component_exprs(arm.body, position, ctors))
         return out
+    if isinstance(expr, ast.HandleExpr):
+        out = _component_exprs(expr.body, position, ctors)
+        for clause in expr.clauses:
+            out.extend(_component_exprs(clause.body, position, ctors))
+        return out
+    if isinstance(expr, ast.IndexExpr):
+        return [c for element in _element_exprs(expr.collection)
+                for c in _component_exprs(element, position, ctors)]
     if isinstance(expr, ast.ArrayLit):
         return list(expr.elements) if position == 0 else []
     if isinstance(expr, ast.ConstructorCall):
@@ -903,7 +1571,11 @@ def _movers(path: Path) -> list[str]:
     at every node where they disagree: one line per changed output."""
     plain = _pipeline(path, False)
     fixed = _pipeline(path, True)
-    if plain is None or plain == fixed:
+    assert plain is not None and fixed is not None, (
+        f"{path.name} did not reach verification and code generation, so "
+        "the differential would compare nothing"
+    )
+    if plain == fixed:
         return []
     names = ("errors", "obligations", "checks", "codegen errors", "WAT")
     out = []
@@ -1051,7 +1723,7 @@ _READERS: dict[tuple[str, str, str], str] = {
     ("vera/codegen/monomorphize.py",
      "MonomorphizationMixin._report_uninferred_type_args",
      "_expr_semantic_types"): "a diagnostic about instantiation",
-    ("vera/verifier.py", "ContractVerifier._call_result_is_nat",
+    ("vera/verifier.py", "ContractVerifier._declared_result_is_nat",
      "_resolved_type_of"): _LEAF,
     ("vera/verifier.py", "ContractVerifier._check_decreases_bound",
      "_resolved_type_of"): _MEASURE,
@@ -1061,8 +1733,8 @@ _READERS: dict[tuple[str, str, str], str] = {
      "ContractVerifier._check_nested_refinement_obligation",
      "_resolved_type_of"): "a refinement's predicate, never inferred "
                            "from a literal",
-    ("vera/verifier.py", "ContractVerifier._declared_component_is_nat",
-     "_resolved_type_of"): _LEAF,
+    ("vera/verifier.py", "ContractVerifier._declared_path_type",
+     "_resolved_type_of"): _LEAF + " (down an enclosing pattern's path)",
     ("vera/verifier.py", "ContractVerifier._decreases_chain_may_be_declined",
      "_resolved_type_of"): "whether a measure component is rankable",
     ("vera/verifier.py", "ContractVerifier._has_nat_origin",
@@ -1097,14 +1769,29 @@ _READERS: dict[tuple[str, str, str], str] = {
      "_expr_semantic_types"): "stores the table",
     ("vera/wasm/context.py", "WasmContext.set_expr_semantic_types",
      "_expr_semantic_types"): "stores the table",
-    ("vera/wasm/data.py", "DataMixin._declared_component_is_nat",
-     "_checker_resolved_type"): _LEAF,
+    ("vera/wasm/data.py", "DataMixin._declared_path_type",
+     "_checker_resolved_type"): _LEAF + " (down an enclosing pattern's path)",
+    ("vera/wasm/data.py", "DataMixin._destructure_ctor_name",
+     "_checker_resolved_type"): "which constructor's fields a destructure "
+                                "binds: the source's type NAME, never a "
+                                "component's sign",
     ("vera/wasm/inference.py", "InferenceMixin._infer_vera_type",
      "_expr_semantic_types"): "clone naming (#1327): the walker first",
-    ("vera/wasm/operators.py", "OperatorsMixin._call_result_is_nat",
+    ("vera/wasm/operators.py", "OperatorsMixin._declared_result_is_nat",
      "_resolved_codegen_type"): _LEAF,
     ("vera/wasm/operators.py", "OperatorsMixin._checker_resolved_type",
      "_expr_semantic_types"): "the accessor",
+    ("vera/wasm/operators.py", "OperatorsMixin._has_nat_origin_codegen",
+     "_resolved_codegen_type"): "an index's element type as `@Nat` "
+                                "provenance, the verifier's "
+                                "`_has_nat_origin`; a literal is never a "
+                                "leaf of it",
+    ("vera/wasm/operators.py", "OperatorsMixin._is_nat_operand",
+     "_resolved_codegen_type"): "the static half of the `@Nat`-subtraction "
+                                "test, the verifier's `_is_nat_typed`; the "
+                                "pure-literal case is exempted by "
+                                "provenance, and the mixed-sign one is the "
+                                "pinned residual",
     ("vera/wasm/operators.py", "OperatorsMixin._overflow_codegen_type",
      "_resolved_codegen_type"): _WIDTH,
     ("vera/wasm/operators.py", "OperatorsMixin._resolved_codegen_type",

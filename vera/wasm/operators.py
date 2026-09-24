@@ -1925,10 +1925,28 @@ class OperatorsMixin:
         that's Path B (#552) territory, which generalises the
         verifier check to every binding-site narrowing.
         """
-        return (self._is_static_nat_typed(expr.left)
-                and self._is_static_nat_typed(expr.right)
+        return (self._is_nat_operand(expr.left)
+                and self._is_nat_operand(expr.right)
                 and (self._has_nat_origin_codegen(expr.left)
                      or self._has_nat_origin_codegen(expr.right)))
+
+    def _is_nat_operand(self, expr: ast.Expr) -> bool:
+        """The verifier's ``_is_nat_typed``, read the same way: the
+        checker's resolved type for the operand where the table has one,
+        and the shared static rule where it does not (#1503).
+
+        The static rule alone has no arm for an index, an effect operation
+        or a call whose `@Nat` return this side's walker reads as `Int`, so
+        `@Array<Nat>.0[0] - @Nat.0` was obligated `nat_sub` by the verifier
+        and compiled with no underflow guard; once the widening rule reads
+        an index's declared `@Nat`, the return's narrowing guard stood down
+        for it too, and -3 came back from a `@Nat` function (PR #1537
+        review).  A pure-literal operand is still exempt: its provenance
+        (:py:meth:`_has_nat_origin_codegen`) is no `@Nat`'s."""
+        resolved = self._resolved_codegen_type(expr)
+        if resolved is not None:
+            return resolved == "Nat"
+        return self._is_static_nat_typed(expr)
 
     def _is_static_nat_typed(self, expr: ast.Expr) -> bool:
         """Return True iff *expr* has static type @Nat.
@@ -1962,15 +1980,18 @@ class OperatorsMixin:
 
         Codegen's guard fires at exactly the sites the verifier obligates only
         if the two ask one rule, so the rule is not written here; this side
-        supplies the call leaf (:py:meth:`_call_result_is_nat`) and nothing
-        else.  A non-negative literal is not a genuine @Nat (it is
+        supplies the declaration leaf (:py:meth:`_declared_result_is_nat`) and
+        nothing else.  A non-negative literal is not a genuine @Nat (it is
         range-checked against its target, #812) unless it exceeds `i64.MAX`,
         and arithmetic is @Nat only when both operands are.
         """
-        return narrowing.result_is_nat(expr, self._call_result_is_nat)
+        return narrowing.result_is_nat(expr, self._declared_result_is_nat)
 
-    def _call_result_is_nat(self, expr: ast.Expr) -> bool:
-        """The call leaf of the shared widening rule, codegen's reading.
+    def _declared_result_is_nat(self, expr: ast.Expr) -> bool:
+        """The declaration leaf of the shared widening rule, codegen's
+        reading: whether the value of a form the rule does not decompose — a
+        slot, a call, an index into an opaque array, an effect operation —
+        is a genuine @Nat (#1503).
 
         Consults the checker's resolved-type side-table first — the answer
         the verifier's leaf reads, so a verified build matches it
@@ -2011,7 +2032,7 @@ class OperatorsMixin:
         """Codegen's reading of :func:`vera.narrowing.arm_nat_compatible` —
         an if/match arm is @Nat-compatible if intrinsically @Nat or a
         non-negative literal (#813 site 2a)."""
-        return narrowing.arm_nat_compatible(expr, self._call_result_is_nat)
+        return narrowing.arm_nat_compatible(expr, self._declared_result_is_nat)
 
     @staticmethod
     def _is_nonneg_int_literal(expr: ast.Expr) -> bool:
@@ -2077,12 +2098,16 @@ class OperatorsMixin:
         """
         if isinstance(expr, ast.SlotRef):
             return expr.type_name == "Nat"
-        if isinstance(expr, ast.FnCall):
-            return self._infer_fncall_vera_type(expr) == "Nat"
-        if isinstance(expr, ast.ModuleCall):
-            return self._infer_fncall_vera_type(
-                ast.FnCall(name=expr.name, args=expr.args, span=expr.span),
-            ) == "Nat"
+        if isinstance(expr, (ast.FnCall, ast.ModuleCall)):
+            # The verifier's reading: the checker's resolved type of the
+            # call, then its declaration (`_declared_result_is_nat`).  The
+            # walker alone maps an i64 return to "Int" and never answers
+            # "Nat".
+            return self._declared_result_is_nat(expr)
+        if isinstance(expr, ast.IndexExpr):
+            # `arr[i]` has @Nat provenance iff its element type is @Nat, read
+            # from the checker's table as the verifier reads it.
+            return self._resolved_codegen_type(expr) == "Nat"
         if isinstance(expr, ast.BinaryExpr):
             return (self._has_nat_origin_codegen(expr.left)
                     or self._has_nat_origin_codegen(expr.right))

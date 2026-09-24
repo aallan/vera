@@ -144,6 +144,8 @@ class ControlFlowMixin:
     def _check_match(self, expr: ast.MatchExpr, *,
                      expected: Type | None = None) -> Type | None:
         """Type-check a match expression."""
+        for arm in expr.arms:
+            self._register_arm_pattern_reads(expr.scrutinee, arm.pattern)
         scrutinee_ty = self._synth_expr(expr.scrutinee)
         if scrutinee_ty is None:  # pragma: no cover — defensive: _synth_expr returns UnknownType, not None
             return None
