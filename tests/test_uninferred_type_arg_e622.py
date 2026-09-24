@@ -788,6 +788,11 @@ class TestRewriteLegFailsClosed:
                 # always has the attribute, so its absence would be a
                 # fixture artefact rather than a measurement.
                 self._expr_semantic_types = None
+                # #1511: the namespace's alias maps, which the leg resolves a
+                # type argument through before it names the clone; this
+                # namespace declares none.
+                from vera.naming import EMPTY_ALIAS_ENV
+                self._alias_env = EMPTY_ALIAS_ENV
 
         return _Ctx()
 

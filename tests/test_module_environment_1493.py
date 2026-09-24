@@ -26,12 +26,13 @@ import lists naming it.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
 from vera import ast
-from vera.checker import typecheck
+from vera.checker import typecheck, typecheck_with_artifacts
 from vera.checker.core import TypeChecker
 from vera.codegen.core import CodeGenerator
 from vera.parser import parse_to_ast
@@ -133,15 +134,29 @@ class TestTheReportedPrograms:
 # =====================================================================
 
 def _generator(entry: Path) -> CodeGenerator:
-    """A generator with *entry*'s modules registered and its own Pass 1."""
+    """The generator ``vera compile`` builds for *entry*, after compiling it.
+
+    The whole pipeline, not a hand-picked prefix of its passes: a prefix
+    stopped before the prelude injection, so a signature naming one of the
+    prelude's demand-injected types (``Json``, ``HtmlNode``, ``Request``,
+    ``Response``) read ``unsupported`` on BOTH sides and the differential
+    could not see a module's measurement of it (PR #1508 review).  What is
+    compared is what the compile leaves registered.
+    """
     source = entry.read_text(encoding="utf-8")
     program = parse_to_ast(source)
     mods = ModuleResolver(_root=entry.parent).resolve_imports(program, entry)
-    gen = CodeGenerator(source=source, file=str(entry))
-    gen._resolved_modules = mods
-    gen._collect_namespace_fn_names(program)
-    gen._register_modules(program)
-    gen._register_all(program)
+    _, arts = typecheck_with_artifacts(
+        program, source, file=str(entry), resolved_modules=mods,
+        collect_module_artifacts=True,
+    )
+    gen = CodeGenerator(
+        source=source, file=str(entry), resolved_modules=mods,
+        expr_semantic_types=arts.expr_semantic_types,
+        expr_target_types=arts.expr_target_types,
+        module_artifacts=arts.module_artifacts,
+    )
+    gen.compile_program(program)
     return gen
 
 
@@ -250,6 +265,137 @@ class TestSignaturesDoNotDependOnTheEntry:
 
         monkeypatch.setattr(CodeGenerator, "_module_registrar", blind)
         assert signature_mismatches(tmp_path / "main.vera")
+
+
+# =====================================================================
+# The prelude's demand-injected types, in a module (PR #1508 review)
+# =====================================================================
+
+@dataclass(frozen=True)
+class PreludeType:
+    """A data type the prelude injects only when a program uses it."""
+
+    name: str
+    #: ``mk``'s body: a value of the type, from ``@Int.0``.
+    make: str
+    #: A match on ``{X}`` producing an Int.
+    use: str
+    #: What ``use`` returns on ``mk(1)``.
+    value: int
+
+
+PRELUDE_TYPES: tuple[PreludeType, ...] = (
+    PreludeType(
+        "Json", "if @Int.0 > 0 then { JNumber(1.5) } else { JNull }",
+        "match {X} {\n    JNull -> 1,\n    _ -> 2\n  }", 2),
+    PreludeType(
+        "HtmlNode", 'HtmlText("xyz")',
+        "match {X} {\n    HtmlText(@String) -> string_length(@String.0),"
+        "\n    _ -> 0\n  }", 3),
+    PreludeType(
+        "Request", 'Request("GET", "/p", map_new(), "abcd")',
+        "match {X} {\n    Request(@String, @String, @Map<String, String>, "
+        "@String) -> string_length(@String.0)\n  }", 4),
+    PreludeType(
+        "Response", 'Response(200 + @Int.0, map_new(), "ok")',
+        "match {X} {\n    Response(@Int, @Map<String, String>, @String) "
+        "-> @Int.0\n  }", 201),
+)
+
+
+def _prelude_files(ty: PreludeType, topology: str) -> dict[str, str]:
+    """``ma`` returns a value of *ty*; *topology* says who matches on it."""
+    mk = (f"public fn mk(@Int -> @{ty.name})\n" + _CONTRACT
+          + f"{{\n  {ty.make}\n}}\n")
+
+    def use(arg: str) -> str:
+        return ("\npublic fn use(@Int -> @Int)\n" + _CONTRACT + "{\n  "
+                + ty.use.replace("{X}", f"mk({arg})") + "\n}\n")
+
+    # A private function of the entry whose signature names the type, so the
+    # entry demands the prelude block itself.
+    named = (f"\nprivate fn named(@{ty.name} -> @Bool)\n" + _CONTRACT
+             + "{\n  true\n}\n")
+    if topology == "entry consumes":
+        return {"ma.vera": "module ma;\n\n" + mk,
+                "main.vera": _main("import ma(mk);\n",
+                                   ty.use.replace("{X}", "mk(1)"))}
+    if topology == "own body consumes":
+        return {"ma.vera": "module ma;\n\n" + mk + use("@Int.0"),
+                "main.vera": _main("import ma(use);\n", "use(1)")}
+    if topology == "module consumes":
+        return {"ma.vera": "module ma;\n\n" + mk,
+                "mc.vera": "module mc;\n\nimport ma(mk);\n" + use("@Int.0"),
+                "main.vera": _main("import mc(use);\n", "use(1)")}
+    if topology == "the entry names it too":
+        return {"ma.vera": "module ma;\n\n" + mk + use("@Int.0"),
+                "main.vera": _main("import ma(use);\n", "use(1)") + named}
+    raise AssertionError(topology)
+
+
+PRELUDE_TOPOLOGIES = ("entry consumes", "own body consumes",
+                      "module consumes", "the entry names it too")
+
+_PRELUDE_CELLS = [
+    pytest.param(ty, topology, id=f"{ty.name}-{topology}")
+    for ty in PRELUDE_TYPES for topology in PRELUDE_TOPOLOGIES
+]
+
+
+def _write(tmp_path: Path, files: dict[str, str]) -> Path:
+    for name, text in files.items():
+        (tmp_path / name).write_text(text, encoding="utf-8")
+    return tmp_path / "main.vera"
+
+
+class TestPreludeTypesInAModule:
+    """A module using one of the prelude's demand-injected types compiles as
+    it does as the entry file.
+
+    Two things were missing.  The prelude's demand was read off the entry
+    file alone, so a module that used ``Json`` in a program whose entry
+    never named it compiled against no ``Json`` at all; and the registrar
+    that measures a module's signatures had none of the four types in its
+    namespace, so ``mk(@Int -> @Json)`` registered as ``unsupported`` and
+    a direct match on the call dropped the function (E602, then E620).
+    """
+
+    @pytest.mark.parametrize(("ty", "topology"), _PRELUDE_CELLS)
+    def test_runs(self, ty: PreludeType, topology: str,
+                  tmp_path: Path) -> None:
+        out = pipeline(tmp_path, _prelude_files(ty, topology))
+        assert out.accepted and out.compiles_clean, out.describe()
+        assert run_main(out) == ("ok", ty.value)
+
+    @pytest.mark.parametrize(("ty", "topology"), _PRELUDE_CELLS)
+    def test_signatures_do_not_depend_on_the_entry(
+        self, ty: PreludeType, topology: str, tmp_path: Path,
+    ) -> None:
+        assert not signature_mismatches(
+            _write(tmp_path, _prelude_files(ty, topology)))
+
+    def test_the_harness_sees_the_prelude(self, tmp_path: Path) -> None:
+        """The module compiled as the entry measures ``mk`` as a pointer:
+        the differential compares a real width, not ``unsupported`` on
+        both sides."""
+        _write(tmp_path, _prelude_files(PRELUDE_TYPES[0], "entry consumes"))
+        assert _generator(tmp_path / "ma.vera")._fn_sigs["mk"] == (
+            ["i64"], "i32")
+
+    @pytest.mark.parametrize("ty", PRELUDE_TYPES, ids=lambda t: t.name)
+    def test_the_differential_can_fail(
+        self, ty: PreludeType, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Not vacuous: a registrar with the prelude's types taken out of
+        its namespace — the registrar before this fix — disagrees with the
+        entry."""
+        from vera.codegen import modules as codegen_modules
+
+        monkeypatch.setattr(codegen_modules, "prelude_adt_names", frozenset)
+        mismatches = signature_mismatches(
+            _write(tmp_path, _prelude_files(ty, "own body consumes")))
+        assert [m.split(": ")[0] for m in mismatches] == ["ma::mk"], mismatches
 
 
 # =====================================================================

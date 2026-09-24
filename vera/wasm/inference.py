@@ -1312,7 +1312,8 @@ class InferenceMixin:
             # built by the same encoding.  (The pre-#775 site joined RAW
             # type names with "_", which additionally missed every
             # parameterized instantiation like Map<String, Int>.)
-            mangled = Monomorphizer._mangle_fn_name(call.name, tuple(parts))
+            mangled = Monomorphizer._mangle_fn_name(
+                call.name, self._canonical_type_args(parts))
             # Look up WASM return type and map back
             ret_wt = self._fn_ret_types.get(mangled)
             if ret_wt == "i64":
@@ -2879,8 +2880,11 @@ class InferenceMixin:
         if name.startswith("Future<") and name.endswith(">"):
             inner = name[7:-1]
             return self._slot_name_to_wasm_type(inner, _seen)
-        # Map/Set/Decimal are opaque host-import handles (i32)
-        if name.startswith("Map<") or name.startswith("Set<") or name == "Decimal":
+        # Map/Set/Decimal are opaque host-import handles (i32).  A clone is
+        # named after a container's bare head (#772), so `option_unwrap_or$Set`
+        # binds a bare `Set`: it is the same handle.
+        if (name.startswith("Map<") or name.startswith("Set<")
+                or name in ("Map", "Set", "Decimal")):
             return "i32"
         base = name.split("<")[0] if "<" in name else name
         # Function type aliases are closure pointers (i32) — resolved

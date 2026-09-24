@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import functools
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Iterable, Mapping
 from types import MappingProxyType
 
 from vera import ast
@@ -682,6 +682,26 @@ def _source_mentions_http_server(program: ast.Program) -> bool:
     return False
 
 
+def _modules_demand(
+    modules: Iterable[ast.Program],
+    mentions: Callable[[ast.Program], bool],
+    block_types: set[str],
+) -> bool:
+    """Whether an imported module uses a demand-injected prelude block.
+
+    A module that declares a data type of one of the block's names means
+    its OWN declaration by the names it writes (spec §8.4.1), so its
+    mentions demand nothing: counting them would inject the prelude's
+    type beside it, and the two would contend for one layout (#1277) in
+    a program that never used the prelude's.
+    """
+    return any(
+        mentions(module)
+        and not block_types & _user_defined_data_names(module)
+        for module in modules
+    )
+
+
 def _has_standard_html(program: ast.Program) -> bool:
     """Check if user's ``data HtmlNode`` has the expected 3 constructors."""
     _EXPECTED = {"HtmlElement", "HtmlText", "HtmlComment"}
@@ -935,7 +955,9 @@ def _type_shape_key(te: object, slots: dict[str, str]) -> str:
     return f"?{type(te).__name__}"
 
 
-def inject_prelude(program: ast.Program) -> str:
+def inject_prelude(
+    program: ast.Program, modules: Iterable[ast.Program] = (),
+) -> str:
     """Inject prelude ADTs, combinators, and array operations.
 
     Mutates ``program.declarations`` by prepending prelude declarations.
@@ -973,6 +995,17 @@ def inject_prelude(program: ast.Program) -> str:
       empty but still injected when non-empty and ``array_fn_names``
       isn't a subset of user names, so adding a future recursive
       helper stays a one-line change.
+
+    *modules* are the programs of the modules *program* imports, as the
+    checker saw them.  The demand-injected blocks (``Json``, ``HtmlNode``
+    and the HttpServer types) are asked of them too, because their bodies
+    are compiled into the same WASM module as *program*'s: a module that
+    uses ``Json`` in a program whose entry never names it compiled against
+    no ``Json`` at all (PR #1508 review).  A module that declares a data
+    type of the block's name means its own declaration by it, so it
+    demands nothing (:func:`_modules_demand`).  Code generation and the
+    verifier's monomorphization discovery pass the same programs, so the
+    two sides inject the same prelude.
     """
     user_names = _user_defined_names(program)
     user_data_names = _user_defined_data_names(program)
@@ -1048,6 +1081,7 @@ def inject_prelude(program: ast.Program) -> str:
         or (user_names & _json_ctors)
         or (user_names & _json_builtins)
         or _source_mentions_json(program)
+        or _modules_demand(modules, _source_mentions_json, {"Json"})
     )
     if user_uses_json:
         user_has_json = "Json" in user_data_names
@@ -1073,6 +1107,7 @@ def inject_prelude(program: ast.Program) -> str:
         or (user_names & _html_ctors)
         or (user_names & _html_builtins)
         or _source_mentions_html(program)
+        or _modules_demand(modules, _source_mentions_html, {"HtmlNode"})
     )
     if user_uses_html:
         user_has_html = "HtmlNode" in user_data_names
@@ -1087,7 +1122,9 @@ def inject_prelude(program: ast.Program) -> str:
     # HttpServer handler types (#305) — inject only when referenced;
     # a user-defined data Request / data Response shadows the prelude
     # (the extraction loop below skips user-defined names).
-    if _source_mentions_http_server(program):
+    if _source_mentions_http_server(program) or _modules_demand(
+        modules, _source_mentions_http_server, {"Request", "Response"},
+    ):
         if not {"Request", "Response"} <= user_data_names:
             source_parts.append(_HTTP_SERVER_DATA)
 

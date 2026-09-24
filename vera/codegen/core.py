@@ -28,6 +28,7 @@ from vera.codegen.api import CompileResult
 from vera.codegen.memory import ConstructorLayout
 from vera.errors import Diagnostic, SourceLocation
 from vera.monomorphize import (
+    Monomorphizer,
     NamespaceFnNames,
     canonicalize_type_aliases,
     qualify_nested_generic_decls,
@@ -436,12 +437,18 @@ class CodeGenerator(
         ] = {}
         # #1493: the data types an imported module's REGISTRAR must see as
         # data types though it holds none of their layouts — the ones that
-        # module imports.  Set only on the per-module registrar
-        # `_register_modules` builds (`_module_registrar`), from the one
-        # derivation the checker's module registration reads
+        # module imports, and the prelude's.  Set only on the per-module
+        # registrar `_register_modules` builds (`_module_registrar`), from
+        # the one derivation the checker's module registration reads
         # (`vera.module_view.imported_data_types`); empty everywhere else,
         # where imported layouts are absorbed and scoped by membership.
         self._imported_adt_names: frozenset[str] = frozenset()
+        # Each imported module's program as the checker saw it, captured by
+        # `_register_modules` before its rewrites.  Pass 1.2 asks the
+        # prelude's demand of them (`inject_prelude(..., modules=)`), and the
+        # verifier's discovery asks it of the same programs, so the two sides
+        # inject one prelude (PR #1508 review).
+        self._module_programs_as_checked: tuple[ast.Program, ...] = ()
         # #1511: the data types a mono clone's TYPE ARGUMENTS name, while that
         # clone is registered or compiled (`_clone_type_scope`).  A clone is
         # measured in the namespace its generic was declared in, and its type
@@ -780,6 +787,13 @@ class CodeGenerator(
         # name (``outer$Int$where$ginner$Int``) to avoid a cross-instantiation
         # collision.
         self._clone_base_chain: dict[str, str] = {}
+        # #1511: every mono clone name → the type arguments it was
+        # instantiated at, as the namespace that instantiated it spells them.
+        # A hoisted `where` helper carries its parent clone's, and a generic
+        # helper's clone adds its own after them.  `_clone_type_scope` reads
+        # it: the arguments are the only part of a clone another namespace
+        # wrote (PR #1508 review).
+        self._clone_type_args: dict[str, tuple[str, ...]] = {}
         # Reset per-`_monomorphize` run; declared here so the type is stated
         # once (imported bases that actually entered `generic_decls`).
         self._imported_generic_base_origins: dict[str, tuple[str, ...]] = {}
@@ -1643,8 +1657,8 @@ class CodeGenerator(
 
     @contextlib.contextmanager
     def _clone_type_scope(self, decl: ast.FnDecl) -> Iterator[None]:
-        """Make the data types *decl* names members while it is measured
-        and compiled (#1511).
+        """Make the data types *decl*'s type arguments name members while it
+        is measured and compiled (#1511).
 
         A mono clone is registered and compiled in the namespace its generic
         was DECLARED in (#1111, #1316) — the prelude's for a combinator — but
@@ -1654,13 +1668,20 @@ class CodeGenerator(
         that type, so the substituted `@Shape` parameter had no WASM
         representation there, and the clone was skipped (E604) with every
         caller after it (E620), on a check-green program — in a single file
-        as much as across modules.  A clone can name another namespace's type
-        only through its type arguments, and after the #1317 renames a data
-        type's name has one owner, so the names are added as they stand;
-        only names with a registered layout are data types.
+        as much as across modules.
+
+        Only the ARGUMENTS are admitted (`_clone_type_args`), never a name the
+        generic's own declaration writes: that name means what it means in the
+        declaring namespace, which is the point of measuring the clone there
+        (#1316).  Admitting every name the clone spells let a user
+        `data Array` re-type the prelude's own `Array<T>` parameters as a
+        one-word pointer, which built modules that fail to load, or returned
+        the wrong length (PR #1508 review).  :meth:`_type_arg_data_types`
+        says which names an argument makes data types.
         """
         names = frozenset(
-            name for name in _type_names_in(decl) if name in self._adt_layouts
+            name for arg in self._clone_type_args.get(decl.name, ())
+            for name in self._type_arg_data_types(arg)
         )
         saved = self._clone_adt_members
         self._clone_adt_members = names
@@ -1670,6 +1691,33 @@ class CodeGenerator(
         finally:
             self._clone_adt_members = saved
             self._sync_alias_env()
+
+    def _type_arg_data_types(self, arg: str) -> set[str]:
+        """The data types a clone's type argument *arg* names, at any depth.
+
+        A name is one when it has a registered layout.  After the #1317
+        renames such a name has one owner, so it means the same type in the
+        clone as where the argument was written — except a built-in
+        container's name (`_CONTAINER_NAMES`).  A container is not a
+        declaration, so no rename separates it from a user's `data Array`
+        (§8.4.1), and an argument cannot say which of the two it is: a clone
+        is named after a container's bare head (#772), so an array literal's
+        type and a value of the user's `data Array` are both the argument
+        `Array`.  The name keeps the declaring namespace's reading, the
+        container's, which is what every array value needs; a user type named
+        like a container, as an argument of a generic declared elsewhere,
+        waits for a spelling that names its owner (#1519).
+        """
+        out: set[str] = set()
+        stack: list[ast.TypeExpr] = [Monomorphizer._parse_type_name(arg)]
+        while stack:
+            te = stack.pop()
+            if not isinstance(te, ast.NamedType):
+                continue
+            stack.extend(te.type_args or ())
+            if te.name in self._adt_layouts and te.name not in _CONTAINER_NAMES:
+                out.add(te.name)
+        return out
 
     def _namespace_ctor_projection(
         self,
@@ -2427,7 +2475,11 @@ class CodeGenerator(
         # #851 — keep the synthetic prelude buffer: injected decls'
         # spans index into it, and `_diag_location` quotes it (under
         # the `<prelude>` origin) for prelude-origin diagnostics.
-        self._prelude_source = inject_prelude(program)
+        # The imported modules' bodies compile into this WASM module too,
+        # so what they use is demanded with the entry's.
+        self._prelude_source = inject_prelude(
+            program, modules=self._module_programs_as_checked,
+        )
         # #1277: prelude ADTs whose name an IMPORTED module has already
         # taken in `_adt_layouts`.  One flat layout map, one slot per name,
         # so the two declarations contend and the module's — registered back
@@ -4221,19 +4273,9 @@ class CodeGenerator(
         return stmt
 
 
-def _type_names_in(node: object) -> set[str]:
-    """Every type name *node* spells in a type position: its ``NamedType``
-    heads and arguments (#1511).  A slot reference's type is always spelled
-    by the binding it refers to as well, so the bindings suffice."""
-    out: set[str] = set()
-    stack: list[object] = [node]
-    while stack:
-        cur = stack.pop()
-        if isinstance(cur, ast.NamedType):
-            out.add(cur.name)
-        if isinstance(cur, ast.Node):
-            stack.extend(
-                getattr(cur, f.name) for f in dataclasses.fields(cur))
-        elif isinstance(cur, (tuple, list)):
-            stack.extend(cur)
-    return out
+#: The built-in containers' names (#1511).  None is a declaration, so a user
+#: `data` of one of these names (§8.4.1) shares its spelling with the
+#: container, and `CodeGenerator._type_arg_data_types` never reads a clone's
+#: type argument of that name as the user's type.  `Tuple` and `Future` are
+#: reserved in the data namespace (#1404, #1372).
+_CONTAINER_NAMES = frozenset({"Array", "Set", "Map", "Decimal"})

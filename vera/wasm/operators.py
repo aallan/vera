@@ -1730,6 +1730,21 @@ class OperatorsMixin:
         """
         return self._translate_quantifier(expr, env, is_forall=False)
 
+    def _index_refinement_layers(
+        self, te: ast.TypeExpr,
+    ) -> list[naming.RefinementBinder]:
+        """Each refinement a quantifier's index type carries, outermost
+        first, following aliases — ``[]`` for a plain ``Int`` or ``Nat``."""
+        layers: list[naming.RefinementBinder] = []
+        node: ast.TypeExpr | None = te
+        while node is not None:
+            parts = naming.refinement_binder_parts(node, self._alias_env)
+            if parts is None:
+                break
+            layers.append(parts)
+            node = parts.base if parts.base_is_refinement else None
+        return layers
+
     def _translate_quantifier(
         self,
         expr: ast.ForallExpr | ast.ExistsExpr,
@@ -1746,15 +1761,24 @@ class OperatorsMixin:
           block $qbreak_N
             loop $qloop_N
               if counter >= limit → br $qbreak_N
-              push counter as @T binding
-              evaluate predicate body → i32
-              forall: if false → result=0, br $qbreak_N
-              exists: if true  → result=1, br $qbreak_N
+              if the index type's refinement holds of counter:
+                push counter as @T binding
+                evaluate predicate body → i32
+                forall: if false → result=0, br $qbreak_N
+                exists: if true  → result=1, br $qbreak_N
               counter++
               br $qloop_N
             end
           end
           local.get result
+
+        The index type's refinement is HONOURED (#1506 review): the
+        quantifier ranges over the values below the bound that satisfy it,
+        so ``forall`` means ``P(i) ==> body(i)`` for each index and
+        ``exists`` means ``P(i) && body(i)`` for some.  It was never read —
+        the runtime check of ``forall(@{ @Nat | @Nat.0 < 2 }, 5, ...)``
+        tested every index below 5, and an ``exists`` over a refinement
+        nothing satisfies still answered the body's value.
         """
         # Evaluate domain
         domain_instrs = self.translate_expr(expr.domain, env)
@@ -1788,6 +1812,18 @@ class OperatorsMixin:
         if body_instrs is None:
             return None  # pragma: no cover
 
+        # The index type's refinement, each layer of it: `P(counter)` as an
+        # i32, the layers conjoined.
+        domain_instrs_p: list[str] = []
+        for layer in self._index_refinement_layers(expr.binding_type):
+            cond = self.translate_expr(
+                layer.predicate, env.push(layer.binder_name, counter_local))
+            if cond is None:
+                return None  # pragma: no cover — the [E615] channel above
+            domain_instrs_p.extend(cond)
+            if len(domain_instrs_p) > len(cond):
+                domain_instrs_p.append("i32.and")
+
         # Unique labels
         qid = self._next_quant_id
         self._next_quant_id += 1
@@ -1815,26 +1851,21 @@ class OperatorsMixin:
         instructions.append("    i64.ge_s")
         instructions.append(f"    br_if {brk}")
 
-        # Evaluate predicate body (counter is in env as @T)
-        for instr in body_instrs:
-            instructions.append(f"    {instr}")
-
-        # Short-circuit check
+        # Evaluate predicate body (counter is in env as @T), and
+        # short-circuit: forall on a false predicate → result=0, break;
+        # exists on a true one → result=1, break.
+        step: list[str] = list(body_instrs)
         if is_forall:
-            # forall: if predicate is false → result=0, break
-            instructions.append("    i32.eqz")
-            instructions.append("    if")
-            instructions.append("      i32.const 0")
-            instructions.append(f"      local.set {result_local}")
-            instructions.append(f"      br {brk}")
-            instructions.append("    end")
+            step += ["i32.eqz", "if", "  i32.const 0",
+                     f"  local.set {result_local}", f"  br {brk}", "end"]
         else:
-            # exists: if predicate is true → result=1, break
-            instructions.append("    if")
-            instructions.append("      i32.const 1")
-            instructions.append(f"      local.set {result_local}")
-            instructions.append(f"      br {brk}")
-            instructions.append("    end")
+            step += ["if", "  i32.const 1",
+                     f"  local.set {result_local}", f"  br {brk}", "end"]
+        if domain_instrs_p:
+            # An index outside the refinement is not in the range.
+            step = [*domain_instrs_p, "if", *(f"  {i}" for i in step), "end"]
+        for instr in step:
+            instructions.append(f"    {instr}")
 
         # Increment counter
         instructions.append(f"    local.get {counter_local}")

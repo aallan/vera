@@ -873,25 +873,29 @@ class TestUnresolvedNameMatrix:
             )
 
 
-#: Type SHAPES at the quantifier's two type positions (#1506): the binding
+#: Type SHAPES at the quantifier's two type positions (#1506): the index
 #: type, and the predicate's parameter — the grammar keys
 #: ``(forall_expr|exists_expr, type_expr, primary_expr)`` and
 #: ``(anonymous_fn, type_expr, forall_expr|exists_expr)``.  The name matrix
 #: above puts a declared NAME in each; a refinement, an alias of one, or a
-#: type with no integer representation is a different shape, and at the
-#: predicate's parameter each one used to pass check and verify and then
-#: stop code generation (E699) or leave a module that fails to load.
-QUANTIFIER_SHAPES: tuple[tuple[str, bool], ...] = (
-    # (spelling, whether the PREDICATE may take it)
-    ("Nat", True),
-    ("Int", True),
-    ("Idx", True),                          # an alias of Nat
-    ("{ @Nat | @Nat.0 < 100 }", False),     # an inline refinement
-    ("Small", False),                       # an alias of a refinement
-    ("Byte", False),                        # an integer, but not the index's
-    ("Bool", False),
-    ("Option<Int>", False),
-    ("Colour", False),
+#: type with no integer representation is a different shape.  At the
+#: predicate's parameter each one used to pass check and verify and then stop
+#: code generation (E699) or leave a module that fails to load; at the index
+#: type a non-integer was accepted and ignored, and a refinement was ignored
+#: by the runtime check that should range over it.
+QUANTIFIER_SHAPES: tuple[tuple[str, int | None, bool], ...] = (
+    # (spelling, the INDEX values it admits below 5 — None when it is not
+    #  an index type — and whether the PREDICATE may take it)
+    ("Nat", 5, True),
+    ("Int", 5, True),
+    ("Idx", 5, True),                           # an alias of Nat
+    ("{ @Nat | @Nat.0 < 100 }", 5, False),      # an inline refinement
+    ("Small", 2, False),                        # an alias of a refinement
+    ("{ @Nat | @Nat.0 > 10 }", 0, False),       # a refinement none satisfy
+    ("Byte", None, False),                      # an integer, not an index
+    ("Bool", None, False),
+    ("Option<Int>", None, False),
+    ("Colour", None, False),
 )
 
 _QUANT_PRELUDE = (
@@ -899,36 +903,128 @@ _QUANT_PRELUDE = (
     "type Small = { @Nat | @Nat.0 < 2 };\n\n"
 )
 
+#: Each quantifier's body over its index, and the answer over the first
+#: ``n`` indices — a body whose value depends on the index, so a check that
+#: ignored the index's refinement would give a different answer.
+_QUANT_BODY = {
+    "forall": ("{I}.0 < 3", lambda n: 1 if n <= 3 else 0),
+    "exists": ("{I}.0 > 0", lambda n: 1 if n >= 2 else 0),
+}
+
 
 @dataclass(frozen=True)
 class QuantifierCell:
     form: str
     position: str       # "binding" or "predicate"
     shape: str
-    admissible: bool
+    admits: int | None  # index values the shape admits below 5
+    predicate_ok: bool
 
     @property
     def label(self) -> str:
         return f"{self.form}|{self.position}|{self.shape}"
 
+    @property
+    def refusal(self) -> str | None:
+        """The code that refuses the cell, or None when it must run."""
+        if self.position == "binding":
+            return "E186" if self.admits is None else None
+        return None if self.predicate_ok else "E179"
+
+    @property
+    def value(self) -> int:
+        _body, answer = _QUANT_BODY[self.form]
+        n = self.admits if self.position == "binding" else 5
+        assert n is not None
+        return answer(n)
+
     def source(self) -> str:
         binding = self.shape if self.position == "binding" else "Nat"
         param = self.shape if self.position == "predicate" else "Nat"
+        body, _answer = _QUANT_BODY[self.form]
+        if self.refusal is not None and self.position == "predicate":
+            body_text = "true"
+        else:
+            body_text = body.replace("{I}", f"@{param}")
         return (
             _QUANT_PRELUDE + "public fn main(@Unit -> @Int)\n"
             "  requires(true)\n  ensures(true)\n  effects(pure)\n{\n"
             f"  if {self.form}(@{binding}, 5, fn(@{param} -> @Bool) "
-            "effects(pure) { true }) then { 1 } else { 0 }\n}\n"
+            f"effects(pure) {{ {body_text} }}) then {{ 1 }} else {{ 0 }}\n}}\n"
         )
 
 
 QUANTIFIER_CELLS: tuple[QuantifierCell, ...] = tuple(
-    QuantifierCell(form, position, shape,
-                   admissible or position == "binding")
+    QuantifierCell(form, position, shape, admits, predicate_ok)
     for form in ("forall", "exists")
     for position in ("binding", "predicate")
-    for shape, admissible in QUANTIFIER_SHAPES
+    for shape, admits, predicate_ok in QUANTIFIER_SHAPES
 )
+
+#: A type parameter at each of the quantifier's type positions, in a generic
+#: instantiated at each of these types (#1506 review): refused where it is
+#: written, whatever the instantiation.
+_TYPE_PARAM_POSITIONS = {
+    "index": ("E186", "forall(@T, 3, fn(@Nat -> @Bool) effects(pure) "
+                      "{ true })"),
+    "predicate parameter": ("E179", "forall(@Nat, 3, fn(@T -> @Bool) "
+                                    "effects(pure) { true })"),
+    "predicate result": ("E179", "forall(@Nat, 3, fn(@Nat -> @T) "
+                                 "effects(pure) { @T.0 })"),
+    "bound": ("E128", "forall(@Nat, @T.0, fn(@Nat -> @Bool) effects(pure) "
+                      "{ true })"),
+}
+
+#: The instantiations that are written into a module that fails to load:
+#: a type parameter defers to the instantiation (PR #1202), and nothing
+#: checks it there yet.  Checking these where the types are known is
+#: #1506's remaining work; each cell flips when it lands.
+_TYPE_PARAM_GAPS = frozenset({
+    ("predicate result", "Int"), ("predicate result", "Nat"),
+    ("bound", "Bool"), ("bound", "String"), ("bound", "Colour"),
+})
+_TYPE_PARAM_ARGS = {
+    "Bool": "true", "Int": "5", "Nat": "5", "String": '"abc"', "Colour": "Red",
+}
+
+
+@dataclass(frozen=True)
+class TypeParamCell:
+    position: str
+    instance: str
+
+    @property
+    def label(self) -> str:
+        return f"{self.position}|T={self.instance}"
+
+    def source(self) -> str:
+        _code, quant = _TYPE_PARAM_POSITIONS[self.position]
+        return (
+            _QUANT_PRELUDE
+            + "private forall<T> fn q(@T -> @Bool)\n"
+            "  requires(true)\n  ensures(true)\n  effects(pure)\n{\n"
+            f"  {quant}\n}}\n\n"
+            "public fn main(@Unit -> @Int)\n"
+            "  requires(true)\n  ensures(true)\n  effects(pure)\n{\n"
+            f"  if q({_TYPE_PARAM_ARGS[self.instance]}) then {{ 1 }} "
+            "else { 0 }\n}\n"
+        )
+
+
+TYPE_PARAM_CELLS: tuple[TypeParamCell, ...] = tuple(
+    TypeParamCell(position, instance)
+    for position in _TYPE_PARAM_POSITIONS
+    for instance in _TYPE_PARAM_ARGS
+)
+
+_TYPE_PARAM_PARAMS = [
+    pytest.param(cell, id=cell.label, marks=pytest.mark.xfail(
+        strict=True,
+        reason="#1506: checked at the instantiation next, not yet"))
+    if (cell.position, cell.instance) in _TYPE_PARAM_GAPS
+    else pytest.param(cell, id=cell.label)
+    for cell in TYPE_PARAM_CELLS
+]
 
 
 class TestQuantifierShapes:
@@ -939,14 +1035,39 @@ class TestQuantifierShapes:
         self, cell: QuantifierCell, tmp_path: Path,
     ) -> None:
         outcome = _single_file_outcome(tmp_path, cell.source())
-        if not cell.admissible:
-            assert "E179" in {d.error_code for d in outcome.check_errors}, (
+        if cell.refusal is not None:
+            assert cell.refusal in {
+                d.error_code for d in outcome.check_errors}, (
                 outcome.describe())
             return
         assert outcome.accepted and outcome.compiles_clean, (
             outcome.describe())
-        # `forall` over 0..4 of `true` is true; so is `exists`.
+        # The index's refinement is honoured: a body that depends on the
+        # index answers over the values the index type admits.
+        assert run_main(outcome) == ("ok", cell.value)
+
+    @pytest.mark.parametrize("cell", _TYPE_PARAM_PARAMS)
+    def test_a_type_parameter_defers_to_the_instantiation(
+        self, cell: TypeParamCell, tmp_path: Path,
+    ) -> None:
+        """A quantifier position typed by a type parameter is accepted, as
+        E128 accepts the bound's (PR #1202): the integer instantiations
+        run.  The ones that cannot are the strict xfails above."""
+        outcome = _single_file_outcome(tmp_path, cell.source())
+        assert outcome.accepted and outcome.compiles_clean, (
+            outcome.describe())
         assert run_main(outcome) == ("ok", 1)
+
+    def test_the_refinement_changes_the_answer(self) -> None:
+        """Not vacuous: at the index position, a refined shape's expected
+        value differs from the unrefined one for both quantifiers."""
+        for form in ("forall", "exists"):
+            values = {
+                c.shape: c.value for c in QUANTIFIER_CELLS
+                if c.form == form and c.position == "binding"
+                and c.refusal is None
+            }
+            assert len(set(values.values())) > 1, (form, values)
 
 
 # =====================================================================
@@ -1009,6 +1130,29 @@ def _consume(body: str, contracts: str) -> str:
     )
 
 
+#: A module that declares a constructor named like one of `Colour`'s and is
+#: imported for an unrelated function (#1535).  No namespace can name both
+#: `Green`s, so the program is legal, and code generation qualifies `mb`'s
+#: types apart (#1317): `Colour` is `mod$mb$Colour` in every namespace that
+#: can name it.
+_MH = """\
+module mh;
+
+public data Hue {
+  Green,
+  Blue
+}
+
+public fn blue(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  3
+}
+"""
+
+
 @dataclass(frozen=True)
 class Topology:
     """Where the module result is produced, and where it is consumed."""
@@ -1016,9 +1160,24 @@ class Topology:
     label: str
     #: The module that supplies ``paint`` for a module-qualified call.
     paint_module: str
+    #: Whether a sibling module declares a constructor named like one of
+    #: `Colour`'s, so the program's `Colour` is owner-qualified (#1535).
+    contended: bool = False
+
+    @property
+    def name(self) -> str:
+        return self.label + (", owner-qualified" if self.contended else "")
 
     def files(self, consumer: str) -> dict[str, str]:
         """The program, with *consumer* (declarations) placed in it."""
+        files = self._files(consumer)
+        if self.contended:
+            files["mh.vera"] = _MH
+            files["main.vera"] = "import mh(blue);\n" + files[
+                "main.vera"].replace("  consume(1)\n", "  consume(1) + blue(()) - 3\n")
+        return files
+
+    def _files(self, consumer: str) -> dict[str, str]:
         if self.label == "entry consumes":
             # A imports B's type and returns it; the entry consumes it.
             return {
@@ -1062,6 +1221,11 @@ TOPOLOGIES: tuple[Topology, ...] = (
     Topology("module consumes", "ma"),
     Topology("own body consumes", "ma"),
     Topology("diamond", "mc"),
+    # #1535: where the entry does not import `Colour`, the sibling's `Green`
+    # qualifies `mb`'s types apart; where it does, the rename falls on the
+    # sibling's `Hue` instead, and `Colour` keeps its name.
+    Topology("module consumes", "ma", contended=True),
+    Topology("own body consumes", "ma", contended=True),
 )
 
 
@@ -1290,7 +1454,7 @@ class TestModuleEnvironmentMatrix:
         assert not fields - claimed_fields, sorted(fields - claimed_fields)
         assert not claimed_fields - fields, sorted(claimed_fields - fields)
 
-    @pytest.mark.parametrize("topology", TOPOLOGIES, ids=lambda t: t.label)
+    @pytest.mark.parametrize("topology", TOPOLOGIES, ids=lambda t: t.name)
     @pytest.mark.parametrize("cell", FLOW_CELLS, ids=lambda c: c.label)
     def test_accepted_means_compiled(
         self, cell: FlowCell, topology: Topology, tmp_path: Path,
@@ -1305,6 +1469,51 @@ class TestModuleEnvironmentMatrix:
         assert outcome.accepted, outcome.describe()
         assert outcome.compiles_clean, outcome.describe()
         assert run_main(outcome) == ("ok", expected)
+
+    @pytest.mark.parametrize(
+        "topology", [t for t in TOPOLOGIES if t.contended],
+        ids=lambda t: t.name)
+    def test_the_contended_topologies_are_owner_qualified(
+        self, topology: Topology, tmp_path: Path,
+    ) -> None:
+        """Not vacuous: the sibling's `Green` renames `mb`'s types, so the
+        module's `pick` returns `mod$mb$Colour`."""
+        from vera.codegen.core import CodeGenerator
+
+        cell = next(c for c in FLOW_CELLS if c.label == "call argument")
+        files = topology.files(cell.consumer(topology))
+        for name, text in files.items():
+            (tmp_path / name).write_text(text, encoding="utf-8")
+        program = parse_to_ast(files["main.vera"])
+        resolved = ModuleResolver(_root=tmp_path).resolve_imports(
+            program, tmp_path / "main.vera")
+        gen = CodeGenerator(source=files["main.vera"],
+                            file=str(tmp_path / "main.vera"),
+                            resolved_modules=resolved)
+        gen.compile_program(parse_to_ast(files["main.vera"]))
+        assert "mod$mb$Colour" in gen._adt_layouts, sorted(gen._adt_layouts)
+
+    def test_the_reported_program(self, tmp_path: Path) -> None:
+        """#1535's program: `ma` imports `mb`'s `Colour` and returns it, and
+        the entry imports `mc`, whose `Hue` also has a `Green`.  The release
+        branch dropped `ma`'s `pick` (E605) and `main` behind it (E620);
+        `main` (6dc41d40) refused the program with E610."""
+        mb = "module mb;\n\npublic data Colour {\n  Red,\n  Green\n}\n"
+        mc = _MH.replace("module mh;", "module mc;")
+        ma = ("module ma;\n\nimport mb(Colour);\n\n"
+              "public fn paint(@Colour -> @Int)\n" + _NC
+              + "{\n  match @Colour.0 {\n    Red -> 1,\n    Green -> 2\n  }\n}\n\n"
+              "public fn pick(@Int -> @Colour)\n" + _NC
+              + "{\n  if @Int.0 == 0 then {\n    Red\n  } else {\n    Green\n"
+              "  }\n}\n")
+        main = ("import ma(paint, pick);\nimport mc(blue);\n\n"
+                "public fn main(@Unit -> @Int)\n" + _NC
+                + "{\n  paint(pick(1)) + blue(())\n}\n")
+        outcome = pipeline(tmp_path, {"mb.vera": mb, "mc.vera": mc,
+                                      "ma.vera": ma, "main.vera": main})
+        assert outcome.accepted and outcome.compiles_clean, (
+            outcome.describe())
+        assert run_main(outcome) == ("ok", 5)
 
 
 # =====================================================================
@@ -2474,3 +2683,565 @@ class TestGenericsAtAnotherNamespacesType:
         assert emitted, "no specialisation emitted: the cell is vacuous"
         assert not uncovered_instances(emitted, discovered), (
             f"emitted {sorted(emitted)}, discovered {sorted(discovered)}")
+
+
+#: A `data` type named like each built-in container (§8.4.1 lets a
+#: declaration take the name), and a value of that container's own type.
+_CONTAINER_DECLS: dict[str, tuple[str, str, str, str]] = {
+    # (declaration, a container value, its size)
+    "Array": ("data Array {\n  MkArr(Int)\n}\n\n", "[1, 2, 3]",
+              "array_length"),
+    "Map": ("data Map {\n  MkMap(Int)\n}\n\n",
+            'map_insert(map_insert(map_new(), "a", 1), "b", 2)', "map_size"),
+    "Set": ("data Set {\n  MkSet(Int)\n}\n\n",
+            "set_add(set_add(set_new(), 1), 2)", "set_size"),
+}
+
+#: Where the same-named data type is declared: the entry's own, a module's
+#: the entry imports only a function from, or nowhere (the control, and the
+#: bare `Map` / `Set` a clone is named after, #772).
+CONTAINER_PLACES = ("entry declares it", "an imported module declares it",
+                    "nothing declares it")
+
+#: The generic the container value passes through, over `{C}` (the value),
+#: wrapped by the container's size function.
+_CONTAINER_GENERICS: dict[str, str] = {
+    "option_unwrap_or": "option_unwrap_or(Some({C}), {C})",
+    "option_unwrap_or, None": "option_unwrap_or(None, {C})",
+    "result_unwrap_or": "result_unwrap_or(Ok({C}), {C})",
+    "a module generic's own container parameter": "gl::sizeg({C})",
+    "a module generic returning its argument": "gl::idg({C})",
+}
+
+
+@dataclass(frozen=True)
+class ContainerCell:
+    """A container value through a generic declared elsewhere, in a program
+    that also declares a data type of the container's name."""
+
+    container: str
+    generic: str
+    place: str
+
+    @property
+    def label(self) -> str:
+        return f"{self.container}|{self.place}|{self.generic}"
+
+    @property
+    def value(self) -> int:
+        return 2 if self.container != "Array" else 3
+
+    def files(self) -> dict[str, str]:
+        decl, value, size = _CONTAINER_DECLS[self.container]
+        template = _CONTAINER_GENERICS[self.generic]
+        if "sizeg" in template:
+            # The module generic spells the container itself: its own
+            # `Array<T>` parameter is the container whatever the entry
+            # declares.
+            expr = template.replace("{C}", value)
+        else:
+            expr = size + "(" + template.replace("{C}", value) + ")"
+        gl = (_GL + "public forall<T> fn sizeg(@" + self.container
+              + ("<T>" if self.container != "Map" else "<T, Int>")
+              + " -> @Int)\n" + _NC + "{\n  " + size + "(@"
+              + self.container
+              + ("<T>" if self.container != "Map" else "<T, Int>")
+              + ".0)\n}\n")
+        probe = ("public fn probe(@Unit -> @Int)\n" + _NC + "{\n  " + expr
+                 + " + one(0)\n}\n")
+        files = {"gl.vera": gl}
+        if self.place == "nothing declares it":
+            decl = ""
+        if self.place != "an imported module declares it":
+            one = ("private fn one(@Int -> @Int)\n" + _NC
+                   + "{\n  @Int.0\n}\n\n")
+            files["main.vera"] = ("import gl;\n\n"
+                                  + ("private " + decl if decl else "") + one
+                                  + probe + "\n" + _NEST_MAIN)
+        else:
+            files["mh.vera"] = (
+                "module mh;\n\npublic " + decl + "public fn one(@Int -> @Int)\n"
+                + _NC + "{\n  @Int.0\n}\n")
+            files["main.vera"] = ("import gl;\nimport mh(one);\n\n" + probe
+                                  + "\n" + _NEST_MAIN)
+        return files
+
+
+CONTAINER_CELLS: tuple[ContainerCell, ...] = tuple(
+    ContainerCell(container, generic, place)
+    for container in _CONTAINER_DECLS
+    for generic in _CONTAINER_GENERICS
+    for place in CONTAINER_PLACES
+)
+
+
+class TestAContainerNamedDataType:
+    """(f), continued: a clone's measurement admits the data types its type
+    ARGUMENTS name, and nothing its generic's own declaration writes (PR
+    #1508 review).
+
+    Admitting every name a clone spelled let a `data Array` anywhere in the
+    program re-type the prelude's own `Array<T>`, or a module generic's, as
+    a one-word pointer: `array_length(option_unwrap_or(Some([1, 2]), []))`
+    returned 0, and a module generic over `@Array<T>` built a module that
+    fails to load.  A container's name in a type argument keeps the
+    container's reading, since a clone is named after a container's bare
+    head (#772) and the argument cannot say whose `Array` it is.
+    """
+
+    @pytest.mark.parametrize("cell", CONTAINER_CELLS, ids=lambda c: c.label)
+    def test_the_container_keeps_its_representation(
+        self, cell: ContainerCell, tmp_path: Path,
+    ) -> None:
+        outcome = pipeline(tmp_path, cell.files())
+        assert outcome.accepted and outcome.compiles_clean, (
+            outcome.describe())
+        assert run_main(outcome) == ("ok", cell.value)
+        emitted, discovered = _emitted_and_discovered(
+            tmp_path / "differential", cell.files())
+        assert emitted, "no specialisation emitted: the cell is vacuous"
+        assert not uncovered_instances(emitted, discovered), (
+            f"emitted {sorted(emitted)}, discovered {sorted(discovered)}")
+
+    def test_a_user_type_as_a_type_argument_still_compiles(
+        self, tmp_path: Path,
+    ) -> None:
+        """The admission itself: a type argument naming the entry's own data
+        type is a member of the prelude's namespace while the clone is
+        measured (#1511), so the value keeps its one-word pointer."""
+        main = ("private data Shape {\n  Sq(Int)\n}\n\n"
+                "public fn main(@Unit -> @Int)\n" + _NC
+                + "{\n  match option_unwrap_or(Some(Sq(5)), Sq(6)) {\n"
+                "    Sq(@Int) -> @Int.0\n  }\n}\n")
+        outcome = pipeline(tmp_path, {"main.vera": main})
+        assert outcome.accepted and outcome.compiles_clean, (
+            outcome.describe())
+        assert run_main(outcome) == ("ok", 5)
+
+    @pytest.mark.parametrize("call", ("gl::wrapg(Sq(5))", "gl::idg(Sq(5))",
+                                      "gl::viag(Sq(5))", "gl::outerg(Sq(5))"))
+    def test_a_clone_and_its_hoisted_helper_at_a_user_type(
+        self, call: str, tmp_path: Path,
+    ) -> None:
+        """The arguments reach every declaration a clone becomes: a module
+        generic's `where` helper, hoisted per clone, is measured at the
+        entry's `Shape` too, and so is a module generic the entry's own
+        `idg` shadows, reached qualified under its `mod$` symbol."""
+        gl = (_GL + "public forall<T> fn wrapg(@T -> @T)\n" + _NC
+              + "{\n  inner(@T.0)\n}\nwhere {\n  fn inner(@T -> @T)\n"
+              "    requires(true)\n    ensures(true)\n    effects(pure)\n"
+              "  {\n    @T.0\n  }\n}\n\n"
+              # reached qualified only (the entry shadows it), and calling a
+              # generic the entry does not: its clone is chased from there
+              "public forall<T> fn viag(@T -> @T)\n" + _NC
+              + "{\n  wrapg(@T.0)\n}\n\n"
+              # a generic helper under a generic
+              "public forall<T> fn outerg(@T -> @T)\n" + _NC
+              + "{\n  innerg(@T.0)\n}\nwhere {\n  forall<U> fn innerg(@U -> @U)\n"
+              "    requires(true)\n    ensures(true)\n    effects(pure)\n"
+              "  {\n    @U.0\n  }\n}\n")
+        main = ("import gl;\n\nprivate data Shape {\n  Sq(Int)\n}\n\n"
+                + _USER_GENERICS["idg"]
+                + _USER_GENERICS["idg"].replace("idg", "viag")
+                + "public fn main(@Unit -> @Int)\n" + _NC
+                + "{\n  let @Int = match " + call
+                + " {\n    Sq(@Int) -> @Int.0\n  };\n  @Int.0 + idg(0) + viag(0)\n}\n")
+        outcome = pipeline(tmp_path, {"gl.vera": gl, "main.vera": main})
+        assert outcome.accepted and outcome.compiles_clean, (
+            outcome.describe())
+        assert run_main(outcome) == ("ok", 5)
+
+    @pytest.mark.xfail(strict=True, reason=(
+        "#1519: an argument spelled with a container's name is read as the "
+        "container in the declaring namespace, whose name captures the "
+        "caller's type"))
+    def test_a_container_named_data_type_as_a_type_argument(
+        self, tmp_path: Path,
+    ) -> None:
+        """The other reading of the same spelling: the entry's own
+        `data Array` passed through the prelude's generic.  The argument is
+        `Array` whichever type it is, and the prelude reads the container."""
+        main = ("private data Array {\n  MkArr(Int)\n}\n\n"
+                "public fn main(@Unit -> @Int)\n" + _NC
+                + "{\n  match option_unwrap_or(Some(MkArr(5)), MkArr(6)) {\n"
+                "    MkArr(@Int) -> @Int.0\n  }\n}\n")
+        outcome = pipeline(tmp_path, {"main.vera": main})
+        assert outcome.accepted and outcome.compiles_clean, (
+            outcome.describe())
+        assert run_main(outcome) == ("ok", 5)
+
+
+# =====================================================================
+# (g) Generics instantiated at a type alias (#1511)
+# =====================================================================
+#
+# A type argument is written in the namespace that instantiates a generic,
+# and the clone is measured in the namespace that declared it.  Named by the
+# raw alias, the clone read `@Num` where `Num` means nothing (the prelude, a
+# library module) or something else, and was skipped (E604) or built into a
+# module that fails to load.  The argument is now resolved where it was
+# written (`vera.monomorphize.canonical_type_arg`), by discovery and by the
+# call site alike.
+
+#: (declaration, the value to bind, how the probe turns a value into Int)
+_ALIASES: dict[str, tuple[str, str, str]] = {
+    "plain": ("type Num = Int;\n\n", "5", "{E}"),
+    "refined": ("type Num = { @Int | @Int.0 > 0 };\n\n", "5", "{E}"),
+    "String": ("type Num = String;\n\n", '"abcde"', "string_length({E})"),
+    "alias of an alias": ("type Base = Int;\n\ntype Num = Base;\n\n", "5",
+                          "{E}"),
+}
+
+#: The generic, by where it is declared, over `{X}` (a `Num`) and `{D}`
+#: (another value of the type).
+_ALIAS_GENERICS: dict[str, tuple[str, str]] = {
+    "prelude": ("", "option_unwrap_or(Some({X}), {D})"),
+    "own generic": ("idg", "idg({X})"),
+    "library generic": ("gl", "gl::idg({X})"),
+    "imported generic": ("gl(idg)", "idg({X})"),
+    "nested in a constructor argument": (
+        "idg", "option_unwrap_or(Some(idg({X})), {D})"),
+}
+
+
+@dataclass(frozen=True)
+class AliasCell:
+    """A generic instantiated at an alias declared where the call is."""
+
+    alias: str
+    generic: str
+    place: str          # "entry" or "module"
+
+    @property
+    def label(self) -> str:
+        return f"{self.place}|{self.alias}|{self.generic}"
+
+    @property
+    def value(self) -> int:
+        return 5
+
+    def files(self) -> dict[str, str]:
+        decl, value, wrap = _ALIASES[self.alias]
+        needs, template = _ALIAS_GENERICS[self.generic]
+        expr = template.replace("{X}", "@Num.0").replace("{D}", "@Num.0")
+        own = _USER_GENERICS["idg"] if needs == "idg" else ""
+        imports = f"import {needs};\n\n" if needs.startswith("gl") else ""
+        body = (imports + decl + own + "public fn probe(@Unit -> @Int)\n"
+                + _NC + "{\n  let @Num = " + value + ";\n  "
+                + wrap.replace("{E}", expr) + "\n}\n")
+        files = {"gl.vera": _GL} if imports else {}
+        if self.place == "entry":
+            files["main.vera"] = body + "\n" + _NEST_MAIN
+        else:
+            files["mb.vera"] = "module mb;\n\n" + body
+            files["main.vera"] = "import mb(probe);\n\n" + _NEST_MAIN
+        return files
+
+
+ALIAS_CELLS: tuple[AliasCell, ...] = tuple(
+    AliasCell(alias, generic, place)
+    for alias in _ALIASES
+    for generic in _ALIAS_GENERICS
+    for place in ("entry", "module")
+)
+
+#: The alias names a type the declaring module declares as data: the
+#: argument is the caller's, so the module's `Shape` is never consulted.
+_CAPTURE_GL = (
+    _GL.rstrip("\n") + "\n\npublic data Shape {\n  Sq(Int)\n}\n"
+)
+
+
+class TestGenericsAtATypeAlias:
+    """(g): a generic compiles at a type alias of the instantiating
+    namespace, wherever the generic is declared (#1511)."""
+
+    @pytest.mark.parametrize("cell", ALIAS_CELLS, ids=lambda c: c.label)
+    def test_compiles_and_runs(
+        self, cell: AliasCell, tmp_path: Path,
+    ) -> None:
+        outcome = pipeline(tmp_path, cell.files())
+        assert outcome.accepted and outcome.compiles_clean, (
+            outcome.describe())
+        assert run_main(outcome) == ("ok", cell.value)
+        emitted, discovered = _emitted_and_discovered(
+            tmp_path / "differential", cell.files())
+        assert emitted, "no specialisation emitted: the cell is vacuous"
+        assert not uncovered_instances(emitted, discovered), (
+            f"emitted {sorted(emitted)}, discovered {sorted(discovered)}")
+        # Named by what the alias MEANS, never by the alias.
+        assert not any("Num" in "".join(types) or "Base" in "".join(types)
+                       for _name, types in emitted), sorted(emitted)
+
+    @pytest.mark.parametrize("place", ("entry", "module"))
+    def test_an_alias_named_like_the_declaring_modules_data_type(
+        self, place: str, tmp_path: Path,
+    ) -> None:
+        """The caller's `type Shape = Int;` against `gl`'s `data Shape`:
+        the argument is resolved where it is written, so the clone is
+        `idg$Int`, and `gl`'s `Shape` is never consulted."""
+        body = ("import gl(idg);\n\ntype Shape = Int;\n\n"
+                "public fn probe(@Unit -> @Int)\n" + _NC
+                + "{\n  let @Shape = 7;\n  idg(@Shape.0)\n}\n")
+        files = {"gl.vera": _CAPTURE_GL}
+        if place == "entry":
+            files["main.vera"] = body + "\n" + _NEST_MAIN
+        else:
+            files["mb.vera"] = "module mb;\n\n" + body
+            files["main.vera"] = "import mb(probe);\n\n" + _NEST_MAIN
+        outcome = pipeline(tmp_path, files)
+        assert outcome.accepted and outcome.compiles_clean, (
+            outcome.describe())
+        assert run_main(outcome) == ("ok", 7)
+
+    @pytest.mark.xfail(strict=True, reason=(
+        "#1519: the substituted data type `Shape` reads as the declaring "
+        "module's alias of `Int` inside the clone"))
+    @pytest.mark.parametrize("call", ("idg(Circle(4))", "gl::idg(Circle(4))"))
+    def test_a_data_type_named_like_the_declaring_modules_alias(
+        self, call: str, tmp_path: Path,
+    ) -> None:
+        """The other direction: `gl` declares `type Shape = Int;`, and the
+        entry calls `gl`'s generic at its own `data Shape`.  The clone is
+        rightly keyed on the entry's type, and is then built into a module
+        that fails to load (#1519, on `main` as well)."""
+        gl = (_GL.rstrip("\n") + "\n\ntype Shape = Int;\n\n"
+              "public fn seven(@Unit -> @Int)\n" + _NC
+              + "{\n  let @Shape = 7;\n  @Shape.0\n}\n")
+        imports = "import gl(idg);\n" if call.startswith("idg") else (
+            "import gl;\n")
+        main = (imports + "\nprivate data Shape {\n  Circle(Int),\n"
+                "  Square(Int)\n}\n\npublic fn main(@Unit -> @Int)\n" + _NC
+                + "{\n  match " + call + " {\n    Circle(@Int) -> @Int.0,\n"
+                "    Square(@Int) -> @Int.0 * 10\n  }\n}\n")
+        outcome = pipeline(tmp_path, {"gl.vera": gl, "main.vera": main})
+        assert outcome.accepted and outcome.compiles_clean, (
+            outcome.describe())
+        assert run_main(outcome) == ("ok", 4)
+
+    def test_no_prelude_body_writes_a_type_argument(self) -> None:
+        """Discovery walks the prelude's bodies in the entry file's
+        namespace, which is only safe while no prelude body calls a
+        generic: a type argument written there would be resolved against
+        the entry's aliases.  If this fails, give the prelude its own
+        scope in `canonical_type_args`."""
+        generics = prelude_generics()
+        from vera.prelude import inject_prelude
+
+        program = parse_to_ast(
+            "public fn main(@Unit -> @Int)\n" + _NC + "{\n  1\n}\n")
+        inject_prelude(program)
+        called: set[str] = set()
+
+        def walk(node: object) -> None:
+            if isinstance(node, (ast.FnCall, ast.ModuleCall)):
+                called.add(node.name)
+            if isinstance(node, ast.Node):
+                for f in dataclasses.fields(node):
+                    walk(getattr(node, f.name))
+            elif isinstance(node, (list, tuple)):
+                for item in node:
+                    walk(item)
+
+        for tld in program.declarations:
+            if isinstance(tld.decl, ast.FnDecl) and tld.decl.name != "main":
+                walk(tld.decl.body)
+        assert not called & set(generics), sorted(called & set(generics))
+
+
+class TestQualifiedCallsNameTheirOwnTarget:
+    """(e), continued: two cases from the review of the #1509 fix.
+
+    A qualified call is named from the declaration it reaches, and the
+    qualified-only discovery reads the names its module can see."""
+
+    def test_a_non_generic_target_beside_a_local_generic(
+        self, tmp_path: Path,
+    ) -> None:
+        """`m::foo` is a non-generic module function; the entry declares a
+        generic `foo` of its own.  Discovery named `idg`'s argument from the
+        entry's generic (`Option`) where the call site names the module's
+        function's return (`Int`)."""
+        files = {
+            "m.vera": ("module m;\n\npublic fn foo(@Int -> @Int)\n" + _NC
+                       + "{\n  @Int.0 + 1\n}\n"),
+            "main.vera": (
+                "import m;\n\n"
+                "private forall<T> fn foo(@T -> @Option<T>)\n" + _NC
+                + "{\n  Some(@T.0)\n}\n\n" + _USER_GENERICS["idg"]
+                + "public fn main(@Unit -> @Int)\n" + _NC
+                + "{\n  idg(m::foo(3)) + option_unwrap_or(foo(1), 0)\n}\n"),
+        }
+        outcome = pipeline(tmp_path, files)
+        assert outcome.accepted and outcome.compiles_clean, (
+            outcome.describe())
+        assert run_main(outcome) == ("ok", 5)
+        emitted, discovered = _emitted_and_discovered(
+            tmp_path / "differential", files)
+        assert not uncovered_instances(emitted, discovered), (
+            f"emitted {sorted(emitted)}, discovered {sorted(discovered)}")
+
+    def test_an_operation_in_a_module_private_generics_argument(
+        self, tmp_path: Path,
+    ) -> None:
+        """Inside a module, `get(())` under the module's own `State<Int>`
+        handler is the operation, though the ENTRY declares a function
+        `get`.  The qualified-only discovery for the module's private
+        generic read the flat table, took the entry's `get`, and named a
+        clone the call site does not call."""
+        files = {
+            "mb.vera": (
+                "module mb;\n\n" + _USER_GENERICS["idg"]
+                + "public fn probe(@Unit -> @Int)\n" + _NC
+                + "{\n  handle[State<Int>](@Int = 42) {\n"
+                "    get(@Unit) -> { resume(@Int.0) },\n"
+                "    put(@Int) -> { resume(()) }\n"
+                "  } in {\n    idg(get(()))\n  }\n}\n"),
+            "main.vera": (
+                "import mb(probe);\n\n"
+                "private fn get(@Unit -> @Bool)\n" + _NC + "{\n  true\n}\n\n"
+                "public fn main(@Unit -> @Int)\n" + _NC
+                + "{\n  if get(()) then { probe(()) } else { 0 }\n}\n"),
+        }
+        outcome = pipeline(tmp_path, files)
+        assert outcome.accepted and outcome.compiles_clean, (
+            outcome.describe())
+        assert run_main(outcome) == ("ok", 42)
+        emitted, discovered = _emitted_and_discovered(
+            tmp_path / "differential", files)
+        assert not uncovered_instances(emitted, discovered), (
+            f"emitted {sorted(emitted)}, discovered {sorted(discovered)}")
+
+
+# =====================================================================
+# (h) A module's own function under a name the entry also declares
+# =====================================================================
+#
+# Code generation has one flat function namespace, where the ENTRY's
+# declaration holds a bare name, so a module's own function of that name is
+# emitted under `mod$<path>$name`.  A bare call in the module's bodies means
+# the module's function (§8.5.2), and only its target was redirected: its
+# type was named from the entry's declaration, so a generic called on the
+# result was specialised at the entry's type, and beside an entry GENERIC of
+# the name the generic rewrite took the call itself (PR #1508 review).  Each
+# cell runs to its value and holds against the verifier's discovery.
+
+#: The entry's own declaration of `foo`, and what `main` adds for it.
+_ENTRY_FOO: dict[str, tuple[str, str]] = {
+    "an entry generic": (
+        "private forall<T> fn foo(@T -> @T)\n" + _NC + "{\n  @T.0\n}\n\n",
+        " + foo(0)"),
+    "an entry function": (
+        "private fn foo(@Int -> @Int)\n" + _NC + "{\n  @Int.0 + 10\n}\n\n",
+        " + foo(0)"),
+    "nothing in the entry": ("", ""),
+}
+
+#: `bar`'s body over `{F}`, the module's call `foo(@Int.0)` (a `Bool`).
+_FOO_POSITIONS: dict[str, str] = {
+    "a private generic's argument": "if idm({F}) then { 1 } else { 2 }",
+    "a prelude generic's argument":
+        "if option_unwrap_or(Some({F}), false) then { 1 } else { 2 }",
+    "a library generic's argument, qualified":
+        "if gl::idg({F}) then { 1 } else { 2 }",
+    "a constructor argument":
+        "match Some({F}) {\n    Some(@Bool) -> if @Bool.0 then { 1 } "
+        "else { 2 },\n    None -> 3\n  }",
+    "a let binding": "let @Bool = {F};\n  if @Bool.0 then { 1 } else { 2 }",
+    "a condition": "if {F} then { 1 } else { 2 }",
+}
+
+
+@dataclass(frozen=True)
+class DisplacedCell:
+    entry: str
+    visibility: str     # the module's `foo`
+    position: str
+
+    @property
+    def label(self) -> str:
+        return f"{self.entry}|{self.visibility}|{self.position}"
+
+    @property
+    def value(self) -> int:
+        return 11 if self.entry == "an entry function" else 1
+
+    def files(self) -> dict[str, str]:
+        decl, call = _ENTRY_FOO[self.entry]
+        body = _FOO_POSITIONS[self.position].replace("{F}", "foo(@Int.0)")
+        ma = ("module ma;\n\nimport gl;\n\n" + self.visibility
+              + " fn foo(@Int -> @Bool)\n" + _NC + "{\n  @Int.0 > 0\n}\n\n"
+              + "private forall<T> fn idm(@T -> @T)\n" + _NC
+              + "{\n  @T.0\n}\n\npublic fn bar(@Int -> @Int)\n" + _NC
+              + "{\n  " + body + "\n}\n")
+        main = ("import ma(bar);\n\n" + decl + "public fn main(@Unit -> @Int)\n"
+                + _NC + "{\n  bar(1)" + call + "\n}\n")
+        return {"gl.vera": _GL, "ma.vera": ma, "main.vera": main}
+
+
+DISPLACED_CELLS: tuple[DisplacedCell, ...] = tuple(
+    DisplacedCell(entry, visibility, position)
+    for entry in _ENTRY_FOO
+    for visibility in ("private", "public")
+    for position in _FOO_POSITIONS
+)
+
+
+class TestAModulesFunctionTheEntryDisplaces:
+    """(h): a module's bare call to its own function means that function,
+    whatever the entry declares under the name."""
+
+    @pytest.mark.parametrize("cell", DISPLACED_CELLS, ids=lambda c: c.label)
+    def test_the_module_calls_its_own_function(
+        self, cell: DisplacedCell, tmp_path: Path,
+    ) -> None:
+        outcome = pipeline(tmp_path, cell.files())
+        assert outcome.accepted and outcome.compiles_clean, (
+            outcome.describe())
+        assert run_main(outcome) == ("ok", cell.value)
+        emitted, discovered = _emitted_and_discovered(
+            tmp_path / "differential", cell.files())
+        assert not uncovered_instances(emitted, discovered), (
+            f"emitted {sorted(emitted)}, discovered {sorted(discovered)}")
+
+    def test_a_parameterised_result_names_the_same_clone_on_both_sides(
+        self, tmp_path: Path,
+    ) -> None:
+        """The module's `foo` returns `Option<Int>`: discovery must name
+        `idm`'s argument from the module's declaration as the call site
+        does (`Option`, #772), not from the checker's full type."""
+        files = DisplacedCell(
+            "an entry generic", "private", "a private generic's argument",
+        ).files()
+        files["ma.vera"] = files["ma.vera"].replace(
+            "fn foo(@Int -> @Bool)", "fn foo(@Int -> @Option<Int>)").replace(
+            "@Int.0 > 0\n}", "Some(@Int.0)\n}").replace(
+            "if idm(foo(@Int.0)) then { 1 } else { 2 }",
+            "option_unwrap_or(idm(foo(@Int.0)), 7)")
+        outcome = pipeline(tmp_path, files)
+        assert outcome.accepted and outcome.compiles_clean, (
+            outcome.describe())
+        assert run_main(outcome) == ("ok", 1)
+        emitted, discovered = _emitted_and_discovered(
+            tmp_path / "differential", files)
+        assert not uncovered_instances(emitted, discovered), (
+            f"emitted {sorted(emitted)}, discovered {sorted(discovered)}")
+
+    def test_a_where_helper_of_the_name_owns_the_call(
+        self, tmp_path: Path,
+    ) -> None:
+        """The rename is shadow-aware: inside `bar`, whose `where` helper is
+        also `foo`, the bare call is the helper's (1 > 5 is false, so 2),
+        not the module's top-level `foo` (1 > 0, which would give 1).  The
+        run only: the verifier's discovery names the helper's call from the
+        entry's generic, as it did before this change."""
+        files = DisplacedCell(
+            "an entry generic", "private", "a private generic's argument",
+        ).files()
+        files["ma.vera"] = files["ma.vera"].rstrip("\n") + (
+            "\nwhere {\n  fn foo(@Int -> @Bool)\n    requires(true)\n"
+            "    ensures(true)\n    effects(pure)\n  {\n    @Int.0 > 5\n  }\n}\n")
+        outcome = pipeline(tmp_path, files)
+        assert outcome.accepted and outcome.compiles_clean, (
+            outcome.describe())
+        assert run_main(outcome) == ("ok", 2)

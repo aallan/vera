@@ -966,6 +966,7 @@ ERROR_CODES: dict[str, str] = {
     "E183": "Let binding of a zero-size type",
     "E184": "Name declared twice in one namespace",
     "E185": "Declaration takes a built-in ability's name or operation",
+    "E186": "Quantifier index type is not Int or Nat",
     # E2xx — Type Checker: Calls
     "E200": "Unresolved function",
     "E201": "Wrong argument count",

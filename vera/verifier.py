@@ -32,6 +32,7 @@ from vera.monomorphize import (
     UninferredTypeArg,
     collect_nested_generic_decls,
     declared_return_clone_key,
+    displaced_module_fns,
     importer_occupied_bare_names,
     module_qualified_generic_names,
     module_qualified_generic_targets,
@@ -956,6 +957,11 @@ class ContractVerifier:
         # discovery key `_instances` / `generic_decls` use.  A key absent from
         # here is a main-file generic.
         self._generic_origins: dict[str, tuple[str, ...]] = {}
+        # Per module path, its functions the entry displaces in the flat
+        # tables, to their `mod$` symbols (`displaced_module_fns`); filled by
+        # `_collect_instantiations` for its discovery context.
+        self._displaced_fn_symbols: dict[
+            tuple[str, ...], dict[str, str]] = {}
         # #1299: the names `inject_prelude` added to the discovery copy.  Fed
         # to the shared `namespace_fn_names` derivation so the tables carry
         # the prelude for EVERY namespace, and so this side's answer does not
@@ -2429,6 +2435,27 @@ class ContractVerifier:
                         fn_ret_type_exprs.setdefault(
                             idecl.name, idecl.return_type)
 
+        # A module's function the entry displaces is registered under its
+        # `mod$` symbol, as code generation registers it: discovery resolves a
+        # bare call to it through `displaced_fn_symbols`, and must then find
+        # the module's declaration there and not the entry's.
+        displaced = self._displaced_fn_symbols
+        for mod in self._resolved_modules:
+            symbols = displaced.get(mod.path, {})
+            for tld in mod.program.declarations:
+                idecl = tld.decl
+                if not isinstance(idecl, ast.FnDecl):
+                    continue
+                symbol = symbols.get(idecl.name)
+                if symbol is None:
+                    continue
+                fn_names.add(symbol)
+                iret = self._simple_type_name(idecl.return_type)
+                if iret is not None:
+                    fn_ret_types[symbol] = iret
+                if idecl.return_type is not None:
+                    fn_ret_type_exprs[symbol] = idecl.return_type
+
         # #820: retain the raw alias TypeExprs so the closure-argument widening
         # obligation resolves a `SlotRef` closure's formal types the same way
         # codegen does (`resolve_fn_type_alias`).  First non-empty build wins —
@@ -2494,6 +2521,23 @@ class ContractVerifier:
             # codegen emits and a clone whose contract lies runs unverified.
             expr_types=self._expr_types,
             module_expr_types=self._module_expr_types,
+            # #1511: each namespace's alias maps — the entry's environment and
+            # every module's own — so a type argument is resolved where it
+            # was written before it names a clone, as code generation does.
+            # The module each imported generic came from, as code
+            # generation's `_imported_generic_base_origins` holds it.
+            generic_origins=dict(self._generic_origins),
+            # Each module's functions the entry displaces, so a bare call to
+            # one in that module's body is named from the module's own
+            # declaration, as code generation names it.
+            displaced_fn_symbols=self._displaced_fn_symbols,
+            type_arg_aliases={
+                None: (self._alias_env.aliases, self._alias_env.alias_params),
+                **{
+                    path: (env.aliases, env.alias_params)
+                    for path, env in self._module_alias_envs.items()
+                },
+            },
             # #1509: the qualified-only generics' declarations, the set
             # codegen's `_shadowed_imported_generic_decls` holds, so a nested
             # `path::name(...)` is named from its instantiated return on both
@@ -2730,7 +2774,12 @@ class ContractVerifier:
             tld.decl.name for tld in disc.declarations
             if isinstance(tld.decl, ast.FnDecl)
         }
-        inject_prelude(disc)
+        # The modules' bodies are compiled beside the entry's, so the
+        # prelude they demand is injected here as code generation injects
+        # it (Pass 1.2), from the same programs as the checker saw them.
+        inject_prelude(
+            disc, modules=[mod.program for mod in self._resolved_modules],
+        )
         self._disc_prelude_fn_names = frozenset(
             tld.decl.name for tld in disc.declarations
             if isinstance(tld.decl, ast.FnDecl)
@@ -2840,6 +2889,15 @@ class ContractVerifier:
             return {}
 
         qualified_only = self._qualified_only_generic_decls(program)
+        # Each module's functions the entry displaces, from the one
+        # derivation code generation renames their calls by.  Read off the
+        # entry as written, before the prelude was injected, as codegen's is.
+        importer_names = self._local_fn_names(program)
+        self._displaced_fn_symbols = {
+            mod.path: displaced_module_fns(
+                mod.program, mod.path, importer_names)
+            for mod in self._resolved_modules
+        }
         ctx = self._build_mono_context(disc, generic_decls, qualified_only)
         mono = Monomorphizer(ctx)
         # Stash for verification-time monomorphization (monomorphize_fn needs

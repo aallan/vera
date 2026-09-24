@@ -16,12 +16,15 @@ from vera.errors import Diagnostic, SourceLocation
 from vera.module_view import imported_data_types
 from vera.monomorphize import (
     canonicalize_type_aliases,
+    displaced_module_fns,
     importer_occupied_bare_names,
     module_qualified_generic_names,
     module_qualified_generic_targets,
+    module_qualified_symbol,
     namespace_fn_names,
     public_generic_names,
     qualify_contended_data_decls,
+    reroute_module_qualified_generic_calls,
 )
 from vera.naming import display_adt_name
 from vera.prelude import PRELUDE_NAMESPACE, data_decl_shape, prelude_adt_names
@@ -262,6 +265,7 @@ class CrossModuleMixin:
         checker_programs = {
             mod.path: mod.program for mod in self._resolved_modules
         }
+        self._module_programs_as_checked = tuple(checker_programs.values())
         self._resolved_modules = [
             dataclasses.replace(
                 mod,
@@ -305,6 +309,15 @@ class CrossModuleMixin:
         # against; the two agree on every `$`-free name, which is asserted
         # directly rather than assumed (tests/test_module_generic_namespace_1274).
         importer_bare_names = importer_occupied_bare_names(program)
+        # Each module's own functions whose bare name the entry's
+        # declarations hold, to the `mod$` symbol they are emitted under.  A
+        # module body's bare call to one is renamed to that symbol below,
+        # before anything names or resolves it (PR #1508 review).
+        self._displaced_fn_symbols = {
+            mod.path: displaced_module_fns(
+                mod.program, mod.path, importer_bare_names)
+            for mod in self._resolved_modules
+        }
 
         # #1274 (F1): classify EVERY module's generics before rerouting ANY
         # module's bodies.  A module's bare call can name a generic it imported
@@ -765,6 +778,18 @@ class CrossModuleMixin:
                 routed = self._reroute_module_qualified_generic_calls(
                     tld.decl, module_qualified_targets,
                 )
+                # A bare call to one of this module's functions that the
+                # entry displaces means the module's function (§8.5.2), so
+                # it calls that function's `mod$` symbol, in every body the
+                # module compiles and every discovery walk over them.  Only
+                # the call target was redirected before, at the call site:
+                # its type was named from the entry's declaration, so a
+                # generic called on its result was specialised at the wrong
+                # type, and beside an entry GENERIC of the same name the
+                # generic rewrite took the call first.  Shadow-aware like the
+                # generic reroute: a `where` helper of the name owns it.
+                routed = self._reroute_displaced_calls(
+                    routed, self._displaced_fn_symbols[mod.path])
                 # #774: an imported PUBLIC generic is monomorphized by the
                 # importer (Pass 1.5) at its own call sites — it can't be
                 # emitted verbatim under a bare/mangled name in Pass 2.5, but
@@ -888,6 +913,20 @@ class CrossModuleMixin:
         name it, so each imported name is then spelled through THIS
         namespace's renames — the symbol its rewritten signatures carry.
 
+        The prelude's data types are data types in every namespace, as the
+        checker's ``TypeEnv`` holds them all unconditionally
+        (:func:`vera.prelude.prelude_adt_names`, the floor
+        ``_adt_members_in_scope`` completes membership with).  The entry
+        file registers the demand-injected ones (``Json``, ``HtmlNode``,
+        ``Request``, ``Response``) at Pass 1.2 and re-measures its own
+        signatures that named them; a module's are measured here, before
+        that, so without them ``mk(@Int -> @Json)`` registered as
+        ``unsupported`` and a direct match on the call dropped the function
+        (PR #1508 review).  A module's own declaration of one of the names
+        keeps its own index (``_sync_alias_env`` only fills a gap), and a
+        module alias of one still takes the alias branch first, as in the
+        checker.
+
         #1189: the registrar is handed the module's OWN file, because
         ``_register_fn`` stamps every ``_fn_source_map`` entry with
         ``self.file``; ``ResolvedModule.file_path`` is the attribution source
@@ -902,7 +941,7 @@ class CrossModuleMixin:
             for name in imported_data_types(
                 checker_programs[mod.path], checker_programs,
             )
-        )
+        ) | prelude_adt_names()
         temp._register_all(mod.program)
         return temp
 
@@ -1855,8 +1894,6 @@ class CrossModuleMixin:
         ``ModuleCall`` resolved by the desugar; the verifier a name-renamed
         ``FnCall`` keyed to the same ``mod$…`` discovery base).
         """
-        from vera.monomorphize import reroute_module_qualified_generic_calls
-
         return reroute_module_qualified_generic_calls(
             decl, qualified_targets,
             lambda call, args: ast.ModuleCall(
@@ -1864,6 +1901,21 @@ class CrossModuleMixin:
                 args=args, span=call.span,
             ),
         )
+
+    @staticmethod
+    def _reroute_displaced_calls(
+        decl: ast.FnDecl, symbols: dict[str, str],
+    ) -> ast.FnDecl:
+        """*decl* with each bare call to a displaced module function renamed
+        to its symbol (*symbols*, from :func:`vera.monomorphize
+        .displaced_module_fns`), shadow-aware like the generic reroute."""
+        def rename(
+            call: ast.FnCall, args: tuple[ast.Expr, ...],
+        ) -> ast.Node:
+            return ast.FnCall(
+                name=symbols[call.name], args=args, span=call.span)
+
+        return reroute_module_qualified_generic_calls(decl, symbols, rename)
 
     @staticmethod
     def _module_qualified_wasm_name(
@@ -1876,7 +1928,7 @@ class CrossModuleMixin:
         result can never collide with a user function name — mirroring the
         monomorphizer's ``name$TypeArg`` mangling convention.
         """
-        return "mod$" + "$".join(path) + "$" + name
+        return module_qualified_symbol(path, name)
 
     # -----------------------------------------------------------------
     # Name collision diagnostics

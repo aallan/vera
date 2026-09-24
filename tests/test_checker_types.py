@@ -1578,12 +1578,11 @@ private fn main(@Unit -> @Int)
 
     def test_nested_inner_byte_base_allowed(self) -> None:
         """Nesting, allowance direction: an inner `@Byte`-based refinement
-        (reached through a forall binder inside an `@Int`-based outer
-        predicate) still gets the allowance.  The predicate takes the index,
-        a `@Nat` (spec §6.3.3, E179); the refinement under test is the
-        binder's."""
+        (a closure parameter's type, inside an `@Int`-based outer
+        predicate) still gets the allowance.  A quantifier's index cannot
+        carry it: the index is an `Int` or a `Nat` (spec §6.3.3, E186)."""
         _check_ok("""
-type T = { @Int | forall(@{ @Byte | @Byte.0 < 10 }, 1, fn(@Nat -> @Bool) effects(pure) { true }) && @Int.0 > 0 };
+type T = { @Int | apply_fn(fn(@{ @Byte | @Byte.0 < 10 } -> @Bool) effects(pure) { true }, 3) && @Int.0 > 0 };
 
 private fn main(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)

@@ -1384,7 +1384,7 @@ class ExpressionsMixin:
     def _check_forall_expr(self, expr: ast.ForallExpr) -> Type | None:
         """Type-check forall(type, domain, predicate)."""
         self._check_refinement_predicates(expr.binding_type)  # #861
-        self._resolve_type(expr.binding_type)
+        self._check_quantifier_index(expr.binding_type, "forall")
         self._check_quantifier_bound(expr.domain, "forall")
         self._check_quantifier_predicate(expr.predicate, "forall")
         self._synth_expr(expr.predicate)
@@ -1393,11 +1393,56 @@ class ExpressionsMixin:
     def _check_exists_expr(self, expr: ast.ExistsExpr) -> Type | None:
         """Type-check exists(type, domain, predicate)."""
         self._check_refinement_predicates(expr.binding_type)  # #861
-        self._resolve_type(expr.binding_type)
+        self._check_quantifier_index(expr.binding_type, "exists")
         self._check_quantifier_bound(expr.domain, "exists")
         self._check_quantifier_predicate(expr.predicate, "exists")
         self._synth_expr(expr.predicate)
         return BOOL
+
+    def _check_quantifier_index(self, te: ast.TypeExpr, form: str) -> None:
+        """The index type is ``Int`` or ``Nat``, or a refinement of one
+        (spec §6.3.3, E186).
+
+        A refinement of the index is honoured: the quantifier ranges over the
+        values below the bound that satisfy it (``forall`` holds when the
+        predicate holds for each of them, ``exists`` when it holds for one),
+        in the runtime check code generation emits.  Any other index type has
+        no meaning there — the index is a count — and was accepted and never
+        read, so ``forall(@String, 3, ...)`` checked and ran.  A type
+        parameter defers to the instantiation, as the bound's does (PR #1202):
+        the generic's integer instantiations are the ones that run, and
+        checking the others where the types are known is #1506's remaining
+        work.
+        """
+        before = len(self.errors)
+        ty = self._resolve_type(te)
+        if len(self.errors) > before:
+            return
+        base = ty
+        while isinstance(base, RefinedType):
+            base = base.base
+        if (base is None or isinstance(base, (UnknownType, TypeVar))
+                or base in (INT, NAT)):
+            return
+        what = pretty_type(base)
+        self._error(
+            te,
+            f"The {form}() index type must be Int or Nat, or a refinement "
+            f"of one: it is {what}.",
+            rationale=(
+                "A quantifier's first argument is the type of its index, "
+                "which runs over 0 up to the bound: a count.  A refinement of "
+                "Int or Nat narrows the values it ranges over; any other type "
+                "names no count."
+            ),
+            fix=(
+                "Give the index type @Nat or @Int — or a refinement such as "
+                "@{ @Nat | @Nat.0 > 0 } to range over the values that "
+                "satisfy it — and read anything else inside the predicate."
+            ),
+            spec_ref='Chapter 6, Section 6.3.3 "Quantified Expressions"',
+            error_code="E186",
+        )
 
     def _check_quantifier_predicate(
         self, pred: ast.AnonFn, form: str,
@@ -1413,15 +1458,21 @@ class ExpressionsMixin:
         a wrong arity, and emitted a module that fails to load for a ``Bool``
         parameter or an ``Int`` result.
 
-        A refinement is refused rather than erased to its base.  The index
-        takes EVERY value in the range, so a refinement narrower than the
-        index type cannot hold for all of them; erasing it would bind values
-        the declared type excludes, and every guard downstream of the binding
-        trusts the declared type.  The condition belongs in the body instead.
+        A refinement of the PARAMETER is refused.  The predicate is applied
+        to every value of the index, so a refinement narrower than the index
+        type cannot hold for all of them, and binding a value the declared
+        type excludes would mislead every guard downstream.  A refinement
+        that means "range over these values" belongs on the index type,
+        where it is honoured (`_check_quantifier_index`), or in the body, as
+        ``P ==> ...`` for ``forall`` and ``P && ...`` for ``exists``.
 
         A type parameter defers to the instantiation, as E128 does for the
         bound: the generic's integer instantiations are the ones that run.
+        Checking the others where the types are known is #1506's remaining
+        work.
         """
+        connective = "==>" if form == "forall" else "&&"
+
         def refuse(node: ast.Node, what: str) -> None:
             self._error(
                 node,
@@ -1438,10 +1489,10 @@ class ExpressionsMixin:
                 ),
                 fix=(
                     f"Write the predicate as fn(@Nat -> @Bool) (or @Int, or "
-                    f"an alias of either) and test any further condition in "
-                    f"its body — for a refinement {{ @Nat | P }}, write "
-                    f"fn(@Nat -> @Bool) effects(pure) {{ P ==> ... }} in "
-                    f"{form}()."
+                    f"an alias of either).  For a refinement {{ @Nat | P }}, "
+                    f"refine the index type instead — "
+                    f"{form}(@{{ @Nat | P }}, ...) — or test P in the body: "
+                    f"fn(@Nat -> @Bool) effects(pure) {{ P {connective} ... }}."
                 ),
                 spec_ref='Chapter 6, Section 6.3.3 "Quantified Expressions"',
                 error_code="E179",

@@ -37,6 +37,7 @@ from collections.abc import (
     Iterable,
     Iterator,
     Mapping,
+    Sequence,
 )
 from dataclasses import dataclass, field, fields, replace
 from typing import Any, cast
@@ -381,6 +382,90 @@ def _capturing_binders(
     return {b: f"{b}$shadowed" for b in binders if b in spelled}
 
 
+TypeArgAliasScope = tuple[
+    Mapping[str, ast.TypeExpr], Mapping[str, tuple[str, ...] | None],
+]
+"""A namespace's alias maps, as :func:`canonical_type_arg` reads them."""
+
+
+def canonical_type_arg(
+    name: str,
+    aliases: Mapping[str, ast.TypeExpr],
+    alias_params: Mapping[str, tuple[str, ...] | None],
+    keep: frozenset[str] = frozenset(),
+) -> str:
+    """The one spelling of a clone's type argument (#1511).
+
+    A type argument is WRITTEN in the namespace that instantiates a generic,
+    and the clone is measured and compiled in the namespace that DECLARED it
+    (#1316), so a name only the first namespace gives meaning to must not
+    reach the second.  Every consultor that names a clone — discovery in
+    code generation and in the verifier, and the call site — asks this, with
+    *aliases* / *alias_params* the maps of the namespace the argument was
+    written in:
+
+    * an alias is resolved, there, to its target — DESIGN.md's type-alias
+      row: a type argument is a structural component, so one type must not
+      become two namespaces (DE_BRUIJN.md §6.5);
+    * a refinement is reduced to its base, which is its representation;
+    * a data type keeps its name, which after the #1317 renames has one
+      owner (code generation spells a contended module type
+      ``mod$<path>$<Name>`` in every namespace that can name it).
+
+    A primitive is never expanded, because the spine takes a primitive ahead
+    of an alias of the same spelling; nor is a name in *keep*, the type
+    variables in play, which the #1271 phantom filter must still see as
+    variables.  An alias whose target has no name (a function type) leaves
+    *name* unchanged.  Idempotent in the namespace that produced it: a
+    canonical name holds no alias of that namespace.
+    """
+    if not aliases:
+        return name
+    parsed = Monomorphizer._parse_type_name(name)
+    canon = _canonical_named(parsed, aliases, alias_params, keep, 0)
+    if canon is None or canon is parsed:
+        # Nothing to resolve: the name is returned as it was spelled, so an
+        # alias-free argument names the same clone in every namespace,
+        # whatever that namespace's alias maps hold.
+        return name
+    return Monomorphizer._format_type_name(canon)
+
+
+def _canonical_named(
+    te: ast.TypeExpr,
+    aliases: Mapping[str, ast.TypeExpr],
+    alias_params: Mapping[str, tuple[str, ...] | None],
+    keep: frozenset[str],
+    depth: int,
+) -> ast.NamedType | None:
+    """:func:`canonical_type_arg`'s walk; ``None`` where no name results."""
+    if depth > 64:  # a cyclic alias; the checker refuses it (E132)
+        return None
+    if isinstance(te, ast.RefinementType):
+        return _canonical_named(
+            te.base_type, aliases, alias_params, keep, depth + 1)
+    if not isinstance(te, ast.NamedType):
+        return None
+    if te.name not in keep and te.name not in PRIMITIVES and (
+            te.name in aliases):
+        body = aliases[te.name]
+        params = alias_params.get(te.name)
+        if params and te.type_args and len(params) == len(te.type_args):
+            body = substitute_type_vars(body, dict(zip(params, te.type_args)))
+        return _canonical_named(body, aliases, alias_params, keep, depth + 1)
+    if not te.type_args:
+        return te
+    args: list[ast.TypeExpr] = []
+    for arg in te.type_args:
+        canon = _canonical_named(arg, aliases, alias_params, keep, depth + 1)
+        if canon is None:
+            return None
+        args.append(canon)
+    if all(new is old for new, old in zip(args, te.type_args)):
+        return te
+    return replace(te, type_args=tuple(args))
+
+
 def substitute_type_param_names(name: str, mapping: dict[str, str]) -> str:
     """Substitute type-parameter NAMES inside a type-name *string* (#773).
 
@@ -683,6 +768,44 @@ def importer_occupied_bare_names(program: ast.Program) -> set[str]:
             out.add(decl.name)
             walk_helpers(decl, bool(decl.forall_vars))
     return out
+
+
+def module_qualified_symbol(path: Sequence[str], name: str) -> str:
+    """The symbol a module's function takes where its bare name is not its
+    own in the flat namespace: ``mod$<path>$name`` (#814).  ``$`` is illegal
+    in a Vera identifier, so it collides with no source name."""
+    return "mod$" + "$".join(path) + "$" + name
+
+
+def displaced_module_fns(
+    module_program: ast.Program,
+    path: Sequence[str],
+    importer_names: Collection[str],
+) -> dict[str, str]:
+    """The module's top-level NON-generic functions whose bare name the
+    importer's own declarations occupy, each to the symbol it is emitted and
+    registered under (:func:`module_qualified_symbol`), for the module at
+    *path*.
+
+    Code generation has one flat function namespace, where the importer's
+    declaration holds the bare name, so the module's function is emitted
+    under its ``mod$`` symbol (``_register_shadowed_import``).  A bare call
+    in the module's own bodies still means the module's function (§8.5.2),
+    and codegen redirected only the call's target: discovery, in code
+    generation and in the verifier, and the call site's type inference named
+    the call from the IMPORTER's declaration, so a generic called on its
+    result was specialised at the wrong type — a module that fails to load,
+    and, beside an importer's generic of the same name, a call to that
+    generic's clone (PR #1508 review).  Both sides read this one derivation
+    (*importer_names* is :func:`importer_occupied_bare_names` of the entry
+    program), so each resolves such a call to the same symbol.
+    """
+    return {
+        tld.decl.name: module_qualified_symbol(path, tld.decl.name)
+        for tld in module_program.declarations
+        if isinstance(tld.decl, ast.FnDecl) and not tld.decl.forall_vars
+        and tld.decl.name in importer_names
+    }
 
 
 def module_qualified_generic_names(
@@ -2182,6 +2305,29 @@ class MonoContext:
     # a module absent here has no table, never the entry program's.
     module_expr_types: Mapping[tuple[str, ...], SpanTypeTable] = field(
         default_factory=dict)
+    # #1511: per namespace — ``None`` for the entry program, a module's path
+    # for its bodies — the alias maps a type argument WRITTEN there resolves
+    # through (:func:`canonical_type_arg`).  Codegen passes the maps each
+    # namespace's bodies compile under, and the verifier its per-module alias
+    # environments, so both name a clone from the same canonical arguments.
+    # A namespace absent here is not canonicalized.
+    type_arg_aliases: Mapping[tuple[str, ...] | None, TypeArgAliasScope] = (
+        field(default_factory=dict))
+    # For each generic in ``generic_decls`` that an imported module declared,
+    # that module's path; a local generic is absent.  A qualified call
+    # ``path::name`` is named from the bare-name generic only when the
+    # generic came from ``path`` (:meth:`Monomorphizer._module_call_generic_decl`).
+    generic_origins: Mapping[str, tuple[str, ...]] = field(
+        default_factory=dict)
+    # Per module path, each of its top-level functions whose bare name the
+    # entry program's declaration holds in the flat tables, to the symbol the
+    # module's function is registered under there
+    # (:func:`displaced_module_fns`).  A bare call walked in that module's
+    # namespace is resolved through it before any flat table is read.  Code
+    # generation's bodies arrive with those calls already renamed; the
+    # verifier's keep the source spelling.
+    displaced_fn_symbols: Mapping[tuple[str, ...], Mapping[str, str]] = (
+        field(default_factory=dict))
 
 
 class Monomorphizer:
@@ -2249,6 +2395,10 @@ class Monomorphizer:
         # outside any scope (and for a consumer that supplied no tables),
         # where the flat map answers as it always did.
         self._scope_ctor_owners: Mapping[str, str] | None = None
+        # The walked module's own functions the entry's declarations displace
+        # in the flat tables, to their registered symbols (`namespace_scope`,
+        # `_call_symbol`); empty outside a module's scope.
+        self._scope_displaced: Mapping[str, str] = {}
 
     @contextlib.contextmanager
     def namespace_scope(
@@ -2285,7 +2435,11 @@ class Monomorphizer:
         saved_path = self._namespace_path
         saved = self._scope_fn_names
         saved_owners = self._scope_ctor_owners
+        saved_displaced = self._scope_displaced
         self._namespace_path = path
+        self._scope_displaced = (
+            self.ctx.displaced_fn_symbols.get(path, {})
+            if path is not None else {})
         if self.ctx.namespace_fn_names is not None:
             self._scope_fn_names = self.ctx.namespace_fn_names.visible(path)
         if self.ctx.namespace_ctor_owners is not None:
@@ -2301,6 +2455,7 @@ class Monomorphizer:
             self._namespace_path = saved_path
             self._scope_fn_names = saved
             self._scope_ctor_owners = saved_owners
+            self._scope_displaced = saved_displaced
 
     def checker_table(
         self, path: tuple[str, ...] | None,
@@ -2349,6 +2504,19 @@ class Monomorphizer:
         if owned is not None:
             return owned.get(ctor_name)
         return self.ctx.ctor_tp_indices.get(ctor_name)
+
+    def _call_symbol(self, call: ast.FnCall) -> ast.FnCall:
+        """*call* as the walked namespace resolves it.
+
+        A bare call to one of a module's own functions that the entry
+        program's declaration displaces in the flat tables names the symbol
+        the module's function is registered under
+        (:func:`displaced_module_fns`), so every table lookup below answers
+        for the module's declaration and not the entry's.  Any other call is
+        returned as it is.
+        """
+        symbol = self._scope_displaced.get(call.name)
+        return call if symbol is None else replace(call, name=symbol)
 
     def _bare_call_is_user_fn(self, name: str) -> bool:
         """Discovery's leg of :func:`~vera.slots.bare_call_denotes_user_fn`.
@@ -2467,6 +2635,16 @@ class Monomorphizer:
             self._scope_fn_names = saved_names | {
                 wfn.name for wfn in (fn.where_fns or ())
             }
+        # A `where` helper owns its bare name in its parent's subtree
+        # (spec §5), so a module function the entry displaces is not what a
+        # call there means.  Codegen's reroute is shadow-aware the same way.
+        saved_displaced = self._scope_displaced
+        helpers = {wfn.name for wfn in (fn.where_fns or ())}
+        if helpers & saved_displaced.keys():
+            self._scope_displaced = {
+                name: symbol for name, symbol in saved_displaced.items()
+                if name not in helpers
+            }
         try:
             self._collect_calls_in_node_scoped(
                 fn, generic_decls, ctor_to_adt, instances,
@@ -2475,6 +2653,7 @@ class Monomorphizer:
             self._op_result_types = saved_ops
             self._scope_type_vars = saved_vars
             self._scope_fn_names = saved_names
+            self._scope_displaced = saved_displaced
 
     def _binds_a_type_var(
         self,
@@ -2508,19 +2687,49 @@ class Monomorphizer:
         Components are matched by identifier token, never by substring, so
         ``Option<U>`` is phantom while ``Unit`` is not.
         """
-        type_vars = self._scope_type_vars | frozenset(decl.forall_vars or ())
-        type_vars |= self._ctx_generic_type_vars()
-        type_vars |= frozenset(
-            v for gdecl in generic_decls.values()
-            for v in (gdecl.forall_vars or ())
-        )
-        type_vars -= self._declared_type_names()
+        type_vars = self._type_var_names(decl, generic_decls)
         if not type_vars:
             return False
         return any(
             token in type_vars
             for arg in type_args
             for token in _TYPE_NAME_TOKENS.findall(arg)
+        )
+
+    def _type_var_names(
+        self, decl: ast.FnDecl, generic_decls: dict[str, ast.FnDecl],
+    ) -> frozenset[str]:
+        """The names :meth:`_binds_a_type_var` reads as type VARIABLES: every
+        ``forall`` binder in play, less the names this namespace makes types."""
+        type_vars = self._scope_type_vars | frozenset(decl.forall_vars or ())
+        type_vars |= self._ctx_generic_type_vars()
+        type_vars |= frozenset(
+            v for gdecl in generic_decls.values()
+            for v in (gdecl.forall_vars or ())
+        )
+        return type_vars - self._declared_type_names()
+
+    def canonical_type_args(
+        self,
+        type_args: tuple[str, ...],
+        decl: ast.FnDecl,
+        generic_decls: dict[str, ast.FnDecl] | None,
+    ) -> tuple[str, ...]:
+        """*type_args*, as written in the namespace being walked, in their one
+        spelling (:func:`canonical_type_arg`, #1511).
+
+        The namespace is the walk's (:meth:`namespace_scope`): the entry
+        program's or a module's own.  The prelude's bodies are walked in the
+        entry's namespace, which is right only because no prelude body calls
+        a generic (pinned by a test), so no type argument is ever written
+        there."""
+        scope = self.ctx.type_arg_aliases.get(self._namespace_path)
+        if scope is None or not scope[0]:
+            return type_args
+        keep = self._type_var_names(decl, generic_decls or {})
+        return tuple(
+            canonical_type_arg(arg, scope[0], scope[1], keep)
+            for arg in type_args
         )
 
     def _ctx_generic_type_vars(self) -> frozenset[str]:
@@ -2700,6 +2909,10 @@ class Monomorphizer:
         # ModuleCall only matches once its target is a known generic.
         if isinstance(node, (ast.FnCall, ast.ModuleCall)) and (
             node.name in generic_decls
+        ) and not (
+            # A module's own function the entry displaces is not a call to
+            # the generic that holds the flat bare name (`_call_symbol`).
+            isinstance(node, ast.FnCall) and node.name in self._scope_displaced
         ) and not (
             # #1274 (F1): a qualified call whose target is QUALIFIED-ONLY is not
             # a call to the bare name at all — its clone is emitted under
@@ -2952,7 +3165,8 @@ class Monomorphizer:
                 # monomorphized body can still compile unused branches.
                 mapping[tv] = "Bool"
             result.append(mapping[tv])
-        return tuple(result)
+        # #1511: in their one spelling, resolved where they were written.
+        return self.canonical_type_args(tuple(result), decl, generic_decls)
 
     def _record_uninferred_type_arg(
         self, fn_name: str, type_var: str, arg: ast.Expr,
@@ -3196,6 +3410,8 @@ class Monomorphizer:
         """
         if generic_decls is None:
             generic_decls = self.ctx.generic_decls or None
+        if isinstance(expr, ast.FnCall):
+            expr = self._call_symbol(expr)
         if isinstance(expr, ast.IntLit):
             return "Int"
         if isinstance(expr, ast.BoolLit):
@@ -3382,14 +3598,20 @@ class Monomorphizer:
 
         A qualified-only generic is looked up under its own module
         (``qualified_generic_decls``); any other is the one the bare name
-        denotes, since a module generic that owns the importer's bare name is
-        the generic ``generic_decls`` holds under it (#774).  ``None`` for a
-        non-generic target, or a qualified-only generic the consumer did not
-        supply.
+        denotes when that generic came from the called module, since a module
+        generic that owns the importer's bare name is the generic
+        ``generic_decls`` holds under it (#774).  ``None`` for a non-generic
+        target, or a qualified-only generic the consumer did not supply.
         """
         key = (tuple(call.path), call.name)
         decl = self.ctx.qualified_generic_decls.get(key)
-        if decl is None and key not in self.ctx.qualified_module_generics:
+        if (decl is None and key not in self.ctx.qualified_module_generics
+                and self.ctx.generic_origins.get(call.name) == key[0]):
+            # The generic the bare name holds is the one `path::name`
+            # reaches only when it came from `path`.  A local generic of the
+            # same name, or another module's, is not: the qualified target is
+            # then that module's own declaration — a non-generic, named by
+            # the checker, as the call site names it (PR #1508 review).
             decl = (generic_decls or {}).get(call.name)
         if decl is None or not decl.forall_vars:
             return None
@@ -3578,6 +3800,8 @@ class Monomorphizer:
         None for positions that cannot be inferred from the argument (e.g.
         T in Err(e) where only E is resolved from Err).
         """
+        if isinstance(expr, ast.FnCall):
+            expr = self._call_symbol(expr)
         if isinstance(expr, ast.SlotRef):
             if expr.type_args:
                 arg_names = []

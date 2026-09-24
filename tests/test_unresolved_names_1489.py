@@ -322,6 +322,29 @@ class TestTheInstructionNamesTheCause:
         assert _codes_at(out, "E136") == [locate(src, "Fn)")]
         assert "@fn(Int -> Int) effects(pure)" in _diag(out, "E136").fix
 
+    def test_another_modules_alias(self, tmp_path: Path) -> None:
+        """An alias is module-local (§8.4.1): the fix says to declare a
+        copy, quoting the module's own definition, and never to import it —
+        and the copy it quotes is accepted."""
+        mb = ("module mb;\n\ntype Score = Int;\n\n"
+              "public fn s(@Int -> @Score)\n" + _CONTRACT
+              + "{\n  @Int.0 + 1\n}\n")
+        body = ("public fn main(@Unit -> @Int)\n" + _CONTRACT
+                + "{\n  let @Score = s(1);\n  @Score.0\n}\n")
+        out = pipeline(tmp_path / "bare", {
+            "mb.vera": mb, "main.vera": "import mb(s);\n\n" + body,
+        })
+        diag = _diag(out, "E136")
+        assert "module-local" in diag.rationale, diag.rationale
+        assert "'type Score = Int;'" in diag.fix, diag.fix
+        assert "import" not in diag.fix, diag.fix
+        fixed = pipeline(tmp_path / "fixed", {
+            "mb.vera": mb,
+            "main.vera": "import mb(s);\n\ntype Score = Int;\n\n" + body,
+        })
+        assert fixed.accepted and fixed.compiles_clean, fixed.describe()
+        assert run_main(fixed) == ("ok", 2)
+
     def test_another_modules_effect(self, tmp_path: Path) -> None:
         """Effects are module-local: the fix says to declare a copy."""
         out = pipeline(tmp_path, {
@@ -405,6 +428,15 @@ def _quantifier(predicate: str, binder: str = "@Nat",
 _SMALL = "type Small = { @Nat | @Nat.0 < 2 };\ntype Idx = Nat;\n\n"
 
 
+def eval_index(expr: str, n: int) -> bool:
+    """Evaluate a test's small predicate over the index *n* in Python."""
+    # Test-authored comparisons over one integer, with no names: evaluated
+    # with no builtins in scope.
+    return bool(eval(
+        expr.replace("@Nat.0", str(n)).replace("true", "True")
+        .replace("==>", "<="), {"__builtins__": {}}, {}))
+
+
 class TestQuantifierPredicate:
     """#1506: every predicate shape code generation cannot lower is E179,
     and every shape it can lower still runs."""
@@ -438,16 +470,68 @@ class TestQuantifierPredicate:
         assert out.accepted and out.compiles_clean, out.describe()
         assert run_main(out) == ("ok", value)
 
-    def test_the_binding_type_is_not_the_predicates(
-        self, tmp_path: Path,
+    @pytest.mark.parametrize(("form", "binder", "body", "value"), (
+        # R-1508's repros: the refinement is the range, so a body that holds
+        # only inside it makes `forall` true, and `exists` over a refinement
+        # no index below the bound satisfies is false.
+        ("forall", "@{ @Nat | @Nat.0 < 2 }", "@Nat.0 < 2", 1),
+        ("forall", "@Small", "@Nat.0 < 2", 1),
+        ("forall", "@Nat", "@Nat.0 < 2", 0),
+        ("exists", "@{ @Nat | @Nat.0 > 10 }", "true", 0),
+        ("exists", "@{ @Nat | @Nat.0 > 3 }", "true", 1),
+        ("exists", "@Nat", "@Nat.0 > 3", 1),
+    ))
+    def test_the_index_types_refinement_is_honoured(
+        self, form: str, binder: str, body: str, value: int,
+        tmp_path: Path,
     ) -> None:
-        """The first argument is documentation code generation never
-        binds; a refined one compiles and runs as before."""
         out = _check(tmp_path, _quantifier(
-            "fn(@Nat -> @Bool) effects(pure) { true }",
-            binder="@{ @Nat | @Nat.0 < 100 }"))
+            f"fn(@Nat -> @Bool) effects(pure) {{ {body} }}",
+            binder=binder, prelude=_SMALL, form=form))
         assert out.accepted and out.compiles_clean, out.describe()
-        assert run_main(out) == ("ok", 1)
+        assert run_main(out) == ("ok", value)
+
+    @pytest.mark.parametrize("binder", ("@String", "@Bool", "@Byte"))
+    def test_an_index_type_that_is_no_count_is_refused(
+        self, binder: str, tmp_path: Path,
+    ) -> None:
+        out = _check(tmp_path, _quantifier(
+            "fn(@Nat -> @Bool) effects(pure) { true }", binder=binder))
+        diag = _diag(out, "E186")
+        assert binder[1:] in diag.description, diag.description
+
+    @pytest.mark.parametrize("form", ("forall", "exists"))
+    def test_each_suggested_rewrite_means_the_refinement(
+        self, form: str, tmp_path: Path,
+    ) -> None:
+        """E179's two rewrites of a refined PARAMETER — refine the index
+        type instead, or test P in the body with `==>` for `forall` and `&&`
+        for `exists` — mean the same thing, over predicates and bodies whose
+        answers differ."""
+        connective = "==>" if form == "forall" else "&&"
+        refused = _check(tmp_path / "refused", _quantifier(
+            "fn(@{ @Nat | @Nat.0 < 3 } -> @Bool) effects(pure) { true }",
+            form=form))
+        assert connective in _diag(refused, "E179").fix
+        cases = [
+            ("@Nat.0 < 3", "@Nat.0 < 2"), ("@Nat.0 < 3", "@Nat.0 < 5"),
+            ("@Nat.0 > 10", "true"), ("@Nat.0 > 1", "@Nat.0 == 4"),
+            ("@Nat.0 > 1", "@Nat.0 == 9"), ("true", "@Nat.0 < 4"),
+        ]
+        for i, (pred, body) in enumerate(cases):
+            index_form = _check(tmp_path / f"i{i}", _quantifier(
+                f"fn(@Nat -> @Bool) effects(pure) {{ {body} }}",
+                binder=f"@{{ @Nat | {pred} }}", form=form))
+            body_form = _check(tmp_path / f"b{i}", _quantifier(
+                f"fn(@Nat -> @Bool) effects(pure) {{ ({pred}) {connective} "
+                f"({body}) }}", form=form))
+            assert index_form.accepted and body_form.accepted
+            expected = [n for n in range(5) if eval_index(pred, n)]
+            want = (all(eval_index(body, n) for n in expected)
+                    if form == "forall"
+                    else any(eval_index(body, n) for n in expected))
+            assert run_main(index_form) == run_main(body_form) == (
+                "ok", int(want)), (pred, body)
 
     def test_an_unknown_parameter_type_is_reported_once(
         self, tmp_path: Path,

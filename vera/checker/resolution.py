@@ -398,12 +398,13 @@ class ResolutionMixin:
     def _unknown_type_advice(self, name: str) -> tuple[str, str]:
         """(rationale suffix, fix) for an unknown type name (E136).
 
-        The instruction depends on WHY the name is unknown here, and five
+        The instruction depends on WHY the name is unknown here, and six
         causes have a better answer than "declare it or import it": the
         ``Fn`` a function-typed slot is referenced by, a clash between two
         imports, an import that did not resolve, a module that declares the
-        type (privately, or without this file importing it), and an import
-        list naming a type its module does not declare.
+        type (privately, or without this file importing it), a module that
+        declares it as an ALIAS, which no import can reach (§8.4.1), and an
+        import list naming a type its module does not declare.
         """
         if name == "Fn":
             # The one spelling a program has seen without writing it: a
@@ -454,6 +455,22 @@ class ResolutionMixin:
                     f"Import it where it is declared: "
                     f"'import {label}({name});' (or add '{name}' to an "
                     f"existing import of '{label}').",
+                )
+        for mod in self._resolved_modules:
+            for tld in mod.program.declarations:
+                decl = tld.decl
+                if not (isinstance(decl, ast.TypeAliasDecl)
+                        and decl.name == name):
+                    continue
+                label = ".".join(mod.path)
+                text = _declaration_text(mod.source, decl) or (
+                    f"type {name} = ...;")
+                return (
+                    f"  Module '{label}' declares a type alias '{name}', and "
+                    f"an alias is module-local (Chapter 8, Section 8.4.1): "
+                    f"no other file can import it.",
+                    f"Declare your own copy of the alias in this file — "
+                    f"'{text}' — or write the type it stands for.",
                 )
         for path, names in self._import_names.items():
             if names is not None and name in names:
@@ -784,3 +801,18 @@ class ResolutionMixin:
             self._unify_for_inference(
                 pattern.return_type, concrete.return_type,
                 mapping, forall_vars, conflicts)
+
+
+def _declaration_text(source: str, decl: ast.Node) -> str | None:
+    """*decl*'s source text on one line, or ``None`` without a span."""
+    span = decl.span
+    if span is None:
+        return None
+    lines = source.splitlines()[span.line - 1:span.end_line]
+    if not lines:
+        return None
+    if len(lines) == 1:
+        return lines[0][span.column - 1:span.end_column - 1].strip() or None
+    lines[0] = lines[0][span.column - 1:]
+    lines[-1] = lines[-1][:span.end_column - 1]
+    return " ".join(line.strip() for line in lines if line.strip()) or None
