@@ -251,7 +251,10 @@ class BlockBindingPolicy(enum.Enum):
     sort (an ADT, `Array`, `Tuple` or `Map`) takes a fresh const of the sort
     of the outer binding it shadows, which has the same slot name and so the
     same sort (#1524 review).  With no outer binding nothing is pushed,
-    because no later reference can then name a wrong value.
+    because no later reference can then name a wrong value.  That const is
+    TRACKED as an opaque shadow, so a refinement binding refuted over it
+    takes the #1460 re-ask rather than an E505 on a value the program never
+    produces; the scalar var is not tracked (#1470).
 
     For `_walk_for_nat_binding_obligations`, which needs a slot to exist for
     every binding whether or not the RHS translated, so a later `@Nat`
@@ -5863,9 +5866,20 @@ class ContractVerifier:
                     # this binding's slot name, so its sort is this
                     # binding's sort.  With no outer there is nothing a
                     # later reference could read in its place.
+                    #
+                    # The const is an opaque shadow, as OPAQUE_SHADOW's is:
+                    # a countermodel that picks it names no value the
+                    # program produces, so a refinement binding refuted over
+                    # it takes the #1460 re-ask and falls to its runtime
+                    # guard when the predicate is satisfiable.  Untracked,
+                    # it turned the stale-read Tier 1 of `let @PosInt =
+                    # nat_to_int(array_length(@Array<Int>.0))` into an E505
+                    # on a program that runs.  The scalar placeholder above
+                    # stays untracked; its refutations are #1470's.
                     stale = env.resolve(type_name, 0)
                     if stale is not None:
                         val = z3.FreshConst(stale.sort(), "fresh")
+                        self._opaque_shadows.append(val)
             elif (policy is BlockBindingPolicy.OPAQUE_SHADOW
                     and type_name is not None):
                 stale = env.resolve(type_name, 0)

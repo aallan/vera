@@ -41,7 +41,11 @@ Further groups hold the rest of the class:
 * a call the measure walk misses withholds the proof, pinned with the walk
   made to miss one;
 * an untranslatable ``let`` of every sort family takes its slot with a fresh
-  value, so a later reference never reads the binding it shadows.
+  value, so a later reference never reads the binding it shadows;
+* a refinement binding whose refutation rests on a non-scalar ``let``'s
+  fresh value is left to its runtime guard (``tier3``), for every
+  non-scalar family: never proved from the shadowed value, never refused
+  over the placeholder, and the guard traps a held value that breaks it.
 
 The census cell holds ``examples/``, the conformance suite and every gated
 documentation block at zero violations.
@@ -1190,6 +1194,128 @@ def test_nat_binding_after_an_untranslatable_adt_let_is_not_proved() -> None:
             if d.severity == "error"] == []
     statuses = _decreases_status(_NAT_BIND_AFTER_ADT_LET, kind="nat_bind")
     assert statuses and "verified" not in statuses, statuses
+
+
+# =====================================================================
+# A refutation that rests on a `let` placeholder (#1524 review)
+# =====================================================================
+#
+# The fresh value a non-scalar `let` takes above is one the solver knows
+# nothing about, so a countermodel that picks it names no value the program
+# produces.  It is an opaque shadow, so the refinement binding asks whether
+# ANY value satisfies the predicate (#1460) and, when one does, leaves the
+# binding to the runtime guard codegen emits there.  Each family reads the
+# `let` through a translatable function of it, and the parameter it shadows
+# satisfies the predicate by `requires`, which is the value a stale read
+# would prove from.  The control binds the parameter itself, which shows
+# the read proves at all.  The scalar placeholder is not an opaque shadow:
+# its refutations are #1470's.
+
+
+@dataclass(frozen=True)
+class Refine:
+    """One sort family at the refinement binding: its type, the precondition
+    that makes the parameter satisfy the predicate, a held value that
+    satisfies it (*good*, read as 3) and one that does not (*bad*), the read,
+    and the argument, which is never read as 3."""
+
+    ty: str
+    requires: str
+    good: str
+    bad: str
+    read: str
+    arg: str
+
+
+REFINES: dict[str, Refine] = {
+    "adt": Refine("Box", "match @Box.0 { Box(@Int) -> @Int.0 > 0 }",
+                  "Box(3)", "Box(0)",
+                  "match @Box.0 { Box(@Int) -> @Int.0 }", "Box(9)"),
+    "option": Refine("Option<Int>",
+                     "match @Option<Int>.0 { Some(@Int) -> @Int.0 > 0, "
+                     "None -> false }",
+                     "Some(3)", "Some(0)",
+                     "match @Option<Int>.0 { Some(@Int) -> @Int.0, "
+                     "None -> 1 }", "Some(9)"),
+    "tuple": Refine("Tuple<Int, Bool>",
+                    "match @Tuple<Int, Bool>.0 { "
+                    "Tuple(@Int, @Bool) -> @Int.0 > 0 }",
+                    "Tuple(3, true)", "Tuple(0, true)",
+                    "match @Tuple<Int, Bool>.0 { "
+                    "Tuple(@Int, @Bool) -> @Int.0 }", "Tuple(9, true)"),
+    "array": Refine("Array<Int>", "array_length(@Array<Int>.0) > 0",
+                    "[1, 2, 3]", "[]",
+                    "nat_to_int(array_length(@Array<Int>.0))", "[9]"),
+    # `map_size` is uninterpreted, so the read proves only from `requires`.
+    "map": Refine("Map<Int, Int>", "map_size(@Map<Int, Int>.0) > 0",
+                  "map_insert(map_insert(map_insert(map_new(), 1, 1), 2, 2), "
+                  "3, 3)", "map_new()",
+                  "nat_to_int(map_size(@Map<Int, Int>.0))",
+                  "map_insert(map_new(), 9, 9)"),
+}
+
+_BOX = """private data Box {
+  Box(Int)
+}
+
+"""
+
+
+def _refine_program(family: str, held: str | None) -> str:
+    """*held* is what the `let` holds behind an untranslatable call; None is
+    the control, which binds the parameter itself."""
+    r = REFINES[family]
+    value = f"@{r.ty}.0" if held is None else _opaque(r.ty, held)
+    return (
+        _BOX
+        + "type PosInt = { @Int | @Int.0 > 0 };\n\n"
+        f"public fn f(@{r.ty} -> @Int)\n"
+        f"  requires({r.requires})\n  ensures(true)\n  effects(pure)\n{{\n"
+        f"  let @{r.ty} = {value};\n"
+        f"  let @PosInt = {r.read};\n"
+        "  @PosInt.0\n}\n\n"
+        "public fn main(@Unit -> @Int)\n  requires(true)\n  ensures(true)\n"
+        f"  effects(pure)\n{{\n  f({r.arg})\n}}\n"
+    )
+
+
+def _refine_verdict(source: str) -> tuple[list[str], list[str]]:
+    """The `refine_bind` statuses and the error codes of one program."""
+    result = verify(parse_to_ast(source), source)
+    return ([o.status for o in result.obligations if o.kind == "refine_bind"],
+            [d.error_code for d in result.diagnostics
+             if d.severity == "error"])
+
+
+@pytest.mark.parametrize("family", sorted(REFINES))
+def test_refutation_over_a_let_placeholder_is_left_to_the_guard(
+        family: str) -> None:
+    """A held value that satisfies the predicate: `tier3`, neither a proof
+    from the parameter nor an E505 from the placeholder, and the run
+    returns the held value."""
+    source = _refine_program(family, REFINES[family].good)
+    assert [d for d in _check(source) if d.severity == "error"] == []
+    assert _refine_verdict(source) == (["tier3"], []), source
+    assert execute(_compile(source)).value == 3
+
+
+@pytest.mark.parametrize("family", sorted(REFINES))
+def test_let_placeholder_that_breaks_the_predicate_traps(family: str) -> None:
+    """A held value that breaks the predicate is still `tier3`, since the
+    verifier cannot see it, and the guard at the binding traps the run."""
+    source = _refine_program(family, REFINES[family].bad)
+    assert [d for d in _check(source) if d.severity == "error"] == []
+    assert _refine_verdict(source) == (["tier3"], []), source
+    with pytest.raises(WasmTrapError, match="Refinement violation in let"):
+        execute(_compile(source))
+
+
+@pytest.mark.parametrize("family", sorted(REFINES))
+def test_let_placeholder_control_is_proved(family: str) -> None:
+    """Bound to the parameter, the same read proves from `requires`."""
+    source = _refine_program(family, None)
+    assert [d for d in _check(source) if d.severity == "error"] == []
+    assert _refine_verdict(source) == (["verified"], []), source
 
 
 # =====================================================================
