@@ -103,18 +103,20 @@ def _verify(path: Path) -> dict:
             f"(exit {proc.returncode})\n{proc.stdout[:400]}\n"
             f"{proc.stderr[-800:]}"
         ) from None
-    # A bare call to a name that does not resolve is E200, a WARNING — so a
-    # fixture with a typo in a callee still verifies, and every assertion
-    # below is then made about a program that does not do what it reads as
-    # doing.  One such typo (`int_to_nat_or`) survived a first draft of this
-    # file and made the three-consumers cell measure nothing.
+    # A bare call to a name that does not resolve is an E200 error, after
+    # which verify reports no obligation — so a fixture with a typo in a
+    # callee leaves every assertion below with nothing to measure.  One such
+    # typo (`int_to_nat_or`) survived a first draft of this file, while E200
+    # was a warning, and made the three-consumers cell measure nothing.  The
+    # check reads both channels.
     unresolved = [
-        w for w in result.get("warnings", [])
-        if w.get("error_code") == "E200"
+        d for d in [*result.get("diagnostics", []),
+                    *result.get("warnings", [])]
+        if d.get("error_code") == "E200"
     ]
     assert not unresolved, (
         f"{path.name}: fixture names a function that does not resolve — "
-        f"{[w['description'] for w in unresolved]}"
+        f"{[d['description'] for d in unresolved]}"
     )
     return result
 

@@ -2201,9 +2201,9 @@ public fn f(@Unit -> @Int)
         The complement of the arity case: the range check reaches the
         literal only where something told it the target type, so an
         unresolved call is unchanged rather than gaining a second
-        diagnostic.  (E200 is a *warning* here, so the assertion has to
-        look at both streams — an `_errors`-only check would read the
-        empty error list as agreement.)
+        diagnostic.  (The assertion reads both streams, so it does not
+        depend on E200's severity — an error since #1513, a warning before,
+        when an `_errors`-only check read the empty error list as agreement.)
         """
         src = """
 public fn f(@Unit -> @Int)
