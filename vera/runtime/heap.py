@@ -310,9 +310,11 @@ class _ShadowGuard:
         assert isinstance(sp, int)  # noqa: S101
         assert isinstance(limit, int)  # noqa: S101
         if sp < 0 or sp + 4 > limit:
-            # Same diagnostic shape as the WAT-side overflow path
-            # (``unreachable`` in ``gc_shadow_push``) — surface
-            # as a host-side error rather than a wasmtime trap.
+            # The host-side twin of the WAT-side bound (the
+            # ``unreachable`` in ``gc_shadow_push``, which a host names
+            # by the generic kind's shadow-stack cause): raised here as
+            # a host-side error, so it reaches the reader as
+            # ``host_error`` with this message, not as a wasmtime trap.
             # #791: the bound is slot-complete — the push writes a
             # 4-byte slot at ``[sp..sp+3]``, so ``sp + 4 > limit``
             # (not ``sp >= limit``) rejects a misaligned ``gc_sp``

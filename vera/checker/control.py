@@ -195,8 +195,29 @@ class ControlFlowMixin:
                         error_code="E302",
                     )
 
-        self._check_exhaustiveness(expr, scrutinee_ty)
+        # #1497: a match naming a refused declaration's constructor was
+        # written against that declaration, so its coverage is not judged.
+        if not (self._refused_ctor_names and any(
+                self._names_refused_ctor(arm.pattern) for arm in expr.arms)):
+            self._check_exhaustiveness(expr, scrutinee_ty)
         return result_type or UnknownType()
+
+    def _names_refused_ctor(self, pat: ast.Pattern) -> bool:
+        """Whether *pat* names a constructor of a refused declaration.
+
+        Only a name nothing registered answers: a refused `data Int
+        { Some(Bool) }` leaves the prelude's `Some` resolvable, and a match
+        on it must still be judged for coverage — the guard the pattern and
+        call sites apply too.
+        """
+        if isinstance(pat, (ast.NullaryPattern, ast.ConstructorPattern)) and (
+                pat.name in self._refused_ctor_names
+                and self.env.lookup_constructor(pat.name) is None):
+            return True
+        if isinstance(pat, ast.ConstructorPattern):
+            return any(
+                self._names_refused_ctor(sub) for sub in pat.sub_patterns)
+        return False
 
     def _check_exhaustiveness(
         self, expr: ast.MatchExpr, scrutinee_ty: Type
@@ -234,7 +255,10 @@ class ControlFlowMixin:
 
         # --- ADT exhaustiveness ---
         if isinstance(raw_ty, AdtType):
-            adt_info = self.env.data_types.get(raw_ty.name)
+            # #1513: a type this file does not import is judged by its own
+            # declaration, as its constructors are resolved by it.
+            adt_info = (self.env.data_types.get(raw_ty.name)
+                        or self._stranger_data_type(raw_ty.name))
             if adt_info is None:
                 return  # unknown ADT, can't check
             all_ctors = set(adt_info.constructors.keys())
@@ -368,7 +392,10 @@ class ControlFlowMixin:
             return scrut
         if isinstance(scrut, AdtType) and (
                 scrut.name in self.env.data_types
-                or scrut.name in _CONSTRUCTORLESS_BUILTIN_TYPES):
+                or scrut.name in _CONSTRUCTORLESS_BUILTIN_TYPES
+                # #1513: a type this file does not import, whose own
+                # declaration types the constructors a pattern names.
+                or self._stranger_data_type(scrut.name) is not None):
             return scrut
         return None
 
@@ -434,6 +461,11 @@ class ControlFlowMixin:
 
         if isinstance(pat, (ast.ConstructorPattern, ast.NullaryPattern)):
             ci = self.env.lookup_constructor(pat.name)
+            if ci is None and pat.name not in self._refused_ctor_names:
+                # #1513: a constructor of a type this file does not import
+                # is typed by its own declaration, so one of another type
+                # cannot match this scrutinee here either.
+                _candidates, ci = self._stranger_constructor(pat.name)
             if ci is None:
                 return False  # E320/E322 own an unknown constructor name
             if isinstance(scrut, AdtType) and scrut.name == ci.parent_type:
@@ -465,7 +497,8 @@ class ControlFlowMixin:
         scrut_name = pretty_type(scrut)
         alternatives = [f"a binding pattern '@{scrut_name}'", "a wildcard '_'"]
         if isinstance(scrut, AdtType):
-            info = self.env.data_types.get(scrut.name)
+            info = (self.env.data_types.get(scrut.name)
+                    or self._stranger_data_type(scrut.name))
             if info is not None and info.constructors:
                 ctors = ", ".join(sorted(info.constructors))
                 alternatives.insert(0, f"a constructor of {scrut_name} "
@@ -496,16 +529,43 @@ class ControlFlowMixin:
             return self._check_tuple_pattern(pat, expected)
 
         ci = self.env.lookup_constructor(pat.name)
+        if ci is None and pat.name in self._refused_ctor_names:
+            # #1497: a constructor of a declaration refused as E158.  Its
+            # E158 is the one error the program owes, so the sub-patterns
+            # bind quietly and nothing more is reported here.
+            refused: list[Binding] = []
+            for sub_pat in pat.sub_patterns:
+                refused.extend(self._check_pattern(sub_pat, UnknownType()))
+            return refused
         if ci is None:
+            # #1513: a constructor of a type this file does not import is
+            # resolved as a construction of it is — a warning naming the
+            # import where the name denotes one declaration, which then
+            # types the pattern's fields below.
+            candidates, ci = self._stranger_constructor(pat.name)
+            if ci is not None:
+                message, fix = self._stranger_ctor_message(
+                    pat.name, ci, candidates)
+                self._error(
+                    pat, message,
+                    rationale=self._STRANGER_CTOR_RATIONALE,
+                    fix=fix,
+                    severity="warning",
+                    spec_ref='Chapter 8, Section 8.5.4 '
+                             '"Constructor Resolution"',
+                    error_code="E320",
+                )
+        if ci is None:
+            # An error (#1513): the arm names no constructor, so it has no
+            # tag to test and cannot be compiled.
             self._error(
                 pat,
                 f"Unknown constructor '{pat.name}' in pattern.",
-                severity="warning",
                 rationale="A constructor pattern must name a constructor "
-                          "declared by an ADT's data declaration.",
-                fix=f"Declare '{pat.name}' as a constructor in a data "
-                    f"declaration, or use a constructor that exists on the "
-                    f"matched type (check the spelling and capitalisation).",
+                          "declared by a data type in scope; no such "
+                          "constructor is defined or imported, so the arm "
+                          "cannot be compiled.",
+                fix=self._unknown_ctor_fix(pat.name, candidates),
                 spec_ref='Chapter 2, Section 2.4 '
                          '"Algebraic Data Types (ADTs)"',
                 error_code="E320",
@@ -574,17 +634,33 @@ class ControlFlowMixin:
                                expected: Type | None) -> list[Binding]:
         """Check a nullary constructor pattern."""
         ci = self.env.lookup_constructor(pat.name)
+        if ci is None and pat.name in self._refused_ctor_names:
+            return []  # #1497: see `_check_ctor_pattern`
         if ci is None:
+            # #1513: see `_check_ctor_pattern`.
+            candidates, ci = self._stranger_constructor(pat.name)
+            if ci is not None:
+                message, fix = self._stranger_ctor_message(
+                    pat.name, ci, candidates)
+                self._error(
+                    pat, message,
+                    rationale=self._STRANGER_CTOR_RATIONALE,
+                    fix=fix,
+                    severity="warning",
+                    spec_ref='Chapter 8, Section 8.5.4 '
+                             '"Constructor Resolution"',
+                    error_code="E322",
+                )
+        if ci is None:
+            # An error (#1513); see `_check_ctor_pattern`.
             self._error(
                 pat,
                 f"Unknown constructor '{pat.name}' in pattern.",
-                severity="warning",
                 rationale="A nullary pattern must name a no-field "
-                          "constructor declared by an ADT's data "
-                          "declaration.",
-                fix=f"Declare '{pat.name}' as a constructor in a data "
-                    f"declaration, or use an existing constructor of the "
-                    f"matched type (check spelling and capitalisation).",
+                          "constructor declared by a data type in scope; no "
+                          "such constructor is defined or imported, so the "
+                          "arm cannot be compiled.",
+                fix=self._unknown_ctor_fix(pat.name, candidates),
                 spec_ref='Chapter 2, Section 2.4 '
                          '"Algebraic Data Types (ADTs)"',
                 error_code="E322",
@@ -756,7 +832,28 @@ class ControlFlowMixin:
         self._handler_body_state_tnames = []
 
         # Check handler clauses
+        first_clauses: dict[str, ast.HandlerClause] = {}
         for clause in expr.clauses:
+            # #1433: a handler is a namespace of clauses, one per operation.
+            # Two clauses for one operation compiled to a handler that ran
+            # the LATER one whenever the body performed it — a choice made by
+            # clause order, which the program does not state.  The surplus
+            # is refused, and its body not checked.
+            first_clause = first_clauses.setdefault(clause.op_name, clause)
+            if first_clause is not clause:
+                self._report_duplicate_name(
+                    clause, noun="handler clause", name=clause.op_name,
+                    scope="this handler", first=first_clause,
+                    fix=(
+                        f"Delete this clause, or merge the two into the one "
+                        f"clause for '{clause.op_name}': each operation has "
+                        f"exactly one clause in a handler."
+                    ),
+                )
+                # Refused like a surplus declaration, so the call graph
+                # reads none of its calls either (#1492).
+                self._refused_decl_ids.add(id(clause))
+                continue
             op_info = eff_info.operations.get(clause.op_name)
             if op_info is None:
                 self._error(

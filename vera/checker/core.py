@@ -427,11 +427,34 @@ class TypeChecker(
         # _check_fn; empty everywhere else (so no non-helper diagnostic sees
         # the hint).  Parent TYPE params stay in scope through the loop.
         self._where_helper_outer_tnames: list[frozenset[str]] = []
-        # #815: ids of FnDecls rejected for redefining a built-in (E151).
-        # They are not registered (the built-in stays canonical), so the
-        # check phase skips them — re-checking would resolve their own body
-        # against the built-in and emit bogus secondary diagnostics.
-        self._rejected_builtin_redefs: set[int] = set()
+        # ids of declarations registration refused: a FnDecl redefining a
+        # built-in (E151, #815), an effect or ability redeclaring a built-in
+        # one (E152, E185), the surplus declaration of a name its namespace
+        # already holds (E184, #1433), and a refused MEMBER of a declaration
+        # (a surplus operation or constructor, an operation named after a
+        # built-in ability's, a constructor named after a special-cased
+        # type).  None is registered — the built-in, or the first
+        # declaration, stays the one every use resolves to — so none holds a
+        # name, and the check phase skips them too: re-checking would
+        # resolve their own bodies against that entry and emit bogus
+        # secondary diagnostics.  The check phase adds a handler's surplus
+        # clause (E184) when it meets one, for the call graph (#1492).
+        self._refused_decl_ids: set[int] = set()
+        # ids of functions that ARE registered, under names of their own,
+        # but whose bodies the check phase skips: each has a `where` helper
+        # refused for redefining a built-in (#815), so a call to that helper
+        # would resolve against the built-in and cascade bogus diagnostics.
+        # Kept apart from `_refused_decl_ids` because such a function still
+        # holds its name (#1433): a bare call reaches it, and a second
+        # declaration of the name is a duplicate.
+        self._unchecked_body_ids: set[int] = set()
+        # #1497: the constructors of a `data` declaration refused as E158 for
+        # taking a primitive's name.  It is not registered, so a use of one
+        # would otherwise report an unknown constructor the program never
+        # meant: the declaration's own E158 is the one error it owes.  A
+        # constructor name two imports supply is refused the same way, at
+        # the import (E157, #1513).
+        self._refused_ctor_names: set[str] = set()
         # #991 checker leg (PR #1013 review): lexically-scoped where-helper
         # resolution, mirroring the verifier and codegen.  ``env.functions``
         # is flat and last-wins, so a bare call to a same-named helper in a
@@ -664,12 +687,13 @@ class TypeChecker(
         # the scoped lookup prefers it over a nested helper of the same name
         # that clobbered the flat registry (helpers register last) — the
         # checker then resolves helper calls exactly as the verifier and
-        # codegen do.  Rejected built-in redefinitions stay out (the built-in
-        # is canonical, #815).
+        # codegen do.  Refused declarations stay out: a built-in
+        # redefinition (the built-in is canonical, #815), and a surplus
+        # declaration of a name (the first is canonical, #1433).
         for tld in program.declarations:
             decl = tld.decl
             if (isinstance(decl, ast.FnDecl)
-                    and id(decl) not in self._rejected_builtin_redefs):
+                    and id(decl) not in self._refused_decl_ids):
                 self._top_level_fn_infos[decl.name] = self._fn_info_for_decl(
                     decl, visibility=tld.visibility,
                 )
@@ -708,15 +732,19 @@ class TypeChecker(
         for tld in program.declarations:
             decl = tld.decl
             if (isinstance(decl, ast.DataDecl)
-                    and id(decl) not in self._rejected_builtin_redefs
+                    and id(decl) not in self._refused_decl_ids
                     and decl.name in self.env.data_types
                     and not regularity.is_regular(decl.name)):
                 self.env.refused_non_regular.add(decl.name)
         for tld in program.declarations:
-            # #815: a built-in redefinition (E151) is already reported and not
-            # registered; skip checking its body so it isn't re-checked against
-            # the canonical built-in (which would emit bogus diagnostics).
-            if id(tld.decl) in self._rejected_builtin_redefs:
+            # #815/#1433: a refused declaration — a built-in redefinition
+            # (E151) or a name's surplus declaration (E184) — is already
+            # reported and not registered; skip checking its body so it isn't
+            # re-checked against the canonical entry (which would emit bogus
+            # diagnostics).  So is the body of a function whose helper was
+            # refused, for the same reason one scope down.
+            if (id(tld.decl) in self._refused_decl_ids
+                    or id(tld.decl) in self._unchecked_body_ids):
                 continue
             self._check_decl(tld.decl)
         self._check_recursion(program)
@@ -731,10 +759,16 @@ class TypeChecker(
         would need the very specification it is checking.  The cycles come
         from :class:`~vera.callgraph.CallGraph`, which the verifier reads for
         the measure obligations, so the two agree on what is recursive.
+
+        The graph reads what the check phase read (#1433, #815): a refused
+        declaration adds no function and no call, so it draws its refusal
+        alone, and a function whose body was skipped adds no call until the
+        body is checked.
         """
         graph = CallGraph(
-            tld.decl for tld in program.declarations
-            if id(tld.decl) not in self._rejected_builtin_redefs
+            (tld.decl for tld in program.declarations),
+            refused=self._refused_decl_ids,
+            unchecked=self._unchecked_body_ids,
         )
         for fn in graph.unmeasured():
             others = [f"'{m.name}'" for m in graph.cycle(fn) if m is not fn]
@@ -821,6 +855,10 @@ class TypeChecker(
             for tv in decl.type_params:
                 self.env.type_params[tv] = TypeVar(tv)
         for op in decl.operations:
+            # #1433: an operation registration refused (E184, E185) is not
+            # checked, like any other refused declaration.
+            if id(op) in self._refused_decl_ids:
+                continue
             for param_te in op.param_types:
                 self._check_refinement_predicates(param_te)
             self._check_refinement_predicates(op.return_type)
@@ -852,7 +890,8 @@ class TypeChecker(
             for tv in decl.type_params:
                 self.env.type_params[tv] = TypeVar(tv)
         for ctor in decl.constructors:
-            if ctor.fields is not None:
+            # #1433: nor is a constructor registration refused (E184, E158).
+            if ctor.fields is not None and id(ctor) not in self._refused_decl_ids:
                 for field_te in ctor.fields:
                     self._check_refinement_predicates(field_te)
         self.env.type_params = saved_field_params
@@ -1144,10 +1183,15 @@ class TypeChecker(
             self._where_helper_outer_tnames.append(frozenset(param_slot_names))
             try:
                 for wfn in decl.where_fns:
-                    # #815: skip a where-helper rejected for redefining a
-                    # built-in (E151 already emitted; it is not registered, so
-                    # re-checking would resolve its body against the built-in).
-                    if id(wfn) in self._rejected_builtin_redefs:
+                    # #815/#1433: skip a refused where-helper — one
+                    # redefining a built-in (E151) or repeating a name its
+                    # block already declares (E184).  It is not registered,
+                    # so re-checking would resolve its body against the
+                    # canonical entry.  A helper whose OWN helper was refused
+                    # is registered, but its body is skipped for the same
+                    # reason.
+                    if (id(wfn) in self._refused_decl_ids
+                            or id(wfn) in self._unchecked_body_ids):
                         continue
                     self._check_fn(wfn)
             finally:
@@ -1219,9 +1263,10 @@ class TypeChecker(
         Matches the verifier's ``_scoped_fn_lookup`` and codegen's
         parent-qualified hoist, so all three subsystems agree on
         helper-name scoping.  A helper rejected for redefining a built-in
-        (E151, #815) is skipped — the built-in stays canonical.  With an
-        empty stack (data invariants, op signatures) this is exactly the
-        flat lookup.
+        (E151, #815) or repeating a name its block already declares (E184,
+        #1433) is skipped — the built-in, or the first helper, stays
+        canonical.  With an empty stack (data invariants, op signatures)
+        this is exactly the flat lookup.
 
         The frame walk is the ONLY route to a helper: since #1307 the flat
         registry holds none, so this returns ``None`` for a helper named
@@ -1246,7 +1291,7 @@ class TypeChecker(
         for frame in reversed(self._fn_scope_stack):
             for wfn in frame.where_fns or ():
                 if (wfn.name == name
-                        and id(wfn) not in self._rejected_builtin_redefs):
+                        and id(wfn) not in self._refused_decl_ids):
                     return self._fn_info_for_decl(wfn)
         top = self._top_level_fn_infos.get(name)
         if top is not None:

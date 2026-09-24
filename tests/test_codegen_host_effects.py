@@ -1077,8 +1077,9 @@ class TestPostconditionHostImportPropagation823:
     ``_compile_postconditions`` — dropped any flag a builtin or allocation set
     while lowering an ``ensures(...)`` predicate, so the import / memory / GC
     declaration was omitted and the orphaned ``call``/``global.get`` failed WAT
-    compilation.  #808 surfaced this (its new ``vera.overflow_trap`` was the
-    first import to expose it) and fixed the general ordering for every
+    compilation.  #808 surfaced this (its new ``vera.overflow_trap``, since
+    folded into ``vera.trap`` by #1479, was the first import to expose it) and
+    fixed the general ordering for every
     host-import family and ``$alloc`` (#823).
 
     Each fixture's BODY is a plain slot — no arithmetic, no allocation — so the

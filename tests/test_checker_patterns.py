@@ -74,9 +74,10 @@ private fn first(@List<Option<Int>> -> @Int)
 }
 """)
 
-    def test_unknown_constructor_pattern_warns_e320(self) -> None:
-        """A constructor pattern naming an unknown constructor warns E320."""
-        warns = _warnings("""
+    def test_unknown_constructor_pattern_is_e320_error(self) -> None:
+        """A constructor pattern naming an unknown constructor is an E320
+        error (#1513): the arm has no layout to test."""
+        warns = _check("""
 private data Option<T> { None, Some(T) }
 
 private fn f(@Option<Int> -> @Int)
@@ -91,7 +92,7 @@ private fn f(@Option<Int> -> @Int)
 """)
         e320 = [w for w in warns if w.error_code == "E320"]
         assert len(e320) == 1
-        assert e320[0].severity == "warning"
+        assert e320[0].severity == "error"
 
     def test_constructor_field_count_mismatch_is_e321(self) -> None:
         """A constructor pattern with the wrong sub-pattern count reports E321."""
@@ -108,9 +109,10 @@ private fn f(@Pair -> @Int)
 """, "field(s)")
         assert any(e.error_code == "E321" for e in errs)
 
-    def test_unknown_nullary_constructor_warns_e322(self) -> None:
-        """A nullary pattern naming an unknown constructor warns E322."""
-        warns = _warnings("""
+    def test_unknown_nullary_constructor_is_e322_error(self) -> None:
+        """A nullary pattern naming an unknown constructor is an E322 error
+        (#1513)."""
+        warns = _check("""
 private data Option<T> { None, Some(T) }
 
 private fn f(@Option<Int> -> @Int)
@@ -125,7 +127,7 @@ private fn f(@Option<Int> -> @Int)
 """)
         e322 = [w for w in warns if w.error_code == "E322"]
         assert len(e322) == 1
-        assert e322[0].severity == "warning"
+        assert e322[0].severity == "error"
 
 
 # =====================================================================
@@ -512,7 +514,7 @@ class TestPatternCoverage:
     # --- Lines 283-285: unknown constructor in pattern ---
 
     def test_unknown_constructor_pattern(self) -> None:
-        """Unknown constructor in pattern produces a warning (lines 283-285)."""
+        """Unknown constructor in pattern is an error (#1513)."""
         diags = _check("""
 private data Color { Red, Green, Blue }
 
@@ -527,8 +529,9 @@ private fn foo(@Color -> @Int)
   }
 }
 """)
-        warnings = [d for d in diags if d.severity == "warning"]
-        assert any("Unknown constructor" in w.description for w in warnings)
+        errors = [d for d in diags if d.severity == "error"]
+        assert any("Unknown constructor" in e.description
+                   and e.error_code == "E320" for e in errors)
 
     # --- Lines 299-305: constructor arity mismatch in pattern ---
 
@@ -553,7 +556,7 @@ private fn foo(@Option<Int> -> @Int)
     # --- Line 339: unknown nullary pattern ---
 
     def test_unknown_nullary_pattern(self) -> None:
-        """Unknown nullary constructor in pattern produces a warning (line 339)."""
+        """Unknown nullary constructor in pattern is an error (#1513)."""
         diags = _check("""
 private fn foo(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -564,8 +567,9 @@ private fn foo(@Int -> @Int)
   }
 }
 """)
-        warnings = [d for d in diags if d.severity == "warning"]
-        assert any("Unknown constructor" in w.description for w in warnings)
+        errors = [d for d in diags if d.severity == "error"]
+        assert any("Unknown constructor" in e.description
+                   and e.error_code == "E322" for e in errors)
 
 
 # =====================================================================
@@ -588,8 +592,10 @@ private fn foo(@Unit -> @Int)
   }
 }
 """)
-        warnings = [d for d in diags if d.severity == "warning"]
-        assert any("unresolved" in w.description.lower() for w in warnings)
+        # The unresolved scrutinee (E200, an error since #1513) is the only
+        # diagnostic: the match itself adds none.
+        assert [(d.severity, d.error_code) for d in diags] == [
+            ("error", "E200")]
 
     # --- Lines 117-118: arm_ty is None or UnknownType → continue ---
 
@@ -608,8 +614,10 @@ private fn foo(@Color -> @Int)
   }
 }
 """)
-        warnings = [d for d in diags if d.severity == "warning"]
-        assert any("unresolved" in w.description.lower() for w in warnings)
+        # The unresolved call (E200, an error since #1513) is the only
+        # diagnostic: the unknown arm type adds no arm-join error.
+        assert [(d.severity, d.error_code) for d in diags] == [
+            ("error", "E200")]
 
     # --- Line 122-123: result_type is Never, arm_ty is concrete ---
 

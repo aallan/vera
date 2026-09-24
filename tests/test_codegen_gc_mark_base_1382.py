@@ -26,7 +26,11 @@ from pathlib import Path
 import pytest
 import wasmtime
 
-from tests.codegen_helpers import _compile_ok, _run
+from tests.codegen_helpers import (
+    _compile_ok,
+    _run,
+    instantiate_with_trap_signal,
+)
 
 _CONFORMANCE_DIR = Path(__file__).parent / "conformance"
 
@@ -230,16 +234,20 @@ def _gc_harness(
 
     The WAT is the collector this PR emits, not a hand-rolled stand-in;
     the program is chosen to need `$alloc` (hence the whole GC) while
-    importing nothing, so it instantiates with no host functions.
+    importing nothing but the trap signal its allocator names heap
+    exhaustion through (#1479), so it instantiates with that one stub.
     """
     monkeypatch.setenv("VERA_EAGER_GC", "1")
     wat = _compile_ok(_HARNESS_SRC).wat or ""
-    assert "(import " not in wat, (
-        "harness program must not need host imports"
+    imports = re.findall(r'\(import "vera" "([^"]+)"', wat)
+    assert imports == ["trap"], (
+        f"harness program must need no host import but the trap signal: "
+        f"{imports}"
     )
     engine = wasmtime.Engine()
     store = wasmtime.Store(engine)
-    instance = wasmtime.Instance(store, wasmtime.Module(engine, wat), [])
+    instance = instantiate_with_trap_signal(
+        store, wasmtime.Module(engine, wat))
     return store, instance
 
 

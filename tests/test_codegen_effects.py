@@ -2339,7 +2339,8 @@ public fn main(@Unit -> @Int)
         `(tag $exn_Tuple<Int, Int> …)` — the composite type arg must be
         escaped. Post-fix it compiles to valid WAT (main exported) and,
         as an uncaught throw, traps at run exactly like the primitive
-        `Exn<Int>` case."""
+        `Exn<Int>` case: named `uncaught_exception` by the entry point's
+        exception boundary, which catches the composite tag too (#1479)."""
         src = """\
 public fn main(@Unit -> @Int)
   requires(true) ensures(true) effects(<Exn<Tuple<Int, Int>>>)
@@ -2354,8 +2355,13 @@ public fn main(@Unit -> @Int)
             f"{[d.description for d in result.diagnostics]}"
         )
         # Uncaught throw traps at run (same as primitive Exn<Int>).
-        with pytest.raises(WasmTrapError, match="thrown Wasm exception"):
+        with pytest.raises(WasmTrapError) as info:
             execute(result, fn_name="main")
+        assert info.value.kind == "uncaught_exception"
+        assert str(info.value) == (
+            "An `Exn<Tuple<Int, Int>>` escaped `main`: no "
+            "`handle[Exn<Tuple<Int, Int>>]` caught it before the call "
+            "returned.")
 
     # --- Root cause C ------------------------------------------------
 

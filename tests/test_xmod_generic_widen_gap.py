@@ -178,9 +178,10 @@ def _trap_kind(result, fn: str, arg: int) -> str | None:
     Callers pin the widen guard by its own ``widen_guard`` kind (#1438 — the
     same convention as ``test_xmod_widening_differential._trap_kind``); a
     different trap at ``u64.MAX`` would be a different, wrong guard.  Until
-    #1438 gave the guard a ``vera.widen_trap`` signal the strongest available
-    pin was the bare ``unreachable`` it shared with every non-exhaustive match,
-    so these cells could only say "an anonymous trap fired here"."""
+    #1438 gave the guard a signal of its own (``widen_guard``, through
+    ``vera.trap`` since #1479) the strongest available pin was a bare
+    ``unreachable``, so these cells could only say "an anonymous trap fired
+    here"."""
     try:
         execute(result, fn_name=fn, args=[arg])
     except WasmTrapError as exc:

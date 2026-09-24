@@ -71,7 +71,7 @@ class CallsMixin:
                 )
             if call.name == "string_char_code" and len(call.args) == 2:
                 return self._translate_char_code(
-                    call.args[0], call.args[1], env,
+                    call.args[0], call.args[1], env, at=call,
                 )
             if call.name == "string_from_char_code" and len(call.args) == 1:
                 return self._translate_from_char_code(call.args[0], env)
@@ -178,7 +178,8 @@ class CallsMixin:
                 if arg_instrs is None:
                     return None
                 if self._narrows_into_nat(call.args[0]):
-                    arg_instrs = self._emit_nat_bind_guard(arg_instrs)
+                    arg_instrs = self._emit_nat_bind_guard(
+                        arg_instrs, at=call.args[0])
                 return self._to_string_core(arg_instrs)
             if call.name == "bool_to_string" and len(call.args) == 1:
                 return self._translate_bool_to_string(call.args[0], env)
@@ -333,11 +334,11 @@ class CallsMixin:
                     call.args[0], call.args[1], env,
                 )
             if call.name == "floor" and len(call.args) == 1:
-                return self._translate_floor(call.args[0], env)
+                return self._translate_floor(call.args[0], env, at=call)
             if call.name == "ceil" and len(call.args) == 1:
-                return self._translate_ceil(call.args[0], env)
+                return self._translate_ceil(call.args[0], env, at=call)
             if call.name == "round" and len(call.args) == 1:
-                return self._translate_round(call.args[0], env)
+                return self._translate_round(call.args[0], env, at=call)
             if call.name == "sqrt" and len(call.args) == 1:
                 return self._translate_sqrt(call.args[0], env)
             if call.name == "pow" and len(call.args) == 2:
@@ -348,7 +349,8 @@ class CallsMixin:
             if call.name == "int_to_float" and len(call.args) == 1:
                 return self._translate_to_float(call.args[0], env)
             if call.name == "float_to_int" and len(call.args) == 1:
-                return self._translate_float_to_int(call.args[0], env)
+                return self._translate_float_to_int(
+                    call.args[0], env, at=call)
             if call.name == "nat_to_int" and len(call.args) == 1:
                 return self._translate_nat_to_int(call.args[0], env)
             if call.name == "int_to_nat" and len(call.args) == 1:
@@ -631,12 +633,15 @@ class CallsMixin:
                     # in the same shape, so obligation and guard still match
                     # one-for-one.
                     if base == "Int" and self._result_is_nat(call.args[0]):
-                        instructions = self._emit_int_widen_guard(instructions)
+                        instructions = self._emit_int_widen_guard(
+                            instructions, at=call.args[0])
             if refined_payload is None and (is_state_put or is_exn_throw):
                 if base == "Nat" and self._narrows_into_nat(call.args[0]):
-                    instructions = self._emit_nat_bind_guard(instructions)
+                    instructions = self._emit_nat_bind_guard(
+                        instructions, at=call.args[0])
                 elif base == "Int" and self._result_is_nat(call.args[0]):
-                    instructions = self._emit_int_widen_guard(instructions)
+                    instructions = self._emit_int_widen_guard(
+                        instructions, at=call.args[0])
             # #754's registry contributes NOTHING on this route, and the
             # reason is a property of the route rather than an omission.
             # Only `get`, `put` and `throw` have a bare one — every other
@@ -726,10 +731,10 @@ class CallsMixin:
                 return None
             if (i < len(nat_params) and nat_params[i]
                     and self._narrows_into_nat(arg)):
-                arg_instrs = self._emit_nat_bind_guard(arg_instrs)
+                arg_instrs = self._emit_nat_bind_guard(arg_instrs, at=arg)
             elif (i < len(int_params) and int_params[i]
                     and self._result_is_nat(arg)):
-                arg_instrs = self._emit_int_widen_guard(arg_instrs)
+                arg_instrs = self._emit_int_widen_guard(arg_instrs, at=arg)
             instructions.extend(arg_instrs)
 
         # #517 — emit ``return_call $target`` for tail-position
@@ -783,9 +788,9 @@ class CallsMixin:
         """
         base = op_formals[index] if index < len(op_formals) else None
         if base == "Nat" and self._narrows_into_nat(arg):
-            return self._emit_nat_bind_guard(arg_instrs)
+            return self._emit_nat_bind_guard(arg_instrs, at=arg)
         if base == "Int" and self._result_is_nat(arg):
-            return self._emit_int_widen_guard(arg_instrs)
+            return self._emit_int_widen_guard(arg_instrs, at=arg)
         return arg_instrs
 
     def _translate_qualified_call(

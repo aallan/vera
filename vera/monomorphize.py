@@ -52,8 +52,11 @@ from vera.types import PRIMITIVES, REMOVED_ALIASES, SpanTypeTable
 
 # Identifier tokens inside a rendered type name (`Map<String, Int>` →
 # `Map`, `String`, `Int`).  #1271 matches type-variable names against these
-# rather than by substring, so `Unit` never reads as a mention of `U`.
-_TYPE_NAME_TOKENS = re.compile(r"[A-Za-z_][A-Za-z_0-9]*")
+# rather than by substring, so `Unit` never reads as a mention of `U`.  A
+# `$`-joined name is ONE token: an owner-qualified type (`libm$Shape`, #1317)
+# names one type, and a `where` helper binder renamed apart
+# (`Int$shadowed`, #1433) is one type variable.
+_TYPE_NAME_TOKENS = re.compile(r"[A-Za-z_][A-Za-z_0-9$]*")
 
 
 def substitute_type_vars(
@@ -337,6 +340,45 @@ def canonicalize_type_aliases(
             return replace(te, base_type=new_base)
         return te
     return te
+
+
+def _unshadowed(
+    mapping: dict[str, str], binders: tuple[str, ...] | None,
+) -> dict[str, str]:
+    """*mapping* without the type variables *binders* rebind (#1433).
+
+    A ``where`` helper's own ``forall`` binders shadow its enclosing
+    function's inside the helper (spec §5.6.2), so a substitution for the
+    enclosing function stops at them.  Returns *mapping* itself when nothing
+    is shadowed, so the common case allocates nothing.
+    """
+    if not binders or not any(b in mapping for b in binders):
+        return mapping
+    return {k: v for k, v in mapping.items() if k not in binders}
+
+
+def _capturing_binders(
+    mapping: dict[str, str], binders: tuple[str, ...] | None,
+) -> dict[str, str]:
+    """Fresh names for the *binders* a substitution by *mapping* would
+    capture (#1433): each one a replacement type in *mapping* spells.
+
+    A helper's ``forall<Int>`` binds ``Int`` inside the helper, so the
+    ``Int`` a parent's ``U -> Int`` puts in place of the helper's ``@U``
+    would name the helper's parameter instead of the type.  A fresh name
+    ends in ``$shadowed``: ``$`` cannot appear in a source identifier, so it
+    spells no declared type, and no replacement spells it either, because a
+    renamed binder is a type variable and never an instantiation
+    (``_binds_a_type_var``).  Over-reading a replacement only renames a
+    binder that did not need it, which is harmless.
+    """
+    if not binders or not mapping:
+        return {}
+    spelled = {
+        tok for value in mapping.values()
+        for tok in _TYPE_NAME_TOKENS.findall(value)
+    }
+    return {b: f"{b}$shadowed" for b in binders if b in spelled}
 
 
 def substitute_type_param_names(name: str, mapping: dict[str, str]) -> str:
@@ -985,6 +1027,17 @@ def namespace_ctor_owners(
     never inherited, so a module reached only transitively from the entry
     contributes nothing to the entry's map while keeping everything its own
     imports allow.
+
+    One use of such a module's declaration remains (#1513): a constructor
+    of a PUBLIC type of a module the namespace's checker sees, which the
+    namespace does not import — `gcount(GMk(9))` with `GBox` reaching the
+    caller only through `gcount`'s signature.  After the three classes, a
+    constructor name none of them holds is filled from the public types of
+    the modules in :func:`namespace_module_reach` that the namespace cannot
+    name, where exactly one such type declares it: the fallback class of
+    codegen's ``_namespace_ctor_projection``, over the same modules, so the
+    two sides name the clone after the same type.  It fills and never
+    displaces, so every name the classes above resolve keeps its owner.
     """
     from vera.prelude import prelude_data_decls
 
@@ -1051,9 +1104,65 @@ def namespace_ctor_owners(
                     out[ctor.name] = tld.decl.name
         return out
 
+    reach = namespace_module_reach(module_list)
+
+    def fill_strangers(
+        key: tuple[str, ...] | None, out: dict[str, str],
+    ) -> dict[str, str]:
+        # Every type this namespace declares or imports already holds its
+        # constructors in `out` (or yields them to infrastructure), so the
+        # public types of its reach that declare a name `out` lacks are the
+        # strangers codegen's fallback reads.  A name is filled only where
+        # exactly one of them declares it.
+        sources: dict[str, list[str]] = {}
+        for path in sorted(reach.get(key, frozenset())):
+            for adt_name, ctor_names in sorted(
+                    public_adts.get(path, {}).items()):
+                for ctor_name in ctor_names:
+                    if ctor_name not in out:
+                        sources.setdefault(ctor_name, []).append(adt_name)
+        for ctor_name, adt_names in sources.items():
+            if len(adt_names) == 1:
+                out[ctor_name] = adt_names[0]
+        return out
+
     return NamespaceCtorOwners({
-        key: owners(prog) for key, prog in [(None, entry), *module_list]
+        key: fill_strangers(key, owners(prog))
+        for key, prog in [(None, entry), *module_list]
     })
+
+
+def namespace_module_reach(
+    modules: Iterable[tuple[tuple[str, ...], ast.Program]],
+) -> dict[tuple[str, ...] | None, frozenset[tuple[str, ...]]]:
+    """The modules each namespace's checker can see (#1513).
+
+    The entry program's checker is handed every resolved module; a module's
+    bodies are checked by a fresh checker handed the modules its own imports
+    reach, transitively (``ModulesMixin._modules_visible_to``).  A
+    constructor of a type a namespace does not import is resolved among
+    those modules by the checker (`_stranger_constructor`), so codegen's
+    ``_namespace_ctor_projection`` and :func:`namespace_ctor_owners` resolve
+    it among the modules this returns — one derivation for both, keyed by
+    module path with ``None`` for the entry program, and asserted equal to
+    the checker's view by ``tests/test_warning_severity_1513.py``.
+    """
+    module_list = list(modules)
+    by_path = dict(module_list)
+    reach: dict[tuple[str, ...] | None, frozenset[tuple[str, ...]]] = {
+        None: frozenset(by_path),
+    }
+    for path, prog in module_list:
+        seen: set[tuple[str, ...]] = set()
+        frontier = [tuple(imp.path) for imp in prog.imports]
+        while frontier:
+            dep = frontier.pop()
+            if dep in seen or dep not in by_path:
+                continue
+            seen.add(dep)
+            frontier.extend(tuple(imp.path) for imp in by_path[dep].imports)
+        reach[path] = frozenset(seen)
+    return reach
 
 
 @dataclass(frozen=True)
@@ -3840,6 +3949,11 @@ class Monomorphizer:
         mapping = dict(zip(decl.forall_vars, concrete_types))
         mangled = self._mangle_fn_name(decl.name, concrete_types)
 
+        # #1433: rename every `where` helper binder the substitution would
+        # capture first, so the reindex walk and the substitution below both
+        # read the renamed declaration and agree node for node.
+        decl = self._rename_capturing_binders(decl, mapping)
+
         # Scope-aware De Bruijn reindexing (#769 gap 3): resolve every
         # SlotRef against the full binding scope at its reference site and
         # recompute its index in the collapsed (post-substitution) namespace.
@@ -3853,6 +3967,60 @@ class Monomorphizer:
         return replace(
             substituted, name=mangled,
             forall_vars=None, forall_constraints=None,
+        )
+
+    def _rename_capturing_binders(
+        self, fn: ast.FnDecl, mapping: dict[str, str],
+    ) -> ast.FnDecl:
+        """*fn* with each ``where`` helper binder that *mapping* would
+        capture renamed, at every depth (#1433).
+
+        *mapping* is the substitution in force inside *fn*.  Each helper
+        sees it without the type variables the helper rebinds
+        (:func:`_unshadowed`), and a binder the remaining replacements spell
+        (:func:`_capturing_binders`) is renamed with every use of it — its
+        type positions, slot and result references, and ability constraints
+        — through the helper and into the nested helpers that do not rebind
+        it.  Returns *fn* itself when nothing is renamed.
+        """
+        helpers = fn.where_fns or ()
+        if not helpers or not mapping:
+            return fn
+        renamed: list[ast.FnDecl] = []
+        for helper in helpers:
+            active = _unshadowed(mapping, helper.forall_vars)
+            fresh = _capturing_binders(active, helper.forall_vars)
+            if fresh:
+                helper = self._rename_binders(helper, fresh)
+            renamed.append(self._rename_capturing_binders(helper, active))
+        if all(new is old for new, old in zip(renamed, helpers)):
+            return fn
+        return replace(fn, where_fns=tuple(renamed))
+
+    def _rename_binders(
+        self, helper: ast.FnDecl, fresh: dict[str, str],
+    ) -> ast.FnDecl:
+        """*helper* with its ``forall`` binders renamed by *fresh*.
+
+        Every use inside the helper names the binder, which shadows any type
+        of its name there, so the renaming is the ordinary substitution of
+        the old name by the new one; a nested helper rebinding the name
+        keeps its own (:func:`_unshadowed`).  A slot reference keeps its
+        index: the renamed bindings are exactly the ones it counted.
+        """
+        body = self._substitute_in_ast(helper, fresh)
+        assert isinstance(body, ast.FnDecl)  # noqa: S101
+        constraints = helper.forall_constraints
+        if constraints:
+            constraints = tuple(
+                replace(c, type_var=fresh.get(c.type_var, c.type_var))
+                for c in constraints
+            )
+        return replace(
+            body,
+            forall_vars=tuple(
+                fresh.get(b, b) for b in helper.forall_vars or ()),
+            forall_constraints=constraints,
         )
 
     def _substituted_slot_name(
@@ -3981,11 +4149,17 @@ class Monomorphizer:
         # — `monomorphize_fn` clears them — so the consumers rebuild its scope
         # from the bare env, and so does the post side.
         post_scope = env
+        # #1433: the substitution in force at the point being walked.  A
+        # `where` helper's own `forall` binders shadow the enclosing
+        # function's (spec §5.6.2), so inside the helper the mapping loses
+        # them — the same narrowing `_substitute_in_ast` applies to the clone
+        # this walk counts for, or the two would mint different names.
+        active = mapping
 
         def push(te: ast.TypeExpr) -> None:
             stack.append((
                 naming.slot_name_or_none(te, scope),
-                self._substituted_slot_name(te, mapping, post_scope),
+                self._substituted_slot_name(te, active, post_scope),
             ))
 
         def resolve(ref: ast.SlotRef) -> None:
@@ -4092,7 +4266,7 @@ class Monomorphizer:
                     walk(item)
 
         def walk_fn_scope(fn_decl: ast.FnDecl) -> None:
-            nonlocal scope, post_scope
+            nonlocal scope, post_scope, active
             del stack[:]
             for param_te in fn_decl.params:
                 push(param_te)
@@ -4104,7 +4278,7 @@ class Monomorphizer:
             # collect_calls_in_node walk (PR #972 review; a depth-1 walk left
             # nested helpers' collapsed indices stale).
             for nested in fn_decl.where_fns or ():
-                saved = (scope, post_scope)
+                saved = (scope, post_scope, active)
                 scope = fn_slot_scope(scope, nested.forall_vars)
                 # AS DECLARED on both sides.  Substitution clears only the
                 # cloned function's own variables, so the helper carries its
@@ -4117,10 +4291,11 @@ class Monomorphizer:
                 # minted `Option<Int>` through the alias where the consumers
                 # rebuild `Option<T>` (PR #1224 round-3).
                 post_scope = fn_slot_scope(post_scope, nested.forall_vars)
+                active = _unshadowed(active, nested.forall_vars)
                 try:
                     walk_fn_scope(nested)
                 finally:
-                    scope, post_scope = saved
+                    scope, post_scope, active = saved
 
         walk_fn_scope(decl)
         return out
@@ -4227,7 +4402,23 @@ class Monomorphizer:
             if f.name == "span":
                 continue
             val = getattr(node, f.name)
-            new_val = self._substitute_value(val, mapping, reindex)
+            if f.name == "where_fns" and isinstance(node, ast.FnDecl) and val:
+                # #1433: a helper's own `forall` binders shadow the enclosing
+                # function's (spec §5.6.2).  Substituting through them cloned
+                # `forall<T> fn h` under a parent instantiated at `Bool` at
+                # `Bool`, whatever `h` was called at — `h(7)` then called an
+                # i32 clone with an i64 and the module failed to load.
+                new_val = tuple(
+                    self._substitute_in_ast(
+                        helper, _unshadowed(mapping, helper.forall_vars),
+                        reindex,
+                    )
+                    for helper in val
+                )
+                if all(n is o for n, o in zip(new_val, val)):
+                    new_val = val
+            else:
+                new_val = self._substitute_value(val, mapping, reindex)
             if new_val is not val:
                 changes[f.name] = new_val
 

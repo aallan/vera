@@ -30,6 +30,12 @@ is a value no declaration names; a module-qualified call, because the module
 graph is acyclic (E011); built-ins, and effect and ability operations.  Spec
 §5.6 states the first as the recursion this analysis cannot see.
 
+**Not read**: what the checker refused or does not check (#1433, #815).  A
+refused declaration is no node and no call target, and adds no call: the
+first declaration of a name, or the built-in, stays the one a call reaches.
+A function whose body the check phase skips holds its name but adds no call.
+See :class:`CallGraph`.
+
 The calls themselves are enumerated once, by :func:`iter_calls`.  The graph
 draws its edges from it, and the verifier holds its measure proof to it
 (:func:`computation_calls`), so the two cannot disagree about where a call
@@ -38,7 +44,7 @@ can be written.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Container, Iterable, Iterator, Sequence
 from dataclasses import dataclass, fields, is_dataclass
 
 from vera import ast
@@ -71,13 +77,16 @@ def iter_calls(
     root: object,
     spec: bool = False,
     expand: Callable[[ast.Node], object] | None = None,
+    skip: Container[int] = frozenset(),
 ) -> Iterator[tuple[ast.FnCall, bool]]:
     """Every bare call under *root*, with whether it is a specification call.
 
     THE enumeration of where a call can be written.  It is a generic walk
     over every dataclass field, not a dispatch on expression kinds, so a node
     kind that no list names is still walked.  A nested declaration is not
-    entered: it is its own node of the graph, with its own frame.
+    entered: it is its own node of the graph, with its own frame.  Nor is a
+    node whose id is in *skip*: a declaration the checker refused, such as a
+    handler's surplus clause for an operation (#1433).
 
     A call inside a contract or a refinement predicate is a specification
     call, and so is every call under what *expand* returns for a node: the
@@ -99,6 +108,8 @@ def iter_calls(
             stack.extend((item, in_spec) for item in reversed(node))
             continue
         if not (is_dataclass(node) and isinstance(node, ast.Node)):
+            continue
+        if id(node) in skip:
             continue
         if isinstance(node, ast.FnCall):
             yield node, in_spec
@@ -144,22 +155,45 @@ def declares_decreases(decl: ast.FnDecl) -> bool:
 
 
 class CallGraph:
-    """The call graph of one program's declarations, with its cycles."""
+    """The call graph of one program's declarations, with its cycles.
 
-    def __init__(self, declarations: Iterable[ast.Decl]) -> None:
-        decls = list(declarations)
+    *refused* and *unchecked* are the checker's ``_refused_decl_ids`` and
+    ``_unchecked_body_ids``, so the graph reads what its check phase reads.
+    A refused declaration, at any depth, is no node, no call target and no
+    source of calls: a built-in's redefinition (E151), a type named after a
+    primitive (E158), the surplus of a name declared twice in one namespace
+    (E184), and a refused member (a constructor, a handler clause).  Every
+    use of the name reaches the built-in or the first declaration (spec
+    §8.5.5), and a call does here too.  An unchecked function, one with a refused ``where`` helper (#815),
+    holds its name, so it is a node and a call target, but nothing written
+    in it is read.  The verifier passes neither: it reads only a program
+    that type-checked, where both are empty.
+    """
+
+    def __init__(
+        self,
+        declarations: Iterable[ast.Decl],
+        refused: Container[int] = frozenset(),
+        unchecked: Container[int] = frozenset(),
+    ) -> None:
+        self._refused = refused
+        self._unchecked = unchecked
+        decls = [d for d in declarations if id(d) not in refused]
         self._top: dict[str, ast.FnDecl] = {}
         self._aliases: dict[str, ast.TypeExpr] = {}
         self._ctor_fields: dict[str, tuple[ast.TypeExpr, ...]] = {}
         for d in decls:
             if isinstance(d, ast.FnDecl):
-                # Last wins, as the checker's top-level table does.
+                # One declaration per name: the checker refuses the surplus
+                # (E184), which *refused* has left out.
                 self._top[d.name] = d
             elif isinstance(d, ast.TypeAliasDecl):
                 self._aliases[d.name] = d.type_expr
             elif isinstance(d, ast.DataDecl):
                 for ctor in d.constructors:
-                    self._ctor_fields[ctor.name] = tuple(ctor.fields or ())
+                    if id(ctor) not in refused:
+                        self._ctor_fields[ctor.name] = tuple(
+                            ctor.fields or ())
         #: Every declaration, `where` helpers included, in source preorder.
         self.fns: list[ast.FnDecl] = []
         #: Every call edge, in the order the walk met them.
@@ -186,6 +220,8 @@ class CallGraph:
     def _add_fn(self, decl: ast.FnDecl, outer: list[ast.FnDecl]) -> None:
         frames = [*outer, decl]
         self.fns.append(decl)
+        if id(decl) in self._unchecked:
+            return
         seen: set[str] = set()
         for te in (*decl.params, decl.return_type):
             self._walk(te, decl, frames, True, seen)
@@ -193,7 +229,8 @@ class CallGraph:
             self._walk(contract, decl, frames, True, seen)
         self._walk(decl.body, decl, frames, False, seen)
         for wfn in decl.where_fns or ():
-            self._add_fn(wfn, frames)
+            if id(wfn) not in self._refused:
+                self._add_fn(wfn, frames)
 
     def _resolve(
         self, name: str, frames: Sequence[ast.FnDecl],
@@ -203,7 +240,7 @@ class CallGraph:
             return None
         for frame in reversed(frames):
             for wfn in frame.where_fns or ():
-                if wfn.name == name:
+                if wfn.name == name and id(wfn) not in self._refused:
                     return wfn
         return self._top.get(name)
 
@@ -237,7 +274,7 @@ class CallGraph:
                     return self._ctor_fields[node.name]
             return None
 
-        for call, in_spec in iter_calls(root, spec, expand):
+        for call, in_spec in iter_calls(root, spec, expand, self._refused):
             callee = self._resolve(call.name, frames)
             if callee is not None:
                 self.sites.append(CallSite(caller, callee, call, in_spec))

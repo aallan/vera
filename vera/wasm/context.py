@@ -19,6 +19,7 @@ See spec/11-compilation.md for the compilation specification.
 
 from __future__ import annotations
 
+import itertools
 from typing import TYPE_CHECKING, Callable
 
 from vera import ast
@@ -29,6 +30,12 @@ from vera.skip import (
     CodegenSkip,
 )
 from vera.slots import bare_call_denotes_user_fn
+from vera.trap_registry import (
+    TRAP_EMITTERS,
+    TRAP_KINDS,
+    check_marker,
+    signal_instructions,
+)
 
 if TYPE_CHECKING:
     from vera.codegen import ConstructorLayout
@@ -63,6 +70,17 @@ from vera.wasm.data import DataMixin
 # =====================================================================
 # WASM translation context
 # =====================================================================
+
+
+#: Identities for per-module record entries (#1479).  Unique across the
+#: process, so an entry can never be mistaken for one from another module:
+#: the record is read back from each module's own text by these numbers.
+_CHECK_IDS = itertools.count(1)
+
+#: The per-module record while a module is compiled: entry id -> (the
+#: `TRAP_EMITTERS` key, the node the check's span comes from).
+CheckRecord = dict[int, tuple[str, ast.Node | None]]
+
 
 class WasmContext(
     InferenceMixin,
@@ -113,6 +131,7 @@ class WasmContext(
         ctor_adt_tp_indices: dict[str, tuple[int | None, ...]] | None = None,
         adt_tp_counts: dict[str, int] | None = None,
         adt_tp_param_names: dict[str, tuple[str, ...]] | None = None,
+        checks: CheckRecord | None = None,
     ) -> None:
         self.string_pool = string_pool
         self._next_local: int = 0
@@ -326,22 +345,25 @@ class WasmContext(
         self._random_ops_used: set[str] = set()
         # Math host-import tracking (propagated to codegen core, #467)
         self._math_ops_used: set[str] = set()
-        # #808: the #798 integer-overflow guard calls $vera.overflow_trap so the
-        # trap classifies as kind="overflow" rather than bare "unreachable".
-        # Set in operators._emit_overflow_guard; merged into codegen core (which
-        # emits the import) in functions.py after each function is compiled (and
-        # in closures.py for lifted-closure bodies).
-        self._needs_overflow_trap: bool = False
-        # #754: set when a @Int -> @Nat narrowing guard emits a
-        # `vera.nat_guard_trap` call, so assembly.py declares the host
-        # import and the trap reports its own kind.
-        self._needs_nat_guard_trap: bool = False
-        # #1438: the @Nat -> @Int WIDENING guard's twin signal, raised
-        # the same way and merged at the same per-scope seams.  Missing
-        # one of those merges leaves a module calling an undeclared
-        # `$vera.widen_trap`, which fails to instantiate only on the
+        # #1479: set by `_emit_trap` beside every `vera.trap` call it emits
+        # — the one signal every named check raises, its kind a code rather
+        # than an import of its own — so assembly declares the import.
+        # Merged into the CodeGenerator at every per-scope seam (the function
+        # body after its postconditions in functions.py, each lifted closure
+        # in closures.py): a seam that drops it leaves a module calling an
+        # undeclared `$vera.trap`, which fails to instantiate only on the
         # shape that reaches that scope — the #808 / #823 failure mode.
-        self._needs_widen_trap: bool = False
+        self._needs_trap: bool = False
+        # #1479: the contract channel's twin, raised the same way by the
+        # contract checks `_emit_trap` emits and merged at the same seams.
+        self._needs_contract_fail: bool = False
+        # #1479: every check this context emitted, by record entry id.
+        # Shared with the CodeGenerator (and every other context compiling
+        # the same module), which reads the record back from the assembled
+        # module text through the marker each entry's instruction carries —
+        # so an entry whose instructions never reach the module drops out on
+        # its own, and nothing has to be merged or rolled back.
+        self._emitted_checks: CheckRecord = checks if checks is not None else {}
         # R-1412 F3: the component type an enclosing construction hands to
         # the argument it is translating, for a NESTED literal whose own
         # span carries no recorded target.  Saved and restored around each
@@ -492,7 +514,10 @@ class WasmContext(
         # compile at all today), and the closed failure is what a future
         # thread-through would meet rather than a silently unguarded payload.
         self._refinement_guard_emitter: (
-            Callable[[ast.TypeExpr, int, str, WasmSlotEnv], list[str] | None]
+            Callable[
+                [ast.TypeExpr, int, str, WasmSlotEnv, ast.Node | None],
+                list[str] | None,
+            ]
             | None
         ) = None
         # Closure signature registry: sig_key -> (type_name, param/result WAT)
@@ -753,12 +778,15 @@ class WasmContext(
     def set_refinement_guard_emitter(
         self,
         emitter: Callable[
-            [ast.TypeExpr, int, str, WasmSlotEnv], list[str] | None
+            [ast.TypeExpr, int, str, WasmSlotEnv, ast.Node | None],
+            list[str] | None,
         ],
     ) -> None:
         """Install the §2.6.5 refinement-predicate guard lowering (#1268).
 
-        *emitter* takes ``(type_expr, value_local, message, env)`` and returns
+        *emitter* takes ``(type_expr, value_local, message, env, at)`` —
+        *at* the node the per-module record locates the check at (#1479) —
+        and returns
         the WAT that traps via ``$vera.contract_fail`` when the value in
         *value_local* violates *type_expr*'s predicate — or ``None`` when the
         type is unrefined, or refined over a base codegen emits no guard for
@@ -868,6 +896,74 @@ class WasmContext(
     def extra_locals_wat(self) -> list[str]:
         """Return WAT local declarations for non-parameter locals."""
         return [f"(local {name} {wt})" for name, wt in self._locals]
+
+    def _emit_trap(
+        self,
+        emitter: str,
+        *,
+        at: ast.Node | None,
+        message: str | None = None,
+    ) -> list[str]:
+        """The single emission path of a named check's trap (#1479).
+
+        Returns the instructions that raise *emitter*'s trap kind — the
+        signal, then the ``unreachable`` — for the caller to splice inside
+        the ``if`` that tests the check's condition.  Beside the emission it
+        raises the signal's ``_needs_...`` flag (merged at every per-scope
+        seam, so the import is declared wherever the call lands), interns
+        *message* into the data section, and records the check for the
+        per-module record.
+
+        *emitter* is the caller's own :data:`vera.trap_registry.TRAP_EMITTERS`
+        key, and the kind comes from its row rather than from the caller, so
+        an emitter cannot raise a kind its row does not state.  *message* is
+        required exactly for a kind whose sites carry their own
+        (``TrapKind.site_message``) and refused for one that reports its
+        canonical description.
+        """
+        row = TRAP_EMITTERS.get(emitter)
+        if row is None or not row.per_site or row.via not in (
+                "signal", "contract"):
+            raise CodegenInvariantError(
+                f"{emitter!r} is not a per-site signalling emitter in "
+                "vera.trap_registry.TRAP_EMITTERS", at,
+            )
+        kind = TRAP_KINDS[row.kind]
+        if kind.site_message != bool(message):
+            raise CodegenInvariantError(
+                f"{emitter}: trap kind {row.kind!r} "
+                + ("needs a site message" if kind.site_message
+                   else "reports its canonical description, not a message"),
+                at,
+            )
+        ptr, length = self.string_pool.intern(message) if message else (0, 0)
+        if row.kind == "contract_violation":
+            self._needs_contract_fail = True
+        else:
+            self._needs_trap = True
+        return signal_instructions(
+            row.kind, ptr, length, marker=self._record_check(emitter, at))
+
+    def _record_check(self, emitter: str, at: ast.Node | None) -> str:
+        """Enter one check in the per-module record (#1479); returns the
+        marker the instruction that IS the check must carry.
+
+        *emitter* is the :data:`vera.trap_registry.TRAP_EMITTERS` key of the
+        function emitting the check, and *at* the node its span is taken
+        from (``TrapEmitter.span`` says which node that is).  The entry
+        counts once for every copy of the marker in the assembled module and
+        not at all when no copy survives — a translation thrown away, a
+        function dropped after it compiled, a rendering spliced twice — so
+        the caller only has to put the marker on its instruction.
+        """
+        if emitter not in TRAP_EMITTERS:
+            raise CodegenInvariantError(
+                f"trap emitter {emitter!r} is not in "
+                "vera.trap_registry.TRAP_EMITTERS", at,
+            )
+        check_id = next(_CHECK_IDS)
+        self._emitted_checks[check_id] = (emitter, at)
+        return check_marker(check_id)
 
     # -----------------------------------------------------------------
     # #1212 — the @Byte write boundary's literal width
@@ -1545,14 +1641,14 @@ class WasmContext(
                 # target is guarded too (CR #756).
                 if (self._resolve_base_type_name(type_name) == "Nat"
                         and self._narrows_into_nat(stmt.value)):
-                    stmt_instrs.extend(
-                        self._emit_nat_bind_guard(val_instrs))
+                    stmt_instrs.extend(self._emit_nat_bind_guard(
+                        val_instrs, at=stmt.value))
                 elif (self._resolve_base_type_name(type_name) == "Int"
                         and self._result_is_nat(stmt.value)):
                     # #813: guard a @Nat -> @Int let widening — a @Nat value
                     # above i64.MAX reinterprets to a negative @Int.
-                    stmt_instrs.extend(
-                        self._emit_int_widen_guard(val_instrs))
+                    stmt_instrs.extend(self._emit_int_widen_guard(
+                        val_instrs, at=stmt.value))
                 else:
                     # A `@Byte` target's literals were already marked before
                     # the translation above, so `val_instrs` is the i32

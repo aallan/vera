@@ -191,9 +191,9 @@ def _trap_kind(result, fn: str, arg: int) -> str | None:
     ``_trap_kind``), not merely "some trap" — a divide-by-zero or out-of-bounds
     trap at ``u64.MAX`` would be a different, wrong guard.  Before #1438 the
     widen guard was a bare ``unreachable`` and the strongest available pin was
-    that shared kind, which a non-exhaustive match or a shadow-stack overflow
-    would also have satisfied; the dedicated ``vera.widen_trap`` signal is what
-    lets these cells name the guard they mean."""
+    that shared kind, which a shadow-stack overflow would also have
+    satisfied; the guard's own ``widen_guard`` signal (through ``vera.trap``
+    since #1479) is what lets these cells name the guard they mean."""
     try:
         execute(result, fn_name=fn, args=[arg])
     except WasmTrapError as exc:

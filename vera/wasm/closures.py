@@ -178,11 +178,11 @@ class ClosuresMixin:
             if (formal_te is not None
                     and self._type_expr_base_is_nat(formal_te)
                     and self._narrows_into_nat(arg)):
-                arg_instrs = self._emit_nat_bind_guard(arg_instrs)
+                arg_instrs = self._emit_nat_bind_guard(arg_instrs, at=arg)
             elif (formal_te is not None
                     and self._type_expr_base_is_int(formal_te)
                     and self._result_is_nat(arg)):
-                arg_instrs = self._emit_int_widen_guard(arg_instrs)
+                arg_instrs = self._emit_int_widen_guard(arg_instrs, at=arg)
             instructions.extend(arg_instrs)
             # The parameter's width in the `call_indirect` signature is the
             # DECLARED formal's, not the argument's (#1256).  Both sides of

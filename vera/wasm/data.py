@@ -152,7 +152,7 @@ class DataMixin:
             )
         head = (f"Refinement violation in {where}\n"
                 f"  {ast.format_type_expr(te)} binding")
-        return emitter(te, value_local, head, env) or []
+        return emitter(te, value_local, head, env, node) or []
 
     def _emit_construction_refine_guard(
         self,
@@ -254,7 +254,7 @@ class DataMixin:
             return value
         if not self._narrows_into_nat(arg):
             return value
-        return self._emit_nat_bind_guard(value)
+        return self._emit_nat_bind_guard(value, at=arg)
 
     def _refined_slot_wasm_type(self, te: ast.TypeExpr) -> str | None:
         """The WASM REPRESENTATION of a refined slot's value, or None when no
@@ -561,7 +561,8 @@ class DataMixin:
                         or mono_base == "Nat"
                         or self._adt_arg_is_nat(tuple_target, i))
                         and self._narrows_into_nat(expr.args[i])):
-                    field_val = self._emit_nat_bind_guard(field_val)
+                    field_val = self._emit_nat_bind_guard(
+                        field_val, at=expr.args[i])
                 # #813: dual — runtime-guard a @Nat -> @Int widening into a
                 # concrete @Int constructor field (`WrapI(@Nat.0)` where
                 # `WrapI(Int)`); a @Nat above i64.MAX would otherwise be stored
@@ -574,7 +575,8 @@ class DataMixin:
                         or self._adt_arg_is_int(tuple_target, i)
                         or mono_base == "Int")
                         and self._result_is_nat(expr.args[i])):
-                    field_val = self._emit_int_widen_guard(field_val)
+                    field_val = self._emit_int_widen_guard(
+                        field_val, at=expr.args[i])
                 # #1426: and the §2.6.5 PREDICATE beside the sign pair.  A
                 # refined component was obligated at this store and checked
                 # by nobody, so a value its own component type forbids went
@@ -753,7 +755,7 @@ class DataMixin:
             # @Nat target is guarded too (CR #756), matching the alias-aware
             # call-arg / ctor-field metadata.
             if self._resolve_base_type_name(type_name) == "Nat":
-                load = self._emit_nat_bind_guard(load)
+                load = self._emit_nat_bind_guard(load, at=te)
             # #820: a @Nat component destructured into an @Int slot
             # (`let Tuple<@Int> = Tuple(@Nat.0)`) is a tuple-component widening —
             # guard the field load when the target binding is @Int and the
@@ -772,7 +774,7 @@ class DataMixin:
                           and self._result_is_nat(destr_lit_args[idx]))
                          or self._adt_arg_is_nat(
                              self._checker_resolved_type(stmt.value), idx))):
-                load = self._emit_int_widen_guard(load)
+                load = self._emit_int_widen_guard(load, at=te)
             instrs.extend(load)
             instrs.append(f"local.set {local_idx}")
             # #765: the refined twin of the `@Nat` sign guard above — a
@@ -1143,7 +1145,7 @@ class DataMixin:
             # guarded in `translate_block`, so this no-ops on that id).
             body = self._guard_nat_return_leaf(arm.body, body)
             if guard_widen_arms and self._result_is_nat(arm.body):
-                body = self._emit_int_widen_guard(body)
+                body = self._emit_int_widen_guard(body, at=arm.body)
             return setup_instrs + body
 
         # Conditional arm with more arms following
@@ -1161,7 +1163,7 @@ class DataMixin:
         # arm above); no-ops unless this arm body is a collected narrowing leaf.
         body = self._guard_nat_return_leaf(arm.body, body)
         if guard_widen_arms and self._result_is_nat(arm.body):
-            body = self._emit_int_widen_guard(body)
+            body = self._emit_int_widen_guard(body, at=arm.body)
 
         # Compile remaining arms (else branch)
         else_instrs = self._compile_match_arms(
@@ -1427,7 +1429,7 @@ class DataMixin:
             # (CR #756).
             if (self._resolve_base_type_name(type_name) == "Nat"
                     and scr_wasm_type == "i64"):
-                bind_val = self._emit_nat_bind_guard(bind_val)
+                bind_val = self._emit_nat_bind_guard(bind_val, at=pattern)
             # #813: dual — `match @Nat.0 { @Int -> … }` binds a @Nat scrutinee
             # into an @Int slot, widening it.  Guard only when the scrutinee is
             # provably @Nat (`_result_is_nat`), never a genuine @Int scrutinee
@@ -1436,7 +1438,7 @@ class DataMixin:
                     and scr_wasm_type == "i64"
                     and scrutinee is not None
                     and self._result_is_nat(scrutinee)):
-                bind_val = self._emit_int_widen_guard(bind_val)
+                bind_val = self._emit_int_widen_guard(bind_val, at=pattern)
             instrs = [
                 *bind_val,
                 f"local.set {local_idx}",
@@ -1580,7 +1582,7 @@ class DataMixin:
                 # Alias-aware (`type Age = Nat`) via `_resolve_base_type_name`
                 # (CR #756).
                 if self._resolve_base_type_name(type_name) == "Nat":
-                    load = self._emit_nat_bind_guard(load)
+                    load = self._emit_nat_bind_guard(load, at=sub_pat)
                 # #813: dual — extracting a concrete @Nat *field* into an @Int
                 # sub-pattern slot (`match @Box.0 { Box(@Int) -> }` on a
                 # `Box(Nat)`) widens it; a @Nat field above i64.MAX would
@@ -1601,7 +1603,7 @@ class DataMixin:
                                  self._resolve_nested_scrutinee_type(
                                      pattern.name, i, scrutinee_type) or "",
                              ) == "Nat")):
-                    load = self._emit_int_widen_guard(load)
+                    load = self._emit_int_widen_guard(load, at=sub_pat)
                 instrs.extend(load)
                 instrs.append(f"local.set {local_idx}")
                 # #765: the refined twin of the sign guards above — a
@@ -2042,7 +2044,7 @@ class DataMixin:
             if elem_instrs is None:
                 return None
             if target_elem_is_int and self._result_is_nat(elem):
-                elem_instrs = self._emit_int_widen_guard(elem_instrs)
+                elem_instrs = self._emit_int_widen_guard(elem_instrs, at=elem)
             # #1426: the §2.6.5 predicate at the same store.  The element
             # target comes from the same threaded table the widening guard
             # above reads, with the refinement left ON — the literal is typed
@@ -2085,13 +2087,26 @@ class DataMixin:
         instructions.append(f"i32.const {n}")
         return instructions
 
+    def _index_message(self, expr: ast.IndexExpr) -> str:
+        """The `index_out_of_bounds` message: the access, and its bound."""
+        coll = ast.format_expr(expr.collection)
+        idx = ast.format_expr(expr.index)
+        return (
+            f"Array index out of bounds{self._at_line(expr)}: "
+            f"`{coll}[{idx}]` needs `0 <= {idx}` and "
+            f"`{idx} < array_length({coll})`."
+        )
+
     def _translate_index_expr(
         self, expr: ast.IndexExpr, env: WasmSlotEnv,
     ) -> list[str] | None:
         """Translate array indexing with bounds check.
 
-        Evaluates collection → (ptr, len), evaluates index,
-        performs bounds check (trap on OOB), then loads the element.
+        Evaluates collection → (ptr, len), evaluates index, checks
+        ``0 <= index < len`` in i64 — before the index is narrowed to the
+        i32 address arithmetic uses — signalling ``index_out_of_bounds``
+        with the access and its bound on failure (#1479), then loads the
+        element.
         """
         # The COLLECTION must actually be one (PR #1372 review).  The emit
         # below saves two words — the (ptr, len) pair every real array is —
@@ -2151,6 +2166,7 @@ class DataMixin:
         # Temp locals for ptr, len, index
         tmp_ptr = self.alloc_local("i32")
         tmp_len = self.alloc_local("i32")
+        tmp_idx64 = self.alloc_local("i64")
         tmp_idx = self.alloc_local("i32")
 
         instructions: list[str] = []
@@ -2158,17 +2174,24 @@ class DataMixin:
         instructions.extend(coll_instrs)
         instructions.append(f"local.set {tmp_len}")
         instructions.append(f"local.set {tmp_ptr}")
-        # Evaluate and wrap index from i64 to i32
+        # Bounds check in i64, BEFORE narrowing the index (#1479): an index
+        # of 2^32 + 1 wraps to 1, so a check made on the wrapped i32 passed
+        # it and read element 1.  `(u64)idx >= (u64)len` is false exactly
+        # for 0 <= idx < len — a negative i64 reads as a huge unsigned one.
         instructions.extend(idx_instrs)
+        instructions.append(f"local.tee {tmp_idx64}")
+        instructions.append(f"local.get {tmp_len}")
+        instructions.append("i64.extend_i32_u")
+        instructions.append("i64.ge_u")
+        instructions.append("if")
+        instructions.extend(
+            f"  {i}" for i in self._emit_trap(
+                "wasm/data.py:_translate_index_expr", at=expr,
+                message=self._index_message(expr)))
+        instructions.append("end")
+        instructions.append(f"local.get {tmp_idx64}")
         instructions.append("i32.wrap_i64")
         instructions.append(f"local.set {tmp_idx}")
-        # Bounds check: if (u32)idx >= (u32)len then trap
-        instructions.append(f"local.get {tmp_idx}")
-        instructions.append(f"local.get {tmp_len}")
-        instructions.append("i32.ge_u")
-        instructions.append("if")
-        instructions.append("  unreachable")
-        instructions.append("end")
         # Compute address: ptr + idx * elem_size
         instructions.append(f"local.get {tmp_ptr}")
         if elem_size == 1:

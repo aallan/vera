@@ -1219,7 +1219,7 @@ sqrt(@Float64.0)                    -- returns Float64 (square root)
 pow(@Float64.0, @Int.0)             -- returns Float64 (exponentiation)
 ```
 
-`abs` returns `Nat` because absolute values are non-negative. `floor`, `ceil`, and `round` convert `Float64` to `Int`; they trap on NaN or out-of-range values (WASM semantics). `round` uses IEEE 754 roundTiesToEven (banker's rounding): `round(2.5)` is `2`, not `3`. `pow` takes an `Int` exponent — negative exponents produce reciprocals (`pow(2.0, -1)` is `0.5`). The integer builtins (`abs`, `min`, `max`) are fully verifiable by the SMT solver (Tier 1). The float builtins fall to Tier 3 (runtime).
+`abs` returns `Nat` because absolute values are non-negative. `floor`, `ceil`, and `round` convert `Float64` to `Int`; they trap as `float_conversion` on NaN, an infinity, or a value outside the `Int` range `[-2^63, 2^63)`. `round` uses IEEE 754 roundTiesToEven (banker's rounding): `round(2.5)` is `2`, not `3`. `pow` takes an `Int` exponent — negative exponents produce reciprocals (`pow(2.0, -1)` is `0.5`). The integer builtins (`abs`, `min`, `max`) are fully verifiable by the SMT solver (Tier 1). The float builtins fall to Tier 3 (runtime).
 
 ### Logarithmic, trigonometric, and numeric utility functions
 
@@ -1864,7 +1864,7 @@ private forall<T> fn identity(@T -> @T)
 
 ## Abilities (Type Constraints)
 
-Abilities constrain type variables in generic functions. An ability declares operations that a type must support:
+Abilities constrain type variables in generic functions. An ability declares operations that a type must support. `Eq` is one of the four built-in abilities, so the block below only shows its interface: a program never declares it, and declaring a built-in ability is an error (E185).
 
 ```vera
 ability Eq<T> {
@@ -2432,7 +2432,7 @@ public fn main(@Unit -> @Unit)
 
 ## Conformance Suite
 
-The `tests/conformance/` directory contains 254 small programs — most self-contained, with the Chapter 8 module-system programs and a few cross-module Chapter 7 and 9 programs importing companion `_lib.vera` / `_mid.vera` modules — that validate every language feature against the spec — often one program per feature, though some features (slot references, match, contracts) span several. These are the best minimal working examples of Vera syntax and semantics.
+The `tests/conformance/` directory contains 255 small programs — most self-contained, with the Chapter 8 module-system programs and a few cross-module Chapter 7 and 9 programs importing companion `_lib.vera` / `_mid.vera` modules — that validate every language feature against the spec — often one program per feature, though some features (slot references, match, contracts) span several. These are the best minimal working examples of Vera syntax and semantics.
 
 Each program is organized by spec chapter (`ch01_int_literals.vera`, `ch04_match_basic.vera`, `ch07_state_handler.vera`, etc.) and the `manifest.json` file maps features to programs. When you need to see how a specific construct works, check the conformance program before reading the spec.
 
@@ -2469,7 +2469,7 @@ These are known limitations in the current reference implementation. Most are tr
 
 No known bugs.
 
-When a Vera program type-checks cleanly, compiles without errors, and then produces a runtime trap you can't explain, runtime trap diagnostics are now Vera-native end-to-end: each trap carries a `kind` label (`divide_by_zero` / `out_of_bounds` / `stack_exhausted` / `unreachable` / `overflow` / `contract_violation` / `host_error` / `unknown`), a per-kind `Fix:` paragraph naming the canonical remediation (omitted for `contract_violation` and `host_error`, whose descriptions already carry the specific instruction, and for `unknown`, where there is nothing general to suggest), and a source backtrace pointing at the offending Vera function and line — not just `wasm trap: <reason>`.  Tail-recursive iteration runs in constant WASM stack space for both non-allocating ([#517](https://github.com/aallan/vera/issues/517), v0.0.126) and allocating ([#549](https://github.com/aallan/vera/issues/549), v0.0.154) tail calls — the latter prepends a `$gc_sp` restore before each `return_call` to keep the shadow stack bounded across iterations.
+When a Vera program type-checks cleanly, compiles without errors, and then produces a runtime trap you can't explain, runtime trap diagnostics are now Vera-native end-to-end: each trap carries a `kind` label naming its cause — `contract_violation`, `overflow`, `nat_guard`, `widen_guard`, `nat_underflow`, `assertion_failed`, `index_out_of_bounds`, `string_index_out_of_bounds`, `float_conversion`, `heap_exhausted`, `uncaught_exception` (an `Exn<T>` no `handle[Exn<T>]` caught before it left the entry point), `divide_by_zero`, `out_of_bounds`, `stack_exhausted`, `host_error`, or `unreachable` for the runtime's own internal limits (shadow-stack overflow and the like), and `unknown` — a message describing the failure, which names the failing site wherever the check carries one (the assertion's text, the index and its bound, the subtraction and the `requires` that discharges it), a per-kind `Fix:` paragraph naming the canonical remediation (omitted for `contract_violation` and `host_error`, whose descriptions already carry the specific instruction, and for `unknown`, where there is nothing general to suggest), and, under the default `vera run` host, a source backtrace pointing at the offending Vera function and line — not just `wasm trap: <reason>` (a `--target wasi-p2` trap keeps its kind, message and `Fix:`, but its `frames` list is empty, because frames do not cross the component boundary, spec §13.6).  Tail-recursive iteration runs in constant WASM stack space for both non-allocating ([#517](https://github.com/aallan/vera/issues/517), v0.0.126) and allocating ([#549](https://github.com/aallan/vera/issues/549), v0.0.154) tail calls — the latter prepends a `$gc_sp` restore before each `return_call` to keep the shadow stack bounded across iterations.
 
 ## Specification Reference
 
@@ -2507,7 +2507,7 @@ Read `SKILL.md` for the full language reference. It covers syntax, slot referenc
 
 ### Conformance programs as reference
 
-The conformance suite in `tests/conformance/` contains 254 small, self-contained programs — often one per language feature — that serve as minimal working examples (most are fully self-contained; the cross-module programs of Chapters 7–9 import companion `_lib`/module fixtures). Each positive program must pass its declared verification level (see `manifest.json` for mappings: `parse`, `check`, `verify`, or `run`); the forty-six negative fixtures (`ch02_generic_over_unit_rejected`, `ch02_map_unit_value_rejected`, `ch02_nonregular_data_rejected`, `ch04_let_unit_rejected`, `ch05_apply_fn_arity`, `ch05_decreases_float_rejected`, `ch05_reserved_fn_name_rejected`, `ch05_reserved_keyword_fn_rejected`, `ch05_reserved_contextual_keyword_fn_rejected`, `ch05_reserved_resume_fn_rejected`, `ch05_where_helper_outer_slot_rejected`, `ch07_handler_state_body_scope_rejected`, `ch07_old_outside_ensures_rejected`, `ch07_state_unit_op_param_read_rejected`, `ch08_ambiguous_import_adt_rejected`, `ch08_ambiguous_import_adt_swapped_rejected`, `ch08_ambiguous_import_rejected`, `ch08_ambiguous_import_swapped_rejected`, `ch08_circular_import`, `ch08_reserved_vera_prefix_rejected`, `ch08_reserved_vera_prefix_reference_rejected`, `ch08_reserved_vera_prefix_binder_rejected`, `ch08_reserved_vera_prefix_effect_rejected`, `ch08_reserved_vera_prefix_ability_rejected`, `ch08_reserved_vera_prefix_constructor_rejected`, `ch08_visibility_private`, `ch09_builtin_effect_redefinition_rejected`, `ch09_builtin_redefinition`, `ch09_ord_adt_rejected`, `ch09_eq_non_derivable_rejected`, `ch09_sql_injection_rejected`, `ch09_sql_placeholder_mismatch_rejected`, `ch09_sql_placeholder_let_mismatch_rejected`, `ch09_sql_numbered_placeholder_rejected`, `ch07_bare_effect_op_rejected`, `ch06_quantifier_array_domain_rejected`, `ch07_handler_state_type_mismatch_rejected`, `ch02_alias_cycle_rejected`, `ch04_pattern_ctor_over_container_rejected`, `ch04_pattern_literal_type_rejected`, `ch05_where_helper_sibling_call_rejected`, `ch08_builtin_adt_redefinition_rejected`, `ch08_builtin_tuple_redefinition_rejected`, `ch08_builtin_ctor_redefinition_rejected`, `ch08_sibling_ctor_collision_rejected`, `ch08_module_prelude_adt_contention_rejected`) instead must *fail* with the E-code in their `expected_error` field, at the stage their `expected_error_stage` names — `check` by default, or `compile` for a diagnostic the checker accepts and codegen refuses. When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec.
+The conformance suite in `tests/conformance/` contains 255 small, self-contained programs — often one per language feature — that serve as minimal working examples (most are fully self-contained; the cross-module programs of Chapters 7–9 import companion `_lib`/module fixtures). Each positive program must pass its declared verification level (see `manifest.json` for mappings: `parse`, `check`, `verify`, or `run`); the forty-seven negative fixtures (`ch02_generic_over_unit_rejected`, `ch02_map_unit_value_rejected`, `ch02_nonregular_data_rejected`, `ch04_let_unit_rejected`, `ch05_apply_fn_arity`, `ch05_decreases_float_rejected`, `ch05_reserved_fn_name_rejected`, `ch05_where_helper_duplicate_rejected`, `ch05_reserved_keyword_fn_rejected`, `ch05_reserved_contextual_keyword_fn_rejected`, `ch05_reserved_resume_fn_rejected`, `ch05_where_helper_outer_slot_rejected`, `ch07_handler_state_body_scope_rejected`, `ch07_old_outside_ensures_rejected`, `ch07_state_unit_op_param_read_rejected`, `ch08_ambiguous_import_adt_rejected`, `ch08_ambiguous_import_adt_swapped_rejected`, `ch08_ambiguous_import_rejected`, `ch08_ambiguous_import_swapped_rejected`, `ch08_circular_import`, `ch08_reserved_vera_prefix_rejected`, `ch08_reserved_vera_prefix_reference_rejected`, `ch08_reserved_vera_prefix_binder_rejected`, `ch08_reserved_vera_prefix_effect_rejected`, `ch08_reserved_vera_prefix_ability_rejected`, `ch08_reserved_vera_prefix_constructor_rejected`, `ch08_visibility_private`, `ch09_builtin_effect_redefinition_rejected`, `ch09_builtin_redefinition`, `ch09_ord_adt_rejected`, `ch09_eq_non_derivable_rejected`, `ch09_sql_injection_rejected`, `ch09_sql_placeholder_mismatch_rejected`, `ch09_sql_placeholder_let_mismatch_rejected`, `ch09_sql_numbered_placeholder_rejected`, `ch07_bare_effect_op_rejected`, `ch06_quantifier_array_domain_rejected`, `ch07_handler_state_type_mismatch_rejected`, `ch02_alias_cycle_rejected`, `ch04_pattern_ctor_over_container_rejected`, `ch04_pattern_literal_type_rejected`, `ch05_where_helper_sibling_call_rejected`, `ch08_builtin_adt_redefinition_rejected`, `ch08_builtin_tuple_redefinition_rejected`, `ch08_builtin_ctor_redefinition_rejected`, `ch08_sibling_ctor_collision_rejected`, `ch08_module_prelude_adt_contention_rejected`) instead must *fail* with the E-code in their `expected_error` field, at the stage their `expected_error_stage` names — `check` by default, or `compile` for a diagnostic the checker accepts and codegen refuses. When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec.
 
 ### Workflow
 
@@ -2692,9 +2692,9 @@ Each stage is a module with a single public API function (`parse_file`, `transfo
 pytest tests/ -v                       # Run all tests (see TESTING.md)
 pytest tests/test_conformance.py -v    # Conformance suite only
 mypy vera/                             # Type-check the compiler
-python scripts/check_conformance.py    # All 254 conformance programs hold (positives pass; negatives fail with their E-code)
+python scripts/check_conformance.py    # All 255 conformance programs hold (positives pass; negatives fail with their E-code)
 python scripts/check_examples.py       # All 43 examples must pass
-python scripts/check_corpus_canonical.py # All 304 corpus programs in canonical form
+python scripts/check_corpus_canonical.py # All 305 corpus programs in canonical form
 ```
 
 Test helpers follow a pattern: `_check_ok(source)` / `_check_err(source, match)` / `_verify_ok(source)` / `_verify_err(source, match)`. See existing tests for examples.
@@ -2705,7 +2705,7 @@ A bug fix closes the **class** the report belongs to, not the reported instance:
 
 ### Invariants
 
-- All 254 conformance programs in `tests/conformance/` must hold at their declared level — positive entries pass, and the negative fixtures (`ch02_generic_over_unit_rejected`, `ch02_map_unit_value_rejected`, `ch02_nonregular_data_rejected`, `ch04_let_unit_rejected`, `ch05_apply_fn_arity`, `ch05_decreases_float_rejected`, `ch05_reserved_fn_name_rejected`, `ch05_reserved_keyword_fn_rejected`, `ch05_reserved_contextual_keyword_fn_rejected`, `ch05_reserved_resume_fn_rejected`, `ch05_where_helper_outer_slot_rejected`, `ch07_handler_state_body_scope_rejected`, `ch07_old_outside_ensures_rejected`, `ch07_state_unit_op_param_read_rejected`, `ch08_ambiguous_import_adt_rejected`, `ch08_ambiguous_import_adt_swapped_rejected`, `ch08_ambiguous_import_rejected`, `ch08_ambiguous_import_swapped_rejected`, `ch08_circular_import`, `ch08_reserved_vera_prefix_rejected`, `ch08_reserved_vera_prefix_reference_rejected`, `ch08_reserved_vera_prefix_binder_rejected`, `ch08_reserved_vera_prefix_effect_rejected`, `ch08_reserved_vera_prefix_ability_rejected`, `ch08_reserved_vera_prefix_constructor_rejected`, `ch08_visibility_private`, `ch09_builtin_effect_redefinition_rejected`, `ch09_builtin_redefinition`, `ch09_ord_adt_rejected`, `ch09_eq_non_derivable_rejected`, `ch09_sql_injection_rejected`, `ch09_sql_placeholder_mismatch_rejected`, `ch09_sql_placeholder_let_mismatch_rejected`, `ch09_sql_numbered_placeholder_rejected`, `ch07_bare_effect_op_rejected`, `ch06_quantifier_array_domain_rejected`, `ch07_handler_state_type_mismatch_rejected`, `ch02_alias_cycle_rejected`, `ch04_pattern_ctor_over_container_rejected`, `ch04_pattern_literal_type_rejected`, `ch05_where_helper_sibling_call_rejected`, `ch08_builtin_adt_redefinition_rejected`, `ch08_builtin_tuple_redefinition_rejected`, `ch08_builtin_ctor_redefinition_rejected`, `ch08_sibling_ctor_collision_rejected`, `ch08_module_prelude_adt_contention_rejected`) must *fail* with their `expected_error` E-code, at the stage `expected_error_stage` names — `check` by default, or `compile` for a diagnostic the checker accepts and codegen refuses (`ch08_module_prelude_adt_contention_rejected` → E621), which also asserts the program type-checks cleanly first
+- All 255 conformance programs in `tests/conformance/` must hold at their declared level — positive entries pass, and the negative fixtures (`ch02_generic_over_unit_rejected`, `ch02_map_unit_value_rejected`, `ch02_nonregular_data_rejected`, `ch04_let_unit_rejected`, `ch05_apply_fn_arity`, `ch05_decreases_float_rejected`, `ch05_reserved_fn_name_rejected`, `ch05_where_helper_duplicate_rejected`, `ch05_reserved_keyword_fn_rejected`, `ch05_reserved_contextual_keyword_fn_rejected`, `ch05_reserved_resume_fn_rejected`, `ch05_where_helper_outer_slot_rejected`, `ch07_handler_state_body_scope_rejected`, `ch07_old_outside_ensures_rejected`, `ch07_state_unit_op_param_read_rejected`, `ch08_ambiguous_import_adt_rejected`, `ch08_ambiguous_import_adt_swapped_rejected`, `ch08_ambiguous_import_rejected`, `ch08_ambiguous_import_swapped_rejected`, `ch08_circular_import`, `ch08_reserved_vera_prefix_rejected`, `ch08_reserved_vera_prefix_reference_rejected`, `ch08_reserved_vera_prefix_binder_rejected`, `ch08_reserved_vera_prefix_effect_rejected`, `ch08_reserved_vera_prefix_ability_rejected`, `ch08_reserved_vera_prefix_constructor_rejected`, `ch08_visibility_private`, `ch09_builtin_effect_redefinition_rejected`, `ch09_builtin_redefinition`, `ch09_ord_adt_rejected`, `ch09_eq_non_derivable_rejected`, `ch09_sql_injection_rejected`, `ch09_sql_placeholder_mismatch_rejected`, `ch09_sql_placeholder_let_mismatch_rejected`, `ch09_sql_numbered_placeholder_rejected`, `ch07_bare_effect_op_rejected`, `ch06_quantifier_array_domain_rejected`, `ch07_handler_state_type_mismatch_rejected`, `ch02_alias_cycle_rejected`, `ch04_pattern_ctor_over_container_rejected`, `ch04_pattern_literal_type_rejected`, `ch05_where_helper_sibling_call_rejected`, `ch08_builtin_adt_redefinition_rejected`, `ch08_builtin_tuple_redefinition_rejected`, `ch08_builtin_ctor_redefinition_rejected`, `ch08_sibling_ctor_collision_rejected`, `ch08_module_prelude_adt_contention_rejected`) must *fail* with their `expected_error` E-code, at the stage `expected_error_stage` names — `check` by default, or `compile` for a diagnostic the checker accepts and codegen refuses (`ch08_module_prelude_adt_contention_rejected` → E621), which also asserts the program type-checks cleanly first
 - All 43 examples in `examples/` must pass `vera check` and `vera verify`
 - `mypy vera/` must be clean
 - `pytest tests/ -v` must pass
@@ -2719,7 +2719,7 @@ A bug fix closes the **class** the report belongs to, not the reported instance:
 
 ### Contributing
 
-See `CONTRIBUTING.md` for guidelines. Pre-commit hooks run mypy, pytest, trailing whitespace checks, and validate all examples on every commit.
+See `CONTRIBUTING.md` for guidelines. Pre-commit hooks run the fast gates on every commit — ruff, mypy, trailing whitespace checks, the doc gates, and the test files the commit stages; CI runs the full test suite, the conformance suite and every example on every pull request.
 
 
 ========================================================================
@@ -2792,8 +2792,13 @@ and exits; every other `vera` command works without it.
   `PATH`. See its [README](https://github.com/aallan/vera/blob/main/editors/vscode/README.md) for setup.
 - **Anything else** — point your editor's generic LSP client at the
   command `vera lsp` for language `vera` / file pattern `*.vera`,
-  using stdio transport and full-document sync. That is the entire
-  contract.
+  using stdio transport and full-document sync. That is the whole
+  contract for diagnostics, hover, navigation and completion. The three
+  custom methods that edit the document also need the client to
+  advertise `workspace.applyEdit` and
+  `workspace.workspaceEdit.documentChanges`: the server sends only
+  version-guarded edits, and `documentChanges` is the only form that
+  can carry a version.
 
 ## Standard features
 
@@ -2828,6 +2833,15 @@ included) and publishes:
   completion lists the in-scope bindings that fit, innermost first,
   each with its type.
 
+If the pipeline itself fails on a text (an internal compiler error,
+which is a bug), the server publishes whatever diagnostics the failing
+step had already recorded, then one `E699` naming the failure, in place
+of that text's diagnostics, and keeps no analysis of it: hover,
+go-to-definition and completion answer nothing, and the proof delta and
+the edit methods refuse, until a change the server can analyse. None of
+them answers from the previous text's analysis, because the buffer no
+longer holds that text.
+
 ## What no generic language server can do
 
 ### The warm verification core
@@ -2851,13 +2865,17 @@ JSON-RPC `InvalidParams` rather than opaque errors.
 #### `vera/speculativeEdit` — "would this edit break my proofs?"
 
 ```json
-{"uri": "file:///main.vera", "text": "<full proposed source>"}
+{"uri": "file:///main.vera", "text": "<full proposed source>", "version": 7}
 ```
 
 Verifies the proposed text *in memory* — the canonical document, its
 published diagnostics, and the editor's view are untouched — and
 returns a **proof delta** against the document's current obligation
-set:
+set. A delta is only as good as its baseline, so the request is
+refused with `InvalidParams`, as `vera/proposeEdit` is, when there is
+no baseline to measure against — the document is not open, or the
+server has no analysis of its current text — or when the optional
+`"version"` names a version the document is no longer at:
 
 ```json
 {
@@ -2945,7 +2963,8 @@ obligation to the gate.
 #### `vera/proposeEdit` — the enforced edit workflow
 
 ```json
-{"uri": "file:///main.vera", "text": "<full proposed source>", "force": false}
+{"uri": "file:///main.vera", "text": "<full proposed source>", "force": false,
+ "version": 7}
 ```
 
 The whole edit → verify → apply sequence as one method, so the
@@ -2964,13 +2983,73 @@ every speculative obligation, so it has to be — but it introduced
 nothing and took nothing away, so the gate passes it.  A pair that
 worsened is refused exactly as the identical unmoved edit is.
 
-On apply the server issues `workspace/applyEdit` (the client owns the
-buffer), updates its canonical state, and republishes
-diagnostics; on refuse, nothing changes and the response says why:
+On a pass the server asks the client to apply the edit, and changes
+nothing of its own. The client owns the buffer: the server's copy of
+the text, its version and the published diagnostics describe what the
+client has, and they move only when the client's own `didOpen`,
+`didChange` or `didClose` says the buffer moved. So the edit goes out
+as one `workspace/applyEdit` — a whole-document replacement guarded by
+the version of the text it was verified against, which a client whose
+buffer has moved on since (the user typed, or another edit landed
+first) must refuse rather than let it overwrite the newer text. The
+server waits for the answer without holding up anything else, and an
+applied edit reaches it as the client's `didChange`: at the client's
+own version, analysed and published like any other change, and
+replayed from the warm cache. On refuse, nothing is sent and nothing
+changes, and the response says why:
 
 ```json
-{"applied": false, "ok": true, "proof_delta": {...}, "diagnostics": 0}
+{"applied": false, "ok": true, "proof_delta": {...}, "diagnostics": 0,
+ "client": null, "client_reason": null}
 ```
+
+`applied` is `true` when the client applied the edit, `false` when it
+did not or the edit was never sent, and `null` when the server cannot
+tell — it states only what it knows. `client` says what became of the
+edit, and `client_reason` says why when there is a why — the client's
+`failureReason`, the error it answered with, or what arrived in place
+of an answer:
+
+| `client` | What happened | What to do |
+|----------|---------------|------------|
+| `null` | The gate refused; nothing was sent. | Read the proof delta and the diagnostics count. |
+| `"applied"` | The client applied the edit. | Nothing: its `didChange` brings the server's state along. |
+| `"declined"` | The client answered `applied: false` — most often because its buffer is no longer at the version the edit was verified against. | Re-read the document and propose again. |
+| `"failed"` | The client answered with an error, or the request could not be sent (`applied: false`); or the client answered with something other than a boolean `applied` (`applied: null`). | Propose again; after `applied: null`, re-read the document first. |
+| `"timeout"` | No answer arrived within 60 seconds, the bound on the wait, so the proposal answers rather than wait for ever (`applied: null`). The edit request is still open: the client may still apply it, and its `didChange` then updates the server as any change does. | Re-read the document before proposing again. |
+| `"cancelled"` | The request was cancelled before the client answered (`applied: null`). | Re-read the document before proposing again. |
+| `"unsupported"` | The client does not advertise `workspace.applyEdit` and `workspace.workspaceEdit.documentChanges`, so no version-guarded edit could be sent, and none was. | Advertise both capabilities. |
+
+If the client cancels the `vera/proposeEdit` request itself while the
+edit is pending, that request ends with a `RequestCancelled` error —
+never `applied` — and the edit request stays open for the client to
+answer.
+
+The version guard protects the newer text only if the edit was made
+from, and judged against, the text at that version, so all three edit
+methods refuse with `InvalidParams`, and say why, rather than act on a
+text the client no longer has:
+
+- **The document is not open.** An edit is sent only for a document
+  the client has open, because only then is there a version to guard it
+  with — the protocol's `null` version means "the file on disk is the
+  master", which a client applies to whatever its buffer holds when the
+  edit lands — and an analysis to judge it against. Open the document
+  first.
+- **The server has no analysis of the open text** — the change it last
+  received could not be analysed (see [Standard
+  features](#standard-features)). `force` does not waive this: it
+  overrides the gate's verdict, not the question of which text the edit
+  is about. The next change the server can analyse clears it.
+- **The request was made from an older version.** The optional
+  `"version"` names the document version the request was made from —
+  for `vera/proposeEdit`, the version the proposed text was written
+  against. When the open document is at any other version, the server
+  has seen changes the request did not, and refuses. Without
+  `"version"` the server cannot tell: a proposal written against an
+  older text replaces whatever the buffer holds, including typing the
+  server had already seen. A client that cannot send it accepts that
+  risk.
 
 `"force": true` (strictly boolean — anything else fails closed)
 overrides the gate for the cases where breaking a proof is the point,
@@ -2982,7 +3061,7 @@ easy thing.
 
 ```json
 {"uri": "file:///main.vera", "fn": "callee",
- "kind": "requires", "expr": "@Nat.0 >= 1"}
+ "kind": "requires", "expr": "@Nat.0 >= 1", "version": 7}
 ```
 
 Splices the new expression over the first `requires`/`ensures` clause
@@ -2993,11 +3072,15 @@ precondition some caller no longer satisfies surfaces as
 sites**, and the gate refuses. There is no `force` here — an agent
 that wants to push through a breaking contract change must construct
 the full text and call `vera/proposeEdit` with `force` explicitly.
+The splice is made from the server's current text, so the optional
+`"version"` here guards the agent's choice of function and clause
+rather than a text it wrote; it is refused on the same terms as
+`vera/proposeEdit`'s, and so is `vera/addEffect`'s.
 
 #### `vera/addEffect` — effect propagation through the call graph
 
 ```json
-{"uri": "file:///main.vera", "fn": "target", "effect": "Async"}
+{"uri": "file:///main.vera", "fn": "target", "effect": "Async", "version": 7}
 ```
 
 The genuinely multi-site one. Adding an effect to a function
@@ -3011,7 +3094,7 @@ all-or-nothing, never a half-propagated document. The response adds
 `"rewritten"`: the affected functions in declaration order. If every
 row already carries the effect, nothing runs and the no-op shape comes
 back (`"applied": false, "ok": true, "proof_delta": null,
-"rewritten": []`).
+"client": null, "rewritten": []`).
 
 The closure is **bounded at handlers**: a call site inside a
 `handle[E]` body contributes no edge, because the handler discharges
@@ -3052,7 +3135,8 @@ every step.
 1. `didOpen` the file; read the published diagnostics and tier hints.
 2. Draft an edit; `vera/speculativeEdit` it; inspect the proof delta.
 3. If the delta looks right, `vera/proposeEdit` the same text — the
-   server re-verifies (cheaply, from the warm cache) and applies.
+   server re-verifies (cheaply, from the warm cache) and has the client
+   apply it; `applied: true` means the client did.
 4. For the two structured refactors — tightening a contract,
    threading an effect — call the dedicated method instead and let
    the server construct the candidate.
@@ -3324,7 +3408,7 @@ None of this is Vera-specific, but it validates the design choices. The thesis i
 
 This is a real concern. LLMs are trained on trillions of tokens of Python, TypeScript, and JavaScript. A MojoBench study (NAACL 2025) found that even fine-tuned models achieved only 30–35% improvement over base models on Mojo code generation, illustrating the cold-start problem for new languages.
 
-Vera's approach has three parts. First, the agent-facing documentation (SKILL.md) is designed to be dropped into a model's context window, so the model works from the language specification rather than training data recall. Second, Vera's syntax is deliberately simple and regular (fewer constructs, each with one preferred surface spelling `vera fmt` produces deterministically), which reduces the surface area a model needs to learn. Third, the conformance test suite (254 programs covering every language feature) gives models concrete examples to learn from and conform to. Simon Willison's December 2025 JustHTML write-up illustrates the same point in practice: an LLM-assisted implementation, guided by the html5lib conformance suite, conformed to the HTML parsing spec by running against its tests, and a comprehensive test suite is a strong scaffold for a model implementing to a specification.
+Vera's approach has three parts. First, the agent-facing documentation (SKILL.md) is designed to be dropped into a model's context window, so the model works from the language specification rather than training data recall. Second, Vera's syntax is deliberately simple and regular (fewer constructs, each with one preferred surface spelling `vera fmt` produces deterministically), which reduces the surface area a model needs to learn. Third, the conformance test suite (255 programs covering every language feature) gives models concrete examples to learn from and conform to. Simon Willison's December 2025 JustHTML write-up illustrates the same point in practice: an LLM-assisted implementation, guided by the html5lib conformance suite, conformed to the HTML parsing spec by running against its tests, and a comprehensive test suite is a strong scaffold for a model implementing to a specification.
 
 
 ## How does Vera compare to Dafny / Lean / Koka / F*?
@@ -3367,7 +3451,7 @@ The reference compiler is under active development. The current release includes
 
 - A seven-stage pipeline: parse, transform, resolve, typecheck, verify, compile, execute
 - A 14-chapter formal specification
-- 17,088 tests, including a 254-program conformance suite
+- 16,978 tests, including a 255-program conformance suite
 - 43 working example programs
 - 164 built-in functions covering strings, arrays, math, parsing, and data types
 - Four built-in abilities (Eq, Ord, Hash, Show) with constrained generics and ADT auto-derivation
@@ -3493,7 +3577,7 @@ Every diagnostic has a stable error code. Codes are grouped by compiler phase:
 - **E155**: Bare function name supplied by two imports
 - **E156**: Bare data type name supplied by two imports
 - **E157**: Bare constructor name supplied by two imports
-- **E158**: Declaration reuses a special-cased built-in ADT name
+- **E158**: Declaration reuses a primitive or special-cased built-in type name
 - **E159**: Two data declarations share a constructor name
 - **E160**: Array index must be Int or Nat
 - **E161**: Cannot index non-array type
@@ -3510,6 +3594,8 @@ Every diagnostic has a stable error code. Codes are grouped by compiler phase:
 - **E181**: Constraint references undeclared type variable
 - **E182**: Slot reference to a zero-size type
 - **E183**: Let binding of a zero-size type
+- **E184**: Name declared twice in one namespace
+- **E185**: Declaration takes a built-in ability's name or operation
 - **E200**: Unresolved function
 - **E201**: Wrong argument count
 - **E202**: Argument type mismatch

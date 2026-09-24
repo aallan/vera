@@ -947,7 +947,7 @@ ERROR_CODES: dict[str, str] = {
     "E155": "Bare function name supplied by two imports",
     "E156": "Bare data type name supplied by two imports",
     "E157": "Bare constructor name supplied by two imports",
-    "E158": "Declaration reuses a special-cased built-in ADT name",
+    "E158": "Declaration reuses a primitive or special-cased built-in type name",
     "E159": "Two data declarations share a constructor name",
     "E160": "Array index must be Int or Nat",
     "E161": "Cannot index non-array type",
@@ -964,6 +964,8 @@ ERROR_CODES: dict[str, str] = {
     "E181": "Constraint references undeclared type variable",
     "E182": "Slot reference to a zero-size type",
     "E183": "Let binding of a zero-size type",
+    "E184": "Name declared twice in one namespace",
+    "E185": "Declaration takes a built-in ability's name or operation",
     # E2xx — Type Checker: Calls
     "E200": "Unresolved function",
     "E201": "Wrong argument count",

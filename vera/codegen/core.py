@@ -41,7 +41,14 @@ from vera.prelude import (
     prelude_adt_names,
     prelude_data_decls,
 )
+from vera.skip import CodegenInvariantError
 from vera.slots import family_fallback_name
+from vera.trap_registry import (
+    TRAP_EMITTERS,
+    EmittedCheck,
+    find_check_markers,
+    strip_check_markers,
+)
 from vera.wasm import StringPool
 from vera.wasm.helpers import CellNames
 from vera.wasm.async_fusion import (
@@ -60,7 +67,7 @@ from vera.codegen.compilability import CompilabilityMixin
 if TYPE_CHECKING:
     from vera.resolver import ResolvedModule
     from vera.types import ModuleArtifacts, SpanTypeTable, Type
-    from vera.wasm.context import WasmContext
+    from vera.wasm.context import CheckRecord, WasmContext
 
 
 # #1100: WAT-text scanning for the skip-propagation pass
@@ -73,6 +80,13 @@ if TYPE_CHECKING:
 # function symbol); `throw $tag` references an exception tag, not a
 # function; `ref.func` is never emitted.
 _WAT_FN_NAME_RE = re.compile(r"\s*\(func \$([^\s()]+)")
+# #1479: every function DEFINITION in the assembled module, which is how the
+# per-module record attributes each check marker to the function holding it.
+_WAT_FN_DEF_RE = re.compile(r"^\s*\(func \$([^\s()]+)(.*)$", re.MULTILINE)
+# The whole body of a closure whose enclosing function was dropped: its table
+# slot must survive, and nothing can construct it.  Named so the trap roster
+# (`vera.trap_registry.INTERNAL_TRAPS`) can list the stub's `unreachable`.
+_DROPPED_CLOSURE_BODY = "unreachable"
 _WAT_CALL_RE = re.compile(r"\b(?:return_call|call)\s+\$([^\s()]+)")
 # #1185: an INDIRECT call names no function symbol at all — it dispatches
 # on the module's function table — so `_WAT_CALL_RE` is blind to it and
@@ -231,16 +245,17 @@ class CodeGenerator(
         # Track which effect operations are needed
         self._io_ops_used: set[str] = set()
         self._needs_contract_fail: bool = False
-        # #808: set when an overflow guard emits a `vera.overflow_trap` call,
-        # so assembly.py declares the host import.
-        self._needs_overflow_trap: bool = False
-        # #754: set when a @Int -> @Nat narrowing guard emits a
-        # `vera.nat_guard_trap` call, so `_assemble_module` declares the
-        # host import.
-        self._needs_nat_guard_trap: bool = False
-        # #1438: the widening guard's twin, on the generator that
-        # assembles the module.
-        self._needs_widen_trap: bool = False
+        # #1479: set (merged from each `WasmContext` at the per-scope seams)
+        # when any check calls `vera.trap`, the one signal every named check
+        # raises, so `_assemble_module` declares the import.  The allocator
+        # calls it too, so an allocating module declares it whatever this
+        # says (see `_assemble_module`).
+        self._needs_trap: bool = False
+        # #1479: every check emitted into this module, by record entry id —
+        # one record, shared with every `WasmContext` compiling the module.
+        # `CompileResult.emitted_checks` is read back from the assembled text,
+        # whose instructions carry the entries' markers.
+        self._emitted_checks: CheckRecord = {}
         self._needs_memory: bool = False
         # (cell, wasm_type).  `CellNames` rather than a bare family
         # (#1238 review F2): the wasi target names the unsupported
@@ -440,6 +455,17 @@ class CodeGenerator(
         # declaration ordering: that one is first-wins because a slot has
         # one winner, while contention is a property of each declaration.
         self._module_adt_declarers: dict[str, tuple[tuple[str, ...], ...]] = {}
+        # #1513: module path -> the ADT names that module declares PUBLIC,
+        # the set the checker's `_module_constructors` is built from.  The
+        # namespace projection reads it to resolve a constructor of a type
+        # the namespace does not import (`paint(Green)` with `Colour` reached
+        # only through `paint`'s signature) exactly where the checker does.
+        self._module_public_adts: dict[tuple[str, ...], frozenset[str]] = {}
+        # #1513: namespace -> the modules that namespace's checker can see,
+        # so the same fallback resolves among the same declarations.
+        self._namespace_module_reach: dict[
+            tuple[str, ...] | None, frozenset[tuple[str, ...]]
+        ] = {}
         # #1317: `mod$<path>$<Name>` -> the bare name the user wrote, for
         # every ADT type and constructor the per-owner rename qualified.  The
         # mangled spelling is a WASM symbol, never a name the reader is asked
@@ -919,6 +945,59 @@ class CodeGenerator(
         self._error(
             node, description, rationale=rationale, error_code=error_code)
 
+    def _assemble_emitted_checks(self, wat: str) -> list[EmittedCheck]:
+        """The per-module record, read back from the assembled module *wat*
+        (#1479): one entry for every record marker the text holds, under the
+        function whose body holds it.
+
+        Every recorded check's instruction carries its entry's marker
+        (``vera.trap_registry.CHECK_MARKER_RE``), so the text is the record;
+        a string literal or comment that spells a marker is not one.
+        A translation thrown away and redone, a function dropped after it
+        compiled, a closure stubbed to ``unreachable``, a failed closure
+        worklist, a self-tail prefix spliced zero or several times — each is
+        counted by what the module holds, with no bookkeeping to keep in step
+        with the compile.
+        """
+        headers = list(_WAT_FN_DEF_RE.finditer(wat))
+        out: list[EmittedCheck] = []
+        for position, header in enumerate(headers):
+            function = header.group(1)
+            end = (headers[position + 1].start()
+                   if position + 1 < len(headers) else len(wat))
+            prelude = function.split("$")[0] in self._prelude_fn_names
+            source = (self._fn_source_map.get(function)
+                      or self._fn_source_map.get(function.rsplit("$", 1)[0]))
+            for marker in find_check_markers(wat, header.start(), end):
+                entry = self._emitted_checks.get(int(marker.group(1)))
+                if entry is None:
+                    raise CodegenInvariantError(
+                        f"${function} carries record marker "
+                        f"{marker.group(0).strip()!r}, which names no entry "
+                        "of this module's record", None,
+                    )
+                emitter, node = entry
+                row = TRAP_EMITTERS[emitter]
+                span = node.span if node is not None else None
+                out.append(EmittedCheck(
+                    emitter=emitter,
+                    kind=row.kind,
+                    obligations=row.obligations,
+                    function=function,
+                    line=span.line if span is not None else 0,
+                    column=span.column if span is not None else 0,
+                    end_line=span.end_line if span is not None else 0,
+                    end_column=span.end_column if span is not None else 0,
+                    file=(None if prelude
+                          else source[0] if source is not None else self.file),
+                    prelude=prelude,
+                ))
+        stray = sum(1 for _ in find_check_markers(wat)) - len(out)
+        if stray:
+            raise CodegenInvariantError(
+                f"{stray} record marker(s) outside every function body", None)
+        return out
+
     def _get_source_line(self, line: int) -> str:
         """Extract a line from the source text."""
         lines = self.source.splitlines()
@@ -1359,7 +1438,7 @@ class CodeGenerator(
         exports[:] = [e for e in exports if e not in dropped_set]
         self._closure_fns_wat = [
             (
-                f"  (func ${match.group(1)} unreachable)"
+                f"  (func ${match.group(1)} {_DROPPED_CLOSURE_BODY})"
                 if (match := _WAT_FN_NAME_RE.match(closure_wat)) is not None
                 and match.group(1) in direct_cause
                 else closure_wat
@@ -1578,14 +1657,24 @@ class CodeGenerator(
           §8.5.2 says it does.
 
         A declaration the namespace cannot NAME is in none of the three: it
-        is dropped before the classes are applied, because a name it cannot
-        write must not answer for one it can.  That covers the entry file's
-        declarations while a module compiles, a sibling module's that this
-        one never imports, and a module reached only transitively from the
-        entry — each measured taking the prelude's `Some` away from a body
-        that renders `Some(42)` without it.  Dropped rather than demoted to
-        `foreign`: `foreign` is applied after `infra`, so a stranger placed
-        there would still shadow the prelude.
+        is kept out of them, because a name it cannot write must not answer
+        for one it can.  That covers the entry file's declarations while a
+        module compiles, a sibling module's that this one never imports, and
+        a module reached only transitively from the entry — each measured
+        taking the prelude's `Some` away from a body that renders `Some(42)`
+        without it.  Kept out rather than demoted to `foreign`: `foreign` is
+        applied after `infra`, so a stranger placed there would still shadow
+        the prelude.
+
+        One use of a stranger remains (#1513): a body that constructs a
+        PUBLIC type of a module its checker sees without importing the type
+        — `paint(Green)`, with `Colour` reaching the entry only through
+        `paint`'s signature.  A **fallback** applied after the three fills
+        each constructor name that no class holds and exactly one such
+        stranger declares, which is the question the checker's
+        `_stranger_constructor` answers before it accepts the name with a
+        warning.  It fills and never displaces, so the guarantee above
+        holds for every name the three classes resolve.
 
         Returns the constructor layouts, the ownership map, and the
         type-parameter index table, all three built from the same ordering
@@ -1608,6 +1697,10 @@ class CodeGenerator(
         infra: list[str] = []
         foreign: list[str] = []
         own: list[str] = []
+        # #1513: the strangers a body may still NAME a constructor of — a
+        # PUBLIC type of a module the compilation absorbs, which this
+        # namespace does not import.  See the fallback class below.
+        strangers: list[str] = []
         for adt_name in self._adt_layouts:
             bare = display.get(adt_name, adt_name)
             if bare not in declared:
@@ -1666,6 +1759,12 @@ class CodeGenerator(
                 # away with it — measured as an E602 in the entry for
                 # `HtmlNode`, `Request` and `Response`, whose blocks the
                 # prelude injects on demand.
+                if (owner is not None
+                        and owner in self._namespace_module_reach.get(
+                            active, frozenset())
+                        and bare in self._module_public_adts.get(
+                            owner, frozenset())):
+                    strangers.append(adt_name)
                 continue
             elif owner is None:
                 # An ENTRY-file declaration while a module compiles, with no
@@ -1705,6 +1804,34 @@ class CodeGenerator(
         # The namespace's OWN declarations shadow both, which is §8.5.2.
         for adt_name in own:
             apply(adt_name, keep_infra=False)
+        # #1513: a constructor of a type this namespace does NOT import —
+        # `paint(Green)` where `Colour` reaches the entry only through
+        # `paint`'s signature.  The checker accepts it, with a warning that
+        # names the module to import from, when exactly one module's public
+        # type declares the name, that type's name is declared by no other
+        # module, and nothing in scope here already holds either name
+        # (`_stranger_constructor`).  This class answers the same question
+        # the same way, so the program the checker accepts is the one that
+        # compiles.  It FILLS gaps and never displaces: a name any class
+        # above holds keeps its meaning, which is what keeps #1436's
+        # guarantee that a declaration this namespace cannot name never
+        # answers for one it can.  A name two strangers declare is left
+        # out, and the checker has already refused it.
+        stranger_sources: dict[str, list[str]] = {}
+        for adt_name in strangers:
+            for ctor_name in self._adt_layouts[adt_name]:
+                if ctor_name not in ctor_layouts:
+                    stranger_sources.setdefault(ctor_name, []).append(
+                        adt_name)
+        for ctor_name, sources in stranger_sources.items():
+            if len(sources) != 1:
+                continue
+            (adt_name,) = sources
+            ctor_layouts[ctor_name] = self._adt_layouts[adt_name][ctor_name]
+            ctor_to_adt[ctor_name] = adt_name
+            owned_tp = self._adt_ctor_tp_indices.get(adt_name, {})
+            if ctor_name in owned_tp:
+                tp_indices[ctor_name] = owned_tp[ctor_name]
         return ctor_layouts, ctor_to_adt, tp_indices
 
     def _adt_decl_index(self, name: str, order: dict[str, int]) -> int:
@@ -3028,16 +3155,49 @@ class CodeGenerator(
 
         # Assemble the module
         wat = self._assemble_module(functions_wat)
+        # #1479: read the per-module record back from the assembled text, then
+        # take its markers out — the WAT a caller sees carries none, and the
+        # binary never did (they are comments).
+        emitted_checks = self._assemble_emitted_checks(wat)
+        wat = strip_check_markers(wat)
 
         # Convert WAT to WASM binary
         try:
+            # #1433: the backstop — the module binds each function identifier
+            # once, or the compile ends in an E699 naming it, never in
+            # wasm-tools' `duplicate func identifier` against a symbol the
+            # author never wrote.
+            self._assert_unique_func_names(wat)
             wasm_bytes = wasmtime.wat2wasm(wat)
         except Exception as exc:  # noqa: BLE001 — a backend failure becomes a codegen diagnostic
-            self.diagnostics.append(Diagnostic(  # diag-fields-exempt: internal wat2wasm backend failure; a code-generation bug, not a user error, so no source-level fix or spec section applies.
-                description=f"WAT compilation failed: {exc}",
-                location=SourceLocation(file=self.file),
-                severity="error",
-            ))
+            if isinstance(exc, CodegenInvariantError):
+                self.diagnostics.append(Diagnostic(
+                    description=(
+                        f"Internal compiler error while assembling the "
+                        f"module: {exc.msg}"
+                    ),
+                    location=SourceLocation(file=self.file),
+                    rationale=(
+                        "Code generation produced a module WebAssembly "
+                        "cannot load. That is a bug in the compiler, not "
+                        "something to change in the program: a program the "
+                        "checker should have refused was not, or a valid "
+                        "one was compiled under a clashing name."
+                    ),
+                    fix=(
+                        "Please file a bug report with the offending "
+                        "program at https://github.com/aallan/vera/issues"
+                    ),
+                    spec_ref='Chapter 0, Section 0.5.1 "Diagnostic Structure"',
+                    severity="error",
+                    error_code="E699",
+                ))
+            else:
+                self.diagnostics.append(Diagnostic(  # diag-fields-exempt: internal wat2wasm backend failure; a code-generation bug, not a user error, so no source-level fix or spec section applies.
+                    description=f"WAT compilation failed: {exc}",
+                    location=SourceLocation(file=self.file),
+                    severity="error",
+                ))
             return CompileResult(
                 wat=wat,
                 wasm_bytes=b"",
@@ -3121,6 +3281,7 @@ class CodeGenerator(
             fn_source_map=dict(self._fn_source_map),
             prelude_fn_names=set(self._prelude_fn_names),
             dropped_fns=dropped_fns,
+            emitted_checks=emitted_checks,
         )
 
     def _user_dropped_fns(

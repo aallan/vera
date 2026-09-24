@@ -1,5 +1,5 @@
 <svg width="920" height="500" viewBox="0 0 920 500" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
-  <title id="title">Linear memory layout: string constants at offset zero, then a 4096-byte GC shadow stack, a 4096-byte mark worklist, and the heap growing toward higher addresses from data_end plus 8192, inside an initial 64 KiB page that memory.grow can extend. Every allocation carries a 4-byte header: mark bit, then payload size.</title>
+  <title id="title">Linear memory layout: string constants at offset zero, then a 16 384-byte GC shadow stack, a 65 536-byte mark worklist, a 65 536-byte wrapper table in a program that holds host-backed values, and the heap growing toward higher addresses from data_end plus 81 920 (147 456 with the wrapper table), in memory that memory.grow extends. Every allocation carries a 4-byte header: mark bit, then payload size.</title>
   <!-- Design system: see architecture.svg. Grounded in spec/12 §12.5.1–12.5.2. -->
   <defs>
     <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
@@ -23,7 +23,7 @@
 
   <rect x="1.5" y="1.5" width="917" height="497" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
 
-  <text class="f micro" x="36" y="42">LINEAR MEMORY · ONE 64 KiB PAGE, GROWABLE</text>
+  <text class="f micro" x="36" y="42">LINEAR MEMORY · GROWABLE</text>
   <text class="f sub" x="36" y="64">Addresses increase downward. The GC scaffolding is only emitted when the program heap-allocates.</text>
 
   <!-- ═══ the address-space bar ═══ -->
@@ -34,18 +34,22 @@
   <!-- shadow stack -->
   <rect class="seg" x="340" y="148" width="240" height="46" fill="#ede8f2"/>
   <text class="f st" x="460" y="168" text-anchor="middle">GC shadow stack</text>
-  <text class="f ss" x="460" y="183" text-anchor="middle">4096 bytes</text>
+  <text class="f ss" x="460" y="183" text-anchor="middle">16 384 bytes · 4 096 roots</text>
   <!-- mark worklist -->
   <rect class="seg" x="340" y="194" width="240" height="46" fill="#f2eef7"/>
   <text class="f st" x="460" y="214" text-anchor="middle">GC mark worklist</text>
-  <text class="f ss" x="460" y="229" text-anchor="middle">4096 bytes</text>
+  <text class="f ss" x="460" y="229" text-anchor="middle">65 536 bytes · 16 384 entries</text>
+  <!-- wrapper table: only in a program that holds host-backed values -->
+  <rect x="340" y="240" width="240" height="44" fill="#f7f3fa" stroke="#cfccc5" stroke-width="1" stroke-dasharray="4 3"/>
+  <text class="f st" x="460" y="259" text-anchor="middle">GC wrapper table</text>
+  <text class="f ss" x="460" y="274" text-anchor="middle">65 536 bytes · only with host-backed values</text>
   <!-- heap -->
-  <rect class="seg" x="340" y="240" width="240" height="150" fill="#e6f0e9"/>
-  <text class="f st" x="460" y="266" text-anchor="middle">Heap</text>
-  <text class="f ss" x="460" y="282" text-anchor="middle">ADTs · closures · arrays</text>
-  <line x1="460" y1="300" x2="460" y2="368" stroke="#5a9e6f" stroke-width="1.5" marker-end="url(#arr)"/>
-  <text class="f ss" x="472" y="338" fill="#3d7a4d">bump allocation —</text>
-  <text class="f ss" x="472" y="351" fill="#3d7a4d">grows toward higher addresses</text>
+  <rect class="seg" x="340" y="284" width="240" height="106" fill="#e6f0e9"/>
+  <text class="f st" x="460" y="306" text-anchor="middle">Heap</text>
+  <text class="f ss" x="460" y="321" text-anchor="middle">ADTs · closures · arrays</text>
+  <line x1="460" y1="330" x2="460" y2="382" stroke="#5a9e6f" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text class="f ss" x="472" y="352" fill="#3d7a4d">bump allocation —</text>
+  <text class="f ss" x="472" y="365" fill="#3d7a4d">grows toward higher addresses</text>
   <!-- unused -->
   <rect x="340" y="390" width="240" height="38" fill="#f5f4f1" stroke="#cfccc5" stroke-width="1" stroke-dasharray="4 3"/>
   <text class="f ss" x="460" y="413" text-anchor="middle" fill="#a9a49b">unused</text>
@@ -56,11 +60,13 @@
   <line class="tick" x1="580" y1="148" x2="600" y2="148"/>
   <text class="m off" x="608" y="152">data_end</text>
   <line class="tick" x1="580" y1="194" x2="600" y2="194"/>
-  <text class="m off" x="608" y="198">data_end + 4096</text>
+  <text class="m off" x="608" y="198">data_end + 16 384</text>
   <line class="tick" x1="580" y1="240" x2="600" y2="240"/>
-  <text class="m off" x="608" y="244">data_end + 8192 = $heap_ptr₀</text>
+  <text class="m off" x="608" y="244">data_end + 81 920</text>
+  <line class="tick" x1="580" y1="284" x2="600" y2="284"/>
+  <text class="m off" x="608" y="288">data_end + 147 456 = $heap_ptr₀</text>
   <line class="tick" x1="580" y1="428" x2="600" y2="428"/>
-  <text class="m off" x="608" y="432">65 536 + (memory.grow)</text>
+  <text class="m off" x="608" y="432">grows with memory.grow</text>
 
   <!-- purpose notes (left) -->
   <text class="f noteh" x="36" y="164">why a shadow stack?</text>
@@ -70,15 +76,15 @@
   <text class="f note" x="36" y="222">after each <tspan class="m" font-size="10px">call $alloc</tspan>, restored at exit.</text>
 
   <!-- allocation inset (right, under offsets) -->
-  <text class="f noteh" x="640" y="292">one allocation</text>
-  <rect x="640" y="302" width="52" height="30" fill="#f8efdf" stroke="#e8e6e1"/>
-  <text class="m" x="666" y="321" text-anchor="middle" font-size="10px" fill="#b07820">hdr · 4 B</text>
-  <rect x="692" y="302" width="150" height="30" fill="#ffffff" stroke="#e8e6e1"/>
-  <text class="f ss" x="767" y="321" text-anchor="middle">payload, 8-byte aligned</text>
-  <text class="m" x="640" y="352" font-size="10px" fill="#7a756d">bit 0      GC mark (white/black)</text>
-  <text class="m" x="640" y="366" font-size="10px" fill="#7a756d">bits 1–16  payload size (≤ 65 535)</text>
-  <text class="m" x="640" y="380" font-size="10px" fill="#7a756d">bits 17–31 reserved</text>
+  <text class="f noteh" x="640" y="316">one allocation</text>
+  <rect x="640" y="326" width="52" height="30" fill="#f8efdf" stroke="#e8e6e1"/>
+  <text class="m" x="666" y="345" text-anchor="middle" font-size="10px" fill="#b07820">hdr · 4 B</text>
+  <rect x="692" y="326" width="150" height="30" fill="#ffffff" stroke="#e8e6e1"/>
+  <text class="f ss" x="767" y="345" text-anchor="middle">payload, 8-byte aligned</text>
+  <text class="m" x="640" y="376" font-size="10px" fill="#7a756d">bit 0      GC mark (white/black)</text>
+  <text class="m" x="640" y="390" font-size="10px" fill="#7a756d">bits 1–16  payload size (≤ 65 535)</text>
+  <text class="m" x="640" y="404" font-size="10px" fill="#7a756d">bits 17–31 reserved</text>
 
   <!-- footer -->
-  <text class="f footi" x="36" y="462">A program that never allocates carries none of this — no shadow stack, no worklist, no $heap_ptr, zero GC overhead.</text>
+  <text class="f footi" x="36" y="462">A program that never allocates carries none of this — no shadow stack, no worklist, no wrapper table, no $heap_ptr, zero GC overhead.</text>
 </svg>
