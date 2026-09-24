@@ -370,6 +370,15 @@ class CallsHandlersMixin:
             recovered = self._recover_ctor_ptype(arg, bare)
             if recovered is not None:
                 return recovered
+            # A non-generic data type takes no arguments.  The positional
+            # fallback below lists the constructor's FIELD types in their
+            # place (`MkArr(3)` as `Array<Int>`), which reads as another
+            # type now that the argument count says whose a spelling is
+            # (#1539): a `data Array`'s value rendered as the container.
+            adt = self._ctor_to_adt_name(arg.name)
+            if (adt is not None and arg.name != "Tuple"
+                    and not self._adt_tp_counts.get(adt, 0)):
+                return adt
 
         info = self._get_arg_type_info_wasm(arg)
         if info is None:
@@ -491,7 +500,7 @@ class CallsHandlersMixin:
                 break
             fbase, fargs = self._split_param_type(decl)
             # Only nested GENERIC ADT fields carry a recoverable parameter.
-            if not fargs or fbase not in self._adt_type_names:
+            if not fargs or self._value_adt_key(decl) is None:
                 continue
             # Which nested type-arg positions ARE a parent parameter still
             # needing a value?  (`Rose<T>` → position 0 holds `T`.)
@@ -608,7 +617,10 @@ class CallsHandlersMixin:
         instantiation lays out an i32_pair, not a bare pointer.
         """
         base, type_args = self._split_param_type(ptype)
-        if base not in self._adt_type_names:
+        # #1534/#1539: the VALUE's type says which data type this is, not
+        # the membership of the namespace compiling the show: a value made
+        # in another module has a type the entry file may not name.
+        if self._value_adt_key(ptype) is None:
             return None
 
         # Tuple is a VARIADIC product with an empty registered layout — its
@@ -663,8 +675,12 @@ class CallsHandlersMixin:
         plans: list[tuple[str, int, list[tuple[int, str, str]]]] = []
         for cname, layout in ctors:
             n_fields = len(layout.field_offsets)
-            # ctor-owner-exempt: owner-qualified above; parsed-name path
-            tp_idx = self._ctor_adt_tp_indices.get(cname)
+            # #1534: read per OWNER, as the layouts above are.  The by-name
+            # table is this namespace's projection, so it answered for a
+            # same-named constructor of another type: an entry-file `MkDuo`
+            # ordering its parameters the other way laid out an imported
+            # `Duo<Int, String>` as `(Int, String)`.
+            tp_idx = self._adt_owned_tp_indices.get(base, {}).get(cname)
             raw_types = (
                 layout.field_types
                 if layout.field_types
@@ -907,7 +923,7 @@ class CallsHandlersMixin:
         # this namespace's own one-word ADT, and falling through to
         # `_show_adt` below is what renders it.  Taking the array arm would
         # walk its heap pointer as a (ptr, len) pair.
-        if base == "Array" and not self._declares_adt(base):
+        if base == "Array" and not self._declares_adt(ptype):
             elem_type = type_args[0] if type_args else None
             if elem_type is None:
                 return None
@@ -1288,7 +1304,7 @@ class CallsHandlersMixin:
         if base == "String":
             return self._translate_hash_string(value_instrs)
         # The hash twin of the show arm above (#1321/#1331).
-        if base == "Array" and not self._declares_adt(base):
+        if base == "Array" and not self._declares_adt(ptype):
             elem_type = type_args[0] if type_args else None
             if elem_type is None:
                 return None

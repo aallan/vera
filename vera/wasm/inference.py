@@ -22,6 +22,12 @@ from vera.slots import (
 )
 from vera.wasm.helpers import _strip_future, state_type_arg
 
+#: A built-in data type whose instances take any number of arguments: its
+#: registered type-parameter count is not an arity (`Tuple<Int, Bool>` is an
+#: instance of the 0-parameter registration).  `Tuple` is reserved in the data
+#: namespace (E158, #1397), so no declaration shares the name.
+_VARIADIC_ADTS = frozenset({"Tuple"})
+
 # `substitute_type_vars` was relocated to `vera.monomorphize` (the codegen-free
 # shared monomorphizer, #732) so the verifier can reuse it without importing the
 # WASM backend.  Re-exported here so the existing
@@ -604,7 +610,7 @@ class InferenceMixin:
             # TODAY — which is exactly the width-luck that hid #1309 and
             # #1331, and the reason it is corrected rather than left to a
             # future representation to expose.
-            if base in self._adt_type_names:
+            if self._declares_adt(name):
                 return "i32"
             # Opaque handle types — i32 handles managed by host runtime
             if base in ("Decimal", "Map", "Set"):
@@ -1753,10 +1759,24 @@ class InferenceMixin:
                 or resolved.startswith("Array<"))
 
     def _infer_array_element_type(self, expr: ast.ArrayLit) -> str | None:
-        """Infer the Vera element type name from an array literal."""
+        """Infer the Vera element type name from an array literal.
+
+        An element that is itself a literal is spelled in full
+        (``Array<Int>``), not by the bare head the walker names it by (#772):
+        the bare ``Array`` is also how a value of a ``data Array { … }``
+        is spelled, and the deciders read it as the declaration wherever
+        one is in scope (#1539), measuring the container's ``(ptr, len)``
+        element as a one-word pointer.  The full spelling carries the
+        container's argument, which no such declaration takes.
+        """
         if not expr.elements:
             return None
-        return self._infer_vera_type(expr.elements[0])
+        first = expr.elements[0]
+        if isinstance(first, ast.ArrayLit):
+            inner = self._infer_array_element_type(first)
+            if inner is not None:
+                return f"Array<{inner}>"
+        return self._infer_vera_type(first)
 
     def _infer_index_element_type(self, expr: ast.IndexExpr) -> str | None:
         """Infer the Vera element type from an index expression's collection.
@@ -2463,7 +2483,7 @@ class InferenceMixin:
         alias_map = dict(zip(alias_params, type_args))
         return self._canonical_wasm_type(fn_type.return_type, alias_map)
 
-    def _declares_adt(self, type_name: str) -> bool:
+    def _declares_adt(self, type_name: str, arity: int | None = None) -> bool:
         """Is *type_name* a ``data`` declaration of the namespace compiling?
 
         The wasm layer's arm of the resolution spine's DECLARED-ADT branch
@@ -2477,11 +2497,75 @@ class InferenceMixin:
         ``_adt_type_names`` is the namespace-scoped set the same
         ``AliasEnv.data_types`` this context's ``_alias_env`` carries — so a
         sibling module's ADT, or the entry file's, is NOT an ADT here.
-        Strips one level of type arguments so a parameterised spelling
-        (``Box<Int>``) asks about its head.
+
+        A parameterised spelling (``Box<Int>``) asks about its head, and is
+        an instance of the declaration only with as many arguments as the
+        declaration takes (#1539).  The spelling is a VALUE's type as often
+        as a name this namespace wrote: an array literal's ``Array<Int>``
+        beside a ``data Array { … }`` is the container's, which the head
+        alone cannot say, and reading it as the one-word declaration walked
+        its ``(ptr, len)`` pair as a pointer.  A name this namespace writes
+        always carries the declaration's arity (the checker refuses any
+        other, E135), so the count separates the two exactly when they
+        differ.  When they agree — a built-in ``Decimal`` beside
+        ``data Decimal`` — the checker gives both one type, and so does
+        this.  A bare spelling is the declaration's, as the #772 bare head
+        of a generic declaration's value is.  *arity* is the argument count
+        of a caller that has the name without its arguments.
         """
-        base = type_name.split("<")[0] if "<" in type_name else type_name
-        return base in self._adt_type_names
+        if "<" in type_name:
+            base = type_name.split("<", 1)[0]
+            if arity is None:
+                arity = len(self._split_type_args(type_name))
+        else:
+            base = type_name
+        if base not in self._adt_type_names:
+            return False
+        if not arity or base in _VARIADIC_ADTS:
+            return True
+        declared = self._adt_tp_counts.get(base)
+        return declared is None or declared == arity
+
+    def _value_adt_key(self, ptype: str) -> str | None:
+        """The data type a VALUE's type names: its layout key, or ``None``
+        for a built-in or primitive (#1534, #1539).
+
+        This namespace's own reading first, arity-aware
+        (:meth:`_declares_adt`); then any user declaration's layout key,
+        which after the #1317 renames names one data type in every
+        namespace (``_value_data_types``).  The second is what a value made
+        elsewhere needs: ``favourite``'s ``Colour`` is a data type in the
+        entry file that imported ``favourite`` alone, and asking the entry's
+        membership dropped every ``show`` / ``hash`` of it (E602).
+        """
+        base = ptype.split("<", 1)[0] if "<" in ptype else ptype
+        if self._declares_adt(ptype):
+            return base
+        if base in self._value_data_types:
+            return base
+        return None
+
+    @staticmethod
+    def _split_type_args(type_name: str) -> list[str]:
+        """The top-level argument spellings of ``Head<A, B<C>>``."""
+        inner = type_name.split("<", 1)[1]
+        inner = inner[:-1] if inner.endswith(">") else inner
+        out: list[str] = []
+        depth = 0
+        cur = ""
+        for ch in inner:
+            if ch == "<":
+                depth += 1
+            elif ch == ">":
+                depth -= 1
+            if ch == "," and depth == 0:
+                out.append(cur.strip())
+                cur = ""
+            else:
+                cur += ch
+        if cur.strip():
+            out.append(cur.strip())
+        return out
 
     @staticmethod
     def _named_type_to_wasm(name: str) -> str | None:
@@ -2766,7 +2850,7 @@ class InferenceMixin:
         # Unreachable for a declared ADT — the `_declares_adt` guard above
         # answers first — and ordered this way so the chain reads the same
         # everywhere rather than relying on that guard staying put.
-        if base in self._adt_type_names:
+        if self._declares_adt(resolved):
             return "i32"
         # Opaque handle types — i32 handles managed by host runtime
         if base in ("Decimal", "Map", "Set"):

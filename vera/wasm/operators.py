@@ -265,7 +265,7 @@ class OperatorsMixin:
                 if (op in (ast.BinOp.EQ, ast.BinOp.NEQ)
                         and lv is not None
                         and lv_base not in ("Bool", "Byte")
-                        and lv_base in self._adt_type_names
+                        and self._value_adt_key(lv) is not None
                         and not self._is_lost_type_arg_clone(lv, lv_base)
                         and self._eq_type_name_fully_concrete(lv)):
                     adt_eq = self._translate_adt_eq(left, right, lv, expr)
@@ -541,7 +541,7 @@ class OperatorsMixin:
         base = arg.split("<", 1)[0]
         return (
             base not in self._CONCRETE_NON_ADT_BASES
-            and base not in self._adt_type_names
+            and self._value_adt_key(arg) is None
         )
 
     def _has_free_type_var_arg(self, lv: str) -> bool:
@@ -682,7 +682,7 @@ class OperatorsMixin:
             # wrongly flag as under-parameterized — silently dropping the loud
             # E613 that a non-Eq ``Tuple`` comparison must raise.
             return all(self._eq_type_name_fully_concrete(a) for a in args)
-        if base in self._adt_type_names:
+        if self._value_adt_key(base) is not None:
             if len(args) != self._adt_tp_counts.get(base, 0):
                 return False  # under-parameterized: an argument was erased
             return all(self._eq_type_name_fully_concrete(a) for a in args)
@@ -791,7 +791,7 @@ class OperatorsMixin:
 
         parsed = Monomorphizer._parse_type_name(type_name)
         base = parsed.name
-        if base not in self._adt_type_names:
+        if self._value_adt_key(type_name) is None:
             return None
         fn_name = self._adt_eq_fn_name(type_name)
         if fn_name in self._adt_eq_helpers or fn_name in self._adt_eq_pending:
@@ -1075,6 +1075,10 @@ class OperatorsMixin:
             return "f64"
         if base in ("Bool", "Byte"):
             return "i32"
+        # #1331/#1539: a data type's value is a pointer, a `data Array`'s
+        # among them, which the container arm below would measure as a pair.
+        if self._value_adt_key(ftype) is not None:
+            return "i32"
         if base in ("String", "Array"):
             return "i32_pair"
         # ADT pointer (or opaque) → i32
@@ -1120,7 +1124,7 @@ class OperatorsMixin:
                 "call $eq_String",
             ]
         # Nested ADT: recurse into its own helper.
-        if base in self._adt_type_names:
+        if self._value_adt_key(ftype) is not None:
             nested_fn = self._request_adt_eq_helper(ftype)
             if nested_fn is None:
                 return None

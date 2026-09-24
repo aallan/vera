@@ -1283,7 +1283,11 @@ class RegistrationMixin:
     #: doors would close if these names were reserved, since E158 fires in
     #: ``_register_data`` wherever the declaration is.  NOT the containers
     #: (``Array``, ``Map``, ``Set``, ``Decimal``): the resolution spine tells
-    #: those apart from a declaration correctly, which is #1321/#1331.
+    #: a NAME a namespace writes apart from a declaration correctly, which is
+    #: #1321/#1331, and code generation a VALUE of the container apart when
+    #: its type takes a different number of arguments (#1539).  A value of
+    #: the same arity it cannot, because the checker gives both one type;
+    #: whether to reserve those names too is #1547.
     #:
     #: The complement is what keeps this honest rather than a hand list left
     #: to rot: every name NOT here is exercised end to end — declared, run,

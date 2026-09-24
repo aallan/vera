@@ -1719,6 +1719,31 @@ class CodeGenerator(
                 out.add(te.name)
         return out
 
+    def _value_data_type_names(self) -> frozenset[str]:
+        """The data types a VALUE's type names in every namespace (#1534).
+
+        A value's type is spelled where the value was made: an imported
+        function's return type in the module that declared it, a field's
+        type in its data type's module.  The namespace compiling the body
+        that shows or hashes the value need not be able to name that type —
+        the entry file may import `favourite` without its `Colour` — so its
+        membership is the wrong question.  The layout key is the right one:
+        after the #1317 renames every user declaration's key has one owner,
+        so it means the same data type in every namespace.
+
+        Less the names a built-in also answers to, which the key alone does
+        not settle: a container's (`_CONTAINER_NAMES`), never a declaration,
+        and a built-in or prelude data type's, whose layout slot a
+        declaration of the same name takes (§8.4.1).  Those are read in the
+        namespace, through `_declares_adt`, as they were.  The twin of
+        :meth:`_type_arg_data_types`, which answers the same question for a
+        clone's type arguments.
+        """
+        reserved = (
+            _CONTAINER_NAMES | self._builtin_adt_names | prelude_adt_names())
+        return frozenset(
+            name for name in self._adt_layouts if name not in reserved)
+
     def _namespace_ctor_projection(
         self,
     ) -> tuple[dict[str, object], dict[str, str],

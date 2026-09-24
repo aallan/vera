@@ -673,6 +673,8 @@ class FunctionCompilationMixin:
             # third copy is one more thing to drift (PR #1419 review).
             adt_ctor_layouts=self._adt_layouts,
             adt_type_names=adt_type_names,
+            value_data_types=self._value_data_type_names(),
+            adt_ctor_tp_indices=self._adt_ctor_tp_indices,
             generic_fn_info=getattr(self, "_generic_fn_info", None),
             generic_constrained_vars=getattr(
                 self, "_generic_constrained_vars", None),
