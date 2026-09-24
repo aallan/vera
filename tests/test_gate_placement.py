@@ -18,10 +18,13 @@ evaluated, not string-matched, by the small evaluator below: a condition
 that stops matching a cell or an event is a behaviour change, however it is
 spelled.  The CI half fails closed.  A step counts as a gate only where it
 runs and can fail the run: a condition the evaluator cannot read is an error
-unless ``UNREADABLE_CONDITIONS`` names the step with its reason, and
-``continue-on-error``, a shell other than the default ``bash -e``, or a run
-command that swallows its own failure (``|| true``, ``set +e``) is an error
-outright.  A gate is a command the step invokes, not text it mentions.
+unless ``UNREADABLE_CONDITIONS`` names the step with its reason (a condition
+on a context name the modelled events do not define is unreadable, not
+null), and ``continue-on-error``, a shell other than the default ``bash -e``,
+or a run command that swallows its own failure (``|| true``, ``set +e``) is
+an error outright.  A gate is a command the step invokes on a line with no
+shell control operator, not text it mentions.  The known evasions are pinned
+at the end of the file.
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ from __future__ import annotations
 import itertools
 import re
 import shlex
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -188,8 +192,16 @@ def _tokens(expr: str) -> list[tuple[str, str]]:
     return out
 
 
-def evaluate(expr: str, context: dict[str, object]) -> object:
-    """Evaluate one expression, with or without its `${{ }}` wrapper."""
+def evaluate(
+    expr: str, context: dict[str, object], strict: bool = True
+) -> object:
+    """Evaluate one expression, with or without its `${{ }}` wrapper.
+
+    Strict by default: a context name the event (or matrix cell) does not
+    define is unreadable, not null, since a condition on `github.actor` or
+    `github.head_ref` would otherwise read as `!=` anything and count a step
+    the modelled events cannot say runs.  Rendering a `run:` command is
+    lenient (`strict=False`): there an unmodelled name only fills in text."""
     body = expr.strip()
     if body.startswith("${{") and body.endswith("}}"):
         body = body[3:-2]
@@ -235,6 +247,8 @@ def evaluate(expr: str, context: dict[str, object]) -> object:
                 raise SyntaxError(f"function call {text}() in {expr!r}")
             if text in ("true", "false"):
                 return text == "true"
+            if strict and text not in context:
+                raise SyntaxError(f"{text} is not defined for this event in {expr!r}")
             return context.get(text)
         raise SyntaxError(f"unexpected {text!r} in {expr!r}")
 
@@ -287,7 +301,7 @@ def render(command: str, context: dict[str, object]) -> str:
     """A `run:` command with each `${{ }}` replaced by its value."""
 
     def value(m: re.Match[str]) -> str:
-        result = evaluate(m.group(0), context)
+        result = evaluate(m.group(0), context, strict=False)
         if result is None:
             return ""
         if isinstance(result, bool):
@@ -382,14 +396,34 @@ def _gating_steps(
     return steps
 
 
+_CONTROL_OPERATORS = ("|", "|&", "&", "&&", "||", ";")
+
+
+def _no_control_operator(line: str, what: str) -> None:
+    """A line that invokes a gate carries no shell control operator.
+
+    CI's default shell is `bash -e` without `pipefail`, so after `| tee`, a
+    trailing `&`, an `&& echo ok` or a `; echo done` the line exits 0 when
+    the gate fails."""
+    lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+    operators = [token for token in lexer if token in _CONTROL_OPERATORS]
+    if operators:
+        pytest.fail(f"`{line.strip()}` can exit 0 when {what} fails ({operators})")
+
+
 def _invokes(steps: list[dict[str, Any]], *command: str) -> list[dict[str, Any]]:
     """The steps with a line whose command word and first arguments are
-    `command` — invoked, not merely mentioned (`echo scripts/x.py` is not)."""
+    `command` — invoked, not merely mentioned (`echo scripts/x.py` is not),
+    and invoked so that its failure fails the line."""
     want = list(command)
-    return [
-        step for step in steps
-        if any(_command(line)[: len(want)] == want for line in step["run"].splitlines())
-    ]
+    found: list[dict[str, Any]] = []
+    for step in steps:
+        for line in step["run"].splitlines():
+            if _command(line)[: len(want)] == want:
+                _no_control_operator(line, " ".join(want))
+                found.append(step)
+                break
+    return found
 
 
 # The four events every gate has to hold on.
@@ -431,7 +465,6 @@ class TestTheEvaluator:
             ("a == 'x' && '--release' || ''", {"a": "x"}, "--release"),
             ("a == 'x' && '--release' || ''", {"a": "q"}, ""),
             ("(a == 'x' || b == 'y') && 'on' || 'off'", {"a": "q", "b": "y"}, "on"),
-            ("missing", {}, None),
             ("always()", {}, True),
             ("success() && a == 'x'", {"a": "x"}, True),
             ("failure() || cancelled()", {}, False),
@@ -446,7 +479,8 @@ class TestTheEvaluator:
         assert evaluate(expr, context) == want
 
     @pytest.mark.parametrize(
-        "expr", ["contains(a, 'x')", "always(a)", "a ==", "a b", "a > 'x'"]
+        "expr",
+        ["contains(a, 'x')", "always(a)", "a ==", "a b", "a > 'x'", "missing"],
     )
     def test_what_it_cannot_read_is_an_error(self, expr: str) -> None:
         with pytest.raises(SyntaxError):
@@ -702,8 +736,7 @@ class TestCiRunsEveryGate:
             steps += [per_cell[0][key] for key in everywhere]
         # The pre-commit-hooks hooks run in CI through pre-commit itself.
         hygiene = "\n".join(
-            step["run"] for step in steps
-            if "pre-commit run --all-files" in step["run"]
+            step["run"] for step in _invokes(steps, "pre-commit", "run", "--all-files")
         )
         missing: list[str] = []
         for hook in _hooks():
@@ -782,3 +815,89 @@ class TestCiRunsEveryGate:
         assert len(steps) == 1
         argv = _command(steps[0]["run"])
         assert argv[2:] == (["--release"] if release else [])
+
+
+# ---------------------------------------------------------------------------
+# The known evasions, pinned.  Each is an edit to one configuration file that
+# stops a gate running or stops it failing the run while leaving its text in
+# place; each must turn the named check red.  The edits are applied to copies
+# in memory, never to the files on disk.
+# ---------------------------------------------------------------------------
+
+_CONF = "      - name: Check conformance suite\n        run: python scripts/check_conformance.py\n"
+_WALK = (
+    "      - name: Check every walker covers every Expr subclass (#597)\n"
+    "        run: python scripts/check_walker_coverage.py\n"
+)
+_STAGED = "        files: '^tests/test_[^/]*\\.py$'\n        require_serial: true\n"
+
+
+def _walk_if(condition: str) -> str:
+    return _WALK.replace("        run:", f"        if: {condition}\n        run:", 1)
+
+
+def _conf_run(run: str) -> str:
+    return _CONF.replace("python scripts/check_conformance.py", run, 1)
+
+
+_COUNTERPART = ("counterpart", "pull request into release/v0.2.0")
+_CONFORMANCE = ("conformance", "pull request into release/v0.2.0")
+_WHOLE_SUITE = ("whole suite", None)
+
+EVASIONS = [
+    ("walker coverage on push only", CI, _WALK, _walk_if("github.event_name == 'push'"), _COUNTERPART),
+    ("conformance step continue-on-error", CI, _CONF,
+     _CONF.replace("        run:", "        continue-on-error: true\n        run:", 1), _CONFORMANCE),
+    ("staged-test hook always_run", PRECOMMIT, _STAGED, _STAGED + "        always_run: true\n", _WHOLE_SUITE),
+    ("eager-gc job continue-on-error", CI, "  eager-gc:\n", "  eager-gc:\n    continue-on-error: true\n", _CONFORMANCE),
+    ("conformance piped to tee", CI, _CONF, _conf_run("python scripts/check_conformance.py | tee conformance.log"), _CONFORMANCE),
+    ("conformance backgrounded", CI, _CONF, _conf_run("python scripts/check_conformance.py &"), _CONFORMANCE),
+    ("conformance in an and-list, not last", CI, _CONF,
+     "      - name: Check conformance suite\n        run: |\n"
+     "          python scripts/check_conformance.py && echo conformance ok\n"
+     "          echo done\n", _CONFORMANCE),
+    ("conformance in an and-list on one line", CI, _CONF,
+     _conf_run("python scripts/check_conformance.py && echo conformance ok; echo done"), _CONFORMANCE),
+    ("walker coverage piped to tee", CI, _WALK,
+     _WALK.replace("check_walker_coverage.py", "check_walker_coverage.py | tee walker.log", 1), _COUNTERPART),
+    ("walker coverage behind an unmodelled head_ref", CI, _WALK, _walk_if("github.head_ref != ''"), _COUNTERPART),
+    ("conformance skipped for an unmodelled actor", CI, _CONF,
+     _CONF.replace("        run:", "        if: github.actor != 'dependabot[bot]'\n        run:", 1), _CONFORMANCE),
+    ("conformance may fail for an unmodelled actor", CI, _CONF,
+     _CONF.replace(
+         "        run:",
+         "        continue-on-error: ${{ github.actor == 'dependabot[bot]' }}\n        run:", 1,
+     ), _CONFORMANCE),
+    ("walker coverage behind a precedence trap", CI, _WALK,
+     _walk_if("${{ !github.event_name == 'schedule' }}"), _COUNTERPART),
+    ("staged-test hook as python -m pytest over tests/", PRECOMMIT,
+     "        entry: .venv/bin/pytest -q -n 4\n", "        entry: .venv/bin/python -m pytest tests/ -q\n",
+     _WHOLE_SUITE),
+]
+
+
+@pytest.mark.parametrize(
+    ("path", "old", "new", "check"),
+    [pytest.param(path, old, new, check, id=name) for name, path, old, new, check in EVASIONS],
+)
+def test_each_known_evasion_is_caught(
+    monkeypatch: pytest.MonkeyPatch, path: Path, old: str, new: str, check: tuple[str, str | None]
+) -> None:
+    text = path.read_text(encoding="utf-8")
+    assert text.count(old) == 1, f"the evasion's anchor moved in {path.name}"
+    edited = yaml.safe_load(text.replace(old, new, 1))
+    module = sys.modules[__name__]
+    if path == CI:
+        monkeypatch.setattr(module, "_workflow", lambda: dict(edited))
+    else:
+        monkeypatch.setattr(module, "_hooks", lambda: [
+            {**hook, "repo": repo["repo"]} for repo in edited["repos"] for hook in repo["hooks"]
+        ])
+    kind, event = check
+    with pytest.raises((AssertionError, pytest.fail.Exception)):
+        if kind == "counterpart":
+            TestCiRunsEveryGate().test_every_gate_the_hook_runs_also_runs_in_ci(str(event))
+        elif kind == "conformance":
+            TestCiRunsEveryGate().test_conformance_and_the_examples_run(str(event))
+        else:
+            TestThePreCommitHookIsFast().test_no_hook_runs_the_whole_suite()
