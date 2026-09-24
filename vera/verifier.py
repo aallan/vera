@@ -60,6 +60,7 @@ from vera.obligations.core import (
     expr_text_for,
 )
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv, alias_env_from_environment
+from vera.resolver import merged_import_filters
 from vera.slots import effect_op_result_names, fn_slot_scope, slot_table
 from vera.smt import (
     AxiomKind,
@@ -1556,11 +1557,9 @@ class ContractVerifier:
         if not self._resolved_modules:
             return
 
-        # 1. Build import filter
-        for imp in program.imports:
-            self._import_names[imp.path] = (
-                set(imp.names) if imp.names is not None else None
-            )
+        # 1. Build import filter, unioned across repeated imports of one
+        # path (#1433) — the one derivation the checker and codegen read too.
+        self._import_names.update(merged_import_filters(program.imports))
 
         # Snapshot builtin function names
         _builtins = TypeEnv()
@@ -6826,9 +6825,10 @@ class ContractVerifier:
                 self._walk_for_primitive_op_obligations(
                     decl, arg, smt, slot_env, assumptions,
                 )
-            # #807: float_to_int(x) compiles to `i64.trunc_f64_s`, which traps on
-            # NaN / ±Inf / out-of-i64-range — a partial op, so it carries a
-            # domain obligation just like div-by-zero (#801) and overflow (#798).
+            # #807: float_to_int(x) is a partial op — NaN / ±Inf /
+            # out-of-i64-range trap, as codegen's `float_conversion` check
+            # (#1479) — so it carries a domain obligation just like
+            # div-by-zero (#801) and overflow (#798).
             if expr.name == "float_to_int" and len(expr.args) == 1:
                 self._check_float_to_int_domain_obligation(
                     decl, expr, smt, slot_env, assumptions,
@@ -9157,7 +9157,7 @@ class ContractVerifier:
         Two-check, mirroring the index-bounds discharge (#680): prove ``P`` →
         ``verified``; else prove ``¬P`` (``P`` is false in every reachable
         state, so the assert always traps) → loud E507; else Tier 3 (the
-        §11.14.1 ``unreachable`` trap is the runtime guard).  Path conditions
+        §11.14.1 ``assertion_failed`` check is the runtime guard).  Path conditions
         from enclosing ``if`` / ``match`` branches live in
         ``smt._path_conditions`` and are picked up by ``check_valid``, so a
         branch-guarded assert discharges from its guard.  An untranslatable
@@ -9254,7 +9254,8 @@ class ContractVerifier:
         if (coll is None or idx is None
                 or not str(coll.sort()).startswith("Array_")):
             # Untranslatable, or an unrecognised array representation — no
-            # Tier-1 length model.  The runtime `out_of_bounds` trap guards it.
+            # Tier-1 length model.  Codegen's `index_out_of_bounds` check
+            # guards it at run time.
             self._record_obligation(decl.name, "index_bounds", expr, "tier3")
             return
 
@@ -9435,16 +9436,17 @@ class ContractVerifier:
     ) -> None:
         """Discharge the ``float_to_int`` domain obligation at one site (#807).
 
-        ``float_to_int(x)`` compiles to ``i64.trunc_f64_s``, which TRAPS when
-        ``x`` is ``NaN``, ``±Inf``, or when ``trunc(x)`` falls outside
+        ``float_to_int(x)`` TRAPS — as ``float_conversion``, the domain check
+        codegen emits before its ``i64.trunc_f64_s`` (#1479) — when ``x`` is
+        ``NaN``, ``±Inf``, or when ``trunc(x)`` falls outside
         ``[i64.MIN, i64.MAX]``.  So each site carries a "``x`` is finite and in
         range" obligation, mirroring div-by-zero (#801) and overflow (#798):
 
         - a CONCRETE finite in-range argument → **Tier 1** (verified);
         - a concrete ``NaN`` / ``Inf`` / out-of-range argument → provable trap →
           **loud E529**;
-        - a symbolic argument → **honest Tier 3**, guarded by the codegen trunc
-          trap.
+        - a symbolic argument → **honest Tier 3**, guarded by that
+          ``float_conversion`` check.
 
         Concrete-gated: Z3's symbolic ``FP``↔``Real`` reasoning is unreliable
         (it returns spurious counterexamples — see :mod:`vera.smt`'s
@@ -12964,9 +12966,9 @@ class ContractVerifier:
             f"`{operand}` in '{decl.name}' provably traps: the argument is "
             f"{reason}.",
             rationale=(
-                "float_to_int compiles to `i64.trunc_f64_s`, which traps at "
-                "runtime on NaN, +/-infinity, or a value whose truncation falls "
-                "outside the i64 range.  The argument is a constant the verifier "
+                "float_to_int traps at runtime, as `float_conversion`, on "
+                "NaN, +/-infinity, or a value whose truncation falls outside "
+                "the i64 range.  The argument is a constant the verifier "
                 "determined is always one of these (#807)."
             ),
             fix=(
@@ -13009,8 +13011,8 @@ class ContractVerifier:
             rationale=(
                 "A body `assert(P)` carries a Tier-1 proof obligation that `P` "
                 "holds (spec §6.2.5).  The SMT solver proved `P` is false for "
-                "every reachable state, so the assert always traps "
-                "(`unreachable`) at runtime."
+                "every reachable state, so the assert always traps at "
+                "runtime, as `assertion_failed`."
             ),
             fix=(
                 "Correct or weaken the assertion, or establish the missing "

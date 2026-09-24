@@ -34,13 +34,20 @@ from lsprotocol import types as lsp
 
 from vera import ast, naming
 from vera.checker.core import CheckArtifacts
-from vera.errors import Diagnostic, ParseError, TransformError
+from vera.errors import (
+    Diagnostic,
+    ParseError,
+    SourceLocation,
+    TransformError,
+    partial_diagnostics,
+)
 from vera.lsp.convert import (
     LineIndex,
     location_to_range,
     span_to_range,
     uri_to_path,
 )
+from vera.lsp.documents import Document
 from vera.obligations.cache import walk_nodes
 from vera.obligations.core import ProofObligation
 from vera.obligations.session import (
@@ -215,29 +222,92 @@ def _tier_hints(analysis: Analysis) -> list[lsp.Diagnostic]:
     return hints
 
 
+def current_analysis(
+    doc: Document | None, analysis: Analysis | None,
+) -> Analysis | None:
+    """*analysis* if it is an analysis of the open document *doc*'s
+    text, else ``None``.
+
+    The currency check behind the one reader of the per-URI analysis
+    table, ``VeraLanguageServer.current_analysis`` (#1444).  Hover,
+    definition, completion, the proof delta and the edit workflows all
+    read through it, so none of them answers from an analysis of a text
+    the buffer has left.  ``analyze_and_publish`` keeps the table that
+    way -- an analysis that raises removes the entry instead of leaving
+    the previous text's -- and this checks it again at the read.
+    """
+    if analysis is None or doc is None or analysis.text != doc.text:
+        return None
+    return analysis
+
+
+def _to_lsp(d: Diagnostic, index: LineIndex) -> lsp.Diagnostic:
+    """One Vera diagnostic in LSP shape.
+
+    The editor surface honours the same diagnostics-as-instructions
+    contract as --json: description, then the rationale paragraph, then
+    the Fix: paragraph (#728).
+    """
+    message = d.description
+    if d.rationale:
+        message += f"\n\n{d.rationale}"
+    if d.fix:
+        message += f"\n\nFix: {d.fix}"
+    return lsp.Diagnostic(
+        range=location_to_range(d.location, index),
+        message=message,
+        severity=_SEVERITY.get(d.severity, lsp.DiagnosticSeverity.Error),
+        source="vera",
+        code=d.error_code or None,
+        data={"tier": d.tier} if d.tier is not None else None,
+    )
+
+
 def to_lsp_diagnostics(analysis: Analysis) -> list[lsp.Diagnostic]:
     """Map Vera diagnostics (+ synthesised tier hints) to LSP shape."""
-    out: list[lsp.Diagnostic] = []
-    for d in analysis.diagnostics:
-        data = {"tier": d.tier} if d.tier is not None else None
-        # The editor surface honours the same diagnostics-as-
-        # instructions contract as --json: description, then the
-        # rationale paragraph, then the Fix: paragraph (#728).
-        message = d.description
-        if d.rationale:
-            message += f"\n\n{d.rationale}"
-        if d.fix:
-            message += f"\n\nFix: {d.fix}"
-        out.append(lsp.Diagnostic(
-            range=location_to_range(d.location, analysis.index),
-            message=message,
-            severity=_SEVERITY.get(d.severity, lsp.DiagnosticSeverity.Error),
-            source="vera",
-            code=d.error_code or None,
-            data=data,
-        ))
+    out = [_to_lsp(d, analysis.index) for d in analysis.diagnostics]
     out.extend(_tier_hints(analysis))
     return out
+
+
+def analysis_failure(
+    uri: str, text: str, exc: BaseException,
+) -> list[lsp.Diagnostic]:
+    """What is published for *uri* when analysing *text* raised: the
+    diagnostics the failing pass had already recorded, then one
+    ``E699`` naming the failure and what it stops.
+
+    The same report the CLI's backstop makes for an exception that
+    escapes a command (#1429 there: what the pass recorded comes first,
+    because it is what the user can act on), so the client learns there
+    was a compiler bug rather than seeing the previous text's
+    diagnostics stay up, or none.
+    """
+    path = uri_to_path(uri)
+    index = LineIndex(text)
+    recorded = [_to_lsp(d, index) for d in partial_diagnostics(exc)]
+    return recorded + [_to_lsp(Diagnostic(
+        description=(
+            f"Internal compiler error while analysing '{path}': "
+            f"{type(exc).__name__}: {exc}"
+        ),
+        location=SourceLocation(file=path, line=0, column=0),
+        rationale=(
+            "The compiler raised an unexpected exception. This is a bug in "
+            "the compiler, not a property of the program -- the text may "
+            "well be valid. Until a change the server can analyse, it has "
+            "no analysis of this document: hover, go-to-definition and "
+            "completion answer nothing, a proof delta has no baseline, and "
+            "the edit methods refuse."
+        ),
+        fix=(
+            "Please file a bug report with the offending program at "
+            "https://github.com/aallan/vera/issues"
+        ),
+        spec_ref='Chapter 0, Section 0.5.1 "Diagnostic Structure"',
+        severity="error",
+        error_code="E699",
+    ), index)]
 
 
 def _span_contains(

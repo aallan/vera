@@ -798,9 +798,8 @@ class TestTheDiagnosticIsRegisteredAtItsOwnPhase:
         main_path = _write(tmp_path, _FLAP_FILES["ab"])
         emitted = [d["error_code"]
                    for d in _check_json(main_path, seed="0")["diagnostics"]]
-        # The refused name's bare call misses (E200), an error since #1513.
-        assert emitted == ["E155", "E200"]
-        assert all(phases[code] == "typecheck" for code in emitted)
+        assert emitted == ["E155"]
+        assert phases[emitted[0]] == "typecheck"
 
 
 class TestTheFlapShapes:
@@ -867,28 +866,28 @@ class TestTheFlapShapes:
             ))
             for order, files in _FLAP_FILES.items()
         }
-        assert codes["ab"] == codes["ba"] == ["E155", "E200"]
+        assert codes["ab"] == codes["ba"] == ["E155"]
 
     def test_the_refused_name_binds_to_nothing(
         self, tmp_path: Path,
     ) -> None:
-        """The bare call misses (E200) rather than resolving to a supplier.
+        """The bare call resolves to no supplier, and draws nothing of its own.
 
         The other half of "no pick": had the checker reported the clash and
         then injected one supplier anyway, the follow-on diagnostics would
-        still be keyed to whichever module the injection loop reached first,
-        and E155 would be a label on a nondeterminism it had not removed.
-        Here the ambiguous name is in no namespace, so what follows a bare
-        call to it is the same miss under every seed.
+        still be keyed to whichever module the injection loop reached first
+        (`libbool`'s `gen` returns `@Bool`, an E121 in `doorc`), and E155
+        would be a label on a nondeterminism it had not removed.  Here the
+        ambiguous name is in no namespace, and the E155 at `midc`'s import is
+        the one diagnostic the program owes: the call to it adds none (#1513;
+        an E200 there would only restate the E155), under every seed.
         """
         main_path = _write(tmp_path, _FLAP_FILES["ab"])
         payload = _check_json(main_path, seed="0")
-        # An error since #1513: a call to nothing cannot compile.
-        misses = [d for d in payload["diagnostics"]
-                  if d["error_code"] == "E200"]
-        assert len(misses) == 1, payload["diagnostics"]
-        assert "gen" in misses[0]["description"]
-        assert misses[0]["location"]["file"].endswith("midc.vera")
+        assert _codes(payload) == ["E155"], payload
+        (refusal,) = payload["diagnostics"]
+        assert "gen" in refusal["description"]
+        assert refusal["location"]["file"].endswith("midc.vera")
 
 
 class TestTheRefusalIsDefinitionGated:

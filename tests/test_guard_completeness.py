@@ -39,6 +39,7 @@ from pathlib import Path
 import pytest
 
 import vera
+from vera.trap_registry import signal_call_pattern
 
 _PKG_PARENT = str(Path(vera.__file__).resolve().parents[1])
 
@@ -750,9 +751,9 @@ class TestTheNarrowingGuardNamesItself754:
     paragraph lists three causes — a non-exhaustive `match`, a compiler
     assertion, a shadow-stack overflow — and a narrowing is none of them, so
     the one piece of advice that would have helped (`requires(... >= 0)`)
-    was the one it did not give.  The guard now signals
-    `vera.nat_guard_trap` before its `unreachable`, the same channel #808
-    built for arithmetic overflow.
+    was the one it did not give.  The guard now signals `nat_guard` before
+    its `unreachable`, through the channel #808 built for arithmetic
+    overflow — one `vera.trap` import for every kind since #1479.
     """
 
     def test_the_trap_carries_the_narrowing_kind_and_its_fix(
@@ -774,8 +775,11 @@ class TestTheNarrowingGuardNamesItself754:
 
         The flag that emits the declaration is set beside the call, and has
         to survive every per-scope merge — the body's, the postcondition's,
-        and a lifted closure's.  This drives the closure one, which is the
-        merge a guard emitted only inside a lifted body depends on.
+        and a lifted closure's.  This drives a guard emitted only inside a
+        lifted body.  Since #1479 a closure's module also declares the
+        signal for its allocator, so this cell no longer isolates the
+        closure merge; `tests/test_named_traps_1479.py`'s fan-in cells do,
+        with a check whose import no allocation declares.
         """
         source = """\
 public fn main(@Unit -> @Int)
@@ -790,11 +794,11 @@ public fn main(@Unit -> @Int)
         proc = _cli("compile", "--wat",
                     str(_write(tmp_path, source, "sig754.vera")))
         assert proc.returncode == 0, proc.stderr[-600:]
-        assert 'import "vera" "nat_guard_trap"' in proc.stdout, (
+        assert 'import "vera" "trap"' in proc.stdout, (
             "the guard inside the lifted closure calls the signal, but the "
             "module does not declare the import"
         )
-        assert proc.stdout.count("call $vera.nat_guard_trap") >= 1
+        assert signal_call_pattern("nat_guard").search(proc.stdout)
 
 
 # ===========================================================================
@@ -1520,7 +1524,7 @@ class TestTupleComponentSitesAreGuarded1416:
         proc = _cli("compile", "--wat",
                     str(_write(tmp_path, _1416_CONSTRUCT, "c1416.vera")))
         assert proc.returncode == 0, proc.stderr[-500:]
-        assert "call $vera.nat_guard_trap" in proc.stdout, (
+        assert signal_call_pattern("nat_guard").search(proc.stdout), (
             "the `@Int` component stored into a `Tuple<Nat, Int>` carries no "
             "narrowing guard, while its `@Int` neighbour's widening twin at "
             "the same site does"
@@ -2284,8 +2288,10 @@ class TestARefinedIntElementCountsItsWideningGuardToo:
             # The WIDENING signal specifically (#1438), not every trap: the
             # predicate guard #1426 adds shares the `unreachable`, so a
             # shared-token count cannot see a missing widening guard
-            # (CR PR-review).
-            return rest.split("\n  )")[0].count("$vera.widen_trap")
+            # (CR PR-review).  Since #1479 every kind shares one import, so
+            # the kind's own code is what tells them apart.
+            return len(signal_call_pattern("widen_guard").findall(
+                rest.split("\n  )")[0]))
 
         plain = traps(_CR_PLAIN_INT_ELEMENT, "cr4b.vera")
         refined = traps(_CR_REFINED_INT_ELEMENT, "cr4c.vera")

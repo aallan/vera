@@ -262,6 +262,16 @@ class CallsMixin:
                 self._synth_expr(arg)
             return UnknownType()
 
+        if name in self._ambiguous_import_fn_names:
+            # #1304: two imports supply this name, so it denotes none of
+            # their declarations, and the E155 at the import is the one
+            # error the program owes.  A second error here would only
+            # restate it, and could name no remedy of its own: qualifying
+            # the call does not lift an E155 (§8.5.2.2).
+            for arg in args:
+                self._synth_expr(arg)
+            return UnknownType()
+
         # Unresolved — an error (#1513): a call to nothing has no body to
         # compile, so a warning here let `vera check` pass a program code
         # generation then refused.  Name the module when one this file can
@@ -272,14 +282,7 @@ class CallsMixin:
             mod.path for mod in self._resolved_modules
             if name in self._module_functions.get(mod.path, {})
         )
-        if name in self._ambiguous_import_fn_names:
-            fix = (f"'{name}' is imported from more than one module, so the "
-                   f"bare name denotes none of them (E155); call the one you "
-                   f"mean by its module path: "
-                   + " or ".join(f"'{'.'.join(m)}::{name}(...)'"
-                                 for m in declaring)
-                   + ".")
-        elif declaring:
+        if declaring:
             fix = ("Import it from the module that declares it: "
                    + " or ".join(self._import_line(m, name)
                                  for m in declaring)
@@ -1378,6 +1381,12 @@ class CallsMixin:
             return self._check_tuple_constructor(expr)
 
         ci = self.env.lookup_constructor(expr.name)
+        if ci is None and expr.name in self._refused_ctor_names:
+            # #1497: a constructor of a declaration refused as E158, whose
+            # E158 is the one error the program owes.
+            for arg in expr.args:
+                self._synth_expr(arg)
+            return UnknownType()
         if ci is None:
             candidates, ci = self._stranger_constructor(expr.name)
             if ci is not None:
@@ -1599,6 +1608,8 @@ class CallsMixin:
                                     expected: Type | None = None) -> Type | None:
         """Type-check a nullary constructor: None, Nil, etc."""
         ci = self.env.lookup_constructor(expr.name)
+        if ci is None and expr.name in self._refused_ctor_names:
+            return UnknownType()  # #1497: see `_check_constructor_call`
         if ci is None:
             candidates, ci = self._stranger_constructor(expr.name)
             if ci is not None:

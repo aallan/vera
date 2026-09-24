@@ -13,7 +13,7 @@ from vera import ast
 from vera.environment import TypeEnv
 from vera.monomorphize import namespace_adt_names, namespace_fn_names
 from vera.registration import where_helper_parents
-from vera.resolver import ResolvedModule, import_name_filters
+from vera.resolver import ResolvedModule, merged_import_filters
 
 
 class ModulesMixin:
@@ -39,9 +39,9 @@ class ModulesMixin:
         """
         from vera.checker.core import TypeChecker
 
-        # 1. Build import filter — the union of every import of a module
-        # (#1513), never the last declaration's list alone.
-        self._import_names.update(import_name_filters(program.imports))
+        # 1. Build import filter, unioned across repeated imports of one
+        # path (#1433) — the one derivation the verifier and codegen read too.
+        self._import_names.update(merged_import_filters(program.imports))
 
         # Snapshot builtin names (TypeEnv registers builtins in __post_init__).
         # Hoisted above the #1304 refusal, which needs them: every injection
@@ -352,6 +352,10 @@ class ModulesMixin:
         self._ambiguous_import_fn_names = frozenset(fn_clashes)
         self._ambiguous_import_type_names = frozenset(type_clashes)
         self._ambiguous_import_ctor_names = frozenset(ctor_clashes)
+        # A clashing constructor name is refused at the import, and like a
+        # refused declaration's constructor (#1497) a use of it draws no
+        # error of its own: the E157 is the one the program owes (#1513).
+        self._refused_ctor_names.update(ctor_clashes)
 
         for clashes, kind, article, code in (
             (fn_clashes, "function", "a", "E155"),

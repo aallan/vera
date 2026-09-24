@@ -37,9 +37,9 @@ from pathlib import Path
 import pytest
 
 import vera
-from tests.codegen_helpers import wat_calls
 from vera import narrowing
 from vera.environment import TypeEnv
+from vera.trap_registry import signal_call_pattern
 
 _PKG_PARENT = str(Path(vera.__file__).resolve().parents[1])
 
@@ -149,7 +149,7 @@ def test_1362_the_claim_and_the_module_agree(tmp_path: Path) -> None:
     """
     wat = _wat(tmp_path, _1362_REPRO)
     assert wat.startswith("(module"), wat[:300]
-    assert wat_calls(wat, "vera.nat_guard_trap"), (
+    assert signal_call_pattern("nat_guard").search(wat), (
         "the module carries no sign guard, so the `tier3` record above "
         f"claims a check that is not there:\n{wat}"
     )
@@ -315,14 +315,12 @@ def _traps_on_negative(tmp_path: Path, name: str) -> bool:
     # String result instead of the i64 argument, so the module failed WASM
     # validation, and this helper read the failure as an honest no-guard answer.
     # So the artifact must be shown to RUN before its verdict is read.
-    # #754: the narrowing guard names itself now — it signals
-    # `vera.nat_guard_trap` before its `unreachable`, so the trap reports
-    # `kind="nat_guard"` and the word "unreachable" no longer appears.  Both
-    # spellings are accepted because the builtins in this map do not all take
-    # the same guard: `string_repeat` and friends narrow into a `@Nat` formal
-    # (the nat guard), while a `@Nat` -> `@Int` widen at the same site still
-    # traps bare.
-    if "Negative value bound into a @Nat slot" in out or "unreachable" in out:
+    # #754: the narrowing guard names itself — it signals `nat_guard` before
+    # its `unreachable` (through `vera.trap` since #1479), so the trap reports
+    # its own message and the word "unreachable" no longer appears.  Every
+    # builtin in this map narrows a negative into a `@Nat` formal, so the
+    # narrowing guard's message is the one a guarded shape prints.
+    if "Negative value bound into a @Nat slot" in out:
         return True
     assert proc.returncode == 0, (
         f"{name}: the fixture did not run, so it reports no verdict about "

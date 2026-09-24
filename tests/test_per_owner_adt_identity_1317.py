@@ -1936,7 +1936,7 @@ class TestTheFlowSurfaceFailsClosed:
         can actually make.  A wildcard beside a list dominates it.
         """
         from vera import ast
-        from vera.codegen.modules import _merged_import_filters
+        from vera.resolver import merged_import_filters as _merged_import_filters
 
         def imp(path: tuple[str, ...], names: tuple[str, ...] | None):
             return ast.ImportDecl(path=path, names=names)

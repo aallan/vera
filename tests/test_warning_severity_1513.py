@@ -730,7 +730,8 @@ class TestTheFixesWork:
         The checker kept only the LAST list, so `f` was an E200 — harmless
         while E200 was a warning, since code generation reads every
         declaration and the program ran (printing 5).  As an error it would
-        have refused a working program; the filter is now the union."""
+        refuse a working program; the filter is the union of the lists
+        (#1433)."""
         lib = _LIB + (
             "\npublic fn g(@Int -> @Int)\n" + _HDR + "{\n  @Int.0 + 2\n}\n")
         path = _write(tmp_path, {
@@ -741,6 +742,55 @@ class TestTheFixesWork:
         assert check["ok"] is True and check["warnings"] == [], check
         run = _cli("run", path)
         assert run["ok"] is True and run["value"] == 5, run
+
+    def test_a_name_two_imports_supply_draws_only_the_import_error(
+        self, tmp_path: Path,
+    ) -> None:
+        """A use of a name an import clash refuses adds no error of its own.
+
+        §8.5.2.2: the refusal is a property of the import list, and a use of
+        the name resolves to nothing.  An E200 at a bare call, or an E210 or
+        E320 at a constructor, would only restate the E155 or E157, and
+        could name no remedy that lifts it: qualifying the call, or
+        importing the type again, leaves the clash in the import list.  The
+        import's error is the one the program owes, and following its fix
+        (declare the name here, reach each import by its module path)
+        checks clean and runs."""
+        gen = ("module {m};\n\npublic fn gen(@Int -> @Int)\n" + _HDR
+               + "{{\n  @Int.0 + {k}\n}}\n")
+        imports = "import gena;\nimport genb;\n\n"
+        files = {"gena.vera": gen.format(m="gena", k=1),
+                 "genb.vera": gen.format(m="genb", k=2)}
+        path = _write(tmp_path, {
+            "main.vera": _main("gen(1)", imports=imports), **files})
+        check = _cli("check", path)
+        assert _pairs(check, "diagnostics") + _pairs(check, "warnings") == [
+            ("error", "E155")], check
+        # Constructors two imports supply, with and without fields: a
+        # construction and a pattern of each.
+        (tmp_path / "qa.vera").write_text(
+            "module qa;\n\npublic data Foo {\n  Q(Int),\n  R\n}\n",
+            encoding="utf-8")
+        (tmp_path / "qb.vera").write_text(
+            "module qb;\n\npublic data Bar {\n  Q(Int),\n  R\n}\n",
+            encoding="utf-8")
+        path.write_text(_main(
+            "match Q(4) {\n    Q(@Int) -> @Int.0\n  }"
+            " + match R {\n    R -> 1\n  }",
+            imports="import qa;\nimport qb;\n\n"), encoding="utf-8")
+        check = _cli("check", path)
+        assert _pairs(check, "diagnostics") + _pairs(check, "warnings") == [
+            ("error", "E157"), ("error", "E157")], check
+        # The E155's fix: a local declaration takes the bare name, and each
+        # import stays reachable by its module path.
+        local = ("private fn gen(@Int -> @Int)\n" + _HDR
+                 + "{\n  @Int.0 + 10\n}\n\n")
+        path.write_text(imports + local + _main(
+            "gen(1) + gena::gen(1) + genb::gen(1)"), encoding="utf-8")
+        check = _cli("check", path)
+        assert check["ok"] is True and check["warnings"] == [], check
+        run = _cli("run", path)
+        assert run["ok"] is True and run["value"] == 16, run
 
     def test_a_pattern_on_an_unimported_type_names_the_import(
         self, tmp_path: Path,

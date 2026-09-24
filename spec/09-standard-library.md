@@ -240,7 +240,7 @@ let @Array<Int> = [1, 2, 3];
 - Fixed size: the length is determined at creation and cannot change.
 - Immutable: elements cannot be modified after creation.
 - Zero-indexed: the first element is at index 0.
-- Bounds-checked: indexing with an out-of-range index causes a runtime trap (see Chapter 12).
+- Bounds-checked: indexing with an out-of-range index causes an `index_out_of_bounds` runtime trap (Section 11.12.3).
 
 **Element types:** Arrays can contain any type for which a WASM representation exists, including primitives (`Int`, `Nat`, `Bool`, `Byte`, `Float64`), ADT types (`Option<Int>`, `Result<Nat, String>`), `String`, and nested arrays (`Array<Array<Int>>`).
 
@@ -888,7 +888,7 @@ public fn floor(@Float64 -> @Int)
   effects(pure)
 ```
 
-Returns the largest integer less than or equal to the input. Compiles to `f64.floor` followed by `i64.trunc_f64_s`. Traps on NaN or out-of-range values (WASM semantics).
+Returns the largest integer less than or equal to the input. Compiles to `f64.floor` followed by `i64.trunc_f64_s`, behind a domain check: NaN, an infinity, or a result outside `[-2^63, 2^63)` traps as `float_conversion` (Section 11.8.5).
 
 ```
 floor(3.7)
@@ -906,7 +906,7 @@ public fn ceil(@Float64 -> @Int)
   effects(pure)
 ```
 
-Returns the smallest integer greater than or equal to the input. Compiles to `f64.ceil` followed by `i64.trunc_f64_s`. Traps on NaN or out-of-range values (WASM semantics).
+Returns the smallest integer greater than or equal to the input. Compiles to `f64.ceil` followed by `i64.trunc_f64_s`, behind a domain check: NaN, an infinity, or a result outside `[-2^63, 2^63)` traps as `float_conversion` (Section 11.8.5).
 
 ```
 ceil(3.2)
@@ -924,7 +924,7 @@ public fn round(@Float64 -> @Int)
   effects(pure)
 ```
 
-Rounds to the nearest integer using banker's rounding (IEEE 754 roundTiesToEven). This means `round(2.5)` evaluates to `2`, not `3` — ties round to the nearest even integer. Compiles to `f64.nearest` followed by `i64.trunc_f64_s`. Traps on NaN or out-of-range values (WASM semantics).
+Rounds to the nearest integer using banker's rounding (IEEE 754 roundTiesToEven). This means `round(2.5)` evaluates to `2`, not `3` — ties round to the nearest even integer. Compiles to `f64.nearest` followed by `i64.trunc_f64_s`, behind a domain check: NaN, an infinity, or a result outside `[-2^63, 2^63)` traps as `float_conversion` (Section 11.8.5).
 
 ```
 round(3.7)
@@ -1066,7 +1066,7 @@ public fn float_to_int(@Float64 -> @Int)
   effects(pure)
 ```
 
-Truncates a floating-point number toward zero. Traps on NaN or Infinity (consistent with `floor`, `ceil`, and `round`). Compiled to `i64.trunc_f64_s`.
+Truncates a floating-point number toward zero. Traps as `float_conversion` on NaN, an infinity, or a value outside `[-2^63, 2^63)` (consistent with `floor`, `ceil`, and `round`; Section 11.8.5). Compiled to `i64.trunc_f64_s` behind that domain check.
 
 ```
 float_to_int(3.9)
@@ -1322,7 +1322,7 @@ public fn string_char_code(@String, @Int -> @Nat)
   requires(true) ensures(true) effects(pure)
 ```
 
-Returns the ASCII code point (as a `Nat`) of the byte at the given index in the string. The index is zero-based. Traps if the index is out of bounds.
+Returns the unsigned byte value (as a `Nat`) at the given index in the string. The index is zero-based, and counts bytes: it must lie in `[0, string_length(s))`, the string's length in BYTES, or the call traps as `string_index_out_of_bounds` (Section 11.8.5).
 
 <!-- vera:skip-parse category="FRAGMENT" reason="bare string_char_code calls with their results in comments" -->
 ```vera
@@ -2617,7 +2617,7 @@ Returns the value of the named attribute if the node is an `HtmlElement` with th
 
 Vera supports restricted abilities for constraining type variables in generic functions. To support practical generic programming — sorting, hashing, serialisation — type variables need constraints. Vera adopts restricted abilities rather than full typeclasses:
 
-<!-- vera:no-run category="non-scalar-entry" reason="its exported functions take Array, T parameters" -->
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E185 E185" reason="the built-in Eq and Ord abilities' interfaces, shown as declarations beside a use; a program declaring either is refused" -->
 ```
 ability Eq<T> {
   op eq(T, T -> Bool);
@@ -2652,12 +2652,15 @@ Key design points:
 
 This design draws on Roc's abilities (deliberately no HKTs, auto-derivable) and Gleam's validation that useful languages need not have typeclasses.
 
+Ability **operation** names form one namespace across every ability in scope, the built-in abilities included: a bare call `size(x)` names the operation and not its ability. A second declaration of an operation name, in the same ability or another, is refused (**E184**, §8.5.5). A user ability named after a built-in ability, or an operation named after a built-in ability's operation, is refused as well (**E185**): code generation compiles `eq`, `compare`, `hash` and `show` against the built-in whatever a declaration says.
+
 ### 9.8.1 Built-in Abilities
 
-Four abilities are built into the language. Each is auto-satisfied for primitive types and (where noted) for ADTs composed of satisfying types.
+Four abilities are built into the language. Each is auto-satisfied for primitive types and (where noted) for ADTs composed of satisfying types. The declarations below show their interfaces; the abilities are in scope in every program, and a program that declares one of them is refused (**E185**).
 
 **Eq\<T\>** — Equality comparison.
 
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E185" reason="the built-in Eq ability's interface; a program declaring it is refused" -->
 ```
 ability Eq<T> {
   op eq(T, T -> Bool);
@@ -2670,6 +2673,7 @@ Satisfied by: Int, Nat, Bool, Float64, String, Byte, Unit, and ADTs whose constr
 
 **Ord\<T\>** — Ordering comparison.
 
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E185" reason="the built-in Ord ability's interface; a program declaring it is refused" -->
 ```
 ability Ord<T> {
   op compare(T, T -> Ordering);
@@ -2692,6 +2696,7 @@ Satisfied by: Int, Nat, Float64, Byte, String — exactly the orderable types on
 
 **Hash\<T\>** — Hashing.
 
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E185" reason="the built-in Hash ability's interface; a program declaring it is refused" -->
 ```
 ability Hash<T> {
   op hash(T -> Int);
@@ -2704,6 +2709,7 @@ Satisfied by: Int, Nat, Bool, Float64, String, Byte, Unit, and composite types �
 
 **Show\<T\>** — String representation.
 
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E185" reason="the built-in Show ability's interface; a program declaring it is refused" -->
 ```
 ability Show<T> {
   op show(T -> String);
