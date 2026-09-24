@@ -106,12 +106,13 @@ def _assert_refused_once_at_the_declaration(
         if re.match(rf"(public |private )data {name}\b", text))
     assert diag.location.line == line, (diag.location, line)
     assert Path(diag.location.file or "").name == declaring, diag.location
-    # The message names the rule, the rationale says why for a container,
+    # The message names the rule, the rationale says why for these four
+    # built-in types (§2 calls each a built-in type, `Decimal` included),
     # and the fix tells the writer to rename the type.
     assert f"'{name}' is a reserved built-in type name" in diag.description, (
         diag.description)
-    assert f"'{name}' is a built-in container" in diag.rationale, (
-        diag.rationale)
+    assert (f"'{name}' is a built-in type. Declared with the built-in's "
+            "number of type arguments") in diag.rationale, diag.rationale
     assert diag.fix.startswith("Rename the data type"), diag.fix
 
 

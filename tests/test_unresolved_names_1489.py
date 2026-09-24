@@ -446,10 +446,11 @@ class TestModuleRegistrationSeesItsImports:
 # =====================================================================
 
 def _quantifier(predicate: str, binder: str = "@Nat",
-                prelude: str = "", form: str = "forall") -> str:
+                prelude: str = "", form: str = "forall",
+                bound: int = 5) -> str:
     return (
         prelude + "public fn main(@Unit -> @Int)\n" + _CONTRACT
-        + f"{{\n  if {form}({binder}, 5, {predicate}) then {{ 1 }} "
+        + f"{{\n  if {form}({binder}, {bound}, {predicate}) then {{ 1 }} "
         f"else {{ 0 }}\n}}\n"
     )
 
@@ -520,27 +521,32 @@ class TestQuantifierPredicate:
         assert out.accepted and out.compiles_clean, out.describe()
         assert run_main(out) == ("ok", value)
 
-    @pytest.mark.parametrize(("form", "binder", "body", "value"), (
-        ("forall", "@Q", "12 / @Nat.0 > 2", 1),
-        ("forall", "@Q", "@Nat.0 > 0", 1),
-        ("exists", "@Q", "@Nat.0 == 4", 1),
-        ("exists", "@Q", "@Nat.0 == 0", 0),
-        ("forall", "@{ @Pos | 12 / @Pos.0 > 2 }", "@Nat.0 < 5", 1),
+    @pytest.mark.parametrize(("form", "binder", "body", "value", "bound"), (
+        ("forall", "@Q", "12 / @Nat.0 > 2", 1, 5),
+        ("forall", "@Q", "@Nat.0 > 0", 1, 5),
+        ("exists", "@Q", "@Nat.0 == 4", 1, 5),
+        ("exists", "@Q", "@Nat.0 == 0", 0, 5),
+        ("forall", "@{ @Pos | 12 / @Pos.0 > 2 }", "@Nat.0 < 5", 1, 5),
+        # Below 5, `Q` and `Pos` hold the same indices (1 to 4), so only a
+        # bound past 5 shows the OUTER layer narrowing the range: `Pos`
+        # holds 5, and 12 / 5 > 2 does not.
+        ("exists", "@Q", "@Nat.0 == 5", 0, 6),
+        ("forall", "@Q", "@Nat.0 < 5", 1, 6),
     ))
     def test_an_outer_layer_is_tested_only_where_the_inner_holds(
-        self, form: str, binder: str, body: str, value: int,
+        self, form: str, binder: str, body: str, value: int, bound: int,
         tmp_path: Path,
     ) -> None:
         """A refinement of a refinement: ``Q``'s predicate divides by the
         index, which ``Pos`` keeps from being 0.  The layers are tested
         innermost first and each only where the one inside it holds, as the
         type means; conjoined eagerly, index 0 divided by zero (PR #1508
-        review)."""
+        review).  Every layer narrows the range, the outer one included."""
         nested = ("type Pos = { @Nat | @Nat.0 > 0 };\n"
                   "type Q = { @Pos | 12 / @Pos.0 > 2 };\n\n")
         out = _check(tmp_path, _quantifier(
             f"fn(@Nat -> @Bool) effects(pure) {{ {body} }}",
-            binder=binder, prelude=nested, form=form))
+            binder=binder, prelude=nested, form=form, bound=bound))
         assert out.accepted and out.compiles_clean, out.describe()
         assert run_main(out) == ("ok", value)
 

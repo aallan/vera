@@ -1275,8 +1275,8 @@ class RegistrationMixin:
     #: ``Tuple(1, 2)`` instead of ``(1, 2)``), so the answer is the one Vera
     #: already gives in the neighbouring namespaces: the name is reserved.
     #:
-    #: The containers (``Array``, ``Map``, ``Set``, ``Decimal``) for another
-    #: reason.  The resolution spine tells a NAME a namespace writes apart
+    #: The built-in types ``Array``, ``Map``, ``Set`` and ``Decimal`` for
+    #: another reason.  The resolution spine tells a NAME a namespace writes apart
     #: from a declaration (#1321/#1331), but the checker gives a value of the
     #: container and a value of a declaration taking the same number of type
     #: arguments one type, ``AdtType(name, args)``, so nothing downstream can
@@ -1370,7 +1370,7 @@ class RegistrationMixin:
                 and name not in self._SPECIAL_CASED_BUILTIN_CTORS):
             subject = "redeclared as a data type"
             rationale = (
-                f"'{name}' is a built-in container. Declared with the "
+                f"'{name}' is a built-in type. Declared with the "
                 f"built-in's number of type arguments, it is the same type "
                 f"as the built-in to the type checker, so a built-in "
                 f"'{name}' value would be accepted where this declaration's "

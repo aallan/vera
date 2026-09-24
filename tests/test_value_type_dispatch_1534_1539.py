@@ -224,6 +224,32 @@ class TestATypeReachedThroughASignature:
         assert control[0] == "ok", control
         assert variant == control
 
+    @pytest.mark.parametrize("op", sorted(_OPS))
+    @pytest.mark.parametrize("value", sorted(_VALUES))
+    def test_inside_a_closure_body(
+        self, tmp_path: Path, value: str, op: str,
+    ) -> None:
+        """A closure's body is compiled on its own path
+        (``vera/codegen/closures.py``), which must hand the dispatch the
+        same value types: ``show`` or ``hash`` of the value inside a lambda,
+        mapped over two elements and joined (PR #1508 review)."""
+        expr, fn, types = _VALUES[value]
+        # The hash is rendered in the lambda rather than carried out of it:
+        # a hash above `i64.MAX` traps where it is bound into a `Nat` slot.
+        shown = f"show({expr})" if op == "show" else f"show(hash({expr}))"
+        body = (
+            "array_fold(array_map([1, 2], fn(@Int -> @String) "
+            f"effects(pure) {{ {shown} }}), \"\", "
+            "fn(@String, @String -> @String) effects(pure) "
+            "{ string_concat(@String.1, @String.0) })")
+        variant = _run(tmp_path / "variant", {
+            "mb.vera": _MB, "main.vera": _entry(fn, "String", body)})
+        control = _run(tmp_path / "control", {
+            "mb.vera": _MB,
+            "main.vera": _entry(f"{fn}, {types}", "String", body)})
+        assert control[0] == "ok", control
+        assert variant == control
+
     def test_a_constructor_name_the_entry_reuses(
         self, tmp_path: Path,
     ) -> None:
@@ -421,25 +447,37 @@ _RESOLVERS = frozenset({"_declares_adt", "_value_adt_key"})
 _MEMBERSHIP = frozenset({"_adt_type_names", "_value_data_types"})
 
 
+def _membership_readers_in(source: str, file: str) -> dict[str, list[int]]:
+    """Every function in *source* reading either membership set, with the
+    lines it reads them on: a class's methods, keyed ``file:Class.fn``, and
+    a module-level function, keyed ``file:<module>.fn``."""
+    out: dict[str, list[int]] = {}
+    tree = pyast.parse(source)
+    owned: list[tuple[str, pyast.FunctionDef | pyast.AsyncFunctionDef]] = [
+        ("<module>", fn) for fn in tree.body
+        if isinstance(fn, (pyast.FunctionDef, pyast.AsyncFunctionDef))]
+    for node in pyast.walk(tree):
+        if isinstance(node, pyast.ClassDef):
+            owned += [
+                (node.name, fn) for fn in node.body
+                if isinstance(fn, (pyast.FunctionDef, pyast.AsyncFunctionDef))]
+    for owner, fn in owned:
+        lines = [
+            n.lineno for n in pyast.walk(fn)
+            if isinstance(n, pyast.Attribute) and n.attr in _MEMBERSHIP
+        ]
+        if lines and fn.name != "__init__":
+            out[f"{file}:{owner}.{fn.name}"] = lines
+    return out
+
+
 def _membership_readers() -> dict[str, list[int]]:
     """Every function in ``vera/wasm`` reading either membership set,
     with the lines it reads them on, from the source."""
     out: dict[str, list[int]] = {}
     for path in sorted((_ROOT / "vera" / "wasm").glob("*.py")):
-        tree = pyast.parse(path.read_text(encoding="utf-8"))
-        for node in pyast.walk(tree):
-            if not isinstance(node, pyast.ClassDef):
-                continue
-            for fn in node.body:
-                if not isinstance(fn, pyast.FunctionDef):
-                    continue
-                lines = [
-                    n.lineno for n in pyast.walk(fn)
-                    if isinstance(n, pyast.Attribute)
-                    and n.attr in _MEMBERSHIP
-                ]
-                if lines and fn.name != "__init__":
-                    out[f"{path.name}:{node.name}.{fn.name}"] = lines
+        out.update(_membership_readers_in(
+            path.read_text(encoding="utf-8"), path.name))
     return out
 
 
@@ -458,3 +496,12 @@ class TestEveryMembershipReadIsAResolver:
         readers = _membership_readers()
         assert any(k.endswith("._declares_adt") for k in readers)
         assert any(k.endswith("._value_adt_key") for k in readers)
+
+    def test_the_scan_sees_a_module_level_function(self) -> None:
+        """A read outside any class is reported too, so a helper function in
+        ``vera/wasm`` cannot read the membership unseen."""
+        source = ("def helper(ctx):\n    return ctx._adt_type_names\n\n"
+                  "class C:\n    def m(self):\n"
+                  "        return self._value_data_types\n")
+        assert _membership_readers_in(source, "x.py") == {
+            "x.py:<module>.helper": [2], "x.py:C.m": [6]}
