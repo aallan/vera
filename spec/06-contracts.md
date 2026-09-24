@@ -164,7 +164,7 @@ Everything allowed in the decidable fragment (Chapter 2, Section 2.6.1):
 - `true`, `false`
 - The `@T.result` reference (in `ensures` only)
 - Conditional expressions (`if ... then ... else ...`)
-- Calls to `pure` functions that have their own contracts — the verifier inlines the callee's contract at the call site
+- Calls to `pure` functions that have their own contracts — the verifier inlines the callee's contract at the call site. The callee MUST NOT lead back to the function whose contract makes the call, directly or through other calls: a contract defined through its own function would need itself to be checked, so such a call is rejected at check time with `E138`. The same holds for a call inside a refinement predicate of a type the function names, since the compiled program evaluates that predicate as a check
 
 ### 6.3.2 Additionally Allowed in Contracts (Tier 2)
 

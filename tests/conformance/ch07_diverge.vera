@@ -1,0 +1,31 @@
+-- Conformance: the Diverge effect (Chapter 7, Section 7.7.3)
+-- Tests: a recursive function whose effect row names Diverge needs no
+-- decreases clause, and it compiles and runs.  Diverge propagates like any
+-- effect, so every caller up to main declares it too.
+-- Whether the Collatz iteration reaches 1 from every start is an open
+-- problem, so no measure exists for it and Diverge is the honest row.
+private fn collatz_steps(@Nat, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(<Diverge>)
+{
+  -- @Nat.1 is the current value, @Nat.0 the steps taken so far.
+  if @Nat.1 <= 1 then {
+    @Nat.0
+  } else {
+    if @Nat.1 % 2 == 0 then {
+      collatz_steps(@Nat.1 / 2, @Nat.0 + 1)
+    } else {
+      collatz_steps(3 * @Nat.1 + 1, @Nat.0 + 1)
+    }
+  }
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<Diverge, IO>)
+{
+  let @Nat = collatz_steps(27, 0);
+  IO.print("27 reaches 1 in \(@Nat.0) steps\n")
+}

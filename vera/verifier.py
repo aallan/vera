@@ -25,6 +25,7 @@ from functools import lru_cache, partial
 from typing import TYPE_CHECKING, ClassVar, cast
 
 from vera import ast, binders, carriers, narrowing, naming
+from vera.callgraph import CallGraph
 from vera.environment import ConstructorInfo, FunctionInfo, TypeEnv
 from vera.monomorphize import (
     MonoContext,
@@ -221,15 +222,6 @@ class BlockBindingPolicy(enum.Enum):
     against the enclosing env: it carried no variant at all (#1452 review).
     """
 
-    SKIP = "skip"
-    """Leave the env alone; a later slot reference resolves to the outer.
-
-    For a reader that only LOOKS for something (`_walk_for_calls` hunts
-    recursive-group calls): it records no obligation, so a stale resolution
-    cannot become a false claim, and pushing an opaque value would lose the
-    outer binding a call argument may still legitimately name.
-    """
-
     HALT = "halt"
     """Stop reading the block here.
 
@@ -261,6 +253,12 @@ class BlockBindingPolicy(enum.Enum):
     outer's value.  Deliberately NOT seeded with the resolved source type
     beyond that invariant: a fresh var is disconnected from the value, so
     asserting more would be an unchecked assumption.
+
+    And for `_walk_for_calls`, the `decreases` walk (#1492), which
+    translates each recursive call's arguments in the env it has built: a
+    binding left out of it would move every later slot of its type onto an
+    outer value, and a measure proved against that value is a claim about a
+    call the program does not make.
     """
 
 
@@ -2134,6 +2132,10 @@ class ContractVerifier:
         """
         self._register_modules(program)  # C7d: cross-module imports
         self._register_all(program)      # local declarations shadow imports
+        # #1492/#1520: the call graph whose cycles decide which calls a
+        # `decreases` measure has to be checked across — one per program the
+        # verifier reads, keyed by the declarations it holds.
+        self._register_call_graphs(program)
         # #991: pin each LOCAL top-level function's own info so the scoped
         # helper lookup can prefer it over a nested helper of the same name that
         # clobbered the flat registry (nested helpers register last).  This
@@ -4644,17 +4646,13 @@ class ContractVerifier:
         # into the decreases checking below.
         del smt._path_conditions[tlf_depth:]
 
-        # 8. Handle decreases clauses — attempt verification
-        # Build mutual recursion group for decreases checking
-        group_decls: dict[str, ast.FnDecl] = {decl.name: decl}
-        if decl.where_fns:
-            for wfn in decl.where_fns:
-                group_decls[wfn.name] = wfn
-        elif parent_where_group is not None:
-            group_decls[parent_where_group.name] = parent_where_group
-            if parent_where_group.where_fns:
-                for wfn in parent_where_group.where_fns:
-                    group_decls[wfn.name] = wfn
+        # 8. Handle decreases clauses — attempt verification.
+        # #1520: the group is the function's cycle in the program's WHOLE
+        # call graph.  It was the function and its `where` group, so a cycle
+        # through any other declaration had its measure proved over the
+        # self-calls alone, while the runtime guard, which follows the real
+        # call chain, trapped.
+        group_decls = self._decreases_group(decl, parent_where_group)
 
         for contract in decl.contracts:
             if isinstance(contract, ast.Decreases):
@@ -4664,7 +4662,7 @@ class ContractVerifier:
                 # while the measure's value is one.
                 self._check_decreases_bound(
                     decl, contract, smt, slot_env, assumptions)
-                if self._verify_decreases(
+                if group_decls is not None and self._verify_decreases(
                     decl, contract, smt, slot_env, group_decls,
                 ):
                     self._record_obligation(
@@ -6377,20 +6375,42 @@ class ContractVerifier:
         if z3_initial is None:  # pragma: no cover
             return False
 
-        # Collect all recursive call sites (self + mutual) with path conds
-        group_names = set(group_decls.keys())
+        # Collect all recursive call sites (self + mutual) with path conds.
+        # #1520: the calls that stay on the cycle are the call graph's, by
+        # site, when the graph holds this very declaration.  A clone (a
+        # monomorphized generic) is a copy the graph never saw, so its calls
+        # are matched by name against the group instead.
+        orig = self._graph_decl(decl)
+        expected: dict[int, ast.FnDecl] = {}
+        if orig is decl:
+            expected = {
+                id(site.call): site.callee
+                for site in self._graph_of[id(decl)].cycle_sites(decl)
+            }
+
+            def match(call: ast.FnCall) -> ast.FnDecl | None:
+                return expected.get(id(call))
+        else:
+            def match(call: ast.FnCall) -> ast.FnDecl | None:
+                return group_decls.get(call.name)
         calls = self._collect_recursive_calls(
-            decl.name, decl.body, smt, slot_env, group_names,
+            decl.body, smt, slot_env, match,
         )
         if not calls:
             # No recursive calls found → can't verify
+            return False
+        # #1520: every call the graph puts on the cycle has to be one the
+        # walk compared with the measure.  A call the walk cannot reach
+        # would otherwise be missing from the proof while the runtime guard
+        # still meets it, which is the false Tier 1 this closes.
+        if orig is decl and not set(expected) <= {id(c[4]) for c in calls}:
             return False
 
         import z3 as z3mod
 
         # For each call site, verify the measure decreases
-        for callee_name, call_args, z3_path_conds, call_site_env in calls:
-            callee_decl = group_decls.get(callee_name, decl)
+        for callee_decl, call_args, z3_path_conds, call_site_env, _call in \
+                calls:
 
             # Build callee's slot env from actual arguments
             callee_env = SlotEnv()
@@ -6411,7 +6431,7 @@ class ContractVerifier:
 
             # For cross-calls, use the callee's decreases expression
             callee_measure_expr: ast.Expr
-            if callee_name == decl.name:
+            if callee_decl is decl:
                 callee_measure_expr = measure_expr
             else:
                 found = self._find_decreases_expr(callee_decl)
@@ -6424,6 +6444,10 @@ class ContractVerifier:
                 callee_measure_expr, callee_env,
             )
             if z3_callee_measure is None:  # pragma: no cover
+                return False
+            if z3_callee_measure.sort() != z3_initial.sort():
+                # #1520: two functions on one cycle whose measures have
+                # different types have no common order to decrease in.
                 return False
 
             # Verify: path_conds ⟹ measure strictly decreases
@@ -6464,59 +6488,130 @@ class ContractVerifier:
 
     def _collect_recursive_calls(
         self,
-        fn_name: str,
         expr: ast.Expr,
         smt: SmtContext,
         slot_env: SlotEnv,
-        group_names: set[str] | None = None,
-    ) -> list[tuple[str, tuple[ast.Expr, ...], list[object], SlotEnv]]:
-        """Walk the AST to find recursive call sites.
+        match: Callable[[ast.FnCall], ast.FnDecl | None],
+    ) -> list[tuple[ast.FnDecl, tuple[ast.Expr, ...], list[object],
+                    SlotEnv, ast.FnCall]]:
+        """Walk the AST to find the calls *match* resolves to a cycle member.
 
-        Finds calls to *fn_name* and, when *group_names* is supplied, any
-        call to a function in the mutual recursion group.  Returns a list
-        of ``(callee_name, call_args, z3_path_conditions, slot_env)``
+        Returns ``(callee, call_args, z3_path_conditions, slot_env, call)``
         tuples.
         """
-        effective = group_names or {fn_name}
-        results: list[tuple[str, tuple[ast.Expr, ...], list[object], SlotEnv]] = []
-        self._walk_for_calls(effective, expr, [], results, smt, slot_env)
+        results: list[tuple[ast.FnDecl, tuple[ast.Expr, ...], list[object],
+                            SlotEnv, ast.FnCall]] = []
+        self._walk_for_calls(match, expr, [], results, smt, slot_env)
         return results
+
+    def _register_call_graphs(self, program: ast.Program) -> None:
+        """Build the call graph of *program* and of every module it reads."""
+        graphs = [CallGraph(tld.decl for tld in program.declarations)]
+        for mod in self._resolved_modules:
+            graphs.append(CallGraph(
+                tld.decl for tld in mod.program.declarations))
+        self._graph_of: dict[int, CallGraph] = {}
+        self._graph_by_name: dict[str, list[ast.FnDecl]] = {}
+        for graph in graphs:
+            for fn in graph.fns:
+                self._graph_of[id(fn)] = graph
+                self._graph_by_name.setdefault(fn.name, []).append(fn)
+
+    def _graph_decl(self, decl: ast.FnDecl) -> ast.FnDecl | None:
+        """The call graph's own declaration for *decl*.
+
+        *decl* itself when the graph holds it.  A monomorphized clone is a
+        new node that keeps its source name, so it maps to the one
+        declaration of that name; a name two declarations share maps to
+        nothing, and the caller then claims nothing about the measure.
+        """
+        graph_of = getattr(self, "_graph_of", None)
+        if graph_of is None:
+            return None
+        if id(decl) in graph_of:
+            return decl
+        same = self._graph_by_name.get(decl.name, [])
+        return same[0] if len(same) == 1 else None
+
+    def _decreases_cycle(self, decl: ast.FnDecl) -> list[ast.FnDecl] | None:
+        """The declarations on *decl*'s call cycle, or None if unplaceable."""
+        orig = self._graph_decl(decl)
+        if orig is None:
+            return None
+        return self._graph_of[id(orig)].cycle(orig)
+
+    def _decreases_group(
+        self, decl: ast.FnDecl, parent_where_group: ast.FnDecl | None,
+    ) -> dict[str, ast.FnDecl] | None:
+        """What `_verify_decreases` matches *decl*'s cycle calls against.
+
+        A declaration the call graph holds needs nothing here: its calls
+        are matched by SITE against the graph's cycle (#1520), so the dict
+        is empty.  A monomorphized clone is a copy the graph never saw, and
+        keeps the by-name `where` group it has always used, whose members
+        are clones too, but only while the original's cycle lies inside
+        that group.  A cycle through any other declaration cannot be read
+        from the clone, so the answer is None: no proof is claimed and the
+        obligation stays with the runtime guard.
+        """
+        cycle = self._decreases_cycle(decl)
+        if cycle is None:
+            return None
+        if self._graph_decl(decl) is decl:
+            return {}
+        where_group: dict[str, ast.FnDecl] = {decl.name: decl}
+        if decl.where_fns:
+            for wfn in decl.where_fns:
+                where_group[wfn.name] = wfn
+        elif parent_where_group is not None:
+            where_group[parent_where_group.name] = parent_where_group
+            for wfn in parent_where_group.where_fns or ():
+                where_group[wfn.name] = wfn
+        if any(m.name not in where_group for m in cycle):
+            return None
+        return where_group
 
     def _walk_for_calls(
         self,
-        group_names: set[str],
+        match: Callable[[ast.FnCall], ast.FnDecl | None],
         expr: ast.Expr,
         z3_path_conds: list[object],
-        results: list[tuple[str, tuple[ast.Expr, ...], list[object], SlotEnv]],
+        results: list[tuple[ast.FnDecl, tuple[ast.Expr, ...], list[object],
+                            SlotEnv, ast.FnCall]],
         smt: SmtContext,
         slot_env: SlotEnv,
     ) -> None:
         """Recursively walk AST, tracking Z3 path conditions and slot env."""
         if isinstance(expr, ast.FnCall):
-            if expr.name in group_names:
+            callee = match(expr)
+            if callee is not None:
                 results.append(
-                    (expr.name, expr.args, list(z3_path_conds), slot_env),
+                    (callee, expr.args, list(z3_path_conds), slot_env, expr),
                 )
             # Also walk into arguments (they might contain recursive calls)
             for arg in expr.args:
-                self._walk_for_calls(group_names, arg, z3_path_conds, results,
+                self._walk_for_calls(match, arg, z3_path_conds, results,
                                      smt, slot_env)
             return
 
         if isinstance(expr, ast.IfExpr):
+            # #1492: a call in the condition runs on every path, so it is
+            # walked under the enclosing path conditions.
+            self._walk_for_calls(match, expr.condition, z3_path_conds,
+                                 results, smt, slot_env)
             z3_cond = smt.translate_expr(expr.condition, slot_env)
             if z3_cond is not None:
                 import z3 as z3mod
                 then_conds = z3_path_conds + [z3_cond]
-                self._walk_for_calls(group_names, expr.then_branch,
+                self._walk_for_calls(match, expr.then_branch,
                                      then_conds, results, smt, slot_env)
                 else_conds = z3_path_conds + [z3mod.Not(z3_cond)]
-                self._walk_for_calls(group_names, expr.else_branch,
+                self._walk_for_calls(match, expr.else_branch,
                                      else_conds, results, smt, slot_env)
             else:  # pragma: no cover
-                self._walk_for_calls(group_names, expr.then_branch,
+                self._walk_for_calls(match, expr.then_branch,
                                      z3_path_conds, results, smt, slot_env)
-                self._walk_for_calls(group_names, expr.else_branch,
+                self._walk_for_calls(match, expr.else_branch,
                                      z3_path_conds, results, smt, slot_env)
             return
 
@@ -6524,38 +6619,58 @@ class ContractVerifier:
             cur_env = slot_env
             for stmt in expr.statements:
                 if isinstance(stmt, ast.LetStmt):
-                    self._walk_for_calls(group_names, stmt.value,
+                    self._walk_for_calls(match, stmt.value,
                                          z3_path_conds, results, smt, cur_env)
+                    # #1492: FRESH_VAR, not the SKIP policy this walk had.
+                    # The calls it finds are not only looked at: their
+                    # arguments are translated in this env to compare the
+                    # measure.  Leaving an untranslatable binding out of the
+                    # env shifted every later slot of its type onto an
+                    # outer one, so `f(@Nat.0 - 1)` after such a `let` read
+                    # the PARAMETER, proved a decrease the run then broke,
+                    # and the guard trapped a program verified at Tier 1.  A
+                    # fresh value keeps the De Bruijn positions aligned and
+                    # can only fail a proof, never make one.
                     bound = self._apply_let_binding(
                         stmt, smt, cur_env,
-                        policy=BlockBindingPolicy.SKIP,
+                        policy=BlockBindingPolicy.FRESH_VAR,
                     )
-                    if bound is not None:  # SKIP never halts
+                    if bound is not None:  # FRESH_VAR never halts
                         cur_env = bound
+                elif isinstance(stmt, ast.LetDestruct):
+                    # #1492: a destructure's right-hand side is evaluated like
+                    # any other, and it was skipped, so a recursive call there
+                    # was never compared with the measure.  Its binders become
+                    # opaque values, so a later call whose arguments read one
+                    # can only fail to prove, never prove from a stale outer.
+                    self._walk_for_calls(match, stmt.value,
+                                         z3_path_conds, results, smt, cur_env)
+                    cur_env = self._shadow_destructured_slots(
+                        stmt, smt, cur_env)
                 elif isinstance(stmt, ast.ExprStmt):
                     # Walk a statement-position expression for recursive-group
                     # calls so `decreases` sees a discarded recursive call
                     # (test_decreases_resolves_via_stmt_position_recursive_call).
-                    self._walk_for_calls(group_names, stmt.expr,
+                    self._walk_for_calls(match, stmt.expr,
                                          z3_path_conds, results, smt, cur_env)
-            self._walk_for_calls(group_names, expr.expr, z3_path_conds,
+            self._walk_for_calls(match, expr.expr, z3_path_conds,
                                  results, smt, cur_env)
             return
 
         if isinstance(expr, ast.BinaryExpr):
-            self._walk_for_calls(group_names, expr.left, z3_path_conds,
+            self._walk_for_calls(match, expr.left, z3_path_conds,
                                  results, smt, slot_env)
-            self._walk_for_calls(group_names, expr.right, z3_path_conds,
+            self._walk_for_calls(match, expr.right, z3_path_conds,
                                  results, smt, slot_env)
             return
 
         if isinstance(expr, ast.UnaryExpr):
-            self._walk_for_calls(group_names, expr.operand, z3_path_conds,
+            self._walk_for_calls(match, expr.operand, z3_path_conds,
                                  results, smt, slot_env)
             return
 
         if isinstance(expr, ast.MatchExpr):
-            self._walk_for_calls(group_names, expr.scrutinee, z3_path_conds,
+            self._walk_for_calls(match, expr.scrutinee, z3_path_conds,
                                  results, smt, slot_env)
             scrutinee_z3 = smt.translate_expr(expr.scrutinee, slot_env)
             for match_arm in expr.arms:
@@ -6573,7 +6688,7 @@ class ContractVerifier:
                 if arm.condition is not None:
                     arm_conds.append(arm.condition)
                 arm_conds.extend(arm.facts)
-                self._walk_for_calls(group_names, match_arm.body, arm_conds,
+                self._walk_for_calls(match, match_arm.body, arm_conds,
                                      results, smt, arm.env)
             return
 
@@ -6586,56 +6701,67 @@ class ContractVerifier:
         # only make the proof harder, never wrongly easier).
         if isinstance(expr, ast.HandleExpr):
             if expr.state is not None:
-                self._walk_for_calls(group_names, expr.state.init_expr,
+                self._walk_for_calls(match, expr.state.init_expr,
                                      z3_path_conds, results, smt, slot_env)
-            self._walk_for_calls(group_names, expr.body, z3_path_conds,
+            self._walk_for_calls(match, expr.body, z3_path_conds,
                                  results, smt, slot_env)
+            # #1492: a clause body binds the operation's arguments (and the
+            # handler state) as its most recent slots, so reading its calls
+            # against the enclosing env named the PARAMETER where the clause
+            # names the thrown value — `throw(@Nat) -> { f(@Nat.0 - 1) }`
+            # under `throw(@Nat.0 + 5)` was proved a decrease and trapped.
+            # It is read with no slots and no path facts: every call there
+            # is still found, and none can be proved from a binding this
+            # walk does not model.
             for clause in expr.clauses:
-                self._walk_for_calls(group_names, clause.body,
-                                     z3_path_conds, results, smt, slot_env)
+                self._walk_for_calls(match, clause.body,
+                                     [], results, smt, SlotEnv())
                 if clause.state_update is not None:
-                    self._walk_for_calls(group_names, clause.state_update[1],
-                                         z3_path_conds, results, smt,
-                                         slot_env)
+                    self._walk_for_calls(match, clause.state_update[1],
+                                         [], results, smt, SlotEnv())
             return
 
         if isinstance(expr, ast.AnonFn):
-            # The closure's parameters shadow nothing the measure can
-            # reference soundly from here; walk the body with the
-            # enclosing env — a hit only ADDS a call site to prove.
-            self._walk_for_calls(group_names, expr.body, z3_path_conds,
-                                 results, smt, slot_env)
+            # #1492: the same for a closure.  Its parameters shadow outer
+            # slots of their type, so `fn(@Nat -> @Nat) { f(@Nat.0 - 1) }`
+            # applied to `n + 10` was read as `f(n - 1)` and proved; and a
+            # closure can be applied in another activation than the one
+            # that built it, where the entry measure is not the one the
+            # path facts describe.  The body is read with no slots and no
+            # path facts, so its calls are found and none is proved.
+            self._walk_for_calls(match, expr.body, [],
+                                 results, smt, SlotEnv())
             return
 
         if isinstance(expr, (ast.ConstructorCall, ast.QualifiedCall,
                              ast.ModuleCall)):
             for arg in expr.args:
-                self._walk_for_calls(group_names, arg, z3_path_conds,
+                self._walk_for_calls(match, arg, z3_path_conds,
                                      results, smt, slot_env)
             return
 
         if isinstance(expr, ast.IndexExpr):
-            self._walk_for_calls(group_names, expr.collection, z3_path_conds,
+            self._walk_for_calls(match, expr.collection, z3_path_conds,
                                  results, smt, slot_env)
-            self._walk_for_calls(group_names, expr.index, z3_path_conds,
+            self._walk_for_calls(match, expr.index, z3_path_conds,
                                  results, smt, slot_env)
             return
 
         if isinstance(expr, ast.ArrayLit):
             for el in expr.elements:
-                self._walk_for_calls(group_names, el, z3_path_conds,
+                self._walk_for_calls(match, el, z3_path_conds,
                                      results, smt, slot_env)
             return
 
         if isinstance(expr, ast.InterpolatedString):
             for part in expr.parts:
                 if isinstance(part, ast.Expr):
-                    self._walk_for_calls(group_names, part, z3_path_conds,
+                    self._walk_for_calls(match, part, z3_path_conds,
                                          results, smt, slot_env)
             return
 
         if isinstance(expr, (ast.AssertExpr, ast.AssumeExpr)):
-            self._walk_for_calls(group_names, expr.expr, z3_path_conds,
+            self._walk_for_calls(match, expr.expr, z3_path_conds,
                                  results, smt, slot_env)
             return
 

@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from vera import ast
+from vera.callgraph import CallGraph
 from vera.errors import Diagnostic
 from vera.obligations.cache import (
     DischargeCache,
@@ -318,11 +319,29 @@ class VerificationSession:
         out_diags: list[Diagnostic] = list(verifier.errors)
         out_obls: list[ProofObligation] = list(verifier.obligations)
 
+        # #1520: a `decreases` verdict reads the calls that stay on the
+        # declaration's call cycle, and which calls those are depends on
+        # OTHER declarations' bodies — a body edit elsewhere can close or
+        # open a cycle through this one without touching anything
+        # `fn_cache_key` digests.  The cycle's membership goes in the key.
+        call_graph = CallGraph(tld.decl for tld in program.declarations)
+
+        def _cycle_key(root: ast.FnDecl) -> str:
+            stack, names = [root], []
+            while stack:
+                fn = stack.pop()
+                names.append(
+                    f"{fn.name}:" + ",".join(
+                        m.name for m in call_graph.cycle(fn)))
+                stack.extend(fn.where_fns or ())
+            return "|".join(names)
+
         for tld in program.declarations:
             if not isinstance(tld.decl, ast.FnDecl):
                 continue
             decl = tld.decl
             key = fn_cache_key(decl, fn_map, context_hash, env)
+            key = f"{key}\x1f{_cycle_key(decl)}"
             if self._disclosed:
                 # A slice proved under a DIFFERENT disclosed set is stale:
                 # its statuses depend on which facts were withheld, which is

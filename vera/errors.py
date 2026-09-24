@@ -927,6 +927,8 @@ ERROR_CODES: dict[str, str] = {
     "E133": "Type alias arity mismatch",
     "E134": "Type does not take type arguments",
     "E135": "Array/Map/Set with a zero-size element, key, or value type",
+    "E137": "Recursive function declares neither decreases nor Diverge",
+    "E138": "Contract calls back into its own function",
     "E140": "Arithmetic requires numeric operands",
     "E141": "Arithmetic requires matching numeric types",
     "E142": "Cannot compare incompatible types",
