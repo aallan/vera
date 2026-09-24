@@ -1150,6 +1150,17 @@ def namespace_ctor_owners(
     never inherited, so a module reached only transitively from the entry
     contributes nothing to the entry's map while keeping everything its own
     imports allow.
+
+    One use of such a module's declaration remains (#1513): a constructor
+    of a PUBLIC type of a module the namespace's checker sees, which the
+    namespace does not import — `gcount(GMk(9))` with `GBox` reaching the
+    caller only through `gcount`'s signature.  After the three classes, a
+    constructor name none of them holds is filled from the public types of
+    the modules in :func:`namespace_module_reach` that the namespace cannot
+    name, where exactly one such type declares it: the fallback class of
+    codegen's ``_namespace_ctor_projection``, over the same modules, so the
+    two sides name the clone after the same type.  It fills and never
+    displaces, so every name the classes above resolve keeps its owner.
     """
     from vera.prelude import prelude_data_decls
 
@@ -1216,9 +1227,65 @@ def namespace_ctor_owners(
                     out[ctor.name] = tld.decl.name
         return out
 
+    reach = namespace_module_reach(module_list)
+
+    def fill_strangers(
+        key: tuple[str, ...] | None, out: dict[str, str],
+    ) -> dict[str, str]:
+        # Every type this namespace declares or imports already holds its
+        # constructors in `out` (or yields them to infrastructure), so the
+        # public types of its reach that declare a name `out` lacks are the
+        # strangers codegen's fallback reads.  A name is filled only where
+        # exactly one of them declares it.
+        sources: dict[str, list[str]] = {}
+        for path in sorted(reach.get(key, frozenset())):
+            for adt_name, ctor_names in sorted(
+                    public_adts.get(path, {}).items()):
+                for ctor_name in ctor_names:
+                    if ctor_name not in out:
+                        sources.setdefault(ctor_name, []).append(adt_name)
+        for ctor_name, adt_names in sources.items():
+            if len(adt_names) == 1:
+                out[ctor_name] = adt_names[0]
+        return out
+
     return NamespaceCtorOwners({
-        key: owners(prog) for key, prog in [(None, entry), *module_list]
+        key: fill_strangers(key, owners(prog))
+        for key, prog in [(None, entry), *module_list]
     })
+
+
+def namespace_module_reach(
+    modules: Iterable[tuple[tuple[str, ...], ast.Program]],
+) -> dict[tuple[str, ...] | None, frozenset[tuple[str, ...]]]:
+    """The modules each namespace's checker can see (#1513).
+
+    The entry program's checker is handed every resolved module; a module's
+    bodies are checked by a fresh checker handed the modules its own imports
+    reach, transitively (:func:`vera.module_view.modules_visible_to`).  A
+    constructor of a type a namespace does not import is resolved among
+    those modules by the checker (`_stranger_constructor`), so codegen's
+    ``_namespace_ctor_projection`` and :func:`namespace_ctor_owners` resolve
+    it among the modules this returns — one derivation for both, keyed by
+    module path with ``None`` for the entry program, and asserted equal to
+    the checker's view by ``tests/test_warning_severity_1513.py``.
+    """
+    module_list = list(modules)
+    by_path = dict(module_list)
+    reach: dict[tuple[str, ...] | None, frozenset[tuple[str, ...]]] = {
+        None: frozenset(by_path),
+    }
+    for path, prog in module_list:
+        seen: set[tuple[str, ...]] = set()
+        frontier = [tuple(imp.path) for imp in prog.imports]
+        while frontier:
+            dep = frontier.pop()
+            if dep in seen or dep not in by_path:
+                continue
+            seen.add(dep)
+            frontier.extend(tuple(imp.path) for imp in by_path[dep].imports)
+        reach[path] = frozenset(seen)
+    return reach
 
 
 @dataclass(frozen=True)

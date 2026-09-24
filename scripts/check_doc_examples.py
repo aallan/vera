@@ -7,11 +7,12 @@ order:
 
 1. **parse** — the block parses.
 2. **check** — ``vera check`` accepts it, and it draws no warning outside
-   ``BENIGN_CHECK_WARNINGS``.  ``vera check`` only warns on a name the block
-   does not define — a function, a constructor, a module — so that the
-   program still reaches code generation, which refuses it; the gate fails
-   every warning except the ones it names as harmless, so a warning the
-   checker gains later fails here until someone classifies it.
+   ``BENIGN_CHECK_WARNINGS``.  The one other warning ``vera check`` gives is
+   for a constructor whose data type the block does not import (E210 and
+   E214 in a construction, E320 and E322 in a pattern): the program
+   compiles, but an example should import what it uses.
+   The gate fails every warning except the ones it names as harmless, so a
+   warning the checker gains later fails here until someone classifies it.
 3. **verify** — ``vera verify`` accepts it.
 4. **run** — for each ``vera:run`` marker, ``vera run --fn`` with the
    marker's arguments exits 0 and prints exactly the marker's ``stdout``.
@@ -195,10 +196,9 @@ STAGE_ORDER: tuple[str, ...] = ("parse", "check", "verify", "run")
 
 # The warnings `vera check` may give a block the check stage still passes,
 # each with why it is harmless there.  Every other warning fails the stage:
-# the rest of the checker's warnings name something the block does not
-# define — a function, a constructor, a module — which `vera check` only
-# warns on so the program still reaches code generation, where it is an
-# error.  A warning the checker gains later fails the stage until it is
+# the rest are E210, E214, E320 and E322 for a constructor whose data type the
+# block does not import, which compiles but is not how an example should be
+# written.  A warning the checker gains later fails the stage until it is
 # classified here.
 BENIGN_CHECK_WARNINGS: dict[str, str] = {
     "W001": (

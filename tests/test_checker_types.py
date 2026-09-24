@@ -5,6 +5,7 @@ Split from tests/test_checker.py (#420). Shared helpers live in tests/checker_he
 from __future__ import annotations
 
 from tests.checker_helpers import (
+    _check,
     _check_err,
     _check_ok,
     _errors,
@@ -449,9 +450,10 @@ private fn foo(@Int -> @Box<Int>)
 { MkBox(@Int.0) }
 """)
 
-    def test_unknown_constructor_call_warns_e210(self) -> None:
-        """A call to an undeclared constructor warns E210, not just a message."""
-        warns = _warnings("""
+    def test_unknown_constructor_call_is_e210_error(self) -> None:
+        """A call to an undeclared constructor is an E210 error (#1513):
+        there is no layout to build, so code generation refused it."""
+        warns = _check("""
 private data Option<T> { None, Some(T) }
 
 private fn f(@Int -> @Int)
@@ -463,7 +465,7 @@ private fn f(@Int -> @Int)
 """)
         e210 = [w for w in warns if w.error_code == "E210"]
         assert len(e210) == 1
-        assert e210[0].severity == "warning"
+        assert e210[0].severity == "error"
 
     def test_nullary_constructor_given_args_is_e211(self) -> None:
         """Calling a nullary constructor with arguments reports E211."""
@@ -487,9 +489,10 @@ private fn f(@Int -> @Box)
 """, "field 0 has type")
         assert any(e.error_code == "E213" for e in errs)
 
-    def test_unknown_nullary_constructor_call_warns_e214(self) -> None:
-        """A bare reference to an undeclared nullary constructor warns E214."""
-        warns = _warnings("""
+    def test_unknown_nullary_constructor_call_is_e214_error(self) -> None:
+        """A bare reference to an undeclared nullary constructor is an E214
+        error (#1513)."""
+        warns = _check("""
 private data Option<T> { None, Some(T) }
 
 private fn f(@Int -> @Int)
@@ -501,7 +504,7 @@ private fn f(@Int -> @Int)
 """)
         e214 = [w for w in warns if w.error_code == "E214"]
         assert len(e214) == 1
-        assert e214[0].severity == "warning"
+        assert e214[0].severity == "error"
 
     def test_constructor_used_as_nullary_is_e215(self) -> None:
         """Using a field-carrying constructor without arguments reports E215."""
@@ -514,9 +517,10 @@ private fn f(@Int -> @Option<Int>)
 """, "used as nullary")
         assert any(e.error_code == "E215" for e in errs)
 
-    def test_unresolved_qualified_call_warns_e220(self) -> None:
-        """A qualified call resolving to neither effect-op nor module warns E220."""
-        warns = _warnings("""
+    def test_unresolved_qualified_call_is_e220_error(self) -> None:
+        """A qualified call resolving to neither effect-op nor module is an
+        E220 error (#1513): code generation has no operation to call."""
+        warns = _check("""
 private fn f(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -526,7 +530,7 @@ private fn f(@Int -> @Int)
 """)
         e220 = [w for w in warns if w.error_code == "E220"]
         assert len(e220) == 1
-        assert e220[0].severity == "warning"
+        assert e220[0].severity == "error"
 
     def test_data_invariant_non_bool_is_e120(self) -> None:
         """A data-type invariant whose body isn't Bool reports E120."""
@@ -2198,9 +2202,9 @@ public fn f(@Unit -> @Int)
         The complement of the arity case: the range check reaches the
         literal only where something told it the target type, so an
         unresolved call is unchanged rather than gaining a second
-        diagnostic.  (E200 is a *warning* here, so the assertion has to
-        look at both streams — an `_errors`-only check would read the
-        empty error list as agreement.)
+        diagnostic.  (The assertion reads both streams, so it does not
+        depend on E200's severity — an error since #1513, a warning before,
+        when an `_errors`-only check read the empty error list as agreement.)
         """
         src = """
 public fn f(@Unit -> @Int)

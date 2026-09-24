@@ -109,11 +109,11 @@ private fn foo(@Unit -> @Unit)
   resume(42)
 }
 """)
-        warns = [d for d in diags if d.severity == "warning"]
-        assert any("Unresolved function 'resume'" in w.description
-                    for w in warns), \
-            f"Expected unresolved resume warning, got: " \
-            f"{[w.description for w in warns]}"
+        errs = [d for d in diags if d.severity == "error"]
+        assert any("Unresolved function 'resume'" in e.description
+                    for e in errs), \
+            f"Expected an unresolved resume error (E200, since #1513), " \
+            f"got: {[e.description for e in errs]}"
 
     def test_with_clause_valid(self) -> None:
         """Handler with-clause with correct type produces no errors."""
@@ -458,16 +458,18 @@ private fn serve(@Unit -> @Unit)
 """)
 
     def test_diverge_no_operations(self) -> None:
-        """Diverge has no operations — qualified calls produce a warning."""
-        warns = _warnings("""
+        """Diverge has no operations — a qualified call is an E220 error
+        (#1513: there is no operation to compile)."""
+        errs = _errors("""
 private fn bad(@Unit -> @Unit)
   requires(true) ensures(true) effects(<Diverge>)
 {
   Diverge.stop(())
 }
 """)
-        assert any("Unresolved qualified call" in w.description for w in warns), \
-            f"Expected unresolved call warning, got: {[w.description for w in warns]}"
+        assert any("Unresolved qualified call" in e.description
+                   and e.error_code == "E220" for e in errs), \
+            f"Expected an unresolved call error, got: {[e.description for e in errs]}"
 
     def test_diverge_registered_in_env(self) -> None:
         """Diverge is present in the environment's effect registry."""

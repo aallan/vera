@@ -54,6 +54,26 @@ from vera.verifier import (
 )
 
 
+def resolve_document_imports(
+    program: ast.Program, file: str,
+) -> tuple[list[ResolvedModule], list[Diagnostic]]:
+    """Resolve *program*'s imports from the directory *file* lives in.
+
+    The one rule for rooting a document's resolver, shared by
+    :meth:`VerificationSession.verify_source` and the language server's
+    own check (`vera.lsp.features.analyze`), so the two passes resolve the
+    same modules — see the comment at the call in ``verify_source`` for why
+    a path-less document resolves none.  Returns the resolved modules and
+    the resolver's diagnostics.
+    """
+    path = Path(file)
+    parent = path.parent
+    if (parent != Path(".") or path.is_file()) and parent.is_dir():
+        resolver = ModuleResolver(_root=parent)
+        return resolver.resolve_imports(program, path), list(resolver.errors)
+    return [], []
+
+
 @dataclass
 class SessionVerifyResult:
     """Outcome of one ``verify_source`` call.
@@ -182,7 +202,6 @@ class VerificationSession:
 
         resolver_errors: list[Diagnostic] = []
         if resolved_modules is None and file is not None:
-            path = Path(file)
             # The resolver roots at the directory the DOCUMENT lives in, so
             # it may only be built when *file* names one (#1246 review).  A
             # path-less document — an `untitled:` buffer, a non-`file:` URI,
@@ -200,7 +219,7 @@ class VerificationSession:
             #
             # `resolved_modules` stays empty in that case: a relative import
             # in a document with no location CANNOT meaningfully resolve, and
-            # the E230 module-not-found warnings then say exactly that.  The
+            # the E230 module-not-found errors then say exactly that.  The
             # directory must also EXIST — a `vscode-vfs://host/a.vera` parses
             # to the non-existent `vscode-vfs:/host` — so the "not found"
             # story comes from the import check rather than from a resolver
@@ -211,13 +230,8 @@ class VerificationSession:
             # CWD.  `is_file()` separates them — a relative document that
             # exists on disk keeps its siblings, which keying on the parent
             # alone had silently taken away (PR #1282 review).
-            parent = path.parent
-            if (parent != Path(".") or path.is_file()) and parent.is_dir():
-                resolver = ModuleResolver(_root=parent)
-                resolved_modules = resolver.resolve_imports(program, path)
-                resolver_errors = resolver.errors
-            else:
-                resolved_modules = []
+            resolved_modules, resolver_errors = resolve_document_imports(
+                program, file)
 
         from vera.checker import typecheck_with_artifacts
         # #1509: each module's own tables too, which instantiation

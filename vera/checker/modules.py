@@ -474,6 +474,10 @@ class ModulesMixin:
         self._ambiguous_import_fn_names = frozenset(fn_clashes)
         self._ambiguous_import_type_names = frozenset(type_clashes)
         self._ambiguous_import_ctor_names = frozenset(ctor_clashes)
+        # A clashing constructor name is refused at the import, and like a
+        # refused declaration's constructor (#1497) a use of it draws no
+        # error of its own: the E157 is the one the program owes (#1513).
+        self._refused_ctor_names.update(ctor_clashes)
 
         for clashes, kind, article, code in (
             (fn_clashes, "function", "a", "E155"),

@@ -85,16 +85,19 @@ def _verify(path: Path) -> dict:
             f"(exit {proc.returncode})\n{proc.stdout[:400]}\n"
             f"{proc.stderr[-800:]}"
         ) from None
-    # An unresolved bare call is only a WARNING, so a typo'd callee verifies a
-    # program that does not do what it reads as doing (the trap #1403's file
-    # records).  Every fixture here names its own helpers.
+    # A typo'd callee is an unresolved bare call: an E200 error, after which
+    # verify reports no obligation, so a cell would read nothing about the
+    # program it names (the trap #1403's file records, from when E200 was a
+    # warning and the program verified anyway).  Every fixture here names its
+    # own helpers, and the check reads both channels.
     unresolved = [
-        w for w in result.get("warnings", [])
-        if w.get("error_code") == "E200"
+        d for d in [*result.get("diagnostics", []),
+                    *result.get("warnings", [])]
+        if d.get("error_code") == "E200"
     ]
     assert not unresolved, (
         f"{path.name}: fixture names a function that does not resolve — "
-        f"{[w['description'] for w in unresolved]}"
+        f"{[d['description'] for d in unresolved]}"
     )
     return result
 

@@ -172,7 +172,7 @@ private fn f(@Int -> @Int)
         assert any(d.error_code == "E300" for d in diags)
 
     def test_unresolved_function_has_code_E200(self) -> None:
-        """Unresolved function produces E200 (warning)."""
+        """Unresolved function produces E200 (an error since #1513)."""
         src = """\
 private fn f(@Int -> @Int)
   requires(true) ensures(true) effects(pure)

@@ -22,6 +22,7 @@ from vera.monomorphize import (
     module_qualified_generic_targets,
     module_qualified_symbol,
     namespace_fn_names,
+    namespace_module_reach,
     public_generic_names,
     qualify_contended_data_decls,
     reroute_module_qualified_generic_calls,
@@ -290,6 +291,9 @@ class CrossModuleMixin:
         # #1253: per-namespace ADT bookkeeping, filled in the harvest loop and
         # folded into membership sets after it.
         declared_adts: dict[tuple[str, ...], frozenset[str]] = {}
+        # #1513: which of those each module EXPORTS, read by the
+        # constructor fallback in `_namespace_ctor_projection`.
+        public_adts: dict[tuple[str, ...], frozenset[str]] = {}
 
         # #814 §8.5.3: names of LOCAL functions in the importing program,
         # INCLUDING (recursively) `where`-fn helpers.  A module fn whose bare
@@ -406,6 +410,10 @@ class CrossModuleMixin:
                 tld.decl.name
                 for tld in mod.program.declarations
                 if isinstance(tld.decl, ast.DataDecl)
+            )
+            public_adts[mod.path] = frozenset(
+                name for name in declared_adts[mod.path]
+                if vis_map.get(name) == "public"
             )
 
             # Harvest function sigs — include all (public + private) so
@@ -882,6 +890,8 @@ class CrossModuleMixin:
 
         # #1253: fold the per-namespace ADT membership sets.
         self._builtin_adt_names = builtin_adt_names
+        self._module_public_adts = dict(public_adts)
+        self._namespace_module_reach = self._build_namespace_module_reach()
         self._adt_namespace_members = self._build_adt_membership(
             program, declared_adts, checker_programs, adt_renames,
         )
@@ -944,6 +954,23 @@ class CrossModuleMixin:
         ) | prelude_adt_names()
         temp._register_all(mod.program)
         return temp
+
+    def _build_namespace_module_reach(
+        self,
+    ) -> dict[tuple[str, ...] | None, frozenset[tuple[str, ...]]]:
+        """The modules each namespace's checker can see (#1513).
+
+        The constructor fallback in `_namespace_ctor_projection` asks this,
+        so a constructor the checker resolves among the modules it can see
+        is resolved here among the same modules, and one outside them cannot
+        make a name ambiguous on this side alone.  The derivation is the
+        shared :func:`vera.monomorphize.namespace_module_reach`, which the
+        verifier's :func:`~vera.monomorphize.namespace_ctor_owners` reads
+        too, so the two sides of the #732 differential resolve a stranger
+        constructor among the same modules.
+        """
+        return namespace_module_reach(
+            (mod.path, mod.program) for mod in self._resolved_modules)
 
     def _build_adt_membership(
         self,
@@ -2189,8 +2216,11 @@ class CrossModuleMixin:
         rationale = (
             "The WASM code generator compiles imported functions into the "
             "same binary.  An unresolved call has no target to compile "
-            "against; the checker only warns (E200) on it, so the program "
-            "still reaches code generation."
+            "against.  The checker refuses a call that names nothing (E200, "
+            "E230, E233), so a call reaching this was either compiled "
+            "without being checked, or accepted by the checker as something "
+            "code generation does not yet compile as a call: a bare call to "
+            "an operation of a user-declared ability is one (#1499)."
         )
         source_line = self._get_source_line(loc.line)
         # A module-qualified call (`m::f`) and a bare call (`f`) fail for
