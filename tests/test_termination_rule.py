@@ -45,7 +45,11 @@ Further groups hold the rest of the class:
 * a refinement binding whose refutation rests on a non-scalar ``let``'s
   fresh value is left to its runtime guard (``tier3``), for every
   non-scalar family: never proved from the shadowed value, never refused
-  over the placeholder, and the guard traps a held value that breaks it.
+  over the placeholder, and the guard traps a held value that breaks it;
+* refused declarations (#1433, #815) — a declaration the checker refuses
+  adds no function and no call to the graph, and a body the check phase
+  skips adds no call, so each draws its refusal alone, beside a recursion
+  with no measure that the rule still refuses.
 
 The census cell holds ``examples/``, the conformance suite and every gated
 documentation block at zero violations.
@@ -69,6 +73,7 @@ import pytest
 from tests.codegen_helpers import _assert_no_orphan_call_indirect
 from tests.module_fixture_helpers import fake_resolved_module
 from vera import ast
+from vera.callgraph import CallGraph
 from vera.checker import typecheck
 from vera.codegen import CompileResult, compile, execute
 from vera.errors import Diagnostic
@@ -1316,6 +1321,411 @@ def test_let_placeholder_control_is_proved(family: str) -> None:
     source = _refine_program(family, None)
     assert [d for d in _check(source) if d.severity == "error"] == []
     assert _refine_verdict(source) == (["verified"], []), source
+
+
+# =====================================================================
+# A refused declaration is not part of the call graph (#1433, #815)
+# =====================================================================
+
+# The checker refuses a declaration it will not register: a function named
+# after a built-in (E151), the surplus of a name declared twice in one
+# namespace (E184), a type named after a primitive (E158).  The built-in, or
+# the first declaration, stays the one every use resolves against, and the
+# refused declaration is not checked: spec §8.5.5 reports one error for each
+# surplus.  A function whose `where` helper is refused keeps its name, but
+# the check phase skips its body (#815).  The call graph reads what the
+# check phase reads, so none of these adds a call: a refused declaration
+# draws its refusal alone, and an unchecked body is judged once it is
+# checked.
+#
+# Every program ends with `spin`, a recursion with no measure that the rule
+# must still refuse, so no cell can pass by the rule not running.  Each
+# expected diagnostic is located by the n-th line holding a needle.
+
+_SPIN = """
+public fn spin(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if @Nat.0 == 0 then { 0 } else { spin(@Nat.0 - 1) + 2 }
+}
+"""
+
+#: A function `f` whose body is *body*, with the helpers *where* declares.
+_PARENT = """
+public fn f(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  {body}
+}}
+where {{
+{where}
+}}
+"""
+
+
+def _helper(name: str, body: str, indent: str = "  ") -> str:
+    return (
+        f"{indent}fn {name}(@Nat -> @Nat)\n{indent}  requires(true)\n"
+        f"{indent}  ensures(true)\n{indent}  effects(pure)\n"
+        f"{indent}{{\n{indent}  {body}\n{indent}}}\n"
+    )
+
+
+_COUNTDOWN = "if @Nat.0 == 0 then {{ 0 }} else {{ {name}(@Nat.0 - 1) + 2 }}"
+
+
+def _countdown(name: str) -> str:
+    """A body that recurses on `name` with no measure to show it ends."""
+    return _COUNTDOWN.format(name=name)
+
+
+#: name -> (program, module m's text or None, the diagnostics besides
+#: `spin`'s E137, each as (code, file, needle, n): the n-th line of that
+#: file holding the needle).
+_REFUSED: dict[str, tuple[str, str | None,
+                          list[tuple[str, str, str, int]]]] = {
+    # E151: a built-in's redefinition, recursing with no measure.
+    "builtin_redefinition": (
+        f"""
+public fn abs(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  {_countdown("abs")}
+}}
+""", None, [("E151", "main", "public fn abs(", 1)]),
+    # ... and whose precondition calls itself.
+    "builtin_redefinition_contract": (
+        """
+public fn abs(@Nat -> @Nat)
+  requires(@Nat.0 == 0 || abs(@Nat.0 - 1) >= 0)
+  ensures(true)
+  effects(pure)
+{
+  @Nat.0
+}
+""", None, [("E151", "main", "public fn abs(", 1)]),
+    # E184: a function declared twice.  The surplus recurses with no
+    # measure; the first, which every call reaches, has one.
+    "duplicate_function": (
+        f"""
+public fn f(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{{
+  {_countdown("f")}
+}}
+
+public fn f(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  {_countdown("f")}
+}}
+""", None, [("E184", "main", "public fn f(", 2)]),
+    # The other way round: the first is the one judged, and it has none.
+    "duplicate_function_first_unmeasured": (
+        f"""
+public fn f(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  {_countdown("f")}
+}}
+
+public fn f(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{{
+  {_countdown("f")}
+}}
+""", None, [("E137", "main", "public fn f(", 1),
+            ("E184", "main", "public fn f(", 2)]),
+    # The surplus's precondition calls back into its own name.
+    "duplicate_function_contract": (
+        """
+public fn f(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Nat.0
+}
+
+public fn f(@Nat -> @Nat)
+  requires(@Nat.0 == 0 || f(@Nat.0 - 1) >= 0)
+  ensures(true)
+  effects(pure)
+{
+  @Nat.0
+}
+""", None, [("E184", "main", "public fn f(", 2)]),
+    # A module declares a function twice: its own check refuses the surplus.
+    "duplicate_function_in_module": (
+        """
+import m;
+
+public fn entry(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  f(@Nat.0)
+}
+""", f"""module m;
+
+public fn f(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{{
+  {_countdown("f")}
+}}
+
+public fn f(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  {_countdown("f")}
+}}
+""", [("E184", "m", "public fn f(", 2)]),
+    # E151 on a `where` helper that recurses with no measure ...
+    "helper_builtin_redefinition": (
+        _PARENT.format(body="@Nat.0",
+                       where=_helper("abs", _countdown("abs"))),
+        None, [("E151", "main", "fn abs(", 1)]),
+    # ... and on one whose own helper does.
+    "helper_builtin_redefinition_nested": (
+        _PARENT.format(
+            body="@Nat.0",
+            where=_helper("abs", "k(@Nat.0)")
+            + "  where {\n" + _helper("k", _countdown("k"), "    ")
+            + "  }"),
+        None, [("E151", "main", "fn abs(", 1)]),
+    # ... and on a helper's own helper, which calls it: the depth-2 shape
+    # PR #1524's review raised, where E137 and E178 joined the E151.
+    "helper_builtin_redefinition_depth2": (
+        _PARENT.format(
+            body="h(@Nat.0)",
+            where=_helper("h", "abs(@Nat.0)")
+            + "  where {\n" + _helper("abs", _countdown("abs"), "    ")
+            + "  }"),
+        None, [("E151", "main", "fn abs(", 1)]),
+    # The parent of a refused helper recurses with no measure.  It keeps
+    # its name, so `g`'s call reaches it, but its body is not checked, so
+    # none of it is read.
+    "parent_of_refused_helper": (
+        _PARENT.format(body=_countdown("f"),
+                       where=_helper("abs", "@Nat.0"))
+        + """
+public fn g(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  f(@Nat.0)
+}
+""", None, [("E151", "main", "fn abs(", 1)]),
+    # E184: a helper declared twice in one block; the surplus recurses ...
+    "duplicate_helper": (
+        _PARENT.format(body="h(@Nat.0)",
+                       where=_helper("h", "@Nat.0 + 1")
+                       + "\n" + _helper("h", _countdown("h"))),
+        None, [("E184", "main", "fn h(", 2)]),
+    # ... or its own helper does.
+    "duplicate_helper_nested": (
+        _PARENT.format(
+            body="h(@Nat.0)",
+            where=_helper("h", "@Nat.0 + 1") + "\n"
+            + _helper("h", "k(@Nat.0)")
+            + "  where {\n" + _helper("k", _countdown("k"), "    ")
+            + "  }"),
+        None, [("E184", "main", "fn h(", 2)]),
+    # E184: a handler with two clauses for one operation.  Only the surplus
+    # calls back into `f`, and a surplus clause never runs.
+    "duplicate_handler_clause": (
+        """
+public fn f(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if @Nat.0 == 0 then {
+    0
+  } else {
+    handle[Exn<Nat>] {
+      throw(@Nat) -> { @Nat.0 + 2 },
+      throw(@Nat) -> { f(@Nat.0) + 2 }
+    } in {
+      throw(@Nat.0 - 1)
+    }
+  }
+}
+""", None, [("E184", "main", "throw(@Nat) -> {", 2)]),
+    # The first clause, which does run, is read: `f` recurses through it.
+    "duplicate_handler_clause_first_recurses": (
+        """
+public fn f(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if @Nat.0 == 0 then {
+    0
+  } else {
+    handle[Exn<Nat>] {
+      throw(@Nat) -> { f(@Nat.0) + 2 },
+      throw(@Nat) -> { @Nat.0 + 2 }
+    } in {
+      throw(@Nat.0 - 1)
+    }
+  }
+}
+""", None, [("E137", "main", "public fn f(", 1),
+            ("E184", "main", "throw(@Nat) -> {", 2)]),
+    # E184: a constructor listed twice.  Only the surplus's field predicate
+    # calls `g`, which builds one.
+    "duplicate_constructor": (
+        """
+private data D {
+  C({ @Int | @Int.0 > 0 }),
+  C({ @Int | g(@Int.0) })
+}
+
+public fn g(@Int -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match C(1) {
+    C(@Int) -> true
+  }
+}
+""", None, [("E184", "main", "C({ @Int |", 2)]),
+    # E184: an alias declared twice.  Only the surplus's predicate calls
+    # `g`, whose parameter is of that type.
+    "duplicate_alias": (
+        """
+type P = { @Int | @Int.0 > 0 };
+
+type P = { @Int | g(@Int.0) };
+
+public fn g(@P -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  true
+}
+""", None, [("E184", "main", "type P =", 2)]),
+    # E158: a data type named after a primitive, whose field predicate
+    # calls `g`, which builds one.
+    "primitive_named_data": (
+        """
+public data Int {
+  I({ @Nat | g(@Nat.0) })
+}
+
+public fn g(@Nat -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match I(1) {
+    I(@Nat) -> true
+  }
+}
+""", None, [("E158", "main", "public data Int", 1)]),
+}
+
+
+def _located(source: str, needle: str, n: int) -> int:
+    """The line number of the n-th line of *source* holding *needle*."""
+    lines = [i for i, text in enumerate(source.splitlines(), start=1)
+             if needle in text]
+    assert len(lines) >= n, (needle, n, source)
+    return lines[n - 1]
+
+
+@pytest.mark.parametrize("name", sorted(_REFUSED))
+def test_refused_declaration_draws_its_refusal_alone(name: str) -> None:
+    """The refusal alone, and `spin`'s E137: no second report, no crash."""
+    program, module_text, besides = _REFUSED[name]
+    source = program + _SPIN
+    texts = {"main": source, "m": module_text or ""}
+    files = {"main": None, "m": "/fake/m.vera"}
+    expected = sorted(
+        [(code, files[where], _located(texts[where], needle, n))
+         for code, where, needle, n in besides]
+        + [("E137", None, _located(source, "public fn spin(", 1))],
+        key=repr,
+    )
+    errors = [d for d in _check(source, module_text)
+              if d.severity == "error"]
+    got = sorted(
+        [(d.error_code,
+          "/fake/m.vera" if str(d.location.file).endswith("m.vera")
+          else None,
+          d.location.line) for d in errors],
+        key=repr,
+    )
+    assert got == expected, (source, module_text, errors)
+
+
+def test_a_refused_helper_is_no_call_target() -> None:
+    """A call resolves past a refused helper, as the checker's lookup does.
+
+    Handed `f`'s helper `h` as refused, the graph leaves it out, and the
+    call in `f` reaches the top-level `h`, the declaration the checker's
+    scoped lookup resolves it to, not a helper the graph does not hold.
+    """
+    program = parse_to_ast("""
+public fn f(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  h(@Nat.0)
+}
+where {
+  fn h(@Nat -> @Nat)
+    requires(true)
+    ensures(true)
+    effects(pure)
+  {
+    @Nat.0
+  }
+}
+
+public fn h(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Nat.0 + 1
+}
+""")
+    f, h = (tld.decl for tld in program.declarations)
+    assert isinstance(f, ast.FnDecl) and f.where_fns
+    helper = f.where_fns[0]
+    graph = CallGraph((tld.decl for tld in program.declarations),
+                      refused={id(helper)})
+    assert id(helper) not in {id(fn) for fn in graph.fns}
+    assert [(s.caller is f, s.callee is h) for s in graph.sites] == [
+        (True, True)]
 
 
 # =====================================================================
