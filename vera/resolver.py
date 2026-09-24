@@ -9,6 +9,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 from vera import ast
 from vera.errors import (
@@ -19,6 +23,30 @@ from vera.errors import (
 )
 from vera.parser import parse_file
 from vera.transform import transform
+
+
+def import_name_filters(
+    imports: Iterable[ast.ImportDecl],
+) -> dict[tuple[str, ...], set[str] | None]:
+    """Each imported module's name filter: the names its imports admit (#1513).
+
+    ``None`` is a wildcard import.  A module imported by more than one
+    declaration admits the UNION of their lists (a wildcard among them
+    admits everything).  The checker and code generation's ADT membership
+    each built this dict one declaration at a time and kept only the LAST
+    list, so `import lib(f);` beside `import lib(g);` left `f` unresolved
+    for the checker while code generation, whose function tables read
+    every declaration, compiled the call and ran it.
+    """
+    filters: dict[tuple[str, ...], set[str] | None] = {}
+    for imp in imports:
+        path = tuple(imp.path)
+        names = set(imp.names) if imp.names is not None else None
+        if path in filters:
+            prev = filters[path]
+            names = None if prev is None or names is None else prev | names
+        filters[path] = names
+    return filters
 
 
 @dataclass(frozen=True)

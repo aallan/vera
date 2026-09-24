@@ -8,6 +8,7 @@ import pytest
 
 from vera.checker import typecheck
 from vera.parser import parse_to_ast
+from vera.resolver import ModuleResolver
 
 from tests.checker_helpers import (
     CLEAN_EXAMPLES,
@@ -28,9 +29,16 @@ class TestExampleRoundTrips:
 
     @pytest.mark.parametrize("filename", CLEAN_EXAMPLES)
     def test_clean_example(self, filename: str) -> None:
-        source = (EXAMPLES_DIR / filename).read_text(encoding="utf-8")
+        path = EXAMPLES_DIR / filename
+        source = path.read_text(encoding="utf-8")
         prog = parse_to_ast(source, file=filename)
-        errors = typecheck(prog, source=source, file=filename)
+        # Resolve the example's imports as `vera check` does: an import
+        # nothing resolves leaves its calls unresolved, which is an error
+        # since #1513 (`modules.vera` imports `vera.math`).
+        resolved = ModuleResolver(_root=EXAMPLES_DIR).resolve_imports(
+            prog, path)
+        errors = typecheck(prog, source=source, file=filename,
+                           resolved_modules=resolved)
         real_errors = [e for e in errors if e.severity == "error"]
         assert real_errors == [], \
             f"{filename}: {[e.description for e in real_errors]}"
@@ -201,8 +209,9 @@ private fn factorial(@Nat -> @Nat)
 }
 """)
 
-    def test_unresolved_function_warning(self) -> None:
-        """Unresolved functions emit warnings, not errors."""
+    def test_unresolved_function_is_an_error(self) -> None:
+        """An unresolved function is an error (#1513): there is no body to
+        call, so code generation could never build the program."""
         diags = _check("""
 private fn foo(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -210,9 +219,9 @@ private fn foo(@Int -> @Int)
 """)
         warnings = [d for d in diags if d.severity == "warning"]
         errors = [d for d in diags if d.severity == "error"]
-        assert len(warnings) >= 1
-        assert any("Unresolved" in w.description for w in warnings)
-        assert errors == []
+        assert warnings == []
+        assert [e.error_code for e in errors] == ["E200"]
+        assert "Unresolved" in errors[0].description
 
 
 # =====================================================================
@@ -786,8 +795,8 @@ class TestControlFlowCoverage:
 
     def test_if_one_branch_none(self) -> None:
         """When one if-branch cannot be synthesised, return the other."""
-        # Trigger by having one branch contain an unresolvable call
-        # (warning, not error) so _synth_expr returns None.
+        # Trigger by having one branch contain an unresolvable call so
+        # _synth_expr returns UnknownType.
         diags = _check("""
 private fn foo(@Bool -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -796,10 +805,11 @@ private fn foo(@Bool -> @Int)
   else { 42 }
 }
 """)
-        # Should still produce some result type (no crash).
-        # The warning about unresolved function is expected.
-        warnings = [d for d in diags if d.severity == "warning"]
-        assert any("unresolved" in w.description.lower() for w in warnings)
+        # Should still produce some result type (no crash): the unresolved
+        # call (E200, an error since #1513) is the only diagnostic, with no
+        # branch-join error behind it.
+        assert [(d.severity, d.error_code) for d in diags] == [
+            ("error", "E200")]
 
     # --- Lines 57-60: Never propagation in if-branches ---
 
@@ -856,11 +866,10 @@ private fn foo(@Bool -> @Int)
   else { 42 }
 }
 """)
-        # Should produce a warning about unresolved function, not crash
-        errors = [d for d in diags if d.severity == "error"]
-        assert errors == []
-        warnings = [d for d in diags if d.severity == "warning"]
-        assert any("unresolved" in w.description.lower() for w in warnings)
+        # The unresolved call (E200, an error since #1513) is the only
+        # diagnostic: the if takes the else type without a join error.
+        assert [(d.severity, d.error_code) for d in diags] == [
+            ("error", "E200")]
 
     def test_if_else_unknown_returns_then(self) -> None:
         """When else-branch has UnknownType, return then type (line 54)."""
@@ -872,10 +881,10 @@ private fn foo(@Bool -> @Int)
   else { completely_unknown() }
 }
 """)
-        errors = [d for d in diags if d.severity == "error"]
-        assert errors == []
-        warnings = [d for d in diags if d.severity == "warning"]
-        assert any("unresolved" in w.description.lower() for w in warnings)
+        # The unresolved call (E200, an error since #1513) is the only
+        # diagnostic: the if takes the then type without a join error.
+        assert [(d.severity, d.error_code) for d in diags] == [
+            ("error", "E200")]
 
 
 # =====================================================================

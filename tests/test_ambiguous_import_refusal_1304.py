@@ -798,8 +798,9 @@ class TestTheDiagnosticIsRegisteredAtItsOwnPhase:
         main_path = _write(tmp_path, _FLAP_FILES["ab"])
         emitted = [d["error_code"]
                    for d in _check_json(main_path, seed="0")["diagnostics"]]
-        assert emitted == ["E155"]
-        assert phases[emitted[0]] == "typecheck"
+        # The refused name's bare call misses (E200), an error since #1513.
+        assert emitted == ["E155", "E200"]
+        assert all(phases[code] == "typecheck" for code in emitted)
 
 
 class TestTheFlapShapes:
@@ -882,9 +883,10 @@ class TestTheFlapShapes:
         """
         main_path = _write(tmp_path, _FLAP_FILES["ab"])
         payload = _check_json(main_path, seed="0")
-        misses = [d for d in payload["warnings"]
+        # An error since #1513: a call to nothing cannot compile.
+        misses = [d for d in payload["diagnostics"]
                   if d["error_code"] == "E200"]
-        assert len(misses) == 1, payload["warnings"]
+        assert len(misses) == 1, payload["diagnostics"]
         assert "gen" in misses[0]["description"]
         assert misses[0]["location"]["file"].endswith("midc.vera")
 

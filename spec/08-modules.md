@@ -368,6 +368,21 @@ imports both supply is refused (§8.5.2.2, **E157**) exactly as a function name
 is. An imported type's constructors are admitted by the type's name, so a
 selective import naming the type admits all of them.
 
+A constructor name no type in scope declares is an error: **E210** for a
+construction with arguments, **E214** for a nullary one, **E320** and **E322**
+for the same in a pattern. One case is a warning instead. When the constructor
+belongs to a `public` data type of a module this file reaches through its
+imports, but the file does not import the type — typically one that reaches it
+only through an imported function's signature, as in `paint(Green)` after
+`import ma(paint);` where `ma` imports `Colour` from `mb` — a *construction* of
+it compiles and is reported as **E210** or **E214** at warning severity, with
+the import that names it (`import mb(Colour);`) as the fix. It resolves this way
+only when it denotes exactly one declaration: one module's public type declares
+the name, no other module the file can see declares a type of the same name, and
+the type's name means nothing else in this file. Otherwise it is an error. A
+*pattern* on such a constructor is always an error (**E320**, **E322**): the
+file must import the type to match on it.
+
 Constructors differ from functions in one respect, and it is a property of
 compilation rather than of resolution: what two modules of one program may
 share under one `data` name is a LAYOUT, not merely a namespace. Two
@@ -542,7 +557,9 @@ Imported functions are **not** exported from the WASM module. Only the importing
 
 ### 8.9.3 Guard Rail
 
-The code generator maintains a guard rail that detects calls to undefined functions. After module registration populates the known-function set, the guard rail only flags truly unknown calls — imported functions are recognised as known.
+A call that resolves to no function is an error at type-check time — **E200** for a bare call, **E230** for a module-qualified call to a module this file does not import, **E233** for a function the named module does not declare — so a program `vera check` accepts never calls an undefined function.
+
+The code generator keeps a guard rail for the same condition, for a program compiled without being checked first. After module registration populates the known-function set, the guard rail only flags truly unknown calls — imported functions are recognised as known.
 
 If a function call cannot be resolved against either local definitions or imported modules, the guard rail reports:
 

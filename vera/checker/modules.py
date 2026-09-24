@@ -13,7 +13,7 @@ from vera import ast
 from vera.environment import TypeEnv
 from vera.monomorphize import namespace_adt_names, namespace_fn_names
 from vera.registration import where_helper_parents
-from vera.resolver import ResolvedModule
+from vera.resolver import ResolvedModule, import_name_filters
 
 
 class ModulesMixin:
@@ -39,11 +39,9 @@ class ModulesMixin:
         """
         from vera.checker.core import TypeChecker
 
-        # 1. Build import filter
-        for imp in program.imports:
-            self._import_names[imp.path] = (
-                set(imp.names) if imp.names is not None else None
-            )
+        # 1. Build import filter — the union of every import of a module
+        # (#1513), never the last declaration's list alone.
+        self._import_names.update(import_name_filters(program.imports))
 
         # Snapshot builtin names (TypeEnv registers builtins in __post_init__).
         # Hoisted above the #1304 refusal, which needs them: every injection

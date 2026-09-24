@@ -155,6 +155,7 @@ def verify_file(path: str | Path) -> "VerifyResult":
         FileNotFoundError: If the file does not exist.
     """
     from vera.checker import typecheck
+    from vera.resolver import ModuleResolver
     from vera.transform import transform
     from vera.verifier import verify
 
@@ -162,9 +163,12 @@ def verify_file(path: str | Path) -> "VerifyResult":
     source = path.read_text(encoding="utf-8")
     tree = parse(source, file=str(path))
     ast = transform(tree)
+    # Resolve imports as `vera verify` does, so an imported name means the
+    # declaration it names here too (#1513).
+    resolved = ModuleResolver(_root=path.parent).resolve_imports(ast, path)
     # Type-check first (verify expects a valid AST)
-    typecheck(ast, source, file=str(path))
-    return verify(ast, source, file=str(path))
+    typecheck(ast, source, file=str(path), resolved_modules=resolved)
+    return verify(ast, source, file=str(path), resolved_modules=resolved)
 
 
 def typecheck_file(path: str | Path) -> list[Diagnostic]:
@@ -182,10 +186,17 @@ def typecheck_file(path: str | Path) -> list[Diagnostic]:
         FileNotFoundError: If the file does not exist.
     """
     from vera.checker import typecheck
+    from vera.resolver import ModuleResolver
     from vera.transform import transform
 
     path = Path(path)
     source = path.read_text(encoding="utf-8")
     tree = parse(source, file=str(path))
     ast = transform(tree)
-    return typecheck(ast, source, file=str(path))
+    # Resolve imports as `vera check` does (#1513): an unresolved call is an
+    # error, so a module-blind check would report every imported name.
+    resolver = ModuleResolver(_root=path.parent)
+    resolved = resolver.resolve_imports(ast, path)
+    return resolver.errors + typecheck(
+        ast, source, file=str(path), resolved_modules=resolved,
+    )

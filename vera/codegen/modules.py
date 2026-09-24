@@ -23,6 +23,7 @@ from vera.monomorphize import (
     qualify_contended_data_decls,
 )
 from vera.naming import display_adt_name
+from vera.resolver import import_name_filters
 from vera.prelude import PRELUDE_NAMESPACE, data_decl_shape, prelude_adt_names
 
 if TYPE_CHECKING:
@@ -303,12 +304,10 @@ class CrossModuleMixin:
             for mod in self._resolved_modules
         ]
 
-        # 1. Build import filter: path -> set of names (or None for wildcard)
-        import_names: dict[tuple[str, ...], set[str] | None] = {}
-        for imp in program.imports:
-            import_names[imp.path] = (
-                set(imp.names) if imp.names is not None else None
-            )
+        # 1. Build import filter: path -> set of names (or None for wildcard),
+        # the union of every import of a module (#1513).
+        import_names: dict[tuple[str, ...], set[str] | None] = (
+            import_name_filters(program.imports))
 
         # #1253: per-namespace ADT bookkeeping, filled in the harvest loop and
         # folded into membership sets after it.
@@ -898,9 +897,42 @@ class CrossModuleMixin:
 
         # #1253: fold the per-namespace ADT membership sets.
         self._builtin_adt_names = builtin_adt_names
+        self._module_public_adts = dict(public_adts)
+        self._namespace_module_reach = self._build_namespace_module_reach()
         self._adt_namespace_members = self._build_adt_membership(
             program, import_names, declared_adts, public_adts,
         )
+
+    def _build_namespace_module_reach(
+        self,
+    ) -> dict[tuple[str, ...] | None, frozenset[tuple[str, ...]]]:
+        """The modules each namespace's checker can see (#1513).
+
+        The entry program's checker is handed every resolved module; a
+        module's bodies are checked by a fresh checker handed the modules
+        its own imports reach (``ModulesMixin._modules_visible_to``).  The
+        constructor fallback in `_namespace_ctor_projection` asks this, so
+        a constructor the checker resolves among the modules it can see is
+        resolved here among the same modules, and one outside them cannot
+        make a name ambiguous on this side alone.
+        """
+        by_path = {m.path: m for m in self._resolved_modules}
+        reach: dict[tuple[str, ...] | None, frozenset[tuple[str, ...]]] = {
+            None: frozenset(by_path),
+        }
+        for mod in self._resolved_modules:
+            seen: set[tuple[str, ...]] = set()
+            frontier = [tuple(imp.path) for imp in mod.program.imports]
+            while frontier:
+                path = frontier.pop()
+                if path in seen or path not in by_path:
+                    continue
+                seen.add(path)
+                frontier.extend(
+                    tuple(imp.path) for imp in by_path[path].program.imports
+                )
+            reach[mod.path] = frozenset(seen)
+        return reach
 
     def _build_adt_membership(
         self,
@@ -952,12 +984,7 @@ class CrossModuleMixin:
             None: visible(main_own, import_names),
         }
         for mod in self._resolved_modules:
-            own_imports = {
-                tuple(imp.path): (
-                    set(imp.names) if imp.names is not None else None
-                )
-                for imp in mod.program.imports
-            }
+            own_imports = import_name_filters(mod.program.imports)
             members[mod.path] = visible(
                 declared_adts.get(mod.path, frozenset()), own_imports,
             )
@@ -2133,8 +2160,8 @@ class CrossModuleMixin:
         rationale = (
             "The WASM code generator compiles imported functions into the "
             "same binary.  An unresolved call has no target to compile "
-            "against; the checker only warns (E200) on it, so the program "
-            "still reaches code generation."
+            "against.  The checker refuses one (E200, E230, E233), so this "
+            "is reached only by a program compiled without being checked."
         )
         source_line = self._get_source_line(loc.line)
         # A module-qualified call (`m::f`) and a bare call (`f`) fail for

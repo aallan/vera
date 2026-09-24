@@ -13,7 +13,7 @@ check, verify, run — and these tests hold each piece of it:
   a synthetic document, so dropping either stage from the gate turns a cell
   red; the corrected forms pass, and SKILL.md carries the corrected forms.
 - **Stage semantics** (``TestStages``): a marked stage must fail (a pass is
-  a stale marker), the undefined-name warnings fail the check stage, a run
+  a stale marker), an undefined name fails the check stage, a run
   marker compares exact output, and a run marker the gate could never reach
   is a problem.
 - **Selection** (``TestSelection``): which blocks the gate reads as Vera.
@@ -292,8 +292,8 @@ class TestStages:
     def test_undefined_function_fails_the_check_stage(
         self, tmp_path: Path,
     ) -> None:
-        """`vera check` only warns (E200) on a call to a function the block
-        does not define; the gate reads that as a partial block."""
+        """A call to a function the block does not define is E200, an
+        error since #1513; the gate reads that as a partial block."""
         program = _TWO.replace("{\n  2\n}", "{\n  helper(())\n}")
         findings = _findings(_gate(tmp_path, _fence(program)))
         assert len(findings.failures) == 1
@@ -330,8 +330,8 @@ private fn to_int(@Color -> @Int)
     def test_typed_hole_warning_does_not_fail_check(
         self, tmp_path: Path,
     ) -> None:
-        """Only the undefined-name warnings fail the stage: a typed hole's
-        W001 is what a hole example exists to show."""
+        """A benign warning does not fail the stage: a typed hole's W001 is
+        what a hole example exists to show."""
         program = _TWO.replace("{\n  2\n}", "{\n  ?\n}").replace(
             "ensures(@Int.result == 2)", "ensures(true)"
         )
@@ -724,19 +724,16 @@ public fn f(@Int -> @Int)
 """
 
 # One block per warning the checker gives, drawing exactly that warning.
+# E210 and E214 are warnings only for a constructor whose data type the file
+# does not import, which needs modules beside the block
+# (`_WARNING_PLANT_MODULES`); every other use of an unknown name is an error
+# since #1513.
 _WARNING_PLANTS: dict[str, str] = {
-    "E200": _WARNING_PLANT_HEAD + "  helper(())\n}",
-    "E210": _WARNING_PLANT_HEAD + "  let @Option<Int> = Circle(1);\n  @Int.0\n}",
-    "E214": _WARNING_PLANT_HEAD + "  let @Option<Int> = Nothing;\n  @Int.0\n}",
-    "E220": _WARNING_PLANT_HEAD + "  Nope.op(@Int.0)\n}",
-    "E230": _WARNING_PLANT_HEAD + "  vera.geometry::magnitude(@Int.0)\n}",
-    "E233": "import vera.math;\n\n" + _WARNING_PLANT_HEAD
-    + "  vera.math::nonexistent(@Int.0)\n}",
+    "E210": "import wpa(unbox);\n\n" + _WARNING_PLANT_HEAD
+    + "  unbox(MkBox(@Int.0))\n}",
+    "E214": "import wpa(paint);\n\n" + _WARNING_PLANT_HEAD
+    + "  paint(Green)\n}",
     "E310": _WARNING_PLANT_HEAD + "  match @Int.0 {\n    _ -> 1,\n    0 -> 2\n  }\n}",
-    "E320": _WARNING_PLANT_HEAD
-    + "  match Some(@Int.0) {\n    Circle(@Int) -> 1,\n    _ -> 0\n  }\n}",
-    "E322": _WARNING_PLANT_HEAD
-    + "  match Some(@Int.0) {\n    Nothing -> 1,\n    _ -> 0\n  }\n}",
     "W001": _WARNING_PLANT_HEAD + "  ?\n}",
     "W002": """\
 private fn shout(@Int -> @Int)
@@ -756,6 +753,60 @@ public fn f(@Int -> @Int)
   await(async(shout(@Int.0)))
 }""",
 }
+
+
+_WPB = """\
+module wpb;
+
+public data Box {
+  MkBox(Int)
+}
+
+public data Colour {
+  Red,
+  Green
+}
+"""
+
+_WPA = """\
+module wpa;
+
+import wpb(Box, Colour);
+
+public fn unbox(@Box -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Box.0 {
+    MkBox(@Int) -> @Int.0
+  }
+}
+
+public fn paint(@Colour -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Colour.0 {
+    Red -> 1,
+    Green -> 2
+  }
+}
+"""
+
+# The modules a plant imports, written beside the block.
+_WARNING_PLANT_MODULES: dict[str, dict[str, str]] = {
+    "E210": {"wpa.vera": _WPA, "wpb.vera": _WPB},
+    "E214": {"wpa.vera": _WPA, "wpb.vera": _WPB},
+}
+
+
+def _write_plant(tmp_path: Path, code: str) -> Path:
+    path = _write_block(tmp_path, _WARNING_PLANTS[code])
+    for name, source in _WARNING_PLANT_MODULES.get(code, {}).items():
+        (path.parent / name).write_text(source, encoding="utf-8")
+    return path
 
 
 class TestCheckWarnings:
@@ -788,7 +839,7 @@ class TestCheckWarnings:
     ) -> None:
         from vera.cli import cmd_check
 
-        path = _write_block(tmp_path, _WARNING_PLANTS[code])
+        path = _write_plant(tmp_path, code)
         rc, data, _raw = _MOD._cli_json(cmd_check, path)
         assert rc == 0 and data["ok"] is True
         assert data["diagnostics"] == []
@@ -798,7 +849,7 @@ class TestCheckWarnings:
     def test_the_check_stage_passes_only_a_benign_warning(
         self, code: str, tmp_path: Path,
     ) -> None:
-        failure = _MOD.check_error(_write_block(tmp_path, _WARNING_PLANTS[code]))
+        failure = _MOD.check_error(_write_plant(tmp_path, code))
         if code in _MOD.BENIGN_CHECK_WARNINGS:
             assert failure is None
         else:

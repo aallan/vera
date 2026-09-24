@@ -1332,6 +1332,46 @@ class TestTypecheckFile:
         errors = [d for d in diags if d.severity == "error"]
         assert errors == []
 
+    @staticmethod
+    def _importing_pair(tmp_path: Path) -> Path:
+        """An entry calling a function a sibling module exports."""
+        (tmp_path / "tflib.vera").write_text(
+            "module tflib;\n\n"
+            "public fn twice(@Int -> @Int)\n"
+            "  requires(true) ensures(@Int.result == @Int.0 * 2) "
+            "effects(pure)\n"
+            "{ @Int.0 * 2 }\n",
+            encoding="utf-8",
+        )
+        entry = tmp_path / "entry.vera"
+        entry.write_text(
+            "import tflib(twice);\n\n"
+            "public fn f(@Int -> @Int)\n"
+            "  requires(true) ensures(@Int.result == @Int.0 * 2) "
+            "effects(pure)\n"
+            "{ twice(@Int.0) }\n",
+            encoding="utf-8",
+        )
+        return entry
+
+    def test_typecheck_file_resolves_imports(self, tmp_path: Path) -> None:
+        """typecheck_file resolves imports as `vera check` does (#1513).
+
+        An unresolved call is an error, so a module-blind check reported
+        every imported name as one."""
+        diags = typecheck_file(self._importing_pair(tmp_path))
+        assert [d.error_code for d in diags] == []
+
+    def test_verify_file_resolves_imports(self, tmp_path: Path) -> None:
+        """verify_file resolves imports too, so the callee's postcondition
+        proves the caller's (#1513); module-blind, the call was opaque and
+        the `ensures` fell to Tier 3 with an E522."""
+        result = verify_file(self._importing_pair(tmp_path))
+        assert [d.error_code for d in result.diagnostics] == []
+        ensures = [o.status for o in result.obligations
+                   if o.fn_name == "f" and o.kind == "ensures"]
+        assert ensures == ["verified"]
+
 
 # =====================================================================
 # verify_file tests

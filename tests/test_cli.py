@@ -73,10 +73,18 @@ def test_usage_lists_every_dispatched_command() -> None:
 # A warnings-only program: the unresolved bare call draws an E200
 # warning (not an error), exercising the warning channel end-to-end.
 # Shared by test_warning_only_source and test_json_with_warnings.
-_UNRESOLVED_CALL_SRC = """\
+# A warnings-only program: an unreachable arm after a catch-all is E310, a
+# warning whose program compiles and runs.  An unresolved call served here
+# until #1513 made it the error it is (code generation has no body to call).
+_WARNING_ONLY_SRC = """\
 public fn main(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
-{ no_such_fn(1) }
+{
+  match 3 {
+    _ -> 1,
+    3 -> 2
+  }
+}
 """
 
 
@@ -360,9 +368,10 @@ class TestCmdCheck:
         """A warnings-only program exits 0 with the warning on stderr.
 
         Used closures.vera until #854 made its `apply_fn` call
-        warning-free; a genuinely-unresolved call keeps exercising the
-        warning path (E200 is a warning, not an error)."""
-        path = _bad_vera(tmp_path, _UNRESOLVED_CALL_SRC)
+        warning-free, then an unresolved call until #1513 made E200 an
+        error; an unreachable arm (E310) keeps exercising the warning
+        path."""
+        path = _bad_vera(tmp_path, _WARNING_ONLY_SRC)
         rc = cmd_check(path)
         assert rc == 0
         captured = capsys.readouterr()
@@ -424,9 +433,10 @@ class TestCmdCheck:
         """Warnings-only file has ok: true with warnings in JSON.
 
         Used closures.vera until #854 made its `apply_fn` call
-        warning-free; a genuinely-unresolved call keeps exercising the
-        warnings channel (E200 is a warning, not an error)."""
-        path = _bad_vera(tmp_path, _UNRESOLVED_CALL_SRC)
+        warning-free, then an unresolved call until #1513 made E200 an
+        error; an unreachable arm (E310) keeps exercising the warnings
+        channel."""
+        path = _bad_vera(tmp_path, _WARNING_ONLY_SRC)
         rc = cmd_check(path, as_json=True)
         assert rc == 0
         data = json.loads(capsys.readouterr().out)

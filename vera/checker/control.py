@@ -497,15 +497,18 @@ class ControlFlowMixin:
 
         ci = self.env.lookup_constructor(pat.name)
         if ci is None:
+            # An error (#1513), including for a constructor of a type this
+            # file does not import: unlike a construction, a pattern on one
+            # never compiled, so the import is required here.
+            candidates, _ = self._stranger_constructor(pat.name)
             self._error(
                 pat,
                 f"Unknown constructor '{pat.name}' in pattern.",
-                severity="warning",
                 rationale="A constructor pattern must name a constructor "
-                          "declared by an ADT's data declaration.",
-                fix=f"Declare '{pat.name}' as a constructor in a data "
-                    f"declaration, or use a constructor that exists on the "
-                    f"matched type (check the spelling and capitalisation).",
+                          "declared by a data type in scope; no such "
+                          "constructor is defined or imported, so the arm "
+                          "cannot be compiled.",
+                fix=self._unknown_ctor_fix(pat.name, candidates),
                 spec_ref='Chapter 2, Section 2.4 '
                          '"Algebraic Data Types (ADTs)"',
                 error_code="E320",
@@ -575,16 +578,16 @@ class ControlFlowMixin:
         """Check a nullary constructor pattern."""
         ci = self.env.lookup_constructor(pat.name)
         if ci is None:
+            # An error (#1513); see `_check_ctor_pattern`.
+            candidates, _ = self._stranger_constructor(pat.name)
             self._error(
                 pat,
                 f"Unknown constructor '{pat.name}' in pattern.",
-                severity="warning",
                 rationale="A nullary pattern must name a no-field "
-                          "constructor declared by an ADT's data "
-                          "declaration.",
-                fix=f"Declare '{pat.name}' as a constructor in a data "
-                    f"declaration, or use an existing constructor of the "
-                    f"matched type (check spelling and capitalisation).",
+                          "constructor declared by a data type in scope; no "
+                          "such constructor is defined or imported, so the "
+                          "arm cannot be compiled.",
+                fix=self._unknown_ctor_fix(pat.name, candidates),
                 spec_ref='Chapter 2, Section 2.4 '
                          '"Algebraic Data Types (ADTs)"',
                 error_code="E322",

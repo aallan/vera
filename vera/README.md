@@ -89,7 +89,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `  expressions.py` | 1,485 | | Expression synthesis (bidirectional), operators, statements | |
 | `  eq_ability.py` | 226 | | Eq ability derivation checks | |
 | `  sql.py` | 309 | | SQL literal-provenance resolution + placeholder counting (#309) | `resolve_literal_string()`, `count_placeholders()` |
-| `  calls.py` | 1,631 | | Function/constructor/module/ability calls | |
+| `  calls.py` | 1,871 | | Function/constructor/module/ability calls | |
 | `  control.py` | 929 | | If/match, patterns, effect handlers | |
 | `resolver.py` | 332 | Resolve | Module path resolution, parse cache | `ModuleResolver` |
 | `disclosure.py` | 536 | Verify | Per-module disclosed-function manifests: each module's own verification emits the set `disclosed_fn_names` derives, keyed by owner path and carrying the `DisclosureSite` the importer's E534 cites, so the #1363 demotion crosses an import (#1399); computed BOTTOM-UP over the import DAG so each module is verified once and nothing nests, and content-addressed on the module's own source + its closure's + the budget, which is what makes an edit to an imported module invalidate it | `ModuleDisclosureIndex`, `DisclosureSite` |
@@ -773,7 +773,7 @@ The `ERROR_CODES` dict in `errors.py` maps every code to a short description (17
 
 ## Test Suite
 
-Testing spans a **pytest suite** of 16,307 tests across 224 files: compiler-internals unit tests plus a **conformance suite** (253 programs in `tests/conformance/` validating every language feature against the spec) and **example programs** (43 end-to-end demos). The conformance suite is the definitive specification artifact; most programs target a single feature, though some (slot references, match, contracts) span several, and each serves as a minimal working example.
+Testing spans a **pytest suite** of 16,330 tests across 225 files: compiler-internals unit tests plus a **conformance suite** (253 programs in `tests/conformance/` validating every language feature against the spec) and **example programs** (43 end-to-end demos). The conformance suite is the definitive specification artifact; most programs target a single feature, though some (slot references, match, contracts) span several, and each serves as a minimal working example.
 
 See **[TESTING.md](../TESTING.md)** for the comprehensive testing reference -- test file table, conformance suite details, compiler code coverage, language feature coverage, helper conventions, validation scripts, CI pipeline, and guidelines for adding tests.
 

@@ -1292,15 +1292,19 @@ private fn f(@Int -> @Int)
 
     def test_independent_shadows_do_not_cross_contaminate(self) -> None:
         """Two independent opaque shadows — a `random_int` Int and a
-        `random_nat` Nat — keep separate obligations: the `1 / @Int.0` div and
+        `State` Nat — keep separate obligations: the `1 / @Int.0` div and
         the `@Nat.0 - @Nat.1` subtraction each fall to their own Tier-3,
-        neither masking nor leaking onto the other."""
+        neither masking nor leaking onto the other.  The Nat is a `State`
+        read: an undeclared `random_nat` served until #1513 made an
+        unresolved call an error, and a declared helper is not opaque (its
+        `ensures(true)` result is an arbitrary Nat, so the subtraction is
+        refuted rather than deferred)."""
         result = _verify("""
 private fn f(@Int, @Nat -> @Array<Int>)
-  requires(@Int.0 != 0) ensures(true) effects(<Random>)
+  requires(@Int.0 != 0) ensures(true) effects(<Random, State<Nat>>)
 {
   let @Int = Random.random_int(0, 9);
-  let @Nat = random_nat(0, 9);
+  let @Nat = get(());
   [1 / @Int.0, @Nat.0 - @Nat.1]
 }
 """)
