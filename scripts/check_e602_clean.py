@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Pre-commit / CI gate: no `[E602]` (body unsupported) or `[E604]`
+"""CI gate: no `[E602]` (body unsupported) or `[E604]`
 (parameter unsupported) skips outside the known allowlist.
 
 Layer 1 of #626 ("convert 'translate returns None → silent skip'
@@ -109,7 +109,7 @@ def _extract_skips(
     # discharge inside the verify pass that compile triggers as
     # a side effect.  TimeoutExpired surfaces as a failure (same
     # shape as a JSON-decode failure), so the script never blocks
-    # CI / pre-commit indefinitely.
+    # CI indefinitely.
     try:
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "compile", "--wat",

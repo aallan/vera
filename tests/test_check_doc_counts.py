@@ -742,8 +742,8 @@ class TestProjectStatusLine:
 # ---------------------------------------------------------------------------
 # The headline test totals: checked against the live collection only with
 # --release (the release PR), and against one another always.  Every fix PR
-# moves the total, so gating it per PR made each merge conflict with every
-# other open PR on the same five lines.
+# moves the total, so gating it on every PR would make each merge conflict
+# with every other open PR on the same five lines.
 # ---------------------------------------------------------------------------
 
 

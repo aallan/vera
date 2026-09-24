@@ -16,7 +16,12 @@ the configuration files themselves:
 Conditions in the workflow (``if:`` keys and ``${{ }}`` expressions) are
 evaluated, not string-matched, by the small evaluator below: a condition
 that stops matching a cell or an event is a behaviour change, however it is
-spelled.
+spelled.  The CI half fails closed.  A step counts as a gate only where it
+runs and can fail the run: a condition the evaluator cannot read is an error
+unless ``UNREADABLE_CONDITIONS`` names the step with its reason, and
+``continue-on-error``, a shell other than the default ``bash -e``, or a run
+command that swallows its own failure (``|| true``, ``set +e``) is an error
+outright.  A gate is a command the step invokes, not text it mentions.
 """
 
 from __future__ import annotations
@@ -112,23 +117,42 @@ def _triggers(workflow: dict[Any, Any]) -> dict[str, Any]:
     return dict(workflow.get("on", workflow.get(True)) or {})
 
 
+def _command(line: str) -> list[str]:
+    """A shell line's command word and arguments, past any leading `env` and
+    `NAME=value` assignments; `[]` for a line that is not a simple command."""
+    try:
+        tokens = shlex.split(line)
+    except ValueError:
+        return []
+    while tokens and (tokens[0] == "env" or re.fullmatch(r"[A-Za-z_]\w*=\S*", tokens[0])):
+        tokens = tokens[1:]
+    return tokens
+
+
 def _runs_pytest(entry: str) -> list[str] | None:
-    """The arguments after `pytest` in a command, or None if it does not
-    run pytest."""
-    tokens = shlex.split(entry)
-    for index, token in enumerate(tokens):
-        if token == "pytest" or token.endswith("/pytest"):
-            return tokens[index + 1:]
+    """The arguments of a command whose command word is pytest, or None.
+
+    The command word, not any token: `echo pytest` runs no tests."""
+    tokens = _command(entry)
+    if tokens and (tokens[0] == "pytest" or tokens[0].endswith("/pytest")):
+        return tokens[1:]
     return None
 
 
 # ---------------------------------------------------------------------------
 # A small evaluator for GitHub Actions expressions: string literals, context
 # names, `==` / `!=` (case-insensitive on strings, as Actions compares them),
-# `!`, `&&`, `||` and parentheses — what ci.yml's conditions use.  Anything
-# else is a SyntaxError, so a condition this cannot read fails the test that
-# needed it rather than being skipped.
+# `!`, `&&`, `||`, parentheses, and the four status functions — what ci.yml's
+# conditions use.  The status functions answer for a run whose earlier steps
+# passed, which is the run a gate has to hold in: `always()` and `success()`
+# are true, `failure()` and `cancelled()` false.  Anything else is a
+# SyntaxError, so a condition this cannot read fails the test that needed it
+# rather than being skipped.
 # ---------------------------------------------------------------------------
+
+_STATUS_FUNCTIONS = {
+    "always": True, "success": True, "failure": False, "cancelled": False,
+}
 
 _TOKEN = re.compile(
     r"\s*(?:(?P<op>==|!=|&&|\|\||!|\(|\))|'(?P<str>(?:[^']|'')*)'"
@@ -195,6 +219,9 @@ def evaluate(expr: str, context: dict[str, object]) -> object:
             return text
         if kind == "name":
             if peek() == ("op", "("):
+                if text in _STATUS_FUNCTIONS and tokens[pos + 1: pos + 2] == [("op", ")")]:
+                    pos += 2
+                    return _STATUS_FUNCTIONS[text]
                 raise SyntaxError(f"function call {text}() in {expr!r}")
             if text in ("true", "false"):
                 return text == "true"
@@ -257,14 +284,102 @@ def render(command: str, context: dict[str, object]) -> str:
     return re.sub(r"\$\{\{.*?\}\}", value, command)
 
 
-def _step_runs(step: dict[str, Any], context: dict[str, object]) -> bool:
-    condition = step.get("if")
+def _truthy(value: object) -> bool:
+    return value not in (None, False, "", 0)
+
+
+# Conditions the evaluator cannot read, each allowed with the reason the step
+# still gates.  Any other condition it cannot read fails the test that met it:
+# a gate's condition is evaluated or justified, never guessed.
+UNREADABLE_CONDITIONS = {
+    "Check CHANGELOG updated for substantive changes": (
+        "skips only a pull request labelled `skip-changelog`, the documented"
+        " escape hatch (CONTRIBUTING.md); every other pull request and every"
+        " push runs it"
+    ),
+}
+
+
+def _runs(item: dict[str, Any], context: dict[str, object], where: str) -> bool:
+    """Whether a job or step runs in `context`, failing closed.
+
+    No `if` runs.  A condition the evaluator reads runs when it is true.  One
+    it cannot read runs only if `UNREADABLE_CONDITIONS` names the step, and
+    otherwise fails the test that asked rather than counting either way."""
+    condition = item.get("if")
     if condition is None:
         return True
-    return evaluate(str(condition), context) not in (None, False, "", 0)
+    try:
+        return _truthy(evaluate(str(condition), context))
+    except SyntaxError:
+        if item.get("name") in UNREADABLE_CONDITIONS:
+            return True
+        pytest.fail(
+            f"{where}: cannot evaluate `if: {condition}` — teach the evaluator"
+            " its form, or name the step in UNREADABLE_CONDITIONS with the"
+            " reason it still gates"
+        )
 
 
-# The four events the brief of every gate is written against.
+def _can_fail(item: dict[str, Any], context: dict[str, object], where: str) -> None:
+    """A gate that cannot fail the run is no gate: `continue-on-error` must be
+    absent or provably false in `context`, and no shell may be substituted
+    for the default `bash -e`, which stops a multi-line step at its first
+    failing command."""
+    value = item.get("continue-on-error")
+    if value not in (None, False):
+        try:
+            allowed = isinstance(value, str) and not _truthy(evaluate(value, context))
+        except SyntaxError:
+            allowed = False
+        if not allowed:
+            pytest.fail(
+                f"{where} carries `continue-on-error: {value}`, so it can fail"
+                " without failing the run"
+            )
+    shell = item.get("shell") or (item.get("defaults") or {}).get("run", {}).get("shell")
+    if shell is not None:
+        pytest.fail(f"{where} runs its steps under `{shell}` instead of the default `bash -e`")
+
+
+def _gating_steps(
+    workflow: dict[Any, Any], job_name: str, context: dict[str, object]
+) -> list[dict[str, Any]]:
+    """The steps of one job that run in `context` and can fail the run.
+
+    The job's own `if` and `continue-on-error` count, and so do the
+    workflow's `defaults`; a job that does not run gates nothing.  A run
+    command that swallows its own failure (`|| true`, `set +e`, …) fails the
+    test outright: its step is not a gate however the job is configured."""
+    _can_fail(workflow, context, "the workflow")
+    job = workflow["jobs"][job_name]
+    if not _runs(job, context, f"job {job_name}"):
+        return []
+    _can_fail(job, context, f"job {job_name}")
+    steps: list[dict[str, Any]] = []
+    for step in job.get("steps", []):
+        where = f"job {job_name}, step {step.get('name') or step.get('uses')!r}"
+        if not _runs(step, context, where):
+            continue
+        _can_fail(step, context, where)
+        command = render(str(step.get("run", "")), context)
+        if re.search(r"\|\||\bset\s+\+e\b", command):
+            pytest.fail(f"{where}: `{command.strip()}` can swallow its own failure")
+        steps.append({**step, "run": command})
+    return steps
+
+
+def _invokes(steps: list[dict[str, Any]], *command: str) -> list[dict[str, Any]]:
+    """The steps with a line whose command word and first arguments are
+    `command` — invoked, not merely mentioned (`echo scripts/x.py` is not)."""
+    want = list(command)
+    return [
+        step for step in steps
+        if any(_command(line)[: len(want)] == want for line in step["run"].splitlines())
+    ]
+
+
+# The four events every gate has to hold on.
 EVENTS = {
     "pull request into main": {
         "github.event_name": "pull_request",
@@ -304,6 +419,9 @@ class TestTheEvaluator:
             ("a == 'x' && '--release' || ''", {"a": "q"}, ""),
             ("(a == 'x' || b == 'y') && 'on' || 'off'", {"a": "q", "b": "y"}, "on"),
             ("missing", {}, None),
+            ("always()", {}, True),
+            ("success() && a == 'x'", {"a": "x"}, True),
+            ("failure() || cancelled()", {}, False),
         ],
     )
     def test_it_evaluates(
@@ -311,7 +429,9 @@ class TestTheEvaluator:
     ) -> None:
         assert evaluate(expr, context) == want
 
-    @pytest.mark.parametrize("expr", ["contains(a, 'x')", "a ==", "a b", "a > 'x'"])
+    @pytest.mark.parametrize(
+        "expr", ["contains(a, 'x')", "always(a)", "a ==", "a b", "a > 'x'"]
+    )
     def test_what_it_cannot_read_is_an_error(self, expr: str) -> None:
         with pytest.raises(SyntaxError):
             evaluate(expr, {"a": "x"})
@@ -360,6 +480,12 @@ class TestThePreCommitHookIsFast:
             assert hook.get("pass_filenames", True) and files, (
                 f"{hook['id']} runs pytest with nothing to narrow it — the"
                 " whole suite, which runs in CI"
+            )
+            # The staged file names are the only narrowing, and `always_run`
+            # runs the hook when none match, with no names at all.
+            assert not hook.get("always_run"), (
+                f"{hook['id']} sets `always_run`, so a commit that stages no"
+                " test file runs pytest over the whole suite"
             )
             for path in ("vera/cli.py", "tests/conftest.py", "tests/checker_helpers.py", "scripts/build_site.py"):
                 assert not re.search(files, path), (
@@ -457,6 +583,13 @@ def _narrowing(args: list[str]) -> list[str]:
 
 
 class TestCiRunsEveryGate:
+    """Each gate runs on each of the four events and can fail the run.
+
+    A step counts only where `_gating_steps` says it runs and can fail: its
+    job's and its own conditions evaluated for the event (and matrix cell),
+    no `continue-on-error`, no shell substituted for `bash -e`, and no run
+    command that swallows its own failure."""
+
     def test_both_events_reach_main_and_release_branches_unfiltered(self) -> None:
         triggers = _triggers(_workflow())
         for event in ("push", "pull_request"):
@@ -482,17 +615,12 @@ class TestCiRunsEveryGate:
         env = {**workflow.get("env", {}), **job.get("env", {})}
         assert "PYTEST_ADDOPTS" not in env
         cells = _matrix_cells(job)
-        assert len(cells) == 13
+        assert len(cells) == 13, "the matrix is pinned at 13 cells; update with it"
         for cell in cells:
-            context = {**EVENTS[event], **cell}
-            suites = [
-                step for step in job["steps"]
-                if "run" in step
-                and _runs_pytest(step["run"]) is not None
-                and _step_runs(step, context)
-            ]
+            steps = _gating_steps(workflow, "test", {**EVENTS[event], **cell})
+            suites = [step for step in steps if _runs_pytest(step["run"]) is not None]
             assert len(suites) == 1, (
-                f"{cell}: {len(suites)} pytest steps run, not exactly one"
+                f"{cell}: {len(suites)} gating pytest steps, not exactly one"
             )
             step = suites[0]
             assert "PYTEST_ADDOPTS" not in step.get("env", {})
@@ -505,7 +633,7 @@ class TestCiRunsEveryGate:
 
     @pytest.mark.parametrize("event", sorted(EVENTS))
     def test_conformance_and_the_examples_run(self, event: str) -> None:
-        jobs = _workflow()["jobs"]
+        workflow = _workflow()
         context = EVENTS[event]
         for job, script, eager in [
             ("lint", "scripts/check_conformance.py", False),
@@ -515,24 +643,30 @@ class TestCiRunsEveryGate:
             ("eager-gc", "scripts/check_conformance.py", True),
             ("eager-gc", "scripts/check_examples_run.py", True),
         ]:
-            steps = [
-                step for step in jobs[job]["steps"]
-                if script in step.get("run", "") and _step_runs(step, context)
-            ]
+            steps = _invokes(_gating_steps(workflow, job, context), "python", script)
             assert len(steps) == 1, f"{job} runs {script} {len(steps)} times"
             if eager:
                 assert str(steps[0].get("env", {}).get("VERA_EAGER_GC")) == "1"
 
-    def test_every_gate_the_hook_runs_also_runs_in_ci(self) -> None:
+    @pytest.mark.parametrize("event", sorted(EVENTS))
+    def test_every_gate_the_hook_runs_also_runs_in_ci(self, event: str) -> None:
         workflow = _workflow()
-        steps = [
-            step for job in workflow["jobs"].values() for step in job.get("steps", [])
-        ]
-        runs = "\n".join(str(step.get("run", "")) for step in steps)
+        context = EVENTS[event]
+        # A matrix job's step gates when it gates on every cell.
+        steps: list[dict[str, Any]] = []
+        for name, job in workflow["jobs"].items():
+            cells = _matrix_cells(job) if "strategy" in job else [{}]
+            per_cell = [
+                {step.get("name") or step.get("uses"): step
+                 for step in _gating_steps(workflow, name, {**context, **cell})}
+                for cell in cells
+            ]
+            everywhere = set.intersection(*(set(found) for found in per_cell))
+            steps += [per_cell[0][key] for key in everywhere]
         # The pre-commit-hooks hooks run in CI through pre-commit itself.
         hygiene = "\n".join(
-            str(step["run"]) for step in steps
-            if "pre-commit run --all-files" in str(step.get("run", ""))
+            step["run"] for step in steps
+            if "pre-commit run --all-files" in step["run"]
         )
         missing: list[str] = []
         for hook in _hooks():
@@ -544,22 +678,26 @@ class TestCiRunsEveryGate:
                     missing.append(f"{hook['id']} (pre-commit run --all-files)")
                 continue
             entry = hook["entry"]
-            if _runs_pytest(entry) is not None:
+            args = _runs_pytest(entry)
+            if args is not None:
                 # The staged-files run and the collection are covered by the
                 # whole suite (test_every_matrix_cell_runs_the_whole_suite);
                 # a named test file must be run by name.
-                for arg in _runs_pytest(entry) or []:
-                    if arg.startswith("tests/") and arg not in runs:
+                for arg in args:
+                    if arg.startswith("tests/") and not any(
+                        arg in (_runs_pytest(step["run"]) or []) for step in steps
+                    ):
                         missing.append(f"{hook['id']} ({arg})")
                 continue
             script = re.search(r"scripts/\w+\.py", entry)
             if script is not None:
-                wanted = CI_COUNTERPART.get(script.group(0), script.group(0))
+                wanted = ["python", CI_COUNTERPART.get(script.group(0), script.group(0))]
             else:
-                wanted = entry.removeprefix(".venv/bin/")
-            if wanted not in runs:
-                missing.append(f"{hook['id']} ({wanted})")
-        assert missing == [], f"local gates CI does not run: {missing}"
+                wanted = _command(entry)
+                wanted[0] = wanted[0].removeprefix(".venv/bin/")
+            if not _invokes(steps, *wanted):
+                missing.append(f"{hook['id']} ({' '.join(wanted)})")
+        assert missing == [], f"{event}: local gates CI does not run: {missing}"
 
     def test_the_commit_time_only_exception_is_real(self) -> None:
         """Every exemption names a hook that exists and that CI does not
@@ -574,6 +712,20 @@ class TestCiRunsEveryGate:
             assert hook_id in ids
             assert hook_id not in runs
 
+    def test_the_unreadable_conditions_are_real(self) -> None:
+        """Every allowlisted condition names a step that exists and whose
+        condition the evaluator really cannot read, so the table cannot
+        outlive its reason either."""
+        steps = {
+            step.get("name"): step
+            for job in _workflow()["jobs"].values()
+            for step in job.get("steps", [])
+        }
+        for name in UNREADABLE_CONDITIONS:
+            assert name in steps, name
+            with pytest.raises(SyntaxError):
+                evaluate(str(steps[name]["if"]), EVENTS["push to main"])
+
     @pytest.mark.parametrize(
         ("event", "release"),
         [
@@ -586,12 +738,10 @@ class TestCiRunsEveryGate:
     def test_doc_counts_runs_in_release_mode_on_main_only(
         self, event: str, release: bool
     ) -> None:
-        steps = [
-            step for step in _workflow()["jobs"]["lint"]["steps"]
-            if "scripts/check_doc_counts.py" in step.get("run", "")
-        ]
+        steps = _invokes(
+            _gating_steps(_workflow(), "lint", EVENTS[event]),
+            "python", "scripts/check_doc_counts.py",
+        )
         assert len(steps) == 1
-        assert _step_runs(steps[0], EVENTS[event])
-        argv = shlex.split(render(steps[0]["run"], EVENTS[event]))
-        assert argv[:2] == ["python", "scripts/check_doc_counts.py"]
+        argv = _command(steps[0]["run"])
         assert argv[2:] == (["--release"] if release else [])

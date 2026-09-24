@@ -31,8 +31,8 @@ of that name below for the rule that decides which counts are headline).
 By default — the pre-commit hook, and CI on pull requests into
 ``release/**`` — each headline figure is read and checked against the other
 citations of the same figure, but not against the live collection: every
-fix PR moves those totals, so gating them per PR made every merge conflict
-with every other open PR.  ``--release`` — the release PR, which CI runs in
+fix PR moves those totals, so gating them on every PR would make each merge
+conflict with every other open PR.  ``--release`` — the release PR, which CI runs in
 this mode on pull requests into ``main`` and on pushes to ``main`` — checks
 them against the live collection as well, so a stale headline is caught when
 the release is cut.  Every other count is checked in both modes.

@@ -100,7 +100,12 @@ The release-prep PR must:
    `vera/README.md`'s Test Suite paragraph.  Confirm with
    `python scripts/check_doc_counts.py --release`.  Fix PRs leave these
    alone, since every one of them moves them; CI runs this mode on the
-   release PR (a pull request into `main`) and on pushes to `main`.
+   release PR (a pull request into `main`) and on pushes to `main`.  The
+   trigger is the pull request's base branch, which identifies the release
+   PR only while fix PRs target a `release/**` branch: if fix PRs target
+   `main` directly, every one of them would run in release mode, so the
+   trigger has to become the version bump (a pull request that raises
+   `[project].version`, the event `release.yml` keys on).
 5. Reconcile `KNOWN_ISSUES.md`'s Bugs table with the tracker, by running
    `python scripts/check_doc_counts.py --check-bug-issues`.  The convention
    is one row per open `bug`-labelled issue, and the check needs the GitHub
