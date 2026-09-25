@@ -649,20 +649,104 @@ public fn four(@Unit -> @Nat)
 """
 
 
+# The same for a `where` helper copied with a clone: `a.count`'s helper
+# `k` and `b.count`'s helper `h` sit at the same span.  `k` decreases, and
+# `h`'s cycle runs through `g`, whose edge grows.  Found in the wrong
+# module, `h`'s copy would take `k`'s one-member cycle and be proved.
+
+_SAME_SPAN_HELPER_A = """module a;
+
+public forall<T> fn count(@T, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then { 0 } else { k(@T.0, @Nat.0 - 1) }
+}
+where {
+  fn k(@T, @Nat -> @Nat)
+    requires(true)
+    ensures(true)
+    decreases(@Nat.0)
+    effects(pure)
+  {
+    if @Nat.0 == 0 then { 0 } else { k(@T.0, @Nat.0 - 1) + k(@T.0, @Nat.0 - 1) }
+  }
+}
+
+public fn three(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  count(true, 3)
+}
+"""
+
+_SAME_SPAN_HELPER_B = """module b;
+
+public forall<T> fn count(@T, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then { 0 } else { h(@T.0, @Nat.0 - 1) }
+}
+where {
+  fn h(@T, @Nat -> @Nat)
+    requires(true)
+    ensures(true)
+    decreases(@Nat.0)
+    effects(pure)
+  {
+    if @Nat.0 == 0 then { 0 } else { h(@T.0, @Nat.0 - 1) + g(@Nat.0 + 1)       }
+  }
+}
+
+private fn g(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 > 5 then { 0 } else { count(true, @Nat.0) }
+}
+
+public fn four(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  count(true, 3)
+}
+"""
+
+_SAME_SPAN_PAIRS = {
+    "top-level": (_SAME_SPAN_A, _SAME_SPAN_B,
+                  [("a.vera", 6, "verified"), ("b.vera", 6, "tier3")]),
+    "helper": (_SAME_SPAN_HELPER_A, _SAME_SPAN_HELPER_B,
+               [("a.vera", 6, "verified"), ("a.vera", 15, "verified"),
+                ("b.vera", 6, "tier3"), ("b.vera", 15, "tier3")]),
+}
+
+
+@pytest.mark.parametrize("pair", tuple(_SAME_SPAN_PAIRS))
 @pytest.mark.parametrize("order", ("a-first", "b-first"))
 def test_a_same_span_declaration_in_another_module_is_not_taken(
-    tmp_path: Path, order: str,
+    tmp_path: Path, order: str, pair: str,
 ) -> None:
+    a_text, b_text, expected = _SAME_SPAN_PAIRS[pair]
     imports = ["import a(three);", "import b(four);"]
     if order == "b-first":
         imports.reverse()
     main = ("\n".join(imports) + "\n\npublic fn main(@Unit -> @Int)\n"
             "  requires(true)\n  ensures(true)\n  effects(pure)\n{\n"
             "  nat_to_int(three(()) + four(()))\n}\n")
-    files = {"a.vera": _SAME_SPAN_A, "b.vera": _SAME_SPAN_B,
-             "main.vera": main}
+    files = {"a.vera": a_text, "b.vera": b_text, "main.vera": main}
     result = _verify(tmp_path, files, "main.vera")
     by_file = sorted(
         (Path(o.file or "").name, o.line, o.status)
         for o in result.obligations if o.kind == "decreases")
-    assert by_file == [("a.vera", 6, "verified"), ("b.vera", 6, "tier3")]
+    assert by_file == expected
