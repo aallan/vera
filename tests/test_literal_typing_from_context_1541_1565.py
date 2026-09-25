@@ -960,6 +960,23 @@ class TestAMixedCollectionIsRefused:
     def test_other_collections_and_routes(self, body: str) -> None:
         assert "E503" in _codes(_NAT_PRELUDE + _fn(body, ret="Nat")), body
 
+    @pytest.mark.parametrize("body", [
+        "let @Array<Nat> = array_slice([{L}, 5], 1, 2);\n  7",
+        "let @Array<Nat> = array_slice(array_reverse([{L}, 5]), 0, 1);\n  7",
+        "let @Array<Nat> = second([{L}], [5]);\n  7",
+        "let @Option<Array<Nat>> = second(Some([{L}]), Some([5]));\n  7",
+    ], ids=["slice", "slice_of_reverse", "second", "second_option"])
+    @pytest.mark.parametrize("literal", ["-3", "0 - 3"])
+    def test_a_collection_without_the_negative_is_refused_too(
+            self, body: str, literal: str) -> None:
+        """The accepted trade-off (spec §4.2, #1605): the value is `[5]`
+        and `main` ran it, but a `Nat` collection context decides the
+        type argument whether or not the call returns the negative, since
+        nothing checks an `Array<Int>` bound into an `Array<Nat>` element
+        by element (#1542).  Refused, it fails closed."""
+        source = _NAT_PRELUDE + _fn(body.replace("{L}", literal), ret="Nat")
+        assert "E503" in _codes(source), body
+
     @pytest.mark.parametrize("literal", ["-3", "0 - 3"])
     def test_an_element_read_through_nested_indexes_is_no_collection(
             self, literal: str) -> None:
@@ -1144,8 +1161,10 @@ _TRADE_CELLS_SPEC = {
                 "Int", "true", True),
     "arr_opt": ("let @Array<Option<Nat>> = array_reverse([Some({L}), "
                 "Some(5)]);\n  opt_get(@Array<Option<Nat>>.0[1])", "Int",
-                # `Some(-3)` is built at its own `Option<Int>`, which the
-                # `Option` pattern's `@Nat` bind guards wherever it is read.
+                # `Some(-3)` is built at its own `Option<Int>`.  An `Option`
+                # pattern's `@Nat` bind guards it, as here; a read through
+                # `option_unwrap_or` binds nothing and returns the -3, as on
+                # `main` (#1542).
                 "true", False),
     "tup_arr": ("let @Tuple<Array<Nat>, Nat> = Tuple(array_reverse([{L}, 5]),"
                 " 1);\n  match @Tuple<Array<Nat>, Nat>.0 { Tuple(@Array<Nat>,"
