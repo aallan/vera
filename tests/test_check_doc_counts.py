@@ -3108,3 +3108,135 @@ class TestEnglishNumberWordRejectsInvalidCompounds:
         mod = _MOD
         for word in ("twenty-zero", "twenty-ten", "thirty-nineteen", "forty-twenty"):
             assert mod._english_number_word_to_int(word) is None, word
+
+
+# ---------------------------------------------------------------------------
+# Release mode keys on the version bump (#1536).  CI chose `--release` from
+# the pull request's base branch, which identifies the release PR only while
+# fix PRs target a release branch; once they target `main`, every one of them
+# would have run in release mode.  The pull request that raises
+# `[project].version` against its base is the release PR, whatever its base.
+# ---------------------------------------------------------------------------
+
+
+def _pyproject(version: str) -> str:
+    return f'[project]\nname = "veralang"\nversion = "{version}"\n'
+
+
+class TestVersionRaised:
+    @pytest.mark.parametrize(
+        ("base", "head", "raised"),
+        [
+            ("0.1.13", "0.2.0", True),
+            ("0.2.0", "0.2.1", True),
+            ("0.2.9", "0.2.10", True),  # numeric, not lexicographic
+            ("0.2.0", "0.2.0", False),
+            ("0.2.1", "0.2.0", False),
+            ("0.10.0", "0.9.9", False),
+        ],
+    )
+    def test_it_compares_versions_numerically(
+        self, base: str, head: str, raised: bool
+    ) -> None:
+        assert _MOD.version_raised(_pyproject(base), _pyproject(head)) is raised
+
+    def test_an_unreadable_version_is_an_error_not_a_default(self) -> None:
+        with pytest.raises(ValueError):
+            _MOD.version_raised("[project]\nname = 'x'\n", _pyproject("0.2.0"))
+
+
+def _scrubbed_env() -> dict[str, str]:
+    """The inherited environment without `GIT_*`: under a hook those name
+    the outer repository, and a temporary repository's git must not reach
+    it."""
+    return {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+
+def _repo_with_versions(tmp_path: Path, *versions: str) -> tuple[Path, list[str]]:
+    """A repository with one commit per version, on a branch `main` that
+    is also published as `origin/main`, as a CI checkout has it.  Returns
+    the root and the commits' SHAs, oldest first."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    env = _scrubbed_env()
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", *args], cwd=repo, env=env, check=True,
+            capture_output=True, text=True, encoding="utf-8",
+        ).stdout.strip()
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.invalid")
+    git("config", "user.name", "t")
+    shas = []
+    for version in versions:
+        (repo / "pyproject.toml").write_text(_pyproject(version), encoding="utf-8")
+        git("add", "pyproject.toml")
+        git("commit", "-q", "--allow-empty", "-m", version)
+        shas.append(git("rev-parse", "HEAD"))
+    git("update-ref", "refs/remotes/origin/main", shas[0])
+    return repo, shas
+
+
+class TestReleaseModeFor:
+    def test_a_pull_request_that_raises_the_version_is_the_release(
+        self, tmp_path: Path
+    ) -> None:
+        """CI passes a pull request's base branch by name; it is read as
+        `origin/<base>`, the ref a CI checkout carries."""
+        repo, _ = _repo_with_versions(tmp_path, "0.1.13", "0.2.0")
+        release, why = _MOD.release_mode_for("main", repo)
+        assert release is True
+        assert "0.1.13 -> 0.2.0" in why
+
+    def test_a_pull_request_that_keeps_the_version_is_not(
+        self, tmp_path: Path
+    ) -> None:
+        """The case the base-branch trigger got wrong: a fix PR into `main`."""
+        repo, _ = _repo_with_versions(tmp_path, "0.2.0", "0.2.0")
+        release, _why = _MOD.release_mode_for("main", repo)
+        assert release is False
+
+    def test_a_push_compares_against_the_commit_before_it(
+        self, tmp_path: Path
+    ) -> None:
+        repo, shas = _repo_with_versions(tmp_path, "0.1.13", "0.2.0", "0.2.0")
+        # The release merge raised the version against the commit before it.
+        subprocess.run(
+            ["git", "checkout", "-q", shas[1]], cwd=repo, env=_scrubbed_env(),
+            check=True, capture_output=True,
+        )
+        assert _MOD.release_mode_for(shas[0], repo)[0] is True
+        # The next push to main did not.
+        subprocess.run(
+            ["git", "checkout", "-q", shas[2]], cwd=repo, env=_scrubbed_env(),
+            check=True, capture_output=True,
+        )
+        assert _MOD.release_mode_for(shas[1], repo)[0] is False
+
+    def test_a_new_branch_has_no_previous_commit(self, tmp_path: Path) -> None:
+        """A push that creates a branch reports an all-zero `before`."""
+        repo, _ = _repo_with_versions(tmp_path, "0.2.0")
+        release, why = _MOD.release_mode_for("0" * 40, repo)
+        assert release is False
+        assert "new branch" in why
+
+    @pytest.mark.parametrize("base", ["", "no-such-ref"])
+    def test_an_unreadable_base_fails_closed(
+        self, tmp_path: Path, base: str
+    ) -> None:
+        """A base that names nothing must not be read as "not a release":
+        that would silently skip the release checks on the release PR."""
+        repo, _ = _repo_with_versions(tmp_path, "0.2.0")
+        with pytest.raises(_MOD.ReleaseModeError):
+            _MOD.release_mode_for(base, repo)
+
+    def test_the_outer_repository_is_not_consulted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Under a hook, `GIT_DIR` names the outer repository; the script's
+        own git must read the tree it was given."""
+        repo, _ = _repo_with_versions(tmp_path, "0.1.13", "0.2.0")
+        monkeypatch.setenv("GIT_DIR", str(tmp_path / "elsewhere" / ".git"))
+        assert _MOD.release_mode_for("main", repo)[0] is True

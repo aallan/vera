@@ -185,11 +185,12 @@ jobs:
 
       - name: Check documentation counts are consistent
         # The headline test totals are checked against the live collection
-        # on the release PR (a pull request into main) and on main itself;
-        # on a pull request into release/** they are checked against one
-        # another only, since every fix PR moves them.  The rule is in
-        # scripts/check_doc_counts.py.
-        run: python scripts/check_doc_counts.py ${{ (github.base_ref == 'main' || github.ref == 'refs/heads/main') && '--release' || '' }}
+        # on a change that raises [project].version (the release PR, whatever
+        # its base, and the push that merges it), and against one another
+        # only on every other change, since every fix PR moves them (#1536).
+        # A pull request is compared with its base branch, a push with the
+        # commit before it.  The rule is in scripts/check_doc_counts.py.
+        run: python scripts/check_doc_counts.py --release-if-version-raised "${{ github.event_name == 'pull_request' && github.base_ref || github.event.before }}"
 
       - name: Check limitation tables are in sync
         run: python scripts/check_limitations_sync.py

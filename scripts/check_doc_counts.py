@@ -28,14 +28,16 @@ for the release PR.  A commit hook must not depend on a network call.
 
 Two modes, which differ only in the HEADLINE test totals (see the section
 of that name below for the rule that decides which counts are headline).
-By default — the pre-commit hook, and CI on pull requests into
-``release/**`` — each headline figure is read and checked against the other
+By default — the pre-commit hook, and CI on every change that keeps the
+version — each headline figure is read and checked against the other
 citations of the same figure, but not against the live collection: every
 fix PR moves those totals, so gating them on every PR would make each merge
-conflict with every other open PR.  ``--release`` — the release PR, which CI runs in
-this mode on pull requests into ``main`` and on pushes to ``main`` — checks
+conflict with every other open PR.  ``--release`` — the release PR — checks
 them against the live collection as well, so a stale headline is caught when
-the release is cut.  Every other count is checked in both modes.
+the release is cut.  CI passes ``--release-if-version-raised <base>``, which
+turns release mode on exactly when ``[project].version`` rose against the
+base: a pull request against its base branch, a push against the commit
+before it (#1536).  Every other count is checked in both modes.
 """
 
 import argparse
@@ -2256,11 +2258,100 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help=(
             "also check the headline test totals against the live collection "
-            "(the release PR; CI passes it on pull requests into main and on "
-            "pushes to main, never on pull requests into release/**)"
+            "(the release PR)"
+        ),
+    )
+    parser.add_argument(
+        "--release-if-version-raised",
+        metavar="BASE",
+        help=(
+            "run in --release mode when pyproject.toml's [project].version is "
+            "higher than at BASE: a branch name (read as origin/BASE, as a CI "
+            "checkout has it) or a commit.  CI passes a pull request's base "
+            "branch and a push's previous commit (#1536)"
         ),
     )
     return parser.parse_args(argv)
+
+
+# ---------------------------------------------------------------------------
+# Release mode keys on the version bump (#1536).  The release PR is the pull
+# request that raises `[project].version` against its base — the same signal
+# `release.yml` publishes on — so the choice does not depend on which branch
+# fix PRs target.
+# ---------------------------------------------------------------------------
+
+
+class ReleaseModeError(Exception):
+    """The base's version could not be read, so the mode cannot be chosen.
+
+    Raised rather than answered "not a release": a base that reads as
+    nothing would otherwise skip the release checks on the release PR.
+    """
+
+
+_NO_PREVIOUS_COMMIT = re.compile(r"^0{40}$")
+
+
+def _project_version(pyproject_text: str) -> tuple[int, ...]:
+    try:
+        version = tomllib.loads(pyproject_text)["project"]["version"]
+        parts = tuple(int(part) for part in str(version).split("."))
+    except (tomllib.TOMLDecodeError, KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"no readable [project].version ({exc})") from exc
+    if not parts:
+        raise ValueError("an empty [project].version")
+    return parts
+
+
+def version_raised(base_pyproject: str, head_pyproject: str) -> bool:
+    """Whether the head's `[project].version` is higher than the base's,
+    compared as numbers (`0.2.10` is above `0.2.9`)."""
+    return _project_version(head_pyproject) > _project_version(base_pyproject)
+
+
+def _pyproject_at(ref: str, root: Path) -> str | None:
+    # `GIT_*` from a hook names the repository the hook runs in; this reads
+    # the tree at `root`, whichever that is.
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    for candidate in (f"origin/{ref}", ref):
+        result = subprocess.run(
+            ["git", "show", f"{candidate}:pyproject.toml"],
+            cwd=root, env=env, capture_output=True, text=True, check=False,
+            encoding="utf-8",
+        )
+        if result.returncode == 0:
+            return result.stdout
+    return None
+
+
+def release_mode_for(base: str, root: Path) -> tuple[bool, str]:
+    """Whether the tree at `root` raises the version against `base`, and
+    the reason, for the log.
+
+    A push that creates a branch has no previous commit (an all-zero SHA),
+    so it has no version to raise and runs in the default mode.  Any other
+    base that does not resolve is an error.
+    """
+    if _NO_PREVIOUS_COMMIT.match(base):
+        return False, "no previous commit (a new branch)"
+    if not base:
+        raise ReleaseModeError("no base was given to compare the version with")
+    base_text = _pyproject_at(base, root)
+    if base_text is None:
+        raise ReleaseModeError(
+            f"cannot read pyproject.toml at {base!r} (tried origin/{base} "
+            f"and {base})"
+        )
+    head_text = (root / "pyproject.toml").read_text(encoding="utf-8")
+    try:
+        raised = version_raised(base_text, head_text)
+        old = ".".join(map(str, _project_version(base_text)))
+        new = ".".join(map(str, _project_version(head_text)))
+    except ValueError as exc:
+        raise ReleaseModeError(str(exc)) from exc
+    verdict = "raised" if raised else "not raised"
+    return raised, f"[project].version {old} -> {new} against {base}: {verdict}"
 
 
 # A TESTING.md per-file row: `| `test_x.py` | <tests> | <lines> | ...`.
@@ -2981,6 +3072,15 @@ def main() -> int:
     # with a different remedy (relocate the test file into the target
     # tree), not this one.
     sys.path.insert(0, str(root))
+
+    if args.release_if_version_raised is not None:
+        try:
+            raised, why = release_mode_for(args.release_if_version_raised, root)
+        except ReleaseModeError as exc:
+            print(f"ERROR: release mode: {exc}", file=sys.stderr)
+            return 1
+        print(f"Release mode {'on' if raised else 'off'}: {why}.")
+        args.release = args.release or raised
 
     live = gather(root)
     if isinstance(live, str):

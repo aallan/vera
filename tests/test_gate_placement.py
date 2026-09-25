@@ -442,11 +442,13 @@ EVENTS = {
         "github.event_name": "push",
         "github.base_ref": "",
         "github.ref": "refs/heads/main",
+        "github.event.before": "1" * 40,
     },
     "push to release/v0.2.0": {
         "github.event_name": "push",
         "github.base_ref": "",
         "github.ref": "refs/heads/release/v0.2.0",
+        "github.event.before": "2" * 40,
     },
 }
 
@@ -797,24 +799,28 @@ class TestCiRunsEveryGate:
                 evaluate(str(steps[name]["if"]), EVENTS["push to main"])
 
     @pytest.mark.parametrize(
-        ("event", "release"),
+        ("event", "base"),
         [
-            ("pull request into main", True),
-            ("push to main", True),
-            ("pull request into release/v0.2.0", False),
-            ("push to release/v0.2.0", False),
+            ("pull request into main", "main"),
+            ("pull request into release/v0.2.0", "release/v0.2.0"),
+            ("push to main", "1" * 40),
+            ("push to release/v0.2.0", "2" * 40),
         ],
     )
-    def test_doc_counts_runs_in_release_mode_on_main_only(
-        self, event: str, release: bool
+    def test_doc_counts_keys_release_mode_on_the_version_bump(
+        self, event: str, base: str
     ) -> None:
+        """Release mode is chosen by the script from the version bump
+        (#1536), never by the event: a pull request hands it its base
+        branch, a push the commit before it.  A base branch alone named
+        the release PR only while fix PRs targeted a release branch."""
         steps = _invokes(
             _gating_steps(_workflow(), "lint", EVENTS[event]),
             "python", "scripts/check_doc_counts.py",
         )
         assert len(steps) == 1
         argv = _command(steps[0]["run"])
-        assert argv[2:] == (["--release"] if release else [])
+        assert argv[2:] == ["--release-if-version-raised", base]
 
 
 # ---------------------------------------------------------------------------
