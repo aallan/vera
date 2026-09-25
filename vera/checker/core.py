@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from vera.resolver import ResolvedModule
 
 from vera import ast, naming
+from vera.callgraph import CallGraph
 from vera.errors import (
     Diagnostic,
     SourceLocation,
@@ -444,7 +445,8 @@ class TypeChecker(
         # declaration, stays the one every use resolves to — so none holds a
         # name, and the check phase skips them too: re-checking would
         # resolve their own bodies against that entry and emit bogus
-        # secondary diagnostics.
+        # secondary diagnostics.  The check phase adds a handler's surplus
+        # clause (E184) when it meets one, for the call graph (#1492).
         self._refused_decl_ids: set[int] = set()
         # ids of functions that ARE registered, under names of their own,
         # but whose bodies the check phase skips: each has a `where` helper
@@ -774,6 +776,86 @@ class TypeChecker(
                     or id(tld.decl) in self._unchecked_body_ids):
                 continue
             self._check_decl(tld.decl)
+        self._check_recursion(program)
+
+    def _check_recursion(self, program: ast.Program) -> None:
+        """Spec §5.6 and §7.7.3 over the program's whole call graph (#1492).
+
+        Every function on a cycle of calls, a self-call included, declares a
+        `decreases` measure or names `Diverge` in its effect row (E137).  A
+        contract or refinement predicate may not call back into its own
+        function, directly or through other calls (E138, #1521): checking it
+        would need the very specification it is checking.  The cycles come
+        from :class:`~vera.callgraph.CallGraph`, which the verifier reads for
+        the measure obligations, so the two agree on what is recursive.
+
+        The graph reads what the check phase read (#1433, #815): a refused
+        declaration adds no function and no call, so it draws its refusal
+        alone, and a function whose body was skipped adds no call until the
+        body is checked.
+        """
+        graph = CallGraph(
+            (tld.decl for tld in program.declarations),
+            refused=self._refused_decl_ids,
+            unchecked=self._unchecked_body_ids,
+        )
+        for fn in graph.unmeasured():
+            others = [f"'{m.name}'" for m in graph.cycle(fn) if m is not fn]
+            how = (f"it is on a call cycle with {', '.join(others)}"
+                   if others else "it calls itself")
+            self._error(
+                fn,
+                f"Function '{fn.name}' is recursive ({how}) but declares "
+                f"neither a decreases() clause nor the Diverge effect.",
+                rationale=(
+                    "A function without Diverge in its effect row must be "
+                    "proved to terminate, and a recursive one proves it "
+                    "with a decreases() measure. Without one nothing shows "
+                    "the recursion ends, and a function that never returns "
+                    "would have its postcondition reported as verified. "
+                    "This holds for every effect row, IO included."
+                ),
+                fix=(
+                    f"Give '{fn.name}' a measure that strictly decreases on "
+                    f"every recursive call and stays non-negative. For a "
+                    f"loop that counts @Nat.0 up to a limit @Nat.1, "
+                    f"measure the distance left: requires(@Nat.0 <= @Nat.1) "
+                    f"and decreases(@Nat.1 - @Nat.0). Every function on the "
+                    f"cycle needs its own measure unless it declares Diverge. "
+                    f"If the recursion is not meant to end, as in a server or "
+                    f"read-eval loop, declare it: effects(<Diverge>), or "
+                    f"effects(<Diverge, IO>) with IO; every function that "
+                    f"calls it must declare Diverge too."
+                ),
+                spec_ref='Chapter 5, Section 5.6 "Recursive Functions"',
+                error_code="E137",
+            )
+        for site in graph.spec_cycle_sites():
+            if site.callee is site.caller:
+                how = f"calls '{site.caller.name}' itself"
+            else:
+                how = (f"calls '{site.callee.name}', which leads back to "
+                       f"'{site.caller.name}'")
+            self._error(
+                site.call,
+                f"A contract or refinement predicate of "
+                f"'{site.caller.name}' {how}.",
+                rationale=(
+                    "A contract is the specification its function is "
+                    "checked against, so it cannot be defined through that "
+                    "function: checking it would need the specification it "
+                    "is checking. The verifier has no finite meaning to give "
+                    "it, and a run that evaluates it recurses without end."
+                ),
+                fix=(
+                    f"State the property without calling back into "
+                    f"'{site.caller.name}': write it over the parameters and "
+                    f"the result directly, or call a separate specification "
+                    f"function that does not reach '{site.caller.name}'."
+                ),
+                spec_ref='Chapter 6, Section 6.3.1 "Allowed in All Contracts"',
+                error_code="E138",
+            )
 
     def _check_decl(self, decl: ast.Decl) -> None:
         """Check a single declaration."""

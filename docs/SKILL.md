@@ -673,6 +673,7 @@ Vera has no `for` or `while` loops. Iteration is always expressed as tail-recurs
 private fn loop(@Nat, @Nat -> @Unit)
   requires(@Nat.0 <= @Nat.1)
   ensures(true)
+  decreases(@Nat.1 - @Nat.0)
   effects(<IO>)
 {
   IO.print(string_concat(fizzbuzz(@Nat.0), "\n"));
@@ -686,9 +687,9 @@ private fn loop(@Nat, @Nat -> @Unit)
 
 Here `@Nat.0` is the counter (De Bruijn index 0 = most recent, i.e. the second parameter) and `@Nat.1` is the limit (the first parameter). The contract `requires(@Nat.0 <= @Nat.1)` ensures the counter never exceeds the limit — and since the recursive call passes `@Nat.0 + 1` where `@Nat.0 < @Nat.1`, the precondition is maintained at every step. The function prints, then either recurses with an incremented counter or returns `()`.
 
-Call with the limit first and counter second: `loop(100, 1)`.
+The measure `decreases(@Nat.1 - @Nat.0)` is the number of steps left. It shrinks by one on every recursive call and never goes below zero, which is what proves the loop ends; the `requires` is what makes the subtraction safe at entry. Every recursive function needs a measure, whatever its effect row, `<IO>` included (see [decreases](#decreases-termination)). A loop that is not meant to end declares `Diverge` instead.
 
-For pure recursive functions that need termination proofs, add a `decreases` clause (see [Recursion](#recursion)). Effectful recursive functions like the loop above do not require `decreases`.
+Call with the limit first and counter second: `loop(100, 1)`.
 
 ## Closures and captured bindings
 
@@ -1307,7 +1308,7 @@ Conditions guaranteed when the function returns. Use `@T.result` to refer to the
 
 ### decreases (termination)
 
-Required on **pure** recursive functions: the expression must strictly decrease on each recursive call so Z3 can discharge termination.  Effectful recursive functions (`<IO>`, `<State>`, `<Http>`, etc.) do **not** require `decreases` — see the FizzBuzz example in the [Iteration](#iteration) section, which loops over `<IO>` recursively without one.
+Required on **every** recursive function whose effect row does not name `Diverge`, pure or effectful: the expression must strictly decrease on each recursive call so Z3 can discharge termination.  A function is recursive when it lies on a cycle of calls, whether it calls itself directly, through a `where` helper, through a closure or handler clause in its own body, or through other top-level functions.  Every function on the cycle that does not name `Diverge` needs its own `decreases`, and the measure must decrease on every call from one member of the cycle to another.  A recursive function with neither a `decreases` clause nor `Diverge` is rejected at check time (`E137`).  An `<IO>` loop that counts up to a bound takes the distance left as its measure — see the FizzBuzz loop in the [Iteration](#iteration) section.  A contract cannot call back into its own function, directly or through other calls (`E138`).
 
 ```vera
 private fn factorial(@Nat -> @Nat)
@@ -1392,7 +1393,12 @@ effects(<Diverge, IO>)           -- divergent with IO
 
 `Diverge` is a built-in marker effect with no operations. Its presence in the
 effect row signals that the function may not terminate. Functions without
-`Diverge` must be proven total (via `decreases` clauses on recursion).
+`Diverge` must be proven total (via `decreases` clauses on recursion). Use it
+for a loop with no bound, such as a server or read-eval loop: a function that
+declares it needs no `decreases`, and compiles like any other; it has a
+termination guard only if it also declares `decreases`. Like any effect, it
+propagates: every function that calls a `Diverge` function must declare
+`Diverge` too (`E125`), up to `main`.
 
 ### Effect declarations
 
@@ -2416,6 +2422,7 @@ public fn fizzbuzz(@Nat -> @String)
 private fn loop(@Nat, @Nat -> @Unit)
   requires(@Nat.0 <= @Nat.1)
   ensures(true)
+  decreases(@Nat.1 - @Nat.0)
   effects(<IO>)
 {
   IO.print(string_concat(fizzbuzz(@Nat.0), "\n"));
@@ -2437,7 +2444,7 @@ public fn main(@Unit -> @Unit)
 
 ## Conformance Suite
 
-The `tests/conformance/` directory contains 255 small programs — most self-contained, with the Chapter 8 module-system programs and a few cross-module Chapter 7 and 9 programs importing companion `_lib.vera` / `_mid.vera` modules — that validate every language feature against the spec — often one program per feature, though some features (slot references, match, contracts) span several. These are the best minimal working examples of Vera syntax and semantics.
+The `tests/conformance/` directory contains 256 small programs — most self-contained, with the Chapter 8 module-system programs and a few cross-module Chapter 7 and 9 programs importing companion `_lib.vera` / `_mid.vera` modules — that validate every language feature against the spec — often one program per feature, though some features (slot references, match, contracts) span several. These are the best minimal working examples of Vera syntax and semantics.
 
 Each program is organized by spec chapter (`ch01_int_literals.vera`, `ch04_match_basic.vera`, `ch07_state_handler.vera`, etc.) and the `manifest.json` file maps features to programs. When you need to see how a specific construct works, check the conformance program before reading the spec.
 

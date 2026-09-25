@@ -1164,6 +1164,19 @@
     ]
   },
   {
+    "id": "ch07_diverge",
+    "file": "ch07_diverge.vera",
+    "chapter": 7,
+    "title": "Diverge effect: unmeasured recursion compiles and runs",
+    "level": "run",
+    "spec_ref": "Section 7.7.3",
+    "features": [
+      "diverge_effect",
+      "recursion",
+      "effect_propagation"
+    ]
+  },
+  {
     "id": "ch07_io",
     "file": "ch07_io.vera",
     "chapter": 7,
