@@ -285,8 +285,12 @@ class TestTheRule:
         self, tmp_path: Path,
     ) -> None:
         """`a`'s `Json` declares a `JNull` of its own.  In `b`, which imports
-        `a`'s `Json`, `JNull` is still the prelude's — `json_stringify`
-        renders it "null" — while `MyK` is `a`'s: 4 + 41."""
+        `a`'s `Json`, `JNull` is still the prelude's — `json_stringify` takes
+        it — while `MyK` is `a`'s, and the program checks clean.  Writing the
+        prelude's constructor uses the prelude's `Json`, whose shape differs
+        from `a`'s, and one name carries one layout in the compiled program,
+        so compilation refuses the pair at `a`'s declaration (E621, spec
+        §11.16) rather than lay one type's values out in the other's."""
         a_source = (
             "module a;\n\npublic data Json {\n  JNull,\n  MyK(Int)\n}\n\n"
             + _fn("unwrap(@Json -> @Int)",
@@ -298,7 +302,10 @@ class TestTheRule:
         check = _cli("check", main)
         assert check["ok"] is True and _codes(check, "warnings") == [], _said(check)
         run = _cli("run", main)
-        assert run["ok"] is True and run["value"] == 45, _said(run)
+        assert run["ok"] is False and _errors(run) == ["E621"], _said(run)
+        (diag,) = [d for d in run["diagnostics"] if d["severity"] == "error"]
+        assert ("module 'a'" in diag["description"]
+                and "'Json'" in diag["description"]), diag
 
     def test_a_private_type_of_the_name_is_not_importable(
         self, tmp_path: Path,

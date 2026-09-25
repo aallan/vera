@@ -936,14 +936,16 @@ class TestMeeting:
         """The surface is not only function signatures.
 
         ``liba`` exports ``Wrapper { W(Shape) }``, so an importer naming
-        ``Wrapper`` can extract a ``Shape`` from it without ever naming the
-        type — the same crossing by a different route.
+        ``Wrapper`` can extract a ``Shape`` from its field and hand it to
+        ``libb`` — the same crossing by a different route.  Binding the field
+        names the type, so the entry imports ``liba``'s (an unimported name
+        is E136, #1489).
         """
         liba = _FLOW_A + """
 public data Wrapper { W(Shape) }
 """
         entry = """\
-import liba(aone, Wrapper);
+import liba(aone, Wrapper, Shape);
 import libb(bone);
 
 public fn main(@Unit -> @Int)

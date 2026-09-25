@@ -271,6 +271,17 @@ class RegistrationMixin:
         # those stays legal (§8.4.1, §8.5.2); declaring the same name twice
         # HERE does not.
         self._ns_ctor_owners: dict[str, str] = {}
+        # #1489: what this namespace declares, known before any of it is
+        # registered, so a signature naming a declaration further down the
+        # file is a forward reference rather than an unknown name.
+        self._forward_type_names = frozenset(
+            tld.decl.name for tld in program.declarations
+            if isinstance(tld.decl, (ast.DataDecl, ast.TypeAliasDecl))
+        )
+        self._forward_effect_names = frozenset(
+            tld.decl.name for tld in program.declarations
+            if isinstance(tld.decl, ast.EffectDecl)
+        )
         # #1433: the first declaration of each name in each of the four
         # top-level namespaces this pass holds (see `_DECL_NAMESPACES`).  The
         # same scope as `_ns_ctor_owners` and for the same reason: `env`
@@ -1248,9 +1259,9 @@ class RegistrationMixin:
         elif isinstance(decl, ast.AbilityDecl):
             self._register_ability(decl)
 
-    #: The built-in ADT names whose SEMANTICS the compiler special-cases, so
-    #: a user declaration of the name cannot be told apart from the built-in
-    #: (#1397).
+    #: The built-in type names a ``data`` declaration may not take (#1397,
+    #: #1547), because a declaration of one cannot be told apart from the
+    #: built-in.
     #:
     #: ``Future`` is the transparent wrapper: several derivations peel a
     #: ``Future<…>`` spelling before asking what the name means, so a declared
@@ -1264,15 +1275,25 @@ class RegistrationMixin:
     #: ``Tuple(1, 2)`` instead of ``(1, 2)``), so the answer is the one Vera
     #: already gives in the neighbouring namespaces: the name is reserved.
     #:
-    #: NOT the other built-in ADTs.  §8.4.1 makes the prelude's data types
-    #: ordinary declarations a program may shadow: the MODULE
-    #: ``examples/vera/collections.vera`` ships a ``public data Option<T>``
-    #: (legal because it restates the prelude's shape, §11.16 / #1277), and
-    #: #1312's E623 rail is built on entry-file shadowing being legal.  Both
-    #: doors would close if these names were reserved, since E158 fires in
-    #: ``_register_data`` wherever the declaration is.  NOT the containers
-    #: (``Array``, ``Map``, ``Set``, ``Decimal``): the resolution spine tells
-    #: those apart from a declaration correctly, which is #1321/#1331.
+    #: The built-in types ``Array``, ``Map``, ``Set`` and ``Decimal`` for
+    #: another reason.  The resolution spine tells a NAME a namespace writes apart
+    #: from a declaration (#1321/#1331), but the checker gives a value of the
+    #: container and a value of a declaration taking the same number of type
+    #: arguments one type, ``AdtType(name, args)``, so nothing downstream can
+    #: tell the two VALUES apart: ``show(decimal_from_int(5))`` beside a
+    #: ``data Decimal`` printed the declaration's constructor, and
+    #: ``show([1, 2])`` beside a ``data Array<T>`` built a module that fails
+    #: to load (#1547).  A different count was told apart (#1539), but a
+    #: name that meant the container at one count and the declaration at
+    #: another is a trap, so the name is reserved at every count.
+    #:
+    #: NOT the prelude's data types.  §8.4.1 makes them ordinary declarations
+    #: a program may shadow: the MODULE ``examples/vera/collections.vera``
+    #: ships a ``public data Option<T>`` (legal because it restates the
+    #: prelude's shape, §11.16 / #1277), and #1312's E623 rail is built on
+    #: entry-file shadowing being legal.  Both doors would close if these
+    #: names were reserved, since E158 fires in ``_register_data`` wherever
+    #: the declaration is; whether to reserve them is #1496.
     #:
     #: The complement is what keeps this honest rather than a hand list left
     #: to rot: every name NOT here is exercised end to end — declared, run,
@@ -1280,26 +1301,40 @@ class RegistrationMixin:
     #: ``tests/test_name_resolution_spine_1316.py``, which reads this tuple
     #: instead of restating it.  A new special-cased built-in that nobody
     #: adds here fails there.
-    _SPECIAL_CASED_BUILTIN_ADTS = ("Future", "Tuple")
+    _SPECIAL_CASED_BUILTIN_ADTS = (
+        "Array", "Decimal", "Future", "Map", "Set", "Tuple")
+
+    #: The names reserved in the CONSTRUCTOR namespace as well: the two whose
+    #: built-in has a constructor of that name, whose layout slot a user's
+    #: constructor would take (PR #1404 review).  No built-in constructor is
+    #: called ``Array``, ``Map``, ``Set`` or ``Decimal``, so a constructor of
+    #: one of those names collides with nothing and stays legal.
+    _SPECIAL_CASED_BUILTIN_CTORS = ("Future", "Tuple")
 
     def _check_special_cased_builtin_adt(
         self, node: ast.Node, name: str, kind: str,
     ) -> bool:
-        """Refuse a declaration whose name the compiler special-cases (#1397).
+        """Refuse a declaration that takes a reserved built-in type name
+        (#1397, #1547).
 
         The same rule E151 applies to built-in FUNCTIONS and E152 to built-in
         EFFECTS: a name whose meaning the compiler hard-codes cannot also be
         a user declaration, because nothing downstream can tell the two
         apart.  Accepting it was silent for ``Tuple`` — ``show`` dropped the
-        constructor name — which is the outcome DESIGN §0.2 excludes.
+        constructor name — and for ``Decimal``, whose built-in value
+        ``show`` printed as the declaration's constructor: the outcome
+        DESIGN §0.2 excludes.
 
         Asked in BOTH namespaces a declaration can put the name in, because
         the collision is keyed differently downstream in each and closing
         only one leaves the other open (PR #1404 review):
 
         * as a ``data`` TYPE name — the render, compare and layout
-          derivations branch on the type's base name;
-        * as a CONSTRUCTOR name inside any ADT — codegen flattens
+          derivations branch on the type's base name, and for a container
+          the checker gives the built-in's values and the declaration's one
+          type;
+        * as a CONSTRUCTOR name inside any ADT, for ``Tuple`` and ``Future``
+          (:attr:`_SPECIAL_CASED_BUILTIN_CTORS`) — codegen flattens
           ``ctor_layouts`` by constructor name across every ADT, and both
           the tuple construction site and the SMT synthesis door key on
           ``expr.name``.  A ``data Box { Tuple(Bool) }`` therefore won the
@@ -1330,10 +1365,20 @@ class RegistrationMixin:
                 f"declaration, so this {kind} could never be named: each "
                 f"'@{name}' in the program would still mean the primitive."
             )
-        elif (name not in self._SPECIAL_CASED_BUILTIN_ADTS
-                or kind == "type alias"):
-            return False
-        elif kind == "data type":
+        elif (kind == "data type"
+                and name in self._SPECIAL_CASED_BUILTIN_ADTS
+                and name not in self._SPECIAL_CASED_BUILTIN_CTORS):
+            subject = "redeclared as a data type"
+            rationale = (
+                f"'{name}' is a built-in type. Declared with the "
+                f"built-in's number of type arguments, it is the same type "
+                f"as the built-in to the type checker, so a built-in "
+                f"'{name}' value would be accepted where this declaration's "
+                f"is expected and read through the wrong layout when the "
+                f"program runs. The name is reserved at every number of "
+                f"type arguments, so that it has one meaning."
+            )
+        elif kind == "data type" and name in self._SPECIAL_CASED_BUILTIN_ADTS:
             subject = "redeclared as a data type"
             rationale = (
                 f"Unlike the prelude's data types, which a program may "
@@ -1343,7 +1388,8 @@ class RegistrationMixin:
                 f"the built-in, so the program would compile against a "
                 f"mixture of the two."
             )
-        else:
+        elif (kind == "constructor"
+                and name in self._SPECIAL_CASED_BUILTIN_CTORS):
             subject = "used as a constructor name"
             rationale = (
                 f"Constructor layouts are held in one table keyed by "
@@ -1355,13 +1401,16 @@ class RegistrationMixin:
                 f"uses elsewhere in the program are compiled against this "
                 f"declaration's layout."
             )
+        else:
+            return False
         self._error(
             node,
-            f"'{name}' is a built-in type whose meaning the compiler "
-            f"special-cases, so it cannot be {subject}.",
+            f"'{name}' is a reserved built-in type name, so it cannot be "
+            f"{subject}.",
             rationale=rationale,
             fix=(
-                f"Rename the {kind}. If you meant the built-in "
+                f"Rename the {kind} to a name no built-in type uses, and "
+                f"update every use of it. If you meant the built-in "
                 f"'{name}', use it directly instead of declaring it."
             ),
             spec_ref='Chapter 8, Section 8.4.1 "Visibility Rules"',
@@ -1470,7 +1519,7 @@ class RegistrationMixin:
                 ctor, ctor.name, "constructor",
             )
             self._check_sibling_ctor_collision(ctor, decl.name)
-            if ctor.name in self._SPECIAL_CASED_BUILTIN_ADTS:
+            if ctor.name in self._SPECIAL_CASED_BUILTIN_CTORS:
                 # Registration continues past `_error` so the rest of the
                 # declaration still reports, but a REFUSED constructor must
                 # not land in `env.constructors` — nothing downstream should

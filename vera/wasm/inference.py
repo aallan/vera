@@ -22,6 +22,12 @@ from vera.slots import (
 )
 from vera.wasm.helpers import _strip_future, state_type_arg
 
+#: A built-in data type whose instances take any number of arguments: its
+#: registered type-parameter count is not an arity (`Tuple<Int, Bool>` is an
+#: instance of the 0-parameter registration).  `Tuple` is reserved in the data
+#: namespace (E158, #1397), so no declaration shares the name.
+_VARIADIC_ADTS = frozenset({"Tuple"})
+
 # `substitute_type_vars` was relocated to `vera.monomorphize` (the codegen-free
 # shared monomorphizer, #732) so the verifier can reuse it without importing the
 # WASM backend.  Re-exported here so the existing
@@ -604,7 +610,7 @@ class InferenceMixin:
             # TODAY — which is exactly the width-luck that hid #1309 and
             # #1331, and the reason it is corrected rather than left to a
             # future representation to expose.
-            if base in self._adt_type_names:
+            if self._declares_adt(name):
                 return "i32"
             # Opaque handle types — i32 handles managed by host runtime
             if base in ("Decimal", "Map", "Set"):
@@ -971,10 +977,11 @@ class InferenceMixin:
         The precedence and its rationale are stated once, on
         :func:`vera.monomorphize.checker_clone_type_name`.  The discovery twin
         (``Monomorphizer._infer_vera_type_name``) asks the same two sources in
-        the same order over the same table, so a shape either walker cannot
-        name is named identically for both rather than becoming a clone only
-        one of them believes in — which is what every member of the #1327
-        family was.
+        the same order over the same table — the checker's table for the file
+        the body was written in, the entry program's or a module's own
+        (#1509) — so a shape either walker cannot name is named identically
+        for both rather than becoming a clone only one of them believes in —
+        which is what every member of the #1327 family was.
         """
         walked = self._walk_vera_type(expr)
         if walked is not None:
@@ -1280,13 +1287,30 @@ class InferenceMixin:
             for pt, arg in zip(param_types, call.args):
                 self._unify_param_arg_wasm(
                     pt, arg, forall_vars, mapping, constrained_vars)
-            # Use the first param's type to determine return type
-            # (Generic fn return type is typically a type var)
-            # We need to figure out the return type from forall info
-            # Actually, look at the monomorphized fn sig
+            # #769: prefer the callee's DECLARED return TypeExpr substituted
+            # with the inferred instantiation — exactly the substitution
+            # discovery performs (Monomorphizer._generic_return_name), so
+            # both sides mangle the same clone for a generic call in
+            # argument position.  The WAT collapse below names an i32-handle
+            # return "Bool" and a declared-Nat i64 return "Int" — names
+            # discovery never emits (dangling-E602 desyncs pre-#769).
+            # #1509: only a variable the return MENTIONS has to be bound.  A
+            # phantom one no argument determines (`E` in
+            # `result_unwrap_or(Ok(2), 0)`) left this branch answering
+            # nothing, so a generic call nested in a constructor argument
+            # fell to the checker's `Nat` where discovery names the bound
+            # return (`Int`), and the two named different clones for the
+            # call around it.
+            decl_ret = self._fn_ret_type_exprs.get(call.name)
+            if isinstance(decl_ret, ast.RefinementType):
+                decl_ret = decl_ret.base_type
+            if isinstance(decl_ret, ast.NamedType):
+                if decl_ret.name in forall_vars:
+                    return mapping.get(decl_ret.name)
+                return decl_ret.name
             parts = []
             for tv in forall_vars:
-                if tv not in mapping:  # pragma: no cover
+                if tv not in mapping:
                     return None
                 parts.append(mapping[tv])
             # Shared injective mangler (#775) — the registry below is keyed
@@ -1294,20 +1318,8 @@ class InferenceMixin:
             # built by the same encoding.  (The pre-#775 site joined RAW
             # type names with "_", which additionally missed every
             # parameterized instantiation like Map<String, Int>.)
-            # #769: prefer the callee's DECLARED return TypeExpr substituted
-            # with the inferred instantiation — exactly the substitution
-            # discovery performs (Monomorphizer._infer_fncall_vera_type), so
-            # both sides mangle the same clone for a generic call in
-            # argument position.  The WAT collapse below names an i32-handle
-            # return "Bool" and a declared-Nat i64 return "Int" — names
-            # discovery never emits (dangling-E602 desyncs pre-#769).
-            decl_ret = self._fn_ret_type_exprs.get(call.name)
-            if isinstance(decl_ret, ast.RefinementType):
-                decl_ret = decl_ret.base_type
-            if isinstance(decl_ret, ast.NamedType):
-                sub_map = dict(zip(forall_vars, parts))
-                return sub_map.get(decl_ret.name, decl_ret.name)
-            mangled = Monomorphizer._mangle_fn_name(call.name, tuple(parts))
+            mangled = Monomorphizer._mangle_fn_name(
+                call.name, self._canonical_type_args(parts))
             # Look up WASM return type and map back
             ret_wt = self._fn_ret_types.get(mangled)
             if ret_wt == "i64":
@@ -1747,10 +1759,24 @@ class InferenceMixin:
                 or resolved.startswith("Array<"))
 
     def _infer_array_element_type(self, expr: ast.ArrayLit) -> str | None:
-        """Infer the Vera element type name from an array literal."""
+        """Infer the Vera element type name from an array literal.
+
+        An element that is itself a literal is spelled in full
+        (``Array<Int>``), not by the bare head the walker names it by (#772):
+        the bare ``Array`` is also how a value of a ``data Array { … }``
+        is spelled, and the deciders read it as the declaration wherever
+        one is in scope (#1539), measuring the container's ``(ptr, len)``
+        element as a one-word pointer.  The full spelling carries the
+        container's argument, which no such declaration takes.
+        """
         if not expr.elements:
             return None
-        return self._infer_vera_type(expr.elements[0])
+        first = expr.elements[0]
+        if isinstance(first, ast.ArrayLit):
+            inner = self._infer_array_element_type(first)
+            if inner is not None:
+                return f"Array<{inner}>"
+        return self._infer_vera_type(first)
 
     def _infer_index_element_type(self, expr: ast.IndexExpr) -> str | None:
         """Infer the Vera element type from an index expression's collection.
@@ -2457,7 +2483,7 @@ class InferenceMixin:
         alias_map = dict(zip(alias_params, type_args))
         return self._canonical_wasm_type(fn_type.return_type, alias_map)
 
-    def _declares_adt(self, type_name: str) -> bool:
+    def _declares_adt(self, type_name: str, arity: int | None = None) -> bool:
         """Is *type_name* a ``data`` declaration of the namespace compiling?
 
         The wasm layer's arm of the resolution spine's DECLARED-ADT branch
@@ -2471,11 +2497,75 @@ class InferenceMixin:
         ``_adt_type_names`` is the namespace-scoped set the same
         ``AliasEnv.data_types`` this context's ``_alias_env`` carries — so a
         sibling module's ADT, or the entry file's, is NOT an ADT here.
-        Strips one level of type arguments so a parameterised spelling
-        (``Box<Int>``) asks about its head.
+
+        A parameterised spelling (``Box<Int>``) asks about its head, and is
+        an instance of the declaration only with as many arguments as the
+        declaration takes (#1539).  The spelling is a VALUE's type as often
+        as a name this namespace wrote: an array literal's ``Array<Int>``
+        beside a ``data Array { … }`` is the container's, which the head
+        alone cannot say, and reading it as the one-word declaration walked
+        its ``(ptr, len)`` pair as a pointer.  A name this namespace writes
+        always carries the declaration's arity (the checker refuses any
+        other, E135), so the count separates the two exactly when they
+        differ.  When they agree — a built-in ``Decimal`` beside
+        ``data Decimal`` — the checker gives both one type, and so does
+        this.  A bare spelling is the declaration's, as the #772 bare head
+        of a generic declaration's value is.  *arity* is the argument count
+        of a caller that has the name without its arguments.
         """
-        base = type_name.split("<")[0] if "<" in type_name else type_name
-        return base in self._adt_type_names
+        if "<" in type_name:
+            base = type_name.split("<", 1)[0]
+            if arity is None:
+                arity = len(self._split_type_args(type_name))
+        else:
+            base = type_name
+        if base not in self._adt_type_names:
+            return False
+        if not arity or base in _VARIADIC_ADTS:
+            return True
+        declared = self._adt_tp_counts.get(base)
+        return declared is None or declared == arity
+
+    def _value_adt_key(self, ptype: str) -> str | None:
+        """The data type a VALUE's type names: its layout key, or ``None``
+        for a built-in or primitive (#1534, #1539).
+
+        This namespace's own reading first, arity-aware
+        (:meth:`_declares_adt`); then any user declaration's layout key,
+        which after the #1317 renames names one data type in every
+        namespace (``_value_data_types``).  The second is what a value made
+        elsewhere needs: ``favourite``'s ``Colour`` is a data type in the
+        entry file that imported ``favourite`` alone, and asking the entry's
+        membership dropped every ``show`` / ``hash`` of it (E602).
+        """
+        base = ptype.split("<", 1)[0] if "<" in ptype else ptype
+        if self._declares_adt(ptype):
+            return base
+        if base in self._value_data_types:
+            return base
+        return None
+
+    @staticmethod
+    def _split_type_args(type_name: str) -> list[str]:
+        """The top-level argument spellings of ``Head<A, B<C>>``."""
+        inner = type_name.split("<", 1)[1]
+        inner = inner[:-1] if inner.endswith(">") else inner
+        out: list[str] = []
+        depth = 0
+        cur = ""
+        for ch in inner:
+            if ch == "<":
+                depth += 1
+            elif ch == ">":
+                depth -= 1
+            if ch == "," and depth == 0:
+                out.append(cur.strip())
+                cur = ""
+            else:
+                cur += ch
+        if cur.strip():
+            out.append(cur.strip())
+        return out
 
     @staticmethod
     def _named_type_to_wasm(name: str) -> str | None:
@@ -2760,7 +2850,7 @@ class InferenceMixin:
         # Unreachable for a declared ADT — the `_declares_adt` guard above
         # answers first — and ordered this way so the chain reads the same
         # everywhere rather than relying on that guard staying put.
-        if base in self._adt_type_names:
+        if self._declares_adt(resolved):
             return "i32"
         # Opaque handle types — i32 handles managed by host runtime
         if base in ("Decimal", "Map", "Set"):
@@ -2874,8 +2964,11 @@ class InferenceMixin:
         if name.startswith("Future<") and name.endswith(">"):
             inner = name[7:-1]
             return self._slot_name_to_wasm_type(inner, _seen)
-        # Map/Set/Decimal are opaque host-import handles (i32)
-        if name.startswith("Map<") or name.startswith("Set<") or name == "Decimal":
+        # Map/Set/Decimal are opaque host-import handles (i32).  A clone is
+        # named after a container's bare head (#772), so `option_unwrap_or$Set`
+        # binds a bare `Set`: it is the same handle.
+        if (name.startswith("Map<") or name.startswith("Set<")
+                or name in ("Map", "Set", "Decimal")):
             return "i32"
         base = name.split("<")[0] if "<" in name else name
         # Function type aliases are closure pointers (i32) — resolved

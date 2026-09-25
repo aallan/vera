@@ -132,6 +132,9 @@ class WasmContext(
         adt_tp_counts: dict[str, int] | None = None,
         adt_tp_param_names: dict[str, tuple[str, ...]] | None = None,
         checks: CheckRecord | None = None,
+        value_data_types: frozenset[str] | None = None,
+        adt_ctor_tp_indices: (
+            dict[str, dict[str, tuple[int | None, ...]]] | None) = None,
     ) -> None:
         self.string_pool = string_pool
         self._next_local: int = 0
@@ -250,6 +253,19 @@ class WasmContext(
         )
         # ADT type names for slot/param type resolution
         self._adt_type_names: set[str] = adt_type_names or set()
+        # #1534: the data types a VALUE's type can name whatever this
+        # namespace can name -- every user declaration's layout key, which
+        # has one owner after the #1317 renames, less the names a built-in
+        # also answers to.  Read only through `_value_adt_key`.
+        self._value_data_types: frozenset[str] = (
+            value_data_types or frozenset())
+        # #1534: the per-OWNER constructor type-parameter indices, the twin
+        # of `_adt_ctor_layouts` -- the LIVE nested map.  The by-name
+        # `_ctor_adt_tp_indices` is this namespace's projection, so it
+        # answers for a same-named constructor of another type.
+        self._adt_owned_tp_indices: dict[
+            str, dict[str, tuple[int | None, ...]]] = (
+            adt_ctor_tp_indices or {})
         # Generic function info for call rewriting:
         # fn_name -> (forall_vars, param_type_exprs)
         self._generic_fn_info: dict[

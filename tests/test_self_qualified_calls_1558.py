@@ -20,11 +20,12 @@ The instrument:
 
 - **The position matrix** (`TestThePositionMatrix`): the call in every
   position a call takes — a body, a `let`, an `if` condition, a `match` arm,
-  `requires`, `ensures`, a nested call, a pipe, an interpolation, a closure,
-  a `where` helper, a handler, an `assert` — and to every kind of callee: a
-  private function, a generic, a recursive call, a callee with a
-  precondition, one whose result and precondition read the order of two
-  `@Int` arguments, and a callee a `where` helper of the same name shadows.
+  `requires`, `ensures`, a nested call, a generic call's argument, a pipe, an
+  interpolation, a closure, a `where` helper, a handler, an `assert` — and to
+  every kind of callee: a private function, a generic, a recursive call, a
+  callee with a precondition, one whose result and precondition read the
+  order of two `@Int` arguments, and a callee a `where` helper of the same
+  name shadows.
   Each is placed in a module the entry imports, in one it reaches only
   transitively, and in the file checked as the entry, under a one-segment
   and a dotted path.  Every cell checks clean and prints the value its
@@ -148,6 +149,9 @@ def _positions(q: str) -> dict[str, Position]:
         "assert": Position(f"assert({q}two(@Int.0) == @Int.0 * 2);\n  @Int.0 * 4"),
         "private": Position(f"{q}ptwo(@Int.0) * 2"),
         "generic": Position(f"{q}gid(@Int.0) * 4"),
+        # The argument of a generic's call: its instantiation is named from
+        # the argument's type, which a call by the path has to supply.
+        "generic_argument": Position(f"{q}gid({q}two(@Int.0)) * 2"),
         "recursion": Position("nat_to_int(fact(3)) * 2", recursive=True),
         "precondition": Position(f"{q}pos(@Int.0) * 4"),
         # A `@Nat` result: the subtraction is `@Nat`'s, with its underflow
@@ -1500,76 +1504,78 @@ class TestATailCallByThePath:
 
 
 # ---------------------------------------------------------------------------
-# The one position not compiled yet (#1366)
+# An entry declaration of the same name
 # ---------------------------------------------------------------------------
 
-_GENERIC_ARGUMENT = """\
-module ma;
-
-private forall<T> fn gid(@T -> @T)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{{
-  @T.0
-}}
-
-private fn two(@Int -> @Int)
-  requires(true)
-  ensures(@Int.result == @Int.0 * 2)
-  effects(pure)
-{{
-  @Int.0 * 2
-}}
-
-public fn four(@Int -> @Int)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{{
-  gid({q}two(@Int.0)) + 3
-}}
-"""
+_ENTRY_TWO = {
+    "function": _fn("two(@Int -> @Int)", "@Int.0 * 1000", vis="private"),
+    "generic": ("private forall<T> fn two(@T -> @T)\n  requires(true)\n"
+                "  ensures(true)\n  effects(pure)\n{\n  @T.0\n}\n"),
+}
 
 
-class TestTheOnePositionNotCompiledYet:
-    """Spec §8.5.3 names the one position where a call by the path is not
-    yet compiled as the bare call: inside an imported module, as an argument
-    of a generic function's call.  Discovery's type namer has no arm for a
-    module-qualified call (#1366), so verification and compilation refuse it
-    with E622, as they refuse a qualified call into another module there.
+class TestAnEntryDeclarationOfTheSameName:
+    """The entry file declares a function named like one of `ma`'s own, so
+    code generation emits `ma`'s under its `mod$` symbol and renames `ma`'s
+    bare calls to it (#1508).  A call by `ma`'s own path inside `ma` reaches
+    `ma`'s function as its bare call does, whatever the entry declares under
+    the name: a function, or a generic, whose clone took the qualified call
+    while `vera verify` proved `four` from `ma`'s `two`."""
 
-    A PIN of today's behaviour, not an `xfail` (the suite's convention: see
-    `test_binder_position_generator.py`): the day #1366 is fixed, the module
-    cell fails, and the spec's sentence goes with it.  The entry cell is the
-    boundary of the claim: there the same call runs."""
-
-    def test_inside_an_imported_module_it_is_e622(
-        self, tmp_path: Path,
+    @pytest.mark.parametrize("placement", ["direct", "transitive"])
+    @pytest.mark.parametrize("vis", ["public", "private"])
+    @pytest.mark.parametrize("entry_two", list(_ENTRY_TWO))
+    @pytest.mark.parametrize("q", ["ma::", ""], ids=["qualified", "bare"])
+    def test_the_modules_own_function_runs(
+        self, q: str, entry_two: str, vis: str, placement: str,
+        tmp_path: Path,
     ) -> None:
-        outcomes = {}
-        for q in ("ma::", ""):
-            root = tmp_path / (q.rstrip(":") or "bare")
-            root.mkdir()
-            (root / "ma.vera").write_text(_GENERIC_ARGUMENT.format(q=q),
-                                          encoding="utf-8")
-            (root / "main.vera").write_text(
-                _entry("import ma(four);", "four(3)"), encoding="utf-8")
-            check = _cli("check", root / "main.vera")
-            assert check["ok"] is True, _said(check)
-            outcomes[q] = (_errors(_cli("verify", root / "main.vera")),
-                           _cli("run", root / "main.vera"))
-        (q_verify, q_run), (c_verify, c_run) = outcomes["ma::"], outcomes[""]
-        assert q_verify == ["E622"], q_verify
-        assert q_run["ok"] is False and _errors(q_run) == ["E622"], (
-            _said(q_run))
-        assert c_verify == [] and c_run["value"] == 9, (c_verify, c_run)
-
-    def test_in_the_entry_it_runs(self, tmp_path: Path) -> None:
         (tmp_path / "ma.vera").write_text(
-            _GENERIC_ARGUMENT.format(q="ma::"), encoding="utf-8")
-        verify = _cli("verify", tmp_path / "ma.vera")
+            "module ma;\n\n"
+            + _fn("two(@Int -> @Int)", "@Int.0 * 2", vis=vis,
+                  ens="@Int.result == @Int.0 * 2") + "\n"
+            + _fn("four(@Int -> @Int)", f"{q}two(@Int.0) * 2",
+                  ens="@Int.result == @Int.0 * 4"),
+            encoding="utf-8")
+        if placement == "direct":
+            imports = "import ma(four);"
+        else:
+            (tmp_path / "mid.vera").write_text(
+                "module mid;\n\nimport ma(four);\n\n"
+                + _fn("six(@Int -> @Int)", "four(@Int.0)"), encoding="utf-8")
+            imports = "import mid(six);"
+        call = "four(3)" if placement == "direct" else "six(3)"
+        (tmp_path / "main.vera").write_text(
+            f"{imports}\n\n" + _ENTRY_TWO[entry_two] + "\n"
+            + _fn("main(@Unit -> @Int)", f"{call} + two(0)"),
+            encoding="utf-8")
+        check = _cli("check", tmp_path / "main.vera")
+        assert check["ok"] is True, _said(check)
+        verify = _cli("verify", tmp_path / "main.vera")
         assert _errors(verify) == [], _said(verify)
-        run = _cli("run", tmp_path / "ma.vera", fn_name="four",
-                   raw_fn_args=["3"])
-        assert run["ok"] is True and run["value"] == 9, _said(run)
+        run = _cli("run", tmp_path / "main.vera")
+        assert run["ok"] is True and run["value"] == 12, _said(run)
+
+    @pytest.mark.parametrize("q", ["ma::", ""], ids=["qualified", "bare"])
+    def test_the_modules_own_generic_runs(
+        self, q: str, tmp_path: Path,
+    ) -> None:
+        """`ma`'s own GENERIC `gid`, beside an entry function `gid`: the call
+        by the path reaches `ma`'s clone, which the verifier discovers as
+        code generation emits it (the #732 differential)."""
+        (tmp_path / "ma.vera").write_text(
+            "module ma;\n\n"
+            "public forall<T> fn gid(@T -> @T)\n  requires(true)\n"
+            "  ensures(true)\n  effects(pure)\n{\n  @T.0\n}\n\n"
+            + _fn("four(@Int -> @Int)", f"{q}gid(@Int.0) * 4"),
+            encoding="utf-8")
+        (tmp_path / "main.vera").write_text(
+            "import ma(four);\n\n"
+            + _fn("gid(@Int -> @Int)", "@Int.0 * 1000", vis="private") + "\n"
+            + _fn("main(@Unit -> @Int)", "four(3) + gid(0)"),
+            encoding="utf-8")
+        emitted, discovered = _emitted_and_discovered(tmp_path)
+        assert emitted, emitted
+        assert emitted <= discovered, (emitted, discovered)
+        run = _cli("run", tmp_path / "main.vera")
+        assert run["ok"] is True and run["value"] == 12, _said(run)

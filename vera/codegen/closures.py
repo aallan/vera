@@ -336,6 +336,8 @@ class ClosureLiftingMixin:
             # — a lifted closure body belongs to the declaration that
             # contains it, so it resolves names in that declaration's scope.
             adt_type_names=set(self._alias_env.data_types),
+            value_data_types=self._value_data_type_names(),
+            adt_ctor_tp_indices=self._adt_ctor_tp_indices,
             # #873: a generic called ONLY from inside a closure body must be
             # rewritten to its monomorphized clone here too — mono discovery
             # already walks closure bodies (the total AST walk) and emits the

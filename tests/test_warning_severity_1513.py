@@ -752,8 +752,8 @@ class TestTheStrangerFallback:
         where the entry reaches more than any module does."""
         from types import SimpleNamespace
 
-        from vera.checker.core import TypeChecker
         from vera.codegen.modules import CrossModuleMixin
+        from vera.module_view import modules_visible_to
         from vera.parser import parse_to_ast
         from vera.resolver import ModuleResolver
 
@@ -765,10 +765,13 @@ class TestTheStrangerFallback:
         program = parse_to_ast(path.read_text(encoding="utf-8"))
         resolved = ModuleResolver(_root=tmp_path).resolve_imports(
             program, path)
-        checker = TypeChecker(resolved_modules=resolved)
+        # A module's bodies are checked by a checker handed exactly the
+        # modules `modules_visible_to` reaches from it (the per-module body
+        # check in `vera/checker/modules.py`); the entry's, every module.
         checker_view: dict[tuple[str, ...] | None,
                            frozenset[tuple[str, ...]]] = {
-            mod.path: frozenset(m.path for m in checker._modules_visible_to(mod))
+            mod.path: frozenset(
+                m.path for m in modules_visible_to(mod.program, resolved))
             for mod in resolved
         }
         checker_view[None] = frozenset(m.path for m in resolved)

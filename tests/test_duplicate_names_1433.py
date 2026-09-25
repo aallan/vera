@@ -236,6 +236,12 @@ NOT_NAMESPACES: dict[str, str] = {
         "the built-in data types the environment starts with, kept by "
         "identity to tell them from a same-named declaration or import "
         "(#1559); it registers nothing"),
+    "TypeChecker._module_registration_cache": (
+        "keyed by module PATH, a memo of each module's registration (#1275); "
+        "the names inside it are registered by that module's own pass"),
+    "TypeChecker._unresolved_imports": (
+        "keyed by the module PATH of an import that did not resolve, with "
+        "the names its list mentions, for E136's instruction (#1489)"),
 }
 
 _MAPPING_ORIGINS = ("dict", "Dict", "Mapping", "MutableMapping",
