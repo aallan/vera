@@ -45,9 +45,16 @@ from vera import ast, binders
 #: `_is_compilable` decides membership FROM this set, and the verifier's
 #: `_effect_op_formal_guarded` asks about it.  Two copies of the roster is
 #: exactly the drift this module exists to prevent.
+#:
+#: ``Diverge`` is here since #1492.  It is a marker with no operations, so
+#: there is nothing to lower: a function that declares it compiles like any
+#: other, with no termination guard unless it also declares ``decreases``.
+#: It was refused before, which made the spec's only opt-out from the
+#: termination rule (§7.7.3) unusable, because E125 then carried the refusal
+#: up every caller to ``main``.
 COMPILABLE_EFFECTS = frozenset({
     "IO", "State", "Exn", "Http", "Async", "HttpServer",
-    "Inference", "DB", "Random",
+    "Inference", "DB", "Random", "Diverge",
 })
 
 #: The subset of :data:`COMPILABLE_EFFECTS` whose lowering touches linear

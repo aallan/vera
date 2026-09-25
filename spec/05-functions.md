@@ -138,7 +138,14 @@ Effect syntax and semantics are detailed in Chapter 7.
 
 ## 5.6 Recursive Functions
 
-Recursive functions are functions that call themselves (directly or mutually). A recursive function MUST declare a `decreases` clause:
+Recursive functions are functions that call themselves (directly or mutually). A recursive function MUST declare a `decreases` clause, unless its effect row names `Diverge` (Chapter 7, Section 7.7.3). The rule holds for every effect row: an `<IO>` or `<State<T>>` function that recurses is recursive in the same sense as a pure one. A recursive function that declares neither is rejected at check time with `E137`.
+
+Whether a function is recursive is decided over the program's **call graph**. Its nodes are the program's function declarations, `where` helpers at every depth included. Its edges are bare calls, resolved as the checker resolves them (Section 5.6.2). A declaration refused at check time, such as a redefinition of a built-in (`E151`) or a second declaration of a name in one namespace (`E184`, Chapter 8, Section 8.5.5), is not in the graph, so it draws that refusal alone, and a call to its name reaches the built-in or the first declaration. A call written in the body, including one in a closure or handler clause inside the body, is a **computation edge**. A call written in a contract, or in a refinement predicate of a type the declaration names or of a field of a constructor it applies, is a **specification edge**. A function is recursive when it lies on a cycle of computation edges, which includes a function that calls itself and every function on a cycle through other declarations, whether they are its `where` helpers, its parent, or other top-level functions. A cycle through a specification edge is not recursion: it is rejected with `E138` (below). Two kinds of call are not edges:
+
+- A call through a function value, `apply_fn(f, …)`, whose callee is a closure the checker does not track. Recursion that exists only through such calls, for example a closure stored in a data value and later applied to that value, is not detected, and no measure is required for it.
+- A module-qualified call. The module graph is acyclic (`E011`), so no cycle can pass through one.
+
+A contract, or a refinement predicate in a type the function names or in a field of a constructor it applies, MUST NOT call back into its own function, directly or through other calls: such a call is rejected with `E138` (Chapter 6, Section 6.3.1).
 
 <!-- vera:run fn="factorial" args="5" stdout="120" -->
 ```
@@ -196,7 +203,7 @@ The tuple `(@Nat.1, @Nat.0)` decreases lexicographically on each recursive call.
 
 ### 5.6.2 Mutual Recursion
 
-Mutually recursive functions are declared together in a `where` block. Each must have its own `decreases` clause:
+Mutually recursive functions are commonly declared together in a `where` block, but a cycle through top-level functions is mutual recursion in the same sense. Every function on the cycle whose effect row does not name `Diverge` MUST have its own `decreases` clause, and the verifier checks the measure on every call from one member of the cycle to another: the callee's measure, evaluated at the call's arguments, must be strictly less than the caller's measure at entry. The members' measures must therefore have a common type; where they do not, or where a call cannot be proved to decrease, the obligation is Tier 3, and the runtime guard of Section 5.6.1 checks it wherever the backend generates one. Section 5.6.1 lists the exclusions (a parameterized or indirectly parameterized ADT measure, a function declaring `Exn`, a measure the backend cannot translate); for those, the Tier 3 obligation has no runtime check. Two functions on one cycle, each with its own measure:
 
 <!-- vera:run fn="is_even" args="4" stdout="1" -->
 ```

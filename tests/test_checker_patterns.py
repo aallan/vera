@@ -64,7 +64,7 @@ private data Option<T> { None, Some(T) }
 private data List<T> { Nil, Cons(T, List<T>) }
 
 private fn first(@List<Option<Int>> -> @Int)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) decreases(@List<Option<Int>>.0) effects(pure)
 {
   match @List<Option<Int>>.0 {
     Cons(Some(@Int), @List<Option<Int>>) -> @Int.0,

@@ -850,6 +850,9 @@ class ControlFlowMixin:
                         f"exactly one clause in a handler."
                     ),
                 )
+                # Refused like a surplus declaration, so the call graph
+                # reads none of its calls either (#1492).
+                self._refused_decl_ids.add(id(clause))
                 continue
             op_info = eff_info.operations.get(clause.op_name)
             if op_info is None:

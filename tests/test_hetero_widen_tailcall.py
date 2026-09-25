@@ -156,9 +156,11 @@ public fn f(@Nat -> @Int) requires(true) ensures(true) effects(pure)
 # call (returns @Int, so NOT widen-guarded and NOT collected).  The @Nat `0 ->`
 # arm is a bare slot (widen-guarded per-arm, but reachable — not a call).  The
 # recursive @Int arm must keep its `return_call $f` so a deep run is
-# constant-stack.
+# constant-stack.  `f` never returns from a negative `@Int`, so it declares
+# `Diverge` (#1492): that is the honest row, and it leaves the compiled
+# function exactly as it was, with no termination guard.
 _FIX1_TCO = """
-public fn f(@Nat, @Int -> @Int) requires(true) ensures(true) effects(pure)
+public fn f(@Nat, @Int -> @Int) requires(true) ensures(true) effects(<Diverge>)
 { match @Int.0 { 0 -> @Nat.0, _ -> f(@Nat.0, @Int.0 - 1) } }
 """
 

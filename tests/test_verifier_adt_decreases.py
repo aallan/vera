@@ -39,6 +39,7 @@ private data List<T> {
 private fn length(@List<Int> -> @Nat)
   requires(true)
   ensures(@Nat.result >= 0)
+  decreases(@List<Int>.0)
   effects(pure)
 {
   match @List<Int>.0 {
@@ -360,7 +361,7 @@ private fn sum(@List<Int> -> @Int)
         assert result.summary.tier1_verified == 8
 
     def test_overall_tier_counts(self) -> None:
-        """All examples together: 411 T1 / 122 T3 / 533 total (current).
+        """All examples together: 417 T1 / 131 T3 / 548 total (current).
 
         Counts move when examples are added or their contracts become
         more / less verifiable.  Trajectory:
@@ -721,9 +722,20 @@ private fn sum(@List<Int> -> @Int)
         # — eight across the corpus — each Tier 3 with the measure-range
         # guard behind it: 411/122/533 -> 411/130/541.  A measure a
         # `requires` bounds proves at Tier 1 instead and adds nothing.
-        assert t1 == 413, f"Expected 413 T1, got {t1}"
-        assert t3 == 130, f"Expected 130 T3, got {t3}"
-        assert total == 543, f"Expected 543 total, got {total}"
+        #
+        # #1492: every recursive function declares a measure, and three
+        # examples had none — `fizzbuzz.vera`'s and `life.vera`'s `<IO>`
+        # loops and `pattern_matching.vera`'s `first_some`.  Each measure
+        # proves at Tier 1 (+3 T1), and the two `@Nat` ones each add a
+        # Tier-3 `decreases_bound` (+2 T3): 413/130/543 -> 416/132/548.
+        # The `decreases` walk also binds an untranslatable `let` to a fresh
+        # value instead of leaving it out of its env, so a later slot of that
+        # type is no longer read as an outer one.  `json.vera`'s
+        # `sum_hourly`, whose recursive call reads such a `@Float64`, now
+        # proves its measure: +1 T1, -1 T3: 416/132/548 -> 417/131/548.
+        assert t1 == 417, f"Expected 417 T1, got {t1}"
+        assert t3 == 131, f"Expected 131 T3, got {t3}"
+        assert total == 548, f"Expected 548 total, got {total}"
         # Zero is the load-bearing value, not a vacuous one: every corpus
         # narrowing is now covered by an emitted guard, so any reappearance
         # is a REGRESSION in guard coverage rather than a new example.  The
@@ -775,8 +787,13 @@ public fn is_even(@Nat -> @Bool)
             o.kind for o in result.obligations if o.status == "tier3"
         ) == ["decreases_bound", "decreases_bound"]
 
-    def test_sibling_without_decreases_stays_tier3(self) -> None:
-        """If a sibling has no decreases clause, caller stays Tier 3."""
+    def test_sibling_without_decreases_is_refused_at_check(self) -> None:
+        """#1492: a sibling on the cycle with no measure is E137 at check.
+
+        Spec §5.6.2 gives every member of a mutually recursive group its
+        own `decreases`.  The program used to reach the verifier, which
+        left `f`'s measure at Tier 3 and asked nothing of `g`.
+        """
         source = """\
 public fn f(@Nat -> @Nat)
   requires(true)
@@ -796,9 +813,10 @@ public fn f(@Nat -> @Nat)
     }
   }
 """
-        result = _verify(source)
-        e525 = [d for d in result.diagnostics if d.error_code == "E525"]
-        assert len(e525) == 1, "f's decreases should be Tier 3 (sibling has none)"
+        diags = typecheck(parse_to_ast(source), source)
+        errors = [d for d in diags if d.severity == "error"]
+        assert [d.error_code for d in errors] == ["E137"]
+        assert "Function 'g'" in errors[0].description
 
     def test_where_block_contracts_verified(self) -> None:
         """Where-block functions have their own contracts verified."""

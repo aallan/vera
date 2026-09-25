@@ -8,6 +8,7 @@ private data List<T> {
 private fn first_some(@List<Option<Int>> -> @Int)
   requires(true)
   ensures(true)
+  decreases(@List<Option<Int>>.0)
   effects(pure)
 {
   match @List<Option<Int>>.0 {
