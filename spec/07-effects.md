@@ -160,6 +160,8 @@ handle[State<Int>](@Int = 0) {
 }
 ```
 
+> **Status: Not yet implemented.** Code generation compiles handlers only for `State<T>` and `Exn<E>`. A handler for any other effect, a user-declared one included, passes `vera check` and `vera verify`, but the function containing it is dropped at compile time (E602). Tracked in [#1597](https://github.com/aallan/vera/issues/1597).
+
 ### 7.5.1 Handler Syntax
 
 ```
@@ -185,7 +187,7 @@ For the builtin `State` effect the state declaration **is** the `State<T>` cell:
 
 **Cell identity is the RESOLVED `T`, not the spelling.** `State<T>` is one effect instance per resolved `T`, so every spelling that resolves to the same type names the same cell — whether that type is scalar or composite, and whether the alias is plain or parameterized. A `handle[State<MaybeInt>]` under `type MaybeInt = Option<Int>` therefore handles a callee declaring `effects(<State<Option<Int>>>)`, and the two share one cell:
 
-<!-- vera:run fn="main" stdout="7" -->
+<!-- vera:run fn="run_stash" stdout="7" -->
 ```vera
 type MaybeInt = Option<Int>;
 
@@ -197,7 +199,7 @@ private fn stash(@Unit -> @Unit)
   put(Some(7))
 }
 
-public fn main(@Unit -> @Int)
+public fn run_stash(@Unit -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
@@ -212,9 +214,9 @@ public fn main(@Unit -> @Int)
 }
 ```
 
-`main` returns `7` — `stash` writes to the cell the handler established. The same rule governs `Exn<E>` payloads: `Exn<Msg>` under `type Msg = String` catches a `throw` from a function declaring `effects(<Exn<String>>)`. Two cells are distinct exactly when their resolved types are (`State<Option<Int>>` and `State<Option<Bool>>` are two cells; a handler for one does not handle the other). A refinement is part of that resolved type, predicate included, exactly as it is for the state declaration a handler writes: under `type Pos = { @Int | @Int.0 > 0 }` and `type Neg = { @Int | @Int.0 < 0 }`, `State<Pos>`, `State<Neg>` and `State<Int>` are **three** cells, and a function declaring `effects(<State<Pos>>)` writes the `Pos` one wherever it is called from.
+`run_stash` returns `7` — `stash` writes to the cell the handler established. The same rule governs `Exn<E>` payloads: `Exn<Msg>` under `type Msg = String` catches a `throw` from a function declaring `effects(<Exn<String>>)`. Two cells are distinct exactly when their resolved types are (`State<Option<Int>>` and `State<Option<Bool>>` are two cells; a handler for one does not handle the other). A refinement is part of that resolved type, predicate included, exactly as it is for the state declaration a handler writes: under `type Pos = { @Int | @Int.0 > 0 }` and `type Neg = { @Int | @Int.0 < 0 }`, `State<Pos>`, `State<Neg>` and `State<Int>` are **three** cells, and a function declaring `effects(<State<Pos>>)` writes the `Pos` one wherever it is called from.
 
-Resolved-type identity governs the cell wherever the resolved type is **nameable** — every type with a resolution, which since the mangler was made total over canonical renderings includes the composite carrying a function type (`State<Handler>` under `type Handler = Option<fn(Int -> Int) effects(pure)>` is the `Option<fn(Int -> Int) effects(pure)>` cell, the same one `State<Option<fn(Int -> Int) effects(pure)>>` names). What is left outside the rule is the type expression with **no resolution to name**: one resolving to a bare function type, and one that does not resolve at all (a removed alias, an alias applied at the wrong arity). Family naming is total, so both are named by their alias-opaque **spelling** and two such spellings name two cells rather than sharing one; both are then refused, downstream and at different gates — the unresolvable one at the compilability gate before any cell is declared, the bare function type only when the function reading it is dropped, its cell having been declared in the meantime. That fallback runs in the conservative direction only: it can leave split a cell the resolution would have merged, never merge two the checker keeps apart.
+Resolved-type identity governs the cell wherever the resolved type is **nameable** — every type with a resolution, including the composite carrying a function type (`State<Handler>` under `type Handler = Option<fn(Int -> Int) effects(pure)>` is the `Option<fn(Int -> Int) effects(pure)>` cell, the same one `State<Option<fn(Int -> Int) effects(pure)>>` names). What is left outside the rule is the type expression with **no resolution to name**: one resolving to a bare function type, and one that does not resolve at all (a removed alias, an alias applied at the wrong arity). Family naming is total, so both are named by their alias-opaque **spelling** and two such spellings name two cells rather than sharing one; both are then refused, downstream and at different gates — the unresolvable one at the compilability gate before any cell is declared, the bare function type only when the function reading it is dropped, its cell having been declared in the meantime. That fallback runs in the conservative direction only: it can leave split a cell the resolution would have merged, never merge two the checker keeps apart.
 
 ### 7.5.2 Handler Semantics
 
@@ -299,7 +301,7 @@ Note: when the handler does not call `resume`, the handled body is abandoned. Th
 
 **Choice handler (non-determinism):**
 
-<!-- vera:skip-parse category="FUTURE" reason="handle[Choice] multi-shot resume + array_concat" -->
+<!-- vera:skip-check category="FUTURE" code="E330" reason="handle[Choice]: the Choice effect is a sketch, not declared, and multi-shot resume is not implemented" -->
 ```
 private fn all_choices(@Unit -> @Array<Bool>)
   requires(true)
@@ -311,7 +313,7 @@ private fn all_choices(@Unit -> @Array<Bool>)
       let @Array<Bool> = resume(true);
       let @Array<Bool> = resume(false);
       array_concat(@Array<Bool>.1, @Array<Bool>.0)
-    },
+    }
   } in {
     let @Bool = choose(true);
     [@Bool.0]
@@ -336,7 +338,7 @@ private forall<A, B> fn option_map(@Option<A>, fn(A -> B) effects(<E>) -> @Optio
 {
   match @Option<A>.0 {
     Some(@A) -> Some(apply_fn(@Fn.0, @A.0)),
-    None -> None,
+    None -> None
   }
 }
 ```
@@ -419,7 +421,7 @@ Like `IO`, `Random` is built-in — no `effect Random { ... }` declaration is ne
 
 ### 7.7.5 `HttpServer`
 
-The `HttpServer` effect has no operations — it is a marker (#305, since v0.0.193).  Declaring `effects(<HttpServer>)` marks a function as an HTTP request handler: a **total**, contract-checked function `handle(Request -> Response)` (§9.5.6).  The accept loop lives in the host `vera serve` driver, not in the program, so handlers do not need `Diverge` — termination-checked request handling is a feature, and per-request effects (`State<T>`, `Exn<E>`) compose inside the handler's row as usual.
+The `HttpServer` effect has no operations — it is a marker ([#305](https://github.com/aallan/vera/issues/305)).  Declaring `effects(<HttpServer>)` marks a function as an HTTP request handler: a **total**, contract-checked function `handle(Request -> Response)` (§9.5.6).  The accept loop lives in the host `vera serve` driver, not in the program, so handlers do not need `Diverge` — termination-checked request handling is a feature, and per-request effects (`State<T>`, `Exn<E>`) compose inside the handler's row as usual.
 
 ### 7.7.6 `Async`
 
@@ -427,7 +429,7 @@ The `Async` effect has no operations — it is a marker. Declaring `effects(<Asy
 
 ### 7.7.7 `DB`
 
-The `DB` effect executes SQL against a relational database (#229, since v0.1.7). Functions that read or write the database must declare `effects(<DB>)`, making database access visible in the type signature.
+The `DB` effect executes SQL against a relational database ([#229](https://github.com/aallan/vera/issues/229)). Functions that read or write the database must declare `effects(<DB>)`, making database access visible in the type signature.
 
 | Operation | Signature | Description |
 |-----------|-----------|-------------|
@@ -436,7 +438,7 @@ The `DB` effect executes SQL against a relational database (#229, since v0.1.7).
 
 The second argument is the **positional parameter list** — the values bound, in order, to the `?` placeholders in the SQL. Each parameter is an `Option<String>`: `Some(v)` binds a value, `None` binds SQL `NULL`. Passing data as parameters — rather than assembling it into the SQL text — is what keeps a value from being parsed as SQL, the standard defence against injection. See §9.5.7 for the row and parameter marshalling.
 
-Like `IO`, `DB` is built-in — no `effect DB { ... }` declaration is needed (and one is `E152`). Both operations return `Result`: a failed statement (malformed SQL, a constraint violation, an unreachable database) surfaces as `Err(String)`, never a trap, so every call site must `match` the failure arm. Operations are host-backed; the connection is chosen by the `VERA_DB_URL` environment variable, defaulting to an in-memory SQLite database (`sqlite::memory:`). In v1 the effect is un-mockable — `handle[DB]` awaits the user-handleable-host-effect machinery (#372) — and targets SQLite only. The browser runtime answers every `DB` operation with `Err` (a deliberate stub, §12), and the wasi-p2 target rejects `<DB>` at compile time.
+Like `IO`, `DB` is built-in — no `effect DB { ... }` declaration is needed (and one is `E152`). Both operations return `Result`: a failed statement (malformed SQL, a constraint violation, an unreachable database) surfaces as `Err(String)`, never a trap, so every call site must `match` the failure arm. Operations are host-backed; the connection is chosen by the `VERA_DB_URL` environment variable, defaulting to an in-memory SQLite database (`sqlite::memory:`). The effect is not mockable — `handle[DB]` awaits the user-handleable-host-effect machinery (#372) — and targets SQLite only. The browser runtime answers every `DB` operation with `Err` (a deliberate stub, §12), and the wasi-p2 target rejects `<DB>` at compile time.
 
 ## 7.8 Effect Subtyping
 
@@ -452,7 +454,7 @@ In general, `effects(<E1>)` is a subtype of `effects(<E1, E2>)`. A function that
 ![Effect subtyping by row inclusion: pure fits where IO is allowed, IO fits where IO plus State is allowed — fewer effects always fit where more are expected.](../assets/diagrams/effect-row-lattice.svg)
 
 This means:
-- A `pure` function can be passed where `Fn(@A -> @B) effects(<IO>)` is expected.
+- A `pure` function can be passed where `fn(A -> B) effects(<IO>)` is expected.
 - A function with `effects(<IO>)` can be passed where `effects(<IO, Exn<String>>)` is expected.
 
 ## 7.9 Effect-Contract Interaction
@@ -521,7 +523,7 @@ Special case: if the handler does not always call `resume`, the return type of t
 
 ```
 handle[Exn<String>] {
-  throw(@String) -> None,          -- returns Option<Int>
+  throw(@String) -> None           -- returns Option<Int>
 } in {
   Some(risky_computation())        -- body type: Option<Int> with effects <Exn<String>>
 }

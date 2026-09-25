@@ -146,7 +146,6 @@ For the semantics of module declarations, imports, visibility modifiers, and nam
 
 ```ebnf
 fn_decl: forall_clause? FN LOWER_IDENT fn_signature contract_block effect_clause fn_body where_block?
-       | forall_clause? FN LOWER_IDENT fn_signature contract_block effect_clause fn_body
 
 forall_clause: FORALL LT type_var_list GT
              | FORALL LT type_var_list WHERE ability_constraint_list GT
@@ -238,18 +237,17 @@ Abilities share the `op_decl` production with effects. Both use the same `op` ke
 ### 10.3.7 Type Expressions
 
 ```ebnf
-type_expr: UPPER_IDENT type_args?          // named type: Int, Array<Int>, Option<String>
+type_expr: UPPER_IDENT type_args?          // named type or type variable: Int, T, Array<Int>, Tuple<Int, String>
          | fn_type                          // function type
-         | tuple_type                       // Tuple<Int, String>
          | refinement_type                  // { @Int | @Int.0 > 0 }
-         | UPPER_IDENT                      // type variable (single uppercase letter/word)
 
 type_args: LT type_expr (COMMA type_expr)* GT
 
 fn_type: FN LPAREN param_types ARROW type_expr RPAREN effect_clause
 
 tuple_type: UPPER_IDENT LT type_expr (COMMA type_expr)* GT
-          // "Tuple" is parsed as UPPER_IDENT, distinguished semantically
+          // not a separate alternative: "Tuple" is parsed by type_expr's
+          // UPPER_IDENT type_args? form and distinguished semantically
 
 refinement_type: LBRACE AT type_expr BAR expr RBRACE
 ```
@@ -261,7 +259,7 @@ expr: pipe_expr
 
 pipe_expr: implies_expr (PIPE implies_expr)*
 
-implies_expr: or_expr (IMPLIES or_expr)*
+implies_expr: or_expr (IMPLIES implies_expr)?
 
 or_expr: and_expr (OR and_expr)*
 
@@ -297,7 +295,6 @@ primary_expr: INT_LIT
             | block_expr                    // block
             | handle_expr                   // effect handler
             | array_literal                 // [1, 2, 3]
-            | tuple_literal                 // Tuple(1, "hello")
             | old_expr                      // old(State<Int>)
             | new_expr                      // new(State<Int>)
             | assert_expr                   // assert(pred)
@@ -426,7 +423,8 @@ exists_expr: EXISTS LPAREN AT type_expr COMMA expr COMMA anonymous_fn RPAREN
 
 ```ebnf
 tuple_literal: UPPER_IDENT LPAREN arg_list RPAREN
-             // "Tuple" is parsed as UPPER_IDENT constructor call
+             // not a separate alternative: "Tuple" is parsed by fn_call's
+             // constructor form and distinguished semantically
 ```
 
 ## 10.4 Operator Precedence Table
