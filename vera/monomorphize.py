@@ -1477,6 +1477,8 @@ def reroute_module_qualified_generic_calls(
     decl: ast.FnDecl,
     qualified_generics: Collection[str],
     make_call: Callable[[ast.FnCall, tuple[ast.Expr, ...]], ast.Node],
+    own_path: tuple[str, ...] | None = None,
+    own_names: Collection[str] = frozenset(),
 ) -> ast.FnDecl:
     """Shadow-aware rewrite of bare calls to a module's QUALIFIED-ONLY top-level
     generics (#1000, widened by #1274).
@@ -1501,6 +1503,21 @@ def reroute_module_qualified_generic_calls(
     Only the matched call NODE changes (recursively rerouted args); every other
     node — including nested ``AnonFn`` / ``where`` bodies — is structurally
     preserved with its span.
+
+    *own_path* is the path the module whose body this is names itself by
+    (#1558), and *own_names* the names among *qualified_generics* that are
+    the module's OWN declarations.  A call the author already qualified with
+    the path — ``ma::gen(x)`` inside ``module ma;`` — names the module's own
+    function exactly as a bare ``gen(x)`` there does, so for a name in
+    *own_names* it is routed the same way, and a ``where`` helper does not
+    capture it, as nothing local shadows a qualified call.  The verifier
+    passes them for its qualified-only generics, so its name-renamed key
+    discovers the clone codegen emits (the #732 differential); codegen's
+    generic reroute passes none, since it emits that very ``ModuleCall``.
+    Codegen's displaced-function rename passes them too (#1508): there the
+    module's own function is emitted under its ``mod$`` symbol, and a call by
+    the path left to the desugar reached the bare name, which the entry's
+    declaration of it — a generic's clone included — holds.
     """
     if not qualified_generics:
         return decl
@@ -1526,6 +1543,17 @@ def reroute_module_qualified_generic_calls(
                 cast("ast.Expr", walk(a, shadowed)) for a in node.args
             )
             return make_call(node, new_args)
+        if (own_path is not None
+                and isinstance(node, ast.ModuleCall)
+                and tuple(node.path) == own_path
+                and node.name in own_names):
+            new_args = tuple(
+                cast("ast.Expr", walk(a, shadowed)) for a in node.args
+            )
+            return make_call(
+                ast.FnCall(name=node.name, args=node.args, span=node.span),
+                new_args,
+            )
         if isinstance(node, ast.Node):
             changes = {}
             for f in fields(node):

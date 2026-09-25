@@ -1296,6 +1296,18 @@ class TestRunDecision:
         findings = _findings(_gate(tmp_path, _fence(_LOADS_THROUGH_A_HELPER, marker)))
         assert findings == _MOD.Findings([], [], [])
 
+    def test_a_property_reaches_through_a_call_by_the_blocks_own_path(
+        self, tmp_path: Path,
+    ) -> None:
+        """#1558: inside `module ma;`, `ma::read_it(...)` reaches the block's
+        own `read_it`, as its bare spelling does in the cell above."""
+        program = "module ma;\n\n" + _LOADS_THROUGH_A_HELPER.replace(
+            'match read_it("data.txt")', 'match ma::read_it("data.txt")')
+        assert "ma::read_it" in program
+        marker = '<!-- vera:no-run category="fixture" reason="reads data.txt" -->'
+        findings = _findings(_gate(tmp_path, _fence(program, marker)))
+        assert findings == _MOD.Findings([], [], [])
+
     def test_an_unknown_no_run_category_is_a_problem(self, tmp_path: Path) -> None:
         marker = '<!-- vera:no-run category="too-slow" reason="r" -->'
         findings = _findings(_gate(tmp_path, _fence(_TWO, marker)))

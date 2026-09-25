@@ -355,7 +355,9 @@ The grammar is:
 module_call: module_path "::" LOWER_IDENT "(" arg_list? ")"
 ```
 
-Module-qualified calls always resolve against the specific module's public declarations. They are not affected by local shadowing -- if the importer defines its own `magnitude`, a module-qualified call `vera.math::magnitude(x)` still calls the module's version.
+A module-qualified call through the path of a module the file imports resolves against that module's public declarations. Module-qualified calls are not affected by local shadowing -- if the importer defines its own `magnitude`, a module-qualified call `vera.math::magnitude(x)` still calls the module's version.
+
+A module's own path names the module itself. Inside a file whose `module` declaration gives the path `ma`, `ma::two(x)` calls that file's own top-level `two` — a private one too, since the call is inside the module that declares it (§8.4.1) — and it is checked, verified and compiled as the bare call to that top-level function is: it is a call-graph edge (§5.6), and a tail call where the bare call would be one. The one difference is the one a qualified call always has: nothing local shadows it, so where a `where` helper of `four` is also named `two`, the bare `two(x)` inside `four` reaches the helper and `ma::two(x)` the module's function. The path is the file's own only when the program reaches the file by it. An imported module's declaration must give the path it is imported by, and the entry file's must not be the path of a module the entry resolves, which that path names instead. So a file without a `module` declaration, or one imported under a path it does not declare, has no path of its own to qualify by, and the fix **E230** gives there is the declaration. Every other path must be a module the file imports (**E230**), and a name its own path does not declare at the top level is **E233**.
 
 **Design note.** Vera does not support import aliasing (renaming a declaration at the import site). Where two reachable declarations share a name, the module-qualified call syntax (`vera.math::magnitude(x)`) names the one wanted without introducing a second name for the same declaration — for a name a local declaration shadows (§8.5.2), and, together with a local declaration or a selective import, for two imports supplying one name (§8.5.2.2). Aliasing would violate the one-canonical-form principle (§0.2.3): the same function could be referenced by different names in different files, making semantically identical call sites textually distinct.
 
@@ -391,7 +393,23 @@ constructor of another type cannot match the scrutinee (**E314**), exactly as
 when the type is imported. It resolves this way only when it denotes exactly one
 declaration: one module's public type declares the name, no other module the
 file can see declares a type of the same name, and no data type of that name is
-in scope in this file. Otherwise it is an error.
+declared in this file or imported into it. The prelude's own type of that name
+does not bar it. Otherwise it is an error.
+
+Importing a data type admits its constructors whatever the type is named. A
+module may declare a type named like one the prelude provides (`Json`,
+`HtmlNode`, `Request`, `Response` and the rest, §8.4.1), and a file that imports
+it may construct it and match on its constructors. The bare type name stays the
+prelude's there, since an import never wins a name the prelude owns (§8.5.2.2),
+and so does any constructor name the prelude declares. The imported type's other
+constructors are admitted. A program that also uses the prelude's type, through
+one of those constructor names for instance, compiles both declarations of the
+name, and they contend unless their shapes match (**E621**, §11.16). Data types
+are identified by their bare name, so in that file a value of the imported type
+and a value of the prelude's share the name `Json`, and a `match` on either is
+held to the prelude's constructors, the ones the name denotes there
+([#1560](https://github.com/aallan/vera/issues/1560)). Importing a `private`
+type of such a name is **E150**, as for any other name.
 
 Constructors differ from functions in one respect, and it is a property of
 compilation rather than of resolution: what two modules of one program may
@@ -599,7 +617,7 @@ For each resolved module:
 
 1. Create a type checker instance with the module's source.
 2. Give it the public data types the module ITSELF imports, as its own import lists admit them (§8.3), taken from those modules' registrations, so that the module's signatures resolve in the module's own namespace (§2.10). Then run the registration pass (Pass 1) over the module's declarations. Modules are registered in dependency order, and each one once for the whole check, whichever file imports it.
-3. Harvest the module's own registered declarations, excluding built-in names; the data types it imports are in scope in its registration, and are not exported by it.
+3. Harvest the module's own registered declarations, excluding the built-ins its environment starts with. A declaration named like a built-in type is the module's own, and is harvested (§8.5.4). The data types it imports are in scope in its registration, and are not exported by it.
 4. Filter to `public` declarations only.
 5. Check that selective imports do not reference `private` names.
 6. Inject the filtered declarations into the main program's type environment using `setdefault` (so local definitions shadow imports).
@@ -623,7 +641,7 @@ Local declarations always take priority over imported declarations due to the `s
 
 The checker maintains per-module dictionaries of all declarations (both public and private) for two purposes:
 
-- **Module-qualified call lookup**: `ModuleCall` nodes look up the function in the specific module's public dictionary.
+- **Module-qualified call lookup**: a `ModuleCall` through an imported module's path looks the function up in that module's public dictionary. One through the file's own path (§8.5.3) reads the file's own top-level functions instead, private ones included.
 - **Better error messages**: when a selective import names a private declaration, the checker can report "it is private" rather than "not found".
 
 ## 8.8 Cross-Module Verification
@@ -697,7 +715,7 @@ Imported functions are **not** exported from the WASM module. Only the importing
 
 ### 8.9.3 Guard Rail
 
-A call that resolves to no function is an error at type-check time — **E200** for a bare call, **E230** for a module-qualified call to a module this file does not import, **E233** for a function the named module does not declare. A bare call to a name two imports supply is refused at the import instead (**E155**, §8.5.2.2). A call the checker accepts can still have no function behind it: a bare call to an operation of a user-declared ability is one, which code generation does not yet compile ([#1499](https://github.com/aallan/vera/issues/1499)).
+A call that resolves to no function is an error at type-check time — **E200** for a bare call, **E230** for a module-qualified call to a path that is neither a module this file imports nor the file's own (§8.5.3), **E233** for a function the named module does not declare. A bare call to a name two imports supply is refused at the import instead (**E155**, §8.5.2.2). A call the checker accepts can still have no function behind it: a bare call to an operation of a user-declared ability is one, which code generation does not yet compile ([#1499](https://github.com/aallan/vera/issues/1499)).
 
 The code generator keeps a guard rail for the same condition, which such a call reaches, and so does a program compiled without being checked first. After module registration populates the known-function set, the guard rail only flags truly unknown calls — imported functions are recognised as known.
 

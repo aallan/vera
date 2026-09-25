@@ -914,6 +914,13 @@ KNOWN_MULTI_SITE_ERROR_CODES: dict[str, frozenset[tuple[str, str]]] = {
         ("vera/checker/calls.py", "CallsMixin._check_apply_fn"),
         ("vera/checker/calls.py", "CallsMixin._check_fn_call_with_info"),
     }),
+    # A module-qualified call to a function the named module does not
+    # declare: an imported module's path and the file's own path (#1558)
+    # are two call shapes for one rule, each listing the module's functions.
+    "E233": frozenset({
+        ("vera/checker/calls.py", "CallsMixin._check_module_call"),
+        ("vera/checker/calls.py", "CallsMixin._check_own_module_call"),
+    }),
     # Call arity mismatch: named call vs. apply_fn, same rule.
     "E201": frozenset({
         ("vera/checker/calls.py", "CallsMixin._check_apply_fn"),

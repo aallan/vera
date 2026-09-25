@@ -844,7 +844,8 @@ class WasmContext(
     ) -> None:
         """Configure tail-call optimization for the function being compiled.
 
-        ``sites`` is the set of ``id(ast.FnCall)`` AST nodes the
+        ``sites`` is the set of ``id(ast.FnCall)`` AST nodes (and of
+        each ``ast.ModuleCall`` by the module's own path, #1558) the
         per-fn analyzer in ``vera/tail_position.py``
         identified as syntactically in tail position.  At translate
         time, ``_translate_call`` checks ``id(call) in sites`` plus
@@ -1473,7 +1474,13 @@ class WasmContext(
                 args=expr.args,
                 span=expr.span,
             )
-            return self._translate_call(desugared, env)
+            # #1558: a tail call by the module's own path is marked on the
+            # `ModuleCall` (`compute_tail_call_sites`), and the fresh node
+            # above is no key of that set, so the mark is carried across —
+            # after the #983/#820 subtractions, which remove this node's id
+            # like any other call's.
+            return self._translate_call(
+                desugared, env, tail=id(expr) in self._tail_call_sites)
 
         if isinstance(expr, ast.StringLit):
             return self._translate_string_lit(expr)

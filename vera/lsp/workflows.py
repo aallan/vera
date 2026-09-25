@@ -143,8 +143,10 @@ bound it either, though the checker discharges that one.  Every
 non-match keeps the edge, so the comparison under-prunes rather than
 over-prunes: a surviving edge writes a row the program may not need,
 which still type-checks (#1292).
-Propagation remains single-file (module-qualified calls do not
-propagate across the file boundary).  Row identity, separately, is the
+Propagation remains single-file (a call into another module does not
+propagate across the file boundary; a call by the document's own path,
+``ma::f(...)`` inside ``module ma;``, is the call to ``f`` it is and
+propagates as the bare call does, #1558).  Row identity, separately, is the
 base name before any type arguments, so ``State<Int>`` will not be
 added next to an existing ``State<Bool>``.
 
@@ -179,7 +181,11 @@ from lsprotocol import types as lsp
 from vera import ast
 from vera.lsp.documents import Document
 from vera.lsp.extensions import speculative_edit
-from vera.obligations.cache import direct_callee_names, walk_nodes
+from vera.obligations.cache import (
+    called_name,
+    direct_callee_names,
+    walk_nodes,
+)
 from vera.obligations.core import ProofObligation
 from vera.obligations.session import VerificationSession
 
@@ -767,12 +773,15 @@ def _handled_effect_key(ref: ast.EffectRefNode) -> str:
 
 def _unhandled_callee_names(
     decl: ast.FnDecl, effect: str | None,
+    own_path: tuple[str, ...] | None,
 ) -> frozenset[str]:
     """Direct callees of *decl*, minus those a ``handle[effect]``
     block in *decl* already discharges (#725).
 
     With *effect* ``None`` this is exactly
-    :func:`direct_callee_names` — the handler-unaware call graph.
+    :func:`direct_callee_names` — the handler-unaware call graph.  A call by
+    the program's own path, *own_path*, is a callee as its bare call is
+    (:func:`~vera.obligations.cache.called_name`, #1558).
 
     Containment is structural (the handled sub-tree) rather than
     span-arithmetic: identical answers where both apply, and no
@@ -799,7 +808,7 @@ def _unhandled_callee_names(
     non-match keeps the edge.
     """
     if effect is None:
-        return direct_callee_names(decl)
+        return direct_callee_names(decl, own_path=own_path)
     want = _effect_instance_key(effect)
     # Identity by object, not by value: two structurally equal calls
     # at different sites are distinct nodes, and every node stays
@@ -812,22 +821,27 @@ def _unhandled_callee_names(
         for n in walk_nodes(h.body)
     }
     return frozenset(
-        n.name
+        name
         for n in walk_nodes(decl)
-        if isinstance(n, ast.FnCall) and id(n) not in handled
+        if id(n) not in handled
+        and (name := called_name(n, own_path)) is not None
     )
 
 
 def transitive_callers(
     program: ast.Program, fn_name: str, effect: str | None = None,
+    own_path: tuple[str, ...] | None = None,
 ) -> list[str] | None:
     """*fn_name* plus every top-level function that transitively calls
     it, in declaration order; ``None`` if no such top-level function.
 
-    The inverse closure over the Phase B call walker: plain ``FnCall``
-    names only, so module-qualified calls never propagate across the
-    file boundary, and calls inside ``where`` blocks attribute to
-    their containing top-level function.
+    The inverse closure over the Phase B call walker: bare calls, and
+    calls by the program's own path *own_path* (``ma::f(...)`` inside
+    ``module ma;`` is the call to ``f`` it is, #1558; the language server
+    passes its analysis's answer, and ``None`` is a file with no path of
+    its own).  A call into another module never propagates across the file
+    boundary, and calls inside ``where`` blocks attribute to their
+    containing top-level function.
 
     *effect* bounds the closure at handlers (#725): a call site inside
     a ``handle[effect]`` body contributes no edge, because the handler
@@ -859,7 +873,7 @@ def transitive_callers(
     if fn_name not in fns:
         return None
     callees = {
-        name: _unhandled_callee_names(decl, effect) & fns.keys()
+        name: _unhandled_callee_names(decl, effect, own_path) & fns.keys()
         for name, decl in fns.items()
     }
     affected = {fn_name}
@@ -942,7 +956,8 @@ async def add_effect(
             f"document {uri!r} does not parse; "
             "effect rows cannot be located",
         )
-    affected = transitive_callers(analysis.program, fn_name, effect)
+    affected = transitive_callers(
+        analysis.program, fn_name, effect, own_path=analysis.own_path)
     if affected is None:
         raise ValueError(f"no top-level function {fn_name!r}")
 

@@ -4696,6 +4696,16 @@ ALIAS_HANDLER = "type MyAlias = Int;\n\n" + "\n".join([
 ])
 
 
+# #1558: inside `module ma;`, `ma::target(...)` is the call to `target` its
+# bare spelling is, so its caller is on the closure too.
+OWN_PATH = "module ma;\n\n" + "\n".join([
+    _fn("target", "@Nat.0"),
+    _fn("by_path", "ma::target(@Nat.0)"),
+    _fn("bare", "target(@Nat.0)"),
+    _fn("lone", "@Nat.0"),
+])
+
+
 class TestTransitiveCallers:
     def test_diamond_closure_in_declaration_order(self) -> None:
         prog = _program(DIAMOND)
@@ -4874,6 +4884,22 @@ class TestTransitiveCallers:
         ref = QualifiedEffectRef(module="Mod", name="IO", type_args=None)
         assert _handled_effect_key(ref) == "Mod.IO"
 
+    @pytest.mark.parametrize("effect", [None, "Async"])
+    def test_a_call_by_the_own_path_is_an_edge(
+        self, effect: str | None,
+    ) -> None:
+        """#1558: with the document's own path `ma`, `by_path`'s
+        `ma::target(...)` calls `target` and is on the closure, in the
+        handler-unaware query and the bounded one alike.  Without an own
+        path the same call names another module, and is no edge."""
+        prog = _program(OWN_PATH)
+        assert transitive_callers(
+            prog, "target", effect, own_path=("ma",),
+        ) == ["target", "by_path", "bare"]
+        assert transitive_callers(prog, "target", effect) == [
+            "target", "bare",
+        ]
+
 
 class TestEffectRowRewrite:
     def _decl(self, src: str, name: str) -> object:
@@ -4992,6 +5018,21 @@ class TestAddEffect:
         doc = server.store.get(URI)
         assert doc is not None
         assert doc.text.count("effects(<Exn<Int>>)") == 3
+
+    def test_a_caller_by_the_own_path_is_rewritten(self) -> None:
+        """#1558: the caller that calls `target` by the document's own path
+        is rewritten with the rest, and the candidate applies.  Left out,
+        `by_path` keeps `pure`, its call site fails E125, and the gate
+        refuses the whole edit."""
+        server = self._server(OWN_PATH)
+        out = _settle(server, lambda: add_effect(server, URI, "target", "Async"))
+        assert out["applied"] is True
+        assert out["ok"] is True
+        assert out["rewritten"] == ["target", "by_path", "bare"]
+        doc = server.store.get(URI)
+        assert doc is not None
+        assert doc.text.count("effects(<Async>)") == 3
+        assert doc.text.count("effects(pure)") == 1  # lone
 
     def test_fully_satisfied_is_noop(self) -> None:
         src = _fn("f", "@Nat.0", effects="<Async>")

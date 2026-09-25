@@ -1903,6 +1903,14 @@ _SUB_POSITIONS: tuple[SubPosition, ...] = (
 _CALL_OPS: tuple[Op, ...] = tuple(
     op for op in _OPS if op.name in ("call_pre", "string_char_code"))
 
+# The user callee called by the file's own path (#1558): inside
+# `module ma;`, `ma::need_pos(x)` is the call `need_pos(x)` is, so its
+# precondition is obligated at every sub-position the bare call's is.
+_CALL_OPS = (*_CALL_OPS, *(
+    replace(op, name="call_pre by own path", value="ma::need_pos({v})",
+            helpers="module ma;\n\n" + op.helpers)
+    for op in _CALL_OPS if op.name == "call_pre"))
+
 _SUB_AT = ("body", "measure at entry", "refinement predicate")
 
 
@@ -4384,3 +4392,145 @@ def test_the_e529_rationale_says_what_float_to_int_traps_on() -> None:
     rationale = _e529_rationale(
         "int_to_string(float_to_int(100000000000000000000000.0))")
     assert "on NaN, +/-infinity, or a value whose truncation" in rationale
+
+
+# =====================================================================
+# A tail call by the module's own path evaluates the measure too
+# =====================================================================
+#
+# Inside `module ma;`, `ma::step(...)` is the bare call to the top-level
+# `step` (#1558), lowered to the same `return_call`, so the measure is
+# evaluated on its arguments at the site exactly as for `step(...)`.
+_STEP_TAIL_BY_PATH = """\
+module ma;
+
+private fn step(@Nat, @Nat -> @Nat)
+  requires(@Nat.0 <= @Nat.1)
+  ensures(true)
+  decreases(@Nat.1 - @Nat.0)
+  effects(pure)
+{
+  if @Nat.0 COND @Nat.1 then {
+    @Nat.0
+  } else {
+    CALL(@Nat.1, @Nat.0 + 1)
+  }
+}
+
+public fn main(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  step(@Nat.0, 0)
+}
+"""
+
+
+@pytest.mark.parametrize("call", ["step", "ma::step"])
+@pytest.mark.parametrize(("cond", "status"), [
+    (">", "violated/E502"),  # the call runs when `@Nat.0 == @Nat.1`
+    ("==", "verified"),
+])
+def test_a_tail_call_by_the_modules_own_path_evaluates_the_measure(
+        call: str, cond: str, status: str) -> None:
+    src = _STEP_TAIL_BY_PATH.replace("CALL", call).replace("COND", cond)
+    v = _verify(src)
+    site = _at(src, f"{call}(@Nat.1")
+    assert _records(v, "nat_sub", site) == [status], (
+        [(o.kind, o.status, o.error_code, o.line, o.column)
+         for o in v.obligations])
+    ran = _run(src, "main", [3])
+    if status == "verified":
+        assert ran.trap_kind is None and ran.value == 3, ran
+    else:
+        # The measure is evaluated before the callee's `requires`.
+        assert ran.trap_kind is not None, ran
+        assert "Precondition violation" not in ran.trap_message, ran
+
+
+# From a `where` helper, the own path names the TOP-LEVEL function, never
+# the helper (#1558): the call below goes to the top-level `step`, and code
+# generation evaluates no measure of the helper's at it.
+_HELPER_CALLS_THE_TOP_LEVEL_BY_PATH = """\
+module ma;
+
+private fn step(@Nat, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Nat.0
+}
+
+public fn outer(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  step(@Nat.0, 0)
+}
+where {
+  fn step(@Nat, @Nat -> @Nat)
+    requires(@Nat.0 <= @Nat.1)
+    ensures(true)
+    decreases(@Nat.1 - @Nat.0)
+    effects(pure)
+  {
+    if @Nat.0 > @Nat.1 then {
+      @Nat.0
+    } else {
+      ma::step(@Nat.1, @Nat.0 + 1)
+    }
+  }
+}
+"""
+
+
+def test_an_own_path_call_from_a_helper_is_no_self_tail_call() -> None:
+    src = _HELPER_CALLS_THE_TOP_LEVEL_BY_PATH
+    v = _verify(src)
+    assert _records(v, "nat_sub", _at(src, "ma::step(")) == [], (
+        [(o.kind, o.status, o.error_code, o.line, o.column)
+         for o in v.obligations])
+    assert v.ok, v.errors
+    assert _run(src, "outer", [3]).value == 1
+
+
+# A refinement predicate is read in the scope its guard is emitted in, the
+# file's own path included (#1558): `ma::need_pos(@Int.0)` in a predicate
+# is the call `need_pos(@Int.0)` is, and a predicate that calls it on every
+# value of `@Int` traps on `-3` at the boundary guard.
+_PREDICATE_CALL_BY_PATH = """\
+module ma;
+
+private fn need_pos(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(@Int.result == @Int.0)
+  effects(pure)
+{
+  @Int.0
+}
+
+type R = { @Int | CALL(@Int.0) > 0 };
+
+public fn g(@R -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  1
+}
+"""
+
+
+@pytest.mark.parametrize("call", ["need_pos", "ma::need_pos"])
+def test_a_predicate_call_by_the_modules_own_path_is_obligated(
+        call: str) -> None:
+    src = _PREDICATE_CALL_BY_PATH.replace("CALL", call)
+    v = _verify(src)
+    assert _records(v, "call_pre", _at(src, f"{call}(@Int.0)")) == [
+        "violated/E501"], [(o.kind, o.status, o.error_code, o.line, o.column)
+                           for o in v.obligations]
+    ran = _run(src, "g", [-3])
+    assert "Precondition violation in need_pos" in ran.trap_message, ran
