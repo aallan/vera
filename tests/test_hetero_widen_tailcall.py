@@ -42,6 +42,7 @@ from vera.checker import typecheck_with_artifacts
 from vera.codegen import compile as codegen_compile
 from vera.codegen import execute
 from vera.codegen.api import WasmTrapError
+from vera.trap_registry import signal_call_pattern
 from vera.parser import parse_to_ast
 from vera.resolver import ModuleResolver
 from vera.verifier import verify
@@ -97,9 +98,9 @@ def _assert_traps(
     Two guards live in this file's fixtures and they report different kinds:
     the `@Int` -> `@Nat` narrowing guard carries `nat_guard` (#754), and the
     `@Nat` -> `@Int` widen guard carries `widen_guard` (#1438, which signals
-    `vera.widen_trap` before the `unreachable` on #754's pattern — until then
-    the widen side tripped the bare `unreachable` net, indistinguishable from
-    a non-exhaustive match).  A union of the two would accept either at every
+    its kind before the `unreachable` on #754's pattern, through the one
+    `vera.trap` import since #1479 — until then the widen side tripped the
+    bare `unreachable` net, indistinguishable from any other).  A union of the two would accept either at every
     site, so a narrowing guard regressing to the bare net — the exact
     condition #754 fixed — would leave every cell here green (PR review).
     Since #1438 the same argument runs in the other direction too: a widen
@@ -155,9 +156,11 @@ public fn f(@Nat -> @Int) requires(true) ensures(true) effects(pure)
 # call (returns @Int, so NOT widen-guarded and NOT collected).  The @Nat `0 ->`
 # arm is a bare slot (widen-guarded per-arm, but reachable — not a call).  The
 # recursive @Int arm must keep its `return_call $f` so a deep run is
-# constant-stack.
+# constant-stack.  `f` never returns from a negative `@Int`, so it declares
+# `Diverge` (#1492): that is the honest row, and it leaves the compiled
+# function exactly as it was, with no termination guard.
 _FIX1_TCO = """
-public fn f(@Nat, @Int -> @Int) requires(true) ensures(true) effects(pure)
+public fn f(@Nat, @Int -> @Int) requires(true) ensures(true) effects(<Diverge>)
 { match @Int.0 { 0 -> @Nat.0, _ -> f(@Nat.0, @Int.0 - 1) } }
 """
 
@@ -193,11 +196,13 @@ class TestFix1DeadGuardUnderTailCall:
             "call so the appended guard is reached"
         )
         # ...and the live guard (sign check + trap) follows it.  Since #1438 the
-        # widen guard's trap is `call $vera.widen_trap` then `unreachable`, so
-        # pin the signal: a bare `unreachable` appears elsewhere in every module
-        # (GC shadow-stack overflow, array bounds), and asserting only that word
-        # would keep this cell green with no widen guard emitted at all.
-        assert "i64.lt_s" in wat and "call $vera.widen_trap" in wat
+        # widen guard's trap signals `widen_guard` (through `vera.trap`, #1479)
+        # then executes `unreachable`, so pin the signal: a bare `unreachable`
+        # appears elsewhere in every module (GC shadow-stack overflow), and
+        # asserting only that word would keep this cell green with no widen
+        # guard emitted at all.
+        assert "i64.lt_s" in wat
+        assert signal_call_pattern("widen_guard").search(wat)
 
     def test_tco_recursive_int_arm_return_call_survives(self) -> None:
         # The GENUINE @Int recursive arm is NOT widen-guarded, so its

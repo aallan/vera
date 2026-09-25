@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 from vera import ast
-from vera.monomorphize import Monomorphizer, resolve_fn_type_alias
+from vera.monomorphize import (
+    Monomorphizer,
+    canonical_type_arg,
+    resolve_fn_type_alias,
+)
 from vera.skip import CodegenSkip
 from vera.slots import bare_call_denotes_user_fn
 from vera.wasm.helpers import WasmSlotEnv
@@ -71,7 +75,7 @@ class CallsMixin:
                 )
             if call.name == "string_char_code" and len(call.args) == 2:
                 return self._translate_char_code(
-                    call.args[0], call.args[1], env,
+                    call.args[0], call.args[1], env, at=call,
                 )
             if call.name == "string_from_char_code" and len(call.args) == 1:
                 return self._translate_from_char_code(call.args[0], env)
@@ -178,7 +182,8 @@ class CallsMixin:
                 if arg_instrs is None:
                     return None
                 if self._narrows_into_nat(call.args[0]):
-                    arg_instrs = self._emit_nat_bind_guard(arg_instrs)
+                    arg_instrs = self._emit_nat_bind_guard(
+                        arg_instrs, at=call.args[0])
                 return self._to_string_core(arg_instrs)
             if call.name == "bool_to_string" and len(call.args) == 1:
                 return self._translate_bool_to_string(call.args[0], env)
@@ -333,11 +338,11 @@ class CallsMixin:
                     call.args[0], call.args[1], env,
                 )
             if call.name == "floor" and len(call.args) == 1:
-                return self._translate_floor(call.args[0], env)
+                return self._translate_floor(call.args[0], env, at=call)
             if call.name == "ceil" and len(call.args) == 1:
-                return self._translate_ceil(call.args[0], env)
+                return self._translate_ceil(call.args[0], env, at=call)
             if call.name == "round" and len(call.args) == 1:
-                return self._translate_round(call.args[0], env)
+                return self._translate_round(call.args[0], env, at=call)
             if call.name == "sqrt" and len(call.args) == 1:
                 return self._translate_sqrt(call.args[0], env)
             if call.name == "pow" and len(call.args) == 2:
@@ -348,7 +353,8 @@ class CallsMixin:
             if call.name == "int_to_float" and len(call.args) == 1:
                 return self._translate_to_float(call.args[0], env)
             if call.name == "float_to_int" and len(call.args) == 1:
-                return self._translate_float_to_int(call.args[0], env)
+                return self._translate_float_to_int(
+                    call.args[0], env, at=call)
             if call.name == "nat_to_int" and len(call.args) == 1:
                 return self._translate_nat_to_int(call.args[0], env)
             if call.name == "int_to_nat" and len(call.args) == 1:
@@ -631,12 +637,15 @@ class CallsMixin:
                     # in the same shape, so obligation and guard still match
                     # one-for-one.
                     if base == "Int" and self._result_is_nat(call.args[0]):
-                        instructions = self._emit_int_widen_guard(instructions)
+                        instructions = self._emit_int_widen_guard(
+                            instructions, at=call.args[0])
             if refined_payload is None and (is_state_put or is_exn_throw):
                 if base == "Nat" and self._narrows_into_nat(call.args[0]):
-                    instructions = self._emit_nat_bind_guard(instructions)
+                    instructions = self._emit_nat_bind_guard(
+                        instructions, at=call.args[0])
                 elif base == "Int" and self._result_is_nat(call.args[0]):
-                    instructions = self._emit_int_widen_guard(instructions)
+                    instructions = self._emit_int_widen_guard(
+                        instructions, at=call.args[0])
             # #754's registry contributes NOTHING on this route, and the
             # reason is a property of the route rather than an omission.
             # Only `get`, `put` and `throw` have a bare one — every other
@@ -666,7 +675,10 @@ class CallsMixin:
         # locally-shadowed same-module sibling to the module's ``mod$``
         # version (the rename map is empty for every non-mod$ body, so normal
         # compilation is unaffected).  Shadowed siblings are non-generic, so
-        # this never collides with the generic rewrite above.
+        # this never collides with the generic rewrite above.  A module's own
+        # top-level sibling reaches here already renamed (`_register_modules`
+        # renames the module's calls before anything names them), so the
+        # generic rewrite cannot take its bare name first.
         if call_target in self._intra_module_renames:
             call_target = self._intra_module_renames[call_target]
 
@@ -726,10 +738,10 @@ class CallsMixin:
                 return None
             if (i < len(nat_params) and nat_params[i]
                     and self._narrows_into_nat(arg)):
-                arg_instrs = self._emit_nat_bind_guard(arg_instrs)
+                arg_instrs = self._emit_nat_bind_guard(arg_instrs, at=arg)
             elif (i < len(int_params) and int_params[i]
                     and self._result_is_nat(arg)):
-                arg_instrs = self._emit_int_widen_guard(arg_instrs)
+                arg_instrs = self._emit_int_widen_guard(arg_instrs, at=arg)
             instructions.extend(arg_instrs)
 
         # #517 — emit ``return_call $target`` for tail-position
@@ -783,9 +795,9 @@ class CallsMixin:
         """
         base = op_formals[index] if index < len(op_formals) else None
         if base == "Nat" and self._narrows_into_nat(arg):
-            return self._emit_nat_bind_guard(arg_instrs)
+            return self._emit_nat_bind_guard(arg_instrs, at=arg)
         if base == "Int" and self._result_is_nat(arg):
-            return self._emit_int_widen_guard(arg_instrs)
+            return self._emit_int_widen_guard(arg_instrs, at=arg)
         return arg_instrs
 
     def _translate_qualified_call(
@@ -900,6 +912,16 @@ class CallsMixin:
             instructions.append("unreachable")
         return instructions
 
+    def _canonical_type_args(self, parts: list[str]) -> tuple[str, ...]:
+        """*parts* as written in the body being compiled, in the one spelling
+        a clone is named by (:func:`vera.monomorphize.canonical_type_arg`,
+        #1511)."""
+        return tuple(
+            canonical_type_arg(
+                part, self._alias_env.aliases, self._alias_env.alias_params)
+            for part in parts
+        )
+
     def _resolve_generic_call(self, call: ast.FnCall) -> str | None:
         """Resolve a call to a generic function to its mangled name.
 
@@ -975,7 +997,11 @@ class CallsMixin:
                     return None
                 mapping[tv] = "Bool"
             parts.append(mapping[tv])
-        return Monomorphizer._mangle_fn_name(call.name, tuple(parts))
+        # #1511: the one spelling discovery names the clone by, resolved in
+        # the namespace this body was written in — the alias maps installed
+        # for it (`_module_alias_scope`).
+        return Monomorphizer._mangle_fn_name(
+            call.name, self._canonical_type_args(parts))
 
     def _unify_param_arg_wasm(
         self,

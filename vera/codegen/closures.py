@@ -325,6 +325,8 @@ class ClosureLiftingMixin:
 
         ctx = WasmContext(
             self.string_pool,
+            # #1479: one record for the whole module, read back from its text.
+            checks=self._emitted_checks,
             ctor_layouts=ctor_layouts,
             # #1414: the LIVE nested map, not a copy of it — the flat
             # `ctor_layouts` above is already derived from it, and a
@@ -334,6 +336,8 @@ class ClosureLiftingMixin:
             # — a lifted closure body belongs to the declaration that
             # contains it, so it resolves names in that declaration's scope.
             adt_type_names=set(self._alias_env.data_types),
+            value_data_types=self._value_data_type_names(),
+            adt_ctor_tp_indices=self._adt_ctor_tp_indices,
             # #873: a generic called ONLY from inside a closure body must be
             # rewritten to its monomorphized clone here too — mono discovery
             # already walks closure bodies (the total AST walk) and emits the
@@ -519,9 +523,9 @@ class ClosureLiftingMixin:
         # matches the codegen-unguardable @Unit refinement (the verifier records
         # that narrowing `tier3_unguarded`, claiming no runtime guard).
         refined_param_checks: list[
-            tuple[int, tuple[ast.Expr, str]]
+            tuple[int, tuple[ast.Expr, str], ast.TypeExpr]
         ] = [
-            (value_local, parts)
+            (value_local, parts, param_te)
             for _i, param_te, value_local in param_info
             if (parts := self._refinement_guard_parts(param_te)) is not None
         ]
@@ -842,14 +846,15 @@ class ClosureLiftingMixin:
                     self._emit_element_guards(
                         ctx, closure_sig, param_te, ptr_local,
                         elem_len_local, env, "parameter"))
-            for value_local, parts in refined_param_checks:
+            for value_local, parts, param_te in refined_param_checks:
                 predicate, base_name = parts
                 msg = (
                     f"Refinement violation in {closure_sig}\n"
                     f"  parameter: {ast.format_expr(predicate)} failed"
                 )
                 guard = self._emit_refinement_check(
-                    ctx, predicate, base_name, value_local, msg, env)
+                    ctx, predicate, base_name, value_local, msg, env,
+                    at=param_te)
                 if guard is not None:
                     refine_guard_instrs.extend(guard)
             # #1032: a REFINED closure RETURN carries a runtime predicate guard
@@ -894,7 +899,8 @@ class ClosureLiftingMixin:
                     if ret_refined_parts is not None:
                         predicate, base_name = ret_refined_parts
                         guard = self._emit_refinement_check(
-                            ctx, predicate, base_name, ptr_l, msg, env)
+                            ctx, predicate, base_name, ptr_l, msg, env,
+                            at=anon_fn.return_type)
                         if guard is not None:
                             ret_guard.extend(guard)
                     if ret_guard:
@@ -910,7 +916,8 @@ class ClosureLiftingMixin:
                     if ret_refined_parts is not None:
                         predicate, base_name = ret_refined_parts
                         guard = self._emit_refinement_check(
-                            ctx, predicate, base_name, ret_local, msg, env)
+                            ctx, predicate, base_name, ret_local, msg, env,
+                            at=anon_fn.return_type)
                         if guard is not None:
                             ret_guard.extend(guard)
                     # #1430: a `Map` or `Set` result is one i32 handle, so
@@ -938,7 +945,8 @@ class ClosureLiftingMixin:
         # not as a whole-body wrap here — see that block for why.
         if (ctx._type_expr_base_is_int(anon_fn.return_type)
                 and ctx._result_is_nat(anon_fn.body)):
-            body_instrs = ctx._emit_int_widen_guard(body_instrs)
+            body_instrs = ctx._emit_int_widen_guard(
+                body_instrs, at=anon_fn.body)
 
         # Propagate host-import tracking from closure ctx to module level
         self._map_ops_used.update(ctx._map_ops_used)
@@ -953,21 +961,14 @@ class ClosureLiftingMixin:
         # its host imports on the closure ctx (the _scan_io_ops AnonFn
         # branch also covers these — same belt-and-braces as #808).
         self._async_ops_used.update(ctx._async_ops_used)
-        # #808: a #798 integer-overflow guard inside a lifted closure body sets
-        # this on the closure ctx; OR it into the module ``self`` so
-        # ``_assemble_module`` emits the ``vera.overflow_trap`` import (same
-        # propagation the per-function merge does in functions.py).
-        self._needs_overflow_trap = (
-            self._needs_overflow_trap or ctx._needs_overflow_trap
-        )
-        # #754: the narrowing guard's own trap signal, propagated at the
-        # SAME merge for the same reason — a guard emitted while lowering a
-        # postcondition or a lifted closure body sets it on that context.
-        self._needs_widen_trap = (
-            self._needs_widen_trap or ctx._needs_widen_trap
-        )
-        self._needs_nat_guard_trap = (
-            self._needs_nat_guard_trap or ctx._needs_nat_guard_trap
+        # #1479: a check inside a lifted closure body raises its signal's
+        # flag on the closure ctx; OR it into the module ``self`` so
+        # ``_assemble_module`` declares the import (the same propagation the
+        # per-function merge does in functions.py).  A closure whose only
+        # check is here links only through this merge.
+        self._needs_trap = self._needs_trap or ctx._needs_trap
+        self._needs_contract_fail = (
+            self._needs_contract_fail or ctx._needs_contract_fail
         )
         # #773: structural-Eq helpers generated inside a lifted closure body.
         self._adt_eq_helpers.update(ctx._adt_eq_helpers)

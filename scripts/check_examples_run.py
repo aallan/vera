@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Pre-commit / CI gate: every `examples/*.vera` program either RUNS
+"""CI gate: every `examples/*.vera` program either RUNS
 trap-free under the native runtime, or is matched to a documented
 property that excludes it from harness execution.
 
@@ -240,7 +240,7 @@ NEUTRALISED_ENV: tuple[str, ...] = (
 
 # Per-example wall-clock budget.  Generous: the whole set runs
 # in a few seconds, so this only ever fires on a genuine hang, which is
-# reported as a failure rather than blocking the hook indefinitely.
+# reported as a failure rather than blocking the CI job indefinitely.
 TIMEOUT_SECONDS = 300
 
 # The committed on-disk database `sqlitedb.vera` reads.
@@ -680,7 +680,7 @@ def run_corpus(
                 cwd=str(workdir),
                 # Nothing reads the invoking terminal's stdin: an example
                 # that tried would otherwise consume the user's keystrokes
-                # mid-hook.  DEVNULL is an immediate EOF, not a hang —
+                # mid-run.  DEVNULL is an immediate EOF, not a hang —
                 # which is why terminal-dependence rather than hanging is
                 # the reason the stdin examples are skipped.
                 stdin=subprocess.DEVNULL,

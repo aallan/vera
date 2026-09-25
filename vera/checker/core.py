@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from vera.resolver import ResolvedModule
 
 from vera import ast, naming
+from vera.callgraph import CallGraph
 from vera.errors import (
     Diagnostic,
     SourceLocation,
@@ -59,7 +60,7 @@ from vera.types import (
 )
 
 from vera.checker.resolution import ResolutionMixin
-from vera.checker.modules import ModulesMixin
+from vera.checker.modules import ModuleRegistration, ModulesMixin
 from vera.checker.registration import RegistrationMixin
 from vera.checker.expressions import ExpressionsMixin
 from vera.checker.calls import CallsMixin
@@ -198,14 +199,16 @@ def typecheck_with_artifacts(
     about the module it is verifying rather than about that module's imports.
 
     ``collect_module_artifacts`` (#987, opt-in per PR #997 review) gates the
-    per-resolved-module side-table pass.  Only the codegen-bound callers
-    (``vera compile`` / ``run`` / ``serve`` / ``test``) consume
-    ``CheckArtifacts.module_artifacts`` — they pass ``True``.  ``vera verify``
-    and the warm ``VerificationSession`` read only the top-level
-    ``expr_semantic_types`` / ``expr_target_types`` tables and would pay a full
-    extra ``check_program`` per resolved module for nothing, so they leave it
-    ``False`` (``module_artifacts`` is then an empty dict, which ``_compile_fn``
-    already tolerates — the #986 imported-body suppression fallback).
+    per-resolved-module side-table pass: one extra ``check_program`` per
+    resolved module.  Two consumers read ``CheckArtifacts.module_artifacts``.
+    Code generation reads them for imported bodies (``vera compile`` /
+    ``run`` / ``serve`` / ``test``).  Instantiation discovery reads them for
+    each module's own bodies (#1509), so ``vera verify``, ``verify()`` when it
+    is handed none, and the warm ``VerificationSession`` pass ``True`` too.
+    The session pays the pass again on each round of its disclosed-set
+    fixpoint.  A caller that leaves it ``False`` gets an empty dict, which
+    ``_compile_fn`` already tolerates (the #986 imported-body suppression
+    fallback).
     ``alias_env`` (#1208), by contrast, is the entry module's own and always
     present — it costs one walk of an already-built table.  There is no
     per-module counterpart in the artifacts: the two consumers that need one
@@ -250,6 +253,7 @@ def typecheck_with_artifacts(
         # re-run a body check the top-level pass has already done.
         module_arts = _collect_module_artifacts(
             resolved_modules, checker._module_body_check_memo,
+            checker._module_registration_cache,
         )
 
     return diagnostics, CheckArtifacts(
@@ -265,6 +269,9 @@ def typecheck_with_artifacts(
 def _collect_module_artifacts(
     resolved_modules: list[ResolvedModule] | None,
     body_check_memo: set[tuple[str, ...]] | None = None,
+    registration_cache: (
+        dict[tuple[str, ...], ModuleRegistration] | None
+    ) = None,
 ) -> ModuleArtifacts:
     """Collect each resolved module's OWN span-keyed side-tables (#987).
 
@@ -305,28 +312,34 @@ def _collect_module_artifacts(
     on the codegen ones.  Two passes deriving the same diagnostics is the #1213
     disease; this one keeps the artifact it alone produces.
 
-    Cost note (PR #997 review, corrected for #1244): THIS pass is quadratic
-    and still codegen-only — N resolved modules each get a full
-    ``check_program`` that re-registers the other N-1, so it is O(N^2)
-    sub-checks (measured ~85ms at 20 modules vs ~4ms for the main-file-only
-    check), and it runs only when a caller asks for artifacts, i.e. for
-    ``vera compile``/``run``/``serve``/``test``.
+    Cost note (PR #997 review): each of the N resolved modules gets a full
+    ``check_program`` of its own program, and the pass runs only when a
+    caller asks for artifacts.  Code generation reads them for imported
+    bodies (``vera compile``/``run``/``serve``/``test``), and instantiation
+    discovery for each module's own bodies (#1509), so ``vera verify``,
+    ``verify()`` when it is handed none, and the warm ``VerificationSession``
+    ask too; the session pays the pass again on each round of its
+    disclosed-set fixpoint.  :func:`typecheck_with_artifacts` lists the same
+    callers.
 
-    What is no longer true is that a module's body is checked only on those
-    paths.  ``ModulesMixin._register_modules`` checks each module's bodies
-    under its own import filter (#1244), and that runs from
-    ``check_program`` — so ``vera check``, ``vera verify`` and the warm
-    ``VerificationSession`` all pay one full sub-check per resolved module,
-    and the session pays it again on every re-check (it calls
-    ``typecheck_with_artifacts`` per verify).  ``body_check_memo`` is that
-    pass's memo, threaded into each sub-checker here so a body check the
-    top-level pass has already run is not repeated per sub-check — without
-    it, this O(N^2) pass would multiply the #1244 pass by N.
+    A module's body is checked on every path, not only on those.
+    ``ModulesMixin._register_modules`` checks each module's bodies under its
+    own import filter (#1244), and that runs from ``check_program`` — so
+    ``vera check``, ``vera verify`` and the warm ``VerificationSession`` all
+    pay one full sub-check per resolved module, and the session pays it
+    again on every re-check (it calls ``typecheck_with_artifacts`` per
+    verify).  ``body_check_memo`` is that pass's memo, threaded into each
+    sub-checker here so a body check the top-level pass has already run is
+    not repeated per sub-check — without it, this pass would multiply the
+    #1244 pass by N.
 
-    Memoising each module's per-check REGISTRATION (its declarations are
-    re-derived identically every pass) is the optimisation candidate that
-    would collapse both toward O(N); it is tracked as
-    [#1275](https://github.com/aallan/vera/issues/1275).
+    Each module's REGISTRATION, and the export tables read off it, are
+    memoised per path for the whole run (#1275,
+    ``ModulesMixin._module_registrations``) and handed to every sub-check
+    here as *registration_cache*, so a sub-check re-registers none of the
+    other modules and re-reads none of their exports: what each sub-check
+    still does per other module is a handful of table lookups, and the rest
+    of its work is its own program.
     """
     mods = resolved_modules or []
     result: ModuleArtifacts = {}
@@ -345,6 +358,7 @@ def _collect_module_artifacts(
             resolved_modules=sub_resolved,
         )
         sub._module_body_check_memo = body_check_memo
+        sub._module_registration_cache = registration_cache
         sub.expr_types = {}
         sub.expr_semantic_types = sub_semantic
         sub.expr_target_types = sub_target
@@ -426,11 +440,34 @@ class TypeChecker(
         # _check_fn; empty everywhere else (so no non-helper diagnostic sees
         # the hint).  Parent TYPE params stay in scope through the loop.
         self._where_helper_outer_tnames: list[frozenset[str]] = []
-        # #815: ids of FnDecls rejected for redefining a built-in (E151).
-        # They are not registered (the built-in stays canonical), so the
-        # check phase skips them — re-checking would resolve their own body
-        # against the built-in and emit bogus secondary diagnostics.
-        self._rejected_builtin_redefs: set[int] = set()
+        # ids of declarations registration refused: a FnDecl redefining a
+        # built-in (E151, #815), an effect or ability redeclaring a built-in
+        # one (E152, E185), the surplus declaration of a name its namespace
+        # already holds (E184, #1433), and a refused MEMBER of a declaration
+        # (a surplus operation or constructor, an operation named after a
+        # built-in ability's, a constructor named after a special-cased
+        # type).  None is registered — the built-in, or the first
+        # declaration, stays the one every use resolves to — so none holds a
+        # name, and the check phase skips them too: re-checking would
+        # resolve their own bodies against that entry and emit bogus
+        # secondary diagnostics.  The check phase adds a handler's surplus
+        # clause (E184) when it meets one, for the call graph (#1492).
+        self._refused_decl_ids: set[int] = set()
+        # ids of functions that ARE registered, under names of their own,
+        # but whose bodies the check phase skips: each has a `where` helper
+        # refused for redefining a built-in (#815), so a call to that helper
+        # would resolve against the built-in and cascade bogus diagnostics.
+        # Kept apart from `_refused_decl_ids` because such a function still
+        # holds its name (#1433): a bare call reaches it, and a second
+        # declaration of the name is a duplicate.
+        self._unchecked_body_ids: set[int] = set()
+        # #1497: the constructors of a `data` declaration refused as E158 for
+        # taking a primitive's name.  It is not registered, so a use of one
+        # would otherwise report an unknown constructor the program never
+        # meant: the declaration's own E158 is the one error it owes.  A
+        # constructor name two imports supply is refused the same way, at
+        # the import (E157, #1513).
+        self._refused_ctor_names: set[str] = set()
         # #991 checker leg (PR #1013 review): lexically-scoped where-helper
         # resolution, mirroring the verifier and codegen.  ``env.functions``
         # is flat and last-wins, so a bare call to a same-named helper in a
@@ -527,6 +564,27 @@ class TypeChecker(
         self._module_all_data_types: dict[
             tuple[str, ...], dict[str, AdtInfo]
         ] = {}
+        # #1489: the type and effect names THIS namespace declares, set by
+        # `_register_all` before it registers anything.  A signature may name
+        # a declaration further down the file; during registration that name
+        # is not registered yet, and it is a forward reference, not an
+        # unknown name (E136 / E338).
+        self._forward_type_names: frozenset[str] = frozenset()
+        self._forward_effect_names: frozenset[str] = frozenset()
+        # #1489: each import whose module did not resolve, with its name list
+        # (``None`` for a wildcard), so an E136 on a name it lists can say
+        # which import to fix.  Set by `_register_modules`.
+        self._unresolved_imports: dict[
+            tuple[str, ...], frozenset[str] | None
+        ] = {}
+        # #1489 / #1275: each resolved module's declarations, registered in
+        # the module's OWN namespace — its imports' data types first — and
+        # what they export, once per path for the whole run.  Shared down the
+        # nested checkers with the body-check memo; ``None`` until first
+        # asked.  See `ModulesMixin._module_registrations`.
+        self._module_registration_cache: (
+            dict[tuple[str, ...], ModuleRegistration] | None
+        ) = None
         # De-dup removed-alias errors (emitted once per alias name).
         self._reported_alias_errors: set[str] = set()
         # De-dup reserved-namespace type REFERENCES (E154, #1221) — one
@@ -663,12 +721,13 @@ class TypeChecker(
         # the scoped lookup prefers it over a nested helper of the same name
         # that clobbered the flat registry (helpers register last) — the
         # checker then resolves helper calls exactly as the verifier and
-        # codegen do.  Rejected built-in redefinitions stay out (the built-in
-        # is canonical, #815).
+        # codegen do.  Refused declarations stay out: a built-in
+        # redefinition (the built-in is canonical, #815), and a surplus
+        # declaration of a name (the first is canonical, #1433).
         for tld in program.declarations:
             decl = tld.decl
             if (isinstance(decl, ast.FnDecl)
-                    and id(decl) not in self._rejected_builtin_redefs):
+                    and id(decl) not in self._refused_decl_ids):
                 self._top_level_fn_infos[decl.name] = self._fn_info_for_decl(
                     decl, visibility=tld.visibility,
                 )
@@ -707,17 +766,101 @@ class TypeChecker(
         for tld in program.declarations:
             decl = tld.decl
             if (isinstance(decl, ast.DataDecl)
-                    and id(decl) not in self._rejected_builtin_redefs
+                    and id(decl) not in self._refused_decl_ids
                     and decl.name in self.env.data_types
                     and not regularity.is_regular(decl.name)):
                 self.env.refused_non_regular.add(decl.name)
         for tld in program.declarations:
-            # #815: a built-in redefinition (E151) is already reported and not
-            # registered; skip checking its body so it isn't re-checked against
-            # the canonical built-in (which would emit bogus diagnostics).
-            if id(tld.decl) in self._rejected_builtin_redefs:
+            # #815/#1433: a refused declaration — a built-in redefinition
+            # (E151) or a name's surplus declaration (E184) — is already
+            # reported and not registered; skip checking its body so it isn't
+            # re-checked against the canonical entry (which would emit bogus
+            # diagnostics).  So is the body of a function whose helper was
+            # refused, for the same reason one scope down.
+            if (id(tld.decl) in self._refused_decl_ids
+                    or id(tld.decl) in self._unchecked_body_ids):
                 continue
             self._check_decl(tld.decl)
+        self._check_recursion(program)
+
+    def _check_recursion(self, program: ast.Program) -> None:
+        """Spec §5.6 and §7.7.3 over the program's whole call graph (#1492).
+
+        Every function on a cycle of calls, a self-call included, declares a
+        `decreases` measure or names `Diverge` in its effect row (E137).  A
+        contract or refinement predicate may not call back into its own
+        function, directly or through other calls (E138, #1521): checking it
+        would need the very specification it is checking.  The cycles come
+        from :class:`~vera.callgraph.CallGraph`, which the verifier reads for
+        the measure obligations, so the two agree on what is recursive.
+
+        The graph reads what the check phase read (#1433, #815): a refused
+        declaration adds no function and no call, so it draws its refusal
+        alone, and a function whose body was skipped adds no call until the
+        body is checked.
+        """
+        graph = CallGraph(
+            (tld.decl for tld in program.declarations),
+            refused=self._refused_decl_ids,
+            unchecked=self._unchecked_body_ids,
+        )
+        for fn in graph.unmeasured():
+            others = [f"'{m.name}'" for m in graph.cycle(fn) if m is not fn]
+            how = (f"it is on a call cycle with {', '.join(others)}"
+                   if others else "it calls itself")
+            self._error(
+                fn,
+                f"Function '{fn.name}' is recursive ({how}) but declares "
+                f"neither a decreases() clause nor the Diverge effect.",
+                rationale=(
+                    "A function without Diverge in its effect row must be "
+                    "proved to terminate, and a recursive one proves it "
+                    "with a decreases() measure. Without one nothing shows "
+                    "the recursion ends, and a function that never returns "
+                    "would have its postcondition reported as verified. "
+                    "This holds for every effect row, IO included."
+                ),
+                fix=(
+                    f"Give '{fn.name}' a measure that strictly decreases on "
+                    f"every recursive call and stays non-negative. For a "
+                    f"loop that counts @Nat.0 up to a limit @Nat.1, "
+                    f"measure the distance left: requires(@Nat.0 <= @Nat.1) "
+                    f"and decreases(@Nat.1 - @Nat.0). Every function on the "
+                    f"cycle needs its own measure unless it declares Diverge. "
+                    f"If the recursion is not meant to end, as in a server or "
+                    f"read-eval loop, declare it: effects(<Diverge>), or "
+                    f"effects(<Diverge, IO>) with IO; every function that "
+                    f"calls it must declare Diverge too."
+                ),
+                spec_ref='Chapter 5, Section 5.6 "Recursive Functions"',
+                error_code="E137",
+            )
+        for site in graph.spec_cycle_sites():
+            if site.callee is site.caller:
+                how = f"calls '{site.caller.name}' itself"
+            else:
+                how = (f"calls '{site.callee.name}', which leads back to "
+                       f"'{site.caller.name}'")
+            self._error(
+                site.call,
+                f"A contract or refinement predicate of "
+                f"'{site.caller.name}' {how}.",
+                rationale=(
+                    "A contract is the specification its function is "
+                    "checked against, so it cannot be defined through that "
+                    "function: checking it would need the specification it "
+                    "is checking. The verifier has no finite meaning to give "
+                    "it, and a run that evaluates it recurses without end."
+                ),
+                fix=(
+                    f"State the property without calling back into "
+                    f"'{site.caller.name}': write it over the parameters and "
+                    f"the result directly, or call a separate specification "
+                    f"function that does not reach '{site.caller.name}'."
+                ),
+                spec_ref='Chapter 6, Section 6.3.1 "Allowed in All Contracts"',
+                error_code="E138",
+            )
 
     def _check_decl(self, decl: ast.Decl) -> None:
         """Check a single declaration."""
@@ -746,6 +889,10 @@ class TypeChecker(
             for tv in decl.type_params:
                 self.env.type_params[tv] = TypeVar(tv)
         for op in decl.operations:
+            # #1433: an operation registration refused (E184, E185) is not
+            # checked, like any other refused declaration.
+            if id(op) in self._refused_decl_ids:
+                continue
             for param_te in op.param_types:
                 self._check_refinement_predicates(param_te)
             self._check_refinement_predicates(op.return_type)
@@ -777,7 +924,8 @@ class TypeChecker(
             for tv in decl.type_params:
                 self.env.type_params[tv] = TypeVar(tv)
         for ctor in decl.constructors:
-            if ctor.fields is not None:
+            # #1433: nor is a constructor registration refused (E184, E158).
+            if ctor.fields is not None and id(ctor) not in self._refused_decl_ids:
                 for field_te in ctor.fields:
                     self._check_refinement_predicates(field_te)
         self.env.type_params = saved_field_params
@@ -1044,6 +1192,13 @@ class TypeChecker(
                 error_code="E122",
             )
 
+        # 7b. #1233: a handler-clause State operation code generation cannot
+        #     lower is refused here rather than skipped at compile.  Asked
+        #     while this function's frame is on the scope stack, so a bare
+        #     `get` owned by a declaration of that name is told apart from
+        #     the operation exactly as the call itself was.
+        self._check_clause_op_addressing(decl)
+
         # 8. Check where-block functions.
         #    Pop the parent's VALUE-slot scope FIRST so a helper body cannot
         #    resolve the outer function's parameter slots (#969).  spec §5:
@@ -1069,10 +1224,15 @@ class TypeChecker(
             self._where_helper_outer_tnames.append(frozenset(param_slot_names))
             try:
                 for wfn in decl.where_fns:
-                    # #815: skip a where-helper rejected for redefining a
-                    # built-in (E151 already emitted; it is not registered, so
-                    # re-checking would resolve its body against the built-in).
-                    if id(wfn) in self._rejected_builtin_redefs:
+                    # #815/#1433: skip a refused where-helper — one
+                    # redefining a built-in (E151) or repeating a name its
+                    # block already declares (E184).  It is not registered,
+                    # so re-checking would resolve its body against the
+                    # canonical entry.  A helper whose OWN helper was refused
+                    # is registered, but its body is skipped for the same
+                    # reason.
+                    if (id(wfn) in self._refused_decl_ids
+                            or id(wfn) in self._unchecked_body_ids):
                         continue
                     self._check_fn(wfn)
             finally:
@@ -1144,9 +1304,10 @@ class TypeChecker(
         Matches the verifier's ``_scoped_fn_lookup`` and codegen's
         parent-qualified hoist, so all three subsystems agree on
         helper-name scoping.  A helper rejected for redefining a built-in
-        (E151, #815) is skipped — the built-in stays canonical.  With an
-        empty stack (data invariants, op signatures) this is exactly the
-        flat lookup.
+        (E151, #815) or repeating a name its block already declares (E184,
+        #1433) is skipped — the built-in, or the first helper, stays
+        canonical.  With an empty stack (data invariants, op signatures)
+        this is exactly the flat lookup.
 
         The frame walk is the ONLY route to a helper: since #1307 the flat
         registry holds none, so this returns ``None`` for a helper named
@@ -1171,7 +1332,7 @@ class TypeChecker(
         for frame in reversed(self._fn_scope_stack):
             for wfn in frame.where_fns or ():
                 if (wfn.name == name
-                        and id(wfn) not in self._rejected_builtin_redefs):
+                        and id(wfn) not in self._refused_decl_ids):
                     return self._fn_info_for_decl(wfn)
         top = self._top_level_fn_infos.get(name)
         if top is not None:

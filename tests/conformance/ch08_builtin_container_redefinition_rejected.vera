@@ -1,0 +1,22 @@
+-- Conformance: a built-in container name is reserved in the data namespace
+-- (Chapter 8, Section 8.4.1)
+-- Tests: E158 — `data Decimal` is rejected at check (#1547).
+-- The sibling of ch08_builtin_adt_redefinition_rejected and
+-- ch08_builtin_tuple_redefinition_rejected, for the built-in containers.
+-- A declaration taking a container's name with the container's number of
+-- type arguments is the same type as the container to the checker, so a
+-- built-in value ran as the declaration: `show(decimal_from_int(5))` below
+-- printed `MkShadow(0)`. `Array`, `Map`, `Set` and `Decimal` are reserved
+-- whatever number of type parameters the declaration takes; a constructor
+-- may still take one of those names.
+private data Decimal {
+  MkShadow(Int)
+}
+
+public fn main(-> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  show(decimal_from_int(5))
+}

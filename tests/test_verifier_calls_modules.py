@@ -543,6 +543,7 @@ private fn caller(@Int -> @Int)
 private fn loop(@Nat, @Nat -> @Nat)
   requires(@Nat.0 <= @Nat.1)
   ensures(true)
+  decreases(@Nat.1 - @Nat.0)
   effects(pure)
 {
   if @Nat.0 < @Nat.1 then {

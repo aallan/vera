@@ -107,29 +107,32 @@ dependencies. CI enforces that `uv.lock` stays current.
 
 ### Pre-commit Hooks
 
-The repository configures 39 hooks across two stages: 37 run at the commit stage (after `pre-commit install`), and 2 (`check-changelog-updated` and `uv-lock-check`, described below) run at the push stage (after `pre-commit install --hook-type pre-push`). Most commit-stage hooks have per-hook `files:` / `types:` filters — the `python` type-check only runs when Python files are staged; `check_readme_examples.py` only runs when `README.md` or Vera sources change, etc. A plain-text commit touching only one markdown file triggers a small subset; a compiler-level commit triggers most of them.
+The repository configures 31 hooks across two stages: 29 run at the commit stage (after `pre-commit install`), and 2 (`check-changelog-updated` and `uv-lock-check`, described below) run at the push stage (after `pre-commit install --hook-type pre-push`). Most commit-stage hooks have per-hook `files:` / `types:` filters — the `python` type-check only runs when Python files are staged; `check_diagnostic_examples.py` only runs when `DE_BRUIJN.md` or compiler sources change, etc. A plain-text commit touching only one markdown file triggers a small subset; a compiler-level commit triggers most of them.
 
-![The gate pipeline: file-filtered commit-stage hooks, the push-stage CHANGELOG and uv.lock gates, and CI re-running everything against the platform matrix before anything lands on protected main.](assets/diagrams/ci-gates.svg)
+![The gate pipeline: the fast commit-stage hooks, the push-stage CHANGELOG and uv.lock gates, and CI running the full suite on the platform matrix, conformance and the examples, and every hook again, before anything lands on protected main.](assets/diagrams/ci-gates.svg)
 
-The **commit-stage** hooks — 37 total, of which 36 are gated to relevant `files:`/`types:` filters and one (`check-added-large-files`, a general `--maxkb=500` size check) applies unconditionally — include:
+**What runs where.** The commit-stage hooks are the fast gates, so a commit takes minutes.  The full pytest suite, the conformance suite and the examples run in CI only, on every pull request and on every push to `main` and `release/**`; CI also re-runs every gate below, so a commit that skipped the hooks is still gated before it can merge.  A commit runs the test files it stages: under the test-first rule, the test that proves a change is in the commit that makes it.
+
+The **commit-stage** hooks — 29 total, of which 28 are gated to relevant `files:`/`types:` filters and one (`check-added-large-files`, a general `--maxkb=500` size check on the files a commit adds) applies unconditionally — include:
 
 - Trailing whitespace and file endings
 - YAML/TOML validity
 - Merge conflict markers
 - Python debug statements
-- Lint with ruff (default rules)
+- Lint with ruff (the declared rule set), and its security rules over `vera/` as CI spells them
 - mypy type checking
-- pytest test suite
-- All conformance programs hold at their declared level — positives pass; the negatives fail at the stage their `expected_error_stage` names (`check` by default, or `compile` for a diagnostic the checker accepts and codegen refuses) with their `expected_error` E-code
-- The same conformance programs hold again under `VERA_EAGER_GC=1`, which forces a collection at every allocation so that a GC-rooting bug fails deterministically instead of by timing
-- All `.vera` examples type-check and verify cleanly
-- README, EXAMPLES.md, SKILL.md, HTML, and spec code blocks parse correctly
-- Documentation counts match live codebase
-- Site assets (`docs/llms.txt`, `docs/llms-full.txt`, etc.) regenerated and up-to-date
+- The test files the commit stages, run in full, and a collection of the whole suite so an import broken in a test file nobody staged fails at once
+- All `.vera` programs in canonical form
+- Every Vera block in the agent-facing documents (SKILL.md, README, FAQ, EXAMPLES.md, DE_BRUIJN.md, PYPI_README, the spec, and the landing page) parses, checks and verifies, and prints what each `vera:run` marker expects, or carries a `vera:skip` marker naming the stage and codes it fails; a block that exports a function names an invocation or a `vera:no-run` property
+- Documentation counts match live codebase (the headline test totals against one another; see the doc-count gate below)
+- Version numbers in sync
+- Site assets (`docs/llms.txt`, `docs/llms-full.txt`, etc.) regenerated, up-to-date, and coherent with the landing page
 - Spec EBNF and Lark grammar agree on rule names
 - Editor grammars (vscode, TextMate, Vim) carry every built-in effect name
 - License compliance (all dependencies MIT-compatible)
-- Browser parity (JS runtime matches Python runtime)
+- Browser parity (JS runtime matches Python runtime), when the host-binding surface changes
+
+CI runs, in addition: the full suite on every OS × Python cell, the conformance programs at their declared level (positives pass; the negatives fail at the stage their `expected_error_stage` names, `check` by default or `compile` for a diagnostic the checker accepts and codegen refuses, with their `expected_error` E-code), the examples' `check` + `verify` and their runs, the `[E602]`/`[E604]` compile sweep, and the conformance programs and examples again under `VERA_EAGER_GC=1`, which forces a collection at every allocation so that a GC-rooting bug fails deterministically instead of by timing.
 
 If you modify documentation sources (SKILL.md, AGENTS.md, FAQ.md, `vera/errors.py`, `vera/grammar.lark`, or `docs/index.html`), the `site-assets` hook will regenerate `docs/` files via `scripts/build_site.py`. The CI also runs `scripts/check_site_assets.py` to verify freshness.
 
@@ -168,13 +171,14 @@ VERA_JS_COVERAGE=1 pytest tests/test_browser.py -v  # JS coverage
 
 PRs touching `vera/browser/runtime.mjs` have JavaScript coverage tracked by Codecov (via V8's built-in coverage). See [TESTING.md](TESTING.md) for the full testing reference -- coverage data, test helpers, and guidelines for adding tests.  See [ENVIRONMENT.md](ENVIRONMENT.md) for all `VERA_*` environment variables (provider keys, runtime knobs, and debug flags like `VERA_EAGER_GC` for hunting GC-rooting bugs and `VERA_DEBUG_HOST_ERRORS` for host-binding ones).
 
-**Doc-count gate**: any PR that adds tests will trip `scripts/check_doc_counts.py` if it doesn't also update the test counts in `TESTING.md` (per-file rows + overall total), `ROADMAP.md` (the "Where we are" line), and `README.md` (project-status line).  Run the script locally to see exactly which numbers need updating:
+**Doc-count gate**: a PR that adds tests updates the per-file rows in `TESTING.md` — the row of every test file it changes, and a new row for every test file it adds — and `scripts/check_doc_counts.py` fails it until it does.  It does NOT update the HEADLINE test totals: the suite total and test-file count in `TESTING.md`'s overview row (with its passed/skipped breakdown), `README.md`'s project-status line, `FAQ.md`, `ROADMAP.md`'s "Where we are" line and `vera/README.md`'s Test Suite paragraph.  Every fix PR moves those, so a PR that edits them conflicts with every other open PR; the release PR sets them, with `--release`, which checks them against the live collection (CI runs that mode on pull requests into `main`).  By default the script checks them against one another instead, so a partial edit of them still fails.  Run the script locally to see exactly which numbers need updating:
 
 ```bash
-python scripts/check_doc_counts.py    # reports stale counts with file:field references
+python scripts/check_doc_counts.py            # reports stale counts with file:field references
+python scripts/check_doc_counts.py --release  # the release PR: the headline totals too
 ```
 
-The script is part of the pre-commit hooks, so a `git push` will catch this before CI does.  The gate exists to keep `TESTING.md` honest about what the suite covers — a regression where a counted test was silently deleted would fail this check.
+The script is part of the pre-commit hooks, so a commit catches this before CI does.  The gate exists to keep `TESTING.md` honest about what the suite covers — a regression where a counted test was silently deleted would fail this check.
 
 ### Type Checking
 
@@ -184,20 +188,15 @@ mypy vera/
 
 ### Validation Scripts
 
-Every Vera code block in the documentation is gated: the `check_*_examples` family replays each fence through the compiler — parsing at minimum, and for the spec, `docs/index.html` and `PYPI_README.md` the whole pipeline — so a fence cannot drift from the language it demonstrates.  The `examples/` corpus is held harder still: `check_examples.py` type-checks and verifies all of it, and `check_examples_run.py` runs it, so an example is gated as a program and not merely as text.
+Every Vera code block in the agent-facing documentation is gated by one checker, `check_doc_examples.py`: each block parses, passes `vera check` with no warning outside a named benign set, passes `vera verify`, and runs every `vera:run` invocation it names, printing exactly the output the marker states. A block that exports a function names at least one invocation, or carries a `<!-- vera:no-run category="..." reason="..." -->` whose property holds of each export it does not run. A block that is deliberately wrong or partial carries a `<!-- vera:skip-<stage> category="..." code="..." reason="..." -->` marker on the line before its fence; the gate still runs that stage, fails if the block passes it, and fails unless the block fails with exactly the codes the marker names, one per diagnostic, so a marker cannot outlive its reason or excuse a second defect (`scripts/doc_annotations.py` defines the markers and the vocabularies). Every `vera run examples/...` a document names is run, unless `check_examples_run.py` already runs that exact invocation or skips that example by property, and a tracked document with Vera blocks that the gate neither reads nor lists as exempt fails the gate too. The `examples/` corpus is held to the same standard as programs: `check_examples.py` type-checks and verifies all of it, and `check_examples_run.py` runs it.
 
 ```bash
 python scripts/check_conformance.py      # verify all conformance programs
 python scripts/check_examples.py         # verify all .vera examples
-python scripts/check_spec_examples.py    # verify spec code blocks parse
-python scripts/check_readme_examples.py  # verify README code blocks parse
-python scripts/check_examples_doc.py     # verify EXAMPLES.md code blocks parse
-python scripts/check_skill_examples.py   # verify SKILL.md code blocks parse
-python scripts/check_faq_examples.py    # verify FAQ code blocks parse
-python scripts/check_debruijn_examples.py  # verify DE_BRUIJN.md code blocks parse
-python scripts/check_html_examples.py   # verify HTML code blocks parse, check, verify
+python scripts/check_doc_examples.py     # every doc's Vera blocks: parse, check, verify, run
+python scripts/check_doc_examples.py SKILL.md  # the same, for named documents only
 python scripts/check_version_sync.py     # verify version consistency
-python scripts/check_doc_counts.py       # verify documentation counts match codebase
+python scripts/check_doc_counts.py       # verify documentation counts match codebase (add --release on the release PR)
 ```
 
 ## Coding Standards

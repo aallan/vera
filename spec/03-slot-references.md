@@ -64,6 +64,7 @@ To resolve `@T.n`, the compiler:
 
 Scopes are nested. Inner scopes are searched before outer scopes:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="an unnamed signature with its contracts, not a declaration" -->
 ```
 fn(@Int -> @Int)
   requires(@Int.0 > 0)
@@ -129,6 +130,7 @@ This follows standard De Bruijn indexing where the most recently introduced bind
 
 ### Example 2: Mixed Types
 
+<!-- vera:skip-parse category="FRAGMENT" reason="an unnamed signature with its contracts, not a declaration" -->
 ```
 fn(@Int, @String, @Int -> @String)
   requires(@Int.0 > @Int.1)
@@ -148,6 +150,7 @@ In `requires(@Int.0 > @Int.1)`: the third parameter must be greater than the fir
 
 ### Example 3: Nested Let Bindings
 
+<!-- vera:skip-parse category="FRAGMENT" reason="an unnamed signature with its contracts, not a declaration" -->
 ```
 fn(@Int -> @Int)
   requires(@Int.0 >= 0)
@@ -170,6 +173,7 @@ Trace:
 
 ### Example 4: Pattern Matching
 
+<!-- vera:skip-parse category="FRAGMENT" reason="an unnamed signature with its contracts, not a declaration" -->
 ```
 fn(@Option<Int> -> @Int)
   requires(true)
@@ -192,6 +196,7 @@ In the `None` arm:
 
 ### Example 5: Nested Functions (Closures)
 
+<!-- vera:skip-parse category="FRAGMENT" reason="an unnamed signature with its contracts, not a declaration" -->
 ```
 fn(@Int -> Fn(@Int -> @Int) effects(pure))
   requires(@Int.0 > 0)
@@ -210,6 +215,7 @@ In the inner function body:
 
 ### Example 6: Tuple Destructuring
 
+<!-- vera:skip-parse category="FRAGMENT" reason="an unnamed signature with its contracts, not a declaration" -->
 ```
 fn(@Tuple<Int, String, Bool> -> @Int)
   requires(true)
@@ -324,6 +330,7 @@ The contract says: minimum <= maximum (precondition), and the result is between 
 
 In postcondition (`ensures`) clauses, the special reference `@T.result` refers to the function's return value, where `T` is the return type.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="an unnamed signature with its contracts, not a declaration" -->
 ```
 fn(@Int -> @Int)
   ensures(@Int.result > @Int.0)
@@ -334,6 +341,7 @@ fn(@Int -> @Int)
 
 If the return type is a compound type:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="an unnamed signature with its contracts, not a declaration" -->
 ```
 fn(@Int -> @Tuple<Int, String>)
   ensures(@Int.result.0 > @Int.0)
@@ -408,6 +416,7 @@ private fn unwrap(@Option<Cnt>, @Cnt -> @Int)
 
 When there is exactly one binding of a given type in scope, the `.0` index MAY be elided:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="an unnamed signature with its contracts, not a declaration" -->
 ```
 fn(@Int, @String -> @String)
   requires(length(@String) > 0)    -- @String is unambiguous: only one String in scope

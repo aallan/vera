@@ -2865,10 +2865,12 @@ public fn main(@Unit -> @Int)
         assert val == 7
 
     def test_unimported_ctor_stays_rejected_at_check_1008(self) -> None:
-        """PINNED INVARIANT (green pre- and post-fix): the CHECKER rejects an
-        importer pattern-matching a constructor whose type it never imported
-        (E320) — registering the module's own layouts unconditionally in
-        codegen must not soften this user-facing guard rail."""
+        """PINNED INVARIANT: the CHECKER reports an importer pattern-matching
+        a constructor whose type it never imported (E320) — registering the
+        module's own layouts unconditionally in codegen must not silence
+        this user-facing diagnostic.  Since #1513 it is a warning whose fix
+        names the type's import, as for a construction: the constructor
+        denotes one declaration, which types the pattern."""
         from vera.checker import typecheck
 
         main_src = """\
@@ -2890,11 +2892,14 @@ public fn main(@Unit -> @Int)
         try:
             prog = transform(parse_file(path))
             diags = typecheck(prog, main_src, resolved_modules=[mod])
-            assert any(d.error_code == "E320" for d in diags), (
+            e320 = [d for d in diags if d.error_code == "E320"]
+            assert e320, (
                 "pattern-matching an unimported module ctor must stay E320 "
                 f"at check (guard rail, #1008); got "
                 f"{[d.error_code for d in diags]}"
             )
+            assert all("import lib(Inner, make, unwrap);" in d.fix
+                       for d in e320), [d.fix for d in e320]
         finally:
             Path(path).unlink(missing_ok=True)
 

@@ -28,6 +28,7 @@ from functools import lru_cache, partial
 from typing import TYPE_CHECKING, ClassVar, NamedTuple, cast
 
 from vera import ast, binders, carriers, narrowing, naming
+from vera.callgraph import CallGraph, computation_calls
 from vera.environment import ConstructorInfo, FunctionInfo, TypeEnv
 from vera.monomorphize import (
     MonoContext,
@@ -35,6 +36,7 @@ from vera.monomorphize import (
     UninferredTypeArg,
     collect_nested_generic_decls,
     declared_return_clone_key,
+    displaced_module_fns,
     importer_occupied_bare_names,
     module_qualified_generic_names,
     module_qualified_generic_targets,
@@ -64,6 +66,7 @@ from vera.obligations.core import (
 )
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv, alias_env_from_environment
 from vera.builtin_domains import BUILTIN_DOMAINS, domain_contract
+from vera.resolver import merged_import_filters
 from vera.slots import (
     effect_op_result_names,
     fn_slot_scope,
@@ -93,6 +96,7 @@ from vera.types import (
     AdtType,
     EffectRowType,
     FunctionType,
+    ModuleArtifacts,
     PrimitiveType,
     PureEffectRow,
     RefinedType,
@@ -324,7 +328,16 @@ class BlockBindingPolicy(enum.Enum):
     """
 
     FRESH_VAR = "fresh_var"
-    """Always mint a fresh var carrying the declared type's invariant.
+    """Mint a fresh var for the binding, of whatever type it has.
+
+    A scalar's carries the declared type's invariant.  A type with no scalar
+    sort (an ADT, `Array`, `Tuple` or `Map`) takes a fresh const of the sort
+    of the outer binding it shadows, which has the same slot name and so the
+    same sort (#1524 review).  With no outer binding nothing is pushed,
+    because no later reference can then name a wrong value.  That const is
+    TRACKED as an opaque shadow, so a refinement binding refuted over it
+    takes the #1460 re-ask rather than an E505 on a value the program never
+    produces; the scalar var is not tracked (#1470).
 
     For `_walk_for_nat_binding_obligations`, which needs a slot to exist for
     every binding whether or not the RHS translated, so a later `@Nat`
@@ -362,7 +375,9 @@ class ArmContext:
 class RecursiveCall(NamedTuple):
     """One recursive call site, as `_collect_recursive_calls` finds it."""
 
-    name: str
+    #: The declaration the walk's *match* resolved the call to, whose
+    #: measure the call is compared against.
+    callee: ast.FnDecl
     args: tuple[ast.Expr, ...]
     #: The Z3 path conditions (and match-arm facts) that hold at the call.
     path_conds: list[object]
@@ -896,6 +911,7 @@ def verify(
     resolved_modules: list[ResolvedModule] | None = None,
     expr_types: dict[tuple[int, int, int, int], Type] | None = None,
     expr_target_types: dict[tuple[int, int, int, int], Type] | None = None,
+    module_artifacts: ModuleArtifacts | None = None,
 ) -> VerifyResult:
     """Verify contracts in a type-checked Vera Program AST.
 
@@ -905,7 +921,30 @@ def verify(
     *resolved_modules* provides imported module ASTs for cross-module
     contract verification (C7d).  Imported function preconditions are
     checked at call sites; postconditions are assumed.
+
+    *module_artifacts* is each resolved module's own pair of checker tables
+    (``CheckArtifacts.module_artifacts``, collected with
+    ``collect_module_artifacts=True``), which instantiation discovery reads
+    for that module's bodies (#1509) exactly as code generation does.  When
+    a program with imports is verified without them, they are collected
+    here, so the instantiations this run verifies are the ones code
+    generation emits.
     """
+    if resolved_modules and module_artifacts is None:
+        # #1509: discovery reads each module's own table for that module's
+        # bodies, and code generation is handed those tables by every CLI
+        # path that compiles.  Collected with the entry's tables below when
+        # those are missing too, so the program is checked once.
+        from vera.checker import typecheck_with_artifacts
+        _diags, _arts = typecheck_with_artifacts(
+            program, source, file=file, resolved_modules=resolved_modules,
+            collect_module_artifacts=True,
+        )
+        module_artifacts = _arts.module_artifacts
+        if expr_types is None:
+            expr_types = _arts.expr_semantic_types
+        if expr_target_types is None:
+            expr_target_types = _arts.expr_target_types
     if expr_types is None or expr_target_types is None:
         # #747: when the caller didn't supply the checker's semantic-type
         # side-tables, collect them here so a bare verify() matches the CLI
@@ -928,6 +967,7 @@ def verify(
         timeout_ms=resolve_timeout_ms(timeout_ms),
         resolved_modules=resolved_modules,
         expr_types=expr_types, expr_target_types=expr_target_types,
+        module_artifacts=module_artifacts,
     )
     verifier.verify_program(program)
     return VerifyResult(
@@ -979,6 +1019,7 @@ class ContractVerifier:
         shared_smt: SmtContext | None = None,
         expr_types: dict[tuple[int, int, int, int], Type] | None = None,
         expr_target_types: dict[tuple[int, int, int, int], Type] | None = None,
+        module_artifacts: ModuleArtifacts | None = None,
     ) -> None:
         self.env = TypeEnv()
         self.errors: list[Diagnostic] = []
@@ -1149,6 +1190,12 @@ class ContractVerifier:
         # discovery key `_instances` / `generic_decls` use.  A key absent from
         # here is a main-file generic.
         self._generic_origins: dict[str, tuple[str, ...]] = {}
+        # Per module path, the functions its bare calls mean (its own, or
+        # ones it imports) that the entry displaces in the flat tables, to
+        # their `mod$` symbols (`displaced_module_fns`); filled by
+        # `_collect_instantiations` for its discovery context.
+        self._displaced_fn_symbols: dict[
+            tuple[str, ...], dict[str, str]] = {}
         # #1299: the names `inject_prelude` added to the discovery copy.  Fed
         # to the shared `namespace_fn_names` derivation so the tables carry
         # the prelude for EVERY namespace, and so this side's answer does not
@@ -1196,6 +1243,19 @@ class ContractVerifier:
         self._expr_target_types: dict[tuple[int, int, int, int], Type] = (
             expr_target_types or {}
         )
+        # #1509: each resolved module's OWN semantic table, which instantiation
+        # discovery reads for that module's bodies, as code generation's does
+        # (`MonoContext.module_expr_types`).  Empty when a caller verifies
+        # without them — a module's body is then looked up in no table, never
+        # in this program's.
+        self._module_artifacts: ModuleArtifacts = dict(module_artifacts or {})
+        self._module_expr_types: dict[
+            tuple[str, ...], dict[tuple[int, int, int, int], Type]
+        ] = {
+            path: tables[0]
+            for path, tables in self._module_artifacts.items()
+            if tables[0] is not None
+        }
         # #732: per-monomorphization discovery results, populated by
         # register_program (so both the cold verify_program path and the warm
         # incremental session see the same instantiation set).  Maps a generic
@@ -1841,11 +1901,9 @@ class ContractVerifier:
         if not self._resolved_modules:
             return
 
-        # 1. Build import filter
-        for imp in program.imports:
-            self._import_names[imp.path] = (
-                set(imp.names) if imp.names is not None else None
-            )
+        # 1. Build import filter, unioned across repeated imports of one
+        # path (#1433) — the one derivation the checker and codegen read too.
+        self._import_names.update(merged_import_filters(program.imports))
 
         # Snapshot builtin function names
         _builtins = TypeEnv()
@@ -2557,6 +2615,10 @@ class ContractVerifier:
         """
         self._register_modules(program)  # C7d: cross-module imports
         self._register_all(program)      # local declarations shadow imports
+        # #1492/#1520: the call graph whose cycles decide which calls a
+        # `decreases` measure has to be checked across — one per program the
+        # verifier reads, keyed by the declarations it holds.
+        self._register_call_graphs(program)
         # #991: pin each LOCAL top-level function's own info so the scoped
         # helper lookup can prefer it over a nested helper of the same name that
         # clobbered the flat registry (nested helpers register last).  This
@@ -2624,6 +2686,9 @@ class ContractVerifier:
         self,
         disc_program: ast.Program,
         generic_decls: dict[str, ast.FnDecl],
+        qualified_generic_decls: (
+            dict[tuple[str, ...], dict[str, ast.FnDecl]] | None
+        ) = None,
     ) -> MonoContext:
         """Build a MonoContext for per-monomorphization discovery (#732).
 
@@ -2824,6 +2889,30 @@ class ContractVerifier:
                         fn_ret_type_exprs.setdefault(
                             idecl.name, idecl.return_type)
 
+        # A module's function the entry displaces is registered under its
+        # `mod$` symbol, as code generation registers it: discovery resolves a
+        # bare call to it through `displaced_fn_symbols`, and must then find
+        # the module's declaration there and not the entry's.  A module's call
+        # to a function it IMPORTS maps to the symbol the function's own
+        # module holds here, so registering each module's own entries
+        # registers every symbol a call can name.
+        displaced = self._displaced_fn_symbols
+        for mod in self._resolved_modules:
+            symbols = displaced.get(mod.path, {})
+            for tld in mod.program.declarations:
+                idecl = tld.decl
+                if not isinstance(idecl, ast.FnDecl):
+                    continue
+                symbol = symbols.get(idecl.name)
+                if symbol is None:
+                    continue
+                fn_names.add(symbol)
+                iret = self._simple_type_name(idecl.return_type)
+                if iret is not None:
+                    fn_ret_types[symbol] = iret
+                if idecl.return_type is not None:
+                    fn_ret_type_exprs[symbol] = idecl.return_type
+
         # #820: retain the raw alias TypeExprs so the closure-argument widening
         # obligation resolves a `SlotRef` closure's formal types the same way
         # codegen does (`resolve_fn_type_alias`).  First non-empty build wins —
@@ -2881,12 +2970,40 @@ class ContractVerifier:
                 },
             ),
             adt_ctor_tp_indices=adt_ctor_tp_indices,
-            # #1327/#1366/#1369: the same checker table codegen's own
-            # `_build_mono_context` threads — the ENTRY program's, which the
-            # CLI hands to both.  The two consultors must back off to the SAME
-            # answers, or this discovery finds a strict subset of what codegen
-            # emits and a clone whose contract lies runs unverified.
+            # #1327/#1366/#1369: the same checker tables codegen's own
+            # `_build_mono_context` threads — the ENTRY program's for the entry
+            # file's bodies and (#1509) each module's own for that module's —
+            # which the CLI hands to both.  The two consultors must back off to
+            # the SAME answers, or this discovery finds a strict subset of what
+            # codegen emits and a clone whose contract lies runs unverified.
             expr_types=self._expr_types,
+            module_expr_types=self._module_expr_types,
+            # #1511: each namespace's alias maps — the entry's environment and
+            # every module's own — so a type argument is resolved where it
+            # was written before it names a clone, as code generation does.
+            # The module each imported generic came from, as code
+            # generation's `_imported_generic_base_origins` holds it.
+            generic_origins=dict(self._generic_origins),
+            # Each module's functions the entry displaces, so a bare call to
+            # one in that module's body is named from the module's own
+            # declaration, as code generation names it.
+            displaced_fn_symbols=self._displaced_fn_symbols,
+            type_arg_aliases={
+                None: (self._alias_env.aliases, self._alias_env.alias_params),
+                **{
+                    path: (env.aliases, env.alias_params)
+                    for path, env in self._module_alias_envs.items()
+                },
+            },
+            # #1509: the qualified-only generics' declarations, the set
+            # codegen's `_shadowed_imported_generic_decls` holds, so a nested
+            # `path::name(...)` is named from its instantiated return on both
+            # sides.
+            qualified_generic_decls={
+                (path, name): decl
+                for path, by_name in (qualified_generic_decls or {}).items()
+                for name, decl in by_name.items()
+            },
         )
 
     @staticmethod
@@ -3114,7 +3231,13 @@ class ContractVerifier:
             tld.decl.name for tld in disc.declarations
             if isinstance(tld.decl, ast.FnDecl)
         }
-        inject_prelude(disc)
+        # The modules' bodies are compiled beside the entry's, so the
+        # prelude they demand is injected here as code generation injects
+        # it (Pass 1.2), from the same programs as the checker saw them.
+        inject_prelude(
+            disc,
+            modules={mod.path: mod.program for mod in self._resolved_modules},
+        )
         self._disc_prelude_fn_names = frozenset(
             tld.decl.name for tld in disc.declarations
             if isinstance(tld.decl, ast.FnDecl)
@@ -3223,7 +3346,20 @@ class ContractVerifier:
         if not generic_decls:
             return {}
 
-        ctx = self._build_mono_context(disc, generic_decls)
+        qualified_only = self._qualified_only_generic_decls(program)
+        # The functions each module's bare calls mean that the entry
+        # displaces — its own, or one it imports — from the one derivation
+        # code generation renames their calls by.  Read off the entry as
+        # written, before the prelude was injected, as codegen's is.
+        importer_names = self._local_fn_names(program)
+        module_programs = {
+            mod.path: mod.program for mod in self._resolved_modules}
+        self._displaced_fn_symbols = {
+            mod.path: displaced_module_fns(
+                mod.program, mod.path, importer_names, module_programs)
+            for mod in self._resolved_modules
+        }
+        ctx = self._build_mono_context(disc, generic_decls, qualified_only)
         mono = Monomorphizer(ctx)
         # Stash for verification-time monomorphization (monomorphize_fn needs
         # no context, so reusing the discovery instance is fine).
@@ -3417,7 +3553,8 @@ class ContractVerifier:
         # bare name in `program.declarations` and is verified as itself, so this
         # supplementary set is discovery-only bookkeeping for the differential.
         self._collect_shadowed_qualified_instances(
-            program, mono, generic_decls, result,
+            program, mono, generic_decls, result, qualified_only,
+            qualified_module_programs,
         )
         # #1327/#1366: discovery is complete, so every type argument it could
         # not infer is now known.  The verifier's discovered set is what the
@@ -3448,10 +3585,17 @@ class ContractVerifier:
             # the namespace the walk was in; this is the scope that makes
             # every half of "which file is this?" agree (#1208/#1220).
             with self._declaring_module_scope(rec.origin):
-                self._report_one_uninferred(rec)
+                # #1509: the table of the file the argument is written in —
+                # the one discovery consulted before recording it.
+                self._report_one_uninferred(
+                    rec, mono.checker_table(rec.origin))
 
-    def _report_one_uninferred(self, rec: UninferredTypeArg) -> None:
-        """The [E622] diagnostic for one record, in the caller's scope."""
+    def _report_one_uninferred(
+        self, rec: UninferredTypeArg,
+        table: dict[tuple[int, int, int, int], Type] | None,
+    ) -> None:
+        """The [E622] diagnostic for one record, in the caller's scope;
+        *table* is the checker table of the file the argument is in."""
         self._error(
             rec.arg,
             f"Cannot infer the type argument '{rec.type_var}' of "
@@ -3465,7 +3609,7 @@ class ContractVerifier:
                 "at a guessed type would report a tier for a "
                 "specialisation the compiler does not emit."
             ),
-            fix=uninferred_type_arg_fix(rec, self._expr_types),
+            fix=uninferred_type_arg_fix(rec, table),
             spec_ref='Chapter 5, Section 5.9 "Generic Functions"',
             error_code="E622",
         )
@@ -3476,6 +3620,8 @@ class ContractVerifier:
         mono: Monomorphizer,
         generic_decls: dict[str, ast.FnDecl],
         result: dict[str, set[tuple[str, ...]]],
+        shadowed: dict[tuple[str, ...], dict[str, ast.FnDecl]],
+        module_programs: list[ast.Program],
     ) -> None:
         """Discover ``m::gen(...)`` instantiations of shadowed imported generics.
 
@@ -3484,6 +3630,9 @@ class ContractVerifier:
         variant.  Uses the shared arg-driven inference (identical to the bare
         path) over every ``ast.ModuleCall`` whose target is a shadowed imported
         generic, accumulating into ``result`` keyed by the bare generic name.
+        *shadowed* is :meth:`_qualified_only_generic_decls`'s map, and
+        *module_programs* the resolved modules' discovery copies, parallel to
+        ``_resolved_modules``.
 
         Runs the SAME transitive worklist codegen does (CR 3518737014): a
         shadowed clone body that calls ANOTHER generic — an unshadowed imported
@@ -3492,58 +3641,9 @@ class ContractVerifier:
         verifier would discover a strict subset of codegen's emitted set (a new
         false Tier-1: a cross-module transitive clone runs unverified).
         """
-        local_fn_names = self._local_fn_names(program)
-        ctor_to_adt = mono.ctx.ctor_to_adt
-        # Build the (path → {name → decl}) map of shadowed imported generics,
-        # mirroring codegen's ``_shadowed_imported_generic_decls`` — which holds
-        # every QUALIFIED-ONLY module generic, i.e. the ones that do not own the
-        # importer's bare name (#1029 R4, widened to the full predicate by
-        # #1274).  Pre-#1029 only the public-shadowed generics were here, so a
-        # shadowed generic's body call to a PRIVATE sibling (`gen` → `sib`) had
-        # no `sib` base in the transitive scan: the `mod$g$sib` clone codegen
-        # emits ran with a contract the verifier never checked (a false
-        # Tier-1).  Each decl is rerouted the SAME shadow-aware
-        # way codegen reroutes it (bare private-generic call → a ``ModuleCall``
-        # the by-name transitive scan then matches), keeping the two sides'
-        # discovered set in lockstep.  A private sibling reached this way is
-        # verified via ``_imported_generic_verify_decls`` (it is keyed there too),
-        # so it must NOT ALSO be stashed in ``_shadowed_module_generic_verify``
-        # below — the guard there avoids the double-verify.
-        shadowed: dict[tuple[str, ...], dict[str, ast.FnDecl]] = {}
-        for mod in self._resolved_modules:
-            qual_names = module_qualified_generic_names(
-                mod.program, self._import_names.get(mod.path), local_fn_names,
-                direct=mod.direct,
-            )
-            # #1274 (F1): the reroute reaches a DIFFERENT module's generics too,
-            # each under its own owner's path.
-            reroute_targets = self._qualified_generic_targets(
-                program, mod.path,
-            )
-
-            def _reroute(
-                decl: ast.FnDecl,
-                targets: dict[str, tuple[str, ...]] = reroute_targets,
-            ) -> ast.FnDecl:
-                return reroute_module_qualified_generic_calls(
-                    decl, targets,
-                    lambda call, args: ast.ModuleCall(
-                        path=targets[call.name], name=call.name,
-                        args=args, span=call.span,
-                    ),
-                )
-
-            for tld in mod.program.declarations:
-                decl = tld.decl
-                if not isinstance(decl, ast.FnDecl) or not decl.forall_vars:
-                    continue
-                if decl.name in qual_names:
-                    shadowed.setdefault(mod.path, {}).setdefault(
-                        decl.name, _reroute(decl),
-                    )
         if not shadowed:
             return
-
+        ctor_to_adt = mono.ctx.ctor_to_adt
         # Seed: `m::gen(...)` sites in the importer's non-generic bodies.
         # Keyed by (path, name) so a shadowed sibling reached transitively is
         # monomorphized against the correct module's decl.
@@ -3614,9 +3714,13 @@ class ContractVerifier:
                 try:
                     # In *origin*'s namespace, so an [E622] recorded here
                     # names the file the call is written in.
+                    # #1509: with the generics the main walk knows, as
+                    # codegen's twin (`_mono_infer_shadowed`) now infers —
+                    # so a nested generic call in an argument is named from
+                    # its instantiated return on both sides.
                     with mono.namespace_scope(origin):
                         type_args = mono._infer_type_args_from_args(
-                            decl, node.args, ctor_to_adt, None,
+                            decl, node.args, ctor_to_adt, generic_decls,
                         )
                 finally:
                     mono._op_result_types = saved_ops
@@ -3636,6 +3740,20 @@ class ContractVerifier:
             decl = tld.decl
             if isinstance(decl, ast.FnDecl) and not decl.forall_vars:
                 walk_seed(decl, None, None)
+        # #1509: and every module's own bodies, mirroring codegen's scan of
+        # `_imported_fn_decls` (#1029, #1274).  A module body may call a
+        # qualified-only generic QUALIFIED in its own source (`gl::justg(2)`,
+        # `gl` a module the entry does not import); the reroute leaves that a
+        # `ModuleCall`, codegen emitted its clone, and this discovery never
+        # saw it — a clone in the compiled program whose contract no run
+        # verified.
+        for mod, qmod in zip(
+            self._resolved_modules, module_programs, strict=True,
+        ):
+            for tld in qmod.declarations:
+                decl = tld.decl
+                if isinstance(decl, ast.FnDecl) and not decl.forall_vars:
+                    walk_seed(decl, None, mod.path)
 
         # Also seed from every NORMAL (unshadowed) generic clone body already in
         # `result` (CR 3519063445): an unshadowed generic `caller<T>` whose body
@@ -3722,6 +3840,64 @@ class ContractVerifier:
                     nxt = (spath, s_name, s_ct)
                     if nxt not in shadowed_seen:
                         worklist.append(nxt)
+
+    def _qualified_only_generic_decls(
+        self, program: ast.Program,
+    ) -> dict[tuple[str, ...], dict[str, ast.FnDecl]]:
+        """Every module generic *program* reaches only qualified, by module.
+
+        Mirrors codegen's ``_shadowed_imported_generic_decls`` — which holds
+        every QUALIFIED-ONLY module generic, i.e. the ones that do not own the
+        importer's bare name (#1029 R4, widened to the full predicate by
+        #1274).  Pre-#1029 only the public-shadowed generics were here, so a
+        shadowed generic's body call to a PRIVATE sibling (`gen` → `sib`) had
+        no `sib` base in the transitive scan: the `mod$g$sib` clone codegen
+        emits ran with a contract the verifier never checked (a false
+        Tier-1).  Each decl is rerouted the SAME shadow-aware way codegen
+        reroutes it (bare private-generic call → a ``ModuleCall`` the by-name
+        transitive scan then matches), keeping the two sides' discovered set
+        in lockstep.  A private sibling reached this way is verified via
+        ``_imported_generic_verify_decls`` (it is keyed there too), so it must
+        NOT ALSO be stashed in ``_shadowed_module_generic_verify`` — the guard
+        in the walk avoids the double-verify.
+
+        #1509: the discovery context reads the same map, so a nested
+        ``path::name(...)`` is named from the generic's instantiated return.
+        """
+        local_fn_names = self._local_fn_names(program)
+        shadowed: dict[tuple[str, ...], dict[str, ast.FnDecl]] = {}
+        for mod in self._resolved_modules:
+            qual_names = module_qualified_generic_names(
+                mod.program, self._import_names.get(mod.path), local_fn_names,
+                direct=mod.direct,
+            )
+            # #1274 (F1): the reroute reaches a DIFFERENT module's generics too,
+            # each under its own owner's path.
+            reroute_targets = self._qualified_generic_targets(
+                program, mod.path,
+            )
+
+            def _reroute(
+                decl: ast.FnDecl,
+                targets: dict[str, tuple[str, ...]] = reroute_targets,
+            ) -> ast.FnDecl:
+                return reroute_module_qualified_generic_calls(
+                    decl, targets,
+                    lambda call, args: ast.ModuleCall(
+                        path=targets[call.name], name=call.name,
+                        args=args, span=call.span,
+                    ),
+                )
+
+            for tld in mod.program.declarations:
+                decl = tld.decl
+                if not isinstance(decl, ast.FnDecl) or not decl.forall_vars:
+                    continue
+                if decl.name in qual_names:
+                    shadowed.setdefault(mod.path, {}).setdefault(
+                        decl.name, _reroute(decl),
+                    )
+        return shadowed
 
     def _chase_normal_from_clone(
         self,
@@ -5116,17 +5292,13 @@ class ContractVerifier:
         #     recursive call.
         self._record_call_obligations(decl, smt)
 
-        # 8. Handle decreases clauses — attempt verification
-        # Build mutual recursion group for decreases checking
-        group_decls: dict[str, ast.FnDecl] = {decl.name: decl}
-        if decl.where_fns:
-            for wfn in decl.where_fns:
-                group_decls[wfn.name] = wfn
-        elif parent_where_group is not None:
-            group_decls[parent_where_group.name] = parent_where_group
-            if parent_where_group.where_fns:
-                for wfn in parent_where_group.where_fns:
-                    group_decls[wfn.name] = wfn
+        # 8. Handle decreases clauses — attempt verification.
+        # #1520: the group is the function's cycle in the program's WHOLE
+        # call graph.  It was the function and its `where` group, so a cycle
+        # through any other declaration had its measure proved over the
+        # self-calls alone, while the runtime guard, which follows the real
+        # call chain, trapped.
+        group_decls = self._decreases_group(decl, parent_where_group)
 
         for contract in decl.contracts:
             if isinstance(contract, ast.Decreases):
@@ -5141,7 +5313,7 @@ class ContractVerifier:
                 # while the measure's value is one.
                 self._check_decreases_bound(
                     decl, contract, smt, slot_env, assumptions)
-                verified = self._verify_decreases(
+                verified = group_decls is not None and self._verify_decreases(
                     decl, contract, smt, slot_env, group_decls,
                 )
                 # #1480: the two translations above re-read the measure —
@@ -6337,6 +6509,30 @@ class ContractVerifier:
                 return None
             if policy is BlockBindingPolicy.FRESH_VAR:
                 val = self._fresh_slot_var(smt, stmt.type_expr)
+                if val is None and type_name is not None:
+                    # #1524 review: `_fresh_slot_var` has a sort only for a
+                    # scalar, so an ADT, `Array`, `Tuple` or `Map` binding
+                    # was left out of the env, and a later `@T.0` read the
+                    # outer value it shadows: `decreases(@NList.0)` was
+                    # proved over the parameter's tail while the program
+                    # recursed on the tail of a longer list.  The outer has
+                    # this binding's slot name, so its sort is this
+                    # binding's sort.  With no outer there is nothing a
+                    # later reference could read in its place.
+                    #
+                    # The const is an opaque shadow, as OPAQUE_SHADOW's is:
+                    # a countermodel that picks it names no value the
+                    # program produces, so a refinement binding refuted over
+                    # it takes the #1460 re-ask and falls to its runtime
+                    # guard when the predicate is satisfiable.  Untracked,
+                    # it turned the stale-read Tier 1 of `let @PosInt =
+                    # nat_to_int(array_length(@Array<Int>.0))` into an E505
+                    # on a program that runs.  The scalar placeholder above
+                    # stays untracked; its refutations are #1470's.
+                    stale = env.resolve(type_name, 0)
+                    if stale is not None:
+                        val = z3.FreshConst(stale.sort(), "fresh")
+                        self._opaque_shadows.append(val)
             elif (policy is BlockBindingPolicy.OPAQUE_SHADOW
                     and type_name is not None):
                 stale = env.resolve(type_name, 0)
@@ -6947,10 +7143,16 @@ class ContractVerifier:
         # and the arguments of a site are body code too.  Every call met
         # there was obligated by the body walk under the right facts, so
         # what these translations find is dropped; only the measure's own
-        # evaluation is recorded here (#1480 review).
+        # evaluation is recorded here (#1480 review).  A site is a call to
+        # the function's own name, the `return_call` target codegen checks
+        # the measure at (`_dec_self_tail_prefix`).
+
+        def self_call(call: ast.FnCall) -> ast.FnDecl | None:
+            return decl if call.name == decl.name else None
+
         with smt.call_outcomes_discarded():
             sites = self._collect_recursive_calls(
-                decl.name, decl.body, smt, slot_env)
+                decl.body, smt, slot_env, self_call)
         for site in sites:
             if id(site.node) not in tail_ids:
                 continue
@@ -7010,27 +7212,6 @@ class ContractVerifier:
             value = smt.declare_int(smt._fresh_name(prefix))
         self._opaque_shadows.append(value)
         return value
-
-    def _bind_unknown(
-        self,
-        env: SlotEnv,
-        smt: SmtContext,
-        binders: Iterable[ast.TypeExpr],
-    ) -> SlotEnv:
-        """*env* with an opaque value pushed for each binder, in order.
-
-        For a scope whose binders take values the recursive-call walk cannot
-        know: a closure's parameters, a handler clause's operation
-        parameters and the handler state it binds after them (the order the
-        checker binds them in).  A reference to one of them resolves to an
-        unknown value of its sort, and a reference past them still reaches
-        the enclosing binding it captures.
-        """
-        for te in binders:
-            env = env.push(
-                self._type_expr_to_slot_name(te, smt._alias_env),
-                self._opaque_value(smt, te, "scoped"))
-        return env
 
     def _walk_evaluated(
         self,
@@ -7215,20 +7396,35 @@ class ContractVerifier:
         if z3_initial is None:  # pragma: no cover
             return False
 
-        # Collect all recursive call sites (self + mutual) with path conds
-        group_names = set(group_decls.keys())
+        # Collect all recursive call sites (self + mutual) with path conds.
+        # Which calls stay on the cycle is settled before the walk, and not
+        # by it: see `_decreases_expected`.
+        expected = self._decreases_expected(decl, group_decls)
+
+        def match(call: ast.FnCall) -> ast.FnDecl | None:
+            return expected.get(id(call))
+
         calls = self._collect_recursive_calls(
-            decl.name, decl.body, smt, slot_env, group_names,
+            decl.body, smt, slot_env, match,
         )
         if not calls:
             # No recursive calls found → can't verify
+            return False
+        # #1520: every call on the cycle has to be one the walk compared
+        # with the measure.  A call the walk cannot reach would otherwise be
+        # missing from the proof while the runtime guard still meets it,
+        # which is the false Tier 1 this closes — for a monomorphized clone
+        # as much as for the declaration the graph holds (#1524 review: a
+        # generic's clone had no such check, so a call in a position the
+        # walk skipped was proved away).
+        if not set(expected) <= {id(c[4]) for c in calls}:
             return False
 
         import z3 as z3mod
 
         # For each call site, verify the measure decreases
-        for callee_name, call_args, z3_path_conds, call_site_env, _ in calls:
-            callee_decl = group_decls.get(callee_name, decl)
+        for callee_decl, call_args, z3_path_conds, call_site_env, _call in \
+                calls:
 
             # Build callee's slot env from actual arguments
             callee_env = SlotEnv()
@@ -7249,7 +7445,7 @@ class ContractVerifier:
 
             # For cross-calls, use the callee's decreases expression
             callee_measure_expr: ast.Expr
-            if callee_name == decl.name:
+            if callee_decl is decl:
                 callee_measure_expr = measure_expr
             else:
                 found = self._find_decreases_expr(callee_decl)
@@ -7262,6 +7458,10 @@ class ContractVerifier:
                 callee_measure_expr, callee_env,
             )
             if z3_callee_measure is None:  # pragma: no cover
+                return False
+            if z3_callee_measure.sort() != z3_initial.sort():
+                # #1520: two functions on one cycle whose measures have
+                # different types have no common order to decrease in.
                 return False
 
             # Verify: path_conds ⟹ measure strictly decreases
@@ -7302,63 +7502,211 @@ class ContractVerifier:
 
     def _collect_recursive_calls(
         self,
-        fn_name: str,
         expr: ast.Expr,
         smt: SmtContext,
         slot_env: SlotEnv,
-        group_names: set[str] | None = None,
+        match: Callable[[ast.FnCall], ast.FnDecl | None],
     ) -> list[RecursiveCall]:
-        """Walk the AST to find recursive call sites.
+        """Walk the AST to find the calls *match* resolves to a declaration:
+        a cycle member for the termination proof, the function itself for
+        the measure a self-recursive tail call evaluates (#1480).
 
-        Finds calls to *fn_name* and, when *group_names* is supplied, any
-        call to a function in the mutual recursion group.  Returns one
-        :class:`RecursiveCall` per site, carrying the call node itself so a
-        consumer can ask where the call stands (tail position, #1480).
+        Returns one :class:`RecursiveCall` per site, carrying the declaration
+        *match* named and the call node itself, so a consumer can ask where
+        the call stands (tail position, #1480).
         """
-        effective = group_names or {fn_name}
         results: list[RecursiveCall] = []
-        self._walk_for_calls(effective, expr, [], results, smt, slot_env)
+        self._walk_for_calls(match, expr, [], results, smt, slot_env)
         return results
+
+    def _decreases_expected(
+        self, decl: ast.FnDecl, group_decls: dict[str, ast.FnDecl],
+    ) -> dict[int, ast.FnDecl]:
+        """The calls in *decl*'s body that stay on its cycle, by call node.
+
+        Each maps to the declaration it calls, whose measure the call is
+        compared against.  For a declaration the call graph holds, these are
+        the graph's own cycle sites (#1520).  A monomorphized clone is a copy
+        the graph never saw, so its calls are every computation call that
+        names a member of *group_decls*, the clone's `where` group, which
+        `_decreases_group` has checked holds the original's whole cycle.
+
+        Both come from :func:`vera.callgraph.iter_calls`, a generic walk
+        over every field, and never from `_walk_for_calls`, the walk the
+        measure is compared on.  That independence is the point: a position
+        the measure walk does not read shows up as an expected call it did
+        not compare, so `_verify_decreases` withholds the proof instead of
+        proving the calls it happened to reach.
+        """
+        if self._graph_decl(decl) is decl:
+            return {
+                id(site.call): site.callee
+                for site in self._graph_of[id(decl)].cycle_sites(decl)
+            }
+        return {
+            id(call): group_decls[call.name]
+            for call in computation_calls(decl.body)
+            if call.name in group_decls
+        }
+
+    def _register_call_graphs(self, program: ast.Program) -> None:
+        """Build the call graph of *program* and of every module it reads."""
+        graphs = [CallGraph(tld.decl for tld in program.declarations)]
+        for mod in self._resolved_modules:
+            graphs.append(CallGraph(
+                tld.decl for tld in mod.program.declarations))
+        self._graph_of: dict[int, CallGraph] = {}
+        self._graph_by_name: dict[str, list[ast.FnDecl]] = {}
+        for graph in graphs:
+            for fn in graph.fns:
+                self._graph_of[id(fn)] = graph
+                self._graph_by_name.setdefault(fn.name, []).append(fn)
+
+    def _graph_decl(self, decl: ast.FnDecl) -> ast.FnDecl | None:
+        """The call graph's own declaration for *decl*.
+
+        *decl* itself when the graph holds it.  A monomorphized clone is a
+        new node that keeps its source name, so it maps to the one
+        declaration of that name; a name two declarations share maps to
+        nothing, and the caller then claims nothing about the measure.
+        """
+        graph_of = getattr(self, "_graph_of", None)
+        if graph_of is None:
+            return None
+        if id(decl) in graph_of:
+            return decl
+        same = self._graph_by_name.get(decl.name, [])
+        return same[0] if len(same) == 1 else None
+
+    def _decreases_cycle(self, decl: ast.FnDecl) -> list[ast.FnDecl] | None:
+        """The declarations on *decl*'s call cycle, or None if unplaceable."""
+        orig = self._graph_decl(decl)
+        if orig is None:
+            return None
+        return self._graph_of[id(orig)].cycle(orig)
+
+    def _decreases_group(
+        self, decl: ast.FnDecl, parent_where_group: ast.FnDecl | None,
+    ) -> dict[str, ast.FnDecl] | None:
+        """What `_verify_decreases` matches *decl*'s cycle calls against.
+
+        A declaration the call graph holds needs nothing here: its calls
+        are matched by SITE against the graph's cycle (#1520), so the dict
+        is empty.  A monomorphized clone is a copy the graph never saw, and
+        keeps the by-name `where` group it has always used, whose members
+        are clones too, but only while the original's cycle lies inside
+        that group.  A cycle through any other declaration cannot be read
+        from the clone, so the answer is None: no proof is claimed and the
+        obligation stays with the runtime guard.
+        """
+        cycle = self._decreases_cycle(decl)
+        if cycle is None:
+            return None
+        if self._graph_decl(decl) is decl:
+            return {}
+        where_group: dict[str, ast.FnDecl] = {decl.name: decl}
+        if decl.where_fns:
+            for wfn in decl.where_fns:
+                where_group[wfn.name] = wfn
+        elif parent_where_group is not None:
+            where_group[parent_where_group.name] = parent_where_group
+            for wfn in parent_where_group.where_fns or ():
+                where_group[wfn.name] = wfn
+        if any(m.name not in where_group for m in cycle):
+            return None
+        return where_group
 
     def _walk_for_calls(
         self,
-        group_names: set[str],
+        match: Callable[[ast.FnCall], ast.FnDecl | None],
         expr: ast.Expr,
         z3_path_conds: list[object],
         results: list[RecursiveCall],
         smt: SmtContext,
         slot_env: SlotEnv,
     ) -> None:
-        """Recursively walk AST, tracking Z3 path conditions and slot env."""
+        """Recursively walk AST, tracking Z3 path conditions and slot env.
+
+        The `decreases` walk: it records each call *match* puts on the cycle
+        with the path conditions and slot env its arguments are read in.
+        `_verify_decreases` holds what it records to the call graph's own
+        enumeration (`_decreases_expected`), so a position missing here
+        withholds a proof rather than making one; a position walked with the
+        wrong env is the failure that check cannot see, and each branch
+        below says which env it reads a position in.
+
+        # WALKER_COVERAGE: (#597 — every Expr subclass has a disposition;
+        # check_walker_coverage.py enforces completeness.  #1524 review:
+        # ForallExpr and ExistsExpr were leaves here, so a recursive call in a
+        # quantifier was proved away on the path with no other check.)
+        #
+        # Handled (explicit isinstance branch — record and/or recurse):
+        #   FnCall             → record if on the cycle; recurse args
+        #   IfExpr             → condition (enclosing path), branches under it
+        #   Block              → let / destructure values, statements, tail,
+        #                        with each binding pushed on the env
+        #   BinaryExpr         → recurse operands
+        #   UnaryExpr          → recurse operand
+        #   MatchExpr          → scrutinee; arm bodies in the arm's env
+        #   HandleExpr         → state init + body (enclosing env); clause
+        #                        bodies and updates (empty env, no path facts)
+        #   AnonFn             → body (empty env, no path facts)
+        #   ForallExpr         → domain (enclosing env) + predicate (AnonFn)
+        #   ExistsExpr         → domain (enclosing env) + predicate (AnonFn)
+        #   ConstructorCall    → recurse args
+        #   QualifiedCall      → recurse args (effect operation)
+        #   ModuleCall         → recurse args (never an edge: E011)
+        #   IndexExpr          → recurse collection + index
+        #   ArrayLit           → recurse elements
+        #   InterpolatedString → recurse interpolated parts
+        #   AssertExpr         → recurse condition
+        #   AssumeExpr         → recurse condition
+        #
+        # Leaf — no sub-expression, walk terminates:
+        #   IntLit             → literal
+        #   BoolLit            → literal
+        #   StringLit          → literal
+        #   FloatLit           → literal
+        #   UnitLit            → literal
+        #   SlotRef            → bound slot, no sub-expression
+        #   ResultRef          → @result reference, no sub-expression
+        #   NullaryConstructor → nullary ADT tag, no sub-expression
+        #   OldExpr            → contract state operator (effect_ref only)
+        #   NewExpr            → contract state operator (effect_ref only)
+        #
+        # Cannot occur — rejected before this walk:
+        #   HoleExpr           → check time rejects (E170)
+        """
         if isinstance(expr, ast.FnCall):
-            if expr.name in group_names:
+            callee = match(expr)
+            if callee is not None:
                 results.append(RecursiveCall(
-                    expr.name, expr.args, list(z3_path_conds), slot_env,
-                    expr,
+                    callee, expr.args, list(z3_path_conds), slot_env, expr,
                 ))
             # Also walk into arguments (they might contain recursive calls)
             for arg in expr.args:
-                self._walk_for_calls(group_names, arg, z3_path_conds, results,
+                self._walk_for_calls(match, arg, z3_path_conds, results,
                                      smt, slot_env)
             return
 
         if isinstance(expr, ast.IfExpr):
-            # The condition is evaluated first, and a call in it is a call.
-            self._walk_for_calls(group_names, expr.condition, z3_path_conds,
+            # #1492: a call in the condition runs on every path, so it is
+            # walked under the enclosing path conditions.
+            self._walk_for_calls(match, expr.condition, z3_path_conds,
                                  results, smt, slot_env)
             z3_cond = smt.translate_expr(expr.condition, slot_env)
             if z3_cond is not None:
                 import z3 as z3mod
                 then_conds = z3_path_conds + [z3_cond]
-                self._walk_for_calls(group_names, expr.then_branch,
+                self._walk_for_calls(match, expr.then_branch,
                                      then_conds, results, smt, slot_env)
                 else_conds = z3_path_conds + [z3mod.Not(z3_cond)]
-                self._walk_for_calls(group_names, expr.else_branch,
+                self._walk_for_calls(match, expr.else_branch,
                                      else_conds, results, smt, slot_env)
             else:  # pragma: no cover
-                self._walk_for_calls(group_names, expr.then_branch,
+                self._walk_for_calls(match, expr.then_branch,
                                      z3_path_conds, results, smt, slot_env)
-                self._walk_for_calls(group_names, expr.else_branch,
+                self._walk_for_calls(match, expr.else_branch,
                                      z3_path_conds, results, smt, slot_env)
             return
 
@@ -7369,8 +7717,21 @@ class ContractVerifier:
             cur_env = slot_env
             for stmt in expr.statements:
                 if isinstance(stmt, ast.LetStmt):
-                    self._walk_for_calls(group_names, stmt.value,
+                    self._walk_for_calls(match, stmt.value,
                                          z3_path_conds, results, smt, cur_env)
+                    # #1492, #1480: OPAQUE_SHADOW, not the SKIP policy this
+                    # walk had.  The calls it finds are not only looked at:
+                    # their arguments are translated in this env to compare
+                    # the measure, and to obligate the measure a tail call
+                    # evaluates.  Leaving an untranslatable binding out of
+                    # the env shifted every later slot of its type onto an
+                    # outer one, so `f(@Nat.0 - 1)` after such a `let` read
+                    # the PARAMETER, proved a decrease the run then broke,
+                    # and the guard trapped a program verified at Tier 1.  A
+                    # fresh value keeps the De Bruijn positions aligned and
+                    # can only fail a proof, never make one; it is tracked,
+                    # so an obligation over it falls to Tier 3 rather than
+                    # being refused on its unconstrained value.
                     bound = self._apply_let_binding(
                         stmt, smt, cur_env,
                         policy=BlockBindingPolicy.OPAQUE_SHADOW,
@@ -7378,7 +7739,12 @@ class ContractVerifier:
                     if bound is not None:  # OPAQUE_SHADOW never halts
                         cur_env = bound
                 elif isinstance(stmt, ast.LetDestruct):
-                    self._walk_for_calls(group_names, stmt.value,
+                    # #1492: a destructure's right-hand side is evaluated like
+                    # any other, and it was skipped, so a recursive call there
+                    # was never compared with the measure.  Its binders become
+                    # opaque values, so a later call whose arguments read one
+                    # can only fail to prove, never prove from a stale outer.
+                    self._walk_for_calls(match, stmt.value,
                                          z3_path_conds, results, smt, cur_env)
                     cur_env = self._shadow_destructured_slots(
                         stmt, smt, cur_env)
@@ -7386,26 +7752,26 @@ class ContractVerifier:
                     # Walk a statement-position expression for recursive-group
                     # calls so `decreases` sees a discarded recursive call
                     # (test_decreases_resolves_via_stmt_position_recursive_call).
-                    self._walk_for_calls(group_names, stmt.expr,
+                    self._walk_for_calls(match, stmt.expr,
                                          z3_path_conds, results, smt, cur_env)
-            self._walk_for_calls(group_names, expr.expr, z3_path_conds,
+            self._walk_for_calls(match, expr.expr, z3_path_conds,
                                  results, smt, cur_env)
             return
 
         if isinstance(expr, ast.BinaryExpr):
-            self._walk_for_calls(group_names, expr.left, z3_path_conds,
+            self._walk_for_calls(match, expr.left, z3_path_conds,
                                  results, smt, slot_env)
-            self._walk_for_calls(group_names, expr.right, z3_path_conds,
+            self._walk_for_calls(match, expr.right, z3_path_conds,
                                  results, smt, slot_env)
             return
 
         if isinstance(expr, ast.UnaryExpr):
-            self._walk_for_calls(group_names, expr.operand, z3_path_conds,
+            self._walk_for_calls(match, expr.operand, z3_path_conds,
                                  results, smt, slot_env)
             return
 
         if isinstance(expr, ast.MatchExpr):
-            self._walk_for_calls(group_names, expr.scrutinee, z3_path_conds,
+            self._walk_for_calls(match, expr.scrutinee, z3_path_conds,
                                  results, smt, slot_env)
             scrutinee_z3 = smt.translate_expr(expr.scrutinee, slot_env)
             for match_arm in expr.arms:
@@ -7423,7 +7789,7 @@ class ContractVerifier:
                 if arm.condition is not None:
                     arm_conds.append(arm.condition)
                 arm_conds.extend(arm.facts)
-                self._walk_for_calls(group_names, match_arm.body, arm_conds,
+                self._walk_for_calls(match, match_arm.body, arm_conds,
                                      results, smt, arm.env)
             return
 
@@ -7436,79 +7802,90 @@ class ContractVerifier:
         # only make the proof harder, never wrongly easier).
         #
         # A clause or a closure body binds slots of its own over the
-        # enclosing ones, and is read in that scope (#1480 review): read
-        # against the enclosing env, a closure's `@Nat.0` was the enclosing
-        # PARAMETER, and a measure proved over it held for a value the call
-        # never passes.
+        # enclosing ones, so it is not read against the enclosing env
+        # (#1480 review, #1492): there a closure's `@Nat.0` was the
+        # enclosing PARAMETER, and a measure proved over it held for a
+        # value the call never passes.
         if isinstance(expr, ast.HandleExpr):
             # The state's initialiser and the handled body are enclosing-
             # scope code: the state is no slot in the body (§7.5.1).
             if expr.state is not None:
-                self._walk_for_calls(group_names, expr.state.init_expr,
+                self._walk_for_calls(match, expr.state.init_expr,
                                      z3_path_conds, results, smt, slot_env)
-            self._walk_for_calls(group_names, expr.body, z3_path_conds,
+            self._walk_for_calls(match, expr.body, z3_path_conds,
                                  results, smt, slot_env)
-            state = (expr.state.type_expr,) if expr.state is not None else ()
+            # #1492: a clause body binds the operation's arguments (and the
+            # handler state) as its most recent slots, so reading its calls
+            # against the enclosing env named the PARAMETER where the clause
+            # names the thrown value — `throw(@Nat) -> { f(@Nat.0 - 1) }`
+            # under `throw(@Nat.0 + 5)` was proved a decrease and trapped.
+            # It is read with no slots and no path facts: every call there
+            # is still found, and none can be proved from a binding this
+            # walk does not model.
             for clause in expr.clauses:
-                clause_env = self._bind_unknown(
-                    slot_env, smt, (*clause.params, *state))
-                self._walk_for_calls(group_names, clause.body,
-                                     z3_path_conds, results, smt, clause_env)
+                self._walk_for_calls(match, clause.body,
+                                     [], results, smt, SlotEnv())
                 if clause.state_update is not None:
-                    self._walk_for_calls(group_names, clause.state_update[1],
-                                         z3_path_conds, results, smt,
-                                         clause_env)
+                    self._walk_for_calls(match, clause.state_update[1],
+                                         [], results, smt, SlotEnv())
             return
 
         if isinstance(expr, ast.AnonFn):
-            self._walk_for_calls(
-                group_names, expr.body, z3_path_conds, results, smt,
-                self._bind_unknown(slot_env, smt, expr.params))
+            # #1492: the same for a closure.  Its parameters shadow outer
+            # slots of their type, so `fn(@Nat -> @Nat) { f(@Nat.0 - 1) }`
+            # applied to `n + 10` was read as `f(n - 1)` and proved; and a
+            # closure can be applied in another activation than the one
+            # that built it, where the entry measure is not the one the
+            # path facts describe.  The body is read with no slots and no
+            # path facts, so its calls are found and none is proved.
+            self._walk_for_calls(match, expr.body, [],
+                                 results, smt, SlotEnv())
             return
 
         if isinstance(expr, (ast.ForallExpr, ast.ExistsExpr)):
-            # The domain is enclosing-scope code; the predicate is a
-            # closure, called on each element of it.
-            self._walk_for_calls(group_names, expr.domain, z3_path_conds,
+            # #1524 review: the domain is an operand evaluated in this
+            # activation, so it is read like one.  The predicate is a
+            # closure, and the branch above reads it as one: its calls are
+            # found and none is proved.
+            self._walk_for_calls(match, expr.domain, z3_path_conds,
                                  results, smt, slot_env)
-            self._walk_for_calls(group_names, expr.predicate, z3_path_conds,
+            self._walk_for_calls(match, expr.predicate, z3_path_conds,
                                  results, smt, slot_env)
             return
 
         if isinstance(expr, (ast.ConstructorCall, ast.QualifiedCall,
                              ast.ModuleCall)):
             for arg in expr.args:
-                self._walk_for_calls(group_names, arg, z3_path_conds,
+                self._walk_for_calls(match, arg, z3_path_conds,
                                      results, smt, slot_env)
             return
 
         if isinstance(expr, ast.IndexExpr):
-            self._walk_for_calls(group_names, expr.collection, z3_path_conds,
+            self._walk_for_calls(match, expr.collection, z3_path_conds,
                                  results, smt, slot_env)
-            self._walk_for_calls(group_names, expr.index, z3_path_conds,
+            self._walk_for_calls(match, expr.index, z3_path_conds,
                                  results, smt, slot_env)
             return
 
         if isinstance(expr, ast.ArrayLit):
             for el in expr.elements:
-                self._walk_for_calls(group_names, el, z3_path_conds,
+                self._walk_for_calls(match, el, z3_path_conds,
                                      results, smt, slot_env)
             return
 
         if isinstance(expr, ast.InterpolatedString):
             for part in expr.parts:
                 if isinstance(part, ast.Expr):
-                    self._walk_for_calls(group_names, part, z3_path_conds,
+                    self._walk_for_calls(match, part, z3_path_conds,
                                          results, smt, slot_env)
             return
 
         if isinstance(expr, (ast.AssertExpr, ast.AssumeExpr)):
-            self._walk_for_calls(group_names, expr.expr, z3_path_conds,
+            self._walk_for_calls(match, expr.expr, z3_path_conds,
                                  results, smt, slot_env)
             return
 
-        # Other expression types (literals, slot refs, holes) — no calls a
-        # body can reach.
+        # Leaves (the checklist above): no sub-expression to hold a call.
         return
 
     # -----------------------------------------------------------------
@@ -7722,12 +8099,14 @@ class ContractVerifier:
             # `requires` or a built-in's declared domain — obligated HERE,
             # where the walk reaches it, not only where translation does.
             self._obligate_call_site(expr, smt, slot_env, assumptions)
-            # #807: float_to_int(x) compiles to `i64.trunc_f64_s`, which traps on
-            # NaN / ±Inf / out-of-i64-range — a partial op, so it carries a
-            # domain obligation just like div-by-zero (#801) and overflow (#798).
-            # #1480: `floor`, `ceil` and `round` compile to the same instruction
-            # after a rounding step, and `float_to_string` truncates the
-            # integer part it prints with it; none of them carried anything.
+            # #807: float_to_int(x) is a partial op — NaN / ±Inf /
+            # out-of-i64-range trap, as codegen's `float_conversion` check
+            # (#1479) — so it carries a domain obligation just like
+            # div-by-zero (#801) and overflow (#798).
+            # #1480: `floor`, `ceil` and `round` make the same check after a
+            # rounding step, and `float_to_string` truncates the integer
+            # part it prints with an `i64.trunc_f64_s` that traps the same
+            # way (#1482); none of them carried anything.
             if len(expr.args) == 1 and self._is_builtin_call(expr.name):
                 if expr.name in _FLOAT_CONVERSIONS:
                     self._check_float_to_int_domain_obligation(
@@ -10103,7 +10482,7 @@ class ContractVerifier:
         Two-check, mirroring the index-bounds discharge (#680): prove ``P`` →
         ``verified``; else prove ``¬P`` (``P`` is false in every reachable
         state, so the assert always traps) → loud E507; else Tier 3 (the
-        §11.14.1 ``unreachable`` trap is the runtime guard).  Path conditions
+        §11.14.1 ``assertion_failed`` check is the runtime guard).  Path conditions
         from enclosing ``if`` / ``match`` branches live in
         ``smt._path_conditions`` and are picked up by ``check_valid``, so a
         branch-guarded assert discharges from its guard.  An untranslatable
@@ -10200,7 +10579,8 @@ class ContractVerifier:
         if (coll is None or idx is None
                 or not str(coll.sort()).startswith("Array_")):
             # Untranslatable, or an unrecognised array representation — no
-            # Tier-1 length model.  The runtime `out_of_bounds` trap guards it.
+            # Tier-1 length model.  Codegen's `index_out_of_bounds` check
+            # guards it at run time.
             self._record_obligation(decl.name, "index_bounds", expr, "tier3")
             return
 
@@ -10453,19 +10833,20 @@ class ContractVerifier:
     ) -> None:
         """Discharge the ``float_to_int`` domain obligation at one site (#807).
 
-        ``float_to_int(x)`` compiles to ``i64.trunc_f64_s``, which TRAPS when
-        ``x`` is ``NaN``, ``±Inf``, or when ``trunc(x)`` falls outside
-        ``[i64.MIN, i64.MAX]``.  ``floor``, ``ceil`` and ``round`` compile to
-        the same instruction after ``f64.floor`` / ``f64.ceil`` /
-        ``f64.nearest`` (#1480), so they carry the same obligation over the
-        value that step produces.  So each site carries a "``x`` is finite and
-        in range" obligation, mirroring div-by-zero (#801) and overflow (#798):
+        ``float_to_int(x)`` TRAPS — as ``float_conversion``, the domain check
+        codegen emits before its ``i64.trunc_f64_s`` (#1479) — when ``x`` is
+        ``NaN``, ``±Inf``, or when ``trunc(x)`` falls outside
+        ``[i64.MIN, i64.MAX]``.  ``floor``, ``ceil`` and ``round`` make the
+        same check after ``f64.floor`` / ``f64.ceil`` / ``f64.nearest``
+        (#1480), so they carry the same obligation over the value that step
+        produces.  So each site carries a "``x`` is finite and in range"
+        obligation, mirroring div-by-zero (#801) and overflow (#798):
 
         - a CONCRETE finite in-range argument → **Tier 1** (verified);
         - a concrete ``NaN`` / ``Inf`` / out-of-range argument → provable trap →
           **loud E529**;
-        - a symbolic argument → **honest Tier 3**, guarded by the codegen trunc
-          trap.
+        - a symbolic argument → **honest Tier 3**, guarded by that
+          ``float_conversion`` check.
 
         Concrete-gated: Z3's symbolic ``FP``↔``Real`` reasoning is unreliable
         (it returns spurious counterexamples — see :mod:`vera.smt`'s
@@ -13485,6 +13866,7 @@ class ContractVerifier:
             from vera.disclosure import ModuleDisclosureIndex
             self._disclosure_index = ModuleDisclosureIndex(
                 self._resolved_modules, self.timeout_ms,
+                self._module_artifacts,
             )
         return self._disclosure_index.disclosed_in(path)
 
@@ -14238,11 +14620,11 @@ class ContractVerifier:
             f"`{operand}` in '{decl.name}' provably traps: the argument is "
             f"{reason}.",
             rationale=(
-                f"{conversion} compiles to {step}`i64.trunc_f64_s`, which "
-                f"traps at runtime on NaN, +/-infinity, or a value whose "
-                f"truncation falls outside the i64 range.  The argument is a "
-                f"constant the verifier determined is always one of these "
-                f"(#807)."
+                f"{conversion} ends in {step}`i64.trunc_f64_s`, and traps at "
+                f"runtime, as `float_conversion`, on NaN, +/-infinity, or a "
+                f"value whose truncation falls outside the i64 range.  The "
+                f"argument is a constant the verifier determined is always "
+                f"one of these (#807)."
             ),
             fix=(
                 f"Guard the conversion so the argument is finite and in "
@@ -14285,8 +14667,8 @@ class ContractVerifier:
             rationale=(
                 "A body `assert(P)` carries a Tier-1 proof obligation that `P` "
                 "holds (spec §6.2.5).  The SMT solver proved `P` is false for "
-                "every reachable state, so the assert always traps "
-                "(`unreachable`) at runtime."
+                "every reachable state, so the assert always traps at "
+                "runtime, as `assertion_failed`."
             ),
             fix=(
                 "Correct or weaken the assertion, or establish the missing "

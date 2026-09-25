@@ -28,6 +28,7 @@ from vera.codegen.api import CompileResult
 from vera.codegen.memory import ConstructorLayout
 from vera.errors import Diagnostic, SourceLocation
 from vera.monomorphize import (
+    Monomorphizer,
     NamespaceFnNames,
     canonicalize_type_aliases,
     qualify_nested_generic_decls,
@@ -41,7 +42,14 @@ from vera.prelude import (
     prelude_adt_names,
     prelude_data_decls,
 )
+from vera.skip import CodegenInvariantError
 from vera.slots import family_fallback_name
+from vera.trap_registry import (
+    TRAP_EMITTERS,
+    EmittedCheck,
+    find_check_markers,
+    strip_check_markers,
+)
 from vera.wasm import StringPool
 from vera.wasm.helpers import CellNames
 from vera.wasm.async_fusion import (
@@ -60,7 +68,7 @@ from vera.codegen.compilability import CompilabilityMixin
 if TYPE_CHECKING:
     from vera.resolver import ResolvedModule
     from vera.types import ModuleArtifacts, SpanTypeTable, Type
-    from vera.wasm.context import WasmContext
+    from vera.wasm.context import CheckRecord, WasmContext
 
 
 # #1100: WAT-text scanning for the skip-propagation pass
@@ -73,6 +81,13 @@ if TYPE_CHECKING:
 # function symbol); `throw $tag` references an exception tag, not a
 # function; `ref.func` is never emitted.
 _WAT_FN_NAME_RE = re.compile(r"\s*\(func \$([^\s()]+)")
+# #1479: every function DEFINITION in the assembled module, which is how the
+# per-module record attributes each check marker to the function holding it.
+_WAT_FN_DEF_RE = re.compile(r"^\s*\(func \$([^\s()]+)(.*)$", re.MULTILINE)
+# The whole body of a closure whose enclosing function was dropped: its table
+# slot must survive, and nothing can construct it.  Named so the trap roster
+# (`vera.trap_registry.INTERNAL_TRAPS`) can list the stub's `unreachable`.
+_DROPPED_CLOSURE_BODY = "unreachable"
 _WAT_CALL_RE = re.compile(r"\b(?:return_call|call)\s+\$([^\s()]+)")
 # #1185: an INDIRECT call names no function symbol at all — it dispatches
 # on the module's function table — so `_WAT_CALL_RE` is blind to it and
@@ -231,16 +246,17 @@ class CodeGenerator(
         # Track which effect operations are needed
         self._io_ops_used: set[str] = set()
         self._needs_contract_fail: bool = False
-        # #808: set when an overflow guard emits a `vera.overflow_trap` call,
-        # so assembly.py declares the host import.
-        self._needs_overflow_trap: bool = False
-        # #754: set when a @Int -> @Nat narrowing guard emits a
-        # `vera.nat_guard_trap` call, so `_assemble_module` declares the
-        # host import.
-        self._needs_nat_guard_trap: bool = False
-        # #1438: the widening guard's twin, on the generator that
-        # assembles the module.
-        self._needs_widen_trap: bool = False
+        # #1479: set (merged from each `WasmContext` at the per-scope seams)
+        # when any check calls `vera.trap`, the one signal every named check
+        # raises, so `_assemble_module` declares the import.  The allocator
+        # calls it too, so an allocating module declares it whatever this
+        # says (see `_assemble_module`).
+        self._needs_trap: bool = False
+        # #1479: every check emitted into this module, by record entry id —
+        # one record, shared with every `WasmContext` compiling the module.
+        # `CompileResult.emitted_checks` is read back from the assembled text,
+        # whose instructions carry the entries' markers.
+        self._emitted_checks: CheckRecord = {}
         self._needs_memory: bool = False
         # (cell, wasm_type).  `CellNames` rather than a bare family
         # (#1238 review F2): the wasi target names the unsupported
@@ -419,6 +435,27 @@ class CodeGenerator(
         self._adt_namespace_members: dict[
             tuple[str, ...] | None, frozenset[str]
         ] = {}
+        # #1493: the data types an imported module's REGISTRAR must see as
+        # data types though it holds none of their layouts — the ones that
+        # module imports, and the prelude's.  Set only on the per-module
+        # registrar `_register_modules` builds (`_module_registrar`), from
+        # the one derivation the checker's module registration reads
+        # (`vera.module_view.imported_data_types`); empty everywhere else,
+        # where imported layouts are absorbed and scoped by membership.
+        self._imported_adt_names: frozenset[str] = frozenset()
+        # Each imported module's program as the checker saw it, by path,
+        # captured by `_register_modules` before its rewrites.  Pass 1.2 asks the
+        # prelude's demand of them (`inject_prelude(..., modules=)`), and the
+        # verifier's discovery asks it of the same programs, so the two sides
+        # inject one prelude (PR #1508 review).
+        self._module_programs_as_checked: dict[
+            tuple[str, ...], ast.Program] = {}
+        # #1511: the data types a mono clone's TYPE ARGUMENTS name, while that
+        # clone is registered or compiled (`_clone_type_scope`).  A clone is
+        # measured in the namespace its generic was declared in, and its type
+        # arguments are named in the namespace that instantiated it; empty
+        # everywhere else.
+        self._clone_adt_members: frozenset[str] = frozenset()
         # The builtin ADTs, members of every namespace (they are global
         # infrastructure, owned by no module — the same set `_register_modules`
         # exempts from the E609/E610 collision rails).  A FLOOR, not the whole
@@ -440,6 +477,17 @@ class CodeGenerator(
         # declaration ordering: that one is first-wins because a slot has
         # one winner, while contention is a property of each declaration.
         self._module_adt_declarers: dict[str, tuple[tuple[str, ...], ...]] = {}
+        # #1513: module path -> the ADT names that module declares PUBLIC,
+        # the set the checker's `_module_constructors` is built from.  The
+        # namespace projection reads it to resolve a constructor of a type
+        # the namespace does not import (`paint(Green)` with `Colour` reached
+        # only through `paint`'s signature) exactly where the checker does.
+        self._module_public_adts: dict[tuple[str, ...], frozenset[str]] = {}
+        # #1513: namespace -> the modules that namespace's checker can see,
+        # so the same fallback resolves among the same declarations.
+        self._namespace_module_reach: dict[
+            tuple[str, ...] | None, frozenset[tuple[str, ...]]
+        ] = {}
         # #1317: `mod$<path>$<Name>` -> the bare name the user wrote, for
         # every ADT type and constructor the per-owner rename qualified.  The
         # mangled spelling is a WASM symbol, never a name the reader is asked
@@ -751,6 +799,13 @@ class CodeGenerator(
         # name (``outer$Int$where$ginner$Int``) to avoid a cross-instantiation
         # collision.
         self._clone_base_chain: dict[str, str] = {}
+        # #1511: every mono clone name → the type arguments it was
+        # instantiated at, as the namespace that instantiated it spells them.
+        # A hoisted `where` helper carries its parent clone's, and a generic
+        # helper's clone adds its own after them.  `_clone_type_scope` reads
+        # it: the arguments are the only part of a clone another namespace
+        # wrote (PR #1508 review).
+        self._clone_type_args: dict[str, tuple[str, ...]] = {}
         # Reset per-`_monomorphize` run; declared here so the type is stated
         # once (imported bases that actually entered `generic_decls`).
         self._imported_generic_base_origins: dict[str, tuple[str, ...]] = {}
@@ -918,6 +973,59 @@ class CodeGenerator(
         self._error_once_sites.add(key)
         self._error(
             node, description, rationale=rationale, error_code=error_code)
+
+    def _assemble_emitted_checks(self, wat: str) -> list[EmittedCheck]:
+        """The per-module record, read back from the assembled module *wat*
+        (#1479): one entry for every record marker the text holds, under the
+        function whose body holds it.
+
+        Every recorded check's instruction carries its entry's marker
+        (``vera.trap_registry.CHECK_MARKER_RE``), so the text is the record;
+        a string literal or comment that spells a marker is not one.
+        A translation thrown away and redone, a function dropped after it
+        compiled, a closure stubbed to ``unreachable``, a failed closure
+        worklist, a self-tail prefix spliced zero or several times — each is
+        counted by what the module holds, with no bookkeeping to keep in step
+        with the compile.
+        """
+        headers = list(_WAT_FN_DEF_RE.finditer(wat))
+        out: list[EmittedCheck] = []
+        for position, header in enumerate(headers):
+            function = header.group(1)
+            end = (headers[position + 1].start()
+                   if position + 1 < len(headers) else len(wat))
+            prelude = function.split("$")[0] in self._prelude_fn_names
+            source = (self._fn_source_map.get(function)
+                      or self._fn_source_map.get(function.rsplit("$", 1)[0]))
+            for marker in find_check_markers(wat, header.start(), end):
+                entry = self._emitted_checks.get(int(marker.group(1)))
+                if entry is None:
+                    raise CodegenInvariantError(
+                        f"${function} carries record marker "
+                        f"{marker.group(0).strip()!r}, which names no entry "
+                        "of this module's record", None,
+                    )
+                emitter, node = entry
+                row = TRAP_EMITTERS[emitter]
+                span = node.span if node is not None else None
+                out.append(EmittedCheck(
+                    emitter=emitter,
+                    kind=row.kind,
+                    obligations=row.obligations,
+                    function=function,
+                    line=span.line if span is not None else 0,
+                    column=span.column if span is not None else 0,
+                    end_line=span.end_line if span is not None else 0,
+                    end_column=span.end_column if span is not None else 0,
+                    file=(None if prelude
+                          else source[0] if source is not None else self.file),
+                    prelude=prelude,
+                ))
+        stray = sum(1 for _ in find_check_markers(wat)) - len(out)
+        if stray:
+            raise CodegenInvariantError(
+                f"{stray} record marker(s) outside every function body", None)
+        return out
 
     def _get_source_line(self, line: int) -> str:
         """Extract a line from the source text."""
@@ -1359,7 +1467,7 @@ class CodeGenerator(
         exports[:] = [e for e in exports if e not in dropped_set]
         self._closure_fns_wat = [
             (
-                f"  (func ${match.group(1)} unreachable)"
+                f"  (func ${match.group(1)} {_DROPPED_CLOSURE_BODY})"
                 if (match := _WAT_FN_NAME_RE.match(closure_wat)) is not None
                 and match.group(1) in direct_cause
                 else closure_wat
@@ -1448,14 +1556,20 @@ class CodeGenerator(
         """
         order = self._decl_order
         members = self._adt_members_in_scope()
+        data_types = {
+            name: self._adt_decl_index(name, order)
+            for name in self._adt_layouts
+            if members is None or name in members
+        }
+        # #1493: a per-module registrar names the data types its module
+        # imports without holding their layouts; they are data types there
+        # all the same, and precede every declaration of the namespace.
+        for name in self._imported_adt_names:
+            data_types.setdefault(name, _BUILTIN_DECL_INDEX)
         self._alias_env = AliasEnv(
             aliases=dict(self._type_aliases),
             alias_params=dict(self._type_alias_params),
-            data_types={
-                name: self._adt_decl_index(name, order)
-                for name in self._adt_layouts
-                if members is None or name in members
-            },
+            data_types=data_types,
             _order={
                 name: order.get(name, _BUILTIN_DECL_INDEX)
                 for name in self._type_aliases
@@ -1540,6 +1654,7 @@ class CodeGenerator(
         if self._active_module_path == PRELUDE_NAMESPACE:
             return (
                 infrastructure | self._builtin_adt_names | prelude_adt_names()
+                | self._clone_adt_members
             )
         if not self._adt_namespace_members:
             return None
@@ -1549,8 +1664,97 @@ class CodeGenerator(
         return (
             members | infrastructure
             | self._builtin_adt_names | prelude_adt_names()
+            | self._clone_adt_members
         )
 
+    @contextlib.contextmanager
+    def _clone_type_scope(self, decl: ast.FnDecl) -> Iterator[None]:
+        """Make the data types *decl*'s type arguments name members while it
+        is measured and compiled (#1511).
+
+        A mono clone is registered and compiled in the namespace its generic
+        was DECLARED in (#1111, #1316) — the prelude's for a combinator — but
+        its type arguments were named in the namespace that INSTANTIATED it:
+        `option_unwrap_or` at the entry file's `Shape`, or at a module's
+        `mod$liba$Shape`.  The declaring namespace's membership does not hold
+        that type, so the substituted `@Shape` parameter had no WASM
+        representation there, and the clone was skipped (E604) with every
+        caller after it (E620), on a check-green program — in a single file
+        as much as across modules.
+
+        Only the ARGUMENTS are admitted (`_clone_type_args`), never a name the
+        generic's own declaration writes: that name means what it means in the
+        declaring namespace, which is the point of measuring the clone there
+        (#1316).  Admitting every name the clone spells let a user
+        `data Array` re-type the prelude's own `Array<T>` parameters as a
+        one-word pointer, which built modules that fail to load, or returned
+        the wrong length (PR #1508 review).  :meth:`_type_arg_data_types`
+        says which names an argument makes data types.
+        """
+        names = frozenset(
+            name for arg in self._clone_type_args.get(decl.name, ())
+            for name in self._type_arg_data_types(arg)
+        )
+        saved = self._clone_adt_members
+        self._clone_adt_members = names
+        self._sync_alias_env()
+        try:
+            yield
+        finally:
+            self._clone_adt_members = saved
+            self._sync_alias_env()
+
+    def _type_arg_data_types(self, arg: str) -> set[str]:
+        """The data types a clone's type argument *arg* names, at any depth.
+
+        A name is one when it has a registered layout.  After the #1317
+        renames such a name has one owner, so it means the same type in the
+        clone as where the argument was written — except a built-in
+        container's name (`_CONTAINER_NAMES`).  A container is not a
+        declaration, so no rename separates it from a user's `data Array`
+        (§8.4.1), and an argument cannot say which of the two it is: a clone
+        is named after a container's bare head (#772), so an array literal's
+        type and a value of the user's `data Array` are both the argument
+        `Array`.  The name keeps the declaring namespace's reading, the
+        container's, which is what every array value needs; a user type named
+        like a container, as an argument of a generic declared elsewhere,
+        waits for a spelling that names its owner (#1519).
+        """
+        out: set[str] = set()
+        stack: list[ast.TypeExpr] = [Monomorphizer._parse_type_name(arg)]
+        while stack:
+            te = stack.pop()
+            if not isinstance(te, ast.NamedType):
+                continue
+            stack.extend(te.type_args or ())
+            if te.name in self._adt_layouts and te.name not in _CONTAINER_NAMES:
+                out.add(te.name)
+        return out
+
+    def _value_data_type_names(self) -> frozenset[str]:
+        """The data types a VALUE's type names in every namespace (#1534).
+
+        A value's type is spelled where the value was made: an imported
+        function's return type in the module that declared it, a field's
+        type in its data type's module.  The namespace compiling the body
+        that shows or hashes the value need not be able to name that type —
+        the entry file may import `favourite` without its `Colour` — so its
+        membership is the wrong question.  The layout key is the right one:
+        after the #1317 renames every user declaration's key has one owner,
+        so it means the same data type in every namespace.
+
+        Less the names a built-in also answers to, which the key alone does
+        not settle: a container's (`_CONTAINER_NAMES`), never a declaration,
+        and a built-in or prelude data type's, whose layout slot a
+        declaration of the same name takes (§8.4.1).  Those are read in the
+        namespace, through `_declares_adt`, as they were.  The twin of
+        :meth:`_type_arg_data_types`, which answers the same question for a
+        clone's type arguments.
+        """
+        reserved = (
+            _CONTAINER_NAMES | self._builtin_adt_names | prelude_adt_names())
+        return frozenset(
+            name for name in self._adt_layouts if name not in reserved)
 
     def _namespace_ctor_projection(
         self,
@@ -1578,14 +1782,24 @@ class CodeGenerator(
           §8.5.2 says it does.
 
         A declaration the namespace cannot NAME is in none of the three: it
-        is dropped before the classes are applied, because a name it cannot
-        write must not answer for one it can.  That covers the entry file's
-        declarations while a module compiles, a sibling module's that this
-        one never imports, and a module reached only transitively from the
-        entry — each measured taking the prelude's `Some` away from a body
-        that renders `Some(42)` without it.  Dropped rather than demoted to
-        `foreign`: `foreign` is applied after `infra`, so a stranger placed
-        there would still shadow the prelude.
+        is kept out of them, because a name it cannot write must not answer
+        for one it can.  That covers the entry file's declarations while a
+        module compiles, a sibling module's that this one never imports, and
+        a module reached only transitively from the entry — each measured
+        taking the prelude's `Some` away from a body that renders `Some(42)`
+        without it.  Kept out rather than demoted to `foreign`: `foreign` is
+        applied after `infra`, so a stranger placed there would still shadow
+        the prelude.
+
+        One use of a stranger remains (#1513): a body that constructs a
+        PUBLIC type of a module its checker sees without importing the type
+        — `paint(Green)`, with `Colour` reaching the entry only through
+        `paint`'s signature.  A **fallback** applied after the three fills
+        each constructor name that no class holds and exactly one such
+        stranger declares, which is the question the checker's
+        `_stranger_constructor` answers before it accepts the name with a
+        warning.  It fills and never displaces, so the guarantee above
+        holds for every name the three classes resolve.
 
         Returns the constructor layouts, the ownership map, and the
         type-parameter index table, all three built from the same ordering
@@ -1608,6 +1822,10 @@ class CodeGenerator(
         infra: list[str] = []
         foreign: list[str] = []
         own: list[str] = []
+        # #1513: the strangers a body may still NAME a constructor of — a
+        # PUBLIC type of a module the compilation absorbs, which this
+        # namespace does not import.  See the fallback class below.
+        strangers: list[str] = []
         for adt_name in self._adt_layouts:
             bare = display.get(adt_name, adt_name)
             if bare not in declared:
@@ -1666,6 +1884,12 @@ class CodeGenerator(
                 # away with it — measured as an E602 in the entry for
                 # `HtmlNode`, `Request` and `Response`, whose blocks the
                 # prelude injects on demand.
+                if (owner is not None
+                        and owner in self._namespace_module_reach.get(
+                            active, frozenset())
+                        and bare in self._module_public_adts.get(
+                            owner, frozenset())):
+                    strangers.append(adt_name)
                 continue
             elif owner is None:
                 # An ENTRY-file declaration while a module compiles, with no
@@ -1705,6 +1929,34 @@ class CodeGenerator(
         # The namespace's OWN declarations shadow both, which is §8.5.2.
         for adt_name in own:
             apply(adt_name, keep_infra=False)
+        # #1513: a constructor of a type this namespace does NOT import —
+        # `paint(Green)` where `Colour` reaches the entry only through
+        # `paint`'s signature.  The checker accepts it, with a warning that
+        # names the module to import from, when exactly one module's public
+        # type declares the name, that type's name is declared by no other
+        # module, and nothing in scope here already holds either name
+        # (`_stranger_constructor`).  This class answers the same question
+        # the same way, so the program the checker accepts is the one that
+        # compiles.  It FILLS gaps and never displaces: a name any class
+        # above holds keeps its meaning, which is what keeps #1436's
+        # guarantee that a declaration this namespace cannot name never
+        # answers for one it can.  A name two strangers declare is left
+        # out, and the checker has already refused it.
+        stranger_sources: dict[str, list[str]] = {}
+        for adt_name in strangers:
+            for ctor_name in self._adt_layouts[adt_name]:
+                if ctor_name not in ctor_layouts:
+                    stranger_sources.setdefault(ctor_name, []).append(
+                        adt_name)
+        for ctor_name, sources in stranger_sources.items():
+            if len(sources) != 1:
+                continue
+            (adt_name,) = sources
+            ctor_layouts[ctor_name] = self._adt_layouts[adt_name][ctor_name]
+            ctor_to_adt[ctor_name] = adt_name
+            owned_tp = self._adt_ctor_tp_indices.get(adt_name, {})
+            if ctor_name in owned_tp:
+                tp_indices[ctor_name] = owned_tp[ctor_name]
         return ctor_layouts, ctor_to_adt, tp_indices
 
     def _adt_decl_index(self, name: str, order: dict[str, int]) -> int:
@@ -2308,7 +2560,11 @@ class CodeGenerator(
         # #851 — keep the synthetic prelude buffer: injected decls'
         # spans index into it, and `_diag_location` quotes it (under
         # the `<prelude>` origin) for prelude-origin diagnostics.
-        self._prelude_source = inject_prelude(program)
+        # The imported modules' bodies compile into this WASM module too,
+        # so what they use is demanded with the entry's.
+        self._prelude_source = inject_prelude(
+            program, modules=self._module_programs_as_checked,
+        )
         # #1277: prelude ADTs whose name an IMPORTED module has already
         # taken in `_adt_layouts`.  One flat layout map, one slot per name,
         # so the two declarations contend and the module's — registered back
@@ -2494,6 +2750,7 @@ class CodeGenerator(
                 self._module_alias_scope(
                     self._declaration_namespace(mdecl.name, origin_path)),
                 self._module_source_scope(origin_path),
+                self._clone_type_scope(mdecl),
             ):
                 self._register_fn(mdecl)
                 if origin_path is not None:
@@ -2724,6 +2981,7 @@ class CodeGenerator(
                 self._module_alias_scope(
                     self._declaration_namespace(mdecl.name, origin)),
                 self._module_source_scope(origin),
+                self._clone_type_scope(mdecl),
             ):
                 fn_wat = self._compile_fn_tracked(
                     mdecl, export=is_public,
@@ -3028,16 +3286,49 @@ class CodeGenerator(
 
         # Assemble the module
         wat = self._assemble_module(functions_wat)
+        # #1479: read the per-module record back from the assembled text, then
+        # take its markers out — the WAT a caller sees carries none, and the
+        # binary never did (they are comments).
+        emitted_checks = self._assemble_emitted_checks(wat)
+        wat = strip_check_markers(wat)
 
         # Convert WAT to WASM binary
         try:
+            # #1433: the backstop — the module binds each function identifier
+            # once, or the compile ends in an E699 naming it, never in
+            # wasm-tools' `duplicate func identifier` against a symbol the
+            # author never wrote.
+            self._assert_unique_func_names(wat)
             wasm_bytes = wasmtime.wat2wasm(wat)
         except Exception as exc:  # noqa: BLE001 — a backend failure becomes a codegen diagnostic
-            self.diagnostics.append(Diagnostic(  # diag-fields-exempt: internal wat2wasm backend failure; a code-generation bug, not a user error, so no source-level fix or spec section applies.
-                description=f"WAT compilation failed: {exc}",
-                location=SourceLocation(file=self.file),
-                severity="error",
-            ))
+            if isinstance(exc, CodegenInvariantError):
+                self.diagnostics.append(Diagnostic(
+                    description=(
+                        f"Internal compiler error while assembling the "
+                        f"module: {exc.msg}"
+                    ),
+                    location=SourceLocation(file=self.file),
+                    rationale=(
+                        "Code generation produced a module WebAssembly "
+                        "cannot load. That is a bug in the compiler, not "
+                        "something to change in the program: a program the "
+                        "checker should have refused was not, or a valid "
+                        "one was compiled under a clashing name."
+                    ),
+                    fix=(
+                        "Please file a bug report with the offending "
+                        "program at https://github.com/aallan/vera/issues"
+                    ),
+                    spec_ref='Chapter 0, Section 0.5.1 "Diagnostic Structure"',
+                    severity="error",
+                    error_code="E699",
+                ))
+            else:
+                self.diagnostics.append(Diagnostic(  # diag-fields-exempt: internal wat2wasm backend failure; a code-generation bug, not a user error, so no source-level fix or spec section applies.
+                    description=f"WAT compilation failed: {exc}",
+                    location=SourceLocation(file=self.file),
+                    severity="error",
+                ))
             return CompileResult(
                 wat=wat,
                 wasm_bytes=b"",
@@ -3121,6 +3412,7 @@ class CodeGenerator(
             fn_source_map=dict(self._fn_source_map),
             prelude_fn_names=set(self._prelude_fn_names),
             dropped_fns=dropped_fns,
+            emitted_checks=emitted_checks,
         )
 
     def _user_dropped_fns(
@@ -4064,3 +4356,11 @@ class CodeGenerator(
             if new_expr is not stmt.expr:
                 return _replace(stmt, expr=new_expr)
         return stmt
+
+
+#: The built-in containers' names (#1511).  None is a declaration, so a user
+#: `data` of one of these names (§8.4.1) shares its spelling with the
+#: container, and `CodeGenerator._type_arg_data_types` never reads a clone's
+#: type argument of that name as the user's type.  `Tuple` and `Future` are
+#: reserved in the data namespace (#1404, #1372).
+_CONTAINER_NAMES = frozenset({"Array", "Set", "Map", "Decimal"})

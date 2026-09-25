@@ -34,8 +34,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-# The doc gates' inline <!-- vera:skip-... --> fence annotations (#538) are
-# repo-tooling metadata: strip them from every generated site asset.
+# The doc gate's inline <!-- vera:skip-... --> and <!-- vera:run ... --> fence
+# markers (#538, #1481) are repo-tooling metadata: strip them from every
+# generated site asset.
 from doc_annotations import strip_annotations
 
 # Single-sourced E001 doc example (#954): render_e001_doc_example() is the
@@ -533,6 +534,7 @@ For deeper questions about the design — why no variable names, what gets verif
 
 Nothing is implicit. The signature declares types, preconditions, postconditions, and effects. The compiler verifies the contract via SMT solver. A zero divisor the verifier can witness is a compile error (`E526`), not a runtime crash.
 
+<!-- vera:run fn="safe_divide" args="2 10" stdout="5" -->
 ```vera
 public fn safe_divide(@Int, @Int -> @Int)
   requires(@Int.1 != 0)
@@ -545,6 +547,7 @@ public fn safe_divide(@Int, @Int -> @Int)
 
 Read the slots: `@Int.1` is the first parameter, `@Int.0` is the second — De Bruijn indexing, most-recent first. No local variable names means no local naming bug is possible — references are type-directed and positional. The `requires` clause is what discharges the divisor obligation: with it the division proves at compile time; without it the compiler refuses the program with `E526` and a counterexample, and only a divisor it can neither prove non-zero nor witness a zero for falls to a runtime guard. [examples/safe_divide.vera]({REPO}/blob/main/examples/safe_divide.vera).
 
+<!-- vera:run fn="fizzbuzz" args="15" stdout="FizzBuzz" -->
 ```vera
 public fn fizzbuzz(@Nat -> @String)
   requires(true)
@@ -569,6 +572,7 @@ public fn fizzbuzz(@Nat -> @String)
 
 A program everyone knows. Interpolation uses `"\\(@Nat.0)"` — the slot reference substitutes in directly with auto-conversion. There are no naming decisions to make, and none to hallucinate. [examples/fizzbuzz.vera]({REPO}/blob/main/examples/fizzbuzz.vera).
 
+<!-- vera:no-run category="api-key" reason="calls Inference, which needs a provider key" -->
 ```vera
 public fn classify_sentiment(@String -> @Result<String, String>)
   requires(string_length(@String.0) > 0)
@@ -582,6 +586,7 @@ public fn classify_sentiment(@String -> @Result<String, String>)
 
 LLM calls are effects. Where the two functions above are `effects(pure)`, this one declares `<Inference>`. A caller that does not permit `<Inference>` cannot invoke it. The effect system makes model calls visible in every signature that uses them, all the way up. [examples/inference.vera]({REPO}/blob/main/examples/inference.vera).
 
+<!-- vera:no-run category="network" reason="calls Http, so a run would reach the network" -->
 ```vera
 public fn research_topic(@String -> @Result<String, String>)
   requires(string_length(@String.0) > 0)
@@ -599,6 +604,7 @@ public fn research_topic(@String -> @Result<String, String>)
 
 Effects compose. `<Http, Inference>` is the row — both must be permitted. `Inference` auto-detects the provider (Anthropic, OpenAI, Moonshot, Mistral, xAI, DeepSeek) from whichever API key is set to a non-empty value. Postconditions can constrain model output; Z3 cannot know what a model will return at compile time, so these become runtime assertions that trap on violation.
 
+<!-- vera:no-run category="fixture" reason="queries a users table the block does not create" -->
 ```vera
 public fn find_user(@String -> @Result<Array<Array<Option<String>>>, String>)
   requires(string_length(@String.0) > 0)
@@ -796,8 +802,9 @@ def build_skill_md() -> str:
     generated artefact that makes the language reference available at
     veralang.dev/SKILL.md — same domain as the website, cacheable, stable.
     Relative links are rewritten to absolute GitHub blob URLs because this
-    file is consumed outside the repository context, and the doc gates'
-    vera:skip fence annotations (#538) are stripped for the same reason.
+    file is consumed outside the repository context, and the doc gate's
+    vera:skip and vera:run fence markers (#538, #1481) are stripped for the
+    same reason.
     """
     return _abs_links(
         strip_annotations((ROOT / "SKILL.md").read_text(encoding="utf-8"))

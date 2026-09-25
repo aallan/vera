@@ -110,6 +110,30 @@ def wat_fn_names(wat: str) -> list[str]:
     )
 
 
+def instantiate_with_trap_signal(
+    store: wasmtime.Store, module: wasmtime.Module,
+) -> wasmtime.Instance:
+    """Instantiate a compiled module whose one host import is ``vera.trap``.
+
+    An allocating module imports the trap signal whatever else it does,
+    because its allocator names heap exhaustion through it (#1479) — so a
+    harness that drives ``$alloc`` or ``$gc_collect`` directly links that
+    one import and nothing else.  The stub records nothing: a signalled
+    trap ends the call at the ``unreachable`` that follows it, so the test
+    sees the trap either way.  Any OTHER import fails to link here, which
+    keeps the harness's "no host imports" premise honest.
+    """
+    linker = wasmtime.Linker(store.engine)
+    linker.define_func(
+        "vera", "trap",
+        wasmtime.FuncType(
+            [wasmtime.ValType.i32(), wasmtime.ValType.i32(),
+             wasmtime.ValType.i32()], []),
+        lambda _code, _ptr, _len: None,
+    )
+    return linker.instantiate(store, module)
+
+
 def exceptions_engine() -> wasmtime.Engine:
     """A wasmtime engine configured the way ``execute()`` configures its own.
 

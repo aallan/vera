@@ -978,23 +978,34 @@ class TestAModulesOwnImportsAreInItsRegistry:
         """§8.5.1 is the rule, and the fix does not widen past it.
 
         `mid` imports only `cap`, so `other` is NOT in scope inside `mid`.
-        The CHECKER says so only when it is handed that file: `vera check
-        mid.vera` warns "Unresolved function 'other'" (E200, exit 0), while
-        `vera check main.vera` — reaching `mid` as an import, and never
-        re-checking its body under its own import filter — says nothing at
-        all.  Warn-vs-silent, not reject-vs-accept, and the asymmetry is
-        #1244.
+        The checker refuses it (E200, located in `mid`): since #1244 it
+        re-checks `mid`'s bodies under `mid`'s own import filter, and since
+        #1513 an unresolved call is an error rather than a warning, because
+        the name has no meaning in the module that wrote it — code
+        generation took the IMPORTER's `other`, so the same `mid` passed its
+        precondition under one importer and trapped under another.
 
-        The importer happens to import `other` itself, so a registry that
-        took the whole reachable set (or fell through to the importer's, the
-        pre-#1225 behaviour) would bind it and interpret the callee's
-        contract with a function the callee cannot name.  It must miss
-        instead — loudly, as an E532 demotion.
+        The verifier is asked as well, past the checker, because its own
+        scope is the invariant here.  The importer happens to import `other`
+        itself, so a registry that took the whole reachable set (or fell
+        through to the importer's, the pre-#1225 behaviour) would bind it
+        and interpret the callee's contract with a function the callee
+        cannot name.  It must miss instead — loudly, as an E532 demotion.
         """
         mid = _MID_REQ.replace("cap(0)", "other(0)")
         main = _MAIN_REQ.replace("import deep(cap);", "import deep(other);")
         main = main.replace("cap(0)", "other(0)")
-        result = _verify_mod(main, _deep_chain(mid))
+        modules = _deep_chain(mid)
+        prog = parse_to_ast(main)
+        check = typecheck(prog, main, resolved_modules=modules,
+                          file=_ENTRY_FILE)
+        refused = [d for d in check
+                   if d.severity == "error" and d.error_code == "E200"]
+        assert len(refused) == 1, [(d.error_code, d.severity) for d in check]
+        assert "other" in refused[0].description
+        assert refused[0].location.file != _ENTRY_FILE
+        result = verify(
+            prog, main, file=_ENTRY_FILE, resolved_modules=modules)
         assert [
             d for d in result.diagnostics if d.error_code == "E532"
         ], (

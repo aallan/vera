@@ -52,6 +52,7 @@ These rules key on representation, not on the name `Unit`: a `Future` transparen
 
 The legal side of the line — a `@Unit` parameter declared and satisfied with the unit literal:
 
+<!-- vera:run fn="main" stdout="7" -->
 ```vera
 private fn poll(@Unit -> @Int)
   requires(true)
@@ -177,7 +178,7 @@ Rules:
 
 An ADT may declare an invariant that all values must satisfy:
 
-<!-- vera:skip-check category="INCOMPLETE" reason="is_sorted in SortedList invariant" -->
+<!-- vera:skip-check category="FUTURE" code="E130 E200" reason="the data invariant clause is not implemented yet (#686), so vera check reports E130; is_sorted is defined elsewhere (E200)" -->
 ```
 private data SortedList<T>
   invariant(is_sorted(@SortedList<T>.0))
@@ -187,7 +188,7 @@ private data SortedList<T>
 }
 ```
 
-When implemented, the invariant will be checked by the contract verifier at every construction site.  At present (per the status callout above) the form is unparseable in the reference compiler, so no checking occurs and refinement types (§2.6) are the working alternative.
+When implemented, the invariant will be checked by the contract verifier at every construction site.  At present (per the status callout above) the form parses but fails type checking with E130 in the reference compiler, so no checking occurs and refinement types (§2.6) are the working alternative.
 
 ## 2.5 Function Types
 
@@ -277,7 +278,7 @@ Type aliases can capture commonly used refinements:
 type PosInt = { @Int | @Int.0 > 0 };
 type NonEmptyArray<T> = { @Array<T> | array_length(@Array<T>.0) > 0 };
 type Percentage = { @Int | @Int.0 >= 0 && @Int.0 <= 100 };
-type Byte = { @Int | @Int.0 >= 0 && @Int.0 <= 255 };
+type Octet = { @Int | @Int.0 >= 0 && @Int.0 <= 255 };
 ```
 
 Type aliases are transparent for refinement subtyping: `PosInt` and `{ @Int | @Int.0 > 0 }` are the same type for subtyping purposes.
@@ -332,14 +333,15 @@ The guard is *defense in depth* for the unverified path: a `vera verify`-clean p
 
 Functions and data types may be parameterised by type variables:
 
-<!-- vera:skip-check category="INCOMPLETE" reason="forall<A,B> fn swap uses Tuple" -->
 ```
 private forall<A, B> fn swap(@Tuple<A, B> -> @Tuple<B, A>)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  Tuple(@B.0, @A.0)
+  match @Tuple<A, B>.0 {
+    Tuple(@A, @B) -> Tuple(@B.0, @A.0)
+  }
 }
 ```
 
@@ -379,3 +381,36 @@ This means `Array<PosInt>` is NOT a subtype of `Array<Int>`. Converting between 
 ## 2.9 Type Equality
 
 Two types are equal if and only if they have the same structure after resolving type aliases. Refinement type equality uses logical equivalence: `{ @T | P }` equals `{ @T | Q }` if and only if `P <==> Q` is valid.
+
+## 2.10 Type Names
+
+A type name, wherever a type is written — a parameter or result type, a constructor field, an alias body, an effect or ability operation signature, a `let` or pattern binder, a slot or result reference's type arguments, a handler's state, clause parameters and `with` update, a quantifier's binder or predicate — must resolve where it is written, to one of:
+
+- a type parameter in scope;
+- a primitive type (§2.2);
+- a type alias declared in the same module;
+- a `data` declaration of the same module, a built-in or prelude data type (`Option`, `Result`, `Ordering`, `Future`, …), or a public data type the module imports (§8.3);
+- one of the built-in types `Array`, `Map`, `Set`, `Tuple` and `Decimal`.
+
+A declaration further down the same file is in scope: a signature may name a type declared after it. Here `area` names `Shape`, which is declared below it:
+
+<!-- vera:no-run category="non-scalar-entry" reason="its exported function takes a Shape parameter" -->
+```vera
+public fn area(@Shape -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Shape.0 {
+    Square(@Int) -> @Int.0 * @Int.0,
+    Rect(@Int, @Int) -> @Int.1 * @Int.0
+  }
+}
+
+public data Shape {
+  Square(Int),
+  Rect(Int, Int)
+}
+```
+
+Any other name is a compile error (`E136`), reported at each place it is written. That includes a data type another module declares but this module does not import: a value of the type can reach a module through a function it imports and be passed along, but the type's name is in scope only where an import admits it (§8.6.4).

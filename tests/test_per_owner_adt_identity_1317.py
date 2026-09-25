@@ -936,14 +936,16 @@ class TestMeeting:
         """The surface is not only function signatures.
 
         ``liba`` exports ``Wrapper { W(Shape) }``, so an importer naming
-        ``Wrapper`` can extract a ``Shape`` from it without ever naming the
-        type — the same crossing by a different route.
+        ``Wrapper`` can extract a ``Shape`` from its field and hand it to
+        ``libb`` — the same crossing by a different route.  Binding the field
+        names the type, so the entry imports ``liba``'s (an unimported name
+        is E136, #1489).
         """
         liba = _FLOW_A + """
 public data Wrapper { W(Shape) }
 """
         entry = """\
-import liba(aone, Wrapper);
+import liba(aone, Wrapper, Shape);
 import libb(bone);
 
 public fn main(@Unit -> @Int)
@@ -1936,7 +1938,7 @@ class TestTheFlowSurfaceFailsClosed:
         can actually make.  A wildcard beside a list dominates it.
         """
         from vera import ast
-        from vera.codegen.modules import _merged_import_filters
+        from vera.resolver import merged_import_filters as _merged_import_filters
 
         def imp(path: tuple[str, ...], names: tuple[str, ...] | None):
             return ast.ImportDecl(path=path, names=names)
@@ -2011,7 +2013,9 @@ class TestADiagnosticStreamThatIsNotEmpty:
         self, tmp_path: Path,
     ) -> None:
         # Two contending `Shape`s (renamed), beside a dropped function that
-        # makes the stream non-empty.
+        # makes the stream non-empty.  Its unresolved call is an E200 error
+        # at check since #1513, so the program is driven past the check to
+        # reach code generation's own diagnostics.
         liba = _LIBA + """
 public fn broken(@Int -> @Int)
   requires(true)
@@ -2024,10 +2028,11 @@ public fn broken(@Int -> @Int)
         entry = _ENTRY.replace(
             "  aone(3) + bone(4)\n", "  aone(3) + bone(4)\n").replace(
             "import liba(aone);", "import liba(aone, broken);")
-        _verify, result, _cg = build_multi_module(
+        check_errors, result, _cg = build_multi_module_past_check(
             tmp_path / "noisy",
             {"liba.vera": liba, "libb.vera": _LIBB, "main.vera": entry},
         )
+        assert [code for code, _ in check_errors] == ["E200"], check_errors
         assert result.diagnostics, (
             "the stream is empty, so this cell measures nothing"
         )

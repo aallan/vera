@@ -1,10 +1,9 @@
 #!/usr/bin/env python
 """Replay `vera:diagnostic`-annotated ```text fences against live output (#1291).
 
-The doc-example gates (`check_debruijn_examples.py` and siblings) parse
-```vera fences only, so a ```text fence carrying RENDERED COMPILER
-OUTPUT — a diagnostic block, a fix text, a trap message — is validated by
-nothing: DE_BRUIJN.md's §6.2 E130 example is the instance that motivated
+The doc example gate (`check_doc_examples.py`) reads ```vera fences
+only, so a ```text fence carrying RENDERED COMPILER OUTPUT — a diagnostic
+block, a fix text, a trap message — is validated by nothing else: DE_BRUIJN.md's §6.2 E130 example is the instance that motivated
 this (it went stale the moment #1262 extended E130's fix text, and every
 ```vera-fence gate stayed green throughout, since parsing Vera source was
 never what that block needed checked).
@@ -14,12 +13,12 @@ For each `<!-- vera:diagnostic file="..." [stage="check"]
 immediately followed by a ```text fence, this script re-parses and
 re-checks the program and asserts the fence is byte-identical to the live
 `Diagnostic.format()` output — the same replay-not-trust shape the ```vera
-fence gates already use, applied to rendered TEXT instead of source.
+fence gate already uses, applied to rendered TEXT instead of source.
 
 Scope: this is the "marker-annotated subset" #1291 asks for first, not a
 sweep of every ```text fence that happens to look like diagnostic output.
-Widening to more documents is future work — add the document's path to
-DOCS below once it carries a `vera:diagnostic` annotation.
+Every gated document is scanned, so a pair added anywhere the example gate
+reads is replayed here.
 """
 
 import sys
@@ -27,17 +26,18 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from check_doc_examples import diagnostic_documents
 from doc_annotations import replay_diagnostic_examples, scan_diagnostic_examples
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# Documents scanned for `vera:diagnostic` annotations.  A document with no
-# annotated examples is silently fine (zero found, zero replayed) — this
-# list only need grow as more mirrors gain the annotation, not as a
-# precondition for adding one.
-DOCS = (
-    ROOT / "DE_BRUIJN.md",
-)
+# Documents scanned for `vera:diagnostic` annotations: every gated document
+# that is not HTML, from the one list the example gate reads
+# (`check_doc_examples.diagnostic_documents`).  The example gate honours a
+# pair as an expected failure, so every pair it can honour must be replayed
+# here; one list keeps the two from drifting apart.  A document with no
+# annotated examples is fine (zero found, zero replayed).
+DOCS = tuple(ROOT / doc for doc in diagnostic_documents(ROOT))
 
 
 def main() -> int:

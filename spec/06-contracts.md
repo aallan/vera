@@ -12,6 +12,7 @@ Contracts serve as executable specifications. They are the source of truth about
 
 A precondition is a predicate that MUST hold when the function is called. It is the caller's responsibility to ensure preconditions are met.
 
+<!-- vera:run fn="safe_divide" args="2 10" stdout="5" -->
 ```
 public fn safe_divide(@Int, @Int -> @Int)
   requires(@Int.1 != 0)
@@ -28,6 +29,7 @@ At every call site of `safe_divide`, the compiler verifies that the first argume
 
 A postcondition is a predicate that MUST hold when the function returns. It is the function's responsibility to ensure postconditions are met.
 
+<!-- vera:run fn="absolute_value" args="3" stdout="3" -->
 ```
 public fn absolute_value(@Int -> @Nat)
   requires(true)
@@ -53,7 +55,7 @@ Postconditions on stateful functions also have `old(State<T>)` and `new(State<T>
 
 An invariant is a predicate declared on a data type that MUST hold for all values of that type:
 
-<!-- vera:skip-check category="INCOMPLETE" reason="is_sorted_impl in SortedArray" -->
+<!-- vera:skip-check category="FUTURE" code="E130 E200" reason="the data invariant clause is not implemented yet (#686), so vera check reports E130; is_sorted_impl is defined elsewhere (E200)" -->
 ```
 private data SortedArray
   invariant(is_sorted_impl(@SortedArray.0))
@@ -89,6 +91,7 @@ private fn sum_to(@Nat -> @Nat)
 
 An assertion is a predicate that MUST hold at the point where it appears in the function body:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="an unnamed signature with its contracts, not a declaration" -->
 ```
 fn(@Int, @Int -> @Int)
   requires(@Int.0 > 0 && @Int.1 > 0)
@@ -119,6 +122,7 @@ One boundary is worth stating, because the Tier-1 claim inherits whatever the pr
 
 An assumption is a predicate that the compiler MUST accept as true without proof:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="an unnamed signature with its contracts, not a declaration" -->
 ```
 fn(@Int -> @Int)
   requires(true)
@@ -160,7 +164,7 @@ Everything allowed in the decidable fragment (Chapter 2, Section 2.6.1):
 - `true`, `false`
 - The `@T.result` reference (in `ensures` only)
 - Conditional expressions (`if ... then ... else ...`)
-- Calls to `pure` functions that have their own contracts — the verifier inlines the callee's contract at the call site
+- Calls to `pure` functions that have their own contracts — the verifier inlines the callee's contract at the call site. The callee MUST NOT lead back to the function whose contract makes the call, directly or through other calls: a contract defined through its own function would need itself to be checked, so such a call is rejected at check time with `E138`. The same holds for a call inside a refinement predicate of a type the function names, or of a field of a constructor it applies, since the compiled program evaluates that predicate as a check
 
 ### 6.3.2 Additionally Allowed in Contracts (Tier 2)
 
@@ -175,6 +179,7 @@ Note that array element access (`@Array<T>.0[i]`) and array literals (`[a, b, c]
 
 Vera supports bounded quantification in contracts:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="a quantifier expression, not a declaration" -->
 ```
 forall(@Nat, array_length(@Array<Int>.0), fn(@Nat -> @Bool) effects(pure) {
   @Array<Int>.0[@Nat.0] > 0
@@ -185,6 +190,7 @@ This reads: "for all `@Nat.0` in `[0, array_length(@Array<Int>.0))`, the array e
 
 The syntax is:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="the quantifier's form, with placeholder slots" -->
 ```
 forall(@IndexType, @BoundExpr, @PredicateFn)
 ```
@@ -192,9 +198,15 @@ forall(@IndexType, @BoundExpr, @PredicateFn)
 The bound is an **integer count** — the quantified index runs over `0 .. bound-1`.  An `@Int`/`@Nat` (or a refinement over one) is required; any other domain type — an array, a string — is a check-time error (**E128**).  To quantify over an array's elements, pass `array_length(arr)` as the bound and index the array inside the predicate.
 
 Where:
-- `@IndexType` is the type of the bound variable (must be `Nat` or `Int`)
+- `@IndexType` is the type of the bound variable: `Nat` or `Int`, an alias of either, or a refinement of one (**E186** otherwise)
 - `@BoundExpr` is the exclusive upper bound (inclusive lower bound is always 0)
 - `@PredicateFn` is an anonymous function returning `Bool`
+
+A refinement of the index type narrows the range to the values below the bound that satisfy it. `forall(@{ @Nat | P }, n, fn(@Nat -> @Bool) effects(pure) { Q })` holds when `Q` holds for every index below `n` that satisfies `P`, which is `forall(@Nat, n, fn(@Nat -> @Bool) effects(pure) { P ==> Q })`. The `exists` form holds when some index below `n` satisfies both, which is `exists(@Nat, n, fn(@Nat -> @Bool) effects(pure) { P && Q })`.
+
+The predicate is applied to every value in that range, so it takes exactly one parameter — the index, of type `Int` or `Nat`, or an alias of either — and returns `Bool`. A refinement is not a valid parameter type, spelled inline or through an alias. Put the condition on the index type, or test it in the body, with `P ==> ...` for `forall` and `P && ...` for `exists`. Any other predicate signature is a check-time error (**E179**).
+
+A type parameter at any of these positions — the index type, the predicate's parameter or result, the bound's type — is accepted, and each instantiation of the generic is expected to supply an integer index and bound and a `Bool` result. An instantiation that does not is not yet refused at check time ([#1506](https://github.com/aallan/vera/issues/1506)); checking each instantiation where the types are known is the planned rule.
 
 Bounded quantification with concrete literal bounds is decidable via finite unrolling, and symbolic bounds are decidable via inductive reasoning — but **both reach the decidable fragment only via Tier 2 (Z3-guided)**, which is [not yet implemented](https://github.com/aallan/vera/issues/427). At present every `forall` / `exists` in a contract falls to Tier 3 (runtime check) regardless of whether its bound is a literal, a length expression, or symbolic.
 
@@ -288,7 +300,7 @@ The `@Nat` obligations (E502 / E503) carry the most nuance, spanning many bindin
 
 **String length** ([#802](https://github.com/aallan/vera/issues/802)).  Vera strings are UTF-8 byte sequences and `string_length` returns the **byte** count, but Z3's string theory (SMT-LIB 2.6) models strings as sequences of Unicode **code points** — its `Length` counts code points, which disagrees with the runtime on every multibyte character (`string_length("é")` is `2`, not `1`).  `string_length` is therefore modeled at **Tier 1** only for a string **literal**, whose exact byte length is known; on any non-literal argument it defers to a runtime-guarded **Tier 3** obligation (Z3's string theory has no byte-length operator).  The boolean predicates `string_contains` / `string_starts_with` / `string_ends_with` stay **Tier 1**: UTF-8 is self-synchronizing, so a valid substring / prefix / suffix matches at the byte level exactly when it matches at the code-point level.  The other byte/offset-sensitive string builtins (`string_slice`, `string_index_of`, `string_char_code`, `string_chars`) are not translated to Z3 and already fall to **Tier 3**.  Two further deferrals keep the predicates honest.  Z3's string-sort alphabet only reaches U+2FFFF, and its Python binding silently stores any higher code point as the literal's *escape text* rather than the character — so a literal containing a code point **above U+2FFFF** is unusable in the `z3.StringVal`-based predicate translation (`string_contains` / `string_starts_with` / `string_ends_with`) and defers to **Tier 3** there, instead of letting a predicate match phantom escape bytes the runtime never sees.  `string_length` is unaffected by this one — it byte-counts the *decoded* literal, so an astral literal's length stays **Tier 1**.  A **lone surrogate** (U+D800–U+DFFF) defers on **both** paths: `z3.StringVal` stores it as phantom escape text just like the astral case, and — since it has no UTF-8 encoding at all — `string_length`'s byte count cannot be taken either.
 
-**Numeric type conversions** ([#807](https://github.com/aallan/vera/issues/807)).  Three Float64 builtins are modeled at **Tier 1**.  `float_clamp(v, lo, hi)` is pure Float64 and modeled **unconditionally** as the faithful WASM `f64.min(f64.max(v, lo), hi)` — NaN-propagating and ±0-correct.  Z3's own `fp.min` / `fp.max` *diverge* from WASM here (SMT-LIB returns the non-NaN operand and leaves ±0 implementation-defined, whereas WASM propagates NaN and pins the ±0 sign), so a naive `fpMin` / `fpMax` model would be **unsound** — it would prove `!float_is_nan(float_clamp(NaN, …))`, which the runtime refutes.  `float_clamp` is total, so it carries no obligation.  `int_to_float(n)` and `float_to_int(x)` cross the Int↔Float boundary, and Z3's *symbolic* Int↔Real↔FP reasoning is **unreliable** — it returns spurious counterexamples that do not satisfy their own constraints, non-deterministically across timeouts.  These are therefore modeled at Tier 1 **only for a concrete (constant-foldable) argument**, where Z3 is merely constant-folding; a symbolic argument defers to a sound **Tier 3** (the guiding principle: defer to Tier 3 what Z3 cannot soundly model).  `int_to_float` is total (`f64.convert_i64_s` never traps).  `float_to_int` is **partial** — `i64.trunc_f64_s` traps on NaN / ±Inf / out-of-i64-range — so a concrete argument additionally carries the domain obligation above (a provable violation is a loud **E529**), and a symbolic argument's Tier-3 obligation is guarded by the codegen trunc trap.  `floor`, `ceil` and `round` end in the same instruction after `f64.floor`, `f64.ceil` or `f64.nearest`, and carry the same obligation over the rounded value.  `float_to_string` extracts the integer part it prints with it too, after rendering the non-finite classes and taking the magnitude, so a finite value of magnitude 2^63 or more traps; each call carries the obligation, as does every `show` or interpolation of a `@Float64`, which lower to it (a composite value holding one is recorded Tier 3 at the `show`).  (The four format/parse Float64 builtins — `float_to_string`, `parse_float64`, `decimal_from_float`, `decimal_to_float` — remain **Tier 3** by necessity: Z3's string theory cannot format or parse a float, and `Decimal` is an opaque host handle.)
+**Numeric type conversions** ([#807](https://github.com/aallan/vera/issues/807)).  Three Float64 builtins are modeled at **Tier 1**.  `float_clamp(v, lo, hi)` is pure Float64 and modeled **unconditionally** as the faithful WASM `f64.min(f64.max(v, lo), hi)` — NaN-propagating and ±0-correct.  Z3's own `fp.min` / `fp.max` *diverge* from WASM here (SMT-LIB returns the non-NaN operand and leaves ±0 implementation-defined, whereas WASM propagates NaN and pins the ±0 sign), so a naive `fpMin` / `fpMax` model would be **unsound** — it would prove `!float_is_nan(float_clamp(NaN, …))`, which the runtime refutes.  `float_clamp` is total, so it carries no obligation.  `int_to_float(n)` and `float_to_int(x)` cross the Int↔Float boundary, and Z3's *symbolic* Int↔Real↔FP reasoning is **unreliable** — it returns spurious counterexamples that do not satisfy their own constraints, non-deterministically across timeouts.  These are therefore modeled at Tier 1 **only for a concrete (constant-foldable) argument**, where Z3 is merely constant-folding; a symbolic argument defers to a sound **Tier 3** (the guiding principle: defer to Tier 3 what Z3 cannot soundly model).  `int_to_float` is total (`f64.convert_i64_s` never traps).  `float_to_int` is **partial** — it traps, as `float_conversion` (Chapter 11, Section 11.8.5), on NaN / ±Inf / out-of-i64-range — so a concrete argument additionally carries the domain obligation above (a provable violation is a loud **E529**), and a symbolic argument's Tier-3 obligation is guarded by that check.  `floor`, `ceil` and `round` make the same check after `f64.floor`, `f64.ceil` or `f64.nearest`, and carry the same obligation over the rounded value.  `float_to_string` extracts the integer part it prints with `i64.trunc_f64_s` too, after rendering the non-finite classes and taking the magnitude, so a finite value of magnitude 2^63 or more traps ([#1482](https://github.com/aallan/vera/issues/1482)); each call carries the obligation, as does every `show` or interpolation of a `@Float64`, which lower to it (a composite value holding one is recorded Tier 3 at the `show`).  (The four format/parse Float64 builtins — `float_to_string`, `parse_float64`, `decimal_from_float`, `decimal_to_float` — remain **Tier 3** by necessity: Z3's string theory cannot format or parse a float, and `Decimal` is an opaque host handle.)
 
 **Refinement predicates at a call argument** (§2.6.4).  A refinement the caller must establish is obligated wherever the value enters a refined slot, and that includes the refinements a parameter's type writes on a **component** — an ADT payload, a tuple component.  Those are *assumed* by the callee, which is verified once for every caller, so the value's own positions must establish them — the argument (a closure's included), a `let` binder, a constructor field, a tuple component, an effect-operation argument, and the function's return slot, the last of which is what makes the rule transitive.  A construction is excluded only where its own site carries the obligation.  The discharge is a solver query with the source's component invariants as premises, withheld when that source's producer was disclosed.  The tiering follows the guard rather than the site — the boundary guard reaches a parameter's own refinement and its tuple components only (§2.6.5), so an undischarged payload or array-element obligation is `tier3_unguarded`/`E506` while an undischarged tuple-component one is a guarded Tier 3.
 

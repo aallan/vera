@@ -348,11 +348,11 @@ class TestResolveNamedIsDrivenByTheSpine:
 # =====================================================================
 
 
-#: The names a `data` declaration may not take (#1397, E158), read from the
-#: COMPILER's own reservation rather than restated here: the compiler
-#: special-cases their SEMANTICS by name, so a declaration of one cannot be
-#: told apart from the built-in.  They stay in the ALIAS battery —
-#: `type Tuple = Int;` is still legal and still has to resolve correctly.
+#: The names a `data` declaration may not take (#1397, #1547, E158), read
+#: from the COMPILER's own reservation rather than restated here: a
+#: declaration of one cannot be told apart from the built-in.  They stay in
+#: the ALIAS battery — `type Tuple = Int;` is still legal and still has to
+#: resolve correctly.
 #:
 #: Imported, not copied, so the two halves of this file's partition —
 #: refused here, fully working there — cannot drift apart from what the
@@ -369,7 +369,21 @@ _UNDECLARABLE = tuple(RegistrationMixin._SPECIAL_CASED_BUILTIN_ADTS)
 #: about would drop out and the cell would pass on both sides (PR #1404
 #: review, finding 6).  `test_the_compiler_reserves_exactly_these` holds the
 #: two against each other, so the pair cannot drift.
-_EXPECTED_RESERVED = ("Future", "Tuple")
+#:
+#: The four built-in containers joined for #1547: the checker gives a
+#: built-in value and a same-named declaration's value one type, so a
+#: built-in value ran as the declaration.
+_EXPECTED_RESERVED = ("Array", "Decimal", "Future", "Map", "Set", "Tuple")
+
+#: The names reserved in the CONSTRUCTOR namespace too, from the compiler.
+#: Only the two whose built-in has a constructor of that name: a user's
+#: constructor would take the built-in's layout slot.  No built-in
+#: constructor is called `Array`, `Map`, `Set` or `Decimal`.
+_UNCONSTRUCTIBLE = tuple(RegistrationMixin._SPECIAL_CASED_BUILTIN_CTORS)
+
+#: The constructor reservation, written out, for the reason
+#: `_EXPECTED_RESERVED` is.
+_EXPECTED_RESERVED_CTORS = ("Future", "Tuple")
 
 
 def _declarable_type_names() -> list[str]:
@@ -435,10 +449,11 @@ def _shadow_program(name: str) -> str:
 
 
 class TestDeclaredAdtBeatsTheBuiltinName:
-    """#1331's repro, over every name it could be written with.
+    """#1331's repro, over every built-in name a declaration may take.
 
     Base: ``Array`` compiled to a module with NO exports at all, and the
-    remaining names passed by width-luck.  The differential against a
+    remaining names passed by width-luck.  The container names are reserved
+    since #1547 (E158), so the battery runs the names left declarable.  The differential against a
     fresh-name control is what makes that luck impossible to rely on again —
     it fails for a name whose emitted signature merely happens to be right
     for a wrong reason.
@@ -538,12 +553,9 @@ class TestDeclaredAdtBeatsTheBuiltinName:
 
         The property asserted is the one that holds for EVERY name: the
         program either runs and gives the right answer, or is refused with a
-        diagnostic.  It is never accepted and unloadable.  Which of the two
-        it is depends on the name — for ``Array`` the head of
-        ``Array<Array>`` is the DECLARATION (spec §8.4.1), so indexing it is
-        refused; for the rest the container is still the container — and
-        pinning the disjunction rather than one branch is what makes the
-        cell meaningful for all sixteen.
+        diagnostic.  It is never accepted and unloadable.  Pinning the
+        disjunction rather than one branch is what makes the cell meaningful
+        for every declarable name.
         """
         source = (
             f"private data {name} {{ MkShadowV(Int) }}\n\n"
@@ -732,18 +744,23 @@ public fn main(@Unit -> @Int)
 
 
 class TestSpecialCasedBuiltinAdtsAreRefused:
-    """#1397 — `data Tuple` / `data Future` are refused at check (E158).
+    """#1397 / #1547 — a `data` declaration of a reserved built-in type name
+    is refused at check (E158).
 
-    The spine tells a declared `Array` / `Map` / `Set` / `Decimal` apart from
-    the container of that name, which is what #1321/#1331 established.  It
-    cannot do that for these two: `Tuple` is registered by
-    `_register_builtin_adts` AND rendered through a variadic-product path
-    keyed on its name, and `Future` is the transparent wrapper several
-    derivations peel before asking what the name means.  Measured at
-    `release/v0.2.0`: `show(MkShadowS(7))` under `data Tuple` printed `(7)`,
-    dropping the constructor name and refusing `[E243]` on equality against
-    the BUILT-IN's fields, and the same program under `data Future` compiled
-    to a module that fails to load.
+    `Tuple` is registered by `_register_builtin_adts` AND rendered through a
+    variadic-product path keyed on its name, and `Future` is the transparent
+    wrapper several derivations peel before asking what the name means.
+    Measured at `release/v0.2.0`: `show(MkShadowS(7))` under `data Tuple`
+    printed `(7)`, dropping the constructor name and refusing `[E243]` on
+    equality against the BUILT-IN's fields, and the same program under
+    `data Future` compiled to a module that fails to load.
+
+    The spine tells a declared `Array` / `Map` / `Set` / `Decimal` NAME
+    apart from the container (#1321/#1331), but the checker gives a value of
+    the container and a value of a same-arity declaration one type, so the
+    VALUES cannot be told apart (#1547): `show(decimal_from_int(5))` beside
+    a `data Decimal` printed the declaration's constructor.  The class
+    matrix for those four is `tests/test_reserved_container_names_1547.py`.
 
     So the name is refused, on the rule E151 already applies to built-in
     functions and E152 to built-in effects.
@@ -767,6 +784,16 @@ class TestSpecialCasedBuiltinAdtsAreRefused:
             f"compiler reserves {sorted(_UNDECLARABLE)}, "
             f"this file expects {sorted(_EXPECTED_RESERVED)}"
         )
+
+    def test_the_compiler_reserves_exactly_these_constructors(self) -> None:
+        """The constructor half of the same equality: a subset of the type
+        reservation, and exactly the names whose built-in has a constructor
+        of that name."""
+        assert set(_UNCONSTRUCTIBLE) == set(_EXPECTED_RESERVED_CTORS), (
+            f"compiler reserves constructors {sorted(_UNCONSTRUCTIBLE)}, "
+            f"this file expects {sorted(_EXPECTED_RESERVED_CTORS)}"
+        )
+        assert set(_UNCONSTRUCTIBLE) <= set(_UNDECLARABLE)
 
     @pytest.mark.parametrize("name", _EXPECTED_RESERVED)
     def test_the_declaration_is_refused(self, name: str) -> None:
@@ -805,17 +832,18 @@ class TestSpecialCasedBuiltinAdtsAreRefused:
         assert _run(_alias_program(name), fn="main") == 42
 
     @pytest.mark.parametrize(
-        "name", ["Option", "Result", "Ordering", "UrlParts", "Array", "Map"])
+        "name", ["Option", "Result", "Ordering", "UrlParts", "Json"])
     def test_every_other_builtin_name_stays_declarable(
         self, name: str,
     ) -> None:
-        """The reservation is exactly the special-cased names.
+        """The reservation is exactly the reserved names.
 
         §8.4.1 makes the prelude's data types ordinary declarations a program
         may shadow, `examples/vera/collections.vera` ships a `public data
         Option<T>`, and #1312's E623 rail is built on entry-file shadowing
         being legal — so widening this would refuse programs the language
-        documents as valid.
+        documents as valid.  Whether to reserve them is #1496's question,
+        not this one.
         """
         assert "E158" not in [
             d.error_code for d in _check(_shadow_program(name))]
@@ -883,7 +911,7 @@ public fn hashes_alike(@Unit -> @Int)
         assert execute(result, fn_name="summed").value == 7
         assert execute(result, fn_name="hashes_alike").value == 7
 
-    @pytest.mark.parametrize("name", _EXPECTED_RESERVED)
+    @pytest.mark.parametrize("name", _EXPECTED_RESERVED_CTORS)
     def test_a_constructor_of_the_name_is_refused_too(self, name: str) -> None:
         """The CONSTRUCTOR namespace, which the type reservation does not
         reach (PR #1404 review, CodeRabbit).
@@ -912,7 +940,7 @@ public fn hashes_alike(@Unit -> @Int)
         )]
         assert "E158" in codes, codes
 
-    @pytest.mark.parametrize("name", _EXPECTED_RESERVED)
+    @pytest.mark.parametrize("name", _EXPECTED_RESERVED_CTORS)
     def test_a_constructor_of_the_name_is_refused_in_a_module_too(
         self, name: str, tmp_path: Path,
     ) -> None:
@@ -964,7 +992,7 @@ public fn hashes_alike(@Unit -> @Int)
         )]
         assert "E158" not in codes, codes
 
-    @pytest.mark.parametrize("name", _EXPECTED_RESERVED)
+    @pytest.mark.parametrize("name", _EXPECTED_RESERVED_CTORS)
     def test_a_refused_constructor_is_not_registered(self, name: str) -> None:
         """A name the checker refused must not stay resolvable (#1404 review).
 
@@ -1793,10 +1821,10 @@ class TestPreludeNamespaceScope:
     ) -> None:
         """The ``data`` half of the same question.
 
-        An entry ``data Array { … }`` must not make the PRELUDE's own
-        ``Array<T>`` parameters a one-word ADT pointer — which is what a
-        permissive namespace membership would have done, since a single-file
-        program has no module structure to scope by.
+        An entry declaration of a built-in name must not change how the
+        PRELUDE's own bodies lay that name out — which is what a permissive
+        namespace membership would have done, since a single-file program
+        has no module structure to scope by.
         """
         assert _run(_shadow_program(name), fn="main") == 7
 
@@ -1846,6 +1874,9 @@ class TestPreludeNamespaceScope:
         The scoping is what stops that, and only a program that declares the
         name AND demands the prelude family can tell: the shadow battery
         above compiles no prelude body that mentions ``Array``.
+
+        The checker refuses this declaration (E158, #1547); the cell drives
+        code generation directly, which is where the scoping lives.
         """
         source = """\
 private data Array { MkArr(Int) }
@@ -1901,7 +1932,8 @@ public fn main(@Unit -> @Int)
         ``_adt_members_in_scope`` must answer the prelude's own view — global
         infrastructure only — whatever the entry file declares, and must do
         so for a SINGLE-FILE program, where the permissive ``None`` would
-        otherwise hand the prelude the entry's declarations.
+        otherwise hand the prelude the entry's declarations.  Code generation
+        is driven directly: the checker refuses ``data Array`` (E158, #1547).
         """
         result, gen = _compile_with_generator(_shadow_program("Array"))
         assert isinstance(result, CompileResult) and result.ok
@@ -1976,7 +2008,7 @@ class TestCrossDerivationDifferential:
     def test_a_declared_shadow_answers_as_a_fresh_name_does(
         self, name: str,
     ) -> None:
-        """Every site must answer for ``data Array`` exactly what it answers
+        """Every site must answer for ``data Option`` exactly what it answers
         for ``data ZzShadowCtl`` — the declaration beats the built-in
         reading, at all five, or the shapes disagree."""
         shadowed = self._answers(_shadow_program(name), name)

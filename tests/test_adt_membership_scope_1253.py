@@ -116,8 +116,9 @@ def _slot_tables(
 
     # The checker's view: the module checked as ITSELF, with its own imports
     # and `direct` re-derived against IT (§8.6.4 visibility belongs to the
-    # importer).  Spelled out here rather than routed through
-    # `ModulesMixin._modules_visible_to`, which this PR's #1244 commit adds:
+    # importer).  Spelled out here rather than routed through the checker's
+    # module view (`vera.module_view.modules_visible_to` since #1489;
+    # `ModulesMixin._modules_visible_to` when #1244 added it):
     # a test whose RED/GREEN claim is about the state BEFORE that commit has
     # to be runnable there, and calling a method the branch introduces makes
     # the claim unreproducible from the artifact.  This is the same

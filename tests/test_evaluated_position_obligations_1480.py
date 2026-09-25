@@ -2410,7 +2410,7 @@ _PLACEHOLDER_KINDS = {
     "built-in domain, in a measure at a tail call": (
         _MEASURE_CHAR_CODE, ("f(@Nat.0 - 1", 0), "call_pre",
         ["tier3/E532", "tier3/E532"], "main", [1],
-        (_MEASURE_CHAR_CODE, [7]), "unreachable"),
+        (_MEASURE_CHAR_CODE, [7]), "String index out of bounds"),
     "division, in a measure at a tail call": (
         _MEASURE_DIVISION, ("f(@Nat.2 - 1", 0), "div_zero", ["tier3"],
         "main", [5], (_MEASURE_DIVISION, [0]), "division by zero"),
@@ -2429,7 +2429,8 @@ _PLACEHOLDER_KINDS = {
         "Refinement violation"),
     "float truncation, of a computed value": (
         _COMPUTED_FLOOR, ("floor(", 0), "float_to_int_domain", ["tier3"],
-        "f", [2.5], (_COMPUTED_FLOOR, [1e300]), "overflow"),
+        "f", [2.5], (_COMPUTED_FLOOR, [1e300]),
+        "Float64 to Int conversion out of range"),
     # `_check_refined_binding_obligation_term`, the refinement twin of the
     # `@Nat` narrowing above (#1480 review): E505 in a `requires` and an
     # `ensures` on programs that run.  In a body too, where the release
@@ -2636,7 +2637,7 @@ _REFINED_BINDER_TYPES = """\
 type Pos = { @Int | @Int.0 > 0 };
 type Idx = { @Int | @Int.0 >= 0 && @Int.0 < 3 };
 type Small = { @Pos | @Pos.0 < 10 };
-type Never = { @Int | @Int.0 > 0 && @Int.0 < 0 };
+type Impossible = { @Int | @Int.0 > 0 && @Int.0 < 0 };
 """
 
 
@@ -2747,7 +2748,7 @@ _REFINED_BINDER_CONTROLS = {
         "assert", ["tier3/E535"]),
     "a call outside an empty refinement's arm": (
         "Option<Int>", "None",
-        "let @Int = " + _arm("Some(@Never)", "1", "None")
+        "let @Int = " + _arm("Some(@Impossible)", "1", "None")
         + ";\n    need_pos(@Int.0)", "need_pos(@Int.0)",
         "call_pre", ["tier3/E532"]),
     # Code generation does not guard a bind of a refinement over a

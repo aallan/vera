@@ -11,7 +11,7 @@
 -- outside the grid are dead (bounded universe).  Run for 300
 -- generations at 100 ms per frame.
 --
--- All 32 contracts discharge at Tier 1, including a formal
+-- All 33 contracts discharge at Tier 1, including a formal
 -- specification of Conway's B3/S23 transition rule on `next_cell`.
 -- =============================================================================
 -- Core: cell access, neighbour count, transition, next-generation step.
@@ -281,17 +281,20 @@ public fn main(@Unit -> @Unit)
 }
 where {
   fn run_loop(@Array<Array<Bool>>, @Nat, @Nat -> @Unit)
-    requires(true)
+    requires(@Nat.1 <= @Nat.0)
     ensures(true)
+    decreases(@Nat.0 - @Nat.1)
     effects(<IO>)
   {
     -- Slot table: @Nat.0 = limit (rightmost), @Nat.1 = current generation.
-    if @Nat.1 > @Nat.0 then {
-      ()
+    -- The measure is the number of generations left to draw.
+    render(@Array<Array<Bool>>.0, @Nat.1, @Nat.0, population(@Array<Array<Bool>>.0));
+    IO.sleep(100);
+    if @Nat.1 < @Nat.0 then {
+      let @Array<Array<Bool>> = step(@Array<Array<Bool>>.0);
+      run_loop(@Array<Array<Bool>>.0, @Nat.1 + 1, @Nat.0)
     } else {
-      render(@Array<Array<Bool>>.0, @Nat.1, @Nat.0, population(@Array<Array<Bool>>.0));
-      IO.sleep(100);
-      run_loop(step(@Array<Array<Bool>>.0), @Nat.1 + 1, @Nat.0)
+      ()
     }
   }
 }

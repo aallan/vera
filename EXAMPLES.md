@@ -6,6 +6,7 @@ This document walks through Vera's key features with working code examples. Ever
 
 `requires(@Int.1 != 0)` means this function cannot be called with a zero divisor. The compiler checks every call site to prove the precondition holds. If it cannot prove it, the code does not compile: a divisor the verifier can witness as zero is an `E526` compile error with a counterexample, and only a divisor it can neither prove non-zero nor witness a zero for falls to a runtime guard.
 
+<!-- vera:run fn="safe_divide" args="2 10" stdout="5" -->
 ```vera
 public fn safe_divide(@Int, @Int -> @Int)
   requires(@Int.1 != 0)
@@ -22,6 +23,7 @@ public fn safe_divide(@Int, @Int -> @Int)
 
 Types can carry predicates. `PosInt` is not just `Int` — it's an integer the compiler has proved is positive. `NonEmptyArray` is an array the compiler has proved is non-empty. Indexing into it is safe by construction.
 
+<!-- vera:run fn="safe_divide" args="10 2" stdout="5" -->
 ```vera
 type PosInt = { @Int | @Int.0 > 0 };
 type Percentage = { @Int | @Int.0 >= 0 && @Int.0 <= 100 };
@@ -50,6 +52,7 @@ private fn head(@NonEmptyArray -> @Int)
 
 User-defined types with recursive structure. `decreases(@List<Int>.0)` is a termination proof — the compiler verifies that the argument shrinks on every recursive call.
 
+<!-- vera:no-run category="non-scalar-entry" reason="its exported functions take List parameters" -->
 ```vera
 private data List<T> {
   Nil,
@@ -75,6 +78,7 @@ public fn sum(@List<Int> -> @Int)
 
 Vera is pure by default. State changes must be declared as effects. `effects(<State<Int>>)` says this function reads and writes an integer. The `ensures` clause specifies exactly how the state changes. Handlers provide the actual state implementation — the function `run_counter` eliminates the effect entirely and is pure.
 
+<!-- vera:run fn="run_counter" stdout="3" -->
 ```vera
 public fn increment(@Unit -> @Unit)
   requires(true)
@@ -93,7 +97,7 @@ public fn run_counter(@Unit -> @Int)
 {
   handle[State<Int>](@Int = 0) {
     get(@Unit) -> { resume(@Int.0) },
-    put(@Int) -> { resume(()) } with @Int = @Int.0
+    put(@Int) -> { resume(()) }
   } in {
     put(0);
     put(get(()) + 1);
@@ -110,6 +114,7 @@ public fn run_counter(@Unit -> @Int)
 
 The `Exn<E>` effect models exceptions with a typed error value. Unlike most languages, exceptions are explicit in the type signature and must be handled by the caller. The handler catches the thrown value and returns a fallback — `safe_div` is pure because the effect has been discharged.
 
+<!-- vera:run fn="safe_div" args="10 0" stdout="-1" -->
 ```vera
 private fn checked_div(@Int, @Int -> @Int)
   requires(true)
@@ -138,6 +143,7 @@ public fn safe_div(@Int, @Int -> @Int)
 
 `IO.print` is an effect operation. The `\(@Int.0)` syntax interpolates values into strings, auto-converting primitive types. `effects(<IO, Async>)` declares both IO and async effects — the compiler rejects any call to this function from a context that doesn't permit both.
 
+<!-- vera:run fn="main" stdout="roundtrip(42) = 42" -->
 ```vera
 private fn roundtrip(@Int -> @Int)
   requires(true)
@@ -187,6 +193,7 @@ Notice the separation of concerns: `fizzbuzz` is `effects(pure)` — the verifie
 
 The contract `requires(@Nat.0 <= @Nat.1)` on `loop` ensures the function is only called with valid bounds — and since the recursive call passes `@Nat.0 + 1` where `@Nat.0 < @Nat.1`, the precondition is maintained at every step.
 
+<!-- vera:run fn="fizzbuzz" args="15" stdout="FizzBuzz" -->
 ```vera
 public fn fizzbuzz(@Nat -> @String)
   requires(true)
@@ -211,6 +218,7 @@ public fn fizzbuzz(@Nat -> @String)
 private fn loop(@Nat, @Nat -> @Unit)
   requires(@Nat.0 <= @Nat.1)
   ensures(true)
+  decreases(@Nat.1 - @Nat.0)
   effects(<IO>)
 {
   IO.print(string_concat(fizzbuzz(@Nat.0), "\n"));
@@ -236,6 +244,7 @@ public fn main(@Unit -> @Unit)
 
 Vera has a built-in Markdown document type. `md_parse` produces a typed `MdBlock` tree; `md_has_heading` and `md_extract_code_blocks` query its structure. This is designed for agent workflows where an LLM produces structured output and the contract system validates its shape.
 
+<!-- vera:run fn="main" stdout="Has titleCode blocks: 1" -->
 ```vera
 public fn main(@Unit -> @Unit)
   requires(true)
@@ -354,6 +363,7 @@ private fn classify_sentiment(@String -> @Result<String, String>)
 
 The `<DB>` effect runs SQL against a relational database (SQLite in v1, chosen by `VERA_DB_URL`; in-memory by default). The query string must be a **literal** — runtime values reach the database only through `?` placeholders and the params array. Rows come back as `Array<Array<Option<String>>>`: a SQL `NULL` is a `None` cell, distinct from an empty string, and reading a cell goes through `Option` — the `NULL` case must be matched or explicitly defaulted (`option_unwrap_or`) before the text can be used.
 
+<!-- vera:no-run category="fixture" reason="queries a users table the block does not create" -->
 ```vera
 public fn find_user(@String -> @Result<Array<Array<Option<String>>>, String>)
   requires(string_length(@String.0) > 0)

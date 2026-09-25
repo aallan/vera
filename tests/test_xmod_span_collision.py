@@ -152,9 +152,9 @@ class TestCrossModuleSpanCollision:
         result = _compile_main(tmp_path)
         with pytest.raises(WasmTrapError) as exc_info:
             execute(result, fn_name="mw", args=[U64_MAX])
-        # Pin the kind: since #1438 the widen guard signals `vera.widen_trap`
-        # before its `unreachable`, so it reports `widen_guard` rather than the
-        # anonymous `unreachable` it used to share with every non-exhaustive
-        # match and shadow-stack overflow.  Naming it here is what makes this a
+        # Pin the kind: since #1438 the widen guard signals `widen_guard`
+        # before its `unreachable` (through `vera.trap` since #1479), so it
+        # reports its own kind rather than the anonymous `unreachable` a
+        # shadow-stack overflow reports.  Naming it here is what makes this a
         # control: a trap from some other guard at u64.MAX would no longer pass.
         assert exc_info.value.kind == "widen_guard", exc_info.value.kind

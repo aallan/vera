@@ -42,6 +42,7 @@ class TrialResult:
     args: dict[str, int | float | str]  # {"@Int.0": 5, "@String.0": "hello"}
     status: str  # "pass" | "fail" | "error"
     message: str  # violation message or empty
+    trap_kind: str = ""  # the trap's kind (WasmTrapError.kind), or empty
 
 
 @dataclass
@@ -276,6 +277,7 @@ class _TestEngine:
             resolved_modules=self.resolved_modules,
             expr_types=self.expr_semantic_types,
             expr_target_types=self.expr_target_types,
+            module_artifacts=self.module_artifacts,
         )
         classification = _classify_functions(
             self.program, verify_result.diagnostics,
@@ -1254,36 +1256,21 @@ def _run_trials(
                 status="pass", message="",
             ))
         except RuntimeError as e:
-            msg = str(e)
-            if "contract" in msg.lower() or "ensures" in msg.lower():
-                results.append(TrialResult(
-                    fn_name=fn_name, args=arg_dict,
-                    status="fail", message=msg,
-                ))
-            else:  # pragma: no cover — non-contract RuntimeError during WASM execution
-                results.append(TrialResult(
-                    fn_name=fn_name, args=arg_dict,
-                    status="error", message=msg,
-                ))
-        except Exception as e:  # pragma: no cover — WASM traps, stack overflow, etc.  # noqa: BLE001
-            exc_name = type(e).__name__
-            if exc_name in ("Trap", "WasmtimeError"):
-                msg = str(e)
-                if "contract" in msg.lower():
-                    results.append(TrialResult(
-                        fn_name=fn_name, args=arg_dict,
-                        status="fail", message=msg,
-                    ))
-                else:
-                    results.append(TrialResult(
-                        fn_name=fn_name, args=arg_dict,
-                        status="error", message=msg,
-                    ))
-            else:
-                results.append(TrialResult(
-                    fn_name=fn_name, args=arg_dict,
-                    status="error", message=str(e),
-                ))
+            # A trial fails only on a contract the program broke; any other
+            # trap is an error.  Classified by the trap's kind, never by its
+            # message (#1479): a site message quotes program text, so an
+            # index into the string "contract" read as a contract failure.
+            kind = getattr(e, "kind", "")
+            status = "fail" if kind == "contract_violation" else "error"
+            results.append(TrialResult(
+                fn_name=fn_name, args=arg_dict,
+                status=status, message=str(e), trap_kind=kind,
+            ))
+        except Exception as e:  # pragma: no cover — defensive: execute() wraps every trap  # noqa: BLE001
+            results.append(TrialResult(
+                fn_name=fn_name, args=arg_dict,
+                status="error", message=str(e),
+            ))
 
     return results
 

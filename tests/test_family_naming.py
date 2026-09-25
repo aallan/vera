@@ -44,6 +44,7 @@ from vera.codegen.compilability import MAX_CELL_FAMILY_SYMBOL
 from vera.codegen import CompileResult, compile as codegen_compile, execute
 from vera.parser import parse_to_ast
 from vera.resolver import ModuleResolver
+from vera.trap_registry import signal_call_pattern
 
 _ROOT = Path(__file__).resolve().parent.parent
 
@@ -394,7 +395,7 @@ public fn main(@Unit -> @Int)
   } in {
     stash(());
     match get(()) {
-      Some(@Fn) -> 5,
+      Some(@fn(Int -> Int) effects(pure)) -> 5,
       None -> 0 - 1
     }
   }
@@ -941,13 +942,18 @@ def test_refined_nat_cell_emits_the_same_write_guards_as_its_base(
     # guard, and both lower through the same comparison.  The property
     # this cell was written for is unchanged and is what `>=` states —
     # the refined cell must not LOSE a guard its base gets.
-    # Counted by SIGNAL, not by shared tokens: the sign guard calls
-    # `$vera.nat_guard_trap` and the predicate guard `$vera.contract_fail`,
-    # and both lower through `i64.lt_s` — `refinement_binder_parts` conjoins
-    # the implicit `@Nat >= 0` — so a `>=` on the shared token could not see
-    # a removed sign guard (CR PR-review).
-    assert (refined.wat.count("$vera.nat_guard_trap")
-            == bare.wat.count("$vera.nat_guard_trap")), (
+    # Counted by SIGNAL, not by shared tokens: the sign guard signals
+    # `nat_guard` through `$vera.trap` and the predicate guard calls
+    # `$vera.contract_fail`, and both lower through `i64.lt_s` —
+    # `refinement_binder_parts` conjoins the implicit `@Nat >= 0` — so a `>=`
+    # on the shared token could not see a removed sign guard (CR PR-review).
+    # The kind's own code is what names the sign guard since #1479, when
+    # every kind moved onto one import; the base count is asserted non-zero
+    # so the equality cannot hold as 0 == 0.
+    sign_guard = signal_call_pattern("nat_guard")
+    bare_guards = len(sign_guard.findall(bare.wat))
+    assert bare_guards > 0, "the bare cell emits no #1203 narrowing guard"
+    assert len(sign_guard.findall(refined.wat)) == bare_guards, (
         "the refined cell lost a #1203 narrowing guard its base still gets"
     )
     # Scoped to `main`'s own body (CR PR-review): a module-wide search is
