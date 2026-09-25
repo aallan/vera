@@ -80,6 +80,7 @@ from vera.parser import parse_to_ast
 from vera.resolver import ModuleResolver
 from vera.runtime.traps import WasmTrapError
 from vera.skip import STATE_CLAUSE_INLINE_DEPTH_CAP
+from vera.verifier import VerifyResult, verify
 
 _ROOT = Path(__file__).resolve().parent.parent
 _GRAMMAR = _ROOT / "vera" / "grammar.lark"
@@ -3652,3 +3653,216 @@ class TestAFunctionTheModuleImportsTheEntryDisplaces:
         assert outcome.accepted and outcome.compiles_clean, (
             outcome.describe())
         assert run_main(outcome) == ("ok", 1)
+
+
+# =====================================================================
+# (h), and the termination rule: the call graph reaches what the run does
+# =====================================================================
+#
+# The termination rule (#1492, spec §5.6) reads a call graph, one per
+# program, that resolves a bare call lexically in the namespace writing it
+# (`vera.callgraph`): a module's graph holds the module's own declarations
+# and nothing it imports, and the entry's holds nothing of a module's.  Code
+# generation reaches the same functions through the `mod$` symbols above.
+# Were the two to disagree about which function a module's bare call
+# reaches, the rule would judge a recursion the program does not run:
+# refuse a function that terminates, or accept one that has no measure.
+# In every cell the entry declares a function under a name the module's
+# calls use.
+
+#: The contracts of a function that declares a measure.
+_MEASURED_NC = (
+    "  requires(true)\n  ensures(true)\n  decreases(@Nat.0)\n"
+    "  effects(pure)\n")
+
+#: The entry's own `count`, whose `count(0)` is 10 in each shape.
+_ENTRY_COUNT: dict[str, str] = {
+    "not recursive": (
+        "private fn count(@Nat -> @Nat)\n" + _NC + "{\n  @Nat.0 + 10\n}\n\n"),
+    "recursive, measured": (
+        "private fn count(@Nat -> @Nat)\n" + _MEASURED_NC
+        + "{\n  if @Nat.0 == 0 then { 10 } else { count(@Nat.0 - 1) }\n}\n\n"),
+    "recursive, unmeasured": (
+        "private fn count(@Nat -> @Nat)\n" + _NC
+        + "{\n  if @Nat.0 == 0 then { 10 } else { count(@Nat.0 - 1) }\n}\n\n"),
+}
+
+#: The module's cycle: each function on it, and the one it calls.
+_MODULE_CYCLES: dict[str, tuple[tuple[str, str], ...]] = {
+    "a self-call": (("count", "count"),),
+    "a pair": (("count", "tally"), ("tally", "count")),
+}
+
+
+@dataclass(frozen=True)
+class RecursionCell:
+    cycle: str        # the module's cycle (`_MODULE_CYCLES`)
+    measured: bool    # whether each function on it declares `decreases`
+    flavour: str      # "a function" or "a generic"
+    entry: str        # the entry's `count` (`_ENTRY_COUNT`)
+
+    @property
+    def label(self) -> str:
+        measure = "measured" if self.measured else "unmeasured"
+        return f"{self.cycle}|{measure}|{self.flavour}|{self.entry}"
+
+    @property
+    def refused(self) -> set[tuple[str, str]]:
+        """The E137s the rule owes, as (file, function)."""
+        owed: set[tuple[str, str]] = set()
+        if not self.measured:
+            owed |= {("m.vera", name) for name, _ in _MODULE_CYCLES[self.cycle]}
+        if self.entry == "recursive, unmeasured":
+            owed.add(("main.vera", "count"))
+        return owed
+
+    def files(self) -> dict[str, str]:
+        """`m`'s cycle counts its argument down to 0, one per call, so
+        `total(3)` is 3 and `main` is 13.  A module call that reached the
+        entry's `count` would make it 21, 22 or 23 instead."""
+        generic = self.flavour == "a generic"
+        head = "private forall<T> fn" if generic else "private fn"
+        params = "@T, @Nat -> @Nat" if generic else "@Nat -> @Nat"
+        targ = "@T.0, " if generic else ""
+        contracts = _MEASURED_NC if self.measured else _NC
+        fns = "".join(
+            f"{head} {name}({params})\n{contracts}"
+            f"{{\n  if @Nat.0 == 0 then {{ 0 }} else "
+            f"{{ {callee}({targ}@Nat.0 - 1) + 1 }}\n}}\n\n"
+            for name, callee in _MODULE_CYCLES[self.cycle])
+        module = (
+            "module m;\n\n" + fns + "public fn total(@Nat -> @Nat)\n" + _NC
+            + "{\n  count(" + ("true, " if generic else "") + "@Nat.0)\n}\n")
+        main = ("import m(total);\n\n" + _ENTRY_COUNT[self.entry]
+                + "public fn main(@Unit -> @Int)\n" + _NC
+                + "{\n  nat_to_int(total(3) + count(0))\n}\n")
+        return {"m.vera": module, "main.vera": main}
+
+
+RECURSION_CELLS: tuple[RecursionCell, ...] = tuple(
+    RecursionCell(cycle, measured, flavour, entry)
+    for cycle in _MODULE_CYCLES
+    for measured in (False, True)
+    for flavour in ("a function", "a generic")
+    for entry in _ENTRY_COUNT
+)
+
+#: `ma`'s `foo`, how `mb` imports it, and `main`'s value: `bar(1)` is
+#: `foo(1) * 2`, and the entry's `foo` adds 1.
+_IMPORTED_INT_FOO: dict[str, tuple[str, str, int]] = {
+    "a function, imported by name": (
+        "public fn foo(@Int -> @Int)\n" + _NC + "{\n  @Int.0 + 100\n}\n",
+        "import ma(foo);\n", 203),
+    "a function, imported by wildcard": (
+        "public fn foo(@Int -> @Int)\n" + _NC + "{\n  @Int.0 + 100\n}\n",
+        "import ma;\n", 203),
+    "a generic, imported by name": (
+        "public forall<T> fn foo(@T -> @Int)\n" + _NC + "{\n  100\n}\n",
+        "import ma(foo);\n", 201),
+}
+
+
+def _e137s(diags: list[Diagnostic]) -> set[tuple[str, str]]:
+    """Each E137 as (file, function): "Function 'x' is recursive ..."."""
+    return {
+        (Path(str(d.location.file)).name, d.description.split("'")[1])
+        for d in diags if d.error_code == "E137"
+    }
+
+
+def _verify_file(path: Path, root: Path) -> VerifyResult:
+    """Resolve and verify *path* as a program of its own."""
+    source = path.read_text(encoding="utf-8")
+    program = parse_to_ast(source)
+    resolver = ModuleResolver(_root=root)
+    resolved = resolver.resolve_imports(program, path)
+    assert not resolver.errors, resolver.errors
+    return verify(program, source, file=str(path), resolved_modules=resolved)
+
+
+class TestTheTerminationRuleReadsTheModulesOwnCalls:
+    """(h), and the termination rule: a module's bare call reaches the same
+    function in the call graph as in the program that runs."""
+
+    @pytest.mark.parametrize("cell", RECURSION_CELLS, ids=lambda c: c.label)
+    def test_the_rule_judges_the_recursion_that_runs(
+        self, cell: RecursionCell, tmp_path: Path,
+    ) -> None:
+        """E137 falls on each function of the module's cycle that has no
+        measure, and on the entry's `count` when it recurses with none,
+        and on nothing else.  An accepted program runs to 13."""
+        outcome = pipeline(tmp_path, cell.files())
+        assert _e137s(outcome.check_errors) == cell.refused, (
+            outcome.describe())
+        assert [d.error_code for d in outcome.check_errors] == (
+            ["E137"] * len(cell.refused)), outcome.describe()
+        if cell.refused:
+            return
+        assert outcome.compiles_clean, outcome.describe()
+        assert run_main(outcome) == ("ok", 13)
+
+    @pytest.mark.parametrize(
+        "cell",
+        [c for c in RECURSION_CELLS
+         if c.measured and c.entry != "recursive, unmeasured"],
+        ids=lambda c: c.label)
+    def test_each_measure_is_proved_where_its_function_is_declared(
+        self, cell: RecursionCell, tmp_path: Path,
+    ) -> None:
+        """Verified as a program of its own, the module proves the measure
+        of each function on its cycle, over the calls its own namespace
+        makes.  The entry verifies beside it, and proves its own `count`'s
+        measure when it has one.
+
+        A generic's measure is proved on its clones, and a clone whose
+        cycle runs through another top-level declaration is left to the
+        runtime guard (`ContractVerifier._decreases_group`, held by
+        `test_generic_cycle_through_top_level_function_is_not_proved`), so
+        the generic pair's measures are Tier 3."""
+        pipeline(tmp_path, cell.files())
+        module = _verify_file(tmp_path / "m.vera", tmp_path)
+        assert not [d for d in module.diagnostics if d.severity == "error"]
+        proved = {o.fn_name: o.status for o in module.obligations
+                  if o.kind == "decreases"}
+        status = ("tier3" if cell.flavour == "a generic"
+                  and cell.cycle == "a pair" else "verified")
+        assert proved == {
+            name: status for name, _ in _MODULE_CYCLES[cell.cycle]
+        }, proved
+        entry = _verify_file(tmp_path / "main.vera", tmp_path)
+        assert not [d for d in entry.diagnostics if d.severity == "error"]
+        own = [o.status for o in entry.obligations
+               if o.kind == "decreases"
+               and Path(o.file or "").name == "main.vera"]
+        assert own == (
+            ["verified"] if cell.entry == "recursive, measured" else []), own
+
+    @pytest.mark.parametrize("imported", _IMPORTED_INT_FOO)
+    def test_an_imported_function_is_no_edge_to_the_entrys(
+        self, imported: str, tmp_path: Path,
+    ) -> None:
+        """`mb`'s `bar` calls the `foo` it imports from `ma`, and the
+        entry's own `foo` calls `bar`.  Neither declares a measure, so an
+        edge from `bar`'s call to the entry's `foo` would close a cycle and
+        refuse both (E137).  There is none: the program checks, verifies,
+        and runs to `ma`'s value, and only `main` calls the entry's `foo`.
+        A run that reached the entry's `foo` from `bar` would never end."""
+        decl, imp, value = _IMPORTED_INT_FOO[imported]
+        files = {
+            "ma.vera": "module ma;\n\n" + decl,
+            "mb.vera": ("module mb;\n\n" + imp
+                        + "\npublic fn bar(@Int -> @Int)\n" + _NC
+                        + "{\n  foo(@Int.0) * 2\n}\n"),
+            "main.vera": ("import mb(bar);\n\nprivate fn foo(@Int -> @Int)\n"
+                          + _NC + "{\n  bar(@Int.0) + 1\n}\n\n"
+                          + "public fn main(@Unit -> @Int)\n" + _NC
+                          + "{\n  foo(1)\n}\n"),
+        }
+        outcome = pipeline(tmp_path, files)
+        assert outcome.accepted and outcome.compiles_clean, (
+            outcome.describe())
+        entry = _verify_file(tmp_path / "main.vera", tmp_path)
+        assert not [d for d in entry.diagnostics if d.severity == "error"]
+        assert run_main(outcome) == ("ok", value)
+        assert outcome.result is not None
+        assert not _callers_of_the_entrys_foo(outcome.result.wat)
