@@ -1461,19 +1461,8 @@ class TestModuleEnvironmentMatrix:
     @pytest.mark.parametrize("cell", FLOW_CELLS, ids=lambda c: c.label)
     def test_accepted_means_compiled(
         self, cell: FlowCell, topology: Topology, tmp_path: Path,
-        request: pytest.FixtureRequest,
     ) -> None:
         """Accepted: compiles clean and runs to the value.  Else: refused."""
-        if (cell.label == "module-qualified call argument"
-                and topology.label == "own body consumes"):
-            # `ma::paint(...)` in `ma`'s own body: a module's call to itself,
-            # qualified.  `main` and this branch's base run it; the release
-            # branch refuses it at check (E230, "Module 'ma' not found"),
-            # #1558, outside this class.  Strict, so the cell turns red when
-            # that is fixed.
-            request.node.add_marker(pytest.mark.xfail(
-                strict=True,
-                reason="#1558: a module's self-qualified call is E230"))
         outcome = pipeline(tmp_path, topology.files(cell.consumer(topology)))
         expected = cell.expected(topology)
         if isinstance(expected, str):
