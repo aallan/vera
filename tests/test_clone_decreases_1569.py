@@ -41,7 +41,8 @@ from tests.module_fixture_helpers import (
     build_multi_module,
     module_value,
 )
-from vera.verifier import VerifyResult, verify
+from vera import ast
+from vera.verifier import ContractVerifier, VerifyResult, verify
 
 VISIBILITY = ("private", "public")
 FLAVOURS = ("generic", "plain")
@@ -405,3 +406,66 @@ def test_module_generic_shadowed_by_a_local(
     if local == "generic":
         expected.append(("main.vera", "tier3"))
     assert by_file == expected
+
+
+# `count`'s own edge grows the measure; its edge to `go` decreases, and so
+# does `go`'s edge back.  The runtime guard traps on the growing edge.
+_UNRENAMED_MODULE = """module m;
+
+private forall<T> fn count(@T, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then { 0 } else {
+    if @Nat.0 > 5 then { go(@T.0, @Nat.0 - 1) } else { count(@T.0, @Nat.0 + 1) }
+  }
+}
+where {
+  fn go(@T, @Nat -> @Nat)
+    requires(true)
+    ensures(true)
+    decreases(@Nat.0)
+    effects(pure)
+  {
+    if @Nat.0 == 0 then { 0 } else { count(@T.0, @Nat.0 - 1) }
+  }
+}
+
+public fn three(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  count(true, 3)
+}
+"""
+
+
+@pytest.mark.parametrize("renamed", (True, False))
+def test_a_call_the_clone_left_under_its_source_name_withholds_the_proof(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, renamed: bool,
+) -> None:
+    """A clone is renamed to its discovery key, and so are the calls in it
+    that name its generic.  If a copy left one under the source name, the
+    group, keyed by the new names, would not count it, and the proof would
+    rest on the other edges.  The verifier refuses the group instead.
+
+    The cell is driven by making the imported generic's copy keep its calls
+    as written; the control (``renamed``) proves the same program is
+    otherwise refused only for its growing edge.
+    """
+    reroute = ContractVerifier._reroute_to_module_qualified
+
+    def keep_calls(self: ContractVerifier, decl: ast.FnDecl,
+                   *args: object, **kwargs: object) -> ast.FnDecl:
+        if decl.forall_vars and not renamed:
+            return decl
+        return reroute(self, decl, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(ContractVerifier, "_reroute_to_module_qualified",
+                        keep_calls)
+    files, entry = _files("importer", _UNRENAMED_MODULE)
+    statuses = _decreases(tmp_path, files, entry)
+    assert statuses and "verified" not in statuses[:1], statuses

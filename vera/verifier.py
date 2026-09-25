@@ -6913,6 +6913,15 @@ class ContractVerifier:
         names = {self._source_name(w) for w in where_group.values()}
         if any(m.name not in names for m in cycle):
             return None
+        # A renamed clone's calls to its generic are renamed with it.  A call
+        # still under a source name the group no longer holds would be left
+        # out of the expected set, which is read by the group's names, and
+        # the proof would rest on the other edges (PR #1579 review).
+        renamed = names - set(where_group)
+        if renamed and any(
+                call.name in renamed for call in computation_calls(
+                    decl.body, own_path=self._own_scope()[0])):
+            return None
         # #1558: a call by the module's own path names a TOP-LEVEL function,
         # which this by-name group can confuse with a `where` helper of the
         # same name.  Only the clone's call to itself is unambiguous; any
