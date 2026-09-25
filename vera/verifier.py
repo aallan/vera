@@ -6850,11 +6850,13 @@ class ContractVerifier:
 
         *decl* itself when the graph holds it.  A generic imported from
         module *origin* reaches the verifier as a copy of the module's
-        declaration, its calls renamed onto their discovery keys, so it is
-        found in that module's graph by its name and source span, which a
-        copy keeps.  None when no single declaration there has both: the
-        caller then falls back to the clone's name, and claims no proof
-        when that finds nothing.
+        declaration, its calls renamed onto their discovery keys, and a
+        generic `where` helper under a plain function is renamed too, to
+        the chain that names it.  So it is found in that module's graph by
+        its source span, which a copy keeps and no two declarations of one
+        file share.  None when no declaration there has it: the caller then
+        falls back to the clone's name, and claims no proof when that finds
+        nothing.
         """
         graph_of = getattr(self, "_graph_of", None)
         if graph_of is None:
@@ -6864,8 +6866,7 @@ class ContractVerifier:
         graph = self._graph_by_path.get(origin) if origin is not None else None
         if graph is None or decl.span is None:
             return None
-        same = [fn for fn in graph.fns
-                if fn.name == decl.name and fn.span == decl.span]
+        same = [fn for fn in graph.fns if fn.span == decl.span]
         return same[0] if len(same) == 1 else None
 
     def _source_name(self, decl: ast.FnDecl) -> str:

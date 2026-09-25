@@ -16,8 +16,10 @@ The matrix crosses:
 * flavour — generic (``forall<T>``) and plain;
 * placement — the module verified alone, through a file that imports it,
   and through a file that imports a module that imports it;
-* helper — none; a ``where`` helper carrying the recursion; a cycle
-  between the function and its helper;
+* helper — none; a ``where`` helper carrying the recursion; a generic
+  helper carrying it under a plain ``count`` (in the generic flavour, so
+  its clone is keyed by the chain that names it); a cycle between the
+  function and its helper;
 * measure — a ``@Nat`` countdown, a count-up gap
   (``decreases(@Nat.0 - @Nat.1)``) and a structural ADT;
 * direction — a measure that decreases, and one that does not.
@@ -47,7 +49,7 @@ from vera.verifier import ContractVerifier, VerifyResult, verify
 VISIBILITY = ("private", "public")
 FLAVOURS = ("generic", "plain")
 PLACEMENTS = ("direct", "importer", "transitive")
-HELPERS = ("none", "helper", "cycle")
+HELPERS = ("none", "helper", "nested", "cycle")
 MEASURES = ("nat", "gap", "adt")
 DIRECTIONS = ("decreasing", "stuck")
 
@@ -74,7 +76,8 @@ _MEASURE = {
 
 
 def _fn(vis: str, generic: bool, name: str, measure: str,
-        decreasing: bool, callee: str, helper: bool = False) -> str:
+        decreasing: bool, callee: str, helper: bool = False,
+        helper_forall: bool = False) -> str:
     """A measured function *name* whose recursive call names *callee*."""
     t = "T" if generic else "Bool"
     m = _MEASURE[measure]
@@ -86,7 +89,8 @@ def _fn(vis: str, generic: bool, name: str, measure: str,
         args = m["step"] if decreasing else m["stuck"]
         body = (f"if {m['base']} then {{ 0 }} else "
                 f"{{ {callee}(@{t}.0, {args}) + 1 }}")
-    head = "" if helper else vis + " " + ("forall<T> " if generic else "")
+    head = ("forall<T> " if helper_forall else "") if helper else (
+        vis + " " + ("forall<T> " if generic else ""))
     return (f"{head}fn {name}(@{t}, {m['params']} -> @Nat)\n"
             f"  requires({m['req']})\n  ensures(true)\n"
             f"  decreases({m['dec']})\n  effects(pure)\n{{\n  {body}\n}}\n")
@@ -103,24 +107,27 @@ def _module(vis: str, generic: bool, helper: str, measure: str,
     if helper == "none":
         out.append(_fn(vis, generic, "count", measure, decreasing, "count"))
     else:
-        if helper == "helper":
-            # `count` forwards to `go`, which carries the recursion.
+        if helper in ("helper", "nested"):
+            # `count` forwards to `go`, which carries the recursion.  A
+            # nested generic `go` sits under a plain `count`.
+            nested = helper == "nested" and generic
+            pt = "Bool" if nested else t
             slots = {"nat": "@Nat.0", "gap": "@Nat.1, @Nat.0",
                      "adt": "@Chain.0"}[measure]
-            parent = (f"{vis} {'forall<T> ' if generic else ''}"
-                      f"fn count(@{t}, {m['params']} -> @Nat)\n"
+            parent = (f"{vis} {'forall<T> ' if generic and not nested else ''}"
+                      f"fn count(@{pt}, {m['params']} -> @Nat)\n"
                       f"  requires({m['req']})\n  ensures(true)\n"
-                      f"  effects(pure)\n{{\n  go(@{t}.0, {slots})\n}}\n")
+                      f"  effects(pure)\n{{\n  go(@{pt}.0, {slots})\n}}\n")
             inner = _fn(vis, generic, "go", measure, decreasing, "go",
-                        helper=True)
+                        helper=True, helper_forall=nested)
         else:
             # `count` -> `go` -> `count`; `count`'s edge always decreases.
             parent = _fn(vis, generic, "count", measure, True, "go")
             inner = _fn(vis, generic, "go", measure, decreasing, "count",
                         helper=True)
-        nested = "\n".join("  " + ln if ln else ln
-                           for ln in inner.splitlines())
-        out.append(parent.rstrip("\n") + "\nwhere {\n" + nested + "\n}\n")
+        body = "\n".join("  " + ln if ln else ln
+                         for ln in inner.splitlines())
+        out.append(parent.rstrip("\n") + "\nwhere {\n" + body + "\n}\n")
     out.append("public fn three(@Unit -> @Nat)\n  requires(true)\n"
                "  ensures(true)\n  effects(pure)\n{\n"
                f"  count(true, {m['entry']})\n}}\n")
