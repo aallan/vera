@@ -341,6 +341,12 @@ class VerificationSession:
         # set the cold path computes, or it proves at Tier 1 from facts cold
         # withholds — a warm/cold divergence in the generous direction.
         verifier._disclosed_fns = self._disclosed
+        # #1480: every refinement predicate the program declares, discharged
+        # once, first — exactly where the cold `_verify_all_declarations`
+        # runs it, so the two streams agree in order as well as content.  Not
+        # cached per function: it belongs to no function's slice, and a
+        # predicate's callee can change while the declaration text does not.
+        verifier._verify_refinement_declarations(program)
         stats = SessionRunStats()
         out_diags: list[Diagnostic] = list(verifier.errors)
         out_obls: list[ProofObligation] = list(verifier.obligations)

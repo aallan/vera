@@ -1091,13 +1091,20 @@ class TestFencesThroughTheGate:
 # ---------------------------------------------------------------------------
 
 
+# A block that verifies and traps at run time.  The index reaches
+# `string_char_code` through a closure, which the verifier reads without its
+# value: a literal out-of-range index is refused at verify (E501, the
+# built-in's declared domain, #1480), so the block would never reach the run
+# stage, while an index the verifier cannot state leaves the domain to the
+# run (E532).
 _TRAPS_AT_RUN = """\
 public fn main(@Unit -> @Nat)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  string_char_code("abc", 7)
+  string_char_code("abc",
+    apply_fn(fn(@Int -> @Int) effects(pure) { @Int.0 }, 7))
 }"""
 
 
@@ -1155,13 +1162,15 @@ public fn some_two(@Unit -> @Option<Int>)
   Some(2)
 }"""
 
+# Traps at run time, as `_TRAPS_AT_RUN` does, inside a value.
 _SOME_TRAP = """\
 public fn main(@Unit -> @Option<Nat>)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  Some(string_char_code("abc", 7))
+  Some(string_char_code("abc",
+    apply_fn(fn(@Int -> @Int) effects(pure) { @Int.0 }, 7)))
 }"""
 
 

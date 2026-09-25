@@ -26,6 +26,8 @@ from vera import ast, naming
 from vera.monomorphize import mangle_type_name, unmangle_type_name
 from vera import carriers
 from vera.regularity import RegularityIndex, adt_names_in
+from vera.builtin_domains import BUILTIN_DOMAIN_NAMES, domain_contract
+from vera.slots import substitute_parameters
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv
 from vera.types import (
     AdtType,
@@ -196,6 +198,23 @@ class CallDemotion:
     Tier-3 obligation (E532) rather than letting the precondition obligation
     silently not exist: DESIGN.md degrades loudly, and the runtime guard
     still enforces the contract.
+    """
+
+    callee_name: str
+    call_node: ast.FnCall | ast.ModuleCall
+    precondition: ast.Requires
+
+
+@dataclass
+class CallDischarge:
+    """A call site whose precondition was DISCHARGED, for a callee whose
+    check sits at the call site (#1480).
+
+    A user callee's `requires` is checked in the callee's own prologue, so a
+    discharged call-site precondition leaves no record (Phase A records the
+    undischarged ones).  A built-in's declared domain is different: the check
+    is emitted inline, at the call, so the call site is where its runtime
+    check is and where its obligation has to be — discharged or not.
     """
 
     callee_name: str
@@ -425,6 +444,25 @@ def _adt_sort_key(
     return f"{adt_name}<{', '.join(arg_strs)}>"
 
 
+def _same_call_site(a: ast.Node, b: ast.Node) -> bool:
+    """Whether two call nodes are one call site: by span, since a pipe is
+    re-desugared into a fresh node on every translation, and by identity for
+    a node with no span (#727's key, shared by every call-outcome list)."""
+    if a.span is not None and b.span is not None:
+        return a.span == b.span
+    return a is b
+
+
+def _pattern_condition_exact(pattern: ast.Pattern) -> bool:
+    """Whether `SmtContext._pattern_condition` holds of exactly the values
+    *pattern* matches.  A constructor pattern's condition is its outer
+    recognizer alone, so one with a refutable sub-pattern (`Some(None)`,
+    `Some(3)`) over-approximates what it matches (#1562)."""
+    return not isinstance(pattern, ast.ConstructorPattern) or all(
+        isinstance(sub, (ast.BindingPattern, ast.WildcardPattern))
+        for sub in pattern.sub_patterns)
+
+
 def _sorts_agree(a: z3.ExprRef, b: z3.ExprRef) -> bool:
     """Whether two terms share a Z3 sort, so an ``If`` can join them (#1360)."""
     try:
@@ -627,6 +665,9 @@ class SmtContext:
         # statically (untranslatable ADT-argument, etc.) — demoted to a loud
         # Tier-3 by the verifier rather than silently dropped.
         self._call_demotions: list[CallDemotion] = []
+        # #1480: discharged checks for a callee whose check sits at the call
+        # site (a built-in's declared domain) — see `CallDischarge`.
+        self._call_discharges: list[CallDischarge] = []
         self._fresh_counter: int = 0
         # Path conditions accumulated from if/match branches so that
         # call-site precondition checks can see which branch is active.
@@ -637,6 +678,48 @@ class SmtContext:
         # that needs one is provable only from something this run admitted it
         # could not establish, which is a Tier-3 truth and not a Tier-1 proof.
         self._tainted_facts: list[z3.ExprRef] = []
+        # #1480 review: what a placeholder's binder guarantees about it.  A
+        # refined binder whose value does not translate is bound to a fresh
+        # value, and codegen's §2.6.5 guard at the bind establishes the
+        # binder's predicate before anything in its scope runs.  Each entry
+        # pairs that value with the predicate over it, and a refutation reads
+        # the predicate wherever the value occurs (`_check_refutation`).
+        self._value_facts: list[tuple[z3.ExprRef, z3.ExprRef]] = []
+        # #1480 review: each guarded arm binder's fresh value, paired with the
+        # projection it stands for (`record_guarded_value`).  An assumption
+        # the solver holds is stated over the projections (`assume`), as it
+        # is where no binder is fresh: a fresh value's fact reaches only a
+        # query that reads it, so an assumption over the fresh value said
+        # nothing about the projection — a callee's `ensures` and the
+        # function's own `requires` lost what they state about a payload.
+        self._guarded_values: list[tuple[z3.ExprRef, z3.ExprRef]] = []
+        # #1480 review: what `_path_conditions` lacks for an UNDER-
+        # approximation of the point the translation has reached, one entry
+        # per branch the translation entered where it lacks something.  A
+        # `match` arm's own condition is pushed without the negation of the
+        # earlier arms' (and a nested pattern's is its outer constructor
+        # alone, #1562), so the path conditions over-approximate where an arm
+        # runs: right for a premise, wrong for the antecedent of a fact about
+        # what the arm's bind established.  An entry is the missing
+        # conjunct, or None where no under-approximation exists: an arm whose
+        # own condition is inexact.  A default arm's path already holds the
+        # negation of every earlier arm's.  Read by `_arm_guarded_binders`.
+        self._reach_extras: list[z3.ExprRef | None] = []
+        # #1480 review: whether a call-site precondition refuted over an
+        # opaque value (#1199) is a violation.  True only while the verifier
+        # translates a function BODY (`strict_preconditions`): the position
+        # whose call checks were recorded before #1480, where §6.4.2 keeps a
+        # user callee's precondition strict (#804).  Every other check is one
+        # #1480 records, and a refutation of it that rests on a value the
+        # verifier cannot state is a Tier-3 demotion (`_rests_on_unknown`).
+        self._strict_preconditions = False
+        # Optional hook (injected by the verifier) answering whether a term
+        # is, or embeds, a placeholder one of its walks bound for a `let`, a
+        # destructure or a `match` binder whose value does not translate —
+        # `ContractVerifier._contains_opaque_shadow`, which reads the live
+        # `_opaque_shadows`.  Signature: (term) -> bool.  None when no
+        # verifier is driving (pure-SMT tests).
+        self._placeholder_hook: Any = None
         # #1406/#1407: the Z3 terms this function's DISCLOSED calls produced.
         # Disclosure is a property of the VALUE, not of the syntax that names
         # it: `let @T = mk(x); match @T.0 { … }` reaches the match as a slot
@@ -671,6 +754,14 @@ class SmtContext:
         # PR-review).  Signature: (scrutinee_ast, scrutinee_z3, pattern, smt)
         # -> list[z3 fact].  None when no verifier is driving (pure-SMT tests).
         self._subpattern_fact_hook: Any = None
+        # Optional hook (injected by the verifier) returning the fresh values
+        # a `match` arm binds its guarded refined binders to, keyed by the id
+        # of the value each would otherwise receive, with each one's fact
+        # recorded (`ContractVerifier._guarded_binder_values`, #1480 review).
+        # Signature: (scrutinee_ast, scrutinee_z3, pattern, smt, taken) ->
+        # dict[int, z3 term], *taken* being the conditions the arm's bind
+        # runs under.  None when no verifier is driving (pure-SMT tests).
+        self._guarded_binder_hook: Any = None
         # Optional hook (injected by the verifier) returning the checker's
         # recorded (instance-substituted) semantic ``Type`` for an expression
         # — the #747 side-table, via ``ContractVerifier._resolved_type_of``.
@@ -743,7 +834,7 @@ class SmtContext:
         """Declare a Z3 integer variable constrained >= 0 (for Nat)."""
         v = z3.Int(name)
         self._vars[name] = v
-        self.solver.add(v >= 0)
+        self.assume(v >= 0)
         return v
 
     def declare_string(self, name: str) -> z3.SeqRef:
@@ -1058,6 +1149,93 @@ class SmtContext:
         demotions = list(self._call_demotions)
         self._call_demotions.clear()
         return demotions
+
+    def drain_call_discharges(self) -> list[CallDischarge]:
+        """Return the discharged call-site checks recorded since the last
+        drain, and clear the list (#1480).
+
+        A site that ALSO has a violation or a demotion pending is left out:
+        the same call is translated by more than one walk, and the record a
+        site keeps is its worst outcome, never a discharge beside a failure.
+        """
+        failed = [
+            *(v.call_node for v in self._call_violations),
+            *(d.call_node for d in self._call_demotions),
+        ]
+        kept = [
+            ok for ok in self._call_discharges
+            if not any(_same_call_site(ok.call_node, n) for n in failed)
+        ]
+        self._call_discharges.clear()
+        return kept
+
+    @contextlib.contextmanager
+    def call_outcomes_discarded(self) -> Iterator[None]:
+        """Translate without keeping a call-site outcome (#1480).
+
+        For a translation that re-reads code another walk has already
+        obligated under the right facts: the recursive-call walk re-reads a
+        function's body to find its calls, and the arguments of a tail call
+        it found, without the path conditions the body walk held.  Whatever
+        it finds at a call is a repeat at best and a check under the wrong
+        facts at worst, so every violation, demotion and discharge recorded
+        inside the block is dropped on exit.  Outcomes already pending when
+        the block is entered are kept.
+        """
+        marks = (len(self._call_violations), len(self._call_demotions),
+                 len(self._call_discharges))
+        try:
+            yield
+        finally:
+            del self._call_violations[marks[0]:]
+            del self._call_demotions[marks[1]:]
+            del self._call_discharges[marks[2]:]
+
+    @contextlib.contextmanager
+    def strict_preconditions(self) -> Iterator[None]:
+        """Translate a function body under #804's strict precondition rule.
+
+        The verifier wraps its translation of a function's body in this, and
+        nothing else: that translation checked and recorded every call it
+        reached before #1480, and §6.4.2 keeps a user callee's precondition
+        over an opaque value (#1199) an E501 there.  Everywhere else (a
+        contract clause, a measure, a predicate, a call only the obligation
+        walk reaches) the check is one #1480 records, and it may not refuse
+        on a value the verifier cannot state (`_rests_on_unknown`).
+        """
+        saved = self._strict_preconditions
+        self._strict_preconditions = True
+        try:
+            yield
+        finally:
+            self._strict_preconditions = saved
+
+    def _rests_on_unknown(
+        self, goal: z3.ExprRef, result: SmtResult, *, strict: bool,
+    ) -> bool:
+        """Whether a call-site check that failed with *result* was refuted
+        only over a value the verifier cannot state (#1480 review).
+
+        Such a value is a placeholder: a binding one of the verifier's walks
+        made for a `let`, a destructure or a `match` binder whose value does
+        not translate (`_placeholder_hook`), or an opaque stand-in (#1199,
+        the ``"opaque"`` status) unless *strict* keeps #804's rule.  Z3 may
+        give it any value, so its countermodel names no value the program
+        produces, and the compiled code checks the precondition at the call:
+        the obligation is a Tier-3 demotion, never a refusal.
+
+        But embedding a placeholder is not depending on it, so the goal is
+        asked again, negated, as #1460 asks a refinement's: a precondition
+        false for EVERY value the placeholder could take is refuted outright.
+        """
+        rests = (
+            (result.status == "opaque" and not strict)
+            or (self._placeholder_hook is not None
+                and self._placeholder_hook(goal))
+        )
+        if not rests:
+            return False
+        return self.check_valid(z3.Not(goal), []).status != "verified"
 
     def _record_call_demotion(
         self,
@@ -1553,7 +1731,7 @@ class SmtContext:
         premise is foreign to it, which is the fail-closed answer rather than
         the convenient one.
         """
-        self.solver.add(axiom)
+        self.assume(axiom)
         self._quantified_axioms[axiom.get_id()] = QuantifiedAxiom(
             kind=kind, symbol=symbol,
         )
@@ -2176,11 +2354,11 @@ class SmtContext:
         self._vars[lit_name] = lit_const
         # Length axiom: `length(lit) == N`.
         length_fn = self._get_length_fn(array_sort)
-        self.solver.add(length_fn(lit_const) == len(expr.elements))
+        self.assume(length_fn(lit_const) == len(expr.elements))
         # Per-element axioms: `index(lit, i) == element_i`.
         index_fn = self._get_index_fn(array_sort, element_sort)
         for i, elt in enumerate(element_z3s):
-            self.solver.add(index_fn(lit_const, z3.IntVal(i)) == elt)
+            self.assume(index_fn(lit_const, z3.IntVal(i)) == elt)
         # #1418 review F1: the literal's own constant is a STAND-IN — an
         # element's term is related to it only by the axioms above, which the
         # occurrence walk cannot see — so a disclosed element must be
@@ -2262,6 +2440,22 @@ class SmtContext:
         user-function call, not the built-in `eq` / `compare`.
         """
         return self._fn_lookup is not None and self._fn_lookup(name) is not None
+
+    def _resolves_to_builtin(self, name: str) -> bool:
+        """Whether a bare call to *name* reaches the BUILT-IN of that name.
+
+        Not `not _is_user_fn(name)`: the lookup falls through to the flat
+        registry, which holds the built-ins, so every built-in name "is
+        registered".  A built-in's entry is the one with no declaration
+        behind it — no span and no parameter type expressions — which is
+        what a user or imported function's entry always has.
+        """
+        if self._fn_lookup is None:
+            return True
+        info = self._fn_lookup(name)
+        return info is None or (
+            getattr(info, "span", None) is None
+            and not getattr(info, "param_type_exprs", ()))
 
     @staticmethod
     def _desugar_compare(call: ast.FnCall) -> ast.Expr:
@@ -2360,13 +2554,21 @@ class SmtContext:
             return self.translate_expr(
                 self._desugar_compare(call), env)
 
+        # #1480: a built-in whose compiled translation traps outside a
+        # declared domain has that domain checked here, at every call, the
+        # way a user callee's `requires` is.  The value is translated below
+        # exactly as before: the check adds an obligation, not a model.
+        if (call.name in BUILTIN_DOMAIN_NAMES
+                and self._resolves_to_builtin(call.name)):
+            self._check_builtin_domain(call, env)
+
         # Built-in: array_length()
         if call.name == "array_length" and len(call.args) == 1:
             arg = self.translate_expr(call.args[0], env)
             if arg is not None:
                 length_fn = self._get_length_fn(arg.sort())
                 result = length_fn(arg)
-                self.solver.add(result >= 0)
+                self.assume(result >= 0)
                 return result
             return None  # pragma: no cover
 
@@ -2378,7 +2580,7 @@ class SmtContext:
                     "map_size", arg.sort(), z3.IntSort(),
                 )
                 result = size_fn(arg)
-                self.solver.add(result >= 0)
+                self.assume(result >= 0)
                 return result
             return None  # pragma: no cover
 
@@ -2394,7 +2596,7 @@ class SmtContext:
                     "set_size", arg.sort(), z3.IntSort(),
                 )
                 result = size_fn(arg)
-                self.solver.add(result >= 0)
+                self.assume(result >= 0)
                 return result
             return None  # pragma: no cover
 
@@ -2582,6 +2784,157 @@ class SmtContext:
         return self._translate_call_with_info(
             callee_info, call.name, call.args, call, env,
         )
+
+    def check_call_site(
+        self, call: ast.FnCall | ast.ModuleCall, env: SlotEnv,
+    ) -> None:
+        """Obligate *call*'s precondition at this site, in *env* (#1480 review).
+
+        The verifier's primitive-operation walk calls this at every call it
+        reaches, and it reaches every evaluated expression: an argument of a
+        built-in the SMT layer does not model, a closure or quantifier body, an
+        interpolated part, a `handle` body, an effect operation's argument, the
+        statements after a `let` whose value does not translate, an arm under
+        a scrutinee that does not.  Translation checks a call's precondition
+        too, as a side effect of translating the call, but translation stops
+        early at each of those, so it cannot be what obligates a call.
+
+        The outcome goes to the three lists every call-site precondition uses,
+        with their dedup, so a call both reach is one record: a built-in's
+        declared domain (`_check_builtin_domain`), or a user callee's
+        `requires` (`_check_callee_precondition`).  A call with neither — any
+        other built-in, an effect operation — obligates nothing here; its
+        arguments are the walk's to reach.
+
+        Every check made here is one #1480 records, so none of them refuses
+        on a value the verifier cannot state (§6.4.2): over a placeholder
+        for an effect operation's result, a `let` whose value does not
+        translate or an arm's binder under a scrutinee that does not, a
+        precondition that some value of the placeholder satisfies is the
+        E532 demotion, with the callee's own check behind it
+        (`_rests_on_unknown`), and an `assume` about the value discharges
+        it.  A precondition false for every such value is E501.  E532 is
+        also what an argument the walk cannot read at all gets: a binder of
+        a closure, a quantifier's predicate or a handler clause, whose scope
+        the walk enters without its values.
+        """
+        info: Any
+        if isinstance(call, ast.FnCall):
+            if self._resolves_to_builtin(call.name):
+                if call.name in BUILTIN_DOMAIN_NAMES:
+                    self._check_builtin_domain(call, env)
+                return
+            if self._fn_lookup is None:  # pragma: no cover — resolved above
+                return
+            info = self._fn_lookup(call.name)
+        else:
+            # The ONE resolution the call's translation uses (#1558): an
+            # imported module's function, else the scope's own top-level
+            # function when the path is its own.  Reading the imports alone
+            # left `ma::need_pos(x)` inside `module ma;` unobligated wherever
+            # only this walk reaches it, while its check trapped.
+            info = self.module_callee(tuple(call.path), call.name)
+        if info is None:
+            return
+        self._check_callee_precondition(info, call.name, call.args, call, env)
+
+    def _check_callee_precondition(
+        self,
+        callee_info: Any,
+        callee_name: str,
+        args: tuple[ast.Expr, ...],
+        call_node: ast.FnCall | ast.ModuleCall,
+        env: SlotEnv,
+    ) -> None:
+        """The precondition half of `_translate_call_with_info`, for a call
+        the walk reaches whether or not translation does.
+
+        The same gates, in the same order, with the same records: a callee
+        with only `requires(true)` obligates nothing; a generic callee, and
+        an argument that does not translate even with the callee's ADT sorts
+        forced (#882), demote (E532); otherwise each precondition is checked
+        against the translated arguments.
+        """
+        has_nontrivial_pre = any(
+            isinstance(c, ast.Requires)
+            and not (isinstance(c.expr, ast.BoolLit) and c.expr.value)
+            for c in callee_info.contracts
+        )
+        if not has_nontrivial_pre:
+            return
+        if callee_info.forall_vars:
+            self._record_call_demotion(callee_info, callee_name, call_node)
+            return
+        if len(args) != len(callee_info.param_type_exprs):
+            return
+        zero_size = self._zero_size_params(callee_info)
+        z3_args = self._translate_call_args(args, env, zero_size)
+        if z3_args is None:
+            self._ensure_call_arg_sorts(callee_info.param_type_exprs)
+            z3_args = self._translate_call_args(args, env, zero_size)
+        if z3_args is None:
+            self._record_call_demotion(callee_info, callee_name, call_node)
+            return
+        self._check_call_preconditions(
+            callee_info, callee_name, z3_args, call_node, zero_size,
+        )
+
+    def _check_builtin_domain(self, call: ast.FnCall, env: SlotEnv) -> None:
+        """Obligate *call*'s declared domain at this call site (#1480).
+
+        The domain is :mod:`vera.builtin_domains`' `requires`, with the
+        call's actual arguments substituted for its parameters and the
+        result translated in the CALLER's scope — so a literal string's byte
+        length is exact (#802) and a slot's facts are the caller's.  The
+        outcome goes to the same three lists every call-site precondition
+        uses: a discharge (recorded, since the check is inline here), a
+        violation (E501, on any outcome but a proof — as a user callee's),
+        or a demotion when the domain cannot be stated (E532).
+        """
+        contract = domain_contract(call.name)
+        if contract is None or len(call.args) != len(contract.params):
+            return
+        predicate = substitute_parameters(
+            contract.requires.expr, contract.params, call.args,
+            naming.EMPTY_ALIAS_ENV, None,
+        )
+        goal = (self.translate_expr(predicate, env)
+                if predicate is not None else None)
+        if goal is None or goal.sort() != z3.BoolSort():
+            self._record_call_demotion_for(
+                call.name, call, contract.requires)
+            return
+        result = self.check_valid(goal, [])
+        if result.status == "verified":
+            if not any(ok.precondition is contract.requires
+                       and _same_call_site(ok.call_node, call)
+                       for ok in self._call_discharges):
+                self._call_discharges.append(CallDischarge(
+                    callee_name=call.name, call_node=call,
+                    precondition=contract.requires,
+                ))
+            return
+        if result.status == "disclosed" or self._rests_on_unknown(
+                goal, result, strict=False):
+            # Holds only from a disclosed fact (the #1363 rule
+            # `_check_call_preconditions` applies to a user callee), or is
+            # refuted only over a value the verifier cannot state: a
+            # demotion, never a proof and never a violation.  A built-in's
+            # domain is obligated by #1480 everywhere, so no call to one
+            # takes #804's strict rule, the function body included; the
+            # check at the call is the guarantee, and an `assume` about the
+            # value still discharges it.
+            self._record_call_demotion_for(
+                call.name, call, contract.requires)
+            return
+        if not any(v.precondition is contract.requires
+                   and _same_call_site(v.call_node, call)
+                   for v in self._call_violations):
+            self._call_violations.append(CallViolation(
+                callee_name=call.name, call_node=call,
+                precondition=contract.requires,
+                counterexample=result.counterexample,
+            ))
 
     def _translate_module_call(
         self, call: ast.ModuleCall, env: SlotEnv
@@ -2816,6 +3169,15 @@ class SmtContext:
                 # misattribution from claiming Tier 1, and equally wrong.  It
                 # takes the same Tier-3 E532 demotion an untranslatable
                 # precondition takes, so the call keeps its runtime guard.
+                self._record_call_demotion_for(
+                    callee_name, call_node, contract,
+                )
+                return False
+            if result.status != "verified" and self._rests_on_unknown(
+                    z3_pre, result, strict=self._strict_preconditions):
+                # #1480 review: refuted only over a value the verifier cannot
+                # state, at a check #1480 records.  The callee's own check
+                # stands behind the call, so it is the E532 demotion.
                 self._record_call_demotion_for(
                     callee_name, call_node, contract,
                 )
@@ -3070,7 +3432,7 @@ class SmtContext:
             with self._callee_contract_scope(callee_info):
                 z3_post = self.translate_expr(contract.expr, callee_env)
             if z3_post is not None:
-                self.solver.add(self._guard_fact(z3_post))
+                self.assume(self._guard_fact(z3_post))
         self._result_var = saved_result
 
         # #746: a refined return type is an implicit postcondition — assume
@@ -3132,7 +3494,7 @@ class SmtContext:
                         inner_env = inner_env.push(binder, ret_var)
                     z3_pred = self.translate_expr(predicate, inner_env)
                     if z3_pred is not None:
-                        self.solver.add(self._guard_fact(z3_pred))
+                        self.assume(self._guard_fact(z3_pred))
                     # An untranslatable level is DROPPED here, where
                     # `_translate_refined_predicate` returns None for the same
                     # case.  The directions are opposite on purpose: there the
@@ -3434,14 +3796,15 @@ class SmtContext:
             return None
 
         # Collect preceding arm conditions for the default case
-        preceding_conds: list[z3.ExprRef] = []
-        for arm in arms[:-1]:
-            pc = self._pattern_condition(scrutinee, arm.pattern)
-            if pc is not None:
-                preceding_conds.append(pc)
+        conds = [self._pattern_condition(scrutinee, arm.pattern)
+                 for arm in arms]
+        preceding_conds: list[z3.ExprRef] = [
+            pc for pc in conds[:-1] if pc is not None]
 
         # Translate last arm body (default case)
-        last_env = self._bind_pattern(scrutinee, arms[-1].pattern, env)
+        last_env = self._bind_pattern(
+            scrutinee, arms[-1].pattern, env,
+            self._arm_guarded_binders(expr, scrutinee, len(arms) - 1, conds))
         if last_env is None:
             return None
 
@@ -3459,10 +3822,10 @@ class SmtContext:
             # precondition checks that read `_path_conditions` live (CR
             # PR-review).  Empty preceding ⇒ irrefutable arm ⇒ unconditional.
             if preceding_conds:
-                self.solver.add(z3.Implies(
+                self.assume(z3.Implies(
                     z3.And(*[z3.Not(pc) for pc in preceding_conds]), f))
             else:
-                self.solver.add(f)
+                self.assume(f)
         result = self.translate_expr(arms[-1].body, last_env)
         for _ in last_facts:
             self._path_conditions.pop()
@@ -3473,15 +3836,22 @@ class SmtContext:
             return None
 
         # Wrap preceding arms in z3.If(condition, body, previous)
-        for arm in reversed(arms[:-1]):
-            cond = self._pattern_condition(scrutinee, arm.pattern)
+        for index in reversed(range(len(arms) - 1)):
+            arm = arms[index]
+            cond = conds[index]
             if cond is None:  # pragma: no cover
                 return None
-            arm_env = self._bind_pattern(scrutinee, arm.pattern, env)
+            arm_env = self._bind_pattern(
+                scrutinee, arm.pattern, env,
+                self._arm_guarded_binders(expr, scrutinee, index, conds))
             if arm_env is None:  # pragma: no cover
                 return None
 
             self._path_conditions.append(cond)
+            # The arm runs only if no earlier arm matched, which the path
+            # does not say; and a nested pattern's condition is its outer
+            # constructor alone (#1562), so nothing under-approximates it.
+            self._reach_extras.append(self._arm_reach(arm.pattern, conds, index))
             arm_facts = self._arm_source_facts(
                 expr.scrutinee, scrutinee, arm.pattern)
             for f in arm_facts:
@@ -3489,11 +3859,12 @@ class SmtContext:
                 # note) so the refined-return goal sees it after the path
                 # conditions pop, while the live `_path_conditions` push covers
                 # in-arm precondition checks.
-                self.solver.add(z3.Implies(cond, f))
+                self.assume(z3.Implies(cond, f))
                 self._path_conditions.append(f)
             arm_body = self.translate_expr(arm.body, arm_env)
             for _ in arm_facts:
                 self._path_conditions.pop()
+            self._reach_extras.pop()
             self._path_conditions.pop()
 
             if arm_body is None:  # pragma: no cover
@@ -3501,6 +3872,104 @@ class SmtContext:
             result = z3.If(cond, arm_body, result)
 
         return result
+
+    def _arm_guarded_binders(
+        self, expr: ast.MatchExpr, scrutinee: z3.ExprRef, index: int,
+        conds: list[z3.ExprRef | None],
+    ) -> dict[int, z3.ExprRef] | None:
+        """The fresh values arm *index* binds its guarded refined binders to
+        (#1480 review; `ContractVerifier._guarded_binder_values`).
+
+        The condition its bind runs under is the path to the `match`, no
+        earlier arm matching (the If-chain below tries them in order), and
+        its own pattern.  Called before the arm's own conditions are pushed.
+
+        Only for a pattern whose condition is exact.  `_pattern_condition`
+        reads a nested pattern by its outer constructor alone, so for
+        `Some(Some(@Pos))` it holds of `Some(None)` too, where this arm's bind
+        never runs, and the fact would put `P` on a value the program never
+        guards: `ensures(@Int.result > 0)` over `Some(None) -> 0 - 7` was
+        proved.  An earlier arm's condition over-approximates the values it
+        takes, so its negation only narrows *taken* and is safe either way.
+        """
+        if self._guarded_binder_hook is None:
+            return None
+        pattern = expr.arms[index].pattern
+        if not _pattern_condition_exact(pattern):
+            return None
+        # Under the enclosing branches the TRANSLATION entered as well: a
+        # fact about the payload that held wherever an enclosing arm's
+        # condition does, rather than where that arm runs, put `P` on the
+        # payload on runs where an earlier enclosing arm returned it (#1480
+        # review).  The path conditions and `_reach_extras` together
+        # under-approximate the point reached; where no under-approximation
+        # exists, the binder is left the projection, with no fact.
+        reach = self.reach_conditions()
+        if reach is None:
+            return None
+        taken = [*reach, *(z3.Not(c) for c in conds[:index] if c is not None)]
+        if conds[index] is not None:
+            taken.append(conds[index])
+        return cast("dict[int, z3.ExprRef]", self._guarded_binder_hook(
+            expr.scrutinee, scrutinee, expr.arms[index].pattern, self, taken))
+
+    def _arm_reach(
+        self, pattern: ast.Pattern, conds: list[z3.ExprRef | None],
+        index: int,
+    ) -> z3.ExprRef | None:
+        """What a non-default arm's pushed condition lacks for an under-
+        approximation of the arm running: no earlier arm matched.  None
+        where there is none, its own condition being inexact."""
+        if not _pattern_condition_exact(pattern):
+            return None
+        return z3.And(*[z3.Not(c) for c in conds[:index] if c is not None])
+
+    def reach_conditions(self) -> list[z3.ExprRef] | None:
+        """The path conditions and `_reach_extras` together: an under-
+        approximation of the point the translation has reached, or None where
+        a branch it entered has none.  The verifier's own walks push only
+        premises and their arms' own conditions, and a fact read in their
+        scope is read in that scope (#1480 review)."""
+        if any(e is None for e in self._reach_extras):
+            return None
+        return [*self._path_conditions,
+                *(e for e in self._reach_extras if e is not None)]
+
+    def record_guarded_value(
+        self, fresh: z3.ExprRef, projection: z3.ExprRef,
+    ) -> None:
+        """Pair a guarded binder's fresh value with its projection, so an
+        assumption that reads the value is stated over the projection."""
+        self._guarded_values.append((fresh, projection))
+
+    def over_projections(self, term: z3.ExprRef) -> z3.ExprRef:
+        """*term* with every guarded binder's fresh value replaced by the
+        projection it stands for (#1480 review).
+
+        What the term then says is what it says where no binder is fresh.
+        The fresh value's fact (`taken ⟹ fresh == projection ∧ P(fresh)`)
+        reaches only a query that reads it, and an ASSUMPTION is read by
+        every query without being read by any, so one over a fresh value
+        said nothing about the projection: `mk`'s `ensures(match
+        @Option<Int>.result { Some(@Pos) -> @Pos.0 > 5, … })` told its caller
+        nothing about the payload.  Nothing is added beyond what the
+        assumption states: the binder's predicate is not asserted, so no fact
+        outlives the query it was read by."""
+        if not self._guarded_values:
+            return term
+        pairs = {f.get_id(): (f, p) for f, p in self._guarded_values}
+        for _ in range(len(pairs) + 1):
+            found = self._ids_in([term], set(pairs))
+            if not found:
+                return term
+            term = z3.substitute(term, *(pairs[i] for i in found))
+        return term  # pragma: no cover — a projection never embeds itself
+
+    def assume(self, fact: z3.ExprRef) -> None:
+        """Assert *fact* into the solver's base context, stated over the
+        projections of any guarded binder it reads (`over_projections`).
+        Every assertion outside a query's own push/pop goes through here."""
+        self.solver.add(self.over_projections(fact))
 
     def _find_ctor_index(
         self, sort: z3.SortRef, ctor_name: str,
@@ -3550,8 +4019,15 @@ class SmtContext:
         scrutinee: z3.ExprRef,
         pattern: ast.Pattern,
         env: SlotEnv,
+        guarded: Mapping[int, z3.ExprRef] | None = None,
     ) -> SlotEnv | None:
-        """Extend *env* with bindings introduced by *pattern*."""
+        """Extend *env* with bindings introduced by *pattern*.
+
+        *guarded* maps the id of a value a binder would receive to the fresh
+        value that binder is bound to instead: a refined binder whose bind
+        codegen guards, which the verifier gives its predicate after the bind
+        (`ContractVerifier._guarded_binder_values`, #1480 review).
+        """
         if isinstance(pattern, (
             ast.NullaryPattern, ast.WildcardPattern,
             ast.IntPattern, ast.BoolPattern, ast.StringPattern,
@@ -3562,7 +4038,9 @@ class SmtContext:
             slot_name = self._type_expr_to_slot_name(pattern.type_expr)
             if slot_name is None:  # pragma: no cover
                 return None
-            return env.push(slot_name, scrutinee)
+            value = (guarded.get(scrutinee.get_id(), scrutinee)
+                     if guarded else scrutinee)
+            return env.push(slot_name, value)
 
         if isinstance(pattern, ast.ConstructorPattern):
             sort = scrutinee.sort()
@@ -3573,7 +4051,7 @@ class SmtContext:
             for i, sub_pat in enumerate(pattern.sub_patterns):
                 accessor = sort.accessor(idx, i)
                 field_val = accessor(scrutinee)
-                bound = self._bind_pattern(field_val, sub_pat, cur)
+                bound = self._bind_pattern(field_val, sub_pat, cur, guarded)
                 if bound is None:  # pragma: no cover
                     return None
                 cur = bound
@@ -4233,24 +4711,7 @@ class SmtContext:
         citation belongs to" have to mean the same thing, and two traversals
         written separately are two chances for them to drift.
         """
-        stack: list[Any] = [term]
-        seen: set[int] = set()
-        while stack:
-            cur = stack.pop()
-            try:
-                cur_id = cur.get_id()
-            except (AttributeError, z3.Z3Exception):
-                continue
-            if cur_id in wanted:
-                return True
-            if cur_id in seen:
-                continue
-            seen.add(cur_id)
-            try:
-                stack.extend(cur.children())
-            except (AttributeError, z3.Z3Exception):  # pragma: no cover
-                continue
-        return False
+        return bool(self._ids_in([term], wanted, first=True))
 
     def disclosed_term_sites(self, term: object) -> list[Any]:
         """The citation sites of the disclosed values occurring in *term*.
@@ -4270,6 +4731,66 @@ class SmtContext:
                 out.extend(sites)
         return out
 
+    def assume_of_value(self, value: z3.ExprRef, fact: z3.ExprRef) -> None:
+        """Record *fact* as true of the placeholder *value* (#1480 review).
+
+        For a refined binder whose value does not translate: the verifier
+        binds it to a fresh value, and codegen guards the bind (§2.6.5), so
+        the binder's predicate holds of that value everywhere it can be read.
+        """
+        self._value_facts.append((value, fact))
+
+    def _facts_of_values_read(
+        self, goal: z3.ExprRef, assumptions: list[z3.ExprRef],
+    ) -> list[z3.ExprRef]:
+        """The recorded facts of every placeholder a refutation reads.
+
+        By occurrence in the goal, an assumption or a path condition: a
+        placeholder is fresh, and is bound only in its binder's scope, after
+        the guard, so a query that reads it is one its fact is true in.  A
+        query that does not read it is never given the fact, so an empty
+        refinement (an arm the guard makes unreachable) proves nothing
+        outside that scope.  A value that can outlive its scope, a `match`
+        arm's binder inside the `match`'s own value, carries a fact guarded
+        by the condition its bind runs under (`assume_of_value`'s caller
+        states it).
+        """
+        if not self._value_facts:
+            return []
+        wanted = {value.get_id() for value, _ in self._value_facts}
+        read = self._ids_in(
+            [goal, *assumptions, *self._path_conditions], wanted)
+        return [fact for value, fact in self._value_facts
+                if value.get_id() in read]
+
+    def _ids_in(
+        self, terms: list[Any], wanted: set[int], *, first: bool = False,
+    ) -> set[int]:
+        """The ids in *wanted* that occur in any of *terms* — the one walk
+        :py:meth:`_term_contains` and :py:meth:`_facts_of_values_read` both
+        read, stopping at the first hit when *first* is set."""
+        found: set[int] = set()
+        stack: list[Any] = list(terms)
+        seen: set[int] = set()
+        while stack:
+            cur = stack.pop()
+            try:
+                cur_id = cur.get_id()
+            except (AttributeError, z3.Z3Exception):
+                continue
+            if cur_id in wanted:
+                found.add(cur_id)
+                if first:
+                    return found
+            if cur_id in seen:
+                continue
+            seen.add(cur_id)
+            try:
+                stack.extend(cur.children())
+            except (AttributeError, z3.Z3Exception):  # pragma: no cover
+                continue
+        return found
+
     def _check_refutation(
         self,
         goal: z3.ExprRef,
@@ -4286,6 +4807,8 @@ class SmtContext:
         if tainted:
             for tf in self._tainted_facts:
                 self.solver.add(tf)
+        for vf in self._facts_of_values_read(goal, assumptions):
+            self.solver.add(vf)
         self.solver.add(z3.Not(goal))
 
         result = self.solver.check()
@@ -4390,10 +4913,14 @@ class SmtContext:
         self._result_var = None
         self._call_violations.clear()
         self._call_demotions.clear()
+        self._call_discharges.clear()
         self._fresh_counter = 0
         self._opaque_tainted = False
         self._path_conditions.clear()
         self._tainted_facts.clear()   # #1363: per-function, must not survive
+        self._value_facts.clear()  # #1480 review: per-function placeholders
+        self._guarded_values.clear()  # and the guarded binders' projections
+        self._reach_extras.clear()
         self._disclosed_terms.clear()  # #1406: ditto — see the docstring
         self._disclosed_term_sites.clear()  # and the citations riding on them
         # The statability memo is per FUNCTION, not per process: the answer is

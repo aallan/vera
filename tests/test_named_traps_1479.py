@@ -1250,12 +1250,19 @@ def test_a_function_named_like_a_host_read_frame_cannot_forge_the_kind(
 def test_vera_test_classifies_a_trial_by_its_trap_kind() -> None:
     """A trial fails only on a broken contract.  A site message quotes the
     program's text, so a message that reads "contract" is not one: an index
-    into the string "contract" is an `error`, whatever its message says."""
+    into the string "contract" is an `error`, whatever its message says.
+
+    The index reaches the call through a closure, which the verifier reads
+    without its value: an unbounded `@Int.0` there is refused at verify
+    (E501, the built-in's declared domain, #1480) and no trial would run,
+    while an index it cannot state leaves the domain to the run (E532)."""
     from vera.tester import test as run_trials
     source = (
         "public fn code(@Int -> @Nat)\n"
         "  requires(true) ensures(@Nat.result < 256) effects(pure)\n"
-        '{\n  string_char_code("contract", @Int.0)\n}\n')
+        '{\n  string_char_code("contract",\n'
+        "    apply_fn(fn(@Int -> @Int) effects(pure) { @Int.0 }, @Int.0))\n"
+        "}\n")
     program = parse_to_ast(source)
     diags, _ = typecheck_with_artifacts(program, source)
     assert not [d for d in diags if d.severity == "error"]

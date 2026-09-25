@@ -299,6 +299,13 @@ class WasmContext(
         # Stack shapes recorded by a lowering that installs its own
         # scope, keyed by expression id (#1371).  See `_stack_shape_of`.
         self._scoped_expr_shape: dict[int, str] = {}
+        # Instructions a guarded @Nat subtraction has arranged to run right
+        # after an expression inside one of its operands produces its value,
+        # keyed by expression id (#1503): recording which arm of a join ran,
+        # or keeping a sub-value the operand consumes, for the sign the guard
+        # reads.  Installed and withdrawn around the operands' translation by
+        # `_translate_nat_subtraction`; applied by `translate_expr`.
+        self._nat_sub_hooks: dict[int, list[str]] = {}
         self._scoped_fns: set[str] = (
             self._known_fns if scoped_fns is None else scoped_fns
         )
@@ -385,6 +392,14 @@ class WasmContext(
         # span carries no recorded target.  Saved and restored around each
         # argument, so a sibling never sees another's.
         self._pending_component_type: object | None = None
+        # The constructor arguments that widen a genuine `@Nat` into the
+        # `@Int` component a binding reads, where the component's other
+        # sources can be negative — the per-arm widening of #820 at the
+        # argument that supplies it (#1503).  Registered by the destructure
+        # or `match` that binds the component, before its value is
+        # translated; read by `_translate_constructor_call`.  Keyed by
+        # expression id, holding the node so the id stays its own.
+        self._heterogeneous_widen_args: dict[int, ast.Expr] = {}
         # #773: structural-Eq helper functions this context generated, keyed by
         # the mangled `$eq_<type>` function name → its full WAT text.  Each
         # helper takes two i32 ADT pointers and returns i32 (1 = equal).  A
@@ -550,7 +565,7 @@ class WasmContext(
         self._old_state_locals: dict[str, int] = {}
         # #517 — WASM tail-call optimization.  Populated by
         # ``set_tail_call_context`` from the per-fn analyzer in
-        # ``vera/codegen/tail_position.py``: the set of ``id(FnCall)``
+        # ``vera/tail_position.py``: the set of ``id(FnCall)``
         # AST nodes that are syntactically in tail position.  The
         # ``_translate_call`` site emits ``return_call $foo`` instead
         # of ``call $foo`` when the call's id is in this set AND its
@@ -846,7 +861,7 @@ class WasmContext(
 
         ``sites`` is the set of ``id(ast.FnCall)`` AST nodes (and of
         each ``ast.ModuleCall`` by the module's own path, #1558) the
-        per-fn analyzer in ``vera/codegen/tail_position.py``
+        per-fn analyzer in ``vera/tail_position.py``
         identified as syntactically in tail position.  At translate
         time, ``_translate_call`` checks ``id(call) in sites`` plus
         the type-match condition (callee's WASM return type ==
@@ -1088,7 +1103,11 @@ class WasmContext(
         instructions = self._translate_expr_unscoped(expr, env)
         if instructions is None:
             return None
-        return self._scope_shadow_roots(expr, instructions)
+        scoped = self._scope_shadow_roots(expr, instructions)
+        # A guarded @Nat subtraction's record of this value (#1503): it
+        # reads the value on the stack and leaves it there.
+        recorded = self._nat_sub_hooks.get(id(expr))
+        return scoped if recorded is None else [*scoped, *recorded]
 
     def _scope_shadow_roots(
         self, expr: ast.Expr, instructions: list[str]
