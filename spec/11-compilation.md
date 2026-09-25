@@ -67,7 +67,7 @@ The one operation that can violate the non-negativity invariant despite well-typ
 (i64.sub lhs rhs)
 ```
 
-An operand whose value can be negative leaves its bits ambiguous: a literal-only part such as `0 - 3` has static type `@Nat` (two non-negative literals) and value -3, and -3 and `2^64 - 3` are one i64.  Where either operand can be negative, the guard computes each operand's sign from how the operand makes its value and traps exactly when the left value is below the right — where exactly one of them is negative, iff that one is the left, and otherwise by the unsigned comparison above, since two non-negative values are their u64s and two negative i64s order the same way unsigned ([#1503](https://github.com/aallan/vera/issues/1503)):
+An operand whose value can be negative leaves its bits ambiguous: a join such as `if b then { 0 - 3 } else { 1 }` has static type `@Nat` (an `if` takes its else branch's type) and can hold -3, and -3 and `2^64 - 3` are one i64.  Where either operand can be negative, the guard computes each operand's sign from how the operand makes its value and traps exactly when the left value is below the right — where exactly one of them is negative, iff that one is the left, and otherwise by the unsigned comparison above, since two non-negative values are their u64s and two negative i64s order the same way unsigned ([#1503](https://github.com/aallan/vera/issues/1503)):
 
 ```wat
 (if (select (local.get $lhs_neg)                  ;; the signs differ: the negative one is below
