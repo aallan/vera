@@ -3805,6 +3805,7 @@ class ContractVerifier:
             # T = Nat reads an `Option<T>` scrutinee, sees a TypeVar field
             # under a @Nat binder, and E503s an impossible narrowing.
             saved_subst = self._instance_subst
+            recorded: list[int] = []
             self._instance_subst = {
                 tv: self._resolve_type(Monomorphizer._parse_type_name(cn))
                 for tv, cn in zip(decl.forall_vars, concrete)
@@ -3816,13 +3817,13 @@ class ContractVerifier:
                 # re-declare under the SAME env the recount above renamed them
                 # in — a clone recounted in one namespace and re-declared in
                 # another resolves references onto the wrong parameters.
-                source = self._graph_source(decl, origin_module)
-                if source is not None:
-                    self._clone_source[id(clone)] = source
+                recorded = self._record_clone_sources(
+                    clone, self._graph_source(decl, origin_module))
                 with self._declaring_module_scope(origin_module):
                     self._verify_fn(clone, enclosing=enclosing)
             finally:
-                self._clone_source.pop(id(clone), None)
+                for key in recorded:
+                    self._clone_source.pop(key, None)
                 self._instance_subst = saved_subst
                 inst_obl, inst_err = self.obligations, self.errors
                 self.errors, self.obligations = saved
@@ -6825,12 +6826,12 @@ class ContractVerifier:
         """The call graph's own declaration for *decl*.
 
         *decl* itself when the graph holds it.  A monomorphized clone is a
-        new node: a generic's clone maps to the generic it was cloned from
-        (#1569), whatever name it is verified under.  A clone with no record
-        of its source, such as a `where` helper copied with its parent,
-        keeps its source name, so it maps to the one declaration of that
-        name; a name two declarations share maps to nothing, and the caller
-        then claims nothing about the measure.
+        new node: a generic's clone, and each `where` helper copied with it,
+        maps to the declaration it was copied from (#1569), whatever name it
+        is verified under.  A clone with no record of its source keeps its
+        source name, so it maps to the one declaration of that name; a name
+        two declarations share maps to nothing, and the caller then claims
+        nothing about the measure.
         """
         graph_of = getattr(self, "_graph_of", None)
         if graph_of is None:
@@ -6868,6 +6869,43 @@ class ContractVerifier:
             return None
         same = [fn for fn in graph.fns if fn.span == decl.span]
         return same[0] if len(same) == 1 else None
+
+    def _record_clone_sources(
+        self, clone: ast.FnDecl, source: ast.FnDecl | None,
+    ) -> list[int]:
+        """Record *source* as *clone*'s declaration, and each `where` helper
+        copied with *clone* against its own (PR #1579 review).
+
+        A helper is found in *source*'s graph by its source span, which the
+        copy keeps.  Returns the ids recorded, for the caller to drop when
+        the clone's verification ends.
+        """
+        if source is None:
+            return []
+        graph = self._graph_of[id(source)]
+        by_span: dict[object, list[ast.FnDecl]] = {}
+        for fn in graph.fns:
+            by_span.setdefault(fn.span, []).append(fn)
+        recorded: list[int] = []
+
+        def record(copy: ast.FnDecl, original: ast.FnDecl) -> None:
+            self._clone_source[id(copy)] = original
+            recorded.append(id(copy))
+            for helper in copy.where_fns or ():
+                same = by_span.get(helper.span, [])
+                if helper.span is not None and len(same) == 1:
+                    record(helper, same[0])
+
+        record(clone, source)
+        return recorded
+
+    def _member_source(self, decl: ast.FnDecl) -> ast.FnDecl | None:
+        """The call graph's declaration *decl* is, or is a copy of; None
+        when neither the graph nor a clone's record has it.  Never found by
+        name (PR #1579 review)."""
+        if id(decl) in self._graph_of:
+            return decl
+        return self._clone_source.get(id(decl))
 
     def _source_name(self, decl: ast.FnDecl) -> str:
         """The name *decl* is declared under in the source (#1569)."""
@@ -6908,12 +6946,16 @@ class ContractVerifier:
             where_group[parent_where_group.name] = parent_where_group
             for wfn in parent_where_group.where_fns or ():
                 where_group[wfn.name] = wfn
-        # A member is matched by the name its source declaration has: a
-        # clone verified through an importer is named by its discovery key
-        # (#1569), while the cycle holds the declaration it was cloned from.
-        names = {self._source_name(w) for w in where_group.values()}
-        if any(m.name not in names for m in cycle):
+        # A member is matched by declaration, never by name: a clone verified
+        # through an importer is named by its discovery key (#1569), and a
+        # top-level function can share a `where` helper's name, so a cycle
+        # through it would pass a name check while its call, rerouted onto
+        # its own discovery key, is counted by nothing (PR #1579 review).
+        sources = [self._member_source(w) for w in where_group.values()]
+        member_ids = {id(src) for src in sources if src is not None}
+        if any(id(m) not in member_ids for m in cycle):
             return None
+        names = {self._source_name(w) for w in where_group.values()}
         # A renamed clone's calls to its generic are renamed with it.  A call
         # still under a source name the group no longer holds would be left
         # out of the expected set, which is read by the group's names, and

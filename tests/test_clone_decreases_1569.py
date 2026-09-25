@@ -476,3 +476,193 @@ def test_a_call_the_clone_left_under_its_source_name_withholds_the_proof(
     files, entry = _files("importer", _UNRENAMED_MODULE)
     statuses = _decreases(tmp_path, files, entry)
     assert statuses and "verified" not in statuses[:1], statuses
+
+
+# ---------------------------------------------------------------------
+# A `where` helper named like a top-level function (PR #1579 review)
+# ---------------------------------------------------------------------
+#
+# `count` has a `where` helper `go`, and calls the module's top-level
+# `go` by its own path, `m::go(...)`, which calls back into `count`.  The
+# cycle therefore runs through a declaration outside `count`'s group
+# that has a group member's name.  Matched by name, the cycle looked as
+# if it lay inside the group, and the call through `m::go`, rerouted in
+# an importer's copy onto `go`'s discovery key, was left out of the
+# proof.  Matched by declaration, the cycle leaves the group, so no
+# proof is claimed.
+#
+# Crossed: `private` and `public`; a generic and a plain top-level `go`;
+# the call to it in `count` and in a second helper `h`; a call that grows
+# the measure and one that shrinks it; the module alone, an importer, a
+# transitive importer, and an importer that imports `count` by name.
+
+COLLISION_TOPS = ("generic", "plain")
+COLLISION_SITES = ("parent", "helper")
+COLLISION_DIRECTIONS = ("growing", "decreasing")
+COLLISION_PLACEMENTS = ("direct", "importer", "transitive", "by-name")
+
+
+def _collision_module(vis: str, top: str, site: str,
+                      direction: str) -> str:
+    grow = direction == "growing"
+    targ = "@T.0" if top == "generic" else "true"
+    call = f"m::go({targ}, {'@Nat.0 + 1' if grow else '@Nat.0 - 1'})"
+    if site == "parent":
+        body = ("if @Nat.0 == 0 then { 0 } else "
+                f"{{ count(@T.0, @Nat.0 - 1) + {call} }}")
+        extra = ""
+    else:
+        body = ("if @Nat.0 == 0 then { 0 } else "
+                "{ count(@T.0, @Nat.0 - 1) + h(@T.0, @Nat.0 - 1) }")
+        extra = ("\n  fn h(@T, @Nat -> @Nat)\n    requires(true)\n"
+                 "    ensures(true)\n    decreases(@Nat.0)\n"
+                 "    effects(pure)\n  {\n"
+                 f"    if @Nat.0 == 0 then {{ 0 }} else {{ {call} }}\n  }}\n")
+    if top == "generic":
+        sig, back = "forall<T> fn go(@T, @Nat -> @Nat)", "count(@T.0, "
+    else:
+        sig, back = "fn go(@Bool, @Nat -> @Nat)", "count(@Bool.0, "
+    back_body = (f"if @Nat.0 > 5 then {{ 0 }} else {{ {back}@Nat.0) }}"
+                 if grow else
+                 f"if @Nat.0 == 0 then {{ 0 }} else {{ {back}@Nat.0 - 1) }}")
+    return (f"module m;\n\n{vis} forall<T> fn count(@T, @Nat -> @Nat)\n"
+            "  requires(true)\n  ensures(true)\n  decreases(@Nat.0)\n"
+            f"  effects(pure)\n{{\n  {body}\n}}\n"
+            "where {\n  fn go(@T, @Nat -> @Nat)\n    requires(true)\n"
+            "    ensures(true)\n    effects(pure)\n  {\n    0\n  }\n"
+            f"{extra}}}\n\n"
+            f"{vis} {sig}\n  requires(true)\n  ensures(true)\n"
+            f"  decreases(@Nat.0)\n  effects(pure)\n{{\n  {back_body}\n}}\n\n"
+            "public fn three(@Unit -> @Nat)\n  requires(true)\n"
+            "  ensures(true)\n  effects(pure)\n{\n  count(true, 3)\n}\n")
+
+
+def _collision_files(placement: str,
+                     module_text: str) -> tuple[dict[str, str], str]:
+    if placement != "by-name":
+        return _files(placement, module_text)
+    main = ("import m(count);\n\npublic fn main(@Unit -> @Int)\n"
+            "  requires(true)\n  ensures(true)\n  effects(pure)\n{\n"
+            "  nat_to_int(count(true, 3))\n}\n")
+    return {"m.vera": module_text, "main.vera": main}, "main.vera"
+
+
+COLLISION_CELLS = [
+    pytest.param(*c, id="-".join(c)) for c in itertools.product(
+        VISIBILITY, COLLISION_TOPS, COLLISION_SITES, COLLISION_DIRECTIONS,
+        COLLISION_PLACEMENTS)
+    # A private `count` cannot be imported by name.
+    if not (c[0] == "private" and c[4] == "by-name")
+]
+
+
+@pytest.mark.parametrize(
+    ("vis", "top", "site", "direction", "placement"), COLLISION_CELLS)
+def test_a_cycle_through_a_namesake_of_a_helper_is_not_proved(
+    tmp_path: Path, vis: str, top: str, site: str, direction: str,
+    placement: str,
+) -> None:
+    """No obligation on the cycle is proved while it leaves `count`'s group.
+
+    The one exception is a plain top-level `go` in the module's own run:
+    the graph holds it, so its own obligation is proved over the whole
+    cycle's sites when every edge shrinks the measure.
+    """
+    module_text = _collision_module(vis, top, site, direction)
+    files, entry = _collision_files(placement, module_text)
+    result = _verify(tmp_path / "v", files, entry)
+    statuses = {o.line: o.status for o in result.obligations
+                if o.kind == "decreases"}
+    go_line = module_text.splitlines().index(
+        f"{vis} forall<T> fn go(@T, @Nat -> @Nat)"
+        if top == "generic" else f"{vis} fn go(@Bool, @Nat -> @Nat)") + 1
+    proved = {line for line, s in statuses.items() if s == "verified"}
+    if (top == "plain" and placement == "direct"
+            and direction == "decreasing"):
+        assert proved == {go_line + 3}, (statuses, module_text)
+    else:
+        assert proved == set(), (statuses, module_text)
+    if direction == "growing" and placement != "direct":
+        verify_errors, compiled, cg_errors = build_multi_module(
+            tmp_path / "r", files, entry)
+        assert verify_errors == [] and cg_errors == []
+        assert module_value(compiled)[0] == "trap"
+
+
+# ---------------------------------------------------------------------
+# Two modules with a declaration at the same span (PR #1579 review)
+# ---------------------------------------------------------------------
+#
+# A clone's declaration is found by its span in the graph of the module
+# that declares it: spans are unique within one file, not across files.
+# `a.f` and `b.f` sit at the same span; `a.f` decreases, and `b.f`'s
+# cycle runs through `g`, whose edge grows.  Found in the wrong module,
+# `b.f`'s clone would take `a.f`'s one-member cycle and be proved.
+
+_SAME_SPAN_A = """module a;
+
+public forall<T> fn f(@Nat, @T -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then { 0 } else { f(@Nat.0 - 1, @T.0) + f(@Nat.0 - 1, @T.0) }
+}
+
+public fn three(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  f(3, true)
+}
+"""
+
+_SAME_SPAN_B = """module b;
+
+public forall<T> fn f(@Nat, @T -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then { 0 } else { g(@Nat.0 + 0) + f(@Nat.0 - 1, @T.0) }
+}
+
+private fn g(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 > 5 then { 0 } else { f(@Nat.0 + 1, true) }
+}
+
+public fn four(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  f(3, true)
+}
+"""
+
+
+@pytest.mark.parametrize("order", ("a-first", "b-first"))
+def test_a_same_span_declaration_in_another_module_is_not_taken(
+    tmp_path: Path, order: str,
+) -> None:
+    imports = ["import a(three);", "import b(four);"]
+    if order == "b-first":
+        imports.reverse()
+    main = ("\n".join(imports) + "\n\npublic fn main(@Unit -> @Int)\n"
+            "  requires(true)\n  ensures(true)\n  effects(pure)\n{\n"
+            "  nat_to_int(three(()) + four(()))\n}\n")
+    files = {"a.vera": _SAME_SPAN_A, "b.vera": _SAME_SPAN_B,
+             "main.vera": main}
+    result = _verify(tmp_path, files, "main.vera")
+    by_file = sorted(
+        (Path(o.file or "").name, o.line, o.status)
+        for o in result.obligations if o.kind == "decreases")
+    assert by_file == [("a.vera", 6, "verified"), ("b.vera", 6, "tier3")]
