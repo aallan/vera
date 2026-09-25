@@ -604,3 +604,24 @@ class TestRigidTypeParameter:
         ast = parse_to_ast(source)
         diags, _arts = typecheck_with_artifacts(ast, source)
         assert [d for d in diags if d.severity == "error"], name
+
+
+# A literal-only expression the checker types `Int` although its value is
+# not negative (a negation, an `Int` operand) falls back to `Int` when
+# nothing constrains it, as it did before #1541 (PR #1583 review): its own
+# type is its type by value.
+_INT_TYPED_NONNEGATIVE = ("-0", "(0 - 3) + 4", "-(0 - 3)")
+
+
+class TestIntTypedNonNegativeFallsBackToInt:
+    @pytest.mark.parametrize("expr", _INT_TYPED_NONNEGATIVE)
+    def test_instantiation(self, expr: str) -> None:
+        source = _ID + _fn(f"let Tuple<@Int, @Int> = Tuple(0, id({expr}));"
+                           "\n  @Int.0")
+        ast = parse_to_ast(source)
+        _diags, arts = typecheck_with_artifacts(ast, source)
+        line = source.splitlines().index(
+            f"  let Tuple<@Int, @Int> = Tuple(0, id({expr}));") + 1
+        col = len("  let Tuple<@Int, @Int> = Tuple(0, ") + 1
+        key = (line, col, line, col + len(f"id({expr})"))
+        assert arts.expr_types[key] == "Int"

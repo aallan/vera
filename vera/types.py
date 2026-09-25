@@ -891,8 +891,8 @@ def contains_fresh_typevar(ty: Type) -> bool:
 #: `ResolutionMixin._infer_type_args_in_context`.  Never leaves inference.
 #:
 #: The hole carries that last resort: :data:`LITERAL_HOLE` where every
-#: literal at the position is non-negative (a `Nat`), and
-#: :data:`NEGATIVE_LITERAL_HOLE` where one is negative (an `Int`).
+#: literal at the position is a `Nat`, and :data:`NEGATIVE_LITERAL_HOLE`
+#: where one is an `Int` — a negative value, or a negation (`-0`).
 LITERAL_HOLE = TypeVar("$lit")
 NEGATIVE_LITERAL_HOLE = TypeVar("$lit-")
 

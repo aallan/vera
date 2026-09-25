@@ -63,6 +63,21 @@ def is_literal_only(expr: ast.Expr) -> bool:
     return False
 
 
+def literal_only_is_int(expr: ast.Expr) -> bool:
+    """Whether the checker types the literal-only expression *expr* `Int`
+    rather than `Nat`: a negation, an operand that is `Int`, or a negative
+    value (`ExpressionsMixin._check_binary` / `_check_unary`)."""
+    if isinstance(expr, ast.UnaryExpr):
+        return True
+    if isinstance(expr, ast.BinaryExpr):
+        if (literal_only_is_int(expr.left)
+                or literal_only_is_int(expr.right)):
+            return True
+        value = literal_int_value(expr)
+        return value is not None and value < 0
+    return False
+
+
 def literal_int_value(expr: ast.Expr) -> int | None:
     """The value of a literal-only integer expression, or ``None`` when
     *expr* is not one or has no value (a division by zero).
@@ -777,8 +792,11 @@ class ResolutionMixin:
             return ty
         if isinstance(ty, PrimitiveType) and ty.name in ("Int", "Nat"):
             if is_literal_only(expr):
-                value = literal_int_value(expr)
-                if value is not None and value < 0:
+                # The hole's fallback is the type rule 1 gives the
+                # expression itself (PR #1583 review): `-0` and
+                # `(0 - 3) + 4` are `Int` although their values are not
+                # negative, so they fall back to `Int` as they did.
+                if literal_only_is_int(expr):
                     return NEGATIVE_LITERAL_HOLE
                 return LITERAL_HOLE
         if isinstance(expr, ast.Block):
