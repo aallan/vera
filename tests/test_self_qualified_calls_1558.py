@@ -822,12 +822,15 @@ class TestOnlyTheOwnPath:
     ) -> None:
         """`ma.vera` declares `module mz;` and is imported as `ma`.  Neither
         spelling is its own path: `mz` is not how the program reaches it and
-        `ma` is not what it declares.  The fix names the mismatch."""
+        `ma` is not what it declares.  The fix names the mismatch, and the
+        rationale states the rule rather than denying that `mz` is the
+        declared path, which it is."""
         check = self._four(tmp_path, "module mz;\n\n",
                            f"{path}::two(@Int.0) * 2")
         assert _errors(check) == ["E230"], _said(check)
         (diag,) = [d for d in check["diagnostics"] if d["severity"] == "error"]
         assert "module ma;" in diag["fix"], diag
+        assert "reaches the file by that path" in diag["rationale"], diag
 
     def test_an_import_of_the_same_path_keeps_the_path(
         self, tmp_path: Path,

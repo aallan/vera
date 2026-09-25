@@ -1844,10 +1844,12 @@ class CallsMixin:
                 f"Cannot resolve call to '{fn_name}'.",
                 rationale=(
                     "No module matching this path is imported by this file, "
-                    "and it is not the path the file's own 'module' "
-                    "declaration gives it, so the call names no function and "
-                    "the program cannot compile.  A module reached only "
-                    "through another module's imports is not visible here."
+                    "and the path does not name the file itself: a file's "
+                    "own path is the one its 'module' declaration gives, "
+                    "and only where the program reaches the file by that "
+                    "path.  So the call names no function and the program "
+                    "cannot compile.  A module reached only through another "
+                    "module's imports is not visible here."
                 ),
                 fix=self._unresolved_module_fix(mod_path, fn_name),
                 spec_ref='Chapter 8, Section 8.6.5 "Resolution Errors"',
