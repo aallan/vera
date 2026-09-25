@@ -5,7 +5,7 @@ Vera programs — and how to drive the compiler as a source of truth about itsel
 
 This is a **cookbook**: recipes and workflows organised by what you are trying to
 do, not an exhaustive flag reference. For the bare command list see the
-[README](README.md#key-commands) or `vera` with no arguments. For the
+[README](README.md#the-workflow) or `vera` with no arguments. For the
 editor/agent surface — the language server and its proof-delta methods — see
 [LSP_SERVER.md](LSP_SERVER.md). For the language itself, see [SKILL.md](SKILL.md)
 and [spec/](spec/).
@@ -33,8 +33,9 @@ source ──▶ parse ──▶ check ──▶ verify ──▶ compile ──
 Two commitments from [DESIGN.md](DESIGN.md) shape every command:
 
 1. **Fail loud, with a fix.** A diagnostic *names* the problem, explains *why*,
-   and gives a concrete instruction — never a bare status. Every diagnostic
-   carries a stable code (`E001`–`E702`) you can pin tooling to.
+   and gives a concrete instruction — never a bare status. Diagnostics carry
+   stable codes (errors `E001`–`E702`, warnings `W001`–`W003`) you can pin
+   tooling to; a few still carry none ([#1490](https://github.com/aallan/vera/issues/1490)).
 2. **Two audiences.** Every diagnostic-producing command has a `--json` mode.
    People read the default text; agents consume `--json` in a feedback loop. The
    JSON is the machine contract; the prose is for humans. This is the single
@@ -107,11 +108,16 @@ vera verify --timeout-ms 60000 file.vera   # per-query Z3 budget, ms (default 10
 Vera verifies in two implemented tiers, at every call site:
 
 - **Tier 1 — Z3 static.** The compiler builds a verification condition and asks
-  Z3. `unsat` means the contract holds *for all inputs*. This is the strong
-  guarantee: a fully Tier-1 program that compiles is correct by construction.
+  Z3. `unsat` means the contract holds *for all inputs*, apart from the open
+  soundness bugs listed in [KNOWN_ISSUES.md](KNOWN_ISSUES.md). The
+  `requires`/`ensures` clauses are also compiled as runtime checks wherever
+  code generation can express them, so a proof bug surfaces as a trap rather
+  than a wrong answer.
 - **Tier 3 — runtime fallback.** When Z3 returns `unknown` or times out, the
   contract is compiled as a runtime check that traps on violation with the
   contract text.
+- **Unguarded sites.** The few obligations that have no runtime guard are
+  reported as warnings (`E504`, `E506`, `E531`, `E537`) and counted in neither tier.
 
 (Tier 2, Z3-*guided*, is specified in spec/06 but not yet implemented.)
 
@@ -350,10 +356,11 @@ the tier summary → `vera test --json` on the Tier-3 remainder.
 
 Every diagnostic-producing command (`check`, `verify`, `compile`, `run`, `test`,
 `ast`) speaks `--json`; the introspection commands (`builtins`, `effects`,
-`errors`) speak it natively. Diagnostic codes are **stable** (`E001`–`E702`), so
-an agent can branch on `error_code` rather than parsing prose. See the
-[JSON diagnostics](README.md) section of the README for the diagnostic schema
-and [error-code table](spec/), and `vera errors --json` for the live catalogue.
+`errors`) speak it natively. Diagnostic codes are **stable** (errors
+`E001`–`E702`, warnings `W001`–`W003`), so an agent can branch on `error_code`
+rather than parsing prose. See the [JSON diagnostics](CLAUDE.md#json-diagnostics)
+section of CLAUDE.md for the diagnostic schema, and `vera errors --json` for the
+live catalogue.
 
 ---
 

@@ -4,7 +4,7 @@ Runbook for [#387](https://github.com/aallan/vera/issues/387) — deliberately b
 
 > A passing suite is necessary, not sufficient. The #680 audit found 8 green-for-the-wrong-reason tests in one 57-test battery; #734 had to mutation-validate its own harness. Mutation testing systematises that check.
 
-**Current baseline (soundness core):** 80.8% caught, 2,038 survivors. The committed score lives in `mutation-summary.csv` and the README badge; the **per-module chart and the full survivor inventory** are attached to the [baseline comment on #387](https://github.com/aallan/vera/issues/387#issuecomment-4779424892).
+**Current baseline (soundness core):** 83.3% caught, 1,773 survivors. The committed score lives in `mutation-summary.csv` and the README badge; the **per-module chart and the full survivor inventory** are attached to the [baseline comment on #387](https://github.com/aallan/vera/issues/387#issuecomment-4779424892).
 
 ## Tool: mutmut (chosen over cosmic-ray)
 
@@ -82,7 +82,7 @@ python scripts/mutation_report.py --label core
 
 It writes **`mutation-summary.csv`** (committed — per-module total / killed / survived / timeout / caught%, a diff-able score history across sweeps), **`mutation.json`** (the README shields.io badge), **`mutation-survivors.csv`** (the survivor + timeout inventory, gitignored), and **`mutation-<label>.png`** (the per-module chart, gitignored — needs matplotlib, which ships in the `[mutation]` extra; the script skips the PNG with a note if it is absent). The script **fails loud** rather than emit a number it can't stand behind: an empty corpus, a result line it can't parse (mutmut format drift), a `mutmut results` status it doesn't model (`not checked` / `suspicious` / `caught by type check` — `mutmut results` lists every non-killed mutant, and these must not be folded into the derived killed count), a module missing from the `mutants/` tree, or a per-module total below its survived+timeout count is a hard error, not a skewed score. Post the headline score + per-module table as a comment on [#387](https://github.com/aallan/vera/issues/387), and drag-drop the inventory CSV and the chart into that comment (`gh` can't upload binaries; GitHub CDN-hosts them). The soundness core (`verifier` / `smt` / `checker` / `obligations`, all in-process tested) is triaged first; remaining modules become tracked per-module follow-ups under the issue.
 
-The 2026-06 baseline: 10,620 core mutants, **80.8% caught** (6,816 killed + 1,766 timeout), 2,038 survivors — `verifier.py` dominates the survivors (1,132); `checker/control.py` is the weakest-covered substantive module (60.6%).
+The committed score: 10,620 core mutants, **83.3% caught** (7,081 killed + 1,766 timeout), 1,773 survivors — `verifier.py` dominates the survivors (875); `checker/control.py` is the weakest-covered substantive module (60.6%).
 
 ## CI (follow-up)
 

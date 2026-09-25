@@ -161,19 +161,19 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `  server.py` | 235 | | `vera serve` HTTP driver for `handle(Request -> Response)` (#305) | |
 | `tester.py` | 1,285 | Test | Z3-guided input generation (parameter types resolved through `naming.py`; a TIER-3 target whose input constraints do not all translate is skipped naming the blocker rather than trialled, while a Tier-1-proved function is reported verified and never trialled at all), WASM execution, tier classification | `test()` |
 | `formatter.py` | 2,036 | Format | Canonical code formatter | `format_source()` |
-| `errors.py` | 1078 | All | Diagnostic class, error hierarchy, error code registry | `Diagnostic`, `VeraError`, `ERROR_CODES` |
+| `errors.py` | 1,083 | All | Diagnostic class, error hierarchy, error code registry | `Diagnostic`, `VeraError`, `ERROR_CODES` |
 | `skip.py` | 242 | All | Codegen-internal control-flow exceptions behind structured skip diagnostics (#626) | `CodegenSkip`, `CodegenInvariantError` |
 | `introspect.py` | 127 | All | Payloads for `vera builtins` / `effects` / `errors --json` | `builtins_payload()`, `effects_payload()`, `errors_payload()` |
 | `envflags.py` | 35 | All | One truthiness rule for the `VERA_*` diagnostic flags catalogued in ENVIRONMENT.md; a leaf module (imports `os` only) so any layer can read a flag without a cycle | `flag_enabled()` |
 | `_since.py` | 376 | All | Best-effort `since` version attribution for built-ins, effects, abilities | |
 | `browser/` | 138 | Execute | Browser runtime for compiled WASM (package) | `emit_browser_bundle()` |
 | ` ├ emit.py` | 137 | | Browser bundle emission (wasm + runtime + html) | `emit_browser_bundle()` |
-| ` ├ runtime.mjs` | 3,877 | | Self-contained JS runtime: IO, State, Http, Inference, contracts, Markdown, Json, Html | |
-| ` └ harness.mjs` | 106 | | Node.js test harness for parity testing | |
+| ` ├ runtime.mjs` | 4,209 | | Self-contained JS runtime: IO, State, Http, Inference, contracts, Markdown, Json, Html | |
+| ` └ harness.mjs` | 116 | | Node.js test harness for parity testing | |
 | `cli.py` | 2,224 | All | CLI commands | `main()` |
 | `registration.py` | 158 | Type check | Shared function registration | `register_fn()` |
 
-Total: ~88,000 lines of Python + 344 lines of grammar + 3,983 lines of JavaScript.
+Total: ~125,000 lines of Python + 344 lines of grammar + 4,325 lines of JavaScript.
 
 ## Parsing
 
@@ -216,7 +216,8 @@ Node
 │   ├── ForallExpr, ExistsExpr             Quantifiers (contracts only)
 │   ├── OldExpr, NewExpr                   State snapshots (contracts only)
 │   ├── AssertExpr, AssumeExpr             Assertions
-│   └── IndexExpr, PipeExpr                Postfix operations
+│   ├── HoleExpr                           Typed hole (?)
+│   └── IndexExpr                          Postfix indexing
 │
 ├── TypeExpr                                Type expressions (syntactic)
 │   ├── NamedType                          Simple and parameterised types
@@ -227,7 +228,8 @@ Node
 │   ├── ConstructorPattern                 Some(@Int)
 │   ├── NullaryPattern                     None, Red
 │   ├── BindingPattern                     @Type (binds a value)
-│   ├── LiteralPattern                     0, "x", true
+│   ├── IntPattern, StringPattern          0, "x"
+│   ├── BoolPattern                        true
 │   └── WildcardPattern                    _
 │
 ├── Stmt                                    Statements
@@ -239,7 +241,8 @@ Node
 │   ├── FnDecl                             Function
 │   ├── DataDecl                           ADT
 │   ├── TypeAliasDecl                      Type alias
-│   └── EffectDecl                         Effect
+│   ├── EffectDecl                         Effect
+│   └── AbilityDecl                        Ability
 │
 ├── Contract                                Contract clauses
 │   ├── Requires, Ensures                  Pre/postconditions
@@ -358,7 +361,7 @@ Context flags (`in_ensures`, `in_contract`, `current_return_type`, `current_effe
 
 `TypeEnv._register_builtins()` registers the built-in types and operations. Function names follow the `domain_verb` convention (see spec §9.1.1): `string_` prefix for string ops, `float_` prefix for float predicates, `source_to_target` for conversions, prefix-less for math universals only (`abs`, `min`, `max`, etc.). New built-in functions must follow these patterns.
 
-The **standard prelude** automatically provides `Option<T>`, `Result<T, E>`, `Ordering`, and `UrlParts` in every program without explicit `data` declarations, along with Option/Result combinators and the array built-ins (including `array_length`, `array_append`, `array_range`, `array_concat`, `array_slice`, `array_map`, `array_filter`, `array_fold`, `array_mapi`, `array_reverse`, `array_find`, `array_any`, `array_all`, `array_flatten`, `array_sort_by`). User-defined `data` declarations with the same name shadow the prelude.
+The **standard prelude** automatically provides `Option<T>`, `Result<T, E>`, `Ordering`, and `UrlParts` in every program without explicit `data` declarations (and `Json`, `HtmlNode`, `Request` and `Response` when a program mentions them), along with Option/Result combinators and the array built-ins (including `array_length`, `array_append`, `array_range`, `array_concat`, `array_slice`, `array_map`, `array_filter`, `array_fold`, `array_mapi`, `array_reverse`, `array_find`, `array_any`, `array_all`, `array_flatten`, `array_sort_by`). User-defined `data` declarations with the same name shadow the prelude.
 
 | Built-in | Kind | Details |
 |----------|------|---------|
@@ -368,7 +371,7 @@ The **standard prelude** automatically provides `Option<T>`, `Result<T, E>`, `Or
 | `MdInline` | ADT | `MdText(String)`, `MdCode(String)`, `MdEmph(Array<MdInline>)`, `MdStrong(Array<MdInline>)`, `MdLink(Array<MdInline>, String)`, `MdImage(String, String)` |
 | `MdBlock` | ADT | `MdParagraph(Array<MdInline>)`, `MdHeading(Nat, Array<MdInline>)`, `MdCodeBlock(String, String)`, `MdBlockQuote(Array<MdBlock>)`, `MdList(Bool, Array<Array<MdBlock>>)`, `MdThematicBreak`, `MdTable(Array<Array<Array<MdInline>>>)`, `MdDocument(Array<MdBlock>)` |
 | `State<T>` | Effect | `get(Unit) → T`, `put(T) → Unit` operations |
-| `IO` | Effect | `print`, `read_line`, `read_file`, `write_file`, `args`, `exit`, `get_env` |
+| `IO` | Effect | `print`, `read_line`, `read_char`, `read_file`, `write_file`, `args`, `exit`, `get_env`, `sleep`, `time`, `stderr` |
 | `Async` | Effect | No operations — marker for async computation |
 | `Diverge` | Effect | No operations — marker for non-termination |
 | `array_length` | Function | `forall<T> Array<T> → Int`, pure |
@@ -592,7 +595,7 @@ The two-pass architecture mirrors the type checker: pass 1 registers all functio
 
 ### Host-binding families (`vera/runtime/`)
 
-Before #421, `execute()` and every effect's host bindings lived in one ~4,358-line `codegen/api.py`. The wasmtime host layer is now factored into `vera/runtime/`: trap classification (`traps.py`), WASM memory marshalling (`heap.py`, `collections.py`), and **one module per optional effect family**, each exposing a single `register_<family>(linker, …)` that defines and registers its host callbacks. `execute()` calls these in sequence instead of inlining ~3,000 lines of branches. The compiled `.wasm` import interface is unchanged — this is an internal refactor, not a contract change.
+`execute()` lives in `codegen/api.py`; the wasmtime host layer is factored into `vera/runtime/` ([#421](https://github.com/aallan/vera/issues/421)): trap classification (`traps.py`), WASM memory marshalling (`heap.py`, `collections.py`), and **one module per optional effect family**, each exposing a single `register_<family>(linker, …)` that defines and registers its host callbacks. `execute()` calls these in sequence. The compiled `.wasm` import interface does not depend on this layout — it is internal structure, not a contract.
 
 ![The wasmtime host layer: execute() registers one pluggable adapter per optional effect family into the Linker — Decimal, State, and the fused Async adapter carry an explicit store — while IO stays inline as execute()'s observation channel; the module's import interface is the portability contract the browser runtime also implements.](../assets/diagrams/host-families.svg)
 
@@ -610,11 +613,11 @@ Before #421, `execute()` and every effect's host bindings lived in one ~4,358-li
 
 `wasm/markdown.py` provides bidirectional WASM memory marshalling for the `MdInline` and `MdBlock` ADT trees. Write direction (`write_md_inline`, `write_md_block`) allocates ADT nodes in WASM linear memory using the same `$alloc` + tag-dispatch layout as user-defined ADTs. Read direction (`read_md_inline`, `read_md_block`) reconstructs Python objects from WASM memory. Helper functions `_read_i32`, `_read_i64`, and `_write_i64` handle raw memory access for struct fields.
 
-The WASM import interface is the portability contract: the compiled `.wasm` binary declares `(import "vera" "md_parse" ...)` etc., and any host runtime provides matching implementations. The Python implementation in `api.py` is the reference; the browser runtime in `browser/runtime.mjs` provides JavaScript host bindings with the same WASM memory allocation protocol.
+The WASM import interface is the portability contract: the compiled `.wasm` binary declares `(import "vera" "md_parse" ...)` etc., and any host runtime provides matching implementations. The Python implementation in `vera/runtime/md.py` (over `vera/markdown.py`) is the reference; the browser runtime in `browser/runtime.mjs` provides JavaScript host bindings with the same WASM memory allocation protocol.
 
 ### Browser runtime
 
-`browser/runtime.mjs` is a self-contained JavaScript runtime (~3,877 lines) that provides JavaScript implementations of all Vera host bindings. It works with any core Vera `.wasm` module — the default and browser targets share one import ABI, so no code generation is needed; the `--target wasi-p2` component is a different artifact format with its own host.
+`browser/runtime.mjs` is a self-contained JavaScript runtime (~4,200 lines) that provides JavaScript implementations of all Vera host bindings. It works with any core Vera `.wasm` module — the default and browser targets share one import ABI, so no code generation is needed; the `--target wasi-p2` component is a different artifact format with its own host.
 
 **Dynamic import introspection:** Instead of generating per-program glue code, the runtime uses `WebAssembly.Module.imports(module)` at initialization to discover which host functions the module actually needs, then builds the import object dynamically. State\<T\> types are pattern-matched from `state_get_*`/`state_put_*` import names.
 
@@ -622,11 +625,11 @@ The WASM import interface is the portability contract: the compiled `.wasm` bina
 
 **Bundled Markdown parser:** The runtime includes a JavaScript Markdown parser (~400 lines, bundled inline) matching the Python §9.7.3 subset. Zero external dependencies.
 
-**GC reachability discipline (JS host side):** JS host functions that allocate multiple WASM heap blocks and hold intermediates in JS locals must root those intermediates on the shadow stack — otherwise EAGER_GC (and, under pressure, normal GC) reclaims them mid-walk. The runtime exports two helpers: `gcShadowPush(ptr)` writes a pointer to `$gc_sp` and advances it (throws if `$gc_sp` / `$gc_stack_limit` aren't exported, since that means the module was built without GC support but is calling allocators that can trigger GC), and `gcGuard(fn)` saves `$gc_sp` at entry and restores it on exit (success or exception). This is the browser parallel of the CLI-side `_ShadowGuard` context manager added in v0.0.158 (#692). The walkers `writeJson` / `writeHtml` and the parsers `json_parse` / `html_parse` wrap their bodies in `gcGuard` and push intermediates (`arrPtr`, `wrapperPtr`, `jsonPtr`) as soon as each is allocated — see `runtime.mjs` for the canonical pattern. Without this, `Map<K, Json>` / `Set<Json>` and similar heap-pointer-keyed collections drop values under GC pressure (#708).
+**GC reachability discipline (JS host side):** JS host functions that allocate multiple WASM heap blocks and hold intermediates in JS locals must root those intermediates on the shadow stack — otherwise EAGER_GC (and, under pressure, normal GC) reclaims them mid-walk. The runtime exports two helpers: `gcShadowPush(ptr)` writes a pointer to `$gc_sp` and advances it (throws if `$gc_sp` / `$gc_stack_limit` aren't exported, since that means the module was built without GC support but is calling allocators that can trigger GC), and `gcGuard(fn)` saves `$gc_sp` at entry and restores it on exit (success or exception). This is the browser parallel of the CLI-side `_ShadowGuard` context manager ([#692](https://github.com/aallan/vera/issues/692)). The walkers `writeJson` / `writeHtml` and the parsers `json_parse` / `html_parse` wrap their bodies in `gcGuard` and push intermediates (`arrPtr`, `wrapperPtr`, `jsonPtr`) as soon as each is allocated — see `runtime.mjs` for the canonical pattern. Without this, `Map<K, Json>` / `Set<Json>` and similar heap-pointer-keyed collections drop values under GC pressure (#708).
 
 **Parity enforcement:** `tests/test_browser.py` runs the examples the browser target can execute — two explicit lists in that file, not the whole `examples/` directory, since an example that reads stdin interactively, uses a refused host family (file IO, `DB`), or does not compile standalone cannot be compared — plus per-binding batteries over the Map/Set/Decimal/Json/Regex/Markdown host imports, through both Python/wasmtime and Node.js/JS-runtime. The two example lists carry different oracles: the examples exporting `main` are run and compared on stdout, while the ones reached as exported functions are called with fixed arguments and compared on the returned value. The per-binding batteries compare stdout. `json_stringify` and `md_render` are compared the same way and additionally against the canonical form the specification states for each (§9.7.1, §9.7.3), because cross-host equality alone would be satisfied by two hosts agreeing on a wrong answer; `md_render` is also asserted stable under re-render and exercised on `MdBlock` values the test *builds*, since several renderer rules are unreachable through `md_parse`, and `json_stringify`'s number rendering is checked differentially against a real `JSON.stringify`. `json_parse` is compared by accepted domain, the parse-side counterpart: §9.7.1 states the domain — RFC 8259-valid text that decodes to finite numbers and strings of Unicode scalar values — and the battery compares the whole `Err` message across hosts for the JavaScript constants, for a number that overflows to an infinity in either spelling — with an exponent (`1e999`) or as plain digits (`1` followed by 309 zeros, the route `json.loads` decodes to an `int`) — and for a lone-surrogate escape, parameterised over every position a string can occupy (value, key, array element, nested), beside controls the refusals must not disturb: matched surrogate pairs, `"NaN"` as an ordinary string value, the finite boundary values, underflow to `0`, and the band between the largest finite double and the rounding boundary, whose integers are larger than `sys.float_info.max` and still accepted by both hosts. `md_parse` is compared by ADT: §9.7.3 states the grammar, `vera/markdown_grammar.py` holds its patterns once and the browser runtime carries a generated copy the suite asserts verbatim, and a generated corpus — the divergence classes #1301 measured, every block-opening line template taken one, two and three at a time, every inline shape in the four positions that reach the inline parser, a carriage-return leg and a seeded fuzz leg — is parsed by both hosts with the trees compared byte for byte, because a comparison routed through `md_render` cannot see how a paragraph's plain-text runs are grouped. The browser stubs are covered on two different shapes: `IO.read_file` and `IO.write_file` get the same per-host pinning, run through both runtimes against a path that really is readable or writable so the native `Ok` and the browser `Err` are each asserted (a missing file or an unwritable directory would `Err` on both sides and prove nothing), while `IO.read_char` is exercised in Node alone — the module links and the stub's `Err` arm returns `0` — with no native run to compare against. `Inference` and `DB` return `Err` from every browser operation, which is a deliberate platform boundary — the credentials they need would be readable from page source — rather than a divergence awaiting a fix. Pre-commit hooks and CI trigger these tests on any change to the host binding surface.
 
-`browser/emit.py` provides `emit_browser_bundle()` for the `vera compile --target browser` CLI command, which produces a ready-to-serve directory (module.wasm + vera-runtime.mjs + index.html).
+`browser/emit.py` provides `emit_browser_bundle()` for the `vera compile --target browser` CLI command, which produces a ready-to-serve directory (module.wasm + runtime.mjs + index.html).
 
 ### Runtime contracts
 
@@ -667,7 +670,7 @@ Memory is managed automatically. The allocator and garbage collector are impleme
 
 ## Error System
 
-**File:** `errors.py` (1,071 lines)
+**File:** `errors.py` (size in the module map above)
 
 ```
 VeraError (exception hierarchy)
@@ -701,7 +704,7 @@ Every diagnostic includes eight fields designed for LLM consumption:
 
 </details>
 
-`Diagnostic.format()` produces the multi-section natural language output shown in the root README's "What Errors Look Like" section. The format is designed so the compiler's output can be fed directly back to the model that wrote the code.
+`Diagnostic.format()` produces the multi-section natural language output shown in the root README's "Errors are instructions" section. The format is designed so the compiler's output can be fed directly back to the model that wrote the code.
 
 **Parse error patterns:** `diagnose_lark_error()` in `parser.py` maps common Lark exception patterns to specific diagnostics. It checks expected token sets to distinguish "missing contract block" from "missing effects clause" from "malformed slot reference", producing targeted fix suggestions for each.
 
@@ -759,20 +762,23 @@ Every diagnostic includes a description (what went wrong), rationale (which lang
 
 ### 10. Stable error code taxonomy
 
-Every diagnostic has a unique code grouped by compiler phase:
+Every coded diagnostic has a unique code grouped by compiler phase (a few diagnostics still carry none, [#1490](https://github.com/aallan/vera/issues/1490)):
 
 | Range | Phase | Source |
 |-------|-------|--------|
 | E001–E008 | Parse | `errors.py` factory functions |
 | E009 | Transform: string escapes | `transform.py` |
 | E010 | Transform: unhandled rule | `transform.py` |
+| E011–E013 | Resolve: module imports | `resolver.py` |
 | E020, E021, E023 | Parse: malformed comments (lexical) | `lexical.py` scan + `errors.py` factory |
 | E030, E031 | Parse: `old()`/`new()` applied to an expression | `errors.py` factory |
+| E032 | Parse: contract clause after the effects clause | `errors.py` factory |
 | E1xx | Type check: core + expressions | `checker/core.py`, `checker/expressions.py` |
 | E2xx | Type check: calls | `checker/calls.py` |
 | E3xx | Type check: control flow | `checker/control.py` |
 | E5xx | Verification | `verifier.py` |
 | E6xx | Codegen | `codegen/` |
+| E7xx | Testing | `tester.py` |
 
 The `ERROR_CODES` dict in `errors.py` maps every code to a short description (186 entries — 183 `E` codes and 3 `W` warning codes). Codes are stable across versions — they can be used for programmatic filtering, suppression, and documentation lookups. Formatted output shows the code in brackets: `[E130] Error at line 5, column 3:`.
 
@@ -875,13 +881,13 @@ To add a new WASM type mapping, update `wasm_type()` in `wasm/helpers.py` and th
 
 | Package | Version | Purpose |
 |---------|---------|---------|
-| `lark` | ≥1.1 | LALR(1) parser generator. Chosen for its Python-native implementation, deterministic parsing, and built-in Transformer pattern. |
-| `z3-solver` | ≥4.12 | SMT solver for contract verification. Industry-standard solver supporting QF_LIA and Boolean logic. Note: does not ship `py.typed` — mypy override configured in `pyproject.toml`. |
-| `wasmtime` | ≥15.0 | WebAssembly runtime. Used for WAT→WASM compilation and execution via `vera compile` / `vera run`. Note: does not ship complete type stubs — mypy override configured in `pyproject.toml`. |
+| `lark` | ≥1.3.1 | LALR(1) parser generator. Chosen for its Python-native implementation, deterministic parsing, and built-in Transformer pattern. |
+| `z3-solver` | ≥4.15.5 | SMT solver for contract verification. Industry-standard solver supporting QF_LIA and Boolean logic. Note: does not ship `py.typed` — mypy override configured in `pyproject.toml`. |
+| `wasmtime` | ≥46.0.1 | WebAssembly runtime. Used for WAT→WASM compilation and execution via `vera compile` / `vera run`. Note: does not ship complete type stubs — mypy override configured in `pyproject.toml`. |
 
 ### Development
 
-`pytest`, `pytest-cov` (testing), `mypy` (strict type checking), `pre-commit` (commit hooks).
+`pytest`, `pytest-cov`, `pytest-xdist` (testing), `mypy` (strict type checking), `ruff` (linting), `pre-commit` (commit hooks), `pip-licenses` (licence check); the `[dev]` extra also pulls in the `[lsp]` extra (`pygls`, `lsprotocol`).
 
 ---
 
