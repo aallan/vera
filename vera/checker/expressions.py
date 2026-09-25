@@ -29,6 +29,7 @@ from vera.types import (
     INT,
     is_subtype,
     NAT,
+    literal_narrows_to_nat,
     numeric_join,
     NUMERIC_TYPES,
     ORDERABLE_TYPES,
@@ -1166,11 +1167,34 @@ class ExpressionsMixin:
             stmt.value, list(stmt.type_bindings),
             lambda name: (name == "Tuple") == tuple_shape,
         )
-        self._synth_expr(stmt.value)
+        value_ty = self._synth_expr(stmt.value)
 
+        resolved_types: list[Type] = []
         for te in stmt.type_bindings:
             self._check_refinement_predicates(te)  # #861
-            resolved = self._resolve_type(te)
+            resolved_types.append(self._resolve_type(te))
+
+        # #1541, PR #1583 review: a tuple destructure's bindings are the
+        # type its source is expected at, as a `let`'s declared type is.
+        # Where the source is a generic call whose literals it instantiated
+        # at an `Int` where a binding is a `Nat`, the call is checked against
+        # the bindings, so each literal meets the type it has there:
+        # `let Tuple<@Nat, @Nat> = id(Tuple(1, 0 - 3))` is refused (E503)
+        # as `let @Nat = id(0 - 3)` is.  A source built here is not: the
+        # destructure's own narrowing reads its components where they are.
+        if (tuple_shape and value_ty is not None
+                and isinstance(stmt.value, (ast.FnCall, ast.ModuleCall))
+                and not isinstance(value_ty, UnknownType)):
+            bindings = AdtType("Tuple", tuple(resolved_types))
+            if (not contains_typevar(bindings)
+                    and literal_narrows_to_nat(
+                        value_ty,
+                        self._literal_soft_type(stmt.value, value_ty)
+                        or value_ty,
+                        bindings)):
+                self._synth_expr(stmt.value, expected=bindings)
+
+        for te, resolved in zip(stmt.type_bindings, resolved_types):
             tname = self._type_expr_to_slot_name(te)
             self.env.bind(tname, resolved, "destruct")
 

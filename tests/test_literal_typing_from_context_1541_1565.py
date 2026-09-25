@@ -29,7 +29,8 @@ The rule the checker now follows:
 
 A program that is genuinely wrong stays refused: a negative literal whose
 context is `@Nat` is a narrowing, obligated and refused (E503) as before —
-#1541's `get_nat(id(W(0 - 3)))` among them.
+#1541's `get_nat(id(W(0 - 3)))` among them, and a tuple destructure's and a
+refinement of `Nat`'s context too.
 """
 
 from __future__ import annotations
@@ -520,10 +521,39 @@ private fn nats_of(@Array<Nat> -> @Array<Nat>)
 {
   @Array<Nat>.0
 }
+
+type Small = { @Nat | @Nat.0 < 100 };
+
+private fn small_of(@Small -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  nat_to_int(@Small.0)
+}
 """
 
 _NAT_HOSTS = {
     "expected_result": "let @Nat = id({L});\n  nat_to_int(@Nat.0)",
+    # A tuple whose component type is `Nat`, and a refinement of `Nat`, as
+    # the type the call's result is expected at (PR #1583 review): the
+    # tuple's components and the refinement's base are the literal's
+    # context too.
+    "tuple_id_let": ("let Tuple<@Nat, @Nat> = id(Tuple(1, {L}));\n"
+                     "  nat_to_int(@Nat.0)"),
+    "tuple_sibling": ("match second(Tuple(nat_of(1), nat_of(1)), "
+                      "Tuple(1, {L})) { Tuple(@Nat, @Nat) -> "
+                      "nat_to_int(@Nat.0) }"),
+    "tuple_second_let": ("let Tuple<@Nat, @Nat> = second(Tuple(1, 2), "
+                         "Tuple(5, {L}));\n  nat_to_int(@Nat.0)"),
+    "small_let_id": "let @Small = id({L});\n  nat_to_int(@Small.0)",
+    "small_arg_id": "small_of(id({L}))",
+    "small_sibling": ("let @Small = 5;\n"
+                      "  nat_to_int(second(@Small.0, {L}))"),
+    "option_id_let": ("let @Option<Nat> = id(Some({L}));\n"
+                      "  match @Option<Nat>.0 { Some(@Nat) -> "
+                      "nat_to_int(@Nat.0), None -> 0 }"),
+    "nested_id_let": "let @Nat = id(id({L}));\n  nat_to_int(@Nat.0)",
     "nat_sibling": "nat_to_int(second(nat_of(3), {L}))",
     "nat_closure": ("nat_to_int(array_fold([1, 2], {L}, fn(@Nat, @Int -> "
                     "@Nat) effects(pure) { @Nat.0 }))"),
@@ -537,6 +567,21 @@ _NAT_CELLS = [
      value)
     for shape, (literal, value) in sorted(_SHAPES.items())
     for host, body in sorted(_NAT_HOSTS.items())
+] + [
+    # The same contexts one level further in, where the value read back is
+    # not the literal: a tuple inside a `Box`, and inside an array.
+    (f"{shape}-{host}", _NAT_PRELUDE + _fn(body.replace("{L}", literal)),
+     want if value >= 0 else value)
+    for shape, (literal, value) in sorted(_SHAPES.items())
+    for host, (body, want) in sorted({
+        "box_tuple_let": (
+            "let @Box<Tuple<Nat, Nat>> = id(MkBox(Tuple(1, {L})));\n"
+            "  match @Box<Tuple<Nat, Nat>>.0 { MkBox(@Tuple<Nat, Nat>) -> 7 }",
+            7),
+        "arr_tuple_let": (
+            "let @Array<Tuple<Nat, Nat>> = id([Tuple(1, {L})]);\n"
+            "  nat_to_int(array_length(@Array<Tuple<Nat, Nat>>.0))", 1),
+    }.items())
 ]
 
 
@@ -547,7 +592,11 @@ class TestNatContextMatrix:
     def test_context_decides(self, name: str, source: str,
                              value: int) -> None:
         if value < 0:
-            assert "E503" in _codes(source), name
+            # A `Small` sibling meets the literal at the refinement itself,
+            # whose predicate refutes it first (E505).
+            refusals = ({"E503", "E505"} if name.endswith("-small_sibling")
+                        else {"E503"})
+            assert refusals & set(_codes(source)), name
         else:
             assert _codes(source) == [], name
             assert _run(source, "f", [0]) == value, name

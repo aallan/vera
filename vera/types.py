@@ -928,7 +928,8 @@ def default_literal_holes(ty: Type) -> Type:
 
 
 def contains_literal_hole(ty: Type) -> bool:
-    """True iff :data:`LITERAL_HOLE` occurs anywhere in *ty*."""
+    """True iff a literal hole (:func:`is_literal_hole`) occurs anywhere in
+    *ty*."""
     if isinstance(ty, TypeVar):
         return is_literal_hole(ty)
     if isinstance(ty, AdtType):
@@ -941,19 +942,55 @@ def contains_literal_hole(ty: Type) -> bool:
     return False
 
 
+def literal_narrows_to_nat(ty: Type, soft: Type, context: Type) -> bool:
+    """True iff *context* holds a `Nat`, or a refinement of one, at a
+    position where *ty* holds an `Int` that a literal decided — *soft*, the
+    same type with each literal-decided position a hole, holds a hole there
+    — at any depth of a composite (#1541, PR #1583 review).  A literal
+    placed there is a narrowing, which only checking it against *context*
+    puts on the record.
+
+    The checker admits `Int` where `Nat` is expected and leaves the
+    non-negativity to the verifier, so this is the question
+    :func:`is_subtype` does not answer."""
+    while isinstance(ty, RefinedType):
+        ty = ty.base
+    while isinstance(context, RefinedType):
+        context = context.base
+    if is_literal_hole(soft):
+        return (isinstance(ty, PrimitiveType) and ty.name == "Int"
+                and isinstance(context, PrimitiveType)
+                and context.name == "Nat")
+    if (isinstance(ty, AdtType) and isinstance(context, AdtType)
+            and isinstance(soft, AdtType)
+            and ty.name == context.name == soft.name
+            and len(ty.type_args) == len(context.type_args)
+            == len(soft.type_args)):
+        return any(literal_narrows_to_nat(a, h, c) for a, h, c in zip(
+            ty.type_args, soft.type_args, context.type_args))
+    return False
+
+
 def fill_literal_holes(ty: Type, source: Type | None) -> Type:
     """*ty* with each literal hole replaced by the `Int` or `Nat` at the
     same position of *source*.
 
+    A hole aligned with a refinement takes the refinement's integer base.
     A hole whose aligned position in *source* is anything else — missing,
-    another type, a refinement — stays a hole, so a later source (or the
-    final default) decides it: a literal is never given a type it cannot
-    have.  A refinement is not adopted into the instantiation: the literal
-    still meets it as the target of the argument it sits in, and adopting
-    it would give the whole construction the refined type, which a join
-    with a sibling of the base type then reads as its own.
+    another type — stays a hole, so a later source (or the final default)
+    decides it: a literal is never given a type it cannot have.  A
+    refinement is not adopted into the instantiation: the literal still
+    meets it as the target of the argument it sits in, and adopting it
+    would give the whole construction the refined type, which a join with
+    a sibling of the base type then reads as its own.
     """
     if is_literal_hole(ty):
+        # A refinement's integer base is the literal's type there (PR #1583
+        # review): `let @Small = id(0 - 3)` over a refinement of `Nat` is
+        # `id` at `Nat`, where the -3 is refused as `let @Nat = id(0 - 3)`
+        # is.  The refinement itself is not adopted (above).
+        while isinstance(source, RefinedType):
+            source = source.base
         if (isinstance(source, PrimitiveType)
                 and source.name in ("Int", "Nat")):
             return source
