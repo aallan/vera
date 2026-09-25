@@ -355,7 +355,7 @@ The grammar is:
 module_call: module_path "::" LOWER_IDENT "(" arg_list? ")"
 ```
 
-Module-qualified calls always resolve against the specific module's public declarations. They are not affected by local shadowing -- if the importer defines its own `magnitude`, a module-qualified call `vera.math::magnitude(x)` still calls the module's version.
+A module-qualified call through the path of a module the file imports resolves against that module's public declarations. Module-qualified calls are not affected by local shadowing -- if the importer defines its own `magnitude`, a module-qualified call `vera.math::magnitude(x)` still calls the module's version.
 
 A module's own path names the module itself. Inside a file whose `module` declaration gives the path `ma`, `ma::two(x)` calls that file's own top-level `two` — a private one too, since the call is inside the module that declares it (§8.4.1) — and it is checked, verified and compiled as the bare call to that top-level function is, a call-graph edge included (§5.6). The one difference is the one a qualified call always has: nothing local shadows it, so where a `where` helper of `four` is also named `two`, the bare `two(x)` inside `four` reaches the helper and `ma::two(x)` the module's function. The path is the file's own only when the program reaches the file by it. An imported module's declaration must give the path it is imported by, and the entry file's must not be the path of a module the entry resolves, which that path names instead. So a file without a `module` declaration, or one imported under a path it does not declare, has no path of its own to qualify by, and the fix **E230** gives there is the declaration. Every other path must be a module the file imports (**E230**), and a name its own path does not declare at the top level is **E233**.
 
@@ -637,7 +637,7 @@ Local declarations always take priority over imported declarations due to the `s
 
 The checker maintains per-module dictionaries of all declarations (both public and private) for two purposes:
 
-- **Module-qualified call lookup**: `ModuleCall` nodes look up the function in the specific module's public dictionary.
+- **Module-qualified call lookup**: a `ModuleCall` through an imported module's path looks the function up in that module's public dictionary. One through the file's own path (§8.5.3) reads the file's own top-level functions instead, private ones included.
 - **Better error messages**: when a selective import names a private declaration, the checker can report "it is private" rather than "not found".
 
 ## 8.8 Cross-Module Verification

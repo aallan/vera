@@ -23,7 +23,8 @@ The instrument:
   `requires`, `ensures`, a nested call, a pipe, an interpolation, a closure,
   a `where` helper, a handler, an `assert` — and to every kind of callee: a
   private function, a generic, a recursive call, a callee with a
-  precondition, and a callee a `where` helper of the same name shadows.
+  precondition, one whose result and precondition read the order of two
+  `@Int` arguments, and a callee a `where` helper of the same name shadows.
   Each is placed in a module the entry imports, in one it reaches only
   transitively, and in the file checked as the entry, under a one-segment
   and a dotted path.  Every cell checks clean and prints the value its
@@ -32,7 +33,8 @@ The instrument:
 - **The verifier** (`TestTheVerifierReadsTheOwnPath`): a qualified call is
   verified as its bare control is, in every position: the same errors, the
   same warnings and the same tier counts.  The call's precondition is an
-  obligation (E501 where the control's is), a contract that calls a private
+  obligation (E501 where the control's is), read with the arguments in the
+  order they are written, a contract that calls a private
   function by its qualified name is read in that module's scope, and a
   recursive call spelled with the path counts for `decreases`.
 - **The clones** (`TestBothSidesNameTheSameClones`): a generic called by its
@@ -99,6 +101,10 @@ def _callees(rec: str) -> str:
         _fn("pthree(@Int -> @Nat)", "3", vis="private",
             ens="@Nat.result == 3"),
         _fn("nid(@Nat -> @Int)", "nat_to_int(@Nat.0)"),
+        # Two `@Int` parameters, whose order the result and the precondition
+        # both read: `@Int.1` is the first argument, `@Int.0` the second.
+        _fn("sub(@Int, @Int -> @Int)", "@Int.1 - @Int.0",
+            req="@Int.1 > @Int.0", ens="@Int.result == @Int.1 - @Int.0"),
     ))
 
 
@@ -152,6 +158,11 @@ def _positions(q: str) -> dict[str, Position]:
         # the call only when the callee's parameters are read (E503 here,
         # since nothing keeps `@Int.0` non-negative).
         "nat_param": Position(f"{q}nid(@Int.0) * 4"),
+        # Two same-typed arguments, which no type check tells apart:
+        # `sub(15, 3)` is 12 only in the order written, and `four`'s
+        # `requires` proves `sub`'s only in that order (swapped, E501).
+        "argument_order": Position(f"{q}sub(@Int.0 * 5, @Int.0)",
+                                   req="@Int.0 > 0"),
         # A `where` helper named `two`: the bare control reaches the helper
         # (600), and the qualified call the module's `two` (12).
         "helper_shadow": Position(
@@ -371,6 +382,19 @@ class TestTheVerifierReadsTheOwnPath:
         q = _cli("verify", q_target)
         c = _cli("verify", c_target)
         assert _verify_outcome(q) == _verify_outcome(c), (q, c)
+
+    def test_the_arguments_are_read_in_the_order_written(
+        self, tmp_path: Path,
+    ) -> None:
+        """`four`'s `requires(@Int.0 > 0)` proves `sub`'s precondition for
+        `ma::sub(@Int.0 * 5, @Int.0)` only in the order written, so the
+        qualified call verifies clean.  Read swapped (`@Int.0 > @Int.0 * 5`)
+        it is E501, which is how the `argument_order` cell above tells the
+        two readings apart rather than finding both sides refused."""
+        target, _ = _write_cell(tmp_path, "one_segment", "argument_order",
+                                "as_entry", qualified=True)
+        verify = _cli("verify", target)
+        assert verify["ok"] is True and _errors(verify) == [], _said(verify)
 
     def test_a_generic_clone_reads_its_own_module_path(
         self, tmp_path: Path,
