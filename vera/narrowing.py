@@ -736,7 +736,10 @@ class QuotientSign:
 
     Read from the operands, as a product's sign is, and not from the
     quotient's sign bit: a genuine `@Nat` above `i64.MAX` sets that bit, and
-    `@Nat.0 / 1` is `@Nat.0`, which is not negative."""
+    `@Nat.0 / 1` is `@Nat.0`, which is not negative.  Except where an
+    operand is such a `@Nat` and the divisor is not -1: `i64.div_s` divides
+    it as the negative i64 its bits are (#1504), so `(2^63 + 10) / -2` comes
+    back positive, and the quotient is read as the u64 it is."""
 
     expr: ast.BinaryExpr
     left: "OperandSign"
@@ -782,9 +785,11 @@ def subtraction_operand_sign(
     - An addition or a multiplication at the unsigned width takes it from
       its operands (:class:`SumSign`); one at the signed width computes an
       i64 whose sign bit is its sign.
-    - A division takes it from its operands (:class:`QuotientSign`), and a
-      remainder from its dividend (:class:`RemainderSign`): never from the
-      result's sign bit, which a genuine `@Nat` above `i64.MAX` sets.
+    - A division takes it from its operands (:class:`QuotientSign`) — save
+      where an operand is a `@Nat` above `i64.MAX` and the divisor is not
+      -1, which `i64.div_s` does not compute (#1504) — and a remainder from
+      its dividend (:class:`RemainderSign`): never from the result's sign
+      bit, which a genuine `@Nat` above `i64.MAX` sets.
     - A subtraction no guard checks is negative where its left operand is
       below its right (:class:`DifferenceSign`).
 
@@ -1112,6 +1117,107 @@ def component_is_nat(
             compatible = compatible and nat
         genuine = genuine or nat
     return compatible and genuine
+
+
+def heterogeneous_widening_sources(
+    sources: tuple[ComponentSource, ...],
+    index: int,
+    declared_is_nat: DeclaredIsNatOracle,
+    leaf_component_is_nat: LeafComponentIsNat,
+) -> tuple[ComponentSource, ...]:
+    """The genuine `@Nat` sources of a component that is NOT a `@Nat` as a
+    whole — the per-arm widening of #820, for the component an `@Int`
+    binding reads.  An argument source is genuine as
+    :func:`_carries_genuine_nat` reads it.
+
+    Where a component's sources hold a genuine `@Nat` beside one that can be
+    negative (`if b then { Tuple(1, 0 - 3) } else { Tuple(1, @Nat.0) }`), the
+    component is heterogeneous: :func:`component_is_nat` answers False, and
+    no guard at the binding can tell the -3 from a `@Nat` above `i64.MAX`.
+    The widening happens at each genuine source instead, so an argument
+    source is obligated and guarded where the constructor stores it, and an
+    opaque one — whose component no constructor argument here supplies — is
+    a widening nothing guards.  Empty for a component that is a `@Nat`, whose
+    widening the binding itself guards, for one no source of which can be
+    negative, and for one with no genuine `@Nat`.
+    """
+    if component_is_nat(sources, index, declared_is_nat,
+                        leaf_component_is_nat):
+        return ()
+
+    def genuine(source: ComponentSource) -> bool:
+        if source.is_argument:
+            return _carries_genuine_nat(source.expr, declared_is_nat)
+        return leaf_component_is_nat(source, index) is True
+
+    if all(genuine(source) or (source.is_argument
+                               and is_nonneg_literal_value(source.expr))
+           for source in sources):
+        return ()  # no source can be negative: not heterogeneous
+    return tuple(source for source in sources if genuine(source))
+
+
+def _carries_genuine_nat(
+    expr: ast.Expr, declared_is_nat: DeclaredIsNatOracle,
+) -> bool:
+    """A genuine `@Nat` (:func:`result_is_nat`), or an addition or a
+    product of one and a non-negative literal: `@Nat.0 * 1` is `@Nat.0` at
+    the unsigned width, whose overflow check keeps it exact.
+
+    Read only for an argument of a component that another source makes
+    heterogeneous, whose widening nothing else guards.  :func:`result_is_nat` itself counts a literal
+    operand as no `@Nat`, which leaves `let @Int = @Nat.0 * 1` unguarded on
+    `main` as well; widening that rule reaches every widening and narrowing
+    site, a call whose declared `@Nat` is a literal's inferred one (#1541)
+    among them, so it is its own change."""
+    if result_is_nat(expr, declared_is_nat):
+        return True
+    if not (isinstance(expr, ast.BinaryExpr)
+            and expr.op in (ast.BinOp.ADD, ast.BinOp.MUL)):
+        return False
+    operands = (expr.left, expr.right)
+    return (
+        all(_carries_genuine_nat(o, declared_is_nat)
+            or is_nonneg_literal_value(o) for o in operands)
+        and any(_carries_genuine_nat(o, declared_is_nat) for o in operands)
+    )
+
+
+def pattern_binding_sources(
+    scrutinee: ast.Expr,
+    pattern: ast.ConstructorPattern,
+    field_is_generic: Callable[[str, int], bool] | None = None,
+) -> tuple[tuple[ast.TypeExpr, tuple[ComponentSource, ...], int, str], ...]:
+    """Every binding a constructor *pattern* over *scrutinee* makes, at any
+    depth: ``(type, sources, field, constructor)`` — the binding's declared
+    type, the sources of the component it binds (:func:`component_sources`,
+    and one level deeper per nested pattern, :func:`subcomponent_sources`),
+    and the constructor field it reads.  The walk both code generation's
+    field extraction and the verifier's sub-pattern legs take."""
+    out: list[tuple[ast.TypeExpr, tuple[ComponentSource, ...], int, str]] = []
+
+    def walk(pat: ast.ConstructorPattern,
+             field_sources: Callable[[int], tuple[ComponentSource, ...]],
+             ) -> None:
+        for i, sub in enumerate(pat.sub_patterns):
+            sources = field_sources(i)
+            if isinstance(sub, ast.BindingPattern):
+                out.append((sub.type_expr, sources, i, pat.name))
+            elif isinstance(sub, ast.ConstructorPattern):
+                step = (pat.name, i)
+
+                def inner(j: int, *, _outer: tuple[ComponentSource, ...]
+                          = sources, _step: tuple[str, int] = step,
+                          _name: str = sub.name,
+                          ) -> tuple[ComponentSource, ...]:
+                    return subcomponent_sources(
+                        _outer, _step, j, lambda n: n == _name,
+                        field_is_generic)
+                walk(sub, inner)
+
+    walk(pattern, lambda i: component_sources(
+        scrutinee, i, lambda n: n == pattern.name, field_is_generic))
+    return tuple(out)
 
 
 def component_narrows(

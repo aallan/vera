@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 from typing import TYPE_CHECKING
 
 from vera import ast, naming, narrowing
@@ -16,6 +17,8 @@ from vera.wasm.helpers import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from vera.codegen import ConstructorLayout
 
 
@@ -571,10 +574,18 @@ class DataMixin:
                 # target comes from `tuple_target` rather than `int_fields`;
                 # #757 closes the same direction for a generic field
                 # instantiated to @Int, which the bitmap cannot carry either.
-                elif (((i < len(layout.int_fields) and layout.int_fields[i])
+                #
+                # #1503: and an argument a binding reads as one source of a
+                # HETEROGENEOUS `@Int` component (`if b then { Tuple(1, 0 -
+                # 3) } else { Tuple(1, @Nat.0) }`), which no guard at the
+                # binding can tell from a `@Nat` above `i64.MAX`: the
+                # widening is this argument's, so it is guarded here, as
+                # #820 guards a scalar join's `@Nat` arm.
+                elif ((((i < len(layout.int_fields) and layout.int_fields[i])
                         or self._adt_arg_is_int(tuple_target, i)
                         or mono_base == "Int")
-                        and self._result_is_nat(expr.args[i])):
+                        and self._result_is_nat(expr.args[i]))
+                        or id(expr.args[i]) in self._heterogeneous_widen_args):
                     field_val = self._emit_int_widen_guard(
                         field_val, at=expr.args[i])
                 # #1426: and the §2.6.5 PREDICATE beside the sign pair.  A
@@ -661,6 +672,10 @@ class DataMixin:
         over ``stmt.type_bindings`` (TypeExpr items) instead of match
         sub-patterns.
         """
+        self._register_heterogeneous_widenings(
+            (te, self._destructure_sources(stmt, idx), idx,
+             self._destructure_ctor_name(stmt))
+            for idx, te in enumerate(stmt.type_bindings))
         # Translate the value expression — should produce a heap pointer (i32)
         val_instrs = self.translate_expr(stmt.value, env)
         if val_instrs is None:
@@ -796,16 +811,50 @@ class DataMixin:
         the `nat_to_int_coerce` it records and the guard emitted here cannot
         part.
         """
-        tuple_shape = stmt.constructor == "Tuple"
         ctor = self._destructure_ctor_name(stmt)
-        sources = narrowing.component_sources(
+        return narrowing.component_is_nat(
+            self._destructure_sources(stmt, index), index,
+            self._declared_result_is_nat,
+            lambda leaf, i: self._declared_component_is_nat(leaf, i, ctor),
+        )
+
+    @staticmethod
+    def _destructure_sources(
+        stmt: ast.LetDestruct, index: int,
+    ) -> tuple[narrowing.ComponentSource, ...]:
+        """The sources of component *index* of *stmt*'s value, read the
+        way the verifier's destructure leg reads them."""
+        tuple_shape = stmt.constructor == "Tuple"
+        return narrowing.component_sources(
             stmt.value, index,
             lambda name: (name == "Tuple") == tuple_shape,
         )
-        return narrowing.component_is_nat(
-            sources, index, self._declared_result_is_nat,
-            lambda leaf, i: self._declared_component_is_nat(leaf, i, ctor),
-        )
+
+    def _register_heterogeneous_widenings(
+        self,
+        bindings: Iterable[tuple[
+            ast.TypeExpr, tuple[narrowing.ComponentSource, ...], int,
+            str | None]],
+    ) -> None:
+        """Mark, for :py:meth:`_translate_constructor_call`, the constructor
+        arguments that widen a genuine `@Nat` into a HETEROGENEOUS `@Int`
+        component one of *bindings* reads — ``(type, sources, field,
+        constructor)`` each (:func:`vera.narrowing.
+        heterogeneous_widening_sources`, #1503).  Called before the value
+        holding those arguments is translated.  An opaque genuine source has
+        no argument here to guard; the verifier discloses it (E531)."""
+        for type_expr, sources, index, ctor in bindings:
+            type_name = self._type_expr_to_slot_name(type_expr)
+            if (type_name is None
+                    or self._resolve_base_type_name(type_name) != "Int"):
+                continue
+            for source in narrowing.heterogeneous_widening_sources(
+                    sources, index, self._declared_result_is_nat,
+                    functools.partial(self._declared_component_is_nat,
+                                      ctor=ctor)):
+                if source.is_argument:
+                    self._heterogeneous_widen_args[id(source.expr)] = (
+                        source.expr)
 
     def _declared_path_type(
         self, leaf: narrowing.ComponentSource,
@@ -930,6 +979,14 @@ class DataMixin:
         so the whole module failed to assemble — on programs as ordinary as
         ``match @String.0 { @String -> string_length(@String.0) }``.
         """
+        # #1503: a constructor sub-pattern's heterogeneous `@Int` component
+        # is widened at the argument that supplies it, which the scrutinee
+        # builds — so it is marked before the scrutinee is translated.
+        for arm in expr.arms:
+            if isinstance(arm.pattern, ast.ConstructorPattern):
+                self._register_heterogeneous_widenings(
+                    narrowing.pattern_binding_sources(
+                        expr.scrutinee, arm.pattern, self._field_is_generic))
         # Translate scrutinee
         scr_instrs = self.translate_expr(expr.scrutinee, env)
         if scr_instrs is None:

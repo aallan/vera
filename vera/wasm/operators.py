@@ -2263,12 +2263,54 @@ class OperatorsMixin:
             sign.right, right_value, hooks, captures)
         if isinstance(sign, narrowing.DifferenceSign):
             return self._nat_sub_below(left, right, left_value, right_value)
-        code = [*left, *right, "i32.xor"]
         if isinstance(sign, narrowing.QuotientSign):
-            code += [*value(), "i64.const 0", "i64.ne", "i32.and"]
-        elif sign.expr.op == ast.BinOp.MUL:
+            return self._quotient_sign_code(
+                sign, left, right, value, left_value, right_value)
+        code = [*left, *right, "i32.xor"]
+        if sign.expr.op == ast.BinOp.MUL:
             code += [*value(), "i64.const 0", "i64.lt_s", "i32.and"]
         return code
+
+    def _quotient_sign_code(
+        self,
+        sign: narrowing.QuotientSign,
+        left: list[str],
+        right: list[str],
+        value: Callable[[], list[str]],
+        left_value: Callable[[], list[str]],
+        right_value: Callable[[], list[str]],
+    ) -> list[str]:
+        """The sign code of a quotient: negative exactly when one operand is
+        and it is not zero — where `i64.div_s` computes the quotient.
+
+        It does not where an operand is a `@Nat` above `i64.MAX`, which it
+        divides as the negative i64 its bits are (#1504): `(2^63 + 10) / -2`
+        comes back as the positive `2^62 - 5`.  There the operand signs say
+        nothing about the value computed, so it is read as the u64 it is, the
+        comparison the guard makes of two genuine operands.  A division by -1
+        is the exception: it negates exactly at the u64 width, so its sign is
+        still its operands'.  An operand above `i64.MAX` is one read as not
+        negative whose sign bit is set."""
+        left_flag = self.alloc_local("i32")
+        right_flag = self.alloc_local("i32")
+
+        def above_i64_max(
+            flag: int, operand: Callable[[], list[str]],
+        ) -> list[str]:
+            return [*operand(), "i64.const 0", "i64.lt_s",
+                    f"local.get {flag}", "i32.eqz", "i32.and"]
+
+        return [
+            *left, f"local.tee {left_flag}",
+            *right, f"local.tee {right_flag}",
+            "i32.xor",
+            *value(), "i64.const 0", "i64.ne", "i32.and",
+            *above_i64_max(left_flag, left_value),
+            *right_value(), "i64.const -1", "i64.ne", "i32.and",
+            *above_i64_max(right_flag, right_value),
+            "i32.or",
+            "i32.eqz", "i32.and",
+        ]
 
     def _nat_sub_capture(
         self, node: ast.Expr, hooks: dict[int, list[str]],

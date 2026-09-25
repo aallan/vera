@@ -652,6 +652,163 @@ public fn f(@Int, @Nat -> @T0)
         assert _NAT_GUARD in observed.run, observed.run
 
 
+# =====================================================================
+# A heterogeneous component widens at the argument that supplies it
+# =====================================================================
+
+_WIDEN_EMITTER = "wasm/operators.py:_emit_int_widen_guard"
+
+
+def _het_program(params: str, ret: str, body: str, *,
+                 requires: str = "true", ensures: str = "true") -> str:
+    return (
+        f"public fn f({params} -> @{ret})\n  requires({requires})\n"
+        f"  ensures({ensures})\n  effects(pure)\n{{\n  {body}\n}}\n"
+    )
+
+#: The join of a negative literal and a genuine `@Nat` in one component.
+_HETERO_JOIN = ("if @Bool.0 then { Tuple(1, 0 - 3) } "
+                "else { Tuple(1, @Nat.0) }")
+
+
+def _hetero_body(value: str) -> str:
+    return _het_program("@Nat, @Bool", "Int",
+                        f"let Tuple<@Int, @Int> = {value};\n  @Int.0")
+
+
+#: (label, source, the arguments that reach a genuine `@Nat` above
+#: `i64.MAX`, the arguments that reach the negative value, its value).
+_HETERO_SHAPES = [
+    ("an if, the literal arm first", _hetero_body(_HETERO_JOIN),
+     [_U64_MAX, 0], [5, 1], -3),
+    ("an if, the slot arm first", _hetero_body(
+        "if @Bool.0 then { Tuple(1, @Nat.0) } else { Tuple(1, 0 - 3) }"),
+     [_U64_MAX, 1], [5, 0], -3),
+    ("a match", _hetero_body(
+        "match @Bool.0 { true -> Tuple(1, 0 - 3), "
+        "false -> Tuple(1, @Nat.0) }"),
+     [_U64_MAX, 0], [5, 1], -3),
+    ("a block whose tail is the if", _hetero_body(
+        "{ let @Nat = 1; if @Bool.0 then { Tuple(1, 0 - 3) } "
+        "else { Tuple(1, @Nat.1) } }"),
+     [_U64_MAX, 0], [5, 1], -3),
+    ("a product arm", _hetero_body(
+        "if @Bool.0 then { Tuple(1, 0 - 3) } else { Tuple(1, @Nat.0 * 1) }"),
+     [_U64_MAX, 0], [5, 1], -3),
+    ("a sum arm", _hetero_body(
+        "if @Bool.0 then { Tuple(1, 2 - 3) } else { Tuple(1, @Nat.0 + 0) }"),
+     [_U64_MAX, 0], [5, 1], -1),
+    ("an Int slot beside it", _het_program(
+        "@Int, @Nat, @Bool", "Int",
+        "let Tuple<@Int, @Int> = if @Bool.0 then { Tuple(1, @Nat.0) } "
+        "else { Tuple(1, @Int.0) };\n  @Int.0"),
+     [0, _U64_MAX, 1], [-4, 5, 0], -4),
+    ("a tuple pattern over the join", _het_program(
+        "@Nat, @Bool", "Int",
+        f"match ({_HETERO_JOIN}) {{ Tuple(@Int, @Int) -> @Int.0 }}"),
+     [_U64_MAX, 0], [5, 1], -3),
+    ("an option pattern over the join", _het_program(
+        "@Nat, @Bool", "Int",
+        "match (if @Bool.0 then { Some(0 - 3) } else { Some(@Nat.0) }) {\n"
+        "    Some(@Int) -> @Int.0,\n    None -> 0\n  }"),
+     [_U64_MAX, 0], [5, 1], -3),
+]
+
+#: The component's test, `@Int.0 < 3`, at each position #1486 walks.
+_HETERO_TEST = ("{ let Tuple<@Int, @Int> = " + _HETERO_JOIN
+                + "; @Int.0 < 3 }")
+_HETERO_POSITIONS = {
+    "requires": _het_program("@Nat, @Bool", "Int", "7",
+                             requires=_HETERO_TEST),
+    "ensures": _het_program("@Nat, @Bool", "Int", "7",
+                            ensures=_HETERO_TEST),
+    "assert": _het_program("@Nat, @Bool", "Int",
+                           f"assert({_HETERO_TEST});\n  7"),
+    "a later match arm": _het_program(
+        "@Nat, @Bool", "Int",
+        f"match @Bool.0 {{\n    true -> if {_HETERO_TEST} then {{ 7 }} "
+        f"else {{ 8 }},\n    false -> if {_HETERO_TEST} then {{ 7 }} "
+        "else { 8 }\n  }"),
+}
+
+
+def _widenings_are_guarded(observed: Observed, *, at_claim: bool) -> None:
+    """A `nat_to_int_coerce` is claimed, a widening guard is emitted, and
+    every claim is a guarded one.  *at_claim*: each guard stands at the node
+    its claim names — the argument, for a heterogeneous component.  (A
+    binding's own guard stands at the binding, and its claim at the
+    value.)"""
+    claims = {(line, col) for kind, status, line, col in observed.obligations
+              if kind == "nat_to_int_coerce"}
+    guards = {(line, col) for emitter, line, col in observed.checks
+              if emitter == _WIDEN_EMITTER}
+    assert claims, observed.obligations
+    assert guards, observed.checks
+    if at_claim:
+        assert claims <= guards, (observed.obligations, observed.checks)
+    assert all(status in ("tier3", "verified")
+               for kind, status, _l, _c in observed.obligations
+               if kind == "nat_to_int_coerce"), observed.obligations
+
+
+class TestAHeterogeneousComponentWidensAtItsArgument:
+    """A component whose sources hold a genuine `@Nat` beside a value that
+    can be negative is heterogeneous: no guard at the binding can tell -3
+    from a `@Nat` above `i64.MAX`, whose bits are the same.  So the widening
+    is the argument's, as #820 makes a scalar join's `@Nat` arm its own: the
+    verifier records it where the constructor stores that argument, under
+    the arm's path condition, and code generation guards it there (PR #1537
+    review).  Reading the component as a widening of neither kind recorded
+    nothing and returned u64.MAX as -1, where the release branch trapped.
+
+    An addition or a product of a genuine `@Nat` and a non-negative literal
+    is such a source too: `@Nat.0 * 1` is `@Nat.0` at the unsigned width."""
+
+    @pytest.mark.parametrize(
+        ("label", "source", "big", "negative", "value"), _HETERO_SHAPES,
+        ids=[c[0] for c in _HETERO_SHAPES])
+    def test_the_nat_traps_and_the_negative_value_comes_back(
+        self, label: str, source: str, big: list[int], negative: list[int],
+        value: int,
+    ) -> None:
+        observed = _observe(source, "f", big)
+        _widenings_are_guarded(observed, at_claim=True)
+        assert _WIDEN_GUARD in observed.run, observed.run
+        assert _observe(source, "f", negative).run == f"ran:{value}"
+
+    @pytest.mark.parametrize("position", sorted(_HETERO_POSITIONS))
+    def test_every_evaluated_position(self, position: str) -> None:
+        source = _HETERO_POSITIONS[position]
+        observed = _observe(source, "f", [_U64_MAX, 0])
+        _widenings_are_guarded(observed, at_claim=True)
+        assert _WIDEN_GUARD in observed.run, observed.run
+        assert _observe(source, "f", [5, 1]).run == "ran:7"
+
+    def test_a_component_with_no_negative_source_is_not_one(self) -> None:
+        """Only a source that can be negative makes a component
+        heterogeneous.  `option_unwrap_or(Some(0 - 3), 0) + 1` is a sum
+        over a call whose declared `@Nat` the checker inferred from `0 - 3`
+        (#1541), and the value is -2, as `main` returns it: read as the
+        argument's widening, it trapped."""
+        source = _het_program(
+            "@Nat", "Int",
+            "let Tuple<@Int, @Int> = "
+            "Tuple(1, option_unwrap_or(Some(0 - 3), 0) + 1);\n  @Int.0")
+        assert _observe(source, "f", [2]).run == "ran:-2"
+
+    def test_an_opaque_nat_source_is_disclosed(self) -> None:
+        """A slot's `@Nat` component beside a negative argument is supplied
+        by no constructor argument that could be guarded, so it is disclosed
+        (E531), as `main` discloses it, rather than claimed or dropped."""
+        source = _het_program(
+            "@Tuple<Int, Nat>, @Bool", "Int",
+            "let Tuple<@Int, @Int> = if @Bool.0 then { Tuple(1, 0 - 3) } "
+            "else { @Tuple<Int, Nat>.0 };\n  @Int.0")
+        widenings = tuple(o for o in _verify_only(source)
+                          if o[0] == "nat_to_int_coerce")
+        assert widenings == (("nat_to_int_coerce", "tier3_unguarded"),)
+
+
 class TestTheSourceAxisIsTheCodes:
     """The matrix's axes come from the code, not from a list kept beside it
     (PR #1537 review): a form the classifier reads that the matrix does not
@@ -1425,6 +1582,30 @@ _OPERAND_VALUE_CELLS = [
      _DIV_PARAMS, "Bool",
      "((if @Bool.1 then { 0 - 3 } else { @Nat.1 }) / 5) - @Nat.2 == @Nat.0",
      [0, 5, 0, 1, 0], "ran:1"),
+    # `i64.div_s` divides a `@Nat` above `i64.MAX` as the negative i64 its
+    # bits are (#1504), so by any divisor but -1 the operands' signs say
+    # nothing about what it computes: `(2^63 + 10) / -2` comes back as the
+    # positive `2^62 - 5`.  That quotient is compared as the u64 it is,
+    # which traps these rows, as two genuine operands' comparison does —
+    # read as negative, the first returned 0 and the second 1 (PR #1537
+    # review).
+    ("a quotient by a join of -2 and 1, its dividend above i64.MAX",
+     _DIV_PARAMS, "Bool",
+     "@Nat.2 - (@Nat.1 / (if @Bool.1 then { 0 - 2 } else { 1 })) == @Nat.0",
+     [2, _BIG + 10, (1 << 62) + 7, 1, 0], _UNDERFLOW),
+    ("a quotient by a join of -2 and 1, what the division computes",
+     _DIV_PARAMS, "Bool",
+     "@Nat.2 - (@Nat.1 / (if @Bool.1 then { 0 - 2 } else { 1 })) == @Nat.0",
+     [2, _BIG + 10, 13835058055282163719, 1, 0], _UNDERFLOW),
+    ("a quotient of two joins, its dividend above i64.MAX by -2",
+     _DIV_PARAMS, "Bool",
+     "@Nat.2 - ((if @Bool.1 then { 0 - 9 } else { @Nat.1 }) / "
+     "(if @Bool.0 then { 0 - 2 } else { 3 })) == @Nat.0",
+     [10, _BIG + 10, (1 << 62) + 15, 0, 1], _UNDERFLOW),
+    ("a quotient by a join of -2 and 1, its negative arm",
+     _DIV_PARAMS, "Bool",
+     "@Nat.2 - (@Nat.1 / (if @Bool.1 then { 0 - 2 } else { 1 })) == @Nat.0",
+     [2, 5, 4, 1, 0], "ran:1"),
     ("a remainder of a negative dividend",
      _DIV_PARAMS, "Bool",
      "@Nat.2 - ((if @Bool.1 then { 0 - 7 } else { @Nat.1 }) % 5) == @Nat.0",
@@ -1433,6 +1614,15 @@ _OPERAND_VALUE_CELLS = [
      _DIV_PARAMS, "Bool",
      "@Nat.2 - ((if @Bool.1 then { 0 - 7 } else { @Nat.1 }) % 5) == @Nat.0",
      [2, 9, 0, 0, 0], _UNDERFLOW),
+    # A remainder takes its sign from its dividend's reading, not from its
+    # own sign bit: `i64.rem_s` leaves -3 for `(2^63 + 10) % 5` (#1504),
+    # which the dividend's `@Nat` arm says is no negative value, so the
+    # guard compares it as the u64 it is and traps.  Read by its sign bit,
+    # the -3 made the difference 13 and the run returned 0.
+    ("a remainder of a slot above i64.MAX, read by its dividend",
+     _DIV_PARAMS, "Bool",
+     "@Nat.2 - ((if @Bool.1 then { 0 - 7 } else { @Nat.1 }) % 5) == @Nat.0",
+     [10, _BIG + 10, 7, 0, 1], _UNDERFLOW),
     ("a remainder by a negative divisor, its dividend's sign",
      _DIV_PARAMS, "Bool",
      "@Nat.2 - (@Nat.1 % (if @Bool.1 then { 0 - 5 } else { 3 })) == @Nat.0",
@@ -3020,6 +3210,9 @@ _READERS: dict[tuple[str, str, str], str] = {
     ("vera/verifier.py", "ContractVerifier._obligate_destructure_narrowings",
      "_resolved_type_of"): "the source's arity and refined components; "
                            "the sign legs read the component classifier",
+    ("vera/verifier.py", "ContractVerifier._destructure_binding_sources",
+     "_resolved_type_of"): "which constructor the destructure names, for "
+                           "the component classifier's leaf",
     ("vera/verifier.py", "ContractVerifier._obligate_subpattern_narrowings",
      "_resolved_type_of"): "field enumeration and refined fields, plus "
                            "the component classifier's leaf",

@@ -392,6 +392,14 @@ class WasmContext(
         # span carries no recorded target.  Saved and restored around each
         # argument, so a sibling never sees another's.
         self._pending_component_type: object | None = None
+        # The constructor arguments that widen a genuine `@Nat` into the
+        # `@Int` component a binding reads, where the component's other
+        # sources can be negative — the per-arm widening of #820 at the
+        # argument that supplies it (#1503).  Registered by the destructure
+        # or `match` that binds the component, before its value is
+        # translated; read by `_translate_constructor_call`.  Keyed by
+        # expression id, holding the node so the id stays its own.
+        self._heterogeneous_widen_args: dict[int, ast.Expr] = {}
         # #773: structural-Eq helper functions this context generated, keyed by
         # the mangled `$eq_<type>` function name → its full WAT text.  Each
         # helper takes two i32 ADT pointers and returns i32 (1 = equal).  A

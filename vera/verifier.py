@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import enum
+import functools
 import math
 import weakref
 
@@ -1110,6 +1111,14 @@ class ContractVerifier:
         # verification, so a premise contradiction can be reported at the line
         # that contributed it rather than at a blameless `requires`.
         self._first_assume_node: ast.Node | None = None
+        # #1503: the constructor arguments that widen a genuine @Nat into a
+        # HETEROGENEOUS @Int component a destructure or a sub-pattern reads
+        # — registered by that binding before its value is walked, and
+        # obligated where the walk reaches the construction, under the path
+        # condition in force there.  Codegen's `_heterogeneous_widen_args`
+        # marks the same arguments for its guard.  Keyed by expression id,
+        # holding the node so the id stays its own.
+        self._heterogeneous_widen_args: dict[int, ast.Expr] = {}
         # #680 review: fresh consts pushed to shadow a stale outer slot when an
         # untranslatable let/destructure rebinds it.  A div/sub operand that IS
         # one falls to Tier-3 (the shadowed value is unknown).  Reset per fn.
@@ -9621,10 +9630,13 @@ class ContractVerifier:
                             # guard is emitted, by either route.
                             guarded=True,
                         )
-                    elif (self._int_widening_target(arg, field_ty)
-                            and self._result_is_nat(arg)):
+                    elif ((self._int_widening_target(arg, field_ty)
+                           and self._result_is_nat(arg))
+                          or id(arg) in self._heterogeneous_widen_args):
                         # #813: dual — a @Nat argument widening into an @Int
-                        # field can reinterpret above i64.MAX.  A concrete @Int
+                        # field can reinterpret above i64.MAX.  #1503: and
+                        # one a binding reads as a source of a heterogeneous
+                        # @Int component, which codegen guards here too.  A concrete @Int
                         # field is codegen-guarded (the layout `int_fields`
                         # bitmap); #757 gives the generic-instantiated one the
                         # same guard, keyed on the argument's recorded target,
@@ -9692,6 +9704,18 @@ class ContractVerifier:
                 # obligation inflates `len(obligations)`.  The guardedness
                 # each arm claims is per SITE, from the two rosters above,
                 # rather than restated at each call.
+                # #1503: a component a binding reads as heterogeneous, whose
+                # target here is not already the @Int this descent widens
+                # into, is obligated as the argument codegen guards.
+                for i, arg in enumerate(expr.args):
+                    if (id(arg) in self._heterogeneous_widen_args
+                            and not (i < len(comp_types)
+                                     and self._is_int_type(comp_types[i])
+                                     and self._result_is_nat(arg))):
+                        self._check_int_widening_obligation(
+                            decl, arg, smt, slot_env, list(assumptions),
+                            site="heterogeneous component", guarded=True,
+                        )
                 for arg, comp_ty in zip(expr.args, comp_types):
                     # One descent, shared with the container walk and
                     # with the enclosing `let`'s declared type: each of
@@ -9965,6 +9989,8 @@ class ContractVerifier:
                     # non-literal source (#747 site 2) is projected
                     # component-wise out of the translated RHS, now that the
                     # SMT layer models a tuple as a projectable datatype.
+                    self._register_heterogeneous_widenings(
+                        decl, self._destructure_binding_sources(stmt))
                     self._walk_for_nat_binding_obligations(
                         decl, stmt.value, smt, cur_env, block_assumptions,
                     )
@@ -10166,6 +10192,17 @@ class ContractVerifier:
             # a genuine @Int-slot arm body) widens the @Nat arm per-arm — the
             # boundary guard cannot fire without false-trapping the @Int arm.
             match_hetero_int = self._is_hetero_int_widen_join(expr)
+            # #1503: a constructor sub-pattern's heterogeneous @Int
+            # component is obligated at the argument the scrutinee builds,
+            # so it is registered before the scrutinee is walked.
+            for match_arm in expr.arms:
+                if isinstance(match_arm.pattern, ast.ConstructorPattern):
+                    self._register_heterogeneous_widenings(decl, (
+                        (self._resolve_type(te), sources, i, ctor)
+                        for te, sources, i, ctor
+                        in narrowing.pattern_binding_sources(
+                            expr.scrutinee, match_arm.pattern,
+                            self._field_is_generic)))
             self._walk_for_nat_binding_obligations(
                 decl, expr.scrutinee, smt, slot_env, assumptions,
             )
@@ -11649,7 +11686,7 @@ class ContractVerifier:
         trap (``tier3_runtime``).  The unguarded cases (``guarded=False``) are
         neither statically proven nor runtime-checked, so they surface an E531
         warning and are excluded from the discharged totals rather than
-        silently counting a runtime check they never get.  There are three,
+        silently counting a runtime check they never get.  There are four,
         and the enumeration is derived from which callers can pass
         ``guarded=False`` rather than from which one motivated the code — it
         read "the sole unguarded case" while naming one of two, and #1268
@@ -11662,7 +11699,9 @@ class ContractVerifier:
           unprojectable path — codegen does not guard the component coercion,
           as it does not for tuple construction;
         * a GENERIC-INSTANTIATED @Int constructor field, which erases to i64
-          with no per-field mono metadata to key a guard on.
+          with no per-field mono metadata to key a guard on;
+        * an OPAQUE source (a slot, a call) of a heterogeneous @Int component
+          a binding reads (#1503), which no constructor argument supplies.
 
         *reason* is WHY the obligation was not discharged, spliced into the
         E531 rationale (#1251).  Required on the UNGUARDED leg (and refused by
@@ -14650,6 +14689,67 @@ class ContractVerifier:
                 decl, comp_term, smt, assumptions,
                 site="tuple destructure", node=stmt.value, guarded=True,
             )
+
+    def _destructure_binding_sources(
+        self, stmt: ast.LetDestruct,
+    ) -> list[tuple[Type, tuple[narrowing.ComponentSource, ...], int,
+                    str | None]]:
+        """``(target, sources, field, constructor)`` for each binding of
+        *stmt* — the reading :py:meth:`_obligate_destructure_narrowings`
+        takes of its components."""
+        rhs_ty = self._resolved_type_of(stmt.value)
+        if isinstance(rhs_ty, RefinedType):
+            rhs_ty = rhs_ty.base
+        ctor_name = (self._destructure_ctor_name(stmt, rhs_ty)
+                     if isinstance(rhs_ty, AdtType) else None)
+        tuple_shape = stmt.constructor == "Tuple"
+        return [
+            (self._resolve_type(te),
+             narrowing.component_sources(
+                 stmt.value, i,
+                 lambda name: (name == "Tuple") == tuple_shape),
+             i, ctor_name)
+            for i, te in enumerate(stmt.type_bindings)
+        ]
+
+    def _register_heterogeneous_widenings(
+        self,
+        decl: ast.FnDecl,
+        bindings: Iterable[tuple[
+            Type, tuple[narrowing.ComponentSource, ...], int, str | None]],
+    ) -> None:
+        """Record where a genuine @Nat widens into a HETEROGENEOUS @Int
+        component one of *bindings* reads (:func:`vera.narrowing.
+        heterogeneous_widening_sources`, #1503) — the per-arm widening of
+        #820, for a component whose other sources can be negative, so the
+        binding's own guard cannot stand for it.
+
+        An argument source is registered, to be obligated where the walk
+        reaches the construction that stores it: that is where codegen
+        guards it (``_heterogeneous_widen_args``).  An opaque source — a
+        slot, a call — has no argument here to guard, so its widening is
+        disclosed ``tier3_unguarded`` (E531)."""
+        for target, sources, index, ctor in bindings:
+            if not self._is_int_type(target):
+                continue
+            for source in narrowing.heterogeneous_widening_sources(
+                    sources, index, self._declared_result_is_nat,
+                    functools.partial(self._declared_component_is_nat,
+                                      ctor_name=ctor)):
+                if source.is_argument:
+                    self._heterogeneous_widen_args[id(source.expr)] = (
+                        source.expr)
+                else:
+                    self._record_int_widen_tier3(
+                        decl, source.expr, "heterogeneous component",
+                        "tier3_unguarded", guarded=False,
+                        reason=(
+                            "the component's other sources can be negative, "
+                            "so the binding cannot guard it, and this "
+                            "source's `@Nat` component is supplied by no "
+                            "constructor argument that could be guarded "
+                            "instead"
+                        ))
 
     def _declared_component_is_nat(
         self,
