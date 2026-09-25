@@ -3266,15 +3266,15 @@ There are three layers, and they cover different things.
 
 ![The three verification layers: the type system is mechanical and complete, Z3 contract verification is mechanical and bounded (prove or counterexample, the rest runtime-checked), and human intent is expressive but unverified — the human reviews contracts, not implementations.](https://raw.githubusercontent.com/aallan/vera/main/assets/diagrams/faq-layers.svg)
 
-**Layer 1: Type system (mechanical, complete).** Every binding uses typed De Bruijn indices (`@Int.0`, `@String.1`, etc.), so the type checker can verify that every reference resolves to a binding of the correct type, every function call matches its signature, every pattern match is exhaustive, and generics monomorphise correctly. This is the "components slot together" layer. Nothing novel here beyond the index scheme, but it's total — if it type-checks, the pieces fit.
+**Layer 1: Type system (mechanical).** Every binding uses typed De Bruijn indices (`@Int.0`, `@String.1`, etc.), so the type checker can verify that every reference resolves to a binding of the correct type, every function call matches its signature, every pattern match is exhaustive, and generics monomorphise correctly. This is the "components slot together" layer. Nothing novel here beyond the index scheme; the known gaps in it, such as a case missing inside a nested constructor pattern ([#1540](https://github.com/aallan/vera/issues/1540)), are listed in [KNOWN_ISSUES.md](https://github.com/aallan/vera/blob/main/KNOWN_ISSUES.md).
 
-**Layer 2: Z3 contract verification (mechanical, bounded).** Every function has mandatory preconditions, postconditions, and effect declarations. The compiler translates these into a decidable SMT fragment and hands them to Z3. Currently that fragment covers linear arithmetic over integers and booleans, array lengths, ADT constructor discrimination and field access (via Z3 datatype sorts), and termination measures for structural recursion. Across the current example programs, the vast majority of contracts verify statically — the compiler can prove the implementation satisfies the spec without running the code. The remainder are contracts involving generic type parameters (a fundamental SMT limitation) or symbolic effect state modelling across handlers. These fall back to runtime contract checking: the assertions still execute, they just aren't proven at compile time.
+**Layer 2: Z3 contract verification (mechanical, bounded).** Every function has mandatory preconditions, postconditions, and effect declarations. The compiler translates these into a decidable SMT fragment and hands them to Z3. Currently that fragment covers linear arithmetic over integers and booleans, array lengths, ADT constructor discrimination and field access (via Z3 datatype sorts), and termination measures for structural recursion. Across the current example programs, the vast majority of contracts verify statically — the compiler can prove the implementation satisfies the spec without running the code. The remainder are contracts outside that fragment — nonlinear arithmetic, floating-point functions, a generic function with no concrete instantiation to verify (generic functions are verified per instantiation) — or symbolic effect state modelling across handlers. These fall back to runtime contract checking: the assertions still execute, they just aren't proven at compile time.
 
-This layer does cover actual correctness properties, not just interface compatibility. If you write `ensures(@Nat.result >= 0)` on an absolute value function, the compiler will either prove it holds for all inputs or give you a counterexample.
+This layer does cover actual correctness properties, not just interface compatibility. If you write `ensures(@Nat.result >= 0)` on an absolute value function, `vera verify` will prove it holds for all inputs, give you a counterexample, or — where it can do neither — compile it as a runtime check and say so.
 
 **Layer 3: Agent documentation and human intent (expressive, unverified).** The contracts themselves are unverified with respect to user intent. Nothing in the pipeline checks whether `ensures(@Int.result >= 0)` is actually what you wanted the function to do. The contract could be a perfectly verified implementation of the wrong specification. This is where SKILL.md lives — it steers the model toward writing contracts that capture reasonable intent, but "reasonable" has no formal backing.
 
-So: provably correct relative to stated requirements, yes. Provably correct relative to unstated intent, no — but the auditable surface is deliberately as small as possible. The human reviews contracts, not implementations.
+So: provably correct relative to stated requirements, yes, where Tier 1 proves them — the open soundness bugs in [KNOWN_ISSUES.md](https://github.com/aallan/vera/blob/main/KNOWN_ISSUES.md) are the known exceptions, and the compiled program checks its contracts at run time as well, so a wrong proof traps rather than returning a wrong answer. Provably correct relative to unstated intent, no — but the auditable surface is deliberately as small as possible. The human reviews contracts, not implementations.
 
 
 ## Is SQL injection really a compile-time error?
@@ -3303,18 +3303,18 @@ The guarantee is exactly as wide as the query path, and no wider. Every string t
 
 ## Does the compiler prove division-by-zero, out-of-bounds indexing, etc. can't happen?
 
-It does — the verifier auto-synthesises a proof obligation at every primitive operation whose well-definedness depends on operand values, and discharges it from the surrounding preconditions and path conditions.  **Integer** division and modulo by zero carry a `b != 0` obligation (E526) — float division is exempt, since `f64.div` by zero yields inf or NaN rather than trapping; array indexing carries a `0 <= i < array_length(arr)` obligation (E527); `@Nat` subtraction underflow and `@Int` → `@Nat` narrowing carry `>=` / `>= 0` obligations (E502 / E503).  A function that declares `requires(@Int.1 != 0)` and performs `@Int.0 / @Int.1` is statically proven non-trapping; a function that declares `requires(true)` and performs `@Int.1 / @Int.0` is now a **compile error** (E526), not a silent runtime trap.  (An operation inside a closure body, quantifier predicate, or handler clause is walked under a fresh slot scope: a slot-dependent obligation is reported as a Tier-3 entry — runtime-guarded at the codegen-guarded sites, while the documented unguarded sites (a user effect-operation argument or generic-instantiated constructor field, disclosed as `tier3_unguarded`/E504, and a refined nested constructor sub-pattern, disclosed as `tier3_unguarded`/E506) carry no codegen guard and say so in the stream — while a manifest violation like `5 / 0` is the same loud compile error as direct position. A quantifier domain and a handler's state-init and body are enclosing-scope positions and prove at full precision.)
+Largely — the verifier auto-synthesises a proof obligation at every primitive operation whose well-definedness depends on operand values, and discharges it from the surrounding preconditions and path conditions.  **Integer** division and modulo by zero carry a `b != 0` obligation (E526) — float division is exempt, since `f64.div` by zero yields inf or NaN rather than trapping; array indexing carries a `0 <= i < array_length(arr)` obligation (E527); `@Nat` subtraction underflow and `@Int` → `@Nat` narrowing carry `>=` / `>= 0` obligations (E502 / E503).  A function that declares `requires(@Int.1 != 0)` and performs `@Int.0 / @Int.1` is statically proven free of a zero divisor (`INT_MIN / -1` still traps at run time with no obligation, [#1598](https://github.com/aallan/vera/issues/1598)); a function that declares `requires(true)` and performs `@Int.1 / @Int.0` is refused by `vera verify` (E526), not left to a runtime trap.  (An operation inside a closure body, quantifier predicate, or handler clause is walked under a fresh slot scope: a slot-dependent obligation is reported as a Tier-3 entry — runtime-guarded at the codegen-guarded sites, while the few unguarded sites carry no codegen guard and say so in the stream as `tier3_unguarded` warnings (`E504`, `E506`, `E531`, `E537`) — while a manifest violation like `5 / 0` is the same loud compile error as direct position. A quantifier domain and a handler's state-init and body are enclosing-scope positions and prove at full precision.)
 
 You discharge an obligation by encoding the constraint in a precondition (`requires(...)`), a guarding `if` (whose path condition holds in the relevant branch), or a refinement type (`{ @Int | @Int.0 != 0 }`) — the verifier then proves it at every call site.  Integer division and modulo are decidable, so an unguarded divisor the solver can show may be zero is a compile error (E526); a divisor the solver can't translate — opaque, like a value behind an uninterpreted call — falls to a Tier-3 runtime guard instead, the same way array bounds do.  Array bounds depend on `array_length`, which the solver treats as opaque, so they are proven at Tier 1 only where a literal length, refinement, precondition, or path condition pins it — and a provably out-of-range index (e.g. `[1, 2, 3][5]`) is a compile error (E527).
 
-Where a bound can't be proved at Tier 1 — a dynamic array index whose length the solver can't pin, or an index inside a closure body — it falls to a runtime-guarded **Tier 3** rather than a static proof, and that fallback is honest, not silent: `vera verify --json` counts it.  Those traps are Vera-native — each carries a kind label (`divide_by_zero`, `out_of_bounds`), a per-kind `Fix:` paragraph naming the precondition that would lift it to a static proof, and a source backtrace.
+Where a bound can't be proved at Tier 1 — a dynamic array index whose length the solver can't pin, or an index inside a closure body — it falls to a runtime-guarded **Tier 3** rather than a static proof, and that fallback is honest, not silent: `vera verify --json` counts it.  Those traps are Vera-native — each carries a kind label (`divide_by_zero`, `index_out_of_bounds`), a per-kind `Fix:` paragraph naming the precondition that would lift it to a static proof, and a source backtrace.
 
-These obligations are auto-synthesised as of [#680](https://github.com/aallan/vera/issues/680).  Lifting dynamic or closure-captured array bounds from a runtime-guarded Tier 3 to a Tier-1 proof is part of the Tier 2 verification work ([#427](https://github.com/aallan/vera/issues/427)).
+Lifting dynamic or closure-captured array bounds from a runtime-guarded Tier 3 to a Tier-1 proof is part of the Tier 2 verification work ([#427](https://github.com/aallan/vera/issues/427)).
 
 
 ## How can we verify if the written code is safe and follows compliance?
 
-Every function in Vera must declare what it requires, what it guarantees, and what side effects it performs. The compiler proves the implementation satisfies those contracts via Z3 — it either verifies statically or gives you a counterexample. So a compliance reviewer can audit the contracts (which are small and declarative) without reading the implementation, and the compiler proves the code matches them.
+Every function in Vera must declare what it requires, what it guarantees, and what side effects it performs. The compiler proves the implementation satisfies those contracts via Z3 — it verifies statically, gives you a counterexample, or (where it can do neither) compiles a runtime check and says so. So a compliance reviewer can audit the contracts (which are small and declarative) without reading the implementation, and the compiler proves the code matches them.
 
 The effect system adds another dimension: a function that declares `effects(pure)` is proven to have no side effects. A function that declares `effects(<IO>)` can only perform IO operations. A caller that only permits `<Http>` cannot invoke a function that also performs `<IO>`. This makes it possible to enforce security boundaries at the type level — a sandboxed module literally cannot perform operations outside its declared effect set.
 
@@ -3344,14 +3344,14 @@ public forall<T where Eq<T>> fn contains(@Array<T>, @T -> @Bool)
 
 The compiler checks at every call site that the concrete type satisfies the required ability. ADTs can auto-derive `Eq` if all their constructor fields are themselves `Eq`-satisfying types — simple enums satisfy `Eq` automatically.
 
-The design choice to fix the ability set (rather than allowing user-defined abilities) is deliberate: it keeps the language simpler for models and avoids the coherence problems that plague open type class systems.
+The design choice to fix the ability set (rather than allowing user-defined abilities) is deliberate: it keeps the language simpler for models and avoids the coherence problems that plague open type class systems. The grammar still parses an `ability` declaration, and a program that calls a user-declared ability's operation passes `vera check` but does not compile ([#1499](https://github.com/aallan/vera/issues/1499)).
 
 
 ## How does HTTP work in Vera?
 
 HTTP is modelled as a built-in algebraic effect. `Http.get(url)` and `Http.post(url, body)` are effect operations that return `Result<String, String>`. Functions that use them must declare `effects(<Http>)` in their signature, making network access explicit and trackable in the type system.
 
-The effect system means a caller that only permits `<IO>` cannot invoke a function that performs `<Http>` — network access is a separate capability. In tests, you can provide mock handlers instead of making real network requests. The pattern for fetching and parsing JSON from an API is: call `Http.get`, then `json_parse` the response body.
+The effect system means a caller that only permits `<IO>` cannot invoke a function that performs `<Http>` — network access is a separate capability. User handlers for `Http` are not compiled yet: a `handle[Http]` type-checks, but code generation drops its function (`E602`), so a test cannot yet mock the network ([#1597](https://github.com/aallan/vera/issues/1597), [#372](https://github.com/aallan/vera/issues/372)). The pattern for fetching and parsing JSON from an API is: call `Http.get`, then `json_parse` the response body.
 
 Currently HTTP supports GET and POST. Custom headers, additional HTTP methods, response status codes, timeouts, and streaming are tracked as known limitations ([#351](https://github.com/aallan/vera/issues/351)–[#356](https://github.com/aallan/vera/issues/356)).
 
@@ -3410,12 +3410,12 @@ The reference compiler targets WebAssembly, so the initial applications are web-
 
 But the deeper answer is that the end users aren't humans directly — they're AI coding agents. The intended workflow is: a human (or an orchestrating agent) describes what they want; a model generates Vera code; the compiler verifies it; the WASM binary runs. The human's job is to review contracts, not implementations.
 
-HTTP, JSON, and Markdown are now built-in, which supports the primary agent workloads: API integration, data processing, and structured document generation. A Vera program can make an HTTP request, parse the JSON response, and return typed, contract-checked data — all with the network I/O declared as an algebraic effect (`effects(<Http>)`). A research function that fetches data from the web, processes results via LLM inference, and returns typed, contract-checked Markdown output is the kind of program Vera is designed for.
+HTTP, JSON, and Markdown are built-in, which supports the primary agent workloads: API integration, data processing, and structured document generation. A Vera program can make an HTTP request, parse the JSON response, and return typed, contract-checked data — all with the network I/O declared as an algebraic effect (`effects(<Http>)`). A research function that fetches data from the web, processes results via LLM inference, and returns typed, contract-checked Markdown output is the kind of program Vera is designed for.
 
 
 ## Is there evidence this actually works?
 
-Vera-specific benchmark data is now available across multiple models. **[VeraBench](https://github.com/aallan/vera-bench)** — a 60-problem benchmark across 5 difficulty tiers — covers 9 models across 3 providers (v0.0.18). The headline result: six of the nine write 100% correct Vera, a language none of them was trained on. Vera has the highest score, or level with it, for six of the nine models. The metric is **% solved** (pass@1): a refusal, a compile failure, a crash and a wrong answer all count alike as not solved, so a model cannot score higher by answering less.
+Vera-specific benchmark data is available across multiple models. **[VeraBench](https://github.com/aallan/vera-bench)** — a 60-problem benchmark across 5 difficulty tiers — covers 9 models across 3 providers (VeraBench v0.0.18, measured on Vera v0.1.8). The headline result: six of the nine write 100% correct Vera, a language none of them was trained on. Vera has the highest score, or level with it, for six of the nine models. The metric is **% solved** (pass@1): a refusal, a compile failure, a crash and a wrong answer all count alike as not solved, so a model cannot score higher by answering less.
 
 The sharpest evidence that the design choices are doing the work is Vera against [Aver](https://averlang.dev), a second language that is also absent from every training set and also learned from a single document in the prompt — so familiarity cannot explain a difference between them. What separates them is that Aver has ordinary variable names where Vera has typed slot references. Vera scores higher on all five models that ran both. The two languages differ in more than one respect, so this isolates the variable better than the Python comparison without isolating it completely.
 
@@ -3425,7 +3425,7 @@ The broader literature is also encouraging. The type-constrained decoding paper 
 
 The Vericoding benchmark (Sun et al., "A Benchmark for Vericoding", [arXiv:2509.22908](https://arxiv.org/abs/2509.22908)) shows LLMs achieving 82% verification success on Dafny versus 27% on Lean, which suggests SMT-automated verification (Vera's approach) is significantly more LLM-tractable than explicit proof construction.
 
-Blinn et al. ("Statically Contextualizing Large Language Models with Typed Holes", OOPSLA 2024, [ACM DL](https://doi.org/10.1145/3689728)) demonstrated that providing type context at incomplete program locations significantly improves LLM completion quality — a result that directly motivates Vera's planned typed holes feature ([#226](https://github.com/aallan/vera/issues/226)).
+Blinn et al. ("Statically Contextualizing Large Language Models with Typed Holes", OOPSLA 2024, [ACM DL](https://doi.org/10.1145/3689728)) demonstrated that providing type context at incomplete program locations significantly improves LLM completion quality — a result that directly motivates Vera's typed holes: a `?` in any expression position type-checks with a `W001` warning naming the expected type and the bindings in scope.
 
 None of this is Vera-specific, but it validates the design choices. The thesis is plausible, the tooling exists, and initial Vera-specific results are consistent with the broader literature. What's needed is expanded and replicated evaluations — more models, more tiers, and longitudinal tracking across releases — to confirm these findings across languages and settings.
 
@@ -3483,7 +3483,7 @@ The reference compiler is under active development. The current release includes
 - Four built-in abilities (Eq, Ord, Hash, Show) with constrained generics and ADT auto-derivation
 - Full IO operations (print, read_line, read_char, read_file, write_file, args, exit, get_env, sleep, time, stderr)
 - Algebraic data types, pattern matching, closures, generics with monomorphisation
-- Algebraic effect handlers with resume and state
+- Algebraic effect handlers with resume and state (compiled for `State` and `Exn`; [#1597](https://github.com/aallan/vera/issues/1597))
 - Built-in `<Http>`, `<HttpServer>`, `<Inference>`, `<DB>`, `<State>`, `<IO>`, `<Async>`, `<Random>`, `<Diverge>`, and `Exn<T>` (typed exception) effects
 - `<Inference>` dispatches to Anthropic, OpenAI, Kimi (Moonshot), Mistral, Grok (xAI), or DeepSeek via env vars
 - Collection types: `Map<K,V>`, `Set<T>`, `Array<T>`, `Decimal`, `Json`, `HtmlNode`, `Markdown`
@@ -3535,19 +3535,26 @@ For agents, point your model at [SKILL.md](https://raw.githubusercontent.com/aal
 
 ## Error Code Reference
 
-Every diagnostic has a stable error code. Codes are grouped by compiler phase:
+Diagnostics carry stable codes: errors E001-E702 and warnings W001-W003. Codes are grouped by compiler phase:
 
 | Range | Phase |
 |-------|-------|
 | E001-E009 | Parse errors |
 | E010 | Transform errors |
+| E011-E013 | Import resolution |
+| E020-E023 | Parse: malformed comments (lexical) |
+| E030-E032 | Parse: contract clauses |
 | E1xx | Type check: core + expressions |
 | E2xx | Type check: calls |
 | E3xx | Type check: control flow |
 | E5xx | Verification |
 | E6xx | Code generation |
 | E7xx | Testing |
+| W001-W003 | Warnings |
 
+- **W001**: Typed hole
+- **W003**: Unverified assumption (assume statement)
+- **W002**: Async argument evaluates eagerly
 - **E001**: Missing contract block
 - **E002**: Missing effect clause
 - **E003**: Malformed slot reference

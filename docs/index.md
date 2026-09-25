@@ -14,7 +14,7 @@ Programming languages have always co-evolved with their users. Assembly emerged 
 
 The [empirical literature](https://arxiv.org/abs/2307.12488) shows models are particularly vulnerable to naming-related errors: choosing misleading names, reusing names incorrectly, and losing track of which name refers to which value. Vera addresses this by making everything explicit and verifiable.
 
-The model doesn't need to be right. It needs to be *checkable*. Names are replaced by structural references. Contracts are mandatory. Effects are typed. Every function is a specification the compiler verifies against its implementation.
+The model doesn't need to be right. It needs to be *checkable*. Names are replaced by structural references. Contracts are mandatory. Effects are typed. Every function is a specification the compiler checks against its implementation: proving what it can, guarding most of the rest at run time, and saying which it can do neither for.
 
 ![The loop: the model writes Vera with mandatory contracts; the compiler type-checks every program, proves supported contract obligations via Z3, guards most of the rest at runtime, and discloses what it can neither prove nor guard; when it's wrong the diagnostics return — description, rationale, fix, spec_ref — and when the proofs hold it ships as one .wasm for CLI and browser, or a WASI component.](https://veralang.dev/loop-web.svg)
 
@@ -22,7 +22,7 @@ For deeper questions about the design — why no variable names, what gets verif
 
 ## What Vera Looks Like
 
-Nothing is implicit. The signature declares types, preconditions, postconditions, and effects. The compiler verifies the contract via SMT solver. A zero divisor the verifier can witness is a compile error (`E526`), not a runtime crash.
+Nothing is implicit. The signature declares types, preconditions, postconditions, and effects. `vera verify` proves the contract with an SMT solver where it can, and the compiled program checks it at run time as well. A zero divisor the verifier can witness is refused (`E526`), not left to a runtime crash.
 
 <!-- vera:run fn="safe_divide" args="2 10" stdout="5" -->
 ```vera
@@ -156,7 +156,7 @@ A 60-problem benchmark across 5 difficulty tiers — pure arithmetic, strings an
 
 Every score is marked against the other two in its row: **bold** where it is the sole highest, _italic_ where it is not the highest, unmarked where it ties for highest.
 
-Frontier models now write Vera **as well as they write the languages they were trained on**. Vera has the highest score, or level with it, for six of the nine models.
+Frontier models write Vera **as well as they write the languages they were trained on**. Vera has the highest score, or level with it, for six of the nine models.
 
 Mandatory contracts and typed slot references appear to provide enough structure to compensate for zero training data. Every successful program came from a single skill file in context, written by a model that had never seen the language before.
 
@@ -182,11 +182,13 @@ Full source and data: [https://github.com/aallan/vera-bench](https://github.com/
 ## Key Features
 
 - **No variable names** — Typed [De Bruijn indices](https://raw.githubusercontent.com/aallan/vera/main/DE_BRUIJN.md) (`@T.n`) replace variable names: `@Int.0` is the most-recent `Int` binding, `@Int.1` the one before. The whole class of naming hallucinations is removed at the language level, not caught after the fact.
-- **Full contracts** — Mandatory preconditions, postconditions, and effect declarations on every function. Z3 generates test inputs from the contracts and runs them through WASM — no manual test cases.
+- **Full contracts** — Mandatory preconditions, postconditions, and effect declarations on every function, and a `decreases` measure — or the `Diverge` effect — on every recursive one. `vera test` has Z3 generate test inputs from the contracts and runs them through WASM — no manual test cases.
 - **SQL injection won't compile** — The `<DB>` effect accepts only a literal query string — built from string literals, never spliced from a runtime value. Interpolating user input into SQL is a compile-time error (`E207`); every value flows through a `?` placeholder instead. Injection safety stops being a discipline you remember and becomes one the compiler enforces.
-- **Algebraic effects** — IO, Http, HttpServer, State, Exceptions, Async, Inference, DB, Random, Diverge — declared, typed, and handled explicitly. Pure by default.
+- **Algebraic effects** — IO, Http, HttpServer, State, Exceptions, Async, Inference, DB, Random, Diverge — declared and typed. `State` and `Exn` are handled in Vera code; the host effects are backed by the runtime. Pure by default.
 - **Refinement types** — Types that express constraints like "a list of positive integers of length `n`".
-- **Three-tier verification** — Static via [Z3](https://www.microsoft.com/en-us/research/project/z3-3/) plus runtime fallback, shipped; the Z3-guided middle tier is specified, not yet implemented.
+- **Three-tier verification** — Static via [Z3](https://www.microsoft.com/en-us/research/project/z3-3/) plus runtime fallback, shipped; the Z3-guided middle tier is specified, not yet implemented. What can be neither proved nor guarded is disclosed, and a `requires` that can never hold is refused rather than proving everything. `vera verify --timeout-ms` sets the per-query solver budget.
+- **Traps that name their cause** — A `@Nat` underflow, a failed contract or `assert`, an index out of bounds or an escaped exception reports its kind and a fix — the same on wasmtime, in the browser and under WASI 0.2.
+- **Language server** — A warm Z3 session between keystrokes — proofs re-check at editor latency. Custom methods hand agents [proof deltas](https://raw.githubusercontent.com/aallan/vera/main/LSP_SERVER.md) before an edit lands.
 - **Diagnostics as instructions** — Every error is a natural-language explanation with a concrete fix, designed for LLM consumption.
 - **LLM inference as effect** — `Inference.complete` is an algebraic effect — typed, contract-verifiable, host-backed. Anthropic, OpenAI, Moonshot, Mistral, xAI, DeepSeek.
 - **Typed stdlib** — JSON, HTML, Markdown, HTTP, Regex, Decimal — built-in ADTs with parse/query/serialize.
@@ -243,9 +245,14 @@ Python 3.11+. Everything else installs into a virtual environment.
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install veralang
+vera version
+# Optional: the language server for editors and agents
+python -m pip install "veralang[lsp]"
 ```
 
-Or install the current GitHub source for development:
+**Upgrading to 0.2.0:** the checker and verifier are stricter than in 0.1.x, so a program 0.1.13 accepted may be refused — most often a recursive function with neither `decreases` nor `Diverge` (`E137`), or a `decreases` measure that is not proved to decrease (`E502`). The [CHANGELOG](https://github.com/aallan/vera/blob/main/CHANGELOG.md) lists each new check.
+
+The wheel ships the compiler and the `vera` command. For the full environment — the bundled examples, conformance suite, and specification the agent docs teach from — or for compiler development and unreleased changes, install from source:
 
 ```bash
 git clone https://github.com/aallan/vera.git
@@ -264,6 +271,8 @@ vera compile --target browser examples/hello_world.vera
 
 Editor support: [Vera Language for VS Code](https://marketplace.visualstudio.com/items?itemName=veralang.vera-language) (`code --install-extension veralang.vera-language`; [source](https://github.com/aallan/vera/tree/main/editors/vscode)), a [Vim package](https://github.com/aallan/vera/tree/main/editors/vim-veralang) for Vim 8+ and Neovim, and a [TextMate `.tmbundle`](https://github.com/aallan/vera/tree/main/editors/textmate) for Sublime Text and other TextMate-grammar editors.
 
+Live proof-aware diagnostics, hover, slot go-to-definition, and typed-hole completion come from the [language server](https://raw.githubusercontent.com/aallan/vera/main/LSP_SERVER.md). The source install above (`.[dev]`) already includes it; on the PyPI route add it with `python -m pip install "veralang[lsp]"`, or use `pip install -e ".[lsp]"` for a lighter source checkout. Any editor with a generic LSP client can point at `vera lsp` directly.
+
 ## For Agents
 
 This page is also a machine-readable specification. Every document here has an alternate in markdown, served on the same domain, discoverable through standard `<link rel="alternate">`, `llms.txt`, and the Mintlify `llms-txt` / `llms-full-txt` conventions.
@@ -272,6 +281,7 @@ This page is also a machine-readable specification. Every document here has an a
 - [`LSP_SERVER.md`](https://raw.githubusercontent.com/aallan/vera/main/LSP_SERVER.md) — The language server: live proof-aware diagnostics and the custom proof-delta methods agents use to ask “does this edit still prove?” before committing it.
 - [`AGENTS.md`](https://raw.githubusercontent.com/aallan/vera/main/AGENTS.md) — Setup instructions for any agent system (Copilot, Cursor, Windsurf, custom). Writing Vera code and working on the compiler.
 - [`CLAUDE.md`](https://raw.githubusercontent.com/aallan/vera/main/CLAUDE.md) — Project orientation for Claude Code. Key commands, repo layout, workflows, invariants.
+- [`TOOLCHAIN.md`](https://raw.githubusercontent.com/aallan/vera/main/TOOLCHAIN.md) — The CLI cookbook: driving the toolchain to write, verify, test, run, and debug Vera, plus the `builtins`/`effects`/`errors` introspection commands.
 
 Claude Code discovers `SKILL.md` and `CLAUDE.md` automatically when working inside the repo. For other projects, install the skill manually:
 
@@ -280,11 +290,29 @@ mkdir -p ~/.claude/skills/vera-language
 cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md
 ```
 
-For other models: point them at [`SKILL.md`](https://veralang.dev/SKILL.md) via system prompt, file attachment, or retrieval. It's self-contained and works with any model that reads markdown.
+For other models: point them at [`SKILL.md`](https://veralang.dev/SKILL.md) via system prompt, file attachment, or retrieval. It's self-contained and works with any model that reads markdown. Every Vera example in it, and on this page, is checked, verified and, where it names an expected output, run in CI.
+
+The documents above are how machines *read* Vera. The [language server](https://raw.githubusercontent.com/aallan/vera/main/LSP_SERVER.md) is how they *interrogate* it: `vera lsp` holds a warm, incremental Z3 session between edits, and four custom methods — `vera/speculativeEdit`, `vera/proposeEdit`, `vera/strengthenContract`, `vera/addEffect` — let an agent learn whether an edit *keeps*, *breaks*, or *strengthens* a program's proofs before committing it, then apply it only through the verification gate.
+
+```json
+// vera/speculativeEdit — the proof delta for an in-memory edit
+{
+  "ok": true,
+  "proof_delta": {
+    "newly_discharged": ["..."],
+    "newly_undischarged": [],
+    "timed_out": [],
+    "removed": [],
+    "unchanged": 11,
+    "proof_regressions": []
+  },
+  "diagnostics": 0
+}
+```
 
 ## Status
 
-Vera is under [active development](https://raw.githubusercontent.com/aallan/vera/main/ROADMAP.md). A complete compiler with 164 built-in functions, ten algebraic effects (IO, Http, HttpServer, State, Exceptions, Async, Inference, DB, Random, Diverge), contract-driven testing via [Z3](https://www.microsoft.com/en-us/research/project/z3-3/), and a 14-chapter specification. A 256-program conformance suite and 43 worked examples are validated against the spec on every pull request. All of it is developed openly on [GitHub](https://github.com/aallan/vera) and released under the MIT licence.
+Vera is under [active development](https://raw.githubusercontent.com/aallan/vera/main/ROADMAP.md). A complete compiler with 164 built-in functions, ten algebraic effects (IO, Http, HttpServer, State, Exceptions, Async, Inference, DB, Random, Diverge), contract-driven testing via [Z3](https://www.microsoft.com/en-us/research/project/z3-3/), a language server with agent-facing proof deltas, and a 14-chapter specification. A 256-program conformance suite and 43 worked examples are validated against the spec on every pull request. All of it is developed openly on [GitHub](https://github.com/aallan/vera) and released under the MIT licence.
 
 ## Links
 
