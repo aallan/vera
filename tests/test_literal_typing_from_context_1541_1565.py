@@ -105,7 +105,8 @@ public fn f(@{param} -> @{ret})
 
 
 # ---------------------------------------------------------------------
-# Rule 1: a literal-only expression is typed by its value.  Read from the
+# Rule 1: a literal-only expression whose value is negative is `Int`;
+# otherwise its operators type it.  Read from the
 # checker's `expr_types` table, so the type is the one synthesized and not
 # a consequence observed downstream.
 # ---------------------------------------------------------------------
@@ -550,3 +551,56 @@ class TestNatContextMatrix:
         else:
             assert _codes(source) == [], name
             assert _run(source, "f", [0]) == value, name
+
+
+# A literal cannot have the enclosing function's rigid type parameter:
+# inside `forall<T>` a `T` is opaque.  A literal's hole must not be
+# overwritten by `T` whichever argument comes first (PR #1583 review) —
+# accepted, the clone at `T = String` received an i64 where a string was
+# expected and the module failed to load.
+_RIGID_HOSTS = {
+    "call_literal_first": "second({L}, @T.0)",
+    "call_literal_second": "second(@T.0, {L})",
+    "ctor_literal_first": "match MkTwo({L}, @T.0) { MkTwo(@T, @T) -> @T.0 }",
+    "ctor_literal_second": "match MkTwo(@T.0, {L}) { MkTwo(@T, @T) -> @T.0 }",
+    "nested_call_first": "second(id({L}), @T.0)",
+    "tuple_first": ("match second(Tuple({L}, 1), Tuple(@T.0, @T.0)) "
+                    "{ Tuple(@T, @T) -> @T.0 }"),
+}
+
+
+def _rigid_source(body: str) -> str:
+    return _HOSTS_PRELUDE + f"""
+private forall<T> fn g(@T -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  {body}
+}}
+
+public fn f(@String -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  string_length(g(@String.0))
+}}
+"""
+
+
+_RIGID_CELLS = [
+    (f"{shape}-{host}", _rigid_source(body.replace("{L}", literal)))
+    for shape, (literal, _value) in sorted(_SHAPES.items())
+    for host, body in sorted(_RIGID_HOSTS.items())
+]
+
+
+class TestRigidTypeParameter:
+    @pytest.mark.parametrize(("name", "source"), _RIGID_CELLS,
+                             ids=[c[0] for c in _RIGID_CELLS])
+    def test_a_literal_is_not_a_rigid_type_parameter(
+            self, name: str, source: str) -> None:
+        ast = parse_to_ast(source)
+        diags, _arts = typecheck_with_artifacts(ast, source)
+        assert [d for d in diags if d.severity == "error"], name

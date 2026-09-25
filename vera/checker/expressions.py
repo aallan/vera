@@ -627,7 +627,8 @@ class ExpressionsMixin:
             # non-negativity with no verifier obligation (§0.2.2).
             joined = numeric_join(left_base, right_base)
             if joined is not None:
-                # #1541: a literal-only expression is typed by its value.
+                # #1541: a literal-only expression whose value is negative is
+                # an `Int`.
                 # `0 - 3` is two non-negative literals, and `Nat - Nat` would
                 # make it a `Nat` holding -3; whatever instantiation it then
                 # fixed (`id(0 - 3)`, `[0 - 1, 5]`) declared the value

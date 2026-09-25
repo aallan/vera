@@ -976,15 +976,14 @@ def fill_literal_holes(ty: Type, source: Type | None) -> Type:
 
 def _literal_can_have(ty: Type) -> bool:
     """Whether an integer literal can have type *ty*: an integer type (a
-    literal is typed `Byte` in a `Byte` context), a refinement of one, or
-    a type variable, which stands for whatever it is instantiated at.  A
-    literal meeting any other type in a shared type head is the same
-    conflict its `Nat` was before holes existed (#898, #1541)."""
-    base = ty.base if isinstance(ty, RefinedType) else ty
+    literal is typed `Byte` in a `Byte` context) or a refinement of one.
+    A literal meeting any other type in a shared type head is the same
+    conflict its `Nat` was before holes existed (#898, #1541).  A type
+    variable never reaches here: `merge_inferred_types` settles a hole
+    against one first."""
+    base = ty
     while isinstance(base, RefinedType):
         base = base.base
-    if isinstance(base, TypeVar):
-        return True
     return (isinstance(base, PrimitiveType)
             and base.name in ("Int", "Nat", "Byte"))
 
@@ -1033,15 +1032,19 @@ def merge_inferred_types(
             return (a, False)
         if is_literal_hole(a):
             if isinstance(b, TypeVar):
-                return (a, False)
+                return (a, False)  # the same rule, in the other order
             return (b, nested and not _literal_can_have(b))
         return (b, False)
     if _is_fresh_typevar(b):
         if is_literal_hole(b):
             if isinstance(a, TypeVar):
-                # A variable leaked unresolved from a nested generic call
-                # yields to the literal, as it yields to any concrete type
-                # (#970's dual in `_unify_for_inference`).
+                # A type variable yields to the literal: one leaked
+                # unresolved from a nested generic call, as it yields to any
+                # concrete type (#970's dual in `_unify_for_inference`), and
+                # the enclosing function's rigid one, which a literal cannot
+                # have.  The hole then takes the literal's own type, and the
+                # argument the variable types is checked against it — a
+                # rigid `T` there is refused (E202), as before #1541.
                 return (b, False)
             return (a, nested and not _literal_can_have(a))
         return (a, False)

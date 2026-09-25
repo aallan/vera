@@ -958,9 +958,16 @@ class ResolutionMixin:
                 mapping[pattern.name] = concrete
             elif (isinstance(existing, TypeVar)
                   and '$' in existing.name
-                  and not is_fresh):
+                  and not is_fresh
+                  and not (is_literal_hole(existing)
+                           and isinstance(concrete, TypeVar))):
                 # Overwrite a tentative fresh-TypeVar mapping with a concrete
-                # (or forall-var) resolution.
+                # (or forall-var) resolution.  Not a literal's hole with a
+                # type variable (#1541, PR #1583 review): a literal cannot
+                # have a rigid `T` — inside its own body `T` is opaque — nor
+                # a variable leaked unresolved from a nested call, so that
+                # meeting is `merge_inferred_types`'s, which keeps the hole
+                # in either argument order.
                 mapping[pattern.name] = concrete
             elif (isinstance(existing, TypeVar)
                   and not isinstance(concrete, TypeVar)):
