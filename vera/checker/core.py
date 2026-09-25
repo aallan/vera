@@ -198,14 +198,16 @@ def typecheck_with_artifacts(
     about the module it is verifying rather than about that module's imports.
 
     ``collect_module_artifacts`` (#987, opt-in per PR #997 review) gates the
-    per-resolved-module side-table pass.  Only the codegen-bound callers
-    (``vera compile`` / ``run`` / ``serve`` / ``test``) consume
-    ``CheckArtifacts.module_artifacts`` — they pass ``True``.  ``vera verify``
-    and the warm ``VerificationSession`` read only the top-level
-    ``expr_semantic_types`` / ``expr_target_types`` tables and would pay a full
-    extra ``check_program`` per resolved module for nothing, so they leave it
-    ``False`` (``module_artifacts`` is then an empty dict, which ``_compile_fn``
-    already tolerates — the #986 imported-body suppression fallback).
+    per-resolved-module side-table pass: one extra ``check_program`` per
+    resolved module.  Two consumers read ``CheckArtifacts.module_artifacts``.
+    Code generation reads them for imported bodies (``vera compile`` /
+    ``run`` / ``serve`` / ``test``).  Instantiation discovery reads them for
+    each module's own bodies (#1509), so ``vera verify``, ``verify()`` when it
+    is handed none, and the warm ``VerificationSession`` pass ``True`` too.
+    The session pays the pass again on each round of its disclosed-set
+    fixpoint.  A caller that leaves it ``False`` gets an empty dict, which
+    ``_compile_fn`` already tolerates (the #986 imported-body suppression
+    fallback).
     ``alias_env`` (#1208), by contrast, is the entry module's own and always
     present — it costs one walk of an already-built table.  There is no
     per-module counterpart in the artifacts: the two consumers that need one

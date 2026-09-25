@@ -3289,7 +3289,7 @@ def _callers_of_the_entrys_foo(wat: str) -> set[str]:
 
     The entry's `foo` is `$foo`, or a clone `$foo$…` of it; a module's
     `foo` the entry displaces is `$mod$<path>$foo`.  Only `main` calls the
-    entry's.  A `Bool` read of the wrong call's result can still land on
+    entry's, by `call` or, in tail position, `return_call`.  A `Bool` read of the wrong call's result can still land on
     the right answer (an `Int` payload read at a `Bool`'s offset is zero),
     so each cell asserts the call's target as well as its value.
     """
@@ -3297,7 +3297,8 @@ def _callers_of_the_entrys_foo(wat: str) -> set[str]:
     for chunk in re.split(r"^  \(func ", wat, flags=re.M)[1:]:
         name = chunk.split(None, 1)[0].lstrip("$")
         if name != "main" and re.search(
-                r"\bcall \$foo(?:\$[^\s)]*)?(?=[\s)])", chunk):
+                r"\b(?:return_call|call) \$foo(?:\$[^\s)]*)?(?=[\s)])",
+                chunk):
             callers.add(name)
     return callers
 
@@ -3542,6 +3543,17 @@ class TestAFunctionTheModuleImportsTheEntryDisplaces:
         """The value half covers every position the `Bool` half does, and
         the bare call besides."""
         assert set(_INT_POSITIONS) == set(_FOO_POSITIONS) | {"a bare call"}
+
+    def test_the_target_check_reads_a_tail_call(self) -> None:
+        """A call in tail position compiles to `return_call`, so the target
+        check reads it as it reads `call`; the module's own symbol and
+        `main`'s calls are not the entry's `foo` reached from elsewhere."""
+        wat = ("  (func $main (result i64)\n    call $foo$Int\n  )\n"
+               "  (func $bar (param $p0 i64) (result i64)\n"
+               "    local.get 0\n    return_call $foo$Int\n  )\n"
+               "  (func $baz (param $p0 i64) (result i64)\n"
+               "    local.get 0\n    return_call $mod$ma$foo\n  )\n")
+        assert _callers_of_the_entrys_foo(wat) == {"bar"}
 
     @pytest.mark.parametrize(
         "cell", IMPORTED_DISPLACED_CELLS, ids=lambda c: c.label)
