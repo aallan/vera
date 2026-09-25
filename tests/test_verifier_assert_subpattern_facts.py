@@ -1627,8 +1627,8 @@ def test_1403_an_untranslatable_scrutinee_is_never_more_permissive(
     Whether a `match` scrutinee happens to translate is an accident of how
     the value is produced, so it must never buy a program a better verdict.
     The grid is asserted whole first — so no cell is vacuous — and the
-    relation between the two grids is then asserted over the payload entry
-    of each:
+    relation between the two grids is then asserted, over the payload entry
+    of each (leg 1) and over every refutation the twin reports (leg 2):
 
     1. nothing that reads the payload is `verified` here but what the
        binder's own refinement establishes.  The placeholder a binder gets
@@ -1679,10 +1679,18 @@ def test_1403_an_untranslatable_scrutinee_is_never_more_permissive(
         if _payload_entry(obls) == ("verified", None)
         and not _guarded_binder(k[0])
     }
+    # Leg 2 follows every refutation the twin reports, wherever it sits in
+    # the cell's list: the twin refutes the `narrowing` bind itself, the
+    # first entry of its `store` row, not the payload's.  Keyed on the
+    # payload entry alone it followed none, and could not fail.
+    refuted_in_twin = {
+        k for k in measured
+        if any(s == "violated" for s, _ in _MATRIX_EXPECTED[k][1])
+    }
+    assert refuted_in_twin, "leg 2 has no refutation to follow"
     refutation_lost = {
-        k for k, (_ok, obls) in measured.items()
-        if (_MATRIX_EXPECTED[k][1][-1:] or [("", "")])[0][0] == "violated"
-        and _payload_entry(obls) is None
+        k for k in refuted_in_twin
+        if not any(s == "violated" for s, _ in measured[k][1])
         and not (_guarded_binder(k[0])
                  and _bind_guarded(tmp_path, k[0], k[1]))
     }

@@ -5397,10 +5397,13 @@ class ContractVerifier:
                 # which are the termination proof's premises, not the
                 # solver's.  A call-site precondition they find violated is
                 # therefore either a repeat or a check under the wrong facts,
-                # so their violations are dropped; the evaluation points were
-                # each obligated under their own.  (Their demotions are
-                # "cannot check", which no premise changes, and stay for 8b.)
+                # so their outcomes are dropped; the evaluation points were
+                # each obligated under their own (4c, the tail-call walk,
+                # 7f).  A demotion found only here is a repeat of one of
+                # those, or about an evaluation codegen never makes: it was
+                # reported as a second E532, at the measure's own call.
                 smt.drain_call_violations()
+                smt.drain_call_demotions()
                 if verified:
                     self._record_obligation(
                         decl.name, "decreases", contract, "verified",

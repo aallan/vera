@@ -4534,3 +4534,48 @@ def test_a_predicate_call_by_the_modules_own_path_is_obligated(
                            for o in v.obligations]
     ran = _run(src, "g", [-3])
     assert "Precondition violation in need_pos" in ran.trap_message, ran
+
+
+# A measure that calls a function with a `requires` is evaluated at entry
+# and at the tail call, and both are obligated there: the entry from
+# `requires(@Nat.0 < 1000)`, the tail call from the `assume` about the value
+# the untranslatable `let` binds.  The termination proof translates the
+# measure again at the recursive call, and a demotion it met there is about
+# no evaluation codegen makes; it was reported as a second E532, at the
+# measure's own call.
+_MEASURE_CALL_AFTER_AN_UNTRANSLATABLE_LET = """\
+private fn g(@Nat -> @Nat)
+  requires(@Nat.0 < 1000)
+  ensures(@Nat.result == @Nat.0)
+  effects(pure)
+{
+  @Nat.0
+}
+
+public fn f(@Nat -> @Nat)
+  requires(@Nat.0 < 1000)
+  ensures(true)
+  decreases(g(@Nat.0))
+  effects(pure)
+{
+  if @Nat.0 == 0 then {
+    0
+  } else {
+    let @Nat = apply_fn(fn(@Nat -> @Nat) effects(pure) { @Nat.0 - 1 }, @Nat.0);
+    assume(@Nat.0 < 1000);
+    f(@Nat.0)
+  }
+}
+"""
+
+
+def test_the_termination_proof_reports_no_call_of_its_own() -> None:
+    src = _MEASURE_CALL_AFTER_AN_UNTRANSLATABLE_LET
+    v = _verify(src)
+    assert [
+        (o.status, o.error_code, o.line, o.column)
+        for o in v.obligations if o.kind == "call_pre"
+    ] == [], [(o.kind, o.status, o.error_code, o.line, o.column)
+              for o in v.obligations]
+    assert v.ok, v.errors
+    assert _run(src, "f", [5]).value == 0
