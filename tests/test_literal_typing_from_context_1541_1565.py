@@ -960,6 +960,23 @@ class TestAMixedCollectionIsRefused:
     def test_other_collections_and_routes(self, body: str) -> None:
         assert "E503" in _codes(_NAT_PRELUDE + _fn(body, ret="Nat")), body
 
+    @pytest.mark.parametrize("literal", ["-3", "0 - 3"])
+    def test_an_element_read_through_nested_indexes_is_no_collection(
+            self, literal: str) -> None:
+        """Each index reads one element, so neither array level it reads
+        is a collection of the value: the 5 read from `[[L, 5]]` at
+        `[0][1]` verifies and returns 5, as on `main`.  Read at `[0]`,
+        the whole inner array is the value, and is refused."""
+        read = _NAT_PRELUDE + _fn(
+            f"let @Nat = array_reverse([[{literal}, 5]])[0][1];\n"
+            "  nat_to_int(@Nat.0)")
+        assert _codes(read) == []
+        assert _run(read, "f", [0]) == 5
+        whole = _NAT_PRELUDE + _fn(
+            f"let @Array<Nat> = array_reverse([[{literal}, 5]])[0];\n"
+            "  nat_to_int(array_length(@Array<Nat>.0))")
+        assert "E503" in _codes(whole)
+
 
 # The accepted trade-off at a scalar position (PR #1583 review): a negative
 # literal beside a non-negative one, where the call does return the

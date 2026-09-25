@@ -961,7 +961,7 @@ def contains_literal_hole(ty: Type) -> bool:
 
 def negative_literal_meets_nat(soft: Type, context: Type,
                                in_collection: bool = False,
-                               element_read: bool = False) -> bool:
+                               element_reads: int = 0) -> bool:
     """True iff *context* holds a `Nat`, or a refinement of one, at a
     position where *soft* holds a hole the literals' values fixed at `Int`
     and a `Nat` context may fill (:func:`context_may_fill`), at any depth
@@ -977,10 +977,11 @@ def negative_literal_meets_nat(soft: Type, context: Type,
     :func:`is_subtype` does not answer.
 
     *in_collection* is whether the position lies within a collection's
-    element type (:func:`context_may_fill`).  *element_read* is whether
-    *context* is the array an index reads one element of: that array's
-    own level is then no collection, since the read returns one element,
-    not all of them."""
+    element type (:func:`context_may_fill`).  *element_reads* counts the
+    indexes that read one element out of *context*, outermost first: each
+    array level they read is no collection of the value, since a read
+    returns one element, not all of them (`xs[0][1]` reads two levels,
+    `xs[0]` one)."""
     while isinstance(context, RefinedType):
         context = context.base
     if is_literal_hole(soft):
@@ -992,8 +993,9 @@ def negative_literal_meets_nat(soft: Type, context: Type,
             and soft.name == context.name
             and len(soft.type_args) == len(context.type_args)):
         within = in_collection or (
-            soft.name in COLLECTION_TYPES and not element_read)
-        return any(negative_literal_meets_nat(h, c, within)
+            soft.name in COLLECTION_TYPES and element_reads == 0)
+        return any(negative_literal_meets_nat(
+                       h, c, within, max(element_reads - 1, 0))
                    for h, c in zip(soft.type_args, context.type_args))
     return False
 
