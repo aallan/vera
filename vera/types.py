@@ -942,32 +942,27 @@ def contains_literal_hole(ty: Type) -> bool:
     return False
 
 
-def literal_narrows_to_nat(ty: Type, soft: Type, context: Type) -> bool:
+def negative_literal_meets_nat(soft: Type, context: Type) -> bool:
     """True iff *context* holds a `Nat`, or a refinement of one, at a
-    position where *ty* holds an `Int` that a literal decided — *soft*, the
-    same type with each literal-decided position a hole, holds a hole there
-    — at any depth of a composite (#1541, PR #1583 review).  A literal
-    placed there is a narrowing, which only checking it against *context*
-    puts on the record.
+    position where *soft* holds a :data:`NEGATIVE_LITERAL_HOLE`, at any
+    depth of a composite (#1541, PR #1583 review).
 
-    The checker admits `Int` where `Nat` is expected and leaves the
-    non-negativity to the verifier, so this is the question
-    :func:`is_subtype` does not answer."""
-    while isinstance(ty, RefinedType):
-        ty = ty.base
+    *soft* is a generic call's result with each position its literals
+    decided a hole (``ResolutionMixin._literal_soft_type``).  A negative
+    hole is a position the literals' values fixed at `Int`; placed where
+    *context* holds a `Nat`, the literal is a narrowing, which only checking
+    the call against *context* puts on the record.  The checker admits
+    `Int` where `Nat` is expected and leaves the non-negativity to the
+    verifier, so this is the question :func:`is_subtype` does not answer."""
     while isinstance(context, RefinedType):
         context = context.base
-    if is_literal_hole(soft):
-        return (isinstance(ty, PrimitiveType) and ty.name == "Int"
-                and isinstance(context, PrimitiveType)
-                and context.name == "Nat")
-    if (isinstance(ty, AdtType) and isinstance(context, AdtType)
-            and isinstance(soft, AdtType)
-            and ty.name == context.name == soft.name
-            and len(ty.type_args) == len(context.type_args)
-            == len(soft.type_args)):
-        return any(literal_narrows_to_nat(a, h, c) for a, h, c in zip(
-            ty.type_args, soft.type_args, context.type_args))
+    if isinstance(soft, TypeVar) and soft.name == NEGATIVE_LITERAL_HOLE.name:
+        return isinstance(context, PrimitiveType) and context.name == "Nat"
+    if (isinstance(soft, AdtType) and isinstance(context, AdtType)
+            and soft.name == context.name
+            and len(soft.type_args) == len(context.type_args)):
+        return any(negative_literal_meets_nat(h, c)
+                   for h, c in zip(soft.type_args, context.type_args))
     return False
 
 

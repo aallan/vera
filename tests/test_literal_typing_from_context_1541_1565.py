@@ -607,6 +607,127 @@ class TestNatContextMatrix:
             assert _run(source, "f", [0]) == value, name
 
 
+# The routes a `Nat` context reaches a generic call by (PR #1583 review):
+# the context is a destructure's bindings (the call's result, or a field of
+# a tuple built at the destructure), a declared `let`, or a `@Nat`
+# parameter; the call is written plainly, nested, as a pipe, as a pipe
+# inside a call, or as an element read out of an array it returns; and
+# between the two sit `if`, `match` and block tails, one or two deep.
+# Every combination is generated: a non-negative literal runs, a negative
+# one is refused (E503) whatever the route.
+_ROUTE_CONSUMERS = {
+    # name -> (the literal's carrier, a non-negative default of the same
+    # type, the body over the routed expression E)
+    "destructure": ("Tuple(1, {L})", "Tuple(1, 2)",
+                    "let Tuple<@Nat, @Nat> = {E};\n  nat_to_int(@Nat.0)"),
+    "field": ("{L}", "1",
+              "let Tuple<@Nat, @Nat> = Tuple(1, {E});\n  nat_to_int(@Nat.0)"),
+    "tuple_let": ("{L}", "1",
+                  "let @Tuple<Nat, Nat> = Tuple(1, {E});\n"
+                  "  match @Tuple<Nat, Nat>.0 { Tuple(@Nat, @Nat) -> "
+                  "nat_to_int(@Nat.0) }"),
+    "array_let": ("{L}", "1",
+                  "let @Array<Nat> = [{E}];\n"
+                  "  nat_to_int(@Array<Nat>.0[0])"),
+    "let": ("{L}", "1", "let @Nat = {E};\n  nat_to_int(@Nat.0)"),
+    "argument": ("{L}", "1", "nat_to_int(nat_of({E}))"),
+}
+
+_ROUTE_CALLS = {
+    "call": "id({X})",
+    "nested": "id(id({X}))",
+    "pipe": "({X}) |> id()",
+    "piped_arg": "id(({X}) |> id())",
+    "index": "array_reverse([{X}])[0]",
+}
+
+_ROUTE_TAILS = {
+    "if": "if @Int.0 == 1000 then {{ {D} }} else {{ {C} }}",
+    "match": "match @Int.0 {{ 1000 -> {D}, _ -> {C} }}",
+    "block": "{{ {C} }}",
+}
+
+
+def _route_tails() -> list[tuple[str, ...]]:
+    """No tail, each tail, and each ordered pair of tails."""
+    return ([()] + [(t,) for t in sorted(_ROUTE_TAILS)]
+            + [(a, b) for a in sorted(_ROUTE_TAILS)
+               for b in sorted(_ROUTE_TAILS)])
+
+
+def _route_expr(consumer: str, call: str, tails: tuple[str, ...],
+                literal: str) -> str:
+    carrier, default, _body = _ROUTE_CONSUMERS[consumer]
+    expr = _ROUTE_CALLS[call].format(X=carrier.replace("{L}", literal))
+    for tail in tails:
+        expr = _ROUTE_TAILS[tail].format(D=default, C=expr)
+    return expr
+
+
+def _route_cells() -> list[tuple[str, str, int]]:
+    shapes = sorted(_SHAPES.items())
+    negative = [s for s in shapes if s[1][1] < 0]
+    non_negative = [s for s in shapes if s[1][1] >= 0]
+    cells = []
+    n = 0
+    for consumer in sorted(_ROUTE_CONSUMERS):
+        for call in sorted(_ROUTE_CALLS):
+            for tails in _route_tails():
+                if len(tails) < 2:
+                    chosen = shapes
+                else:
+                    # A pair of tails is crossed with one negative and one
+                    # non-negative shape, rotating through both lists.
+                    chosen = [negative[n % len(negative)],
+                              non_negative[n % len(non_negative)]]
+                    n += 1
+                for shape, (literal, value) in chosen:
+                    body = _ROUTE_CONSUMERS[consumer][2].replace(
+                        "{E}", _route_expr(consumer, call, tails, literal))
+                    route = "+".join(tails) or "direct"
+                    cells.append((f"{shape}-{consumer}-{call}-{route}",
+                                  _NAT_PRELUDE + _fn(body), value))
+    return cells
+
+
+_ROUTE_CELLS = _route_cells()
+
+
+class TestNatContextThroughEveryRoute:
+    def test_the_matrix_generates_every_route(self) -> None:
+        names = [n.split("-") for n, _s, _v in _ROUTE_CELLS]
+        assert {(c, k, r) for _s, c, k, r in names} == {
+            (c, k, "+".join(t) or "direct")
+            for c in _ROUTE_CONSUMERS for k in _ROUTE_CALLS
+            for t in _route_tails()}
+        assert {s for s, _c, _k, _r in names} == set(_SHAPES)
+        # Both directions at every route.
+        for c in _ROUTE_CONSUMERS:
+            for k in _ROUTE_CALLS:
+                for t in _route_tails():
+                    route = "+".join(t) or "direct"
+                    values = {v for n, _s, v in _ROUTE_CELLS
+                              if n.split("-")[1:] == [c, k, route]}
+                    assert min(values) < 0 <= max(values), (c, k, route)
+
+    @pytest.mark.parametrize(
+        ("name", "source", "value"), _ROUTE_CELLS,
+        ids=[c[0] for c in _ROUTE_CELLS])
+    def test_context_decides(self, name: str, source: str,
+                             value: int) -> None:
+        if value < 0:
+            assert "E503" in _codes(source), name
+            return
+        assert _codes(source) == [], name
+        _shape, consumer, call, route = name.split("-")
+        if (consumer in ("field", "tuple_let") and call == "pipe"
+                and set(route.split("+")) <= {"direct", "block"}):
+            # A pipe as a tuple's component, bare or as a block's result,
+            # is dropped at compile on every revision (#1599).
+            return
+        assert _run(source, "f", [0]) == value, name
+
+
 # A literal cannot have the enclosing function's rigid type parameter:
 # inside `forall<T>` a `T` is opaque.  A literal's hole must not be
 # overwritten by `T` whichever argument comes first (PR #1583 review) —

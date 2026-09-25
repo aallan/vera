@@ -1532,7 +1532,7 @@ class CallsMixin:
         """Type-check a constructor call: Ctor(args)."""
         # Tuple is a variadic built-in constructor — handle specially
         if expr.name == "Tuple":
-            return self._check_tuple_constructor(expr)
+            return self._check_tuple_constructor(expr, expected=expected)
 
         ci = self.env.lookup_constructor(expr.name)
         if ci is None and expr.name in self._refused_ctor_names:
@@ -1925,9 +1925,17 @@ class CallsMixin:
                 self._record_nested_ctor_targets(arg, recorded)
 
     def _check_tuple_constructor(
-        self, expr: ast.ConstructorCall
+        self, expr: ast.ConstructorCall, *,
+        expected: Type | None = None,
     ) -> Type | None:
-        """Type-check a variadic Tuple constructor: Tuple(a, b, ...)."""
+        """Type-check a variadic Tuple constructor: Tuple(a, b, ...).
+
+        A component is synthesized with no expected type; where *expected*
+        is a tuple whose component is a `Nat` and a generic call in the
+        component let a negative literal fix an `Int` there, the component
+        is checked against it (``_check_in_literal_context``; PR #1583
+        review), so `let @Tuple<Nat, Nat> = Tuple(1, id(0 - 3))` is refused
+        (E503) as `let @Nat = id(0 - 3)` is."""
         if not expr.args:
             self._error(
                 expr,
@@ -1941,9 +1949,16 @@ class CallsMixin:
                 error_code="E216",
             )
             return UnknownType()
+        components: tuple[Type, ...] | None = None
+        base = base_type(expected) if expected is not None else None
+        if (isinstance(base, AdtType) and base.name == "Tuple"
+                and len(base.type_args) == len(expr.args)):
+            components = base.type_args
         arg_types: list[Type] = []
-        for arg in expr.args:
+        for i, arg in enumerate(expr.args):
             t = self._synth_expr(arg)
+            if components is not None:
+                t = self._check_in_literal_context(arg, t, components[i])
             if t is not None and not isinstance(t, UnknownType):
                 arg_types.append(t)
             else:

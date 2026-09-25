@@ -86,7 +86,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `  resolution.py` | 1,069 | | AST TypeExpr → semantic Type, inference; the E136 / E338 refusal of a type or effect-row name nothing in scope declares (#1489), with forward references to later declarations kept legal and an instruction that names the cause | |
 | `  modules.py` | 707 | | Cross-module registration (C7b/C7c) — each module registered ONCE per run, in its own namespace with its imports' data types, and its export tables read off that registration once (#1489, #1275) — plus the per-module body check that makes a module's diagnostics independent of which file `vera check` was given (#1244) and the #1304 refusal of a bare function, data-type or constructor name two imports both supply (E155/E156/E157) | |
 | `  registration.py` | 1,623 | | Pass 1 forward declarations, ability registration | |
-| `  expressions.py` | 1,637 | | Expression synthesis (bidirectional), operators, statements | |
+| `  expressions.py` | 1,823 | | Expression synthesis (bidirectional), operators, statements | |
 | `  eq_ability.py` | 226 | | Eq ability derivation checks | |
 | `  sql.py` | 309 | | SQL literal-provenance resolution + placeholder counting (#309) | `resolve_literal_string()`, `count_placeholders()` |
 | `  calls.py` | 2,262 | | Function/constructor/module/ability calls | |

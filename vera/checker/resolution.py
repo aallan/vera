@@ -784,7 +784,7 @@ class ResolutionMixin:
         `match` or block whose every result is one, an array literal's
         element whose every element is one, a tuple or constructor field,
         an index into such an array, and a generic call's result where its
-        own literals decided the instantiation.  Anything a declaration
+        own literals decided the instantiation, written out or as a pipe.  Anything a declaration
         typed — a slot, a closure's parameters, a non-generic call — is
         left as synthesized.
         """
@@ -801,6 +801,11 @@ class ResolutionMixin:
                 return LITERAL_HOLE
         if isinstance(expr, ast.Block):
             return self._literal_soft_type(expr.expr, ty)
+        if (isinstance(expr, ast.BinaryExpr) and expr.op == ast.BinOp.PIPE
+                and isinstance(expr.right, (ast.FnCall, ast.ModuleCall))):
+            # A pipe is the call it desugars to, whose result is recorded
+            # under the call written on its right (PR #1583 review).
+            return self._literal_soft_type(expr.right, ty)
         if isinstance(expr, ast.IfExpr):
             return _meet_literal_holes(
                 (self._literal_soft_type(expr.then_branch, ty),
