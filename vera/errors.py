@@ -1038,7 +1038,7 @@ ERROR_CODES: dict[str, str] = {
     "E526": "Division or modulo by zero",
     "E527": "Array index out of bounds",
     "E528": "Arithmetic overflow",
-    "E529": "float_to_int domain (NaN, infinity, or out of i64 range)",
+    "E529": "Float-to-integer truncation domain (NaN, infinity, or out of i64 range)",
     "E530": "Nat-to-Int widening out of i64 range",
     "E531": "Nat-to-Int widening unverified and not runtime-guarded",
     "E532": "Cannot verify call-site precondition (undecidable)",

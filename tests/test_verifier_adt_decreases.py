@@ -361,7 +361,7 @@ private fn sum(@List<Int> -> @Int)
         assert result.summary.tier1_verified == 8
 
     def test_overall_tier_counts(self) -> None:
-        """All examples together: 417 T1 / 127 T3 / 544 total (current).
+        """All examples together: 424 T1 / 138 T3 / 562 total (current).
 
         Counts move when examples are added or their contracts become
         more / less verifiable.  Trajectory:
@@ -733,15 +733,36 @@ private fn sum(@List<Int> -> @Int)
         # type is no longer read as an outer one.  `json.vera`'s
         # `sum_hourly`, whose recursive call reads such a `@Float64`, now
         # proves its measure: +1 T1, -1 T3: 416/132/548 -> 417/131/548.
+        #
+        # #1480: a built-in whose compiled translation traps now carries its
+        # domain at every call.  `string_ops.vera`'s `string_char_code("A",
+        # 0)` and `float_to_string(3.14)` prove (+2 T1); `ephemeris.vera`'s
+        # nine `floor` / `round` sites and one `float_to_string`, and
+        # `maximum_syntax.vera`'s one `float_to_string`, all over a computed
+        # float, are left to the truncation trap (+11 T3): 417/131/548 ->
+        # 419/142/561.  A `let` whose value does not translate binds an
+        # unknown value of an ARRAY's own sort too, so `life.vera`'s
+        # `@Array<Bool>.0[@Nat.0]` is proved from the bounds guard written
+        # over that same `let` (one T3 -> T1): 420/141/561.  A measure's
+        # operations are obligated where the compiled function evaluates
+        # them, on entry and at a self-recursive tail call: the `@Nat`
+        # subtraction in `fizzbuzz.vera`'s and `life.vera`'s count-up
+        # measures proves at both, under each loop's `requires` (+4 T1):
+        # 424/141/565.  And a call only the obligation walk reaches is
+        # obligated: `life.vera`'s `run_loop(@Array<Array<Bool>>.0, 1, 300)`
+        # follows a `let` of a nested array the translation cannot bind, so
+        # its argument does not translate and the precondition is left to
+        # `run_loop`'s entry check (+1 T3): 424/142/566.
+        #
         # #1541: a generic call whose literal arguments meet an `@Int`
         # context is instantiated at `Int`, so its result is no longer a
         # `@Nat` widened into an `@Int` slot, and the four
         # `nat_to_int_coerce` obligations that widening raised are gone
         # (`array_utilities.vera` 2, `generics.vera` 1,
-        # `nested_closures.vera` 1): -4 T3: 417/131/548 -> 417/127/544.
-        assert t1 == 417, f"Expected 417 T1, got {t1}"
-        assert t3 == 127, f"Expected 127 T3, got {t3}"
-        assert total == 544, f"Expected 544 total, got {total}"
+        # `nested_closures.vera` 1): -4 T3: 424/142/566 -> 424/138/562.
+        assert t1 == 424, f"Expected 424 T1, got {t1}"
+        assert t3 == 138, f"Expected 138 T3, got {t3}"
+        assert total == 562, f"Expected 562 total, got {total}"
         # Zero is the load-bearing value, not a vacuous one: every corpus
         # narrowing is now covered by an emitted guard, so any reappearance
         # is a REGRESSION in guard coverage rather than a new example.  The

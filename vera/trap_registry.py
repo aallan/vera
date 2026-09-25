@@ -462,7 +462,7 @@ TRAP_EMITTERS: dict[str, TrapEmitter] = _emitters(
     TrapEmitter(
         "wasm/calls_strings.py:_translate_char_code",
         "string_index_out_of_bounds",
-        ("index_bounds",), "signal", "the `string_char_code(...)` call",
+        ("call_pre",), "signal", "the `string_char_code(...)` call",
     ),
     # --- Float64 -> Int -------------------------------------------------
     TrapEmitter(

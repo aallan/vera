@@ -91,6 +91,8 @@ public fn safe_divide(@Int, @Int -> @Int)
 
 Multiple `requires` clauses are equivalent to a single `requires` with `&&`. They are provided as separate clauses for readability and for more precise error reporting (the compiler can indicate which specific precondition was violated).
 
+The equivalence rests on §4.6's short-circuit `&&`.  The reference compiler currently evaluates both operands of `&&` ([#1501](https://github.com/aallan/vera/issues/1501)), so until that is fixed a precondition whose later conjunct relies on an earlier one is written as separate clauses: the compiled check evaluates the clauses in order and stops at the first that fails, and the verifier checks each clause under the ones before it.  With `need_pos` requiring a positive argument, `requires(@Int.0 >= 1) requires(need_pos(@Int.0) > 0)` verifies, while `requires(@Int.0 >= 1 && need_pos(@Int.0) > 0)` evaluates `need_pos(0)` on `0`, which traps, and is refused `E501`.
+
 ## 5.3 Parameter Binding Order
 
 Parameters are bound left-to-right, with the leftmost parameter having the highest De Bruijn index and the rightmost parameter having index 0:
@@ -171,6 +173,8 @@ The `decreases` clause specifies an expression that must strictly decrease (in a
 1. The `decreases` expression is evaluated at function entry.
 2. At each recursive call site, the compiler verifies that the `decreases` expression (with the recursive call's arguments substituted) is strictly less than the value at function entry.
 3. The expression MUST have a type with a well-founded ordering: `Nat`, `Int` (floored at zero — the runtime check rejects a step whose new value is negative), an algebraic data type (ordered by the structural size of its concrete constructors), or a lexicographic tuple of these. A measure of any other type — `Float64` (no well-founded ordering the runtime can check: values are dense below any floor, and `NaN` and the infinities do not participate in the order at all — a float measure never reaches the runtime check, because `E127` rejects it statically), `String`, `Bool`, a function type — is rejected at check time with `E127`.
+
+**The measure's own operations.** The measure is an expression the compiled function evaluates, so each operation in it carries the obligation it would carry in a body (§6.4.3), discharged where the compiled code evaluates it. On entry the measure is evaluated after the refined parameters and every `requires` are checked, so those are its premises. A self-recursive tail call evaluates it on the call's arguments before the call is made (the site check described under *Runtime checking* below), so there the premises are the call site's — the caller's facts and the path to the call — with the arguments substituted, and never the callee's `requires`, which is checked only afterwards; an obligation from that evaluation is reported at the call. A non-tail recursive call evaluates nothing at the call: the callee evaluates the measure on its own entry, after its own `requires`. So the count-up measure `decreases(@Nat.1 - @Nat.0 + 1)` underflows (`E502`) wherever `@Nat.0` can exceed `@Nat.1`, as it does on a count-up loop's last call, where `@Nat.0` is `@Nat.1 + 1`. The loop is written `decreases(@Nat.1 + 1 - @Nat.0)` with `requires(@Nat.0 <= @Nat.1 + 1)`, the invariant each call re-establishes, or with a measure that counts down without a subtraction.
 
 Lexicographic decrease:
 

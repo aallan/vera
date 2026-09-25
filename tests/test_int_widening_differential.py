@@ -261,12 +261,15 @@ public fn f(@Nat -> @Int) requires(true) ensures(true) effects(pure)
     # routes u64.MAX to the terminal `_` arm (a distinct codegen guard site), so
     # the non-terminal conditional-arm widen guard is otherwise untested —
     # neutering it lets the middle @Nat arm silently reinterpret to -1.  A local
-    # `let @Int = 1` scrutinee routes to the middle `1 -> @Nat.0` arm (the arg
+    # `let @Int` of 1 routes to the middle `1 -> @Nat.0` arm (the arg
     # value can't double as the scrutinee — u64.MAX would fall to `_`); the
     # `0 -> @Int.0` arm makes the join genuinely @Int (hetero, guarded per-arm).
+    # The 1 comes through a closure the verifier cannot read: from a literal
+    # `let @Int = 1` it reads that the `1` arm always matches (#1576), so the
+    # terminal `_` arm never runs and its widening is vacuously verified.
     ("hetero_match_middle_arm", """
 public fn f(@Nat -> @Int) requires(true) ensures(true) effects(pure)
-{ let @Int = 1; match @Int.0 { 0 -> @Int.0, 1 -> @Nat.0, _ -> @Nat.0 } }
+{ let @Int = apply_fn(fn(@Int -> @Int) effects(pure) { @Int.0 }, 1); match @Int.0 { 0 -> @Int.0, 1 -> @Nat.0, _ -> @Nat.0 } }
 """, "f"),
     # #820 per-arm guard POSITION — the @Nat arm in the ELSE branch of a hetero
     # if.  The committed hetero_if_slot always puts the @Nat arm in THEN (a

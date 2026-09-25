@@ -235,6 +235,9 @@ NOT_NAMESPACES: dict[str, str] = {
     "TypeChecker._literal_soft_results": (
         "keyed by a call's source span, the parts of its result its literals "
         "decided (#1541)"),
+    "TypeChecker._pattern_arg_targets": (
+        "keyed by an argument's source span, the composite type a pattern "
+        "binds it at, which is its construction's context (#1503)"),
     "TypeChecker._builtin_data_types": (
         "the built-in data types the environment starts with, kept by "
         "identity to tell them from a same-named declaration or import "
