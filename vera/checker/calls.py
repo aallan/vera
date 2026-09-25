@@ -1328,13 +1328,24 @@ class CallsMixin:
         A value of such a type reaches the file through an imported
         signature (`pick(1)` returning `mb`'s `Colour`), typed by the bare
         name.  The name denotes one declaration only when no data type of
-        that name is in scope here — declared or imported — and exactly one
-        module this file can see declares a type of that name, public or
-        private: two would give one bare name two types.  The pattern rules
+        that name is declared or imported here — the prelude's own does not
+        count (#1559) — and exactly one module this file can see declares a
+        type of that name, public or private: two would give one bare name
+        two types.  The pattern rules
         read it for such a value: which constructors a match on it must
         cover, and which ones can match it at all.
         """
-        if type_name in self.env.data_types:
+        # A type the file declares or imports bars it; the prelude's own
+        # type of the name does not (#1559).  Every file holds `Json`,
+        # `Request` and the prelude's other types, so counting them refused
+        # every constructor of a module's type named like one: `mk(1)`,
+        # returning `a`'s `Json`, was accepted while `MyK(1)`, building the
+        # same value, was an error.  Such a value meets the prelude's type
+        # by the bare name in this file whichever way it arrives (#1560), so
+        # barring the construction guarded nothing.
+        bound = self.env.data_types.get(type_name)
+        if (bound is not None
+                and bound is not self._builtin_data_types.get(type_name)):
             return None
         declared = [
             types[type_name]
@@ -1813,11 +1824,11 @@ class CallsMixin:
         """Type-check a module-qualified call: path.to.fn(args).
 
         Lookup order:
-        1. Module not resolved → warning (same as C7a).
+        1. Module not resolved → the file's own path (#1558) or an error.
         2. Name not in selective import list → error.
         2.5. C7c: function is private → error.
         3. Function found (public) → delegate to ``_check_fn_call_with_info``.
-        4. Function not found in module → warning with available list.
+        4. Function not found in module → error with available list.
         """
         mod_path = tuple(expr.path)
         fn_name = expr.name
@@ -1825,21 +1836,22 @@ class CallsMixin:
 
         # 1. Module not resolved
         if mod_path not in self._resolved_module_paths:
+            if mod_path == self._own_module_path:
+                return self._check_own_module_call(expr)
             self._error(
                 expr,
                 f"Module '{mod_label}' not found. "
                 f"Cannot resolve call to '{fn_name}'.",
                 rationale=(
                     "No module matching this path is imported by this file, "
-                    "so the call names no function and the program cannot "
-                    "compile.  A module reached only through another "
+                    "and the path does not name the file itself: a file's "
+                    "own path is the one its 'module' declaration gives, "
+                    "and only where the program reaches the file by that "
+                    "path.  So the call names no function and the program "
+                    "cannot compile.  A module reached only through another "
                     "module's imports is not visible here."
                 ),
-                fix=(
-                    f"Add 'import {mod_label};' and create the file "
-                    f"'{mod_label.replace('.', '/')}.vera' relative to the "
-                    f"importing file or project root."
-                ),
+                fix=self._unresolved_module_fix(mod_path, fn_name),
                 spec_ref='Chapter 8, Section 8.6.5 "Resolution Errors"',
                 error_code="E230",
             )
@@ -1923,3 +1935,89 @@ class CallsMixin:
         for arg in expr.args:
             self._synth_expr(arg)
         return UnknownType()
+
+    def _check_own_module_call(self, expr: ast.ModuleCall) -> Type | None:
+        """A module-qualified call to the file's OWN path (#1558).
+
+        `ma::two(3)` inside `module ma;` calls the file's own top-level
+        `two`: the path names the module (§8.5.3), and this module is the
+        one the path names.  Its private functions are reachable too, since
+        the call is inside the module that declares them (§8.4.1).  It is
+        checked as the bare call to that top-level function is, with one
+        difference that is the point of writing it: a `where` helper of the
+        same name does not shadow it, as nothing local shadows a
+        module-qualified call — so it reads the top-level table, never the
+        lexical helper chain a bare call reads first.
+        """
+        fn_name = expr.name
+        fn_info = self._top_level_fn_infos.get(fn_name)
+        if fn_info is not None:
+            return self._check_fn_call_with_info(fn_info, expr.args, expr)
+        if fn_name in self._own_fn_names:
+            # A declaration registration refused (E151, E153): its own error
+            # is the one the program owes, and this use restates it.
+            for arg in expr.args:
+                self._synth_expr(arg)
+            return UnknownType()
+        mod_label = ".".join(expr.path)
+        declared = sorted(self._top_level_fn_infos)
+        # This file's own helpers only: the index spans every module the
+        # file resolves, and another module's helper is no function of this
+        # one either way.
+        helper_of = sorted(
+            parent for parent in self._where_helper_parents.get(fn_name, set())
+            if " in module " not in parent)
+        if helper_of:
+            fix = (f"'{fn_name}' is a 'where' helper of {', '.join(helper_of)}, "
+                   f"local to the function that declares it: call it by its "
+                   f"bare name from inside that function, or lift it to a "
+                   f"top-level function of module '{mod_label}'.")
+        else:
+            fix = (f"Define 'fn {fn_name}(...)' at the top level of this "
+                   f"file, or correct the name to one it declares"
+                   + (f" (e.g. {declared[0]})." if declared else "."))
+        self._error(
+            expr,
+            f"Function '{fn_name}' not found in module '{mod_label}', which "
+            f"is this file."
+            + (f" Its functions: {declared}." if declared else ""),
+            rationale="A module-qualified call to the path this file's "
+                      "'module' declaration gives names one of the file's "
+                      "own top-level functions; the file declares none by "
+                      "this name, so the program cannot compile.",
+            fix=fix,
+            spec_ref='Chapter 8, Section 8.5.3 "Module-Qualified Calls"',
+            error_code="E233",
+        )
+        for arg in expr.args:
+            self._synth_expr(arg)
+        return UnknownType()
+
+    def _unresolved_module_fix(
+        self, mod_path: tuple[str, ...], fn_name: str,
+    ) -> str:
+        """E230's fix: import the module — unless the path is this file's.
+
+        A file imported as `ma` that declares no path, or declares another,
+        has no path of its own (#1558), and adding `import ma;` inside it
+        would import the file into itself.  The remedy there is the
+        declaration.
+        """
+        label = ".".join(mod_path)
+        resolved = self._resolved_as
+        if resolved is not None and mod_path in (
+                resolved, self._declared_module_path):
+            here = ".".join(resolved)
+            if self._declared_module_path is None:
+                declares = "declares no module path"
+            else:
+                declares = ("declares 'module "
+                            f"{'.'.join(self._declared_module_path)};'")
+            return (f"This file is imported as '{here}' but {declares}, so "
+                    f"no path names it.  Declare 'module {here};' at the "
+                    f"top of the file and call its own function as "
+                    f"'{here}::{fn_name}(...)', or call it by its bare name, "
+                    f"'{fn_name}(...)'.")
+        return (f"Add 'import {label};' and create the file "
+                f"'{label.replace('.', '/')}.vera' relative to the importing "
+                f"file or project root.")

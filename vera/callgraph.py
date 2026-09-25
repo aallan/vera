@@ -25,10 +25,18 @@ declaration contributes the calls in its refinement predicates, because the
 compiled program evaluates them as guards: an alias through its definition,
 and a constructor call through its field types.
 
+A module-qualified call by the program's OWN path (``ma::f(...)`` inside
+``module ma;``, spec §8.5.3, #1558) is an edge too, to the top-level
+function it names — never to a ``where`` helper, which a qualified call does
+not reach.  It is the bare call's twin, so leaving it out let a function
+recurse through it with no measure.  The graph is told that path
+(*own_path*); :func:`vera.resolver.own_module_path` derives it.
+
 **Not edges**: a call through a function value (``apply_fn``), whose callee
-is a value no declaration names; a module-qualified call, because the module
-graph is acyclic (E011); built-ins, and effect and ability operations.  Spec
-§5.6 states the first as the recursion this analysis cannot see.
+is a value no declaration names; a module-qualified call into ANOTHER module,
+because the module graph is acyclic (E011); built-ins, and effect and ability
+operations.  Spec §5.6 states the first as the recursion this analysis cannot
+see.
 
 **Not read**: what the checker refused or does not check (#1433, #815).  A
 refused declaration is no node and no call target, and adds no call: the
@@ -69,7 +77,7 @@ class CallSite:
 
     caller: ast.FnDecl
     callee: ast.FnDecl
-    call: ast.FnCall
+    call: ast.FnCall | ast.ModuleCall
     spec: bool
 
 
@@ -78,8 +86,11 @@ def iter_calls(
     spec: bool = False,
     expand: Callable[[ast.Node], object] | None = None,
     skip: Container[int] = frozenset(),
-) -> Iterator[tuple[ast.FnCall, bool]]:
-    """Every bare call under *root*, with whether it is a specification call.
+    own_path: tuple[str, ...] | None = None,
+) -> Iterator[tuple[ast.FnCall | ast.ModuleCall, bool]]:
+    """Every bare call under *root*, with whether it is a specification call
+    — and every module-qualified call by *own_path*, the program's own path,
+    which names one of its top-level functions as a bare call does (#1558).
 
     THE enumeration of where a call can be written.  It is a generic walk
     over every dataclass field, not a dispatch on expression kinds, so a node
@@ -113,6 +124,9 @@ def iter_calls(
             continue
         if isinstance(node, ast.FnCall):
             yield node, in_spec
+        elif (own_path is not None and isinstance(node, ast.ModuleCall)
+                and tuple(node.path) == own_path):
+            yield node, in_spec
         elif isinstance(node, (ast.Contract, ast.RefinementType)):
             in_spec = True
         expansion = expand(node) if expand is not None else None
@@ -124,16 +138,19 @@ def iter_calls(
             stack.append((expansion, True))
 
 
-def computation_calls(root: object) -> list[ast.FnCall]:
+def computation_calls(
+    root: object, own_path: tuple[str, ...] | None = None,
+) -> list[ast.FnCall | ast.ModuleCall]:
     """The calls under *root* that run as computation, in source order.
 
     Those the graph's body edges are drawn from: every call outside a
-    contract and a refinement predicate.  The verifier checks its measure
-    walk against this list (#1524 review), because a call that walk does not
-    reach would otherwise be left out of a termination proof while the
-    runtime guard still meets it.
+    contract and a refinement predicate, the calls by *own_path* among them.
+    The verifier checks its measure walk against this list (#1524 review),
+    because a call that walk does not reach would otherwise be left out of a
+    termination proof while the runtime guard still meets it.
     """
-    return [call for call, spec in iter_calls(root) if not spec]
+    return [call for call, spec in iter_calls(root, own_path=own_path)
+            if not spec]
 
 
 def declares_diverge(decl: ast.FnDecl) -> bool:
@@ -168,6 +185,10 @@ class CallGraph:
     holds its name, so it is a node and a call target, but nothing written
     in it is read.  The verifier passes neither: it reads only a program
     that type-checked, where both are empty.
+
+    *own_path* is the path that names the program's own file in a
+    module-qualified call, or ``None`` where it has none (#1558): a call by
+    it is an edge to the top-level function it names.
     """
 
     def __init__(
@@ -175,9 +196,11 @@ class CallGraph:
         declarations: Iterable[ast.Decl],
         refused: Container[int] = frozenset(),
         unchecked: Container[int] = frozenset(),
+        own_path: tuple[str, ...] | None = None,
     ) -> None:
         self._refused = refused
         self._unchecked = unchecked
+        self._own_path = own_path
         decls = [d for d in declarations if id(d) not in refused]
         self._top: dict[str, ast.FnDecl] = {}
         self._aliases: dict[str, ast.TypeExpr] = {}
@@ -274,8 +297,13 @@ class CallGraph:
                     return self._ctor_fields[node.name]
             return None
 
-        for call, in_spec in iter_calls(root, spec, expand, self._refused):
-            callee = self._resolve(call.name, frames)
+        for call, in_spec in iter_calls(root, spec, expand, self._refused,
+                                        self._own_path):
+            # A call by the own path names a TOP-LEVEL function: no helper
+            # shadows a module-qualified call (§8.5.3).
+            callee = (self._top.get(call.name)
+                      if isinstance(call, ast.ModuleCall)
+                      else self._resolve(call.name, frames))
             if callee is not None:
                 self.sites.append(CallSite(caller, callee, call, in_spec))
 

@@ -638,19 +638,27 @@ def cli_constructible(type_expr: Any, aliases: dict[str, Any], depth: int = 0) -
 
 def _reached(fn: Any, program: Any) -> list[Any]:
     """*fn* and every top-level function of the block it reaches through
-    plain calls: what running *fn* can do."""
+    its calls: what running *fn* can do.
+
+    A call by the block's own path (`ma::f(...)` inside `module ma;`) reaches
+    its own `f`, as the bare call does (#1558).  The gate resolves no modules
+    for this, so the path is derived over none: the one case it reads wrong
+    is a block that also resolves a module of its own declared path, where
+    the path names that module instead."""
     from vera import ast
     from vera.obligations.cache import direct_callee_names
+    from vera.resolver import own_module_path
 
     top = {
         t.decl.name: t.decl
         for t in program.declarations
         if isinstance(t.decl, ast.FnDecl)
     }
+    own_path = own_module_path(program, None, ())
     seen: dict[str, Any] = {fn.name: fn}
     stack = [fn]
     while stack:
-        for name in direct_callee_names(stack.pop()):
+        for name in direct_callee_names(stack.pop(), own_path=own_path):
             if name in top and name not in seen:
                 seen[name] = top[name]
                 stack.append(top[name])

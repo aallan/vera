@@ -16,7 +16,11 @@ from vera.errors import Diagnostic
 from vera.module_view import imported_data_types, modules_visible_to
 from vera.monomorphize import namespace_adt_names, namespace_fn_names
 from vera.registration import where_helper_parents
-from vera.resolver import ResolvedModule, merged_import_filters
+from vera.resolver import (
+    ResolvedModule,
+    merged_import_filters,
+    own_module_path,
+)
 
 if TYPE_CHECKING:
     from vera.checker.core import TypeChecker
@@ -54,7 +58,7 @@ class ModuleRegistration:
 
 def _module_exports(
     temp: TypeChecker, program: ast.Program,
-    builtin_fns: set[str], builtin_types: set[str], builtin_ctors: set[str],
+    builtin_fns: set[str], builtin_ctors: set[str],
 ) -> ModuleRegistration:
     """Read a module's registration *temp* into its :class:`ModuleRegistration`.
 
@@ -71,9 +75,17 @@ def _module_exports(
         k: v for k, v in temp.env.functions.items()
         if k not in builtin_fns or v.span is not None
     }
+    # What the module DECLARES, whatever the name (#1559).  Filtering by name
+    # dropped a module's own `data Json` along with the built-in one it
+    # replaces in `temp`, so its constructors never reached an importer:
+    # `import a(Json)` admitted nothing, and a construction the spec admits
+    # (§8.3.3) was an unknown constructor.  A declaration registers a new
+    # `AdtInfo`, so of the names the module declares, the entries that are
+    # not the built-ins' own -- `temp`'s snapshot of them, taken before
+    # anything was injected or registered -- are the module's.
     all_data = {
         k: v for k, v in temp.env.data_types.items()
-        if k in own_data and k not in builtin_types
+        if k in own_data and temp._builtin_data_types.get(k) is not v
     }
     public_fns = {
         k: v for k, v in all_fns.items() if v.visibility == "public"
@@ -192,7 +204,7 @@ class ModulesMixin:
         #    namespace (#1489), and what they export — both derived once per
         #    path for the whole run (#1275).
         registrations = self._module_registrations(
-            builtin_fn_names, builtin_data_names, builtin_ctor_names,
+            builtin_fn_names, builtin_ctor_names,
         )
         for mod in self._resolved_modules:
             # Registered with the module's own source and file path, so any
@@ -608,6 +620,9 @@ class ModulesMixin:
         # the memo, so a nested checker reuses them instead of registering
         # every module it can see again.
         checker._module_registration_cache = self._module_registration_cache
+        # #1558: the path the program reaches this module by, which its own
+        # `module` declaration has to match for the path to name it.
+        checker._resolved_as = mod.path
         checker.check_program(mod.program)
         seen = {
             (e.error_code, str(e.location.file), e.location.line,
@@ -622,9 +637,25 @@ class ModulesMixin:
             seen.add(key)
             self.errors.append(err)
 
+    def _own_module_paths(
+        self, program: ast.Program,
+    ) -> tuple[tuple[str, ...] | None, tuple[str, ...] | None]:
+        """The path *program* declares, and the path that names it (#1558).
+
+        The second is :func:`vera.resolver.own_module_path`'s answer — the
+        declared path, where the program reaches the file by it — which a
+        module-qualified call to it resolves against the file's own
+        top-level functions (`_check_own_module_call`).  The first is kept
+        for E230's fix when the two differ: a file imported as ``ma`` that
+        declares another path, or none, is told to declare ``module ma;``.
+        """
+        declared = (tuple(program.module.path)
+                    if program.module is not None else None)
+        return declared, own_module_path(
+            program, self._resolved_as, self._resolved_modules)
+
     def _module_registrations(
-        self, builtin_fns: set[str], builtin_types: set[str],
-        builtin_ctors: set[str],
+        self, builtin_fns: set[str], builtin_ctors: set[str],
     ) -> dict[tuple[str, ...], ModuleRegistration]:
         """Each resolved module's declarations, registered in ITS OWN
         namespace (#1489), once per path for the whole run (#1275).
@@ -691,7 +722,7 @@ class ModulesMixin:
                     temp.env.data_types.setdefault(name, info)
             temp._register_all(mod.program)
             cache[path] = _module_exports(
-                temp, mod.program, builtin_fns, builtin_types, builtin_ctors,
+                temp, mod.program, builtin_fns, builtin_ctors,
             )
         return cache
 

@@ -371,3 +371,40 @@ def merged_import_filters(
         else:
             out[imp.path] = existing | names
     return out
+
+
+def own_module_path(
+    program: ast.Program,
+    resolved_as: tuple[str, ...] | None,
+    resolved: Iterable[ResolvedModule],
+) -> tuple[str, ...] | None:
+    """The path that names *program*'s own file in a qualified call (#1558).
+
+    A module's identity is the path its ``module`` declaration gives (§8.2),
+    and a module-qualified call names a module by its path (§8.5.3), so
+    inside the file that path names the file itself: ``ma::two(3)`` in
+    ``module ma;`` calls its own ``two``.  The ONE derivation of which path
+    that is, read by the checker (which resolves the call) and the verifier
+    (which reads the callee's contract at it), so the two cannot disagree
+    about a program.
+
+    The declared path names the file only when the program reaches the file
+    by it, which keeps the answer the same for every program that compiles
+    the file:
+
+    * *resolved_as* — the path the program imports the file by, when it is
+      checked as a module — must be the declared path.  A file declaring
+      ``module mz;`` that is imported as ``ma`` has no unambiguous own path;
+    * for the entry (*resolved_as* ``None``), no module in *resolved* may
+      have the path: there it names that module, as it always did.
+
+    ``None`` for a file with no ``module`` declaration.
+    """
+    if program.module is None:
+        return None
+    declared = tuple(program.module.path)
+    if resolved_as is not None:
+        return declared if declared == resolved_as else None
+    if any(m.path == declared for m in resolved):
+        return None
+    return declared

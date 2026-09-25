@@ -34,6 +34,7 @@ from vera.monomorphize import (
     qualify_nested_generic_decls,
 )
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv
+from vera.resolver import own_module_path
 from vera.prelude import (
     PRELUDE_FILE,
     PRELUDE_NAMESPACE,
@@ -688,6 +689,9 @@ class CodeGenerator(
         self._resolved_modules: list[ResolvedModule] = (
             resolved_modules or []
         )
+        # #1558: the path that names the entry file in a qualified call, set
+        # by `_compile_program`; `_own_path_of` answers for every namespace.
+        self._entry_own_path: tuple[str, ...] | None = None
         # Imported (module path, FnDecl) to compile in Pass 2.5.  The path is
         # carried so Pass 2.5 can apply that module's intra-rename map (#814
         # C2): a bare sibling call inside an imported body must reach the
@@ -1145,6 +1149,7 @@ class CodeGenerator(
             tuple[SpanTypeTable | None, SpanTypeTable | None] | None
         ) = None,
         where_scope: frozenset[str] = frozenset(),
+        own_path: tuple[str, ...] | None = None,
     ) -> str | None:
         """`_compile_fn` plus the #1100 skip/closure bookkeeping.
 
@@ -1163,6 +1168,10 @@ class CodeGenerator(
         exactly what the checker's ``_lookup_function_scoped`` walks.  The
         default is right for a top-level declaration with no helpers, which
         is every caller that omits it.
+
+        *own_path* (#1558) is the path that names *decl*'s own file in a
+        qualified call (``_own_path_of``), so a tail call by it compiles to
+        ``return_call`` as the bare tail call does.
         """
         diags_before = len(self.diagnostics)
         closures_before = len(self._closure_fns_wat)
@@ -1173,7 +1182,7 @@ class CodeGenerator(
             fn_wat = self._compile_fn(
                 decl, export=export, module_renames=module_renames,
                 imported=imported, module_tables=module_tables,
-                where_scope=where_scope,
+                where_scope=where_scope, own_path=own_path,
             )
         if fn_wat is None:
             # The LAST codegen diagnostic emitted during this compile is
@@ -2418,6 +2427,10 @@ class CodeGenerator(
             for tld in program.declarations
             if isinstance(tld.decl, ast.DataDecl)
         }
+        # #1558: and the path that names it in a qualified call, over the
+        # modules it resolves.
+        self._entry_own_path = own_module_path(
+            program, None, self._resolved_modules)
         # Pass 0a: reject programs with typed holes
         holes = _find_holes(program)
         if holes:
@@ -2884,6 +2897,7 @@ class CodeGenerator(
                         where_scope=frozenset(
                             w.name for w in decl.where_fns or ()
                         ),
+                        own_path=self._own_path_of(None),
                     )
                     if fn_wat is not None:
                         functions_wat.append(fn_wat)
@@ -2906,6 +2920,7 @@ class CodeGenerator(
                         for wfn, wscope in self._where_fn_scopes(decl):
                             wfn_wat = self._compile_fn_tracked(
                                 wfn, export=False, where_scope=wscope,
+                                own_path=self._own_path_of(None),
                             )
                             if wfn_wat is not None:
                                 # PR #1013 review: a fully-concrete (T-unused)
@@ -2986,6 +3001,7 @@ class CodeGenerator(
                 fn_wat = self._compile_fn_tracked(
                     mdecl, export=is_public,
                     imported=origin is not None,
+                    own_path=self._own_path_of(origin),
                     module_renames=(
                         self._module_intra_renames.get(origin, {})
                         if origin is not None else None
@@ -3040,6 +3056,7 @@ class CodeGenerator(
                     idecl, export=False,
                     module_renames=self._module_intra_renames.get(path, {}),
                     imported=True,  # #986: don't consult main-file span tables
+                    own_path=self._own_path_of(path),
                     # #987: thread THIS module's own span-keyed tables so the
                     # imported body's @Nat -> @Int widening guard fires.
                     module_tables=self._module_artifacts.get(path),
@@ -3081,6 +3098,7 @@ class CodeGenerator(
                     export=False,
                     module_renames=self._module_intra_renames.get(path, {}),
                     imported=True,  # #986: don't consult main-file span tables
+                    own_path=self._own_path_of(path),
                     # #987: the ``mod$…`` rename only changes the WASM
                     # function name; the body's node spans are unchanged, so
                     # THIS module's table still keys them correctly and its

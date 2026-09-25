@@ -29,7 +29,7 @@ from vera.monomorphize import (
 )
 from vera.naming import display_adt_name
 from vera.prelude import PRELUDE_NAMESPACE, data_decl_shape, prelude_adt_names
-from vera.resolver import merged_import_filters
+from vera.resolver import merged_import_filters, own_module_path
 
 if TYPE_CHECKING:
     from vera.codegen.core import CodeGenerator
@@ -67,6 +67,26 @@ _ENTRY_OWNER: tuple[str, ...] = ()
 
 class CrossModuleMixin:
     """Methods for registering imported module declarations."""
+
+    def _own_path_of(
+        self, mod_path: tuple[str, ...] | None,
+    ) -> tuple[str, ...] | None:
+        """The path that names *mod_path*'s own file in a qualified call.
+
+        ``None`` names the entry file.  :func:`vera.resolver.own_module_path`
+        is the one derivation, the one the checker and the verifier read, so
+        code generation marks a tail call by the path exactly where they
+        resolve one (#1558).  ``None`` is returned for a file with no path
+        of its own, and for a namespace no resolved module has.
+        """
+        gen: CodeGenerator = self  # type: ignore[assignment]
+        if mod_path is None:
+            return gen._entry_own_path
+        mod = next(
+            (m for m in gen._resolved_modules if m.path == mod_path), None)
+        if mod is None:
+            return None
+        return own_module_path(mod.program, mod.path, ())
 
     @contextlib.contextmanager
     def _module_alias_scope(
@@ -770,6 +790,9 @@ class CrossModuleMixin:
             # both get a ``mod$`` emission and an intra-rename entry.  Only
             # public, in-filter fns additionally get a ``_module_qualified_
             # targets`` entry (the table the desugar consults for ``m::f``).
+            module_own_fns = frozenset(
+                tld.decl.name for tld in mod.program.declarations
+                if isinstance(tld.decl, ast.FnDecl))
             for tld in mod.program.declarations:
                 if not isinstance(tld.decl, ast.FnDecl):
                     continue
@@ -800,8 +823,15 @@ class CrossModuleMixin:
                 # call first; an imported function's call reached the entry's
                 # declaration outright.  Shadow-aware like the generic
                 # reroute: a `where` helper of the name owns it.
+                # A call by the module's OWN path to one of its own displaced
+                # functions (#1558) is that bare call, so it is renamed with
+                # it: left to the desugar it reached the bare name, which the
+                # entry's declaration holds (a generic's clone included).
                 routed = self._reroute_displaced_calls(
-                    routed, self._displaced_fn_symbols[mod.path])
+                    routed, self._displaced_fn_symbols[mod.path],
+                    own_path=own_module_path(mod.program, mod.path, ()),
+                    own_names=module_own_fns,
+                )
                 # #774: an imported PUBLIC generic is monomorphized by the
                 # importer (Pass 1.5) at its own call sites — it can't be
                 # emitted verbatim under a bare/mangled name in Pass 2.5, but
@@ -1936,17 +1966,24 @@ class CrossModuleMixin:
     @staticmethod
     def _reroute_displaced_calls(
         decl: ast.FnDecl, symbols: dict[str, str],
+        *, own_path: tuple[str, ...] | None,
+        own_names: frozenset[str],
     ) -> ast.FnDecl:
         """*decl* with each bare call to a displaced module function renamed
         to its symbol (*symbols*, from :func:`vera.monomorphize
-        .displaced_module_fns`), shadow-aware like the generic reroute."""
+        .displaced_module_fns`), shadow-aware like the generic reroute, and
+        each call by the module's own path *own_path* to one of its own
+        functions (*own_names*) renamed the same way, never captured by a
+        ``where`` helper (#1558)."""
         def rename(
             call: ast.FnCall, args: tuple[ast.Expr, ...],
         ) -> ast.Node:
             return ast.FnCall(
                 name=symbols[call.name], args=args, span=call.span)
 
-        return reroute_module_qualified_generic_calls(decl, symbols, rename)
+        return reroute_module_qualified_generic_calls(
+            decl, symbols, rename,
+            own_path=own_path, own_names=own_names & symbols.keys())
 
     @staticmethod
     def _module_qualified_wasm_name(

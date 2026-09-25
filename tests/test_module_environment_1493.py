@@ -595,29 +595,14 @@ class TestAModuleImportingATypeNamedLikeThePrelude:
         assert run_main(out) == ("ok", expected)
 
     @pytest.mark.parametrize("name", _NAMED_LIKE)
-    @pytest.mark.xfail(strict=True, reason=(
-        "#1559: a module cannot construct an imported type named like a "
-        "prelude type (E210 at check)"))
     def test_a_module_constructing_the_imported_type(
         self, name: str, tmp_path: Path,
     ) -> None:
-        """`main` runs it to 41; the release branch refuses it at check
-        (#1559), which the next cell steps past."""
+        """The check accepts the construction (#1559), and code generation
+        builds it without injecting the prelude's type beside `a`'s, which
+        would be E621: it runs to `main`'s 41, as on `main`."""
         out = pipeline(tmp_path, _named_like_files(name, "constructs it"))
         assert out.accepted and out.compiles_clean, out.describe()
-        assert run_main(out) == ("ok", 41)
-
-    @pytest.mark.parametrize("name", _NAMED_LIKE)
-    def test_code_generation_builds_it_past_the_check(
-        self, name: str, tmp_path: Path,
-    ) -> None:
-        """The same program compiled past #1559's E210: code generation
-        builds it and it runs to `main`'s 41.  Before this branch's fix the
-        prelude's type was injected beside `a`'s, and it was E621."""
-        out = pipeline(tmp_path, _named_like_files(name, "constructs it"),
-                       past_check=True)
-        assert {d.error_code for d in out.check_errors} <= {"E210"}
-        assert out.compiles_clean, out.describe()
         assert run_main(out) == ("ok", 41)
 
     @pytest.mark.parametrize(("imported", "used"), (

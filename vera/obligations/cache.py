@@ -33,6 +33,11 @@ what its cache key must cover:
    `violated`/E500 (#1441).  So the component walks contract references
    transitively, and terminates on a visited set because contracts may
    be mutually recursive.
+
+   Every walk reads a call by the program's OWN path (``ma::g(...)``
+   inside ``module ma;``) as the bare call to ``g`` it is
+   (:func:`called_name`, #1558): its callee is a function of this
+   program, not of a module whose source the context hash digests.
 3. **Program context** (``program_context_hash``): ADT / type-alias /
    effect / ability declarations (pattern translation, sort creation,
    type resolution), imported-module contracts (C7d), the solver
@@ -83,14 +88,46 @@ def walk_nodes(node: object) -> Iterator[ast.Node]:
             yield from walk_nodes(item)
 
 
-def direct_callee_names(decl: ast.FnDecl) -> frozenset[str]:
+def called_name(
+    node: object, own_path: tuple[str, ...] | None,
+) -> str | None:
+    """The name of the program's own function *node* calls, if it is a call.
+
+    THE rule for which calls name one of the program's functions, read by
+    every walk below and by the language server's call graph
+    (`vera.lsp.workflows`), so they cannot disagree about a spelling.  A bare
+    call names one; so does a module-qualified call by the program's OWN path
+    (`ma::two(3)` inside `module ma;`, spec §8.5.3, #1558), which is the bare
+    call to the file's top-level function in every phase.  A proof reads that
+    callee's contract as it reads the bare call's, so a reader that skipped
+    the spelling left an edit to the callee's contract replaying a proof that
+    no longer holds.
+
+    *own_path* is :func:`vera.resolver.own_module_path`'s answer for the
+    program, ``None`` for a file that has none.  A call into ANOTHER module
+    names no function of this file: that module's source digest is in the
+    program context hash.  A built-in's name harmlessly misses the top-level
+    function map.
+    """
+    if isinstance(node, ast.FnCall):
+        return node.name
+    if (own_path is not None and isinstance(node, ast.ModuleCall)
+            and tuple(node.path) == own_path):
+        return node.name
+    return None
+
+
+def direct_callee_names(
+    decl: ast.FnDecl, *, own_path: tuple[str, ...] | None,
+) -> frozenset[str]:
     """Names of functions called anywhere in *decl* (body, contracts,
-    where-blocks).  Local plain calls only — module-qualified calls'
-    contracts are covered by the program context hash, and builtin
-    names harmlessly miss the top-level function map.
+    where-blocks): its bare calls and its calls by *own_path*
+    (:func:`called_name`).  *own_path* is required, so no caller can leave
+    the program's own path out by omission.
     """
     return frozenset(
-        n.name for n in walk_nodes(decl) if isinstance(n, ast.FnCall)
+        name for n in walk_nodes(decl)
+        if (name := called_name(n, own_path)) is not None
     )
 
 
@@ -132,6 +169,10 @@ class TypeEnvironment:
     Keeping the three maps in one record rather than three parameters means
     a further route is a field here and a case in the seed loop, not another
     argument threaded through `fn_cache_key`.
+
+    The program's own path is one such route (#1558): a call by it names a
+    top-level function of this program, which every walk of the closure
+    resolves through :func:`called_name`.
     """
 
     #: TYPE name -> the types its declaration carries: an alias's target, or
@@ -141,17 +182,26 @@ class TypeEnvironment:
     constructors: dict[str, tuple[ast.TypeExpr, ...]]
     #: (qualifier, operation) -> the operation's signature types.
     effect_ops: dict[tuple[str, str], tuple[ast.TypeExpr, ...]]
+    #: The path that names the program's own file in a qualified call
+    #: (:func:`vera.resolver.own_module_path`), or ``None`` if it has none.
+    #: No default: a construction site that forgot it would read every call
+    #: by the path as a call into another module.
+    own_path: tuple[str, ...] | None
 
 
 def _type_reference_calls(
     type_exprs: Iterable[object],
     type_defs: dict[str, tuple[ast.TypeExpr, ...]],
     out: set[str],
+    *,
+    own_path: tuple[str, ...] | None,
 ) -> None:
     """Collect functions read while INTERPRETING *type_exprs*.
 
     A refinement predicate may call a function — ``{ @Int | @Int.0 < cap(()) }``
-    — so reading a type reads that function's contract.  A NAMED type hides
+    — so reading a type reads that function's contract, whether the predicate
+    calls it bare or by the program's own path, *own_path*
+    (:func:`called_name`).  A NAMED type hides
     the predicate behind a declaration, so the walk resolves names through
     *type_defs* until it reaches the refinements themselves.  Both kinds of
     declaration carry one: a `type` alias names its target (and #1453 made
@@ -170,8 +220,9 @@ def _type_reference_calls(
     while stack:
         current = stack.pop()
         for node in walk_nodes(current):
-            if isinstance(node, ast.FnCall):
-                out.add(node.name)
+            name = called_name(node, own_path)
+            if name is not None:
+                out.add(name)
             elif isinstance(node, ast.NamedType) and node.name not in seen:
                 seen.add(node.name)
                 stack.extend(type_defs.get(node.name, ()))
@@ -197,9 +248,15 @@ def interface_closure_names(
 
     Terminates on *seen* rather than on the call graph's shape: contracts may
     refer to each other in a cycle, and a caller of a cyclic pair reads both.
+
+    Every walk here names a function by :func:`called_name`, under
+    ``env.own_path``: a call by the program's own path is read exactly where
+    the bare call is — in the declaration, in a callee's contract, and in a
+    refinement predicate reached through a type (#1558).
     """
+    own_path = env.own_path
     seen: set[str] = set()
-    work: set[str] = set(direct_callee_names(decl))
+    work: set[str] = set(direct_callee_names(decl, own_path=own_path))
     # Everything this declaration REACHES, from ONE walk of its subtree.
     # A refinement is read wherever its type is reached from: a parameter, a
     # return, a `where` helper's signature, a `let` annotation, an ADT field
@@ -222,11 +279,12 @@ def interface_closure_names(
             seeds.extend(env.constructors.get(node.name, ()))
         elif isinstance(node, ast.QualifiedCall):
             # `Counter.bump(3)` reads the op's signature, which lives in the
-            # effect declaration.  A MODULE-qualified call misses this map
+            # effect declaration.  A call into another MODULE misses this map
             # and is covered instead by the per-module source digests in the
-            # program context hash.
+            # program context hash; a call by the program's own path is a
+            # call to its own function, which `called_name` reads.
             seeds.extend(env.effect_ops.get((node.qualifier, node.name), ()))
-    _type_reference_calls(seeds, env.types, work)
+    _type_reference_calls(seeds, env.types, work, own_path=own_path)
     todo = list(work)
     while todo:
         name = todo.pop()
@@ -234,16 +292,17 @@ def interface_closure_names(
             continue
         seen.add(name)
         callee = fn_map.get(name)
-        if callee is None:            # builtin, or module-qualified
+        if callee is None:            # a built-in, or an imported function
             continue
         found: set[str] = set()
         for contract in callee.contracts:
             found.update(
-                n.name for n in walk_nodes(contract)
-                if isinstance(n, ast.FnCall)
+                called for n in walk_nodes(contract)
+                if (called := called_name(n, own_path)) is not None
             )
         _type_reference_calls(
-            (*callee.params, callee.return_type), env.types, found)
+            (*callee.params, callee.return_type), env.types, found,
+            own_path=own_path)
         todo.extend(n for n in found if n not in seen)
     return frozenset(seen)
 
@@ -258,8 +317,10 @@ def callee_component(
     Interface = signature + contracts + type parameters — everything
     the caller's verification reads.  Callee bodies are excluded so a
     body-only edit in a callee does not invalidate its callers.
-    Unresolvable names (builtins, module-qualified targets) contribute
-    nothing here; the program context hash covers module contracts.
+    Unresolvable names (built-ins, functions another module supplies)
+    contribute nothing here; the program context hash covers module
+    contracts.  A call by the program's own path is not one of them: it
+    names this program's function (:func:`called_name`).
 
     Over the CLOSURE rather than the direct callees: see this module's
     header, and #1441 for the stale replay that distinguishes them.

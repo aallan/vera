@@ -32,8 +32,19 @@ assume conditions, handle bodies, anonymous-fn bodies, indexing)
 are NOT tail-transparent — calls inside them are NOT in tail
 position regardless of the parent's status.
 
-The analyzer returns a ``set[int]`` of ``id(FnCall)`` nodes.  The
-translator looks up ``id(call) in tail_call_sites`` at emit time.
+A call by the module's OWN path (``ma::count(...)`` inside
+``module ma;``, spec §8.5.3, #1558) is the bare call to that top-level
+function, so it is a tail call wherever the bare call would be.  The
+analyzer is told the path (*own_path*) and marks the ``ModuleCall``;
+the translator desugars it into a fresh ``FnCall`` and carries the
+mark across (``WasmContext.translate_expr``).  A call into ANOTHER
+module is left unmarked: the module graph is acyclic (E011), so such a
+call can never be the step of a loop, and its frame is the only one a
+``return_call`` there could save.
+
+The analyzer returns a ``set[int]`` of ``id(FnCall)`` and
+``id(ModuleCall)`` nodes.  The translator looks up
+``id(call) in tail_call_sites`` at emit time.
 ``id``-based identity is stable for the lifetime of a single
 ``compile_fn`` invocation (the FnDecl is not mutated and not cloned
 between analysis and emit), and per-fn isolation prevents
@@ -54,9 +65,13 @@ from __future__ import annotations
 from vera import ast
 
 
-def compute_tail_call_sites(decl: ast.FnDecl) -> set[int]:
+def compute_tail_call_sites(
+    decl: ast.FnDecl, own_path: tuple[str, ...] | None = None,
+) -> set[int]:
     """Return ``{id(call)}`` for every ``FnCall`` in tail position
-    inside ``decl.body``.
+    inside ``decl.body``, and every ``ModuleCall`` by *own_path*, the
+    path that names *decl*'s own module (``None`` where it has none;
+    :func:`vera.resolver.own_module_path` derives it).
 
     The body's trailing expression is the seed; tail position
     propagates inward through ``IfExpr`` / ``MatchExpr`` / ``Block``
@@ -79,6 +94,10 @@ def compute_tail_call_sites(decl: ast.FnDecl) -> set[int]:
         if isinstance(expr, ast.FnCall):
             sites.add(id(expr))
             return
+        if (own_path is not None and isinstance(expr, ast.ModuleCall)
+                and tuple(expr.path) == own_path):
+            sites.add(id(expr))
+            return
         if isinstance(expr, ast.IfExpr):
             visit_tail(expr.then_branch)
             if expr.else_branch is not None:
@@ -98,9 +117,10 @@ def compute_tail_call_sites(decl: ast.FnDecl) -> set[int]:
         # UnaryExpr, QualifiedCall, ConstructorCall, AnonFn,
         # HandleExpr, ArrayLit, IndexExpr, AssertExpr, AssumeExpr,
         # quantifiers, OldExpr / NewExpr, InterpolatedString,
-        # StringLit, ResultRef, NullaryConstructor, ModuleCall) are
-        # NOT tail-transparent.  A call inside their sub-expressions
-        # is not in tail position.  No further marking required.
+        # StringLit, ResultRef, NullaryConstructor, a ModuleCall into
+        # another module) are NOT tail-transparent.  A call inside
+        # their sub-expressions is not in tail position.  No further
+        # marking required.
 
     visit_tail(decl.body)
     return sites
