@@ -1431,8 +1431,12 @@ def check_bug_rows(known_issues_text: str) -> list[str]:
 # eyeballed), and compared against both row counts.
 # ---------------------------------------------------------------------------
 
+# The heading is `## The next burndown`: the burndown names no release,
+# because which release empties it is not known when a row is added.  A
+# versioned heading (`## The v0.2.1 burndown`) is still read as the
+# section, so an older spelling is checked rather than taken for retired.
 _ROADMAP_BURNDOWN_SECTION = re.compile(
-    r"^## The v[\d.]+ burndown[ \t]*$(.*?)(?=^## |\Z)", re.M | re.S
+    r"^## The (?:next|v[\d.]+) burndown[ \t]*$(.*?)(?=^## |\Z)", re.M | re.S
 )
 # The noun may be singular: a burndown with one row left reads "*One open
 # bug, driven to zero.*", which the plural-only spelling made unwritable in
@@ -1479,7 +1483,7 @@ def _english_number_word_to_int(word: str) -> int | None:
 
 
 def roadmap_burndown_rows(roadmap_text: str) -> list[int] | None:
-    """Issue numbers from the CURRENT '## The vX.Y.Z burndown' table's
+    """Issue numbers from the CURRENT '## The next burndown' table's
     Issue column, in the same shape `bug_rows` reads KNOWN_ISSUES.md's
     Bugs table — the same reader, so the two are compared like for like
     at every value including zero, where a present-but-emptied table is
@@ -1532,7 +1536,7 @@ def check_burndown_header_matches_rows(
     if section is None:
         if bugs:
             return [
-                "ROADMAP.md: there is no '## The vX.Y.Z burndown' section, "
+                "ROADMAP.md: there is no '## The next burndown' section, "
                 f"which reads as zero open bugs, but KNOWN_ISSUES.md's Bugs "
                 f"table has {len(bugs)} row(s): "
                 f"{', '.join(f'#{n}' for n in bugs)}"

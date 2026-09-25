@@ -14,11 +14,13 @@ Ordering derives from the design principles ([DESIGN.md](DESIGN.md)): verificati
 
 16,978 tests, 256 conformance programs, 43 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs (burndown material rather than stage work), plus the *limitations* the stages below retire.
 
-## The v0.2.0 burndown
+The next release is a feature release, v0.3.0: the `Decision` effect ([#1467](https://github.com/aallan/vera/issues/1467)), which waits on [#351](https://github.com/aallan/vera/issues/351), [#352](https://github.com/aallan/vera/issues/352), [#372](https://github.com/aallan/vera/issues/372) and [#373](https://github.com/aallan/vera/issues/373).
 
-*Ten open bugs, driven to zero.*
+## The next burndown
 
-A bug class outranks stage work, so the next release takes the open `bug`-labelled set as its queue.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) carries each row's full account and stays the one place the detail lives; this table is the order of attack.
+*Seventy-one open bugs, driven to zero.*
+
+A bug class outranks stage work, so the open `bug`-labelled set is the queue the fix releases work from, soundness defects first.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) carries each row's full account and stays the one place the detail lives; this table is the order of attack.
 
 | Issue | What |
 |---|---|
@@ -32,6 +34,67 @@ A bug class outranks stage work, so the next release takes the open `bug`-labell
 | [#1546](https://github.com/aallan/vera/issues/1546) | A heterogeneous `@Nat`/`@Int` join read into an `@Int` is unguarded as a tuple component or a `handle`. |
 | [#1557](https://github.com/aallan/vera/issues/1557) | A `@Nat` subtraction over a call to a non-generic `@Nat` function is claimed `nat_sub` `tier3` and compiled with no underflow check. |
 | [#1501](https://github.com/aallan/vera/issues/1501) | `&&`, `\|\|` and `==>` evaluate both operands, although spec §4.6 says `&&` and `\|\|` short-circuit, so a guard written beside the operation it protects does not protect it. |
+| [#1504](https://github.com/aallan/vera/issues/1504) | `@Nat` values above i64.MAX are compared, divided and printed as negative numbers, and a Tier-1 `ensures` fails. |
+| [#1530](https://github.com/aallan/vera/issues/1530) | A `decreases` on an `Exn`-declaring function has no runtime guard, yet verify records it as checked at run time. |
+| [#1551](https://github.com/aallan/vera/issues/1551) | The verifier discovers a module `where` helper's call as the entry file's same-named generic, and verifies a clone that is never emitted. |
+| [#1555](https://github.com/aallan/vera/issues/1555) | `==` between two call results of a generic data type compares heap addresses, and a Tier-1 `ensures` fails at run time. |
+| [#1560](https://github.com/aallan/vera/issues/1560) | A module's own `data Json` accepts a prelude `Json` value and reads it through the wrong layout. |
+| [#1562](https://github.com/aallan/vera/issues/1562) | A nested constructor pattern is modelled by its outer constructor, so an `ensures` is proved that fails at run time. |
+| [#1571](https://github.com/aallan/vera/issues/1571) | A callee's `ensures` is assumed on runs where the call never happens, giving a false Tier 1. |
+| [#1572](https://github.com/aallan/vera/issues/1572) | A qualified call to another module's generic leaves that instantiation unverified, so a false `ensures` passes verify. |
+| [#1581](https://github.com/aallan/vera/issues/1581) | A module generic's call to its `where` helper compiles, in an importer, as a call to the same-named top-level generic. |
+| [#1582](https://github.com/aallan/vera/issues/1582) | A widening inside an `assume` is counted as a Tier 3 runtime check, but an `assume` never runs. |
+| [#1587](https://github.com/aallan/vera/issues/1587) | `0 - 18446744073709551615` proves `ensures(@Int.result < 0)` at Tier 1 and returns 1. |
+| [#1590](https://github.com/aallan/vera/issues/1590) | `nat_to_int` of a `@Nat` above i64.MAX is read as negative outside an `@Int` binding, and a Tier-1 `ensures` fails. |
+| [#1592](https://github.com/aallan/vera/issues/1592) | A unary negation of a `@Nat` above i64.MAX is unguarded, and a Tier-1 `ensures` fails at run time. |
+| [#1598](https://github.com/aallan/vera/issues/1598) | `INT_MIN / -1` has no verifier obligation, so a Tier-1-clean division traps. |
+| [#1482](https://github.com/aallan/vera/issues/1482) | `float_to_string` traps on a finite value of magnitude 2^63 or more. |
+| [#1483](https://github.com/aallan/vera/issues/1483) | `string_repeat` and `string_pad_*` reduce a size argument modulo 2^32 and return a wrong value. |
+| [#1490](https://github.com/aallan/vera/issues/1490) | Four diagnostics, missing visibility among them, carry no error code, and nothing enforces one. |
+| [#1494](https://github.com/aallan/vera/issues/1494) | A user function named after a generated runtime symbol (`alloc`, `gc_collect`, `anon_0`) passes check and fails at compile. |
+| [#1495](https://github.com/aallan/vera/issues/1495) | A user function named after a prelude function replaces it inside the prelude's own bodies. |
+| [#1496](https://github.com/aallan/vera/issues/1496) | An entry-file `data` declaration named after a prelude ADT with a different shape passes check and verify, then fails at compile. |
+| [#1498](https://github.com/aallan/vera/issues/1498) | **E608** refuses, at compile, same-named functions that no namespace can name together. |
+| [#1499](https://github.com/aallan/vera/issues/1499) | A call to a user ability operation, or a qualified ability call, passes check and verify and fails at compile. |
+| [#1500](https://github.com/aallan/vera/issues/1500) | Spec §5.11's `main` signature and `<IO>` requirement is enforced by neither check nor run. |
+| [#1502](https://github.com/aallan/vera/issues/1502) | Host-implemented built-ins trap with `host_error` on inputs their signatures accept, and the `Result` ones trap instead of returning `Err`. |
+| [#1505](https://github.com/aallan/vera/issues/1505) | Diagnostics render type arguments with `@` (`@Array<@Int>.0`), a spelling that does not parse. |
+| [#1506](https://github.com/aallan/vera/issues/1506) | A quantifier predicate whose signature code generation cannot lower passes check and verify, then stops compile with **E699**. |
+| [#1510](https://github.com/aallan/vera/issues/1510) | The collector traps when one live structure holds more than 16,384 heap values. |
+| [#1512](https://github.com/aallan/vera/issues/1512) | A `State<String>` or `State<Array<T>>` cell passes check and verify, and code generation refuses it (**E607**). |
+| [#1514](https://github.com/aallan/vera/issues/1514) | A binder typed through a parameterised alias has no WASM representation, and one case drops `main` silently. |
+| [#1515](https://github.com/aallan/vera/issues/1515) | The call site and monomorphization discovery name a nested generic call differently, so the caller is dropped (**E602**). |
+| [#1516](https://github.com/aallan/vera/issues/1516) | `apply_fn` on a closure that a call returns passes check and verify, and code generation refuses it (**E616**). |
+| [#1517](https://github.com/aallan/vera/issues/1517) | A `@T.result` whose type is not the return type, or is undeclared, verifies. |
+| [#1519](https://github.com/aallan/vera/issues/1519) | A generic from a module with an alias named like the caller's type argument compiles to a module that fails to load. |
+| [#1522](https://github.com/aallan/vera/issues/1522) | A generic `State<T>` handler nested in a `State<Int>` handler passes check and is dropped at compile when `T` is `Int`. |
+| [#1526](https://github.com/aallan/vera/issues/1526) | An escaped exception's quoted `String` can end in U+FFFD at the 64-byte cut. |
+| [#1527](https://github.com/aallan/vera/issues/1527) | `check_doc_counts`' CI job-count check never matches `TESTING.md`, so the job count is ungated. |
+| [#1540](https://github.com/aallan/vera/issues/1540) | A case missing inside a nested constructor pattern passes the exhaustiveness check, and the match runs a wrong arm. |
+| [#1548](https://github.com/aallan/vera/issues/1548) | `show()` and `hash()` of a value typed by an imported signature read the type name through the importer's aliases. |
+| [#1549](https://github.com/aallan/vera/issues/1549) | A user function's **E602** is suppressed when its line falls inside a prelude generic's line span. |
+| [#1550](https://github.com/aallan/vera/issues/1550) | `show()` and `hash()` of a generic data type's value returned by a generic function are refused (**E602**). |
+| [#1552](https://github.com/aallan/vera/issues/1552) | A type alias naming a later alias is registered unresolved, and its uses are refused with errors far from the cause. |
+| [#1553](https://github.com/aallan/vera/issues/1553) | A `type` alias named `Decimal` or `Array`, used beside a built-in value of that type, builds a module that fails to load. |
+| [#1556](https://github.com/aallan/vera/issues/1556) | A type parameter named `Array` passes check and drops its caller at compile (**E602**). |
+| [#1563](https://github.com/aallan/vera/issues/1563) | A refused refined binder also draws a redundant **E501** at a call its refinement satisfies. |
+| [#1564](https://github.com/aallan/vera/issues/1564) | Indexing an array literal directly passes check and is dropped at compile (**E602**). |
+| [#1567](https://github.com/aallan/vera/issues/1567) | A call inside a callee's `ensures` is checked at each caller, which refuses it with **E501**. |
+| [#1570](https://github.com/aallan/vera/issues/1570) | A call precondition in a match arm, a closure, a handler clause or an interpolation raises no obligation. |
+| [#1573](https://github.com/aallan/vera/issues/1573) | The `@Nat`-subtraction trap message drops a compound operand's parentheses. |
+| [#1575](https://github.com/aallan/vera/issues/1575) | A module generic reached only through another generic's instantiation drops `main` when it calls a private generic sibling. |
+| [#1578](https://github.com/aallan/vera/issues/1578) | A match on an `array_fold` call or a pipe passes check and verify, and code generation drops the function (**E602**). |
+| [#1580](https://github.com/aallan/vera/issues/1580) | A pipe whose callee returns `@Nat` is never a widening into `@Int`: u64.MAX comes back as -1. |
+| [#1584](https://github.com/aallan/vera/issues/1584) | An array literal's elements after the first are never checked against its element type. |
+| [#1586](https://github.com/aallan/vera/issues/1586) | A later arm's `@Int` binder guards a `@Nat` that an earlier arm of the same constructor takes, so a valid program traps. |
+| [#1589](https://github.com/aallan/vera/issues/1589) | A `@Nat` above i64.MAX bound out of a tuple or constructor pattern into a `@Nat` binder traps as negative. |
+| [#1591](https://github.com/aallan/vera/issues/1591) | A `@Nat` sum holding a negative literal part is read as an `@Int` operand with no widening check. |
+| [#1593](https://github.com/aallan/vera/issues/1593) | `@Nat.0 + (if b then { 0 - 1 } else { 0 })` traps with a false overflow. |
+| [#1594](https://github.com/aallan/vera/issues/1594) | A `Some(Tuple(...))` built from `@Nat` values crashes the verifier with a Z3 sort mismatch (**E699**). |
+| [#1595](https://github.com/aallan/vera/issues/1595) | An untranslatable call in a recursive call's argument leaves `decreases` and the precondition at Tier 3, even outside the measure. |
+| [#1596](https://github.com/aallan/vera/issues/1596) | `let @Nat = id(0 - 3) + 1` passes verify and is caught only by the runtime guard. |
+| [#1597](https://github.com/aallan/vera/issues/1597) | A handler for an effect other than `State` or `Exn` passes check and verify, and code generation drops its function (**E602**). |
+| [#1599](https://github.com/aallan/vera/issues/1599) | A pipe as a tuple or constructor component passes check and verify, and code generation drops the function (**E602**). |
 
 ## Stage 19 — The verification completeness sprint
 
@@ -42,6 +105,11 @@ Verification-completeness gaps — an obligation not emitted, a guard not plante
 | Issue | What |
 |---|---|
 | [#909](https://github.com/aallan/vera/issues/909) | A value's postcondition / refinement is forgotten through an ADT field (box then unbox loses the fact), degrading provable programs to Tier 3. |
+| [#1561](https://github.com/aallan/vera/issues/1561) | A generic function's `decreases` stays Tier 3 when it calls a non-recursive helper, where the monomorphic form is proved. |
+| [#1585](https://github.com/aallan/vera/issues/1585) | A generic `where` helper on a recursion cycle with its generic parent leaves its own `decreases` at Tier 3, though the parent's is proved. |
+| [#1577](https://github.com/aallan/vera/issues/1577) | An imported generic whose `decreases` measure is one of its module's data types is proved in the module's own run and falls to Tier 3 through an importer. |
+| [#1177](https://github.com/aallan/vera/issues/1177) | A parameterized ADT `decreases` measure (`List<Int>`) is ranked at run time through per-instantiation size helpers, so it gets a runtime guard. |
+| [#1450](https://github.com/aallan/vera/issues/1450) | The boundary guard composes a refinement over a refined base, so such a type compiles instead of being refused with **E618**. |
 
 ## Stage 20 — The single-source sprint
 
@@ -58,6 +126,11 @@ Exit criterion: each listed drift class has a generator or a gate, and a release
 | [#1342](https://github.com/aallan/vera/issues/1342) | Conformance matrix — generate a construct × phase × target support table, so which constructs `check`, `verify`, and each compile target accept is read off the suite rather than asserted in prose. |
 | [#653](https://github.com/aallan/vera/issues/653) | Spec audit for §0.2 / §0.3 design-principle violations — the spec held to its own principles. |
 | [#540](https://github.com/aallan/vera/issues/540) | lychee + markdownlint MD051 cross-doc anchor validation. |
+| [#1525](https://github.com/aallan/vera/issues/1525) | **Derive each fact once** — a resolved program representation shared by the checker, the verifier and code generation, so no two of them re-derive a fact and disagree. |
+| [#1396](https://github.com/aallan/vera/issues/1396) | Spec question: whether a repeated contract clause (two identical `requires`) is refused, warned about or accepted — decide it and state it in the spec. |
+| [#1529](https://github.com/aallan/vera/issues/1529) | Each fix PR carries its own CHANGELOG fragment, assembled at release, so fix PRs share no lines. |
+| [#1531](https://github.com/aallan/vera/issues/1531) | Close two more ways a CI gate line can exit 0 unseen by the gate-placement test. |
+| [#1532](https://github.com/aallan/vera/issues/1532) | Pin the nested refused-constructor search in the #1433 duplicate-name tests. |
 
 ## Stage 21 — The effect hardening sprint
 
@@ -116,6 +189,7 @@ Exit criterion: the LSP limitation rows are retired, and a fresh VeraBench run (
 | [#181](https://github.com/aallan/vera/issues/181) | Slot go-to-definition and mechanical slot-index rewriting beyond parameters (`let`/`match` bindings). |
 | [#558](https://github.com/aallan/vera/issues/558) | `--explain-slots-at <line>:<col>` — query the slot table at any position, not only where a diagnostic already fires. |
 | [#1292](https://github.com/aallan/vera/issues/1292) | LSP: `vera/addEffect` bounds handlers by resolved effect instance, so an alias-spelled `handle[State<MyAlias>]` prunes what `State<Int>` prunes. |
+| [#1471](https://github.com/aallan/vera/issues/1471) | **E538** names the premise that contributes the contradiction (an unsat core over the author's premises), not the first `assume`. |
 | [#523](https://github.com/aallan/vera/issues/523) | `vera context` — token-budgeted project export for agents. |
 | [#698](https://github.com/aallan/vera/issues/698) | `vera shape` — function-archetype histograms per module. |
 | [#224](https://github.com/aallan/vera/issues/224) | REPL — the shortest feedback path is currently `vera run` on a file. |
@@ -147,6 +221,8 @@ Exit criterion: the browser limitation rows are retired and an animated demo run
 Beyond the staged sprints — grouped by arc, each pulled forward by its trigger, not before.
 
 **Verification depth** — [#427](https://github.com/aallan/vera/issues/427) Tier 2 verification (Z3 with `assert`/lemma hints; its differential oracle — per-monomorphization results from #732 — has shipped, so this is unblocked but outranked), [#439](https://github.com/aallan/vera/issues/439) lifting effect-handler bodies out of Tier 3 (research-grade; approach 3 depends on #427), [#686](https://github.com/aallan/vera/issues/686) `data invariant(...)` clauses (blocked; refinement types are the working alternative).
+
+**Nominal types** — [#1358](https://github.com/aallan/vera/issues/1358) `newtype`: nominal scalar types, checked at use (the issue carries the design, a validation plan and an estimate).
 
 **Testing depth** — [#795](https://github.com/aallan/vera/issues/795) mutation testing beyond the soundness core (needs the full-sweep deadlock on mutmut 3.6 / Python 3.14 resolved first), [#792](https://github.com/aallan/vera/issues/792) feedback-driven hardening for the deep verifier/smt layers, [#170](https://github.com/aallan/vera/issues/170) Hypothesis as `vera test` generation backend (bookmark; trigger is sustained "cannot generate inputs" warnings).
 

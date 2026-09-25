@@ -1496,6 +1496,32 @@ class TestBurndownHeaderMatchesRows:
         known_issues = _bugs(_row(101), _row(102))
         assert _MOD.check_burndown_header_matches_rows(roadmap, known_issues) == []
 
+    def test_the_unversioned_heading_is_the_burndown_section(self) -> None:
+        """The burndown carries no version number (`## The next
+        burndown`), because the release that empties it is not known
+        when a row is added.  The heading must still be READ as the
+        section: were it not, the gate would take the section to be
+        retired and compare zero against KNOWN_ISSUES, and it would
+        never check the header word against the rows at all."""
+        roadmap = _roadmap_burndown("Two", 101, 102).replace(
+            "## The v0.1.14 burndown", "## The next burndown"
+        )
+        assert "## The next burndown" in roadmap
+        known_issues = _bugs(_row(101), _row(102))
+        assert _MOD.roadmap_burndown_rows(roadmap) == [101, 102]
+        assert _MOD.check_burndown_header_matches_rows(roadmap, known_issues) == []
+
+    def test_the_unversioned_heading_still_cross_checks_the_word(self) -> None:
+        """A stale header word under the unversioned heading is the same
+        error it is under a versioned one, not a missing section."""
+        roadmap = _roadmap_burndown("Three", 101, 102).replace(
+            "## The v0.1.14 burndown", "## The next burndown"
+        )
+        known_issues = _bugs(_row(101), _row(102))
+        errors = _MOD.check_burndown_header_matches_rows(roadmap, known_issues)
+        assert len(errors) == 1
+        assert "'Three' does not match" in errors[0]
+
     def test_header_word_stale_relative_to_both_tables_is_an_error(self) -> None:
         """The exact #1370 shape: the header still says a count from
         before a row was removed, while both tables already agree with
@@ -1738,7 +1764,7 @@ class TestBugIssueParity:
 _ROOT = Path(__file__).parent.parent
 _TIP_BUGS_SECTION = re.compile(r"^## Bugs[ \t]*$(.*?)(?=^## |\Z)", re.M | re.S)
 _TIP_BURNDOWN_SECTION = re.compile(
-    r"^## The v[\d.]+ burndown[ \t]*$(.*?)(?=^## |\Z)", re.M | re.S
+    r"^## The (?:next|v[\d.]+) burndown[ \t]*$(.*?)(?=^## |\Z)", re.M | re.S
 )
 
 
@@ -1778,7 +1804,7 @@ def _tip_roadmap_marked() -> str:
     this form is exercised either side of the retirement."""
     text = (_ROOT / "ROADMAP.md").read_text(encoding="utf-8")
     kept = (
-        "## The v0.2.0 burndown\n\n"
+        "## The next burndown\n\n"
         "*Zero open bugs, driven to zero.*\n\n"
         f"{_BURNDOWN_DESCRIPTION}\n\n"
         "No open bugs.\n\n"
