@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import ClassVar
 
 from vera import ast, narrowing, naming
@@ -81,6 +82,20 @@ class OperatorsMixin:
             # its `path`, exactly as the direct spelling of the same call does.
             return self.translate_expr(desugared, env)
 
+        # @Nat subtraction underflow guard (#520) — mirrors the static
+        # obligation emitted in vera/verifier.py.  When the result is
+        # statically @Nat and at least one operand has @Nat origin, emit a
+        # runtime check that traps on underflow.  Programs that ran `vera
+        # verify` first will have caught the violation statically; this
+        # guard is the safety net for `vera compile` / `vera run` paths that
+        # skipped verification.  Decided BEFORE the operands are translated:
+        # an operand whose sign its bits do not carry records it as it is
+        # evaluated (#1503), and that has to be arranged first.  (The static
+        # rule reads no f64 or `@Byte` operand as a `@Nat`, so neither lowering
+        # below is passed over.)
+        if expr.op == ast.BinOp.SUB and self._is_nat_subtraction(expr):
+            return self._translate_nat_subtraction(expr, env)
+
         left = self.translate_expr(expr.left, env)
         right = self.translate_expr(expr.right, env)
         # #657 / #630 [E615]: keep as `return None` — do NOT "clean up" to
@@ -121,20 +136,8 @@ class OperatorsMixin:
                     raise CodegenInvariantError(  # pragma: no cover
                         "unsupported f64 arithmetic operator", expr)
                 return left + right + [self._ARITH_OPS_F64[op]]
-            # @Nat subtraction underflow guard (#520) — mirrors the
-            # static obligation emitted in vera/verifier.py.  When the
-            # result is statically @Nat and at least one operand has
-            # @Nat origin, emit a runtime check that traps on
-            # underflow.  Programs that ran `vera verify` first will
-            # have caught the violation statically; this guard is the
-            # safety net for `vera compile` / `vera run` paths that
-            # skipped verification.
-            if op == ast.BinOp.SUB and self._is_nat_subtraction(expr):
-                return self._emit_nat_sub_guard(
-                    left, right, at=expr,
-                    signed=(narrowing.holds_negative_literal(expr.left)
-                            or narrowing.holds_negative_literal(expr.right)),
-                )
+            # A @Nat subtraction took its guarded path above, before its
+            # operands were translated (#520, #1503).
             # #798: @Int/@Nat add/sub/mul wrap at the i64/u64 boundary; emit a
             # runtime overflow guard mirroring the verifier's `int_overflow`
             # obligation (vera/verifier.py:_check_overflow_obligation).  The
@@ -2111,9 +2114,165 @@ class OperatorsMixin:
             )
         return False
 
+    def _is_guarded_nat_subtraction(self, expr: ast.Expr) -> bool:
+        """Whether *expr* is a `@Nat` subtraction this guard checks — so its
+        value, when it has one, is never negative."""
+        return (isinstance(expr, ast.BinaryExpr)
+                and expr.op == ast.BinOp.SUB
+                and self._is_nat_subtraction(expr))
+
+    def _runs_unsigned(self, expr: ast.BinaryExpr) -> bool:
+        """Whether an addition or a multiplication is compiled at the
+        unsigned (`@Nat`) width — the width `_translate_binary` gives its
+        overflow guard, read the same way."""
+        return (self._overflow_arith_codegen_type(expr) or "Int") == "Nat"
+
+    def _translate_nat_subtraction(
+        self, expr: ast.BinaryExpr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """A `@Nat` subtraction, guarded to trap where the left operand's
+        value is below the right's (#520).
+
+        Where both operands can hold only non-negative values their bits are
+        their u64s, and the guard compares those (:py:meth:`_emit_nat_sub_guard`).
+        Where either can hold a negative value — a literal-only part, which
+        the static rule calls `@Nat` (`0 - 3` is two non-negative literals) —
+        the bits no longer say which value they are, so each operand's sign
+        is computed from how it is made
+        (:func:`vera.narrowing.subtraction_operand_sign`) and the guard
+        compares the two values:
+        where exactly one is negative it traps iff that one is the left, and
+        otherwise it compares their u64s (#1503).  A sign that only the arm
+        which produced the value knows, or that needs a sub-value the
+        operand consumes, is recorded while the operand is evaluated, by
+        instructions ``translate_expr`` appends to those nodes — so they are
+        arranged before either operand is translated, and withdrawn after.
+        """
+        signs = tuple(
+            narrowing.subtraction_operand_sign(
+                operand, self._is_guarded_nat_subtraction, self._runs_unsigned)
+            for operand in (expr.left, expr.right)
+        )
+        if signs == (narrowing.KnownSign(False), narrowing.KnownSign(False)):
+            left = self.translate_expr(expr.left, env)
+            right = self.translate_expr(expr.right, env)
+            if left is None or right is None:
+                return None  # pragma: no cover — the [E615] channel
+            return self._emit_nat_sub_guard(left, right, at=expr)
+        lhs_tmp = self.alloc_local("i64")
+        rhs_tmp = self.alloc_local("i64")
+        hooks: dict[int, list[str]] = {}
+        captures: dict[int, int] = {}
+        lhs = [f"local.get {lhs_tmp}"]
+        rhs = [f"local.get {rhs_tmp}"]
+        left_neg = self._nat_sub_sign_code(
+            signs[0], lambda: lhs, hooks, captures)
+        right_neg = self._nat_sub_sign_code(
+            signs[1], lambda: rhs, hooks, captures)
+        below = self._nat_sub_below(
+            left_neg, right_neg, lambda: lhs, lambda: rhs)
+        if hooks.keys() & self._nat_sub_hooks.keys():
+            raise CodegenInvariantError(  # pragma: no cover — a tree
+                "a @Nat subtraction's operand node is recorded twice", expr)
+        self._nat_sub_hooks.update(hooks)
+        try:
+            left = self.translate_expr(expr.left, env)
+            right = self.translate_expr(expr.right, env)
+        finally:
+            for key in hooks:
+                del self._nat_sub_hooks[key]
+        if left is None or right is None:
+            return None  # pragma: no cover — the [E615] channel
+        return self._emit_nat_sub_guard(
+            left, right, at=expr, below=below, operands=(lhs_tmp, rhs_tmp))
+
+    def _nat_sub_sign_code(
+        self,
+        sign: narrowing.OperandSign,
+        value: Callable[[], list[str]],
+        hooks: dict[int, list[str]],
+        captures: dict[int, int],
+    ) -> list[str]:
+        """Instructions that push i32 1 iff the value *sign* describes is
+        negative, once that value has been computed; *value* pushes it.
+
+        The instructions run at the guard, after both operands; what they
+        need from inside an operand — a join's arm, a sub-value an operation
+        consumes — is recorded there through *hooks*, keyed by node."""
+        if isinstance(sign, narrowing.KnownSign):
+            return [f"i32.const {int(sign.negative)}"]
+        if isinstance(sign, narrowing.SignBit):
+            return [*value(), "i64.const 0", "i64.lt_s"]
+        if isinstance(sign, narrowing.ArmSign):
+            flag = self.alloc_local("i32")
+            for leaf, arm_sign in sign.arms:
+                code = self._nat_sub_sign_code(
+                    arm_sign, self._nat_sub_capture(leaf, hooks, captures),
+                    hooks, captures)
+                hooks.setdefault(id(leaf), []).extend(
+                    [*code, f"local.set {flag}"])
+            return [f"local.get {flag}"]
+        left_value = self._nat_sub_capture(sign.expr.left, hooks, captures)
+        right_value = self._nat_sub_capture(sign.expr.right, hooks, captures)
+        left = self._nat_sub_sign_code(sign.left, left_value, hooks, captures)
+        right = self._nat_sub_sign_code(
+            sign.right, right_value, hooks, captures)
+        if isinstance(sign, narrowing.DifferenceSign):
+            return self._nat_sub_below(left, right, left_value, right_value)
+        code = [*left, *right, "i32.xor"]
+        if sign.expr.op == ast.BinOp.MUL:
+            code += [*value(), "i64.const 0", "i64.lt_s", "i32.and"]
+        return code
+
+    def _nat_sub_capture(
+        self, node: ast.Expr, hooks: dict[int, list[str]],
+        captures: dict[int, int],
+    ) -> Callable[[], list[str]]:
+        """A pusher of *node*'s value, for sign code that runs after *node*
+        is evaluated: the first use tees the value into a local as *node*
+        produces it, ahead of anything else recorded there."""
+        def push() -> list[str]:
+            local = captures.get(id(node))
+            if local is None:
+                local = self.alloc_local("i64")
+                captures[id(node)] = local
+                hooks.setdefault(id(node), []).insert(0, f"local.tee {local}")
+            return [f"local.get {local}"]
+        return push
+
+    def _nat_sub_below(
+        self,
+        left_neg: list[str],
+        right_neg: list[str],
+        left: Callable[[], list[str]],
+        right: Callable[[], list[str]],
+    ) -> list[str]:
+        """Instructions that push i32 1 iff the left value is below the right,
+        given each one's sign: where exactly one is negative, iff that one is
+        the left; otherwise by their u64s — two non-negative values are their
+        u64s, and two negative i64s order the same way unsigned."""
+        u64_below = [*left(), *right(), "i64.lt_u"]
+        constant = {"i32.const 0": 0, "i32.const 1": 1}
+        if (len(left_neg) == 1 and len(right_neg) == 1
+                and left_neg[0] in constant and right_neg[0] in constant):
+            if left_neg == right_neg:
+                return u64_below
+            return list(left_neg)
+        left_flag = self.alloc_local("i32")
+        right_flag = self.alloc_local("i32")
+        return [
+            *left_neg, f"local.set {left_flag}",
+            *right_neg, f"local.set {right_flag}",
+            f"local.get {left_flag}",
+            *u64_below,
+            f"local.get {left_flag}", f"local.get {right_flag}", "i32.ne",
+            "select",
+        ]
+
     def _emit_nat_sub_guard(
         self, left: list[str], right: list[str], *, at: ast.Node | None,
-        signed: bool = False,
+        below: list[str] | None = None,
+        operands: tuple[int, int] | None = None,
     ) -> list[str]:
         """Emit a guarded `i64.sub` that traps on underflow.
 
@@ -2140,26 +2299,29 @@ class OperatorsMixin:
         i64.MAX as negative — trapping ``2^63 - 1`` with a message saying its
         right operand was the larger, and passing ``1 - 2^63``.
 
-        *signed* is for an operand holding a literal-only part that can be
-        negative (:func:`vera.narrowing.holds_negative_literal`).  The static
-        rule calls `0 - 3` a `@Nat`, so such an operand reaches this guard
-        with a value that can be negative, which an unsigned comparison
-        reads as a u64 above `i64.MAX`: `@Nat.0 - (0 - 3)`, proved at Tier
-        1, would trap.  That value is an `i64`, so it is compared signed
-        (#1503).
+        An operand that can hold a negative value is compared by *below*
+        instead (:py:meth:`_translate_nat_subtraction`), over the locals
+        *operands* names, which it reads after both are set (#1503).
         """
-        lhs_tmp = self.alloc_local("i64")
-        rhs_tmp = self.alloc_local("i64")
+        if below is None or operands is None:
+            lhs_tmp = self.alloc_local("i64")
+            rhs_tmp = self.alloc_local("i64")
+            check = [
+                f"local.set {rhs_tmp}",
+                f"local.tee {lhs_tmp}",
+                f"local.get {rhs_tmp}",
+                "i64.lt_u",
+            ]
+        else:
+            lhs_tmp, rhs_tmp = operands
+            check = [f"local.set {rhs_tmp}", f"local.set {lhs_tmp}", *below]
         trap = self._emit_trap(
             "wasm/operators.py:_emit_nat_sub_guard", at=at,
             message=self._nat_sub_message(at))
         return [
             *left,
             *right,
-            f"local.set {rhs_tmp}",
-            f"local.tee {lhs_tmp}",
-            f"local.get {rhs_tmp}",
-            "i64.lt_s" if signed else "i64.lt_u",
+            *check,
             "if",
             *(f"  {i}" for i in trap),
             "end",

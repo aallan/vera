@@ -7,6 +7,7 @@ orchestration.
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Callable
 
 from vera import ast, narrowing
@@ -107,30 +108,50 @@ def _compatible_modulo_typevars(
 
 
 
-def _type_var_names(ty: Type) -> frozenset[str]:
-    """The names of the type variables *ty* mentions, at any depth."""
+def _type_var_occurrences(ty: Type, out: Counter[str]) -> None:
+    """Count into *out* every occurrence of a type variable in *ty*, at any
+    depth: through type arguments, a function type's parameters, result and
+    effect row, and a refinement's base."""
     if isinstance(ty, TypeVar):
-        return frozenset({ty.name})
-    if isinstance(ty, AdtType):
-        return frozenset().union(*(_type_var_names(a) for a in ty.type_args))
-    if isinstance(ty, FunctionType):
-        return frozenset().union(
-            _type_var_names(ty.return_type),
-            *(_type_var_names(p) for p in ty.params))
-    if isinstance(ty, RefinedType):
-        return _type_var_names(ty.base)
-    return frozenset()
+        out[ty.name] += 1
+    elif isinstance(ty, AdtType):
+        for arg in ty.type_args:
+            _type_var_occurrences(arg, out)
+    elif isinstance(ty, FunctionType):
+        for param in ty.params:
+            _type_var_occurrences(param, out)
+        _type_var_occurrences(ty.return_type, out)
+        _effect_type_var_occurrences(ty.effect, out)
+    elif isinstance(ty, RefinedType):
+        _type_var_occurrences(ty.base, out)
 
 
-def _result_type_var_names(fn_info: FunctionInfo) -> frozenset[str]:
-    """The type variables through which a call's instantiation reaches
-    past the call: its declared return type and its effect row."""
-    names = _type_var_names(fn_info.return_type)
-    if isinstance(fn_info.effect, ConcreteEffectRow):
-        for inst in fn_info.effect.effects:
+def _effect_type_var_occurrences(row: object, out: Counter[str]) -> None:
+    """:func:`_type_var_occurrences` over an effect row's type arguments."""
+    if isinstance(row, ConcreteEffectRow):
+        for inst in row.effects:
             for arg in inst.type_args:
-                names |= _type_var_names(arg)
-    return names
+                _type_var_occurrences(arg, out)
+
+
+def _instantiation_ends_at_formal(fn_info: FunctionInfo, index: int) -> bool:
+    """Whether the instantiation a call infers from argument *index* types
+    nothing but that argument: every type variable formal *index* mentions
+    occurs exactly once in *fn_info*'s whole signature — so in no other
+    parameter (a callback's parameters and result included), not in the
+    result or the effect row, and not twice in the formal itself.
+
+    Read off the signature's structure, so every callee is answered the
+    same way: `array_length(@Array<T>)` qualifies; `array_any(@Array<T>,
+    fn(T -> Bool))`, whose callback reads the elements at `T`, does not."""
+    counts: Counter[str] = Counter()
+    for param in fn_info.param_types:
+        _type_var_occurrences(param, counts)
+    _type_var_occurrences(fn_info.return_type, counts)
+    _effect_type_var_occurrences(fn_info.effect, counts)
+    formal: Counter[str] = Counter()
+    _type_var_occurrences(fn_info.param_types[index], formal)
+    return bool(formal) and all(counts[var] == 1 for var in formal)
 
 
 def _names(name: str) -> Callable[[str], bool]:
@@ -474,8 +495,8 @@ class CallsMixin:
                 # @Nat narrowing walker can obligate it.
                 #
                 # #1503: except a COMPOSITE argument carrying a pure-literal
-                # subtraction at a formal whose type variables the call's
-                # result does not mention.  `array_length([0 - 1, 5])`
+                # subtraction at a formal whose instantiation types nothing
+                # else in the callee's signature.  `array_length([0 - 1, 5])`
                 # infers `T = Nat` from the literal itself, because the
                 # checker types `0 - 1` bottom-up as `Nat`; recorded as the
                 # literal's target, it has the construction-position element
@@ -483,20 +504,21 @@ class CallsMixin:
                 # trap on a program whose value is 2.  That instantiation
                 # ends at this call: nothing past it is typed by it, so
                 # declining it declines no fact anything downstream reads.
-                # A formal whose variables reach the result
-                # (`array_reverse`, `id`) keeps its target, as a scalar
-                # argument does since #747: its instantiation leaves through
-                # the call and is read as a declaration there (#1541).
+                # A formal whose variables reach anything else keeps its
+                # target, as a scalar argument does since #747: the result
+                # (`array_reverse`, `id`), where the instantiation leaves
+                # through the call and is read as a declaration (#1541);
+                # and another parameter, which the callee reads at the same
+                # instantiation — `array_any`'s callback takes each element
+                # as its `@Nat`, so -1 arrived there as 18446744073709551615
+                # in a program that verified clean.
                 if self.expr_target_types is not None:
-                    result_vars = _result_type_var_names(fn_info)
-                    for c_arg, c_pt, declared_pt in zip(
-                            args, param_types, fn_info.param_types):
+                    for index, (c_arg, c_pt) in enumerate(
+                            zip(args, param_types)):
                         key = ast.span_key(c_arg)
                         if key is None or contains_typevar(c_pt):
                             continue
-                        formal_vars = _type_var_names(declared_pt)
-                        if (formal_vars
-                                and not formal_vars & result_vars
+                        if (_instantiation_ends_at_formal(fn_info, index)
                                 and narrowing.carries_literal_subtraction(
                                     c_arg)
                                 and not narrowing.holds_literal_subtraction(

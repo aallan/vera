@@ -61,7 +61,10 @@ from vera.codegen import execute
 from vera.parser import parse_to_ast
 from vera.resolver import ModuleResolver
 from vera.environment import TypeEnv
-from vera.types import INT, NAT, AdtType, RefinedType, Type, TypeVar
+from vera.types import (
+    BOOL, INT, NAT, AdtType, ConcreteEffectRow, EffectInstance, FunctionType,
+    PureEffectRow, RefinedType, Type, TypeVar,
+)
 from vera.verifier import verify
 
 _U64_MAX = 18446744073709551615
@@ -1136,9 +1139,11 @@ class TestANestedPatternFollowsEveryField:
 
 class TestANatSubtractionTrapsOnlyAGenuineUnderflow:
     """The `@Nat` subtraction guard fires where the static rule reads both
-    operands `@Nat`, and compares them as u64s — except an operand holding
-    a literal-only part that can be negative, which it compares signed
-    (#1503).  Read from the checker's table, as it was at cd3591b5, the
+    operands `@Nat`, and traps only where the left operand's value is below
+    the right's — an operand holding a literal-only part that can be
+    negative is read as the value it holds, not as a u64 (#1503; the
+    reading itself is `TestASubtractionOperandIsReadAsItsValue`).  Read
+    from the checker's table, as it was at cd3591b5, the
     guard trapped every program below: the table types `0 - 3`, a `handle`
     whose body is `0 - 3` and a generic call instantiated from
     `Some(0 - 3)` as `@Nat`, the unsigned comparison read the negative
@@ -1193,8 +1198,9 @@ public fn f(@Nat, @Nat, @Bool -> @Int)
     def test_a_genuine_underflow_beside_a_literal_arm_still_traps(
         self,
     ) -> None:
-        """The signed comparison keeps the guard: with the `if` taking its
-        `5` arm, `2 - 5` is an underflow, and `main` trapped it too."""
+        """Reading the negative arm as a value keeps the guard: with the
+        `if` taking its `5` arm, `2 - 5` is an underflow, and `main` trapped
+        it too."""
         source = self._PROGRAM.replace(
             "BODY", "@Nat.0 - (if @Bool.0 then { 0 - 3 } else { 5 })")
         assert "would be negative" in _observe(source, "f", [1, 2, 0]).run
@@ -1214,6 +1220,414 @@ public fn f(@Nat, @Nat, @Bool -> @Int)
             "BODY", f"if @Nat.0 - {right} == {value} then {{ 1 }} "
             "else { 0 }")
         assert _observe(source, "f", [1, 2 ** 63, 1]).run == "ran:1"
+
+
+#: What a tripped `@Nat`-subtraction guard reports (#1479).
+_UNDERFLOW = "would be negative"
+#: A `@Nat` one above `i64.MAX`: its bits are those of a negative i64.
+_BIG = 2 ** 63
+
+
+def _sub_program(params: str, ret: str, body: str, *,
+                 requires: str = "true", ensures: str = "true") -> str:
+    return (
+        f"public fn f({params} -> @{ret})\n  requires({requires})\n"
+        f"  ensures({ensures})\n  effects(pure)\n{{\n  {body}\n}}\n"
+    )
+
+
+def _compile_checked(source: str) -> object:
+    """Check and compile *source* as `vera run` does, without verifying —
+    for cells that ask only what the module computes."""
+    program, arts = _artifacts(source, "p.vera")
+    compiled = codegen_compile(
+        program, source=source, file="p.vera",
+        expr_semantic_types=arts.expr_semantic_types,
+        expr_target_types=arts.expr_target_types,
+    )
+    errors = [d for d in compiled.diagnostics if d.severity == "error"]
+    assert not errors, [d.description[:80] for d in errors]
+    return compiled
+
+
+def _run(compiled: object, args: list[int]) -> str:
+    try:
+        return f"ran:{execute(compiled, fn_name='f', args=args).value}"
+    except Exception as exc:  # noqa: BLE001 — the trap IS the observation
+        return str(exc)
+
+
+#: (label, parameters, return type, body, arguments, what the run does).
+#: Every value above `i64.MAX` here is one whose bits are a negative i64's,
+#: and every negative one is one whose bits are a u64 above `i64.MAX`, so no
+#: cell passes under a comparison that reads either operand's bits one fixed
+#: way.  A result above `i64.MAX` is compared inside the program rather
+#: than returned: a `@Nat` return of an operand holding a literal
+#: subtraction keeps its signed `>= 0` check, which refuses it (#1504).
+_OPERAND_VALUE_CELLS = [
+    # The review's rows (PR #1537): one flag for the whole subtraction.
+    ("an if over a negative and a small literal, left above i64.MAX",
+     "@Nat, @Bool", "Nat", "@Nat.0 - (if @Bool.0 then { 0 - 3 } else { 1 })",
+     [_BIG, 0], f"ran:{_BIG - 1}"),
+    ("an if over a negative and a small literal, its negative arm",
+     "@Nat, @Bool", "Nat", "@Nat.0 - (if @Bool.0 then { 0 - 3 } else { 1 })",
+     [2, 1], "ran:5"),
+    ("an if over a negative literal and one above i64.MAX, the large arm",
+     "@Nat, @Bool", "Nat",
+     f"@Nat.0 - (if @Bool.0 then {{ 0 - 3 }} else {{ {_U64_MAX} }})",
+     [5, 0], _UNDERFLOW),
+    ("an if over a negative literal and one above i64.MAX, its negative arm",
+     "@Nat, @Bool", "Nat",
+     f"@Nat.0 - (if @Bool.0 then {{ 0 - 3 }} else {{ {_U64_MAX} }})",
+     [5, 1], "ran:8"),
+    ("an if over a negative literal and a slot above i64.MAX, compared",
+     "@Nat, @Nat, @Bool", "Bool",
+     "@Nat.1 - (if @Bool.0 then { 0 - 3 } else { @Nat.0 }) == "
+     "9223372036854775809", [1, _BIG, 0], _UNDERFLOW),
+    # The same join on the right, each arm and each side of i64.MAX.
+    ("an if over a negative literal and a slot, left above i64.MAX",
+     "@Nat, @Nat, @Bool", "Nat",
+     "@Nat.1 - (if @Bool.0 then { 0 - 3 } else { @Nat.0 })",
+     [_BIG, 1, 0], f"ran:{_BIG - 1}"),
+    ("an if over a negative literal and a slot, its negative arm",
+     "@Nat, @Nat, @Bool", "Nat",
+     "@Nat.1 - (if @Bool.0 then { 0 - 3 } else { @Nat.0 })",
+     [5, 2, 1], "ran:8"),
+    ("an if over a negative literal and a slot, an underflow",
+     "@Nat, @Nat, @Bool", "Nat",
+     "@Nat.1 - (if @Bool.0 then { 0 - 3 } else { @Nat.0 })",
+     [2, 5, 0], _UNDERFLOW),
+    ("a match over a negative literal and a slot, left above i64.MAX",
+     "@Nat, @Nat, @Bool", "Nat",
+     "@Nat.1 - (match @Bool.0 {\n    true -> 0 - 3,\n"
+     "    false -> @Nat.0\n  })", [_BIG, 1, 0], f"ran:{_BIG - 1}"),
+    ("a match over a negative literal and a slot, right above i64.MAX",
+     "@Nat, @Nat, @Bool", "Nat",
+     "@Nat.1 - (match @Bool.0 {\n    true -> 0 - 3,\n"
+     "    false -> @Nat.0\n  })", [1, _BIG, 0], _UNDERFLOW),
+    ("a block around the if, left above i64.MAX",
+     "@Nat, @Nat, @Bool", "Nat",
+     "@Nat.1 - { if @Bool.0 then { 0 - 3 } else { @Nat.0 } }",
+     [_BIG, 1, 0], f"ran:{_BIG - 1}"),
+    # ... and on the left.
+    ("on the left, a slot above i64.MAX",
+     "@Nat, @Nat, @Bool", "Nat",
+     "(if @Bool.0 then { 0 - 3 } else { @Nat.1 }) - @Nat.0",
+     [_BIG, 1, 0], f"ran:{_BIG - 1}"),
+    ("on the left, the negative arm",
+     "@Nat, @Nat, @Bool", "Nat",
+     "(if @Bool.0 then { 0 - 3 } else { @Nat.1 }) - @Nat.0",
+     [5, 2, 1], _UNDERFLOW),
+    ("on the left, a literal above i64.MAX",
+     "@Nat, @Bool", "Bool",
+     f"(if @Bool.0 then {{ 0 - 3 }} else {{ {_U64_MAX} }}) - @Nat.0 == "
+     f"{_U64_MAX - 5}", [5, 0], "ran:1"),
+    ("on the left, a literal above i64.MAX, the negative arm",
+     "@Nat, @Bool", "Bool",
+     f"(if @Bool.0 then {{ 0 - 3 }} else {{ {_U64_MAX} }}) - @Nat.0 == 0",
+     [5, 1], _UNDERFLOW),
+    ("on both sides, two negative arms in order",
+     "@Nat, @Nat, @Bool, @Bool", "Nat",
+     "(if @Bool.1 then { 0 - 3 } else { @Nat.1 }) - "
+     "(if @Bool.0 then { 0 - 5 } else { @Nat.0 })", [7, 7, 1, 1], "ran:2"),
+    ("on both sides, two negative arms out of order",
+     "@Nat, @Nat, @Bool, @Bool", "Nat",
+     "(if @Bool.1 then { 0 - 5 } else { @Nat.1 }) - "
+     "(if @Bool.0 then { 0 - 3 } else { @Nat.0 })", [7, 7, 1, 1], _UNDERFLOW),
+    # A pure-literal operand beside a slot above i64.MAX (CodeRabbit's row).
+    ("a pure-literal subtraction beside a slot above i64.MAX",
+     "@Nat", "Bool", "@Nat.0 - (0 - 3) == 9223372036854775816",
+     [_BIG + 5], "ran:1"),
+    ("a pure-literal subtraction on the left",
+     "@Nat", "Nat", "(0 - 3) - @Nat.0", [0], _UNDERFLOW),
+    # A guarded `@Nat` subtraction as an operand holds no negative value.
+    ("a guarded subtraction on the right, left above i64.MAX",
+     "@Nat, @Nat", "Nat", "@Nat.1 - (@Nat.0 - (0 - 3))", [_BIG, 1],
+     f"ran:{_BIG - 4}"),
+    ("a guarded subtraction on the right, an underflow",
+     "@Nat, @Nat", "Nat", "@Nat.1 - (@Nat.0 - (0 - 3))", [2, 1], _UNDERFLOW),
+    ("a guarded subtraction on the left, above i64.MAX",
+     "@Nat, @Nat", "Bool", "(@Nat.1 - (0 - 3)) - @Nat.0 == "
+     "9223372036854775810", [_BIG, 1], "ran:1"),
+    # Arithmetic over a genuine `@Nat` and a negative literal (#1544): the
+    # sign of what it computes follows its operands.
+    ("an addition of a negative literal, left above i64.MAX",
+     "@Nat, @Nat", "Bool",
+     "@Nat.0 - (@Nat.1 + (0 - 3)) == 9223372036854775810", [1, _BIG],
+     "ran:1"),
+    ("a division by a negative literal, left above i64.MAX",
+     "@Nat, @Nat", "Bool",
+     "@Nat.1 - (@Nat.0 / (0 - 3)) == 9223372036854775811", [_BIG, 9],
+     "ran:1"),
+    ("a product with a negative literal, left above i64.MAX",
+     "@Nat, @Nat", "Bool",
+     "@Nat.0 - (@Nat.1 * (0 - 1)) == 9223372036854775809", [1, _BIG],
+     "ran:1"),
+    ("a product with a negative literal that is zero",
+     "@Nat, @Nat", "Nat", "@Nat.0 - ((@Nat.1 * (0 - 1)) + 5)", [0, 2],
+     _UNDERFLOW),
+    # A literal-only sum at the signed width: an i64, whose sign bit is its
+    # sign — not its operands' (-3 + i64.MAX is positive).
+    ("a literal-only sum at the signed width, positive",
+     "@Nat, @Bool, @Bool", "Nat",
+     "@Nat.0 - ((if @Bool.1 then { 0 - 3 } else { 5 }) + "
+     "(if @Bool.0 then { 0 - 3 } else { 9223372036854775807 }))",
+     [5, 1, 0], _UNDERFLOW),
+    ("a literal-only sum at the signed width, negative",
+     "@Nat, @Bool, @Bool", "Nat",
+     "@Nat.0 - ((if @Bool.1 then { 0 - 3 } else { 5 }) + "
+     "(if @Bool.0 then { 0 - 3 } else { 9223372036854775807 }))",
+     [5, 1, 1], "ran:11"),
+    # ... and over two genuine operands it stays a u64, whatever bits the
+    # signed division leaves (#1504): `u64.MAX / 1` is u64.MAX, not -1.
+    ("a division of two genuine operands, above i64.MAX",
+     "@Nat, @Nat", "Nat", "@Nat.1 - (@Nat.0 / 1)", [5, _U64_MAX],
+     _UNDERFLOW),
+    ("an addition of either sign on the right, above i64.MAX",
+     "@Nat, @Nat, @Bool", "Nat",
+     "@Nat.0 - (@Nat.1 + (if @Bool.0 then { 0 - 3 } else { 5 }))",
+     [_BIG, 0, 0], _UNDERFLOW),
+    ("an addition of either sign on the right, negative",
+     "@Nat, @Nat, @Bool", "Nat",
+     "@Nat.0 - (@Nat.1 + (if @Bool.0 then { 0 - 3 } else { 5 }))",
+     [1, 5, 1], "ran:7"),
+    ("an addition of either sign on the left, above i64.MAX",
+     "@Nat, @Nat, @Bool", "Bool",
+     "(@Nat.1 + (if @Bool.0 then { 0 - 3 } else { 5 })) - @Nat.0 == "
+     "9223372036854775813", [_BIG, 0, 0], "ran:1"),
+    ("an addition of either sign on the left, negative",
+     "@Nat, @Nat, @Bool", "Nat",
+     "(@Nat.1 + (if @Bool.0 then { 0 - 3 } else { 5 })) - @Nat.0",
+     [1, 0, 1], _UNDERFLOW),
+    # Signs recorded inside an arm: a guarded subtraction that records its
+    # own, an addition and a product whose sign is their operands'.
+    ("a join holding a guarded subtraction over a join, left above i64.MAX",
+     "@Nat, @Nat, @Bool", "Nat",
+     "@Nat.1 - (if @Bool.0 then { @Nat.0 - (if @Bool.0 then { 0 - 3 } "
+     "else { @Nat.0 }) } else { 0 - 5 })", [_BIG, 1, 1], f"ran:{_BIG - 4}"),
+    ("a join holding a guarded subtraction over a join, an underflow",
+     "@Nat, @Nat, @Bool", "Nat",
+     "@Nat.1 - (if @Bool.0 then { @Nat.0 - (if @Bool.0 then { 0 - 3 } "
+     "else { @Nat.0 }) } else { 0 - 5 })", [1, _BIG, 1], _UNDERFLOW),
+    ("a join holding a guarded subtraction over a join, its other arm",
+     "@Nat, @Nat, @Bool", "Nat",
+     "@Nat.1 - (if @Bool.0 then { @Nat.0 - (if @Bool.0 then { 0 - 3 } "
+     "else { @Nat.0 }) } else { 0 - 5 })", [5, 2, 0], "ran:10"),
+    ("an arm adding a negative literal",
+     "@Nat, @Nat, @Bool", "Nat",
+     "@Nat.1 - (if @Bool.0 then { @Nat.0 + (0 - 3) } else { @Nat.0 })",
+     [5, 1, 1], "ran:7"),
+    ("an arm adding a negative literal, the other arm above i64.MAX",
+     "@Nat, @Nat, @Bool", "Nat",
+     "@Nat.1 - (if @Bool.0 then { @Nat.0 + (0 - 3) } else { @Nat.0 })",
+     [1, _BIG, 0], _UNDERFLOW),
+    ("an arm multiplying by a negative literal",
+     "@Nat, @Nat, @Bool", "Nat",
+     "@Nat.1 - (if @Bool.0 then { @Nat.0 * (0 - 1) } else { @Nat.0 })",
+     [5, 1, 1], "ran:6"),
+    ("an arm multiplying by a negative literal, to zero",
+     "@Nat, @Nat, @Bool", "Nat",
+     "@Nat.1 - (if @Bool.0 then { @Nat.0 * (0 - 1) } else { @Nat.0 })",
+     [5, 0, 1], "ran:5"),
+    ("an arm multiplying by a negative literal, the other arm above i64.MAX",
+     "@Nat, @Nat, @Bool", "Nat",
+     "@Nat.1 - (if @Bool.0 then { @Nat.0 * (0 - 1) } else { @Nat.0 })",
+     [_BIG, 1, 0], f"ran:{_BIG - 1}"),
+    # A literal-only subtraction that wraps to a negative value or to one
+    # above `i64.MAX` from the same kind of bits: its sign is its operands'
+    # order.
+    ("a wrapping literal subtraction on the right, its large value",
+     "@Nat, @Bool", "Nat",
+     f"@Nat.0 - ((if @Bool.0 then {{ 0 }} else {{ {_U64_MAX} }}) - 3)",
+     [2, 0], _UNDERFLOW),
+    ("a wrapping literal subtraction on the right, its negative value",
+     "@Nat, @Bool", "Nat",
+     f"@Nat.0 - ((if @Bool.0 then {{ 0 }} else {{ {_U64_MAX} }}) - 3)",
+     [2, 1], "ran:5"),
+    ("a wrapping literal subtraction on the left, its negative value",
+     "@Nat, @Bool", "Nat",
+     f"((if @Bool.0 then {{ 0 }} else {{ {_U64_MAX} }}) - 3) - @Nat.0",
+     [2, 1], _UNDERFLOW),
+    ("a wrapping literal subtraction on the left, its large value",
+     "@Nat, @Bool", "Bool",
+     f"((if @Bool.0 then {{ 0 }} else {{ {_U64_MAX} }}) - 3) - @Nat.0 == "
+     f"{_U64_MAX - 5}", [2, 0], "ran:1"),
+]
+
+
+class TestASubtractionOperandIsReadAsItsValue:
+    """The `@Nat`-subtraction guard traps exactly where the left operand's
+    value is below the right's (#1503).
+
+    An operand's bits do not say which value they stand for once a
+    literal-only part of it can be negative: its static type is `@Nat`, and
+    -3 and `2^64 - 3` are one i64.  So each operand is read as the value it
+    holds: a genuine `@Nat` — a slot, a call, a guarded subtraction, a
+    literal — as a u64; a literal-only value that can be negative, and a
+    division's or a signed operation's result, as an i64; an unsigned sum or
+    product by its operands' signs, which the operation's own check leaves
+    exact; and an operand that joins kinds (`if b then { 0 - 3 } else
+    { @Nat.0 }`, a literal above `i64.MAX` in the other arm) by the arm that
+    produced it, which records its sign.  Where one value is negative the
+    guard traps iff it is the left one; otherwise it compares the u64s.
+
+    One comparison for the whole subtraction, signed whenever either operand
+    held a negative literal, misread every other value above `i64.MAX`: it
+    trapped `2^63 - 1` at a Tier-1 site and returned 6 for
+    `5 - (2^64 - 1)` (PR #1537 review).  Unsigned throughout, as on the
+    release branch, it trapped `@Nat.0 - (0 - 3)`, which is `@Nat.0 + 3`.
+    """
+
+    @pytest.mark.parametrize(
+        ("label", "params", "ret", "body", "args", "expected"),
+        _OPERAND_VALUE_CELLS, ids=[c[0] for c in _OPERAND_VALUE_CELLS])
+    def test_the_run(self, label: str, params: str, ret: str, body: str,
+                     args: list[int], expected: str) -> None:
+        compiled = _compile_checked(_sub_program(params, ret, body))
+        run = _run(compiled, args)
+        if expected == _UNDERFLOW:
+            assert _UNDERFLOW in run, run
+        else:
+            assert run == expected, run
+
+
+class TestATierOneSubtractionNeverTraps:
+    """Where `vera verify` proves a `@Nat` subtraction's `lhs >= rhs` at
+    Tier 1, and an `ensures` stating what it returns, the run returns that
+    (#1503).  Every cell's proof covers an operand above `i64.MAX` beside a
+    literal that can be negative, where one comparison flag for the whole
+    subtraction trapped: a Tier-1 site whose guard fires, which spec
+    §11.2.1 rules out (PR #1537 review)."""
+
+    @pytest.mark.parametrize(
+        ("params", "ret", "requires", "ensures", "body", "args", "value"), [
+            ("@Nat, @Bool", "Nat", "@Nat.0 != 0",
+             "@Bool.0 || @Nat.result + 1 == @Nat.0",
+             "@Nat.0 - (if @Bool.0 then { 0 - 3 } else { 1 })",
+             [_BIG, 0], _BIG - 1),
+            ("@Nat", "Bool", "true", "@Bool.result",
+             "@Nat.0 - (0 - 3) == @Nat.0 + 3", [_BIG + 5], 1),
+            ("@Nat, @Nat, @Bool", "Nat", "@Nat.0 == 1 && @Nat.1 != 0",
+             "@Bool.0 || @Nat.result + 1 == @Nat.1",
+             "@Nat.1 - (if @Bool.0 then { 0 - 3 } else { @Nat.0 })",
+             [_BIG, 1, 0], _BIG - 1),
+            ("@Nat, @Nat, @Bool", "Nat",
+             "@Bool.0 == false && @Nat.0 == 1 && @Nat.1 != 0",
+             "@Nat.result + 1 == @Nat.1",
+             "(if @Bool.0 then { 0 - 3 } else { @Nat.1 }) - @Nat.0",
+             [_BIG, 1, 0], _BIG - 1),
+            ("@Nat, @Nat", "Nat",
+             "@Nat.0 == 1 && @Nat.1 == 9223372036854775808",
+             "@Nat.result == 9223372036854775804",
+             "@Nat.1 - (@Nat.0 - (0 - 3))", [_BIG, 1], _BIG - 4),
+            ("@Nat, @Nat", "Bool",
+             "@Nat.0 == 9 && @Nat.1 == 9223372036854775808", "@Bool.result",
+             "@Nat.1 - (@Nat.0 / (0 - 3)) == 9223372036854775811",
+             [_BIG, 9], 1),
+            ("@Nat, @Nat, @Bool", "Bool",
+             "@Bool.0 == false && @Nat.0 == 0 && "
+             "@Nat.1 == 9223372036854775808", "@Bool.result",
+             "(@Nat.1 + (if @Bool.0 then { 0 - 3 } else { 5 })) - @Nat.0 "
+             "== 9223372036854775813", [_BIG, 0, 0], 1),
+        ], ids=["an if over a negative and a small literal",
+                "a pure-literal subtraction", "an if with a slot arm",
+                "an if with a slot arm on the left",
+                "a guarded subtraction", "a division by a negative literal",
+                "an addition whose negative arm is excluded"])
+    def test_proved_and_returned(
+        self, params: str, ret: str, requires: str, ensures: str, body: str,
+        args: list[int], value: int,
+    ) -> None:
+        observed = _observe(
+            _sub_program(params, ret, body, requires=requires,
+                         ensures=ensures), "f", args)
+        assert observed.errors == (), observed.obligations
+        statuses = {(kind, status)
+                    for kind, status, _line, _col in observed.obligations
+                    if kind in ("nat_sub", "ensures")}
+        assert statuses == {("nat_sub", "verified"),
+                            ("ensures", "verified")}, observed.obligations
+        assert observed.run == f"ran:{value}", observed.run
+
+
+#: An operand of the matrix's subtraction: its source over the slot ``{N}``,
+#: the flag ``{B}`` and the negative literal ``{K}`` it reads, and its value
+#: given theirs.  Every kind of reading an operand can take is here: a u64
+#: (a slot, a literal above `i64.MAX`, a guarded subtraction), an i64 (a
+#: negative literal, and a join of one with a small literal), and a join
+#: that holds both (with a slot, or with a literal above `i64.MAX`).
+_OPERAND_FORMS: dict[str, tuple[str, object]] = {
+    "a slot": ("{N}", lambda n, b, k: n),
+    "a literal above i64.MAX": (str(_U64_MAX), lambda n, b, k: _U64_MAX),
+    "a negative literal": ("0 - {K}", lambda n, b, k: -k),
+    "an if of a negative and a small literal":
+        ("if {B} then {{ 0 - {K} }} else {{ 2 }}",
+         lambda n, b, k: -k if b else 2),
+    "an if of a negative literal and a slot":
+        ("if {B} then {{ 0 - {K} }} else {{ {N} }}",
+         lambda n, b, k: -k if b else n),
+    "a match of a negative literal and a slot":
+        ("match {B} {{ true -> 0 - {K}, false -> {N} }}",
+         lambda n, b, k: -k if b else n),
+    "an if of a negative literal and one above i64.MAX":
+        ("if {B} then {{ 0 - {K} }} else {{ " + str(_U64_MAX) + " }}",
+         lambda n, b, k: -k if b else _U64_MAX),
+    "a guarded subtraction of a negative literal":
+        ("{N} - (0 - {K})", lambda n, b, k: n + k),
+}
+#: The forms that carry `@Nat` provenance: a subtraction is guarded only
+#: where one of its operands does.
+_GENUINE_FORMS = frozenset({
+    "a slot", "an if of a negative literal and a slot",
+    "a match of a negative literal and a slot",
+    "a guarded subtraction of a negative literal",
+})
+_OPERAND_PAIRS = [
+    (left, right) for left in _OPERAND_FORMS for right in _OPERAND_FORMS
+    if left in _GENUINE_FORMS or right in _GENUINE_FORMS
+]
+
+
+class TestEveryOperandPairIsReadByItsValue:
+    """The subtraction guard over every pair of operand forms, against a
+    reference that computes the difference over unbounded integers.
+
+    ``f(@Nat, @Nat, @Nat, @Bool, @Bool -> @Bool)`` returns
+    ``(L) - (R) == @Nat.0``: the left form reads ``@Nat.2`` and ``@Bool.1``
+    and a -3, the right form ``@Nat.1`` and ``@Bool.0`` and a -5, and
+    ``@Nat.0`` is passed the reference's difference.  Each slot takes a value
+    on each side of `i64.MAX` and each flag both values, so a comparison that
+    reads any operand's bits one fixed way fails a cell: a negative
+    difference must trap, and every other must come back equal.  A
+    difference above the u64 range is not this guard's question and is not
+    run."""
+
+    @pytest.mark.parametrize(("left", "right"), _OPERAND_PAIRS,
+                             ids=[f"{a} - {b}" for a, b in _OPERAND_PAIRS])
+    def test_every_value(self, left: str, right: str) -> None:
+        import itertools
+
+        l_src, l_val = _OPERAND_FORMS[left]
+        r_src, r_val = _OPERAND_FORMS[right]
+        body = (f"({l_src.format(N='@Nat.2', B='@Bool.1', K=3)}) - "
+                f"({r_src.format(N='@Nat.1', B='@Bool.0', K=5)}) == @Nat.0")
+        compiled = _compile_checked(
+            _sub_program("@Nat, @Nat, @Nat, @Bool, @Bool", "Bool", body))
+        wrong: list[str] = []
+        ran = 0
+        for n_l, n_r, b_l, b_r in itertools.product(
+                (7, _BIG + 7), (4, _BIG), (0, 1), (0, 1)):
+            diff = (l_val(n_l, b_l, 3)  # type: ignore[operator]
+                    - r_val(n_r, b_r, 5))  # type: ignore[operator]
+            if diff > _U64_MAX:
+                continue
+            ran += 1
+            run = _run(compiled, [n_l, n_r, max(diff, 0), b_l, b_r])
+            ok = (_UNDERFLOW in run) if diff < 0 else run == "ran:1"
+            if not ok:
+                wrong.append(f"{(n_l, n_r, b_l, b_r)}: {diff} -> {run[:60]}")
+        assert ran, "no cell ran"
+        assert not wrong, wrong
 
 
 class TestANatReturnRefusesAnUnderflowItDoesNotGuard:
@@ -1515,11 +1929,21 @@ def _main_module(imports: str, params: str, body: str) -> str:
     )
 
 
+_T = TypeVar("T")
+_ARR_T = AdtType("Array", (_T,))
+_PURE = PureEffectRow()
+
+
+def _state(arg: Type) -> ConcreteEffectRow:
+    return ConcreteEffectRow(frozenset({EffectInstance("State", (arg,))}))
+
+
 class TestAGenericFunctionDoorDeclinesALiteralsInstantiation:
     """The generic function door records no target for a composite argument
     carrying a pure-literal subtraction when the instantiation it inferred
-    from that argument ends at the call — the constructor door's rule, at
-    the door #747 opened (PR #1537 review).  `array_length([0 - 1, 5])`
+    from that argument ends at the call — when nothing else in the callee's
+    signature is typed by it — the constructor door's rule, at the door #747
+    opened (PR #1537 review).  `array_length([0 - 1, 5])`
     infers `T = Nat` from `0 - 1`, which the checker types bottom-up as
     `Nat`; recorded as the literal's target, the construction-position
     element leg (#1440) refused -1 with E503 and trapped on it, where
@@ -1584,6 +2008,190 @@ public fn f(@Nat, @Bool -> @Nat)
             "BODY", "let @Array<Nat> = array_reverse([0 - 1, 5]);\n"
             "  @Array<Nat>.0[0]"), "f", [0, 1])
         assert "E503" in observed.errors, observed.obligations
+
+    _READER_PROGRAM = """type Pred<T> = fn(T -> Bool) effects(pure);
+
+type Maker<T> = fn(Nat -> T) effects(pure);
+
+private forall<T> fn any_of(@Array<T>, @Pred<T> -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_any(@Array<T>.0, @Pred<T>.0)
+}
+
+private forall<T> fn grow(@Array<T>, @Maker<T> -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_length(array_append(@Array<T>.0, apply_fn(@Maker<T>.0, 3)))
+}
+
+private forall<T> fn count_nat(@Array<Nat>, @T -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_length(@Array<Nat>.0)
+}
+
+private forall<T> fn paired(@Tuple<Array<T>, T> -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  1
+}
+
+public fn f(@Nat -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  BODY
+}
+"""
+
+    @pytest.mark.parametrize("body", [
+        "array_any([0 - 1, 5], fn(@Nat -> @Bool) effects(pure) {\n"
+        "    @Nat.0 == 18446744073709551615\n  })",
+        "array_all([0 - 1, 5], fn(@Nat -> @Bool) effects(pure) {\n"
+        "    @Nat.0 != 18446744073709551615\n  })",
+        "let @Array<Nat> = array_map([0 - 1, 5], fn(@Nat -> @Nat) "
+        "effects(pure) {\n    @Nat.0\n  });\n"
+        "  @Array<Nat>.0[0] == 18446744073709551615",
+        "array_length(array_mapi([0 - 1, 5], fn(@Nat, @Nat -> @Nat) "
+        "effects(pure) {\n    @Nat.1\n  })) == 2",
+        "array_fold([0 - 1, 5], 0, fn(@Nat, @Nat -> @Nat) effects(pure) {\n"
+        "    @Nat.1 + @Nat.0\n  }) == 4",
+        "any_of([0 - 1, 5], fn(@Nat -> @Bool) effects(pure) {\n"
+        "    @Nat.0 == 18446744073709551615\n  })",
+        "grow([0 - 1, 5], fn(@Nat -> @Nat) effects(pure) {\n"
+        "    @Nat.0\n  }) == 3",
+        "count_nat([0 - 1, 5], 1) == 2",
+    ], ids=["array_any's callback", "array_all's callback",
+            "array_map's callback", "array_mapi's callback",
+            "array_fold's callback", "a user generic's aliased callback",
+            "a user generic's callback result", "a concrete formal"])
+    def test_a_target_read_past_the_argument_is_kept(
+        self, body: str,
+    ) -> None:
+        """The element type inferred from `[0 - 1, 5]` also types a callback
+        parameter or result, so the -1 would reach a `@Nat` there — the
+        callback's parameter read it as 18446744073709551615, in a program
+        that verified clean (PR #1537 review).  The door keeps the target,
+        as the base does: E503, and the guard refuses the -1.  So does a
+        formal with no type variable, whose type is the declaration's."""
+        observed = _observe(self._READER_PROGRAM.replace("BODY", body), "f",
+                            [0])
+        assert "E503" in observed.errors, observed.obligations
+        assert _NAT_GUARD in observed.run, observed.run
+
+    def test_an_instantiation_the_formal_reads_twice_keeps_its_target(
+        self,
+    ) -> None:
+        """`paired(@Tuple<Array<T>, T>)` reads its `T` at two positions of
+        one formal, so the element -1 and the `@Nat` beside it share an
+        instantiation: the door keeps the target and `vera verify` refuses
+        the -1, as at the base."""
+        observed = _observe(self._READER_PROGRAM.replace(
+            "BODY", "paired(Tuple([0 - 1, 5], 18446744073709551615)) == 1"),
+            "f", [0])
+        assert "E503" in observed.errors, observed.obligations
+
+    def test_an_int_callback_keeps_the_literal_s_instantiation(self) -> None:
+        """A PIN of the residual: the callback is typed `@Int`, but the
+        element type the door records is the one inferred from the literal,
+        `Nat`, so the -1 is refused as at the base, where `main` returns
+        true.  Typing a literal-only expression by its value is #1541's."""
+        observed = _observe(self._READER_PROGRAM.replace(
+            "BODY", "array_any([0 - 1, 5], fn(@Int -> @Bool) effects(pure) "
+            "{\n    @Int.0 < 0\n  })"), "f", [0])
+        assert "E503" in observed.errors, observed.obligations
+
+    def test_every_generic_builtin_is_read_by_its_signature(self) -> None:
+        """Which formals the door declines is read off each callee's
+        signature, not listed: a formal's inferred instantiation ends at the
+        call iff every type variable it mentions occurs once in the whole
+        signature — in no other parameter (a callback's parameters and
+        result included), not in the result or the effect row, and not
+        twice in the formal itself.  Asked of every generic built-in against
+        this file's own walk of the signature."""
+        from vera.checker.calls import _instantiation_ends_at_formal
+
+        def occurrences(ty: object, out: list[str]) -> None:
+            if isinstance(ty, TypeVar):
+                out.append(ty.name)
+            elif isinstance(ty, AdtType):
+                for arg in ty.type_args:
+                    occurrences(arg, out)
+            elif isinstance(ty, FunctionType):
+                for param in ty.params:
+                    occurrences(param, out)
+                occurrences(ty.return_type, out)
+                effects(ty.effect, out)
+            elif isinstance(ty, RefinedType):
+                occurrences(ty.base, out)
+
+        def effects(row: object, out: list[str]) -> None:
+            if isinstance(row, ConcreteEffectRow):
+                for inst in row.effects:
+                    for arg in inst.type_args:
+                        occurrences(arg, out)
+
+        declined: set[str] = set()
+        kept: set[str] = set()
+        for name, info in TypeEnv().functions.items():
+            if not info.forall_vars:
+                continue
+            everywhere: list[str] = []
+            for param in info.param_types:
+                occurrences(param, everywhere)
+            occurrences(info.return_type, everywhere)
+            effects(info.effect, everywhere)
+            for index, formal in enumerate(info.param_types):
+                mine: list[str] = []
+                occurrences(formal, mine)
+                expected = bool(mine) and all(
+                    everywhere.count(var) == 1 for var in mine)
+                assert _instantiation_ends_at_formal(info, index) == expected, (
+                    name, index)
+                (declined if expected else kept).add(f"{name}#{index}")
+        assert {"array_length#0", "map_size#0",
+                "set_size#0"} <= declined, declined
+        assert {"array_any#0", "array_map#0", "array_fold#0",
+                "array_reverse#0", "map_contains#1"} <= kept, kept
+
+    @pytest.mark.parametrize(("params", "ret", "effect", "ends"), [
+        ((_ARR_T,), NAT, _PURE, True),
+        ((_ARR_T, FunctionType((_T,), BOOL, _PURE)), NAT, _PURE, False),
+        ((_ARR_T, FunctionType((NAT,), _T, _PURE)), NAT, _PURE, False),
+        ((_ARR_T, FunctionType((NAT,), NAT, _state(_T))), NAT, _PURE, False),
+        ((_ARR_T,), _T, _PURE, False),
+        ((_ARR_T,), NAT, _state(_T), False),
+        ((AdtType("Tuple", (_ARR_T, _T)),), NAT, _PURE, False),
+        ((_ARR_T, RefinedType(_T, ast.BoolLit(value=True))), NAT, _PURE,
+         False),
+        ((AdtType("Array", (NAT,)), _T), NAT, _PURE, False),
+    ], ids=["the formal alone", "a callback's parameter",
+            "a callback's result", "a callback's effect row", "the result",
+            "the effect row", "twice in the formal", "a refinement's base",
+            "no type variable"])
+    def test_every_position_of_a_signature_is_read(
+        self, params: tuple, ret: Type, effect: object, ends: bool,
+    ) -> None:
+        """Formal 0's instantiation ends at the call only where no other
+        position of the signature mentions its variable — each position
+        tested on its own, since no built-in has, and no program can call,
+        every shape (a generic effect row is refused at the call, E125)."""
+        from vera.checker.calls import _instantiation_ends_at_formal
+        from vera.environment import FunctionInfo
+
+        info = FunctionInfo(name="g", forall_vars=("T",), param_types=params,
+                            return_type=ret, effect=effect)  # type: ignore[arg-type]
+        assert _instantiation_ends_at_formal(info, 0) is ends
 
 
 class TestALookAheadKeepsTheBindingsDiagnostics:

@@ -67,7 +67,16 @@ The one operation that can violate the non-negativity invariant despite well-typ
 (i64.sub lhs rhs)
 ```
 
-An operand holding a literal-only part that can be negative — `0 - 3`, or an `if` with such an arm — is compared signed (`i64.lt_s`) instead: its static type is `@Nat` (two non-negative literals), but its value is negative, and the unsigned comparison would read it as a u64 above `i64.MAX` and trap `@Nat.0 - (0 - 3)`, whose value is `@Nat.0 + 3` ([#1503](https://github.com/aallan/vera/issues/1503)).
+An operand whose value can be negative leaves its bits ambiguous: a literal-only part such as `0 - 3` has static type `@Nat` (two non-negative literals) and value -3, and -3 and `2^64 - 3` are one i64.  Where either operand can be negative, the guard computes each operand's sign from how the operand makes its value and traps exactly when the left value is below the right — where exactly one of them is negative, iff that one is the left, and otherwise by the unsigned comparison above, since two non-negative values are their u64s and two negative i64s order the same way unsigned ([#1503](https://github.com/aallan/vera/issues/1503)):
+
+```wat
+(if (select (local.get $lhs_neg)                  ;; the signs differ: the negative one is below
+            (i64.lt_u lhs rhs)                     ;; they agree: the u64 order
+            (i32.ne (local.get $lhs_neg) (local.get $rhs_neg)))
+  (then … unreachable))
+```
+
+A genuine `@Nat`, a non-negative literal and a guarded `@Nat` subtraction are never negative; a literal-only value is read by its folded value; a join takes the sign of the arm that produced it, which records it as it runs, so `@Nat.1 - (if b then { 0 - 3 } else { @Nat.0 })` is compared exactly whatever `@Nat.0` holds, one above `i64.MAX` included; an addition or a multiplication at the unsigned width is negative exactly when one operand is (its overflow check traps the other mixed cases); a division or a remainder computes an i64, whose sign bit is its sign; and a subtraction no guard checks is negative where its left operand is below its right.  So the guard never traps `@Nat.0 - (0 - 3)`, whose value is `@Nat.0 + 3`, and a Tier-1 discharge of `lhs >= rhs` means it never fires.
 
 The trap names itself ([#1479](https://github.com/aallan/vera/issues/1479)): before its `unreachable` the guard signals `nat_underflow` through the `vera.trap` host import (Section 11.8.5), with a message quoting the two operands and the `requires(lhs >= rhs)` that discharges the site's obligation — `` @Nat subtraction `@Nat.1 - @Nat.0` would be negative (line 4): ... Add `requires(@Nat.1 >= @Nat.0)` ... `` — so a dynamic underflow reports its own kind and Fix paragraph rather than the generic `unreachable`.
 

@@ -283,6 +283,13 @@ class WasmContext(
         # Stack shapes recorded by a lowering that installs its own
         # scope, keyed by expression id (#1371).  See `_stack_shape_of`.
         self._scoped_expr_shape: dict[int, str] = {}
+        # Instructions a guarded @Nat subtraction has arranged to run right
+        # after an expression inside one of its operands produces its value,
+        # keyed by expression id (#1503): recording which arm of a join ran,
+        # or keeping a sub-value the operand consumes, for the sign the guard
+        # reads.  Installed and withdrawn around the operands' translation by
+        # `_translate_nat_subtraction`; applied by `translate_expr`.
+        self._nat_sub_hooks: dict[int, list[str]] = {}
         self._scoped_fns: set[str] = (
             self._known_fns if scoped_fns is None else scoped_fns
         )
@@ -1071,7 +1078,11 @@ class WasmContext(
         instructions = self._translate_expr_unscoped(expr, env)
         if instructions is None:
             return None
-        return self._scope_shadow_roots(expr, instructions)
+        scoped = self._scope_shadow_roots(expr, instructions)
+        # A guarded @Nat subtraction's record of this value (#1503): it
+        # reads the value on the stack and leaves it there.
+        recorded = self._nat_sub_hooks.get(id(expr))
+        return scoped if recorded is None else [*scoped, *recorded]
 
     def _scope_shadow_roots(
         self, expr: ast.Expr, instructions: list[str]

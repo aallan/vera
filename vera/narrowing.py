@@ -453,30 +453,6 @@ def carries_literal_subtraction(expr: ast.Expr) -> bool:
     return False
 
 
-def holds_negative_literal(expr: ast.Expr) -> bool:
-    """True iff a literal-only part of *expr*'s VALUE can be negative: a
-    maximal pure-literal subexpression (:func:`is_pure_literal`) whose
-    folded value (:func:`literal_range`) can fall below zero, reached
-    through arithmetic and the arms of a join (:func:`flow_arms`).
-
-    The `@Nat`-subtraction guard asks it of each operand.  Its static rule
-    calls `0 - 3` a `@Nat` (two non-negative literals), so an operand
-    holding one reaches the guard with a value that can be negative; an
-    unsigned comparison reads that value as a u64 above `i64.MAX` and traps
-    `@Nat.0 - (0 - 3)`, which the verifier proves at Tier 1 and whose value
-    is `@Nat.0 + 3`.  Such an operand is compared signed, and every other
-    one unsigned."""
-    if is_pure_literal(expr):
-        folded = literal_range(expr)
-        return folded is None or folded[0] < 0
-    if isinstance(expr, ast.BinaryExpr):
-        return expr.op in _INT_ARITH_OPS and (
-            holds_negative_literal(expr.left)
-            or holds_negative_literal(expr.right))
-    arms = flow_arms(expr)
-    return arms is not None and any(holds_negative_literal(a) for a in arms)
-
-
 def literal_operation_width(expr: ast.Expr) -> str | None:
     """The width an arithmetic operation of two literal-only operands runs
     at, read from their VALUES — ``"Int"`` when either can be negative —
@@ -675,6 +651,147 @@ def value_leaves(expr: ast.Expr) -> tuple[ast.Expr, ...]:
     for arm in arms:
         out += value_leaves(arm)
     return out
+
+
+# =====================================================================
+# The sign of a `@Nat` subtraction's operand (#1503)
+# =====================================================================
+#
+# The `@Nat`-subtraction guard traps where the left operand's value is below
+# the right's.  Both operands are `@Nat` to the static rule, so a guard that
+# reads their bits as u64s is right for every genuine `@Nat`; but a
+# literal-only part can hold a negative value (`0 - 3` is two non-negative
+# literals), and -3 and `2^64 - 3` are one i64.  No comparison of the bits
+# alone tells them apart once an operand can hold both a negative value and
+# one above `i64.MAX` (`if b then { 0 - 3 } else { @Nat.0 }`).  So the guard
+# learns each operand's SIGN from how its value is made, and compares the
+# bits only where the two signs agree: two non-negative values are their
+# u64s, and two negative i64s order the same way unsigned.
+
+#: The least value an `@Int` slot holds.
+I64_MIN = -(1 << 63)
+#: The largest value a `@Nat` slot holds: a u64.
+U64_MAX = (1 << 64) - 1
+
+
+@dataclass(frozen=True)
+class KnownSign:
+    """Every value the operand can produce is negative, or none is."""
+
+    negative: bool
+
+
+@dataclass(frozen=True)
+class SignBit:
+    """Every value the operand can produce lies in the i64 range, so its sign
+    is the sign bit of its bits."""
+
+
+@dataclass(frozen=True)
+class ArmSign:
+    """A join: its value is the value of whichever of *arms* — its value
+    leaves (:func:`value_leaves`), each with its own sign — produced it, so
+    that arm records the sign as it produces the value."""
+
+    arms: tuple[tuple[ast.Expr, "OperandSign"], ...]
+
+
+@dataclass(frozen=True)
+class SumSign:
+    """An addition or a multiplication at the unsigned (`@Nat`) width.
+
+    Its overflow check traps two negative operands, and a mixed pair whose
+    true result is not negative (a negative operand's bits are a u64 above
+    `i64.MAX`, so the unsigned operation carries), so what it computes is
+    negative exactly when one operand is — except a product that is zero,
+    which its own sign bit rules out."""
+
+    expr: ast.BinaryExpr
+    left: "OperandSign"
+    right: "OperandSign"
+
+
+@dataclass(frozen=True)
+class DifferenceSign:
+    """A subtraction no guard checks — a literal-only one, the #520 idiom —
+    which wraps: its value is negative exactly when its left operand's value
+    is below its right's."""
+
+    expr: ast.BinaryExpr
+    left: "OperandSign"
+    right: "OperandSign"
+
+
+OperandSign = KnownSign | SignBit | ArmSign | SumSign | DifferenceSign
+
+#: Answers "is this a `@Nat` subtraction code generation guards?" — the
+#: static rule's answer, whose guard admits no negative result.
+GuardedSubtractionOracle = Callable[[ast.Expr], bool]
+#: Answers "does this addition or multiplication run at the unsigned
+#: (`@Nat`) width?" — the width code generation compiles it at.
+UnsignedWidthOracle = Callable[[ast.BinaryExpr], bool]
+
+
+def subtraction_operand_sign(
+    expr: ast.Expr,
+    guarded: GuardedSubtractionOracle,
+    unsigned: UnsignedWidthOracle,
+) -> OperandSign:
+    """How the `@Nat`-subtraction guard learns whether an operand's value is
+    negative, read from how the operand makes it (#1503).
+
+    - A genuine `@Nat` — a slot, a call, a guarded `@Nat` subtraction, a
+      non-negative literal — is never negative (:class:`KnownSign`), and
+      neither is an operation over two such operands (a subtraction aside,
+      which is the guarded one or a literal-only one).
+    - A literal-only value is read by its folded value (:func:`literal_range`):
+      never negative, always negative, or an i64 whose sign bit is its sign
+      (:class:`SignBit`).
+    - A join takes the sign of the arm that produced it (:class:`ArmSign`).
+    - An addition or a multiplication at the unsigned width takes it from
+      its operands (:class:`SumSign`); one at the signed width, a division
+      and a remainder (`i64.div_s` / `i64.rem_s`) compute an i64 whose sign
+      bit is its sign.
+    - A subtraction no guard checks is negative where its left operand is
+      below its right (:class:`DifferenceSign`).
+
+    Every other form is a declared `@Nat` (the static rule admits no other
+    into a `@Nat` subtraction).
+    """
+    if guarded(expr):
+        return KnownSign(False)
+    if is_pure_literal(expr):
+        folded = literal_range(expr)
+        if folded is not None:
+            low, high = folded
+            if 0 <= low and high <= U64_MAX:
+                return KnownSign(False)
+            if I64_MIN <= low and high < 0:
+                return KnownSign(True)
+            if I64_MIN <= low and high <= I64_MAX:
+                return SignBit()
+    if flow_arms(expr) is not None:
+        arms = tuple((leaf, subtraction_operand_sign(leaf, guarded, unsigned))
+                     for leaf in value_leaves(expr))
+        if not arms:
+            return KnownSign(False)
+        first = arms[0][1]
+        if len(arms) == 1 or (isinstance(first, KnownSign) and all(
+                sign == first for _leaf, sign in arms)):
+            return first
+        return ArmSign(arms)
+    if isinstance(expr, ast.BinaryExpr) and expr.op in _INT_ARITH_OPS:
+        left = subtraction_operand_sign(expr.left, guarded, unsigned)
+        right = subtraction_operand_sign(expr.right, guarded, unsigned)
+        if expr.op == ast.BinOp.SUB:
+            return DifferenceSign(expr, left, right)
+        if left == KnownSign(False) and right == KnownSign(False):
+            return KnownSign(False)
+        if (expr.op in (ast.BinOp.ADD, ast.BinOp.MUL)
+                and unsigned(expr)):
+            return SumSign(expr, left, right)
+        return SignBit()
+    return KnownSign(False)
 
 
 def element_sources(collection: ast.Expr) -> tuple["ComponentSource", ...]:
