@@ -963,8 +963,10 @@ QUANTIFIER_CELLS: tuple[QuantifierCell, ...] = tuple(
 )
 
 #: A type parameter at each of the quantifier's type positions, in a generic
-#: instantiated at each of these types (#1506 review): refused where it is
-#: written, whatever the instantiation.
+#: instantiated at each of these types (#1506 review).  The position defers
+#: to the instantiation (PR #1202), so every cell outside ``_TYPE_PARAM_GAPS``
+#: is accepted and runs.  The code beside each position is the one it gives a
+#: concrete type it does not admit; no cell here asserts it.
 _TYPE_PARAM_POSITIONS = {
     "index": ("E186", "forall(@T, 3, fn(@Nat -> @Bool) effects(pure) "
                       "{ true })"),

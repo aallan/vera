@@ -312,12 +312,17 @@ def _collect_module_artifacts(
     on the codegen ones.  Two passes deriving the same diagnostics is the #1213
     disease; this one keeps the artifact it alone produces.
 
-    Cost note (PR #997 review): THIS pass is codegen-only — each of the N
-    resolved modules gets a full ``check_program`` of its own program, and
-    the pass runs only when a caller asks for artifacts, i.e. for
-    ``vera compile``/``run``/``serve``/``test``.
+    Cost note (PR #997 review): each of the N resolved modules gets a full
+    ``check_program`` of its own program, and the pass runs only when a
+    caller asks for artifacts.  Code generation reads them for imported
+    bodies (``vera compile``/``run``/``serve``/``test``), and instantiation
+    discovery for each module's own bodies (#1509), so ``vera verify``,
+    ``verify()`` when it is handed none, and the warm ``VerificationSession``
+    ask too; the session pays the pass again on each round of its
+    disclosed-set fixpoint.  :func:`typecheck_with_artifacts` lists the same
+    callers.
 
-    A module's body is not checked only on those paths.
+    A module's body is checked on every path, not only on those.
     ``ModulesMixin._register_modules`` checks each module's bodies under its
     own import filter (#1244), and that runs from ``check_program`` — so
     ``vera check``, ``vera verify`` and the warm ``VerificationSession`` all
