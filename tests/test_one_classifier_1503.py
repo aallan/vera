@@ -2601,21 +2601,17 @@ public fn f(@Nat, @Bool -> @Nat)
         self,
     ) -> None:
         """`array_reverse`'s `T` reaches its result, where the
-        instantiation is read as the result's declaration.  The -1 beside
-        the 5 means the `@Array<Nat>` context does not fix `T` (spec §4.2,
-        PR #1583 review), so `T` is the literals' `Int` and no literal is a
-        narrowing: the program returns the 5 it reads, as on `main`, and
-        reading the -1 out as a `@Nat` traps on the element's guard, where
-        `main` returned -1."""
-        program = self._PROGRAM.replace(
+        instantiation is read as the result's declaration, so the door
+        records it: the -1 a `@Nat` array would hold is refused.  The -1
+        sits beside the 5, but an array holds every element it was built
+        from, so the `@Array<Nat>` context decides `T` all the same (spec
+        §4.2, PR #1583 review) — bound as an `Array<Int>`, the -1 would
+        reach a fold unguarded (#1542).  `main` verified the program and
+        stored the -1 in the `@Array<Nat>`."""
+        observed = _observe(self._PROGRAM.replace(
             "BODY", "let @Array<Nat> = array_reverse([0 - 1, 5]);\n"
-            "  @Array<Nat>.0[INDEX]")
-        observed = _observe(program.replace("INDEX", "0"), "f", [0, 1])
-        assert observed.errors == (), observed.obligations
-        assert observed.run == "ran:5", observed.run
-        observed = _observe(program.replace("INDEX", "1"), "f", [0, 1])
-        assert observed.errors == (), observed.obligations
-        assert _NAT_GUARD in observed.run, observed.run
+            "  @Array<Nat>.0[0]"), "f", [0, 1])
+        assert "E503" in observed.errors, observed.obligations
 
     _READER_PROGRAM = """type Pred<T> = fn(T -> Bool) effects(pure);
 

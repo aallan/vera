@@ -863,6 +863,304 @@ class TestANegativeLiteralBesideTheValueRead:
             assert _run(source, "f", [0]) == 5, name
 
 
+def _fn_ensures(body: str, ret: str, ensures: str) -> str:
+    return _fn(body, ret=ret).replace("  ensures(true)\n  effects(pure)\n{\n  "
+                                      + body,
+                                      f"  ensures({ensures})\n"
+                                      "  effects(pure)\n{\n  " + body)
+
+
+# A negative literal beside a non-negative one where a collection holds
+# them (PR #1583 review).  An `Array`, a `Set` or a `Map` holds every
+# element its call was given, so under an `@Array<Nat>` context the -3
+# reaches the value, and a whole `Array<Int>` bound into it would be
+# neither obligated nor guarded (#1542): a fold, a find, a filter, a map
+# or `nat_to_string` would read the -3 out of a `@Nat` with no trap.  The
+# context therefore decides the type argument, and the -3 is refused.
+_COLLECTION_SOURCES = {
+    "rev": "array_reverse([5, {L}])",
+    "app": "array_append([{L}], 5)",
+    "cat": "array_concat([{L}], [5])",
+    "lit": "[{L}, 5]",
+    "id": "id([{L}, 5])",
+}
+
+_FOLD_LAST = ("array_fold(@Array<Nat>.0, 7, fn(@Nat, @Nat -> @Nat) "
+              "effects(pure) { if @Nat.1 == 7 then { @Nat.0 } else "
+              "{ @Nat.1 } })")
+
+# name -> (the read of `@Array<Nat>.0`, return type, ensures)
+_COLLECTION_READS = {
+    "fold_last": (_FOLD_LAST, "Nat", "true"),
+    "fold_last_pos": (_FOLD_LAST, "Nat", "@Nat.result >= 0"),
+    "find": ("match array_find(@Array<Nat>.0, fn(@Nat -> @Bool) "
+             "effects(pure) { @Nat.0 > 4 }) { Some(@Nat) -> @Nat.0, "
+             "None -> 9 }", "Nat", "true"),
+    "filter_len": ("array_length(array_filter(@Array<Nat>.0, fn(@Nat -> "
+                   "@Bool) effects(pure) { @Nat.0 > 4 }))", "Nat", "true"),
+    "all": ("if array_all(@Array<Nat>.0, fn(@Nat -> @Bool) effects(pure) "
+            "{ @Nat.0 < 10 }) then { 1 } else { 0 }", "Nat", "true"),
+    "map_id": ("let @Array<Nat> = array_map(@Array<Nat>.0, fn(@Nat -> "
+               "@Nat) effects(pure) { @Nat.0 });\n  array_fold("
+               "@Array<Nat>.0, 0, fn(@Nat, @Nat -> @Nat) effects(pure) "
+               "{ @Nat.0 })", "Nat", "true"),
+    "sum_int": ("array_fold(@Array<Nat>.0, 0, fn(@Int, @Nat -> @Int) "
+                "effects(pure) { @Int.0 + nat_to_int(@Nat.0) })", "Int",
+                "true"),
+    "str": ("string_length(array_fold(@Array<Nat>.0, \"\", fn(@String, "
+            "@Nat -> @String) effects(pure) { string_concat(@String.0, "
+            "nat_to_string(@Nat.0)) }))", "Nat", "true"),
+    "idx0": ("@Array<Nat>.0[0]", "Nat", "true"),
+}
+
+
+def _collection_cells() -> list[tuple[str, str]]:
+    cells = []
+    for lk, literal in sorted({"neg": "-3", "sub": "0 - 3"}.items()):
+        for sk, source in sorted(_COLLECTION_SOURCES.items()):
+            for rk, (read, ret, ensures) in sorted(_COLLECTION_READS.items()):
+                body = (f"let @Array<Nat> = "
+                        f"{source.replace('{L}', literal)};\n  {read}")
+                cells.append((f"{lk}-{sk}-{rk}", _NAT_PRELUDE
+                              + _fn_ensures(body, ret, ensures)))
+    return cells
+
+
+_COLLECTION_CELLS = _collection_cells()
+
+
+class TestAMixedCollectionIsRefused:
+    def test_the_matrix_generates_every_cell(self) -> None:
+        assert len(_COLLECTION_CELLS) == 2 * len(_COLLECTION_SOURCES) * len(
+            _COLLECTION_READS)
+
+    @pytest.mark.parametrize(("name", "source"), _COLLECTION_CELLS,
+                             ids=[c[0] for c in _COLLECTION_CELLS])
+    def test_refused(self, name: str, source: str) -> None:
+        assert "E503" in _codes(source), name
+
+    @pytest.mark.parametrize("body", [
+        # A `Set`'s element and a `Map`'s value and key are collections'
+        # elements too.
+        "let @Set<Nat> = set_add(set_add(set_new(), 5), 0 - 3);\n"
+        "  set_size(@Set<Nat>.0)",
+        "let @Set<Nat> = second(set_add(set_new(), 5), "
+        "set_add(set_new(), 0 - 3));\n  set_size(@Set<Nat>.0)",
+        'let @Map<String, Nat> = second(map_insert(map_new(), "a", 5), '
+        'map_insert(map_new(), "a", 0 - 3));\n  map_size(@Map<String, Nat>.0)',
+        "let @Map<Nat, Int> = map_insert(map_insert(map_new(), 5, 1), "
+        "0 - 3, 2);\n  map_size(@Map<Nat, Int>.0)",
+        # A collection reached as a component, an argument or a field.
+        "let @Tuple<Array<Nat>, Nat> = Tuple(array_reverse([0 - 3, 5]), 1);"
+        "\n  7",
+        "let @Option<Array<Nat>> = Some(array_reverse([-3, 5]));\n  7",
+        "array_length(nats_of(array_reverse([-3, 5])))",
+    ], ids=["set_add", "set_second", "map_value", "map_key", "tuple_field",
+            "option_field", "argument"])
+    def test_other_collections_and_routes(self, body: str) -> None:
+        assert "E503" in _codes(_NAT_PRELUDE + _fn(body, ret="Nat")), body
+
+
+# The accepted trade-off at a scalar position (PR #1583 review): a negative
+# literal beside a non-negative one, where the call does return the
+# negative.  It cannot be told from a call that returns the other, so it is
+# not refused; it verifies clean, and the run traps on the `@Nat` guard (or
+# a callee's refinement at entry) before the -3 is observed.  Where the
+# `@Nat` is a collection's element the same call is refused (E503).
+_TRADE_PRELUDE = _BESIDE_PRELUDE + """
+private fn at1(@Array<Nat> -> @Nat)
+  requires(array_length(@Array<Nat>.0) > 1)
+  ensures(true)
+  effects(pure)
+{
+  @Array<Nat>.0[1]
+}
+
+private fn at1_int(@Array<Nat> -> @Int)
+  requires(array_length(@Array<Nat>.0) > 1)
+  ensures(true)
+  effects(pure)
+{
+  nat_to_int(@Array<Nat>.0[1])
+}
+
+private fn total(@Array<Nat> -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_fold(@Array<Nat>.0, 0, fn(@Nat, @Nat -> @Nat) effects(pure) {
+    @Nat.0 + @Nat.1 })
+}
+
+private fn total_int(@Array<Nat> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_fold(@Array<Nat>.0, 0, fn(@Int, @Nat -> @Int) effects(pure) {
+    @Int.0 + nat_to_int(@Nat.0) })
+}
+
+private fn min_int(@Array<Nat> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_fold(@Array<Nat>.0, 100, fn(@Int, @Nat -> @Int) effects(pure) {
+    if @Nat.0 < 100 then { if nat_to_int(@Nat.0) < @Int.0 then {
+    nat_to_int(@Nat.0) } else { @Int.0 } } else { @Int.0 } })
+}
+
+private fn tsnd(@Tuple<Nat, Nat> -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Tuple<Nat, Nat>.0 { Tuple(@Nat, @Nat) -> @Nat.0 }
+}
+
+private fn tsnd_int(@Tuple<Nat, Nat> -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  match @Tuple<Nat, Nat>.0 { Tuple(@Nat, @Nat) -> nat_to_int(@Nat.0) }
+}
+
+private fn opt_get(@Option<Nat> -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  match @Option<Nat>.0 { Some(@Nat) -> nat_to_int(@Nat.0), None -> 0 }
+}
+
+private fn box_get(@Box<Nat> -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  match @Box<Nat>.0 { MkBox(@Nat) -> nat_to_int(@Nat.0) }
+}
+
+private fn nat_pos(@Nat -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  nat_to_int(@Nat.0)
+}
+
+private fn nat_lt(@Nat -> @Bool)
+  requires(true)
+  ensures(@Bool.result == (@Nat.0 < 10))
+  effects(pure)
+{
+  @Nat.0 < 10
+}
+"""
+
+# name -> (body over the literal L, return type, ensures, refused): the
+# last is whether the `@Nat` the negative reaches is a collection's element.
+_TRADE_CELLS_SPEC = {
+    "let": ("let @Nat = second(5, {L});\n  nat_to_int(@Nat.0)", "Int",
+            "true", False),
+    "let_pos": ("let @Nat = second(5, {L});\n  nat_pos(@Nat.0)", "Int",
+                "true", False),
+    "ret_nat": ("second(5, {L})", "Nat", "@Nat.result >= 0", False),
+    "ret_nat_pin": ("second(5, {L})", "Nat", "@Nat.result == 5", False),
+    "arg": ("nat_to_int(nat_of(second(5, {L})))", "Int", "true", False),
+    "arg_pos": ("nat_pos(second(5, {L}))", "Int", "true", False),
+    "arg_lt": ("if nat_lt(second(5, {L})) then { 1 } else { 0 }", "Int",
+               "true", False),
+    "destr": ("let Tuple<@Nat, @Nat> = second(Tuple(1, 2), Tuple(5, {L}));"
+              "\n  nat_to_int(@Nat.0)", "Int", "true", False),
+    "destr_pos": ("let Tuple<@Nat, @Nat> = second(Tuple(1, 2), "
+                  "Tuple(5, {L}));\n  nat_pos(@Nat.0)", "Int", "true", False),
+    "field": ("let Tuple<@Nat, @Nat> = Tuple(1, second(5, {L}));\n"
+              "  nat_to_int(@Nat.0)", "Int", "true", False),
+    "idx": ("let @Nat = array_reverse([{L}, 5])[1];\n  nat_to_int(@Nat.0)",
+            "Int", "true", False),
+    "idx_pos": ("nat_pos(array_reverse([{L}, 5])[1])", "Int", "true", False),
+    "arrelem": ("let @Array<Nat> = [second(5, {L})];\n"
+                "  nat_to_int(@Array<Nat>.0[0])", "Int", "true", False),
+    "pipe": ("let @Nat = (5) |> second({L});\n  nat_to_int(@Nat.0)", "Int",
+             "true", False),
+    "if": ("let @Nat = if @Int.0 == 1000 then { 1 } else "
+           "{ second(5, {L}) };\n  nat_to_int(@Nat.0)", "Int", "true", False),
+    "match": ("let @Nat = match @Int.0 { 1000 -> 1, _ -> second(5, {L}) };"
+              "\n  nat_to_int(@Nat.0)", "Int", "true", False),
+    "block": ("let @Nat = { second(5, {L}) };\n  nat_to_int(@Nat.0)", "Int",
+              "true", False),
+    "last": ("let @Nat = last_of([5, {L}], 1);\n  nat_to_int(@Nat.0)", "Int",
+             "true", False),
+    "tup_callee": ("let @Tuple<Nat, Nat> = second(Tuple(1, 5), "
+                   "Tuple(1, {L}));\n  tsnd_int(@Tuple<Nat, Nat>.0)", "Int",
+                   "true", False),
+    "tup_callee_nat": ("tsnd(second(Tuple(1, 5), Tuple(1, {L})))", "Nat",
+                       "true", False),
+    "opt_callee": ("let @Option<Nat> = second(Some(5), Some({L}));\n"
+                   "  opt_get(@Option<Nat>.0)", "Int", "true", False),
+    "opt_arg": ("opt_get(second(Some(5), Some({L})))", "Int", "true", False),
+    "box_callee": ("let @Box<Nat> = second(MkBox(5), MkBox({L}));\n"
+                   "  box_get(@Box<Nat>.0)", "Int", "true", False),
+    "arr_at1": ("let @Array<Nat> = array_reverse([{L}, 5]);\n"
+                "  nat_to_int(at1(@Array<Nat>.0))", "Int", "true", True),
+    "arr_at1_ret": ("at1(array_reverse([{L}, 5]))", "Nat", "true", True),
+    "arr_at1_int": ("let @Array<Nat> = array_reverse([{L}, 5]);\n"
+                    "  at1_int(@Array<Nat>.0)", "Int", "true", True),
+    "arr_total": ("total(array_reverse([{L}, 5]))", "Nat", "true", True),
+    "arr_total_int": ("total_int(array_reverse([{L}, 5]))", "Int", "true",
+                      True),
+    "arr_min": ("min_int(array_reverse([{L}, 5]))", "Int", "true", True),
+    "arr_append": ("let @Array<Nat> = array_append([5], {L});\n"
+                   "  at1_int(@Array<Nat>.0)", "Int", "true", True),
+    "arr_concat": ("let @Array<Nat> = array_concat([5], [{L}]);\n"
+                   "  at1_int(@Array<Nat>.0)", "Int", "true", True),
+    "arr_map": ("let @Array<Nat> = array_reverse([{L}, 5]);\n"
+                "  let @Array<Int> = array_map(@Array<Nat>.0, fn(@Nat -> "
+                "@Int) effects(pure) { nat_to_int(@Nat.0) });\n"
+                "  @Array<Int>.0[1]", "Int", "true", True),
+    "arr_tup": ("let @Array<Tuple<Nat, Nat>> = array_reverse([Tuple(1, {L}), "
+                "Tuple(1, 5)]);\n  tsnd_int(@Array<Tuple<Nat, Nat>>.0[1])",
+                "Int", "true", True),
+    "arr_opt": ("let @Array<Option<Nat>> = array_reverse([Some({L}), "
+                "Some(5)]);\n  opt_get(@Array<Option<Nat>>.0[1])", "Int",
+                # `Some(-3)` is built at its own `Option<Int>`, which the
+                # `Option` pattern's `@Nat` bind guards wherever it is read.
+                "true", False),
+    "tup_arr": ("let @Tuple<Array<Nat>, Nat> = Tuple(array_reverse([{L}, 5]),"
+                " 1);\n  match @Tuple<Array<Nat>, Nat>.0 { Tuple(@Array<Nat>,"
+                " @Nat) -> at1_int(@Array<Nat>.0) }", "Int", "true", True),
+    "opt_arr": ("let @Option<Array<Nat>> = Some(array_reverse([{L}, 5]));\n"
+                "  match @Option<Array<Nat>>.0 { Some(@Array<Nat>) -> "
+                "at1_int(@Array<Nat>.0), None -> 0 }", "Int", "true", True),
+}
+
+_TRADE_CELLS = [
+    (f"{lk}-{name}", _TRADE_PRELUDE + _fn_ensures(
+        body.replace("{L}", literal), ret, ensures), refused)
+    for lk, literal in sorted({"neg": "-3", "sub": "0 - 3"}.items())
+    for name, (body, ret, ensures, refused) in sorted(
+        _TRADE_CELLS_SPEC.items())
+]
+
+
+class TestTheScalarTradeOffFailsClosed:
+    @pytest.mark.parametrize(("name", "source", "refused"), _TRADE_CELLS,
+                             ids=[c[0] for c in _TRADE_CELLS])
+    def test_refused_or_trapped(self, name: str, source: str,
+                                refused: bool) -> None:
+        if refused:
+            assert "E503" in _codes(source), name
+            return
+        assert _codes(source) == [], name
+        outcome = _run(source, "f", [0])
+        assert isinstance(outcome, str) and outcome.startswith("trap"), (
+            name, outcome)
+
+
 # A literal cannot have the enclosing function's rigid type parameter:
 # inside `forall<T>` a `T` is opaque.  A literal's hole must not be
 # overwritten by `T` whichever argument comes first (PR #1583 review) —

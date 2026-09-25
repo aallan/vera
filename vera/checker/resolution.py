@@ -30,6 +30,7 @@ from vera.types import (
     Type,
     TypeVar,
     UnknownType,
+    collection_element_vars,
     contains_literal_hole,
     default_literal_holes,
     erases_to_unit,
@@ -915,9 +916,13 @@ class ResolutionMixin:
             from_expected: dict[str, Type] = {}
             self._unify_for_inference(result_type, expected, from_expected,
                                       forall_set)
+            # A variable the result holds as a collection's element type is
+            # every element the call was given (`context_may_fill`).
+            in_collection = collection_element_vars(result_type)
             for tv in holed:
                 mapping[tv] = fill_literal_holes(
-                    mapping[tv], from_expected.get(tv))
+                    mapping[tv], from_expected.get(tv),
+                    tv in in_collection)
         soft = dict(mapping)
         for tv in holed:
             mapping[tv] = default_literal_holes(mapping[tv])

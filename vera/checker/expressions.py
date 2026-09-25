@@ -1033,7 +1033,8 @@ class ExpressionsMixin:
         coll_ty = self._synth_expr(expr.collection)
         if expected is not None:
             coll_ty = self._check_in_literal_context(
-                expr.collection, coll_ty, AdtType("Array", (expected,)))
+                expr.collection, coll_ty, AdtType("Array", (expected,)),
+                element_read=True)
         idx_ty = self._synth_expr(expr.index)
         if coll_ty is None or idx_ty is None:
             return None
@@ -1209,7 +1210,9 @@ class ExpressionsMixin:
             self.env.bind(tname, resolved, "destruct")
 
     def _check_in_literal_context(self, expr: ast.Expr, ty: Type | None,
-                                  context: Type) -> Type | None:
+                                  context: Type, *,
+                                  element_read: bool = False,
+                                  ) -> Type | None:
         """*expr*, synthesized as *ty* without an expected type, checked
         again against *context* where a generic call it reaches let its
         literals fix an `Int` that *context* makes a `Nat`
@@ -1220,40 +1223,48 @@ class ExpressionsMixin:
         each literal at the type *context* gives it, where a negative one
         is a narrowing the verifier refutes (E503).  A literal the source
         builds directly is not re-checked: the destructure's or the
-        binding's own narrowing reads it where it is.  Returns the type the
-        check settled on."""
+        binding's own narrowing reads it where it is.  *element_read* is
+        whether *context* is the array an index reads one element of
+        (:meth:`_call_literal_meets_nat`).  Returns the type the check
+        settled on."""
         if (ty is None or isinstance(ty, UnknownType)
                 or contains_typevar(context)
-                or not self._call_literal_meets_nat(expr, context)):
+                or not self._call_literal_meets_nat(
+                    expr, context, element_read=element_read)):
             return ty
         rechecked = self._synth_expr(expr, expected=context)
         if rechecked is None or isinstance(rechecked, UnknownType):
             return ty
         return rechecked
 
-    def _call_literal_meets_nat(self, expr: ast.Expr, context: Type,
-                                ) -> bool:
+    def _call_literal_meets_nat(self, expr: ast.Expr, context: Type, *,
+                                element_read: bool = False) -> bool:
         """Whether a generic call that *expr* evaluates to, or builds into
         the value, fixed a type argument at `Int` from its literals' values
         where *context* holds a `Nat` (:func:`negative_literal_meets_nat`
         over the call's recorded soft result).  Read through a block's
         result, the branches of an `if` and the arms of a `match`, a
         tuple's fields, an array literal's elements, a pipe, and the array
-        an index reads."""
+        an index reads — one element of it, so that array is no collection
+        of the value (*element_read*)."""
         while isinstance(context, RefinedType):
             context = context.base
         if isinstance(expr, ast.Block):
-            return self._call_literal_meets_nat(expr.expr, context)
+            return self._call_literal_meets_nat(
+                expr.expr, context, element_read=element_read)
         if isinstance(expr, ast.IfExpr):
-            return (self._call_literal_meets_nat(expr.then_branch, context)
-                    or self._call_literal_meets_nat(expr.else_branch,
-                                                    context))
+            return any(
+                self._call_literal_meets_nat(
+                    branch, context, element_read=element_read)
+                for branch in (expr.then_branch, expr.else_branch))
         if isinstance(expr, ast.MatchExpr):
-            return any(self._call_literal_meets_nat(arm.body, context)
-                       for arm in expr.arms)
+            return any(self._call_literal_meets_nat(
+                arm.body, context, element_read=element_read)
+                for arm in expr.arms)
         if isinstance(expr, ast.IndexExpr):
             return self._call_literal_meets_nat(
-                expr.collection, AdtType("Array", (context,)))
+                expr.collection, AdtType("Array", (context,)),
+                element_read=True)
         if (isinstance(expr, ast.BinaryExpr) and expr.op == ast.BinOp.PIPE
                 and isinstance(expr.right, (ast.FnCall, ast.ModuleCall))):
             expr = expr.right
@@ -1269,7 +1280,7 @@ class ExpressionsMixin:
         if isinstance(expr, (ast.FnCall, ast.ModuleCall)):
             soft = self._literal_soft_results.get(ast.span_key(expr))
             return soft is not None and negative_literal_meets_nat(
-                soft, context)
+                soft, context, element_read=element_read)
         return False
 
     # -----------------------------------------------------------------

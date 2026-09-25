@@ -959,7 +959,9 @@ def contains_literal_hole(ty: Type) -> bool:
     return False
 
 
-def negative_literal_meets_nat(soft: Type, context: Type) -> bool:
+def negative_literal_meets_nat(soft: Type, context: Type,
+                               in_collection: bool = False,
+                               element_read: bool = False) -> bool:
     """True iff *context* holds a `Nat`, or a refinement of one, at a
     position where *soft* holds a hole the literals' values fixed at `Int`
     and a `Nat` context may fill (:func:`context_may_fill`), at any depth
@@ -972,35 +974,74 @@ def negative_literal_meets_nat(soft: Type, context: Type) -> bool:
     only checking the call against *context* puts on the record.  The
     checker admits `Int` where `Nat` is expected and leaves the
     non-negativity to the verifier, so this is the question
-    :func:`is_subtype` does not answer."""
+    :func:`is_subtype` does not answer.
+
+    *in_collection* is whether the position lies within a collection's
+    element type (:func:`context_may_fill`).  *element_read* is whether
+    *context* is the array an index reads one element of: that array's
+    own level is then no collection, since the read returns one element,
+    not all of them."""
     while isinstance(context, RefinedType):
         context = context.base
     if is_literal_hole(soft):
-        return (soft != LITERAL_HOLE and context_may_fill(soft)
+        return (soft != LITERAL_HOLE
+                and context_may_fill(soft, in_collection)
                 and isinstance(context, PrimitiveType)
                 and context.name == "Nat")
     if (isinstance(soft, AdtType) and isinstance(context, AdtType)
             and soft.name == context.name
             and len(soft.type_args) == len(context.type_args)):
-        return any(negative_literal_meets_nat(h, c)
+        within = in_collection or (
+            soft.name in COLLECTION_TYPES and not element_read)
+        return any(negative_literal_meets_nat(h, c, within)
                    for h, c in zip(soft.type_args, context.type_args))
     return False
 
 
-def context_may_fill(hole: Type) -> bool:
+#: The built-in collections, each of whose type arguments holds every
+#: element (or key) the collection was built from.
+COLLECTION_TYPES = frozenset({"Array", "Set", "Map"})
+
+
+def context_may_fill(hole: Type, in_collection: bool = False) -> bool:
     """Whether the type a call's result is expected at may decide the
-    literal hole *hole* (spec §4.2 rule 2).  Not a mixed one: a negative
-    literal beside a non-negative one at the same type argument need not
-    reach the result (`second(-3, 5)` is 5), so a `Nat` context must not
-    make the -3 a narrowing; the position takes the literals' own type,
-    `Int`, and the result is narrowed into the context as any `Int` is.
-    Where every literal there is negative the result can only be one of
-    them — a generic function has no other value of its type argument to
-    return — so the context decides it, and a `Nat` refuses it."""
-    return hole != MIXED_LITERAL_HOLE
+    literal hole *hole* (spec §4.2 rule 2).
+
+    Not a mixed one at a scalar position: a negative literal beside a
+    non-negative one at the same type argument need not reach the result
+    (`second(-3, 5)` is 5), so a `Nat` context must not make the -3 a
+    narrowing; the position takes the literals' own type, `Int`, and the
+    result is narrowed into the context as any `Int` is.  Where every
+    literal there is negative the result can only be one of them — a
+    generic function has no other value of its type argument to return —
+    so the context decides it, and a `Nat` refuses it.
+
+    A mixed hole *in_collection*, an element (or key) type of an `Array`,
+    a `Set` or a `Map`, is decided by the context as well (PR #1583
+    review): the collection holds every element its call was given, so the
+    -3 does reach the value, and a whole `Array<Int>` bound into an
+    `Array<Nat>` is neither obligated nor guarded (#1542)."""
+    return in_collection or hole != MIXED_LITERAL_HOLE
 
 
-def fill_literal_holes(ty: Type, source: Type | None) -> Type:
+def collection_element_vars(ty: Type, inside: bool = False) -> set[str]:
+    """The type variables of *ty* that occur within an element (or key)
+    type of a collection (:data:`COLLECTION_TYPES`), at any depth."""
+    if isinstance(ty, TypeVar):
+        return {ty.name} if inside else set()
+    if isinstance(ty, AdtType):
+        within = inside or ty.name in COLLECTION_TYPES
+        out: set[str] = set()
+        for arg in ty.type_args:
+            out |= collection_element_vars(arg, within)
+        return out
+    if isinstance(ty, RefinedType):
+        return collection_element_vars(ty.base, inside)
+    return set()
+
+
+def fill_literal_holes(ty: Type, source: Type | None,
+                       in_collection: bool = False) -> Type:
     """*ty* with each literal hole replaced by the `Int` or `Nat` at the
     same position of *source*.
 
@@ -1014,7 +1055,7 @@ def fill_literal_holes(ty: Type, source: Type | None) -> Type:
     a sibling of the base type then reads as its own.
     """
     if is_literal_hole(ty):
-        if not context_may_fill(ty):
+        if not context_may_fill(ty, in_collection):
             return ty
         # A refinement's integer base is the literal's type there (PR #1583
         # review): `let @Small = id(0 - 3)` over a refinement of `Nat` is
@@ -1029,8 +1070,9 @@ def fill_literal_holes(ty: Type, source: Type | None) -> Type:
     if (isinstance(ty, AdtType) and isinstance(source, AdtType)
             and ty.name == source.name
             and len(ty.type_args) == len(source.type_args)):
+        within = in_collection or ty.name in COLLECTION_TYPES
         return AdtType(ty.name, tuple(
-            fill_literal_holes(a, b)
+            fill_literal_holes(a, b, within)
             for a, b in zip(ty.type_args, source.type_args)))
     if (isinstance(ty, FunctionType) and isinstance(source, FunctionType)
             and len(ty.params) == len(source.params)):
