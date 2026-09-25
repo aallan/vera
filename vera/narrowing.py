@@ -722,7 +722,31 @@ class DifferenceSign:
     right: "OperandSign"
 
 
-OperandSign = KnownSign | SignBit | ArmSign | SumSign | DifferenceSign
+@dataclass(frozen=True)
+class QuotientSign:
+    """A division (`i64.div_s`): its value is negative exactly when one of
+    its operands is and it is not zero.
+
+    Read from the operands, as a product's sign is, and not from the
+    quotient's sign bit: a genuine `@Nat` above `i64.MAX` sets that bit, and
+    `@Nat.0 / 1` is `@Nat.0`, which is not negative."""
+
+    expr: ast.BinaryExpr
+    left: "OperandSign"
+    right: "OperandSign"
+
+
+@dataclass(frozen=True)
+class RemainderSign:
+    """A remainder (`i64.rem_s`), which takes its dividend's sign: its value
+    is negative exactly when the dividend is and it is not zero."""
+
+    expr: ast.BinaryExpr
+    dividend: "OperandSign"
+
+
+OperandSign = (KnownSign | SignBit | ArmSign | SumSign | DifferenceSign
+               | QuotientSign | RemainderSign)
 
 #: Answers "is this a `@Nat` subtraction code generation guards?" — the
 #: static rule's answer, whose guard admits no negative result.
@@ -749,9 +773,11 @@ def subtraction_operand_sign(
       (:class:`SignBit`).
     - A join takes the sign of the arm that produced it (:class:`ArmSign`).
     - An addition or a multiplication at the unsigned width takes it from
-      its operands (:class:`SumSign`); one at the signed width, a division
-      and a remainder (`i64.div_s` / `i64.rem_s`) compute an i64 whose sign
-      bit is its sign.
+      its operands (:class:`SumSign`); one at the signed width computes an
+      i64 whose sign bit is its sign.
+    - A division takes it from its operands (:class:`QuotientSign`), and a
+      remainder from its dividend (:class:`RemainderSign`): never from the
+      result's sign bit, which a genuine `@Nat` above `i64.MAX` sets.
     - A subtraction no guard checks is negative where its left operand is
       below its right (:class:`DifferenceSign`).
 
@@ -782,13 +808,18 @@ def subtraction_operand_sign(
         return ArmSign(arms)
     if isinstance(expr, ast.BinaryExpr) and expr.op in _INT_ARITH_OPS:
         left = subtraction_operand_sign(expr.left, guarded, unsigned)
+        if expr.op == ast.BinOp.MOD:
+            if left == KnownSign(False):
+                return KnownSign(False)
+            return RemainderSign(expr, left)
         right = subtraction_operand_sign(expr.right, guarded, unsigned)
         if expr.op == ast.BinOp.SUB:
             return DifferenceSign(expr, left, right)
         if left == KnownSign(False) and right == KnownSign(False):
             return KnownSign(False)
-        if (expr.op in (ast.BinOp.ADD, ast.BinOp.MUL)
-                and unsigned(expr)):
+        if expr.op == ast.BinOp.DIV:
+            return QuotientSign(expr, left, right)
+        if unsigned(expr):
             return SumSign(expr, left, right)
         return SignBit()
     return KnownSign(False)

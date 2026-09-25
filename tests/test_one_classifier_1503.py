@@ -1226,6 +1226,9 @@ public fn f(@Nat, @Nat, @Bool -> @Int)
 _UNDERFLOW = "would be negative"
 #: A `@Nat` one above `i64.MAX`: its bits are those of a negative i64.
 _BIG = 2 ** 63
+#: The parameters of a quotient or remainder cell: the left operand, the
+#: slot the division reads, the expected difference, and two flags.
+_DIV_PARAMS = "@Nat, @Nat, @Nat, @Bool, @Bool"
 
 
 def _sub_program(params: str, ret: str, body: str, *,
@@ -1383,6 +1386,71 @@ _OPERAND_VALUE_CELLS = [
     ("a division of two genuine operands, above i64.MAX",
      "@Nat, @Nat", "Nat", "@Nat.1 - (@Nat.0 / 1)", [5, _U64_MAX],
      _UNDERFLOW),
+    # A quotient's sign is its operands' — negative exactly when one of them
+    # is and it is not zero — and a remainder's is its dividend's, never the
+    # result's sign bit, which a genuine `@Nat` above `i64.MAX` sets:
+    # `2 - (2^63 + 10) / 1` is an underflow (PR #1537 review).  A division
+    # by -1 negates exactly at the u64 width, so `2 - (2^63 + 10) / -1` is
+    # `2^63 + 12`.
+    ("a quotient by a join of -1 and 1, its dividend above i64.MAX",
+     _DIV_PARAMS, "Bool",
+     "@Nat.2 - (@Nat.1 / (if @Bool.1 then { 0 - 1 } else { 1 })) == @Nat.0",
+     [2, _BIG + 10, 0, 0, 0], _UNDERFLOW),
+    ("a quotient by a join of -1 and 1, its negative arm",
+     _DIV_PARAMS, "Bool",
+     "@Nat.2 - (@Nat.1 / (if @Bool.1 then { 0 - 1 } else { 1 })) == @Nat.0",
+     [2, 5, 7, 1, 0], "ran:1"),
+    ("a quotient by a join of -1 and 1, a dividend above i64.MAX negated",
+     _DIV_PARAMS, "Bool",
+     "@Nat.2 - (@Nat.1 / (if @Bool.1 then { 0 - 1 } else { 1 })) == @Nat.0",
+     [2, _BIG + 10, _BIG + 12, 1, 0], "ran:1"),
+    ("a quotient by a join of -1 and 1 on the left, negated",
+     _DIV_PARAMS, "Bool",
+     "(@Nat.1 / (if @Bool.1 then { 0 - 1 } else { 1 })) - @Nat.2 == @Nat.0",
+     [5, _BIG + 10, 0, 1, 0], _UNDERFLOW),
+    ("a join of -3 and a slot above i64.MAX, divided by one",
+     _DIV_PARAMS, "Bool",
+     "@Nat.2 - ((if @Bool.1 then { 0 - 3 } else { @Nat.1 }) / 1) == @Nat.0",
+     [2, _BIG + 10, 0, 0, 0], _UNDERFLOW),
+    ("a join of -3 and a slot, divided by one, its negative arm",
+     _DIV_PARAMS, "Bool",
+     "@Nat.2 - ((if @Bool.1 then { 0 - 3 } else { @Nat.1 }) / 1) == @Nat.0",
+     [2, 5, 5, 1, 0], "ran:1"),
+    ("a quotient of two negative values",
+     _DIV_PARAMS, "Bool",
+     "@Nat.2 - ((if @Bool.1 then { 0 - 6 } else { @Nat.1 }) / "
+     "(if @Bool.0 then { 0 - 3 } else { 1 })) == @Nat.0",
+     [1, 5, 0, 1, 1], _UNDERFLOW),
+    ("a quotient of one negative value that is zero, on the left",
+     _DIV_PARAMS, "Bool",
+     "((if @Bool.1 then { 0 - 3 } else { @Nat.1 }) / 5) - @Nat.2 == @Nat.0",
+     [0, 5, 0, 1, 0], "ran:1"),
+    ("a remainder of a negative dividend",
+     _DIV_PARAMS, "Bool",
+     "@Nat.2 - ((if @Bool.1 then { 0 - 7 } else { @Nat.1 }) % 5) == @Nat.0",
+     [2, 9, 4, 1, 0], "ran:1"),
+    ("a remainder of a slot, an underflow",
+     _DIV_PARAMS, "Bool",
+     "@Nat.2 - ((if @Bool.1 then { 0 - 7 } else { @Nat.1 }) % 5) == @Nat.0",
+     [2, 9, 0, 0, 0], _UNDERFLOW),
+    ("a remainder by a negative divisor, its dividend's sign",
+     _DIV_PARAMS, "Bool",
+     "@Nat.2 - (@Nat.1 % (if @Bool.1 then { 0 - 5 } else { 3 })) == @Nat.0",
+     [2, 9, 0, 1, 0], _UNDERFLOW),
+    ("a remainder of either sign by a negative divisor, a slot",
+     _DIV_PARAMS, "Bool",
+     "@Nat.2 - ((if @Bool.1 then { 0 - 7 } else { @Nat.1 }) % "
+     "(if @Bool.0 then { 0 - 5 } else { 3 })) == @Nat.0",
+     [2, 9, 0, 0, 1], _UNDERFLOW),
+    ("a remainder of either sign by a negative divisor, its negative arm",
+     _DIV_PARAMS, "Bool",
+     "@Nat.2 - ((if @Bool.1 then { 0 - 7 } else { @Nat.1 }) % "
+     "(if @Bool.0 then { 0 - 5 } else { 3 })) == @Nat.0",
+     [2, 9, 4, 1, 1], "ran:1"),
+    ("a remainder of a negative dividend that is zero, on the left",
+     _DIV_PARAMS, "Bool",
+     "((if @Bool.1 then { 0 - 10 } else { @Nat.1 }) % 5) - @Nat.2 == @Nat.0",
+     [0, 5, 0, 1, 0], "ran:1"),
     ("an addition of either sign on the right, above i64.MAX",
      "@Nat, @Nat, @Bool", "Nat",
      "@Nat.0 - (@Nat.1 + (if @Bool.0 then { 0 - 3 } else { 5 }))",
@@ -1464,12 +1532,14 @@ class TestASubtractionOperandIsReadAsItsValue:
     -3 and `2^64 - 3` are one i64.  So each operand is read as the value it
     holds: a genuine `@Nat` — a slot, a call, a guarded subtraction, a
     literal — as a u64; a literal-only value that can be negative, and a
-    division's or a signed operation's result, as an i64; an unsigned sum or
-    product by its operands' signs, which the operation's own check leaves
-    exact; and an operand that joins kinds (`if b then { 0 - 3 } else
-    { @Nat.0 }`, a literal above `i64.MAX` in the other arm) by the arm that
-    produced it, which records its sign.  Where one value is negative the
-    guard traps iff it is the left one; otherwise it compares the u64s.
+    signed operation's result, as an i64; an unsigned sum or product by its
+    operands' signs, which the operation's own check leaves exact; a
+    quotient by its operands' signs and a remainder by its dividend's, not
+    by the sign bit a genuine `@Nat` above `i64.MAX` sets; and an operand
+    that joins kinds (`if b then { 0 - 3 } else { @Nat.0 }`, a literal above
+    `i64.MAX` in the other arm) by the arm that produced it, which records
+    its sign.  Where one value is negative the guard traps iff it is the
+    left one; otherwise it compares the u64s.
 
     One comparison for the whole subtraction, signed whenever either operand
     held a negative literal, misread every other value above `i64.MAX`: it
@@ -1529,11 +1599,17 @@ class TestATierOneSubtractionNeverTraps:
              "@Nat.1 == 9223372036854775808", "@Bool.result",
              "(@Nat.1 + (if @Bool.0 then { 0 - 3 } else { 5 })) - @Nat.0 "
              "== 9223372036854775813", [_BIG, 0, 0], 1),
+            ("@Nat, @Nat, @Bool", "Bool",
+             "@Bool.0 && @Nat.1 == 2 && @Nat.0 == 9223372036854775818",
+             "@Bool.result",
+             "@Nat.1 - (@Nat.0 / (if @Bool.0 then { 0 - 1 } else { 1 })) "
+             "== 9223372036854775820", [2, _BIG + 10, 1], 1),
         ], ids=["an if over a negative and a small literal",
                 "a pure-literal subtraction", "an if with a slot arm",
                 "an if with a slot arm on the left",
                 "a guarded subtraction", "a division by a negative literal",
-                "an addition whose negative arm is excluded"])
+                "an addition whose negative arm is excluded",
+                "a quotient negating a value above i64.MAX"])
     def test_proved_and_returned(
         self, params: str, ret: str, requires: str, ensures: str, body: str,
         args: list[int], value: int,
@@ -1554,8 +1630,10 @@ class TestATierOneSubtractionNeverTraps:
 #: the flag ``{B}`` and the negative literal ``{K}`` it reads, and its value
 #: given theirs.  Every kind of reading an operand can take is here: a u64
 #: (a slot, a literal above `i64.MAX`, a guarded subtraction), an i64 (a
-#: negative literal, and a join of one with a small literal), and a join
-#: that holds both (with a slot, or with a literal above `i64.MAX`).
+#: negative literal, and a join of one with a small literal), a join that
+#: holds both (with a slot, or with a literal above `i64.MAX`), and a
+#: quotient of such a join, whose sign is its operands' rather than its
+#: bits'.
 _OPERAND_FORMS: dict[str, tuple[str, object]] = {
     "a slot": ("{N}", lambda n, b, k: n),
     "a literal above i64.MAX": (str(_U64_MAX), lambda n, b, k: _U64_MAX),
@@ -1574,6 +1652,9 @@ _OPERAND_FORMS: dict[str, tuple[str, object]] = {
          lambda n, b, k: -k if b else _U64_MAX),
     "a guarded subtraction of a negative literal":
         ("{N} - (0 - {K})", lambda n, b, k: n + k),
+    "a quotient of a negative literal and a slot, by one":
+        ("(if {B} then {{ 0 - {K} }} else {{ {N} }}) / 1",
+         lambda n, b, k: -k if b else n),
 }
 #: The forms that carry `@Nat` provenance: a subtraction is guarded only
 #: where one of its operands does.
@@ -1581,6 +1662,7 @@ _GENUINE_FORMS = frozenset({
     "a slot", "an if of a negative literal and a slot",
     "a match of a negative literal and a slot",
     "a guarded subtraction of a negative literal",
+    "a quotient of a negative literal and a slot, by one",
 })
 _OPERAND_PAIRS = [
     (left, right) for left in _OPERAND_FORMS for right in _OPERAND_FORMS

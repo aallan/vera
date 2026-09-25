@@ -2212,6 +2212,12 @@ class OperatorsMixin:
                 hooks.setdefault(id(leaf), []).extend(
                     [*code, f"local.set {flag}"])
             return [f"local.get {flag}"]
+        if isinstance(sign, narrowing.RemainderSign):
+            dividend = self._nat_sub_sign_code(
+                sign.dividend,
+                self._nat_sub_capture(sign.expr.left, hooks, captures),
+                hooks, captures)
+            return [*dividend, *value(), "i64.const 0", "i64.ne", "i32.and"]
         left_value = self._nat_sub_capture(sign.expr.left, hooks, captures)
         right_value = self._nat_sub_capture(sign.expr.right, hooks, captures)
         left = self._nat_sub_sign_code(sign.left, left_value, hooks, captures)
@@ -2220,7 +2226,9 @@ class OperatorsMixin:
         if isinstance(sign, narrowing.DifferenceSign):
             return self._nat_sub_below(left, right, left_value, right_value)
         code = [*left, *right, "i32.xor"]
-        if sign.expr.op == ast.BinOp.MUL:
+        if isinstance(sign, narrowing.QuotientSign):
+            code += [*value(), "i64.const 0", "i64.ne", "i32.and"]
+        elif sign.expr.op == ast.BinOp.MUL:
             code += [*value(), "i64.const 0", "i64.lt_s", "i32.and"]
         return code
 
