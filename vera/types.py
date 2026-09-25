@@ -877,6 +877,229 @@ def contains_fresh_typevar(ty: Type) -> bool:
     return False
 
 
+#: The hole a LITERAL leaves in an argument's type while a call's type
+#: arguments are inferred (#1541, #1565).
+#:
+#: An integer literal takes its type from its context (spec §4.2), so the
+#: `Nat` the checker synthesizes for `0` — and the `Int` it synthesizes for
+#: `0 - 3` — is the literal's type only when nothing else fixes it.  During
+#: inference each such position is this placeholder instead: a fresh var
+#: (`$` in the name), so any sibling binding a declared type supplies fills
+#: it by the same #293 precedence a nullary constructor's hole already has.
+#: A position nothing else filled is then given the type the call's result
+#: is expected at, and failing that the literal's own type by value — see
+#: `ResolutionMixin._infer_type_args_in_context`.  Never leaves inference.
+#:
+#: The hole carries that last resort, and the signs of the values at the
+#: position: :data:`LITERAL_HOLE` where every literal there is a `Nat`;
+#: :data:`INT_LITERAL_HOLE` where one is an `Int` but none has a negative
+#: value (`-0`, `(0 - 3) + 4`); :data:`NEGATIVE_LITERAL_HOLE` where every
+#: one has a negative value; and :data:`MIXED_LITERAL_HOLE` where a negative
+#: value sits beside one that is not (`second(-3, 5)`).  The last three
+#: fall back to `Int`.
+LITERAL_HOLE = TypeVar("$lit")
+INT_LITERAL_HOLE = TypeVar("$lit0")
+NEGATIVE_LITERAL_HOLE = TypeVar("$lit-")
+MIXED_LITERAL_HOLE = TypeVar("$lit+-")
+_LITERAL_HOLE_NAMES = frozenset(h.name for h in (
+    LITERAL_HOLE, INT_LITERAL_HOLE, NEGATIVE_LITERAL_HOLE,
+    MIXED_LITERAL_HOLE))
+
+
+def is_literal_hole(ty: Type) -> bool:
+    """True iff *ty* is one of the literal holes."""
+    return isinstance(ty, TypeVar) and ty.name in _LITERAL_HOLE_NAMES
+
+
+def join_literal_holes(a: Type, b: Type) -> Type:
+    """The hole for a position two literals share: `Int` if either is, and
+    mixed where one has a negative value and the other one that is not."""
+    names = {a.name if isinstance(a, TypeVar) else "",
+             b.name if isinstance(b, TypeVar) else ""}
+    negative = bool(names & {NEGATIVE_LITERAL_HOLE.name,
+                             MIXED_LITERAL_HOLE.name})
+    other = bool(names & {LITERAL_HOLE.name, INT_LITERAL_HOLE.name,
+                          MIXED_LITERAL_HOLE.name})
+    if negative and other:
+        return MIXED_LITERAL_HOLE
+    if negative:
+        return NEGATIVE_LITERAL_HOLE
+    if INT_LITERAL_HOLE.name in names:
+        return INT_LITERAL_HOLE
+    return LITERAL_HOLE
+
+
+def default_literal_holes(ty: Type) -> Type:
+    """*ty* with every hole given the type its literals have by value:
+    `Nat` for :data:`LITERAL_HOLE`, `Int` for the others."""
+    if is_literal_hole(ty):
+        return NAT if ty == LITERAL_HOLE else INT
+    if isinstance(ty, AdtType):
+        return AdtType(ty.name, tuple(default_literal_holes(a)
+                                      for a in ty.type_args))
+    if isinstance(ty, FunctionType):
+        return FunctionType(tuple(default_literal_holes(p)
+                                  for p in ty.params),
+                            default_literal_holes(ty.return_type), ty.effect)
+    return ty
+
+
+def contains_literal_hole(ty: Type) -> bool:
+    """True iff a literal hole (:func:`is_literal_hole`) occurs anywhere in
+    *ty*."""
+    if isinstance(ty, TypeVar):
+        return is_literal_hole(ty)
+    if isinstance(ty, AdtType):
+        return any(contains_literal_hole(a) for a in ty.type_args)
+    if isinstance(ty, FunctionType):
+        return (any(contains_literal_hole(p) for p in ty.params)
+                or contains_literal_hole(ty.return_type))
+    if isinstance(ty, RefinedType):
+        return contains_literal_hole(ty.base)
+    return False
+
+
+def negative_literal_meets_nat(soft: Type, context: Type,
+                               in_collection: bool = False,
+                               element_reads: int = 0) -> bool:
+    """True iff *context* holds a `Nat`, or a refinement of one, at a
+    position where *soft* holds a hole the literals' values fixed at `Int`
+    and a `Nat` context may fill (:func:`context_may_fill`), at any depth
+    of a composite (#1541, PR #1583 review).
+
+    *soft* is a generic call's result with each position its literals
+    decided a hole (``ResolutionMixin._literal_soft_type``).  Checked
+    against *context*, such a position is a `Nat`, and each literal there
+    meets it: a negative one is a narrowing the verifier refutes, which
+    only checking the call against *context* puts on the record.  The
+    checker admits `Int` where `Nat` is expected and leaves the
+    non-negativity to the verifier, so this is the question
+    :func:`is_subtype` does not answer.
+
+    *in_collection* is whether the position lies within a collection's
+    element type (:func:`context_may_fill`).  *element_reads* counts the
+    indexes that read one element out of *context*, outermost first: each
+    array level they read is no collection of the value, since a read
+    returns one element, not all of them (`xs[0][1]` reads two levels,
+    `xs[0]` one)."""
+    while isinstance(context, RefinedType):
+        context = context.base
+    if is_literal_hole(soft):
+        return (soft != LITERAL_HOLE
+                and context_may_fill(soft, in_collection)
+                and isinstance(context, PrimitiveType)
+                and context.name == "Nat")
+    if (isinstance(soft, AdtType) and isinstance(context, AdtType)
+            and soft.name == context.name
+            and len(soft.type_args) == len(context.type_args)):
+        within = in_collection or (
+            soft.name in COLLECTION_TYPES and element_reads == 0)
+        return any(negative_literal_meets_nat(
+                       h, c, within, max(element_reads - 1, 0))
+                   for h, c in zip(soft.type_args, context.type_args))
+    return False
+
+
+#: The built-in collections, each of whose type arguments holds every
+#: element (or key) the collection was built from.
+COLLECTION_TYPES = frozenset({"Array", "Set", "Map"})
+
+
+def context_may_fill(hole: Type, in_collection: bool = False) -> bool:
+    """Whether the type a call's result is expected at may decide the
+    literal hole *hole* (spec §4.2 rule 2).
+
+    Not a mixed one at a scalar position: a negative literal beside a
+    non-negative one at the same type argument need not reach the result
+    (`second(-3, 5)` is 5), so a `Nat` context must not make the -3 a
+    narrowing; the position takes the literals' own type, `Int`, and the
+    result is narrowed into the context as any `Int` is.  Where every
+    literal there is negative the result can only be one of them — a
+    generic function has no other value of its type argument to return —
+    so the context decides it, and a `Nat` refuses it.
+
+    A mixed hole *in_collection*, an element (or key) type of an `Array`,
+    a `Set` or a `Map`, is decided by the context as well (PR #1583
+    review): the collection holds every element its call was given, so the
+    -3 does reach the value, and a whole `Array<Int>` bound into an
+    `Array<Nat>` is neither obligated nor guarded (#1542)."""
+    return in_collection or hole != MIXED_LITERAL_HOLE
+
+
+def collection_element_vars(ty: Type, inside: bool = False) -> set[str]:
+    """The type variables of *ty* that occur within an element (or key)
+    type of a collection (:data:`COLLECTION_TYPES`), at any depth."""
+    if isinstance(ty, TypeVar):
+        return {ty.name} if inside else set()
+    if isinstance(ty, AdtType):
+        within = inside or ty.name in COLLECTION_TYPES
+        out: set[str] = set()
+        for arg in ty.type_args:
+            out |= collection_element_vars(arg, within)
+        return out
+    if isinstance(ty, RefinedType):
+        return collection_element_vars(ty.base, inside)
+    return set()
+
+
+def fill_literal_holes(ty: Type, source: Type | None,
+                       in_collection: bool = False) -> Type:
+    """*ty* with each literal hole replaced by the `Int` or `Nat` at the
+    same position of *source*.
+
+    A hole aligned with a refinement takes the refinement's integer base.
+    A hole whose aligned position in *source* is anything else — missing,
+    another type — stays a hole, so a later source (or the final default)
+    decides it: a literal is never given a type it cannot have.  A
+    refinement is not adopted into the instantiation: the literal still
+    meets it as the target of the argument it sits in, and adopting it
+    would give the whole construction the refined type, which a join with
+    a sibling of the base type then reads as its own.
+    """
+    if is_literal_hole(ty):
+        if not context_may_fill(ty, in_collection):
+            return ty
+        # A refinement's integer base is the literal's type there (PR #1583
+        # review): `let @Small = id(0 - 3)` over a refinement of `Nat` is
+        # `id` at `Nat`, where the -3 is refused as `let @Nat = id(0 - 3)`
+        # is.  The refinement itself is not adopted (above).
+        while isinstance(source, RefinedType):
+            source = source.base
+        if (isinstance(source, PrimitiveType)
+                and source.name in ("Int", "Nat")):
+            return source
+        return ty
+    if (isinstance(ty, AdtType) and isinstance(source, AdtType)
+            and ty.name == source.name
+            and len(ty.type_args) == len(source.type_args)):
+        within = in_collection or ty.name in COLLECTION_TYPES
+        return AdtType(ty.name, tuple(
+            fill_literal_holes(a, b, within)
+            for a, b in zip(ty.type_args, source.type_args)))
+    if (isinstance(ty, FunctionType) and isinstance(source, FunctionType)
+            and len(ty.params) == len(source.params)):
+        return FunctionType(
+            tuple(fill_literal_holes(a, b)
+                  for a, b in zip(ty.params, source.params)),
+            fill_literal_holes(ty.return_type, source.return_type),
+            ty.effect)
+    return ty
+
+
+def _literal_can_have(ty: Type) -> bool:
+    """Whether an integer literal can have type *ty*: an integer type (a
+    literal is typed `Byte` in a `Byte` context) or a refinement of one.
+    A literal meeting any other type in a shared type head is the same
+    conflict its `Nat` was before holes existed (#898, #1541).  A type
+    variable never reaches here: `merge_inferred_types` settles a hole
+    against one first."""
+    base = ty
+    while isinstance(base, RefinedType):
+        base = base.base
+    return (isinstance(base, PrimitiveType)
+            and base.name in ("Int", "Nat", "Byte"))
+
+
 def merge_inferred_types(
     a: Type, b: Type, nested: bool = False,
 ) -> tuple[Type, bool]:
@@ -911,9 +1134,31 @@ def merge_inferred_types(
     whether we are already inside such a structural merge.
     """
     # A fresh placeholder is a hole — take the other (more-determined) side.
+    # Between two holes, a literal's (#1541) outranks a nullary
+    # constructor's: the literal still has a type to fall back on, and the
+    # other hole has none, so keeping it would leave the variable unresolved.
     if _is_fresh_typevar(a):
+        if is_literal_hole(a) and is_literal_hole(b):
+            return (join_literal_holes(a, b), False)
+        if is_literal_hole(a) and _is_fresh_typevar(b):
+            return (a, False)
+        if is_literal_hole(a):
+            if isinstance(b, TypeVar):
+                return (a, False)  # the same rule, in the other order
+            return (b, nested and not _literal_can_have(b))
         return (b, False)
     if _is_fresh_typevar(b):
+        if is_literal_hole(b):
+            if isinstance(a, TypeVar):
+                # A type variable yields to the literal: one leaked
+                # unresolved from a nested generic call, as it yields to any
+                # concrete type (#970's dual in `_unify_for_inference`), and
+                # the enclosing function's rigid one, which a literal cannot
+                # have.  The hole then takes the literal's own type, and the
+                # argument the variable types is checked against it — a
+                # rigid `T` there is refused (E202), as before #1541.
+                return (b, False)
+            return (a, nested and not _literal_can_have(a))
         return (a, False)
     # Already structurally identical — nothing to reconcile.
     if types_equal(a, b):

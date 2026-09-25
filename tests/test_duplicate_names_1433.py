@@ -232,6 +232,9 @@ NOT_NAMESPACES: dict[str, str] = {
     "TypeChecker.expr_types": "keyed by source span, the LSP's side table",
     "TypeChecker.expr_semantic_types": "keyed by source span, for the verifier",
     "TypeChecker.expr_target_types": "keyed by source span, for codegen",
+    "TypeChecker._literal_soft_results": (
+        "keyed by a call's source span, the parts of its result its literals "
+        "decided (#1541)"),
     "TypeChecker._pattern_arg_targets": (
         "keyed by an argument's source span, the composite type a pattern "
         "binds it at, which is its construction's context (#1503)"),

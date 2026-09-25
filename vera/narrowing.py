@@ -499,6 +499,152 @@ def literal_operation_width(expr: ast.Expr) -> str | None:
     return None
 
 
+#: Answers "is this operand a machine `@Int` or `@Nat`?" — ``"Int"``,
+#: ``"Nat"``, or ``None`` for an operand that is neither or whose type is
+#: unknown.  Each side reads the checker's resolved type through its own
+#: table.
+OperandWidthOracle = Callable[[ast.Expr], "str | None"]
+
+#: The operators whose two integer operands meet at one width: arithmetic,
+#: and the comparisons, which compare them at it (`i64.lt_s`, `i64.eq`).
+_MIXED_WIDTH_OPS = _INT_ARITH_OPS | frozenset({
+    ast.BinOp.EQ, ast.BinOp.NEQ, ast.BinOp.LT, ast.BinOp.GT,
+    ast.BinOp.LE, ast.BinOp.GE,
+})
+
+
+def operation_width(
+    expr: ast.BinaryExpr, operand_width: OperandWidthOracle,
+) -> str | None:
+    """The width an integer operation runs at: the operands' common type,
+    ``"Int"`` if either is an `@Int`, ``"Nat"`` if both are `@Nat` — or,
+    for two literal-only operands, the width their values give it
+    (:func:`literal_operation_width`).  ``None`` where an operand's type is
+    unknown, which each caller defaults as it must (#1417)."""
+    literal = literal_operation_width(expr)
+    if literal is not None:
+        return literal
+    lt = operand_width(expr.left)
+    rt = operand_width(expr.right)
+    if lt is None or rt is None:
+        return None
+    return "Int" if "Int" in (lt, rt) else "Nat"
+
+
+def is_guarded_nat_subtraction(
+    expr: ast.Expr,
+    is_nat: Callable[[ast.Expr], bool],
+    has_nat_origin: Callable[[ast.Expr], bool],
+) -> bool:
+    """Whether *expr* is a `@Nat` subtraction the verifier obligates
+    `lhs >= rhs` for and code generation guards (#520): both operands
+    `@Nat` by *is_nat* — each side's reading of the checker's type — and
+    at least one with `@Nat` provenance, so the pure-literal `0 - 1` idiom
+    is exempt.  One rule, read by both sides: code generation read the
+    operands' syntax alone, so `(0 - 3) - @Nat.0`, an `@Int` subtraction
+    the verifier records no `nat_sub` for, was guarded as one and trapped
+    the -8 of a program `vera verify` passed (PR #1583 review); and a call
+    declared to return `@Nat` was no `@Nat` there, so the subtraction the
+    verifier recorded as runtime-checked had no check (#1557)."""
+    return (isinstance(expr, ast.BinaryExpr) and expr.op == ast.BinOp.SUB
+            and is_nat(expr.left) and is_nat(expr.right)
+            and (has_nat_origin(expr.left) or has_nat_origin(expr.right)))
+
+
+def widened_nat_operands(
+    expr: ast.Expr,
+    operand_width: OperandWidthOracle,
+    guarded: "GuardedSubtractionOracle",
+) -> tuple[ast.Expr, ...]:
+    """The `@Nat` values *expr* widens into an `@Int` operation — each one
+    a `nat_to_int_coerce` site, obligated by the verifier and guarded by
+    code generation where it is evaluated (PR #1583 review, #1588).
+
+    An arithmetic or comparison operation that runs at the signed width —
+    spec §4.4: `Nat + Int` is `Int` — reads a `@Nat` operand's bits as an
+    `@Int`.  A `@Nat` above `i64.MAX` reads there as a negative number, so
+    `@Nat.0 + (0 - 1)` at `2^63 + 5` returned `-9223372036854775804`, and
+    `@Nat.0 + @Int.0` the same, with a Tier-1 `ensures` over the true sum
+    violated at run time.  Each such value is widened into the operation
+    exactly as a `@Nat` bound into an `@Int` slot is, and is checked the
+    same way: provably `<= i64.MAX` is Tier 1, provably above it is E530,
+    and otherwise the guard traps.
+
+    The values are each operand's genuine `@Nat` parts
+    (:func:`int_read_nat_values`): the operand itself, or, for a join, the
+    arms that supply the `@Nat`.  An operation at the unsigned width, or
+    one whose width is unknown, widens nothing.  *guarded* names a guarded
+    `@Nat` subtraction, whose value is never negative.
+    """
+    if not (isinstance(expr, ast.BinaryExpr) and expr.op in _MIXED_WIDTH_OPS):
+        return ()
+    if operation_width(expr, operand_width) != "Int":
+        return ()
+    return (int_read_nat_values(expr.left, operand_width, guarded)
+            + int_read_nat_values(expr.right, operand_width, guarded))
+
+
+def int_read_nat_values(
+    expr: ast.Expr,
+    operand_width: OperandWidthOracle,
+    guarded: "GuardedSubtractionOracle",
+) -> tuple[ast.Expr, ...]:
+    """The parts of *expr* that hold a genuine `@Nat` when *expr* is read
+    as an `@Int` — each one guarded where it is evaluated.
+
+    A join (:func:`flow_arms`) is read by its arms, whatever the checker
+    types it: `if b then { 0 - 3 } else { @Nat.0 }` holds a -3 or a
+    `@Nat`, and one sign-bit guard on the join could not tell a -3 from a
+    `@Nat` above `i64.MAX`, so the `@Nat` arm is the widening.  Any other
+    part is one where the checker types it `@Nat` — except a literal-only
+    value no greater than `i64.MAX`, whose value is its value at either
+    width.  A value the checker types `@Nat` although a literal part of it
+    can be negative (:func:`may_hold_negative_literal`; an `if` joins an
+    `@Int` branch into a `@Nat` one) is read through a quotient's or a
+    remainder's dividend, whose magnitude bounds the result's, and
+    otherwise not at all: its sign bit does not say which it holds.
+    """
+    arms = flow_arms(expr)
+    if arms is not None:
+        return tuple(
+            value for arm in arms
+            for value in int_read_nat_values(arm, operand_width, guarded))
+    if is_pure_literal(expr):
+        folded = literal_range(expr)
+        return (expr,) if folded is not None and folded[0] > I64_MAX else ()
+    if operand_width(expr) != "Nat":
+        return ()
+    if may_hold_negative_literal(expr, guarded):
+        if (isinstance(expr, ast.BinaryExpr)
+                and expr.op in (ast.BinOp.DIV, ast.BinOp.MOD)):
+            return int_read_nat_values(expr.left, operand_width, guarded)
+        return ()
+    return (expr,)
+
+
+def may_hold_negative_literal(
+    expr: ast.Expr, guarded: "GuardedSubtractionOracle",
+) -> bool:
+    """True iff *expr*'s value can come from a literal-only part that can be
+    negative — through arithmetic, a negation and the arms of a join.  The
+    checker can type such a value `@Nat` (an `if` joins an `@Int` branch
+    into a `@Nat` one), so its sign bit does not say which it holds.  A
+    guarded `@Nat` subtraction (*guarded*) is never negative, whatever its
+    operands hold: its guard traps first."""
+    if guarded(expr):
+        return False
+    if is_pure_literal(expr):
+        folded = literal_range(expr)
+        return folded is None or folded[0] < 0
+    if isinstance(expr, ast.BinaryExpr) and expr.op in _INT_ARITH_OPS:
+        return (may_hold_negative_literal(expr.left, guarded)
+                or may_hold_negative_literal(expr.right, guarded))
+    if isinstance(expr, ast.UnaryExpr):
+        return True
+    arms = flow_arms(expr) or ()
+    return any(may_hold_negative_literal(a, guarded) for a in arms)
+
+
 def is_nonneg_int_literal(expr: ast.Expr) -> bool:
     """True iff *expr* is (a block trailing into) a non-negative integer
     literal — always a value an `@Int` slot can hold unchanged (#813)."""

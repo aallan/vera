@@ -1523,15 +1523,7 @@ _MODULAR_REFUSALS: dict[tuple[str, int, str], str] = {
 #: asserts what the compiler does TODAY: the day the defect is fixed that cell
 #: fails, and both entries are meant to be deleted together.  A class
 #: instrument trimmed until it is green measures the trimming.
-_KNOWN_RED: dict[tuple[str, int, str], str] = {
-    ("ADT sub-pattern bind", 0, "tuple"):
-        "#1424, pre-existing at release/v0.2.0 1cf5c6a9: an ADT sub-pattern "
-        "binder of `Tuple` type whose arm RETURNS the bound value, joined "
-        "with an arm that builds a fresh `Tuple`, kills `vera verify` with "
-        "`Z3Exception: sort mismatch` (E699).  No refinement is needed — the "
-        "unrefined twin crashes identically — so it is the sort-resolution "
-        "class of #1424/#1360 rather than a guard defect",
-}
+_KNOWN_RED: dict[tuple[str, int, str], str] = {}
 
 _CELLS = [
     (position, index, repr_name)
@@ -1859,8 +1851,8 @@ def test_every_unsupported_shape_says_so_in_the_compilers_words(
 # =====================================================================
 #
 # Pinned as what the compiler DOES, not as what it should: each assertion
-# fails the day the defect is fixed, which is when the `_KNOWN_RED` entry and
-# the cell here are both meant to be deleted.
+# fails the day the defect is fixed, which is when the cell here is meant to
+# be deleted, with its `_KNOWN_RED` entry where the matrix carries one.
 
 #: Every representation, at every one of the write's four routes: the
 #: differential below is what would have caught #1439, so it ranges over the
@@ -2291,15 +2283,32 @@ def test_1424_a_tuple_sub_pattern_returned_from_its_arm_crashes_verify(
     An ADT sub-pattern binder of `Tuple` type, returned from its own arm and
     joined with an arm that builds a fresh `Tuple`, reaches the verifier's
     sort resolution by two routes that disagree.  `vera check` is clean.
+
+    The payload is built from `@Nat` values.  The matrix's own cell for this
+    position built it from literals, `Some(Tuple(1, 1))`, and crashed only
+    because the literals were typed `Nat` against the declared
+    `Tuple<Int, Int>`; since #1541 they take that declared type, so the cell
+    verifies and runs in the matrix above, and a declared `@Nat` operand is
+    what still reaches the two disagreeing routes.
     """
-    good_src, _bad = _sources(("ADT sub-pattern bind", 0, "tuple"))
-    path = _write(tmp_path, good_src, "sub.vera")
+    source = """public fn f(@Nat -> @Tuple<Int, Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Option<Tuple<Int, Int>> = Some(Tuple(@Nat.0, @Nat.0));
+  match @Option<Tuple<Int, Int>>.0 {
+    Some(@Tuple<Int, Int>) -> @Tuple<Int, Int>.0,
+    None -> Tuple(1, 1)
+  }
+}
+"""
+    path = _write(tmp_path, source, "sub.vera")
     assert _cli("check", "--quiet", str(path)).returncode == 0
     verified = _cli("verify", str(path))
     assert verified.returncode != 0, (
         "#1424 appears to be FIXED — verification no longer crashes.  Remove "
-        "this cell and the ('ADT sub-pattern bind', 0, 'tuple') entry from "
-        "_KNOWN_RED"
+        "this cell"
     )
     output = verified.stdout + verified.stderr
     assert "E699" in output and "sort mismatch" in output, output[-400:]

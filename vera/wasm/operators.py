@@ -59,10 +59,11 @@ class OperatorsMixin:
     # Binary operators
     # -----------------------------------------------------------------
 
-    def _translate_binary(
+    def _translate_widening_binary(
         self, expr: ast.BinaryExpr, env: WasmSlotEnv
     ) -> list[str] | None:
-        """Translate binary operators to WAT."""
+        """Translate a binary operator to WAT, its widened `@Nat` operands
+        arranged first (:py:meth:`_translate_binary` does the rest)."""
         # Pipe: a |> f(x, y) → f(a, x, y), through the ONE shared desugar
         # (`vera.monomorphize.pipe_desugared_call`) the checker, discovery and
         # both type namers use.  #1357: the desugared call keeps the right
@@ -82,6 +83,29 @@ class OperatorsMixin:
             # its `path`, exactly as the direct spelling of the same call does.
             return self.translate_expr(desugared, env)
 
+        # PR #1583 review, #1588: a `@Nat` value an `@Int` operation widens
+        # — an operand, or an arm of a join operand that supplies one —
+        # traps above `i64.MAX` as it is evaluated, at the sites the
+        # verifier's `nat_to_int_coerce` obligation reads from the same
+        # classifier.  Arranged before either operand is translated, since
+        # the `@Nat` subtraction translates them on its own path.
+        widened = [
+            id(value) for value in narrowing.widened_nat_operands(
+                expr, self._overflow_codegen_type,
+                self._is_guarded_nat_subtraction)
+            if id(value) not in self._widened_operands]
+        self._widened_operands.update(widened)
+        try:
+            return self._translate_binary(expr, env)
+        finally:
+            self._widened_operands.difference_update(widened)
+
+    def _translate_binary(
+        self, expr: ast.BinaryExpr, env: WasmSlotEnv
+    ) -> list[str] | None:
+        """Translate binary operators to WAT, once
+        :py:meth:`_translate_widening_binary` has arranged the widened
+        operands."""
         # @Nat subtraction underflow guard (#520) — mirrors the static
         # obligation emitted in vera/verifier.py.  When the result is
         # statically @Nat and at least one operand has @Nat origin, emit a
@@ -1970,10 +1994,15 @@ class OperatorsMixin:
         that's Path B (#552) territory, which generalises the
         verifier check to every binding-site narrowing.
         """
-        return (self._is_static_nat_typed(expr.left)
-                and self._is_static_nat_typed(expr.right)
-                and (self._has_nat_origin_codegen(expr.left)
-                     or self._has_nat_origin_codegen(expr.right)))
+        # The one rule the verifier reads (PR #1583 review): a literal-only
+        # operand by its value, any other by the checker's resolved type
+        # first.  Read from the syntax alone, `0 - 3` is two non-negative
+        # literals, so `(0 - 3) - @Nat.0` — an `@Int` subtraction the
+        # verifier records no `nat_sub` for — was guarded as one, and the
+        # guard trapped the -8 of a program `vera verify` passed.
+        return narrowing.is_guarded_nat_subtraction(
+            expr, lambda e: self._overflow_codegen_type(e) == "Nat",
+            self._has_nat_origin_codegen)
 
     def _is_static_nat_typed(self, expr: ast.Expr) -> bool:
         """Return True iff *expr* has static type @Nat.
@@ -2766,14 +2795,7 @@ class OperatorsMixin:
         obligation at every ``+``/``-``/``*`` site (#798)."""
         # #1503: two literal-only operands take their width from their
         # values, the rule the verifier's width reads first too.
-        literal = narrowing.literal_operation_width(expr)
-        if literal is not None:
-            return literal
-        lt = self._overflow_codegen_type(expr.left)
-        rt = self._overflow_codegen_type(expr.right)
-        if lt is None or rt is None:
-            return None
-        return "Int" if "Int" in (lt, rt) else "Nat"
+        return narrowing.operation_width(expr, self._overflow_codegen_type)
 
     def _checker_resolved_type(self, expr: ast.Expr) -> object | None:
         """*expr*'s checker-resolved type from the threaded side-table, raw.

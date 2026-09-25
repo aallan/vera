@@ -306,6 +306,10 @@ class WasmContext(
         # reads.  Installed and withdrawn around the operands' translation by
         # `_translate_nat_subtraction`; applied by `translate_expr`.
         self._nat_sub_hooks: dict[int, list[str]] = {}
+        # The `@Nat` operands of an `@Int` operation being translated, by
+        # node: each is widened into it, and guarded as it is evaluated
+        # (`narrowing.widened_nat_operands`).
+        self._widened_operands: set[int] = set()
         self._scoped_fns: set[str] = (
             self._known_fns if scoped_fns is None else scoped_fns
         )
@@ -1104,6 +1108,10 @@ class WasmContext(
         if instructions is None:
             return None
         scoped = self._scope_shadow_roots(expr, instructions)
+        # A `@Nat` operand widened into an `@Int` operation traps above
+        # `i64.MAX` before the operation reads its bits (PR #1583 review).
+        if id(expr) in self._widened_operands:
+            scoped = self._emit_int_widen_guard(scoped, at=expr)
         # A guarded @Nat subtraction's record of this value (#1503): it
         # reads the value on the stack and leaves it there.
         recorded = self._nat_sub_hooks.get(id(expr))
@@ -1449,7 +1457,7 @@ class WasmContext(
             return self._translate_slot_ref(expr, env)
 
         if isinstance(expr, ast.BinaryExpr):
-            return self._translate_binary(expr, env)
+            return self._translate_widening_binary(expr, env)
 
         if isinstance(expr, ast.UnaryExpr):
             return self._translate_unary(expr, env)
