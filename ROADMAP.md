@@ -18,7 +18,7 @@ The next release is a feature release, v0.3.0: the `Decision` effect ([#1467](ht
 
 ## The next burndown
 
-*Seventy-one open bugs, driven to zero.*
+*Seventy-five open bugs, driven to zero.*
 
 A bug class outranks stage work, so the open `bug`-labelled set is the queue the fix releases work from, soundness defects first.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) carries each row's full account and stays the one place the detail lives; this table is the order of attack.
 
@@ -35,7 +35,7 @@ A bug class outranks stage work, so the open `bug`-labelled set is the queue the
 | [#1557](https://github.com/aallan/vera/issues/1557) | A `@Nat` subtraction over a call to a non-generic `@Nat` function is claimed `nat_sub` `tier3` and compiled with no underflow check. |
 | [#1501](https://github.com/aallan/vera/issues/1501) | `&&`, `\|\|` and `==>` evaluate both operands, although spec §4.6 says `&&` and `\|\|` short-circuit, so a guard written beside the operation it protects does not protect it. |
 | [#1504](https://github.com/aallan/vera/issues/1504) | `@Nat` values above i64.MAX are compared, divided and printed as negative numbers, and a Tier-1 `ensures` fails. |
-| [#1530](https://github.com/aallan/vera/issues/1530) | A `decreases` on an `Exn`-declaring function has no runtime guard, yet verify records it as checked at run time. |
+| [#1530](https://github.com/aallan/vera/issues/1530) | A `decreases` the backend does not guard (an `Exn` row, a parameterized ADT measure) is recorded as checked at run time. |
 | [#1551](https://github.com/aallan/vera/issues/1551) | The verifier discovers a module `where` helper's call as the entry file's same-named generic, and verifies a clone that is never emitted. |
 | [#1555](https://github.com/aallan/vera/issues/1555) | `==` between two call results of a generic data type compares heap addresses, and a Tier-1 `ensures` fails at run time. |
 | [#1560](https://github.com/aallan/vera/issues/1560) | A module's own `data Json` accepts a prelude `Json` value and reads it through the wrong layout. |
@@ -95,6 +95,10 @@ A bug class outranks stage work, so the open `bug`-labelled set is the queue the
 | [#1596](https://github.com/aallan/vera/issues/1596) | `let @Nat = id(0 - 3) + 1` passes verify and is caught only by the runtime guard. |
 | [#1597](https://github.com/aallan/vera/issues/1597) | A handler for an effect other than `State` or `Exn` passes check and verify, and code generation drops its function (**E602**). |
 | [#1599](https://github.com/aallan/vera/issues/1599) | A pipe as a tuple or constructor component passes check and verify, and code generation drops the function (**E602**). |
+| [#1600](https://github.com/aallan/vera/issues/1600) | An entry file importing a module's `data Json` resolves `@Json` to the prelude's type, and a match on the module's constructors is refused (**E311**). |
+| [#1601](https://github.com/aallan/vera/issues/1601) | An `assume` over a `let` bound to a user function's result does not reach `ensures`, which is refused (**E500**). |
+| [#1602](https://github.com/aallan/vera/issues/1602) | The E506 explanation lists construction positions as unguarded, which they are not since #1426. |
+| [#1603](https://github.com/aallan/vera/issues/1603) | Codes E603, E604, E605 and E607 have registry titles that do not match their use, and E604/E605 duplicate E600/E601. |
 
 ## Stage 19 — The verification completeness sprint
 
