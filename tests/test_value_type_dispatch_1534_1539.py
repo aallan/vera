@@ -234,8 +234,8 @@ class TestATypeReachedThroughASignature:
         same value types: ``show`` or ``hash`` of the value inside a lambda,
         mapped over two elements and joined (PR #1508 review)."""
         expr, fn, types = _VALUES[value]
-        # The hash is rendered in the lambda rather than carried out of it:
-        # a hash above `i64.MAX` traps where it is bound into a `Nat` slot.
+        # The lambda renders its result and the fold joins the strings, so
+        # `show` and `hash` take one path.
         shown = f"show({expr})" if op == "show" else f"show(hash({expr}))"
         body = (
             "array_fold(array_map([1, 2], fn(@Int -> @String) "
