@@ -33,7 +33,6 @@ import contextlib
 import re
 from collections.abc import (
     Callable,
-    Collection,
     Iterable,
     Iterator,
     Mapping,
@@ -1316,8 +1315,9 @@ def public_generic_names(module_program: ast.Program) -> set[str]:
 
 def reroute_module_qualified_generic_calls(
     decl: ast.FnDecl,
-    qualified_generics: Collection[str],
+    qualified_generics: Mapping[str, tuple[str, ...]],
     make_call: Callable[[ast.FnCall, tuple[ast.Expr, ...]], ast.Node],
+    own_path: tuple[str, ...] | None = None,
 ) -> ast.FnDecl:
     """Shadow-aware rewrite of bare calls to a module's QUALIFIED-ONLY top-level
     generics (#1000, widened by #1274).
@@ -1342,6 +1342,15 @@ def reroute_module_qualified_generic_calls(
     Only the matched call NODE changes (recursively rerouted args); every other
     node — including nested ``AnonFn`` / ``where`` bodies — is structurally
     preserved with its span.
+
+    *own_path* is the path the module whose body this is names itself by
+    (#1558).  A call the author already qualified with it — ``ma::gen(x)``
+    inside ``module ma;`` — names the same qualified-only generic a bare
+    ``gen(x)`` there does, so it is routed the same way, and a ``where``
+    helper does not capture it, as nothing local shadows a qualified call.
+    Codegen, which emits that very ``ModuleCall``, passes no *own_path*; the
+    verifier passes it, so its name-renamed key discovers the clone codegen
+    emits (the #732 differential).
     """
     if not qualified_generics:
         return decl
@@ -1367,6 +1376,17 @@ def reroute_module_qualified_generic_calls(
                 cast("ast.Expr", walk(a, shadowed)) for a in node.args
             )
             return make_call(node, new_args)
+        if (own_path is not None
+                and isinstance(node, ast.ModuleCall)
+                and tuple(node.path) == own_path
+                and qualified_generics.get(node.name) == own_path):
+            new_args = tuple(
+                cast("ast.Expr", walk(a, shadowed)) for a in node.args
+            )
+            return make_call(
+                ast.FnCall(name=node.name, args=node.args, span=node.span),
+                new_args,
+            )
         if isinstance(node, ast.Node):
             changes = {}
             for f in fields(node):

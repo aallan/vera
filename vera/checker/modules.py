@@ -13,7 +13,11 @@ from vera import ast
 from vera.environment import TypeEnv
 from vera.monomorphize import namespace_adt_names, namespace_fn_names
 from vera.registration import where_helper_parents
-from vera.resolver import ResolvedModule, merged_import_filters
+from vera.resolver import (
+    ResolvedModule,
+    merged_import_filters,
+    own_module_path,
+)
 
 
 class ModulesMixin:
@@ -103,9 +107,17 @@ class ModulesMixin:
                 k: v for k, v in temp.env.functions.items()
                 if k not in builtin_fn_names or v.span is not None
             }
+            # What the module DECLARES, whatever the name (#1559).  Filtering
+            # by name dropped a module's own `data Json` along with the
+            # built-in one it replaces in `temp`, so its constructors never
+            # reached an importer: `import a(Json)` admitted nothing, and a
+            # construction the spec admits (§8.3.3) was an unknown
+            # constructor.  A declaration registers a new `AdtInfo`, so the
+            # entries that are not the built-ins' own — `temp`'s snapshot of
+            # them, taken before registration — are the module's.
             all_data = {
                 k: v for k, v in temp.env.data_types.items()
-                if k not in builtin_data_names
+                if temp._builtin_data_types.get(k) is not v
             }
 
             # C7c: keep unfiltered dicts for "is private" error messages
@@ -480,6 +492,9 @@ class ModulesMixin:
             resolved_modules=self._modules_visible_to(mod),
         )
         checker._module_body_check_memo = memo
+        # #1558: the path the program reaches this module by, which its own
+        # `module` declaration has to match for the path to name it.
+        checker._resolved_as = mod.path
         checker.check_program(mod.program)
         seen = {
             (e.error_code, str(e.location.file), e.location.line,
@@ -493,6 +508,23 @@ class ModulesMixin:
                 continue
             seen.add(key)
             self.errors.append(err)
+
+    def _own_module_paths(
+        self, program: ast.Program,
+    ) -> tuple[tuple[str, ...] | None, tuple[str, ...] | None]:
+        """The path *program* declares, and the path that names it (#1558).
+
+        The second is :func:`vera.resolver.own_module_path`'s answer — the
+        declared path, where the program reaches the file by it — which a
+        module-qualified call to it resolves against the file's own
+        top-level functions (`_check_own_module_call`).  The first is kept
+        for E230's fix when the two differ: a file imported as ``ma`` that
+        declares another path, or none, is told to declare ``module ma;``.
+        """
+        declared = (tuple(program.module.path)
+                    if program.module is not None else None)
+        return declared, own_module_path(
+            program, self._resolved_as, self._resolved_modules)
 
     def _modules_visible_to(
         self, mod: ResolvedModule,

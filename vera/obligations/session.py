@@ -44,7 +44,7 @@ from vera.obligations.cache import (
 )
 from vera.obligations.core import ProofObligation
 from vera.parser import parse
-from vera.resolver import ModuleResolver, ResolvedModule
+from vera.resolver import ModuleResolver, ResolvedModule, own_module_path
 from vera.smt import SmtContext, resolve_timeout_ms
 from vera.transform import transform
 from vera.verifier import (
@@ -338,7 +338,12 @@ class VerificationSession:
         # OTHER declarations' bodies — a body edit elsewhere can close or
         # open a cycle through this one without touching anything
         # `fn_cache_key` digests.  The cycle's membership goes in the key.
-        call_graph = CallGraph(tld.decl for tld in program.declarations)
+        call_graph = CallGraph(
+            (tld.decl for tld in program.declarations),
+            # #1558: the verifier's graph draws a call by the file's own
+            # path as an edge, so the key's cycles must too.
+            own_path=own_module_path(program, None, resolved_modules or []),
+        )
 
         def _cycle_key(root: ast.FnDecl) -> str:
             stack, names = [root], []

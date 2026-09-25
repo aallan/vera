@@ -544,6 +544,23 @@ class TypeChecker(
         # reached from several importers is checked once and an import cycle
         # terminates.  ``None`` until the first module is reached.
         self._module_body_check_memo: set[tuple[str, ...]] | None = None
+        # #1558: the path this program is resolved by when it is checked AS
+        # an imported module (`_check_module_bodies` sets it; `None` for the
+        # entry), the path its `module` declaration gives, and — derived from
+        # the two in `check_program` — the path that names the file ITSELF in
+        # a module-qualified call, or `None` where it has none.
+        self._resolved_as: tuple[str, ...] | None = None
+        self._declared_module_path: tuple[str, ...] | None = None
+        self._own_module_path: tuple[str, ...] | None = None
+        # Every top-level function name the file declares, refused ones
+        # included, so a qualified call to a refused one adds no error to
+        # the one its declaration drew.
+        self._own_fn_names: frozenset[str] = frozenset()
+        # #1559: the built-in data types this checker's environment starts
+        # with, by identity, so a type the file declares or imports can be
+        # told from the prelude's own type of the same name.
+        self._builtin_data_types: dict[str, AdtInfo] = dict(
+            self.env.data_types)
         # C7c: unfiltered module declarations (for "is private" errors).
         self._module_all_functions: dict[
             tuple[str, ...], dict[str, object]
@@ -683,6 +700,11 @@ class TypeChecker(
         """Entry point: register modules, then local declarations, then check."""
         self._register_modules(program)  # C7b: cross-module imports
         self._register_all(program)  # local declarations shadow imports
+        self._declared_module_path, self._own_module_path = (
+            self._own_module_paths(program))
+        self._own_fn_names = frozenset(
+            tld.decl.name for tld in program.declarations
+            if isinstance(tld.decl, ast.FnDecl))
         # #991 checker leg: pin each LOCAL top-level function's own info so
         # the scoped lookup prefers it over a nested helper of the same name
         # that clobbered the flat registry (helpers register last) — the
@@ -769,6 +791,8 @@ class TypeChecker(
             (tld.decl for tld in program.declarations),
             refused=self._refused_decl_ids,
             unchecked=self._unchecked_body_ids,
+            # #1558: a call by the file's own path is the bare call's twin.
+            own_path=self._own_module_path,
         )
         for fn in graph.unmeasured():
             others = [f"'{m.name}'" for m in graph.cycle(fn) if m is not fn]

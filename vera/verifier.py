@@ -17,7 +17,7 @@ import enum
 
 import z3
 
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from dataclasses import fields as ast_fields
 from collections.abc import Sequence
@@ -61,7 +61,7 @@ from vera.obligations.core import (
     expr_text_for,
 )
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv, alias_env_from_environment
-from vera.resolver import merged_import_filters
+from vera.resolver import merged_import_filters, own_module_path
 from vera.slots import effect_op_result_names, fn_slot_scope, slot_table
 from vera.smt import (
     AxiomKind,
@@ -1005,6 +1005,14 @@ class ContractVerifier:
         #: outside a function's verification, where the flat registry is the
         #: only table there is.
         self._fn_lookup_in_scope: Callable[[str], FunctionInfo | None] | None = None
+        #: #1558: this program's own path in a qualified call, set by
+        #: `register_program`, and the own path and top-level functions of
+        #: the scope `_bind_smt_scope` last bound — the `_module_fn_in_scope`
+        #: twin of `_fn_lookup_in_scope`.
+        self._entry_own_path: tuple[str, ...] | None = None
+        self._own_scope_in_force: tuple[
+            tuple[str, ...] | None, Mapping[str, FunctionInfo] | None,
+        ] = (None, None)
         self._top_level_fn_infos: dict[str, FunctionInfo] = {}
         self._scoped_fn_info_cache: dict[
             tuple[int, str | None], FunctionInfo
@@ -1658,7 +1666,12 @@ class ContractVerifier:
             # in; harvesting only the public surface would leave a contract's
             # call to a private helper falling through to the importer's
             # registry, which is the bug (#1225).
-            mod_scope = CalleeScope(mod_alias_env, temp.env.lookup_function)
+            mod_scope = CalleeScope(
+                mod_alias_env, temp.env.lookup_function,
+                # #1558: the path that names this module inside its own
+                # contracts and bodies, and the functions it declares.
+                own_module_path(mod.program, mod.path, ()), all_fns,
+            )
             # #1241: and the scope every BODY this module declares resolves
             # its bare calls in.  `_declaring_module_scope` already swapped
             # the naming env and the source buffer for an imported generic's
@@ -1751,6 +1764,34 @@ class ContractVerifier:
             return None
         return mod_fns.get(name)
 
+    def _module_fn_in_scope(
+        self, path: tuple[str, ...], name: str,
+    ) -> FunctionInfo | None:
+        """THE declaration ``path::name`` names in the declaration under
+        verification, for the readers without an ``smt`` in hand (#1558).
+
+        :meth:`vera.smt.SmtContext.module_callee`'s answer, from the scope
+        :meth:`_bind_smt_scope` recorded: an imported module's function,
+        else the scope's own top-level function when the path is its own.
+        """
+        found = self._lookup_module_function(tuple(path), name)
+        if found is None:
+            own_path, own_fns = self._own_scope_in_force
+            if own_fns is not None and tuple(path) == own_path:
+                found = own_fns.get(name)
+        return found
+
+    def _own_scope(
+        self,
+    ) -> tuple[tuple[str, ...] | None, Mapping[str, FunctionInfo] | None]:
+        """The own path and top-level functions of the declaration being
+        verified (#1558): its declaring module's, for an imported generic's
+        clone (:meth:`_declaring_module_scope`), else this program's."""
+        declaring = self._decl_fn_scope
+        if declaring is not None:
+            return declaring.own_path, declaring.own_fns
+        return self._entry_own_path, self._top_level_fn_infos
+
     def _fn_in_scope(self, name: str) -> FunctionInfo | None:
         """THE resolution of a bare function NAME in the declaration under
         verification (#1455).
@@ -1803,10 +1844,17 @@ class ContractVerifier:
         than a helper being a special case anywhere.
 
         Module-qualified calls keep their own per-module registry: a path
-        names the module outright, so no lexical chain applies.
+        names the module outright, so no lexical chain applies — and the
+        scope's own path names its own top-level functions (#1558), which a
+        ``where`` helper of the same name does not shadow.
         """
         if isinstance(expr, ast.ModuleCall):
-            return self._lookup_module_function(expr.path, expr.name)
+            # #1558: through the SMT layer's own resolution, which knows the
+            # scope's own path, so the callee the obligation walk reads is
+            # the one the call translates against.
+            found_q: FunctionInfo | None = smt.module_callee(
+                tuple(expr.path), expr.name)
+            return found_q
         lookup = smt._fn_lookup
         if lookup is None:  # pragma: no cover — every walk binds a scope
             return self.env.lookup_function(expr.name)
@@ -1824,15 +1872,16 @@ class ContractVerifier:
         as on the cold one — and being one call, the two paths cannot come to
         bind different halves.
         """
-        smt._alias_env = scope.alias_env
-        smt._fn_lookup = scope.fn_lookup
+        smt._apply_scope(scope)
         # #1455: and on the verifier, for the readers that answer a question
         # about a CALL without an `smt` in hand — the three type oracles
         # below.  Recorded HERE because this is the one place the verifier
         # says where it is, so the answer those readers get and the answer
         # the SMT layer resolves a call with cannot come from different
-        # scopes.
+        # scopes.  The scope's own path goes with it (#1558), for the same
+        # readers' qualified calls.
         self._fn_lookup_in_scope = scope.fn_lookup
+        self._own_scope_in_force = (scope.own_path, scope.own_fns)
         smt._module_fn_lookup = self._lookup_module_function
         smt._callee_scope_lookup = self._callee_scope
 
@@ -2140,6 +2189,11 @@ class ContractVerifier:
         """
         self._register_modules(program)  # C7d: cross-module imports
         self._register_all(program)      # local declarations shadow imports
+        # #1558: the path that names this program's own file in a qualified
+        # call — the checker's derivation, so the two resolve the same calls,
+        # and the call graphs below draw an edge for each such call.
+        self._entry_own_path = own_module_path(
+            program, None, self._resolved_modules)
         # #1492/#1520: the call graph whose cycles decide which calls a
         # `decreases` measure has to be checked across — one per program the
         # verifier reads, keyed by the declarations it holds.
@@ -2539,7 +2593,7 @@ class ContractVerifier:
                     public.setdefault(
                         decl.name,
                         self._reroute_to_module_qualified(
-                            decl, reroute_targets,
+                            decl, reroute_targets, own_path=mod.path,
                         ),
                     )
                     # #1208: first-seen-wins, in lockstep with the setdefault
@@ -2557,7 +2611,7 @@ class ContractVerifier:
                     private.setdefault(
                         self._module_qualified_base(mod.path, decl.name),
                         self._reroute_to_module_qualified(
-                            decl, reroute_targets,
+                            decl, reroute_targets, own_path=mod.path,
                         ),
                     )
                     self._generic_origins.setdefault(  # #1208
@@ -2610,6 +2664,7 @@ class ContractVerifier:
         self,
         decl: ast.FnDecl,
         qual_targets: dict[str, tuple[str, ...]],
+        own_path: tuple[str, ...] | None = None,
     ) -> ast.FnDecl:
         """Name-rename an imported body's bare calls to *path*'s qualified-only
         generics onto their ``mod$<path>$name`` discovery keys (#1029, #1274).
@@ -2623,7 +2678,12 @@ class ContractVerifier:
         against ``generic_decls`` (which keys qualified-only module generics
         under ``mod$<path>$name``), so its terminal renames the ``FnCall`` to that
         key rather than emitting a ``ModuleCall`` — keeping the #732 differential
-        exact while both sides route the identical set of calls."""
+        exact while both sides route the identical set of calls.
+
+        *own_path* (#1558): the path of the module *decl* is declared in, so
+        a call there already qualified with it (``ma::gen(x)``) is renamed
+        onto the same key — codegen reaches that clone through the
+        ``ModuleCall`` as written."""
         if not qual_targets:
             return decl
         rename = {
@@ -2635,6 +2695,7 @@ class ContractVerifier:
             lambda call, args: replace(
                 call, name=rename[call.name], args=args,
             ),
+            own_path=own_path,
         )
 
     def _collect_instantiations(
@@ -2769,7 +2830,7 @@ class ContractVerifier:
                     replace(
                         tld,
                         decl=self._reroute_to_module_qualified(
-                            tld.decl, mod_qual_targets,
+                            tld.decl, mod_qual_targets, own_path=mod.path,
                         ),
                     )
                     if isinstance(tld.decl, ast.FnDecl) else tld
@@ -4024,7 +4085,8 @@ class ContractVerifier:
             smt.reset()
         else:
             smt = SmtContext(timeout_ms=self.timeout_ms)
-        self._bind_smt_scope(smt, CalleeScope(fn_env, fn_lookup))
+        self._bind_smt_scope(
+            smt, CalleeScope(fn_env, fn_lookup, *self._own_scope()))
         # CR PR-review: let the SMT match translation assume a constructor
         # pattern's refined / @Nat sub-pattern SOURCE facts while checking the
         # arm body's call PRECONDITIONS — the E501 path the narrowing-walk fact
@@ -6412,7 +6474,7 @@ class ContractVerifier:
         # by it: see `_decreases_expected`.
         expected = self._decreases_expected(decl, group_decls)
 
-        def match(call: ast.FnCall) -> ast.FnDecl | None:
+        def match(call: ast.FnCall | ast.ModuleCall) -> ast.FnDecl | None:
             return expected.get(id(call))
 
         calls = self._collect_recursive_calls(
@@ -6516,16 +6578,16 @@ class ContractVerifier:
         expr: ast.Expr,
         smt: SmtContext,
         slot_env: SlotEnv,
-        match: Callable[[ast.FnCall], ast.FnDecl | None],
+        match: Callable[[ast.FnCall | ast.ModuleCall], ast.FnDecl | None],
     ) -> list[tuple[ast.FnDecl, tuple[ast.Expr, ...], list[object],
-                    SlotEnv, ast.FnCall]]:
+                    SlotEnv, ast.FnCall | ast.ModuleCall]]:
         """Walk the AST to find the calls *match* resolves to a cycle member.
 
         Returns ``(callee, call_args, z3_path_conditions, slot_env, call)``
         tuples.
         """
         results: list[tuple[ast.FnDecl, tuple[ast.Expr, ...], list[object],
-                            SlotEnv, ast.FnCall]] = []
+                            SlotEnv, ast.FnCall | ast.ModuleCall]] = []
         self._walk_for_calls(match, expr, [], results, smt, slot_env)
         return results
 
@@ -6553,18 +6615,24 @@ class ContractVerifier:
                 id(site.call): site.callee
                 for site in self._graph_of[id(decl)].cycle_sites(decl)
             }
+        # A call by the clone's own module path counts too (#1558);
+        # `_decreases_group` has left only the one that names the clone.
         return {
             id(call): group_decls[call.name]
-            for call in computation_calls(decl.body)
+            for call in computation_calls(
+                decl.body, own_path=self._own_scope()[0])
             if call.name in group_decls
         }
 
     def _register_call_graphs(self, program: ast.Program) -> None:
-        """Build the call graph of *program* and of every module it reads."""
-        graphs = [CallGraph(tld.decl for tld in program.declarations)]
+        """Build the call graph of *program* and of every module it reads,
+        each told the path its own file is qualified by (#1558)."""
+        graphs = [CallGraph((tld.decl for tld in program.declarations),
+                            own_path=self._entry_own_path)]
         for mod in self._resolved_modules:
             graphs.append(CallGraph(
-                tld.decl for tld in mod.program.declarations))
+                (tld.decl for tld in mod.program.declarations),
+                own_path=own_module_path(mod.program, mod.path, ())))
         self._graph_of: dict[int, CallGraph] = {}
         self._graph_by_name: dict[str, list[ast.FnDecl]] = {}
         for graph in graphs:
@@ -6624,15 +6692,25 @@ class ContractVerifier:
                 where_group[wfn.name] = wfn
         if any(m.name not in where_group for m in cycle):
             return None
+        # #1558: a call by the module's own path names a TOP-LEVEL function,
+        # which this by-name group can confuse with a `where` helper of the
+        # same name.  Only the clone's call to itself is unambiguous; any
+        # other claims no proof, and the runtime guard keeps the obligation.
+        for call in computation_calls(decl.body,
+                                      own_path=self._own_scope()[0]):
+            if (isinstance(call, ast.ModuleCall) and call.name in where_group
+                    and not (call.name == decl.name
+                             and where_group[call.name] is decl)):
+                return None
         return where_group
 
     def _walk_for_calls(
         self,
-        match: Callable[[ast.FnCall], ast.FnDecl | None],
+        match: Callable[[ast.FnCall | ast.ModuleCall], ast.FnDecl | None],
         expr: ast.Expr,
         z3_path_conds: list[object],
         results: list[tuple[ast.FnDecl, tuple[ast.Expr, ...], list[object],
-                            SlotEnv, ast.FnCall]],
+                            SlotEnv, ast.FnCall | ast.ModuleCall]],
         smt: SmtContext,
         slot_env: SlotEnv,
     ) -> None:
@@ -6653,6 +6731,8 @@ class ContractVerifier:
         #
         # Handled (explicit isinstance branch — record and/or recurse):
         #   FnCall             → record if on the cycle; recurse args
+        #   ModuleCall         → record if on the cycle (a call by the
+        #                        module's own path, #1558); recurse args
         #   IfExpr             → condition (enclosing path), branches under it
         #   Block              → let / destructure values, statements, tail,
         #                        with each binding pushed on the env
@@ -6666,7 +6746,6 @@ class ContractVerifier:
         #   ExistsExpr         → domain (enclosing env) + predicate (AnonFn)
         #   ConstructorCall    → recurse args
         #   QualifiedCall      → recurse args (effect operation)
-        #   ModuleCall         → recurse args (never an edge: E011)
         #   IndexExpr          → recurse collection + index
         #   ArrayLit           → recurse elements
         #   InterpolatedString → recurse interpolated parts
@@ -6688,7 +6767,9 @@ class ContractVerifier:
         # Cannot occur — rejected before this walk:
         #   HoleExpr           → check time rejects (E170)
         """
-        if isinstance(expr, ast.FnCall):
+        if isinstance(expr, (ast.FnCall, ast.ModuleCall)):
+            # A module-qualified call is on the cycle only when it is by the
+            # module's own path (#1558); *match* knows the ones that are.
             callee = match(expr)
             if callee is not None:
                 results.append(
@@ -6850,8 +6931,7 @@ class ContractVerifier:
                                  results, smt, slot_env)
             return
 
-        if isinstance(expr, (ast.ConstructorCall, ast.QualifiedCall,
-                             ast.ModuleCall)):
+        if isinstance(expr, (ast.ConstructorCall, ast.QualifiedCall)):
             for arg in expr.args:
                 self._walk_for_calls(match, arg, z3_path_conds,
                                      results, smt, slot_env)
@@ -11640,7 +11720,8 @@ class ContractVerifier:
         # resolution left reading the flat table where a lexical scope applies.
         self._bind_smt_scope(
             smt, CalleeScope(
-                fn_env, self._scoped_fn_lookup(decl, enclosing)))
+                fn_env, self._scoped_fn_lookup(decl, enclosing),
+                *self._own_scope()))
         for adt_info in self.env.data_types.values():
             smt.register_adt(adt_info)
         # CR PR-review: the generic refined-return fast path translates the body
@@ -13670,7 +13751,7 @@ class ContractVerifier:
         if isinstance(expr, ast.ModuleCall):
             # Module-qualified calls (e.g. `Math.abs(...)`) — resolve via
             # the per-module registry the verifier already maintains.
-            mfn = self._lookup_module_function(expr.path, expr.name)
+            mfn = self._module_fn_in_scope(expr.path, expr.name)
             if mfn is not None:
                 return self._is_nat_type(mfn.return_type)
             return False
@@ -13827,7 +13908,7 @@ class ContractVerifier:
             resolved = self._resolved_type_of(expr)
             if resolved is not None and self._is_nat_type(resolved):
                 return True
-            mfn = self._lookup_module_function(expr.path, expr.name)
+            mfn = self._module_fn_in_scope(expr.path, expr.name)
             if mfn is None:
                 return False
             return self._is_nat_type(mfn.return_type)
