@@ -37,6 +37,7 @@ from vera.types import (
     UnknownType,
     base_type,
     contains_fresh_typevar,
+    contains_literal_hole,
     contains_typevar,
     erases_to_unit,
     is_effect_subtype,
@@ -46,6 +47,7 @@ from vera.types import (
     pretty_inferred_type,
     strip_builtin_typevar_marker,
     substitute,
+    types_equal,
 )
 
 
@@ -168,12 +170,20 @@ class CallsMixin:
     # Function calls
     # -----------------------------------------------------------------
 
-    def _check_fn_call(self, expr: ast.FnCall) -> Type | None:
-        """Type-check a function call."""
-        return self._check_call_with_args(expr.name, expr.args, expr)
+    def _check_fn_call(self, expr: ast.FnCall, *,
+                       expected: Type | None = None) -> Type | None:
+        """Type-check a function call.
+
+        *expected* is the type the call's result is checked against, where
+        the context supplies one: a generic callee's type arguments that
+        only literals would fix take it (#1541).
+        """
+        return self._check_call_with_args(expr.name, expr.args, expr,
+                                          expected=expected)
 
     def _check_call_with_args(self, name: str, args: tuple[ast.Expr, ...],
-                              node: ast.Node) -> Type | None:
+                              node: ast.Node, *,
+                              expected: Type | None = None) -> Type | None:
         """Check a call to function `name` with given arguments."""
         # apply_fn is a checker special form (#854): it is variadic and
         # effect-polymorphic — its arity, argument types, result type,
@@ -205,7 +215,8 @@ class CallsMixin:
         if bare_call_denotes_user_fn(name, self._user_fn_names):
             fn_info = self._lookup_function_scoped(name)
             if fn_info is not None:
-                return self._check_fn_call_with_info(fn_info, args, node)
+                return self._check_fn_call_with_info(fn_info, args, node,
+                                                     expected=expected)
 
         # Maybe it's an effect operation
         op_info = self.env.lookup_effect_op(name)
@@ -371,7 +382,9 @@ class CallsMixin:
 
     def _check_fn_call_with_info(self, fn_info: FunctionInfo,
                                  args: tuple[ast.Expr, ...],
-                                 node: ast.Node) -> Type | None:
+                                 node: ast.Node, *,
+                                 expected: Type | None = None,
+                                 ) -> Type | None:
         """Check a call against a known function signature."""
         # Synth arg types.  For non-generic functions pass the declared
         # param type as *expected* so that nested constructors can resolve
@@ -409,9 +422,15 @@ class CallsMixin:
         type_arg_conflict = False
         if fn_info.forall_vars:
             conflicts: set[str] = set()
-            mapping = self._infer_type_args(
-                fn_info.forall_vars, fn_info.param_types, arg_types,
-                conflicts)
+            # #1541/#1565: an argument's literals take their type from the
+            # call's other arguments, then from the type the result is
+            # expected at, and only then from their own values.
+            mapping, soft_mapping = self._infer_type_args_in_context(
+                fn_info.forall_vars, fn_info.param_types, arg_types, args,
+                result_type=fn_info.return_type, expected=expected,
+                conflicts=conflicts)
+            self._record_literal_soft_result(
+                node, substitute(fn_info.return_type, soft_mapping))
             if conflicts:
                 # #898: two arguments pinned the same type parameter to
                 # different, irreconcilable types (`eq2(MkOk("x"), MkOk(5))`
@@ -583,6 +602,23 @@ class CallsMixin:
                     if is_subtype(re, param_ty):
                         arg_ty = re
                         arg_types[i] = re
+            # #1541: an argument whose literals the instantiation typed
+            # differently from their own values is checked AGAINST that
+            # instantiation, so each literal meets the type it now has —
+            # a negative one in a `Nat` position is the narrowing it is
+            # (E503), and a nested generic call or constructor takes the
+            # instantiation as its own context.
+            elif (fn_info.forall_vars
+                    and not contains_typevar(param_ty)
+                    and not types_equal(arg_ty, param_ty)
+                    and contains_literal_hole(
+                        self._literal_soft_type(args[i], arg_ty)
+                        or arg_ty)):
+                re = self._synth_expr(args[i], expected=param_ty)
+                if (re is not None and not isinstance(re, UnknownType)
+                        and is_subtype(re, param_ty)):
+                    arg_ty = re
+                    arg_types[i] = re
             # #1010: a constructor argument against a PARTIALLY-generic
             # param (`MkPair(0 - 5, None)` as `@Pair<Nat, T>`) was never
             # re-synthesized — every re-synth above is gated on the WHOLE
@@ -1496,7 +1532,7 @@ class CallsMixin:
         """Type-check a constructor call: Ctor(args)."""
         # Tuple is a variadic built-in constructor — handle specially
         if expr.name == "Tuple":
-            return self._check_tuple_constructor(expr)
+            return self._check_tuple_constructor(expr, expected=expected)
 
         ci = self.env.lookup_constructor(expr.name)
         if ci is None and expr.name in self._refused_ctor_names:
@@ -1594,7 +1630,8 @@ class CallsMixin:
                     spec_ref='Chapter 2, Section 2.4 "Algebraic Data Types (ADTs)"',
                     error_code="E211",
                 )
-            return self._ctor_result_type(ci, arg_types, expected=expected)
+            return self._ctor_result_type(ci, arg_types, expected=expected,
+                                          args=expr.args)
 
         if len(expr.args) != len(ci.field_types):
             self._error(
@@ -1611,10 +1648,18 @@ class CallsMixin:
                 ),
                 error_code="E212",
             )
-            return self._ctor_result_type(ci, arg_types, expected=expected)
+            return self._ctor_result_type(ci, arg_types, expected=expected,
+                                          args=expr.args)
 
-        # Infer type args for parameterised ADTs from arg types
-        mapping = self._infer_ctor_type_args(ci, arg_types)
+        # Infer type args for parameterised ADTs from arg types — a
+        # literal argument taking its type from the other fields, then from
+        # the expected type, then from its own value (#1541).
+        soft: dict[str, Type] = {}
+        mapping = self._infer_ctor_type_args(ci, arg_types, args=expr.args,
+                                             expected=expected, soft_out=soft)
+        self._record_literal_soft_result(expr, AdtType(ci.parent_type, tuple(
+            soft.get(tv, TypeVar(tv))
+            for tv in ci.parent_type_params or ())))
 
         # Merge expected-type mapping for unresolved vars
         for tv, exp_ty in expected_mapping.items():
@@ -1701,6 +1746,33 @@ class CallsMixin:
                 if arg_ty is None or isinstance(arg_ty, UnknownType):
                     continue
                 arg_types[i] = arg_ty
+            # #1541: a field whose literals the field type types
+            # differently from their own values is checked against it —
+            # the function-call door's rule, at the constructor door, for a
+            # declared field (`MkBox(Some(0 - 5))` into `Option<Pos>`) as
+            # for an instantiated one.  Not where the enclosing context
+            # already gave the field its type: the argument was synthesized
+            # against that type above, and it is the more authoritative
+            # target (`Some(Tuple(x, 5))` returned as an
+            # `Option<Tuple<PosInt, Int>>` keeps its `PosInt`).  And only for
+            # an argument the field already admits: the re-check places each
+            # literal at the type it now has, and must not turn a refusal
+            # into an acceptance (a literal in a `@Byte` field stays E213).
+            elif (not contains_typevar(field_ty)
+                    and is_subtype(arg_ty, field_ty)
+                    and not (field_types_for_expected
+                             and i < len(field_types_for_expected)
+                             and not contains_typevar(
+                                 field_types_for_expected[i]))
+                    and not types_equal(arg_ty, field_ty)
+                    and contains_literal_hole(
+                        self._literal_soft_type(expr.args[i], arg_ty)
+                        or arg_ty)):
+                re = self._synth_expr(expr.args[i], expected=field_ty)
+                if (re is not None and not isinstance(re, UnknownType)
+                        and is_subtype(re, field_ty)):
+                    arg_ty = re
+                    arg_types[i] = re
             if not is_subtype(arg_ty, field_ty):
                 self._error(
                     expr.args[i],
@@ -1719,7 +1791,8 @@ class CallsMixin:
                     error_code="E213",
                 )
 
-        return self._ctor_result_type(ci, arg_types, expected=expected)
+        return self._ctor_result_type(ci, arg_types, expected=expected,
+                                      args=expr.args)
 
     def _register_arm_pattern_reads(
         self, scrutinee: ast.Expr, pattern: ast.Pattern,
@@ -1852,9 +1925,17 @@ class CallsMixin:
                 self._record_nested_ctor_targets(arg, recorded)
 
     def _check_tuple_constructor(
-        self, expr: ast.ConstructorCall
+        self, expr: ast.ConstructorCall, *,
+        expected: Type | None = None,
     ) -> Type | None:
-        """Type-check a variadic Tuple constructor: Tuple(a, b, ...)."""
+        """Type-check a variadic Tuple constructor: Tuple(a, b, ...).
+
+        A component is synthesized with no expected type; where *expected*
+        is a tuple whose component is a `Nat` and a generic call in the
+        component let a negative literal fix an `Int` there, the component
+        is checked against it (``_check_in_literal_context``; PR #1583
+        review), so `let @Tuple<Nat, Nat> = Tuple(1, id(0 - 3))` is refused
+        (E503) as `let @Nat = id(0 - 3)` is."""
         if not expr.args:
             self._error(
                 expr,
@@ -1868,9 +1949,16 @@ class CallsMixin:
                 error_code="E216",
             )
             return UnknownType()
+        components: tuple[Type, ...] | None = None
+        base = base_type(expected) if expected is not None else None
+        if (isinstance(base, AdtType) and base.name == "Tuple"
+                and len(base.type_args) == len(expr.args)):
+            components = base.type_args
         arg_types: list[Type] = []
-        for arg in expr.args:
+        for i, arg in enumerate(expr.args):
             t = self._synth_expr(arg)
+            if components is not None:
+                t = self._check_in_literal_context(arg, t, components[i])
             if t is not None and not isinstance(t, UnknownType):
                 arg_types.append(t)
             else:
@@ -1943,7 +2031,8 @@ class CallsMixin:
 
     def _ctor_result_type(self, ci: ConstructorInfo,
                           arg_types: list[Type | None], *,
-                          expected: Type | None = None) -> Type:
+                          expected: Type | None = None,
+                          args: tuple[ast.Expr, ...] | None = None) -> Type:
         """Compute the result type of a constructor call.
 
         When *expected* is an AdtType with the same parent name, unresolved
@@ -1952,7 +2041,8 @@ class CallsMixin:
         """
         if ci.parent_type_params:
             # Try to infer type args from argument types
-            mapping = self._infer_ctor_type_args(ci, arg_types)
+            mapping = self._infer_ctor_type_args(
+                ci, arg_types, args=args, expected=expected)
 
             # Fill unresolved TypeVars from expected type (bidirectional).
             # The same-ADT guard (expected.name == ci.parent_type) means every
@@ -1987,23 +2077,45 @@ class CallsMixin:
             # Use fresh TypeVars for any that remain unresolved — prevents
             # self-referential mappings when different ADTs share a param
             # name (e.g. both Option<T> and List<T> use "T").
-            args = tuple(
+            type_args = tuple(
                 mapping.get(tv, self._fresh_typevar(tv))
                 for tv in ci.parent_type_params
             )
-            return AdtType(ci.parent_type, args)
+            return AdtType(ci.parent_type, type_args)
         return AdtType(ci.parent_type, ())
 
     def _infer_ctor_type_args(self, ci: ConstructorInfo,
-                              arg_types: list[Type | None]) -> dict[str, Type]:
-        """Infer type arguments for a parameterised constructor."""
+                              arg_types: list[Type | None], *,
+                              args: tuple[ast.Expr, ...] | None = None,
+                              expected: Type | None = None,
+                              soft_out: dict[str, Type] | None = None,
+                              ) -> dict[str, Type]:
+        """Infer type arguments for a parameterised constructor.
+
+        With the argument expressions in hand (*args*), a literal field
+        takes its type from its context exactly as at a generic call
+        (#1541): the other fields, then *expected*, then its own value —
+        see ``ResolutionMixin._infer_type_args_in_context``.
+        """
         if not ci.parent_type_params or not ci.field_types:
             return {}
-        mapping: dict[str, Type] = {}
-        for field_ty, arg_ty in zip(ci.field_types, arg_types):
-            if arg_ty is None or isinstance(arg_ty, UnknownType):
-                continue
-            self._unify_for_inference(field_ty, arg_ty, mapping)
+        if args is None or len(args) != len(arg_types):
+            mapping: dict[str, Type] = {}
+            for field_ty, arg_ty in zip(ci.field_types, arg_types):
+                if arg_ty is None or isinstance(arg_ty, UnknownType):
+                    continue
+                self._unify_for_inference(field_ty, arg_ty, mapping)
+            return mapping
+        result_pattern = AdtType(ci.parent_type, tuple(
+            TypeVar(tv) for tv in ci.parent_type_params))
+        mapping, soft = self._infer_type_args_in_context(
+            ci.parent_type_params, ci.field_types, arg_types, args,
+            result_type=result_pattern,
+            expected=(expected if isinstance(expected, AdtType)
+                      and expected.name == ci.parent_type else None),
+            callee_vars_opaque=False)
+        if soft_out is not None:
+            soft_out.update(soft)
         return mapping
 
     # -----------------------------------------------------------------
@@ -2059,7 +2171,8 @@ class CallsMixin:
             self._synth_expr(arg)
         return UnknownType()
 
-    def _check_module_call(self, expr: ast.ModuleCall) -> Type | None:
+    def _check_module_call(self, expr: ast.ModuleCall, *,
+                           expected: Type | None = None) -> Type | None:
         """Type-check a module-qualified call: path.to.fn(args).
 
         Lookup order:
@@ -2076,7 +2189,7 @@ class CallsMixin:
         # 1. Module not resolved
         if mod_path not in self._resolved_module_paths:
             if mod_path == self._own_module_path:
-                return self._check_own_module_call(expr)
+                return self._check_own_module_call(expr, expected=expected)
             self._error(
                 expr,
                 f"Module '{mod_label}' not found. "
@@ -2152,7 +2265,8 @@ class CallsMixin:
         mod_fns = self._module_functions.get(mod_path, {})
         fn_info = mod_fns.get(fn_name)
         if fn_info is not None:
-            return self._check_fn_call_with_info(fn_info, expr.args, expr)
+            return self._check_fn_call_with_info(fn_info, expr.args, expr,
+                                                 expected=expected)
 
         # 4. Function not found in module
         available = sorted(mod_fns.keys())
@@ -2175,7 +2289,9 @@ class CallsMixin:
             self._synth_expr(arg)
         return UnknownType()
 
-    def _check_own_module_call(self, expr: ast.ModuleCall) -> Type | None:
+    def _check_own_module_call(self, expr: ast.ModuleCall, *,
+                               expected: Type | None = None,
+                               ) -> Type | None:
         """A module-qualified call to the file's OWN path (#1558).
 
         `ma::two(3)` inside `module ma;` calls the file's own top-level
@@ -2191,7 +2307,8 @@ class CallsMixin:
         fn_name = expr.name
         fn_info = self._top_level_fn_infos.get(fn_name)
         if fn_info is not None:
-            return self._check_fn_call_with_info(fn_info, expr.args, expr)
+            return self._check_fn_call_with_info(fn_info, expr.args, expr,
+                                                 expected=expected)
         if fn_name in self._own_fn_names:
             # A declaration registration refused (E151, E153): its own error
             # is the one the program owes, and this use restates it.

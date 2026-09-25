@@ -753,6 +753,18 @@ private fn sum(@List<Int> -> @Int)
         # follows a `let` of a nested array the translation cannot bind, so
         # its argument does not translate and the precondition is left to
         # `run_loop`'s entry check (+1 T3): 424/142/566.
+        #
+        # #1541: a generic call whose literal arguments meet an `@Int`
+        # context is instantiated at `Int`, so its result is no longer a
+        # `@Nat` widened into an `@Int` slot, and the four
+        # `nat_to_int_coerce` obligations that widening raised are gone
+        # (`array_utilities.vera` 2, `generics.vera` 1,
+        # `nested_closures.vera` 1): -4 T3: 424/142/566 -> 424/138/562.
+        # A `@Nat` operand of an `@Int` comparison is widened into it and
+        # obligated (PR #1583 review, #1588): `absolute_value.vera`'s
+        # `@Nat.result == @Int.0 || @Nat.result == -@Int.0` (2) and
+        # `life.vera`'s two `@Nat.0 >= array_length(...)` bounds tests (2),
+        # none bounded above: +4 T3: 424/138/562 -> 424/142/566.
         assert t1 == 424, f"Expected 424 T1, got {t1}"
         assert t3 == 142, f"Expected 142 T3, got {t3}"
         assert total == 566, f"Expected 566 total, got {total}"

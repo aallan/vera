@@ -12,6 +12,7 @@ from collections.abc import Sequence
 from typing import ClassVar
 
 from vera import ast
+from vera.checker.resolution import is_literal_only, literal_int_value
 from vera.checker.sql import resolve_array_len, resolve_literal_string
 from vera.types import (
     AdtType,
@@ -28,6 +29,7 @@ from vera.types import (
     INT,
     is_subtype,
     NAT,
+    negative_literal_meets_nat,
     numeric_join,
     NUMERIC_TYPES,
     ORDERABLE_TYPES,
@@ -287,13 +289,13 @@ class ExpressionsMixin:
         if isinstance(expr, ast.ResultRef):
             return self._check_result_ref(expr)
         if isinstance(expr, ast.BinaryExpr):
-            return self._check_binary(expr)
+            return self._check_binary(expr, expected=expected)
         if isinstance(expr, ast.UnaryExpr):
             return self._check_unary(expr)
         if isinstance(expr, ast.IndexExpr):
-            return self._check_index(expr)
+            return self._check_index(expr, expected=expected)
         if isinstance(expr, ast.FnCall):
-            result = self._check_fn_call(expr)
+            result = self._check_fn_call(expr, expected=expected)
             # Bidirectional coercion: when a generic call returns a type
             # with unresolved TypeVars (e.g. map_new() → Map<K, V>) and
             # we have an expected concrete type (e.g. Map<String, Int>),
@@ -315,7 +317,7 @@ class ExpressionsMixin:
         if isinstance(expr, ast.QualifiedCall):
             return self._check_qualified_call(expr)
         if isinstance(expr, ast.ModuleCall):
-            return self._check_module_call(expr)
+            return self._check_module_call(expr, expected=expected)
         if isinstance(expr, ast.IfExpr):
             return self._check_if(expr, expected=expected)
         if isinstance(expr, ast.MatchExpr):
@@ -556,11 +558,14 @@ class ExpressionsMixin:
     # Binary operators
     # -----------------------------------------------------------------
 
-    def _check_binary(self, expr: ast.BinaryExpr) -> Type | None:
-        """Type-check a binary operator expression."""
+    def _check_binary(self, expr: ast.BinaryExpr, *,
+                      expected: Type | None = None) -> Type | None:
+        """Type-check a binary operator expression.  Only a pipe reads
+        *expected*: it is a call, and a call's result is checked against
+        the type its context expects."""
         # Pipe is special
         if expr.op == ast.BinOp.PIPE:
-            return self._check_pipe(expr)
+            return self._check_pipe(expr, expected=expected)
 
         left_ty = self._synth_expr(expr.left)
         right_ty = self._synth_expr(expr.right)
@@ -633,6 +638,17 @@ class ExpressionsMixin:
             # non-negativity with no verifier obligation (§0.2.2).
             joined = numeric_join(left_base, right_base)
             if joined is not None:
+                # #1541: a literal-only expression whose value is negative is
+                # an `Int`.
+                # `0 - 3` is two non-negative literals, and `Nat - Nat` would
+                # make it a `Nat` holding -3; whatever instantiation it then
+                # fixed (`id(0 - 3)`, `[0 - 1, 5]`) declared the value
+                # non-negative, and the `@Nat` guards on it refused or
+                # trapped a program whose value is plainly -3.
+                if types_equal(joined, NAT) and is_literal_only(expr):
+                    value = literal_int_value(expr)
+                    if value is not None and value < 0:
+                        return INT
                 return joined
             self._error(
                 expr,
@@ -885,8 +901,13 @@ class ExpressionsMixin:
             error_code="E243",
         )
 
-    def _check_pipe(self, expr: ast.BinaryExpr) -> Type | None:
-        """Type-check pipe: left |> right (right must be a FnCall/ModuleCall)."""
+    def _check_pipe(self, expr: ast.BinaryExpr, *,
+                    expected: Type | None = None) -> Type | None:
+        """Type-check pipe: left |> right (right must be a FnCall/ModuleCall).
+
+        The desugared call is checked against *expected* as the call
+        written out would be (PR #1583 review): `let @Nat = (0 - 3) |> id()`
+        instantiates `id` at `Nat`, as `let @Nat = id(0 - 3)` does."""
         left_ty = self._synth_expr(expr.left)
         if left_ty is None:
             return None
@@ -896,7 +917,7 @@ class ExpressionsMixin:
             # Create a virtual call with left prepended
             all_args = (expr.left,) + expr.right.args
             return self._check_call_with_args(
-                expr.right.name, all_args, expr.right)
+                expr.right.name, all_args, expr.right, expected=expected)
         # Module-qualified pipe: left |> mod::fn(args) → mod::fn(left, args)
         if isinstance(expr.right, ast.ModuleCall):
             desugared = ast.ModuleCall(
@@ -905,7 +926,7 @@ class ExpressionsMixin:
                 args=(expr.left,) + expr.right.args,
                 span=expr.right.span,
             )
-            return self._check_module_call(desugared)
+            return self._check_module_call(desugared, expected=expected)
         # Fallback: just synth the right side
         return self._synth_expr(expr.right)
 
@@ -999,9 +1020,21 @@ class ExpressionsMixin:
     # Index
     # -----------------------------------------------------------------
 
-    def _check_index(self, expr: ast.IndexExpr) -> Type | None:
-        """Type-check array index: collection[index]."""
+    def _check_index(self, expr: ast.IndexExpr, *,
+                     expected: Type | None = None) -> Type | None:
+        """Type-check array index: collection[index].
+
+        An element expected at a type is read from an array of that type:
+        where the collection's literals decided an `Int` element that
+        *expected* makes a `Nat`, the collection is checked against it
+        (:meth:`_check_in_literal_context`; PR #1583 review), so
+        `let @Nat = array_reverse([0 - 3])[0]` is refused (E503) as
+        `let @Nat = id(0 - 3)` is."""
         coll_ty = self._synth_expr(expr.collection)
+        if expected is not None:
+            coll_ty = self._check_in_literal_context(
+                expr.collection, coll_ty, AdtType("Array", (expected,)),
+                element_reads=1)
         idx_ty = self._synth_expr(expr.index)
         if coll_ty is None or idx_ty is None:
             return None
@@ -1154,13 +1187,101 @@ class ExpressionsMixin:
             stmt.value, list(stmt.type_bindings),
             lambda name: (name == "Tuple") == tuple_shape,
         )
-        self._synth_expr(stmt.value)
+        value_ty = self._synth_expr(stmt.value)
 
+        resolved_types: list[Type] = []
         for te in stmt.type_bindings:
             self._check_refinement_predicates(te)  # #861
-            resolved = self._resolve_type(te)
+            resolved_types.append(self._resolve_type(te))
+
+        # #1541, PR #1583 review: a tuple destructure's bindings are the
+        # type its source is expected at, as a `let`'s declared type is,
+        # whatever the source's form: a generic call, or one reached
+        # through `if`, `match` and block tails, a pipe or an index.  So
+        # `let Tuple<@Nat, @Nat> = id(Tuple(1, 0 - 3))` is refused (E503)
+        # as `let @Nat = id(0 - 3)` is, and so is the same call in an `if`
+        # branch.
+        if tuple_shape:
+            self._check_in_literal_context(
+                stmt.value, value_ty, AdtType("Tuple", tuple(resolved_types)))
+
+        for te, resolved in zip(stmt.type_bindings, resolved_types):
             tname = self._type_expr_to_slot_name(te)
             self.env.bind(tname, resolved, "destruct")
+
+    def _check_in_literal_context(self, expr: ast.Expr, ty: Type | None,
+                                  context: Type, *,
+                                  element_reads: int = 0,
+                                  ) -> Type | None:
+        """*expr*, synthesized as *ty* without an expected type, checked
+        again against *context* where a generic call it reaches let its
+        literals fix an `Int` that *context* makes a `Nat`
+        (:meth:`_call_literal_meets_nat`; #1541, PR #1583 review).
+
+        `if`, `match`, a block, a tuple, an array literal, a pipe and an
+        index each thread the expected type to the call, which then places
+        each literal at the type *context* gives it, where a negative one
+        is a narrowing the verifier refutes (E503).  A literal the source
+        builds directly is not re-checked: the destructure's or the
+        binding's own narrowing reads it where it is.  *element_reads*
+        counts the indexes that read one element out of *context*
+        (:meth:`_call_literal_meets_nat`).  Returns the type the check
+        settled on."""
+        if (ty is None or isinstance(ty, UnknownType)
+                or contains_typevar(context)
+                or not self._call_literal_meets_nat(
+                    expr, context, element_reads=element_reads)):
+            return ty
+        rechecked = self._synth_expr(expr, expected=context)
+        if rechecked is None or isinstance(rechecked, UnknownType):
+            return ty
+        return rechecked
+
+    def _call_literal_meets_nat(self, expr: ast.Expr, context: Type, *,
+                                element_reads: int = 0) -> bool:
+        """Whether a generic call that *expr* evaluates to, or builds into
+        the value, fixed a type argument at `Int` from its literals' values
+        where *context* holds a `Nat` (:func:`negative_literal_meets_nat`
+        over the call's recorded soft result).  Read through a block's
+        result, the branches of an `if` and the arms of a `match`, a
+        tuple's fields, an array literal's elements, a pipe, and the array
+        an index reads — one element of it, so that array level is no
+        collection of the value (*element_reads* counts such reads)."""
+        while isinstance(context, RefinedType):
+            context = context.base
+        if isinstance(expr, ast.Block):
+            return self._call_literal_meets_nat(
+                expr.expr, context, element_reads=element_reads)
+        if isinstance(expr, ast.IfExpr):
+            return any(
+                self._call_literal_meets_nat(
+                    branch, context, element_reads=element_reads)
+                for branch in (expr.then_branch, expr.else_branch))
+        if isinstance(expr, ast.MatchExpr):
+            return any(self._call_literal_meets_nat(
+                arm.body, context, element_reads=element_reads)
+                for arm in expr.arms)
+        if isinstance(expr, ast.IndexExpr):
+            return self._call_literal_meets_nat(
+                expr.collection, AdtType("Array", (context,)),
+                element_reads=element_reads + 1)
+        if (isinstance(expr, ast.BinaryExpr) and expr.op == ast.BinOp.PIPE
+                and isinstance(expr.right, (ast.FnCall, ast.ModuleCall))):
+            expr = expr.right
+        if (isinstance(expr, ast.ConstructorCall) and expr.name == "Tuple"
+                and isinstance(context, AdtType) and context.name == "Tuple"
+                and len(context.type_args) == len(expr.args)):
+            return any(self._call_literal_meets_nat(a, c)
+                       for a, c in zip(expr.args, context.type_args))
+        if (isinstance(expr, ast.ArrayLit) and isinstance(context, AdtType)
+                and context.name == "Array" and len(context.type_args) == 1):
+            return any(self._call_literal_meets_nat(e, context.type_args[0])
+                       for e in expr.elements)
+        if isinstance(expr, (ast.FnCall, ast.ModuleCall)):
+            soft = self._literal_soft_results.get(ast.span_key(expr))
+            return soft is not None and negative_literal_meets_nat(
+                soft, context, element_reads=element_reads)
+        return False
 
     # -----------------------------------------------------------------
     # Anonymous functions
@@ -1217,9 +1338,23 @@ class ExpressionsMixin:
         if not expr.elements:
             return AdtType("Array", (UnknownType(),))
 
+        # An element is synthesized with no expected type; where *expected*
+        # makes it a `Nat` and a generic call in it let a negative literal
+        # fix an `Int` there, it is checked against the element type
+        # (`_check_in_literal_context`; PR #1583 review).
+        expected_base = base_type(expected) if expected is not None else None
+        element_ctx = (
+            expected_base.type_args[0]
+            if (isinstance(expected_base, AdtType)
+                and expected_base.name == "Array"
+                and len(expected_base.type_args) == 1)
+            else None)
         elem_types: list[Type | None] = []
         for elem in expr.elements:
-            elem_types.append(self._synth_expr(elem))
+            et = self._synth_expr(elem)
+            if element_ctx is not None:
+                et = self._check_in_literal_context(elem, et, element_ctx)
+            elem_types.append(et)
 
         first = None
         for et in elem_types:
@@ -1248,7 +1383,6 @@ class ExpressionsMixin:
         # strip to the base first (as `erases_to_unit` itself does) — otherwise
         # the refined shape misses this guard and the literal-level E135
         # double-fires alongside the annotation's (PR #938 review).
-        expected_base = base_type(expected) if expected is not None else None
         expected_is_zero_size_array = (
             isinstance(expected_base, AdtType)
             and expected_base.name == "Array"

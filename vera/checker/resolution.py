@@ -14,6 +14,9 @@ from vera.checker.registration import (
     builtin_effect_names,
 )
 from vera.types import (
+    INT_LITERAL_HOLE,
+    LITERAL_HOLE,
+    NEGATIVE_LITERAL_HOLE,
     PRIMITIVES,
     REMOVED_ALIASES,
     AdtType,
@@ -21,16 +24,96 @@ from vera.types import (
     EffectInstance,
     EffectRowType,
     FunctionType,
+    PrimitiveType,
     PureEffectRow,
     RefinedType,
     Type,
     TypeVar,
     UnknownType,
+    collection_element_vars,
+    contains_literal_hole,
+    default_literal_holes,
     erases_to_unit,
+    fill_literal_holes,
+    is_literal_hole,
+    join_literal_holes,
     merge_inferred_types,
     pretty_type,
     substitute,
 )
+
+#: The arithmetic operators a literal-only expression may combine literals
+#: with.
+_LITERAL_ARITH = (ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL,
+                  ast.BinOp.DIV, ast.BinOp.MOD)
+
+
+def is_literal_only(expr: ast.Expr) -> bool:
+    """True iff *expr* is an integer literal, or arithmetic and negation
+    over nothing but integer literals (`0 - 3`, `-3`, `(1 - 4) * 2`).
+
+    Such an expression has no declared type anywhere in it, so the type it
+    has is the one its context gives it (spec §4.2) — see
+    :meth:`ResolutionMixin._literal_soft_type`.
+    """
+    if isinstance(expr, ast.IntLit):
+        return True
+    if isinstance(expr, ast.UnaryExpr):
+        return expr.op == ast.UnaryOp.NEG and is_literal_only(expr.operand)
+    if isinstance(expr, ast.BinaryExpr) and expr.op in _LITERAL_ARITH:
+        return is_literal_only(expr.left) and is_literal_only(expr.right)
+    return False
+
+
+def literal_only_is_int(expr: ast.Expr) -> bool:
+    """Whether the checker types the literal-only expression *expr* `Int`
+    rather than `Nat`: a negation, an operand that is `Int`, or a negative
+    value (`ExpressionsMixin._check_binary` / `_check_unary`)."""
+    if isinstance(expr, ast.UnaryExpr):
+        return True
+    if isinstance(expr, ast.BinaryExpr):
+        if (literal_only_is_int(expr.left)
+                or literal_only_is_int(expr.right)):
+            return True
+        value = literal_int_value(expr)
+        return value is not None and value < 0
+    return False
+
+
+def literal_int_value(expr: ast.Expr) -> int | None:
+    """The value of a literal-only integer expression, or ``None`` when
+    *expr* is not one or has no value (a division by zero).
+
+    Division truncates toward zero and the remainder takes the dividend's
+    sign, as at run time (spec §4.4).
+    """
+    if isinstance(expr, ast.IntLit):
+        return expr.value
+    if isinstance(expr, ast.UnaryExpr):
+        if expr.op != ast.UnaryOp.NEG:
+            return None
+        v = literal_int_value(expr.operand)
+        return None if v is None else -v
+    if isinstance(expr, ast.BinaryExpr) and expr.op in _LITERAL_ARITH:
+        left = literal_int_value(expr.left)
+        right = literal_int_value(expr.right)
+        if left is None or right is None:
+            return None
+        if expr.op == ast.BinOp.ADD:
+            return left + right
+        if expr.op == ast.BinOp.SUB:
+            return left - right
+        if expr.op == ast.BinOp.MUL:
+            return left * right
+        if right == 0:
+            return None
+        quotient = abs(left) // abs(right)
+        if (left < 0) != (right < 0):
+            quotient = -quotient
+        if expr.op == ast.BinOp.DIV:
+            return quotient
+        return left - right * quotient
+    return None
 
 
 class ResolutionMixin:
@@ -692,6 +775,159 @@ class ResolutionMixin:
     # Type inference helpers
     # -----------------------------------------------------------------
 
+    def _literal_soft_type(self, expr: ast.Expr, ty: Type | None,
+                           ) -> Type | None:
+        """*ty*, the type synthesized for *expr*, with every position a
+        LITERAL decided replaced by :data:`~vera.types.LITERAL_HOLE`
+        (#1541, #1565).
+
+        A position is a literal's when its `Int` or `Nat` came from integer
+        literals alone: a literal-only expression (`0`, `0 - 3`), an `if`,
+        `match` or block whose every result is one, an array literal's
+        element whose every element is one, a tuple or constructor field,
+        an index into such an array, and a generic call's result where its
+        own literals decided the instantiation, written out or as a pipe.  Anything a declaration
+        typed — a slot, a closure's parameters, a non-generic call — is
+        left as synthesized.
+        """
+        if ty is None or isinstance(ty, UnknownType):
+            return ty
+        if isinstance(ty, PrimitiveType) and ty.name in ("Int", "Nat"):
+            if is_literal_only(expr):
+                # The hole's fallback is the type rule 1 gives the
+                # expression itself (PR #1583 review): `-0` and
+                # `(0 - 3) + 4` are `Int` although their values are not
+                # negative, so they fall back to `Int` as they did.
+                if literal_only_is_int(expr):
+                    value = literal_int_value(expr)
+                    if value is not None and value < 0:
+                        return NEGATIVE_LITERAL_HOLE
+                    return INT_LITERAL_HOLE
+                return LITERAL_HOLE
+        if isinstance(expr, ast.Block):
+            return self._literal_soft_type(expr.expr, ty)
+        if (isinstance(expr, ast.BinaryExpr) and expr.op == ast.BinOp.PIPE
+                and isinstance(expr.right, (ast.FnCall, ast.ModuleCall))):
+            # A pipe is the call it desugars to, whose result is recorded
+            # under the call written on its right (PR #1583 review).
+            return self._literal_soft_type(expr.right, ty)
+        if isinstance(expr, ast.IfExpr):
+            return _meet_literal_holes(
+                (self._literal_soft_type(expr.then_branch, ty),
+                 self._literal_soft_type(expr.else_branch, ty)), ty)
+        if isinstance(expr, ast.MatchExpr) and expr.arms:
+            return _meet_literal_holes(
+                tuple(self._literal_soft_type(arm.body, ty)
+                      for arm in expr.arms), ty)
+        if (isinstance(expr, ast.ArrayLit) and expr.elements
+                and isinstance(ty, AdtType) and ty.name == "Array"
+                and len(ty.type_args) == 1):
+            elem = ty.type_args[0]
+            return AdtType("Array", (_meet_literal_holes(
+                tuple(self._literal_soft_type(e, elem)
+                      for e in expr.elements), elem),))
+        if isinstance(expr, ast.IndexExpr):
+            coll = self._literal_soft_type(
+                expr.collection, AdtType("Array", (ty,)))
+            if (isinstance(coll, AdtType) and coll.name == "Array"
+                    and coll.type_args):
+                return coll.type_args[0]
+            return ty
+        if (isinstance(expr, ast.ConstructorCall) and expr.name == "Tuple"
+                and isinstance(ty, AdtType) and ty.name == "Tuple"
+                and len(ty.type_args) == len(expr.args)):
+            return AdtType("Tuple", tuple(
+                self._literal_soft_type(a, t) or t
+                for a, t in zip(expr.args, ty.type_args)))
+        if isinstance(expr, (ast.ConstructorCall, ast.FnCall,
+                             ast.ModuleCall)):
+            recorded = self._literal_soft_results.get(ast.span_key(expr))
+            if recorded is not None:
+                return _overlay_literal_holes(recorded, ty)
+        return ty
+
+    def _record_literal_soft_result(self, node: ast.Node, soft: Type,
+                                    ) -> None:
+        """Record which parts of *node*'s result its literals decided
+        (read back by :meth:`_literal_soft_type`); a result they decided
+        no part of clears any earlier record, since a call is synthesized
+        again whenever its context changes."""
+        key = ast.span_key(node)
+        if key is None:
+            return
+        if contains_literal_hole(soft):
+            self._literal_soft_results[key] = soft
+        else:
+            self._literal_soft_results.pop(key, None)
+
+    def _infer_type_args_in_context(
+        self,
+        forall_vars: tuple[str, ...],
+        param_types: tuple[Type, ...],
+        arg_types: list[Type | None],
+        args: tuple[ast.Expr, ...],
+        *,
+        result_type: Type | None = None,
+        expected: Type | None = None,
+        conflicts: set[str] | None = None,
+        callee_vars_opaque: bool = True,
+    ) -> tuple[dict[str, Type], dict[str, Type]]:
+        """Infer a call's type arguments, a literal taking its type from
+        its context (spec §4.2; #1541, #1565).
+
+        Three sources, in order of authority:
+
+        1. every argument, each literal position a hole
+           (:meth:`_literal_soft_type`) that any declared sibling fills —
+           the closure `fn(@Int, @Int -> @Int)` fixes `array_fold`'s `U`
+           before the accumulator literal `0` can;
+        2. the type the call's result is expected at, which fills a hole
+           still open (`let @Int = id(5)` is `id` at `Int`) unless it is a
+           mixed one (:func:`~vera.types.context_may_fill`): a negative
+           literal beside a non-negative one need not reach the result;
+        3. the literals' own types by value, joined — `Nat` when every
+           literal at the position is non-negative, `Int` otherwise.
+
+        Returns ``(mapping, soft)``.  *soft* is the same mapping with the
+        positions step 3 decided still holes, so a caller can record which
+        parts of its result a literal decided and an enclosing call can
+        treat them as literal in turn.
+
+        *callee_vars_opaque* is the function door's rule that an argument
+        type still carrying the callee's own variables binds nothing
+        (``_unify_for_inference``); the constructor door never applied it.
+        """
+        forall_set: set[str] | None = (
+            set(forall_vars) if callee_vars_opaque else None)
+        mapping: dict[str, Type] = {}
+        for param_ty, arg, arg_ty in zip(param_types, args, arg_types):
+            if arg_ty is None or isinstance(arg_ty, UnknownType):
+                continue
+            soft_ty = self._literal_soft_type(arg, arg_ty)
+            if soft_ty is None:
+                continue
+            self._unify_for_inference(param_ty, soft_ty, mapping,
+                                      forall_set, conflicts)
+        holed = [tv for tv, b in mapping.items() if contains_literal_hole(b)]
+        if not holed:
+            return mapping, dict(mapping)
+        if (expected is not None and result_type is not None
+                and not isinstance(expected, UnknownType)):
+            from_expected: dict[str, Type] = {}
+            self._unify_for_inference(result_type, expected, from_expected,
+                                      forall_set)
+            # A variable the result holds as a collection's element type is
+            # every element the call was given (`context_may_fill`).
+            in_collection = collection_element_vars(result_type)
+            for tv in holed:
+                mapping[tv] = fill_literal_holes(
+                    mapping[tv], from_expected.get(tv),
+                    tv in in_collection)
+        soft = dict(mapping)
+        for tv in holed:
+            mapping[tv] = default_literal_holes(mapping[tv])
+        return mapping, soft
+
     def _infer_type_args(self, forall_vars: tuple[str, ...],
                          param_types: tuple[Type, ...],
                          arg_types: list[Type | None],
@@ -756,9 +992,16 @@ class ResolutionMixin:
                 mapping[pattern.name] = concrete
             elif (isinstance(existing, TypeVar)
                   and '$' in existing.name
-                  and not is_fresh):
+                  and not is_fresh
+                  and not (is_literal_hole(existing)
+                           and isinstance(concrete, TypeVar))):
                 # Overwrite a tentative fresh-TypeVar mapping with a concrete
-                # (or forall-var) resolution.
+                # (or forall-var) resolution.  Not a literal's hole with a
+                # type variable (#1541, PR #1583 review): a literal cannot
+                # have a rigid `T` — inside its own body `T` is opaque — nor
+                # a variable leaked unresolved from a nested call, so that
+                # meeting is `merge_inferred_types`'s, which keeps the hole
+                # in either argument order.
                 mapping[pattern.name] = concrete
             elif (isinstance(existing, TypeVar)
                   and not isinstance(concrete, TypeVar)):
@@ -774,7 +1017,8 @@ class ResolutionMixin:
                 # var made the skip-guard fire and hide this; the #970 registry
                 # rename removed the coincidence, so the concrete-wins rule must
                 # be explicit — not a weakening, the same downstream subtype
-                # check runs unchanged.)
+                # check runs unchanged.)  A literal's hole (#1541) meeting
+                # such a variable is settled by `merge_inferred_types`, below.
                 mapping[pattern.name] = concrete
             else:
                 # #898: both the existing binding and the new one are (partly)
@@ -802,6 +1046,44 @@ class ResolutionMixin:
             self._unify_for_inference(
                 pattern.return_type, concrete.return_type,
                 mapping, forall_vars, conflicts)
+
+
+def _meet_literal_holes(parts: tuple[Type | None, ...], ty: Type) -> Type:
+    """The positions of *ty* that are a literal's in EVERY one of *parts*
+    (the branches of an `if` or `match`, an array literal's elements) are
+    holes; every other position is *ty*'s own."""
+    known = [p for p in parts if p is not None]
+    if len(known) != len(parts):
+        return ty
+    if known and all(is_literal_hole(p) for p in known):
+        hole: Type = known[0]
+        for p in known[1:]:
+            hole = join_literal_holes(hole, p)
+        return hole
+    adts = [p for p in known if isinstance(p, AdtType)
+            and isinstance(ty, AdtType) and p.name == ty.name
+            and len(p.type_args) == len(ty.type_args)]
+    if isinstance(ty, AdtType) and len(adts) == len(known):
+        return AdtType(ty.name, tuple(
+            _meet_literal_holes(tuple(p.type_args[i] for p in adts), arg)
+            for i, arg in enumerate(ty.type_args)))
+    return ty
+
+
+def _overlay_literal_holes(soft: Type, ty: Type) -> Type:
+    """*ty* with a hole wherever *soft* has one at an `Int` or `Nat`
+    position of *ty*."""
+    if is_literal_hole(soft):
+        if isinstance(ty, PrimitiveType) and ty.name in ("Int", "Nat"):
+            return soft
+        return ty
+    if (isinstance(soft, AdtType) and isinstance(ty, AdtType)
+            and soft.name == ty.name
+            and len(soft.type_args) == len(ty.type_args)):
+        return AdtType(ty.name, tuple(
+            _overlay_literal_holes(a, b)
+            for a, b in zip(soft.type_args, ty.type_args)))
+    return ty
 
 
 def _declaration_text(source: str, decl: ast.Node) -> str | None:

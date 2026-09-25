@@ -1054,6 +1054,11 @@ class ContractVerifier:
         self._construction_obligated: set[
             tuple[int, tuple[int, int, int, int] | None, str]
         ] = set()
+        # The `@Nat` values an `@Int` operation being walked widens, by
+        # node (`narrowing.widened_nat_operands`, PR #1583 review): each is
+        # obligated where the walk reaches it, under that position's facts —
+        # an arm's under its arm's.
+        self._widened_operand_ids: set[int] = set()
         # #1415 G2/H2: of those, WHY each one's fact is unestablished —
         # disclosed, refuted, or undecided — because the demotion's wording
         # turns on it and only one of the three is "could neither prove nor
@@ -8364,6 +8369,12 @@ class ContractVerifier:
         # Cannot occur — rejected before this walk:
         #   HoleExpr           → check time rejects
         """
+        if id(expr) in self._widened_operand_ids:
+            # A `@Nat` value an enclosing `@Int` operation widens (PR #1583
+            # review, #1588): the operand itself, or an arm of a join that
+            # supplies it, obligated here, where its facts are in scope.
+            self._check_int_widening_obligation(
+                decl, expr, smt, slot_env, list(assumptions), site="operand")
         if isinstance(expr, ast.FnCall):
             for arg in expr.args:
                 self._walk_for_primitive_op_obligations(
@@ -8576,13 +8587,25 @@ class ContractVerifier:
 
         if isinstance(expr, ast.BinaryExpr):
             # Recurse first so nested subtractions are checked even
-            # when the outer expression isn't @Nat-typed.
-            self._walk_for_primitive_op_obligations(
-                decl, expr.left, smt, slot_env, assumptions,
-            )
-            self._walk_for_primitive_op_obligations(
-                decl, expr.right, smt, slot_env, assumptions,
-            )
+            # when the outer expression isn't @Nat-typed.  The `@Nat`
+            # values this operation widens are obligated as the walk
+            # reaches them (PR #1583 review, #1588) — the sites code
+            # generation's guard reads from the same classifier.
+            widened = [
+                id(value) for value in narrowing.widened_nat_operands(
+                    expr, self._overflow_int_type,
+                    self._is_guarded_nat_subtraction)
+                if id(value) not in self._widened_operand_ids]
+            self._widened_operand_ids.update(widened)
+            try:
+                self._walk_for_primitive_op_obligations(
+                    decl, expr.left, smt, slot_env, assumptions,
+                )
+                self._walk_for_primitive_op_obligations(
+                    decl, expr.right, smt, slot_env, assumptions,
+                )
+            finally:
+                self._widened_operand_ids.difference_update(widened)
             if expr.op == ast.BinOp.PIPE:
                 # `left |> f(a)` is the call `f(left, a)`: its precondition
                 # is obligated on that call, spelled by the one shared
@@ -8593,11 +8616,7 @@ class ContractVerifier:
                 if piped is not None:
                     self._obligate_call_site(
                         piped, smt, slot_env, assumptions)
-            if (expr.op == ast.BinOp.SUB
-                    and self._is_nat_typed(expr.left)
-                    and self._is_nat_typed(expr.right)
-                    and (self._has_nat_origin(expr.left)
-                         or self._has_nat_origin(expr.right))):
+            if self._is_guarded_nat_subtraction(expr):
                 # Both operands are @Nat-typed AND at least one
                 # has Nat-flowed origin (a slot ref, function
                 # return, or a recursive expression containing
@@ -10994,14 +11013,7 @@ class ContractVerifier:
         # (:func:`vera.narrowing.literal_operation_width`) — the checker's
         # bottom-up `Nat` for `0 - 4` made `(0 - 4) + 1` a u64 add, refused
         # with E528 for a result of -3.
-        literal = narrowing.literal_operation_width(expr)
-        if literal is not None:
-            return literal
-        lt = self._overflow_int_type(expr.left)
-        rt = self._overflow_int_type(expr.right)
-        if lt is None or rt is None:
-            return None
-        return "Int" if "Int" in (lt, rt) else "Nat"
+        return narrowing.operation_width(expr, self._overflow_int_type)
 
     def _check_overflow_obligation(
         self,
@@ -15651,6 +15663,13 @@ class ContractVerifier:
             error_code="E506",
             tier=3,
         )
+
+    def _is_guarded_nat_subtraction(self, expr: ast.Expr) -> bool:
+        """Whether *expr* is a `@Nat` subtraction the walk obligates
+        `lhs >= rhs` for (#520): :func:`vera.narrowing.is_guarded_nat_subtraction`
+        over this side's readings, the rule code generation's guard reads."""
+        return narrowing.is_guarded_nat_subtraction(
+            expr, self._is_nat_typed, self._has_nat_origin)
 
     def _is_nat_typed(self, expr: ast.Expr) -> bool:
         """Return True iff *expr* has static type ``@Nat``.
