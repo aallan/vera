@@ -31,12 +31,17 @@ class CallsMixin:
 
     def _translate_call(
         self, call: ast.FnCall, env: WasmSlotEnv,
-        *, denotes_op: bool | None = None,
+        *, denotes_op: bool | None = None, tail: bool = False,
     ) -> list[str] | None:
         """Translate a function call to WASM call instruction.
 
         If the call name matches an effect operation (e.g. get/put for
         State<T>), redirects to the corresponding host import.
+
+        *tail* marks a call in tail position that is not itself a key of
+        ``_tail_call_sites``: a module-qualified call by the module's own
+        path, which ``translate_expr`` desugars into a fresh ``FnCall``
+        (#1558).  Every other call is looked up by its own id.
 
         *denotes_op* overrides the bare-call ownership question (#1284) for
         a call this dispatcher did not receive bare.  ``None`` — every
@@ -752,7 +757,7 @@ class CallsMixin:
         # stays bounded; for functions with a runtime postcondition
         # it REVERTS ``return_call`` → ``call`` so the post-check
         # runs.
-        is_tail = id(call) in self._tail_call_sites
+        is_tail = tail or id(call) in self._tail_call_sites
         callee_ret_wt: str | None = None
         if is_tail:
             sig = self._fn_ret_types.get(call_target)

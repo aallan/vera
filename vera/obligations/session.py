@@ -322,8 +322,15 @@ class VerificationSession:
                 for op in tld.decl.operations:
                     op_defs[(tld.decl.name, op.name)] = (
                         *op.param_types, op.return_type)
+        # #1558: the path that names this file in a qualified call, derived
+        # once and read by every part of the key that follows a call — the
+        # interface closure below and the cycle key's call graph — so a call
+        # by it is followed wherever the bare call is, and by the one answer
+        # the verifier reads too.
+        own_path = own_module_path(program, None, resolved_modules or [])
         env = TypeEnvironment(
-            types=type_defs, constructors=ctor_defs, effect_ops=op_defs)
+            types=type_defs, constructors=ctor_defs, effect_ops=op_defs,
+            own_path=own_path)
 
         # #1363 (PR review): the warm path must run under the same disclosed
         # set the cold path computes, or it proves at Tier 1 from facts cold
@@ -342,7 +349,7 @@ class VerificationSession:
             (tld.decl for tld in program.declarations),
             # #1558: the verifier's graph draws a call by the file's own
             # path as an edge, so the key's cycles must too.
-            own_path=own_module_path(program, None, resolved_modules or []),
+            own_path=own_path,
         )
 
         def _cycle_key(root: ast.FnDecl) -> str:

@@ -454,6 +454,7 @@ class FunctionCompilationMixin:
             tuple[SpanTypeTable | None, SpanTypeTable | None] | None
         ) = None,
         where_scope: frozenset[str] = frozenset(),
+        own_path: tuple[str, ...] | None = None,
     ) -> str | None:
         """Compile a single function to WAT.
 
@@ -487,6 +488,10 @@ class FunctionCompilationMixin:
         pre-#987 behaviour: those component sites stay unguarded, never
         false-guarded.  Fn-type-based recovery (closure formal / return types) is
         NOT span-keyed and is unaffected either way.
+
+        *own_path* (#1558) is the path that names *decl*'s own file in a
+        qualified call; the tail-call analyzer marks a tail call by it as it
+        marks the bare call (``compute_tail_call_sites``).
         """
         # #987: an imported body's span-keyed tables are ITS module's own (or
         # None when none were threaded) — never the main-file tables, whose
@@ -940,7 +945,10 @@ class FunctionCompilationMixin:
         # must match caller).  See ``vera/codegen/tail_position.py``
         # for the analyzer rules and ``_translate_call`` in
         # ``vera/wasm/calls.py`` for the emit site.
-        tail_sites = compute_tail_call_sites(decl)
+        # #1558: a tail call by *own_path*, the path naming this body's own
+        # file, is the bare tail call to that top-level function and is
+        # marked with it.
+        tail_sites = compute_tail_call_sites(decl, own_path)
 
         # #758/#983 — per-narrowing-leaf @Int->@Nat return guard.  Collect the
         # tail-position return leaves that narrow into a bare @Nat return so

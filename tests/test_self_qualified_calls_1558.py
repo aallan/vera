@@ -649,6 +649,35 @@ class TestOnlyTheOwnPath:
         (diag,) = [d for d in check["diagnostics"] if d["severity"] == "error"]
         assert "'nope'" in diag["description"], diag
 
+    @pytest.mark.parametrize("placement", ["entry", "module"])
+    @pytest.mark.parametrize("callee", ["abs", "two"],
+                             ids=["built_in", "imported"])
+    def test_a_name_in_scope_the_file_does_not_declare_is_e233(
+        self, callee: str, placement: str, tmp_path: Path,
+    ) -> None:
+        """`abs` is a built-in and `two` is imported from `mb`: each is in
+        scope in `ma`, and its bare call checks, but neither is a function
+        `ma` declares, so the path does not name it."""
+        def write(call: str) -> Path:
+            (tmp_path / "ma.vera").write_text(
+                "module ma;\n\nimport mb(two);\n\n"
+                + _fn("four(@Int -> @Int)", f"{call}(@Int.0) * 4"),
+                encoding="utf-8")
+            (tmp_path / "mb.vera").write_text(
+                "module mb;\n\n" + _fn("two(@Int -> @Int)", "@Int.0 * 2"),
+                encoding="utf-8")
+            if placement == "entry":
+                return tmp_path / "ma.vera"
+            (tmp_path / "main.vera").write_text(
+                _entry("import ma(four);", "four(3)"), encoding="utf-8")
+            return tmp_path / "main.vera"
+        bare = _cli("check", write(callee))
+        assert bare["ok"] is True, _said(bare)
+        check = _cli("check", write(f"ma::{callee}"))
+        assert _errors(check) == ["E233"], _said(check)
+        (diag,) = [d for d in check["diagnostics"] if d["severity"] == "error"]
+        assert f"'{callee}'" in diag["description"], diag
+
     def test_a_where_helper_is_not_a_function_of_the_module(
         self, tmp_path: Path,
     ) -> None:
@@ -1081,3 +1110,466 @@ class TestThePathNamesTheTopLevelFunction:
         run = _cli("run", tmp_path / "ma.vera", fn_name="entry",
                    raw_fn_args=["2"])
         assert run["ok"] is False, _said(run)
+
+    def test_an_imported_modules_graph_draws_the_path(
+        self, tmp_path: Path,
+    ) -> None:
+        """The same guard, reached through a module: the entry imports `ma`'s
+        generic `gf`, whose clone is verified at the importer against `ma`'s
+        call graph.  `gf` calls `ma::probe(...)`, which calls `gf` back with
+        the same argument, so the cycle's measure stalls and `vera run`
+        traps.  The graph of `ma` has to draw that edge for the clone's
+        `decreases` to stay unproved, as it does for the bare spelling."""
+        outcomes = []
+        for q in ("ma::", ""):
+            root = tmp_path / (q.rstrip(":") or "bare")
+            root.mkdir()
+            (root / "ma.vera").write_text(
+                "module ma;\n\n"
+                "public forall<T> fn gf(@Nat, @T -> @Int)\n"
+                "  requires(true)\n  ensures(true)\n  decreases(@Nat.0)\n"
+                "  effects(pure)\n{\n"
+                "  if @Nat.0 == 0 then { 0 } else { gf(@Nat.0 - 1, @T.0) + "
+                f"{q}probe(@Nat.0) }}\n}}\n\n"
+                + _fn("probe(@Nat -> @Int)", "gf(@Nat.0, true)",
+                      dec="@Nat.0"),
+                encoding="utf-8")
+            (root / "main.vera").write_text(
+                _entry("import ma(probe, gf);", "probe(3) + gf(2, false)"),
+                encoding="utf-8")
+            verify = _cli("verify", root / "main.vera")
+            measures = _statuses(verify, "decreases")
+            assert measures, verify["obligations"]
+            assert "verified" not in measures, (q, verify["obligations"])
+            run = _cli("run", root / "main.vera")
+            assert run["ok"] is False, (q, _said(run))
+            outcomes.append(_verify_outcome(verify))
+        qualified, bare = outcomes
+        assert qualified == bare, (qualified, bare)
+
+
+# ---------------------------------------------------------------------------
+# The language server's warm session
+# ---------------------------------------------------------------------------
+#
+# `vera lsp` verifies every edit on one warm `VerificationSession`, and its
+# proof-delta methods read that session's verdicts.  The session replays a
+# function's cached obligations while its cache key is unchanged
+# (`vera.obligations.cache`), and the key follows the calls a proof reads
+# THROUGH: the function's own calls, the calls in each callee's contract, and
+# the calls in the refinement predicates of the types it reaches.  A call by
+# the file's own path reads its callee's contract exactly as the bare call
+# does, so each of those readers has to follow it too, or an edit to the
+# callee's contract replays a proof that no longer holds.  The oracle is a
+# fresh session on the edited text, as in #1441's cells, beside two premises:
+# the original verifies clean, and the edit moves what a fresh session reports.
+
+_WARM_H = """\
+public fn h(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0 * {k})
+  effects(pure)
+{{
+  @Int.0 * {k}
+}}
+"""
+
+#: shape -> (the program after `module ma;` and `h`, with `{q}` for the call's
+#: prefix; the (function, obligation kind) the edit to `h` breaks).  Each
+#: shape reaches `h` through ONE of the key's readers, so a fix that misses a
+#: reader fails that reader's cell alone.
+_WARM_SHAPES: dict[str, tuple[str, tuple[str, str]]] = {
+    # The caller's own body calls `h`: the function's direct calls.
+    "caller_body": ("""\
+public fn four(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0 * 4)
+  effects(pure)
+{{
+  {q}h(@Int.0) * 2
+}}
+""", ("four", "ensures")),
+    # The caller's own `ensures` calls it: still the direct calls, in a
+    # contract.
+    "caller_contract": ("""\
+public fn four(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == {q}h(@Int.0) * 2)
+  effects(pure)
+{{
+  @Int.0 * 4
+}}
+""", ("four", "ensures")),
+    # A `where` helper of the caller calls it: verifying `four` verifies its
+    # helpers, so their calls are `four`'s.
+    "where_helper": ("""\
+public fn four(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  helper(@Int.0)
+}}
+where {{
+  fn helper(@Int -> @Int)
+    requires(true)
+    ensures(@Int.result == @Int.0 * 4)
+    effects(pure)
+  {{
+    {q}h(@Int.0) * 2
+  }}
+}}
+""", ("helper", "ensures")),
+    # A CALLEE's `ensures` calls it, and the caller calls that callee by its
+    # bare name: the closure's walk of each callee's contracts.
+    "callee_contract": ("""\
+public fn two(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == {q}h(@Int.0))
+  effects(pure)
+{{
+  {q}h(@Int.0)
+}}
+
+public fn four(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0 * 4)
+  effects(pure)
+{{
+  two(@Int.0) * 2
+}}
+""", ("four", "ensures")),
+    # A refinement the caller's own signature names calls it: the types the
+    # declaration reaches.
+    "caller_refinement": ("""\
+type Twice = {{ @Int | @Int.0 == {q}h(7) }};
+
+public fn four(@Int -> @Twice)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  14
+}}
+""", ("four", "refine_bind")),
+    # A refinement a CALLEE's return type names calls it: the closure's walk
+    # of each callee's signature.
+    "callee_signature": ("""\
+type Small = {{ @Int | @Int.0 < {q}h(1) }};
+
+public fn mk(@Unit -> @Small)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  1
+}}
+
+public fn use_it(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result < 2)
+  effects(pure)
+{{
+  mk(())
+}}
+""", ("use_it", "ensures")),
+}
+
+
+def _warm_source(shape: str, q: str, k: int) -> str:
+    body, _broken = _WARM_SHAPES[shape]
+    return ("module ma;\n\n" + _WARM_H.format(k=k) + "\n"
+            + body.format(q=q))
+
+
+def _session_view(result: Any) -> tuple[list[str], list[tuple[object, ...]]]:
+    """Everything a consumer acts on: the error codes, and every obligation's
+    function, owner, kind and status."""
+    codes = sorted({d.error_code for d in result.diagnostics
+                    if d.severity == "error"})
+    return codes, sorted((o.fn_name, o.owner, o.kind, o.status)
+                         for o in result.obligations)
+
+
+def _warm_and_fresh(
+    path: Path, original: str, edited: str,
+) -> tuple[Any, Any, Any, Any]:
+    """(original, warm after the edit, fresh on the edit, the warm session)."""
+    from vera.obligations.session import VerificationSession
+
+    warm = VerificationSession()
+    before = warm.verify_source(original, file=str(path))
+    after = warm.verify_source(edited, file=str(path))
+    fresh = VerificationSession().verify_source(edited, file=str(path))
+    return before, after, fresh, warm
+
+
+def _status_of(result: Any, fn: str, kind: str) -> list[str]:
+    return sorted(o.status for o in result.obligations
+                  if o.fn_name == fn and o.kind == kind)
+
+
+class TestTheWarmSessionReadsTheOwnPath:
+    """An edit to a function a proof reads through the own path invalidates
+    that proof on the warm session, as the same edit does through the bare
+    call."""
+
+    @pytest.mark.parametrize("q", ["ma::", ""], ids=["qualified", "bare"])
+    @pytest.mark.parametrize("shape", list(_WARM_SHAPES))
+    def test_a_contract_edit_reaches_the_caller(
+        self, shape: str, q: str, tmp_path: Path,
+    ) -> None:
+        """`h`'s contract and body go from `* 2` to `* 3`.  The warm session
+        reports what a fresh one does, and that is the caller's obligation
+        refuted, where the original proved it."""
+        fn, kind = _WARM_SHAPES[shape][1]
+        before, after, fresh, _ = _warm_and_fresh(
+            tmp_path / "ma.vera", _warm_source(shape, q, 2),
+            _warm_source(shape, q, 3))
+        assert _session_view(before)[0] == [], _session_view(before)
+        assert _status_of(before, fn, kind) == ["verified"], (
+            _session_view(before))
+        assert _status_of(fresh, fn, kind) == ["violated"], (
+            _session_view(fresh))
+        assert _session_view(after) == _session_view(fresh), (
+            f"{shape}: the warm session replayed what a fresh one refutes — "
+            f"warm {_session_view(after)} vs fresh {_session_view(fresh)}")
+
+    def test_a_body_only_edit_still_replays_the_caller(
+        self, tmp_path: Path,
+    ) -> None:
+        """The optimisation survives the path: an edit to `h`'s BODY alone
+        moves nothing a caller reads, so `four` is replayed, not re-proved."""
+        original = _warm_source("caller_body", "ma::", 2)
+        edited = original.replace("{\n  @Int.0 * 2\n}",
+                                  "{\n  @Int.0 + @Int.0\n}", 1)
+        assert edited != original
+        before, after, fresh, warm = _warm_and_fresh(
+            tmp_path / "ma.vera", original, edited)
+        assert _session_view(before)[0] == [], _session_view(before)
+        assert _session_view(after) == _session_view(fresh)
+        assert _status_of(after, "four", "ensures") == ["verified"]
+        assert warm.last_run_stats.replayed_fns == 1, warm.last_run_stats
+
+    @pytest.mark.parametrize("q", ["ma::", ""], ids=["qualified", "bare"])
+    def test_a_cycle_closed_through_the_path_reaches_the_measure(
+        self, q: str, tmp_path: Path,
+    ) -> None:
+        """`f` recurses by a decreasing bare call and calls `g` by the path;
+        `g`'s body changes from `1` to `f(@Nat.0)`, which closes a cycle
+        through `f` whose measure does not decrease.  `f`'s `decreases` goes
+        from proved to a run-time check, warm as fresh: the session's cycle
+        key draws the path's edge, as the verifier's graph does."""
+        def source(g_body: str) -> str:
+            return (
+                "module ma;\n\n"
+                + _fn("f(@Nat -> @Int)",
+                      "if @Nat.0 == 0 then { 0 } else { f(@Nat.0 - 1) + "
+                      f"{q}g(@Nat.0) }}", dec="@Nat.0")
+                + "\n" + _fn("g(@Nat -> @Int)", g_body, dec="@Nat.0"))
+        before, after, fresh, _ = _warm_and_fresh(
+            tmp_path / "ma.vera", source("1"), source("f(@Nat.0)"))
+        assert _status_of(before, "f", "decreases") == ["verified"], (
+            _session_view(before))
+        assert _status_of(fresh, "f", "decreases") == ["tier3"], (
+            _session_view(fresh))
+        assert _session_view(after) == _session_view(fresh), (
+            f"warm {_session_view(after)} vs fresh {_session_view(fresh)}")
+
+
+# ---------------------------------------------------------------------------
+# Code generation: a tail call by the path
+# ---------------------------------------------------------------------------
+
+_COUNT = """\
+module ma;
+
+private fn count(@Nat, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{{
+  if @Nat.0 == 0 then {{
+    @Int.0
+  }} else {{
+    {q}count(@Nat.0 - 1, @Int.0 + 1)
+  }}
+}}
+
+public fn run_it(@Nat -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  count(@Nat.0, 0)
+}}
+"""
+
+#: Far past the depth one frame per iteration reaches: a `count` that pushes
+#: a frame per call exhausts the call stack below 50,000.
+_DEEP = 1_000_000
+
+
+def _wat(path: Path) -> str:
+    """`vera compile --wat <path>`, in process."""
+    from vera import cli
+
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        rc = cli.cmd_compile(str(path), wat=True)
+    assert rc == 0, err.getvalue()
+    return out.getvalue()
+
+
+def _wat_fn(wat: str, name: str) -> str:
+    """The text of the WAT function `$name`, up to the next function."""
+    start = wat.index(f"(func ${name} ")
+    end = wat.find("(func $", start + 1)
+    return wat[start:end if end != -1 else len(wat)]
+
+
+class TestATailCallByThePath:
+    """A tail call by the own path compiles as the bare tail call does, to
+    WASM's `return_call` (#517), so a loop written through the path runs in
+    constant stack, in the entry and in a module.  A call into ANOTHER module
+    cannot close a cycle (E011), so it is the own path's call that a loop
+    needs."""
+
+    @pytest.mark.parametrize("placement", ["entry", "module"])
+    @pytest.mark.parametrize("q", ["ma::", ""], ids=["qualified", "bare"])
+    def test_a_deep_loop_runs_to_its_end(
+        self, q: str, placement: str, tmp_path: Path,
+    ) -> None:
+        (tmp_path / "ma.vera").write_text(_COUNT.format(q=q), encoding="utf-8")
+        if placement == "entry":
+            run = _cli("run", tmp_path / "ma.vera", fn_name="run_it",
+                       raw_fn_args=[str(_DEEP)])
+        else:
+            (tmp_path / "main.vera").write_text(
+                _entry("import ma(run_it);", f"run_it({_DEEP})"),
+                encoding="utf-8")
+            run = _cli("run", tmp_path / "main.vera")
+        assert run["ok"] is True and run["value"] == _DEEP, _said(run)
+
+    @pytest.mark.parametrize("placement", ["entry", "module"])
+    def test_the_call_compiles_to_return_call(
+        self, placement: str, tmp_path: Path,
+    ) -> None:
+        """The WAT of `count` holds `return_call $count` for the qualified
+        spelling as for the bare one, and no plain `call $count`."""
+        bodies = []
+        for q in ("ma::", ""):
+            root = tmp_path / (q.rstrip(":") or "bare")
+            root.mkdir()
+            (root / "ma.vera").write_text(_COUNT.format(q=q), encoding="utf-8")
+            target = root / "ma.vera"
+            if placement == "module":
+                (root / "main.vera").write_text(
+                    _entry("import ma(run_it);", "run_it(3)"),
+                    encoding="utf-8")
+                target = root / "main.vera"
+            bodies.append(_wat_fn(_wat(target), "count"))
+        qualified, bare = bodies
+        assert "return_call $count" in bare, bare
+        assert "return_call $count" in qualified, qualified
+        assert "call $count" not in qualified.replace(
+            "return_call $count", ""), qualified
+
+    @pytest.mark.parametrize("q", ["ma::", ""], ids=["qualified", "bare"])
+    def test_a_narrowing_tail_call_keeps_its_guard(
+        self, q: str, tmp_path: Path,
+    ) -> None:
+        """`to_nat` returns `minus`'s `@Int` through a `@Nat` slot, so the
+        call is followed by the `>= 0` guard, which a `return_call` would
+        skip.  Through the path as bare: `to_nat(3)` traps on the guard
+        rather than returning -7, and `to_nat(20)` is 10."""
+        (tmp_path / "ma.vera").write_text(
+            "module ma;\n\n"
+            + _fn("minus(@Int -> @Int)", "@Int.0 - 10", vis="private") + "\n"
+            + _fn("to_nat(@Int -> @Nat)", f"{q}minus(@Int.0)"),
+            encoding="utf-8")
+        trapped = _cli("run", tmp_path / "ma.vera", fn_name="to_nat",
+                       raw_fn_args=["3"])
+        assert trapped["ok"] is False, _said(trapped)
+        assert [d.get("trap_kind") for d in trapped["diagnostics"]] == [
+            "nat_guard"], trapped
+        ran = _cli("run", tmp_path / "ma.vera", fn_name="to_nat",
+                   raw_fn_args=["20"])
+        assert ran["ok"] is True and ran["value"] == 10, _said(ran)
+
+
+# ---------------------------------------------------------------------------
+# The one position not compiled yet (#1366)
+# ---------------------------------------------------------------------------
+
+_GENERIC_ARGUMENT = """\
+module ma;
+
+private forall<T> fn gid(@T -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  @T.0
+}}
+
+private fn two(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0 * 2)
+  effects(pure)
+{{
+  @Int.0 * 2
+}}
+
+public fn four(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  gid({q}two(@Int.0)) + 3
+}}
+"""
+
+
+class TestTheOnePositionNotCompiledYet:
+    """Spec §8.5.3 names the one position where a call by the path is not
+    yet compiled as the bare call: inside an imported module, as an argument
+    of a generic function's call.  Discovery's type namer has no arm for a
+    module-qualified call (#1366), so verification and compilation refuse it
+    with E622, as they refuse a qualified call into another module there.
+
+    A PIN of today's behaviour, not an `xfail` (the suite's convention: see
+    `test_binder_position_generator.py`): the day #1366 is fixed, the module
+    cell fails, and the spec's sentence goes with it.  The entry cell is the
+    boundary of the claim: there the same call runs."""
+
+    def test_inside_an_imported_module_it_is_e622(
+        self, tmp_path: Path,
+    ) -> None:
+        outcomes = {}
+        for q in ("ma::", ""):
+            root = tmp_path / (q.rstrip(":") or "bare")
+            root.mkdir()
+            (root / "ma.vera").write_text(_GENERIC_ARGUMENT.format(q=q),
+                                          encoding="utf-8")
+            (root / "main.vera").write_text(
+                _entry("import ma(four);", "four(3)"), encoding="utf-8")
+            check = _cli("check", root / "main.vera")
+            assert check["ok"] is True, _said(check)
+            outcomes[q] = (_errors(_cli("verify", root / "main.vera")),
+                           _cli("run", root / "main.vera"))
+        (q_verify, q_run), (c_verify, c_run) = outcomes["ma::"], outcomes[""]
+        assert q_verify == ["E622"], q_verify
+        assert q_run["ok"] is False and _errors(q_run) == ["E622"], (
+            _said(q_run))
+        assert c_verify == [] and c_run["value"] == 9, (c_verify, c_run)
+
+    def test_in_the_entry_it_runs(self, tmp_path: Path) -> None:
+        (tmp_path / "ma.vera").write_text(
+            _GENERIC_ARGUMENT.format(q="ma::"), encoding="utf-8")
+        verify = _cli("verify", tmp_path / "ma.vera")
+        assert _errors(verify) == [], _said(verify)
+        run = _cli("run", tmp_path / "ma.vera", fn_name="four",
+                   raw_fn_args=["3"])
+        assert run["ok"] is True and run["value"] == 9, _said(run)

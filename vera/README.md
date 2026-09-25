@@ -126,8 +126,8 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `markdown_grammar.py` | 147 | Compile | The §9.7.3 grammar, read by BOTH runtimes: patterns, character classes, continuation widths, and the generated copy `runtime.mjs` carries | `PATTERNS`, `CONTINUATION_INDENT`, `fence_close()`, `trim()`, `js_grammar_block()` |
 | `obligations/` | 1,108 | Verify | Reified proof obligations + warm incremental session (#222 A/B) | `ProofObligation`, `VerificationSession` |
 | `  core.py` | 236 | | ProofObligation record: identity (content_key) + discharge outcome | |
-| `  cache.py` | 386 | | Invalidation keys (structural/callee/context hashes), DischargeCache; `FnCacheEntry` also carries `result_disclosed`, the one datum a replay cannot recover from the cached diagnostics and obligations (#1407) | |
-| `  session.py` | 429 | | Warm-Z3 daemon: per-function replay vs re-verify in declaration order; clears the disclosed set per program and re-enters `_verify_source_fixpoint` for one program's fixpoint (#1363) | |
+| `  cache.py` | 447 | | Invalidation keys (structural/callee/context hashes), DischargeCache; `FnCacheEntry` also carries `result_disclosed`, the one datum a replay cannot recover from the cached diagnostics and obligations (#1407); `called_name` is the one rule for which calls name a program function, a call by the program's own path included (#1558) | |
+| `  session.py` | 478 | | Warm-Z3 daemon: per-function replay vs re-verify in declaration order; clears the disclosed set per program and re-enters `_verify_source_fixpoint` for one program's fixpoint (#1363) | |
 | `lsp/` | 2,419 | Serve | Language Server Protocol over stdio (#222 C/D/E/F) | `create_server()`, `vera lsp` |
 | `  convert.py` | 220 | | Span/SourceLocation/LSP coordinate conversions, UTF-16 transcoding | |
 | `  documents.py` | 69 | | URI-keyed document store, full-text sync | |
@@ -143,7 +143,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `  registration.py` | 651 | | Pass 1 forward declarations, ADT layout | |
 | `  monomorphize.py` | 1,800 | | Generic instantiation, type inference, ability constraint checking (Pass 1.5) | |
 | `  functions.py` | 1,741 | | Function body compilation, GC prologue/epilogue (Pass 2); the exception boundary an export declaring `Exn<T>` is called through, which names an escaping exception `uncaught_exception` (`_exn_boundary`, #1479) | |
-| `  tail_position.py` | 106 | | Tail-position analysis for the function body compiler | |
+| `  tail_position.py` | 126 | | Tail-position analysis for the function body compiler; a call by the module's own path is a tail call where the bare call is (#1558) | |
 | `  closures.py` | 1,090 | | Closure lifting, GC instrumentation | |
 | `  contracts.py` | 1,897 | | Runtime pre/postconditions, old state snapshots, decreases termination guard (entry check-and-set, per-function chain state, ADT rank helpers, self-tail site checks); the refinement boundary guard derives its binder from `naming.refinement_binder_parts` and layers the erased-base skip and the nested-base E618 on top.  Also the ONE derivation of what that guard layer lowers — `_tuple_component_guard_sites` decomposes a boundary tuple for the emitter, the return-epilogue gate and the host-import pre-scan alike, and `_signature_refinement_predicates` enumerates every predicate a signature will be guarded by (#1210) | |
 | `  assembly.py` | 1,727 | | WAT module assembly, `$alloc`, `$gc_collect` | |

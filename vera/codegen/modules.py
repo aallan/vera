@@ -25,7 +25,7 @@ from vera.monomorphize import (
 )
 from vera.naming import display_adt_name
 from vera.prelude import PRELUDE_NAMESPACE, data_decl_shape, prelude_adt_names
-from vera.resolver import merged_import_filters
+from vera.resolver import merged_import_filters, own_module_path
 
 if TYPE_CHECKING:
     from vera.codegen.core import CodeGenerator
@@ -63,6 +63,26 @@ _ENTRY_OWNER: tuple[str, ...] = ()
 
 class CrossModuleMixin:
     """Methods for registering imported module declarations."""
+
+    def _own_path_of(
+        self, mod_path: tuple[str, ...] | None,
+    ) -> tuple[str, ...] | None:
+        """The path that names *mod_path*'s own file in a qualified call.
+
+        ``None`` names the entry file.  :func:`vera.resolver.own_module_path`
+        is the one derivation, the one the checker and the verifier read, so
+        code generation marks a tail call by the path exactly where they
+        resolve one (#1558).  ``None`` is returned for a file with no path
+        of its own, and for a namespace no resolved module has.
+        """
+        gen: CodeGenerator = self  # type: ignore[assignment]
+        if mod_path is None:
+            return gen._entry_own_path
+        mod = next(
+            (m for m in gen._resolved_modules if m.path == mod_path), None)
+        if mod is None:
+            return None
+        return own_module_path(mod.program, mod.path, ())
 
     @contextlib.contextmanager
     def _module_alias_scope(

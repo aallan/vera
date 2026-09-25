@@ -55,6 +55,7 @@ from vera.obligations.session import (
     resolve_document_imports,
 )
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv
+from vera.resolver import own_module_path
 from vera.slots import fn_scopes, fn_slot_scope, slot_table
 
 _SEVERITY = {
@@ -87,6 +88,12 @@ class Analysis:
     # alias table.  Empty when the pipeline stopped at parse/transform — there
     # is no check, so there are no aliases to name against.
     alias_env: AliasEnv = EMPTY_ALIAS_ENV
+    #: #1558: the path that names this document's own file in a qualified
+    #: call (`vera.resolver.own_module_path`, over the modules this analysis
+    #: resolved), so a workflow that follows calls reads `ma::f(...)` inside
+    #: `module ma;` as the call to `f` it is.  ``None`` for a document with
+    #: no path of its own, or one that did not parse.
+    own_path: tuple[str, ...] | None = None
 
 
 def analyze(
@@ -122,6 +129,7 @@ def analyze(
     # would stop every document that imports anything short of verification
     # and publish a false error on each imported call.
     resolved, resolver_errors = resolve_document_imports(program, path)
+    analysis.own_path = own_module_path(program, None, resolved)
     check_diags, artifacts = typecheck_with_artifacts(
         program, text, file=path, resolved_modules=resolved,
     )

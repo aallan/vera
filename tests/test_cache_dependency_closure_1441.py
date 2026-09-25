@@ -140,7 +140,8 @@ _BODY_ONLY_EDITED = _BODY_ONLY_ORIGINAL.replace("{\n  1\n}", "{\n  1 + 0\n}", 1)
 #: A program with no type, data or effect declarations in it — the two
 #: unit cells below are about the CONTRACT half of the walk, so nothing
 #: they hand it resolves through a declaration.
-_EMPTY_ENV = TypeEnvironment(types={}, constructors={}, effect_ops={})
+_EMPTY_ENV = TypeEnvironment(
+    types={}, constructors={}, effect_ops={}, own_path=None)
 
 
 def _summary(result) -> tuple[list[str], list[tuple[str, str, str, str]]]:
@@ -324,7 +325,8 @@ def test_1458_the_signature_walk_terminates_on_an_alias_cycle() -> None:
 
     found: set[str] = set()
     _type_reference_calls(
-        (ast.NamedType(name="A", type_args=None),), type_defs, found)
+        (ast.NamedType(name="A", type_args=None),), type_defs, found,
+        own_path=None)
     assert found == set(), found
 
 
@@ -351,7 +353,8 @@ def test_1458_the_type_walk_terminates_on_a_recursive_data_declaration() -> None
 
     found: set[str] = set()
     _type_reference_calls(
-        (ast.NamedType(name="List", type_args=None),), type_defs, found)
+        (ast.NamedType(name="List", type_args=None),), type_defs, found,
+        own_path=None)
     assert found == {"cap"}, found
 
 
