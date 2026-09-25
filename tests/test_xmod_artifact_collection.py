@@ -3,17 +3,18 @@
 ``_collect_module_artifacts`` (#987) runs a full ``check_program`` per resolved
 module so codegen can thread each module's OWN span-keyed target table into the
 imported body (recovering the #820 @Nat -> @Int widening guard through the
-import door).  That pass is O(N^2) sub-checks in the module count and is pure
-waste for the codegen-free callers — ``vera verify`` and the warm
-``VerificationSession`` read only the top-level ``expr_*_types`` tables, never
-``module_artifacts``.  PR #997 made the collection **opt-in**
-(``collect_module_artifacts=`` on ``typecheck_with_artifacts``, default
-``False``); only the codegen-bound callers pass ``True``.
+import door).  That pass is O(N^2) sub-checks in the module count, so PR #997
+made the collection **opt-in** (``collect_module_artifacts=`` on
+``typecheck_with_artifacts``, default ``False``).  Every caller that compiles
+passes ``True``, and so do ``vera verify`` and the warm
+``VerificationSession``, whose instantiation discovery reads each module's own
+tables (#1509); ``vera check`` does not.
 
 Two pins here:
 
-* ``TestOptInCollection`` — the verify-path pin: WITHOUT the flag the table is
-  an empty dict (verify does not pay the quadratic pass), WITH it the resolved
+* ``TestOptInCollection`` — the opt-in pin: WITHOUT the flag the table is
+  an empty dict (a caller that does not ask, such as ``vera check``, does not
+  pay the quadratic pass), WITH it the resolved
   modules appear.  RED before the opt-in change (collection was unconditional,
   so the table was non-empty on every path).
 
@@ -66,7 +67,7 @@ def _resolve(tmp_path: Path, files: dict[str, str], main_name: str):
 
 class TestOptInCollection:
     def test_default_off_leaves_module_artifacts_empty(self, tmp_path) -> None:
-        # The verify-path pin: without opting in, the per-module quadratic pass
+        # The default-off pin: without opting in, the per-module quadratic pass
         # does not run and the table is empty — even with resolved modules
         # present.  RED before PR #997 (collection was unconditional).
         program, source, main_path, resolved = _resolve(
@@ -79,12 +80,14 @@ class TestOptInCollection:
         )
         assert arts.module_artifacts == {}, (
             "module_artifacts must be empty without collect_module_artifacts "
-            "(the verify path must not pay the per-module quadratic pass)"
+            "(a caller that does not opt in must not pay the per-module "
+            "quadratic pass)"
         )
 
     def test_opt_in_collects_resolved_modules(self, tmp_path) -> None:
-        # The codegen-path counterpart: opting in populates a per-module entry
-        # keyed by module path (what codegen threads into the imported body).
+        # The opt-in counterpart: opting in populates a per-module entry keyed
+        # by module path (what codegen threads into the imported body, and
+        # verify's instantiation discovery reads, #1509).
         program, source, main_path, resolved = _resolve(
             tmp_path, {"lib.vera": _ARRAY_LIB, "main.vera": _DIRECT_MAIN},
             "main.vera",

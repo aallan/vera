@@ -202,22 +202,16 @@ class TestTheIssueExamples:
 
     def test_old_state_loop_is_refused(self, tmp_path: Path) -> None:
         """The gate refuses the old loop at the first stage the toolchain
-        does.  Until #1480 obligates a measure's arithmetic, `vera verify`
-        passes it and both runs trap, so this is red with the run stage
-        removed from the gate; once #1480 lands, `vera verify` refuses it
-        with E502 and the runs never start.  Which of the two this compiler
-        does is read from the verify stage itself, so each branch is
-        asserted exactly rather than as a disjunction."""
+        does: `vera verify` refuses its measure's `@Nat` subtraction with
+        E502 (#1480), so the runs never start and the block has exactly
+        one failure, at the verify stage."""
         report = _gate(tmp_path, _fence(_OLD_STATE_LOOP, *_SUM_RUNS))
         failures = _findings(report).failures
         verdict = _MOD.verify_error(_write_block(tmp_path, _OLD_STATE_LOOP))
-        if verdict is None:
-            assert len(failures) == 2
-            assert all("[run, marker line" in f and "exited" in f for f in failures)
-        else:
-            assert "E502" in verdict.codes
-            assert len(failures) == 1
-            assert "[verify]" in failures[0] and "[E502]" in failures[0]
+        assert verdict is not None
+        assert "E502" in verdict.codes
+        assert len(failures) == 1
+        assert "[verify]" in failures[0] and "[E502]" in failures[0]
 
     def test_corrected_state_loop_prints_the_sums(self, tmp_path: Path) -> None:
         runs = (

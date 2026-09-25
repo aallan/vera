@@ -1465,10 +1465,9 @@ class Op:
     #: Over ``{v}``: the values it is defined on.
     domain: str
     #: Literals inside and outside that domain, and the same values as
-    #: arguments to a compiled function.  A negative is spelled `-3`, never
-    #: `0 - 3`: the pure-literal subtraction types as `@Nat`, and a tuple
-    #: component or a `Map` value then widens it as a `@Nat` above
-    #: i64.MAX — a trap of its own that would stand in for the cell's.
+    #: arguments to a compiled function.  A negative is spelled `-3`, a
+    #: literal, so the cell's value is written rather than computed and no
+    #: trap of the computation's own can stand in for the cell's.
     good: str
     bad: str
     good_arg: int | float

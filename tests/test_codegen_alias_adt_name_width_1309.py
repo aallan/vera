@@ -187,18 +187,11 @@ class TestBuiltinContainerNameShadow:
         COMBINATOR BODIES (``json_get``, ``html_attr``) are emitted into
         every module and render their own ``@Json`` / ``@HtmlNode``
         parameters against the flat ``_type_aliases`` map, which a main-file
-        alias of that name pollutes.  That is an alias-ENV SCOPING defect
-        (#1316 — spec §8.4.1 makes the namespace module-scoped, so a prelude
-        body must render against the prelude's env), not the branch-ORDER
-        defect fixed here, and out of #1309's scope.
-
-        It is NOT, however, an unchanged failure, and an earlier draft of
-        this docstring said it was.  The reorder moves it: 17 prelude
-        ``json_*`` signatures flip from ``(param $p0 i32)`` to ``(param $p0
-        i64)``, the loader's complaint reverses from ``expected i64, found
-        i32`` to ``expected i32, found i64``, its offset shifts, and
-        ``html_attr`` loses one shadow-stack push.  Same root cause, same
-        frame in the backtrace, a later point inside it.
+        alias of that name pollutes.  That was an alias-ENV SCOPING defect
+        (spec §8.4.1 makes the namespace module-scoped, so a prelude body
+        must render against the prelude's env), not the branch-ORDER defect
+        fixed here; #1316 closed it and ``test_name_resolution_spine_1316.py``
+        pins it.
         """
         source = _program(name, "Int", "21", "@{A}.0 + @{A}.0", "@Int")
         assert _run(source, fn="main") == 42

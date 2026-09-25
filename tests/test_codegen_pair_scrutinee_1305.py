@@ -26,8 +26,9 @@ that framing does not hold and the defect is wider:
 The issue's own repro additionally matches ``Some``/``None`` against an
 ``Array<String>``.  A pair type has no constructors and no tag, so codegen
 cannot lower that; it now raises a LOUD skip naming the situation instead
-of emitting a tag read over the array's first four bytes.  (The checker
-accepting that program at all is a separate hole, #1315, outside this fix.)
+of emitting a tag read over the array's first four bytes -- defense in
+depth, since the checker refuses this shape with E314 before code generation
+sees it (#1315).
 """
 from __future__ import annotations
 

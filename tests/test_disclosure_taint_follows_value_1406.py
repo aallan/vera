@@ -585,39 +585,44 @@ private fn consume(@Option<PosInt> -> @Int)
 """ + _F + "{\n  consume(mk(@Float64.0))\n}\n"
 
 
-def test_1410_the_argument_position_is_unchanged_by_this_fix(
+def test_1410_the_argument_position_is_obligated(
     tmp_path: Path,
 ) -> None:
-    """#1410's shape, pinned as measured — NOT fixed here.
+    """#1410's shape: a disclosed value passed as an ARGUMENT is obligated
+    at the argument position.
 
-    Passing a disclosed value as an ARGUMENT leaves `consume`'s postcondition
-    `verified` while the program refutes it.  That is a different rule: the
-    false proof lives in the callee, which modular verification makes once for
-    every caller, so no amount of tainting in `f` reaches it.  It measures
-    identically on `origin/release/v0.2.0` and here — for the direct, the
-    `let`-bound and the wrapper spellings alike — which is the evidence that
-    it is a separate root cause and not a gap in this one.
-
-    Pinned so #1410's fix is visible against it: when the argument position
-    gains the obligation the construction position already has, this cell
-    changes and says so.
+    `consume`'s postcondition is proved once for every caller, on the
+    standing rule that some producer discharged the refined payload it
+    assumes, so no amount of tainting in `f` can reach that proof; the
+    value's own position carries the obligation instead.  The argument
+    `mk(@Float64.0)` (line 27) is recorded `refine_bind` /
+    `tier3_unguarded` / E506 beside the producer's own disclosure (line 8),
+    so the refutation the run gives is on the record rather than behind a
+    clean Tier 1.  The callee's `ensures` stays `verified` in both copies:
+    that proof is sound over the payload it assumes.
     """
     result = _verify(tmp_path, _ARGUMENT)
     assert result["ok"] is True, result.get("diagnostics")
-    assert ("refine_bind", "tier3_unguarded", "E506") in [
-        (o["kind"], o["status"], o.get("error_code"))
+    records = [
+        (o["kind"], o["status"], o.get("error_code"), o["description"],
+         o["location"]["line"])
         for o in result["obligations"]
-    ], "the producer did not disclose, so this pin measures nothing"
+    ]
+    assert ("refine_bind", "tier3_unguarded", "E506",
+            "float_to_int(@Float64.0)", 8) in records, (
+        "the producer did not disclose, so this pin measures nothing"
+    )
+    assert ("refine_bind", "tier3_unguarded", "E506",
+            "mk(@Float64.0)", 27) in records, (
+        f"the argument position carries no obligation for the refined "
+        f"payload it publishes (#1410): {records}"
+    )
     consume_ens = [o for o in result["obligations"]
                    if o["kind"] == "ensures"
                    and o["description"] == "@Int.result > 0"]
-    assert len(consume_ens) == 2, [
-        (o["kind"], o["description"]) for o in result["obligations"]
+    assert [o["status"] for o in consume_ens] == ["verified", "verified"], [
+        (o["kind"], o["description"], o["status"]) for o in consume_ens
     ]
-    assert [o["status"] for o in consume_ens] == ["verified", "verified"], (
-        f"#1410's shape moved — if that was intended, this cell records the "
-        f"measurement it moved from: {[o['status'] for o in consume_ens]}"
-    )
     out = _run(tmp_path, _ARGUMENT)
     _assert_refused(out)
 

@@ -940,12 +940,13 @@ private fn f(@Int -> @Nat)
     def test_non_let_tier3_narrowing_warns_unguarded(self) -> None:
         """A narrowing at a *genuinely unguarded* site whose value the SMT
         layer can't translate surfaces an E504 warning + a `tier3_unguarded`
-        obligation — NOT a silent `tier3_runtime` 'runtime check'.  The
-        effect-operation argument is the canonical unguarded site: codegen
-        does not yet emit a runtime guard there (#754), so an untranslatable
-        narrowing into a @Nat effect-op formal (here `array_length`'s opaque
-        @Int into `E.wait(Nat)`) is neither statically proven nor
-        runtime-checked.  Distinct from the concrete @Nat *call argument*
+        obligation — NOT a silent `tier3_runtime` 'runtime check'.  A
+        user-declared effect's operation argument is the canonical
+        unguarded site: code generation does not compile a user-declared
+        effect's operations at all (E603), so no runtime guard exists
+        there, and an untranslatable narrowing into a @Nat effect-op formal
+        (here `array_length`'s opaque @Int into `E.wait(Nat)`) is neither
+        statically proven nor runtime-checked.  Distinct from the concrete @Nat *call argument*
         form, which #747 codegen DOES guard (now a `tier3_runtime`) — the
         `guarded` flag the verifier threads must distinguish them
         (CodeRabbit, PR #756 round 6)."""

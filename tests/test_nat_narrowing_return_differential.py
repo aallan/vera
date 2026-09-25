@@ -1475,9 +1475,10 @@ class TestNestedSubpatternDifferential:
     (`MkWrap(MkBox(@Nat))`) IS codegen-guarded — this differential proves
     the guard the verifier's static fallback claims (guarded tier3 on an
     unprojectable scrutinee, pinned in tests/test_verifier_fresh_scope.py
-    TestNestedSubpatternFallback).  The refined nested bind is the
-    UNGUARDED residual (#765) and is disclosed as tier3_unguarded/E506
-    instead."""
+    TestNestedSubpatternFallback).  The refined nested bind is guarded
+    too (#765): `vera verify` refutes it (`refine_bind` / `violated` /
+    E505), and the run traps on the constructor sub-pattern's refinement
+    guard."""
 
     _NESTED_NAT = """\
 private data Box {

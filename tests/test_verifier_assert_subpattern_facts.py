@@ -748,15 +748,13 @@ def test_1403_a_nested_bind_carries_its_fact_in_both_polarities(
     tmp_path: Path, arm: str, kind: str, clean_code: str | None,
     disclosed_code: str,
 ) -> None:
-    """`Some(Some(@PosInt))` — the shape with no codegen guard behind it.
+    """`Some(Some(@PosInt))` — a NESTED sub-pattern bind.
 
     For a DIRECT sub-pattern bind codegen emits its own payload guard, so the
     arm's fact is true whenever the arm runs whatever the verifier recorded.
-    For a NESTED bind that guard is not emitted — `_extract_constructor_fields`
-    binds direct sub-patterns only, a #758-class deferral still open as #765 —
-    so this change makes the nested fact a Tier-1 assumption with nothing
-    behind it but the producer's own construction obligation (review of
-    PR #1415, F3).
+    A NESTED bind is guarded the same way (#765).  This change makes the
+    nested fact a Tier-1 assumption, backed by that guard and by the
+    producer's own construction obligation (review of PR #1415, F3).
 
     Both polarities are pinned because the shape deserves to fail loudly if
     either half moves; the companion cell below shows why the clean half is
