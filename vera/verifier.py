@@ -1091,6 +1091,12 @@ class ContractVerifier:
         # gap above (their bodies live in another module, unreached by the
         # `program.declarations` verify loop).  Name → module FnDecl.
         self._imported_generic_verify_decls: dict[str, ast.FnDecl] = {}
+        # #1569: the call graph's declaration each clone being verified was
+        # cloned from, by the clone's id.  A clone is a copy the call graph
+        # never saw, and one verified through an importer is named by its
+        # `mod$…` discovery key, which no declaration has, so its name cannot
+        # find its cycle.
+        self._clone_source: dict[int, ast.FnDecl] = {}
         self._qualified_targets_cache: (
             dict[tuple[str, ...], dict[str, tuple[str, ...]]] | None
         ) = None
@@ -3810,9 +3816,13 @@ class ContractVerifier:
                 # re-declare under the SAME env the recount above renamed them
                 # in — a clone recounted in one namespace and re-declared in
                 # another resolves references onto the wrong parameters.
+                source = self._graph_source(decl, origin_module)
+                if source is not None:
+                    self._clone_source[id(clone)] = source
                 with self._declaring_module_scope(origin_module):
                     self._verify_fn(clone, enclosing=enclosing)
             finally:
+                self._clone_source.pop(id(clone), None)
                 self._instance_subst = saved_subst
                 inst_obl, inst_err = self.obligations, self.errors
                 self.errors, self.obligations = saved
@@ -6798,6 +6808,14 @@ class ContractVerifier:
                 own_path=own_module_path(mod.program, mod.path, ())))
         self._graph_of: dict[int, CallGraph] = {}
         self._graph_by_name: dict[str, list[ast.FnDecl]] = {}
+        # Each graph by the module path its declarations belong to, the
+        # entry program's by None, as `_origin_module_for_generic` answers.
+        self._graph_by_path: dict[tuple[str, ...] | None, CallGraph] = {
+            None: graphs[0],
+        }
+        for mod, graph in zip(self._resolved_modules, graphs[1:],
+                              strict=True):
+            self._graph_by_path.setdefault(mod.path, graph)
         for graph in graphs:
             for fn in graph.fns:
                 self._graph_of[id(fn)] = graph
@@ -6807,17 +6825,53 @@ class ContractVerifier:
         """The call graph's own declaration for *decl*.
 
         *decl* itself when the graph holds it.  A monomorphized clone is a
-        new node that keeps its source name, so it maps to the one
-        declaration of that name; a name two declarations share maps to
-        nothing, and the caller then claims nothing about the measure.
+        new node: a generic's clone maps to the generic it was cloned from
+        (#1569), whatever name it is verified under.  A clone with no record
+        of its source, such as a `where` helper copied with its parent,
+        keeps its source name, so it maps to the one declaration of that
+        name; a name two declarations share maps to nothing, and the caller
+        then claims nothing about the measure.
         """
         graph_of = getattr(self, "_graph_of", None)
         if graph_of is None:
             return None
         if id(decl) in graph_of:
             return decl
+        source = self._clone_source.get(id(decl))
+        if source is not None:
+            return source
         same = self._graph_by_name.get(decl.name, [])
         return same[0] if len(same) == 1 else None
+
+    def _graph_source(
+        self, decl: ast.FnDecl, origin: tuple[str, ...] | None,
+    ) -> ast.FnDecl | None:
+        """The call graph's declaration of the generic *decl* (#1569).
+
+        *decl* itself when the graph holds it.  A generic imported from
+        module *origin* reaches the verifier as a copy of the module's
+        declaration, its calls renamed onto their discovery keys, so it is
+        found in that module's graph by its name and source span, which a
+        copy keeps.  None when no single declaration there has both: the
+        caller then falls back to the clone's name, and claims no proof
+        when that finds nothing.
+        """
+        graph_of = getattr(self, "_graph_of", None)
+        if graph_of is None:
+            return None
+        if id(decl) in graph_of:
+            return decl
+        graph = self._graph_by_path.get(origin) if origin is not None else None
+        if graph is None or decl.span is None:
+            return None
+        same = [fn for fn in graph.fns
+                if fn.name == decl.name and fn.span == decl.span]
+        return same[0] if len(same) == 1 else None
+
+    def _source_name(self, decl: ast.FnDecl) -> str:
+        """The name *decl* is declared under in the source (#1569)."""
+        source = self._clone_source.get(id(decl))
+        return decl.name if source is None else source.name
 
     def _decreases_cycle(self, decl: ast.FnDecl) -> list[ast.FnDecl] | None:
         """The declarations on *decl*'s call cycle, or None if unplaceable."""
@@ -6853,7 +6907,11 @@ class ContractVerifier:
             where_group[parent_where_group.name] = parent_where_group
             for wfn in parent_where_group.where_fns or ():
                 where_group[wfn.name] = wfn
-        if any(m.name not in where_group for m in cycle):
+        # A member is matched by the name its source declaration has: a
+        # clone verified through an importer is named by its discovery key
+        # (#1569), while the cycle holds the declaration it was cloned from.
+        names = {self._source_name(w) for w in where_group.values()}
+        if any(m.name not in names for m in cycle):
             return None
         # #1558: a call by the module's own path names a TOP-LEVEL function,
         # which this by-name group can confuse with a `where` helper of the
