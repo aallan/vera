@@ -232,6 +232,12 @@ NOT_NAMESPACES: dict[str, str] = {
     "TypeChecker.expr_types": "keyed by source span, the LSP's side table",
     "TypeChecker.expr_semantic_types": "keyed by source span, for the verifier",
     "TypeChecker.expr_target_types": "keyed by source span, for codegen",
+    "TypeChecker._module_registration_cache": (
+        "keyed by module PATH, a memo of each module's registration (#1275); "
+        "the names inside it are registered by that module's own pass"),
+    "TypeChecker._unresolved_imports": (
+        "keyed by the module PATH of an import that did not resolve, with "
+        "the names its list mentions, for E136's instruction (#1489)"),
 }
 
 _MAPPING_ORIGINS = ("dict", "Dict", "Mapping", "MutableMapping",

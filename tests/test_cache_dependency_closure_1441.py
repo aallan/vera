@@ -1040,10 +1040,11 @@ _ADT_WILDCARD_EDITED = _ADT_WILDCARD_ORIGINAL.replace(
 #: there is architecture — and lives in `_CHECK_PHASE_GUARDS` below rather
 #: than being counted here.
 #:
-#: Deleting a callee the program still calls, or an ADT it still matches on,
-#: has no type-correct form since #1513 made an unresolved call and an
-#: unknown constructor pattern errors (E200, E322), so those two edits are
-#: check-phase guards below rather than rows here.
+#: Deleting a callee the program still calls, or an ADT it still names and
+#: matches on, has no type-correct form: #1513 made an unresolved call and an
+#: unknown constructor pattern errors (E200, E322), and #1489 made a type
+#: name nothing declares one (E136), so those two edits are check-phase
+#: guards below rather than rows here.
 _CLASS_MATRIX = [
     ("callee contract, direct", "contract weakened",
      _DIRECT_ORIGINAL, _DIRECT_EDITED, None, None),
@@ -1108,9 +1109,10 @@ _CLASS_MATRIX_IDS = [
     "module_contract_weakened",
 ]
 
-#: Edits whose kind has no type-correct form: removing a type alias, retyping
-#: an effect operation, withdrawing a module export, and (since #1513)
-#: removing a callee or an ADT the program still uses.  The checker refuses
+#: Edits whose kind has no type-correct form: removing a type alias,
+#: retyping an effect operation, withdrawing a module export, and removing a
+#: callee or an ADT the program still uses (E200 or E322 since #1513, and E136
+#: for a signature that still names the ADT, #1489).  The checker refuses
 #: each, so verification never runs and BOTH paths report an empty obligation
 #: stream — which means these cannot hold the cache key to account, and a
 #: cache key replaced by a constant passes every one of them (#1458 review).
@@ -1119,22 +1121,22 @@ _CLASS_MATRIX_IDS = [
 _CHECK_PHASE_GUARDS = [
     ("type alias", "declaration removed",
      _ALIAS_ORIGINAL, _ALIAS_REMOVED, None, None),
+    ("ADT", "declaration removed",
+     _ADT_ORIGINAL, _ADT_REMOVED, None, None),
     ("effect operation signature", "definition changed",
      _EFFECT_ORIGINAL, _EFFECT_RETYPED, None, None),
     ("imported module export", "declaration removed",
      _MODULE_MAIN, _MODULE_MAIN, _MODULE_LIB, _MODULE_LIB_UNEXPORTED),
     ("callee", "declaration removed",
      _ENSURES_ORIGINAL, _CALLEE_REMOVED, None, None),
-    ("ADT", "declaration removed",
-     _ADT_ORIGINAL, _ADT_REMOVED, None, None),
 ]
 
 _CHECK_PHASE_GUARD_IDS = [
     "alias_removed",
+    "adt_removed",
     "effect_op_retyped",
     "module_export_removed",
     "callee_removed",
-    "adt_removed",
 ]
 
 

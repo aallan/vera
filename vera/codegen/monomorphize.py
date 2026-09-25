@@ -24,6 +24,7 @@ from vera.monomorphize import (
     MonoContext,
     Monomorphizer,
     NamespaceCtorOwners,
+    TypeArgAliasScope,
     UninferredTypeArg,
     collect_nested_generic_decls,
     declared_return_clone_key,
@@ -190,12 +191,43 @@ class MonomorphizationMixin:
                 ).items()
                 for name in by_name
             ),
+            # #1509: and their declarations, so a nested `path::name(...)` in
+            # an argument is named from its instantiated return, as the
+            # rewrite names it — a module body's call to its own private
+            # generic is one of these after the Pass-0 reroute.
+            qualified_generic_decls={
+                (path, name): decl
+                for path, by_name in getattr(
+                    self, "_shadowed_imported_generic_decls", {},
+                ).items()
+                for name, decl in by_name.items()
+            },
             # #1327/#1366/#1369: the checker's own answer, for the shapes this
-            # walker has no arm for.  The ENTRY program's table — the one the
-            # CLI hands BOTH codegen and the verifier — so the two consultors
-            # back off to identical answers and the #732 differential stays an
-            # equality (see `checker_clone_type_name`).
+            # walker has no arm for — the ENTRY program's table for the entry
+            # file's bodies, and (#1509) each module's own for that module's
+            # bodies, the tables the call-site rewrite reads for the same
+            # bodies (#987).  The CLI hands the verifier the same tables, so
+            # the two consultors back off to identical answers and the #732
+            # differential holds (see `checker_clone_type_name`).
             expr_types=self._expr_semantic_types,
+            module_expr_types={
+                path: tables[0]
+                for path, tables in self._module_artifacts.items()
+                if tables[0] is not None
+            },
+            # #1511: the alias maps each namespace's bodies compile under,
+            # which a type argument written there is resolved through
+            # before it names a clone (`_type_arg_alias_scopes`).
+            type_arg_aliases=getattr(self, "_type_arg_scopes", {}),
+            # The module each IMPORTED generic in `generic_decls` was declared
+            # in, so a qualified call is named from a bare-name generic only
+            # when that generic is the one the call reaches.
+            generic_origins=getattr(
+                self, "_imported_generic_base_origins", {}),
+            # Each module's functions the entry displaces.  This side's module
+            # bodies already call their symbols (`_register_modules`); the map
+            # is the same one the verifier's discovery resolves through.
+            displaced_fn_symbols=getattr(self, "_displaced_fn_symbols", {}),
         )
 
     def _monomorphize(
@@ -263,9 +295,16 @@ class MonomorphizationMixin:
             for ctor_name in self._adt_layouts[adt_name]:
                 ctor_to_adt[ctor_name] = adt_name
 
+        # #1511: computed once, here, where no module's alias scope is
+        # installed, so the entry's flat maps are the entry's own.
+        self._type_arg_scopes = self._type_arg_alias_scopes()
         mono = Monomorphizer(
             self._build_mono_context(generic_decls, ctor_to_adt),
         )
+        # #1509: the qualified-only discovery below builds a throwaway walker
+        # per call, and it names a nested generic call in an argument the way
+        # this walker does only if it knows the same generics.
+        self._mono_generic_decls = generic_decls
 
         # Record of every (generic name, concrete types) actually emitted —
         # i.e. that passed constraint checks.  Consumed by the #732 differential
@@ -443,6 +482,27 @@ class MonomorphizationMixin:
         self._report_uninferred_type_args(mono)
         return emitted
 
+    def _type_arg_alias_scopes(self) -> dict[
+        tuple[str, ...] | None, TypeArgAliasScope,
+    ]:
+        """Per namespace, the alias maps a type argument written there is
+        resolved through (#1511, :func:`vera.monomorphize.canonical_type_arg`).
+
+        Exactly the maps that namespace's bodies compile under — the entry
+        file's flat maps, and each module's ``{prelude, **module_own}``
+        overlay as ``_module_alias_scope`` installs it — so discovery and the
+        call site, which reads the installed maps, resolve one argument
+        alike.  Asked outside every module scope (Pass 1.5)."""
+        scopes: dict[tuple[str, ...] | None, TypeArgAliasScope] = {
+            None: (dict(self._type_aliases), dict(self._type_alias_params)),
+        }
+        for path in self._module_type_aliases:
+            with self._module_alias_scope(path):
+                scopes[path] = (
+                    dict(self._type_aliases), dict(self._type_alias_params),
+                )
+        return scopes
+
     def _report_uninferred_type_args(self, mono: Monomorphizer) -> None:
         """Turn discovery's un-inferable type arguments into [E622] errors.
 
@@ -504,8 +564,10 @@ class MonomorphizationMixin:
                     "and specialising at a guessed type would emit a "
                     "specialisation nothing calls."
                 ),
+                # #1509: the table of the file the argument is written in —
+                # the one discovery consulted before recording it.
                 fix=uninferred_type_arg_fix(
-                    rec, self._expr_semantic_types),
+                    rec, mono.checker_table(rec.origin)),
                 spec_ref='Chapter 5, Section 5.9 "Generic Functions"',
                 severity="error",
                 error_code="E622",
@@ -549,6 +611,7 @@ class MonomorphizationMixin:
                 mono_fn = mono.monomorphize_fn(decl, concrete_types, cenv)
             produced.append(mono_fn)
             self._record_clone_origin(fn_name, mono_fn.name)
+            self._clone_type_args[mono_fn.name] = concrete_types
             # #1002: remember this clone's concrete-FREE chain base so the
             # per-clone where-tree hoister can key a generic-under-generic
             # helper's `_emitted_instances` entry identically to the verifier.
@@ -629,6 +692,10 @@ class MonomorphizationMixin:
                 decl, decl.name, hoisted,
             )
             result.append(rewritten)
+            # #1511: and it spells the parent clone's type arguments.
+            parent_args = self._clone_type_args.get(decl.name, ())
+            for h in hoisted:
+                self._clone_type_args[h.name] = parent_args
             # #998: a hoisted helper's body is the same module's code as the
             # clone it was hoisted from — it needs the same span tables.
             origin = self._mono_clone_origins.get(decl.name)
@@ -727,6 +794,10 @@ class MonomorphizationMixin:
                         clone = mono.monomorphize_fn(gen, concrete, cenv)
                     if origin is not None:
                         self._mono_clone_origins[clone.name] = origin
+                    self._clone_type_args[clone.name] = (
+                        *self._clone_type_args.get(parent_clone_name, ()),
+                        *concrete,
+                    )
                     # Chain the deeper base so a generic sub-helper of `gen`
                     # keys concrete-free too.
                     self._clone_base_chain[clone.name] = chain_keys[gen_name]
@@ -1018,6 +1089,7 @@ class MonomorphizationMixin:
             }
             clone = self._rewrite_sibling_generic_calls(clone, sibling_bases)
             mono_decls.append(_replace(clone, name=mangled))
+            self._clone_type_args[mangled] = concrete_types
             # #1029 (R3/R5): record this shadowed clone's concrete-FREE chain
             # base (the ``mod$<path>$gen`` qualified base, NOT the concrete-
             # including emission name).  The per-clone where-tree hoister
@@ -1094,6 +1166,7 @@ class MonomorphizationMixin:
                         t_fn = mono.monomorphize_fn(t_decl, t_ct, cenv)
                     mono_decls.append(t_fn)
                     self._record_clone_origin(t_name, t_fn.name)
+                    self._clone_type_args[t_fn.name] = t_ct
                     # #1029 (R3): a normal clone reached transitively from a
                     # shadowed clone body keys its concrete-FREE chain base the
                     # same way the main worklist does (line ~271), so its own
@@ -1219,10 +1292,11 @@ class MonomorphizationMixin:
             # its first element and registered the phantom `$Bool` clone
             # instead of the one the call site needs — while the DIRECT
             # spelling of the same call was discovered correctly.  Walk the
-            # desugared call, which carries the same children.
+            # desugared call, which carries the same children, in the same
+            # module's namespace (PR #1508 review).
             self._collect_shadowed_qualified_calls(
                 piped, path, decls_by_name, ctor_to_adt, instances,
-                op_result_types,
+                op_result_types, origin,
             )
             return
 
@@ -1266,11 +1340,23 @@ class MonomorphizationMixin:
         [E622] as the entry program's; the call site inside an imported body
         would then be reported against the importer's file and source line.
         """
-        m = Monomorphizer(self._build_mono_context({}, ctor_to_adt))
-        m._namespace_path = origin
-        if op_result_types:
-            m._op_result_types = op_result_types
-        result = m._infer_type_args_from_args(decl, args, ctor_to_adt, None)
+        # #1509: with the generics the main walk knows.  Built with none, a
+        # nested generic call in an argument was named from its RAW declared
+        # return — `opt_or(option_map(...))` bound `T` to the prelude's own
+        # `VeraB` — where the main walk and the call-site rewrite instantiate
+        # it, so a module's private generic around a nested call was
+        # discovered at a clone nothing calls.
+        generic_decls = getattr(self, "_mono_generic_decls", {})
+        m = Monomorphizer(self._build_mono_context(generic_decls, ctor_to_adt))
+        # In *origin*'s namespace, as the main walk scans the same body: its
+        # bare names and constructors resolve to what that module can see
+        # (#1299, #1436), not to the flat tables — an entry-file `fn get`
+        # does not claim the module's `get(())` operation (PR #1508 review).
+        with m.namespace_scope(origin):
+            if op_result_types:
+                m._op_result_types = op_result_types
+            result = m._infer_type_args_from_args(
+                decl, args, ctor_to_adt, generic_decls)
         # #1327/#1366: this walker is a THROWAWAY built per qualified call, so
         # its fail-closed records would be dropped on the floor.  Carry them to
         # the codegen-level accumulator `_monomorphize` drains, or the shadowed

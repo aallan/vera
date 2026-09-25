@@ -311,13 +311,22 @@ class TestStages:
     def test_undefined_constructor_fails_the_check_stage(
         self, tmp_path: Path,
     ) -> None:
+        # `Color` is declared, and its one constructor is matched, so the
+        # undefined `Red` and `Green` (E322, a warning) are the only thing
+        # the stage can fail on: an undeclared `Color` would be E136 (#1489)
+        # and fail it without them (PR #1508 review).
         program = """\
+private data Color {
+  Blue
+}
+
 private fn to_int(@Color -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
 {
   match @Color.0 {
+    Blue -> 2,
     Red -> 0,
     Green -> 1
   }
@@ -326,6 +335,7 @@ private fn to_int(@Color -> @Int)
         assert len(findings.failures) == 1
         assert "[check]" in findings.failures[0]
         assert "[E322]" in findings.failures[0]
+        assert "[E136]" not in findings.failures[0]
 
     def test_typed_hole_warning_does_not_fail_check(
         self, tmp_path: Path,

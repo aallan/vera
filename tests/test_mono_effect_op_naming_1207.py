@@ -231,7 +231,9 @@ public fn main(@Unit -> @Int)
 # (case id, source, expected clone name, expected run value)
 _CASES = [
     ("handler_plain", _HANDLER_PLAIN, "pick$Nat", 9),
-    ("handler_alias", _HANDLER_ALIAS, "pick$Count", 9),
+    # #1511: the cell's alias is resolved where it is written before it
+    # names the clone, so `Count` (an alias of `Nat`) names `pick$Nat`.
+    ("handler_alias", _HANDLER_ALIAS, "pick$Nat", 9),
     ("effect_row", _EFFECT_ROW, "pick$Nat", 9),
     ("direct_arg", _DIRECT_ARG, "second$Nat", 9),
     ("exn_nested_in_state", _EXN_IN_STATE, "pick$Nat", 9),

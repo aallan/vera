@@ -198,9 +198,15 @@ forall(@IndexType, @BoundExpr, @PredicateFn)
 The bound is an **integer count** — the quantified index runs over `0 .. bound-1`.  An `@Int`/`@Nat` (or a refinement over one) is required; any other domain type — an array, a string — is a check-time error (**E128**).  To quantify over an array's elements, pass `array_length(arr)` as the bound and index the array inside the predicate.
 
 Where:
-- `@IndexType` is the type of the bound variable (must be `Nat` or `Int`)
+- `@IndexType` is the type of the bound variable: `Nat` or `Int`, an alias of either, or a refinement of one (**E186** otherwise)
 - `@BoundExpr` is the exclusive upper bound (inclusive lower bound is always 0)
 - `@PredicateFn` is an anonymous function returning `Bool`
+
+A refinement of the index type narrows the range to the values below the bound that satisfy it. `forall(@{ @Nat | P }, n, fn(@Nat -> @Bool) effects(pure) { Q })` holds when `Q` holds for every index below `n` that satisfies `P`, which is `forall(@Nat, n, fn(@Nat -> @Bool) effects(pure) { P ==> Q })`. The `exists` form holds when some index below `n` satisfies both, which is `exists(@Nat, n, fn(@Nat -> @Bool) effects(pure) { P && Q })`.
+
+The predicate is applied to every value in that range, so it takes exactly one parameter — the index, of type `Int` or `Nat`, or an alias of either — and returns `Bool`. A refinement is not a valid parameter type, spelled inline or through an alias. Put the condition on the index type, or test it in the body, with `P ==> ...` for `forall` and `P && ...` for `exists`. Any other predicate signature is a check-time error (**E179**).
+
+A type parameter at any of these positions — the index type, the predicate's parameter or result, the bound's type — is accepted, and each instantiation of the generic is expected to supply an integer index and bound and a `Bool` result. An instantiation that does not is not yet refused at check time ([#1506](https://github.com/aallan/vera/issues/1506)); checking each instantiation where the types are known is the planned rule.
 
 Bounded quantification with concrete literal bounds is decidable via finite unrolling, and symbolic bounds are decidable via inductive reasoning — but **both reach the decidable fragment only via Tier 2 (Z3-guided)**, which is [not yet implemented](https://github.com/aallan/vera/issues/427). At present every `forall` / `exists` in a contract falls to Tier 3 (runtime check) regardless of whether its bound is a literal, a length expression, or symbolic.
 

@@ -1317,7 +1317,6 @@ _BY_NAME_INVENTORY: dict[tuple[str, str, str], int] = {
     ("vera/smt.py", "SmtContext._translate_ctor_call", "_ctor_to_adt"): 1,
     ("vera/smt.py", "SmtContext.register_adt", "_ctor_to_adt"): 1,
     ("vera/wasm/calls.py", "CallsMixin._translate_call", "_ctor_layouts"): 1,
-    ("vera/wasm/calls_handlers.py", "CallsHandlersMixin._composite_ctor_plans", "_ctor_adt_tp_indices"): 1,
     ("vera/wasm/calls_handlers.py", "CallsHandlersMixin._recover_ctor_ptype", "_ctor_adt_tp_indices"): 1,
     ("vera/wasm/context.py", "WasmContext.__init__", "_ctor_adt_tp_indices"): 1,
     ("vera/wasm/context.py", "WasmContext.__init__", "_ctor_layouts"): 1,

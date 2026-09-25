@@ -3061,15 +3061,17 @@ public fn main(@Unit -> @Int)
         assert _run(self._ISSUE2_ALIAS_SCALAR_RETURN, fn="main") == 20
 
     def test_issue2_discovery_matches_call_rewrite(self) -> None:
-        """The emitted clone (`pick_last$Age`, raw alias name) and the call
-        target must agree — the call site must not reference the alias-resolved
-        `pick_last$Int`."""
+        """The emitted clone and the call target must agree.  Both name it
+        by what the alias MEANS (`pick_last$Int`): since #1511 a type
+        argument is resolved in the namespace it was written in before it
+        names a clone, on both sides, where #899 had both keep the raw
+        alias name (`pick_last$Age`)."""
         result = _compile_ok(self._ISSUE2_ALIAS_SCALAR_RETURN)
         wat = result.wat or ""
-        assert "$pick_last$Age" in wat, (
-            "discovery emitted the raw-name clone pick_last$Age but it is "
-            "absent from the WAT (#899 issue 2)"
+        assert "$pick_last$Int" in wat, (
+            "discovery emitted no canonical clone pick_last$Int (#1511)"
         )
+        assert "$pick_last$Age" not in wat, wat
         skip_notes = [
             d for d in result.diagnostics
             if "function skipped" in str(d.description)

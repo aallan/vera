@@ -555,7 +555,7 @@ type Positive = { @Int | @Int.0 > 0 };
 
 ## Pattern Matching
 
-<!-- vera:skip-check category="INCOMPLETE" code="E322 E322 E322" reason="matches on Color, declared in the Data Types block above" -->
+<!-- vera:skip-check category="INCOMPLETE" code="E136 E322 E322 E322" reason="matches on Color, declared in the Data Types block above" -->
 ```vera
 private fn to_int(@Color -> @Int)
   requires(true)
@@ -1312,7 +1312,7 @@ infinity()                         -- returns Float64 (positive infinity)
 
 **Redefining a built-in is an error (E151)**: a function whose name matches a built-in (e.g. `abs`, `array_length`, `clamp`, `to_string`) is rejected at `vera check`. Built-ins are always in scope as the single canonical definition, so a second one is both redundant (one canonical form) and — for the verifier-modelled built-ins — silently unsound: the verifier would reason with the built-in's model while codegen runs your body. Call the built-in directly (no import needed), or give your function a distinct name (e.g. `magnitude`) for genuinely different behaviour. The one exception is the prelude's Option/Result/Json/Html *combinators* (`option_map`, `option_and_then`, `option_unwrap_or`, `result_map`, `result_unwrap_or`, `json_*`, `html_attr`): these are ordinary Vera functions the prelude injects, so a same-named user definition soundly replaces them.
 
-**Redefining a special-cased built-in ADT is an error (E158)**: `data Future { ... }` and `data Tuple { ... }` are rejected at `vera check`, at the entry file and inside a module alike. These two names the compiler recognises *by name* throughout code generation — how a value is rendered, compared and laid out — so a declaration of one could not be told apart from the built-in, and accepting it was silent: `show(MkShadow(7))` under a `data Tuple` printed `(7)`, dropping the constructor name, and `data Future` compiled to a module that fails to load. It is the same rule that reserves built-in function names (E151) and built-in effect names (E152), and it covers both namespaces a declaration can put the name in: the `data` type name and a **constructor** name inside any ADT (`data Box { Tuple(Bool) }` is also E158, because code generation flattens constructor layouts by name and the user's would displace the built-in carrier's). Only those two: the prelude's data types (`Option`, `Result`, `Ordering`, `UrlParts`, `Json`, `HtmlNode`, `MdBlock`, `MdInline`, `Request`, `Response`) are ordinary declarations a program may shadow — `examples/vera/collections.vera` ships a `public data Option<T>` — and so are the container names `Array`, `Map`, `Set` and `Decimal`. A `type Future = ...` / `type Tuple = ...` alias is unaffected: an alias names a binding, not a layout. Rename the declaration, or use the built-in directly.
+**Declaring a data type with a built-in type's name is an error (E158)**: `data Array { ... }`, `data Map { ... }`, `data Set { ... }`, `data Decimal { ... }`, `data Future { ... }` and `data Tuple { ... }` are rejected at `vera check`, with any number of type parameters, at the entry file and inside a module alike. The compiler recognises `Future` and `Tuple` *by name* throughout code generation — how a value is rendered, compared and laid out — so a declaration of one could not be told apart from the built-in: under a `data Tuple`, `show(MkShadow(7))` would print `(7)`, dropping the constructor name. A declaration of `Array`, `Map`, `Set` or `Decimal` with the built-in's number of type parameters is the same type as the built-in to the type checker, so a built-in value would be accepted where the declaration's is expected and read through the wrong layout: `show(decimal_from_int(5))` beside a `data Decimal { MkShadow(Int) }` would print the declaration's constructor. It is the same rule that reserves built-in function names (E151) and built-in effect names (E152). For `Future` and `Tuple` it also covers a **constructor** name inside any ADT (`data Box { Tuple(Bool) }` is also E158, because code generation flattens constructor layouts by name and the user's would displace the built-in carrier's); a constructor may still be called `Array`, `Map`, `Set` or `Decimal`. The prelude's data types (`Option`, `Result`, `Ordering`, `UrlParts`, `Json`, `HtmlNode`, `MdBlock`, `MdInline`, `Request`, `Response`) are not reserved: they are ordinary declarations a program may shadow — `examples/vera/collections.vera` ships a `public data Option<T>`. A `type Future = ...` / `type Tuple = ...` alias is unaffected: an alias names a binding, not a layout. Rename the declaration (`data Money`, not `data Decimal`), or use the built-in directly.
 
 **Two declarations may not share a constructor name (E159)**: within one file, two `data` declarations may not both declare a constructor of the same name — `private data A1 { Pair(Int, Int) }` beside `private data A2 { Pair(Bool, Bool) }` is rejected at `vera check`, located at the second declaration and naming the first. Constructor names are resolved by name alone, so one namespace cannot hold two, and accepting the pair produced diagnostics describing whichever declaration registered last rather than the collision. It is the single-file sibling of E610 (two modules) and E157 (two imports). Shadowing a *prelude* constructor is a different shape and stays legal — a program may restate `Option`, `Result` or `Ordering` — as is shadowing an *imported* constructor (§8.5.2), though see §11.16 for the compilation caveat on that pair.
 
@@ -1414,6 +1414,8 @@ exists(@Nat, array_length(@Array<Int>.0), fn(@Nat -> @Bool) effects(pure) {
   @Array<Int>.0[@Nat.0] == 0
 })
 ```
+
+The predicate takes exactly one parameter, the index, typed `@Nat` or `@Int` (or an alias of either), and returns `@Bool`. The index runs over every value from 0 up to the bound, so a refined parameter such as `fn(@{ @Nat | @Nat.0 < 10 } -> @Bool)` is refused (`E179`). Put the condition on the index type instead, `forall(@{ @Nat | @Nat.0 < 10 }, n, ...)`, which ranges over the values that satisfy it, or test it in the body: `P ==> Q` for `forall`, and `P && Q` for `exists`. The index type itself must be `@Nat` or `@Int`, or a refinement of one (`E186`).
 
 ## Effects
 
@@ -2392,6 +2394,23 @@ let @Set<Int> = set_new();
 set_add(set_new(), 1)
 ```
 
+### Declaring a data type with a built-in type's name
+
+WRONG — `Array`, `Map`, `Set`, `Decimal`, `Future` and `Tuple` are reserved built-in type names:
+<!-- vera:skip-check category="WRONG" code="E158" reason="a data declaration named Decimal is E158" -->
+```vera
+private data Decimal {
+  Cents(Int)
+}
+```
+
+CORRECT — give the type a name of its own:
+```vera
+private data Money {
+  Cents(Int)
+}
+```
+
 ## Complete Program Examples
 
 ### Pure function with postconditions
@@ -2518,7 +2537,7 @@ public fn main(@Unit -> @Unit)
 
 ## Conformance Suite
 
-The `tests/conformance/` directory contains 255 small programs — most self-contained, with the Chapter 8 module-system programs and a few cross-module Chapter 7 and 9 programs importing companion `_lib.vera` / `_mid.vera` modules — that validate every language feature against the spec — often one program per feature, though some features (slot references, match, contracts) span several. These are the best minimal working examples of Vera syntax and semantics.
+The `tests/conformance/` directory contains 256 small programs — most self-contained, with the Chapter 8 module-system programs and a few cross-module Chapter 7 and 9 programs importing companion `_lib.vera` / `_mid.vera` modules — that validate every language feature against the spec — often one program per feature, though some features (slot references, match, contracts) span several. These are the best minimal working examples of Vera syntax and semantics.
 
 Each program is organized by spec chapter (`ch01_int_literals.vera`, `ch04_match_basic.vera`, `ch07_state_handler.vera`, etc.) and the `manifest.json` file maps features to programs. When you need to see how a specific construct works, check the conformance program before reading the spec.
 
@@ -2547,7 +2566,7 @@ These are known limitations in the current reference implementation. Most are tr
 | `Inference` effect has no user-defined handlers | In the current implementation, `Inference` is always host-backed (dispatches to a real API). User-defined handlers for mocking, local models, or replay are not yet supported. | [#372](https://github.com/aallan/vera/issues/372) |
 | `DB` effect has no user-defined handlers | `DB` is always host-backed; `handle[DB]` for mocking or replay is not yet supported (shared with the other host effects). Test against `sqlite::memory:` for a hermetic real database. | [#372](https://github.com/aallan/vera/issues/372) |
 | `DB` effect is SQLite-only with positional string rows | Phase 1 supports SQLite only, a single connection per run, and stringly-typed positional rows (`Array<Array<Option<String>>>`). Named columns, typed cells, other backends, and transactions are future work. | [#1143](https://github.com/aallan/vera/issues/1143) |
-| Nested handlers over the SAME cell type, with an operation in a clause body | A bare `get`/`put` in a clause body is the ENCLOSING context's operation (spec §7.5.2), but the host state intrinsics address only the innermost cell of a family — so when the enclosing handler (or the function's declared row) is the *same* `State<T>`, the outer cell cannot be reached. That shape is a loud `E602` codegen skip rather than a silently wrong write. Nest handlers over *different* cell types, or refine the inner cell with `with @T = expr`, which is the clause's own state override. Handler nesting is also capped at 8 levels of outward clause re-entry (the expansion is exponential in the nesting depth); past it the function is a loud `E602`. | [#1233](https://github.com/aallan/vera/issues/1233) |
+| Nested handlers over the SAME cell type, with an operation in a clause body | A bare `get`/`put` in a clause body is the ENCLOSING context's operation (spec §7.5.2), but the host state intrinsics address only the innermost cell of a family — so when the enclosing handler (or the function's declared row) is the *same* `State<T>`, the outer cell cannot be reached. That shape is refused at check time (`E339`), where the operation is written, rather than silently writing the wrong cell — except inside a generic whose inner cell is `State<T>`, which matches the outer family only once `T` is instantiated: that program passes check and code generation drops the instantiation (`E602`, [#1522](https://github.com/aallan/vera/issues/1522)). Nest handlers over *different* cell types, or refine the inner cell with `with @T = expr`, which is the clause's own state override. Handler nesting is also capped at 8 levels of outward clause re-entry (the expansion is exponential in the nesting depth); past it the operation is refused at check time (`E339`). | [#1233](https://github.com/aallan/vera/issues/1233), [#1522](https://github.com/aallan/vera/issues/1522) |
 | Browser target: `IO.sleep` freezes the tab | `IO.sleep` busy-waits the browser's main thread, so animations and paced simulations don't run meaningfully under `--target browser`. Until the JSPI-based suspend/resume fix lands, write browser-target programs as a pure simulation core with a JS driver, or stick to terminal output. | [#609](https://github.com/aallan/vera/issues/609) |
 | Browser target: ANSI escapes render as literal text | ANSI escape sequences (cursor control, screen clear) appear as literal control characters in the DOM rather than being interpreted. Terminal-style rendering needs the planned ANSI-subset interpreter in `runtime.mjs`; no language change is required. | [#610](https://github.com/aallan/vera/issues/610) |
 

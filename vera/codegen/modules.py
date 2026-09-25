@@ -13,15 +13,19 @@ from typing import TYPE_CHECKING
 
 from vera import ast
 from vera.errors import Diagnostic, SourceLocation
+from vera.module_view import imported_data_types
 from vera.monomorphize import (
     canonicalize_type_aliases,
+    displaced_module_fns,
     importer_occupied_bare_names,
     module_qualified_generic_names,
     module_qualified_generic_targets,
+    module_qualified_symbol,
     namespace_fn_names,
     namespace_module_reach,
     public_generic_names,
     qualify_contended_data_decls,
+    reroute_module_qualified_generic_calls,
 )
 from vera.naming import display_adt_name
 from vera.prelude import PRELUDE_NAMESPACE, data_decl_shape, prelude_adt_names
@@ -29,6 +33,7 @@ from vera.resolver import merged_import_filters
 
 if TYPE_CHECKING:
     from vera.codegen.core import CodeGenerator
+    from vera.resolver import ResolvedModule
 
 
 class _Ambiguous:
@@ -58,7 +63,6 @@ _NOTHING = object()
 # which is the point: the entry's own `data` is E623's business (#1312) and
 # is only ever COUNTED here, never renamed.
 _ENTRY_OWNER: tuple[str, ...] = ()
-
 
 
 class CrossModuleMixin:
@@ -200,7 +204,6 @@ class CrossModuleMixin:
 
         import dataclasses
 
-        from vera.codegen.core import CodeGenerator
         from vera.monomorphize import (
             collect_nested_generic_decls,
             qualify_nested_generic_decls,
@@ -255,6 +258,15 @@ class CrossModuleMixin:
         # the modules at once, and EMPTY for every program with no contended
         # name, which is why no corpus program's emitted WAT moves.
         adt_renames = self._contended_adt_renames(program, builtin_adt_names)
+        # #1493: every module's program as the checker saw it, BEFORE the
+        # rewrites below.  Import lists keep bare names while the #1317
+        # rename rewrites references, so what a namespace imports is asked
+        # of these and then spelled through that namespace's own renames
+        # (`_module_registrar`).
+        checker_programs = {
+            mod.path: mod.program for mod in self._resolved_modules
+        }
+        self._module_programs_as_checked = dict(checker_programs)
         self._resolved_modules = [
             dataclasses.replace(
                 mod,
@@ -272,12 +284,15 @@ class CrossModuleMixin:
         ]
 
         # 1. Build import filter: path -> set of names (or None for wildcard),
-        # unioned across repeated imports of one path (#1433).
+        # unioned across repeated imports of one path (#1433) — the one
+        # derivation the checker and the verifier read too.
         import_names = merged_import_filters(program.imports)
 
         # #1253: per-namespace ADT bookkeeping, filled in the harvest loop and
         # folded into membership sets after it.
         declared_adts: dict[tuple[str, ...], frozenset[str]] = {}
+        # #1513: which of those each module EXPORTS, read by the
+        # constructor fallback in `_namespace_ctor_projection`.
         public_adts: dict[tuple[str, ...], frozenset[str]] = {}
 
         # #814 §8.5.3: names of LOCAL functions in the importing program,
@@ -298,6 +313,17 @@ class CrossModuleMixin:
         # against; the two agree on every `$`-free name, which is asserted
         # directly rather than assumed (tests/test_module_generic_namespace_1274).
         importer_bare_names = importer_occupied_bare_names(program)
+        # The functions each module's bare calls mean — its own, or one it
+        # imports — whose bare name the entry's declarations hold, to the
+        # `mod$` symbol each is emitted under.  A module body's bare call to
+        # one is renamed to that symbol below, before anything names or
+        # resolves it (PR #1508 review).  What a module imports is read from
+        # the programs as the checker saw them.
+        self._displaced_fn_symbols = {
+            mod.path: displaced_module_fns(
+                mod.program, mod.path, importer_bare_names, checker_programs)
+            for mod in self._resolved_modules
+        }
 
         # #1274 (F1): classify EVERY module's generics before rerouting ANY
         # module's bodies.  A module's bare call can name a generic it imported
@@ -341,21 +367,12 @@ class CrossModuleMixin:
         transitive_contributed: set[str] = set()
         importer_visible: set[str] = set(local_fn_names)
 
-        # 2. Register each module in isolation
+        # 2. Register each module in ITS OWN namespace (#1493): its own
+        #    declarations, with the data types it imports in scope.
         for mod in self._resolved_modules:
-            # #1189: hand the throwaway registrar the module's OWN file.
-            # ``_register_fn`` stamps every ``_fn_source_map`` entry with
-            # ``self.file``, so without this the harvest below would carry
-            # ``"<unknown>"`` — and the main generator, which registers only
-            # LOCAL declarations, would stamp the importer's path onto
-            # module-local coordinates.  ``ResolvedModule.file_path`` is the
-            # same attribution source ``_module_source_scope`` (#1190) reads,
-            # so the source map and the diagnostics can never disagree about
-            # which file an imported body belongs to.
-            temp = CodeGenerator(
-                source=mod.source, file=str(mod.file_path),
+            temp = self._module_registrar(
+                mod, checker_programs, adt_renames.get(mod.path, ({}, {}))[0],
             )
-            temp._register_all(mod.program)
             # #1317: capture this module's alias namespace BEFORE the ADT
             # harvest below, not after it.  The harvest's collision rails ask
             # `_adt_decls_share_a_layout`, which resolves each declaration's
@@ -386,11 +403,11 @@ class CrossModuleMixin:
                 elif isinstance(tld.decl, ast.DataDecl):
                     vis_map[tld.decl.name] = tld.visibility or "private"
 
-            # #1253: what this module DECLARES as data types, and which of
-            # those it EXPORTS.  The two sets are the input to the membership
-            # rule below — a module's namespace holds its own ADTs whatever
-            # their visibility, and an importer's holds only the public ones
-            # its filter names, which is exactly the checker's view.
+            # #1253: what this module DECLARES as data types — its own, under
+            # any #1317 rename.  With what it imports
+            # (`vera.module_view.imported_data_types`) that is its membership
+            # below: a module's namespace holds its own ADTs whatever their
+            # visibility, which is exactly the checker's view.
             declared_adts[mod.path] = frozenset(
                 tld.decl.name
                 for tld in mod.program.declarations
@@ -771,6 +788,20 @@ class CrossModuleMixin:
                 routed = self._reroute_module_qualified_generic_calls(
                     tld.decl, module_qualified_targets,
                 )
+                # A bare call to a function the entry displaces means what
+                # this module's namespace holds (§8.5.2) — its own function,
+                # or else the one it imports — so it calls that function's
+                # `mod$` symbol, in every body the module compiles and every
+                # discovery walk over them.  Before, only an own function's
+                # call target was redirected, at the call site: its type was
+                # named from the entry's declaration, so a generic called on
+                # its result was specialised at the wrong type, and beside an
+                # entry GENERIC of the same name the generic rewrite took the
+                # call first; an imported function's call reached the entry's
+                # declaration outright.  Shadow-aware like the generic
+                # reroute: a `where` helper of the name owns it.
+                routed = self._reroute_displaced_calls(
+                    routed, self._displaced_fn_symbols[mod.path])
                 # #774: an imported PUBLIC generic is monomorphized by the
                 # importer (Pass 1.5) at its own call sites — it can't be
                 # emitted verbatim under a bare/mangled name in Pass 2.5, but
@@ -866,8 +897,67 @@ class CrossModuleMixin:
         self._module_public_adts = dict(public_adts)
         self._namespace_module_reach = self._build_namespace_module_reach()
         self._adt_namespace_members = self._build_adt_membership(
-            program, import_names, declared_adts, public_adts,
+            program, declared_adts, checker_programs, adt_renames,
         )
+
+    def _module_registrar(
+        self,
+        mod: ResolvedModule,
+        checker_programs: Mapping[tuple[str, ...], ast.Program],
+        renames: Mapping[str, str],
+    ) -> CodeGenerator:
+        """*mod*'s declarations, registered in *mod*'s own namespace (#1493).
+
+        The registrar measures each signature's WASM widths by asking the
+        resolution spine what every type name means, in the namespace it
+        holds.  It used to hold the module's own declarations alone, so a
+        data type the module IMPORTED — and returns, or takes — was no data
+        type there: ``pick(@Int -> @Colour)`` registered as
+        ``(['i64'], 'unsupported')``, and a direct ``match`` on the call, in
+        the importer or in the module's own bodies, could not type its
+        scrutinee and dropped the enclosing function (E602, then E620 up the
+        call graph).  The same declarations compiled as the ENTRY registered
+        ``(['i64'], 'i32')``, so the verdict depended on which file was the
+        entry.
+
+        What a namespace imports is the ONE derivation the checker's
+        module registration reads (:func:`vera.module_view.imported_data_types`),
+        asked of the programs as the checker saw them.  The #1317 rename
+        rewrites a contended type's references but not the import lists that
+        name it, so each imported name is then spelled through THIS
+        namespace's renames — the symbol its rewritten signatures carry.
+
+        The prelude's data types are data types in every namespace, as the
+        checker's ``TypeEnv`` holds them all unconditionally
+        (:func:`vera.prelude.prelude_adt_names`, the floor
+        ``_adt_members_in_scope`` completes membership with).  The entry
+        file registers the demand-injected ones (``Json``, ``HtmlNode``,
+        ``Request``, ``Response``) at Pass 1.2 and re-measures its own
+        signatures that named them; a module's are measured here, before
+        that, so without them ``mk(@Int -> @Json)`` registered as
+        ``unsupported`` and a direct match on the call dropped the function
+        (PR #1508 review).  A module's own declaration of one of the names
+        keeps its own index (``_sync_alias_env`` only fills a gap), and a
+        module alias of one still takes the alias branch first, as in the
+        checker.
+
+        #1189: the registrar is handed the module's OWN file, because
+        ``_register_fn`` stamps every ``_fn_source_map`` entry with
+        ``self.file``; ``ResolvedModule.file_path`` is the attribution source
+        ``_module_source_scope`` (#1190) reads, so the source map and the
+        diagnostics agree about which file an imported body belongs to.
+        """
+        from vera.codegen.core import CodeGenerator
+
+        temp = CodeGenerator(source=mod.source, file=str(mod.file_path))
+        temp._imported_adt_names = frozenset(
+            renames.get(name, name)
+            for name in imported_data_types(
+                checker_programs[mod.path], checker_programs,
+            )
+        ) | prelude_adt_names()
+        temp._register_all(mod.program)
+        return temp
 
     def _build_namespace_module_reach(
         self,
@@ -889,23 +979,34 @@ class CrossModuleMixin:
     def _build_adt_membership(
         self,
         program: ast.Program,
-        import_names: dict[tuple[str, ...], set[str] | None],
         declared_adts: dict[tuple[str, ...], frozenset[str]],
-        public_adts: dict[tuple[str, ...], frozenset[str]],
+        checker_programs: Mapping[tuple[str, ...], ast.Program],
+        adt_renames: Mapping[
+            tuple[str, ...], tuple[dict[str, str], dict[str, str]]],
     ) -> dict[tuple[str, ...] | None, frozenset[str]]:
         """Which ADT names are data types in each namespace (#1253).
 
         A namespace holds its OWN declarations, whatever their visibility,
         plus what it IMPORTS — public only, and only the names an explicit
         import list mentions.  That is the checker's view of every module,
-        rebuilt here from the same declarations codegen already harvested, so
-        an unimported (or private) sibling's ADT is as opaque on this side as
-        it is on the checker's.
+        and it is asked of the ONE derivation the checker's module
+        registration and each module's registrar read
+        (:func:`vera.module_view.imported_data_types`, #1493), so the
+        namespace a module's signatures are measured in and the one its
+        bodies are compiled in are the same namespace.  An unimported (or
+        private) sibling's ADT is as opaque on this side as on the checker's.
 
-        Keyed by module path, with ``None`` for the entry program.  Built-ins
-        are NOT included: they belong to every namespace and are added by the
-        reader (`_adt_members_in_scope`), so a namespace's entry stays a
-        statement about source declarations.
+        The derivation reads the programs as the checker saw them, and each
+        imported name is then spelled through that namespace's own #1317
+        renames: the rename rewrites a contended type's references but not
+        the import lists that name it, so filtering the rewritten
+        declarations by the bare list left a module that imports a renamed
+        type — and returns it — without it, and dropped the module's body.
+
+        Keyed by module path, with ``None`` for the entry program, which is
+        never renamed.  Built-ins are NOT included: they belong to every
+        namespace and are added by the reader (`_adt_members_in_scope`), so
+        a namespace's entry stays a statement about source declarations.
 
         Imports are read per namespace, never inherited: §8.6.4 visibility is
         the importer's property, so a module reached transitively from here is
@@ -913,32 +1014,26 @@ class CrossModuleMixin:
         THAT module's import list allows.
         """
 
-        def visible(
-            own: frozenset[str],
-            imports: dict[tuple[str, ...], set[str] | None],
+        def imported(
+            ns_program: ast.Program, renames: Mapping[str, str],
         ) -> frozenset[str]:
-            names = set(own)
-            for dep_path, name_filter in imports.items():
-                exported = public_adts.get(dep_path)
-                if exported is None:
-                    continue
-                names |= {
-                    n for n in exported
-                    if name_filter is None or n in name_filter
-                }
-            return frozenset(names)
+            return frozenset(
+                renames.get(name, name)
+                for name in imported_data_types(ns_program, checker_programs)
+            )
 
         main_own = frozenset(
             tld.decl.name for tld in program.declarations
             if isinstance(tld.decl, ast.DataDecl)
         )
         members: dict[tuple[str, ...] | None, frozenset[str]] = {
-            None: visible(main_own, import_names),
+            None: main_own | imported(program, {}),
         }
         for mod in self._resolved_modules:
-            own_imports = merged_import_filters(mod.program.imports)
-            members[mod.path] = visible(
-                declared_adts.get(mod.path, frozenset()), own_imports,
+            members[mod.path] = (
+                declared_adts.get(mod.path, frozenset())
+                | imported(checker_programs[mod.path],
+                           adt_renames.get(mod.path, ({}, {}))[0])
             )
         # Every ADT some namespace DECLARES.  `_adt_members_in_scope`
         # subtracts this from the registered layouts to recover the global
@@ -1830,8 +1925,6 @@ class CrossModuleMixin:
         ``ModuleCall`` resolved by the desugar; the verifier a name-renamed
         ``FnCall`` keyed to the same ``mod$…`` discovery base).
         """
-        from vera.monomorphize import reroute_module_qualified_generic_calls
-
         return reroute_module_qualified_generic_calls(
             decl, qualified_targets,
             lambda call, args: ast.ModuleCall(
@@ -1839,6 +1932,21 @@ class CrossModuleMixin:
                 args=args, span=call.span,
             ),
         )
+
+    @staticmethod
+    def _reroute_displaced_calls(
+        decl: ast.FnDecl, symbols: dict[str, str],
+    ) -> ast.FnDecl:
+        """*decl* with each bare call to a displaced module function renamed
+        to its symbol (*symbols*, from :func:`vera.monomorphize
+        .displaced_module_fns`), shadow-aware like the generic reroute."""
+        def rename(
+            call: ast.FnCall, args: tuple[ast.Expr, ...],
+        ) -> ast.Node:
+            return ast.FnCall(
+                name=symbols[call.name], args=args, span=call.span)
+
+        return reroute_module_qualified_generic_calls(decl, symbols, rename)
 
     @staticmethod
     def _module_qualified_wasm_name(
@@ -1851,7 +1959,7 @@ class CrossModuleMixin:
         result can never collide with a user function name — mirroring the
         monomorphizer's ``name$TypeArg`` mangling convention.
         """
-        return "mod$" + "$".join(path) + "$" + name
+        return module_qualified_symbol(path, name)
 
     # -----------------------------------------------------------------
     # Name collision diagnostics

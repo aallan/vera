@@ -395,7 +395,7 @@ public fn main(@Unit -> @Int)
   } in {
     stash(());
     match get(()) {
-      Some(@Fn) -> 5,
+      Some(@fn(Int -> Int) effects(pure)) -> 5,
       None -> 0 - 1
     }
   }
