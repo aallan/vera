@@ -19,7 +19,7 @@ public fn safe_divide(@Int, @Int -> @Int)
 }
 ```
 
-There are no variable names. `@Int.0` is the most recent `Int` binding; `@Int.1` is the one before. The `requires` clause is a precondition `vera verify` checks at every call site. The `ensures` clause is a postcondition the SMT solver proves statically. The function is `pure` — no side effects of any kind. If a contract is wrong, `vera verify` refuses the program with a counterexample; a contract the solver can't decide becomes a runtime check. The compiled program checks its contracts at run time as well, so a proof that is wrong traps instead of returning a wrong answer.
+There are no variable names. `@Int.0` is the most recent `Int` binding; `@Int.1` is the one before. The `requires` clause is a precondition `vera verify` checks at every call site. The `ensures` clause is a postcondition the SMT solver proves statically. The function is `pure` — no side effects of any kind. If a contract is wrong, `vera verify` refuses the program with a counterexample; a contract the solver can't decide becomes a runtime check. The compiled program checks its contracts at run time wherever code generation can express them, so a proof that is wrong traps instead of returning a wrong answer; a contract it cannot express, such as a quantified `ensures`, is reported as a runtime check but is not compiled into one ([#1607](https://github.com/aallan/vera/issues/1607)).
 
 ## Why?
 
@@ -258,7 +258,7 @@ cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md
 
 **Other models** — include `SKILL.md` in the system prompt, as a file attachment, or as a retrieval document. The file is self-contained and works with any model that can read markdown.
 
-Every Vera example in `SKILL.md`, this README, the FAQ, `EXAMPLES.md`, the spec and the website is checked, verified and, where it names an expected output, run in CI, so an agent learns from code that passes the toolchain.
+Every Vera example in `SKILL.md`, this README, the FAQ, `EXAMPLES.md`, the spec and the website is checked, verified and, where it names an expected output, run in CI, or carries a marker that says why it is not (a fragment, or a deliberate mistake), so an agent learns from code that passes the toolchain.
 
 **Essential rules** for writing Vera code:
 
@@ -270,7 +270,7 @@ Every Vera example in `SKILL.md`, this README, the FAQ, `EXAMPLES.md`, the spec 
 
 ## Project status
 
-Vera is in **active development** at v0.2.0: 3,000+ commits, 212 releases, 26,601 tests, 95% Python code coverage, 256 conformance programs, 43 examples, and a 14-chapter specification. Known bugs and limitations are tracked in **[KNOWN_ISSUES.md](KNOWN_ISSUES.md)**. See **[HISTORY.md](HISTORY.md)** for how the compiler was built.
+Vera is in **active development** at v0.2.0: 3,000+ commits, 212 releases, 26,605 tests, 95% Python code coverage, 256 conformance programs, 43 examples, and a 14-chapter specification. Known bugs and limitations are tracked in **[KNOWN_ISSUES.md](KNOWN_ISSUES.md)**. See **[HISTORY.md](HISTORY.md)** for how the compiler was built.
 
 The reference compiler — parser, AST, type checker, contract verifier (Z3), WASM code generator, module system, browser runtime, and runtime contract insertion — is working. The language specification is in draft across [14 chapters](spec/).
 

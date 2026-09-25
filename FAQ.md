@@ -75,7 +75,7 @@ This layer does cover actual correctness properties, not just interface compatib
 
 **Layer 3: Agent documentation and human intent (expressive, unverified).** The contracts themselves are unverified with respect to user intent. Nothing in the pipeline checks whether `ensures(@Int.result >= 0)` is actually what you wanted the function to do. The contract could be a perfectly verified implementation of the wrong specification. This is where SKILL.md lives — it steers the model toward writing contracts that capture reasonable intent, but "reasonable" has no formal backing.
 
-So: provably correct relative to stated requirements, yes, where Tier 1 proves them — the open soundness bugs in [KNOWN_ISSUES.md](KNOWN_ISSUES.md) are the known exceptions, and the compiled program checks its contracts at run time as well, so a wrong proof traps rather than returning a wrong answer. Provably correct relative to unstated intent, no — but the auditable surface is deliberately as small as possible. The human reviews contracts, not implementations.
+So: provably correct relative to stated requirements, yes, where Tier 1 proves them — the open soundness bugs in [KNOWN_ISSUES.md](KNOWN_ISSUES.md) are the known exceptions, and the compiled program checks its contracts at run time wherever code generation can express them, so a wrong proof traps rather than returning a wrong answer (a contract it cannot express, such as a quantified `ensures`, is not compiled into a check: [#1607](https://github.com/aallan/vera/issues/1607)). Provably correct relative to unstated intent, no — but the auditable surface is deliberately as small as possible. The human reviews contracts, not implementations.
 
 
 ## Is SQL injection really a compile-time error?
@@ -280,7 +280,7 @@ The reference compiler is under active development. The current release includes
 
 - A seven-stage pipeline: parse, transform, resolve, typecheck, verify, compile, execute
 - A 14-chapter formal specification
-- 26,601 tests, including a 256-program conformance suite
+- 26,605 tests, including a 256-program conformance suite
 - 43 working example programs
 - 164 built-in functions covering strings, arrays, math, parsing, and data types
 - Four built-in abilities (Eq, Ord, Hash, Show) with constrained generics and ADT auto-derivation

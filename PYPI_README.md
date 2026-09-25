@@ -3,8 +3,10 @@
 Vera is a programming language designed for large language models to write. It
 has mandatory contracts, algebraic effects, typed slot references instead of
 variable names, and a compiler that emits WebAssembly. Contracts are verified
-statically with Z3 where possible; a contract the solver can't decide is checked
-at run time, and the compiled program checks its contracts at run time as well.
+statically with Z3 where possible, and the compiled program also checks its
+contracts at run time wherever code generation can express them. A contract it
+cannot express, such as a quantified `ensures`, is reported as a runtime check
+but is not compiled into one ([#1607](https://github.com/aallan/vera/issues/1607)).
 Recursion must be shown to terminate (`decreases`) or declare that it may not
 (`Diverge`), every runtime trap names its cause, and SQL injection is a
 compile-time error.

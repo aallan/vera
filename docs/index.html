@@ -276,7 +276,7 @@
       <p>Programming languages have always co-evolved with their users. Assembly emerged from hardware constraints. C from operating systems. Python from productivity needs. If models become the primary authors of code, it follows that languages should adapt to that too.</p>
       <p class="thesis">The biggest problem models face isn't syntax &mdash; it's coherence over scale. Models are pattern matchers optimising for local plausibility, not architects holding the entire system in mind.</p>
       <p>The <a href="https://arxiv.org/abs/2307.12488">empirical literature</a> shows models are particularly vulnerable to naming-related errors: choosing misleading names, reusing names incorrectly, and losing track of which name refers to which value. Vera addresses this by making everything explicit and verifiable.</p>
-      <p>The model doesn't need to be right. It needs to be <em>checkable</em>. Names are replaced by structural references. Contracts are mandatory. Effects are typed. Every function is a specification the compiler checks against its implementation: proving what it can, guarding most of the rest at run time, and saying which it can do neither for.</p>
+      <p>The model doesn't need to be right. It needs to be <em>checkable</em>. Names are replaced by structural references. Contracts are mandatory. Effects are typed. Every function is a specification the compiler checks against its implementation: proving what it can, guarding most of the rest at run time, and saying which it can do neither for — bar one known gap, a contract recorded as guarded that is not (<a href="https://github.com/aallan/vera/issues/1607">#1607</a>).</p>
       <img src="loop-web.svg" alt="The loop: the model writes Vera with mandatory contracts; the compiler type-checks every program, proves supported contract obligations via Z3, guards most of the rest at runtime, and discloses what it can neither prove nor guard; when it's wrong the diagnostics return — description, rationale, fix, spec_ref — and when the proofs hold it ships as one .wasm for CLI and browser, or a WASI component." width="828" height="188" loading="lazy" style="width:100%;max-width:860px;height:auto;display:block;margin:2.25rem auto">
       <p style="margin-top:1.5rem">For deeper questions about the design &mdash; why no variable names, what gets verified, how Vera compares to Dafny, Lean, and Koka &mdash; see the <a href="https://github.com/aallan/vera/blob/main/FAQ.md">FAQ</a>.</p>
     </div>
@@ -287,7 +287,7 @@
     <div class="col col-wide">
       <div class="eyebrow"><span class="slot">@section.02</span> · the syntax is the argument</div>
       <h2>What Vera Looks Like</h2>
-      <p class="lead">Nothing is implicit. The signature declares types, preconditions, postconditions, and effects. <code>vera verify</code> proves the contract with an SMT solver where it can, and the compiled program checks it at run time as well. A zero divisor the verifier can witness is refused (<code>E526</code>), not left to a runtime crash.</p>
+      <p class="lead">Nothing is implicit. The signature declares types, preconditions, postconditions, and effects. <code>vera verify</code> proves the contract with an SMT solver where it can, and the compiled program checks it at run time as well, wherever code generation can express it (<a href="https://github.com/aallan/vera/issues/1607">#1607</a>). A zero divisor the verifier can witness is refused (<code>E526</code>), not left to a runtime crash.</p>
 
       <div class="sample">
         <div class="code">
@@ -677,7 +677,7 @@ vera compile --target browser examples/hello_world.vera</pre>
 <pre>mkdir -p ~/.claude/skills/vera-language
 cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md</pre>
       </div>
-      <p>For other models: point them at <a href="/SKILL.md">SKILL.md</a> via system prompt, file attachment, or retrieval. It's self-contained and works with any model that reads markdown. Every Vera example in it, and on this page, is checked, verified and, where it names an expected output, run in CI.</p>
+      <p>For other models: point them at <a href="/SKILL.md">SKILL.md</a> via system prompt, file attachment, or retrieval. It's self-contained and works with any model that reads markdown. Every Vera example in it, and on this page, is checked, verified and, where it names an expected output, run in CI, or carries a marker that says why it is not.</p>
 
       <p style="margin-top:2rem">The documents above are how machines <em>read</em> Vera. The <a href="https://github.com/aallan/vera/blob/main/LSP_SERVER.md">language server</a> is how they <em>interrogate</em> it: <code>vera lsp</code> holds a warm, incremental Z3 session between edits, and four custom methods &mdash; <code>vera/speculativeEdit</code>, <code>vera/proposeEdit</code>, <code>vera/strengthenContract</code>, <code>vera/addEffect</code> &mdash; let an agent learn whether an edit <em>keeps</em>, <em>breaks</em>, or <em>strengthens</em> a program's proofs before committing it, then apply it only through the verification gate.</p>
       <div class="code-block">

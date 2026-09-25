@@ -3240,3 +3240,80 @@ class TestReleaseModeFor:
         repo, _ = _repo_with_versions(tmp_path, "0.1.13", "0.2.0")
         monkeypatch.setenv("GIT_DIR", str(tmp_path / "elsewhere" / ".git"))
         assert _MOD.release_mode_for("main", repo)[0] is True
+
+
+class TestMainActsOnTheReleaseModeAnswer:
+    """`main()` wires `--release-if-version-raised` to the checks: the
+    helper's answer must reach `check_all` as `args.release`, and a base
+    the helper cannot read must fail the script, not only the helper.
+    `release_mode_for`, `gather` and `check_all` are stubbed, so the cells
+    measure the wiring alone."""
+
+    def _run_main(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        argv: list[str],
+        answer: tuple[bool, str] | Exception,
+    ) -> tuple[int, list[bool]]:
+        import types
+
+        seen: list[bool] = []
+
+        def mode(base: str, root: Path) -> tuple[bool, str]:
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        def check_all(root: Path, live: Any, args: Any) -> list[str]:
+            seen.append(args.release)
+            return []
+
+        live = types.SimpleNamespace(
+            total_tests=1, test_files=[], manifest=[], examples=0, hooks=0,
+            ci_jobs=0,
+        )
+        monkeypatch.setattr(_MOD, "release_mode_for", mode)
+        monkeypatch.setattr(_MOD, "gather", lambda root: live)
+        monkeypatch.setattr(_MOD, "check_all", check_all)
+        monkeypatch.setattr(sys, "argv", ["check_doc_counts.py", *argv])
+        return _MOD.main(), seen
+
+    def test_a_raised_version_turns_release_mode_on(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        code, seen = self._run_main(
+            monkeypatch, ["--release-if-version-raised", "main"],
+            (True, "0.1.13 -> 0.2.0"),
+        )
+        assert code == 0
+        assert seen == [True]
+
+    def test_an_unraised_version_leaves_it_off(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        code, seen = self._run_main(
+            monkeypatch, ["--release-if-version-raised", "main"],
+            (False, "0.2.0 -> 0.2.0"),
+        )
+        assert code == 0
+        assert seen == [False]
+
+    def test_an_explicit_release_flag_is_not_turned_off(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        code, seen = self._run_main(
+            monkeypatch, ["--release", "--release-if-version-raised", "main"],
+            (False, "0.2.0 -> 0.2.0"),
+        )
+        assert code == 0
+        assert seen == [True]
+
+    def test_an_unreadable_base_exits_one_before_any_check(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        code, seen = self._run_main(
+            monkeypatch, ["--release-if-version-raised", "no-such-ref"],
+            _MOD.ReleaseModeError("cannot read pyproject.toml"),
+        )
+        assert code == 1
+        assert seen == []

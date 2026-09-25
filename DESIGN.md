@@ -53,7 +53,7 @@ Vera's contracts are checked in two implemented tiers, applied at every call sit
 
 **Tier 1 — Z3 static (decidable fragment).** The compiler generates a verification condition and sends it to Z3. If Z3 returns `unsat`, the contract is proved for all inputs. This covers linear integer and real arithmetic, boolean logic, strings, ADT constructor discrimination and fields, array lengths and literals, and refinement predicates (spec §6.8).
 
-**Tier 3 — Runtime fallback.** If Z3 returns `unknown` or times out, the contract is compiled as a runtime check in the WASM binary. A violation traps on entry to the function (a `requires`) or on its return (an `ensures`), naming the contract. The few sites that can be neither proved nor guarded are disclosed as warnings (`E504`, `E506`, `E531`, `E537`) and counted in neither tier.
+**Tier 3 — Runtime fallback.** If Z3 returns `unknown` or times out, the contract is compiled as a runtime check in the WASM binary, wherever code generation can express it ([#1607](https://github.com/aallan/vera/issues/1607) is a contract it cannot). A violation traps on entry to the function (a `requires`) or on its return (an `ensures`), naming the contract. The few sites that can be neither proved nor guarded are disclosed as warnings (`E504`, `E506`, `E531`, `E537`) and counted in neither tier.
 
 `vera verify --json` reports the tier breakdown:
 
@@ -61,7 +61,7 @@ Vera's contracts are checked in two implemented tiers, applied at every call sit
 {"verification": {"tier1_verified": 12, "tier3_runtime": 1, "total": 13, "assumptions": 0, "timeout_ms": 10000}}
 ```
 
-A fully Tier 1–verified program has the strongest guarantee: its contracts hold for all inputs, apart from the open soundness bugs listed in [KNOWN_ISSUES.md](KNOWN_ISSUES.md). The compiled program also checks its contracts at run time, so a wrong proof traps rather than returning a wrong answer. See [spec/06-contracts.md](spec/06-contracts.md) for the formal treatment.
+A fully Tier 1–verified program has the strongest guarantee: its contracts hold for all inputs, apart from the open soundness bugs listed in [KNOWN_ISSUES.md](KNOWN_ISSUES.md). The compiled program also checks its contracts at run time wherever code generation can express them, so a wrong proof traps rather than returning a wrong answer; a contract it cannot express, such as a quantified `ensures`, is not compiled into a check ([#1607](https://github.com/aallan/vera/issues/1607)). See [spec/06-contracts.md](spec/06-contracts.md) for the formal treatment.
 
 **Tier 2 — Z3 guided (extended fragment)** is specified in [spec/06-contracts.md §6.3.2](spec/06-contracts.md) but not yet implemented in the reference compiler. The spec describes it adding hints from `assert` statements and lemma functions to cover function calls, quantifiers, and array properties.
 

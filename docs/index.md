@@ -14,7 +14,7 @@ Programming languages have always co-evolved with their users. Assembly emerged 
 
 The [empirical literature](https://arxiv.org/abs/2307.12488) shows models are particularly vulnerable to naming-related errors: choosing misleading names, reusing names incorrectly, and losing track of which name refers to which value. Vera addresses this by making everything explicit and verifiable.
 
-The model doesn't need to be right. It needs to be *checkable*. Names are replaced by structural references. Contracts are mandatory. Effects are typed. Every function is a specification the compiler checks against its implementation: proving what it can, guarding most of the rest at run time, and saying which it can do neither for.
+The model doesn't need to be right. It needs to be *checkable*. Names are replaced by structural references. Contracts are mandatory. Effects are typed. Every function is a specification the compiler checks against its implementation: proving what it can, guarding most of the rest at run time, and saying which it can do neither for — bar one known gap, a contract recorded as guarded that is not ([#1607](https://github.com/aallan/vera/issues/1607)).
 
 ![The loop: the model writes Vera with mandatory contracts; the compiler type-checks every program, proves supported contract obligations via Z3, guards most of the rest at runtime, and discloses what it can neither prove nor guard; when it's wrong the diagnostics return — description, rationale, fix, spec_ref — and when the proofs hold it ships as one .wasm for CLI and browser, or a WASI component.](https://veralang.dev/loop-web.svg)
 
@@ -22,7 +22,7 @@ For deeper questions about the design — why no variable names, what gets verif
 
 ## What Vera Looks Like
 
-Nothing is implicit. The signature declares types, preconditions, postconditions, and effects. `vera verify` proves the contract with an SMT solver where it can, and the compiled program checks it at run time as well. A zero divisor the verifier can witness is refused (`E526`), not left to a runtime crash.
+Nothing is implicit. The signature declares types, preconditions, postconditions, and effects. `vera verify` proves the contract with an SMT solver where it can, and the compiled program checks it at run time as well, wherever code generation can express it ([#1607](https://github.com/aallan/vera/issues/1607)). A zero divisor the verifier can witness is refused (`E526`), not left to a runtime crash.
 
 <!-- vera:run fn="safe_divide" args="2 10" stdout="5" -->
 ```vera
@@ -290,7 +290,7 @@ mkdir -p ~/.claude/skills/vera-language
 cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md
 ```
 
-For other models: point them at [`SKILL.md`](https://veralang.dev/SKILL.md) via system prompt, file attachment, or retrieval. It's self-contained and works with any model that reads markdown. Every Vera example in it, and on this page, is checked, verified and, where it names an expected output, run in CI.
+For other models: point them at [`SKILL.md`](https://veralang.dev/SKILL.md) via system prompt, file attachment, or retrieval. It's self-contained and works with any model that reads markdown. Every Vera example in it, and on this page, is checked, verified and, where it names an expected output, run in CI, or carries a marker that says why it is not.
 
 The documents above are how machines *read* Vera. The [language server](https://raw.githubusercontent.com/aallan/vera/main/LSP_SERVER.md) is how they *interrogate* it: `vera lsp` holds a warm, incremental Z3 session between edits, and four custom methods — `vera/speculativeEdit`, `vera/proposeEdit`, `vera/strengthenContract`, `vera/addEffect` — let an agent learn whether an edit *keeps*, *breaks*, or *strengthens* a program's proofs before committing it, then apply it only through the verification gate.
 
