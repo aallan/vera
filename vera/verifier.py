@@ -152,6 +152,16 @@ _PLACEHOLDER_NARROWING_REASON = (
     "countermodel names no value the program can produce"
 )
 
+#: Its refinement twin: the E506 / `tier3` reason of a refinement narrowing
+#: refuted only over a placeholder, at a projected sub-pattern bind and at a
+#: payload a call argument's type refines (#1480 review).
+_PLACEHOLDER_REFINEMENT_REASON = (
+    "the value being narrowed is, or embeds, a placeholder for a `let`, "
+    "destructure or `match` binder the SMT layer could not translate, and "
+    "the predicate holds for some value that placeholder could take, so the "
+    "countermodel names no value the program can produce"
+)
+
 _OPAQUE_SCRUTINEE_REASON = (
     "the matched value is opaque to the SMT layer, so its field could not be "
     "projected and the predicate was never given a value to reason about"
@@ -3933,7 +3943,7 @@ class ContractVerifier:
         # the predicate has its precondition checked as the SMT layer
         # translates it, against what the solver holds.
         for fact in facts:
-            smt.solver.add(fact)
+            smt.assume(fact)
         slot_env = SlotEnv()
         if base_key is not None:
             slot_env = slot_env.push(base_key, binder)
@@ -4659,7 +4669,7 @@ class ContractVerifier:
         # 4. Assert caller assumptions into solver so _translate_call
         #    can see them during body translation.
         for a in assumptions:
-            smt.solver.add(a)
+            smt.assume(a)
 
         # 4b. #1451: SNAPSHOT the author's premises.  The solver now holds
         #     exactly what the author wrote — the parameters' type constraints
@@ -6414,12 +6424,17 @@ class ContractVerifier:
                 None, (),
             )
         condition = smt._pattern_condition(scrutinee_z3, pattern)
+        # A walk reads an arm's binders only inside the arm, where the arm's
+        # own condition and the walk's path are premises of every query, so
+        # the fact's antecedent is the arm's scope.  The translation's twin
+        # (`SmtContext._arm_guarded_binders`) needs more: its binders can
+        # outlive the arm inside the `match`'s own value.
+        reach = smt.reach_conditions()
         bound = smt._bind_pattern(
             scrutinee_z3, pattern, env,
-            self._guarded_binder_values(
+            None if reach is None else self._guarded_binder_values(
                 scrutinee, scrutinee_z3, pattern, smt,
-                [*smt._path_conditions,
-                 *([condition] if condition is not None else [])]))
+                [*reach, *([condition] if condition is not None else [])]))
         if bound is None:
             # The scrutinee translated but the pattern cannot be bound to
             # it: its ADT has no SMT sort (a `Map` field, say), so the value
@@ -10603,6 +10618,9 @@ class ContractVerifier:
                 return
             smt.assume_of_value(
                 fresh, z3.Implies(guard, z3.And(fresh == term, *facts)))
+            # An assumption that reads the fresh value is stated over the
+            # projection instead (`SmtContext.assume`).
+            smt.record_guarded_value(fresh, term)
             if smt.term_is_disclosed(term):
                 # The fresh value IS the projection's value, so it carries
                 # the projection's disclosure (#1406, `_inherit_disclosure`'s
@@ -12135,6 +12153,16 @@ class ContractVerifier:
             source_facts, source=value_node, term=val, smt=smt))
         goal = z3.And(*goal_facts) if len(goal_facts) > 1 else goal_facts[0]
         result = smt.check_valid(goal, premises)
+        if self._refuted_only_over_a_placeholder(
+                smt, val, z3.Not(goal), result, premises):
+            # As at every narrowing (#1480 review): a payload refuted only
+            # over a placeholder names no value the program produces.
+            self._record_refined_bind_tier3(
+                decl, value_node, site, guarded=guarded,
+                reason=_PLACEHOLDER_REFINEMENT_REASON,
+                guard_note=_NESTED_SITE_GUARD_NOTE,
+            )
+            return
         if result.status == "verified" and complete:
             self._record_obligation(
                 decl.name, "refine_bind", value_node, "verified")
@@ -12698,7 +12726,7 @@ class ContractVerifier:
                 if z3_pre is not None:
                     assumptions.append(z3_pre)
         for a in assumptions:
-            smt.solver.add(a)
+            smt.assume(a)
 
         body_expr = smt.translate_expr(decl.body, slot_env)
         goal = (
@@ -12785,6 +12813,16 @@ class ContractVerifier:
                 local_assumptions.extend(self._established_facts(
                     [src_fact], source=node, term=term, smt=smt))
         result = smt.check_valid(goal, local_assumptions)
+        if self._refuted_only_over_a_placeholder(
+                smt, term, z3.Not(goal), result, local_assumptions):
+            # The `@Nat` twin's gate (#1480 review): a sub-pattern bind over
+            # a `match` binder whose scrutinee does not translate was E505
+            # in a `requires` on a program that runs, where its guard traps
+            # on a violating payload.
+            self._record_refined_bind_tier3(
+                decl, node, site, refined_ty=refined_ty,
+                reason=_PLACEHOLDER_REFINEMENT_REASON)
+            return
         if result.status == "verified":
             self._record_obligation(decl.name, "refine_bind", node, "verified")
         elif result.status == "violated":

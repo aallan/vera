@@ -441,6 +441,16 @@ def _same_call_site(a: ast.Node, b: ast.Node) -> bool:
     return a is b
 
 
+def _pattern_condition_exact(pattern: ast.Pattern) -> bool:
+    """Whether `SmtContext._pattern_condition` holds of exactly the values
+    *pattern* matches.  A constructor pattern's condition is its outer
+    recognizer alone, so one with a refutable sub-pattern (`Some(None)`,
+    `Some(3)`) over-approximates what it matches (#1562)."""
+    return not isinstance(pattern, ast.ConstructorPattern) or all(
+        isinstance(sub, (ast.BindingPattern, ast.WildcardPattern))
+        for sub in pattern.sub_patterns)
+
+
 def _sorts_agree(a: z3.ExprRef, b: z3.ExprRef) -> bool:
     """Whether two terms share a Z3 sort, so an ``If`` can join them (#1360)."""
     try:
@@ -659,6 +669,26 @@ class SmtContext:
         # pairs that value with the predicate over it, and a refutation reads
         # the predicate wherever the value occurs (`_check_refutation`).
         self._value_facts: list[tuple[z3.ExprRef, z3.ExprRef]] = []
+        # #1480 review: each guarded arm binder's fresh value, paired with the
+        # projection it stands for (`record_guarded_value`).  An assumption
+        # the solver holds is stated over the projections (`assume`), as it
+        # is where no binder is fresh: a fresh value's fact reaches only a
+        # query that reads it, so an assumption over the fresh value said
+        # nothing about the projection — a callee's `ensures` and the
+        # function's own `requires` lost what they state about a payload.
+        self._guarded_values: list[tuple[z3.ExprRef, z3.ExprRef]] = []
+        # #1480 review: what `_path_conditions` lacks for an UNDER-
+        # approximation of the point the translation has reached, one entry
+        # per branch the translation entered where it lacks something.  A
+        # `match` arm's own condition is pushed without the negation of the
+        # earlier arms' (and a nested pattern's is its outer constructor
+        # alone, #1562), so the path conditions over-approximate where an arm
+        # runs: right for a premise, wrong for the antecedent of a fact about
+        # what the arm's bind established.  An entry is the missing
+        # conjunct, or None where no under-approximation exists: an arm whose
+        # own condition is inexact.  A default arm's path already holds the
+        # negation of every earlier arm's.  Read by `_arm_guarded_binders`.
+        self._reach_extras: list[z3.ExprRef | None] = []
         # #1480 review: whether a call-site precondition refuted over an
         # opaque value (#1199) is a violation.  True only while the verifier
         # translates a function BODY (`strict_preconditions`): the position
@@ -788,7 +818,7 @@ class SmtContext:
         """Declare a Z3 integer variable constrained >= 0 (for Nat)."""
         v = z3.Int(name)
         self._vars[name] = v
-        self.solver.add(v >= 0)
+        self.assume(v >= 0)
         return v
 
     def declare_string(self, name: str) -> z3.SeqRef:
@@ -1685,7 +1715,7 @@ class SmtContext:
         premise is foreign to it, which is the fail-closed answer rather than
         the convenient one.
         """
-        self.solver.add(axiom)
+        self.assume(axiom)
         self._quantified_axioms[axiom.get_id()] = QuantifiedAxiom(
             kind=kind, symbol=symbol,
         )
@@ -2308,11 +2338,11 @@ class SmtContext:
         self._vars[lit_name] = lit_const
         # Length axiom: `length(lit) == N`.
         length_fn = self._get_length_fn(array_sort)
-        self.solver.add(length_fn(lit_const) == len(expr.elements))
+        self.assume(length_fn(lit_const) == len(expr.elements))
         # Per-element axioms: `index(lit, i) == element_i`.
         index_fn = self._get_index_fn(array_sort, element_sort)
         for i, elt in enumerate(element_z3s):
-            self.solver.add(index_fn(lit_const, z3.IntVal(i)) == elt)
+            self.assume(index_fn(lit_const, z3.IntVal(i)) == elt)
         # #1418 review F1: the literal's own constant is a STAND-IN — an
         # element's term is related to it only by the axioms above, which the
         # occurrence walk cannot see — so a disclosed element must be
@@ -2522,7 +2552,7 @@ class SmtContext:
             if arg is not None:
                 length_fn = self._get_length_fn(arg.sort())
                 result = length_fn(arg)
-                self.solver.add(result >= 0)
+                self.assume(result >= 0)
                 return result
             return None  # pragma: no cover
 
@@ -2534,7 +2564,7 @@ class SmtContext:
                     "map_size", arg.sort(), z3.IntSort(),
                 )
                 result = size_fn(arg)
-                self.solver.add(result >= 0)
+                self.assume(result >= 0)
                 return result
             return None  # pragma: no cover
 
@@ -2550,7 +2580,7 @@ class SmtContext:
                     "set_size", arg.sort(), z3.IntSort(),
                 )
                 result = size_fn(arg)
-                self.solver.add(result >= 0)
+                self.assume(result >= 0)
                 return result
             return None  # pragma: no cover
 
@@ -3363,7 +3393,7 @@ class SmtContext:
             with self._callee_contract_scope(callee_info):
                 z3_post = self.translate_expr(contract.expr, callee_env)
             if z3_post is not None:
-                self.solver.add(self._guard_fact(z3_post))
+                self.assume(self._guard_fact(z3_post))
         self._result_var = saved_result
 
         # #746: a refined return type is an implicit postcondition — assume
@@ -3425,7 +3455,7 @@ class SmtContext:
                         inner_env = inner_env.push(binder, ret_var)
                     z3_pred = self.translate_expr(predicate, inner_env)
                     if z3_pred is not None:
-                        self.solver.add(self._guard_fact(z3_pred))
+                        self.assume(self._guard_fact(z3_pred))
                     # An untranslatable level is DROPPED here, where
                     # `_translate_refined_predicate` returns None for the same
                     # case.  The directions are opposite on purpose: there the
@@ -3753,10 +3783,10 @@ class SmtContext:
             # precondition checks that read `_path_conditions` live (CR
             # PR-review).  Empty preceding ⇒ irrefutable arm ⇒ unconditional.
             if preceding_conds:
-                self.solver.add(z3.Implies(
+                self.assume(z3.Implies(
                     z3.And(*[z3.Not(pc) for pc in preceding_conds]), f))
             else:
-                self.solver.add(f)
+                self.assume(f)
         result = self.translate_expr(arms[-1].body, last_env)
         for _ in last_facts:
             self._path_conditions.pop()
@@ -3779,6 +3809,10 @@ class SmtContext:
                 return None
 
             self._path_conditions.append(cond)
+            # The arm runs only if no earlier arm matched, which the path
+            # does not say; and a nested pattern's condition is its outer
+            # constructor alone (#1562), so nothing under-approximates it.
+            self._reach_extras.append(self._arm_reach(arm.pattern, conds, index))
             arm_facts = self._arm_source_facts(
                 expr.scrutinee, scrutinee, arm.pattern)
             for f in arm_facts:
@@ -3786,11 +3820,12 @@ class SmtContext:
                 # note) so the refined-return goal sees it after the path
                 # conditions pop, while the live `_path_conditions` push covers
                 # in-arm precondition checks.
-                self.solver.add(z3.Implies(cond, f))
+                self.assume(z3.Implies(cond, f))
                 self._path_conditions.append(f)
             arm_body = self.translate_expr(arm.body, arm_env)
             for _ in arm_facts:
                 self._path_conditions.pop()
+            self._reach_extras.pop()
             self._path_conditions.pop()
 
             if arm_body is None:  # pragma: no cover
@@ -3821,16 +3856,81 @@ class SmtContext:
         if self._guarded_binder_hook is None:
             return None
         pattern = expr.arms[index].pattern
-        if isinstance(pattern, ast.ConstructorPattern) and not all(
-                isinstance(sub, (ast.BindingPattern, ast.WildcardPattern))
-                for sub in pattern.sub_patterns):
+        if not _pattern_condition_exact(pattern):
             return None
-        taken = [*self._path_conditions,
-                 *(z3.Not(c) for c in conds[:index] if c is not None)]
+        # Under the enclosing branches the TRANSLATION entered as well: a
+        # fact about the payload that held wherever an enclosing arm's
+        # condition does, rather than where that arm runs, put `P` on the
+        # payload on runs where an earlier enclosing arm returned it (#1480
+        # review).  The path conditions and `_reach_extras` together
+        # under-approximate the point reached; where no under-approximation
+        # exists, the binder is left the projection, with no fact.
+        reach = self.reach_conditions()
+        if reach is None:
+            return None
+        taken = [*reach, *(z3.Not(c) for c in conds[:index] if c is not None)]
         if conds[index] is not None:
             taken.append(conds[index])
         return cast("dict[int, z3.ExprRef]", self._guarded_binder_hook(
             expr.scrutinee, scrutinee, expr.arms[index].pattern, self, taken))
+
+    def _arm_reach(
+        self, pattern: ast.Pattern, conds: list[z3.ExprRef | None],
+        index: int,
+    ) -> z3.ExprRef | None:
+        """What a non-default arm's pushed condition lacks for an under-
+        approximation of the arm running: no earlier arm matched.  None
+        where there is none, its own condition being inexact."""
+        if not _pattern_condition_exact(pattern):
+            return None
+        return z3.And(*[z3.Not(c) for c in conds[:index] if c is not None])
+
+    def reach_conditions(self) -> list[z3.ExprRef] | None:
+        """The path conditions and `_reach_extras` together: an under-
+        approximation of the point the translation has reached, or None where
+        a branch it entered has none.  The verifier's own walks push only
+        premises and their arms' own conditions, and a fact read in their
+        scope is read in that scope (#1480 review)."""
+        if any(e is None for e in self._reach_extras):
+            return None
+        return [*self._path_conditions,
+                *(e for e in self._reach_extras if e is not None)]
+
+    def record_guarded_value(
+        self, fresh: z3.ExprRef, projection: z3.ExprRef,
+    ) -> None:
+        """Pair a guarded binder's fresh value with its projection, so an
+        assumption that reads the value is stated over the projection."""
+        self._guarded_values.append((fresh, projection))
+
+    def over_projections(self, term: z3.ExprRef) -> z3.ExprRef:
+        """*term* with every guarded binder's fresh value replaced by the
+        projection it stands for (#1480 review).
+
+        What the term then says is what it says where no binder is fresh.
+        The fresh value's fact (`taken ⟹ fresh == projection ∧ P(fresh)`)
+        reaches only a query that reads it, and an ASSUMPTION is read by
+        every query without being read by any, so one over a fresh value
+        said nothing about the projection: `mk`'s `ensures(match
+        @Option<Int>.result { Some(@Pos) -> @Pos.0 > 5, … })` told its caller
+        nothing about the payload.  Nothing is added beyond what the
+        assumption states: the binder's predicate is not asserted, so no fact
+        outlives the query it was read by."""
+        if not self._guarded_values:
+            return term
+        pairs = {f.get_id(): (f, p) for f, p in self._guarded_values}
+        for _ in range(len(pairs) + 1):
+            found = self._ids_in([term], set(pairs))
+            if not found:
+                return term
+            term = z3.substitute(term, *(pairs[i] for i in found))
+        return term  # pragma: no cover — a projection never embeds itself
+
+    def assume(self, fact: z3.ExprRef) -> None:
+        """Assert *fact* into the solver's base context, stated over the
+        projections of any guarded binder it reads (`over_projections`).
+        Every assertion outside a query's own push/pop goes through here."""
+        self.solver.add(self.over_projections(fact))
 
     def _find_ctor_index(
         self, sort: z3.SortRef, ctor_name: str,
@@ -4780,6 +4880,8 @@ class SmtContext:
         self._path_conditions.clear()
         self._tainted_facts.clear()   # #1363: per-function, must not survive
         self._value_facts.clear()  # #1480 review: per-function placeholders
+        self._guarded_values.clear()  # and the guarded binders' projections
+        self._reach_extras.clear()
         self._disclosed_terms.clear()  # #1406: ditto — see the docstring
         self._disclosed_term_sites.clear()  # and the citations riding on them
         # The statability memo is per FUNCTION, not per process: the answer is

@@ -2352,6 +2352,48 @@ public fn f(@Float64 -> @Int)
 }
 """
 
+# A refinement narrowing of a PROJECTED value: an arm's sub-pattern binder
+# under a `match` whose scrutinee is itself a binder of an arm the verifier
+# cannot translate (the map lookup).  POSITION is where the `match` sits.
+_SUBPATTERN_OVER_A_PLACEHOLDER = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+public fn f(@Option<Int>, @Int -> @Bool)
+  REQUIRES
+  ENSURES
+  effects(pure)
+{
+  BODY
+}
+
+public fn main(@Int -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  f(None, @Int.0)
+}
+"""
+
+_SUBPATTERN_MATCH = """match map_get(map_insert(map_new(), 1, Some(@Int.0)), 1) {
+    Some(@Option<Int>) -> match @Option<Int>.0 {
+      Some(@Pos) -> true,
+      None -> true
+    },
+    None -> true
+  }"""
+
+
+def _subpattern_over_a_placeholder(position: str, match: str) -> str:
+    slots = {"REQUIRES": "requires(true)", "ENSURES": "ensures(true)",
+             "BODY": "true"}
+    slots[position] = (match if position == "BODY"
+                       else f"{position.lower()}({match})")
+    src = _SUBPATTERN_OVER_A_PLACEHOLDER
+    for slot, text in slots.items():
+        src = src.replace(slot, text)
+    return src
+
 
 #: name -> (program, the record's needle and its occurrence, kind, the
 #: records there, the function run, a correct call's arguments and the
@@ -2388,6 +2430,20 @@ _PLACEHOLDER_KINDS = {
     "float truncation, of a computed value": (
         _COMPUTED_FLOOR, ("floor(", 0), "float_to_int_domain", ["tier3"],
         "f", [2.5], (_COMPUTED_FLOOR, [1e300]), "overflow"),
+    # `_check_refined_binding_obligation_term`, the refinement twin of the
+    # `@Nat` narrowing above (#1480 review): E505 in a `requires` and an
+    # `ensures` on programs that run.  In a body too, where the release
+    # branch refused it before this change; one rule for every narrowing.
+    **{
+        f"refinement narrowing of a sub-pattern, in {where}": (
+            _subpattern_over_a_placeholder(slot, _SUBPATTERN_MATCH),
+            ("@Option<Int>.0 {", 0), "refine_bind",
+            ["tier3/E506"], "main", [5],
+            (_subpattern_over_a_placeholder(slot, _SUBPATTERN_MATCH), [-3]),
+            "Refinement violation")
+        for where, slot in (("a requires", "REQUIRES"),
+                            ("an ensures", "ENSURES"), ("a body", "BODY"))
+    },
 }
 
 
@@ -2963,6 +3019,360 @@ def test_an_untaken_arms_refinement_says_nothing(name: str) -> None:
     assert "Postcondition violation" in _run(src, fn, []).trap_message
 
 
+# Where an ENCLOSING `match`'s arm does not run (#1480 review).  The fact is
+# guarded by what under-approximates the arm's bind running: each enclosing
+# arm's own condition AND no earlier arm's, and nothing under an arm whose
+# condition is inexact (a nested pattern's is its outer constructor alone,
+# #1562).  Guarded by the path conditions instead, which hold an enclosing
+# arm's own condition only, each `ensures` below was `verified` and each run
+# fails it: the first arm returns the payload the second arm's `@Pos` binds.
+_ENCLOSING = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+public fn f(@SCRUT, @Int -> @Int)
+  requires(true)
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  let @Option<Int> = apply_fn(fn(@Int -> @Option<Int>) effects(pure) { Some(@Int.0) }, @Int.0);
+  match @SCRUT.0 {
+    FIRST -> match @Option<Int>.0 {
+      Some(@FIRST_T) -> @FIRST_T.0,
+      None -> 1
+    },
+    SECOND -> match @Option<Int>.0 {
+      Some(@SECOND_T) -> @SECOND_T.0,
+      None -> 1
+    },
+    LAST -> 1
+  }
+}
+
+public fn main(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  f(ARG, @Int.0)
+}
+"""
+
+
+def _enclosing(**slots: str) -> str:
+    src = _ENCLOSING
+    for slot in ("SCRUT", "FIRST_T", "SECOND_T", "FIRST", "SECOND", "LAST",
+                 "ARG"):
+        src = src.replace(slot, slots[slot])
+    return src
+
+
+_OO = "Option<Option<Bool>>"
+_ENCLOSING_ARM_CONTROLS = {
+    "an earlier enclosing arm with a nested pattern": _enclosing(
+        SCRUT=_OO, FIRST="Some(Some(@Bool))", FIRST_T="Int",
+        SECOND="Some(@Option<Bool>)", SECOND_T="Pos", LAST="None",
+        ARG="Some(Some(true))"),
+    "a repeated enclosing arm": _enclosing(
+        SCRUT="Bool", FIRST="true", FIRST_T="Int", SECOND="true",
+        SECOND_T="Pos", LAST="false", ARG="true"),
+    "an enclosing arm with a nested pattern": _enclosing(
+        SCRUT=_OO, FIRST="Some(Some(@Bool))", FIRST_T="Pos",
+        SECOND="Some(None)", SECOND_T="Int", LAST="None",
+        ARG="Some(None)"),
+}
+
+
+@pytest.mark.parametrize("name", list(_ENCLOSING_ARM_CONTROLS))
+def test_an_enclosing_arm_that_does_not_run_says_nothing(name: str) -> None:
+    src = _ENCLOSING_ARM_CONTROLS[name]
+    v = _verify(src)
+    assert _records(v, "ensures", _at(src, "ensures(@Int.result")) == [
+        "tier3/E522"], (
+        [(o.kind, o.status, o.error_code, o.line, o.column)
+         for o in v.obligations])
+    assert _run(src, "main", [3]).value == 3
+    assert "Postcondition violation" in _run(src, "main", [-3]).trap_message
+
+
+#: The fact still reaches past an enclosing arm that runs: the earlier arm's
+#: condition is disjoint from it, so the postcondition over the payload is
+#: proved, and a payload the refinement forbids traps at the bind.
+_ENCLOSING_ARM_TAKEN = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+public fn f(@Option<Option<Bool>>, @Int -> @Int)
+  requires(true)
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  let @Option<Int> = apply_fn(fn(@Int -> @Option<Int>) effects(pure) { Some(@Int.0) }, @Int.0);
+  match @Option<Option<Bool>>.0 {
+    None -> 1,
+    Some(@Option<Bool>) -> match @Option<Int>.0 {
+      Some(@Pos) -> @Pos.0,
+      None -> 1
+    }
+  }
+}
+
+public fn main(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  f(Some(Some(true)), @Int.0)
+}
+"""
+
+
+def test_an_enclosing_arm_that_runs_keeps_the_fact() -> None:
+    src = _ENCLOSING_ARM_TAKEN
+    v = _verify(src)
+    assert _records(v, "ensures", _at(src, "ensures(@Int.result")) == [
+        "verified"]
+    assert _run(src, "main", [3]).value == 3
+    assert "Refinement violation" in _run(src, "main", [-3]).trap_message
+
+
+#: A `match` in `&&`'s right operand binds whichever the left operand is,
+#: because the reference compiler evaluates both operands (#1501), so its
+#: fact needs no left operand in its antecedent, and the postcondition is
+#: proved.  PINNED: once `&&` short-circuits, `main(false, -3)` skips the
+#: bind and fails the postcondition, and the antecedent needs the left
+#: operand (`SmtContext._arm_guarded_binders`).
+_AND_RIGHT_OPERAND = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+public fn f(@Bool, @Int -> @Int)
+  requires(true)
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  let @Option<Int> = apply_fn(fn(@Int -> @Option<Int>) effects(pure) { Some(@Int.0) }, @Int.0);
+  let @Bool = @Bool.0 && match @Option<Int>.0 {
+    Some(@Pos) -> @Pos.0 > 0,
+    None -> true
+  };
+  match @Option<Int>.0 {
+    Some(@Int) -> if @Bool.0 then { @Int.0 } else { @Int.0 },
+    None -> 1
+  }
+}
+
+public fn main(@Bool, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  f(@Bool.0, @Int.0)
+}
+"""
+
+
+def test_a_match_in_a_right_operand_binds_whatever_the_left_is() -> None:
+    src = _AND_RIGHT_OPERAND
+    v = _verify(src)
+    assert _records(v, "ensures", _at(src, "ensures(@Int.result")) == [
+        "verified"]
+    assert _run(src, "main", [0, 3]).value == 3
+    assert "Refinement violation" in _run(src, "main", [0, -3]).trap_message
+
+
+#: A `match` in an `if` condition is evaluated before either branch, so its
+#: binder's fact reaches the branch the condition selects.
+_MATCH_IN_A_CONDITION = """\
+type Pos = { @Int | @Int.0 > 0 };
+""" + _NEED_POS + """
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Option<Int> = apply_fn(fn(@Int -> @Option<Int>) effects(pure) { Some(@Int.0) }, @Int.0);
+  if match @Option<Int>.0 { Some(@Pos) -> @Pos.0 < 100, None -> false } then {
+    match @Option<Int>.0 {
+      Some(@Int) -> need_pos(@Int.0),
+      None -> 0
+    }
+  } else {
+    0
+  }
+}
+"""
+
+
+def test_a_match_in_a_condition_carries_its_fact_into_the_branch() -> None:
+    src = _MATCH_IN_A_CONDITION
+    v = _verify(src)
+    assert _records(v, "call_pre", _at(src, "need_pos(@Int.0)")) == []
+    assert v.ok, v.errors
+    assert _run(src, "f", [5]).value == 5
+    assert "Refinement violation" in _run(src, "f", [-3]).trap_message
+
+
+# An ASSUMED contract's `match` (#1480 review).  The contract is asserted
+# into the solver, and a fresh binder's fact reaches only a query that reads
+# the fresh value, which no later query about the payload does: each of these
+# was refused at the review's head, and each verifies at `main`.  An
+# assumption is stated over the projections (`SmtContext.assume`).
+_MK_GT5 = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+private fn need_gt5(@Int -> @Int)
+  requires(@Int.0 > 5)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+
+private fn mk(@Int -> @Option<Int>)
+  requires(true)
+  ensures(match @Option<Int>.result {
+    Some(@Pos) -> @Pos.0 > 5,
+    None -> true
+  })
+  effects(pure)
+{
+  if @Int.0 > 5 then {
+    Some(@Int.0)
+  } else {
+    None
+  }
+}
+"""
+
+_ASSUMED_CONTRACTS = {
+    "a callee's ensures, at a call": (_MK_GT5 + """
+public fn use_it(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match mk(@Int.0) {
+    Some(@Int) -> need_gt5(@Int.0),
+    None -> 0
+  }
+}
+""", "use_it", "call_pre", ("need_gt5(@Int.0)", 0), []),
+    "a callee's ensures, under the caller's ensures": (_MK_GT5 + """
+public fn use_it(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result > 5 || @Int.result == 0)
+  effects(pure)
+{
+  match mk(@Int.0) {
+    Some(@Int) -> @Int.0,
+    None -> 0
+  }
+}
+""", "use_it", "ensures", ("ensures(@Int.result", 0), ["verified"]),
+    "the function's own requires": (_MK_GT5 + """
+public fn f(@Option<Int> -> @Int)
+  requires(match @Option<Int>.0 {
+    Some(@Int) -> @Int.0 > 0,
+    None -> true
+  })
+  requires(match @Option<Int>.0 {
+    Some(@Pos) -> @Pos.0 > 5,
+    None -> true
+  })
+  ensures(true)
+  effects(pure)
+{
+  match @Option<Int>.0 {
+    Some(@Int) -> need_gt5(@Int.0),
+    None -> 0
+  }
+}
+
+public fn use_it(@Int -> @Int)
+  requires(@Int.0 > 5)
+  ensures(true)
+  effects(pure)
+{
+  f(Some(@Int.0))
+}
+""", "use_it", "call_pre", ("need_gt5(@Int.0)", 0), []),
+}
+
+
+@pytest.mark.parametrize("name", list(_ASSUMED_CONTRACTS))
+def test_an_assumed_contract_states_its_binders_projection(name: str) -> None:
+    src, fn, kind, (at, occurrence), want = _ASSUMED_CONTRACTS[name]
+    v = _verify(src)
+    assert v.ok, v.errors
+    assert _records(v, kind, _at(src, at, occurrence)) == want, (
+        [(o.kind, o.status, o.error_code, o.line, o.column)
+         for o in v.obligations])
+    assert _run(src, fn, [7]).value == 7
+
+
+#: The gate's other half at the sub-pattern twin: a bind refuted for every
+#: value the placeholder could take is refused.
+def test_a_subpattern_bind_refuted_for_every_value_is_refused() -> None:
+    # The payload is -1 whichever arm of the inner scrutinee runs, and the
+    # projection still embeds the placeholder, so the gate asks, and the
+    # negated re-ask refuses.
+    constant = ("match (match @Option<Int>.0 { Some(@Int) -> "
+                "Some(@Int.0 * 0 - 1), None -> Some(@Int.0 * 0 - 1) }) {")
+    match = _SUBPATTERN_MATCH.replace("match @Option<Int>.0 {", constant)
+    src = _subpattern_over_a_placeholder("REQUIRES", match)
+    assert constant in src
+    v = _verify(src)
+    where = _at(src, "Some(@Option<Int>) -> match")
+    assert ("E505", where[0]) in [(c, line) for c, line, _ in v.errors], (
+        v.errors)
+    assert "Refinement violation" in _run(src, "main", [5]).trap_message
+
+
+#: `_check_nested_refinement_obligation`, the third refinement narrowing (a
+#: payload a call argument's type refines), behind the same gate.  Its site
+#: has no guard (spec §6.4.3), so the placeholder leaves it disclosed rather
+#: than Tier 3: `tier3_unguarded`, and a violating payload runs unchecked.
+_NESTED_OVER_A_PLACEHOLDER = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+private fn takes(@Option<Pos> -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  true
+}
+
+public fn f(@Option<Int>, @Int -> @Bool)
+  requires(match map_get(map_insert(map_new(), 1, Some(@Int.0)), 1) {
+    Some(@Option<Int>) -> takes(@Option<Int>.0),
+    None -> true
+  })
+  ensures(true)
+  effects(pure)
+{
+  true
+}
+
+public fn main(@Int -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  f(None, @Int.0)
+}
+"""
+
+
+def test_a_nested_refinement_over_a_placeholder_is_disclosed() -> None:
+    src = _NESTED_OVER_A_PLACEHOLDER
+    v = _verify(src)
+    assert _records(v, "refine_bind", _at(src, "@Option<Int>.0)")) == [
+        "tier3_unguarded/E506"], (
+        [(o.kind, o.status, o.error_code, o.line, o.column)
+         for o in v.obligations])
+    assert v.ok, v.errors
+    assert _run(src, "main", [-3]).trap_kind is None
+
+
 # ---------------------------------------------------------------------
 # The refinement predicate, at every guard position
 # ---------------------------------------------------------------------
@@ -3145,3 +3555,170 @@ def test_every_declared_domain_is_an_operation() -> None:
     assert declared <= ops, declared - ops
     from vera.verifier import _FLOAT_CONVERSIONS
     assert set(_FLOAT_CONVERSIONS) <= ops, set(_FLOAT_CONVERSIONS) - ops
+
+
+# ---------------------------------------------------------------------
+# Wiring: the refusals, and the solver's assumptions (#1480 review)
+# ---------------------------------------------------------------------
+#
+# Derived from the code, not listed by hand: each scan below enumerates a
+# construct in the verifier's two modules, and the table beside it says what
+# keeps that construct honest.  A new site reddens the scan until it is
+# classified.
+
+
+def _enclosing_functions(path: str, is_site: object) -> dict[str, str]:
+    """Each call *is_site* accepts in *path*, keyed by its innermost
+    enclosing function, with that function's source."""
+    import pathlib
+
+    text = (pathlib.Path(__file__).resolve().parent.parent / path).read_text(
+        encoding="utf-8")
+    tree = _pyast.parse(text)
+    parents: dict[object, object] = {}
+    for node in _pyast.walk(tree):
+        for child in _pyast.iter_child_nodes(node):
+            parents[child] = node
+    found: dict[str, str] = {}
+    for node in _pyast.walk(tree):
+        if isinstance(node, _pyast.Call) and is_site(node):  # type: ignore[operator]
+            up = parents.get(node)
+            while up is not None and not isinstance(up, _pyast.FunctionDef):
+                up = parents.get(up)
+            assert isinstance(up, _pyast.FunctionDef), _pyast.unparse(node)
+            found[up.name] = _pyast.unparse(up)
+    return found
+
+
+def _records_violated(node: object) -> bool:
+    f = node.func  # type: ignore[attr-defined]
+    args = node.args  # type: ignore[attr-defined]
+    return (isinstance(f, _pyast.Attribute) and f.attr == "_record_obligation"
+            and len(args) > 3 and isinstance(args[3], _pyast.Constant)
+            and args[3].value == "violated")
+
+
+#: Every site that records `violated`, and why a placeholder cannot make it
+#: refuse (the ruling: a check #1480 records falls to Tier 3 when it is
+#: refuted only over a value the verifier cannot state, unless it is refuted
+#: for every such value).  "gate": `_refuted_only_over_a_placeholder` or the
+#: opaque-shadow re-ask; "two-check": refused only when the violation itself
+#: is valid, i.e. for every value; "no placeholder": a position #1480 records
+#: nothing at, or a literal value.
+_VIOLATED_SITES = {
+    "_verify_fn": "no placeholder: the function's own `ensures` and "
+                  "refined return, recorded before #1480",
+    "_check_decreases_bound": "two-check",
+    "_record_call_obligations": "gate: SmtContext._rests_on_unknown",
+    "_check_state_decl_divergence": "no placeholder: a handler's state",
+    "_check_subtraction_obligation": "gate",
+    "_check_div_zero_obligation": "gate",
+    "_check_assert_obligation": "two-check",
+    "_check_index_bounds_obligation": "two-check",
+    "_check_overflow_obligation": "two-check",
+    "_check_float_to_int_domain_obligation": "no placeholder: a constant",
+    "_check_nat_binding_obligation": "gate",
+    "_check_nat_binding_obligation_term": "gate",
+    "_check_int_widening_obligation": "two-check",
+    "_check_int_widening_obligation_term": "two-check",
+    "_check_refined_binding_obligation": "gate",
+    "_check_nested_refinement_obligation": "gate",
+    "_reject_or_excuse_concrete_violation": "no placeholder: a literal",
+    "_check_generic_refined_return": "no placeholder: a generic's return",
+    "_check_refined_binding_obligation_term": "gate",
+}
+
+
+def test_every_refusal_is_classified_against_a_placeholder() -> None:
+    sites = _enclosing_functions("vera/verifier.py", _records_violated)
+    assert set(sites) == set(_VIOLATED_SITES), set(sites) ^ set(
+        _VIOLATED_SITES)
+    for name, how in _VIOLATED_SITES.items():
+        source = sites[name]
+        if how == "gate":
+            assert ("_refuted_only_over_a_placeholder(" in source
+                    or "_contains_opaque_shadow(" in source), name
+        elif how == "two-check":
+            assert source.count("check_valid(") >= 2, name
+    # The call-site refusals are built in the SMT layer, each behind the
+    # placeholder test.
+    calls = _enclosing_functions(
+        "vera/smt.py",
+        lambda n: isinstance(n.func, _pyast.Name)
+        and n.func.id == "CallViolation")
+    assert set(calls) == {"_check_builtin_domain",
+                          "_check_call_preconditions"}, set(calls)
+    assert all("_rests_on_unknown(" in s for s in calls.values())
+
+
+def _adds_to_the_solver(node: object) -> bool:
+    f = node.func  # type: ignore[attr-defined]
+    return (isinstance(f, _pyast.Attribute) and f.attr == "add"
+            and isinstance(f.value, _pyast.Attribute)
+            and f.value.attr == "solver")
+
+
+def test_every_assumption_is_stated_over_the_projections() -> None:
+    """The solver's base context is written only by `SmtContext.assume`,
+    which states a guarded binder's fresh value as its projection; the other
+    writers are queries, inside their own push/pop."""
+    writers = {
+        **{f"smt.{k}": v for k, v in _enclosing_functions(
+            "vera/smt.py", _adds_to_the_solver).items()},
+        **{f"verifier.{k}": v for k, v in _enclosing_functions(
+            "vera/verifier.py", _adds_to_the_solver).items()},
+    }
+    assert set(writers) == {"smt.assume", "smt._check_refutation",
+                            "verifier._full_premises_satisfiable"}, set(
+        writers)
+    for query in ("smt._check_refutation",
+                  "verifier._full_premises_satisfiable"):
+        assert "solver.push()" in writers[query], query
+
+
+# ---------------------------------------------------------------------
+# The char-code measure at the i64 bound the runtime compares in
+# ---------------------------------------------------------------------
+#
+# `_MEASURE_CHAR_CODE`'s measure is a `@Nat` sum, and the termination guard
+# compares a `@Nat` measure in signed i64 (`decreases_bound`, E536): a sum
+# just below i64.MAX runs, one just above it traps on entry.  Neither side is
+# provable of an unconstrained `@Nat`, so the bound is Tier 3.  The state is
+# `None`, so the function returns after the entry check rather than counting
+# down from 2^63.
+
+_MEASURE_CHAR_CODE_AT_THE_BOUND = _MEASURE_CHAR_CODE.split(
+    "public fn main")[0] + """public fn main(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Option<Int>>](@Option<Int> = None) {
+    get(@Unit) -> { resume(@Option<Int>.0) },
+    put(@Option<Int>) -> { resume(()) }
+  } in {
+    f(@Nat.0, 1)
+  }
+}
+"""
+
+_I64_MAX = 2**63 - 1
+
+
+@pytest.mark.parametrize(("nat", "traps"), [
+    (_I64_MAX - ord("b"), False),
+    (_I64_MAX - ord("b") + 1, True),
+])
+def test_the_char_code_measure_at_the_i64_bound(nat: int, traps: bool) -> None:
+    src = _MEASURE_CHAR_CODE_AT_THE_BOUND
+    v = _verify(src)
+    assert _records(v, "decreases_bound", _at(src, "@Nat.0 + string_char_code")
+                    ) == ["tier3"], (
+        [(o.kind, o.status, o.error_code, o.line, o.column)
+         for o in v.obligations])
+    assert v.ok, v.errors
+    ran = _run(src, "main", [nat])
+    if traps:
+        assert "outside the i64 range" in ran.trap_message, ran
+    else:
+        assert ran.value == 0, ran
