@@ -111,7 +111,7 @@ Diagnostics occur at every phase of compilation:
 | Type checking | Type mismatches, invalid refinement predicates, subtyping violations |
 | Effect checking | Undeclared effects, missing handlers, effect row mismatches |
 | Verification (Tier 1) | Contract violations with SMT counterexamples, explained in plain language |
-| Verification (Tier 2) | Suggestions for lemmas or hints that would help the solver |
+| Verification (Tier 2) | Suggestions for lemmas or hints that would help the solver (not yet implemented; [#427](https://github.com/aallan/vera/issues/427)) |
 | Verification (Tier 3) | Runtime check insertion points, with explanation of what could not be proven |
 | Reachability | Unreachable branches (when preconditions or types make a case impossible) |
 | Call-site analysis | Arguments that cannot be proven to satisfy a callee's preconditions |

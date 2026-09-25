@@ -252,7 +252,7 @@ For the compilation model of arrays, see Chapter 11, Section 11.12.
 
 `Set<T>` is an unordered collection of unique elements. It requires the `Eq` and `Hash` abilities on `T` (see Section 9.8). Element types must be hashable primitives: `Int`, `Nat`, `Bool`, `Float64`, `String`, or `Byte`.
 
-Set is an opaque built-in type implemented via host imports. The runtime maintains the underlying set; WASM code interacts with sets through `i32` handles. All operations are pure — `set_add` and `set_remove` return new sets (functional semantics).
+Set is an opaque built-in type. A set lives on the WASM heap, as a wrapper pointing to the bucket that holds its elements; WASM code holds it as one `i32` pointer, and the operations are host imports that read the bucket and build a new one. All operations are pure — `set_add` and `set_remove` return new sets (functional semantics).
 
 **Operations:**
 
@@ -279,9 +279,9 @@ private fn set_demo(-> @Int)
 
 ### 9.4.3 Map\<K, V\>
 
-`Map<K, V>` is a key-value mapping. It requires the `Eq` and `Hash` abilities on `K` (see Section 9.8). Keys must be hashable primitive types: `Int`, `Nat`, `Bool`, `Float64`, `String`, or `Byte`. Values must be primitives (`Int`, `Nat`, `Bool`, `Byte`, `Float64`, `String`), ADT heap-pointer types (`Option<T>`, `Result<T, E>`), or other `Map` handles. `Array<T>` values are not yet supported as Map values (tracked as a future enhancement).
+`Map<K, V>` is a key-value mapping. It requires the `Eq` and `Hash` abilities on `K` (see Section 9.8). Keys must be hashable primitive types: `Int`, `Nat`, `Bool`, `Float64`, `String`, or `Byte`. Values must be primitives (`Int`, `Nat`, `Bool`, `Byte`, `Float64`, `String`), ADT heap-pointer types (`Option<T>`, `Result<T, E>`), or other `Map` values. `Array<T>` values are not yet supported as Map values (tracked as a future enhancement).
 
-Map is an opaque built-in type implemented via host imports. The runtime maintains the underlying hash table; WASM code interacts with maps through `i32` handles. All operations are pure — `map_insert` and `map_remove` return new maps (functional semantics).
+Map is an opaque built-in type. A map lives on the WASM heap, as a wrapper pointing to the bucket that holds its entries; WASM code holds it as one `i32` pointer, and the operations are host imports that read the bucket and build a new one. All operations are pure — `map_insert` and `map_remove` return new maps (functional semantics).
 
 **Operations:**
 
@@ -310,7 +310,7 @@ private fn map_demo(-> @Int)
 }
 ```
 
-`Map` is needed by the proposed `Json` ADT (Section 9.7.1), where `JObject` wraps a `Map<String, Json>`.
+The `Json` ADT (Section 9.7.1) uses `Map`: `JObject` wraps a `Map<String, Json>`.
 
 ## 9.5 Built-in Effects
 
@@ -415,7 +415,7 @@ For the runtime implementation of `State<T>`, see Chapter 12, Section 12.4.2.
 
 ### 9.5.3 Http
 
-> **Status: Implemented.** Tracked in [#57](https://github.com/aallan/vera/issues/57). `Http.get` and `Http.post` are fully compilable and execute via host imports (Python `urllib` / JavaScript `fetch`). Returns `Result<String, String>` — `Ok` with the response body, `Err` with the error message. New conformance test `ch09_http` (62 programs, was 61). New example `http.vera`.
+> **Status: Implemented.** Tracked in [#57](https://github.com/aallan/vera/issues/57). `Http.get` and `Http.post` are fully compilable and execute via host imports (Python `urllib` / a synchronous `XMLHttpRequest` in the browser). Returns `Result<String, String>` — `Ok` with the response body, `Err` with the error message. The conformance test `ch09_http` and the example `http.vera` exercise it.
 
 Network I/O is modelled as a built-in algebraic effect with two operations: `get` and `post`. Functions performing network access declare `effects(<Http>)`. The effect is built-in — no `effect Http { ... }` declaration is needed (and one is `E152`).
 
@@ -452,7 +452,7 @@ This follows the same pattern as Markdown: `json_parse(Http.get(url))`, not a de
 **Implementation notes:**
 
 - The Python runtime uses `urllib.request.urlopen` (stdlib, no external dependencies).
-- The browser/Node.js runtime uses the `fetch` API.
+- The browser runtime uses a synchronous `XMLHttpRequest`. Node.js has no `XMLHttpRequest`, so there both operations return `Err`.
 - `Http.post` sends the body with `Content-Type: application/json`.
 - Responses are returned as the full response body string. Status codes are not currently exposed — non-2xx responses produce `Err`.
 - HTTPS is supported. Certificate verification follows the platform default.
@@ -575,7 +575,7 @@ private fn classify(@String -> @Result<String, String>)
 
 ### 9.5.6 HttpServer
 
-The `HttpServer` effect (a marker, §7.7.5 — no operations) enables **verified HTTP request handling** (#305, since v0.0.193).  A server program defines a total, contract-checked handler:
+The `HttpServer` effect (a marker, §7.7.5 — no operations) enables **verified HTTP request handling** (#305).  A server program defines a total, contract-checked handler:
 
 <!-- vera:no-run category="non-scalar-entry" reason="its exported functions take Request parameters" -->
 ```vera
@@ -630,7 +630,7 @@ type error but a read at an address that was never a `Response`.
 
 ### 9.5.7 DB
 
-The `DB` effect (a built-in, §7.7.7) executes SQL through the host (#229, since v0.1.7). `execute` runs writes and returns the affected-row count; `query` runs reads and returns a grid of cells:
+The `DB` effect (a built-in, §7.7.7) executes SQL through the host (#229). `execute` runs writes and returns the affected-row count; `query` runs reads and returns a grid of cells:
 
 <!-- vera:run fn="seed_and_count" stdout="1" -->
 ```vera
@@ -1222,7 +1222,7 @@ public fn test_infinity(@Unit -> @Float64)
 
 ### 9.6.13 String Search
 
-String search functions test for the presence or position of substrings. All are pure, take `String` arguments, and operate on raw bytes (ASCII). All are Tier 3 for verification (String is not modeled in Z3).
+String search functions test for the presence or position of substrings. All are pure, take `String` arguments, and operate on raw bytes (ASCII). The verifier models `string_contains`, `string_starts_with` and `string_ends_with` as the Z3 string operations `Contains`, `PrefixOf` and `SuffixOf`, so a contract that uses them can verify at Tier 1; `string_index_of` is Tier 3.
 
 #### string_contains
 
@@ -1704,7 +1704,7 @@ url_join(UrlParts("", "", "", "", ""))
 
 ### 9.6.19 similarity (Future)
 
-> **Status: Not yet implemented.** Requires `Inference.embed` (returning `Array<Float64>`) which is deferred to a follow-up release. `Inference.complete` was implemented in v0.0.101 ([#61](https://github.com/aallan/vera/issues/61)); `embed` is tracked separately ([#371](https://github.com/aallan/vera/issues/371)).
+> **Status: Not yet implemented.** Requires `Inference.embed` (returning `Array<Float64>`) which is deferred to a follow-up release. `Inference.complete` is implemented ([#61](https://github.com/aallan/vera/issues/61)); `embed` is tracked separately ([#371](https://github.com/aallan/vera/issues/371)).
 
 <!-- vera:skip-parse category="FRAGMENT" reason="similarity signature (no body)" -->
 ```
@@ -2346,14 +2346,14 @@ public data MdBlock {
 **Design note.** The following Markdown constructs are intentionally excluded per the one-canonical-form principle (§0.2.3). Each has a canonical equivalent in the ADT:
 
 - **Raw HTML** (block and inline) — not safe for verification, not appropriate for agent-to-agent communication.
-- **Link reference definitions** — resolved to inline `MdLink` during parsing. The parsed ADT has no reference indirection.
-- **Setext headings** — merged with ATX headings into `MdHeading`. Both surface syntaxes parse to the same constructor.
-- **Indented code blocks** — merged with fenced code blocks into `MdCodeBlock` (with an empty language string).
+- **Link reference definitions** — not recognised: `md_parse` keeps the reference link and the definition as paragraph text. The canonical form is an inline link (`MdLink`).
+- **Setext headings** — not recognised: the title and its underline parse as one paragraph. The canonical form is an ATX heading (`MdHeading`).
+- **Indented code blocks** — not recognised: the indented lines parse as paragraph text. The canonical form is a fenced code block (`MdCodeBlock`).
 - **Hard and soft line breaks** — collapsed into paragraph text. Not structurally significant for agent communication.
 
 **Parse and render operations:**
 
-<!-- vera:skip-parse category="FUTURE" reason="md_parse signature (no body)" -->
+<!-- vera:skip-parse category="FRAGMENT" reason="md_parse signature (no body)" -->
 ```
 public fn md_parse(@String -> @Result<MdBlock, String>)
   requires(true)
@@ -2401,7 +2401,7 @@ Rule 9's stopping set is exactly the patterns of the constructs that claim a lin
 - **A link or image label ends at its MATCHING bracket**, so `[a[b]c](url)` is one link.
 
 
-<!-- vera:skip-parse category="FUTURE" reason="md_render" -->
+<!-- vera:skip-parse category="FRAGMENT" reason="md_render" -->
 ```
 public fn md_render(@MdBlock -> @String)
   requires(true)
@@ -2464,7 +2464,7 @@ the empty item keeps its place as a marker and a space.
 
 **Accessor functions for contracts:**
 
-<!-- vera:skip-parse category="FUTURE" reason="md_has_heading" -->
+<!-- vera:skip-parse category="FRAGMENT" reason="md_has_heading" -->
 ```
 public fn md_has_heading(@MdBlock, @Nat -> @Bool)
   requires(@Nat.0 >= 1 && @Nat.0 <= 6)
@@ -2474,7 +2474,7 @@ public fn md_has_heading(@MdBlock, @Nat -> @Bool)
 
 Returns `true` if the document contains a heading of the given level.
 
-<!-- vera:skip-parse category="FUTURE" reason="md_has_code_block" -->
+<!-- vera:skip-parse category="FRAGMENT" reason="md_has_code_block" -->
 ```
 public fn md_has_code_block(@MdBlock, @String -> @Bool)
   requires(true)
@@ -2484,7 +2484,7 @@ public fn md_has_code_block(@MdBlock, @String -> @Bool)
 
 Returns `true` if the document contains a code block with the given language tag.
 
-<!-- vera:skip-parse category="FUTURE" reason="md_extract_code_blocks" -->
+<!-- vera:skip-parse category="FRAGMENT" reason="md_extract_code_blocks" -->
 ```
 public fn md_extract_code_blocks(@MdBlock, @String -> @Array<String>)
   requires(true)
@@ -2559,7 +2559,7 @@ public data HtmlNode {
 
 **Parse and serialize operations:**
 
-<!-- vera:skip-parse category="FUTURE" reason="html_parse" -->
+<!-- vera:skip-parse category="FRAGMENT" reason="html_parse" -->
 ```
 public fn html_parse(@String -> @Result<HtmlNode, String>)
   requires(true)
@@ -2569,7 +2569,7 @@ public fn html_parse(@String -> @Result<HtmlNode, String>)
 
 Parses an HTML string into an `HtmlNode` tree. The parser is lenient (like browsers) — malformed HTML produces a best-effort tree rather than an error. Returns `Err` only on catastrophic parse failures.
 
-<!-- vera:skip-parse category="FUTURE" reason="html_to_string" -->
+<!-- vera:skip-parse category="FRAGMENT" reason="html_to_string" -->
 ```
 public fn html_to_string(@HtmlNode -> @String)
   requires(true)
@@ -2581,7 +2581,7 @@ Serializes an `HtmlNode` tree back to an HTML string.
 
 **Query and extraction operations:**
 
-<!-- vera:skip-parse category="FUTURE" reason="html_query" -->
+<!-- vera:skip-parse category="FRAGMENT" reason="html_query" -->
 ```
 public fn html_query(@HtmlNode, @String -> @Array<HtmlNode>)
   requires(true)
@@ -2591,7 +2591,7 @@ public fn html_query(@HtmlNode, @String -> @Array<HtmlNode>)
 
 Queries the tree using a simple CSS selector subset. Returns all matching elements. Supported selectors: tag name (`div`), class (`.classname`), ID (`#id`), attribute presence (`[href]`), and descendant combinator (`div p`).
 
-<!-- vera:skip-parse category="FUTURE" reason="html_text" -->
+<!-- vera:skip-parse category="FRAGMENT" reason="html_text" -->
 ```
 public fn html_text(@HtmlNode -> @String)
   requires(true)
@@ -2601,7 +2601,7 @@ public fn html_text(@HtmlNode -> @String)
 
 Extracts all text content from the node and its descendants, recursively concatenated. Comments are excluded.
 
-<!-- vera:skip-parse category="FUTURE" reason="html_attr" -->
+<!-- vera:skip-parse category="FRAGMENT" reason="html_attr" -->
 ```
 public fn html_attr(@HtmlNode, @String -> @Option<String>)
   requires(true)

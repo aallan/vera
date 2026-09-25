@@ -28,11 +28,10 @@ resources — so it renders identically through GitHub's camo proxy.
   and used as hover text) that states the diagram's full claim in a sentence.
 - **All embeds use repo-relative paths**, including `README.md`'s — they
   render from whatever ref is being viewed (branch, PR, merged main).
-  Latent constraint: `pyproject.toml` declares `readme = "README.md"`, so
-  if the package is ever *published* to PyPI, `README.md`'s embeds must
-  switch to absolute raw URLs at that point — PyPI's renderer does not
-  resolve repo-relative image paths. Not applicable while installation is
-  `git clone` + `pip install -e .`.
+  The PyPI page for `veralang` renders `PYPI_README.md` (`pyproject.toml`
+  declares `readme = "PYPI_README.md"`), which embeds no diagrams; an image
+  added there must use an absolute URL, because PyPI's renderer does not
+  resolve repo-relative paths.
 
 ## Design system
 
@@ -70,7 +69,7 @@ reuse the arrow marker, and update the `<title>` and any paired
 | `architecture.svg` | `vera/README.md`, `README.md` | full pipeline + module map, verify/compile fork, warm-verification sidecar, three targets, the one-renderer note for `naming.py` |
 | `workflow.svg` | `README.md` | the agent loop: write → check/verify → diagnostics feed back → run |
 | `pipeline.svg` | `spec/11` | five compile stages and their artifacts |
-| `tiers.svg` | `spec/06` | three-tier verification decision flow |
+| `tiers.svg` | `spec/06`, `DESIGN.md` | three-tier verification decision flow |
 | `effect-handlers.svg` | `spec/07` | handler suspend/resume sequence |
 | `wasmtime-embedding.svg` | `spec/12` | Engine → Module → Linker → Store → call chain |
 | `memory-layout.svg` | `spec/12` | linear-memory segments + allocation header |
@@ -78,7 +77,7 @@ reuse the arrow marker, and update the `<title>` and any paired
 | `wasi-component.svg` | `spec/13` | component wrapping `$Main`/`$Adapter` + dispatch table |
 | `checker-passes.svg` | `vera/README.md` | the three checker passes over the TypeEnv |
 | `z3-refutation.svg` | `vera/README.md` | contract → assert ¬goal → unsat/sat/unknown |
-| `slot-scopes.svg` | `vera/README.md`, `DE_BRUIJN.md` | scope stack + backwards index resolution |
+| `slot-scopes.svg` | `vera/README.md` | scope stack + backwards index resolution |
 | `slot-numbering.svg` | `DE_BRUIJN.md` | per-type right-to-left numbering |
 | `diagnostic-card.svg` | `vera/README.md` | the eight Diagnostic fields |
 | `toolchain.svg` | `TOOLCHAIN.md` | CLI commands mapped onto pipeline stages |
@@ -86,7 +85,7 @@ reuse the arrow marker, and update the `<title>` and any paired
 | `lsp-session.svg` | `LSP_SERVER.md` | the agent proof-delta session |
 | `history-growth.svg` | `HISTORY.md` | growth across the nine landmark releases |
 | `subtyping-lattice.svg` | `spec/02` | the complete subtyping relation + the checker/verifier Nat split |
-| `effect-row-lattice.svg` | `spec/07` | effect subtyping by row inclusion |
+| `effect-row-lattice.svg` | `spec/07`, `DESIGN.md` | effect subtyping by row inclusion |
 | `module-resolution.svg` | `spec/08` | path mapping, cache, cycle rejection, transitive-≠-visible |
 | `async-model.svg` | `spec/09` | eager vs concurrent futures, the commutative-row gate |
 | `httpserver-lifecycle.svg` | `spec/09` | the vera serve request lifecycle, fresh instance per request |

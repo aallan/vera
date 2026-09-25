@@ -171,7 +171,7 @@ Here, `magnitude` and `larger` resolve to the imported functions from `vera.math
 
 Local definitions shadow imported declarations. If a module imports `magnitude` from `vera.math` but also defines its own `magnitude`, the local definition takes precedence for bare-call resolution. The import is not an error — it is simply unused for that name.
 
-The shadowing rule is implemented via `setdefault`: imported names are injected into the type environment only if no local definition with the same name already exists.
+The shadowing rule follows from registration order: imported names are injected into the type environment first, and the local declarations are registered after them, replacing any imported declaration of the same name. The injection uses `setdefault`, so an import never replaces a built-in.
 
 ### 8.5.2.1 Resolution Inside an Imported Module's Body
 
@@ -376,6 +376,39 @@ declaration shadows an imported constructor (§8.5.2), and a constructor name tw
 imports both supply is refused (§8.5.2.2, **E157**) exactly as a function name
 is. An imported type's constructors are admitted by the type's name, so a
 selective import naming the type admits all of them.
+
+Here `vera.collections` supplies `List`, whose constructors are `Nil` and
+`Cons`. The file's own `Stack` also declares a `Nil`, and in this file the bare
+name `Nil` is `Stack`'s:
+
+<!-- vera:run fn="pushed_is_empty" args="1" stdout="0" -->
+```
+import vera.collections(List);
+
+private data Stack {
+  Nil,
+  Push(Int, Stack)
+}
+
+private fn is_empty(@Stack -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Stack.0 {
+    Nil -> true,
+    Push(@Int, @Stack) -> false
+  }
+}
+
+public fn pushed_is_empty(@Int -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  is_empty(Push(@Int.0, Nil))
+}
+```
 
 A constructor name no type in scope declares is an error: **E210** for a
 construction with arguments, **E214** for a nullary one, **E320** and **E322**
@@ -620,9 +653,9 @@ For each resolved module:
 3. Harvest the module's own registered declarations, excluding the built-ins its environment starts with. A declaration named like a built-in type is the module's own, and is harvested (§8.5.4). The data types it imports are in scope in its registration, and are not exported by it.
 4. Filter to `public` declarations only.
 5. Check that selective imports do not reference `private` names.
-6. Inject the filtered declarations into the main program's type environment using `setdefault` (so local definitions shadow imports).
+6. Inject the filtered declarations into the main program's type environment using `setdefault`, which never replaces a built-in. The main program's own declarations are registered after this (Pass 1), so local definitions shadow imports.
 
-This is Pass 0 of the three-pass type-checking architecture (see Chapter 5).
+This is Pass 0 of type checking. Pass 1 registers the main program's declarations, and Pass 2 checks their bodies.
 
 ### 8.7.2 Type Environment Injection
 
@@ -635,7 +668,7 @@ After module registration, the main type environment contains:
 
 A name two imports both supply is the exception, in every one of those namespaces: it is refused (§8.5.2.2) and enters none of them, so a use of it resolves to nothing rather than to whichever supplier was injected first. That holds for a clashing function name (`E155`), a clashing data type name (`E156`) and a clashing constructor name (`E157`) independently — a type excluded for a clash takes its constructors with it, and a constructor name two differently-named types supply is excluded on its own while both types remain.
 
-Local declarations always take priority over imported declarations due to the `setdefault` injection order: imports are injected first, then local registration overwrites any collisions.
+Local declarations always take priority over imported declarations because of the registration order: imports are injected first, then local registration overwrites any collisions.
 
 ### 8.7.3 Per-Module Dictionaries
 
@@ -699,11 +732,11 @@ The code generator uses a **flattening** strategy: imported function bodies are 
 
 ### 8.9.1 Compilation Process
 
-1. **Pass 0 — Module registration**: For each resolved module, register all function signatures and ADT layouts into the code generator's state. A module's signatures are measured in the module's own namespace — its own declarations and the data types its own import lists admit (the same derivation the checker's registration reads, §8.7.1) — so a function returning a data type its module imported has the same WebAssembly signature whichever file is the entry. Imported names are injected via `setdefault` so local definitions shadow imports. Type aliases are **not** merged into the shared state: an alias is module-local (§8.4.1), so each module's aliases are captured in a per-module namespace, and that module's declarations compile and register against `{prelude aliases, module's own aliases}` — never against the importing program's. Harvested return-type expressions are canonicalized (alias references substituted) against the defining module's namespace before entering the shared registries. That same per-module namespace is what slot names, slot-reference keys and `State`/`Exn` cell families are rendered against — in the checker, the verifier and the code generator alike — so a declaration is named in the module that declared it, whichever phase is asking.
+1. **Pass 0 — Module registration**: For each resolved module, register all function signatures and ADT layouts into the code generator's state. A module's signatures are measured in the module's own namespace — its own declarations and the data types its own import lists admit (the same derivation the checker's registration reads, §8.7.1) — so a function returning a data type its module imported has the same WebAssembly signature whichever file is the entry. Imported names are injected first and the local registration pass (Pass 1) overwrites them, so local definitions shadow imports. Type aliases are **not** merged into the shared state: an alias is module-local (§8.4.1), so each module's aliases are captured in a per-module namespace, and that module's declarations compile and register against `{prelude aliases, module's own aliases}` — never against the importing program's. Harvested return-type expressions are canonicalized (alias references substituted) against the defining module's namespace before entering the shared registries. That same per-module namespace is what slot names, slot-reference keys and `State`/`Exn` cell families are rendered against — in the checker, the verifier and the code generator alike — so a declaration is named in the module that declared it, whichever phase is asking.
 
 2. **Pass 2.5 — Imported function compilation**: After compiling local functions (Pass 2), compile all imported function bodies — both public and private — as internal WASM functions. Private helpers must be compiled because imported public functions may call them.
 
-3. **Call desugaring**: `ModuleCall` AST nodes (e.g., `vera.math.magnitude(x)`) are desugared to flat `FnCall` nodes (e.g., `magnitude(x)`) since the imported function exists in the same WASM module.
+3. **Call desugaring**: `ModuleCall` AST nodes (e.g., `vera.math::magnitude(x)`) are desugared to flat `FnCall` nodes, since the imported function exists in the same WASM module. The target is the bare name (`magnitude(x)`) when the importing program's bare name denotes that declaration, and its module-qualified name (item 4) when it is qualified-only — for instance when a local declaration shadows it — so a module-qualified call always reaches the module's function.
 
 4. **Qualified-only naming**: flattening puts every module's declarations in one WASM namespace, where a bare name can belong to only one of them. A declaration that owns the importing program's bare name (§8.5.2.1) keeps it; every other module declaration — private, outside the importer's import filter, shadowed by a local, or reached only transitively — is emitted and called under a **module-qualified** name derived from its owning module's path, so two modules' same-named declarations stay distinct. This applies to generic declarations by way of their instantiations: a qualified-only generic's monomorphized clones are named under its owning module, never under the bare name, so an importer's same-named generic and a module's compile to different functions.
 
@@ -828,6 +861,7 @@ OK: examples/modules.vera
 
 $ vera verify examples/modules.vera
 OK: examples/modules.vera
+Verification: 9 verified (Tier 1), 1 runtime checks (Tier 3)
 
 $ vera run examples/modules.vera --fn abs_max -- -3 -5
 3

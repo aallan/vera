@@ -45,7 +45,7 @@ For contributions to the reference compiler:
 
 When adding or modifying built-in functions (registered in `vera/environment.py`):
 
-- **Prelude types are automatic.** `Option<T>`, `Result<T, E>`, `Ordering`, and `UrlParts` are provided by the standard prelude in every program — no explicit `data` declaration is required. User-defined types with the same name shadow the prelude.
+- **Prelude types are automatic.** `Option<T>`, `Result<T, E>`, `Ordering`, and `UrlParts` are provided by the standard prelude in every program — no explicit `data` declaration is required. `Json`, `HtmlNode`, `Request` and `Response` are injected the same way when a program mentions them. User-defined types with the same name shadow the prelude.
 - **Follow the naming convention** (spec §9.1.1): `domain_verb` for most functions (e.g. `string_length`, `array_append`), `source_to_target` for conversions (e.g. `int_to_float`), `domain_is_predicate` for boolean tests (e.g. `float_is_nan`). Only math universals (`abs`, `min`, `max`, etc.) are prefix-less.
 - **Match the spec.** Type signatures should use the types specified in the language specification (e.g. `NAT` where the spec says `Nat`, not `INT`). Reference the relevant spec chapter and section in your PR description.
 - **Add type checker tests** in the matching `tests/test_checker_*.py` phase file — for built-ins, `test_checker_builtins_strings.py` or `test_checker_builtins_collections.py` (shared helpers come from `tests/checker_helpers.py`) — at minimum, one test with correct types and one with a wrong argument type.
@@ -107,7 +107,7 @@ dependencies. CI enforces that `uv.lock` stays current.
 
 ### Pre-commit Hooks
 
-The repository configures 31 hooks across two stages: 29 run at the commit stage (after `pre-commit install`), and 2 (`check-changelog-updated` and `uv-lock-check`, described below) run at the push stage (after `pre-commit install --hook-type pre-push`). Most commit-stage hooks have per-hook `files:` / `types:` filters — the `python` type-check only runs when Python files are staged; `check_diagnostic_examples.py` only runs when `DE_BRUIJN.md` or compiler sources change, etc. A plain-text commit touching only one markdown file triggers a small subset; a compiler-level commit triggers most of them.
+The repository configures 31 hooks across two stages: 29 run at the commit stage (after `pre-commit install`), and 2 (`check-changelog-updated` and `uv-lock-check`, described below) run at the push stage (after `pre-commit install --hook-type pre-push`). Most commit-stage hooks have per-hook `files:` / `types:` filters — the `python` type-check only runs when Python files are staged; `check_diagnostic_examples.py` only runs when a `.md`/`.txt` file or compiler source changes, etc. A plain-text commit touching only one markdown file triggers a small subset; a compiler-level commit triggers most of them.
 
 ![The gate pipeline: the fast commit-stage hooks, the push-stage CHANGELOG and uv.lock gates, and CI running the full suite on the platform matrix, conformance and the examples, and every hook again, before anything lands on protected main.](assets/diagrams/ci-gates.svg)
 
@@ -134,7 +134,7 @@ The **commit-stage** hooks — 29 total, of which 28 are gated to relevant `file
 
 CI runs, in addition: the full suite on every OS × Python cell, the conformance programs at their declared level (positives pass; the negatives fail at the stage their `expected_error_stage` names, `check` by default or `compile` for a diagnostic the checker accepts and codegen refuses, with their `expected_error` E-code), the examples' `check` + `verify` and their runs, the `[E602]`/`[E604]` compile sweep, and the conformance programs and examples again under `VERA_EAGER_GC=1`, which forces a collection at every allocation so that a GC-rooting bug fails deterministically instead of by timing.
 
-If you modify documentation sources (SKILL.md, AGENTS.md, FAQ.md, `vera/errors.py`, `vera/grammar.lark`, or `docs/index.html`), the `site-assets` hook will regenerate `docs/` files via `scripts/build_site.py`. The CI also runs `scripts/check_site_assets.py` to verify freshness.
+If you modify documentation sources (SKILL.md, AGENTS.md, FAQ.md, LSP_SERVER.md, `vera/__init__.py`, `vera/errors.py`, `vera/grammar.lark`, or `docs/index.html`), the `site-assets` hook will regenerate `docs/` files via `scripts/build_site.py`. The CI also runs `scripts/check_site_assets.py` to verify freshness.
 
 `docs/index.md` is a special case: it is not derived from `docs/index.html` but written out by `build_index_md()` in `scripts/build_site.py`, so an edit to the landing page's substance has to be made in both places. `check_site_assets.py` compares the load-bearing facts across the pair — benchmark version strings, problem and model counts, the results table, the editor names — and fails when they diverge or when one of them can no longer be located.
 

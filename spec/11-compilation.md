@@ -47,9 +47,9 @@ Vera types map to WASM value types as follows:
 | `Float64` | `f64` | 64-bit IEEE 754 floating point |
 | `Unit` | *(none)* | Functions returning `Unit` have no WASM result type |
 | `String` | `i32, i32` | Pointer and length pair (UTF-8 bytes in linear memory) |
-| `Array<T>` | `i32, i32` | Pointer and length pair (elements in linear memory); see Section 11.13 |
+| `Array<T>` | `i32, i32` | Pointer and length pair (elements in linear memory); see Section 11.12 |
 | ADTs | `i32` | Heap pointer to tagged union (see Section 11.6) |
-| Function types | `i32` | Heap pointer to closure struct (see Section 11.11) |
+| Function types | `i32` | Heap pointer to closure struct (see Section 11.10) |
 
 Generic type variables are resolved via monomorphization — each concrete instantiation of a `forall<T>` function produces a specialized copy with type variables replaced by concrete types (e.g. `identity$Int`). Type aliases are resolved through their definitions: function type aliases (e.g. `type IntToInt = fn(Int -> Int) effects(pure)`) resolve to `i32` closure pointers, and refinement type aliases (e.g. `type PosInt = { @Int | @Int.0 > 0 }`) resolve to their base WASM type (see Section 11.15). String and Array types compile to `(i32, i32)` pairs in function signatures — each Vera parameter expands to two WASM parameters (pointer and length), and String/Array return types use WASM multi-value return `(result i32 i32)`. Functions using non-compilable types in their signatures are skipped with a warning.
 
@@ -211,7 +211,8 @@ A function is compilable if:
 
 1. All parameter and return types map to WASM types (Section 11.2) — primitives, ADTs, or monomorphized generics
 2. The function body uses only supported expression types
-3. Effects are `pure`, `<IO>`, or `<State<T>>` where T is a compilable type
+3. Effects are `pure` or built-in — all ten built-in effects (`IO`, `State<T>`, `Exn<E>`, `Http`, `Async`, `HttpServer`, `Inference`, `DB`, `Random`, `Diverge`) compile, with `T` and `E` compilable types; a user-declared effect drops the function with `E603`
+4. Every `handle` expression handles `State<T>` or `Exn<E>`; a handler for any other effect drops the function with `E602` ([#1597](https://github.com/aallan/vera/issues/1597))
 
 Generic (`forall<T>`) functions are compiled via monomorphization: for each concrete call site, a specialized copy is produced with type variables replaced by concrete types. The concrete types are read from the call's arguments, and an argument that is itself a generic call — `result_unwrap_or(result_map(r, f), 0)`, `idg(m::justg(2))` — is named by the specialization it instantiates. Where an argument's type is taken from the checker instead, it is read from the checker's record of the file the call is written in: an imported module's body is read in that module's own record, never the importer's. The call site and the specialization are therefore named the same way wherever the call is written.
 
@@ -235,7 +236,7 @@ Functions declared in `where` blocks are compiled as module-level WASM functions
 
 ### 11.4.4 Exported Functions
 
-All compiled top-level functions are exported from the WASM module. Where-block functions are internal (not exported).
+All compiled `public` top-level functions are exported from the WASM module. `private` functions and where-block functions are internal (not exported).
 
 ## 11.5 String Pool
 
@@ -256,9 +257,10 @@ All strings are concatenated into a single data segment starting at offset 0. Ea
 The WASM module exports one page (64 KiB) of linear memory as `"memory"`. This memory holds:
 
 - **String constants** (data section, starting at offset 0)
-- **Heap-allocated ADTs** (bump-allocated after string data)
+- **GC regions** — the shadow stack, the mark worklist and, for a program holding host-backed values, the wrapper table
+- **Heap data** — ADTs, closures, arrays and strings built at run time, above the GC regions
 
-A bump allocator manages heap allocation. A mutable global `$heap_ptr` tracks the next free byte (initialized to the first byte after string data). The `$alloc` internal function bump-allocates with 8-byte alignment and returns a pointer to the allocated block. The allocator and heap global are only emitted when the program declares ADT types.
+A bump allocator with a free-list overlay manages heap allocation, and a conservative mark-sweep collector reclaims unreachable blocks. A mutable global `$heap_ptr` tracks the next free byte. The `$alloc` internal function allocates with 8-byte alignment and returns a pointer to the allocated block. The allocator, collector and heap global are emitted when the program needs them — it declares a `data` type or allocates, among other triggers. Chapter 12, Section 12.5 gives the layout, the allocator and the collector.
 
 ADT constructors allocate heap blocks containing a tag (i32) followed by field values at computed offsets. Match expressions dispatch on the tag and extract fields at the corresponding offsets.
 
@@ -279,21 +281,25 @@ The `IO` effect is implemented via host imports. Each IO operation the program u
 | `args` | `(import "vera" "args" (func $vera.args (result i32 i32)))` |
 | `exit` | `(import "vera" "exit" (func $vera.exit (param i64)))` |
 | `get_env` | `(import "vera" "get_env" (func $vera.get_env (param i32 i32) (result i32)))` |
+| `read_char` | `(import "vera" "read_char" (func $vera.read_char (result i32)))` |
+| `sleep` | `(import "vera" "sleep" (func $vera.sleep (param i64)))` |
+| `time` | `(import "vera" "time" (func $vera.time (result i64)))` |
+| `stderr` | `(import "vera" "stderr" (func $vera.stderr (param i32 i32)))` |
 
-Only the operations actually used in the program are imported. Operations that return host-allocated data (`read_line`, `read_file`, `write_file`, `args`, `get_env`) cause the module to export its `$alloc` function so the host can allocate WASM memory.
+Only the operations actually used in the program are imported. Operations that return host-allocated data (`read_line`, `read_char`, `read_file`, `write_file`, `args`, `get_env`) cause the module to export its `$alloc` function so the host can allocate WASM memory.
 
 `IO.exit` emits `unreachable` after the call since the process terminates. Operations returning `Result` or `Option` return an `i32` heap pointer to the ADT; operations returning `String` or `Array<String>` return an `(i32, i32)` pair.
 
 ### 11.7.2 State\<T\>
 
-The `State<T>` effect compiles to typed host import pairs for `get` and `put`:
+The `State<T>` effect compiles to typed host imports for `get` and `put`, beside the `state_push_T` / `state_pop_T` pair a handler calls (Section 11.11.1):
 
 ```wat
 (import "vera" "state_get_Int" (func $vera.state_get_Int (result i64)))
 (import "vera" "state_put_Int" (func $vera.state_put_Int (param i64)))
 ```
 
-Each concrete `State<T>` type (`State<Int>`, `State<Bool>`, `State<Nat>`, `State<Float64>`) generates a separate pair of imports. The host runtime maintains mutable state cells per type, initialized to zero. Mixed effects (e.g. `effects(<State<Int>, IO>)`) are supported — both sets of imports are emitted.
+Each concrete `State<T>` type (`State<Int>`, `State<Bool>`, `State<Nat>`, `State<Float64>`) generates a separate set of imports. The host runtime maintains mutable state cells per type, initialized to zero. Mixed effects (e.g. `effects(<State<Int>, IO>)`) are supported — both sets of imports are emitted.
 
 ## 11.8 Runtime Contract Insertion
 
@@ -398,12 +404,14 @@ An instruction that traps by itself names its cause through what the engine says
 vera compile <file.vera>
 ```
 
-Runs the full pipeline (parse → typecheck → verify → compile) and writes a `.wasm` binary file.
+Parses, type-checks and compiles the program, and writes a `.wasm` binary file. It does not run the verifier: a program whose contract `vera verify` refutes still compiles, and the contract is checked at run time (Section 11.8). Run `vera verify` for the static result.
 
 Flags:
 - `--wat` — print WAT text to stdout instead of writing binary
 - `--json` — JSON output with diagnostics and compilation summary
-- `-o <path>` — specify output file path (default: same name with `.wasm` extension)
+- `-o <path>` — specify output file path (default: same name with `.wasm` extension; a directory for `--target browser`)
+- `--target <t>` — `wasm` (default), `browser` (a bundle of WASM, JavaScript runtime and HTML; Chapter 12, Section 12.9.5) or `wasi-p2` (a WASI Preview 2 component; Chapter 13)
+- `--world <w>` — with `--target wasi-p2`: `cli` (default) or `server` (a `wasi:http` component)
 
 ### 11.9.2 `vera run`
 
@@ -411,10 +419,11 @@ Flags:
 vera run <file.vera>
 ```
 
-Runs the full pipeline through execution. Compiles the program, instantiates it with wasmtime, and calls the entry function.
+Parses, type-checks and compiles the program, instantiates it with wasmtime, and calls the entry function. Like `vera compile`, it does not run the verifier.
 
 Flags:
-- `--fn <name>` — function to call (default: `main`)
+- `--fn <name>` — function to call (default: `main`, else the first exported function)
+- `--target wasi-p2` — execute under the built-in WASI 0.2 host (Chapter 13)
 - `--json` — JSON output with result, stdout capture, and diagnostics
 - Arguments after `--` are passed to the function (typed: `Int`→integer, `Float64`→decimal, `Bool`→`true`/`false`, `String`→text, `Byte`→integer 0–255)
 
@@ -492,25 +501,29 @@ call_indirect (type $closure_sig_N)    ;; indirect call
 
 ## 11.11 Effect Handler Compilation
 
-The `handle[Effect<T>]` expression compiles effect handlers to WASM. Currently, `State<T>` handlers are supported via the existing host import mechanism (Section 11.7.2).
+The `handle[Effect<T>]` expression compiles effect handlers to WASM. `State<T>` handlers use host imports (Section 11.7.2) and `Exn<E>` handlers use WASM exception handling (Section 11.11.4). A handler for any other effect drops its function with `E602` ([#1597](https://github.com/aallan/vera/issues/1597)).
 
 ### 11.11.1 State Handler Compilation
 
 A `handle[State<T>](@T = init) { clauses } in { body }` expression compiles to:
 
-1. **Initialize state**: compile `init` expression, call `$vera.state_put_T`
-2. **Compile body**: with `get`/`put` mapped to `$vera.state_get_T`/`$vera.state_put_T` host imports
-3. **Return body result**: the handle expression evaluates to the body's final expression
+1. **Push a cell**: compile the `init` expression, then call `$vera.state_push_T`, which gives this handler its own cell
+2. **Initialize state**: call `$vera.state_put_T` with the `init` value
+3. **Compile body**: with `get`/`put` mapped to `$vera.state_get_T`/`$vera.state_put_T` host imports
+4. **Pop the cell**: call `$vera.state_pop_T`; the handle expression evaluates to the body's final expression
 
 ```wat
 ;; handle[State<Int>](@Int = 42) { ... } in { put(get(()) + 1); get(()) }
+;; (the overflow check on + is omitted)
 i64.const 42                ;; init expr
+call $vera.state_push_Int   ;; this handler's cell
 call $vera.state_put_Int    ;; initialize state
 call $vera.state_get_Int    ;; get(())
 i64.const 1
 i64.add
 call $vera.state_put_Int    ;; put(get(()) + 1)
 call $vera.state_get_Int    ;; get(()) — body result
+call $vera.state_pop_Int    ;; drop this handler's cell
 ```
 
 ### 11.11.2 Handler Clauses as Specifications
@@ -531,7 +544,7 @@ A `handle[State<T>]` expression discharges the `State<T>` effect. This means a f
 
 Cross-function throws work via WASM stack unwinding — no additional codegen is needed for functions that declare `effects(<Exn<E>>)` and call `throw`.
 
-Custom effect handlers (general continuations) are not yet compilable. Functions containing unsupported handler types are skipped with a warning.
+Custom effect handlers (general continuations) are not yet compilable. Functions containing unsupported handler types are skipped with an `E602` warning ([#1597](https://github.com/aallan/vera/issues/1597)).
 
 ## 11.12 Array Compilation
 
@@ -544,7 +557,7 @@ Element sizes in linear memory:
 | Element Type | Byte Size | Load Op | Store Op |
 |-------------|-----------|---------|----------|
 | `Byte` | 1 | `i32.load8_u` | `i32.store8` |
-| `Bool` | 4 | `i32.load` | `i32.store` |
+| `Bool` | 1 | `i32.load8_u` | `i32.store8` |
 | `Int` / `Nat` | 8 | `i64.load` | `i64.store` |
 | `Float64` | 8 | `f64.load` | `f64.store` |
 
@@ -620,7 +633,7 @@ Both quantifiers short-circuit: `forall` exits on the first false result, `exist
 
 ## 11.15 Refinement Type Alias Compilation
 
-Refinement type aliases (e.g. `type PosInt = { @Int | @Int.0 > 0 }`) are compiled by resolving through the alias and refinement to the underlying base type. The refinement predicate is a verification-only construct — it constrains the type statically but produces no runtime code.
+Refinement type aliases (e.g. `type PosInt = { @Int | @Int.0 > 0 }`) are compiled by resolving through the alias and refinement to the underlying base type. The predicate does not change the representation, but it does produce runtime code: where a value is narrowed into the refined type — a `let` binding, a parameter, a return — code generation lowers the predicate to a guard that traps when it is false. A predicate the backend cannot lower at a function boundary is refused (`E617`, `E618`); Section 11.17 lists the narrowings that take no guard.
 
 When the compiler encounters a type alias in a function signature or slot reference, it resolves the alias chain: if the alias target is a `RefinementType`, the compiler recurses into its base type. This continues until a concrete primitive or ADT type is reached. For example:
 
@@ -638,13 +651,13 @@ The compilation process:
 
 1. **Registration**: For each resolved module, register all function signatures, ADT layouts, and type aliases. Imported names are injected via `setdefault` so local definitions shadow imports.
 2. **Compilation**: After compiling local functions, compile all imported function bodies (including private helpers) as internal (non-exported) WASM functions.
-3. **Call desugaring**: `ModuleCall` nodes (e.g. `math.abs(x)`) are desugared to flat `FnCall` nodes (e.g. `abs(x)`) since the imported function exists in the same WASM module.
+3. **Call desugaring**: `ModuleCall` nodes (e.g. `math::abs(x)`) are desugared to flat `FnCall` nodes, since the imported function exists in the same WASM module. The target is the bare name (`abs(x)`) when the importing namespace's bare name denotes that declaration, and the owner-qualified `mod$<path>$abs` when a local declaration shadows it (or, for a shadowed generic, that name's per-instantiation clone), so a qualified call always reaches the module's function.
 
 **Cross-module generics** ([#774](https://github.com/aallan/vera/issues/774)): an imported `public forall<…>` function is *not* compiled verbatim (a generic body has no single WASM representation). Instead the **importer monomorphizes it** at its own call sites — the same Pass-1.5 discovery + emission it runs for its local generics — and emits the concrete clones into its own flat module. A clone whose contract is not statically discharged at its instantiation carries the usual Tier-3 runtime guard, so it is sound at run. This holds for both the bare call form and the module-qualified form (`m::gid(...)`). When a local *non-generic* function shadows the imported generic's bare name (§8.5.2), the bare name keeps resolving to the local; only the module-qualified call reaches the module's generic (its clone is emitted under a distinct `mod$…` name). Code generation and the verifier discover the same instantiation set (a shared monomorphizer, reading the same per-file checker records), so a cross-module clone is never emitted un-verified — including one an imported module's own body instantiates, through a call qualified in that module's source. A clone is measured and compiled in the namespace that declared its generic — the prelude's for a prelude combinator, the defining module's for a module's generic — so the names its own source writes mean what they mean there; its type arguments come from the namespace that instantiated it, and are spelled there before they name the clone: an alias resolved to its target, a refinement reduced to its base, a data type by its name. The data types they name are members of the clone's namespace while it is measured, so a generic instantiated at a type its declaring namespace neither declares nor imports has the same representation as at the call.
 
 Imported functions are **not** exported from the WASM module — only the importing program's `public` functions are exports.
 
-**Name collision detection**: If two imported modules define a function (E608), data type (E609), or constructor (E610) with the same name, the compiler reports an error listing both modules. These rails are the backstop behind the check-phase refusal of §8.5.2.2 (E155/E156/E157), which reports the same shape earlier and in the namespace that holds it. They refuse a wider set, because they read the declarations rather than any namespace's imports: E608 fires for two modules' same-named **function** declarations that would share the flattened `$name`, and only those: the exception is about OWNERSHIP of that name, not about genericity. A declaration the importing namespace's bare name does not denote — private, outside the import filter, shadowed by a local declaration, or reached only transitively — is emitted under `mod$<path>$name` instead (§11.16's qualified-only naming rule), so when NEITHER declaration owns the bare name the two cannot overwrite each other and the rail is silent. Where exactly one owns it, the pair is admitted only between two top-level generics, whose clones are named per owner; a non-generic owner takes the bare `$name` and the other would overwrite it. E609 and E610 have two exceptions, one about layouts and one about ownership. **Layouts**: the flat namespace holds one constructor layout per name, so two modules' same-named `data` declarations collide only when their *shapes* differ — different constructors, a different constructor order (the tag is the position), or different field types; type parameters are compared by position. Two modules that declare the same layout share the one slot and compile, and E610 admits their shared constructor names in lockstep. **Ownership**: two differently-shaped declarations are also admitted when no namespace can *meet* them. A `data` declaration the entry's bare name does not denote is emitted under `mod$<path>$<Name>`, with its constructors, exactly as a shadowed function is — so ADT identity is `(owner, name)` by construction and the two never contend for one slot. A namespace **meets** two declarations when it imports the bare name from both, or when a declaration it imports carries a value of the type in its signature — its parameters, its return type, an ADT's constructor fields, an effect operation's types — while it can also reach the other. That second route is not optional: two same-named cross-module ADTs unify, so an entry importing `liba::aone(@Int -> @Shape)` and `libb::bone(@Shape -> @Int)` may write `bone(aone(6))` even under filters that exclude the type, and qualifying the two apart would read `liba`'s value through `libb`'s tags. Where a namespace can meet them, E609 / E610 refuse the pair. The prelude's own `data` names — `Option`, `Result`, `Ordering`, `UrlParts` and every name the prelude can provide — are never qualified away: a module declaring one contends with the prelude and is E621's, on the same reservation that gives built-in function names to E151, built-in effect names to E152 and built-in ADT names to E158. Per-owner identity is a rule between **user modules**. The entry file's own declaration is likewise not a party — its contention with a module's is E623's — though where several modules contend and the entry declares the name too, the entry can reach none of them, all of them are qualified, and E623 has no pair left to report. For a **function** name the remedies are §8.5.2.2's — a selective import, or a local declaration plus the module-qualified form — and the second is what the ownership exception above exists to make reachable: declaring the name locally shadows every module's version of it, so each is emitted under its own `mod$<path>$name` and each `m::name(...)` call reaches its own module. For two differently-shaped **data type** or **constructor** declarations, the import-side changes are the remedies wherever they leave the two unable to meet: narrowing the filter, declaring the name locally, or making one declaration private each keeps the declarations apart, and each is then compiled under its own owner-qualified symbol with its own layout for its own constructor sites. Where a namespace can still meet them — importing the name from both, or importing a signature that carries a value of one while reaching the other — rename one in its source module. A qualified call does not by itself disambiguate a bare-name clash — §8.5.2.2 refuses the ambiguity rather than resolving it by spelling — but paired with a local declaration, which is what removes the ambiguity, it reaches each module's own declaration. The forward-compatible alternative §8.5.2.2 leaves open is defining a resolution order for the bare name, not mangling it away.
+**Name collision detection**: If two imported modules define a function (E608), data type (E609), or constructor (E610) with the same name, the compiler reports an error listing both modules. These rails are the backstop behind the check-phase refusal of §8.5.2.2 (E155/E156/E157), which reports the same shape earlier and in the namespace that holds it. They refuse a wider set, because they read the declarations rather than any namespace's imports: E608 fires for two modules' same-named **function** declarations that would share the flattened `$name`, and only those: the exception is about OWNERSHIP of that name, not about genericity. A declaration the importing namespace's bare name does not denote — private, outside the import filter, shadowed by a local declaration, or reached only transitively — is emitted under `mod$<path>$name` instead (§8.9.1's qualified-only naming rule), so when NEITHER declaration owns the bare name the two cannot overwrite each other and the rail is silent. Where exactly one owns it, the pair is admitted only between two top-level generics, whose clones are named per owner; a non-generic owner takes the bare `$name` and the other would overwrite it. E609 and E610 have two exceptions, one about layouts and one about ownership. **Layouts**: the flat namespace holds one constructor layout per name, so two modules' same-named `data` declarations collide only when their *shapes* differ — different constructors, a different constructor order (the tag is the position), or different field types; type parameters are compared by position. Two modules that declare the same layout share the one slot and compile, and E610 admits their shared constructor names in lockstep. **Ownership**: two differently-shaped declarations are also admitted when no namespace can *meet* them. A `data` declaration the entry's bare name does not denote is emitted under `mod$<path>$<Name>`, with its constructors, exactly as a shadowed function is — so ADT identity is `(owner, name)` by construction and the two never contend for one slot. A namespace **meets** two declarations when it imports the bare name from both, or when a declaration it imports carries a value of the type in its signature — its parameters, its return type, an ADT's constructor fields, an effect operation's types — while it can also reach the other. That second route is not optional: two same-named cross-module ADTs unify, so an entry importing `liba::aone(@Int -> @Shape)` and `libb::bone(@Shape -> @Int)` may write `bone(aone(6))` even under filters that exclude the type, and qualifying the two apart would read `liba`'s value through `libb`'s tags. Where a namespace can meet them, E609 / E610 refuse the pair. The prelude's own `data` names — `Option`, `Result`, `Ordering`, `UrlParts` and every name the prelude can provide — are never qualified away: a module declaring one contends with the prelude and is E621's, on the same reservation that gives built-in function names to E151, built-in effect names to E152 and built-in ADT names to E158. Per-owner identity is a rule between **user modules**. The entry file's own declaration is likewise not a party — its contention with a module's is E623's — though where several modules contend and the entry declares the name too, the entry can reach none of them, all of them are qualified, and E623 has no pair left to report. For a **function** name the remedies are §8.5.2.2's — a selective import, or a local declaration plus the module-qualified form — and the second is what the ownership exception above exists to make reachable: declaring the name locally shadows every module's version of it, so each is emitted under its own `mod$<path>$name` and each `m::name(...)` call reaches its own module. For two differently-shaped **data type** or **constructor** declarations, the import-side changes are the remedies wherever they leave the two unable to meet: narrowing the filter, declaring the name locally, or making one declaration private each keeps the declarations apart, and each is then compiled under its own owner-qualified symbol with its own layout for its own constructor sites. Where a namespace can still meet them — importing the name from both, or importing a signature that carries a value of one while reaching the other — rename one in its source module. A qualified call does not by itself disambiguate a bare-name clash — §8.5.2.2 refuses the ambiguity rather than resolving it by spelling — but paired with a local declaration, which is what removes the ambiguity, it reaches each module's own declaration. The forward-compatible alternative §8.5.2.2 leaves open is defining a resolution order for the bare name, not mangling it away.
 
 An imported module's data type may collide with one the **prelude** provides in the same way, and the compiler reports **E621** at the module's declaration. The prelude's declarations are compiled into this same flat namespace, which holds one layout per name, so two declarations of a prelude name contend exactly when their *shapes* differ — different constructors, a different constructor order (the tag is the position), or different field types; type parameters are compared by position, so renaming one is not a difference. A module that restates the prelude's type shares the one layout and compiles. The diagnostic names the module and the type and offers both resolutions: rename it in the module, or give it the prelude's shape.
 
@@ -656,4 +669,4 @@ Whether the prelude is compiling its own declaration of that name depends on whi
 
 ## 11.17 Limitations
 
-The Tier-3 runtime guard for the `@Nat >= 0` narrowing invariant covers every concrete binding site, the function **return** position ([#758](https://github.com/aallan/vera/issues/758)), and generic function-formal calls (guarded on the monomorphised callee).  Every `@Nat` PATTERN-BIND site is guarded in the sign direction — the handler-clause binder included since [#1445](https://github.com/aallan/vera/issues/1445), which also gave a refined binder its §2.6.5 predicate ([#1448](https://github.com/aallan/vera/issues/1448)) — and so are two construction positions: the constructor field, and the tuple component, whose built-in `Tuple` carrier has no per-field `@Nat` metadata and reads its target from the threaded table like every other component since [#1416](https://github.com/aallan/vera/issues/1416).  The array element and the `Map` value joined them in [#1440](https://github.com/aallan/vera/issues/1440), so all four construction positions are guarded in both directions — the §2.6.5 PREDICATE at each since [#1426](https://github.com/aallan/vera/issues/1426), for the refinement bases the lowering can compare.  A clause binder is guarded exactly when it NARROWS what the operation delivers: `throw(@Nat)` on an `Exn<Int>` handler and `put(@Pos)` on a `State<Int>` one are guarded, and a binder at the payload's own type is not, because the value already satisfies it.  That question is one derivation over the conjoined refinement chains — a declared type narrows when it bottoms out in a different base, or adds a predicate the payload does not already carry — and the obligation and the guard both read it, so neither can claim a check the other does not make.  A base that is itself a refinement, or one that erases at run time, takes no guard at any site.  At an internal bind that is disclosed `E506`; at a function BOUNDARY the compiler refuses it outright with `E618`, because there the verifier would otherwise promise a runtime check it cannot deliver (§11.2).  Two ARGUMENT sites stay unguarded and are disclosed rather than closed: `string_slice`, whose `@Nat` index arguments code generation deliberately does not guard because the builtin CLAMPS them to `[0, len]` (#475), so a negative becomes a valid `0` and no invalid `@Nat` propagates — the disclosure is `E504` and the roster is `_NAT_ARG_UNGUARDED_BUILTINS`, and a user-declared effect operation's argument, whose enclosing function is dropped with `E603`.  Every BUILT-IN effect operation's argument is guarded at its op-call site, from the declared formals the checker typed the call against (a user-declared effect's is not, its enclosing function being skipped — the exception stated above): the `State` write boundaries ([#1203](https://github.com/aallan/vera/issues/1203)), the `Exn` `throw` payload, which takes the §2.6.5 refinement-predicate guard beside the sign pair ([#1268](https://github.com/aallan/vera/issues/1268)), and every other built-in operation ([#754](https://github.com/aallan/vera/issues/754)).  A tripped sign guard reports `kind="nat_guard"`, whose Fix paragraph names the `requires(... >= 0)` that would discharge it.
+The Tier-3 runtime guard for the `@Nat >= 0` narrowing invariant covers every concrete binding site, the function **return** position ([#758](https://github.com/aallan/vera/issues/758)), and generic function-formal calls (guarded on the monomorphised callee).  Every `@Nat` PATTERN-BIND site is guarded in the sign direction — the handler-clause binder included ([#1445](https://github.com/aallan/vera/issues/1445)), where a refined binder also takes its §2.6.5 predicate ([#1448](https://github.com/aallan/vera/issues/1448)) — and so are two construction positions: the constructor field, and the tuple component, whose built-in `Tuple` carrier has no per-field `@Nat` metadata and reads its target from the threaded table like every other component ([#1416](https://github.com/aallan/vera/issues/1416)).  The array element and the `Map` value are guarded as well ([#1440](https://github.com/aallan/vera/issues/1440)), so all four construction positions are guarded in both directions — with the §2.6.5 PREDICATE at each ([#1426](https://github.com/aallan/vera/issues/1426)), for the refinement bases the lowering can compare.  A clause binder is guarded exactly when it NARROWS what the operation delivers: `throw(@Nat)` on an `Exn<Int>` handler and `put(@Pos)` on a `State<Int>` one are guarded, and a binder at the payload's own type is not, because the value already satisfies it.  That question is one derivation over the conjoined refinement chains — a declared type narrows when it bottoms out in a different base, or adds a predicate the payload does not already carry — and the obligation and the guard both read it, so neither can claim a check the other does not make.  A base that is itself a refinement, or one that erases at run time, takes no guard at any site.  At an internal bind that is disclosed `E506`; at a function BOUNDARY the compiler refuses it outright with `E618`, because there the verifier would otherwise promise a runtime check it cannot deliver (§11.2).  Two ARGUMENT sites stay unguarded and are disclosed rather than closed: `string_slice`, whose `@Nat` index arguments code generation deliberately does not guard because the builtin CLAMPS them to `[0, len]` (#475), so a negative becomes a valid `0` and no invalid `@Nat` propagates — the disclosure is `E504` and the roster is `_NAT_ARG_UNGUARDED_BUILTINS`, and a user-declared effect operation's argument, whose enclosing function is dropped with `E603`.  Every BUILT-IN effect operation's argument is guarded at its op-call site, from the declared formals the checker typed the call against (a user-declared effect's is not, its enclosing function being skipped — the exception stated above): the `State` write boundaries ([#1203](https://github.com/aallan/vera/issues/1203)), the `Exn` `throw` payload, which takes the §2.6.5 refinement-predicate guard beside the sign pair ([#1268](https://github.com/aallan/vera/issues/1268)), and every other built-in operation ([#754](https://github.com/aallan/vera/issues/754)).  A tripped sign guard reports `kind="nat_guard"`, whose Fix paragraph names the `requires(... >= 0)` that would discharge it.

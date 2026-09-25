@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-Grammar fix.
+Grammar fix and a language-client bump.
 
 - Grammar: the effect rule now carries all ten built-in effects —
   `HttpServer`, `Inference`, `Random` and `DB` were missing, so
@@ -11,6 +11,7 @@ Grammar fix.
   way and is corrected with it. A gate in the main repository
   (`scripts/check_editor_grammars.py`) now holds both against
   `vera effects --json`, so the next effect cannot land without them.
+- `vscode-languageclient` 10.1.0 → 10.1.1 (LSP protocol 3.18.3).
 
 ## 0.2.1
 

@@ -276,7 +276,7 @@
       <p>Programming languages have always co-evolved with their users. Assembly emerged from hardware constraints. C from operating systems. Python from productivity needs. If models become the primary authors of code, it follows that languages should adapt to that too.</p>
       <p class="thesis">The biggest problem models face isn't syntax &mdash; it's coherence over scale. Models are pattern matchers optimising for local plausibility, not architects holding the entire system in mind.</p>
       <p>The <a href="https://arxiv.org/abs/2307.12488">empirical literature</a> shows models are particularly vulnerable to naming-related errors: choosing misleading names, reusing names incorrectly, and losing track of which name refers to which value. Vera addresses this by making everything explicit and verifiable.</p>
-      <p>The model doesn't need to be right. It needs to be <em>checkable</em>. Names are replaced by structural references. Contracts are mandatory. Effects are typed. Every function is a specification the compiler verifies against its implementation.</p>
+      <p>The model doesn't need to be right. It needs to be <em>checkable</em>. Names are replaced by structural references. Contracts are mandatory. Effects are typed. Every function is a specification the compiler checks against its implementation: proving what it can, guarding most of the rest at run time, and saying which it can do neither for.</p>
       <img src="loop-web.svg" alt="The loop: the model writes Vera with mandatory contracts; the compiler type-checks every program, proves supported contract obligations via Z3, guards most of the rest at runtime, and discloses what it can neither prove nor guard; when it's wrong the diagnostics return — description, rationale, fix, spec_ref — and when the proofs hold it ships as one .wasm for CLI and browser, or a WASI component." width="828" height="188" loading="lazy" style="width:100%;max-width:860px;height:auto;display:block;margin:2.25rem auto">
       <p style="margin-top:1.5rem">For deeper questions about the design &mdash; why no variable names, what gets verified, how Vera compares to Dafny, Lean, and Koka &mdash; see the <a href="https://github.com/aallan/vera/blob/main/FAQ.md">FAQ</a>.</p>
     </div>
@@ -287,7 +287,7 @@
     <div class="col col-wide">
       <div class="eyebrow"><span class="slot">@section.02</span> · the syntax is the argument</div>
       <h2>What Vera Looks Like</h2>
-      <p class="lead">Nothing is implicit. The signature declares types, preconditions, postconditions, and effects. The compiler verifies the contract via SMT solver. A zero divisor the verifier can witness is a compile error (<code>E526</code>), not a runtime crash.</p>
+      <p class="lead">Nothing is implicit. The signature declares types, preconditions, postconditions, and effects. <code>vera verify</code> proves the contract with an SMT solver where it can, and the compiled program checks it at run time as well. A zero divisor the verifier can witness is refused (<code>E526</code>), not left to a runtime crash.</p>
 
       <div class="sample">
         <div class="code">
@@ -498,7 +498,7 @@
             </tbody>
           </table>
 
-          <p class="bench-caveat">Frontier models now write Vera <strong style="color:var(--ink-900)">as well as they write the languages they were trained on</strong>. Vera has the highest score, or level with it, for six of the nine models.</p>
+          <p class="bench-caveat">Frontier models write Vera <strong style="color:var(--ink-900)">as well as they write the languages they were trained on</strong>. Vera has the highest score, or level with it, for six of the nine models.</p>
 
           <p class="bench-caveat" style="margin-top:.75rem">Mandatory contracts and typed slot references appear to provide enough structure to compensate for zero training data. Every successful program came from a single skill file in context, written by a model that had never seen the language before.</p>
 
@@ -534,11 +534,12 @@
       <p class="ref-subhead">Key features</p>
       <div class="ref-grid ref-grid--flow">
         <div class="ref-item"><div class="title">No variable names</div><div class="desc">Typed <a href="https://github.com/aallan/vera/blob/main/DE_BRUIJN.md">De Bruijn indices</a> (<code>@T.n</code>) replace variable names: <code>@Int.0</code> is the most-recent <code>Int</code> binding, <code>@Int.1</code> the one before. The whole class of naming hallucinations is removed at the language level, not caught after the fact.</div></div>
-        <div class="ref-item"><div class="title">Full contracts</div><div class="desc">Mandatory preconditions, postconditions, and effect declarations on every function. Z3 generates test inputs from the contracts and runs them through WASM &mdash; no manual test cases.</div></div>
+        <div class="ref-item"><div class="title">Full contracts</div><div class="desc">Mandatory preconditions, postconditions, and effect declarations on every function, and a <code>decreases</code> measure &mdash; or the <code>Diverge</code> effect &mdash; on every recursive one. <code>vera test</code> has Z3 generate test inputs from the contracts and runs them through WASM &mdash; no manual test cases.</div></div>
         <div class="ref-item"><div class="title">SQL injection won&rsquo;t compile</div><div class="desc">The <code>&lt;DB&gt;</code> effect accepts only a literal query string &mdash; built from string literals, never spliced from a runtime value. Interpolating user input into SQL is a compile-time error (<code>E207</code>); every value flows through a <code>?</code> placeholder instead. Injection safety stops being a discipline you remember and becomes one the compiler enforces.</div></div>
-        <div class="ref-item"><div class="title">Algebraic effects</div><div class="desc">IO, Http, HttpServer, State, Exceptions, Async, Inference, DB, Random, Diverge &mdash; declared, typed, and handled explicitly. Pure by default.</div></div>
+        <div class="ref-item"><div class="title">Algebraic effects</div><div class="desc">IO, Http, HttpServer, State, Exceptions, Async, Inference, DB, Random, Diverge &mdash; declared and typed. <code>State</code> and <code>Exn</code> are handled in Vera code; the host effects are backed by the runtime. Pure by default.</div></div>
         <div class="ref-item"><div class="title">Refinement types</div><div class="desc">Types that express constraints like &ldquo;a list of positive integers of length <code>n</code>&rdquo;.</div></div>
-        <div class="ref-item"><div class="title">Three-tier verification</div><div class="desc">Static via <a href="https://www.microsoft.com/en-us/research/project/z3-3/">Z3</a> plus runtime fallback, shipped; the Z3-guided middle tier is specified, not yet implemented.</div></div>
+        <div class="ref-item"><div class="title">Three-tier verification</div><div class="desc">Static via <a href="https://www.microsoft.com/en-us/research/project/z3-3/">Z3</a> plus runtime fallback, shipped; the Z3-guided middle tier is specified, not yet implemented. What can be neither proved nor guarded is disclosed, and a <code>requires</code> that can never hold is refused rather than proving everything. <code>vera verify --timeout-ms</code> sets the per-query solver budget.</div></div>
+        <div class="ref-item"><div class="title">Traps that name their cause</div><div class="desc">A <code>@Nat</code> underflow, a failed contract or <code>assert</code>, an index out of bounds or an escaped exception reports its kind and a fix &mdash; the same on wasmtime, in the browser and under WASI 0.2.</div></div>
         <div class="ref-item"><div class="title">Language server</div><div class="desc">A warm Z3 session between keystrokes &mdash; proofs re-check at editor latency. Custom methods hand agents <a href="https://github.com/aallan/vera/blob/main/LSP_SERVER.md">proof deltas</a> before an edit lands.</div></div>
         <div class="ref-item"><div class="title">Diagnostics as instructions</div><div class="desc">Every error is a natural-language explanation with a concrete fix, designed for LLM consumption.</div></div>
         <div class="ref-item"><div class="title">LLM inference as effect</div><div class="desc"><code>Inference.complete</code> is an algebraic effect &mdash; typed, contract-verifiable, host-backed. Anthropic, OpenAI, Moonshot, Mistral, xAI, DeepSeek.</div></div>
@@ -616,6 +617,8 @@ vera version
 python -m pip install "veralang[lsp]"</pre>
       </div>
 
+      <p style="color:var(--ink-500);margin-top:1.25rem"><strong>Upgrading to 0.2.0:</strong> the checker and verifier are stricter than in 0.1.x, so a program 0.1.13 accepted may be refused &mdash; most often a recursive function with neither <code>decreases</code> nor <code>Diverge</code> (<code>E137</code>), or a <code>decreases</code> measure that is not proved to decrease (<code>E502</code>). The <a href="https://github.com/aallan/vera/blob/main/CHANGELOG.md">CHANGELOG</a> lists each new check.</p>
+
       <p style="color:var(--ink-500);margin-top:1.25rem">The wheel ships the compiler and the <code>vera</code> command. For the full environment &mdash; the bundled examples, conformance suite, and specification the agent docs teach from &mdash; or for compiler development and unreleased changes, install from source.</p>
 
       <div class="code-block">
@@ -674,7 +677,7 @@ vera compile --target browser examples/hello_world.vera</pre>
 <pre>mkdir -p ~/.claude/skills/vera-language
 cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md</pre>
       </div>
-      <p>For other models: point them at <a href="/SKILL.md">SKILL.md</a> via system prompt, file attachment, or retrieval. It's self-contained and works with any model that reads markdown.</p>
+      <p>For other models: point them at <a href="/SKILL.md">SKILL.md</a> via system prompt, file attachment, or retrieval. It's self-contained and works with any model that reads markdown. Every Vera example in it, and on this page, is checked, verified and, where it names an expected output, run in CI.</p>
 
       <p style="margin-top:2rem">The documents above are how machines <em>read</em> Vera. The <a href="https://github.com/aallan/vera/blob/main/LSP_SERVER.md">language server</a> is how they <em>interrogate</em> it: <code>vera lsp</code> holds a warm, incremental Z3 session between edits, and four custom methods &mdash; <code>vera/speculativeEdit</code>, <code>vera/proposeEdit</code>, <code>vera/strengthenContract</code>, <code>vera/addEffect</code> &mdash; let an agent learn whether an edit <em>keeps</em>, <em>breaks</em>, or <em>strengthens</em> a program's proofs before committing it, then apply it only through the verification gate.</p>
       <div class="code-block">

@@ -4,7 +4,7 @@ This document walks through Vera's key features with working code examples. Ever
 
 ## Contracts the compiler proves
 
-`requires(@Int.1 != 0)` means this function cannot be called with a zero divisor. The compiler checks every call site to prove the precondition holds. If it cannot prove it, the code does not compile: a divisor the verifier can witness as zero is an `E526` compile error with a counterexample, and only a divisor it can neither prove non-zero nor witness a zero for falls to a runtime guard.
+`requires(@Int.1 != 0)` means this function cannot be called with a zero divisor. `vera verify` checks every call site to prove the precondition holds: a divisor the verifier can witness as zero is refused with an `E501` error and a counterexample, and only a divisor it can neither prove non-zero nor witness a zero for falls to a runtime guard (`E532`).
 
 <!-- vera:run fn="safe_divide" args="2 10" stdout="5" -->
 ```vera
@@ -167,7 +167,7 @@ public fn main(@Unit -> @Unit)
 
 > [`examples/async_futures.vera`](examples/async_futures.vera) — run with `vera run examples/async_futures.vera`
 
-The scalar `async(@Int.0)` above evaluates **eagerly**: `Future<T>` is just `T`'s representation with no runtime overhead, and `await` unwraps it in place. But async is not always eager. Since #841, a direct whitelisted Http call under `async` — `async(Http.get(url))` or `async(Http.post(url, body))` with a call-free argument — runs **concurrently** in the native runtime: each request is issued on a host worker thread at the `async(...)` point, so firing several then awaiting them overlaps the round-trips. Every other shape stays eager, and the browser runtime is always eager (spec-conformant).
+The scalar `async(@Int.0)` above evaluates **eagerly**: `Future<T>` is just `T`'s representation with no runtime overhead, and `await` unwraps it in place. But async is not always eager. A direct whitelisted Http call under `async` — `async(Http.get(url))` or `async(Http.post(url, body))` with a call-free argument — runs **concurrently** in the native runtime: each request is issued on a host worker thread at the `async(...)` point, so firing several then awaiting them overlaps the round-trips. Every other shape stays eager, and the browser runtime is always eager (spec-conformant).
 
 ```vera
 private fn fetch_both(@String, @String -> @Bool)

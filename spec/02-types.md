@@ -17,7 +17,7 @@ Every expression in a Vera program has a statically determined type. There is no
 | Type | Description | Size | Range / Values |
 |------|-------------|------|----------------|
 | `Int` | Signed 64-bit integer | 8 bytes | -2^63 to 2^63 - 1 |
-| `Nat` | Non-negative integer | 8 bytes | 0 to 2^63 - 1 |
+| `Nat` | Non-negative integer | 8 bytes | 0 to 2^64 - 1 |
 | `Bool` | Boolean | 1 byte | `true`, `false` |
 | `Float64` | IEEE 754 double | 8 bytes | Standard double-precision |
 | `String` | UTF-8 string | Variable | Immutable, heap-allocated |
@@ -52,7 +52,7 @@ These rules key on representation, not on the name `Unit`: a `Future` transparen
 
 The legal side of the line — a `@Unit` parameter declared and satisfied with the unit literal:
 
-<!-- vera:run fn="main" stdout="7" -->
+<!-- vera:run fn="use_poll" stdout="7" -->
 ```vera
 private fn poll(@Unit -> @Int)
   requires(true)
@@ -62,7 +62,7 @@ private fn poll(@Unit -> @Int)
   7
 }
 
-public fn main(@Unit -> @Int)
+public fn use_poll(@Unit -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
@@ -81,7 +81,7 @@ public fn main(@Unit -> @Int)
 Tuple<Int, String, Bool>
 ```
 
-Tuples are fixed-size, heterogeneous ordered collections. The empty tuple `Tuple<>` is equivalent to `Unit`.
+Tuples are fixed-size, heterogeneous ordered collections. There is no empty tuple: `Tuple<>` is a parse error, and the zero-size type is `Unit`.
 
 Tuple elements are accessed by type-indexed slot references within the destructured binding (see Chapter 3).
 
@@ -157,9 +157,9 @@ private data Color {
 
 Rules:
 
-1. The type name MUST begin with an uppercase letter.
+1. The type name MUST begin with an uppercase letter, and MUST NOT be a built-in type name (`Array`, `Map`, `Set`, `Decimal`, `Future`, `Tuple` or a primitive type name; E158).
 2. Constructor names MUST begin with an uppercase letter.
-3. Constructor names MUST be unique within the data declaration.
+3. Constructor names MUST be unique within the data declaration (E184), and across the file's `data` declarations (E159; §8.5.5).
 4. ADTs may be recursive (a constructor may reference the type being defined), but the recursion MUST be **regular**. In a declaration `N<P…>`, every occurrence of `N` — or of any type mutually recursive with it — MUST supply each type argument as either a **bare parameter of `N`**, or a type that does **not mention any parameter of `N`** at all. An argument that wraps a parameter inside another type constructor is rejected with **E129**.
 
     `data List<T> { Cons(T, List<T>), Nil }` passes the parameter along unchanged. `data Expr<T> { Lit(T), Add(Expr<Int>, Expr<Int>) }` uses a closed argument, and `data Decl { D(Body<Int>) }` with `data Body<T> { B(T, Decl) }` mixes the two across a mutually recursive pair — all regular. `data Nest<T> { N(Nest<Option<T>>), Z }` is not: `Option<T>` wraps the parameter, so each level's argument is larger than the last and the chain of instantiations — `Nest<Int>`, `Nest<Option<Int>>`, `Nest<Option<Option<Int>>>`, … — never repeats. Nothing that reasons over the type structurally can terminate on one: equality, code generation and verification each need the set of instantiations to be finite.
@@ -174,7 +174,7 @@ Rules:
 
 ### 2.4.1 ADT Invariants
 
-> **Status: Not yet implemented.** The `invariant(...)` clause on `data` declarations is specified here but is not currently working in the reference compiler — every documented form fails with `[E130] no <DataName> bindings in scope`, because the slot environment for the invariant predicate is not yet wired up.  Tracked in [#686](https://github.com/aallan/vera/issues/686) (successor to the now-closed #560 — that earlier issue was about removing the broken spec examples; the feature implementation is the remaining work).  Until the implementation lands, refinement types (Section 2.6) are the working alternative for expressing constraints on data values.
+> **Status: Not yet implemented.** The `invariant(...)` clause on `data` declarations is specified here but is not currently working in the reference compiler — every documented form fails with `[E130] no <DataName> bindings in scope`, because the slot environment for the invariant predicate is not yet wired up.  Tracked in [#686](https://github.com/aallan/vera/issues/686).  Until the implementation lands, refinement types (Section 2.6) are the working alternative for expressing constraints on data values.
 
 An ADT may declare an invariant that all values must satisfy:
 
@@ -192,21 +192,24 @@ When implemented, the invariant will be checked by the contract verifier at ever
 
 ## 2.5 Function Types
 
-Function types include parameter types, return type, and effect annotation:
+Function types include parameter types, return type, and effect annotation. The parameter and return types are written without the `@` a slot declaration carries:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="a bare function type, not a declaration" -->
 ```
-Fn(@Int, @Int -> @Int) effects(pure)
-```
-
-```
-Fn(@String -> @Unit) effects(<IO>)
+fn(Int, Int -> Int) effects(pure)
 ```
 
+<!-- vera:skip-parse category="FRAGMENT" reason="a bare function type, not a declaration" -->
 ```
-Fn(@Array<T>, Fn(@T -> @Bool) effects(<E>) -> @Array<T>) effects(<E>)
+fn(String -> Unit) effects(<IO>)
 ```
 
-A function type with no effects annotation defaults to `effects(pure)`.
+<!-- vera:skip-parse category="FRAGMENT" reason="a bare function type, not a declaration" -->
+```
+fn(Array<T>, fn(T -> Bool) effects(<E>) -> Array<T>) effects(<E>)
+```
+
+The effects clause is mandatory: a function type without one is a parse error (E002).
 
 Function types are first-class: functions can be passed as arguments, returned from functions, and stored in data structures.
 
@@ -225,7 +228,7 @@ More examples:
 ```
 { @Int | @Int.0 >= 0 && @Int.0 < 100 }       -- integers in [0, 100)
 { @Array<Int> | array_length(@Array<Int>.0) > 0 }   -- non-empty integer arrays
-{ @String | length(@String.0) <= 255 }         -- strings of at most 255 characters
+{ @String | string_length(@String.0) <= 255 }  -- strings of at most 255 bytes
 ```
 
 **Predicate well-formedness.** The predicate `P` is type-checked exactly like a contract predicate (Chapter 6): it MUST evaluate to `Bool`, and its operands are typed by the ordinary expression rules of Chapter 4. A predicate that is not `Bool` — a bare value such as `{ @Int | @Int.0 }` — is rejected with error `E126` (the refinement counterpart of `E123` for a non-`Bool` `requires()` and `E124` for a non-`Bool` `ensures()`), and an ill-typed predicate such as `{ @String | @String.0 < 3 }` is rejected by the offending operator's own rule (here `E142`, comparing a `String` with an `Int`). The predicate binder `@T.0` is the sole slot in scope, bound to the base type `T` — the predicate is checked in an isolated scope, so it cannot reference bindings from a surrounding function body or handler clause (any other slot reference is `E130`), regardless of where the refinement is written.
@@ -247,12 +250,12 @@ Refinement predicates MUST be drawn from the following decidable logic fragment:
 - Boolean connectives: `&&`, `||`, `!`, `==>`  (where `==>` is logical implication)
 - Conditional: `if P then { A } else { B }` over allowed sub-expressions, whose condition guards each branch (§2.6)
 - `array_length(@Array<T>.n)` — array length
-- `length(@String.n)` — string length
+- `string_length(@String.n)` — string length in bytes
 - `true`, `false`
 - Parenthesised sub-expressions
 
 **Not allowed in predicates (static verification):**
-- Function calls (except `length`)
+- Function calls (except `array_length` and `string_length`)
 - Non-linear arithmetic (e.g., `@Int.0 * @Int.1`)
 - Quantifiers (`forall`, `exists`)
 - Array element access
@@ -313,15 +316,15 @@ The discharge is a proof obligation like any other, never a comparison of declar
 An obligation drops to Tier 3 — reported as an `E506` warning rather than silently accepted — whenever the verifier reaches no verdict. The warning names which of the following applies, because they call for different responses:
 
 1. **The value being narrowed does not translate.** It uses a construct outside the decidable fragment (§2.6.1), so no term reaches the predicate. A value the verifier models only opaquely falls here too: an effect-operation result, a closure body (never entered), or a scrutinee or destructure source it cannot project to the field or component the predicate is about.
-2. **The refinement's base is one the verifier does not model.** Only `@Int`, `@Nat`, `@Bool`, `@Float64` and `@String` have their binder substituted, so the predicate is never given a value to reason about. This is a property of the *base*, not of the predicate, which may be perfectly decidable: `{ @Array<Int> | array_length(...) > 0 }` is Tier 3 although `array_length(...) > 0` is in the fragment, and so is `{ @Byte | @Byte.0 < 10 }` although `@Byte` is a primitive (§2.1) and the comparison is well-typed by the literal-typing-from-context relaxation §2.6 states for a `@Byte` base (§4.2). Codegen lowers such a predicate regardless, so a boundary narrowing is still checked at run time (§2.6.5). A **concrete** narrowing is decided whatever the base, because a literal needs no model: the value is substituted into the predicate and evaluated, so narrowing `200` into `{ @Byte | @Byte.0 < 10 }` is an `E505` naming the value and narrowing `5` is a Tier-1 proof. Only a narrowing that does not reduce to a truth value falls to Tier 3 here — a symbolic value, or a predicate whose operands the verifier models by something other than evaluation.
+2. **The refinement's base is one the verifier does not model.** Only `@Int`, `@Nat`, `@Bool`, `@Float64` and `@String` have their binder substituted, so the predicate is never given a value to reason about. This is a property of the *base*, not of the predicate, which may be perfectly decidable: `{ @Array<Int> | array_length(...) > 0 }` is Tier 3 although `array_length(...) > 0` is in the fragment, and so is `{ @Byte | @Byte.0 < 10 }` although `@Byte` is a primitive (§2.2) and the comparison is well-typed by the literal-typing-from-context relaxation §2.6 states for a `@Byte` base (§4.2). Codegen lowers such a predicate regardless, so a boundary narrowing is still checked at run time (§2.6.5). A **concrete** narrowing is decided whatever the base, because a literal needs no model: the value is substituted into the predicate and evaluated, so narrowing `200` into `{ @Byte | @Byte.0 < 10 }` is an `E505` naming the value and narrowing `5` is a Tier-1 proof. Only a narrowing that does not reduce to a truth value falls to Tier 3 here — a symbolic value, or a predicate whose operands the verifier models by something other than evaluation.
 3. **The predicate uses a construct outside the decidable fragment** (§2.6.1), over a base that is modelled.
 4. **The solver returns no verdict** — it declines to decide, or its only countermodel ranges over an opaque effect-operation stand-in and therefore refutes nothing the effect can actually produce. Neither is a refutation, so neither reports `E505`.
 
 ### 2.6.5 Runtime Guards
 
-A refinement predicate is also guarded at **runtime**: the compiler emits a predicate check at every function boundary — a refined parameter is checked at entry and a refined return at exit — that traps (via the contract-failure channel) if the value violates the predicate. So even a program compiled *without* `vera verify` rejects a refinement-violating value rather than silently accepting it; for example, calling `clamp_percent(@Int)` whose body returns a value outside `0..100` traps with a refinement-violation diagnostic. This holds at a `public`/FFI entry point too, where an untrusted caller cannot bypass the callee's entry guard. A call argument is covered by that guard, so the boundary checks compose to cover every narrowing whose result is consumed across a boundary; a purely internal narrowing (a `let`, match bind, destructure, constructor field, ADT sub-pattern bind, or a *user-declared* effect operation's argument that never crosses a boundary) is Tier-3-static-only — surfaced as an `E506` warning, not silently accepted.
+A refinement predicate is also guarded at **runtime**: the compiler emits a predicate check at every function boundary — a refined parameter is checked at entry and a refined return at exit — that traps (via the contract-failure channel) if the value violates the predicate. So even a program compiled *without* `vera verify` rejects a refinement-violating value rather than silently accepting it; for example, calling `clamp_percent(@Int)` whose body returns a value outside `0..100` traps with a refinement-violation diagnostic. This holds at a `public`/FFI entry point too, where an untrusted caller cannot bypass the callee's entry guard. A call argument is covered by that guard, so the boundary checks compose to cover every narrowing whose result is consumed across a boundary. An internal narrowing — a `let`, match bind, destructure, ADT sub-pattern bind, constructor field, tuple component, array element or `Map` value — is guarded where it happens. Two narrowings get no runtime guard and are reported as an unguarded `E506` warning, counted in no tier: a *user-declared* effect operation's argument, and a narrowing into a refinement whose base is itself a refinement.
 
-The boundary guard decomposes the parameter's own refinement and its **tuple** components, and stops there — and only at a function boundary, so a constructor field, a tuple component at construction, and an effect operation's argument are guarded at none of it. So a refinement written on a tuple component — `@Tuple<PosInt, Int>` — is checked at entry like any other boundary predicate, while one written on an **ADT payload** (`@Option<PosInt>`) or an **array element** (`@Array<PosInt>`) is checked at no boundary at all. An undischarged §2.6.4 component obligation is therefore reported against what the guard actually covers: a guarded Tier 3 for a tuple component, and an unguarded `E506` — counted in no tier — for the payload and element positions.
+The boundary guard decomposes the parameter's own refinement and its **tuple** components, and stops there. So a refinement written on a tuple component — `@Tuple<PosInt, Int>` — is checked at entry like any other boundary predicate, while one written on an **ADT payload** (`@Option<PosInt>`) or an **array element** (`@Array<PosInt>`) is checked at no boundary at all. An undischarged §2.6.4 component obligation is therefore reported against what the guard actually covers: a guarded Tier 3 for a tuple component, and an unguarded `E506` — counted in no tier — for the payload and element positions.
 
 The built-in `Exn` effect's `throw` payload is guarded, not internal. `throw(v)` narrows `v` into the `Exn<E>` payload and the value leaves the throwing function, but it crosses no *function* boundary on the way, so none of the composing checks above reaches it: the compiler emits the predicate check at the `throw` itself, and a violating payload traps there rather than arriving in a handler clause that has already assumed the predicate.
 
@@ -355,7 +358,7 @@ Type variables:
 
 Type variables may be constrained using ability constraints:
 
-<!-- vera:skip-parse category="FUTURE" reason="forall<T where Ord<T>> fn sort" -->
+<!-- vera:skip-parse category="FRAGMENT" reason="a signature with no contracts or body" -->
 ```
 private forall<T where Ord<T>> fn sort(@Array<T> -> @Array<T>)
 ```

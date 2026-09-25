@@ -19,7 +19,7 @@ public fn safe_divide(@Int, @Int -> @Int)
 }
 ```
 
-There are no variable names. `@Int.0` is the most recent `Int` binding; `@Int.1` is the one before. The `requires` clause is a precondition the compiler checks at every call site. The `ensures` clause is a postcondition the SMT solver proves statically. The function is `pure` — no side effects of any kind. If any of this is wrong, the code does not compile.
+There are no variable names. `@Int.0` is the most recent `Int` binding; `@Int.1` is the one before. The `requires` clause is a precondition `vera verify` checks at every call site. The `ensures` clause is a postcondition the SMT solver proves statically. The function is `pure` — no side effects of any kind. If a contract is wrong, `vera verify` refuses the program with a counterexample; a contract the solver can't decide becomes a runtime check. The compiled program checks its contracts at run time as well, so a proof that is wrong traps instead of returning a wrong answer.
 
 ## Why?
 
@@ -37,7 +37,7 @@ Four examples that show what makes Vera different. For the full tour — contrac
 
 ### Contracts the compiler proves
 
-A precondition like `requires(@Int.1 != 0)` becomes a static obligation: the SMT solver proves it holds at every call site, or refuses to compile.  A program that calls `safe_divide` with a divisor the verifier can't prove non-zero is a compile error, not a runtime error.
+A precondition like `requires(@Int.1 != 0)` becomes a static obligation at every call site.  A call to `safe_divide` whose divisor the verifier can show may be zero is refused with a counterexample (`E501`); a divisor it can neither prove non-zero nor show may be zero is checked at run time (`E532`).
 
 <!-- vera:run fn="safe_divide" args="2 10" stdout="5" -->
 ```vera
@@ -50,7 +50,7 @@ public fn safe_divide(@Int, @Int -> @Int)
 }
 ```
 
-The compiler synthesises the same obligations for primitive operations themselves.  Computing `@Int.1 / @Int.0` where the verifier finds the divisor can be zero is now a compile error (E526), not a runtime trap (an opaque or untranslatable divisor it can neither prove non-zero nor witness a zero for stays Tier 3, guarded at runtime by the zero-divisor trap); an array index is proved in bounds where the length is statically known, a compile error (E527) where provably out of bounds, and otherwise bounds-checked at runtime; `@Nat` subtraction underflow and `@Int` → `@Nat` narrowing are checked the same way.  So a division or array index that `vera verify` reports as proven is safe for all inputs; where it can't prove one — an opaque divisor, a dynamic array length, or an op inside a closure body — the runtime guard catches it rather than silently producing a wrong value.  (Float division is exempt: divide-by-zero yields inf/NaN, not a trap.)
+The compiler synthesises the same obligations for primitive operations themselves.  Computing `@Int.1 / @Int.0` where the verifier finds the divisor can be zero is refused by `vera verify` (E526), not left to a runtime trap (an opaque or untranslatable divisor it can neither prove non-zero nor witness a zero for stays Tier 3, guarded at runtime by the zero-divisor trap); an array index is proved in bounds where the length is statically known, refused (E527) where provably out of bounds, and otherwise bounds-checked at runtime; `@Nat` subtraction underflow and `@Int` → `@Nat` narrowing are checked the same way.  So a division or array index that `vera verify` reports as proven cannot divide by zero or index out of range for any input (`INT_MIN / -1` still traps at run time with no obligation, [#1598](https://github.com/aallan/vera/issues/1598)); where it can't prove one — an opaque divisor, a dynamic array length, or an op inside a closure body — the runtime guard catches it rather than silently producing a wrong value.  (Float division is exempt: divide-by-zero yields inf/NaN, not a trap.)
 
 ### Effects are explicit
 
@@ -121,7 +121,7 @@ Traditional compilers produce diagnostics for humans: `expected token '{'`. Vera
   See: Chapter 5, Section 5.2 "Function Declaration Syntax"
 ```
 
-Every diagnostic has a stable error code (`E001`–`E702`) and is available as structured JSON via the `--json` flag.
+Diagnostics carry stable codes (errors `E001`–`E702`, warnings `W001`–`W003`) and are available as structured JSON via the `--json` flag.
 
 ## Getting started
 
@@ -148,6 +148,8 @@ name belongs to an unrelated project on PyPI. The wheel ships the compiler and
 the `vera` command only — the bundled `examples/`, the conformance suite, and
 the specification live in the repository, not in the wheel.
 
+**Upgrading to 0.2.0:** the checker and verifier are stricter than in 0.1.x, so a program 0.1.13 accepted may be refused — most often a recursive function with neither `decreases` nor `Diverge` (`E137`), a `decreases` measure that is not proved to decrease (`E502`), or a name, type or effect the checker cannot resolve, which is an error rather than a warning. The [CHANGELOG](CHANGELOG.md) lists each new check.
+
 The GitHub source route is the recommended environment for agents and for
 anyone learning the language — it provides the examples, conformance programs,
 and spec that [SKILL.md](SKILL.md) teaches from, alongside the toolchain — and
@@ -173,7 +175,7 @@ Tested in CI on every commit:
 - **macOS 15 (Sequoia) and macOS 26 (Tahoe)** on Apple Silicon, against Python 3.11, 3.12, 3.13
 - **Ubuntu 24.04 LTS** on x86_64, against Python 3.11, 3.12, 3.13
 - **Ubuntu 24.04 LTS** on aarch64, against Python 3.12 (advisory job — runs on every commit, does not gate merges yet)
-- **Windows Server 2022** on x86_64, against Python 3.11, 3.12, 3.13
+- **Windows Server 2025** on x86_64, against Python 3.11, 3.12, 3.13
 
 Untested but expected to work (wheels available for all dependencies):
 
@@ -198,13 +200,13 @@ OK: examples/absolute_value.vera
 
 $ vera verify examples/safe_divide.vera
 OK: examples/safe_divide.vera
-Verification: 4 verified (Tier 1)
+Verification: 6 verified (Tier 1)
 
 $ vera run examples/hello_world.vera
 Hello, World!
 ```
 
-`vera check` parses and type-checks. `vera verify` adds contract verification via Z3 — Tier 1 contracts (decidable arithmetic, comparisons, Boolean logic, ADTs, termination) are proved automatically; contracts Z3 cannot decide become Tier 3 runtime checks. `vera run` compiles to WebAssembly and executes.
+`vera check` parses and type-checks. `vera verify` adds contract verification via Z3 — Tier 1 contracts (decidable arithmetic, comparisons, Boolean logic, ADTs, termination) are proved automatically; contracts Z3 cannot decide become Tier 3 runtime checks, and the few sites with no runtime guard are disclosed as warnings (`E504`, `E506`, `E531`, `E537`) rather than counted in either tier. A function's premises are checked first: a `requires` or `assume` that can never hold is refused (`E538`), so a contradiction proves nothing. A query that runs out of solver time falls back to Tier 3; `--timeout-ms` raises the budget. `vera run` compiles to WebAssembly and executes; a runtime trap names its cause (`@Nat` underflow, a failed contract or `assert`, an index out of bounds, an escaped exception) with a fix.
 
 ```bash
 vera run file.vera --fn f -- 42           # call function f with argument 42
@@ -216,12 +218,13 @@ vera compile --target wasi-p2 --world server file.vera  # wasi:http server compo
 vera test file.vera                       # contract-driven testing via Z3 + WASM
 vera fmt file.vera                        # format to canonical form
 vera verify --json file.vera              # JSON diagnostics for agent feedback loops
+vera verify --timeout-ms 60000 file.vera  # raise the per-query Z3 budget (default 10000 ms)
 vera check --explain-slots file.vera     # show slot resolution table (which @T.n maps to which param)
 vera lsp                                 # serve the Language Server Protocol over stdio (see LSP_SERVER.md)
 vera version                             # print the installed version
 vera builtins --json                     # list the built-in function registry (no file needed)
 vera effects --json                      # list the effect and ability registry (no file needed)
-vera errors --json                       # list the diagnostic-code registry: E001–E702 + W001/W002 (no file needed)
+vera errors --json                       # list the diagnostic-code registry: E001–E702 + W001–W003 (no file needed)
 ```
 
 `vera compile --target browser` produces a self-contained bundle (wasm + JS runtime + HTML) that runs in any browser — no build step, no bundler. Mandatory parity tests ensure identical behaviour between the command-line and browser runtimes for the pure-language surface (arithmetic, ADTs, pattern matching, closures, contracts, effects-as-host-imports, etc.).  Two operations on that surface reach identity by emitting a canonical form the specification states rather than by the hosts happening to agree — `json_stringify` (spec §9.7.1) and `md_render` (§9.7.3) — so their tests assert the expected string as well as cross-host equality.  `md_parse` reaches it a third way: §9.7.3 states the grammar itself — the character classes it is written in, the order the block constructs claim a line, the width a list continuation loses — and both parsers read one shared table of its patterns, with a generated corpus parsed by both hosts on every PR and the resulting ADTs compared byte for byte.  Distinct from that: `Inference.complete`, `DB.query` and `DB.execute` return `Err` from every browser call by definition of the target, because the credential each needs would be readable from page source — reach them through a server-side endpoint called with `Http`, which does run in the browser.  The IO surface is the other documented exception: terminal Vera programs that rely on `IO.sleep` for animation pacing or ANSI escape codes for cursor control compile cleanly to `--target browser` but render the escapes as literal text and freeze the tab while sleeping — the browser target expects Vera to be the pure simulation core and JavaScript to drive timing and rendering ([SKILL.md §Browser compilation](SKILL.md#browser-compilation) has the recommended pattern).
@@ -255,12 +258,14 @@ cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md
 
 **Other models** — include `SKILL.md` in the system prompt, as a file attachment, or as a retrieval document. The file is self-contained and works with any model that can read markdown.
 
+Every Vera example in `SKILL.md`, this README, the FAQ, `EXAMPLES.md`, the spec and the website is checked, verified and, where it names an expected output, run in CI, so an agent learns from code that passes the toolchain.
+
 **Essential rules** for writing Vera code:
 
 1. Every function needs `requires()`, `ensures()`, and `effects()` between the signature and body
 2. Use `@Type.index` to reference bindings — `@Int.0` is the most recent `Int`, `@Int.1` is the one before
 3. Declare all effects — `effects(pure)` for pure functions, `effects(<IO>)` for IO, etc.
-4. Recursive functions need a `decreases()` clause
+4. Recursive functions need a `decreases()` clause, or `Diverge` in their effect row if they may not terminate (`E137`)
 5. Match expressions must be exhaustive
 
 ## Project status
@@ -269,9 +274,9 @@ Vera is in **active development** at v0.2.0: 3,000+ commits, 212 releases, 16,97
 
 The reference compiler — parser, AST, type checker, contract verifier (Z3), WASM code generator, module system, browser runtime, and runtime contract insertion — is working. The language specification is in draft across [14 chapters](spec/).
 
-**Key features delivered:** [typed De Bruijn indices](DE_BRUIJN.md) (`@T.n`), mandatory contracts, algebraic effects (IO, Http, HttpServer, State, Exceptions, Async, Inference, DB, Random, Diverge), refinement types, constrained generics (Eq, Ord, Hash, Show), algebraic data types, pattern matching, modules, 164 built-in functions (strings, arrays, maps, sets, decimals, math, JSON, HTML, Markdown, regex, base64, URL), contract-driven testing, canonical formatter, browser runtime, three-tier verification design (Z3 static and runtime fallback shipped; the Z3-guided tier is specified, not yet implemented), a [language server](LSP_SERVER.md) with warm incremental verification and agent-facing proof-delta methods, and contract-verified HTTP handlers served natively (`vera serve`) or as wasi:http components for stock `wasmtime serve` (`--target wasi-p2 --world server`).
+**Key features delivered:** [typed De Bruijn indices](DE_BRUIJN.md) (`@T.n`), mandatory contracts, termination checking (`decreases`, or `Diverge` for a function that may not terminate), algebraic effects (IO, Http, HttpServer, State, Exceptions, Async, Inference, DB, Random, Diverge; handlers compile for `State` and `Exn` only, [#1597](https://github.com/aallan/vera/issues/1597)), refinement types, constrained generics (Eq, Ord, Hash, Show), algebraic data types, pattern matching, modules, 164 built-in functions (strings, arrays, maps, sets, decimals, math, JSON, HTML, Markdown, regex, base64, URL), contract-driven testing, runtime traps that name their cause, canonical formatter, browser runtime, three-tier verification design (Z3 static and runtime fallback shipped; the Z3-guided tier is specified, not yet implemented), a [language server](LSP_SERVER.md) with warm incremental verification and agent-facing proof-delta methods, and contract-verified HTTP handlers served natively (`vera serve`) or as wasi:http components for stock `wasmtime serve` (`--target wasi-p2 --world server`).
 
-**What's next:** the path from "working language" to "the language agents actually use" — see **[ROADMAP.md](ROADMAP.md)** for the four strategic milestones. The flagship goal is a verified MCP tool server where contracts guarantee tool schemas at compile time. **[VeraBench](https://github.com/aallan/vera-bench)** — a 60-problem benchmark across 5 difficulty tiers — now covers 9 models across 3 providers (v0.0.18). The headline result: six of the nine write 100% correct Vera, a language none of them was trained on. Vera has the highest score, or level with it, for six of the nine models. The metric is **% solved** (pass@1): a refusal, a compile failure, a crash and a wrong answer all count alike as not solved. This is the first sweep in which all 60 problems are graded, so a single problem moves a score by 1.7 percentage points and most gaps are one or two problems wide — see the [full report](https://github.com/aallan/vera-bench) for details.
+**What's next:** the path from "working language" to "the language agents actually use" — see **[ROADMAP.md](ROADMAP.md)** for the four strategic milestones. The flagship goal is a verified MCP tool server where contracts guarantee tool schemas at compile time. **[VeraBench](https://github.com/aallan/vera-bench)** — a 60-problem benchmark across 5 difficulty tiers — covers 9 models across 3 providers (VeraBench v0.0.18, measured on Vera v0.1.8). The headline result: six of the nine write 100% correct Vera, a language none of them was trained on. Vera has the highest score, or level with it, for six of the nine models. The metric is **% solved** (pass@1): a refusal, a compile failure, a crash and a wrong answer all count alike as not solved. This is the first sweep in which all 60 problems are graded, so a single problem moves a score by 1.7 percentage points and most gaps are one or two problems wide — see the [full report](https://github.com/aallan/vera-bench) for details.
 
 Known bugs and open issues are tracked on the **[issue tracker](https://github.com/aallan/vera/issues)**. See **[KNOWN_ISSUES.md](KNOWN_ISSUES.md)** for a consolidated list.
 
@@ -303,10 +308,10 @@ vera/
 │   ├── parser.py                  #   Parser module
 │   ├── ast.py                     #   Typed AST node definitions
 │   ├── transform.py               #   Lark parse tree → AST transformer
-│   ├── resolver.py                #   Slot and name resolution
+│   ├── resolver.py                #   Module path resolution
 │   ├── checker/                   #   Type checker (mixin package)
 │   ├── verifier.py                #   Contract verifier (Z3)
-│   ├── codegen/                   #   Code generation (13 modules)
+│   ├── codegen/                   #   Code generation (12 modules)
 │   ├── wasm/                      #   WASM translation (19 modules)
 │   ├── browser/                   #   Browser runtime
 │   ├── formatter.py               #   Canonical code formatter
@@ -350,7 +355,7 @@ If you use Vera in your research, please cite:
 
 Vera is licensed under the [MIT License](LICENSE).
 
-Every dependency Vera redistributes is under a permissive licence compatible with MIT. `scripts/check_licenses.py` enforces this for the Python side on every commit and in CI, checking installed packages transitively; the npm packages the VS Code extension bundles are listed here but are not yet gate-enforced.
+Every dependency Vera redistributes is under a permissive licence compatible with MIT. `scripts/check_licenses.py` enforces this for the Python side on every commit that changes `pyproject.toml` and in CI, checking installed packages transitively; the npm packages the VS Code extension bundles are listed here but are not yet gate-enforced.
 
 | Dependency | Licence | Role |
 |-----------|---------|------|

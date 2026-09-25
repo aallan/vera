@@ -17,7 +17,7 @@ vera run --target wasi-p2 program.vera       # execute under the built-in wasip2
 **Status: experimental.**  The target covers the **IO and Random host
 families** (Section 13.4).  It is not a blanket "WASI 0.2 compliant"
 mode: a program using any other host family (Http, Map, Set, Decimal,
-Json, Html, Md, Regex, Math, Inference, State, Async) is rejected with
+Json, Html, Md, Regex, Math, Inference, DB, State, Async) is rejected with
 a diagnostic naming the unsupported family — never silently compiled
 against the core target instead.
 
@@ -230,7 +230,7 @@ pointing at `wasmtime serve`.  The native `vera serve` driver
 
 The dual-target differential in `tests/test_wasi_target.py` runs every
 deterministic run-level conformance program under both targets and
-requires byte-identical stdout/stderr: 71 of the 88 run-level programs
+requires byte-identical stdout/stderr: 124 of the 176 run-level programs
 execute identically (the remainder use host families outside the
 target's surface, have no `main`, or depend on wall-clock time).  A
 stock-host smoke test additionally runs the compiled artifact under

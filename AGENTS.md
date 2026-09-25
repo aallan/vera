@@ -19,8 +19,20 @@ write .vera file -> vera check -> fix errors -> vera verify -> fix errors -> don
 Use **typed holes** (`?`) to build programs incrementally. A `?` in any expression position is valid — `vera check` reports a `W001` warning with the expected type and all available slot bindings:
 
 ```text
-Warning [W001]: Typed hole: expected Int.
-Fix: Replace ? with an expression of type Int. Available bindings: @Int.0: Int; @Int.1: Int.
+warning: [W001] Warning at file.vera, line 6, column 3:
+
+      ?
+      ^
+
+  Typed hole: expected Int.
+
+  ? is a placeholder for an incomplete expression. The compiler reports the expected type and available bindings so the hole can be filled in.
+
+  Fix:
+
+    Replace ? with an expression of type Int. Available bindings: @Int.0: Int; @Int.1: Int.
+
+  See: Chapter 4, Section 4.17 "Typed Holes"
 ```
 
 Programs with holes type-check (`ok: true`) but cannot compile (`E614`). Iterative workflow:
@@ -102,7 +114,7 @@ For machine-parseable errors, use the `--json` flag:
 
 ### Error codes
 
-Every diagnostic has a stable error code. Common codes:
+Diagnostics carry stable codes (errors `E001`–`E702`, warnings `W001`–`W003`); a few still carry none ([#1490](https://github.com/aallan/vera/issues/1490)). Common codes:
 
 | Code | Meaning |
 |------|---------|
@@ -160,7 +172,7 @@ Read `vera/README.md` for architecture docs, module map, and design patterns.
 ### Pipeline
 
 ```
-source -> parse (parser.py) -> transform (transform.py) -> resolve (resolver.py) -> typecheck (checker.py) -> verify (verifier.py) -> compile (codegen/ + wasm/) -> execute (wasmtime or browser/runtime.mjs)
+source -> parse (parser.py) -> transform (transform.py) -> resolve (resolver.py) -> typecheck (checker/) -> verify (verifier.py) -> compile (codegen/ + wasm/) -> execute (wasmtime or browser/runtime.mjs)
 ```
 
 Each stage is a module with a single public API function (`parse_file`, `transform`, `resolve_imports`, `typecheck`, `verify`, `compile`, `execute`, `test`) and is independently testable.

@@ -119,8 +119,6 @@ Bindings in scope within the body:
 
 **Note**: Function parameters are ordered such that the **last** parameter is `@T.0` and the **first** parameter is `@T.{n-1}`. This matches De Bruijn convention: the most recently bound variable has index 0.
 
-**Wait — this is confusing.** Let's establish a clear convention:
-
 **Convention**: Parameters are bound left-to-right. The leftmost parameter is bound first (outermost). The rightmost parameter is bound last (innermost). Therefore, in a function `fn(@Int, @Int, @String -> ...)`:
 - The rightmost `@Int` (second parameter) is `@Int.0`
 - The leftmost `@Int` (first parameter) is `@Int.1`
@@ -134,10 +132,10 @@ This follows standard De Bruijn indexing where the most recently introduced bind
 ```
 fn(@Int, @String, @Int -> @String)
   requires(@Int.0 > @Int.1)
-  ensures(length(@String.result) > 0)
+  ensures(string_length(@String.result) > 0)
   effects(pure)
 {
-  concat(to_string(@Int.1), @String.0, to_string(@Int.0))
+  string_concat(string_concat(to_string(@Int.1), @String.0), to_string(@Int.0))
 }
 ```
 
@@ -182,7 +180,7 @@ fn(@Option<Int> -> @Int)
 {
   match @Option<Int>.0 {
     Some(@Int) -> @Int.0,
-    None -> 0,
+    None -> 0
   }
 }
 ```
@@ -198,7 +196,7 @@ In the `None` arm:
 
 <!-- vera:skip-parse category="FRAGMENT" reason="an unnamed signature with its contracts, not a declaration" -->
 ```
-fn(@Int -> Fn(@Int -> @Int) effects(pure))
+fn(@Int -> @fn(Int -> Int) effects(pure))
   requires(@Int.0 > 0)
   ensures(true)
   effects(pure)
@@ -224,7 +222,7 @@ fn(@Tuple<Int, String, Bool> -> @Int)
 {
   let Tuple<@Int, @String, @Bool> = @Tuple<Int, String, Bool>.0;
   if @Bool.0 then {
-    @Int.0 + length(@String.0)
+    @Int.0 + string_length(@String.0)
   } else {
     0
   }
@@ -260,44 +258,42 @@ In the else branch after the let:
 
 ### Example 8: Higher-Order Functions
 
-<!-- vera:skip-parse category="FRAGMENT" reason="fn map_array<A,B>(...) — needs forall" -->
 ```
-private fn map_array<A, B>(@Array<A>, fn(A -> B) effects(pure) -> @Array<B>)
+private forall<A, B> fn map_array(@Array<A>, @fn(A -> B) effects(pure) -> @Array<B>)
   requires(true)
   ensures(array_length(@Array<B>.result) == array_length(@Array<A>.0))
   effects(pure)
 {
   -- implementation uses built-in array mapping primitive
-  array_map(@Array<A>.0, @Fn<A, B>.0)
+  array_map(@Array<A>.0, @Fn.0)
 }
 ```
 
-Here `@Array<A>.0` refers to the first argument and `@Fn<A, B>.0` is a shorthand for the function argument (see Section 3.7).
+Here `@Array<A>.0` refers to the first argument and `@Fn.0` to the function argument (see Section 3.7).
 
 ### Example 9: ADT Construction and Matching
 
-<!-- vera:skip-parse category="FRAGMENT" reason="fn list_head<T>(...) — needs forall" -->
 ```
 private data List<T> {
   Cons(T, List<T>),
   Nil
 }
 
-private fn list_head<T>(@List<T> -> @Option<T>)
+private forall<T> fn list_head(@List<T> -> @Option<T>)
   requires(true)
   ensures(true)
   effects(pure)
 {
   match @List<T>.0 {
     Cons(@T, @List<T>) -> Some(@T.0),
-    Nil -> None,
+    Nil -> None
   }
 }
 ```
 
 In the `Cons` arm:
 - `@T.0` = the head element
-- `@List<T>.0` = the tail (innermost `List<T>`, from the pattern) — the pattern binding **pushes** onto the slot stack rather than replacing the scrutinee; the function-parameter `List<T>` is still accessible at `@List<T>.1` (one deeper in De Bruijn ordering).  This is the same push-on-binding rule that `let` uses (Section 3.4).  If the same pattern binding shape repeats — e.g. `match @Term.0 { App(@Term, @Term) -> ... }` — the leftmost field binding is `@Term.2` (deepest), the rightmost is `@Term.1` (shallowest), and `@Term.0` remains the scrutinee.  Non-commutative operations inside arms (subtraction, comparison, recursive calls) must respect this ordering; commutative ones happen to read the same either way and so don't expose the rule.
+- `@List<T>.0` = the tail (innermost `List<T>`, from the pattern) — the pattern binding **pushes** onto the slot stack rather than replacing the scrutinee; the function-parameter `List<T>` is still accessible at `@List<T>.1` (one deeper in De Bruijn ordering).  This is the same push-on-binding rule that `let` uses (Section 3.4).  If the same pattern binding shape repeats — e.g. `match @Term.0 { App(@Term, @Term) -> ... }` — the rightmost field binding is `@Term.0`, the leftmost is `@Term.1`, and the scrutinee is one deeper at `@Term.2`.  Non-commutative operations inside arms (subtraction, comparison, recursive calls) must respect this ordering; commutative ones happen to read the same either way and so don't expose the rule.
 
 ### Example 10: Multiple Return-Type References in Contracts
 
@@ -344,10 +340,10 @@ If the return type is a compound type:
 <!-- vera:skip-parse category="FRAGMENT" reason="an unnamed signature with its contracts, not a declaration" -->
 ```
 fn(@Int -> @Tuple<Int, String>)
-  ensures(@Int.result.0 > @Int.0)
+  ensures(match @Tuple<Int, String>.result { Tuple(@Int, @String) -> @Int.0 > @Int.1 })
 ```
 
-Here `@Tuple<Int, String>.result` refers to the entire return tuple, and `.0` accesses its first component. The shorthand `@Int.result.0` is NOT valid — use the full tuple type.
+Here `@Tuple<Int, String>.result` refers to the entire return tuple. A slot reference has no component access (`@Tuple<Int, String>.result.0` and `@Int.result.0` do not parse), so a contract on one component matches on the tuple: inside the arm, `@Int.0` is the first component and `@Int.1` the parameter.
 
 ## 3.7 Function Type References
 
@@ -414,17 +410,17 @@ private fn unwrap(@Option<Cnt>, @Cnt -> @Int)
 
 ## 3.9 Index Elision
 
-When there is exactly one binding of a given type in scope, the `.0` index MAY be elided:
+The index is never elided, even when exactly one binding of a given type is in scope. The elided form below is rejected:
 
 <!-- vera:skip-parse category="FRAGMENT" reason="an unnamed signature with its contracts, not a declaration" -->
 ```
 fn(@Int, @String -> @String)
-  requires(length(@String) > 0)    -- @String is unambiguous: only one String in scope
-  ensures(length(@String.result) > @Int)  -- @Int is also unambiguous
+  requires(string_length(@String) > 0)    -- invalid: the index is missing
+  ensures(string_length(@String.result) > @Int)  -- invalid: the index is missing
   effects(pure)
 ```
 
-**No.** In keeping with the "one canonical form" principle, the index MUST always be present. `@String.0` is the only valid form, never `@String`. This eliminates any ambiguity and maintains the invariant that all slot references have the same syntactic structure.
+In keeping with the "one canonical form" principle, the index MUST always be present. `@String.0` is the only valid form, never `@String`. This eliminates any ambiguity and maintains the invariant that all slot references have the same syntactic structure.
 
 ## 3.10 Scope Summary
 

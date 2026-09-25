@@ -82,13 +82,12 @@ Comparison operators produce `Bool`:
 @Int.0 >= @Int.1       -- greater or equal
 ```
 
-Equality (`==`, `!=`) is defined on all types. It is structural equality:
+Equality (`==`, `!=`) is defined on the types that support `Eq` (Chapter 9, Section 9.8): the primitives, `String`, and ADTs whose fields all support `Eq`. It is structural equality:
 - Primitives: value equality
-- Tuples: element-wise equality
-- Arrays: element-wise equality (same length and all elements equal)
 - ADTs: same constructor and recursively equal fields
-- Strings: character-by-character equality
-- Functions: not comparable (compile error)
+- Strings: content equality
+
+Arrays, tuples, maps, sets and functions do not support `Eq`; comparing them with `==` or `!=` is a compile error (E243).
 
 Ordering (`<`, `>`, `<=`, `>=`) is defined only on `Int`, `Nat`, `Float64`, `Byte`, and `String` (lexicographic).
 
@@ -182,7 +181,7 @@ Match expressions perform exhaustive pattern matching on algebraic data types:
 ```
 match @Option<Int>.0 {
   Some(@Int) -> @Int.0 + 1,
-  None -> 0,
+  None -> 0
 }
 ```
 
@@ -218,7 +217,7 @@ Patterns can be nested:
 match @List<Option<Int>>.0 {
   Cons(Some(@Int), @List<Option<Int>>) -> @Int.0,
   Cons(None, @List<Option<Int>>) -> 0,
-  Nil -> -1,
+  Nil -> -1
 }
 ```
 
@@ -363,7 +362,7 @@ string_strip(@String.0)                 -- returns String (trim whitespace)
 
 String concatenation uses a function, not an operator. There is no `+` on strings.
 
-String memory is managed by the conservative mark-sweep garbage collector (shipped v0.0.65, [#51](https://github.com/aallan/vera/issues/51)). See Chapter 11, Section 11.5 for the string pool implementation.
+String memory is managed by the conservative mark-sweep garbage collector. See Chapter 11, Section 11.5 for the string pool implementation.
 
 ### 4.13.1 String Interpolation
 
@@ -410,13 +409,14 @@ From highest to lowest precedence:
 | 4 | `==`, `!=` | None |
 | 3 | `&&` | Left |
 | 2 | `||` | Left |
+| 1.5 | `==>` | Right |
 | 1 | `|>` | Left |
 
 Parentheses can override precedence: `(@Int.0 + @Int.1) * @Int.2`.
 
 ## 4.15 No Loops
 
-Vera has no loop constructs (`for`, `while`, `loop`). All iteration is expressed as recursion. Recursive functions must declare a `decreases` clause for termination checking (see Chapter 6).
+Vera has no loop constructs (`for`, `while`, `loop`). All iteration is expressed as recursion. Recursive functions must declare a `decreases` clause for termination checking (see Chapter 6), unless their effect row names `Diverge` (Chapter 7, Section 7.7.3).
 
 This is deliberate: loops require reasoning about mutable state across iterations, which is a known weakness of LLMs. Recursion with explicit base cases and structural decomposition is a more pattern-matchable structure.
 

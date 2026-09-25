@@ -51,7 +51,7 @@ Postconditions on stateful functions also have `old(State<T>)` and `new(State<T>
 
 ### 6.2.3 Invariants (`invariant`)
 
-> **Status: Not yet implemented.** The `invariant(...)` clause on `data` declarations is specified here but is not currently working in the reference compiler — every documented form fails with `[E130] no <DataName> bindings in scope`, because the slot environment for the invariant predicate is not yet wired up.  Tracked in [#686](https://github.com/aallan/vera/issues/686) (successor to the now-closed #560 — that earlier issue was about removing the broken spec examples; the feature implementation is the remaining work).  Until the implementation lands, refinement types (Chapter 2, Section 2.6) are the working alternative for expressing constraints on data values.
+> **Status: Not yet implemented.** The `invariant(...)` clause on `data` declarations is specified here but is not currently working in the reference compiler — every documented form fails with `[E130] no <DataName> bindings in scope`, because the slot environment for the invariant predicate is not yet wired up.  Tracked in [#686](https://github.com/aallan/vera/issues/686).  Until the implementation lands, refinement types (Chapter 2, Section 2.6) are the working alternative for expressing constraints on data values.
 
 An invariant is a predicate declared on a data type that MUST hold for all values of that type:
 
@@ -116,8 +116,6 @@ The demotion says which of the three it was, because they ask the reader to do d
 
 An arm's **context is one derivation** for every obligation in it, which is what makes the rule above a rule rather than a property of a particular walk.  It follows that an arm's pattern binder shadows a same-named outer slot for *every* obligation in the arm — no obligation is discharged against the enclosing value a binder has taken the name of — and that where the scrutinee cannot be modelled at all, every binder the pattern declares stands for an unreadable value: an obligation over one is neither discharged nor refuted, but falls to its runtime guard.  Refusing such a value is as wrong as proving from it, because the counterexample names nothing the program can produce.
 
-One boundary is worth stating, because the Tier-1 claim inherits whatever the producer's own obligation set does not cover: for a **nested** sub-pattern bind the codegen payload guard that backs the direct case is not yet emitted ([#765](https://github.com/aallan/vera/issues/765)), so the arm's nested fact rests on the producer's own construction obligation alone.
-
 ### 6.2.6 Assumptions (`assume`)
 
 An assumption is a predicate that the compiler MUST accept as true without proof:
@@ -135,11 +133,22 @@ fn(@Int -> @Int)
 }
 ```
 
-The compiler MUST emit a warning (**W003**) for every `assume` statement:
+The compiler MUST emit a warning (**W003**) for every `assume` statement. `vera verify` reports it as:
 
+```text
+warning: [W003] Warning at example.vera, line 7, column 3:
+
+      assume(@Int.0 > 0);   -- trust that the library returns positive
+      ^
+
+  Unverified assumption in 'trusted': taken on trust, not proved.
+
+  `assume` tells the verifier to accept a predicate without proof. If it does not hold at run time the program's behaviour is undefined, and every obligation discharged from it inherits that.
+
+  See: Chapter 6, Section 6.2.6 "Assumptions (`assume`)"
 ```
-WARNING: unverified assumption at line 7: @Int.0 > 0
-```
+
+`vera verify --json` also counts each `assume` in the `assumptions` field of its `verification` summary.
 
 `assume` is an escape hatch. It is unsound — if the assumption is false, the program may have undefined behaviour. It should be used only when interfacing with verified external code or when a proof is beyond the verifier's capability.
 
@@ -151,15 +160,15 @@ Contract predicates use the same expression syntax as Vera programs, with the fo
 
 Everything allowed in the decidable fragment (Chapter 2, Section 2.6.1):
 - Integer literals and slot references
-- Float64 literals and values (`1.5`, `-0.5`) — Z3's IEEE-754 binary64 FloatingPoint sort (`FPSort(11, 53)`, round-nearest-ties-to-even), so Tier-1 proofs respect `NaN` / `±Inf` / signed zero / rounding and match the runtime; `==`/`!=` are IEEE `fpEQ`/`fpNEQ` and `%` is the truncated remainder (C `fmod`) (added [#667](https://github.com/aallan/vera/issues/667), made IEEE-sound in [#797](https://github.com/aallan/vera/issues/797)).  Equality on an ADT whose fields transitively include `Float64` decomposes per-field — same-constructor recognizers plus fieldwise `fpEQ` for Float64 fields, recursing into nested Float64-containing ADTs — so the Tier-1 model matches the runtime's structural per-field `f64.eq` (Chapter 9, Section 9.8.2) rather than Z3's structural datatype `=` (under which `NaN = NaN` holds and `+0.0 = -0.0` does not, both wrong at runtime); a *recursive* Float64-containing ADT has no finite decomposition, so its equality falls to Tier 3 ([#871](https://github.com/aallan/vera/issues/871))
+- Float64 literals and values (`1.5`, `-0.5`) — Z3's IEEE-754 binary64 FloatingPoint sort (`FPSort(11, 53)`, round-nearest-ties-to-even), so Tier-1 proofs respect `NaN` / `±Inf` / signed zero / rounding and match the runtime; `==`/`!=` are IEEE `fpEQ`/`fpNEQ` and `%` is the truncated remainder (C `fmod`) ([#667](https://github.com/aallan/vera/issues/667), [#797](https://github.com/aallan/vera/issues/797)).  Equality on an ADT whose fields transitively include `Float64` decomposes per-field — same-constructor recognizers plus fieldwise `fpEQ` for Float64 fields, recursing into nested Float64-containing ADTs — so the Tier-1 model matches the runtime's structural per-field `f64.eq` (Chapter 9, Section 9.8.2) rather than Z3's structural datatype `=` (under which `NaN = NaN` holds and `+0.0 = -0.0` does not, both wrong at runtime); a *recursive* Float64-containing ADT has no finite decomposition, so its equality falls to Tier 3 ([#871](https://github.com/aallan/vera/issues/871))
 - String literals
 - Linear arithmetic (`+`, `-`, `*` with literal multiplier)
 - Comparisons (`==`, `!=`, `<`, `>`, `<=`, `>=`)
 - The `Eq` / `Ord` ability operations `eq(a, b)` and `compare(a, b)` (Chapter 9, Section 9.8) — the generic-programming spelling of `==` and the three-way `Ordering` comparison.  A contract predicate may use either form; `eq(a, b)` is verified and compiled *as* `a == b`, and `compare(a, b)` *as* the canonical `Ordering` if-chain (`if a < b then Less else if a == b then Equal else Greater`).  The two spellings are semantically identical and share one internal representation (one canonical form, Section 0.2.3), so a contract written with the ability op enjoys the same Tier-1 reasoning and runtime enforcement as its operator form ([#874](https://github.com/aallan/vera/issues/874))
 - Boolean connectives (`&&`, `||`, `!`)
 - `array_length()` on arrays, `string_length()` on strings
-- Array index expressions (`@Array<T>.0[i]`) — uninterpreted `index_<T>(arr, i)` function; sound for relational facts but doesn't reason about element structure beyond what explicit predicates assert (added [#667](https://github.com/aallan/vera/issues/667))
-- Array literals (`[a, b, c]`) — fresh `Array_<T>` constant with `length(lit) == N` and per-element `index(lit, i) == elt_i` axioms asserted (added [#667](https://github.com/aallan/vera/issues/667))
+- Array index expressions (`@Array<T>.0[i]`) — uninterpreted `index_<T>(arr, i)` function; sound for relational facts but doesn't reason about element structure beyond what explicit predicates assert ([#667](https://github.com/aallan/vera/issues/667))
+- Array literals (`[a, b, c]`) — fresh `Array_<T>` constant with `length(lit) == N` and per-element `index(lit, i) == elt_i` axioms asserted ([#667](https://github.com/aallan/vera/issues/667))
 - Logical implication (`==>`)
 - `true`, `false`
 - The `@T.result` reference (in `ensures` only)
@@ -173,7 +182,7 @@ Everything allowed in the decidable fragment (Chapter 2, Section 2.6.1):
 Beyond the decidable fragment, contracts may also use:
 - Quantified expressions (limited, see below) — `forall` / `exists` fall to Tier 3 today
 
-Note that array element access (`@Array<T>.0[i]`) and array literals (`[a, b, c]`) are NOT Tier 2 — both are Tier 1 with the uninterpreted-function encoding described in §6.3.1 (added [#667](https://github.com/aallan/vera/issues/667)).  Tier 2 is reserved for predicates that the decidable fragment can't decide on its own and need user-provided lemmas (#427).
+Note that array element access (`@Array<T>.0[i]`) and array literals (`[a, b, c]`) are NOT Tier 2 — both are Tier 1 with the uninterpreted-function encoding described in §6.3.1 ([#667](https://github.com/aallan/vera/issues/667)).  Tier 2 is reserved for predicates that the decidable fragment can't decide on its own and need user-provided lemmas (#427).
 
 ### 6.3.3 Quantified Expressions
 
@@ -271,7 +280,7 @@ A practical implication: if a function `bad` has an implementation that doesn't 
 - **An `assert` that is neither proved nor refuted says so.**  A body `assert(P)` the solver cannot settle falls to a runtime check and MUST be reported (**E535**), so the construct that moved the tier count is named — the same disclosure `requires` (E521), `ensures` (E522) and `decreases` (E525) already carry.
 - **Refutations over opaque values are not violations.**  A postcondition, refined return, or primitive-operation obligation that *fails* to prove where the goal mentions an opaque constant demotes to a runtime-checked **Tier 3** obligation (`E522` for a postcondition) rather than reporting a definite violation — a countermodel over an unconstrained stand-in says nothing about the value the effect actually produces (`random_int(1, 9)` never returns `0`, but its stand-in would "witness" a zero divisor).  A proof that *succeeds* despite the opacity is kept at Tier 1: it holds for every value the constant could take.  The demotion is per-obligation, not per-function — a genuine violation elsewhere in the same body is still reported.  A value narrowed into a `@Nat` or refined slot is treated alike where it is, or embeds, a placeholder for a `match` binder under a scrutinee the verifier cannot translate, or for a `let` or a destructured component whose value it cannot translate inside a `requires`, an `ensures`, a measure or a predicate: refuted only over the placeholder, the narrowing is not refused — it is Tier 3 behind its guard, or disclosed (`E504`, `E506`) where code generation plants none — and refuted for every value the placeholder could take, it is a violation.  This holds at every narrowing: a binding, a constructor sub-pattern's field, and a payload a call argument's type refines (Section 6.4.3).
 
-Distinct effect-op bindings are distinct constants — two `random_int` results are never provably equal.  The variadic `Tuple` pseudo-constructor participates in the decidable fragment: a tuple literal in expression position, and a destructured tuple's components, translate via an on-demand single-constructor datatype sort keyed on the component types ([#747](https://github.com/aallan/vera/issues/747)), so tuple construction and projection are Tier-1-decidable when every component's type and value translate to the decidable fragment (a component of an unsupported type — a function value, for instance — leaves the tuple unmodelled, and the enclosing obligations fall to Tier 3 as before).
+Distinct effect-op bindings are distinct constants — two `random_int` results are never provably equal.  The variadic `Tuple` pseudo-constructor participates in the decidable fragment: a tuple literal in expression position, and a destructured tuple's components, translate via an on-demand single-constructor datatype sort keyed on the component types ([#747](https://github.com/aallan/vera/issues/747)), so tuple construction and projection are Tier-1-decidable when every component's type and value translate to the decidable fragment (a component of an unsupported type — a function value, for instance — leaves the tuple unmodelled, and the enclosing obligations fall to Tier 3).
 
 ### 6.4.3 Primitive Operation Safety
 
@@ -281,7 +290,7 @@ The verifier checks the contracts the programmer wrote, and **auto-synthesises**
 |---|---|---|
 | `a - b` (Nat) | `a >= b` — no underflow | E502 |
 | `@Int` value into a `@Nat` slot | `value >= 0` | E503 |
-| `a / b`, `a % b` (Int / Nat) | `b != 0` | E526 |
+| `a / b`, `a % b` (Int / Nat) | `b != 0`; `INT_MIN / -1` traps with no obligation ([#1598](https://github.com/aallan/vera/issues/1598)) | E526 |
 | `arr[i]` (`Array<T>`) | `0 <= i < array_length(arr)` | E527 |
 | `a + b`, `a * b` (Int / Nat); `a - b` (Int) | result within i64 / u64 range — no overflow | E528 |
 | `float_to_int(x)`, `floor(x)`, `ceil(x)`, `round(x)` | `x` finite (not NaN / Inf) and its truncated, floored, ceiled or rounded value within i64 range | E529 |
@@ -318,22 +327,26 @@ VCs are translated to SMT-LIB format and solved by Z3:
 
 When Z3 finds a counterexample (a VC is invalid), the compiler reports the specific input values that violate the contract:
 
-```
-ERROR: Contract violation in function foo (line 5)
+For `private fn foo(@Int -> @Int)` with `ensures(@Int.result > @Int.0)` and the body `@Int.0`:
 
-    private fn foo(@Int -> @Int)
-      requires(true)
+```text
+[E500] Error at example.vera, line 3, column 3:
+
       ensures(@Int.result > @Int.0)
-      ...
+      ^
 
-  Postcondition: @Int.result > @Int.0
-  Counterexample:
-    @Int.0 = 0
-    @Int.result = 0
+  Postcondition does not hold in function 'foo'.
+    Counterexample:
+        @Int.0 = 0
+        @Int.result = 0
 
-  The postcondition @Int.result > @Int.0 does not hold when @Int.0 = 0.
-  Consider strengthening the precondition (e.g., requires(@Int.0 > 0))
-  or weakening the postcondition (e.g., ensures(@Int.result >= @Int.0)).
+  The SMT solver found concrete input values for which the postcondition is false. This means the function body does not satisfy its ensures() contract for all valid inputs.
+
+  Fix:
+
+    Resolve the mismatch between the function body and its contract: fix the implementation so it satisfies this ensures() clause, strengthen requires(...) if the counterexample is outside the intended input domain, or weaken/change ensures(...) if the postcondition overstates the intended guarantee.
+
+  See: Chapter 6, Section 6.4.1 "Verification Condition (VC) Generation"
 ```
 
 ## 6.5 Runtime Contract Checking
@@ -356,12 +369,19 @@ if !postcondition {
 
 Runtime contract violations cause a WASM trap with a diagnostic message.
 
-The compiler MUST emit a warning for each runtime-checked contract:
+The compiler MUST emit a warning for each runtime-checked contract. The code names the cause: E521 for a precondition outside the decidable fragment, E522 and E523 for a postcondition whose body or expression is, E524 for a postcondition that timed out, E525 for a termination metric, E520 for a generic function with no concrete instantiation, E532 for a call-site precondition, E534 for a contract that holds only from a disclosed fact, and E535 for an assertion. A precondition with a quantifier gives:
 
-```
-WARNING: Cannot statically verify contract at line 3: requires(@Int.0 > 0)
-  Reason: Z3 timeout after 10s
-  Inserting runtime check.
+```text
+warning: [E521] Warning at example.vera, line 3, column 3:
+
+      requires(forall(@Nat, array_length(@Array<Int>.0), fn(@Nat -> @Bool) effects(pure) { @Array<Int>.0[@Nat.0] > 0 }))
+      ^
+
+  Precondition in 'first_positive' uses constructs outside the decidable fragment. Contract will be checked at runtime.
+
+  The contract expression contains constructs that cannot be translated to SMT (e.g., pattern matching, effect operations, quantifiers).
+
+  See: Chapter 6, Section 6.8 "Summary of Verification Tiers"
 ```
 
 ## 6.6 Lemma Functions
@@ -415,7 +435,7 @@ The refinement on `SafeDiv`'s **second** parameter serves as the contract. The c
 
 | Tier | Scope | Solver | Timeout | Failure mode |
 |------|-------|--------|---------|--------------|
-| 1 | Z3 quantifier-free decidable fragment: linear integer + real arithmetic, bool, strings (Z3 `String` sort), uninterpreted sorts/functions (length, **array literals and indexing via `index_<T>` functions** — #667).  No single SMT-LIB logic name covers all of these — QF_UFLIRA is the closest standard logic (integer + real + uninterpreted functions, without strings); strings are a Z3-specific extension. | Z3 | 10 seconds | Compile error with counterexample; falls to Tier 3 on unknown or timeout |
+| 1 | Z3 quantifier-free decidable fragment: linear integer + real arithmetic, bool, strings (Z3 `String` sort), uninterpreted sorts/functions (length, **array literals and indexing via `index_<T>` functions**, [#667](https://github.com/aallan/vera/issues/667)).  No single SMT-LIB logic name covers all of these — QF_UFLIRA is the closest standard logic (integer + real + uninterpreted functions, without strings); strings are a Z3-specific extension. | Z3 | 10 seconds | Compile error with counterexample; falls to Tier 3 on unknown or timeout |
 | 2 | Extended: quantifiers, lemma/assert hints — [not yet implemented](https://github.com/aallan/vera/issues/427) | Z3 with hints | 10 seconds | Falls to Tier 3 |
 | 3 | Runtime | None (checks emitted as code) | N/A | Runtime trap |
 
@@ -436,7 +456,7 @@ OK: tests/conformance/ch06_assert_assume.vera
 Verification: 8 verified (Tier 1), 3 runtime checks (Tier 3)
 ```
 
-That program contains an `assume` statement, and the summary does not mention it: assumptions reach no tier and are counted nowhere (see the table below). The warning this chapter requires for every `assume` is not emitted either — tracked in [#1345](https://github.com/aallan/vera/issues/1345).
+That program contains an `assume` statement. An assumption reaches no tier (see the table below), so the summary line does not count it: `vera verify` reports it with a W003 warning (Section 6.2.6), and `vera verify --json` counts it in the `assumptions` field of its `verification` object.
 
 ### 6.8.1 Obligation Vocabulary
 
@@ -446,9 +466,9 @@ Every obligation this chapter describes ends in exactly one of the first four st
 |------|-----------------|---------|
 | **proved** | `verified` | Tier 1. Z3 discharged the obligation; it holds for every input. Counted in `tier1_verified`. |
 | **runtime-guarded** | `tier3`, `timeout` | Tier 3. Not proved, but the compiler emitted a guard that traps on violation. Counted in `tier3_runtime`. A call precondition over a binder of a closure, a quantifier's predicate or a handler clause lands here (`E532`, Section 6.4.2), as does one refuted only over a placeholder for a value the verifier cannot state, outside the function body's own translation. |
-| **unguarded** | `tier3_unguarded` | Neither proved nor guarded. Counted in no tier, and reported as a warning (`E504`, `E506`, `E531`, `E539`, `E540`) — or, for `E538`, as an error that refuses the program (§6.8.2). |
+| **unguarded** | `tier3_unguarded` | Neither proved nor guarded. Counted in no tier, and reported as a warning (`E504`, `E506`, `E531`, `E537`, `E539`, `E540`) — or, for `E538`, as an error that refuses the program (§6.8.2). |
 | **refuted or unprovable** | `violated` | The obligation did not discharge and the compiler refuses the program. Two ways in: Z3 returned a concrete counterexample, or — for a user function's precondition over an opaque value, at a call the function body's translation checks (Section 6.4.2) — it could not establish the goal at all. Both report `violated`, which is why the diagnostic says a call *may* violate the precondition rather than that it does. A compile error (`E500`, `E501`, `E502`, `E505`, …), counted in no tier. |
-| **assumed** | — | An `assume` statement (Section 6.2.6), not an obligation: the fact is taken on trust rather than discharged, so it reaches no tier and is counted nowhere. It is an unsound escape hatch. |
+| **assumed** | — | An `assume` statement (Section 6.2.6), not an obligation: the fact is taken on trust rather than discharged, so it reaches no tier. It draws a W003 warning and is counted in the `assumptions` field. It is an unsound escape hatch. |
 | **tested** | — | `vera test` generates inputs from the contracts and runs them through WASM. A distinct activity rather than a tier: it samples inputs, it does not quantify over them. |
 | **specified, not implemented** | — | Carried by the `Status:` callouts in this specification and collected in the [implementation-status appendix](../docs/implementation-status.md). |
 
