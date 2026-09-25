@@ -7,7 +7,10 @@ orchestration.
 
 from __future__ import annotations
 
-from vera import ast
+from collections import Counter
+from collections.abc import Callable
+
+from vera import ast, narrowing
 from vera.slots import bare_call_denotes_user_fn
 from vera.checker.sql import (
     count_placeholders,
@@ -28,6 +31,7 @@ from vera.types import (
     ConcreteEffectRow,
     FunctionType,
     PureEffectRow,
+    RefinedType,
     Type,
     TypeVar,
     UnknownType,
@@ -103,6 +107,59 @@ def _compatible_modulo_typevars(
     # accept a subtype relationship either way (Nat vs Int).
     return is_subtype(a, b) or is_subtype(b, a)
 
+
+
+def _type_var_occurrences(ty: Type, out: Counter[str]) -> None:
+    """Count into *out* every occurrence of a type variable in *ty*, at any
+    depth: through type arguments, a function type's parameters, result and
+    effect row, and a refinement's base."""
+    if isinstance(ty, TypeVar):
+        out[ty.name] += 1
+    elif isinstance(ty, AdtType):
+        for arg in ty.type_args:
+            _type_var_occurrences(arg, out)
+    elif isinstance(ty, FunctionType):
+        for param in ty.params:
+            _type_var_occurrences(param, out)
+        _type_var_occurrences(ty.return_type, out)
+        _effect_type_var_occurrences(ty.effect, out)
+    elif isinstance(ty, RefinedType):
+        _type_var_occurrences(ty.base, out)
+
+
+def _effect_type_var_occurrences(row: object, out: Counter[str]) -> None:
+    """:func:`_type_var_occurrences` over an effect row's type arguments."""
+    if isinstance(row, ConcreteEffectRow):
+        for inst in row.effects:
+            for arg in inst.type_args:
+                _type_var_occurrences(arg, out)
+
+
+def _instantiation_ends_at_formal(fn_info: FunctionInfo, index: int) -> bool:
+    """Whether the instantiation a call infers from argument *index* types
+    nothing but that argument: every type variable formal *index* mentions
+    occurs exactly once in *fn_info*'s whole signature — so in no other
+    parameter (a callback's parameters and result included), not in the
+    result or the effect row, and not twice in the formal itself.
+
+    Read off the signature's structure, so every callee is answered the
+    same way: `array_length(@Array<T>)` qualifies; `array_any(@Array<T>,
+    fn(T -> Bool))`, whose callback reads the elements at `T`, does not."""
+    counts: Counter[str] = Counter()
+    for param in fn_info.param_types:
+        _type_var_occurrences(param, counts)
+    _type_var_occurrences(fn_info.return_type, counts)
+    _effect_type_var_occurrences(fn_info.effect, counts)
+    formal: Counter[str] = Counter()
+    _type_var_occurrences(fn_info.param_types[index], formal)
+    return bool(formal) and all(counts[var] == 1 for var in formal)
+
+
+def _names(name: str) -> Callable[[str], bool]:
+    """The constructor-name test a pattern of constructor *name* makes."""
+    def matches(ctor_name: str) -> bool:
+        return ctor_name == name
+    return matches
 
 class CallsMixin:
     """Methods for checking function calls, constructors, and qualified calls."""
@@ -467,11 +524,38 @@ class CallsMixin:
                 # check (Int <: Nat holds).  Record the instantiated
                 # formal as each argument's target now, so the verifier's
                 # @Nat narrowing walker can obligate it.
+                #
+                # #1503: except a COMPOSITE argument carrying a pure-literal
+                # subtraction at a formal whose instantiation types nothing
+                # else in the callee's signature.  `array_length([0 - 1, 5])`
+                # infers `T = Nat` from the literal itself, because the
+                # checker types `0 - 1` bottom-up as `Nat`; recorded as the
+                # literal's target, it has the construction-position element
+                # leg (#1440) obligate and guard -1 against it — E503 and a
+                # trap on a program whose value is 2.  That instantiation
+                # ends at this call: nothing past it is typed by it, so
+                # declining it declines no fact anything downstream reads.
+                # A formal whose variables reach anything else keeps its
+                # target, as a scalar argument does since #747: the result
+                # (`array_reverse`, `id`), where the instantiation leaves
+                # through the call and is read as a declaration (#1541);
+                # and another parameter, which the callee reads at the same
+                # instantiation — `array_any`'s callback takes each element
+                # as its `@Nat`, so -1 arrived there as 18446744073709551615
+                # in a program that verified clean.
                 if self.expr_target_types is not None:
-                    for c_arg, c_pt in zip(args, param_types):
+                    for index, (c_arg, c_pt) in enumerate(
+                            zip(args, param_types)):
                         key = ast.span_key(c_arg)
-                        if key is not None and not contains_typevar(c_pt):
-                            self.expr_target_types[key] = c_pt
+                        if key is None or contains_typevar(c_pt):
+                            continue
+                        if (_instantiation_ends_at_formal(fn_info, index)
+                                and narrowing.carries_literal_subtraction(
+                                    c_arg)
+                                and not narrowing.holds_literal_subtraction(
+                                    c_arg)):
+                            continue
+                        self.expr_target_types[key] = c_pt
 
         # Check each argument.  When a type-argument conflict was already
         # reported (#898), skip the per-argument subtype check: the merged
@@ -1574,11 +1658,36 @@ class CallsMixin:
         # consults the return, so overwriting lost the `nat_bind` that
         # conformance program exists to pin (the one corpus mover on the
         # first shape of this change).
+        #
+        # #1503: except where the instantiation is the argument's OWN
+        # bottom-up type and that type is the one the shared classifier
+        # refutes.  `W(0 - 3)` infers `A = Nat` because `0 - 3` is two
+        # non-negative literals; recording that `Nat` as the argument's
+        # target turned a store of -3 into a field of its own type into a
+        # narrowing — E503 at verify and a trapping guard at run time, on a
+        # program that reads the field back at `@Int` and was valid on
+        # `main`.  A target the context forced is untouched (it was recorded
+        # above, through `expected`), and so is an inferred one whose
+        # argument carries no pure-literal subtraction, where the checker's
+        # type is the value's type.  The narrowing such a value can meet is
+        # obligated where a pattern binds it at a scalar position, by the
+        # legs that know the type it is bound at (`vera.narrowing`); a
+        # pattern that binds it within a COMPOSITE is the context of the
+        # construction instead (`_register_pattern_reads`).
         if self.expr_target_types is not None:
-            for c_arg, c_ft in zip(expr.args, field_types):
+            for c_arg, c_ft, declared_ft in zip(
+                    expr.args, field_types, ci.field_types):
                 key = ast.span_key(c_arg)
-                if key is not None and not contains_typevar(c_ft):
-                    self.expr_target_types.setdefault(key, c_ft)
+                if key is None or contains_typevar(c_ft):
+                    continue
+                if (contains_typevar(substitute(declared_ft,
+                                                expected_mapping))
+                        and narrowing.carries_literal_subtraction(c_arg)):
+                    continue
+                recorded = self.expr_target_types.setdefault(key, c_ft)
+                if (isinstance(c_arg, ast.ConstructorCall)
+                        and c_arg.name != "Tuple"):
+                    self._record_nested_ctor_targets(c_arg, recorded)
 
         for i, (arg_ty, field_ty) in enumerate(zip(arg_types, field_types)):
             if arg_ty is None or isinstance(arg_ty, UnknownType):
@@ -1611,6 +1720,136 @@ class CallsMixin:
                 )
 
         return self._ctor_result_type(ci, arg_types, expected=expected)
+
+    def _register_arm_pattern_reads(
+        self, scrutinee: ast.Expr, pattern: ast.Pattern,
+    ) -> None:
+        """:py:meth:`_register_pattern_reads` for one `match` arm: a
+        constructor pattern reads the scrutinee's components; a binding
+        pattern at a composite type binds the whole scrutinee there, which
+        is then the context of every construction the scrutinee's value
+        flows from."""
+        if isinstance(pattern, ast.ConstructorPattern):
+            self._register_pattern_reads(
+                scrutinee, list(pattern.sub_patterns), _names(pattern.name),
+            )
+        elif isinstance(pattern, ast.BindingPattern):
+            ty = self._pattern_binding_type(pattern.type_expr)
+            if ty is None or not isinstance(base_type(ty), AdtType):
+                return
+            for leaf in narrowing.value_leaves(scrutinee):
+                key = ast.span_key(leaf)
+                if key is not None:
+                    self._pattern_arg_targets.setdefault(key, ty)
+
+    def _register_pattern_reads(
+        self,
+        source: ast.Expr,
+        fields: list[ast.Pattern | ast.TypeExpr],
+        ctor_matches: Callable[[str], bool],
+    ) -> None:
+        """Record the COMPOSITE types a pattern binds the constructor
+        arguments its *source* builds at, BEFORE the source is synthesized
+        (#1503).
+
+        *fields* are the pattern's positions — a destructure's binding
+        types, or a constructor pattern's sub-patterns — and each one's
+        argument sources are found the way the pattern's legs find them
+        (:func:`vera.narrowing.component_sources`), through nested
+        constructor patterns.  An argument bound at a scalar position is
+        classified where it is bound, by the pattern's own legs.  One bound
+        at a composite type — `W(@Array<Nat>)`, a `@Wrap<Nat>` component —
+        is classified by nothing downstream (a composite binding obligates
+        no component), and the constructor door records no type it inferred
+        from a literal subtraction; so the binding's type is the
+        construction's context (``_pattern_arg_targets``, threaded as its
+        expected type by ``_synth_expr``).  `match W([0 - 3]) {
+        W(@Array<Nat>) -> … }` obligates the `0 - 3` it stores in a `Nat`
+        array, and `W(@Array<Int>)` does not."""
+        for index, field in enumerate(fields):
+            for source_ in narrowing.component_sources(
+                    source, index, ctor_matches):
+                if not source_.is_argument:
+                    continue
+                arg = source_.expr
+                key = ast.span_key(arg)
+                if key is None:
+                    continue
+                if isinstance(field, ast.ConstructorPattern):
+                    self._register_pattern_reads(
+                        arg, list(field.sub_patterns),
+                        _names(field.name),
+                    )
+                    continue
+                te = (field.type_expr if isinstance(field, ast.BindingPattern)
+                      else field if isinstance(field, ast.TypeExpr) else None)
+                ty = self._pattern_binding_type(te) if te is not None else None
+                if ty is not None and isinstance(base_type(ty), AdtType):
+                    self._pattern_arg_targets.setdefault(key, ty)
+
+    def _pattern_binding_type(self, te: ast.TypeExpr) -> Type | None:
+        """A pattern binding's type, resolved without reporting: the
+        pattern is checked, and its diagnostics raised, where it is bound;
+        this looks ahead to it.
+
+        Resolution reports through state that outlives the diagnostic:
+        `_error`'s duplicate collapse (`_seen_diag_keys`) and the one-shot
+        E154 and removed-alias sets.  Kept while only the diagnostic is
+        dropped, that state would deduplicate the binding's own resolution
+        away — `match W([()]) { W(@Array<Unit>) -> 1 }` would lose its
+        E135, pass `vera check` and `vera verify`, and fail to compile — so
+        all of it is restored."""
+        before = len(self.errors)
+        seen = set(self._seen_diag_keys)
+        aliases = set(self._reported_alias_errors)
+        reserved = set(self._reported_reserved_type_refs)
+        try:
+            return self._resolve_type(te)
+        finally:
+            del self.errors[before:]
+            self._seen_diag_keys = seen
+            self._reported_alias_errors = aliases
+            self._reported_reserved_type_refs = reserved
+
+    def _record_nested_ctor_targets(
+        self, ctor: ast.ConstructorCall, target: Type,
+    ) -> None:
+        """Carry a target recorded for a constructor application DOWN to
+        its own arguments (#1503).
+
+        A constructor argument is synthesized before its parent records the
+        field type it is placed in, so a nested application —
+        `MkBox(Some(0 - 5))` into a declared `Option<Pos>` field — instantiated
+        its type parameters from its own argument alone.  The gap fill above
+        now declines to record such an instantiation when the argument holds
+        a pure-literal subtraction (the checker's `Nat` for it is the claim
+        the shared classifier refutes), and the parent's field type is the
+        instantiation the value is in fact placed at, so it is recorded here
+        instead: `0 - 5` is obligated against `Pos`, where it goes.  A gap is
+        filled, never displaced — an entry already present came from the
+        argument's own expected type or its own inference, and stays.  A
+        `Tuple` carrier is left alone: its readers take a component's target
+        from the tuple's own node, which the parent has just recorded.
+        """
+        if self.expr_target_types is None:
+            return
+        info = self.env.lookup_constructor(ctor.name)
+        base = base_type(target)
+        if (info is None or not info.parent_type_params
+                or info.field_types is None
+                or not isinstance(base, AdtType)
+                or base.name != info.parent_type
+                or len(base.type_args) != len(info.parent_type_params)):
+            return
+        mapping = dict(zip(info.parent_type_params, base.type_args))
+        for arg, field_ty in zip(ctor.args, info.field_types):
+            instantiated = substitute(field_ty, mapping)
+            key = ast.span_key(arg)
+            if key is None or contains_typevar(instantiated):
+                continue
+            recorded = self.expr_target_types.setdefault(key, instantiated)
+            if isinstance(arg, ast.ConstructorCall) and arg.name != "Tuple":
+                self._record_nested_ctor_targets(arg, recorded)
 
     def _check_tuple_constructor(
         self, expr: ast.ConstructorCall

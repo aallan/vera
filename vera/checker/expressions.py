@@ -115,6 +115,13 @@ class ExpressionsMixin:
         whole tree.  With collection off (``self.expr_types is None``,
         the default), this adds a single attribute test per expression.
         """
+        if (expected is None and self._pattern_arg_targets
+                and isinstance(expr, (ast.ConstructorCall, ast.ArrayLit))):
+            # #1503: a pattern that binds this construction at a composite
+            # type is its context (`_register_pattern_reads`).
+            pattern_key = ast.span_key(expr)
+            if pattern_key is not None:
+                expected = self._pattern_arg_targets.get(pattern_key)
         result = self._synth_expr_impl(expr, expected=expected)
         if self.expr_types is not None and expr.span is not None:
             key = ast.span_key(expr)
@@ -1142,6 +1149,11 @@ class ExpressionsMixin:
 
     def _check_let_destruct(self, stmt: ast.LetDestruct) -> None:
         """Type-check a destructuring let."""
+        tuple_shape = stmt.constructor == "Tuple"
+        self._register_pattern_reads(
+            stmt.value, list(stmt.type_bindings),
+            lambda name: (name == "Tuple") == tuple_shape,
+        )
         self._synth_expr(stmt.value)
 
         for te in stmt.type_bindings:

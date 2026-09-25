@@ -16,7 +16,7 @@ Ordering derives from the design principles ([DESIGN.md](DESIGN.md)): verificati
 
 ## The v0.2.0 burndown
 
-*Three open bugs, driven to zero.*
+*Ten open bugs, driven to zero.*
 
 A bug class outranks stage work, so the next release takes the open `bug`-labelled set as its queue.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) carries each row's full account and stays the one place the detail lives; this table is the order of attack.
 
@@ -24,6 +24,13 @@ A bug class outranks stage work, so the next release takes the open `bug`-labell
 |---|---|
 | [#1470](https://github.com/aallan/vera/issues/1470) | A refutation can rest on a value whose refinement the solver cannot state: the sort is built, the predicate is not, and the counterexample names a value the type forbids. |
 | [#1468](https://github.com/aallan/vera/issues/1468) | A false precondition on a `forall` generic callee is disclosed as **E532** at the call site instead of refuted as **E501**, so a program calling it is accepted. |
+| [#1541](https://github.com/aallan/vera/issues/1541) | A type argument inferred from a literal subtraction is `Nat`: `let @Int = id(0 - 3)` is refused with **E503**, and `get_nat(id(W(0 - 3)))` verifies clean and traps. |
+| [#1542](https://github.com/aallan/vera/issues/1542) | A composite value coerced into a composite type with a `@Nat` component is obligated nowhere unless it is built at the site. |
+| [#1543](https://github.com/aallan/vera/issues/1543) | `let @Int = @Nat.0 + 1` at i64.MAX returns -2^63 unobligated: arithmetic with a literal operand is never a genuine `@Nat`. |
+| [#1544](https://github.com/aallan/vera/issues/1544) | Mixed-sign arithmetic runs at the unsigned width: a false overflow trap, and an `int_overflow` proved at Tier 1 that traps. |
+| [#1545](https://github.com/aallan/vera/issues/1545) | A destructuring `let` is not checked against its source: `let Tuple<@Int, @String> = Tuple(1, 2)` passes check and verify. |
+| [#1546](https://github.com/aallan/vera/issues/1546) | A heterogeneous `@Nat`/`@Int` join read into an `@Int` is unguarded as a tuple component or a `handle`. |
+| [#1557](https://github.com/aallan/vera/issues/1557) | A `@Nat` subtraction over a call to a non-generic `@Nat` function is claimed `nat_sub` `tier3` and compiled with no underflow check. |
 | [#1501](https://github.com/aallan/vera/issues/1501) | `&&`, `\|\|` and `==>` evaluate both operands, although spec §4.6 says `&&` and `\|\|` short-circuit, so a guard written beside the operation it protects does not protect it. |
 
 ## Stage 19 — The verification completeness sprint

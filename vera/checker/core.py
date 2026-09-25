@@ -511,6 +511,11 @@ class TypeChecker(
         self.expr_target_types: (
             dict[tuple[int, int, int, int], Type] | None
         ) = None
+        # #1503: the COMPOSITE type a pattern binds a constructor argument of
+        # its source at — that construction's context
+        # (`CheckerMixin._register_pattern_reads`).
+        self._pattern_arg_targets: dict[
+            tuple[int, int, int, int], Type] = {}
         self.hole_sites: list[HoleSite] | None = None
         # Resolved modules (C7a: paths for diagnostics, C7b: full list
         # for cross-module type merging).
