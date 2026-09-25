@@ -501,6 +501,41 @@ class TestTheVerifierReadsTheOwnPath:
         codes = [d.get("error_code") for d in verify["warnings"]]
         assert "E525" not in codes, _said(verify)
 
+    def test_a_callee_reached_only_through_a_clone_is_verified(
+        self, tmp_path: Path,
+    ) -> None:
+        """`four` calls `ma`'s private generic `pg`, whose body calls
+        `pub_g`, a generic the entry imports; `pub_g` calls `ma`'s private
+        `pg2`, whose `ensures(false)` is a lie.  The entry reaches `pub_g`
+        only through `pg`'s clone, where the verifier reads calls by name,
+        so it reaches `pg2`'s clone only because the call by the path is
+        renamed onto `pg2`'s key as the bare call is: E500 in both
+        spellings, where a call left as written would verify clean.  The
+        program is not run: code generation drops `main` in both spellings
+        (#1575)."""
+        outcomes = []
+        for q in ("ma::", ""):
+            root = tmp_path / (q.rstrip(":") or "bare")
+            root.mkdir()
+            (root / "ma.vera").write_text(
+                "module ma;\n\n"
+                "private forall<T> fn pg2(@T -> @T)\n  requires(true)\n"
+                "  ensures(false)\n  effects(pure)\n{\n  @T.0\n}\n\n"
+                "public forall<T> fn pub_g(@T -> @T)\n  requires(true)\n"
+                "  ensures(true)\n  effects(pure)\n{\n"
+                f"  {q}pg2(@T.0)\n}}\n\n"
+                "private forall<T> fn pg(@T -> @T)\n  requires(true)\n"
+                "  ensures(true)\n  effects(pure)\n{\n  pub_g(@T.0)\n}\n\n"
+                + _fn("four(@Int -> @Int)", f"{q}pg(@Int.0) * 4"),
+                encoding="utf-8")
+            (root / "main.vera").write_text(
+                _entry("import ma(four, pub_g);", "four(3)"),
+                encoding="utf-8")
+            outcomes.append(_verify_outcome(_cli("verify", root / "main.vera")))
+        qualified, bare = outcomes
+        assert qualified == bare
+        assert qualified[0] == ["E500"], qualified
+
 
 # ---------------------------------------------------------------------------
 # The #732 differential
@@ -1577,5 +1612,38 @@ class TestAnEntryDeclarationOfTheSameName:
         emitted, discovered = _emitted_and_discovered(tmp_path)
         assert emitted, emitted
         assert emitted <= discovered, (emitted, discovered)
+        run = _cli("run", tmp_path / "main.vera")
+        assert run["ok"] is True and run["value"] == 12, _said(run)
+
+    @pytest.mark.parametrize("q", ["ma::", ""], ids=["qualified", "bare"])
+    def test_an_entry_generic_of_the_name_gains_no_clone(
+        self, q: str, tmp_path: Path,
+    ) -> None:
+        """`ma`'s generic `gcall` calls `ma`'s own generic `gid` at `Int`,
+        and the entry declares a generic `gid` it calls only at `Bool`.
+        The verifier renames the call by the path onto `ma`'s key, as it
+        renames the bare call, so it discovers exactly the clones code
+        generation emits (the #732 differential).  Read as written, the
+        call would also instantiate the entry's `gid` at `Int`, a clone
+        nothing calls."""
+        (tmp_path / "ma.vera").write_text(
+            "module ma;\n\n"
+            "public forall<T> fn gid(@T -> @T)\n  requires(true)\n"
+            "  ensures(true)\n  effects(pure)\n{\n  @T.0\n}\n\n"
+            "public forall<T> fn gcall(@T -> @Int)\n  requires(true)\n"
+            "  ensures(true)\n  effects(pure)\n{\n"
+            f"  {q}gid(3)\n}}\n\n"
+            + _fn("four(@Int -> @Int)", "gcall(true) * 4"),
+            encoding="utf-8")
+        (tmp_path / "main.vera").write_text(
+            "import ma(four);\n\n"
+            "private forall<T> fn gid(@T -> @T)\n  requires(true)\n"
+            "  ensures(true)\n  effects(pure)\n{\n  @T.0\n}\n\n"
+            + _fn("main(@Unit -> @Int)",
+                  "if gid(true) then {\n    four(3)\n  } else {\n    0\n  }"),
+            encoding="utf-8")
+        emitted, discovered = _emitted_and_discovered(tmp_path)
+        assert ("mod$ma$gid", ("Int",)) in emitted, emitted
+        assert emitted == discovered, (emitted, discovered)
         run = _cli("run", tmp_path / "main.vera")
         assert run["ok"] is True and run["value"] == 12, _said(run)
