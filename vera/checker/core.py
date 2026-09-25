@@ -620,6 +620,13 @@ class TypeChecker(
         # self-referential mappings when different ADTs share a type
         # parameter name — see #243).
         self._fresh_id: int = 0
+        # #1541: per generic call or constructor (span key), the parts of
+        # its result type its own LITERALS decided, as holes — so an
+        # enclosing call treats `id(0)` as the literal it passes through.
+        # Rewritten on every synthesis of the call; see
+        # `ResolutionMixin._literal_soft_type`.
+        self._literal_soft_results: dict[
+            tuple[int, int, int, int], Type] = {}
 
     @staticmethod
     def _is_public(visibility: str | None) -> bool:

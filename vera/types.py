@@ -877,6 +877,118 @@ def contains_fresh_typevar(ty: Type) -> bool:
     return False
 
 
+#: The hole a LITERAL leaves in an argument's type while a call's type
+#: arguments are inferred (#1541, #1565).
+#:
+#: An integer literal takes its type from its context (spec §4.2), so the
+#: `Nat` the checker synthesizes for `0` — and the `Int` it synthesizes for
+#: `0 - 3` — is the literal's type only when nothing else fixes it.  During
+#: inference each such position is this placeholder instead: a fresh var
+#: (`$` in the name), so any sibling binding a declared type supplies fills
+#: it by the same #293 precedence a nullary constructor's hole already has.
+#: A position nothing else filled is then given the type the call's result
+#: is expected at, and failing that the literal's own type by value — see
+#: `ResolutionMixin._infer_type_args_in_context`.  Never leaves inference.
+#:
+#: The hole carries that last resort: :data:`LITERAL_HOLE` where every
+#: literal at the position is non-negative (a `Nat`), and
+#: :data:`NEGATIVE_LITERAL_HOLE` where one is negative (an `Int`).
+LITERAL_HOLE = TypeVar("$lit")
+NEGATIVE_LITERAL_HOLE = TypeVar("$lit-")
+
+
+def is_literal_hole(ty: Type) -> bool:
+    """True iff *ty* is :data:`LITERAL_HOLE` or
+    :data:`NEGATIVE_LITERAL_HOLE`."""
+    return isinstance(ty, TypeVar) and ty.name in (
+        LITERAL_HOLE.name, NEGATIVE_LITERAL_HOLE.name)
+
+
+def join_literal_holes(a: Type, b: Type) -> Type:
+    """The hole for a position two literals share: negative if either is."""
+    if NEGATIVE_LITERAL_HOLE in (a, b):
+        return NEGATIVE_LITERAL_HOLE
+    return LITERAL_HOLE
+
+
+def default_literal_holes(ty: Type) -> Type:
+    """*ty* with every hole given the type its literals have by value:
+    `Nat` for :data:`LITERAL_HOLE`, `Int` for
+    :data:`NEGATIVE_LITERAL_HOLE`."""
+    if is_literal_hole(ty):
+        return INT if ty == NEGATIVE_LITERAL_HOLE else NAT
+    if isinstance(ty, AdtType):
+        return AdtType(ty.name, tuple(default_literal_holes(a)
+                                      for a in ty.type_args))
+    if isinstance(ty, FunctionType):
+        return FunctionType(tuple(default_literal_holes(p)
+                                  for p in ty.params),
+                            default_literal_holes(ty.return_type), ty.effect)
+    return ty
+
+
+def contains_literal_hole(ty: Type) -> bool:
+    """True iff :data:`LITERAL_HOLE` occurs anywhere in *ty*."""
+    if isinstance(ty, TypeVar):
+        return is_literal_hole(ty)
+    if isinstance(ty, AdtType):
+        return any(contains_literal_hole(a) for a in ty.type_args)
+    if isinstance(ty, FunctionType):
+        return (any(contains_literal_hole(p) for p in ty.params)
+                or contains_literal_hole(ty.return_type))
+    if isinstance(ty, RefinedType):
+        return contains_literal_hole(ty.base)
+    return False
+
+
+def fill_literal_holes(ty: Type, source: Type | None) -> Type:
+    """*ty* with each literal hole replaced by the `Int` or `Nat` at the
+    same position of *source*.
+
+    A hole whose aligned position in *source* is anything else — missing,
+    another type, a refinement — stays a hole, so a later source (or the
+    final default) decides it: a literal is never given a type it cannot
+    have.  A refinement is not adopted into the instantiation: the literal
+    still meets it as the target of the argument it sits in, and adopting
+    it would give the whole construction the refined type, which a join
+    with a sibling of the base type then reads as its own.
+    """
+    if is_literal_hole(ty):
+        if (isinstance(source, PrimitiveType)
+                and source.name in ("Int", "Nat")):
+            return source
+        return ty
+    if (isinstance(ty, AdtType) and isinstance(source, AdtType)
+            and ty.name == source.name
+            and len(ty.type_args) == len(source.type_args)):
+        return AdtType(ty.name, tuple(
+            fill_literal_holes(a, b)
+            for a, b in zip(ty.type_args, source.type_args)))
+    if (isinstance(ty, FunctionType) and isinstance(source, FunctionType)
+            and len(ty.params) == len(source.params)):
+        return FunctionType(
+            tuple(fill_literal_holes(a, b)
+                  for a, b in zip(ty.params, source.params)),
+            fill_literal_holes(ty.return_type, source.return_type),
+            ty.effect)
+    return ty
+
+
+def _literal_can_have(ty: Type) -> bool:
+    """Whether an integer literal can have type *ty*: an integer type (a
+    literal is typed `Byte` in a `Byte` context), a refinement of one, or
+    a type variable, which stands for whatever it is instantiated at.  A
+    literal meeting any other type in a shared type head is the same
+    conflict its `Nat` was before holes existed (#898, #1541)."""
+    base = ty.base if isinstance(ty, RefinedType) else ty
+    while isinstance(base, RefinedType):
+        base = base.base
+    if isinstance(base, TypeVar):
+        return True
+    return (isinstance(base, PrimitiveType)
+            and base.name in ("Int", "Nat", "Byte"))
+
+
 def merge_inferred_types(
     a: Type, b: Type, nested: bool = False,
 ) -> tuple[Type, bool]:
@@ -911,9 +1023,27 @@ def merge_inferred_types(
     whether we are already inside such a structural merge.
     """
     # A fresh placeholder is a hole — take the other (more-determined) side.
+    # Between two holes, a literal's (#1541) outranks a nullary
+    # constructor's: the literal still has a type to fall back on, and the
+    # other hole has none, so keeping it would leave the variable unresolved.
     if _is_fresh_typevar(a):
+        if is_literal_hole(a) and is_literal_hole(b):
+            return (join_literal_holes(a, b), False)
+        if is_literal_hole(a) and _is_fresh_typevar(b):
+            return (a, False)
+        if is_literal_hole(a):
+            if isinstance(b, TypeVar):
+                return (a, False)
+            return (b, nested and not _literal_can_have(b))
         return (b, False)
     if _is_fresh_typevar(b):
+        if is_literal_hole(b):
+            if isinstance(a, TypeVar):
+                # A variable leaked unresolved from a nested generic call
+                # yields to the literal, as it yields to any concrete type
+                # (#970's dual in `_unify_for_inference`).
+                return (b, False)
+            return (a, nested and not _literal_can_have(a))
         return (a, False)
     # Already structurally identical — nothing to reconcile.
     if types_equal(a, b):

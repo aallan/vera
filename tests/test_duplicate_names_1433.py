@@ -232,6 +232,9 @@ NOT_NAMESPACES: dict[str, str] = {
     "TypeChecker.expr_types": "keyed by source span, the LSP's side table",
     "TypeChecker.expr_semantic_types": "keyed by source span, for the verifier",
     "TypeChecker.expr_target_types": "keyed by source span, for codegen",
+    "TypeChecker._literal_soft_results": (
+        "keyed by a call's source span, the parts of its result its literals "
+        "decided (#1541)"),
     "TypeChecker._builtin_data_types": (
         "the built-in data types the environment starts with, kept by "
         "identity to tell them from a same-named declaration or import "

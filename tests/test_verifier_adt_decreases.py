@@ -361,7 +361,7 @@ private fn sum(@List<Int> -> @Int)
         assert result.summary.tier1_verified == 8
 
     def test_overall_tier_counts(self) -> None:
-        """All examples together: 417 T1 / 131 T3 / 548 total (current).
+        """All examples together: 417 T1 / 127 T3 / 544 total (current).
 
         Counts move when examples are added or their contracts become
         more / less verifiable.  Trajectory:
@@ -733,9 +733,15 @@ private fn sum(@List<Int> -> @Int)
         # type is no longer read as an outer one.  `json.vera`'s
         # `sum_hourly`, whose recursive call reads such a `@Float64`, now
         # proves its measure: +1 T1, -1 T3: 416/132/548 -> 417/131/548.
+        # #1541: a generic call whose literal arguments meet an `@Int`
+        # context is instantiated at `Int`, so its result is no longer a
+        # `@Nat` widened into an `@Int` slot, and the four
+        # `nat_to_int_coerce` obligations that widening raised are gone
+        # (`array_utilities.vera` 2, `generics.vera` 1,
+        # `nested_closures.vera` 1): -4 T3: 417/131/548 -> 417/127/544.
         assert t1 == 417, f"Expected 417 T1, got {t1}"
-        assert t3 == 131, f"Expected 131 T3, got {t3}"
-        assert total == 548, f"Expected 548 total, got {total}"
+        assert t3 == 127, f"Expected 127 T3, got {t3}"
+        assert total == 544, f"Expected 544 total, got {total}"
         # Zero is the load-bearing value, not a vacuous one: every corpus
         # narrowing is now covered by an emitted guard, so any reappearance
         # is a REGRESSION in guard coverage rather than a new example.  The

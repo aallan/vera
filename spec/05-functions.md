@@ -373,6 +373,8 @@ private forall<A, B> fn pair(@A, @B -> @Tuple<A, B>)
 
 Type variables are introduced by `forall<...>` and are scoped to the entire function declaration (including contracts and body).
 
+A call's type arguments are inferred from its arguments. An argument that is an integer literal, or is built from literals, takes its type from the call's context — the other arguments first, then the type the result is expected at — and only when neither fixes it from its own value (§4.2).
+
 ### 5.9.1 Effect-Polymorphic Functions
 
 Functions can be polymorphic over effects:

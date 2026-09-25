@@ -12,6 +12,7 @@ from collections.abc import Sequence
 from typing import ClassVar
 
 from vera import ast
+from vera.checker.resolution import is_literal_only, literal_int_value
 from vera.checker.sql import resolve_array_len, resolve_literal_string
 from vera.types import (
     AdtType,
@@ -286,7 +287,7 @@ class ExpressionsMixin:
         if isinstance(expr, ast.IndexExpr):
             return self._check_index(expr)
         if isinstance(expr, ast.FnCall):
-            result = self._check_fn_call(expr)
+            result = self._check_fn_call(expr, expected=expected)
             # Bidirectional coercion: when a generic call returns a type
             # with unresolved TypeVars (e.g. map_new() → Map<K, V>) and
             # we have an expected concrete type (e.g. Map<String, Int>),
@@ -308,7 +309,7 @@ class ExpressionsMixin:
         if isinstance(expr, ast.QualifiedCall):
             return self._check_qualified_call(expr)
         if isinstance(expr, ast.ModuleCall):
-            return self._check_module_call(expr)
+            return self._check_module_call(expr, expected=expected)
         if isinstance(expr, ast.IfExpr):
             return self._check_if(expr, expected=expected)
         if isinstance(expr, ast.MatchExpr):
@@ -626,6 +627,16 @@ class ExpressionsMixin:
             # non-negativity with no verifier obligation (§0.2.2).
             joined = numeric_join(left_base, right_base)
             if joined is not None:
+                # #1541: a literal-only expression is typed by its value.
+                # `0 - 3` is two non-negative literals, and `Nat - Nat` would
+                # make it a `Nat` holding -3; whatever instantiation it then
+                # fixed (`id(0 - 3)`, `[0 - 1, 5]`) declared the value
+                # non-negative, and the `@Nat` guards on it refused or
+                # trapped a program whose value is plainly -3.
+                if types_equal(joined, NAT) and is_literal_only(expr):
+                    value = literal_int_value(expr)
+                    if value is not None and value < 0:
+                        return INT
                 return joined
             self._error(
                 expr,
