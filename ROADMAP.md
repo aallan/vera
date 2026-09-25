@@ -16,7 +16,7 @@ Ordering derives from the design principles ([DESIGN.md](DESIGN.md)): verificati
 
 ## The v0.2.0 burndown
 
-*Two open bugs, driven to zero.*
+*Three open bugs, driven to zero.*
 
 A bug class outranks stage work, so the next release takes the open `bug`-labelled set as its queue.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) carries each row's full account and stays the one place the detail lives; this table is the order of attack.
 
@@ -24,6 +24,7 @@ A bug class outranks stage work, so the next release takes the open `bug`-labell
 |---|---|
 | [#1470](https://github.com/aallan/vera/issues/1470) | A refutation can rest on a value whose refinement the solver cannot state: the sort is built, the predicate is not, and the counterexample names a value the type forbids. |
 | [#1468](https://github.com/aallan/vera/issues/1468) | A false precondition on a `forall` generic callee is disclosed as **E532** at the call site instead of refuted as **E501**, so a program calling it is accepted. |
+| [#1501](https://github.com/aallan/vera/issues/1501) | `&&`, `\|\|` and `==>` evaluate both operands, although spec §4.6 says `&&` and `\|\|` short-circuit, so a guard written beside the operation it protects does not protect it. |
 
 ## Stage 19 — The verification completeness sprint
 

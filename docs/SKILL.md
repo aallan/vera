@@ -1035,7 +1035,7 @@ int_to_string(@Int.0)                   -- returns String (alias for to_string)
 bool_to_string(@Bool.0)                 -- returns String ("true" or "false")
 nat_to_string(@Nat.0)                   -- returns String (natural to decimal)
 byte_to_string(@Byte.0)                 -- returns String (single character)
-float_to_string(@Float64.0)             -- returns String (decimal; total: nan/inf/-inf for non-finite)
+float_to_string(@Float64.0)             -- returns String (decimal; nan/inf/-inf for non-finite; traps if finite and |x| >= 2^63)
 string_strip(@String.0)                 -- returns String (trim whitespace)
 ```
 
@@ -2479,7 +2479,9 @@ These are known limitations in the current reference implementation. Most are tr
 
 ## Known Bugs and Workarounds
 
-No known bugs.
+| Bug | Workaround | Issue |
+|-----|-----------|-------|
+| `&&`, `\|\|` and `==>` evaluate both operands, although spec §4.6 says `&&` and `\|\|` short-circuit, so `@Int.0 != 0 && 10 / @Int.0 > 0` traps on `0` and is refused `E526`. | Guard the operation with a nested `if`: `if @Int.0 != 0 then { 10 / @Int.0 > 0 } else { false }`, and write `P ==> Q` over a `Q` that can trap as `if P then { Q } else { true }`.  Write a precondition whose later conjunct relies on an earlier one as separate `requires` clauses. | [#1501](https://github.com/aallan/vera/issues/1501) |
 
 When a Vera program type-checks cleanly, compiles without errors, and then produces a runtime trap you can't explain, runtime trap diagnostics are now Vera-native end-to-end: each trap carries a `kind` label naming its cause — `contract_violation`, `overflow`, `nat_guard`, `widen_guard`, `nat_underflow`, `assertion_failed`, `index_out_of_bounds`, `string_index_out_of_bounds`, `float_conversion`, `heap_exhausted`, `uncaught_exception` (an `Exn<T>` no `handle[Exn<T>]` caught before it left the entry point), `divide_by_zero`, `out_of_bounds`, `stack_exhausted`, `host_error`, or `unreachable` for the runtime's own internal limits (shadow-stack overflow and the like), and `unknown` — a message describing the failure, which names the failing site wherever the check carries one (the assertion's text, the index and its bound, the subtraction and the `requires` that discharges it), a per-kind `Fix:` paragraph naming the canonical remediation (omitted for `contract_violation` and `host_error`, whose descriptions already carry the specific instruction, and for `unknown`, where there is nothing general to suggest), and, under the default `vera run` host, a source backtrace pointing at the offending Vera function and line — not just `wasm trap: <reason>` (a `--target wasi-p2` trap keeps its kind, message and `Fix:`, but its `frames` list is empty, because frames do not cross the component boundary, spec §13.6).  Tail-recursive iteration runs in constant WASM stack space for both non-allocating ([#517](https://github.com/aallan/vera/issues/517), v0.0.126) and allocating ([#549](https://github.com/aallan/vera/issues/549), v0.0.154) tail calls — the latter prepends a `$gc_sp` restore before each `return_call` to keep the shadow stack bounded across iterations.
 

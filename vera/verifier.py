@@ -14,15 +14,18 @@ from __future__ import annotations
 
 import contextlib
 import enum
+import math
+import weakref
 
 import z3
 
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from dataclasses import fields as ast_fields
+from fractions import Fraction
 from collections.abc import Sequence
 from functools import lru_cache, partial
-from typing import TYPE_CHECKING, ClassVar, cast
+from typing import TYPE_CHECKING, ClassVar, NamedTuple, cast
 
 from vera import ast, binders, carriers, narrowing, naming
 from vera.callgraph import CallGraph, computation_calls
@@ -62,15 +65,21 @@ from vera.obligations.core import (
     expr_text_for,
 )
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv, alias_env_from_environment
+from vera.builtin_domains import BUILTIN_DOMAINS, domain_contract
 from vera.resolver import merged_import_filters, own_module_path
-from vera.slots import effect_op_result_names, fn_slot_scope, slot_table
+from vera.slots import (
+    effect_op_result_names,
+    fn_slot_scope,
+    substitute_parameters,
+)
+from vera.tail_position import compute_tail_call_sites
 from vera.smt import (
     AxiomKind,
     CalleeScope,
-    CallDemotion,
     SlotEnv,
     SmtContext,
     SmtResult,
+    _pattern_condition_exact,
     resolve_timeout_ms,
 )
 from vera.types import (
@@ -79,6 +88,7 @@ from vera.types import (
     is_pair_represented,
     state_cell_lowerable,
     BOOL,
+    BYTE,
     FLOAT64,
     INT,
     NAT,
@@ -138,6 +148,25 @@ _U64_MAX = 2**64 - 1
 #: layer cannot project (#1251).  Nothing about the predicate or its base is at
 #: fault there — the field the predicate is about was never formed — so saying
 #: "outside Z3's decidable fragment" pointed the reader at the wrong thing.
+#: Why a `@Nat` narrowing refuted only over a placeholder is Tier 3 (#1480
+#: review): the E504/`tier3` record's reason, beside the #1460 refinement one.
+_PLACEHOLDER_NARROWING_REASON = (
+    "the value being narrowed is, or embeds, a placeholder for a `let`, "
+    "destructure or `match` binder the SMT layer could not translate, and "
+    "some value that placeholder could take is non-negative, so the "
+    "countermodel names no value the program can produce"
+)
+
+#: Its refinement twin: the E506 / `tier3` reason of a refinement narrowing
+#: refuted only over a placeholder, at a projected sub-pattern bind and at a
+#: payload a call argument's type refines (#1480 review).
+_PLACEHOLDER_REFINEMENT_REASON = (
+    "the value being narrowed is, or embeds, a placeholder for a `let`, "
+    "destructure or `match` binder the SMT layer could not translate, and "
+    "the predicate holds for some value that placeholder could take, so the "
+    "countermodel names no value the program can produce"
+)
+
 _OPAQUE_SCRUTINEE_REASON = (
     "the matched value is opaque to the SMT layer, so its field could not be "
     "projected and the predicate was never given a value to reason about"
@@ -178,6 +207,49 @@ _NESTED_SITE_GUARD_NOTE = (
     "TUPLE components and no further, so a refinement written on an ADT "
     "payload or an array element is checked at no boundary: this one is "
     "neither statically proven nor runtime-checked."
+)
+
+
+class _FloatConversion(NamedTuple):
+    """How one built-in reaches `i64.trunc_f64_s` (#807, #1480)."""
+
+    #: The rounding step before the truncation, over the exact value.
+    #: `round` is `f64.nearest`, ties to even, which is what `round()` does
+    #: to a `Fraction`; `int` truncates toward zero.
+    rounding: Callable[[Fraction], int]
+    #: That step as the compiled code spells it, for the E529 rationale.
+    step: str
+    #: `float_to_string` renders NaN and the infinities before it truncates
+    #: (#857), so only a FINITE value can reach the trap — and it truncates
+    #: the MAGNITUDE, after negating, so `-2^63` traps where `float_to_int`
+    #: converts it.
+    renders_non_finite: bool = False
+
+
+#: Every built-in whose translation truncates a `@Float64` with the trapping
+#: `i64.trunc_f64_s` — the three rounding built-ins after their rounding
+#: instruction, and `float_to_string` (and every `show` or interpolation of a
+#: `@Float64`, which lower to it) on the integer part it prints.  The
+#: obligation is over the value the truncation receives.
+_FLOAT_CONVERSIONS: dict[str, _FloatConversion] = {
+    "float_to_int": _FloatConversion(int, ""),
+    "floor": _FloatConversion(math.floor, "`f64.floor` then "),
+    "ceil": _FloatConversion(math.ceil, "`f64.ceil` then "),
+    "round": _FloatConversion(round, "`f64.nearest` then "),
+    "float_to_string": _FloatConversion(
+        int, "`f64.abs` of a finite value then ", renders_non_finite=True),
+}
+
+
+#: The Fix for an operation a refinement predicate cannot evaluate (#1480).
+_PREDICATE_FIX = (
+    "A refinement predicate is evaluated on any value of its base type, so "
+    "each operation in it must be defined for all of them.  Evaluate the "
+    "operation only where it is defined, inside an `if` in the predicate — "
+    "`{ @Nat | if @Nat.0 >= 5 then { @Nat.0 - 5 > 1 } else { false } }` — "
+    "or rewrite the predicate without it (`@Nat.0 > 6`).  A condition "
+    "written beside the operation with `&&` or `||` does not protect it "
+    "yet: the reference compiler currently evaluates both operands (#1501)."
 )
 
 
@@ -235,7 +307,8 @@ class BlockBindingPolicy(enum.Enum):
     """
 
     OPAQUE_SHADOW = "opaque_shadow"
-    """Replace a shadowed stale outer with a TRACKED fresh const of its sort.
+    """Bind a TRACKED fresh const: of the stale outer's sort when the binding
+    shadows one, else of the declared type's.
 
     For readers that record obligations against the value (the primitive-op
     walker, and the construction descent).  A stale same-type outer is the
@@ -270,7 +343,14 @@ class BlockBindingPolicy(enum.Enum):
     translates each recursive call's arguments in the env it has built: a
     binding left out of it would move every later slot of its type onto an
     outer value, and a measure proved against that value is a claim about a
-    call the program does not make.
+    call the program does not make (`let @Nat = get(()); f(@Nat.0 - 1)`
+    proved `decreases(@Nat.0)` over the PARAMETER, and the guard trapped on
+    the first call).  Its consumers also record from what it found (the
+    measure a tail call evaluates, #1480), so it binds under
+    `_placeholders_tracked`: the scalar var is tracked too, and an
+    obligation over it falls to Tier 3 rather than being refused on its
+    unconstrained value.  The invariant is what the termination proof
+    needs from a `@Nat` binding (`callee_measure >= 0`).
     """
 
 
@@ -280,8 +360,9 @@ class ArmContext:
 
     Three things, and they are three because three separate derivations
     answer them: the slot env the arm binds (`SmtContext._bind_pattern`),
-    the fact that this arm was taken (`_pattern_condition`), and the facts
-    the arm's pattern ESTABLISHES (`_subpattern_source_facts`).  Carrying
+    the fact that this arm was taken (`_pattern_condition`, and the
+    negation of each exact earlier arm's), and the facts the arm's pattern
+    ESTABLISHES (`_subpattern_source_facts`).  Carrying
     them as one value is what stops a reader taking two of the three, which
     is the #1403 shape: the walk that discharges every body `assert` bound
     the pattern and pushed the discriminant and never asked for the facts.
@@ -296,6 +377,133 @@ class ArmContext:
     def assuming(self, base: Sequence[object]) -> list[object]:
         """*base* plus what this arm establishes."""
         return [*base, *self.facts]
+
+
+class RecursiveCall(NamedTuple):
+    """One recursive call site, as `_collect_recursive_calls` finds it."""
+
+    #: The declaration the walk's *match* resolved the call to, whose
+    #: measure the call is compared against.
+    callee: ast.FnDecl
+    args: tuple[ast.Expr, ...]
+    #: The Z3 path conditions (and match-arm facts) that hold at the call.
+    path_conds: list[object]
+    #: The slot env at the call, after the `let`s that precede it.
+    env: SlotEnv
+    #: A bare call, or one by the module's own path (#1558).
+    node: ast.FnCall | ast.ModuleCall
+
+
+@dataclass(frozen=True)
+class EvaluatedAt:
+    """An evaluated position that is not the function body (#1480).
+
+    Code generation evaluates more than a body: the `decreases` measure at
+    entry and on a self-recursive tail call's captured arguments, and every
+    refinement predicate at each guard of its type.  The walks that obligate
+    a body's operations are run over those expressions too, and this says
+    which one is being walked, so an obligation recorded there, and the
+    diagnostic beside it, name the place the check actually runs.
+
+    Set only by :py:meth:`ContractVerifier._walk_evaluated`, for the
+    duration of one walk.
+    """
+
+    #: ``"measure"`` (the measure at function entry), ``"measure_call"``
+    #: (the measure evaluated on a tail call's arguments, before the call),
+    #: or ``"predicate"`` (a refinement predicate, at its declaration).
+    position: str
+    #: The recursive call, for ``"measure_call"``: an obligation discharged
+    #: under that call site's facts is located there, as a call-site
+    #: precondition is, so two sites stay two obligations.
+    call: ast.FnCall | ast.ModuleCall | None = None
+    #: The refinement type, rendered, for ``"predicate"``.
+    type_text: str = ""
+    #: The declaration the refinement belongs to, for ``"predicate"``.
+    owner: str = ""
+
+
+@dataclass(frozen=True)
+class RefinementDeclaration:
+    """One refinement type written in a program, and where (#1480)."""
+
+    node: ast.RefinementType
+    #: The declaration it is written in: a type alias, a `data` or effect
+    #: declaration, or a function (its signature or its body).
+    owner: ast.Decl
+    #: For a function owner, the `where` ancestry it sits under, outermost
+    #: first — the scope a call in its predicate resolves in.
+    enclosing: tuple[ast.FnDecl, ...] = ()
+
+
+def refinement_declarations(
+    program: ast.Program,
+) -> Iterator[RefinementDeclaration]:
+    """Every ``{ @T | P }`` written anywhere in *program*, each once.
+
+    Enumerated from the AST by field, not from a list of the positions a
+    refinement may occupy, because spec §2.6 names a dozen of them — alias
+    bodies, signatures, constructor fields, operation signatures, `let` and
+    destructure annotations, match binders, quantifier binders, handler
+    state, a type argument at any depth — and every one is a type some guard
+    may evaluate.  A refinement nested inside another's base or predicate is
+    yielded too: it is a type of its own.
+    """
+    for tld in program.declarations:
+        yield from _refinements_in(tld.decl, ())
+
+
+def _refinements_in(
+    decl: ast.Decl, enclosing: tuple[ast.FnDecl, ...],
+) -> Iterator[RefinementDeclaration]:
+    for node in _refinement_nodes(decl):
+        yield RefinementDeclaration(node, decl, enclosing)
+    if isinstance(decl, ast.FnDecl):
+        for helper in decl.where_fns or ():
+            yield from _refinements_in(helper, (*enclosing, decl))
+
+
+def _refinement_nodes(root: ast.Node) -> Iterator[ast.RefinementType]:
+    """The refinement types under *root*, not descending into `where`
+    helpers — each is its own declaration, with its own scope."""
+    stack: list[object] = [root]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, tuple):
+            stack.extend(reversed(item))
+            continue
+        if not isinstance(item, ast.Node):
+            continue
+        if isinstance(item, ast.RefinementType):
+            yield item
+        for f in ast_fields(item):
+            if isinstance(item, ast.FnDecl) and f.name == "where_fns":
+                continue
+            stack.append(getattr(item, f.name))
+
+
+def _refinement_text(node: ast.RefinementType) -> str:
+    """``{ @Base | P }`` as written (`ast.format_type_expr` renders a
+    refinement as its base alone)."""
+    return (f"{{ {ast.format_type_expr(node.base_type)} | "
+            f"{ast.format_expr(node.predicate)} }}")
+
+
+def _calls_in(node: object) -> Iterator[ast.Node]:
+    """Every call node under *node* — the ones whose precondition the SMT
+    layer checks as it translates them."""
+    stack: list[object] = [node]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, tuple):
+            stack.extend(item)
+            continue
+        if not isinstance(item, ast.Node):
+            continue
+        if isinstance(item, (ast.FnCall, ast.ModuleCall)):
+            yield item
+        for f in ast_fields(item):
+            stack.append(getattr(item, f.name))
 
 
 #: `@Nat` builtins that plant NO guard, and why — the CALLEE half of the guard
@@ -906,6 +1114,32 @@ class ContractVerifier:
         # untranslatable let/destructure rebinds it.  A div/sub operand that IS
         # one falls to Tier-3 (the shadowed value is unknown).  Reset per fn.
         self._opaque_shadows: list[z3.ExprRef] = []
+        # #1480 review: while a position #1480 obligates is walked for its
+        # narrowings (a `requires`, an `ensures`, a measure, a predicate),
+        # every placeholder `_fresh_slot_var` mints is tracked there too, so
+        # a narrowing refuted only over one is Tier 3 rather than a refusal.
+        # The body's narrowing walk leaves its `let` placeholders untracked,
+        # as it did before #1480 (their refutations are #1470's).
+        self._track_fresh_placeholders = False
+        # #1480: the evaluated position a walk is running over when it is not
+        # the body — see `EvaluatedAt`.  None outside `_walk_evaluated`.
+        self._evaluated_at: EvaluatedAt | None = None
+        # #1480: every call node written inside a refinement predicate, by
+        # identity.  A predicate is obligated once, at its declaration, so a
+        # call-site precondition checked while a USE site translates the
+        # predicate (a refined parameter's assumption, a refine_bind goal) is
+        # a repetition of that one obligation, not a second one.  Built in
+        # `register_program`.
+        self._predicate_call_ids: frozenset[int] = frozenset()
+        # #1480: each recorded `call_pre` -> the precondition it is about, by
+        # identity (see `_call_pre_recorded`).  Keyed by the record's `id`,
+        # with a WEAK reference to the record beside the precondition: an
+        # entry cannot answer for a later record that reuses a discarded
+        # one's `id` (its reference is dead, or is to a record that is not
+        # the one asked about), and it keeps no discarded record alive.
+        self._call_pre_contracts: dict[
+            int, tuple[weakref.ref[ProofObligation], ast.Node]
+        ] = {}
         # Warm-session hook: when provided (by
         # obligations.session.VerificationSession), _verify_fn calls
         # shared_smt.reset() per function instead of constructing a
@@ -1242,12 +1476,19 @@ class ContractVerifier:
         error_code: str = "",
     ) -> None:
         """Record a verification error."""
+        node = self._evaluation_site(node)
+        at = self._evaluated_at
+        if at is not None and at.position == "predicate":
+            # #1480: a type has no `requires` and no call site to guard; the
+            # remedy for every operation a predicate cannot evaluate is the
+            # same edit, made in the predicate.
+            fix = _PREDICATE_FIX
         loc = SourceLocation(file=self._current_file)
         if node.span:
             loc.line = node.span.line
             loc.column = node.span.column
         self.errors.append(Diagnostic(
-            description=description,
+            description=description + self._evaluation_note(),
             location=loc,
             source_line=self._get_source_line(loc.line),
             rationale=rationale,
@@ -1256,6 +1497,48 @@ class ContractVerifier:
             severity="error",
             error_code=error_code,
         ))
+
+    def _evaluation_site(self, node: ast.Node) -> ast.Node:
+        """Where a record about *node* is located (#1480).
+
+        The node itself, except while the measure is walked on a tail call's
+        arguments: that evaluation is discharged under the CALL SITE's facts,
+        so it is located at the call, the way a call-site precondition is —
+        the obligation and its diagnostic land on the one line whose change
+        fixes it, and two call sites stay two obligations.
+        """
+        at = self._evaluated_at
+        if at is not None and at.call is not None:
+            return at.call
+        return node
+
+    def _evaluation_note(self) -> str:
+        """The sentence saying where a check outside the body is evaluated.
+
+        Empty for the body: every diagnostic about a body already names the
+        function and points at the expression.
+        """
+        at = self._evaluated_at
+        if at is None:
+            return ""
+        if at.position == "measure":
+            return (
+                "\n  In the `decreases` measure, which the compiled function "
+                "evaluates on entry, after its `requires` are checked."
+            )
+        if at.position == "measure_call" and at.call is not None:
+            return (
+                f"\n  In the `decreases` measure, which the compiled "
+                f"function evaluates on this recursive call's arguments "
+                f"before the call is made: "
+                f"`{ast.format_expr(at.call)}`."
+            )
+        return (
+            f"\n  In the refinement predicate of `{at.type_text}`"
+            + (f" (declared in '{at.owner}')" if at.owner else "")
+            + ", which every guard of the type evaluates, on any value of its "
+            "base type."
+        )
 
     def _warning(
         self,
@@ -1276,12 +1559,13 @@ class ContractVerifier:
         exactly one, weaken it (#1451) — carrying it costs nothing and
         `check_diagnostic_fields` accepts it on a warning.
         """
+        node = self._evaluation_site(node)
         loc = SourceLocation(file=self._current_file)
         if node.span:
             loc.line = node.span.line
             loc.column = node.span.column
         self.errors.append(Diagnostic(
-            description=description,
+            description=description + self._evaluation_note(),
             location=loc,
             source_line=self._get_source_line(loc.line),
             rationale=rationale,
@@ -1346,7 +1630,8 @@ class ContractVerifier:
         shares a site with — and, for an imported clone, named a line the
         entry file does not have.
         """
-        loc = span_node if span_node is not None else node
+        loc = self._evaluation_site(
+            span_node if span_node is not None else node)
         line = loc.span.line if loc.span else 0
         column = loc.span.column if loc.span else 0
         self.obligations.append(ProofObligation(
@@ -1368,6 +1653,19 @@ class ContractVerifier:
             # distinguish rather than a safety net.
             owner=self._scope_owner if self._scope_is_helper else "",
         ))
+        if kind == "call_pre":
+            # #1480: which precondition this record is about, by identity —
+            # see `_call_pre_recorded` and `_call_pre_contract_of`.
+            record = self.obligations[-1]
+            self._call_pre_contracts[id(record)] = (weakref.ref(record), node)
+
+    def _call_pre_contract_of(self, record: ProofObligation) -> ast.Node | None:
+        """The precondition a `call_pre` *record* is about, or None when
+        this verifier recorded no such record."""
+        entry = self._call_pre_contracts.get(id(record))
+        if entry is None or entry[0]() is not record:
+            return None
+        return entry[1]
 
     @staticmethod
     def _contract_kind(contract: ast.Contract) -> ObligationKind:
@@ -1908,6 +2206,144 @@ class ContractVerifier:
         found: FunctionInfo | None = lookup(expr.name)
         return found
 
+    def _declare_value(
+        self, smt: SmtContext, z3_name: str, ty: Type,
+    ) -> z3.ExprRef:
+        """A Z3 constant for a value of type *ty*, of the sort *ty* carries.
+
+        The one dispatch from a Vera type to its declaration — a parameter's
+        (`_verify_fn` step 1) and a refinement predicate's binder (#1480) —
+        so the two cannot come to model one type two ways.  The `_is_*_type`
+        helpers see through a refinement to its base, so a refined value is
+        declared at its base's sort; its predicate is a separate fact
+        (:py:meth:`_declared_type_facts`).
+        """
+        if self._is_nat_type(ty):
+            return smt.declare_nat(z3_name)
+        if self._is_bool_type(ty):
+            return smt.declare_bool(z3_name)
+        if self._is_string_type(ty):
+            return smt.declare_string(z3_name)
+        if self._is_float64_type(ty):
+            return smt.declare_float64(z3_name)
+        if self._is_array_type(ty):
+            # #667 — Array<T> gets a proper uninterpreted sort
+            # so `arr[i]` and `[a, b, c]` translate to typed
+            # `index_<T>` / array constants rather than falling
+            # back to `declare_int` (which made IndexExpr and
+            # ArrayLit in contracts return None and drop the
+            # predicate to Tier 3).
+            array_var = self._declare_array_var(smt, z3_name, ty)
+            return (array_var if array_var is not None
+                    else smt.declare_int(z3_name))
+        if carriers.projected_carrier_name(ty) is not None:
+            # #1430 — a `Map` or `Set` reached no sort branch at all and
+            # fell through to `declare_int`, an unconstrained integer with
+            # no elements to quantify over, so an element refinement on
+            # one could only ever be disclosed.  The `Array` arm above
+            # takes precedence: it IS its own element sequence.
+            coll_var = self._declare_collection_var(smt, z3_name, ty)
+            return (coll_var if coll_var is not None
+                    else smt.declare_int(z3_name))
+        if self._is_adt_type(ty):
+            adt_var = smt.declare_adt(z3_name, ty)
+            return adt_var if adt_var is not None else smt.declare_int(z3_name)
+        return smt.declare_int(z3_name)
+
+    def _declared_type_facts(
+        self, smt: SmtContext, ty: Type, var: z3.ExprRef,
+    ) -> list[object]:
+        """What a value's DECLARED type says about it, as solver facts.
+
+        #746: a refined value satisfies its predicate — for a parameter, the
+        matched half of the call-site discharge (R1).  An untranslatable
+        predicate or a non-primitive base yields nothing, which leaves the
+        value constrained by its base alone: sound, never over-assumed.
+
+        #1430: and the refinements written INSIDE the type — an
+        `Array<PosInt>` element, an ADT payload — under the same R1 licence.
+        Every producer is obligated to discharge them at the position that
+        gives a value this type (#1410's `refine_bind`), so assuming them
+        closes the same modular loop the value's own refinement uses.  Facts
+        are assumed even when the walk reports itself INCOMPLETE: each fact
+        returned is true of the value, and a partial set is a weaker
+        assumption, never an over-assumption.
+
+        Through the ONE gate every reader of a declared-type fact asks
+        (#1363, #1406, #1413).  A parameter has no producer inside its
+        function, so the gate answers "established" for every program
+        measured — but it is asked rather than assumed, because the rule this
+        file holds is that a reader of these facts is a call to the gate or
+        it is a bug, and a term can acquire a disclosed site through
+        cross-module widening.
+        """
+        facts: list[object] = []
+        if self._is_refined_type(ty):
+            pred = self._translate_refined_predicate(smt, ty, var)
+            if pred is not None:
+                facts.append(pred)
+        nested_facts, _ = self._nested_refinement_facts(smt, ty, var)
+        facts.extend(self._established_facts(
+            nested_facts, source=None, term=var, smt=smt))
+        return facts
+
+    def _fresh_smt(self, scope: CalleeScope) -> SmtContext:
+        """A solver context for one declaration, read in *scope*.
+
+        The prologue every declaration check shares — a function's
+        (`_verify_fn`) and a refinement predicate's (#1480): the warm
+        session's shared context reset or a fresh cold one, the scope bound,
+        the verifier's hooks installed, and every ADT registered.
+        """
+        if self._shared_smt is not None:
+            # Warm session (#222 Phase A): reuse one z3.Solver across
+            # functions.  reset() clears all per-function state (vars,
+            # assertions, sorts, path conditions, uninterpreted-fn
+            # caches) while the ADT registry persists; the scope is rebound
+            # because it closes over this verifier's env.
+            smt = self._shared_smt
+            smt.reset()
+        else:
+            smt = SmtContext(timeout_ms=self.timeout_ms)
+        self._bind_smt_scope(smt, scope)
+        # CR PR-review: let the SMT match translation assume a constructor
+        # pattern's refined / @Nat sub-pattern SOURCE facts while checking the
+        # arm body's call PRECONDITIONS — the E501 path the narrowing-walk fact
+        # carry never reaches.  Stateless, so safe on the warm (shared) smt too.
+        smt._subpattern_fact_hook = self._subpattern_source_facts
+        # #1406/#1407: and let it record a DISCLOSED call's result term, so
+        # the taint follows the value into every binding, projection and
+        # branch that value reaches.  The terms it causes to be recorded are
+        # per-function state, which `SmtContext.reset()` clears — so the warm
+        # (shared) smt is safe for the same reason `_tainted_facts` is.
+        smt._disclosed_call_hook = self._disclosed_call_for_value
+        # #994 F1: let the SMT nullary-ctor translation resolve a bare tag's
+        # exact instantiation from the checker's recorded (instance-substituted)
+        # semantic type, instead of the ambiguous base-name scan that crashed Z3
+        # on `Some(None) == None` / `!= None`.  Stateless (reads the live
+        # `_instance_subst` per clone), so safe on the warm (shared) smt too.
+        smt._recorded_type_hook = self._resolved_type_of
+        # J1: and let the SORT derivation ask whether a refinement's whole
+        # predicate can be stated, so a refinement it cannot state is not
+        # modelled rather than modelled without its meaning.  The chain walk
+        # and the predicate translation live here, so the question is
+        # answered here and asked once, by `SmtContext._refinement_statable`.
+        smt._refinement_statable_hook = partial(
+            self._refinement_predicate_statable, smt)
+        # #1480 review: and let a call-site check ask whether its goal rests
+        # on a placeholder one of the walks bound.  A bound method, so it
+        # reads the live `_opaque_shadows`, which each walk resets.
+        smt._placeholder_hook = self._contains_opaque_shadow
+        # #1480 review: and let the SMT `match` translation bind an arm's
+        # guarded refined binders the way the walks do (`_enter_match_arm`).
+        smt._guarded_binder_hook = self._guarded_binder_values
+        # Register all known ADTs with the SMT context.  Idempotent on
+        # the warm path (same AdtInfo re-registered into the persistent
+        # registry); kept per-function so cold and warm stay identical.
+        for adt_info in self.env.data_types.values():
+            smt.register_adt(adt_info)
+        return smt
+
     def _bind_smt_scope(self, smt: SmtContext, scope: CalleeScope) -> None:
         """Hand *smt* the scope the declaration under verification is read in.
 
@@ -2266,6 +2702,20 @@ class ContractVerifier:
         # incremental session — which both go through register_program — verify
         # the same per-monomorphization set (keeps warm == cold).
         self._instances = self._collect_instantiations(program)
+        # #1480: a built-in's declared domain is quoted, in an E501, out of
+        # the declaration it was parsed from — its span numbers lines there.
+        for domain in BUILTIN_DOMAINS:
+            contract = domain_contract(domain.name)
+            if contract is not None:
+                self._contract_sources[id(contract.requires)] = (
+                    contract.requires, contract.source)
+        # #1480: the calls this program's refinement predicates make, each of
+        # which `_verify_refinement_declarations` obligates at its declaration.
+        self._predicate_call_ids = frozenset(
+            id(call)
+            for site in refinement_declarations(program)
+            for call in _calls_in(site.node.predicate)
+        )
 
     # -- #732: per-monomorphization instantiation discovery ----------------
 
@@ -3649,10 +4099,111 @@ class ContractVerifier:
 
     def _verify_all_declarations(self, program: ast.Program) -> None:
         """One full verification pass over the program's own declarations."""
+        self._verify_refinement_declarations(program)
         for tld in program.declarations:
             if isinstance(tld.decl, ast.FnDecl):
                 self._verify_fn(tld.decl)
         self._verify_shadowed_module_generics()
+
+    # -----------------------------------------------------------------
+    # #1480: a refinement predicate, obligated once at its declaration
+    # -----------------------------------------------------------------
+
+    def _verify_refinement_declarations(self, program: ast.Program) -> None:
+        """Discharge every refinement predicate *program* declares, once.
+
+        Every §2.6.5 guard of a refinement type evaluates its predicate, on
+        whatever value reaches it — a value the verifier proved satisfies the
+        type, or, at a Tier-3 boundary, any value of the base type.  So the
+        predicate's own operations are obligated here, at the declaration,
+        under nothing but the base type's facts: a predicate that traps for
+        some value of its base type is an ill-formed type, and one diagnostic
+        where it is written is what an author can act on.  Obligating it at
+        each use site instead would repeat the one obligation per use (R1's
+        cost), and a type used nowhere would never be checked.
+
+        The premises include the predicate's own control flow: an `if` in the
+        predicate is lazy in the compiled guard, so its branches are walked
+        under their conditions.  `&&` and `||` are NOT: code generation
+        evaluates both operands (`i32.and` / `i32.or`), so the left operand
+        is no premise of the right one, here or anywhere else.
+        """
+        for site in refinement_declarations(program):
+            self._verify_refinement_predicate(site)
+
+    def _verify_refinement_predicate(
+        self, site: RefinementDeclaration,
+    ) -> None:
+        """The declaration check for one refinement type (#1480)."""
+        node, owner = site.node, site.owner
+        if isinstance(owner, ast.FnDecl):
+            # A refinement written in a function is read in that function's
+            # scope: its `forall` variables, and the helpers a call in the
+            # predicate resolves to, exactly as the guard codegen emits there.
+            decl = owner
+            self._set_fn_scope(decl, site.enclosing)
+            env = self._fn_naming_scope(
+                self._current_alias_env, decl, site.enclosing)
+            lookup = self._scoped_fn_lookup(decl, site.enclosing)
+            type_text = _refinement_text(node)
+            owner_text = owner.name
+        else:
+            name = getattr(owner, "name", "")
+            params = getattr(owner, "type_params", None) or ()
+            decl = ast.FnDecl(
+                name=name, forall_vars=None,
+                forall_constraints=None, params=(),
+                return_type=node.base_type, contracts=(),
+                effect=ast.PureEffect(),
+                body=ast.Block(statements=(), expr=node.predicate),
+                where_fns=None, span=node.span,
+            )
+            self._scope_fn_names = frozenset()
+            self._scope_owner = name
+            self._scope_is_helper = False
+            self._tainted_sites = []
+            env = fn_slot_scope(self._current_alias_env, tuple(params))
+            lookup = self._scoped_fn_lookup(decl, ())
+            # An alias IS the type's name; any other declaration holds the
+            # refinement somewhere inside its own text.
+            is_alias_body = (isinstance(owner, ast.TypeAliasDecl)
+                             and owner.type_expr is node)
+            type_text = name if is_alias_body else _refinement_text(node)
+            owner_text = "" if is_alias_body else name
+        self._tainted_reasons = set()
+        # The scope's own path goes with it (#1558), as it does for a
+        # function body: a call by the module's own path in the predicate
+        # resolves to the function the guard codegen emits calls.
+        smt = self._fresh_smt(CalleeScope(env, lookup, *self._own_scope()))
+        # The binder is bound under the key its references resolve through
+        # and under the base's own slot name, as every translator of a
+        # predicate binds it (`_translate_refined_predicate`,
+        # `refinement_binder_parts`).
+        base_key = naming.slot_name_or_none(node.base_type, env)
+        binder_key = naming.predicate_binder_key(node.predicate, env)
+        base_ty = self._resolve_type(node.base_type)
+        binder = self._declare_value(
+            smt, f"@{binder_key or base_key or 'binder'}.0", base_ty)
+        facts = self._declared_type_facts(smt, base_ty, binder)
+        if base_ty == BYTE:
+            # A `@Byte` is modelled as an unbounded integer; its range is a
+            # fact about every value of the base type.
+            facts.extend([binder >= 0, binder <= 255])
+        # In the solver, not only in the walks' assumption list: a call in
+        # the predicate has its precondition checked as the SMT layer
+        # translates it, against what the solver holds.
+        for fact in facts:
+            smt.assume(fact)
+        slot_env = SlotEnv()
+        if base_key is not None:
+            slot_env = slot_env.push(base_key, binder)
+        if binder_key is not None and binder_key != base_key:
+            slot_env = slot_env.push(binder_key, binder)
+        self._opaque_shadows = []
+        self._walk_evaluated(
+            decl, [node.predicate], smt, slot_env, facts,
+            EvaluatedAt("predicate", type_text=type_text, owner=owner_text),
+        )
 
     def _disclosed_fn_names(self) -> frozenset[str]:
         """This verifier's obligations, through the shared rule — plus the
@@ -4238,47 +4789,8 @@ class ContractVerifier:
         # them are built from it, so the two sides cannot end up scoped
         # differently.
         fn_env = self._fn_naming_scope(self._current_alias_env, decl, enclosing)
-        if self._shared_smt is not None:
-            # Warm session (#222 Phase A): reuse one z3.Solver across
-            # functions.  reset() clears all per-function state (vars,
-            # assertions, sorts, path conditions, uninterpreted-fn
-            # caches) while the ADT registry persists; the scope is rebound
-            # because it closes over this verifier's env.
-            smt = self._shared_smt
-            smt.reset()
-        else:
-            smt = SmtContext(timeout_ms=self.timeout_ms)
-        self._bind_smt_scope(
-            smt, CalleeScope(fn_env, fn_lookup, *self._own_scope()))
-        # CR PR-review: let the SMT match translation assume a constructor
-        # pattern's refined / @Nat sub-pattern SOURCE facts while checking the
-        # arm body's call PRECONDITIONS — the E501 path the narrowing-walk fact
-        # carry never reaches.  Stateless, so safe on the warm (shared) smt too.
-        smt._subpattern_fact_hook = self._subpattern_source_facts
-        # #1406/#1407: and let it record a DISCLOSED call's result term, so
-        # the taint follows the value into every binding, projection and
-        # branch that value reaches.  The terms it causes to be recorded are
-        # per-function state, which `SmtContext.reset()` clears — so the warm
-        # (shared) smt is safe for the same reason `_tainted_facts` is.
-        smt._disclosed_call_hook = self._disclosed_call_for_value
-        # #994 F1: let the SMT nullary-ctor translation resolve a bare tag's
-        # exact instantiation from the checker's recorded (instance-substituted)
-        # semantic type, instead of the ambiguous base-name scan that crashed Z3
-        # on `Some(None) == None` / `!= None`.  Stateless (reads the live
-        # `_instance_subst` per clone), so safe on the warm (shared) smt too.
-        smt._recorded_type_hook = self._resolved_type_of
-        # J1: and let the SORT derivation ask whether a refinement's whole
-        # predicate can be stated, so a refinement it cannot state is not
-        # modelled rather than modelled without its meaning.  The chain walk
-        # and the predicate translation live here, so the question is
-        # answered here and asked once, by `SmtContext._refinement_statable`.
-        smt._refinement_statable_hook = partial(
-            self._refinement_predicate_statable, smt)
-        # Register all known ADTs with the SMT context.  Idempotent on
-        # the warm path (same AdtInfo re-registered into the persistent
-        # registry); kept per-function so cold and warm stay identical.
-        for adt_info in self.env.data_types.values():
-            smt.register_adt(adt_info)
+        smt = self._fresh_smt(
+            CalleeScope(fn_env, fn_lookup, *self._own_scope()))
         slot_env = SlotEnv()
 
         # 1. Declare Z3 constants for parameters
@@ -4292,71 +4804,10 @@ class ContractVerifier:
         for i, (param_te, param_ty) in enumerate(zip(decl.params, param_types)):
             type_name = self._type_expr_to_slot_name(param_te, fn_env)
             z3_name = f"@{type_name}.{self._count_slots(slot_env, type_name)}"
-
-            if self._is_nat_type(param_ty):
-                var = smt.declare_nat(z3_name)
-            elif self._is_bool_type(param_ty):
-                var = smt.declare_bool(z3_name)
-            elif self._is_string_type(param_ty):
-                var = smt.declare_string(z3_name)
-            elif self._is_float64_type(param_ty):
-                var = smt.declare_float64(z3_name)
-            elif self._is_array_type(param_ty):
-                # #667 — Array<T> gets a proper uninterpreted sort
-                # so `arr[i]` and `[a, b, c]` translate to typed
-                # `index_<T>` / array constants rather than falling
-                # back to `declare_int` (which made IndexExpr and
-                # ArrayLit in contracts return None and drop the
-                # predicate to Tier 3).
-                array_var = self._declare_array_var(smt, z3_name, param_ty)
-                var = array_var if array_var is not None else smt.declare_int(z3_name)
-            elif carriers.projected_carrier_name(param_ty) is not None:
-                # #1430 — a `Map` or `Set` reached no sort branch at all and
-                # fell through to `declare_int`, an unconstrained integer with
-                # no elements to quantify over, so an element refinement on
-                # one could only ever be disclosed.  The `Array` arm above
-                # takes precedence: it IS its own element sequence.
-                coll_var = self._declare_collection_var(smt, z3_name, param_ty)
-                var = (coll_var if coll_var is not None
-                       else smt.declare_int(z3_name))
-            elif self._is_adt_type(param_ty):
-                adt_var = smt.declare_adt(z3_name, param_ty)
-                var = adt_var if adt_var is not None else smt.declare_int(z3_name)
-            else:
-                var = smt.declare_int(z3_name)
-
+            var = self._declare_value(smt, z3_name, param_ty)
             slot_env = slot_env.push(type_name, var)
-
-            # #746: assume a refined param's predicate.  The base sort is
-            # already correct (the `_is_*_type` helpers above see through
-            # RefinedType to the base); here we additionally constrain the var
-            # to satisfy the predicate.  An untranslatable predicate / non-
-            # primitive base yields None and is simply not assumed (the param
-            # is unconstrained beyond its base — sound, never over-assumed).
-            if self._is_refined_type(param_ty):
-                pred = self._translate_refined_predicate(smt, param_ty, var)
-                if pred is not None:
-                    refined_param_assumptions.append(pred)
-            # #1430: and the refinements written INSIDE the parameter's type
-            # — an `Array<PosInt>` element, an ADT payload — under the same
-            # R1 licence.  Every caller is obligated to discharge them at the
-            # argument position (#1410's `refine_bind`), so assuming them here
-            # closes the same modular loop the parameter's own refinement
-            # uses.  Facts are assumed even when the walk reports itself
-            # INCOMPLETE: each fact returned is true of the value, and a
-            # partial set is a weaker assumption, never an over-assumption.
-            #
-            # Through the ONE gate every reader of a declared-type fact asks
-            # (#1363, #1406, #1413).  A parameter has no producer inside this
-            # function, so the gate answers "established" for every program
-            # measured — but it is asked rather than assumed, because the
-            # rule this file holds is that a reader of these facts is a call
-            # to the gate or it is a bug, and a term can acquire a disclosed
-            # site through cross-module widening.
-            nested_facts, _ = self._nested_refinement_facts(
-                smt, param_ty, var)
-            refined_param_assumptions.extend(self._established_facts(
-                nested_facts, source=None, term=var, smt=smt))
+            refined_param_assumptions.extend(
+                self._declared_type_facts(smt, param_ty, var))
 
         # 2. Declare result variable
         ret_type = self._resolve_type(decl.return_type)
@@ -4414,10 +4865,34 @@ class ContractVerifier:
                 # != 0)` must NOT discharge the division).  `assumptions` here is
                 # exactly that prefix (refined params + requires[0..i-1]); the
                 # requires are not yet asserted into the solver (step 4 below).
-                self._walk_for_primitive_op_obligations(
-                    decl, contract.expr, smt, slot_env, assumptions,
-                )
-                z3_pre = smt.translate_expr(contract.expr, slot_env)
+                # #1480: the prefix is a PREMISE of everything this clause
+                # evaluates, a call's precondition included — the compiled
+                # check evaluates this clause only once every earlier one has
+                # passed.  The walks below take it as their assumptions; the
+                # SMT layer checks a call's precondition as it translates the
+                # call, against its path conditions, so the prefix is pushed
+                # there for the clause's duration.  Without it,
+                # `requires(@Int.0 >= 1) requires(need_pos(@Int.0) > 0)` was
+                # an E501 on a program whose second clause is only ever
+                # evaluated on a positive argument.
+                pc_depth = len(smt._path_conditions)
+                smt._path_conditions.extend(assumptions)
+                try:
+                    self._walk_for_primitive_op_obligations(
+                        decl, contract.expr, smt, slot_env, assumptions,
+                    )
+                    # #1480: and the binding-site narrowings the compiled
+                    # check guards — a call inside the predicate whose `@Nat`
+                    # formal receives an `@Int` traps in the precondition
+                    # check exactly as it would in the body.
+                    self._walk_handled_effects = []
+                    with self._placeholders_tracked():
+                        self._walk_for_nat_binding_obligations(
+                            decl, contract.expr, smt, slot_env, assumptions,
+                        )
+                    z3_pre = smt.translate_expr(contract.expr, slot_env)
+                finally:
+                    del smt._path_conditions[pc_depth:]
                 if z3_pre is None:
                     self._record_obligation(
                         decl.name, "requires", contract, "tier3",
@@ -4445,7 +4920,7 @@ class ContractVerifier:
         # 4. Assert caller assumptions into solver so _translate_call
         #    can see them during body translation.
         for a in assumptions:
-            smt.solver.add(a)
+            smt.assume(a)
 
         # 4b. #1451: SNAPSHOT the author's premises.  The solver now holds
         #     exactly what the author wrote — the parameters' type constraints
@@ -4458,8 +4933,30 @@ class ContractVerifier:
         #     has already failed (#1457 review, F2).
         contract_premises: list[object] = list(smt.solver.assertions())
 
-        # 5. Translate function body
-        body_expr = smt.translate_expr(decl.body, slot_env)
+        # 4c. #1480: the `decreases` measure at ENTRY.  The compiled function
+        #     checks its refined parameters, then every `requires`, then
+        #     evaluates the measure (`pre_instrs` in codegen/functions.py) —
+        #     so each operation the measure performs is obligated here, under
+        #     exactly the premises the solver now holds and before the body is
+        #     translated, whose facts do not exist yet when the measure runs.
+        #     The requires translations above are drained first, so a
+        #     call-site precondition they raised is not attributed to the
+        #     measure.
+        self._record_call_obligations(decl, smt)
+        self._opaque_shadows = []
+        for contract in decl.contracts:
+            if isinstance(contract, ast.Decreases) and contract.exprs:
+                self._walk_evaluated(
+                    decl, self._measure_components_at_entry(decl, contract),
+                    smt, slot_env, assumptions, EvaluatedAt("measure"),
+                )
+
+        # 5. Translate function body.  Its call checks are the ones recorded
+        #    before #1480, and keep #804's strict rule over an opaque value
+        #    (`SmtContext.strict_preconditions`); every other position's are
+        #    #1480's, and do not refuse on a value it cannot state.
+        with smt.strict_preconditions():
+            body_expr = smt.translate_expr(decl.body, slot_env)
 
         # 5.05. #1407: does this function HAND ON a disclosed value?  A
         #       forwarding wrapper makes no claim that needs the disclosed
@@ -4563,39 +5060,24 @@ class ContractVerifier:
             self._walk_for_primitive_op_obligations(
                 decl, contract.expr, smt, slot_env, assumptions,
             )
+            # #1480: the narrowings the compiled postcondition guards, under
+            # the same premises (#801 extended only the primitive-op walk).
+            self._walk_handled_effects = []
+            with self._placeholders_tracked():
+                self._walk_for_nat_binding_obligations(
+                    decl, contract.expr, smt, slot_env, assumptions,
+                )
         smt.set_result_var(None)
 
-        # 6. Report any call-site precondition violations
-        for v in smt.drain_call_violations():
-            # Phase A records call-site obligations only on violation:
-            # successful call-pre checks discharge silently inside the
-            # SMT layer's _translate_call and are not yet enumerated
-            # (Phase B extends the SMT layer to record successes for
-            # the discharge cache).  The summary needs no handling
-            # here: it is derived from the obligation stream, and a
-            # violated obligation is excluded by summarize().  The span comes
-            # from the CALL SITE (not the callee's contract node) so
-            # two calls violating the same precondition remain distinct
-            # obligations; E501 matches _report_call_violation.
-            self._record_obligation(
-                decl.name, "call_pre", v.precondition, "violated",
-                error_code="E501",
-                counterexample=v.counterexample,
-                span_node=v.call_node,
-            )
-            self._report_call_violation(
-                decl, v.callee_name, v.call_node,
-                v.precondition, v.counterexample,
-            )
-
-        # 6b. Report call sites (in the body or a requires predicate) whose
-        #     precondition obligation could not be checked statically (#882).
-        #     A second drain runs after step 8 for calls that appear inside an
-        #     ensures / refined-return / decreases predicate — those record
-        #     their demotion during step-7/8 translation, after this drain has
-        #     already run, and would otherwise vanish (the exact silent-loss
-        #     #882 closes).
-        self._report_call_demotions(decl, smt)
+        # 6. Report the call sites of the body (and of the ensures walk just
+        #    above) whose precondition was violated, or could not be checked
+        #    statically (#882) — `_record_call_obligations` is the one drain,
+        #    run again after every later position that translates a call:
+        #    the ensures and refined return (step 7f), and the measure at each
+        #    evaluation point (steps 4c and 8).  Before #1480 the violation
+        #    half ran here only, so a violated precondition in an `ensures`
+        #    or a measure was checked, found violated, and dropped.
+        self._record_call_obligations(decl, smt)
 
         # 7. Verify ensures clauses
         for contract in decl.contracts:
@@ -4879,6 +5361,12 @@ class ContractVerifier:
         # into the decreases checking below.
         del smt._path_conditions[tlf_depth:]
 
+        # 7f. #1480: the call sites steps 7-7e translated — a call inside an
+        #     `ensures` or a refined return's predicate — reported before the
+        #     measure is walked, so nothing they raised is located at a
+        #     recursive call.
+        self._record_call_obligations(decl, smt)
+
         # 8. Handle decreases clauses — attempt verification.
         # #1520: the group is the function's cycle in the program's WHOLE
         # call graph.  It was the function and its `where` group, so a cycle
@@ -4889,15 +5377,34 @@ class ContractVerifier:
 
         for contract in decl.contracts:
             if isinstance(contract, ast.Decreases):
+                # #1480: the measure on each self-recursive TAIL call's
+                # arguments, where the compiled function evaluates it before
+                # the call is made (the entry evaluation is step 4c).
+                self._obligate_measure_at_tail_calls(
+                    decl, contract, smt, slot_env, assumptions)
                 # #1222: before the termination proof, because it is a
                 # premise of it.  The proof reasons over unbounded integers;
                 # the runtime check compares in i64, and the two agree only
                 # while the measure's value is one.
                 self._check_decreases_bound(
                     decl, contract, smt, slot_env, assumptions)
-                if group_decls is not None and self._verify_decreases(
+                verified = group_decls is not None and self._verify_decreases(
                     decl, contract, smt, slot_env, group_decls,
-                ):
+                )
+                # #1480: the two translations above re-read the measure —
+                # at entry, which step 4c already obligated, and at EVERY
+                # recursive call site without that site's path conditions,
+                # which are the termination proof's premises, not the
+                # solver's.  A call-site precondition they find violated is
+                # therefore either a repeat or a check under the wrong facts,
+                # so their outcomes are dropped; the evaluation points were
+                # each obligated under their own (4c, the tail-call walk,
+                # 7f).  A demotion found only here is a repeat of one of
+                # those, or about an evaluation codegen never makes: it was
+                # reported as a second E532, at the measure's own call.
+                smt.drain_call_violations()
+                smt.drain_call_demotions()
+                if verified:
                     self._record_obligation(
                         decl.name, "decreases", contract, "verified",
                     )
@@ -6109,7 +6616,25 @@ class ContractVerifier:
                 stale = env.resolve(type_name, 0)
                 if stale is not None:
                     val = z3.FreshConst(stale.sort(), "shadow")
+                else:
+                    # No outer to shadow, but the slot still names a value
+                    # later code reads — a call's argument, an `assume`'s
+                    # subject — so it is bound to an unknown value of its
+                    # declared type rather than left unbound (#1480 review):
+                    # a scalar, an array or an ADT, as a destructure's
+                    # component is (`_shadow_destructured_slots`).
+                    val = self._fresh_slot_var(smt, stmt.type_expr)
+                    if val is None:
+                        resolved = self._resolve_type(stmt.type_expr)
+                        if self._is_array_type(resolved):
+                            val = self._declare_array_var(
+                                smt, smt._fresh_name("shadow"), resolved)
+                        elif self._is_adt_type(resolved):
+                            val = smt.declare_adt(
+                                smt._fresh_name("shadow"), resolved)
+                if val is not None:
                     self._opaque_shadows.append(val)
+            self._guarded_binder_value(smt, stmt.type_expr, val)
         if val is not None and type_name is not None:
             return env.push(type_name, val)
         return env
@@ -6121,6 +6646,8 @@ class ContractVerifier:
         pattern: ast.Pattern,
         smt: SmtContext,
         env: SlotEnv,
+        *,
+        earlier: Sequence[ast.Pattern],
     ) -> ArmContext:
         """THE derivation of what one `match` arm means to a walk that
         descends it — the `match` twin of :py:meth:`_apply_let_binding`.
@@ -6166,22 +6693,64 @@ class ContractVerifier:
         :py:meth:`_subpattern_source_facts` routes it to `_tainted_facts` and
         returns none, so `check_valid` withholds it and the site falls to its
         runtime guard.
+
+        The condition is the arm's own pattern and that no *earlier* arm
+        matched, because the compiled `match` tries its arms in order.
+        Without the second half, an arm selected by it lost the fact that
+        selects it: `match x { 0 -> 0, _ -> need_pos(x) }` under
+        `requires(x >= 0)` was refused E501, `match @Nat.0 { 0 -> 0, _ ->
+        @Nat.0 - 1 }` E502, and a count-up loop's recursive call E501 and
+        E502, each where `vera run` returns cleanly (#1576, #1480 review).
+        Only an EXACT earlier condition is negated
+        (`_pattern_condition_exact`): a nested pattern's condition is its
+        outer constructor alone (#1562), so it holds of values the arm does
+        not take, and its negation would drop runs that reach this arm —
+        after `Some(None) ->`, a `Some(Some(5))` still reaches `_ ->`.
         """
         if scrutinee_z3 is None:
             return ArmContext(
                 self._fresh_pattern_env(pattern, env, smt, track=True),
                 None, (),
             )
-        arm_env = env
-        bound = smt._bind_pattern(scrutinee_z3, pattern, env)
-        if bound is not None:
-            arm_env = bound
+        condition = smt._pattern_condition(scrutinee_z3, pattern)
+        excluded = [
+            z3.Not(prior_cond) for prior in earlier
+            if _pattern_condition_exact(prior)
+            and (prior_cond := smt._pattern_condition(
+                scrutinee_z3, prior)) is not None
+        ]
+        if excluded:
+            condition = z3.And(
+                *excluded, *([condition] if condition is not None else []))
+        # A walk reads an arm's binders only inside the arm, where the arm's
+        # own condition and the walk's path are premises of every query, so
+        # the fact's antecedent is the arm's scope.  The translation's twin
+        # (`SmtContext._arm_guarded_binders`) needs more: its binders can
+        # outlive the arm inside the `match`'s own value.
+        reach = smt.reach_conditions()
+        bound = smt._bind_pattern(
+            scrutinee_z3, pattern, env,
+            None if reach is None else self._guarded_binder_values(
+                scrutinee, scrutinee_z3, pattern, smt,
+                [*reach, *([condition] if condition is not None else [])]))
+        if bound is None:
+            # The scrutinee translated but the pattern cannot be bound to
+            # it: its ADT has no SMT sort (a `Map` field, say), so the value
+            # was declared an `Int` and has no constructor to project.
+            # That is an untranslatable scrutinee by another name, and the
+            # arm's binders are as unknown (#1480 review): kept as the
+            # enclosing env, a binder resolved to a same-typed PARAMETER,
+            # and `decreases` was proved over it.
+            return ArmContext(
+                self._fresh_pattern_env(pattern, env, smt, track=True),
+                None, (),
+            )
+        arm_env = bound
         facts: tuple[object, ...] = ()
         if isinstance(pattern, ast.ConstructorPattern):
             facts = tuple(self._subpattern_source_facts(
                 scrutinee, scrutinee_z3, pattern, smt))
-        return ArmContext(
-            arm_env, smt._pattern_condition(scrutinee_z3, pattern), facts)
+        return ArmContext(arm_env, condition, facts)
 
     @contextlib.contextmanager
     def _under_arm(self, smt: SmtContext, arm: ArmContext) -> Iterator[None]:
@@ -6277,6 +6846,7 @@ class ContractVerifier:
             if slot_val is None:
                 continue
             self._opaque_shadows.append(slot_val)
+            self._guarded_binder_value(smt, te, slot_val)
             pushed.append((type_name, slot_val))
         for tn, sv in pushed:
             env = env.push(tn, sv)
@@ -6396,10 +6966,11 @@ class ContractVerifier:
             # the payload's own declared type, where before it fell to a
             # Tier-3 it had everything needed to decide.
             scrutinee_z3 = smt.translate_expr(expr.scrutinee, slot_env)
-            for match_arm in expr.arms:
+            for index, match_arm in enumerate(expr.arms):
                 arm = self._enter_match_arm(
                     expr.scrutinee, scrutinee_z3, match_arm.pattern,
                     smt, slot_env,
+                    earlier=[a.pattern for a in expr.arms[:index]],
                 )
                 self._descend_construction_arm(
                     decl, match_arm.body, expected, smt, arm.env,
@@ -6608,6 +7179,315 @@ class ContractVerifier:
                         else bad.status)
                 ))
 
+    # -----------------------------------------------------------------
+    # #1480: the measure, obligated where the compiled code evaluates it
+    # -----------------------------------------------------------------
+
+    def _measure_components_at_entry(
+        self, decl: ast.FnDecl, contract: ast.Decreases,
+    ) -> list[ast.Expr]:
+        """The measure components the compiled function evaluates at entry.
+
+        Where the termination CHAIN guard is emitted, every component
+        (`_compile_decreases_entry`).  Where it is declined — an `Exn` row
+        or a component the backend cannot rank — only the `@Nat`
+        components whose extra evaluation cannot be observed, which is
+        what `_dec_bound_checks_only` evaluates for the range check.  The
+        verifier's `_decreases_chain_may_be_declined` answers the same
+        question from the same two causes; where codegen declines for a
+        reason that predicate cannot see (a component it cannot translate),
+        this answer is the larger set, which obligates an evaluation that
+        does not happen rather than missing one that does.
+        """
+        if not self._decreases_chain_may_be_declined(decl, contract):
+            return list(contract.exprs)
+        return [
+            e for e in contract.exprs
+            if narrowing.measure_component_needs_range_check(
+                self._resolved_type_of(e))
+            and narrowing.measure_component_is_effect_free(e)
+        ]
+
+    def _obligate_measure_at_tail_calls(
+        self,
+        decl: ast.FnDecl,
+        contract: ast.Decreases,
+        smt: SmtContext,
+        slot_env: SlotEnv,
+        assumptions: list[object],
+    ) -> None:
+        """Obligate the measure on each self-recursive tail call's arguments.
+
+        A self-recursive tail call keeps its `return_call`, and the hop is
+        checked AT THE SITE: the arguments are captured, the measure is
+        evaluated over them and compared, and only then does control
+        transfer (`_dec_self_tail_prefix`).  That evaluation runs before the
+        callee's own `requires` is checked, so its premises are this call
+        site's — the caller's assumptions and the path to the call — with the
+        arguments substituted for the parameters, and never the callee's
+        precondition.
+
+        A NON-tail recursive call evaluates nothing at the site: the callee
+        evaluates the measure on entry, after its own `requires`, which is
+        the entry obligation.  Tail position is the one shared rule
+        (:mod:`vera.tail_position`); a tail site codegen demotes to a plain
+        call anyway (a postcondition to run, a guarded narrowing leaf) is
+        still walked here, which can add no failure the entry obligation and
+        that site's precondition do not already report: under a discharged
+        precondition the site's facts imply the callee's, and the entry
+        obligation holds under those.
+        """
+        if (not contract.exprs
+                or self._decreases_chain_may_be_declined(decl, contract)):
+            return
+        # The file's own path, as code generation passes it: a call by it
+        # (`ma::f(...)` inside `module ma;`) is the bare tail call to that
+        # top-level function, lowered to the same `return_call` (#1558).
+        own_path = self._own_scope()[0]
+        tail_ids = compute_tail_call_sites(decl, own_path)
+        # Finding the sites re-reads the body — its conditions, its `let`
+        # right-hand sides — without the path conditions the body walk held,
+        # and the arguments of a site are body code too.  Every call met
+        # there was obligated by the body walk under the right facts, so
+        # what these translations find is dropped; only the measure's own
+        # evaluation is recorded here (#1480 review).  A site is a call to
+        # the function's own name, the `return_call` target codegen checks
+        # the measure at (`_dec_self_tail_prefix`): a bare call, or one by
+        # the file's own path from a top-level function.  From a `where`
+        # helper that path names the top-level function, never the helper.
+
+        def self_call(call: ast.FnCall | ast.ModuleCall) -> ast.FnDecl | None:
+            if call.name != decl.name:
+                return None
+            if isinstance(call, ast.FnCall):
+                return decl
+            if (own_path is not None and not self._scope_is_helper
+                    and tuple(call.path) == own_path):
+                return decl
+            return None
+
+        with smt.call_outcomes_discarded():
+            sites = self._collect_recursive_calls(
+                decl.body, smt, slot_env, self_call)
+        for site in sites:
+            if id(site.node) not in tail_ids:
+                continue
+            depth = len(smt._path_conditions)
+            smt._path_conditions.extend(site.path_conds)
+            try:
+                with smt.call_outcomes_discarded():
+                    callee_env = self._callee_env_at(decl, site, smt)
+                self._walk_evaluated(
+                    decl, list(contract.exprs), smt, callee_env,
+                    assumptions, EvaluatedAt("measure_call", call=site.node),
+                )
+            finally:
+                del smt._path_conditions[depth:]
+
+    def _callee_env_at(
+        self, decl: ast.FnDecl, site: "RecursiveCall", smt: SmtContext,
+    ) -> SlotEnv:
+        """*decl*'s parameters bound to *site*'s arguments.
+
+        Every parameter pushes SOMETHING, so the De Bruijn positions of its
+        same-typed siblings stay aligned: an argument the SMT layer cannot
+        translate binds a tracked opaque placeholder of the parameter's
+        sort, and an operation over it falls to Tier 3 rather than reading
+        another parameter's value.
+        """
+        env = SlotEnv()
+        for param_te, arg in zip(decl.params, site.args):
+            name = self._type_expr_to_slot_name(param_te, smt._alias_env)
+            term = smt.translate_expr(arg, site.env)
+            if term is None:
+                term = self._opaque_value(smt, param_te, "tail_arg")
+            env = env.push(name, term)
+        return env
+
+    def _opaque_value(
+        self, smt: SmtContext, te: ast.TypeExpr, prefix: str,
+    ) -> object:
+        """A TRACKED fresh value of *te*'s sort, for a slot whose value the
+        walk cannot know.
+
+        Tracked in `_opaque_shadows`, so an obligation whose operand is one
+        falls to Tier 3 rather than taking the unconstrained value's
+        countermodel as real.  A type with no SMT sort of its own still gets
+        a value, an integer one, so the De Bruijn positions of the slots
+        pushed after it stay aligned.
+        """
+        value = self._fresh_slot_var(smt, te)
+        if value is None:
+            resolved = self._resolve_type(te)
+            if self._is_array_type(resolved):
+                value = self._declare_array_var(
+                    smt, smt._fresh_name(prefix), resolved)
+            elif self._is_adt_type(resolved):
+                value = smt.declare_adt(smt._fresh_name(prefix), resolved)
+        if value is None:
+            value = smt.declare_int(smt._fresh_name(prefix))
+        self._opaque_shadows.append(value)
+        return value
+
+    def _walk_evaluated(
+        self,
+        decl: ast.FnDecl,
+        exprs: Sequence[ast.Expr],
+        smt: SmtContext,
+        env: SlotEnv,
+        assumptions: list[object],
+        at: EvaluatedAt,
+    ) -> None:
+        """Obligate every check the compiled code performs while evaluating
+        *exprs* at *at* (#1480).
+
+        The same three walks the body gets — the primitive operations of
+        §6.4.3, the binding-site narrowings, and each call's precondition,
+        which the SMT layer checks as it translates the call — so an
+        expression is obligated the same way wherever it is evaluated.  The
+        call obligations are drained here, while *at* is in force, so each
+        is located and described at this evaluation point.
+        """
+        saved = self._evaluated_at
+        self._evaluated_at = at
+        try:
+            for expr in exprs:
+                self._walk_for_primitive_op_obligations(
+                    decl, expr, smt, env, assumptions)
+                self._walk_handled_effects = []
+                with self._placeholders_tracked():
+                    self._walk_for_nat_binding_obligations(
+                        decl, expr, smt, env, assumptions)
+                smt.translate_expr(expr, env)
+            self._record_call_obligations(decl, smt)
+        finally:
+            self._evaluated_at = saved
+
+    def _record_call_obligations(
+        self, decl: ast.FnDecl, smt: SmtContext,
+    ) -> None:
+        """Drain the call-site precondition outcomes the SMT layer has
+        pending, and record each one — the ONE drain (#1480).
+
+        The SMT layer checks a callee's precondition as it translates the
+        call, and keeps the outcome until something reads it.  Phase A
+        records an obligation only when the precondition was NOT discharged:
+        a violation (E501) or a check it could not make (E532, a Tier-3
+        demotion); a discharged one leaves no record.  The exception is a
+        built-in's declared domain, which is checked inline at the call
+        site rather than in a callee's prologue, so its discharge is
+        recorded too (#1480).
+
+        Run after every position that translates a call, because a pending
+        outcome read later is attributed to the wrong position and a pending
+        outcome never read is lost: until #1480 the violations were drained
+        once, after the body, and a violation found in an `ensures` or a
+        measure was checked and dropped.  Deduplicated against the stream,
+        since one call site can be translated by more than one position.
+
+        A call written inside a refinement predicate is skipped outside that
+        predicate's own declaration check: the predicate is obligated once,
+        at its declaration, and a use site that translates it — a refined
+        parameter's assumption, a narrowing's goal — is repeating that
+        obligation.
+        """
+        # The discharges first, while the failures are still pending: the
+        # SMT layer leaves out a discharged site that ALSO failed under
+        # another translation, and it can only see that before they drain.
+        discharges = smt.drain_call_discharges()
+        for v in smt.drain_call_violations():
+            if self._repeats_predicate_call(v.call_node):
+                continue
+            if self._call_pre_recorded(
+                    decl, v.precondition, v.call_node, failures_only=True):
+                continue
+            self._record_obligation(
+                decl.name, "call_pre", v.precondition, "violated",
+                error_code="E501",
+                counterexample=v.counterexample,
+                span_node=v.call_node,
+            )
+            self._report_call_violation(
+                decl, v.callee_name, v.call_node,
+                v.precondition, v.counterexample,
+            )
+        for ok in discharges:
+            if self._repeats_predicate_call(ok.call_node):
+                continue
+            if self._call_pre_recorded(decl, ok.precondition, ok.call_node):
+                continue
+            self._record_obligation(
+                decl.name, "call_pre", ok.precondition, "verified",
+                span_node=ok.call_node,
+            )
+        self._report_call_demotions(decl, smt)
+
+    def _repeats_predicate_call(self, call_node: ast.Node) -> bool:
+        """Whether *call_node* sits in a refinement predicate that is not the
+        one under its declaration check — see `_record_call_obligations`."""
+        at = self._evaluated_at
+        if at is not None and at.position == "predicate":
+            return False
+        return id(call_node) in self._predicate_call_ids
+
+    def _call_pre_recorded(
+        self,
+        decl: ast.FnDecl,
+        precondition: ast.Contract,
+        call_node: ast.Node,
+        *,
+        failures_only: bool = False,
+    ) -> bool:
+        """Whether this function already recorded a `call_pre` for this
+        precondition at this call site — at the site the record WOULD be
+        located at, which under a tail-call evaluation is the call.
+
+        The drains run after several positions and each DRAINS its list, so
+        no key applied within one list can see across two, and a call
+        translated a second time by a later position arrives looking like a
+        new one.  Measured before this was keyed: one `call_pre` recorded
+        twice at one span with its E532 warning shown twice, which
+        double-counts in `tier3_runtime` and puts two identical warnings on
+        one line (#1459).
+
+        The answer is read from the obligation buffer rather than a side
+        memo, because it has to be a property of the stream actually being
+        built: a memo that outlives the buffer it was built against
+        suppresses a recording that then never happens, which is the trap
+        the speculative passes reset `_construction_obligated` for.  It also
+        gives the per-instance behaviour for free — `_verify_fn` swaps in a
+        fresh buffer per monomorphic instance, so two instances of one call
+        site each find an empty stream and each record their own, and a
+        status that differs between them survives.
+
+        The precondition is matched by IDENTITY, through the table
+        `_record_obligation` fills for each `call_pre` it records, not by
+        its text (#1480): a tail call's site carries both the recursive
+        call's own precondition and those of any call in the measure it
+        evaluates there, and two callees can spell the same condition —
+        matched by text, the second obligation was taken for the first and
+        never recorded.
+
+        *failures_only* asks about undischarged records alone, and is what a
+        violation or a demotion asks: a discharge a DIFFERENT translation of
+        the site recorded must never hide one, so the worse outcome is
+        always in the stream.
+        """
+        site = self._evaluation_site(call_node)
+        span = site.span
+        line = span.line if span else 0
+        column = span.column if span else 0
+        return any(
+            o.kind == "call_pre"
+            and o.fn_name == decl.name
+            and self._call_pre_contract_of(o) is precondition
+            and not (failures_only and o.status == "verified")
+            and o.line == line
+            and o.column == column
+            and o.file == self._current_file
+            for o in self.obligations
+        )
+
     def _verify_decreases(
         self,
         decl: ast.FnDecl,
@@ -6742,15 +7622,17 @@ class ContractVerifier:
         smt: SmtContext,
         slot_env: SlotEnv,
         match: Callable[[ast.FnCall | ast.ModuleCall], ast.FnDecl | None],
-    ) -> list[tuple[ast.FnDecl, tuple[ast.Expr, ...], list[object],
-                    SlotEnv, ast.FnCall | ast.ModuleCall]]:
-        """Walk the AST to find the calls *match* resolves to a cycle member.
+    ) -> list[RecursiveCall]:
+        """Walk the AST to find the calls *match* resolves to a declaration:
+        a cycle member for the termination proof, the function itself for
+        the measure a self-recursive tail call evaluates (#1480).  A call by
+        the module's own path is one when the bare call would be (#1558).
 
-        Returns ``(callee, call_args, z3_path_conditions, slot_env, call)``
-        tuples.
+        Returns one :class:`RecursiveCall` per site, carrying the declaration
+        *match* named and the call node itself, so a consumer can ask where
+        the call stands (tail position, #1480).
         """
-        results: list[tuple[ast.FnDecl, tuple[ast.Expr, ...], list[object],
-                            SlotEnv, ast.FnCall | ast.ModuleCall]] = []
+        results: list[RecursiveCall] = []
         self._walk_for_calls(match, expr, [], results, smt, slot_env)
         return results
 
@@ -6872,8 +7754,7 @@ class ContractVerifier:
         match: Callable[[ast.FnCall | ast.ModuleCall], ast.FnDecl | None],
         expr: ast.Expr,
         z3_path_conds: list[object],
-        results: list[tuple[ast.FnDecl, tuple[ast.Expr, ...], list[object],
-                            SlotEnv, ast.FnCall | ast.ModuleCall]],
+        results: list[RecursiveCall],
         smt: SmtContext,
         slot_env: SlotEnv,
     ) -> None:
@@ -6898,7 +7779,8 @@ class ContractVerifier:
         #                        module's own path, #1558); recurse args
         #   IfExpr             → condition (enclosing path), branches under it
         #   Block              → let / destructure values, statements, tail,
-        #                        with each binding pushed on the env
+        #                        with each binding pushed on the env and
+        #                        each bare assert/assume's fact on the path
         #   BinaryExpr         → recurse operands
         #   UnaryExpr          → recurse operand
         #   MatchExpr          → scrutinee; arm bodies in the arm's env
@@ -6935,9 +7817,9 @@ class ContractVerifier:
             # module's own path (#1558); *match* knows the ones that are.
             callee = match(expr)
             if callee is not None:
-                results.append(
-                    (callee, expr.args, list(z3_path_conds), slot_env, expr),
-                )
+                results.append(RecursiveCall(
+                    callee, expr.args, list(z3_path_conds), slot_env, expr,
+                ))
             # Also walk into arguments (they might contain recursive calls)
             for arg in expr.args:
                 self._walk_for_calls(match, arg, z3_path_conds, results,
@@ -6966,25 +7848,46 @@ class ContractVerifier:
             return
 
         if isinstance(expr, ast.Block):
+            # Every binder the block crosses is pushed, so a later call's
+            # argument is read in the scope it is written in: its consumers
+            # record from it (#1480 review).
             cur_env = slot_env
+            # #804's assume half, as the body walk has it: a bare `assert`
+            # or `assume` holds for the rest of its block, so its predicate
+            # is a path fact of every later statement and of the tail.  A
+            # tail call's measure lost it, and was refused E502 after an
+            # `assert` that makes it hold (#1480 review).  A new list per
+            # fact, never an append: an untranslatable `if` hands both of
+            # its branches this walk's list, and a fact appended to it would
+            # reach the other branch.
+            cur_conds = z3_path_conds
             for stmt in expr.statements:
                 if isinstance(stmt, ast.LetStmt):
                     self._walk_for_calls(match, stmt.value,
-                                         z3_path_conds, results, smt, cur_env)
-                    # #1492: FRESH_VAR, not the SKIP policy this walk had.
+                                         cur_conds, results, smt, cur_env)
+                    # #1492, #1480: a binding the SMT layer cannot translate
+                    # is still pushed, not skipped as this walk once did.
                     # The calls it finds are not only looked at: their
                     # arguments are translated in this env to compare the
-                    # measure.  Leaving an untranslatable binding out of the
-                    # env shifted every later slot of its type onto an
+                    # measure, and to obligate the measure a tail call
+                    # evaluates.  Leaving an untranslatable binding out of
+                    # the env shifted every later slot of its type onto an
                     # outer one, so `f(@Nat.0 - 1)` after such a `let` read
                     # the PARAMETER, proved a decrease the run then broke,
                     # and the guard trapped a program verified at Tier 1.  A
                     # fresh value keeps the De Bruijn positions aligned and
-                    # can only fail a proof, never make one.
-                    bound = self._apply_let_binding(
-                        stmt, smt, cur_env,
-                        policy=BlockBindingPolicy.FRESH_VAR,
-                    )
+                    # carries only its declared type's invariant, which the
+                    # value has; tracked, an obligation over it falls to
+                    # Tier 3 rather than being refused on its unconstrained
+                    # value.  FRESH_VAR, not OPAQUE_SHADOW: over a same-typed
+                    # outer, the shadow is a bare const of the outer's sort,
+                    # and a `@Nat` binding lost the `>= 0` its termination
+                    # proof needs (#1480 review).
+                    with self._placeholders_tracked():
+                        bound = self._apply_let_binding(
+                            stmt, smt, cur_env,
+                            policy=BlockBindingPolicy.FRESH_VAR,
+                        )
                     if bound is not None:  # FRESH_VAR never halts
                         cur_env = bound
                 elif isinstance(stmt, ast.LetDestruct):
@@ -6994,7 +7897,7 @@ class ContractVerifier:
                     # opaque values, so a later call whose arguments read one
                     # can only fail to prove, never prove from a stale outer.
                     self._walk_for_calls(match, stmt.value,
-                                         z3_path_conds, results, smt, cur_env)
+                                         cur_conds, results, smt, cur_env)
                     cur_env = self._shadow_destructured_slots(
                         stmt, smt, cur_env)
                 elif isinstance(stmt, ast.ExprStmt):
@@ -7002,8 +7905,11 @@ class ContractVerifier:
                     # calls so `decreases` sees a discarded recursive call
                     # (test_decreases_resolves_via_stmt_position_recursive_call).
                     self._walk_for_calls(match, stmt.expr,
-                                         z3_path_conds, results, smt, cur_env)
-            self._walk_for_calls(match, expr.expr, z3_path_conds,
+                                         cur_conds, results, smt, cur_env)
+                fact = self._assumed_block_fact(stmt, smt, cur_env)
+                if fact is not None:
+                    cur_conds = [*cur_conds, fact]
+            self._walk_for_calls(match, expr.expr, cur_conds,
                                  results, smt, cur_env)
             return
 
@@ -7023,7 +7929,7 @@ class ContractVerifier:
             self._walk_for_calls(match, expr.scrutinee, z3_path_conds,
                                  results, smt, slot_env)
             scrutinee_z3 = smt.translate_expr(expr.scrutinee, slot_env)
-            for match_arm in expr.arms:
+            for index, match_arm in enumerate(expr.arms):
                 # #1403: through the one arm-context derivation, which is
                 # what stopped this walk reading an arm against the
                 # enclosing env.  It spends the discriminant and the arm's
@@ -7033,6 +7939,7 @@ class ContractVerifier:
                 arm = self._enter_match_arm(
                     expr.scrutinee, scrutinee_z3, match_arm.pattern,
                     smt, slot_env,
+                    earlier=[a.pattern for a in expr.arms[:index]],
                 )
                 arm_conds = list(z3_path_conds)
                 if arm.condition is not None:
@@ -7049,7 +7956,15 @@ class ContractVerifier:
         # guard then trapped a `verify`-green program.  Path conditions
         # are NOT extended here (conservative: fewer assumptions can
         # only make the proof harder, never wrongly easier).
+        #
+        # A clause or a closure body binds slots of its own over the
+        # enclosing ones, so it is not read against the enclosing env
+        # (#1480 review, #1492): there a closure's `@Nat.0` was the
+        # enclosing PARAMETER, and a measure proved over it held for a
+        # value the call never passes.
         if isinstance(expr, ast.HandleExpr):
+            # The state's initialiser and the handled body are enclosing-
+            # scope code: the state is no slot in the body (§7.5.1).
             if expr.state is not None:
                 self._walk_for_calls(match, expr.state.init_expr,
                                      z3_path_conds, results, smt, slot_env)
@@ -7230,6 +8145,29 @@ class ContractVerifier:
                             ).expr
         return facts
 
+    def _obligate_call_site(
+        self,
+        call: ast.FnCall | ast.ModuleCall,
+        smt: SmtContext,
+        slot_env: SlotEnv,
+        assumptions: list[object],
+    ) -> None:
+        """Obligate *call*'s precondition under the walk's facts (#1480
+        review).
+
+        The walk's assumptions are pushed as path conditions for the check,
+        because the SMT layer's call-site check reads its facts from the
+        solver and `_path_conditions`: at a `requires` clause they are the
+        prefix, which is on neither otherwise.  The outcome is pending until
+        the position's drain, `_record_call_obligations`, records it.
+        """
+        depth = len(smt._path_conditions)
+        smt._path_conditions.extend(assumptions)
+        try:
+            smt.check_call_site(call, slot_env)
+        finally:
+            del smt._path_conditions[depth:]
+
     def _walk_for_primitive_op_obligations(
         self,
         decl: ast.FnDecl,
@@ -7273,8 +8211,9 @@ class ContractVerifier:
         #   IfExpr             → recurse cond / then / else
         #   Block              → recurse let RHSes, statements, trailing expr
         #   MatchExpr          → recurse scrutinee + arm bodies
-        #   FnCall             → recurse args
-        #   ModuleCall         → recurse args
+        #   FnCall             → recurse args; the call's precondition
+        #                        (#1480 review)
+        #   ModuleCall         → recurse args; the call's precondition
         #   ConstructorCall    → recurse args
         #   QualifiedCall      → recurse args (effect operation)
         #   InterpolatedString → recurse interpolated parts
@@ -7311,14 +8250,26 @@ class ContractVerifier:
                 self._walk_for_primitive_op_obligations(
                     decl, arg, smt, slot_env, assumptions,
                 )
+            # #1480 review: the call's own precondition — a user callee's
+            # `requires` or a built-in's declared domain — obligated HERE,
+            # where the walk reaches it, not only where translation does.
+            self._obligate_call_site(expr, smt, slot_env, assumptions)
             # #807: float_to_int(x) is a partial op — NaN / ±Inf /
             # out-of-i64-range trap, as codegen's `float_conversion` check
             # (#1479) — so it carries a domain obligation just like
             # div-by-zero (#801) and overflow (#798).
-            if expr.name == "float_to_int" and len(expr.args) == 1:
-                self._check_float_to_int_domain_obligation(
-                    decl, expr, smt, slot_env, assumptions,
-                )
+            # #1480: `floor`, `ceil` and `round` make the same check after a
+            # rounding step, and `float_to_string` truncates the integer
+            # part it prints with an `i64.trunc_f64_s` that traps the same
+            # way (#1482); none of them carried anything.
+            if len(expr.args) == 1 and self._is_builtin_call(expr.name):
+                if expr.name in _FLOAT_CONVERSIONS:
+                    self._check_float_to_int_domain_obligation(
+                        decl, expr, expr.args[0], expr.name, smt, slot_env,
+                    )
+                elif expr.name == "show":
+                    self._check_float_rendering(
+                        decl, expr, expr.args[0], smt, slot_env)
             return
 
         if isinstance(expr, ast.ModuleCall):
@@ -7328,6 +8279,7 @@ class ContractVerifier:
                 self._walk_for_primitive_op_obligations(
                     decl, arg, smt, slot_env, assumptions,
                 )
+            self._obligate_call_site(expr, smt, slot_env, assumptions)
             return
 
         if isinstance(expr, ast.ConstructorCall):
@@ -7473,6 +8425,7 @@ class ContractVerifier:
                             if slot_val is None:
                                 continue
                             self._opaque_shadows.append(slot_val)
+                            self._guarded_binder_value(smt, te, slot_val)
                         pushed.append((type_name, slot_val))
                     for tn, sv in pushed:
                         cur_env = cur_env.push(tn, sv)
@@ -7511,6 +8464,16 @@ class ContractVerifier:
             self._walk_for_primitive_op_obligations(
                 decl, expr.right, smt, slot_env, assumptions,
             )
+            if expr.op == ast.BinOp.PIPE:
+                # `left |> f(a)` is the call `f(left, a)`: its precondition
+                # is obligated on that call, spelled by the one shared
+                # desugaring, which keeps the pipe's span (the site key,
+                # #727).  The partial `f(a)` the walk just visited has one
+                # argument too few and obligates nothing.
+                piped = pipe_desugared_call(expr)
+                if piped is not None:
+                    self._obligate_call_site(
+                        piped, smt, slot_env, assumptions)
             if (expr.op == ast.BinOp.SUB
                     and self._is_nat_typed(expr.left)
                     and self._is_nat_typed(expr.right)
@@ -7575,7 +8538,7 @@ class ContractVerifier:
                 decl, expr.scrutinee, smt, slot_env, assumptions,
             )
             scrutinee_z3 = smt.translate_expr(expr.scrutinee, slot_env)
-            for match_arm in expr.arms:
+            for index, match_arm in enumerate(expr.arms):
                 # #1403: through the one arm-context derivation, which is
                 # what gives this walk the facts the arm establishes.  It is
                 # the walk that discharges every §6.4.3 safety obligation AND
@@ -7600,6 +8563,7 @@ class ContractVerifier:
                 arm = self._enter_match_arm(
                     expr.scrutinee, scrutinee_z3, match_arm.pattern,
                     smt, slot_env,
+                    earlier=[a.pattern for a in expr.arms[:index]],
                 )
                 with self._under_arm(smt, arm):
                     self._walk_for_primitive_op_obligations(
@@ -7687,6 +8651,10 @@ class ContractVerifier:
                     self._walk_for_primitive_op_obligations(
                         decl, part, smt, slot_env, assumptions,
                     )
+                    # #1480: a `@Float64` part is rendered by
+                    # `float_to_string`'s lowering, truncation included.
+                    self._check_float_rendering(
+                        decl, part, part, smt, slot_env)
             return
 
         if isinstance(expr, (ast.ForallExpr, ast.ExistsExpr)):
@@ -9192,7 +10160,7 @@ class ContractVerifier:
                 decl, expr.scrutinee, smt, slot_env, assumptions,
             )
             scrutinee_z3 = smt.translate_expr(expr.scrutinee, slot_env)
-            for match_arm in expr.arms:
+            for index, match_arm in enumerate(expr.arms):
                 # #1403: through the one arm-context derivation.  Its
                 # untranslatable case is what fixes this walk's own defect —
                 # it minted the fresh binders UNTRACKED, so
@@ -9207,10 +10175,12 @@ class ContractVerifier:
                 # it must assume the constructor matched — otherwise Z3 may
                 # witness a negative payload in a branch that never reads it,
                 # a false E503 (CR #756).  An irrefutable pattern has no
-                # discriminant and `_under_arm` is then a no-op.
+                # discriminant of its own; after an exact earlier arm it
+                # carries that arm's negation (#1576).
                 arm = self._enter_match_arm(
                     expr.scrutinee, scrutinee_z3, match_arm.pattern,
                     smt, slot_env,
+                    earlier=[a.pattern for a in expr.arms[:index]],
                 )
                 arm_env = arm.env
                 with self._under_arm(smt, arm):
@@ -9481,6 +10451,33 @@ class ContractVerifier:
         if self._is_opaque_shadow(term):
             return True
         return any(self._contains_opaque_shadow(c) for c in term.children())
+
+    def _refuted_only_over_a_placeholder(
+        self,
+        smt: SmtContext,
+        value: object,
+        violation: object,
+        result: SmtResult,
+        assumptions: list[object],
+    ) -> bool:
+        """Whether a failed narrowing of *value* was refuted only over a
+        placeholder, so it is Tier 3 rather than a violation (#1480 review).
+
+        The `@Nat` narrowing's twin of the #1460 re-ask
+        `_check_refined_binding_obligation` makes: a *value* that is, or
+        embeds, a placeholder a walk bound for a `let`, destructure or
+        `match` binder whose value does not translate (`_opaque_shadows`)
+        names no value the program produces, so its countermodel is not a
+        violation unless *violation* holds for EVERY value the placeholder
+        could take.  The narrowing's own runtime guard is the check.  #1480
+        records narrowings in a `requires`, an `ensures` and a measure, where
+        a `match` over a value that does not translate reaches one.
+        """
+        if result.status == "verified" or not self._contains_opaque_shadow(
+                value):
+            return False
+        return smt.check_valid(
+            violation, list(assumptions)).status != "verified"
 
     def _check_subtraction_obligation(
         self,
@@ -9912,21 +10909,96 @@ class ContractVerifier:
                 otherwise="tier3",
             )
 
+    def _is_builtin_call(self, name: str) -> bool:
+        """Whether a bare call to *name* here reaches the BUILT-IN — not a
+        `where` helper or a user function that shadows its name."""
+        lookup = self._fn_lookup_in_scope
+        info = (lookup(name) if lookup is not None
+                else self.env.lookup_function(name))
+        return info is None or (
+            info.span is None and not info.param_type_exprs)
+
+    def _check_float_rendering(
+        self,
+        decl: ast.FnDecl,
+        site: ast.Expr,
+        value: ast.Expr,
+        smt: SmtContext,
+        slot_env: SlotEnv,
+    ) -> None:
+        """Obligate rendering *value* as text, when that reaches the
+        `float_to_string` truncation (#1480).
+
+        A `@Float64` is rendered by `float_to_string`'s own lowering — a
+        `show`, an interpolated part — so it carries that built-in's domain.
+        A composite value (an ADT, a tuple, an array) whose type holds a
+        `@Float64` anywhere is rendered by a generated helper that reaches
+        the same instruction for each such component; no single term states
+        all of them, so that site is recorded Tier 3, with the truncation
+        itself as the runtime check.
+        """
+        ty = self._resolved_type_of(value)
+        if ty is None:
+            return
+        if self._is_float64_type(ty):
+            self._check_float_to_int_domain_obligation(
+                decl, site, value, "float_to_string", smt, slot_env)
+        elif self._type_holds_float64(smt, ty):
+            self._record_obligation(
+                decl.name, "float_to_int_domain", site, "tier3")
+
+    def _type_holds_float64(self, smt: SmtContext, ty: Type) -> bool:
+        """Whether a value of *ty* has a `@Float64` anywhere a structural
+        `show` renders one: a field, a component, an element, a payload.
+
+        The walk is keyed on the INSTANTIATED type, which a non-regular
+        declaration gives no fixed point (#1429): the checker refuses one,
+        but `verify()` is a public entry point whose check-clean
+        precondition is its caller's to keep.  Such a type is declined by
+        the rule rather than by a bound on depth, and answered yes, so its
+        rendering is recorded Tier 3 with the truncation as its check.
+        """
+        if not smt.type_is_regular(ty):
+            return True
+        seen: set[str] = set()
+        stack: list[Type] = [ty]
+        while stack:
+            t = stack.pop()
+            if isinstance(t, RefinedType):
+                stack.append(t.base)
+                continue
+            if t == FLOAT64:
+                return True
+            if not isinstance(t, AdtType):
+                continue
+            key = pretty_type(t)
+            if key in seen:
+                continue
+            seen.add(key)
+            stack.extend(t.type_args)
+            for ctor in self._adt_constructor_names(t):
+                stack.extend(self._payload_field_types(ctor, t) or ())
+        return False
+
     def _check_float_to_int_domain_obligation(
         self,
         decl: ast.FnDecl,
-        call: ast.FnCall,
+        call: ast.Expr,
+        arg: ast.Expr,
+        conversion: str,
         smt: SmtContext,
         slot_env: SlotEnv,
-        assumptions: list[object],
     ) -> None:
         """Discharge the ``float_to_int`` domain obligation at one site (#807).
 
         ``float_to_int(x)`` TRAPS — as ``float_conversion``, the domain check
         codegen emits before its ``i64.trunc_f64_s`` (#1479) — when ``x`` is
         ``NaN``, ``±Inf``, or when ``trunc(x)`` falls outside
-        ``[i64.MIN, i64.MAX]``.  So each site carries a "``x`` is finite and in
-        range" obligation, mirroring div-by-zero (#801) and overflow (#798):
+        ``[i64.MIN, i64.MAX]``.  ``floor``, ``ceil`` and ``round`` make the
+        same check after ``f64.floor`` / ``f64.ceil`` / ``f64.nearest``
+        (#1480), so they carry the same obligation over the value that step
+        produces.  So each site carries a "``x`` is finite and in range"
+        obligation, mirroring div-by-zero (#801) and overflow (#798):
 
         - a CONCRETE finite in-range argument → **Tier 1** (verified);
         - a concrete ``NaN`` / ``Inf`` / out-of-range argument → provable trap →
@@ -9941,8 +11013,13 @@ class ContractVerifier:
         literal is classified directly (exact, no solver call), so no
         ``assumptions`` are consulted — nothing a precondition could assert can
         change the value of a literal.
+
+        *conversion* names the built-in whose truncation *arg* reaches
+        (:data:`_FLOAT_CONVERSIONS`), and *call* is where the site is
+        located: the call, or — for an interpolated part — the part itself.
         """
-        x = smt.translate_expr(call.args[0], slot_env)
+        spec = _FLOAT_CONVERSIONS[conversion]
+        x = smt.translate_expr(arg, slot_env)
         if not isinstance(x, z3.FPRef):
             # Untranslatable argument → Tier 3.
             self._record_obligation(
@@ -9957,15 +11034,24 @@ class ContractVerifier:
             )
             return
 
-        # Concrete FP literal — classify the domain directly.
+        # Concrete FP literal — classify the domain directly: the value the
+        # built-in's rounding step produces (#1480; `float_to_int` truncates),
+        # which `i64.trunc_f64_s` then converts.
         is_nan = z3.is_true(z3.simplify(z3.fpIsNaN(xs)))
         is_inf = z3.is_true(z3.simplify(z3.fpIsInf(xs)))
         in_range = False
         if not is_nan and not is_inf:
             real = z3.simplify(z3.fpToReal(xs))
             if z3.is_rational_value(real):
-                truncated = int(real.as_fraction())  # toward zero
-                in_range = _I64_MIN <= truncated <= _I64_MAX
+                exact = real.as_fraction()
+                if spec.renders_non_finite:
+                    exact = abs(exact)
+                rounded = spec.rounding(exact)
+                in_range = _I64_MIN <= rounded <= _I64_MAX
+        elif spec.renders_non_finite:
+            # NaN and the infinities are rendered before the truncation.
+            in_range = True
+            is_nan = is_inf = False
 
         if not is_nan and not is_inf and in_range:
             self._record_obligation(
@@ -9976,7 +11062,161 @@ class ContractVerifier:
                 decl.name, "float_to_int_domain", call, "violated",
                 error_code="E529",
             )
-            self._report_float_to_int_domain(decl, call, is_nan, is_inf)
+            self._report_float_to_int_domain(
+                decl, call, conversion, is_nan, is_inf)
+
+    def _guarded_binder_value(
+        self, smt: SmtContext, te: ast.TypeExpr, value: object | None,
+    ) -> object | None:
+        """*value*, a placeholder for a binder declared *te*, recorded as
+        satisfying the binder's refinement (#1480 review).
+
+        A binder whose value does not translate is bound to a fresh value:
+        a `let`, a destructured component, a `match` arm's binder under a
+        scrutinee that does not translate.  Codegen guards every refined
+        bind (§2.6.5, `_emit_bind_refine_guard`) before anything in the
+        binder's scope runs, so wherever the value can be read its
+        predicate holds, and a call precondition or an `assert` over it is
+        discharged under that predicate.  Left as a
+        bare value of the base sort, `need_pos(@Pos.0)` under
+        `match get(()) { Some(@Pos) -> … }` was refused E501 on a program
+        whose call cannot fail.
+
+        Only where the guard exists: `_refined_boundary_codegen_guardable`
+        is codegen's own bail (an erased base, a refinement over a
+        refinement), mirrored.  The predicate is read through
+        `_established_facts`, the one gate for a declared-type fact, and
+        recorded on the value (`SmtContext.assume_of_value`), so a query
+        reads it exactly when it reads the value.  The bind's own
+        obligation is over the SOURCE value, which never mentions this
+        placeholder, so the fact never proves the guard it stands behind.
+        """
+        if value is None:
+            return None
+        ty = self._resolve_type(te)
+        if not self._refined_boundary_codegen_guardable(ty):
+            return value
+        pred = self._translate_refined_predicate(smt, ty, value)
+        if pred is None:
+            return value
+        for fact in self._established_facts(
+                [pred], source=None, term=value, smt=smt):
+            smt.assume_of_value(value, fact)
+        return value
+
+    def _guarded_binder_values(
+        self,
+        scrutinee: ast.Expr,
+        scrutinee_z3: object,
+        pattern: ast.Pattern,
+        smt: SmtContext,
+        taken: list[object],
+    ) -> dict[int, object]:
+        """The fresh values a `match` arm binds its guarded refined binders
+        to, keyed by the id of the value each would otherwise receive
+        (#1480 review).
+
+        The translated twin of :py:meth:`_guarded_binder_value`.  A binder
+        declared at a refinement its value's type does not establish NARROWS,
+        and codegen guards that bind (§2.6.5) before anything in the arm runs,
+        so inside the arm the binder's predicate holds whether or not the
+        scrutinee translates: `match mk(x) { Some(@Pos) -> need_pos(@Pos.0),
+        … }` cannot fail the call, and a violating payload traps at the bind.
+        Read as the bare projection, the binder knew nothing, and the call
+        was refused E501.
+
+        The projection is what the bind's OWN obligation is over
+        (`_obligate_subpattern_narrowings`), so the predicate is never
+        recorded on it: that would prove the guard from itself.  The binder
+        is bound to a fresh value instead, and `taken ⟹ (fresh == projection
+        ∧ P(fresh))` is given only to a query that reads the fresh value
+        (`SmtContext.assume_of_value`).  *taken* is what the arm's bind runs
+        under: the path to the `match`, and the arm's pattern (after every
+        earlier arm's failing, in the translation's If-chain).  The guard is
+        there because a fresh value can outlive the arm inside the `match`'s
+        own translated value, where a query about the result reads it on
+        paths the arm was not taken.  Only where the guard exists
+        (`_refined_boundary_codegen_guardable`); a `@Nat` binder is not a
+        refinement and is left as it is.
+        """
+        out: dict[int, object] = {}
+        if scrutinee_z3 is None:
+            return out
+        guard = z3.And(*taken) if taken else z3.BoolVal(True)
+
+        def bind_fresh(term: z3.ExprRef, target: Type) -> None:
+            if not self._refined_boundary_codegen_guardable(target):
+                return
+            fresh = z3.FreshConst(term.sort(), "guarded")
+            pred = self._translate_refined_predicate(smt, target, fresh)
+            if pred is None:
+                return
+            facts = self._established_facts(
+                [pred], source=None, term=fresh, smt=smt)
+            if not facts:  # pragma: no cover — a fresh value is never disclosed
+                return
+            smt.assume_of_value(
+                fresh, z3.Implies(guard, z3.And(fresh == term, *facts)))
+            # An assumption that reads the fresh value is stated over the
+            # projection instead (`SmtContext.assume`).
+            smt.record_guarded_value(fresh, term)
+            if smt.term_is_disclosed(term):
+                # The fresh value IS the projection's value, so it carries
+                # the projection's disclosure (#1406, `_inherit_disclosure`'s
+                # rule): a function forwarding it still forwards a disclosed
+                # value.  Its predicate is the guard's, not the producer's,
+                # which is why it was established above first.
+                smt._disclosed_terms.append(fresh)
+                sites = smt.disclosed_term_sites(term)
+                if sites:
+                    smt._disclosed_term_sites.setdefault(
+                        fresh.get_id(), []).extend(sites)
+            out[term.get_id()] = fresh
+
+        if isinstance(pattern, ast.BindingPattern):
+            target = self._resolve_type(pattern.type_expr)
+            if (self._is_refined_type(target)
+                    and self._narrows_into_refined(scrutinee, target)):
+                bind_fresh(scrutinee_z3, target)
+        elif isinstance(pattern, ast.ConstructorPattern):
+            self._guarded_subpattern_values(
+                self._resolved_type_of(scrutinee), scrutinee_z3, pattern,
+                smt, bind_fresh)
+        return out
+
+    def _guarded_subpattern_values(
+        self,
+        scrut_ty: Type | None,
+        scrut_term: z3.ExprRef,
+        pattern: ast.ConstructorPattern,
+        smt: SmtContext,
+        bind_fresh: Callable[[z3.ExprRef, Type], None],
+    ) -> None:
+        """Visit each refined sub-pattern binder that narrows its field, at
+        any depth, with its projected field — exactly the binders
+        :py:meth:`_obligate_subpattern_narrowings` obligates as a refinement
+        bind, which are the ones codegen guards."""
+        field_types = self._instantiated_field_types(pattern.name, scrut_ty)
+        if field_types is None:
+            return
+        try:
+            sort = scrut_term.sort()
+            idx = smt._find_ctor_index(sort, pattern.name)
+        except Exception:  # pragma: no cover — non-datatype scrutinee  # noqa: BLE001
+            return
+        if idx is None:
+            return
+        for i, (sub, field_ty) in enumerate(
+                zip(pattern.sub_patterns, field_types)):
+            term = sort.accessor(idx, i)(scrut_term)
+            if isinstance(sub, ast.ConstructorPattern):
+                self._guarded_subpattern_values(
+                    field_ty, term, sub, smt, bind_fresh)
+            elif isinstance(sub, ast.BindingPattern):
+                target = self._resolve_type(sub.type_expr)
+                if (self._is_refined_type(target)
+                        and self._refined_field_narrows(target, field_ty)):
+                    bind_fresh(term, target)
 
     def _fresh_slot_var(
         self, smt: SmtContext, te: ast.TypeExpr,
@@ -10008,7 +11248,29 @@ class ContractVerifier:
             result = smt.declare_float64(fresh)
         elif self._is_string_type(resolved):
             result = smt.declare_string(fresh)
+        if result is not None and self._track_fresh_placeholders:
+            self._opaque_shadows.append(result)
         return result
+
+    @contextlib.contextmanager
+    def _placeholders_tracked(self) -> Iterator[None]:
+        """Walk a position #1480 obligates with its placeholders tracked
+        (#1480 review; `_track_fresh_placeholders`).
+
+        Every obligation #1480 records is a check the compiled program makes
+        where it evaluates it, so none of them may be refused on a value the
+        verifier cannot state.  The narrowing walk binds a `let` or a
+        destructured component it cannot translate to a fresh value, and in
+        the body leaves it untracked; in a `requires`, an `ensures`, a
+        measure or a predicate, the narrowings are #1480's own, so the value
+        is tracked and `_refuted_only_over_a_placeholder` reads it.
+        """
+        saved = self._track_fresh_placeholders
+        self._track_fresh_placeholders = True
+        try:
+            yield
+        finally:
+            self._track_fresh_placeholders = saved
 
     def _fresh_pattern_env(
         self, pattern: ast.Pattern, env: SlotEnv, smt: SmtContext,
@@ -10038,7 +11300,9 @@ class ContractVerifier:
             slot_name = smt._type_expr_to_slot_name(pattern.type_expr)
             if slot_name is None:
                 return env
-            fresh = self._fresh_slot_var(smt, pattern.type_expr)
+            fresh = self._guarded_binder_value(
+                smt, pattern.type_expr,
+                self._fresh_slot_var(smt, pattern.type_expr))
             if fresh is None:
                 # Non-scalar slot: `_fresh_slot_var` can't type it, but if an
                 # outer binding of the same slot exists a nested projection in
@@ -10205,6 +11469,12 @@ class ContractVerifier:
         obligation = val >= 0
         result = smt.check_valid(obligation, list(assumptions))
 
+        if self._refuted_only_over_a_placeholder(
+                smt, val, val < 0, result, assumptions):
+            self._record_nat_bind_tier3(
+                decl, value_node, site, "tier3", guarded=guarded,
+                reason=_PLACEHOLDER_NARROWING_REASON)
+            return
         if result.status == "verified":
             self._record_obligation(decl.name, "nat_bind", value_node, "verified")
         elif result.status == "violated":
@@ -10253,6 +11523,13 @@ class ContractVerifier:
         """
         obligation = term >= 0  # type: ignore[operator]
         result = smt.check_valid(obligation, list(assumptions))
+        if self._refuted_only_over_a_placeholder(
+                smt, term, term < 0,  # type: ignore[operator]
+                result, assumptions):
+            self._record_nat_bind_tier3(
+                decl, node, site, "tier3", guarded=True,
+                reason=_PLACEHOLDER_NARROWING_REASON)
+            return
         if result.status == "verified":
             self._record_obligation(decl.name, "nat_bind", node, "verified")
         elif result.status == "violated":
@@ -11415,6 +12692,16 @@ class ContractVerifier:
             source_facts, source=value_node, term=val, smt=smt))
         goal = z3.And(*goal_facts) if len(goal_facts) > 1 else goal_facts[0]
         result = smt.check_valid(goal, premises)
+        if self._refuted_only_over_a_placeholder(
+                smt, val, z3.Not(goal), result, premises):
+            # As at every narrowing (#1480 review): a payload refuted only
+            # over a placeholder names no value the program produces.
+            self._record_refined_bind_tier3(
+                decl, value_node, site, guarded=guarded,
+                reason=_PLACEHOLDER_REFINEMENT_REASON,
+                guard_note=_NESTED_SITE_GUARD_NOTE,
+            )
+            return
         if result.status == "verified" and complete:
             self._record_obligation(
                 decl.name, "refine_bind", value_node, "verified")
@@ -11910,6 +13197,13 @@ class ContractVerifier:
         # answered here and asked once, by `SmtContext._refinement_statable`.
         smt._refinement_statable_hook = partial(
             self._refinement_predicate_statable, smt)
+        # #1480 review: and let a call-site check ask whether its goal rests
+        # on a placeholder one of the walks bound.  A bound method, so it
+        # reads the live `_opaque_shadows`, which each walk resets.
+        smt._placeholder_hook = self._contains_opaque_shadow
+        # #1480 review: and let the SMT `match` translation bind an arm's
+        # guarded refined binders the way the walks do (`_enter_match_arm`).
+        smt._guarded_binder_hook = self._guarded_binder_values
         slot_env = SlotEnv()
         assumptions: list[object] = []
         for param_te in decl.params:
@@ -11972,7 +13266,7 @@ class ContractVerifier:
                 if z3_pre is not None:
                     assumptions.append(z3_pre)
         for a in assumptions:
-            smt.solver.add(a)
+            smt.assume(a)
 
         body_expr = smt.translate_expr(decl.body, slot_env)
         goal = (
@@ -12059,6 +13353,16 @@ class ContractVerifier:
                 local_assumptions.extend(self._established_facts(
                     [src_fact], source=node, term=term, smt=smt))
         result = smt.check_valid(goal, local_assumptions)
+        if self._refuted_only_over_a_placeholder(
+                smt, term, z3.Not(goal), result, local_assumptions):
+            # The `@Nat` twin's gate (#1480 review): a sub-pattern bind over
+            # a `match` binder whose scrutinee does not translate was E505
+            # in a `requires` on a program that runs, where its guard traps
+            # on a violating payload.
+            self._record_refined_bind_tier3(
+                decl, node, site, refined_ty=refined_ty,
+                reason=_PLACEHOLDER_REFINEMENT_REASON)
+            return
         if result.status == "verified":
             self._record_obligation(decl.name, "refine_bind", node, "verified")
         elif result.status == "violated":
@@ -13319,6 +14623,9 @@ class ContractVerifier:
         if ce_text:
             description += f"\n  {ce_text}"
 
+        at = self._evaluated_at
+        in_measure = at is not None and at.position in (
+            "measure", "measure_call")
         self._error(
             expr,
             description,
@@ -13330,6 +14637,20 @@ class ContractVerifier:
                 "slot, violating the type's non-negativity invariant."
             ),
             fix=(
+                # #1480: a measure has no branch to guard the subtraction in,
+                # and its two remedies are different edits.
+                f"Either state the precondition that bounds the "
+                f"subtraction — `requires({ast.format_expr(expr.right)} <= "
+                f"{ast.format_expr(expr.left)})`; for the count-up loop "
+                f"`decreases(@Nat.1 + 1 - @Nat.0)` that is "
+                f"`requires(@Nat.0 <= @Nat.1 + 1)` — which the measure can "
+                f"rely on because the compiled function checks every "
+                f"`requires` before it evaluates it, and which each "
+                f"recursive call must then establish for its own "
+                f"arguments; or write the measure without a `@Nat` "
+                f"subtraction, for example a parameter that counts down "
+                f"to zero."
+                if in_measure else
                 "Add a precondition that rules out the bad inputs, "
                 "e.g. `requires(@Nat.0 >= @Nat.1)`.  Alternatively, "
                 "guard the subtraction: `if @Nat.0 >= @Nat.1 then "
@@ -13440,31 +14761,55 @@ class ContractVerifier:
     def _report_float_to_int_domain(
         self,
         decl: ast.FnDecl,
-        call: ast.FnCall,
+        call: ast.Expr,
+        conversion: str,
         is_nan: bool,
         is_inf: bool,
     ) -> None:
-        """Emit an E529 diagnostic for a provably out-of-domain float_to_int."""
+        """Emit an E529 diagnostic for a provably out-of-domain conversion —
+        `float_to_int`, the `floor` / `ceil` / `round` that end in the same
+        instruction, or `float_to_string` on the integer part it prints
+        (#1480)."""
         reason = (
             "NaN" if is_nan else "infinite" if is_inf else "out of i64 range"
         )
         operand = ast.format_expr(call)
+        spec = _FLOAT_CONVERSIONS[conversion]
+        if spec.renders_non_finite:
+            # It prints NaN and the infinities (`nan`, `inf`) before it
+            # truncates, so only a finite magnitude can reach the trap.
+            traps_on = (
+                "a value whose truncation falls outside the i64 range; NaN "
+                "and +/-infinity are rendered before the truncation and do "
+                "not reach it"
+            )
+            guard = (
+                f"Bound the argument's magnitude below 2^63 before calling "
+                f"{conversion}, or handle the out-of-range case explicitly."
+            )
+        else:
+            traps_on = (
+                "NaN, +/-infinity, or a value whose truncation falls outside "
+                "the i64 range"
+            )
+            guard = (
+                f"Guard the conversion so the argument is finite and in "
+                f"range — check `!float_is_nan(x)` and "
+                f"`!float_is_infinite(x)` and bound its magnitude before "
+                f"calling {conversion}, or handle the out-of-domain case "
+                f"explicitly."
+            )
         self._error(
             call,
             f"`{operand}` in '{decl.name}' provably traps: the argument is "
             f"{reason}.",
             rationale=(
-                "float_to_int traps at runtime, as `float_conversion`, on "
-                "NaN, +/-infinity, or a value whose truncation falls outside "
-                "the i64 range.  The argument is a constant the verifier "
-                "determined is always one of these (#807)."
+                f"{conversion} ends in {spec.step}`i64.trunc_f64_s`, which "
+                f"traps at runtime, as `float_conversion`, on {traps_on}.  "
+                f"The argument is a constant the verifier determined always "
+                f"reaches that trap (#807)."
             ),
-            fix=(
-                "Guard the conversion so the argument is finite and in range — "
-                "check `!float_is_nan(x)` and `!float_is_infinite(x)` and bound "
-                "its magnitude before calling float_to_int, or handle the "
-                "out-of-domain case explicitly."
-            ),
+            fix=guard,
             spec_ref=(
                 'Chapter 6, Section 6.4.3 "Primitive Operation Safety"'
             ),
@@ -14358,52 +15703,12 @@ class ContractVerifier:
         generic wording on exactly the signatures the concrete rendering
         helps most.  It failed closed, which is why it stayed invisible.
         """
-        import dataclasses as _dc
-
         env = self._current_alias_env if callee_env is None else callee_env
-        table = slot_table(callee_params, env, callee_forall)
-        scope = fn_slot_scope(env, callee_forall)
-
-        class _NoSubstitution(Exception):
-            pass
-
-        def rebuild(node: ast.Expr) -> ast.Expr:
-            if isinstance(node, ast.SlotRef):
-                positions = table.get(naming.slot_ref_key(node, scope))
-                if not positions or node.index >= len(positions):
-                    raise _NoSubstitution
-                pos = positions[node.index]
-                if pos > len(call_node.args):
-                    raise _NoSubstitution
-                return call_node.args[pos - 1]
-            changes: dict[str, object] = {}
-            for f in _dc.fields(node):
-                value = getattr(node, f.name)
-                if isinstance(value, ast.Expr):
-                    new_value = rebuild(value)
-                    if new_value is not value:
-                        changes[f.name] = new_value
-                elif (
-                    isinstance(value, tuple)
-                    and value
-                    and all(isinstance(x, ast.Expr) for x in value)
-                ):
-                    new_tuple = tuple(rebuild(x) for x in value)
-                    if any(
-                        a is not b for a, b in zip(new_tuple, value)
-                    ):
-                        changes[f.name] = new_tuple
-            if changes:
-                # dataclasses.replace's typeshed overload can't see
-                # the per-subclass field types through **dict.
-                return _dc.replace(node, **changes)  # type: ignore[arg-type]
-            return node
-
-        try:
-            rebuilt = rebuild(precondition.expr)
-        except _NoSubstitution:
-            return None
-        return ast.format_expr(rebuilt)
+        rebuilt = substitute_parameters(
+            precondition.expr, callee_params, call_node.args, env,
+            callee_forall,
+        )
+        return None if rebuilt is None else ast.format_expr(rebuilt)
 
     def _report_call_violation(
         self,
@@ -14431,7 +15736,19 @@ class ContractVerifier:
             if isinstance(call_node, ast.ModuleCall)
             else self.env.lookup_function(callee_name)
         )
-        if callee_info is not None and callee_info.param_type_exprs:
+        builtin = (
+            domain_contract(callee_name)
+            if callee_info is not None and not callee_info.param_type_exprs
+            else None
+        )
+        if builtin is not None and builtin.requires is precondition:
+            # #1480: a built-in's declared domain — its parameters are the
+            # domain's, not the registry entry's (which has none).
+            site_pre = self._pre_at_call_site(
+                builtin.params, None, call_node, precondition,
+                EMPTY_ALIAS_ENV,
+            )
+        elif callee_info is not None and callee_info.param_type_exprs:
             from typing import cast
 
             site_pre = self._pre_at_call_site(
@@ -14459,8 +15776,14 @@ class ContractVerifier:
 
         ce_text = "\n  ".join(ce_lines) if ce_lines else ""
 
+        at = self._evaluated_at
+        where = (
+            f"'{caller.name}'"
+            if at is not None and at.position == "predicate"
+            else f"function '{caller.name}'"
+        )
         description = (
-            f"Call to '{callee_name}' in function '{caller.name}' "
+            f"Call to '{callee_name}' in {where} "
             f"may violate the callee's precondition."
         )
         if pre_text:
@@ -14498,44 +15821,6 @@ class ContractVerifier:
             error_code="E501",
         )
 
-    def _call_pre_already_reported(
-        self, decl: ast.FnDecl, d: CallDemotion,
-    ) -> bool:
-        """Has this function already reported this call's demotion?
-
-        `_report_call_demotions` runs TWICE per function so a call that
-        appears only in a later clause is not lost, and each run DRAINS the
-        list — so no key applied within the list can see across the two, and
-        a call translated a second time in a later phase arrives looking
-        like a new one.  Measured: one `call_pre` recorded twice at one span
-        with its E532 warning shown twice, which double-counts in
-        `tier3_runtime` and puts two identical warnings on one line
-        (#1459).
-
-        The answer is read from the obligation buffer rather than a side
-        memo, because it has to be a property of the stream actually being
-        built: a memo that outlives the buffer it was built against
-        suppresses a recording that then never happens, which is the trap
-        the speculative passes reset `_construction_obligated` for.  It
-        also gives the per-instance behaviour for free — `_verify_fn` swaps
-        in a fresh buffer per monomorphic instance, so two instances of one
-        call site each find an empty stream and each record their own, and
-        a status that differs between them survives.
-        """
-        span = d.call_node.span
-        line = span.line if span else 0
-        column = span.column if span else 0
-        text = expr_text_for(d.precondition)
-        return any(
-            o.kind == "call_pre"
-            and o.fn_name == decl.name
-            and o.expr_text == text
-            and o.line == line
-            and o.column == column
-            and o.file == self._current_file
-            for o in self.obligations
-        )
-
     def _report_call_demotions(
         self, decl: ast.FnDecl, smt: SmtContext,
     ) -> None:
@@ -14549,20 +15834,23 @@ class ContractVerifier:
         the runtime guard still enforces the contract.  DESIGN.md degrades
         loudly.
 
-        Called twice per function: once after the body/requires translation
-        (step 6b) and once after the ensures/refined-return/decreases
-        translation (step 8b).  The demotion list is drained each time, so the
-        second call reports only the calls that appear inside those later
-        clauses — the exact silent-loss the first drain missed.  Each demotion
-        records a ``tier3`` ``call_pre`` obligation, so the derived summary
-        (#967) counts it toward both ``tier3_runtime`` and ``total`` — the
+        Called from `_record_call_obligations` after every position that
+        translates a call, and once more after the termination proof (step
+        8b).  The demotion list is drained each time, so a later call reports
+        only the calls a later position translated — the exact silent-loss
+        a single drain after the body missed.  Each demotion records a
+        ``tier3`` ``call_pre`` obligation, so the derived summary (#967)
+        counts it toward both ``tier3_runtime`` and ``total`` — the
         hand-counted path here once bumped ``tier3_runtime`` alone, leaving
         ``total`` short by one on every example that hit this path.  Located at
         the call site (span_node) like E501 so repeated calls to the same
         callee stay distinct.
         """
         for d in smt.drain_call_demotions():
-            if self._call_pre_already_reported(decl, d):
+            if self._repeats_predicate_call(d.call_node):
+                continue
+            if self._call_pre_recorded(
+                    decl, d.precondition, d.call_node, failures_only=True):
                 continue
             self._record_obligation(
                 decl.name, "call_pre", d.precondition, "tier3",
@@ -14583,7 +15871,12 @@ class ContractVerifier:
                           "sort until the call is monomorphized; or the "
                           "callee's contract calls a name that resolves to no "
                           "function in the module that declared it, which is "
-                          "every name outside that module's own imports.",
+                          "every name outside that module's own imports; or "
+                          "an argument is a value the verifier cannot state "
+                          "(an effect operation's result, or a let, "
+                          "destructure or match binder whose value does not "
+                          "translate), and the precondition holds for some "
+                          "value it could take.",
                 spec_ref='Chapter 6, Section 6.8 "Summary of Verification Tiers"',
                 error_code="E532",
                 tier=3,

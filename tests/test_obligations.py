@@ -1107,14 +1107,17 @@ class TestObligationKinds:
         import vera.smt
 
         src = _pathlib.Path(vera.smt.__file__).read_text(encoding="utf-8")
-        assert "self.solver.add(self._guard_fact(z3_post))" in src, (
+        # Asserted through `assume`, the one writer of the solver's base
+        # context, which states a guarded binder over its projection (#1480).
+        assert "self.assume(self._guard_fact(z3_post))" in src, (
             "the callee postcondition must be guarded by the path conditions"
         )
-        assert "self.solver.add(self._guard_fact(z3_pred))" in src, (
+        assert "self.assume(self._guard_fact(z3_pred))" in src, (
             "the refined-return predicate must be guarded by the path conditions"
         )
-        assert "self.solver.add(z3_post)" not in src, "bare, unguarded postcondition assumption"
-        assert "self.solver.add(z3_pred)" not in src, "bare, unguarded refined-return assumption"
+        for bare in ("self.solver.add(z3_post)", "self.solver.add(z3_pred)",
+                     "self.assume(z3_post)", "self.assume(z3_pred)"):
+            assert bare not in src, f"bare, unguarded assumption: {bare}"
 
     def test_let_nat_subtraction_records_once(self) -> None:
         """A violating call as a @Nat-subtraction operand in a let RHS

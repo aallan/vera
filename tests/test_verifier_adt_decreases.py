@@ -361,7 +361,7 @@ private fn sum(@List<Int> -> @Int)
         assert result.summary.tier1_verified == 8
 
     def test_overall_tier_counts(self) -> None:
-        """All examples together: 417 T1 / 131 T3 / 548 total (current).
+        """All examples together: 424 T1 / 142 T3 / 566 total (current).
 
         Counts move when examples are added or their contracts become
         more / less verifiable.  Trajectory:
@@ -733,9 +733,29 @@ private fn sum(@List<Int> -> @Int)
         # type is no longer read as an outer one.  `json.vera`'s
         # `sum_hourly`, whose recursive call reads such a `@Float64`, now
         # proves its measure: +1 T1, -1 T3: 416/132/548 -> 417/131/548.
-        assert t1 == 417, f"Expected 417 T1, got {t1}"
-        assert t3 == 131, f"Expected 131 T3, got {t3}"
-        assert total == 548, f"Expected 548 total, got {total}"
+        #
+        # #1480: a built-in whose compiled translation traps now carries its
+        # domain at every call.  `string_ops.vera`'s `string_char_code("A",
+        # 0)` and `float_to_string(3.14)` prove (+2 T1); `ephemeris.vera`'s
+        # nine `floor` / `round` sites and one `float_to_string`, and
+        # `maximum_syntax.vera`'s one `float_to_string`, all over a computed
+        # float, are left to the truncation trap (+11 T3): 417/131/548 ->
+        # 419/142/561.  A `let` whose value does not translate binds an
+        # unknown value of an ARRAY's own sort too, so `life.vera`'s
+        # `@Array<Bool>.0[@Nat.0]` is proved from the bounds guard written
+        # over that same `let` (one T3 -> T1): 420/141/561.  A measure's
+        # operations are obligated where the compiled function evaluates
+        # them, on entry and at a self-recursive tail call: the `@Nat`
+        # subtraction in `fizzbuzz.vera`'s and `life.vera`'s count-up
+        # measures proves at both, under each loop's `requires` (+4 T1):
+        # 424/141/565.  And a call only the obligation walk reaches is
+        # obligated: `life.vera`'s `run_loop(@Array<Array<Bool>>.0, 1, 300)`
+        # follows a `let` of a nested array the translation cannot bind, so
+        # its argument does not translate and the precondition is left to
+        # `run_loop`'s entry check (+1 T3): 424/142/566.
+        assert t1 == 424, f"Expected 424 T1, got {t1}"
+        assert t3 == 142, f"Expected 142 T3, got {t3}"
+        assert total == 566, f"Expected 566 total, got {total}"
         # Zero is the load-bearing value, not a vacuous one: every corpus
         # narrowing is now covered by an emitted guard, so any reappearance
         # is a REGRESSION in guard coverage rather than a new example.  The
