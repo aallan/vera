@@ -9,10 +9,10 @@ walk.  Both shapes were measured silent at `main` 6dc41d40 and at
 `release/v0.2.0` 8eca11c0, each with the guard emitted and nothing on the
 record:
 
-* `match Some(0 - 5) { Some(@Nat) -> … }`.  The checker infers `T = Nat` from
-  the argument — `0 - 5` is two non-negative literals, so `Nat - Nat` — types
-  the construction `Option<Nat>`, and the narrowing into that `@Nat` field had
-  no target to be read from.  The artifact DID refuse the value, so it was an
+* `match Some(0 - 5) { Some(@Nat) -> … }`.  The checker inferred `T = Nat` from
+  the argument — before #1541 `0 - 5` was two non-negative literals, so
+  `Nat - Nat` — typed the construction `Option<Nat>`, and the narrowing into
+  that `@Nat` field had no target to be read from.  The artifact DID refuse the value, so it was an
   under-count of the Tier-3 checks rather than a false Tier 1; the common
   spellings (a parameter scrutinee, a `let` scrutinee, a call-produced one) all
   recorded correctly, which is what says the target was the gap.
@@ -187,11 +187,10 @@ def test_a_constructor_argument_the_field_forbids_is_on_the_record(
     `verified`, which is the claim that matters about a value the field's
     type forbids.  Pinning `violated` instead would go green for a compiler
     that had stopped verifying and started refusing, and pinning the KIND
-    would over-specify: `0 - 5` is two non-negative literals, so the checker
-    types it `Nat`, and which of the sign direction and the §2.6.5 predicate
-    the verifier reaches first is a property of that typing rather than of
-    the position under test.  The nested cell reports `nat_bind`/E503 today
-    for exactly that reason.
+    would over-specify: which of the sign direction and the §2.6.5 predicate
+    the verifier reaches first is a property of how the literal is typed
+    rather than of the position under test.  The generic cell, whose field
+    is a `@Nat`, reports `nat_bind`; the refined cells report `refine_bind`.
     """
     binds = _binds(_FIELD_SOURCES[label])
     assert binds, (

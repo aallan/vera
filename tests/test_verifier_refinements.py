@@ -1306,12 +1306,14 @@ public fn f(@Unit -> @Int)
 
     def test_literal_destructure_source_not_overassumed(self) -> None:
         """#746 soundness: a *literal* destructure source is excluded from
-        fact-seeding, because the checker types it optimistically.
+        fact-seeding, because the checker's type for it need not describe its
+        value.
 
-        `Tuple(0 - 5, 0 - 5)` is typed `Tuple<Nat, Nat>`, but its component
-        VALUES are negative — that `Int -> Nat` narrowing is deferred to
-        verification, so the `Nat` component type is an unproven claim, not a
-        sound premise.  Were it seeded over the bound slot, `>= 0` over `-5`
+        Before #1541 `Tuple(0 - 5, 0 - 5)` was typed `Tuple<Nat, Nat>` while
+        its component VALUES are negative, and a join such as
+        `if b then { 0 - 5 } else { 1 }` is still typed at its else branch's
+        `Nat` — an `Int -> Nat` narrowing deferred to verification, so a `Nat`
+        component type there is an unproven claim, not a sound premise.  Were it seeded over the bound slot, `>= 0` over `-5`
         would assert a falsehood and vacuously discharge the *later*
         `takes_nat(@Int.0)` obligation.  Asserts that obligation still fires
         ('may be negative'), i.e. the literal source poisoned nothing.  (This

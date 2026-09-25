@@ -535,9 +535,10 @@ private fn f(@Nat, @Nat -> @Nat)
         assert not [o for o in result.obligations if o.kind == "nat_bind"]
 
     def test_pure_literal_subtraction_caught(self) -> None:
-        """`let @Nat = 0 - 1`: typed @Nat but valued -1.  #520 exempts the
-        pure-literal subtraction (no @Nat provenance) and defers it here;
-        #552 must catch it (E503)."""
+        """`let @Nat = 0 - 1`: a literal-only expression valued -1, an `@Int`
+        by its value (spec §4.2), narrowed into a `@Nat` slot.  #520 exempts
+        the pure-literal subtraction from the underflow obligation (no @Nat
+        provenance), so the narrowing obligation must catch it (E503, #552)."""
         _verify_err("""
 private fn f(@Unit -> @Nat)
   requires(true)

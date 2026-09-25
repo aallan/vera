@@ -18,7 +18,7 @@ The next release is a feature release, v0.3.0: the `Decision` effect ([#1467](ht
 
 ## The next burndown
 
-*Seventy-three open bugs, driven to zero.*
+*Seventy-four open bugs, driven to zero.*
 
 A bug class outranks stage work, so the open `bug`-labelled set is the queue the fix releases work from, soundness defects first.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) carries each row's full account and stays the one place the detail lives; this table is the order of attack.
 
@@ -97,6 +97,7 @@ A bug class outranks stage work, so the open `bug`-labelled set is the queue the
 | [#1601](https://github.com/aallan/vera/issues/1601) | An `assume` over a `let` bound to a user function's result does not reach `ensures`, which is refused (**E500**). |
 | [#1602](https://github.com/aallan/vera/issues/1602) | The E506 explanation lists construction positions as unguarded, which they are not since #1426. |
 | [#1603](https://github.com/aallan/vera/issues/1603) | Codes E603, E604, E605 and E607 have registry titles that do not match their use, and E604/E605 duplicate E600/E601. |
+| [#1605](https://github.com/aallan/vera/issues/1605) | A `Nat` collection context refuses a call returning only the non-negative elements of a collection built beside a negative literal (`array_slice([-3, 5], 1, 2)`); lifts with #1542. |
 
 ## Stage 19 — The verification completeness sprint
 

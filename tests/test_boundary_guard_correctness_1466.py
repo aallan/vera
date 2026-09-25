@@ -2275,21 +2275,23 @@ def test_1439_a_state_write_over_a_handle_base_carries_its_guard(
     assert m["bad_refused_at_run"], m["bad_output"]
 
 
-def test_1424_a_tuple_sub_pattern_returned_from_its_arm_crashes_verify(
+def test_1594_a_nat_built_tuple_sub_pattern_crashes_verify(
     tmp_path: Path,
 ) -> None:
-    """#1424, pinned.  This asserts the DEFECT; see the issue for the class.
+    """#1594, pinned.  This asserts the DEFECT; see the issue for the class.
+
+    The Tuple instance of #1424's sort mismatch, which #1424's own fix did
+    not reach.
 
     An ADT sub-pattern binder of `Tuple` type, returned from its own arm and
     joined with an arm that builds a fresh `Tuple`, reaches the verifier's
     sort resolution by two routes that disagree.  `vera check` is clean.
 
     The payload is built from `@Nat` values.  The matrix's own cell for this
-    position built it from literals, `Some(Tuple(1, 1))`, and crashed only
-    because the literals were typed `Nat` against the declared
-    `Tuple<Int, Int>`; since #1541 they take that declared type, so the cell
-    verifies and runs in the matrix above, and a declared `@Nat` operand is
-    what still reaches the two disagreeing routes.
+    position builds it from literals, `Some(Tuple(1, 1))`, which take the
+    declared `Tuple<Int, Int>` as their type (#1541), so that cell verifies
+    and runs in the matrix above; a declared `@Nat` operand is what still
+    reaches the two disagreeing routes.
     """
     source = """public fn f(@Nat -> @Tuple<Int, Int>)
   requires(true)
@@ -2307,7 +2309,7 @@ def test_1424_a_tuple_sub_pattern_returned_from_its_arm_crashes_verify(
     assert _cli("check", "--quiet", str(path)).returncode == 0
     verified = _cli("verify", str(path))
     assert verified.returncode != 0, (
-        "#1424 appears to be FIXED — verification no longer crashes.  Remove "
+        "#1594 appears to be FIXED — verification no longer crashes.  Remove "
         "this cell"
     )
     output = verified.stdout + verified.stderr

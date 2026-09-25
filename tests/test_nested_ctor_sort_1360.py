@@ -158,8 +158,9 @@ def test_the_crashing_shape_still_compiles_and_runs(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("param,declared,value", [
-    # All-`Int` spelling: crashed too, because the literal types as `Nat` on
-    # the declared side.  Pins that the trigger is the nesting, not `Nat`.
+    # All-`Int` spelling: crashed too, when the literal was typed `Nat` on the
+    # declared side (before #1541).  Pins that the trigger is the nesting,
+    # not `Nat`.
     ("@Int", "@Option<Tuple<Int, Int>>", f"Some(Tuple(@Int.0, {_SECOND}))"),
     # All-`Nat` spelling, the other end of the same axis.
     ("@Nat", "@Option<Tuple<Nat, Nat>>", "Some(Tuple(@Nat.0, @Nat.0))"),

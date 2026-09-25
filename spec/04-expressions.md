@@ -12,13 +12,13 @@ Literal expressions produce values of the corresponding primitive type:
 
 | Literal | Type | Examples |
 |---------|------|----------|
-| Integer | `Int` | `0`, `42`, `-17` |
-| Floating-point | `Float64` | `3.14`, `-0.5`, `100.0` |
+| Integer | `Int` or `Nat`, from its context (below) | `0`, `42`, `17` |
+| Floating-point | `Float64` | `3.14`, `0.5`, `100.0` |
 | String | `String` | `"hello"`, `""`, `"line\nbreak"` |
 | Boolean | `Bool` | `true`, `false` |
 | Unit | `Unit` | `()` |
 
-Integer literals in a context expecting `Nat` are checked for non-negativity at compile time.
+Integer literals in a context expecting `Nat` are checked for non-negativity at compile time.  A leading `-` is negation, not part of a literal (below).
 
 **An integer literal takes its type from its context.** Where the context names a type — a `let` binding, a parameter, a return, a constructor field — the literal is checked at that type. Where nothing names one, a non-negative literal is a `Nat` and a negative one an `Int`. An expression built from integer literals alone with `+`, `-`, `*`, `/`, `%` and negation is an `Int` when its value is negative, and otherwise has the type its operators give it: `0 - 3` and `(1 - 4) * 2` are `Int`, `5 - 2` is `Nat`, and `(0 - 3) - (0 - 5)` is `Int` (its operands are).
 

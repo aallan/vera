@@ -1,15 +1,15 @@
 """#1503 — every guard and every obligation reads ONE classifier.
 
-Two sources can disagree about an integer expression's type.  The checker
-types an arithmetic expression bottom-up, synthesizing its operands with no
-expected type, so a non-negative literal is `@Nat` and `0 - 3` is
-`Nat - Nat`, i.e. `@Nat`.  The classifier the verifier and code generation
-share (`vera.narrowing`) does not: a pure-literal subtraction is the #520
-idiom for a negative `@Int` (spec §11.2.1 exempts it from the underflow guard
-for exactly that reason), and in an `@Int` context spec §4.2 types an integer
-literal from its context and §4.4 types the subtraction as the join of its
-operands — `@Int`.  The checker's `@Nat` there is a claim about a value that
-is -3.
+Two sources can disagree about an integer expression's type.  Before #1541
+the checker typed an arithmetic expression bottom-up, synthesizing its
+operands with no expected type, so a non-negative literal was `@Nat` and
+`0 - 3` was `Nat - Nat`, i.e. `@Nat`; it still types a join such as
+`if b then { 0 - 3 } else { 1 }` at its else branch's `@Nat`.  The classifier
+the verifier and code generation share (`vera.narrowing`) does not: a
+pure-literal subtraction is the #520 idiom for a negative `@Int` (spec
+§11.2.1 exempts it from the underflow guard), and spec §4.2 types an integer
+literal from its context and a literal-only expression by its value —
+`@Int`.  A checker's `@Nat` there is a claim about a value that is -3.
 
 The defect is a DECISION reading the checker's answer where the two
 disagree.  Three readers did, all new on the release branch:
@@ -789,9 +789,9 @@ class TestAHeterogeneousComponentWidensAtItsArgument:
     def test_a_component_with_no_negative_source_is_not_one(self) -> None:
         """Only a source that can be negative makes a component
         heterogeneous.  `option_unwrap_or(Some(0 - 3), 0) + 1` is a sum
-        over a call whose declared `@Nat` the checker inferred from `0 - 3`
-        (#1541), and the value is -2, as `main` returns it: read as the
-        argument's widening, it trapped."""
+        over a call whose `@Nat` the checker inferred from `0 - 3` before
+        #1541 (it is `@Int` now), and the value is -2, as `main` returns it:
+        read as the argument's widening, it trapped."""
         source = _het_program(
             "@Nat", "Int",
             "let Tuple<@Int, @Int> = "
@@ -2531,11 +2531,11 @@ class TestAGenericFunctionDoorDeclinesALiteralsInstantiation:
     carrying a pure-literal subtraction when the instantiation it inferred
     from that argument ends at the call — when nothing else in the callee's
     signature is typed by it — the constructor door's rule, at the door #747
-    opened (PR #1537 review).  `array_length([0 - 1, 5])`
-    infers `T = Nat` from `0 - 1`, which the checker types bottom-up as
-    `Nat`; recorded as the literal's target, the construction-position
-    element leg (#1440) refused -1 with E503 and trapped on it, where
-    `main` returns 2."""
+    opened (PR #1537 review).  `array_length([0 - 1, 5])` inferred
+    `T = Nat` from `0 - 1` while the checker typed it bottom-up as `Nat`
+    (before #1541; it infers `Int` now); recorded as the literal's target,
+    the construction-position element leg (#1440) refused -1 with E503 and
+    trapped on it, where `main` returns 2."""
 
     _PROGRAM = """private forall<T> fn count(@Array<T> -> @Nat)
   requires(true)
