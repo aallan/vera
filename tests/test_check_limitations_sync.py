@@ -531,10 +531,12 @@ class TestIssueColumnScoping:
         # issue, so the narrow scan must not see them and the wide one must.
         # That is the scoping property this cell exists to keep honest on a
         # real document rather than only on the synthetic tables above.
-        # #1233's row cites #1522 for E339's one exception, a generic's
-        # State<T> handler that matches an outer State<Int> only at the
-        # instantiation: another issue's number inside the row's prose.
-        prose_only: set[int] = {1451, 1459, 1522}
+        # #1522 left the set when it gained a Bugs row of its own: #1233's
+        # row still cites it, but it is now in the Issue column too.  The
+        # 0.2.0 Bugs rows brought two more: #1496's row cites #1469 (the
+        # reservation that would fix it) and #1602's cites #1426 (the fix
+        # its message predates), neither of them the row's own issue.
+        prose_only: set[int] = {1426, 1451, 1459, 1469}
         narrow: set[int] = set()
         wide: set[int] = set()
         for header in ("## Limitations", "## Bugs"):

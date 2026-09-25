@@ -784,7 +784,7 @@ The `ERROR_CODES` dict in `errors.py` maps every code to a short description (18
 
 ## Test Suite
 
-Testing spans a **pytest suite** of 16,978 tests across 227 files: compiler-internals unit tests plus a **conformance suite** (256 programs in `tests/conformance/` validating every language feature against the spec) and **example programs** (43 end-to-end demos). The conformance suite is the definitive specification artifact; most programs target a single feature, though some (slot references, match, contracts) span several, and each serves as a minimal working example.
+Testing spans a **pytest suite** of 26,601 tests across 241 files: compiler-internals unit tests plus a **conformance suite** (256 programs in `tests/conformance/` validating every language feature against the spec) and **example programs** (43 end-to-end demos). The conformance suite is the definitive specification artifact; most programs target a single feature, though some (slot references, match, contracts) span several, and each serves as a minimal working example.
 
 See **[TESTING.md](../TESTING.md)** for the comprehensive testing reference -- test file table, conformance suite details, compiler code coverage, language feature coverage, helper conventions, validation scripts, CI pipeline, and guidelines for adding tests.
 
