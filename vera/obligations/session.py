@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from vera import ast
+from vera.callgraph import CallGraph
 from vera.errors import Diagnostic
 from vera.obligations.cache import (
     DischargeCache,
@@ -43,7 +44,7 @@ from vera.obligations.cache import (
 )
 from vera.obligations.core import ProofObligation
 from vera.parser import parse
-from vera.resolver import ModuleResolver, ResolvedModule
+from vera.resolver import ModuleResolver, ResolvedModule, own_module_path
 from vera.smt import SmtContext, resolve_timeout_ms
 from vera.transform import transform
 from vera.verifier import (
@@ -52,6 +53,26 @@ from vera.verifier import (
     disclosed_fn_names,
     summarize,
 )
+
+
+def resolve_document_imports(
+    program: ast.Program, file: str,
+) -> tuple[list[ResolvedModule], list[Diagnostic]]:
+    """Resolve *program*'s imports from the directory *file* lives in.
+
+    The one rule for rooting a document's resolver, shared by
+    :meth:`VerificationSession.verify_source` and the language server's
+    own check (`vera.lsp.features.analyze`), so the two passes resolve the
+    same modules — see the comment at the call in ``verify_source`` for why
+    a path-less document resolves none.  Returns the resolved modules and
+    the resolver's diagnostics.
+    """
+    path = Path(file)
+    parent = path.parent
+    if (parent != Path(".") or path.is_file()) and parent.is_dir():
+        resolver = ModuleResolver(_root=parent)
+        return resolver.resolve_imports(program, path), list(resolver.errors)
+    return [], []
 
 
 @dataclass
@@ -182,7 +203,6 @@ class VerificationSession:
 
         resolver_errors: list[Diagnostic] = []
         if resolved_modules is None and file is not None:
-            path = Path(file)
             # The resolver roots at the directory the DOCUMENT lives in, so
             # it may only be built when *file* names one (#1246 review).  A
             # path-less document — an `untitled:` buffer, a non-`file:` URI,
@@ -200,7 +220,7 @@ class VerificationSession:
             #
             # `resolved_modules` stays empty in that case: a relative import
             # in a document with no location CANNOT meaningfully resolve, and
-            # the E230 module-not-found warnings then say exactly that.  The
+            # the E230 module-not-found errors then say exactly that.  The
             # directory must also EXIST — a `vscode-vfs://host/a.vera` parses
             # to the non-existent `vscode-vfs:/host` — so the "not found"
             # story comes from the import check rather than from a resolver
@@ -211,17 +231,16 @@ class VerificationSession:
             # CWD.  `is_file()` separates them — a relative document that
             # exists on disk keeps its siblings, which keying on the parent
             # alone had silently taken away (PR #1282 review).
-            parent = path.parent
-            if (parent != Path(".") or path.is_file()) and parent.is_dir():
-                resolver = ModuleResolver(_root=parent)
-                resolved_modules = resolver.resolve_imports(program, path)
-                resolver_errors = resolver.errors
-            else:
-                resolved_modules = []
+            resolved_modules, resolver_errors = resolve_document_imports(
+                program, file)
 
         from vera.checker import typecheck_with_artifacts
+        # #1509: each module's own tables too, which instantiation
+        # discovery reads for that module's bodies — as a cold `verify()`
+        # and every compiling CLI path do.
         check_diags_raw, artifacts = typecheck_with_artifacts(
             program, source, file=file, resolved_modules=resolved_modules,
+            collect_module_artifacts=True,
         )
         check_diags = resolver_errors + check_diags_raw
         if any(d.severity == "error" for d in check_diags):
@@ -239,6 +258,7 @@ class VerificationSession:
             shared_smt=smt,
             expr_types=artifacts.expr_semantic_types,
             expr_target_types=artifacts.expr_target_types,
+            module_artifacts=artifacts.module_artifacts,
         )
         verifier.register_program(program)
 
@@ -307,22 +327,58 @@ class VerificationSession:
                 for op in tld.decl.operations:
                     op_defs[(tld.decl.name, op.name)] = (
                         *op.param_types, op.return_type)
+        # #1558: the path that names this file in a qualified call, derived
+        # once and read by every part of the key that follows a call — the
+        # interface closure below and the cycle key's call graph — so a call
+        # by it is followed wherever the bare call is, and by the one answer
+        # the verifier reads too.
+        own_path = own_module_path(program, None, resolved_modules or [])
         env = TypeEnvironment(
-            types=type_defs, constructors=ctor_defs, effect_ops=op_defs)
+            types=type_defs, constructors=ctor_defs, effect_ops=op_defs,
+            own_path=own_path)
 
         # #1363 (PR review): the warm path must run under the same disclosed
         # set the cold path computes, or it proves at Tier 1 from facts cold
         # withholds — a warm/cold divergence in the generous direction.
         verifier._disclosed_fns = self._disclosed
+        # #1480: every refinement predicate the program declares, discharged
+        # once, first — exactly where the cold `_verify_all_declarations`
+        # runs it, so the two streams agree in order as well as content.  Not
+        # cached per function: it belongs to no function's slice, and a
+        # predicate's callee can change while the declaration text does not.
+        verifier._verify_refinement_declarations(program)
         stats = SessionRunStats()
         out_diags: list[Diagnostic] = list(verifier.errors)
         out_obls: list[ProofObligation] = list(verifier.obligations)
+
+        # #1520: a `decreases` verdict reads the calls that stay on the
+        # declaration's call cycle, and which calls those are depends on
+        # OTHER declarations' bodies — a body edit elsewhere can close or
+        # open a cycle through this one without touching anything
+        # `fn_cache_key` digests.  The cycle's membership goes in the key.
+        call_graph = CallGraph(
+            (tld.decl for tld in program.declarations),
+            # #1558: the verifier's graph draws a call by the file's own
+            # path as an edge, so the key's cycles must too.
+            own_path=own_path,
+        )
+
+        def _cycle_key(root: ast.FnDecl) -> str:
+            stack, names = [root], []
+            while stack:
+                fn = stack.pop()
+                names.append(
+                    f"{fn.name}:" + ",".join(
+                        m.name for m in call_graph.cycle(fn)))
+                stack.extend(fn.where_fns or ())
+            return "|".join(names)
 
         for tld in program.declarations:
             if not isinstance(tld.decl, ast.FnDecl):
                 continue
             decl = tld.decl
             key = fn_cache_key(decl, fn_map, context_hash, env)
+            key = f"{key}\x1f{_cycle_key(decl)}"
             if self._disclosed:
                 # A slice proved under a DIFFERENT disclosed set is stale:
                 # its statuses depend on which facts were withheld, which is

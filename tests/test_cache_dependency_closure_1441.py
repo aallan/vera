@@ -140,7 +140,8 @@ _BODY_ONLY_EDITED = _BODY_ONLY_ORIGINAL.replace("{\n  1\n}", "{\n  1 + 0\n}", 1)
 #: A program with no type, data or effect declarations in it — the two
 #: unit cells below are about the CONTRACT half of the walk, so nothing
 #: they hand it resolves through a declaration.
-_EMPTY_ENV = TypeEnvironment(types={}, constructors={}, effect_ops={})
+_EMPTY_ENV = TypeEnvironment(
+    types={}, constructors={}, effect_ops={}, own_path=None)
 
 
 def _summary(result) -> tuple[list[str], list[tuple[str, str, str, str]]]:
@@ -324,7 +325,8 @@ def test_1458_the_signature_walk_terminates_on_an_alias_cycle() -> None:
 
     found: set[str] = set()
     _type_reference_calls(
-        (ast.NamedType(name="A", type_args=None),), type_defs, found)
+        (ast.NamedType(name="A", type_args=None),), type_defs, found,
+        own_path=None)
     assert found == set(), found
 
 
@@ -351,7 +353,8 @@ def test_1458_the_type_walk_terminates_on_a_recursive_data_declaration() -> None
 
     found: set[str] = set()
     _type_reference_calls(
-        (ast.NamedType(name="List", type_args=None),), type_defs, found)
+        (ast.NamedType(name="List", type_args=None),), type_defs, found,
+        own_path=None)
     assert found == {"cap"}, found
 
 
@@ -1040,11 +1043,11 @@ _ADT_WILDCARD_EDITED = _ADT_WILDCARD_ORIGINAL.replace(
 #: there is architecture — and lives in `_CHECK_PHASE_GUARDS` below rather
 #: than being counted here.
 #:
-#: Two rows are held by the span-sensitive structural hash rather than by
-#: the closure or the context hash, because their edit deletes lines and
-#: every later declaration shifts: `callee_removed` and `adt_removed`.  They
-#: are kept — the invalidation they pin is real — and named so the table
-#: does not claim them for a component that is not carrying them.
+#: Deleting a callee the program still calls, or an ADT it still names and
+#: matches on, has no type-correct form: #1513 made an unresolved call and an
+#: unknown constructor pattern errors (E200, E322), and #1489 made a type
+#: name nothing declares one (E136), so those two edits are check-phase
+#: guards below rather than rows here.
 _CLASS_MATRIX = [
     ("callee contract, direct", "contract weakened",
      _DIRECT_ORIGINAL, _DIRECT_EDITED, None, None),
@@ -1081,14 +1084,10 @@ _CLASS_MATRIX = [
     ("refinement on an effect operation's parameter, reached through a "
      "QUALIFIED CALL", "contract weakened", _OP_CALL_ORIGINAL,
      _OP_CALL_ORIGINAL.replace(*_CAP_TIGHTENED, 1), None, None),
-    ("callee", "declaration removed",
-     _ENSURES_ORIGINAL, _CALLEE_REMOVED, None, None),
     ("type alias refinement", "definition changed",
      _ALIAS_ORIGINAL, _ALIAS_WIDENED, None, None),
     ("ADT constructors", "definition changed",
      _ADT_WILDCARD_ORIGINAL, _ADT_WILDCARD_EDITED, None, None),
-    ("ADT", "declaration removed",
-     _ADT_ORIGINAL, _ADT_REMOVED, None, None),
     ("imported module contract", "contract weakened",
      _MODULE_MAIN, _MODULE_MAIN, _MODULE_LIB, _MODULE_LIB_WEAKENED),
 ]
@@ -1108,15 +1107,15 @@ _CLASS_MATRIX_IDS = [
     "inline_refinement_on_a_let_annotation",
     "constructor_call",
     "effect_op_qualified_call",
-    "callee_removed",
     "alias_predicate_changed",
     "adt_variant_added",
-    "adt_removed",
     "module_contract_weakened",
 ]
 
-#: Edits whose kind has no type-correct form: removing a type alias, retyping
-#: an effect operation, withdrawing a module export.  The checker refuses
+#: Edits whose kind has no type-correct form: removing a type alias,
+#: retyping an effect operation, withdrawing a module export, and removing a
+#: callee or an ADT the program still uses (E200 or E322 since #1513, and E136
+#: for a signature that still names the ADT, #1489).  The checker refuses
 #: each, so verification never runs and BOTH paths report an empty obligation
 #: stream — which means these cannot hold the cache key to account, and a
 #: cache key replaced by a constant passes every one of them (#1458 review).
@@ -1125,16 +1124,22 @@ _CLASS_MATRIX_IDS = [
 _CHECK_PHASE_GUARDS = [
     ("type alias", "declaration removed",
      _ALIAS_ORIGINAL, _ALIAS_REMOVED, None, None),
+    ("ADT", "declaration removed",
+     _ADT_ORIGINAL, _ADT_REMOVED, None, None),
     ("effect operation signature", "definition changed",
      _EFFECT_ORIGINAL, _EFFECT_RETYPED, None, None),
     ("imported module export", "declaration removed",
      _MODULE_MAIN, _MODULE_MAIN, _MODULE_LIB, _MODULE_LIB_UNEXPORTED),
+    ("callee", "declaration removed",
+     _ENSURES_ORIGINAL, _CALLEE_REMOVED, None, None),
 ]
 
 _CHECK_PHASE_GUARD_IDS = [
     "alias_removed",
+    "adt_removed",
     "effect_op_retyped",
     "module_export_removed",
+    "callee_removed",
 ]
 
 

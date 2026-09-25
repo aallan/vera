@@ -531,7 +531,10 @@ class TestIssueColumnScoping:
         # issue, so the narrow scan must not see them and the wide one must.
         # That is the scoping property this cell exists to keep honest on a
         # real document rather than only on the synthetic tables above.
-        prose_only: set[int] = {1451, 1459}
+        # #1233's row cites #1522 for E339's one exception, a generic's
+        # State<T> handler that matches an outer State<Int> only at the
+        # instantiation: another issue's number inside the row's prose.
+        prose_only: set[int] = {1451, 1459, 1522}
         narrow: set[int] = set()
         wide: set[int] = set()
         for header in ("## Limitations", "## Bugs"):

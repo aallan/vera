@@ -20,6 +20,7 @@ from vera.checker.sql import (
 from vera.environment import (
     DB_SQL_OP_NAMES,
     STRING,
+    AdtInfo,
     ConstructorInfo,
     FunctionInfo,
     OpInfo,
@@ -319,17 +320,47 @@ class CallsMixin:
                 self._synth_expr(arg)
             return UnknownType()
 
-        # Unresolved — emit warning and continue
+        if name in self._ambiguous_import_fn_names:
+            # #1304: two imports supply this name, so it denotes none of
+            # their declarations, and the E155 at the import is the one
+            # error the program owes.  A second error here would only
+            # restate it, and could name no remedy of its own: qualifying
+            # the call does not lift an E155 (§8.5.2.2).
+            for arg in args:
+                self._synth_expr(arg)
+            return UnknownType()
+
+        # Unresolved — an error (#1513): a call to nothing has no body to
+        # compile, so a warning here let `vera check` pass a program code
+        # generation then refused.  Name the module when one this file can
+        # see declares the function, which is the fix a reader needs.
+        # Sorted: a module checker's `_resolved_modules` is built by walking
+        # a set of import paths, so its order follows the hash seed.
+        declaring = sorted(
+            mod.path for mod in self._resolved_modules
+            if name in self._module_functions.get(mod.path, {})
+        )
+        if declaring:
+            fix = ("Import it from the module that declares it: "
+                   + " or ".join(self._import_line(m, name)
+                                 for m in declaring)
+                   + ".  A module reached only through another module's "
+                     "imports is not visible to this file until it is "
+                     "imported here.")
+        else:
+            fix = (f"Define 'fn {name}(...)' in this file, or import it from "
+                   f"the module that declares it with "
+                   f"'import <module>({name});' (replace <module> with that "
+                   f"module's path, e.g. 'vera.math'); check the spelling "
+                   f"too.")
         self._error(
             node,
             f"Unresolved function '{name}'.",
             rationale="A bare call must resolve to a function, effect "
                       "operation, or ability operation in scope; no "
-                      "declaration named this could be found.",
-            fix=f"Define 'fn {name}(...)' in this file, or import it from the "
-                f"module that declares it with 'import <module>({name});' "
-                f"(replace <module> with that module's path, e.g. 'vera.math').",
-            severity="warning",
+                      "declaration named this could be found, so there is "
+                      "no body to call and the program cannot compile.",
+            fix=fix,
             spec_ref='Chapter 8, Section 8.5.1 "Bare Calls"',
             error_code="E200",
         )
@@ -1318,6 +1349,148 @@ class CallsMixin:
     # Constructors
     # -----------------------------------------------------------------
 
+    def _import_line(self, mod_path: tuple[str, ...], name: str) -> str:
+        """The import line that brings *name* in from *mod_path* (#1513).
+
+        When this file already imports that module selectively, the line
+        is that import with *name* added to its list, so following the fix
+        leaves one import of the module rather than a second declaration
+        beside the first.
+        """
+        label = ".".join(mod_path)
+        existing = self._import_names.get(mod_path)
+        names = sorted(existing | {name}) if existing else [name]
+        return f"'import {label}({', '.join(names)});'"
+
+    def _stranger_constructor(
+        self, name: str,
+    ) -> tuple[list[tuple[tuple[str, ...], ConstructorInfo]],
+               ConstructorInfo | None]:
+        """Resolve a constructor of a type this file does not import (#1513).
+
+        Importing a data type is what brings its constructors into scope
+        (§8.3.3, §8.4.2), so a constructor whose type reaches this file only
+        through another declaration's signature — `paint(Green)`, with
+        `Colour` imported by `paint`'s module and not by this file — is not
+        in the environment.  It still denotes exactly one declaration when
+        one module's PUBLIC type declares it, and code generation compiles
+        it (`_namespace_ctor_projection`'s fallback class, which asks the
+        same question of the same modules).
+
+        Returns every module whose public types declare *name*, sorted by
+        path, and the one constructor the name denotes, or
+        ``None`` when it denotes no single declaration.  It denotes one only
+        when exactly one module declares it and its type is one
+        `_stranger_data_type` resolves: a value of it is typed by the bare
+        type name, so a second meaning of that name would let one value pass
+        for another type's.
+
+        A construction and a pattern resolve through here alike, so a
+        pattern is typed by the same declaration: its fields bind at their
+        declared types, and its match is judged against that type's
+        constructors.
+        """
+        # Sorted by path: a module checker's `_resolved_modules` is built by
+        # walking a set of import paths, so its order follows the hash seed.
+        candidates = sorted(
+            ((mod.path, self._module_constructors[mod.path][name])
+             for mod in self._resolved_modules
+             if name in self._module_constructors.get(mod.path, {})),
+            key=lambda pair: pair[0],
+        )
+        if len(candidates) != 1:
+            return candidates, None
+        ci = candidates[0][1]
+        if self._stranger_data_type(ci.parent_type) is None:
+            return candidates, None
+        return candidates, ci
+
+    def _stranger_data_type(self, type_name: str) -> AdtInfo | None:
+        """The declaration a data type name this file does not import
+        denotes (#1513), or ``None``.
+
+        A value of such a type reaches the file through an imported
+        signature (`pick(1)` returning `mb`'s `Colour`), typed by the bare
+        name.  The name denotes one declaration only when no data type of
+        that name is declared or imported here — the prelude's own does not
+        count (#1559) — and exactly one module this file can see declares a
+        type of that name, public or private: two would give one bare name
+        two types.  The pattern rules
+        read it for such a value: which constructors a match on it must
+        cover, and which ones can match it at all.
+        """
+        # A type the file declares or imports bars it; the prelude's own
+        # type of the name does not (#1559).  Every file holds `Json`,
+        # `Request` and the prelude's other types, so counting them refused
+        # every constructor of a module's type named like one: `mk(1)`,
+        # returning `a`'s `Json`, was accepted while `MyK(1)`, building the
+        # same value, was an error.  Such a value meets the prelude's type
+        # by the bare name in this file whichever way it arrives (#1560), so
+        # barring the construction guarded nothing.
+        bound = self.env.data_types.get(type_name)
+        if (bound is not None
+                and bound is not self._builtin_data_types.get(type_name)):
+            return None
+        declared = [
+            types[type_name]
+            for _path, types in sorted(self._module_all_data_types.items())
+            if type_name in types
+        ]
+        if len(declared) != 1:
+            return None
+        return declared[0]
+
+    def _unknown_ctor_fix(
+        self, name: str,
+        candidates: list[tuple[tuple[str, ...], ConstructorInfo]],
+    ) -> str:
+        """The fix for a constructor name that denotes no declaration here."""
+        if not candidates:
+            return (f"Declare '{name}' as a constructor of a 'data' type in "
+                    f"this file, or import the data type that declares it "
+                    f"with 'import <module>(<Type>);' — importing a data "
+                    f"type is what makes its constructors available (check "
+                    f"the spelling and capitalisation too).")
+        imports = " or ".join(
+            self._import_line(path, ci.parent_type)
+            for path, ci in candidates
+        )
+        return (f"Import the data type that declares '{name}': {imports}.  "
+                f"Importing a data type is what makes its constructors "
+                f"available; if more than one module declares '{name}', "
+                f"import the type of the one you mean.")
+
+    # The stranger-constructor warning's text (#1513), shared by E210 and
+    # E214 in a construction and E320 and E322 in a pattern, whose `_error`
+    # calls each carry their code as a literal so the warning-site scans
+    # (`check_diagnostic_fields.py`, the doc gate's plant table,
+    # `test_warning_severity_1513.py`) can read it.
+    _STRANGER_CTOR_RATIONALE = (
+        "Importing a data type is what brings its constructors into scope.  "
+        "This one reaches the file only through another declaration's "
+        "signature; the name denotes exactly one declaration, so the program "
+        "compiles, but the file does not say where it comes from."
+    )
+
+    def _stranger_ctor_message(
+        self, name: str, ci: ConstructorInfo,
+        candidates: list[tuple[tuple[str, ...], ConstructorInfo]],
+    ) -> tuple[str, str]:
+        """The description and fix of the stranger-constructor warning."""
+        mod_path = candidates[0][0]
+        mod_label = ".".join(mod_path)
+        line = self._import_line(mod_path, ci.parent_type)
+        if self._import_names.get(mod_path):
+            fix = (f"Add '{ci.parent_type}' to this file's import of "
+                   f"'{mod_label}': {line}.")
+        else:
+            fix = f"Add the import: {line}."
+        return (
+            f"Constructor '{name}' belongs to data type '{ci.parent_type}' "
+            f"of module '{mod_label}', which this file does not import.",
+            fix,
+        )
+
     def _check_constructor_call(self, expr: ast.ConstructorCall, *,
                                 expected: Type | None = None) -> Type | None:
         """Type-check a constructor call: Ctor(args)."""
@@ -1326,17 +1499,35 @@ class CallsMixin:
             return self._check_tuple_constructor(expr)
 
         ci = self.env.lookup_constructor(expr.name)
+        if ci is None and expr.name in self._refused_ctor_names:
+            # #1497: a constructor of a declaration refused as E158, whose
+            # E158 is the one error the program owes.
+            for arg in expr.args:
+                self._synth_expr(arg)
+            return UnknownType()
+        if ci is None:
+            candidates, ci = self._stranger_constructor(expr.name)
+            if ci is not None:
+                message, fix = self._stranger_ctor_message(
+                    expr.name, ci, candidates)
+                self._error(
+                    expr, message,
+                    rationale=self._STRANGER_CTOR_RATIONALE,
+                    fix=fix,
+                    severity="warning",
+                    spec_ref='Chapter 8, Section 8.5.4 '
+                             '"Constructor Resolution"',
+                    error_code="E210",
+                )
         if ci is None:
             self._error(
                 expr,
                 f"Unknown constructor '{expr.name}'.",
                 rationale="A constructor call must name a constructor declared "
-                          "by some 'data' type in scope; no such constructor "
-                          "is defined or imported.",
-                fix=f"Declare '{expr.name}' as a constructor in a 'data' type, "
-                    f"or import the data type that defines it (importing a "
-                    f"data type makes its constructors available).",
-                severity="warning",
+                          "by a 'data' type in scope; no such constructor is "
+                          "defined or imported, so the call has no value to "
+                          "build and the program cannot compile.",
+                fix=self._unknown_ctor_fix(expr.name, candidates),
                 spec_ref='Chapter 2, Section 2.4 "Algebraic Data Types (ADTs)"',
                 error_code="E210",
             )
@@ -1690,16 +1881,32 @@ class CallsMixin:
                                     expected: Type | None = None) -> Type | None:
         """Type-check a nullary constructor: None, Nil, etc."""
         ci = self.env.lookup_constructor(expr.name)
+        if ci is None and expr.name in self._refused_ctor_names:
+            return UnknownType()  # #1497: see `_check_constructor_call`
+        if ci is None:
+            candidates, ci = self._stranger_constructor(expr.name)
+            if ci is not None:
+                message, fix = self._stranger_ctor_message(
+                    expr.name, ci, candidates)
+                self._error(
+                    expr, message,
+                    rationale=self._STRANGER_CTOR_RATIONALE,
+                    fix=fix,
+                    severity="warning",
+                    spec_ref='Chapter 8, Section 8.5.4 '
+                             '"Constructor Resolution"',
+                    error_code="E214",
+                )
         if ci is None:
             self._error(
                 expr,
                 f"Unknown constructor '{expr.name}'.",
                 rationale="A nullary constructor reference must name a "
-                          "constructor declared by some 'data' type in "
-                          "scope; no such constructor is defined or imported.",
-                fix=f"Declare '{expr.name}' as a constructor in a 'data' "
-                    f"type, or import the data type that defines it.",
-                severity="warning",
+                          "constructor declared by a 'data' type in scope; "
+                          "no such constructor is defined or imported, so "
+                          "the name has no value and the program cannot "
+                          "compile.",
+                fix=self._unknown_ctor_fix(expr.name, candidates),
                 spec_ref=(
                     'Chapter 2, Section 2.4 "Algebraic Data Types (ADTs)"'
                 ),
@@ -1831,17 +2038,20 @@ class CallsMixin:
         ):
             self._check_sql_provenance(expr.name, tuple(expr.args), expr)
 
-        # Try as module-qualified function
+        # Unresolved — an error (#1513): code generation has no operation
+        # to call, and used to fail in the WAT assembler instead.
         self._error(
             expr,
             f"Unresolved qualified call '{expr.qualifier}.{expr.name}'.",
             rationale="A qualified call 'Effect.op' must name an operation of "
                       "an effect that is in scope; no effect named "
-                      f"'{expr.qualifier}' declares an op '{expr.name}'.",
+                      f"'{expr.qualifier}' declares an op '{expr.name}', so "
+                      "there is no operation to perform and the program "
+                      "cannot compile.",
             fix=f"Add '{expr.qualifier}' to the function's effects clause and "
                 f"declare 'op {expr.name}(...)' in that effect, or correct "
-                f"the qualifier or operation name.",
-            severity="warning",
+                f"the qualifier or operation name.  A module function is "
+                f"called with '::' ('module::fn(...)'), not '.'.",
             spec_ref='Chapter 7, Section 7.4 "Performing Effects"',
             error_code="E220",
         )
@@ -1853,11 +2063,11 @@ class CallsMixin:
         """Type-check a module-qualified call: path.to.fn(args).
 
         Lookup order:
-        1. Module not resolved → warning (same as C7a).
+        1. Module not resolved → the file's own path (#1558) or an error.
         2. Name not in selective import list → error.
         2.5. C7c: function is private → error.
         3. Function found (public) → delegate to ``_check_fn_call_with_info``.
-        4. Function not found in module → warning with available list.
+        4. Function not found in module → error with available list.
         """
         mod_path = tuple(expr.path)
         fn_name = expr.name
@@ -1865,20 +2075,22 @@ class CallsMixin:
 
         # 1. Module not resolved
         if mod_path not in self._resolved_module_paths:
+            if mod_path == self._own_module_path:
+                return self._check_own_module_call(expr)
             self._error(
                 expr,
                 f"Module '{mod_label}' not found. "
                 f"Cannot resolve call to '{fn_name}'.",
-                severity="warning",
                 rationale=(
-                    "No module matching this import path was resolved. "
-                    "Check that the file exists and is imported."
+                    "No module matching this path is imported by this file, "
+                    "and the path does not name the file itself: a file's "
+                    "own path is the one its 'module' declaration gives, "
+                    "and only where the program reaches the file by that "
+                    "path.  So the call names no function and the program "
+                    "cannot compile.  A module reached only through another "
+                    "module's imports is not visible here."
                 ),
-                fix=(
-                    f"Add 'import {mod_label};' and create the file "
-                    f"'{mod_label.replace('.', '/')}.vera' relative to the "
-                    f"importing file or project root."
-                ),
+                fix=self._unresolved_module_fix(mod_path, fn_name),
                 spec_ref='Chapter 8, Section 8.6.5 "Resolution Errors"',
                 error_code="E230",
             )
@@ -1951,14 +2163,100 @@ class CallsMixin:
             + (f" Available functions: {available}." if available else ""),
             rationale="A module-qualified call must name a public function "
                       "declared in the target module; the module was resolved "
-                      "but declares no such function.",
+                      "but declares no such function, so the program cannot "
+                      "compile.",
             fix=f"Define 'public fn {fn_name}(...)' in module '{mod_label}', "
                 f"or correct the name to one the module exports"
             + (f" (e.g. {available[0]})." if available else "."),
-            severity="warning",
             spec_ref='Chapter 8, Section 8.5.3 "Module-Qualified Calls"',
             error_code="E233",
         )
         for arg in expr.args:
             self._synth_expr(arg)
         return UnknownType()
+
+    def _check_own_module_call(self, expr: ast.ModuleCall) -> Type | None:
+        """A module-qualified call to the file's OWN path (#1558).
+
+        `ma::two(3)` inside `module ma;` calls the file's own top-level
+        `two`: the path names the module (§8.5.3), and this module is the
+        one the path names.  Its private functions are reachable too, since
+        the call is inside the module that declares them (§8.4.1).  It is
+        checked as the bare call to that top-level function is, with one
+        difference that is the point of writing it: a `where` helper of the
+        same name does not shadow it, as nothing local shadows a
+        module-qualified call — so it reads the top-level table, never the
+        lexical helper chain a bare call reads first.
+        """
+        fn_name = expr.name
+        fn_info = self._top_level_fn_infos.get(fn_name)
+        if fn_info is not None:
+            return self._check_fn_call_with_info(fn_info, expr.args, expr)
+        if fn_name in self._own_fn_names:
+            # A declaration registration refused (E151, E153): its own error
+            # is the one the program owes, and this use restates it.
+            for arg in expr.args:
+                self._synth_expr(arg)
+            return UnknownType()
+        mod_label = ".".join(expr.path)
+        declared = sorted(self._top_level_fn_infos)
+        # This file's own helpers only: the index spans every module the
+        # file resolves, and another module's helper is no function of this
+        # one either way.
+        helper_of = sorted(
+            parent for parent in self._where_helper_parents.get(fn_name, set())
+            if " in module " not in parent)
+        if helper_of:
+            fix = (f"'{fn_name}' is a 'where' helper of {', '.join(helper_of)}, "
+                   f"local to the function that declares it: call it by its "
+                   f"bare name from inside that function, or lift it to a "
+                   f"top-level function of module '{mod_label}'.")
+        else:
+            fix = (f"Define 'fn {fn_name}(...)' at the top level of this "
+                   f"file, or correct the name to one it declares"
+                   + (f" (e.g. {declared[0]})." if declared else "."))
+        self._error(
+            expr,
+            f"Function '{fn_name}' not found in module '{mod_label}', which "
+            f"is this file."
+            + (f" Its functions: {declared}." if declared else ""),
+            rationale="A module-qualified call to the path this file's "
+                      "'module' declaration gives names one of the file's "
+                      "own top-level functions; the file declares none by "
+                      "this name, so the program cannot compile.",
+            fix=fix,
+            spec_ref='Chapter 8, Section 8.5.3 "Module-Qualified Calls"',
+            error_code="E233",
+        )
+        for arg in expr.args:
+            self._synth_expr(arg)
+        return UnknownType()
+
+    def _unresolved_module_fix(
+        self, mod_path: tuple[str, ...], fn_name: str,
+    ) -> str:
+        """E230's fix: import the module — unless the path is this file's.
+
+        A file imported as `ma` that declares no path, or declares another,
+        has no path of its own (#1558), and adding `import ma;` inside it
+        would import the file into itself.  The remedy there is the
+        declaration.
+        """
+        label = ".".join(mod_path)
+        resolved = self._resolved_as
+        if resolved is not None and mod_path in (
+                resolved, self._declared_module_path):
+            here = ".".join(resolved)
+            if self._declared_module_path is None:
+                declares = "declares no module path"
+            else:
+                declares = ("declares 'module "
+                            f"{'.'.join(self._declared_module_path)};'")
+            return (f"This file is imported as '{here}' but {declares}, so "
+                    f"no path names it.  Declare 'module {here};' at the "
+                    f"top of the file and call its own function as "
+                    f"'{here}::{fn_name}(...)', or call it by its bare name, "
+                    f"'{fn_name}(...)'.")
+        return (f"Add 'import {label};' and create the file "
+                f"'{label.replace('.', '/')}.vera' relative to the importing "
+                f"file or project root.")

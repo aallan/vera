@@ -7,6 +7,7 @@ types across modules (C7b) or enforce visibility (C7c).
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -330,3 +331,80 @@ class ModuleResolver:
             return ""
         idx = node.span.line - 1
         return lines[idx] if 0 <= idx < len(lines) else ""
+
+
+def merged_import_filters(
+    decls: Iterable[ast.ImportDecl],
+) -> dict[tuple[str, ...], set[str] | None]:
+    """One filter per imported PATH, unioned across repeated imports (#1433).
+
+    The ONE derivation of what a namespace's import list admits from each
+    module: ``None`` for a whole-module import, else the set of names.  The
+    checker, the verifier and code generation all read it, so they cannot
+    disagree about a program that imports one module twice — each used to
+    key its own table on the path, the last statement winning, and a
+    qualified call to a name only the FIRST list admitted was refused with
+    E231 while its bare call ran.
+
+    A namespace may name a declaration that ANY of its import lists admits,
+    so two statements naming one module contribute the union of their
+    lists and a wildcard dominates every list beside it.  Keying a dict
+    comprehension on the path instead made the LAST statement win and
+    discarded the others (PR review): with
+    ``import liba(aone); import liba(helper);`` the surviving filter admits
+    neither the type nor the signature that carries it, so #1317's flow
+    condition would stop seeing a crossing the entry can actually make and
+    the rename would qualify apart two declarations a value passes between.
+
+    Dedupe is idempotent by construction: repeating one statement adds
+    nothing (spec §8.5.5).
+    """
+    out: dict[tuple[str, ...], set[str] | None] = {}
+    for imp in decls:
+        names = set(imp.names) if imp.names is not None else None
+        if imp.path not in out:
+            out[imp.path] = names
+            continue
+        existing = out[imp.path]
+        if existing is None or names is None:
+            out[imp.path] = None  # a wildcard admits everything
+        else:
+            out[imp.path] = existing | names
+    return out
+
+
+def own_module_path(
+    program: ast.Program,
+    resolved_as: tuple[str, ...] | None,
+    resolved: Iterable[ResolvedModule],
+) -> tuple[str, ...] | None:
+    """The path that names *program*'s own file in a qualified call (#1558).
+
+    A module's identity is the path its ``module`` declaration gives (§8.2),
+    and a module-qualified call names a module by its path (§8.5.3), so
+    inside the file that path names the file itself: ``ma::two(3)`` in
+    ``module ma;`` calls its own ``two``.  The ONE derivation of which path
+    that is, read by the checker (which resolves the call) and the verifier
+    (which reads the callee's contract at it), so the two cannot disagree
+    about a program.
+
+    The declared path names the file only when the program reaches the file
+    by it, which keeps the answer the same for every program that compiles
+    the file:
+
+    * *resolved_as* — the path the program imports the file by, when it is
+      checked as a module — must be the declared path.  A file declaring
+      ``module mz;`` that is imported as ``ma`` has no unambiguous own path;
+    * for the entry (*resolved_as* ``None``), no module in *resolved* may
+      have the path: there it names that module, as it always did.
+
+    ``None`` for a file with no ``module`` declaration.
+    """
+    if program.module is None:
+        return None
+    declared = tuple(program.module.path)
+    if resolved_as is not None:
+        return declared if declared == resolved_as else None
+    if any(m.path == declared for m in resolved):
+        return None
+    return declared

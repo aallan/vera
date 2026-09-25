@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, cast
 from vera import ast
 from vera.skip import AdtEqNotDerivableError, CodegenInvariantError, CodegenSkip
 from vera.codegen.compilability import contract_exprs
-from vera.codegen.tail_position import compute_tail_call_sites
+from vera.tail_position import compute_tail_call_sites
 from vera.monomorphize import mangle_type_name
 from vera.slots import effect_op_result_names, type_expr_slot_name
 from vera.trap_registry import signal_instructions
@@ -454,6 +454,7 @@ class FunctionCompilationMixin:
             tuple[SpanTypeTable | None, SpanTypeTable | None] | None
         ) = None,
         where_scope: frozenset[str] = frozenset(),
+        own_path: tuple[str, ...] | None = None,
     ) -> str | None:
         """Compile a single function to WAT.
 
@@ -487,6 +488,10 @@ class FunctionCompilationMixin:
         pre-#987 behaviour: those component sites stay unguarded, never
         false-guarded.  Fn-type-based recovery (closure formal / return types) is
         NOT span-keyed and is unaffected either way.
+
+        *own_path* (#1558) is the path that names *decl*'s own file in a
+        qualified call; the tail-call analyzer marks a tail call by it as it
+        marks the bare call (``compute_tail_call_sites``).
         """
         # #987: an imported body's span-keyed tables are ITS module's own (or
         # None when none were threaded) — never the main-file tables, whose
@@ -673,6 +678,8 @@ class FunctionCompilationMixin:
             # third copy is one more thing to drift (PR #1419 review).
             adt_ctor_layouts=self._adt_layouts,
             adt_type_names=adt_type_names,
+            value_data_types=self._value_data_type_names(),
+            adt_ctor_tp_indices=self._adt_ctor_tp_indices,
             generic_fn_info=getattr(self, "_generic_fn_info", None),
             generic_constrained_vars=getattr(
                 self, "_generic_constrained_vars", None),
@@ -937,10 +944,13 @@ class FunctionCompilationMixin:
         # ``self_ret_wt`` argument is the function's WASM return
         # type, used by the translator's type-match guard to ensure
         # WASM ``return_call`` semantics are valid (callee signature
-        # must match caller).  See ``vera/codegen/tail_position.py``
+        # must match caller).  See ``vera/tail_position.py``
         # for the analyzer rules and ``_translate_call`` in
         # ``vera/wasm/calls.py`` for the emit site.
-        tail_sites = compute_tail_call_sites(decl)
+        # #1558: a tail call by *own_path*, the path naming this body's own
+        # file, is the bare tail call to that top-level function and is
+        # marked with it.
+        tail_sites = compute_tail_call_sites(decl, own_path)
 
         # #758/#983 — per-narrowing-leaf @Int->@Nat return guard.  Collect the
         # tail-position return leaves that narrow into a bare @Nat return so

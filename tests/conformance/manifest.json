@@ -949,6 +949,20 @@
     ]
   },
   {
+    "id": "ch05_where_helper_duplicate_rejected",
+    "file": "ch05_where_helper_duplicate_rejected.vera",
+    "chapter": 5,
+    "title": "Two `where` helpers of one name in one block are a checker error (#1433)",
+    "level": "check",
+    "spec_ref": "Section 5.6.2",
+    "expected_error": "E184",
+    "features": [
+      "where_block",
+      "duplicate_helper_name",
+      "check_error"
+    ]
+  },
+  {
     "id": "ch05_reserved_keyword_fn_rejected",
     "file": "ch05_reserved_keyword_fn_rejected.vera",
     "chapter": 5,
@@ -1147,6 +1161,19 @@
     "spec_ref": "Section 7.1",
     "features": [
       "pure_effect"
+    ]
+  },
+  {
+    "id": "ch07_diverge",
+    "file": "ch07_diverge.vera",
+    "chapter": 7,
+    "title": "Diverge effect: unmeasured recursion compiles and runs",
+    "level": "run",
+    "spec_ref": "Section 7.7.3",
+    "features": [
+      "diverge_effect",
+      "recursion",
+      "effect_propagation"
     ]
   },
   {
@@ -3562,6 +3589,19 @@
     "file": "ch08_builtin_tuple_redefinition_rejected.vera",
     "chapter": 8,
     "title": "A data type may not redefine the built-in Tuple carrier",
+    "level": "check",
+    "spec_ref": "Section 8.4.1",
+    "expected_error": "E158",
+    "features": [
+      "builtin_adt_redefinition",
+      "check_error"
+    ]
+  },
+  {
+    "id": "ch08_builtin_container_redefinition_rejected",
+    "file": "ch08_builtin_container_redefinition_rejected.vera",
+    "chapter": 8,
+    "title": "A data type may not take a built-in container's name",
     "level": "check",
     "spec_ref": "Section 8.4.1",
     "expected_error": "E158",

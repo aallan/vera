@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 from vera import ast
-from vera.monomorphize import Monomorphizer, resolve_fn_type_alias
+from vera.monomorphize import (
+    Monomorphizer,
+    canonical_type_arg,
+    resolve_fn_type_alias,
+)
 from vera.skip import CodegenSkip
 from vera.slots import bare_call_denotes_user_fn
 from vera.wasm.helpers import WasmSlotEnv
@@ -31,12 +35,17 @@ class CallsMixin:
 
     def _translate_call(
         self, call: ast.FnCall, env: WasmSlotEnv,
-        *, denotes_op: bool | None = None,
+        *, denotes_op: bool | None = None, tail: bool = False,
     ) -> list[str] | None:
         """Translate a function call to WASM call instruction.
 
         If the call name matches an effect operation (e.g. get/put for
         State<T>), redirects to the corresponding host import.
+
+        *tail* marks a call in tail position that is not itself a key of
+        ``_tail_call_sites``: a module-qualified call by the module's own
+        path, which ``translate_expr`` desugars into a fresh ``FnCall``
+        (#1558).  Every other call is looked up by its own id.
 
         *denotes_op* overrides the bare-call ownership question (#1284) for
         a call this dispatcher did not receive bare.  ``None`` — every
@@ -671,7 +680,10 @@ class CallsMixin:
         # locally-shadowed same-module sibling to the module's ``mod$``
         # version (the rename map is empty for every non-mod$ body, so normal
         # compilation is unaffected).  Shadowed siblings are non-generic, so
-        # this never collides with the generic rewrite above.
+        # this never collides with the generic rewrite above.  A module's own
+        # top-level sibling reaches here already renamed (`_register_modules`
+        # renames the module's calls before anything names them), so the
+        # generic rewrite cannot take its bare name first.
         if call_target in self._intra_module_renames:
             call_target = self._intra_module_renames[call_target]
 
@@ -739,7 +751,7 @@ class CallsMixin:
 
         # #517 — emit ``return_call $target`` for tail-position
         # calls whose WASM signature matches the current function's.
-        # The analyzer in ``vera/codegen/tail_position.py`` populates
+        # The analyzer in ``vera/tail_position.py`` populates
         # ``self._tail_call_sites`` with ids of syntactically tail-
         # position FnCalls; the type-match guard ensures WASM
         # ``return_call`` semantics are valid (the callee must
@@ -752,7 +764,7 @@ class CallsMixin:
         # stays bounded; for functions with a runtime postcondition
         # it REVERTS ``return_call`` → ``call`` so the post-check
         # runs.
-        is_tail = id(call) in self._tail_call_sites
+        is_tail = tail or id(call) in self._tail_call_sites
         callee_ret_wt: str | None = None
         if is_tail:
             sig = self._fn_ret_types.get(call_target)
@@ -905,6 +917,16 @@ class CallsMixin:
             instructions.append("unreachable")
         return instructions
 
+    def _canonical_type_args(self, parts: list[str]) -> tuple[str, ...]:
+        """*parts* as written in the body being compiled, in the one spelling
+        a clone is named by (:func:`vera.monomorphize.canonical_type_arg`,
+        #1511)."""
+        return tuple(
+            canonical_type_arg(
+                part, self._alias_env.aliases, self._alias_env.alias_params)
+            for part in parts
+        )
+
     def _resolve_generic_call(self, call: ast.FnCall) -> str | None:
         """Resolve a call to a generic function to its mangled name.
 
@@ -980,7 +1002,11 @@ class CallsMixin:
                     return None
                 mapping[tv] = "Bool"
             parts.append(mapping[tv])
-        return Monomorphizer._mangle_fn_name(call.name, tuple(parts))
+        # #1511: the one spelling discovery names the clone by, resolved in
+        # the namespace this body was written in — the alias maps installed
+        # for it (`_module_alias_scope`).
+        return Monomorphizer._mangle_fn_name(
+            call.name, self._canonical_type_args(parts))
 
     def _unify_param_arg_wasm(
         self,

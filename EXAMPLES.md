@@ -218,6 +218,7 @@ public fn fizzbuzz(@Nat -> @String)
 private fn loop(@Nat, @Nat -> @Unit)
   requires(@Nat.0 <= @Nat.1)
   ensures(true)
+  decreases(@Nat.1 - @Nat.0)
   effects(<IO>)
 {
   IO.print(string_concat(fizzbuzz(@Nat.0), "\n"));

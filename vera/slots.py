@@ -24,6 +24,7 @@ function ``fn foo(@Int, @Int -> @Int)``:
 
 from __future__ import annotations
 
+import dataclasses
 from collections import defaultdict
 from collections.abc import Container, Iterable, Iterator
 
@@ -338,6 +339,84 @@ def slot_table(
     for i, te in enumerate(params, 1):
         by_type[_te_slot_name(te, scope)].append(i)
     return {tname: list(reversed(pos)) for tname, pos in by_type.items()}
+
+
+#: The expressions that bind slots of their own.  A `Block` binds only when
+#: it has statements, so a statement-free block (an `if` branch) is rebuilt.
+_BINDING_EXPRS: tuple[type[ast.Expr], ...] = (
+    ast.AnonFn, ast.MatchExpr, ast.HandleExpr, ast.ForallExpr, ast.ExistsExpr,
+)
+
+
+def substitute_parameters(
+    expr: ast.Expr,
+    params: tuple[ast.TypeExpr, ...],
+    args: tuple[ast.Expr, ...],
+    env: AliasEnv,
+    forall_vars: Iterable[str] | None,
+) -> ast.Expr | None:
+    """*expr*, written over *params*, with each parameter slot replaced by
+    the argument *args* passes in that position.
+
+    A callee's precondition rendered at a call site: `requires(@Int.0 <
+    string_length(@String.0))` at `string_char_code("abc", @Nat.0)` becomes
+    `@Nat.0 < string_length("abc")`.  The slot table is the one
+    :func:`slot_table` builds, so a reference resolves to the parameter the
+    checker bound it to.  Returns ``None`` when the substitution cannot be
+    made exactly, rather than a partial one, which would leave a parameter
+    slot to be resolved against the CALLER's scope: a reference the table
+    does not map (a type it does not hold, an index past its stack, an
+    argument list too short), or a sub-expression that binds (a `let`, a
+    `match` arm, an anonymous function, a quantifier, a handler), under
+    which a slot's index no longer counts from the parameters and an
+    argument's own slots would be captured.  Every other node is rebuilt
+    through every field, so an interpolated string's parts are substituted
+    as an argument list's are.
+    """
+    table = slot_table(params, env, forall_vars)
+    scope = fn_slot_scope(env, forall_vars)
+
+    class _Unmapped(Exception):
+        pass
+
+    def rebuild(node: ast.Expr) -> ast.Expr:
+        if isinstance(node, ast.SlotRef):
+            positions = table.get(naming.slot_ref_key(node, scope))
+            if not positions or node.index >= len(positions):
+                raise _Unmapped
+            pos = positions[node.index]
+            if pos > len(args):
+                raise _Unmapped
+            return args[pos - 1]
+        if isinstance(node, _BINDING_EXPRS) or (
+                isinstance(node, ast.Block) and node.statements):
+            raise _Unmapped
+        changes: dict[str, object] = {}
+        for f in dataclasses.fields(node):
+            value = getattr(node, f.name)
+            if isinstance(value, ast.Expr):
+                new_value = rebuild(value)
+                if new_value is not value:
+                    changes[f.name] = new_value
+            elif isinstance(value, tuple):
+                # An argument list, or an interpolated string's parts, whose
+                # text pieces are kept as they are.  A type expression holds
+                # no parameter slot, so it is kept too.
+                new_tuple = tuple(
+                    rebuild(x) if isinstance(x, ast.Expr) else x
+                    for x in value)
+                if any(a is not b for a, b in zip(new_tuple, value)):
+                    changes[f.name] = new_tuple
+        if changes:
+            # dataclasses.replace's typeshed overload cannot see the
+            # per-subclass field types through **dict.
+            return dataclasses.replace(node, **changes)  # type: ignore[arg-type]
+        return node
+
+    try:
+        return rebuild(expr)
+    except _Unmapped:
+        return None
 
 
 def format_slot_table(

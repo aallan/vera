@@ -104,7 +104,7 @@ class TestTailCallOptimization517:
     "iteration is tail recursion" idiom from `SKILL.md` thus
     silently failed past ~5-10K iterations.
 
-    The fix is a per-fn analyzer (`vera/codegen/tail_position.py`)
+    The fix is a per-fn analyzer (`vera/tail_position.py`)
     that marks `id(FnCall)` AST nodes in syntactic tail position;
     `_translate_call` emits ``return_call $foo`` instead of
     ``call $foo`` when the call's id is in the marked set AND the
@@ -682,7 +682,7 @@ public fn f(-> @Int)
 
     def test_analyzer_marks_block_trailing_expression(self) -> None:
         """Unit test: analyzer marks Block.expr as tail position."""
-        from vera.codegen.tail_position import compute_tail_call_sites
+        from vera.tail_position import compute_tail_call_sites
         from vera.parser import parse_to_ast
         program = parse_to_ast("""\
 public fn f(-> @Int)
@@ -699,7 +699,7 @@ public fn f(-> @Int)
 
     def test_analyzer_marks_both_branches_of_tail_if(self) -> None:
         """Unit test: both then/else branches of a tail-position if."""
-        from vera.codegen.tail_position import compute_tail_call_sites
+        from vera.tail_position import compute_tail_call_sites
         from vera.parser import parse_to_ast
         program = parse_to_ast("""\
 public fn f(@Bool -> @Int)
@@ -724,7 +724,7 @@ public fn f(@Bool -> @Int)
         non-transparent in the same way.
 
         Pre-this-test, MatchExpr handling in the analyzer
-        (``visit_tail`` in ``vera/codegen/tail_position.py``)
+        (``visit_tail`` in ``vera/tail_position.py``)
         existed but had no explicit test pinning the behaviour;
         a regression that dropped or mis-handled the MatchExpr
         case would have slipped past CI silently.  This test
@@ -734,7 +734,7 @@ public fn f(@Bool -> @Int)
         but NOT the inner argument call.
         """
         from vera import ast
-        from vera.codegen.tail_position import compute_tail_call_sites
+        from vera.tail_position import compute_tail_call_sites
         from vera.parser import parse_to_ast
         program = parse_to_ast("""\
 private fn arg_producer(@Unit -> @Int)
@@ -811,7 +811,7 @@ public fn f(@Option<Int> -> @Int)
 
     def test_analyzer_does_not_mark_let_value_calls(self) -> None:
         """Unit test: a call as a let value is NOT tail position."""
-        from vera.codegen.tail_position import compute_tail_call_sites
+        from vera.tail_position import compute_tail_call_sites
         from vera.parser import parse_to_ast
         program = parse_to_ast("""\
 private fn helper(-> @Int)
@@ -834,7 +834,7 @@ public fn f(-> @Int)
 
     def test_analyzer_does_not_mark_call_args(self) -> None:
         """Unit test: args to a tail-position call are NOT themselves tail."""
-        from vera.codegen.tail_position import compute_tail_call_sites
+        from vera.tail_position import compute_tail_call_sites
         from vera.parser import parse_to_ast
         program = parse_to_ast("""\
 private fn inner(@Int -> @Int)
@@ -903,7 +903,7 @@ public fn f(-> @Int)
         block's trailing expression (``42``) never executes.
         """
         from vera import ast
-        from vera.codegen.tail_position import compute_tail_call_sites
+        from vera.tail_position import compute_tail_call_sites
         from vera.parser import parse_to_ast
         program = parse_to_ast("""\
 private fn side_effect(@Unit -> @Int)
@@ -960,7 +960,7 @@ public fn f(-> @Int)
         skipped.
         """
         from vera import ast
-        from vera.codegen.tail_position import compute_tail_call_sites
+        from vera.tail_position import compute_tail_call_sites
         from vera.parser import parse_to_ast
         program = parse_to_ast("""\
 private fn predicate(@Unit -> @Bool)
@@ -1011,7 +1011,7 @@ public fn f(-> @Int)
         the scrutinee is skipped.
         """
         from vera import ast
-        from vera.codegen.tail_position import compute_tail_call_sites
+        from vera.tail_position import compute_tail_call_sites
         from vera.parser import parse_to_ast
         program = parse_to_ast("""\
 private fn make_option(@Unit -> @Option<Int>)

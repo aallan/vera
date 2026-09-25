@@ -232,6 +232,8 @@ More examples:
 
 This rule applies at **every** position where a refinement type can be written: type-alias bodies, function and anonymous-function signatures, constructor fields, effect and ability operation signatures, `let` and destructure annotations, `match` binding patterns, `forall`/`exists` binder types, handler state and clause-parameter annotations, and `with`-clause state updates — including refinements nested inside type arguments (`Array<{ @Int | P }>`) or function-type components.
 
+**A predicate is defined on its whole base type.** Every §2.6.5 guard evaluates the predicate on the value it is handed — at a boundary no proof reaches, any value of the base type — so each operation in the predicate must be defined for every such value. One that traps for some value of the base type makes an ill-formed type: `{ @Nat | @Nat.0 - 5 > 0 || @Nat.0 == 3 }` subtracts past zero at `3`, a value its second disjunct admits, so a guard handed `3` traps instead of accepting it. The verifier discharges the predicate's operations once, at the refinement's declaration (§6.4.3), under only the facts its base type carries and the predicate's own `if`, and reports an operation that is not defined there, where it is written, rather than at each use. `&&` and `||` short-circuit (§4.6), but the reference compiler currently evaluates both operands ([#1501](https://github.com/aallan/vera/issues/1501)), so until that is fixed they do not guard their right operand here; an `if` guards its branches. The membership above is written `{ @Nat | if @Nat.0 >= 5 then { @Nat.0 - 5 > 0 } else { @Nat.0 == 3 } }`.
+
 One rule is relaxed inside a refinement predicate over a `@Byte` base: an integer literal compared against a `Byte`-typed operand is typed against `Byte` rather than `Nat`, so `{ @Byte | @Byte.0 < 10 }` is well-typed. This is literal-typing-from-context (the same rule by which the literal `7` satisfies a `@Byte` parameter, §4.2), not an implicit numeric coercion (§0.2.2) — and the comparison has a defined `i32` runtime-guard lowering (§11). In a general expression a `@Byte`-versus-integer-literal comparison remains `E142`. The allowance is keyed to the predicate's **own base** (resolved through aliases): a `Byte`-typed operand inside an `@Int`-based refinement — e.g. `{ @Int | b(@Int.0) < 10 }` where `b` returns `@Byte` — is `E142`, and a predicate nested inside another (through a `forall`/`exists` binder type) uses its own base, not the enclosing predicate's. The allowance covers comparison only: `@Byte` arithmetic inside a predicate (`{ @Byte | @Byte.0 + 1 < 10 }`) is rejected with `E140`, exactly as in any other expression — `Byte` is excluded from arithmetic at type-check time.
 
 ### 2.6.1 The Decidable Fragment
@@ -243,6 +245,7 @@ Refinement predicates MUST be drawn from the following decidable logic fragment:
 - Arithmetic: `+`, `-`, `*` (where at least one operand of `*` is a literal)
 - Comparison: `==`, `!=`, `<`, `>`, `<=`, `>=`
 - Boolean connectives: `&&`, `||`, `!`, `==>`  (where `==>` is logical implication)
+- Conditional: `if P then { A } else { B }` over allowed sub-expressions, whose condition guards each branch (§2.6)
 - `array_length(@Array<T>.n)` — array length
 - `length(@String.n)` — string length
 - `true`, `false`
@@ -275,7 +278,7 @@ Type aliases can capture commonly used refinements:
 type PosInt = { @Int | @Int.0 > 0 };
 type NonEmptyArray<T> = { @Array<T> | array_length(@Array<T>.0) > 0 };
 type Percentage = { @Int | @Int.0 >= 0 && @Int.0 <= 100 };
-type Byte = { @Int | @Int.0 >= 0 && @Int.0 <= 255 };
+type Octet = { @Int | @Int.0 >= 0 && @Int.0 <= 255 };
 ```
 
 Type aliases are transparent for refinement subtyping: `PosInt` and `{ @Int | @Int.0 > 0 }` are the same type for subtyping purposes.
@@ -378,3 +381,36 @@ This means `Array<PosInt>` is NOT a subtype of `Array<Int>`. Converting between 
 ## 2.9 Type Equality
 
 Two types are equal if and only if they have the same structure after resolving type aliases. Refinement type equality uses logical equivalence: `{ @T | P }` equals `{ @T | Q }` if and only if `P <==> Q` is valid.
+
+## 2.10 Type Names
+
+A type name, wherever a type is written — a parameter or result type, a constructor field, an alias body, an effect or ability operation signature, a `let` or pattern binder, a slot or result reference's type arguments, a handler's state, clause parameters and `with` update, a quantifier's binder or predicate — must resolve where it is written, to one of:
+
+- a type parameter in scope;
+- a primitive type (§2.2);
+- a type alias declared in the same module;
+- a `data` declaration of the same module, a built-in or prelude data type (`Option`, `Result`, `Ordering`, `Future`, …), or a public data type the module imports (§8.3);
+- one of the built-in types `Array`, `Map`, `Set`, `Tuple` and `Decimal`.
+
+A declaration further down the same file is in scope: a signature may name a type declared after it. Here `area` names `Shape`, which is declared below it:
+
+<!-- vera:no-run category="non-scalar-entry" reason="its exported function takes a Shape parameter" -->
+```vera
+public fn area(@Shape -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Shape.0 {
+    Square(@Int) -> @Int.0 * @Int.0,
+    Rect(@Int, @Int) -> @Int.1 * @Int.0
+  }
+}
+
+public data Shape {
+  Square(Int),
+  Rect(Int, Int)
+}
+```
+
+Any other name is a compile error (`E136`), reported at each place it is written. That includes a data type another module declares but this module does not import: a value of the type can reach a module through a function it imports and be passed along, but the type's name is in scope only where an import admits it (§8.6.4).

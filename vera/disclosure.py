@@ -52,6 +52,7 @@ import hashlib
 from dataclasses import dataclass, replace
 
 from vera.resolver import ResolvedModule
+from vera.types import ModuleArtifacts
 
 
 @dataclass(frozen=True)
@@ -156,10 +157,14 @@ class ModuleDisclosureIndex:
         self,
         resolved_modules: list[ResolvedModule],
         timeout_ms: int,
+        module_artifacts: ModuleArtifacts | None = None,
     ) -> None:
         self._closure = list(resolved_modules)
         self._by_path = {m.path: m for m in self._closure}
         self._timeout_ms = timeout_ms
+        # #1509: the importing run's per-module checker tables, which every
+        # module's own verification below reads for its closure.
+        self._module_artifacts = module_artifacts
         self._memo: DisclosedManifest = {}
         # Per-index memos for the two derived values every consult needs.
         # Keyed by (path, SOURCE), never by path alone: within one index a
@@ -375,6 +380,7 @@ class ModuleDisclosureIndex:
             return cached
         result = _verify_for_disclosure(
             mod, sub, self._timeout_ms, self._body_check_memo,
+            self._module_artifacts,
         )
         if key not in _CACHE and len(_CACHE) >= _MAX_ENTRIES:
             del _CACHE[next(iter(_CACHE))]
@@ -407,6 +413,7 @@ def _verify_for_disclosure(
     sub: list[ResolvedModule],
     timeout_ms: int,
     body_check_memo: set[tuple[str, ...]] | None = None,
+    module_artifacts: ModuleArtifacts | None = None,
 ) -> ModuleManifest:
     """Run *mod*'s own verification and return what it disclosed.
 
@@ -423,6 +430,12 @@ def _verify_for_disclosure(
     "unreachable" is not "safe to guess in the generous direction", and
     returning nothing here would say "this module disclosed nothing" about a
     module nobody managed to verify.
+
+    *module_artifacts* is the importing run's per-module checker tables
+    (#1509).  A module's table depends only on the module and its imports,
+    so the ones its closure needs are taken from there rather than collected
+    again per module, which would re-check every module of the closure once
+    for each module verified.
     """
     from vera.checker import typecheck_with_artifacts
     from vera.verifier import (
@@ -445,6 +458,12 @@ def _verify_for_disclosure(
         resolved_modules=sub,
         expr_types=artifacts.expr_semantic_types,
         expr_target_types=artifacts.expr_target_types,
+        module_artifacts=(
+            None if module_artifacts is None else {
+                m.path: module_artifacts[m.path]
+                for m in sub if m.path in module_artifacts
+            }
+        ),
     )
     # WHICH functions is the shared derivation's answer; the walk below only
     # decorates it with the obligation that earned each one, selected by the

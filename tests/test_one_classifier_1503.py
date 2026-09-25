@@ -1626,6 +1626,115 @@ class TestATierOneSubtractionNeverTraps:
         assert observed.run == f"ran:{value}", observed.run
 
 
+#: A `@Nat` subtraction in each position #1480's walks obligate beyond the
+#: body — a `decreases` measure, an `assert` on the recursive-call walk, a
+#: `requires` — whose right operand is a join holding a negative literal, or
+#: a division by one.  (source, arguments, the `nat_sub` statuses, the run.)
+_EVALUATED_POSITION_CELLS = [
+    ("a measure", """private fn g(@Nat, @Bool -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0 - (if @Bool.0 then { 0 - 3 } else { 0 }))
+  effects(pure)
+{
+  if @Nat.0 == 0 then { 0 } else { g(@Nat.0 - 1, @Bool.0) }
+}
+
+public fn f(@Nat, @Bool -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  g(@Nat.0, @Bool.0)
+}
+""", [3, 1], {"verified"}, "ran:0"),
+    ("an assert on the recursive walk", """private fn h(@Nat, @Bool -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then { 0 } else {
+    assert(@Nat.0 - (if @Bool.0 then { 0 - 3 } else { 1 }) >= 0);
+    h(@Nat.0 - 1, @Bool.0)
+  }
+}
+
+public fn f(@Nat, @Bool -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  h(@Nat.0, @Bool.0)
+}
+""", [3, 1], {"verified"}, "ran:0"),
+    ("a requires, its negative arm", """public fn f(@Nat, @Bool -> @Nat)
+  requires(@Nat.0 - (if @Bool.0 then { 0 - 3 } else { 1 }) > 0)
+  ensures(true)
+  effects(pure)
+{
+  @Nat.0
+}
+""", [2, 1], {"violated"}, "ran:2"),
+    ("a requires, an underflow", """public fn f(@Nat, @Bool -> @Nat)
+  requires(@Nat.0 - (if @Bool.0 then { 0 - 3 } else { 1 }) > 0)
+  ensures(true)
+  effects(pure)
+{
+  @Nat.0
+}
+""", [0, 0], {"violated"}, _UNDERFLOW),
+    ("an assert over a quotient, its negative arm", """public fn f(@Nat, @Nat, @Bool -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  assert(@Nat.1 - (@Nat.0 / (if @Bool.0 then { 0 - 1 } else { 1 })) >= 0);
+  true
+}
+""", [2, 5, 1], {"violated"}, "ran:1"),
+    ("an assert over a quotient above i64.MAX, an underflow",
+     """public fn f(@Nat, @Nat, @Bool -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  assert(@Nat.1 - (@Nat.0 / (if @Bool.0 then { 0 - 1 } else { 1 })) >= 0);
+  true
+}
+""", [2, _BIG + 10, 0], {"violated"}, _UNDERFLOW),
+]
+
+
+class TestAnEvaluatedPositionReadsTheSameSign:
+    """The `@Nat`-subtraction guard reads its operands the same way in every
+    position the program evaluates, and #1480's obligation at that position
+    agrees with it: a `verified` `nat_sub` in a measure or on the
+    recursive-call walk never traps, and a `violated` one in a `requires` or
+    an `assert` traps only an underflow.  The release branch's unsigned
+    comparison trapped the two `verified` sites at `3, true`, where the
+    right operand is -3."""
+
+    @pytest.mark.parametrize(
+        ("label", "source", "args", "statuses", "expected"),
+        _EVALUATED_POSITION_CELLS,
+        ids=[c[0] for c in _EVALUATED_POSITION_CELLS])
+    def test_the_record_and_the_run_agree(
+        self, label: str, source: str, args: list[int], statuses: set[str],
+        expected: str,
+    ) -> None:
+        observed = _observe(source, "f", args)
+        found = {status for kind, status, _l, _c in observed.obligations
+                 if kind == "nat_sub"}
+        assert found == statuses, observed.obligations
+        assert any(e == "wasm/operators.py:_emit_nat_sub_guard"
+                   for e, _l, _c in observed.checks), observed.checks
+        if expected == _UNDERFLOW:
+            assert _UNDERFLOW in observed.run, observed.run
+        else:
+            assert observed.run == expected, observed.run
+
+
 #: An operand of the matrix's subtraction: its source over the slot ``{N}``,
 #: the flag ``{B}`` and the negative literal ``{K}`` it reads, and its value
 #: given theirs.  Every kind of reading an operand can take is here: a u64
@@ -2875,15 +2984,20 @@ _READERS: dict[tuple[str, str, str], str] = {
     ("vera/codegen/monomorphize.py",
      "MonomorphizationMixin._build_mono_context",
      "_expr_semantic_types"): "clone naming (#1327), not a guard",
-    ("vera/codegen/monomorphize.py",
-     "MonomorphizationMixin._report_uninferred_type_args",
-     "_expr_semantic_types"): "a diagnostic about instantiation",
     ("vera/verifier.py", "ContractVerifier._declared_result_is_nat",
      "_resolved_type_of"): _LEAF,
     ("vera/verifier.py", "ContractVerifier._check_decreases_bound",
      "_resolved_type_of"): _MEASURE,
     ("vera/verifier.py", "ContractVerifier._check_div_zero_obligation",
      "_resolved_type_of"): "whether the divisor is a Float64",
+    ("vera/verifier.py", "ContractVerifier._check_float_rendering",
+     "_resolved_type_of"): "whether a rendered value holds a Float64",
+    ("vera/verifier.py", "ContractVerifier._guarded_binder_values",
+     "_resolved_type_of"): "a refined binder's field, which narrows unless "
+                           "it is the same refinement: `Nat` and `Int` "
+                           "answer alike",
+    ("vera/verifier.py", "ContractVerifier._measure_components_at_entry",
+     "_resolved_type_of"): _MEASURE,
     ("vera/verifier.py",
      "ContractVerifier._check_nested_refinement_obligation",
      "_resolved_type_of"): "a refinement's predicate, never inferred "

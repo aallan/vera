@@ -132,6 +132,9 @@ class WasmContext(
         adt_tp_counts: dict[str, int] | None = None,
         adt_tp_param_names: dict[str, tuple[str, ...]] | None = None,
         checks: CheckRecord | None = None,
+        value_data_types: frozenset[str] | None = None,
+        adt_ctor_tp_indices: (
+            dict[str, dict[str, tuple[int | None, ...]]] | None) = None,
     ) -> None:
         self.string_pool = string_pool
         self._next_local: int = 0
@@ -250,6 +253,19 @@ class WasmContext(
         )
         # ADT type names for slot/param type resolution
         self._adt_type_names: set[str] = adt_type_names or set()
+        # #1534: the data types a VALUE's type can name whatever this
+        # namespace can name -- every user declaration's layout key, which
+        # has one owner after the #1317 renames, less the names a built-in
+        # also answers to.  Read only through `_value_adt_key`.
+        self._value_data_types: frozenset[str] = (
+            value_data_types or frozenset())
+        # #1534: the per-OWNER constructor type-parameter indices, the twin
+        # of `_adt_ctor_layouts` -- the LIVE nested map.  The by-name
+        # `_ctor_adt_tp_indices` is this namespace's projection, so it
+        # answers for a same-named constructor of another type.
+        self._adt_owned_tp_indices: dict[
+            str, dict[str, tuple[int | None, ...]]] = (
+            adt_ctor_tp_indices or {})
         # Generic function info for call rewriting:
         # fn_name -> (forall_vars, param_type_exprs)
         self._generic_fn_info: dict[
@@ -541,7 +557,7 @@ class WasmContext(
         self._old_state_locals: dict[str, int] = {}
         # #517 — WASM tail-call optimization.  Populated by
         # ``set_tail_call_context`` from the per-fn analyzer in
-        # ``vera/codegen/tail_position.py``: the set of ``id(FnCall)``
+        # ``vera/tail_position.py``: the set of ``id(FnCall)``
         # AST nodes that are syntactically in tail position.  The
         # ``_translate_call`` site emits ``return_call $foo`` instead
         # of ``call $foo`` when the call's id is in this set AND its
@@ -835,8 +851,9 @@ class WasmContext(
     ) -> None:
         """Configure tail-call optimization for the function being compiled.
 
-        ``sites`` is the set of ``id(ast.FnCall)`` AST nodes the
-        per-fn analyzer in ``vera/codegen/tail_position.py``
+        ``sites`` is the set of ``id(ast.FnCall)`` AST nodes (and of
+        each ``ast.ModuleCall`` by the module's own path, #1558) the
+        per-fn analyzer in ``vera/tail_position.py``
         identified as syntactically in tail position.  At translate
         time, ``_translate_call`` checks ``id(call) in sites`` plus
         the type-match condition (callee's WASM return type ==
@@ -1468,7 +1485,13 @@ class WasmContext(
                 args=expr.args,
                 span=expr.span,
             )
-            return self._translate_call(desugared, env)
+            # #1558: a tail call by the module's own path is marked on the
+            # `ModuleCall` (`compute_tail_call_sites`), and the fresh node
+            # above is no key of that set, so the mark is carried across —
+            # after the #983/#820 subtractions, which remove this node's id
+            # like any other call's.
+            return self._translate_call(
+                desugared, env, tail=id(expr) in self._tail_call_sites)
 
         if isinstance(expr, ast.StringLit):
             return self._translate_string_lit(expr)

@@ -1317,7 +1317,6 @@ _BY_NAME_INVENTORY: dict[tuple[str, str, str], int] = {
     ("vera/smt.py", "SmtContext._translate_ctor_call", "_ctor_to_adt"): 1,
     ("vera/smt.py", "SmtContext.register_adt", "_ctor_to_adt"): 1,
     ("vera/wasm/calls.py", "CallsMixin._translate_call", "_ctor_layouts"): 1,
-    ("vera/wasm/calls_handlers.py", "CallsHandlersMixin._composite_ctor_plans", "_ctor_adt_tp_indices"): 1,
     ("vera/wasm/calls_handlers.py", "CallsHandlersMixin._recover_ctor_ptype", "_ctor_adt_tp_indices"): 1,
     ("vera/wasm/context.py", "WasmContext.__init__", "_ctor_adt_tp_indices"): 1,
     ("vera/wasm/context.py", "WasmContext.__init__", "_ctor_layouts"): 1,
@@ -1918,16 +1917,31 @@ public fn go(@Unit -> @Int)
     ) -> None:
         """The checker's answer, which the tables must not contradict.
 
-        Naming the CONSTRUCTOR in the import list leaves it unresolved — the
-        use is refused — while naming its TYPE admits it and the same
-        program is accepted.  The refusal's CODE depends on what the use
-        site then falls back to, so the cell asserts the admission and not a
-        particular diagnostic.
+        Naming the CONSTRUCTOR in the import list does not bring it into
+        scope, while naming its TYPE does.  Since #1513 a constructor of a
+        type the file does not import still resolves when it denotes one
+        declaration, with a warning naming the type's import (E210 for the
+        construction, E320 for each pattern), so the admission shows as
+        those warnings: drawn under the constructor's name, and absent under
+        the type's.
         """
-        by_ctor, _result, _cg = build_multi_module_past_check(
-            tmp_path / "ctor",
-            {"ilib.vera": self._LIB, "main.vera": self._USE % "Sq"})
-        assert by_ctor, "naming the constructor admitted it"
+        from vera.checker import typecheck
+        from vera.parser import parse_to_ast
+        from vera.resolver import ModuleResolver
+
+        ctor_dir = tmp_path / "ctor"
+        ctor_dir.mkdir()
+        (ctor_dir / "ilib.vera").write_text(self._LIB, encoding="utf-8")
+        source = self._USE % "Sq"
+        (ctor_dir / "main.vera").write_text(source, encoding="utf-8")
+        program = parse_to_ast(source)
+        resolved = ModuleResolver(_root=ctor_dir).resolve_imports(
+            program, ctor_dir / "main.vera")
+        diags = typecheck(program, source, resolved_modules=resolved)
+        assert [(d.severity, d.error_code) for d in diags] == [
+            ("warning", "E210"), ("warning", "E320"), ("warning", "E320")], (
+            "naming the constructor admitted it", diags)
+        assert all("'import ilib(Shape, Sq);'" in d.fix for d in diags), diags
         verify_errors, result, cg_errors = build_multi_module(
             tmp_path / "type",
             {"ilib.vera": self._LIB, "main.vera": self._USE % "Shape"})
@@ -1941,15 +1955,19 @@ public fn go(@Unit -> @Int)
     ) -> None:
         """And the shared table agrees, cell by cell.
 
-        Driven directly rather than through a program, because the
-        constructor-name form is exactly the one the checker refuses first:
-        asking the table itself is the only way to see what it would have
-        answered.
+        Driven directly rather than through a program, so the table's own
+        answer is what is read.  A second module the entry can see, `jlib`,
+        declares `Sq` too: the #1513 fallback fills a name only where one
+        unimported type declares it, so here it cannot answer for the import
+        list, and `Sq` is in the entry's table exactly when the import
+        admitted it.
         """
         from vera.monomorphize import namespace_ctor_owners
         from vera.parser import parse_to_ast
 
         lib = parse_to_ast(self._LIB)
+        jlib = parse_to_ast(
+            "module jlib;\n\npublic data Tile {\n  Sq(Bool)\n}\n")
         imp = "import ilib;" if names is None else (
             f"import ilib({', '.join(names)});")
         entry = parse_to_ast(imp + """
@@ -1963,10 +1981,13 @@ public fn go(@Unit -> @Int)
 }
 """)
         owners = namespace_ctor_owners(
-            entry, [(("ilib",), lib)], {"Shape": ("Sq", "Circ")},
+            entry, [(("ilib",), lib), (("jlib",), jlib)],
+            {"Shape": ("Sq", "Circ"), "Tile": ("Sq",)},
         )
         visible = owners.visible(None) or {}
         assert ("Sq" in visible) is admits, (names, sorted(visible))
+        if admits:
+            assert visible["Sq"] == "Shape", visible
         # The declaring module always names its own, whatever the importer
         # asked for.
         assert (owners.visible(("ilib",)) or {}).get("Sq") == "Shape"
@@ -2251,3 +2272,177 @@ class TestTheVerifierReadsTheNameInTheNamespaceThatWroteIt:
         for position in ("construction", "data_segment", "tag_eq"):
             assert module_value(result, position) == (
                 "ok", _MATRIX_EXPECTED[carrier][position])
+
+
+# ---------------------------------------------------------------------------
+# #1513: a constructor of a type the calling namespace does not import
+# ---------------------------------------------------------------------------
+
+
+_S_GBOXB = """\
+module gboxb;
+
+public data GBox<T> {
+  GMk(T)
+}
+"""
+
+_S_GA = """\
+module ga;
+
+import gboxb(GBox);
+
+public forall<T> fn gcount(@GBox<T> -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  match @GBox<T>.0 {
+    GMk(@T) -> 1
+  }
+}
+
+public forall<T> fn gget(@GBox<T> -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @GBox<T>.0 {
+    GMk(@T) -> @T.0
+  }
+}
+"""
+
+_S_HDR = "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+
+
+def _s_fn(name: str, body: str) -> str:
+    return f"public fn {name}(@Unit -> @Int)\n{_S_HDR}{{\n  {body}\n}}\n"
+
+
+#: (the namespace that calls, its selective imports, the call) -> the clones
+#: both sides must name.  `GBox` reaches the caller only through the
+#: signatures of `ga`'s functions, so `GMk` resolves by the #1513 fallback.
+_STRANGER_CALLS: dict[str, tuple[str, str, str, frozenset[tuple[str, ...]]]] = {
+    "entry_two_instances": (
+        "entry", "import ga(gcount, gget);\n",
+        "gcount(GMk(9)) + gcount(GMk(true))",
+        frozenset({("gcount", "Int"), ("gcount", "Bool")})),
+    "entry_result_type": (
+        "entry", "import ga(gcount, gget);\n", "gget(GMk(40)) + 2",
+        frozenset({("gget", "Int")})),
+    "entry_nested_constructor": (
+        "entry", "import ga(gcount, gget);\n", "gcount(GMk(GMk(3)))",
+        frozenset({("gcount", "GBox")})),
+    "module_body": (
+        "module", "import ga(gcount);\n",
+        "gcount(GMk(1)) + gcount(GMk(false))",
+        frozenset({("gcount", "Int"), ("gcount", "Bool")})),
+}
+
+
+def _stranger_call_files(shape: str, *, imported: bool) -> dict[str, str]:
+    where, imports, call, _clones = _STRANGER_CALLS[shape]
+    if imported:
+        imports += "import gboxb(GBox);\n"
+    files = {"gboxb.vera": _S_GBOXB, "ga.vera": _S_GA}
+    if where == "entry":
+        files["main.vera"] = f"{imports}\n" + _s_fn("main", call)
+    else:
+        files["gm.vera"] = f"module gm;\n\n{imports}\n" + _s_fn("twice", call)
+        files["main.vera"] = "import gm(twice);\n\n" + _s_fn("main", "twice(())")
+    return files
+
+
+class TestAStrangerConstructorNamesOneClone:
+    """The #732 differential over a constructor of an unimported type (#1513).
+
+    `gcount(GMk(9))` with `GBox` reaching the caller only through `gcount`'s
+    signature: code generation resolves `GMk` through the fallback class of
+    `_namespace_ctor_projection` and emits `gcount<Int>` from the argument.
+    The verifier's discovery reads `namespace_ctor_owners`, which had no such
+    class, so `GMk` had no owner there, discovery fell back to the checker's
+    `GBox<Nat>` for the literal, and it verified a `gcount<Nat>` the binary
+    does not contain while the emitted `gcount<Int>` went undiscovered.  The
+    same fallback, over the same modules, now fills that table.
+
+    Each shape is run with the type imported as a control, which both sides
+    answered alike before the fix; the premise asserts both sets hold the
+    clones the calls name, so two empty or two equally wrong sets fail.
+    """
+
+    @pytest.mark.parametrize("imported", [False, True],
+                             ids=["unimported", "imported"])
+    @pytest.mark.parametrize("shape", sorted(_STRANGER_CALLS))
+    def test_both_sides_name_the_same_clones(
+        self, shape: str, imported: bool, tmp_path: Path,
+    ) -> None:
+        emitted, discovered = _emitted_and_discovered(
+            tmp_path, _stranger_call_files(shape, imported=imported))
+        assert emitted == discovered, (emitted ^ discovered)
+        named = {
+            (str(name).rsplit("$", 1)[-1], str(types[0]).split("<")[0])
+            for name, types in emitted
+        }
+        assert named == set(_STRANGER_CALLS[shape][3]), sorted(named)
+
+    def test_the_fallback_reads_each_namespaces_own_reach(self) -> None:
+        """The table fills a name from the modules THAT namespace's checker
+        sees, where one unimported type alone declares it.
+
+        `other` declares a second public type with a `GMk`.  The entry's
+        checker is handed every resolved module, `other` included, so `GMk`
+        names two types there and stays unfilled; `gm`
+        reaches only `ga` and `gboxb` through its imports, so there `GMk` is
+        `GBox`'s.  Asked of the shared derivation directly, since the
+        checker refuses the entry's ambiguous use before any program built
+        from it could reach discovery.
+        """
+        from vera.monomorphize import namespace_ctor_owners
+        from vera.parser import parse_to_ast
+
+        modules = [
+            (("gboxb",), parse_to_ast(_S_GBOXB)),
+            (("ga",), parse_to_ast(_S_GA)),
+            (("gm",), parse_to_ast(
+                "module gm;\n\nimport ga(gcount);\n\n"
+                + _s_fn("twice", "gcount(GMk(1))"))),
+            (("other",), parse_to_ast(
+                "module other;\n\npublic data OBox<T> {\n  GMk(T)\n}\n")),
+        ]
+        entry = parse_to_ast("import gm(twice);\n\n" + _s_fn("main", "0"))
+        owners = namespace_ctor_owners(entry, modules, {})
+        assert "GMk" not in (owners.visible(None) or {})
+        assert (owners.visible(("gm",)) or {}).get("GMk") == "GBox"
+        # `ga` imports the type, and `other` declares its own: neither is
+        # the fallback's.
+        assert (owners.visible(("ga",)) or {}).get("GMk") == "GBox"
+        assert (owners.visible(("other",)) or {}).get("GMk") == "OBox"
+
+    def test_the_fallback_fills_and_never_displaces(self) -> None:
+        """A name the namespace's own declaration, an import or the
+        infrastructure holds keeps that owner, though one unimported type
+        in reach also declares it: the fallback only fills gaps, as
+        codegen's does, which is what keeps #1436's guarantee for every
+        name the three classes resolve."""
+        from vera.monomorphize import namespace_ctor_owners
+        from vera.parser import parse_to_ast
+
+        modules = [
+            (("gboxb",), parse_to_ast(_S_GBOXB)),
+            (("ga",), parse_to_ast(_S_GA)),
+            (("sib",), parse_to_ast(
+                "module sib;\n\npublic data Tag {\n  Mark(Int),\n  Some(Bool)\n}"
+                "\n\npublic data Pair {\n  Two(Int)\n}\n")),
+        ]
+        entry = parse_to_ast(
+            "import ga(gcount);\nimport sib(Pair);\n\n"
+            "private data Mine {\n  Mark(Int)\n}\n\n"
+            + _s_fn("main", "0"))
+        registry = {"Option": ("None", "Some")}
+        owners = namespace_ctor_owners(entry, modules, registry)
+        visible = owners.visible(None) or {}
+        assert visible.get("Mark") == "Mine", visible     # own declaration
+        assert visible.get("Some") == "Option", visible   # infrastructure
+        assert visible.get("Two") == "Pair", visible      # an import
+        assert visible.get("GMk") == "GBox", visible      # the fallback

@@ -8,6 +8,7 @@ import pytest
 
 from vera.parser import parse_to_ast
 from vera.checker import typecheck
+from vera.resolver import ModuleResolver
 from vera.verifier import verify
 
 from tests.verifier_helpers import (
@@ -28,13 +29,22 @@ class TestExampleVerification:
 
     @pytest.mark.parametrize("filename", ALL_EXAMPLES)
     def test_example_verifies(self, filename: str) -> None:
-        source = (EXAMPLES_DIR / filename).read_text(encoding="utf-8")
+        path = EXAMPLES_DIR / filename
+        source = path.read_text(encoding="utf-8")
         ast = parse_to_ast(source, file=filename)
-        type_diags = typecheck(ast, source, file=filename)
+        # Resolve the example's imports as `vera verify` does: an import
+        # nothing resolves leaves its calls unresolved, an error since #1513
+        # (`modules.vera` imports `vera.math`).
+        resolver = ModuleResolver(_root=EXAMPLES_DIR)
+        resolved = resolver.resolve_imports(ast, path)
+        assert resolver.errors == [], (
+            f"Resolver errors: {[e.description for e in resolver.errors]}")
+        type_diags = typecheck(ast, source, file=filename,
+                               resolved_modules=resolved)
         type_errors = [d for d in type_diags if d.severity == "error"]
         assert type_errors == [], f"Type errors: {[e.description for e in type_errors]}"
 
-        result = verify(ast, source, file=filename)
+        result = verify(ast, source, file=filename, resolved_modules=resolved)
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert errors == [], f"Verify errors: {[e.description for e in errors]}"
 

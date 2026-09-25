@@ -237,16 +237,18 @@ class TestModuleCallDiagnostics:
             declarations=(tld,),
         )
 
-    def test_module_not_found_warning(self) -> None:
-        """ModuleCall without resolved_modules gives 'not found' warning."""
+    def test_module_not_found_error(self) -> None:
+        """ModuleCall without resolved_modules gives a 'not found' error
+        (E230, an error since #1513: the call names no function)."""
         prog = self._make_program_with_module_call(("foo",), "bar")
         diags = typecheck(prog, source="")
-        warns = [d for d in diags if d.severity == "warning"]
+        warns = [d for d in diags if d.severity == "error"]
         assert any("not found" in w.description for w in warns)
         assert any(w.error_code == "E230" for w in warns)
 
     def test_module_resolved_fn_not_found(self) -> None:
-        """ModuleCall with resolved empty module gives 'not found in module'."""
+        """ModuleCall with resolved empty module gives a 'not found in
+        module' error (E233, an error since #1513)."""
         from vera.resolver import ResolvedModule
 
         prog = self._make_program_with_module_call(("foo",), "bar")
@@ -259,7 +261,7 @@ class TestModuleCallDiagnostics:
             source="",
         )
         diags = typecheck(prog, source="", resolved_modules=[fake_mod])
-        warns = [d for d in diags if d.severity == "warning"]
+        warns = [d for d in diags if d.severity == "error"]
         assert any("not found in module" in w.description for w in warns)
         assert any(w.error_code == "E233" for w in warns)
 
@@ -500,7 +502,8 @@ private fn main(@Int -> @List<Int>)
         assert any(e.error_code == "E231" for e in errors)
 
     def test_fn_not_in_module(self) -> None:
-        """Module call to nonexistent function -> warning with available list."""
+        """Module call to nonexistent function -> error (E233, since #1513)
+        with the available list."""
         mod = _resolved_module(("math",), self.MATH_MODULE)
         call = ast.ModuleCall(
             path=("math",), name="nonexistent",
@@ -524,7 +527,7 @@ private fn main(@Int -> @List<Int>)
             declarations=(ast.TopLevelDecl(visibility="private", decl=fn),),
         )
         diags = typecheck(prog, source="", resolved_modules=[mod])
-        warns = [d for d in diags if d.severity == "warning"]
+        warns = [d for d in diags if d.severity == "error"]
         assert any("not found in module" in w.description for w in warns)
         assert any("magnitude" in w.description for w in warns)  # available list
 
@@ -694,7 +697,8 @@ private fn main(@Int -> @Int)
         assert errors == [], [e.description for e in errors]
 
     def test_wildcard_import_private_fn_unresolved(self) -> None:
-        """Wildcard import: calling private fn -> unresolved warning."""
+        """Wildcard import: calling private fn -> unresolved error (E200,
+        an error since #1513)."""
         mod = _resolved_module(("mod",), self.MIXED_MODULE)
         prog = parse_to_ast("""\
 import mod;
@@ -703,7 +707,7 @@ private fn main(@Int -> @Int)
 { priv_fn(@Int.0) }
 """)
         diags = typecheck(prog, source="", resolved_modules=[mod])
-        warns = [d for d in diags if d.severity == "warning"]
+        warns = [d for d in diags if d.severity == "error"]
         assert any("Unresolved" in w.description or "not found" in w.description
                     for w in warns), [d.description for d in diags]
 
@@ -2620,8 +2624,14 @@ public fn shout(@String -> @Unit)
   requires(true) ensures(true) effects(<Logger>)
 { Logger.log(@String.0) }
 """)
+        # An effect declaration is module-local (spec §8.4.1), so the
+        # importer names `Logger` in its row through its own copy — without
+        # one the row names nothing in scope (E338, #1489).
         source = """\
 import logger(shout);
+effect Logger {
+  op log(String -> Unit);
+}
 public fn main(-> @Unit)
   requires(true) ensures(true) effects(<Logger>)
 { logger::shout("hi") }

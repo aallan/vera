@@ -903,10 +903,12 @@ class CallsStringsMixin:
         # Non-finite short-circuit (#857).  The finite path below
         # rounds via `i64.trunc_f64_s`, which TRAPS on NaN
         # ("invalid conversion to integer") and on ±inf (overflow).
-        # `float_to_string` is documented total, so render the three
-        # IEEE 754 non-finite classes here as canonical ASCII —
-        # "nan", "inf", "-inf" — and set `done` to skip the finite
-        # digit-extraction body.  These bytes are emitted inline into
+        # `float_to_string` renders every non-finite value, so the three
+        # IEEE 754 non-finite classes are written here as canonical ASCII —
+        # "nan", "inf", "-inf" — and `done` is set to skip the finite
+        # digit-extraction body, whose truncation still traps on a finite
+        # magnitude of 2^63 or more: the domain the verifier obligates
+        # (E529, #1480).  These bytes are emitted inline into
         # the compiled WASM, so the Python host runtime and the
         # browser runtime (both of which execute this same module)
         # render identically by construction — the cross-runtime

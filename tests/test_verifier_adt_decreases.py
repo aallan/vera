@@ -39,6 +39,7 @@ private data List<T> {
 private fn length(@List<Int> -> @Nat)
   requires(true)
   ensures(@Nat.result >= 0)
+  decreases(@List<Int>.0)
   effects(pure)
 {
   match @List<Int>.0 {
@@ -360,7 +361,7 @@ private fn sum(@List<Int> -> @Int)
         assert result.summary.tier1_verified == 8
 
     def test_overall_tier_counts(self) -> None:
-        """All examples together: 411 T1 / 122 T3 / 533 total (current).
+        """All examples together: 424 T1 / 142 T3 / 566 total (current).
 
         Counts move when examples are added or their contracts become
         more / less verifiable.  Trajectory:
@@ -721,9 +722,40 @@ private fn sum(@List<Int> -> @Int)
         # — eight across the corpus — each Tier 3 with the measure-range
         # guard behind it: 411/122/533 -> 411/130/541.  A measure a
         # `requires` bounds proves at Tier 1 instead and adds nothing.
-        assert t1 == 413, f"Expected 413 T1, got {t1}"
-        assert t3 == 130, f"Expected 130 T3, got {t3}"
-        assert total == 543, f"Expected 543 total, got {total}"
+        #
+        # #1492: every recursive function declares a measure, and three
+        # examples had none — `fizzbuzz.vera`'s and `life.vera`'s `<IO>`
+        # loops and `pattern_matching.vera`'s `first_some`.  Each measure
+        # proves at Tier 1 (+3 T1), and the two `@Nat` ones each add a
+        # Tier-3 `decreases_bound` (+2 T3): 413/130/543 -> 416/132/548.
+        # The `decreases` walk also binds an untranslatable `let` to a fresh
+        # value instead of leaving it out of its env, so a later slot of that
+        # type is no longer read as an outer one.  `json.vera`'s
+        # `sum_hourly`, whose recursive call reads such a `@Float64`, now
+        # proves its measure: +1 T1, -1 T3: 416/132/548 -> 417/131/548.
+        #
+        # #1480: a built-in whose compiled translation traps now carries its
+        # domain at every call.  `string_ops.vera`'s `string_char_code("A",
+        # 0)` and `float_to_string(3.14)` prove (+2 T1); `ephemeris.vera`'s
+        # nine `floor` / `round` sites and one `float_to_string`, and
+        # `maximum_syntax.vera`'s one `float_to_string`, all over a computed
+        # float, are left to the truncation trap (+11 T3): 417/131/548 ->
+        # 419/142/561.  A `let` whose value does not translate binds an
+        # unknown value of an ARRAY's own sort too, so `life.vera`'s
+        # `@Array<Bool>.0[@Nat.0]` is proved from the bounds guard written
+        # over that same `let` (one T3 -> T1): 420/141/561.  A measure's
+        # operations are obligated where the compiled function evaluates
+        # them, on entry and at a self-recursive tail call: the `@Nat`
+        # subtraction in `fizzbuzz.vera`'s and `life.vera`'s count-up
+        # measures proves at both, under each loop's `requires` (+4 T1):
+        # 424/141/565.  And a call only the obligation walk reaches is
+        # obligated: `life.vera`'s `run_loop(@Array<Array<Bool>>.0, 1, 300)`
+        # follows a `let` of a nested array the translation cannot bind, so
+        # its argument does not translate and the precondition is left to
+        # `run_loop`'s entry check (+1 T3): 424/142/566.
+        assert t1 == 424, f"Expected 424 T1, got {t1}"
+        assert t3 == 142, f"Expected 142 T3, got {t3}"
+        assert total == 566, f"Expected 566 total, got {total}"
         # Zero is the load-bearing value, not a vacuous one: every corpus
         # narrowing is now covered by an emitted guard, so any reappearance
         # is a REGRESSION in guard coverage rather than a new example.  The
@@ -775,8 +807,13 @@ public fn is_even(@Nat -> @Bool)
             o.kind for o in result.obligations if o.status == "tier3"
         ) == ["decreases_bound", "decreases_bound"]
 
-    def test_sibling_without_decreases_stays_tier3(self) -> None:
-        """If a sibling has no decreases clause, caller stays Tier 3."""
+    def test_sibling_without_decreases_is_refused_at_check(self) -> None:
+        """#1492: a sibling on the cycle with no measure is E137 at check.
+
+        Spec §5.6.2 gives every member of a mutually recursive group its
+        own `decreases`.  The program used to reach the verifier, which
+        left `f`'s measure at Tier 3 and asked nothing of `g`.
+        """
         source = """\
 public fn f(@Nat -> @Nat)
   requires(true)
@@ -796,9 +833,10 @@ public fn f(@Nat -> @Nat)
     }
   }
 """
-        result = _verify(source)
-        e525 = [d for d in result.diagnostics if d.error_code == "E525"]
-        assert len(e525) == 1, "f's decreases should be Tier 3 (sibling has none)"
+        diags = typecheck(parse_to_ast(source), source)
+        errors = [d for d in diags if d.severity == "error"]
+        assert [d.error_code for d in errors] == ["E137"]
+        assert "Function 'g'" in errors[0].description
 
     def test_where_block_contracts_verified(self) -> None:
         """Where-block functions have their own contracts verified."""

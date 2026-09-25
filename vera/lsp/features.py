@@ -50,8 +50,12 @@ from vera.lsp.convert import (
 from vera.lsp.documents import Document
 from vera.obligations.cache import walk_nodes
 from vera.obligations.core import ProofObligation
-from vera.obligations.session import VerificationSession
+from vera.obligations.session import (
+    VerificationSession,
+    resolve_document_imports,
+)
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv
+from vera.resolver import own_module_path
 from vera.slots import fn_scopes, fn_slot_scope, slot_table
 
 _SEVERITY = {
@@ -84,6 +88,12 @@ class Analysis:
     # alias table.  Empty when the pipeline stopped at parse/transform — there
     # is no check, so there are no aliases to name against.
     alias_env: AliasEnv = EMPTY_ALIAS_ENV
+    #: #1558: the path that names this document's own file in a qualified
+    #: call (`vera.resolver.own_module_path`, over the modules this analysis
+    #: resolved), so a workflow that follows calls reads `ma::f(...)` inside
+    #: `module ma;` as the call to `f` it is.  ``None`` for a document with
+    #: no path of its own, or one that did not parse.
+    own_path: tuple[str, ...] | None = None
 
 
 def analyze(
@@ -113,22 +123,29 @@ def analyze(
         return analysis
 
     analysis.program = program
-    check_diags, artifacts = typecheck_with_artifacts(program, text, file=path)
+    # Module-AWARE, by the same rooting rule `verify_source` uses (#1513).
+    # A module-blind check reports every imported name as unresolved, which
+    # was only survivable while E200/E230 were warnings; as errors they
+    # would stop every document that imports anything short of verification
+    # and publish a false error on each imported call.
+    resolved, resolver_errors = resolve_document_imports(program, path)
+    analysis.own_path = own_module_path(program, None, resolved)
+    check_diags, artifacts = typecheck_with_artifacts(
+        program, text, file=path, resolved_modules=resolved,
+    )
     analysis.artifacts = artifacts
     analysis.alias_env = artifacts.alias_env
-    analysis.diagnostics = list(check_diags)
+    analysis.diagnostics = resolver_errors + list(check_diags)
 
-    if not any(d.severity == "error" for d in check_diags):
+    if not any(d.severity == "error" for d in analysis.diagnostics):
         result = session.verify_source(text, file=path)
-        # The check above ran module-BLIND (no `resolved_modules`), and
-        # `verify_source` re-checks module-AWARE.  Only the second sees the
-        # resolver's errors and any error that needs an imported signature
-        # to detect, and it hands them back as `check_diagnostics` — which
-        # was discarded, so `glib::takes_int("nope")` published a warning,
-        # produced no obligations, and said nothing about the E202 that had
-        # stopped verification (PR #1282 review).  Appended here, minus
-        # anything the blind check already reported: the module-aware pass
-        # re-derives those, and a straight append shows each twice.
+        # `verify_source` re-checks, and hands its check diagnostics back as
+        # `check_diagnostics` — which were once discarded, so
+        # `glib::takes_int("nope")` published a warning, produced no
+        # obligations, and said nothing about the E202 that had stopped
+        # verification (PR #1282 review).  Appended here, minus anything
+        # the check above already reported: the second pass re-derives
+        # those, and a straight append shows each twice.
         seen = {_diag_key(d) for d in analysis.diagnostics}
         analysis.diagnostics += [
             d for d in result.check_diagnostics if _diag_key(d) not in seen

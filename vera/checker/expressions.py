@@ -539,6 +539,14 @@ class ExpressionsMixin:
             )
             return UnknownType()
 
+        # #1489: a result reference's type ARGUMENTS name types, and resolve
+        # like a slot reference's (`_check_slot_name_args`), so a name in one
+        # that nothing declares is refused (E136) instead of being ignored.
+        # The head is a slot-name head, not a type to resolve: a function-
+        # typed result is `@Fn.result`, and `Fn` names no declaration.
+        self._check_slot_name_args(
+            ast.NamedType(name=ref.type_name, type_args=ref.type_args))
+
         ret = self.env.current_return_type
         if ret is None:
             return UnknownType()
@@ -1388,18 +1396,145 @@ class ExpressionsMixin:
     def _check_forall_expr(self, expr: ast.ForallExpr) -> Type | None:
         """Type-check forall(type, domain, predicate)."""
         self._check_refinement_predicates(expr.binding_type)  # #861
-        self._resolve_type(expr.binding_type)
+        self._check_quantifier_index(expr.binding_type, "forall")
         self._check_quantifier_bound(expr.domain, "forall")
+        self._check_quantifier_predicate(expr.predicate, "forall")
         self._synth_expr(expr.predicate)
         return BOOL
 
     def _check_exists_expr(self, expr: ast.ExistsExpr) -> Type | None:
         """Type-check exists(type, domain, predicate)."""
         self._check_refinement_predicates(expr.binding_type)  # #861
-        self._resolve_type(expr.binding_type)
+        self._check_quantifier_index(expr.binding_type, "exists")
         self._check_quantifier_bound(expr.domain, "exists")
+        self._check_quantifier_predicate(expr.predicate, "exists")
         self._synth_expr(expr.predicate)
         return BOOL
+
+    def _check_quantifier_index(self, te: ast.TypeExpr, form: str) -> None:
+        """The index type is ``Int`` or ``Nat``, or a refinement of one
+        (spec §6.3.3, E186).
+
+        A refinement of the index is honoured: the quantifier ranges over the
+        values below the bound that satisfy it (``forall`` holds when the
+        predicate holds for each of them, ``exists`` when it holds for one),
+        in the runtime check code generation emits.  Any other index type has
+        no meaning there — the index is a count — and was accepted and never
+        read, so ``forall(@String, 3, ...)`` checked and ran.  A type
+        parameter defers to the instantiation, as the bound's does (PR #1202):
+        the generic's integer instantiations are the ones that run, and
+        checking the others where the types are known is #1506's remaining
+        work.
+        """
+        before = len(self.errors)
+        ty = self._resolve_type(te)
+        if len(self.errors) > before:
+            return
+        base = ty
+        while isinstance(base, RefinedType):
+            base = base.base
+        if (base is None or isinstance(base, (UnknownType, TypeVar))
+                or base in (INT, NAT)):
+            return
+        what = pretty_type(base)
+        self._error(
+            te,
+            f"The {form}() index type must be Int or Nat, or a refinement "
+            f"of one: it is {what}.",
+            rationale=(
+                "A quantifier's first argument is the type of its index, "
+                "which runs over 0 up to the bound: a count.  A refinement of "
+                "Int or Nat narrows the values it ranges over; any other type "
+                "names no count."
+            ),
+            fix=(
+                "Give the index type @Nat or @Int — or a refinement such as "
+                "@{ @Nat | @Nat.0 > 0 } to range over the values that "
+                "satisfy it — and read anything else inside the predicate."
+            ),
+            spec_ref='Chapter 6, Section 6.3.3 "Quantified Expressions"',
+            error_code="E186",
+        )
+
+    def _check_quantifier_predicate(
+        self, pred: ast.AnonFn, form: str,
+    ) -> None:
+        """The predicate is a function of the INDEX to Bool (#1506, E179).
+
+        Spec §6.3.3: the index runs over ``0 .. bound-1`` and the predicate is
+        applied to each value, so it takes exactly one parameter, the index —
+        of type ``Int`` or ``Nat``, or an alias of either — and returns
+        ``Bool``.  Nothing checked it, and code generation, which lowers the
+        quantifier as a loop binding an i64 counter under the parameter's type
+        and reading an i32 result, stopped with E699 on a refined parameter or
+        a wrong arity, and emitted a module that fails to load for a ``Bool``
+        parameter or an ``Int`` result.
+
+        A refinement of the PARAMETER is refused.  The predicate is applied
+        to every value of the index, so a refinement narrower than the index
+        type cannot hold for all of them, and binding a value the declared
+        type excludes would mislead every guard downstream.  A refinement
+        that means "range over these values" belongs on the index type,
+        where it is honoured (`_check_quantifier_index`), or in the body, as
+        ``P ==> ...`` for ``forall`` and ``P && ...`` for ``exists``.
+
+        A type parameter defers to the instantiation, as E128 does for the
+        bound: the generic's integer instantiations are the ones that run.
+        Checking the others where the types are known is #1506's remaining
+        work.
+        """
+        connective = "==>" if form == "forall" else "&&"
+
+        def refuse(node: ast.Node, what: str) -> None:
+            self._error(
+                node,
+                f"The {form}() predicate must be a function of the index to "
+                f"Bool, fn(@Nat -> @Bool) or fn(@Int -> @Bool): {what}.",
+                rationale=(
+                    "A quantifier applies its predicate to every value of "
+                    "the index, 0 up to the bound, so the predicate takes "
+                    "exactly one parameter — the index, an Int or a Nat — "
+                    "and returns Bool.  A refinement narrower than the index "
+                    "type cannot hold for every value in the range, and any "
+                    "other shape has no lowering: code generation binds the "
+                    "index as a 64-bit integer and reads a Bool."
+                ),
+                fix=(
+                    f"Write the predicate as fn(@Nat -> @Bool) (or @Int, or "
+                    f"an alias of either).  For a refinement {{ @Nat | P }}, "
+                    f"refine the index type instead — "
+                    f"{form}(@{{ @Nat | P }}, ...) — or test P in the body: "
+                    f"fn(@Nat -> @Bool) effects(pure) {{ P {connective} ... }}."
+                ),
+                spec_ref='Chapter 6, Section 6.3.3 "Quantified Expressions"',
+                error_code="E179",
+            )
+
+        def resolve(te: ast.TypeExpr) -> Type | None:
+            """*te* resolved — or ``None`` when resolving it was itself
+            refused (an unknown name, E136; an alias arity, E133), which is
+            the one diagnostic that mistake gets."""
+            before = len(self.errors)
+            ty = self._resolve_type(te)
+            return None if len(self.errors) > before else ty
+
+        if len(pred.params) != 1:
+            refuse(pred, f"this one takes {len(pred.params)} parameters")
+        else:
+            param = resolve(pred.params[0])
+            if isinstance(param, RefinedType):
+                refuse(pred.params[0], "its parameter is a refinement type")
+            elif not (param is None
+                      or isinstance(param, (TypeVar, UnknownType))
+                      or param in (INT, NAT)):
+                refuse(pred.params[0],
+                       f"its parameter is {pretty_type(param)}")
+        result = resolve(pred.return_type)
+        while isinstance(result, RefinedType):
+            result = result.base
+        if not (result is None or result == BOOL
+                or isinstance(result, (TypeVar, UnknownType))):
+            refuse(pred.return_type, f"it returns {pretty_type(result)}")
 
     def _check_quantifier_bound(self, domain: ast.Expr, form: str) -> None:
         """The quantifier's domain is a numeric BOUND (spec §6.3.3:

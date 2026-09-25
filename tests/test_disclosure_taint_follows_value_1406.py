@@ -193,15 +193,17 @@ def _verify(tmp_path: Path, source: str, name: str = "p.vera") -> dict:
             f"verify emitted no envelope (exit {proc.returncode})\n"
             f"{proc.stdout[:400]}\n{proc.stderr[-600:]}"
         ) from None
-    # An UNRESOLVED call verifies "clean" with only an E200 warning, and its
-    # result is opaque — so a fixture that forgot to declare its producer
-    # exhibits a plausible-looking demotion for a reason that has nothing to
-    # do with disclosure.  That is not hypothetical: two cells in this file
-    # were written without `mk` and passed.  Every fixture here is checked for
-    # it before its verdict is read.
-    assert "E200" not in [w.get("error_code") for w in result["warnings"]], (
-        f"fixture calls an undeclared function, so its obligations are opaque "
-        f"for a reason unrelated to disclosure:\n{source}"
+    # A fixture that forgot to declare its producer calls nothing: an E200
+    # error, after which verify reports no obligation at all, so a cell
+    # would read a verdict about a program that was never verified.  (While
+    # E200 was a warning the call verified with an opaque result instead,
+    # and two cells in this file were written without `mk` and passed.)
+    # Every fixture here is checked for it, on both channels, before its
+    # verdict is read.
+    reported = [*result.get("diagnostics", []), *result.get("warnings", [])]
+    assert "E200" not in [d.get("error_code") for d in reported], (
+        f"fixture calls an undeclared function, so its verdict is about "
+        f"nothing it declares:\n{source}"
     )
     return result
 
@@ -1139,20 +1141,22 @@ def test_1413_every_reader_of_a_source_fact_consults_the_one_gate() -> None:
     # producer roster — the very omission that let the fourth reader in —
     # still satisfied it.  A new reader is a deliberate edit here, and so is
     # a deleted one.
-    # `_check_generic_refined_return` and `_verify_fn` are the two R1
-    # parameter-assumption sites (#1430): each states the refinements written
-    # INSIDE a parameter's type and assumes them, so each is a reader and
-    # each asks the gate.  A parameter has no producer inside its own
+    # `_check_generic_refined_return` and `_declared_type_facts` are the two
+    # R1 parameter-assumption sites (#1430): each states the refinements
+    # written INSIDE a parameter's type and assumes them, so each is a reader
+    # and each asks the gate.  A parameter has no producer inside its own
     # function, so the gate answers "established" on every program measured —
     # it is asked because the rule is that a reader is a call to the gate,
     # and because a term can acquire a disclosed site through cross-module
-    # widening.
+    # widening.  `_declared_type_facts` is `_verify_fn`'s per-parameter
+    # reading, factored out when a refinement predicate's binder came to need
+    # the same facts about its base type (#1480).
     assert readers == [
         "verifier:_check_generic_refined_return",
         "verifier:_check_nested_refinement_obligation",
         "verifier:_check_refined_binding_obligation_term",
+        "verifier:_declared_type_facts",
         "verifier:_subpattern_source_facts",
-        "verifier:_verify_fn",
         "verifier:_walk_for_nat_binding_obligations",
     ], (
         f"the set of functions reading a declared-type source fact changed: "

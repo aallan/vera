@@ -272,7 +272,7 @@ class OperatorsMixin:
                 if (op in (ast.BinOp.EQ, ast.BinOp.NEQ)
                         and lv is not None
                         and lv_base not in ("Bool", "Byte")
-                        and lv_base in self._adt_type_names
+                        and self._value_adt_key(lv) is not None
                         and not self._is_lost_type_arg_clone(lv, lv_base)
                         and self._eq_type_name_fully_concrete(lv)):
                     adt_eq = self._translate_adt_eq(left, right, lv, expr)
@@ -548,7 +548,7 @@ class OperatorsMixin:
         base = arg.split("<", 1)[0]
         return (
             base not in self._CONCRETE_NON_ADT_BASES
-            and base not in self._adt_type_names
+            and self._value_adt_key(arg) is None
         )
 
     def _has_free_type_var_arg(self, lv: str) -> bool:
@@ -689,7 +689,7 @@ class OperatorsMixin:
             # wrongly flag as under-parameterized — silently dropping the loud
             # E613 that a non-Eq ``Tuple`` comparison must raise.
             return all(self._eq_type_name_fully_concrete(a) for a in args)
-        if base in self._adt_type_names:
+        if self._value_adt_key(base) is not None:
             if len(args) != self._adt_tp_counts.get(base, 0):
                 return False  # under-parameterized: an argument was erased
             return all(self._eq_type_name_fully_concrete(a) for a in args)
@@ -798,7 +798,7 @@ class OperatorsMixin:
 
         parsed = Monomorphizer._parse_type_name(type_name)
         base = parsed.name
-        if base not in self._adt_type_names:
+        if self._value_adt_key(type_name) is None:
             return None
         fn_name = self._adt_eq_fn_name(type_name)
         if fn_name in self._adt_eq_helpers or fn_name in self._adt_eq_pending:
@@ -1082,6 +1082,10 @@ class OperatorsMixin:
             return "f64"
         if base in ("Bool", "Byte"):
             return "i32"
+        # #1331/#1539: a data type's value is a pointer, a `data Array`'s
+        # among them, which the container arm below would measure as a pair.
+        if self._value_adt_key(ftype) is not None:
+            return "i32"
         if base in ("String", "Array"):
             return "i32_pair"
         # ADT pointer (or opaque) → i32
@@ -1127,7 +1131,7 @@ class OperatorsMixin:
                 "call $eq_String",
             ]
         # Nested ADT: recurse into its own helper.
-        if base in self._adt_type_names:
+        if self._value_adt_key(ftype) is not None:
             nested_fn = self._request_adt_eq_helper(ftype)
             if nested_fn is None:
                 return None
@@ -1737,6 +1741,21 @@ class OperatorsMixin:
         """
         return self._translate_quantifier(expr, env, is_forall=False)
 
+    def _index_refinement_layers(
+        self, te: ast.TypeExpr,
+    ) -> list[naming.RefinementBinder]:
+        """Each refinement a quantifier's index type carries, outermost
+        first, following aliases — ``[]`` for a plain ``Int`` or ``Nat``."""
+        layers: list[naming.RefinementBinder] = []
+        node: ast.TypeExpr | None = te
+        while node is not None:
+            parts = naming.refinement_binder_parts(node, self._alias_env)
+            if parts is None:
+                break
+            layers.append(parts)
+            node = parts.base if parts.base_is_refinement else None
+        return layers
+
     def _translate_quantifier(
         self,
         expr: ast.ForallExpr | ast.ExistsExpr,
@@ -1753,15 +1772,24 @@ class OperatorsMixin:
           block $qbreak_N
             loop $qloop_N
               if counter >= limit → br $qbreak_N
-              push counter as @T binding
-              evaluate predicate body → i32
-              forall: if false → result=0, br $qbreak_N
-              exists: if true  → result=1, br $qbreak_N
+              if the index type's refinement holds of counter:
+                push counter as @T binding
+                evaluate predicate body → i32
+                forall: if false → result=0, br $qbreak_N
+                exists: if true  → result=1, br $qbreak_N
               counter++
               br $qloop_N
             end
           end
           local.get result
+
+        The index type's refinement is HONOURED (#1506 review): the
+        quantifier ranges over the values below the bound that satisfy it,
+        so ``forall`` means ``P(i) ==> body(i)`` for each index and
+        ``exists`` means ``P(i) && body(i)`` for some.  It was never read —
+        the runtime check of ``forall(@{ @Nat | @Nat.0 < 2 }, 5, ...)``
+        tested every index below 5, and an ``exists`` over a refinement
+        nothing satisfies still answered the body's value.
         """
         # Evaluate domain
         domain_instrs = self.translate_expr(expr.domain, env)
@@ -1795,6 +1823,16 @@ class OperatorsMixin:
         if body_instrs is None:
             return None  # pragma: no cover
 
+        # The index type's refinement, each layer of it: `P(counter)` as an
+        # i32, outermost first.
+        layer_conds: list[list[str]] = []
+        for layer in self._index_refinement_layers(expr.binding_type):
+            cond = self.translate_expr(
+                layer.predicate, env.push(layer.binder_name, counter_local))
+            if cond is None:
+                return None  # pragma: no cover — the [E615] channel above
+            layer_conds.append(cond)
+
         # Unique labels
         qid = self._next_quant_id
         self._next_quant_id += 1
@@ -1822,26 +1860,26 @@ class OperatorsMixin:
         instructions.append("    i64.ge_s")
         instructions.append(f"    br_if {brk}")
 
-        # Evaluate predicate body (counter is in env as @T)
-        for instr in body_instrs:
-            instructions.append(f"    {instr}")
-
-        # Short-circuit check
+        # Evaluate predicate body (counter is in env as @T), and
+        # short-circuit: forall on a false predicate → result=0, break;
+        # exists on a true one → result=1, break.
+        step: list[str] = list(body_instrs)
         if is_forall:
-            # forall: if predicate is false → result=0, break
-            instructions.append("    i32.eqz")
-            instructions.append("    if")
-            instructions.append("      i32.const 0")
-            instructions.append(f"      local.set {result_local}")
-            instructions.append(f"      br {brk}")
-            instructions.append("    end")
+            step += ["i32.eqz", "if", "  i32.const 0",
+                     f"  local.set {result_local}", f"  br {brk}", "end"]
         else:
-            # exists: if predicate is true → result=1, break
-            instructions.append("    if")
-            instructions.append("      i32.const 1")
-            instructions.append(f"      local.set {result_local}")
-            instructions.append(f"      br {brk}")
-            instructions.append("    end")
+            step += ["if", "  i32.const 1",
+                     f"  local.set {result_local}", f"  br {brk}", "end"]
+        # An index outside the refinement is not in the range.  Each layer
+        # guards the step, wrapped outermost first so the INNERMOST is
+        # tested first and each outer layer only where the ones inside it
+        # hold: an outer predicate may be defined only there (`12 / @Pos.0`
+        # over a `Pos` that excludes 0), which an eager `i32.and` of the
+        # layers would evaluate at every index (PR #1508 review).
+        for cond in layer_conds:
+            step = [*cond, "if", *(f"  {i}" for i in step), "end"]
+        for instr in step:
+            instructions.append(f"    {instr}")
 
         # Increment counter
         instructions.append(f"    local.get {counter_local}")

@@ -1,0 +1,40 @@
+-- Conformance: a `where` block declares each name once (Chapter 5, Section
+-- 5.6.2; the rule for every namespace is Chapter 8, Section 8.5.5)
+-- Tests: E184 — two helpers of one name in one `where` block are rejected at
+-- the second declaration (#1433).  The block is a namespace and the two have
+-- no distinguishing spelling: the call inside `compute` could reach only one
+-- of them, and codegen names both `$compute$where$scale`, so before this rule
+-- the program passed `check` and `verify` and then died at wasm-tools with a
+-- duplicate func identifier against a symbol the author never wrote.
+public fn compute(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  scale(@Int.0)
+}
+where {
+  fn scale(@Int -> @Int)
+    requires(true)
+    ensures(true)
+    effects(pure)
+  {
+    @Int.0 * 2
+  }
+
+  fn scale(@Int -> @Int)
+    requires(true)
+    ensures(true)
+    effects(pure)
+  {
+    @Int.0 * 3
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  0
+}
