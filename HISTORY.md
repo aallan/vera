@@ -479,7 +479,7 @@ Stages 19 and 20 run dual-threaded: community PRs against the single-source spri
 | v0.1.11 | 13 Aug | **The community-PR queue clears** — seven third-party contributions reviewed and merged. |
 | v0.1.12 | 15 Aug | **The twelve-group burndown** — refusal rails, the JSON accept domain, throw-payload guards, branch-join monomorphization, and release and spec-drift gates. |
 | v0.1.13 | 21 Aug | **The inference response-shape fix** — `Inference.complete` selects text by block type, and every failure names its provider. |
-| v0.2.0 | 25 Sep | **The soundness release** — termination, obligations where the program evaluates, and runtime traps that name their cause ([#1480](https://github.com/aallan/vera/issues/1480)). |
+| v0.2.0 | 28 Sep | **The soundness release** — termination, obligations where the program evaluates, and runtime traps that name their cause ([#1480](https://github.com/aallan/vera/issues/1480)). |
 
 ---
 
