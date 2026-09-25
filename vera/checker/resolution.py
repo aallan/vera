@@ -963,9 +963,7 @@ class ResolutionMixin:
                 # (or forall-var) resolution.
                 mapping[pattern.name] = concrete
             elif (isinstance(existing, TypeVar)
-                  and (not isinstance(concrete, TypeVar)
-                       or ("$" not in existing.name
-                           and is_literal_hole(concrete)))):
+                  and not isinstance(concrete, TypeVar)):
                 # #970 (dual): the existing binding is a bare type variable that
                 # leaked UNRESOLVED from a nested generic call — e.g., given a
                 # user-defined `forall<T> fn nothing(@Unit -> @Option<T>)`, the
@@ -978,9 +976,8 @@ class ResolutionMixin:
                 # var made the skip-guard fire and hide this; the #970 registry
                 # rename removed the coincidence, so the concrete-wins rule must
                 # be explicit — not a weakening, the same downstream subtype
-                # check runs unchanged.)  A literal's hole (#1541) counts as
-                # concrete here: the literal still has a type to give, and
-                # the leaked variable has none.
+                # check runs unchanged.)  A literal's hole (#1541) meeting
+                # such a variable is settled by `merge_inferred_types`, below.
                 mapping[pattern.name] = concrete
             else:
                 # #898: both the existing binding and the new one are (partly)
