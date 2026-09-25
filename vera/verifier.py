@@ -79,6 +79,7 @@ from vera.smt import (
     SlotEnv,
     SmtContext,
     SmtResult,
+    _pattern_condition_exact,
     resolve_timeout_ms,
 )
 from vera.types import (
@@ -310,21 +311,13 @@ class BlockBindingPolicy(enum.Enum):
     shadows one, else of the declared type's.
 
     For readers that record obligations against the value (the primitive-op
-    walker, the construction descent, and the recursive-call walk whose
-    call sites the termination proof and the tail-call measure read).  A
-    stale same-type outer is the dangerous case: `let @Int = random_int(...)`
-    over a parameter carrying `requires(@Int.0 > 0)` would otherwise
-    discharge the block-local value's predicate from the PARAMETER's bound —
-    a Tier-1 claim about a value the verifier never knew.  Tracking the const
-    as an opaque shadow is what routes an operand that IS one to Tier 3
-    instead of a false E526/E502 on its unconstrained value.
-
-    The recursive-call walk once LEFT THE ENV ALONE here, on the argument
-    that it only looked for calls and recorded nothing.  But its consumers
-    record from what it found, and a recursive call's argument read against
-    the stale outer proved `decreases(@Nat.0)` for `let @Nat = get(());
-    f(@Nat.0 - 1)`, a function whose measure guard traps on its first call
-    (#1480 review).
+    walker, and the construction descent).  A stale same-type outer is the
+    dangerous case: `let @Int = random_int(...)` over a parameter carrying
+    `requires(@Int.0 > 0)` would otherwise discharge the block-local value's
+    predicate from the PARAMETER's bound — a Tier-1 claim about a value the
+    verifier never knew.  Tracking the const as an opaque shadow is what
+    routes an operand that IS one to Tier 3 instead of a false E526/E502 on
+    its unconstrained value.
     """
 
     FRESH_VAR = "fresh_var"
@@ -345,6 +338,19 @@ class BlockBindingPolicy(enum.Enum):
     outer's value.  Deliberately NOT seeded with the resolved source type
     beyond that invariant: a fresh var is disconnected from the value, so
     asserting more would be an unchecked assumption.
+
+    And for `_walk_for_calls`, the `decreases` walk (#1492), which
+    translates each recursive call's arguments in the env it has built: a
+    binding left out of it would move every later slot of its type onto an
+    outer value, and a measure proved against that value is a claim about a
+    call the program does not make (`let @Nat = get(()); f(@Nat.0 - 1)`
+    proved `decreases(@Nat.0)` over the PARAMETER, and the guard trapped on
+    the first call).  Its consumers also record from what it found (the
+    measure a tail call evaluates, #1480), so it binds under
+    `_placeholders_tracked`: the scalar var is tracked too, and an
+    obligation over it falls to Tier 3 rather than being refused on its
+    unconstrained value.  The invariant is what the termination proof
+    needs from a `@Nat` binding (`callee_measure >= 0`).
     """
 
 
@@ -354,8 +360,9 @@ class ArmContext:
 
     Three things, and they are three because three separate derivations
     answer them: the slot env the arm binds (`SmtContext._bind_pattern`),
-    the fact that this arm was taken (`_pattern_condition`), and the facts
-    the arm's pattern ESTABLISHES (`_subpattern_source_facts`).  Carrying
+    the fact that this arm was taken (`_pattern_condition`, and the
+    negation of each exact earlier arm's), and the facts the arm's pattern
+    ESTABLISHES (`_subpattern_source_facts`).  Carrying
     them as one value is what stops a reader taking two of the three, which
     is the #1403 shape: the walk that discharges every body `assert` bound
     the pattern and pushed the discriminant and never asked for the facts.
@@ -6568,6 +6575,8 @@ class ContractVerifier:
         pattern: ast.Pattern,
         smt: SmtContext,
         env: SlotEnv,
+        *,
+        earlier: Sequence[ast.Pattern],
     ) -> ArmContext:
         """THE derivation of what one `match` arm means to a walk that
         descends it — the `match` twin of :py:meth:`_apply_let_binding`.
@@ -6613,6 +6622,19 @@ class ContractVerifier:
         :py:meth:`_subpattern_source_facts` routes it to `_tainted_facts` and
         returns none, so `check_valid` withholds it and the site falls to its
         runtime guard.
+
+        The condition is the arm's own pattern and that no *earlier* arm
+        matched, because the compiled `match` tries its arms in order.
+        Without the second half, an arm selected by it lost the fact that
+        selects it: `match x { 0 -> 0, _ -> need_pos(x) }` under
+        `requires(x >= 0)` was refused E501, `match @Nat.0 { 0 -> 0, _ ->
+        @Nat.0 - 1 }` E502, and a count-up loop's recursive call E501 and
+        E502, each where `vera run` returns cleanly (#1576, #1480 review).
+        Only an EXACT earlier condition is negated
+        (`_pattern_condition_exact`): a nested pattern's condition is its
+        outer constructor alone (#1562), so it holds of values the arm does
+        not take, and its negation would drop runs that reach this arm —
+        after `Some(None) ->`, a `Some(Some(5))` still reaches `_ ->`.
         """
         if scrutinee_z3 is None:
             return ArmContext(
@@ -6620,6 +6642,15 @@ class ContractVerifier:
                 None, (),
             )
         condition = smt._pattern_condition(scrutinee_z3, pattern)
+        excluded = [
+            z3.Not(prior_cond) for prior in earlier
+            if _pattern_condition_exact(prior)
+            and (prior_cond := smt._pattern_condition(
+                scrutinee_z3, prior)) is not None
+        ]
+        if excluded:
+            condition = z3.And(
+                *excluded, *([condition] if condition is not None else []))
         # A walk reads an arm's binders only inside the arm, where the arm's
         # own condition and the walk's path are premises of every query, so
         # the fact's antecedent is the arm's scope.  The translation's twin
@@ -6864,10 +6895,11 @@ class ContractVerifier:
             # the payload's own declared type, where before it fell to a
             # Tier-3 it had everything needed to decide.
             scrutinee_z3 = smt.translate_expr(expr.scrutinee, slot_env)
-            for match_arm in expr.arms:
+            for index, match_arm in enumerate(expr.arms):
                 arm = self._enter_match_arm(
                     expr.scrutinee, scrutinee_z3, match_arm.pattern,
                     smt, slot_env,
+                    earlier=[a.pattern for a in expr.arms[:index]],
                 )
                 self._descend_construction_arm(
                     decl, match_arm.body, expected, smt, arm.env,
@@ -7644,7 +7676,8 @@ class ContractVerifier:
         #   FnCall             → record if on the cycle; recurse args
         #   IfExpr             → condition (enclosing path), branches under it
         #   Block              → let / destructure values, statements, tail,
-        #                        with each binding pushed on the env
+        #                        with each binding pushed on the env and
+        #                        each bare assert/assume's fact on the path
         #   BinaryExpr         → recurse operands
         #   UnaryExpr          → recurse operand
         #   MatchExpr          → scrutinee; arm bodies in the arm's env
@@ -7715,28 +7748,43 @@ class ContractVerifier:
             # argument is read in the scope it is written in: its consumers
             # record from it (#1480 review).
             cur_env = slot_env
+            # #804's assume half, as the body walk has it: a bare `assert`
+            # or `assume` holds for the rest of its block, so its predicate
+            # is a path fact of every later statement and of the tail.  A
+            # tail call's measure lost it, and was refused E502 after an
+            # `assert` that makes it hold (#1480 review).  A new list per
+            # fact, never an append: an untranslatable `if` hands both of
+            # its branches this walk's list, and a fact appended to it would
+            # reach the other branch.
+            cur_conds = z3_path_conds
             for stmt in expr.statements:
                 if isinstance(stmt, ast.LetStmt):
                     self._walk_for_calls(match, stmt.value,
-                                         z3_path_conds, results, smt, cur_env)
-                    # #1492, #1480: OPAQUE_SHADOW, not the SKIP policy this
-                    # walk had.  The calls it finds are not only looked at:
-                    # their arguments are translated in this env to compare
-                    # the measure, and to obligate the measure a tail call
+                                         cur_conds, results, smt, cur_env)
+                    # #1492, #1480: a binding the SMT layer cannot translate
+                    # is still pushed, not skipped as this walk once did.
+                    # The calls it finds are not only looked at: their
+                    # arguments are translated in this env to compare the
+                    # measure, and to obligate the measure a tail call
                     # evaluates.  Leaving an untranslatable binding out of
                     # the env shifted every later slot of its type onto an
                     # outer one, so `f(@Nat.0 - 1)` after such a `let` read
                     # the PARAMETER, proved a decrease the run then broke,
                     # and the guard trapped a program verified at Tier 1.  A
                     # fresh value keeps the De Bruijn positions aligned and
-                    # can only fail a proof, never make one; it is tracked,
-                    # so an obligation over it falls to Tier 3 rather than
-                    # being refused on its unconstrained value.
-                    bound = self._apply_let_binding(
-                        stmt, smt, cur_env,
-                        policy=BlockBindingPolicy.OPAQUE_SHADOW,
-                    )
-                    if bound is not None:  # OPAQUE_SHADOW never halts
+                    # carries only its declared type's invariant, which the
+                    # value has; tracked, an obligation over it falls to
+                    # Tier 3 rather than being refused on its unconstrained
+                    # value.  FRESH_VAR, not OPAQUE_SHADOW: over a same-typed
+                    # outer, the shadow is a bare const of the outer's sort,
+                    # and a `@Nat` binding lost the `>= 0` its termination
+                    # proof needs (#1480 review).
+                    with self._placeholders_tracked():
+                        bound = self._apply_let_binding(
+                            stmt, smt, cur_env,
+                            policy=BlockBindingPolicy.FRESH_VAR,
+                        )
+                    if bound is not None:  # FRESH_VAR never halts
                         cur_env = bound
                 elif isinstance(stmt, ast.LetDestruct):
                     # #1492: a destructure's right-hand side is evaluated like
@@ -7745,7 +7793,7 @@ class ContractVerifier:
                     # opaque values, so a later call whose arguments read one
                     # can only fail to prove, never prove from a stale outer.
                     self._walk_for_calls(match, stmt.value,
-                                         z3_path_conds, results, smt, cur_env)
+                                         cur_conds, results, smt, cur_env)
                     cur_env = self._shadow_destructured_slots(
                         stmt, smt, cur_env)
                 elif isinstance(stmt, ast.ExprStmt):
@@ -7753,8 +7801,11 @@ class ContractVerifier:
                     # calls so `decreases` sees a discarded recursive call
                     # (test_decreases_resolves_via_stmt_position_recursive_call).
                     self._walk_for_calls(match, stmt.expr,
-                                         z3_path_conds, results, smt, cur_env)
-            self._walk_for_calls(match, expr.expr, z3_path_conds,
+                                         cur_conds, results, smt, cur_env)
+                fact = self._assumed_block_fact(stmt, smt, cur_env)
+                if fact is not None:
+                    cur_conds = [*cur_conds, fact]
+            self._walk_for_calls(match, expr.expr, cur_conds,
                                  results, smt, cur_env)
             return
 
@@ -7774,7 +7825,7 @@ class ContractVerifier:
             self._walk_for_calls(match, expr.scrutinee, z3_path_conds,
                                  results, smt, slot_env)
             scrutinee_z3 = smt.translate_expr(expr.scrutinee, slot_env)
-            for match_arm in expr.arms:
+            for index, match_arm in enumerate(expr.arms):
                 # #1403: through the one arm-context derivation, which is
                 # what stopped this walk reading an arm against the
                 # enclosing env.  It spends the discriminant and the arm's
@@ -7784,6 +7835,7 @@ class ContractVerifier:
                 arm = self._enter_match_arm(
                     expr.scrutinee, scrutinee_z3, match_arm.pattern,
                     smt, slot_env,
+                    earlier=[a.pattern for a in expr.arms[:index]],
                 )
                 arm_conds = list(z3_path_conds)
                 if arm.condition is not None:
@@ -8383,7 +8435,7 @@ class ContractVerifier:
                 decl, expr.scrutinee, smt, slot_env, assumptions,
             )
             scrutinee_z3 = smt.translate_expr(expr.scrutinee, slot_env)
-            for match_arm in expr.arms:
+            for index, match_arm in enumerate(expr.arms):
                 # #1403: through the one arm-context derivation, which is
                 # what gives this walk the facts the arm establishes.  It is
                 # the walk that discharges every §6.4.3 safety obligation AND
@@ -8408,6 +8460,7 @@ class ContractVerifier:
                 arm = self._enter_match_arm(
                     expr.scrutinee, scrutinee_z3, match_arm.pattern,
                     smt, slot_env,
+                    earlier=[a.pattern for a in expr.arms[:index]],
                 )
                 with self._under_arm(smt, arm):
                     self._walk_for_primitive_op_obligations(
@@ -10004,7 +10057,7 @@ class ContractVerifier:
                 decl, expr.scrutinee, smt, slot_env, assumptions,
             )
             scrutinee_z3 = smt.translate_expr(expr.scrutinee, slot_env)
-            for match_arm in expr.arms:
+            for index, match_arm in enumerate(expr.arms):
                 # #1403: through the one arm-context derivation.  Its
                 # untranslatable case is what fixes this walk's own defect —
                 # it minted the fresh binders UNTRACKED, so
@@ -10019,10 +10072,12 @@ class ContractVerifier:
                 # it must assume the constructor matched — otherwise Z3 may
                 # witness a negative payload in a branch that never reads it,
                 # a false E503 (CR #756).  An irrefutable pattern has no
-                # discriminant and `_under_arm` is then a no-op.
+                # discriminant of its own; after an exact earlier arm it
+                # carries that arm's negation (#1576).
                 arm = self._enter_match_arm(
                     expr.scrutinee, scrutinee_z3, match_arm.pattern,
                     smt, slot_env,
+                    earlier=[a.pattern for a in expr.arms[:index]],
                 )
                 arm_env = arm.env
                 with self._under_arm(smt, arm):
@@ -14608,31 +14663,49 @@ class ContractVerifier:
         is_inf: bool,
     ) -> None:
         """Emit an E529 diagnostic for a provably out-of-domain conversion —
-        `float_to_int`, or the `floor` / `ceil` / `round` that end in the
-        same instruction (#1480)."""
+        `float_to_int`, the `floor` / `ceil` / `round` that end in the same
+        instruction, or `float_to_string` on the integer part it prints
+        (#1480)."""
         reason = (
             "NaN" if is_nan else "infinite" if is_inf else "out of i64 range"
         )
         operand = ast.format_expr(call)
-        step = _FLOAT_CONVERSIONS[conversion].step
-        self._error(
-            call,
-            f"`{operand}` in '{decl.name}' provably traps: the argument is "
-            f"{reason}.",
-            rationale=(
-                f"{conversion} ends in {step}`i64.trunc_f64_s`, and traps at "
-                f"runtime, as `float_conversion`, on NaN, +/-infinity, or a "
-                f"value whose truncation falls outside the i64 range.  The "
-                f"argument is a constant the verifier determined is always "
-                f"one of these (#807)."
-            ),
-            fix=(
+        spec = _FLOAT_CONVERSIONS[conversion]
+        if spec.renders_non_finite:
+            # It prints NaN and the infinities (`nan`, `inf`) before it
+            # truncates, so only a finite magnitude can reach the trap.
+            traps_on = (
+                "a value whose truncation falls outside the i64 range; NaN "
+                "and +/-infinity are rendered before the truncation and do "
+                "not reach it"
+            )
+            guard = (
+                f"Bound the argument's magnitude below 2^63 before calling "
+                f"{conversion}, or handle the out-of-range case explicitly."
+            )
+        else:
+            traps_on = (
+                "NaN, +/-infinity, or a value whose truncation falls outside "
+                "the i64 range"
+            )
+            guard = (
                 f"Guard the conversion so the argument is finite and in "
                 f"range — check `!float_is_nan(x)` and "
                 f"`!float_is_infinite(x)` and bound its magnitude before "
                 f"calling {conversion}, or handle the out-of-domain case "
                 f"explicitly."
+            )
+        self._error(
+            call,
+            f"`{operand}` in '{decl.name}' provably traps: the argument is "
+            f"{reason}.",
+            rationale=(
+                f"{conversion} ends in {spec.step}`i64.trunc_f64_s`, which "
+                f"traps at runtime, as `float_conversion`, on {traps_on}.  "
+                f"The argument is a constant the verifier determined always "
+                f"reaches that trap (#807)."
             ),
+            fix=guard,
             spec_ref=(
                 'Chapter 6, Section 6.4.3 "Primitive Operation Safety"'
             ),

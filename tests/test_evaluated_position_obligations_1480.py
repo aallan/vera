@@ -3723,3 +3723,664 @@ def test_the_char_code_measure_at_the_i64_bound(nat: int, traps: bool) -> None:
         assert "outside the i64 range" in ran.trap_message, ran
     else:
         assert ran.value == 0, ran
+
+
+# =====================================================================
+# The facts a walk carries: an earlier statement's, an earlier arm's
+# =====================================================================
+#
+# A check the obligation walks record is decided under the facts that hold
+# where the compiled program makes it, which are the facts the body's own
+# translation reads there.  Two of them were missing from the walks, and
+# each refused programs that run clean on every input.
+#
+# * A bare `assert` or `assume` makes its predicate hold for the rest of
+#   its block (#804).  The recursive-call walk never added it, so the
+#   measure a self-recursive tail call evaluates was checked without it.
+# * A `match` arm runs only when no earlier arm matched.  No walk added
+#   that, so an arm selected by it lost the fact that selects it: a call's
+#   precondition, a `@Nat` subtraction, a division or a narrowing in a `_`
+#   arm after a literal arm was refused (#1576).  Only an EXACT earlier
+#   condition is negated.  A nested pattern's condition is its outer
+#   constructor alone (#1562), so its negation would also exclude values
+#   that do reach the later arm.
+
+# The measure a tail call evaluates, `@Nat.1 - (@Nat.0 + 1)`, needs
+# `@Nat.0 < @Nat.1`, and only the statement before the call says so: the
+# branch condition goes through a closure, which the SMT layer cannot read.
+_STEP_AFTER_A_STATEMENT = """\
+private fn step(@Nat, @Nat -> @Nat)
+  requires(@Nat.0 <= @Nat.1)
+  ensures(true)
+  decreases(@Nat.1 - @Nat.0)
+  effects(pure)
+{
+  if apply_fn(fn(@Nat -> @Bool) effects(pure) { @Nat.0 > 0 }, @Nat.1 - @Nat.0) then {
+    STMT(@Nat.0 < @Nat.1);
+    step(@Nat.1, @Nat.0 + 1)
+  } else {
+    @Nat.0
+  }
+}
+
+public fn main(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  step(@Nat.0, 0)
+}
+"""
+
+# The same statement at the top of the body.  The branch condition is the
+# value the closure returned, which the statement relates to the parameters.
+_STEP_AFTER_A_TOP_LEVEL_STATEMENT = """\
+private fn step(@Nat, @Nat -> @Nat)
+  requires(@Nat.0 <= @Nat.1)
+  ensures(true)
+  decreases(@Nat.1 - @Nat.0)
+  effects(pure)
+{
+  let @Bool = apply_fn(fn(@Nat -> @Bool) effects(pure) { @Nat.0 > 0 }, @Nat.1 - @Nat.0);
+  STMT(@Bool.0 == (@Nat.0 < @Nat.1));
+  if @Bool.0 then {
+    step(@Nat.1, @Nat.0 + 1)
+  } else {
+    @Nat.0
+  }
+}
+
+public fn main(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  step(@Nat.0, 0)
+}
+"""
+
+
+@pytest.mark.parametrize("stmt", ["assert", "assume"])
+@pytest.mark.parametrize("shape", [_STEP_AFTER_A_STATEMENT,
+                                   _STEP_AFTER_A_TOP_LEVEL_STATEMENT],
+                         ids=["nested", "top_level"])
+def test_a_tail_measure_reads_the_statements_before_it(
+        shape: str, stmt: str) -> None:
+    src = shape.replace("STMT", stmt)
+    v = _verify(src)
+    assert _records(v, "nat_sub", _at(src, "step(@Nat.1")) == ["verified"], (
+        [(o.kind, o.status, o.error_code, o.line, o.column)
+         for o in v.obligations])
+    assert v.ok, v.errors
+    assert _run(src, "main", [5]).value == 5
+
+
+# The statement in the OTHER branch says nothing about this one.  Here the
+# tail call runs exactly when `@Nat.0 == @Nat.1`, so its measure underflows,
+# and a fact carried out of the sibling branch would prove it.
+_STEP_AFTER_A_SIBLING_STATEMENT = """\
+private fn step(@Nat, @Nat -> @Nat)
+  requires(@Nat.0 <= @Nat.1)
+  ensures(true)
+  decreases(@Nat.1 - @Nat.0)
+  effects(pure)
+{
+  if apply_fn(fn(@Nat -> @Bool) effects(pure) { @Nat.0 > 0 }, @Nat.1 - @Nat.0) then {
+    assert(@Nat.0 < @Nat.1);
+    @Nat.0
+  } else {
+    step(@Nat.1, @Nat.0 + 1)
+  }
+}
+
+public fn main(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  step(@Nat.0, @Nat.0)
+}
+"""
+
+
+def test_a_statement_in_a_sibling_branch_says_nothing_at_a_tail_call() -> None:
+    src = _STEP_AFTER_A_SIBLING_STATEMENT
+    v = _verify(src)
+    tail = _at(src, "step(@Nat.1")
+    assert _records(v, "nat_sub", tail) == ["violated/E502"]
+    ran = _run(src, "main", [5])
+    assert ran.trap_kind is not None, ran
+    assert "Precondition violation" not in ran.trap_message, ran
+
+
+_NEED_POS_DECL = """\
+private fn need_pos(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(@Int.result == @Int.0)
+  effects(pure)
+{
+  @Int.0
+}
+
+"""
+
+_UNWRAP_DECL = """\
+private fn unwrap(@Option<Int> -> @Int)
+  requires(match @Option<Int>.0 { Some(@Int) -> true, None -> false })
+  ensures(true)
+  effects(pure)
+{
+  match @Option<Int>.0 {
+    Some(@Int) -> @Int.0,
+    None -> 0
+  }
+}
+
+"""
+
+
+@dataclass(frozen=True)
+class ArmCell:
+    """A check in an arm that only the earlier arms' failure selects."""
+
+    source: str
+    #: The obligation kind, and the text the site starts at.
+    kind: str
+    site: str
+    #: (function, arguments, the value it returns) for each run.
+    runs: tuple[tuple[str, tuple[int, ...], object], ...]
+
+
+# `count(n, i)` counts `i` up to `n`: the `_` arm runs only when
+# `@Nat.0 == @Nat.1` failed, which with `requires(@Nat.0 <= @Nat.1)` makes
+# the recursive call's precondition and its measure hold.
+_COUNT_UP = """\
+private fn count(@Nat, @Nat -> @Nat)
+  requires(@Nat.0 <= @Nat.1)
+  ensures(true)
+  decreases(@Nat.1 - @Nat.0)
+  effects(pure)
+{
+  match @Nat.0 == @Nat.1 {
+    true -> @Nat.0,
+    _ -> count(@Nat.1, @Nat.0 + 1)
+  }
+}
+
+public fn main(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  count(@Nat.0, 0)
+}
+"""
+
+# The same loop over the gap, with a `@Nat` literal arm before a binder.
+_COUNT_UP_OVER_THE_GAP = """\
+private fn count(@Nat, @Nat -> @Nat)
+  requires(@Nat.0 <= @Nat.1)
+  ensures(true)
+  decreases(@Nat.1 - @Nat.0)
+  effects(pure)
+{
+  match @Nat.1 - @Nat.0 {
+    0 -> @Nat.0,
+    @Nat -> count(@Nat.2, @Nat.1 + 1)
+  }
+}
+
+public fn main(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  count(@Nat.0, 0)
+}
+"""
+
+_ARM_CELLS: dict[str, ArmCell] = {
+    "int_literal": ArmCell(_NEED_POS_DECL + """\
+public fn f(@Int -> @Int)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{
+  match @Int.0 {
+    0 -> 0,
+    _ -> need_pos(@Int.0)
+  }
+}
+""", "call_pre", "need_pos(@Int.0)\n", (("f", (0,), 0), ("f", (5,), 5))),
+    "bool_literal": ArmCell(_NEED_POS_DECL + """\
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Int.0 > 0 {
+    false -> 0,
+    _ -> need_pos(@Int.0)
+  }
+}
+""", "call_pre", "need_pos(@Int.0)\n", (("f", (-3,), 0), ("f", (5,), 5))),
+    "constructor": ArmCell(_UNWRAP_DECL + """\
+public fn f(@Option<Int> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Option<Int>.0 {
+    None -> 0,
+    _ -> unwrap(@Option<Int>.0)
+  }
+}
+
+public fn main_some(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  f(Some(7))
+}
+
+public fn main_none(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  f(None)
+}
+""", "call_pre", "unwrap(@Option<Int>.0)\n",
+        (("main_some", (), 7), ("main_none", (), 0))),
+    "nat_literal_then_binder": ArmCell(_NEED_POS_DECL + """\
+public fn f(@Nat -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Nat.0 {
+    0 -> 0,
+    @Nat -> need_pos(@Nat.0)
+  }
+}
+""", "call_pre", "need_pos(@Nat.0)\n", (("f", (0,), 0), ("f", (5,), 5))),
+    "built_in_domain": ArmCell("""\
+public fn f(@Int -> @Nat)
+  requires(@Int.0 >= 0 && @Int.0 <= 3)
+  ensures(true)
+  effects(pure)
+{
+  match @Int.0 {
+    0 -> 0,
+    _ -> string_char_code("abc", @Int.0 - 1)
+  }
+}
+""", "call_pre", "string_char_code(",
+        (("f", (0,), 0), ("f", (1,), 97), ("f", (3,), 99))),
+    "requires": ArmCell(_NEED_POS_DECL + """\
+public fn f(@Nat -> @Int)
+  requires(match @Nat.0 { 0 -> true, _ -> need_pos(@Nat.0) > 0 })
+  ensures(true)
+  effects(pure)
+{
+  1
+}
+""", "call_pre", "need_pos(@Nat.0)", (("f", (0,), 1), ("f", (5,), 1))),
+    "ensures": ArmCell(_NEED_POS_DECL + """\
+public fn f(@Nat -> @Int)
+  requires(true)
+  ensures(match @Nat.0 { 0 -> true, _ -> need_pos(@Nat.0) > 0 })
+  effects(pure)
+{
+  1
+}
+""", "call_pre", "need_pos(@Nat.0)", (("f", (0,), 1), ("f", (5,), 1))),
+    "predicate": ArmCell(_NEED_POS_DECL + """\
+type Q = { @Nat | match @Nat.0 { 0 -> true, _ -> need_pos(@Nat.0) > 0 } };
+
+public fn f(@Q -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  1
+}
+""", "call_pre", "need_pos(@Nat.0)", (("f", (0,), 1), ("f", (5,), 1))),
+    "count_up_precondition": ArmCell(
+        _COUNT_UP, "call_pre", "count(@Nat.1", (("main", (5,), 5),)),
+    "count_up_measure": ArmCell(
+        _COUNT_UP, "nat_sub", "count(@Nat.1", (("main", (5,), 5),)),
+    "count_up_over_the_gap": ArmCell(
+        _COUNT_UP_OVER_THE_GAP, "nat_sub", "count(@Nat.2",
+        (("main", (5,), 5),)),
+    # #1576: the body walk's own operations.
+    "nat_subtraction": ArmCell("""\
+public fn f(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Nat.0 {
+    0 -> 0,
+    _ -> @Nat.0 - 1
+  }
+}
+""", "nat_sub", "@Nat.0 - 1", (("f", (0,), 0), ("f", (5,), 4))),
+    "division": ArmCell("""\
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Int.0 {
+    0 -> 0,
+    _ -> 100 / @Int.0
+  }
+}
+""", "div_zero", "100 / @Int.0", (("f", (0,), 0), ("f", (5,), 20))),
+    "narrowing": ArmCell("""\
+public fn f(@Int -> @Nat)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{
+  match @Int.0 {
+    0 -> 0,
+    _ -> {
+      let @Nat = @Int.0 - 1;
+      @Nat.0
+    }
+  }
+}
+""", "nat_bind", "@Int.0 - 1", (("f", (0,), 0), ("f", (5,), 4))),
+    "refined_store": ArmCell("""\
+type Pos = { @Int | @Int.0 > 0 };
+
+public fn f(@Int -> @Option<Pos>)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{
+  match @Int.0 {
+    0 -> None,
+    _ -> Some(@Int.0)
+  }
+}
+
+public fn g(@Int -> @Int)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{
+  match f(@Int.0) {
+    Some(@Pos) -> @Pos.0,
+    None -> 0
+  }
+}
+""", "refine_bind", "@Int.0)\n", (("g", (0,), 0), ("g", (5,), 5))),
+}
+
+
+@pytest.mark.parametrize("name", list(_ARM_CELLS))
+def test_an_arm_reads_that_no_earlier_arm_matched(name: str) -> None:
+    cell = _ARM_CELLS[name]
+    v = _verify(cell.source)
+    site = _at(cell.source, cell.site)
+    records = _records(v, cell.kind, site)
+    assert all(r == "verified" for r in records), (
+        records, [(o.kind, o.status, o.error_code, o.line, o.column)
+                  for o in v.obligations])
+    assert v.ok, v.errors
+    for fn, args, value in cell.runs:
+        ran = _run(cell.source, fn, list(args))
+        assert ran.trap_kind is None, (fn, args, ran)
+        assert ran.value == value, (fn, args, ran)
+
+
+# What no earlier arm matching does NOT establish.  Without the `requires`,
+# `-3` reaches the `_` arm; and a NESTED earlier arm matches only some of
+# its constructor's values, so `Some(Some(5))` reaches the `_` arm and fails
+# `need_none`'s precondition, which the whole constructor's negation
+# would prove (#1562).
+_ARM_CONTROLS: dict[str, tuple[str, str, str, tuple[int, ...]]] = {
+    "unguarded": (_NEED_POS_DECL + """\
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Int.0 {
+    0 -> 0,
+    _ -> need_pos(@Int.0)
+  }
+}
+""", "need_pos(@Int.0)\n", "f", (-3,)),
+    "nested_earlier_arm": ("""\
+private fn need_none(@Option<Option<Int>> -> @Int)
+  requires(match @Option<Option<Int>>.0 { None -> true, _ -> false })
+  ensures(true)
+  effects(pure)
+{
+  0
+}
+
+public fn f(@Option<Option<Int>> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Option<Option<Int>>.0 {
+    Some(None) -> 0,
+    _ -> need_none(@Option<Option<Int>>.0)
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  f(Some(Some(5)))
+}
+""", "need_none(@Option<Option<Int>>.0)\n", "main", ()),
+}
+
+
+@pytest.mark.parametrize("name", list(_ARM_CONTROLS))
+def test_what_no_earlier_arm_matching_does_not_establish(name: str) -> None:
+    source, site, fn, args = _ARM_CONTROLS[name]
+    v = _verify(source)
+    assert _records(v, "call_pre", _at(source, site)) == ["violated/E501"], (
+        [(o.kind, o.status, o.error_code, o.line, o.column)
+         for o in v.obligations])
+    ran = _run(source, fn, list(args))
+    assert "Precondition violation in need_" in ran.trap_message, ran
+
+
+# =====================================================================
+# The recursive-call walk's binding of a `let` it cannot translate
+# =====================================================================
+#
+# A fresh value of the binding's type, carrying that type's invariant:
+# the `@Nat` binding is `>= 0`, which is what the termination proof needs
+# of the argument `f(@Nat.0)` passes.  A bare const of the stale outer's
+# sort does not carry it, and the proof fell to Tier 3 with E525.
+_NAT_LET_BEFORE_A_RECURSIVE_CALL = """\
+public fn f(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  let @Nat = apply_fn(fn(@Nat -> @Nat) effects(pure) { @Nat.0 }, 3);
+  if @Nat.0 < @Nat.1 then {
+    f(@Nat.0)
+  } else {
+    0
+  }
+}
+
+public fn main(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  f(@Nat.0)
+}
+"""
+
+
+def test_an_untranslatable_let_keeps_its_types_invariant_for_decreases(
+        ) -> None:
+    src = _NAT_LET_BEFORE_A_RECURSIVE_CALL
+    v = _verify(src)
+    assert [o.status for o in v.obligations if o.kind == "decreases"] == [
+        "verified"], [(o.kind, o.status, o.error_code, o.line)
+                      for o in v.obligations]
+    assert v.ok, v.errors
+    assert _run(src, "main", [5]).value == 0
+
+
+# =====================================================================
+# #1566: an untranslatable ADT `let` over a same-typed parameter
+# =====================================================================
+#
+# The `let` rebinds `@Option<Int>.0` to a value the SMT layer cannot read.
+# A `Some(@Pos)` arm over it narrows that value, not the parameter, so the
+# parameter's `requires` says nothing about the payload: the narrowing is
+# checked by its guard, which traps on `Some(0 - 5)`.  It was proved from
+# the parameter's `requires`, a Tier-1 claim the run refuted.
+_ADT_LET_OVER_A_PARAMETER_BODY = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+public fn f(@Option<Int> -> @Int)
+  requires(match @Option<Int>.0 {
+    Some(@Int) -> @Int.0 > 0,
+    None -> false
+  })
+  ensures(true)
+  effects(<State<Option<Int>>>)
+{
+  let @Option<Int> = get(());
+  match @Option<Int>.0 {
+    Some(@Pos) -> @Pos.0,
+    None -> 1
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Option<Int>>](@Option<Int> = Some(0 - 5)) {
+    get(@Unit) -> { resume(@Option<Int>.0) },
+    put(@Option<Int>) -> { resume(()) }
+  } in {
+    f(Some(3))
+  }
+}
+"""
+
+# The same narrowing in a `requires`, over a closure's result.
+_ADT_LET_OVER_A_PARAMETER_REQUIRES = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+public fn f(@Option<Int>, @Int -> @Int)
+  requires(match @Option<Int>.0 {
+    Some(@Int) -> @Int.0 > 0,
+    None -> false
+  })
+  requires({
+    let @Option<Int> = apply_fn(fn(@Int -> @Option<Int>) effects(pure) { Some(@Int.0) }, @Int.0);
+    match @Option<Int>.0 {
+      Some(@Pos) -> true,
+      None -> true
+    }
+  })
+  ensures(true)
+  effects(pure)
+{
+  1
+}
+
+public fn main(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  f(Some(3), @Int.0)
+}
+"""
+
+
+@pytest.mark.parametrize(("source", "args", "value"), [
+    (_ADT_LET_OVER_A_PARAMETER_BODY, [], None),
+    (_ADT_LET_OVER_A_PARAMETER_REQUIRES, [-5], None),
+    (_ADT_LET_OVER_A_PARAMETER_REQUIRES, [5], 1),
+], ids=["body", "requires_traps", "requires_runs"])
+def test_a_narrowing_over_an_untranslatable_adt_let_is_its_guards(
+        source: str, args: list[int], value: object) -> None:
+    v = _verify(source)
+    # Located at the narrowed value: the second `match`'s scrutinee.
+    scrutinee = _at(source, "@Option<Int>.0 {\n", 1)
+    assert _records(v, "refine_bind", scrutinee) == ["tier3/E506"], (
+        [(o.kind, o.status, o.error_code, o.line, o.column)
+         for o in v.obligations])
+    assert v.ok, v.errors
+    ran = _run(source, "main", args)
+    if value is None:
+        assert ran.trap_kind is not None, ran
+    else:
+        assert ran.trap_kind is None and ran.value == value, ran
+
+
+# =====================================================================
+# E529's rationale names the values that reach the trap
+# =====================================================================
+#
+# `float_to_string` renders NaN and the infinities before it truncates, so
+# only a finite magnitude of 2^63 or more reaches `i64.trunc_f64_s`.
+def _e529_rationale(call: str) -> str:
+    source = f"""\
+public fn main(@Unit -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  {call}
+}}
+"""
+    program = parse_to_ast(source)
+    _diags, arts = typecheck_with_artifacts(program, source)
+    result = verify(
+        program, source,
+        expr_types=arts.expr_semantic_types,
+        expr_target_types=arts.expr_target_types,
+    )
+    [diag] = [d for d in result.diagnostics if d.error_code == "E529"]
+    return diag.rationale
+
+
+def test_the_e529_rationale_says_what_float_to_string_traps_on() -> None:
+    rationale = _e529_rationale("float_to_string(100000000000000000000000.0)")
+    assert "outside the i64 range" in rationale
+    assert "NaN and +/-infinity are rendered" in rationale
+    assert "on NaN" not in rationale
+    ran = _run("""\
+public fn main(@Unit -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  float_to_string(0.0 / 0.0)
+}
+""", "main", [])
+    assert ran.trap_kind is None, ran
+
+
+def test_the_e529_rationale_says_what_float_to_int_traps_on() -> None:
+    rationale = _e529_rationale(
+        "int_to_string(float_to_int(100000000000000000000000.0))")
+    assert "on NaN, +/-infinity, or a value whose truncation" in rationale
