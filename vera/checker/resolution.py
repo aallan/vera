@@ -14,6 +14,7 @@ from vera.checker.registration import (
     builtin_effect_names,
 )
 from vera.types import (
+    INT_LITERAL_HOLE,
     LITERAL_HOLE,
     NEGATIVE_LITERAL_HOLE,
     PRIMITIVES,
@@ -797,7 +798,10 @@ class ResolutionMixin:
                 # `(0 - 3) + 4` are `Int` although their values are not
                 # negative, so they fall back to `Int` as they did.
                 if literal_only_is_int(expr):
-                    return NEGATIVE_LITERAL_HOLE
+                    value = literal_int_value(expr)
+                    if value is not None and value < 0:
+                        return NEGATIVE_LITERAL_HOLE
+                    return INT_LITERAL_HOLE
                 return LITERAL_HOLE
         if isinstance(expr, ast.Block):
             return self._literal_soft_type(expr.expr, ty)
@@ -877,7 +881,9 @@ class ResolutionMixin:
            the closure `fn(@Int, @Int -> @Int)` fixes `array_fold`'s `U`
            before the accumulator literal `0` can;
         2. the type the call's result is expected at, which fills a hole
-           still open (`let @Int = id(5)` is `id` at `Int`);
+           still open (`let @Int = id(5)` is `id` at `Int`) unless it is a
+           mixed one (:func:`~vera.types.context_may_fill`): a negative
+           literal beside a non-negative one need not reach the result;
         3. the literals' own types by value, joined — `Nat` when every
            literal at the position is non-negative, `Int` otherwise.
 
@@ -1044,9 +1050,9 @@ def _meet_literal_holes(parts: tuple[Type | None, ...], ty: Type) -> Type:
     known = [p for p in parts if p is not None]
     if len(known) != len(parts):
         return ty
-    if all(is_literal_hole(p) for p in known):
-        hole: Type = LITERAL_HOLE
-        for p in known:
+    if known and all(is_literal_hole(p) for p in known):
+        hole: Type = known[0]
+        for p in known[1:]:
             hole = join_literal_holes(hole, p)
         return hole
     adts = [p for p in known if isinstance(p, AdtType)

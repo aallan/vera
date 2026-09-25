@@ -890,33 +890,50 @@ def contains_fresh_typevar(ty: Type) -> bool:
 #: is expected at, and failing that the literal's own type by value — see
 #: `ResolutionMixin._infer_type_args_in_context`.  Never leaves inference.
 #:
-#: The hole carries that last resort: :data:`LITERAL_HOLE` where every
-#: literal at the position is a `Nat`, and :data:`NEGATIVE_LITERAL_HOLE`
-#: where one is an `Int` — a negative value, or a negation (`-0`).
+#: The hole carries that last resort, and the signs of the values at the
+#: position: :data:`LITERAL_HOLE` where every literal there is a `Nat`;
+#: :data:`INT_LITERAL_HOLE` where one is an `Int` but none has a negative
+#: value (`-0`, `(0 - 3) + 4`); :data:`NEGATIVE_LITERAL_HOLE` where every
+#: one has a negative value; and :data:`MIXED_LITERAL_HOLE` where a negative
+#: value sits beside one that is not (`second(-3, 5)`).  The last three
+#: fall back to `Int`.
 LITERAL_HOLE = TypeVar("$lit")
+INT_LITERAL_HOLE = TypeVar("$lit0")
 NEGATIVE_LITERAL_HOLE = TypeVar("$lit-")
+MIXED_LITERAL_HOLE = TypeVar("$lit+-")
+_LITERAL_HOLE_NAMES = frozenset(h.name for h in (
+    LITERAL_HOLE, INT_LITERAL_HOLE, NEGATIVE_LITERAL_HOLE,
+    MIXED_LITERAL_HOLE))
 
 
 def is_literal_hole(ty: Type) -> bool:
-    """True iff *ty* is :data:`LITERAL_HOLE` or
-    :data:`NEGATIVE_LITERAL_HOLE`."""
-    return isinstance(ty, TypeVar) and ty.name in (
-        LITERAL_HOLE.name, NEGATIVE_LITERAL_HOLE.name)
+    """True iff *ty* is one of the literal holes."""
+    return isinstance(ty, TypeVar) and ty.name in _LITERAL_HOLE_NAMES
 
 
 def join_literal_holes(a: Type, b: Type) -> Type:
-    """The hole for a position two literals share: negative if either is."""
-    if NEGATIVE_LITERAL_HOLE in (a, b):
+    """The hole for a position two literals share: `Int` if either is, and
+    mixed where one has a negative value and the other one that is not."""
+    names = {a.name if isinstance(a, TypeVar) else "",
+             b.name if isinstance(b, TypeVar) else ""}
+    negative = bool(names & {NEGATIVE_LITERAL_HOLE.name,
+                             MIXED_LITERAL_HOLE.name})
+    other = bool(names & {LITERAL_HOLE.name, INT_LITERAL_HOLE.name,
+                          MIXED_LITERAL_HOLE.name})
+    if negative and other:
+        return MIXED_LITERAL_HOLE
+    if negative:
         return NEGATIVE_LITERAL_HOLE
+    if INT_LITERAL_HOLE.name in names:
+        return INT_LITERAL_HOLE
     return LITERAL_HOLE
 
 
 def default_literal_holes(ty: Type) -> Type:
     """*ty* with every hole given the type its literals have by value:
-    `Nat` for :data:`LITERAL_HOLE`, `Int` for
-    :data:`NEGATIVE_LITERAL_HOLE`."""
+    `Nat` for :data:`LITERAL_HOLE`, `Int` for the others."""
     if is_literal_hole(ty):
-        return INT if ty == NEGATIVE_LITERAL_HOLE else NAT
+        return NAT if ty == LITERAL_HOLE else INT
     if isinstance(ty, AdtType):
         return AdtType(ty.name, tuple(default_literal_holes(a)
                                       for a in ty.type_args))
@@ -944,26 +961,43 @@ def contains_literal_hole(ty: Type) -> bool:
 
 def negative_literal_meets_nat(soft: Type, context: Type) -> bool:
     """True iff *context* holds a `Nat`, or a refinement of one, at a
-    position where *soft* holds a :data:`NEGATIVE_LITERAL_HOLE`, at any
-    depth of a composite (#1541, PR #1583 review).
+    position where *soft* holds a hole the literals' values fixed at `Int`
+    and a `Nat` context may fill (:func:`context_may_fill`), at any depth
+    of a composite (#1541, PR #1583 review).
 
     *soft* is a generic call's result with each position its literals
-    decided a hole (``ResolutionMixin._literal_soft_type``).  A negative
-    hole is a position the literals' values fixed at `Int`; placed where
-    *context* holds a `Nat`, the literal is a narrowing, which only checking
-    the call against *context* puts on the record.  The checker admits
-    `Int` where `Nat` is expected and leaves the non-negativity to the
-    verifier, so this is the question :func:`is_subtype` does not answer."""
+    decided a hole (``ResolutionMixin._literal_soft_type``).  Checked
+    against *context*, such a position is a `Nat`, and each literal there
+    meets it: a negative one is a narrowing the verifier refutes, which
+    only checking the call against *context* puts on the record.  The
+    checker admits `Int` where `Nat` is expected and leaves the
+    non-negativity to the verifier, so this is the question
+    :func:`is_subtype` does not answer."""
     while isinstance(context, RefinedType):
         context = context.base
-    if isinstance(soft, TypeVar) and soft.name == NEGATIVE_LITERAL_HOLE.name:
-        return isinstance(context, PrimitiveType) and context.name == "Nat"
+    if is_literal_hole(soft):
+        return (soft != LITERAL_HOLE and context_may_fill(soft)
+                and isinstance(context, PrimitiveType)
+                and context.name == "Nat")
     if (isinstance(soft, AdtType) and isinstance(context, AdtType)
             and soft.name == context.name
             and len(soft.type_args) == len(context.type_args)):
         return any(negative_literal_meets_nat(h, c)
                    for h, c in zip(soft.type_args, context.type_args))
     return False
+
+
+def context_may_fill(hole: Type) -> bool:
+    """Whether the type a call's result is expected at may decide the
+    literal hole *hole* (spec §4.2 rule 2).  Not a mixed one: a negative
+    literal beside a non-negative one at the same type argument need not
+    reach the result (`second(-3, 5)` is 5), so a `Nat` context must not
+    make the -3 a narrowing; the position takes the literals' own type,
+    `Int`, and the result is narrowed into the context as any `Int` is.
+    Where every literal there is negative the result can only be one of
+    them — a generic function has no other value of its type argument to
+    return — so the context decides it, and a `Nat` refuses it."""
+    return hole != MIXED_LITERAL_HOLE
 
 
 def fill_literal_holes(ty: Type, source: Type | None) -> Type:
@@ -980,6 +1014,8 @@ def fill_literal_holes(ty: Type, source: Type | None) -> Type:
     a sibling of the base type then reads as its own.
     """
     if is_literal_hole(ty):
+        if not context_may_fill(ty):
+            return ty
         # A refinement's integer base is the literal's type there (PR #1583
         # review): `let @Small = id(0 - 3)` over a refinement of `Nat` is
         # `id` at `Nat`, where the -3 is refused as `let @Nat = id(0 - 3)`

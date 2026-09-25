@@ -596,7 +596,15 @@ class TestNatContextMatrix:
         ids=[c[0] for c in _NAT_CELLS])
     def test_context_decides(self, name: str, source: str,
                              value: int) -> None:
-        if value < 0:
+        if value < 0 and name.endswith("-tuple_second_let"):
+            # `second(Tuple(1, 2), Tuple(5, L))` holds the negative literal
+            # beside the 2 at one type argument, so the context does not
+            # fix it (spec §4.2): the call may return either.  It returns
+            # the literal, which the destructure's `@Nat` guard stops.
+            assert _codes(source) == [], name
+            assert _run(source, "f", [0]) == (
+                "trap: Negative value bound into a @Nat slot"), name
+        elif value < 0:
             # A `Small` sibling meets the literal at the refinement itself,
             # whose predicate refutes it first (E505).
             refusals = ({"E503", "E505"} if name.endswith("-small_sibling")
@@ -726,6 +734,133 @@ class TestNatContextThroughEveryRoute:
             # is dropped at compile on every revision (#1599).
             return
         assert _run(source, "f", [0]) == value, name
+
+
+# A negative literal beside the value that is read (PR #1583 review): at
+# the same type argument as a non-negative one, or in an array element the
+# read does not return.  Each program returns 5, as on `main`: the `Nat`
+# context does not fix the type argument, so the literal is no narrowing,
+# and the value read is narrowed into the `Nat` as any `Int` is.
+_BESIDE_PRELUDE = _NAT_PRELUDE + """
+private forall<T> fn last_of(@Array<T>, @T -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if array_length(@Array<T>.0) == 0 then { @T.0 } else {
+    @Array<T>.0[array_length(@Array<T>.0) - 1] }
+}
+
+private forall<T> fn first_of(@T, @T -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @T.1
+}
+"""
+
+_BESIDE_LITERALS = {"neg": "-3", "sub": "0 - 3", "sub25": "2 - 5"}
+
+_BESIDE_SCALARS = {
+    "rev_idx": "array_reverse([{L}, 5])[0]",
+    "append_idx": "array_append([{L}], 5)[1]",
+    "lit_idx_rev": "array_reverse([5, {L}])[1]",
+    "second": "second({L}, 5)",
+    "first_of": "first_of(5, {L})",
+    # The 5 read is itself an `Int` by rule 1, and not negative.
+    "first_of_int": "first_of((0 - 3) - (0 - 8), {L})",
+    "last_of": "last_of([{L}, 5], 1)",
+    "id_second": "id(second({L}, 5))",
+    "rev_idx_pipe": "([{L}, 5] |> array_reverse())[0]",
+    "second_pipe": "({L}) |> second(5)",
+}
+
+_BESIDE_SCALAR_CONSUMERS = {
+    "let": "let @Nat = {E};\n  nat_to_int(@Nat.0)",
+    "arg": "nat_to_int(nat_of({E}))",
+    "field": "let Tuple<@Nat, @Nat> = Tuple(1, {E});\n  nat_to_int(@Nat.0)",
+    "tuple_let": ("let @Tuple<Nat, Nat> = Tuple(1, {E});\n  match "
+                  "@Tuple<Nat, Nat>.0 { Tuple(@Nat, @Nat) -> "
+                  "nat_to_int(@Nat.0) }"),
+    "array_let": ("let @Array<Nat> = [{E}];\n"
+                  "  nat_to_int(@Array<Nat>.0[0])"),
+    "int_let": "let @Int = {E};\n  @Int.0",
+}
+
+_BESIDE_SCALAR_TAILS = {
+    "direct": "{C}",
+    "if": "if @Int.0 == 1000 then { 1 } else { {C} }",
+    "block": "{ {C} }",
+    "match": "match @Int.0 { 1000 -> 1, _ -> {C} }",
+}
+
+_BESIDE_TUPLES = {
+    "t_rev_idx": "array_reverse([Tuple(1, {L}), Tuple(1, 5)])[0]",
+    "t_second": "second(Tuple(1, {L}), Tuple(1, 5))",
+    "t_id_second": "id(second(Tuple(1, {L}), Tuple(1, 5)))",
+    "t_last_of": "last_of([Tuple(1, {L}), Tuple(1, 5)], Tuple(1, 1))",
+}
+
+_BESIDE_TUPLE_CONSUMERS = {
+    "destr": "let Tuple<@Nat, @Nat> = {E};\n  nat_to_int(@Nat.0)",
+    "tlet": ("let @Tuple<Nat, Nat> = {E};\n  match @Tuple<Nat, Nat>.0 "
+             "{ Tuple(@Nat, @Nat) -> nat_to_int(@Nat.0) }"),
+}
+
+_BESIDE_TUPLE_TAILS = {
+    "direct": "{C}",
+    "if": "if @Int.0 == 1000 then { Tuple(1, 1) } else { {C} }",
+    "block": "{ {C} }",
+}
+
+
+def _beside_cells() -> list[tuple[str, str]]:
+    cells = []
+    blocks = ((_BESIDE_SCALARS, _BESIDE_SCALAR_CONSUMERS,
+               _BESIDE_SCALAR_TAILS),
+              (_BESIDE_TUPLES, _BESIDE_TUPLE_CONSUMERS, _BESIDE_TUPLE_TAILS))
+    for exprs, consumers, tails in blocks:
+        for lk, literal in sorted(_BESIDE_LITERALS.items()):
+            for ek, expr in sorted(exprs.items()):
+                for ck, consumer in sorted(consumers.items()):
+                    for tk, tail in sorted(tails.items()):
+                        routed = tail.replace(
+                            "{C}", expr.replace("{L}", literal))
+                        body = consumer.replace("{E}", routed)
+                        cells.append((f"{lk}-{ek}-{ck}-{tk}",
+                                      _BESIDE_PRELUDE + _fn(body)))
+    return cells
+
+
+_BESIDE_CELLS = _beside_cells()
+
+
+def _dropped_at_compile(name: str) -> bool:
+    """Cells code generation drops on every revision: an index into a
+    pipe's result (#1604), and a pipe as a tuple's component, bare or as a
+    block's result (#1599)."""
+    _lit, expr, consumer, tail = name.split("-")
+    return expr == "rev_idx_pipe" or (
+        expr == "second_pipe" and consumer in ("field", "tuple_let")
+        and tail in ("direct", "block"))
+
+
+class TestANegativeLiteralBesideTheValueRead:
+    def test_the_matrix_generates_every_cell(self) -> None:
+        assert len(_BESIDE_CELLS) == len(_BESIDE_LITERALS) * (
+            len(_BESIDE_SCALARS) * len(_BESIDE_SCALAR_CONSUMERS)
+            * len(_BESIDE_SCALAR_TAILS)
+            + len(_BESIDE_TUPLES) * len(_BESIDE_TUPLE_CONSUMERS)
+            * len(_BESIDE_TUPLE_TAILS))
+
+    @pytest.mark.parametrize(("name", "source"), _BESIDE_CELLS,
+                             ids=[c[0] for c in _BESIDE_CELLS])
+    def test_verifies_and_returns_the_value_read(
+            self, name: str, source: str) -> None:
+        assert _codes(source) == [], name
+        if not _dropped_at_compile(name):
+            assert _run(source, "f", [0]) == 5, name
 
 
 # A literal cannot have the enclosing function's rigid type parameter:
