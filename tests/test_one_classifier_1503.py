@@ -38,12 +38,12 @@ ADT constructor, `if`-produced, `match`-produced, block-produced,
 what each must do: an `@Int` binding returns the value, an `@Nat` binding is
 refused on the record and at run time, and the literal is classified exactly
 as an `@Int` parameter holding its value.  The TYPE-SOURCE DIFFERENTIAL then
-replaces the checker's answer with the classifier's at every node where they
-disagree and re-runs the verifier and code generation: a guard, an
-obligation or a byte of the module that moves is a decision that read the
-checker's table where it is wrong.  The READER ROSTER pins where either of
-the checker's tables is read at all, so a new guard reading one turns this
-file red.
+plants the checker's old bottom-up `@Nat` at every literal-only node it now
+types `@Int` by its value (#1541 made the table agree with the value there)
+and re-runs the verifier and code generation: a guard, an obligation or a
+byte of the module that moves is a decision that read the checker's table
+at a literal node.  The READER ROSTER pins where either of the checker's
+tables is read at all, so a new guard reading one turns this file red.
 """
 
 from __future__ import annotations
@@ -68,6 +68,8 @@ from vera.types import (
 from vera.verifier import verify
 
 _U64_MAX = 18446744073709551615
+#: The largest `@Int`: a `@Nat` above it does not widen into one.
+_I64_MAX = (1 << 63) - 1
 
 #: What a tripped `@Int` -> `@Nat` narrowing guard reports (#754).
 _NAT_GUARD = "Negative value bound into a @Nat slot"
@@ -1457,14 +1459,23 @@ _OPERAND_VALUE_CELLS = [
      "@Nat, @Nat, @Bool", "Nat",
      "@Nat.1 - (if @Bool.0 then { 0 - 3 } else { @Nat.0 })",
      [2, 5, 0], _UNDERFLOW),
+    # A `match` joins its arms at `@Int` where one is (the `if` above takes
+    # its else branch's `@Nat`), so over a negative literal and a slot it
+    # is an `@Int`, and the subtraction an `@Int` one (#1541, spec §4.4):
+    # its `@Nat` operand, and the slot arm, above `i64.MAX` trap on the
+    # widening (PR #1583 review).
     ("a match over a negative literal and a slot, left above i64.MAX",
      "@Nat, @Nat, @Bool", "Nat",
      "@Nat.1 - (match @Bool.0 {\n    true -> 0 - 3,\n"
-     "    false -> @Nat.0\n  })", [_BIG, 1, 0], f"ran:{_BIG - 1}"),
+     "    false -> @Nat.0\n  })", [_BIG, 1, 0], _WIDEN_GUARD),
     ("a match over a negative literal and a slot, right above i64.MAX",
      "@Nat, @Nat, @Bool", "Nat",
      "@Nat.1 - (match @Bool.0 {\n    true -> 0 - 3,\n"
-     "    false -> @Nat.0\n  })", [1, _BIG, 0], _UNDERFLOW),
+     "    false -> @Nat.0\n  })", [1, _BIG, 0], _WIDEN_GUARD),
+    ("a match over a negative literal and a slot, in range",
+     "@Nat, @Nat, @Bool", "Nat",
+     "@Nat.1 - (match @Bool.0 {\n    true -> 0 - 3,\n"
+     "    false -> @Nat.0\n  })", [2, 5, 1], "ran:5"),
     ("a block around the if, left above i64.MAX",
      "@Nat, @Nat, @Bool", "Nat",
      "@Nat.1 - { if @Bool.0 then { 0 - 3 } else { @Nat.0 } }",
@@ -1494,38 +1505,50 @@ _OPERAND_VALUE_CELLS = [
      "@Nat, @Nat, @Bool, @Bool", "Nat",
      "(if @Bool.1 then { 0 - 5 } else { @Nat.1 }) - "
      "(if @Bool.0 then { 0 - 3 } else { @Nat.0 })", [7, 7, 1, 1], _UNDERFLOW),
-    # A pure-literal operand beside a slot above i64.MAX (CodeRabbit's row).
+    # A pure-literal operand is an `@Int` by its value (#1541), and so is
+    # arithmetic over one and a genuine `@Nat` (spec §4.4): these are
+    # `@Int` subtractions, not `@Nat` ones.  In range each returns its
+    # value; a `@Nat` operand above `i64.MAX` traps on its widening, and a
+    # negative result on the `@Nat` return's narrowing (PR #1583 review).
     ("a pure-literal subtraction beside a slot above i64.MAX",
      "@Nat", "Bool", "@Nat.0 - (0 - 3) == 9223372036854775816",
-     [_BIG + 5], "ran:1"),
+     [_BIG + 5], _WIDEN_GUARD),
+    ("a pure-literal subtraction beside a slot, in range",
+     "@Nat", "Bool", "@Nat.0 - (0 - 3) == 10", [7], "ran:1"),
     ("a pure-literal subtraction on the left",
-     "@Nat", "Nat", "(0 - 3) - @Nat.0", [0], _UNDERFLOW),
-    # A guarded `@Nat` subtraction as an operand holds no negative value.
-    ("a guarded subtraction on the right, left above i64.MAX",
+     "@Nat", "Nat", "(0 - 3) - @Nat.0", [0], _NAT_GUARD),
+    ("a subtraction of a negative literal on the right, left above i64.MAX",
      "@Nat, @Nat", "Nat", "@Nat.1 - (@Nat.0 - (0 - 3))", [_BIG, 1],
-     f"ran:{_BIG - 4}"),
-    ("a guarded subtraction on the right, an underflow",
-     "@Nat, @Nat", "Nat", "@Nat.1 - (@Nat.0 - (0 - 3))", [2, 1], _UNDERFLOW),
-    ("a guarded subtraction on the left, above i64.MAX",
+     _WIDEN_GUARD),
+    ("a subtraction of a negative literal on the right, in range",
+     "@Nat, @Nat", "Nat", "@Nat.1 - (@Nat.0 - (0 - 3))", [9, 1],
+     "ran:5"),
+    ("a subtraction of a negative literal on the right, negative",
+     "@Nat, @Nat", "Nat", "@Nat.1 - (@Nat.0 - (0 - 3))", [2, 1], _NAT_GUARD),
+    ("a subtraction of a negative literal on the left, above i64.MAX",
      "@Nat, @Nat", "Bool", "(@Nat.1 - (0 - 3)) - @Nat.0 == "
-     "9223372036854775810", [_BIG, 1], "ran:1"),
-    # Arithmetic over a genuine `@Nat` and a negative literal (#1544): the
-    # sign of what it computes follows its operands.
+     "9223372036854775810", [_BIG, 1], _WIDEN_GUARD),
     ("an addition of a negative literal, left above i64.MAX",
      "@Nat, @Nat", "Bool",
      "@Nat.0 - (@Nat.1 + (0 - 3)) == 9223372036854775810", [1, _BIG],
-     "ran:1"),
+     _WIDEN_GUARD),
+    ("an addition of a negative literal, in range",
+     "@Nat, @Nat", "Bool",
+     "@Nat.0 - (@Nat.1 + (0 - 3)) == 15", [1, 13], "ran:1"),
     ("a division by a negative literal, left above i64.MAX",
      "@Nat, @Nat", "Bool",
      "@Nat.1 - (@Nat.0 / (0 - 3)) == 9223372036854775811", [_BIG, 9],
-     "ran:1"),
+     _WIDEN_GUARD),
+    ("a division by a negative literal, in range",
+     "@Nat, @Nat", "Bool",
+     "@Nat.1 - (@Nat.0 / (0 - 3)) == 10", [7, 9], "ran:1"),
     ("a product with a negative literal, left above i64.MAX",
      "@Nat, @Nat", "Bool",
      "@Nat.0 - (@Nat.1 * (0 - 1)) == 9223372036854775809", [1, _BIG],
-     "ran:1"),
+     _WIDEN_GUARD),
     ("a product with a negative literal that is zero",
      "@Nat, @Nat", "Nat", "@Nat.0 - ((@Nat.1 * (0 - 1)) + 5)", [0, 2],
-     _UNDERFLOW),
+     _NAT_GUARD),
     # A literal-only sum at the signed width: an i64, whose sign bit is its
     # sign — not its operands' (-3 + i64.MAX is positive).
     ("a literal-only sum at the signed width, positive",
@@ -1659,14 +1682,23 @@ _OPERAND_VALUE_CELLS = [
      [1, 0, 1], _UNDERFLOW),
     # Signs recorded inside an arm: a guarded subtraction that records its
     # own, an addition and a product whose sign is their operands'.
+    # Here the outer `if` joins the guarded subtraction's `@Nat` with the
+    # `@Int` -5 at `@Int`, so the outer subtraction is an `@Int` one, and
+    # both `@Nat` values it widens trap above `i64.MAX`: its left operand,
+    # and the guarded subtraction's result, which is never negative, so its
+    # sign bit is its widening's (PR #1583 review).
     ("a join holding a guarded subtraction over a join, left above i64.MAX",
      "@Nat, @Nat, @Bool", "Nat",
      "@Nat.1 - (if @Bool.0 then { @Nat.0 - (if @Bool.0 then { 0 - 3 } "
-     "else { @Nat.0 }) } else { 0 - 5 })", [_BIG, 1, 1], f"ran:{_BIG - 4}"),
-    ("a join holding a guarded subtraction over a join, an underflow",
+     "else { @Nat.0 }) } else { 0 - 5 })", [_BIG, 1, 1], _WIDEN_GUARD),
+    ("a join holding a guarded subtraction over a join, its arm above",
      "@Nat, @Nat, @Bool", "Nat",
      "@Nat.1 - (if @Bool.0 then { @Nat.0 - (if @Bool.0 then { 0 - 3 } "
-     "else { @Nat.0 }) } else { 0 - 5 })", [1, _BIG, 1], _UNDERFLOW),
+     "else { @Nat.0 }) } else { 0 - 5 })", [1, _BIG, 1], _WIDEN_GUARD),
+    ("a join holding a guarded subtraction over a join, negative",
+     "@Nat, @Nat, @Bool", "Nat",
+     "@Nat.1 - (if @Bool.0 then { @Nat.0 - (if @Bool.0 then { 0 - 3 } "
+     "else { @Nat.0 }) } else { 0 - 5 })", [1, 5, 1], _NAT_GUARD),
     ("a join holding a guarded subtraction over a join, its other arm",
      "@Nat, @Nat, @Bool", "Nat",
      "@Nat.1 - (if @Bool.0 then { @Nat.0 - (if @Bool.0 then { 0 - 3 } "
@@ -1745,8 +1777,8 @@ class TestASubtractionOperandIsReadAsItsValue:
                      args: list[int], expected: str) -> None:
         compiled = _compile_checked(_sub_program(params, ret, body))
         run = _run(compiled, args)
-        if expected == _UNDERFLOW:
-            assert _UNDERFLOW in run, run
+        if expected in (_UNDERFLOW, _NAT_GUARD, _WIDEN_GUARD):
+            assert expected in run, run
         else:
             assert run == expected, run
 
@@ -1765,8 +1797,6 @@ class TestATierOneSubtractionNeverTraps:
              "@Bool.0 || @Nat.result + 1 == @Nat.0",
              "@Nat.0 - (if @Bool.0 then { 0 - 3 } else { 1 })",
              [_BIG, 0], _BIG - 1),
-            ("@Nat", "Bool", "true", "@Bool.result",
-             "@Nat.0 - (0 - 3) == @Nat.0 + 3", [_BIG + 5], 1),
             ("@Nat, @Nat, @Bool", "Nat", "@Nat.0 == 1 && @Nat.1 != 0",
              "@Bool.0 || @Nat.result + 1 == @Nat.1",
              "@Nat.1 - (if @Bool.0 then { 0 - 3 } else { @Nat.0 })",
@@ -1776,14 +1806,6 @@ class TestATierOneSubtractionNeverTraps:
              "@Nat.result + 1 == @Nat.1",
              "(if @Bool.0 then { 0 - 3 } else { @Nat.1 }) - @Nat.0",
              [_BIG, 1, 0], _BIG - 1),
-            ("@Nat, @Nat", "Nat",
-             "@Nat.0 == 1 && @Nat.1 == 9223372036854775808",
-             "@Nat.result == 9223372036854775804",
-             "@Nat.1 - (@Nat.0 - (0 - 3))", [_BIG, 1], _BIG - 4),
-            ("@Nat, @Nat", "Bool",
-             "@Nat.0 == 9 && @Nat.1 == 9223372036854775808", "@Bool.result",
-             "@Nat.1 - (@Nat.0 / (0 - 3)) == 9223372036854775811",
-             [_BIG, 9], 1),
             ("@Nat, @Nat, @Bool", "Bool",
              "@Bool.0 == false && @Nat.0 == 0 && "
              "@Nat.1 == 9223372036854775808", "@Bool.result",
@@ -1795,12 +1817,10 @@ class TestATierOneSubtractionNeverTraps:
              "@Nat.1 - (@Nat.0 / (if @Bool.0 then { 0 - 1 } else { 1 })) "
              "== 9223372036854775820", [2, _BIG + 10, 1], 1),
         ], ids=["an if over a negative and a small literal",
-                "a pure-literal subtraction", "an if with a slot arm",
+                "an if with a slot arm",
                 "an if with a slot arm on the left",
-                "a guarded subtraction", "a division by a negative literal",
                 "an addition whose negative arm is excluded",
                 "a quotient negating a value above i64.MAX"])
-    @pytest.mark.xfail(strict=False, reason="#1541 types a negative literal-only value `Int`: re-baselined with the operand-widening fix (PR #1583 review)")
     def test_proved_and_returned(
         self, params: str, ret: str, requires: str, ensures: str, body: str,
         args: list[int], value: int,
@@ -1815,6 +1835,51 @@ class TestATierOneSubtractionNeverTraps:
         assert statuses == {("nat_sub", "verified"),
                             ("ensures", "verified")}, observed.obligations
         assert observed.run == f"ran:{value}", observed.run
+
+    @pytest.mark.parametrize(
+        ("params", "requires", "body", "args", "errors"), [
+            ("@Nat", "true", "@Nat.0 - (0 - 3) == @Nat.0 + 3",
+             [_BIG + 5], ()),
+            ("@Nat, @Nat", "@Nat.0 == 1 && @Nat.1 == 9223372036854775808",
+             "@Nat.1 - (@Nat.0 - (0 - 3)) == 9223372036854775804",
+             [_BIG, 1], ("E530",)),
+            ("@Nat, @Nat", "@Nat.0 == 9 && @Nat.1 == 9223372036854775808",
+             "@Nat.1 - (@Nat.0 / (0 - 3)) == 9223372036854775811",
+             [_BIG, 9], ("E528", "E530", "E530")),
+        ], ids=["a pure-literal subtraction", "a guarded subtraction",
+                "a division by a negative literal"])
+    def test_an_int_subtraction_widens_its_nat(
+        self, params: str, requires: str, body: str, args: list[int],
+        errors: tuple[str, ...],
+    ) -> None:
+        """With `0 - 3` an `@Int` (#1541) these are `@Int` subtractions
+        (spec §4.4), not `@Nat` ones: no `nat_sub` is recorded, and the
+        `@Nat` operand above `i64.MAX` widens into them.  The widening is
+        never proved there — Tier 3, or refused (E530) where the
+        `requires` pins the operand above `i64.MAX` — and its guard is what
+        traps, so no site the verifier proves is one that fires."""
+        observed = _observe(
+            _sub_program(params, "Bool", body, requires=requires,
+                         ensures="@Bool.result"), "f", args)
+        assert observed.errors == errors, observed.obligations
+        kinds = {kind for kind, _s, _l, _c in observed.obligations}
+        assert "nat_sub" not in kinds, observed.obligations
+        assert _WIDEN_GUARD in observed.run, observed.run
+        widened = {(line, col) for emitter, line, col in observed.checks
+                   if emitter == "wasm/operators.py:_emit_int_widen_guard"}
+        claims = {(line, col): status
+                  for kind, status, line, col in observed.obligations
+                  if kind == "nat_to_int_coerce"}
+        assert widened and widened <= claims.keys(), (widened, claims)
+        assert any(claims[site] != "verified" for site in widened), claims
+
+    def test_a_pure_literal_subtraction_in_range_returns(self) -> None:
+        """The same `@Int` subtraction at a `@Nat` an `@Int` holds."""
+        observed = _observe(
+            _sub_program("@Nat", "Bool", "@Nat.0 - (0 - 3) == @Nat.0 + 3",
+                         ensures="@Bool.result"), "f", [5])
+        assert observed.errors == (), observed.obligations
+        assert observed.run == "ran:1", observed.run
 
 
 #: A `@Nat` subtraction in each position #1480's walks obligate beyond the
@@ -1970,19 +2035,84 @@ _OPERAND_PAIRS = [
 ]
 
 
+#: The forms the checker types `@Nat`.  A `match` joins its arms at
+#: `@Int` where one is, and an `if` at its else branch's type where the
+#: then branch's is a subtype of it — so an `if` over `0 - 3` and a `@Nat`
+#: is a `@Nat` and a `match` over them an `@Int`.  Every other form holds
+#: a negative literal-only value, an `@Int` by its value (#1541), and so
+#: does arithmetic over one (spec §4.4).
+_NAT_TYPED_FORMS = frozenset({
+    "a slot", "a literal above i64.MAX",
+    "an if of a negative and a small literal",
+    "an if of a negative literal and a slot",
+    "an if of a negative literal and one above i64.MAX",
+    "a quotient of a negative literal and a slot, by one",
+})
+
+
+class _Trap(Exception):
+    """What a reference reading of an operand traps with."""
+
+
+def _int_reading(form: str, n: int, b: int, k: int) -> int:
+    """*form*'s value as an operand of an `@Int` subtraction: each `@Nat`
+    it supplies is widened, and traps above `i64.MAX` (PR #1583 review) —
+    a join's in the arm that supplies it, an `@Int` operation's in that
+    operation, which also traps a result outside the `@Int` range."""
+    value = _OPERAND_FORMS[form][1](n, b, k)  # type: ignore[operator]
+    supplies_nat = {
+        "a slot": True,
+        "a literal above i64.MAX": True,
+        "a negative literal": False,
+        "an if of a negative and a small literal": False,
+        "an if of a negative literal and a slot": not b,
+        "a match of a negative literal and a slot": not b,
+        "an if of a negative literal and one above i64.MAX": not b,
+        "a guarded subtraction of a negative literal": True,
+        "a quotient of a negative literal and a slot, by one": not b,
+    }[form]
+    nat = _U64_MAX if "one above i64.MAX" in form or form == (
+        "a literal above i64.MAX") else n
+    if supplies_nat and nat > _I64_MAX:
+        raise _Trap(_WIDEN_GUARD)
+    if value > _I64_MAX:
+        raise _Trap("overflow")
+    return value
+
+
 class TestEveryOperandPairIsReadByItsValue:
-    """The subtraction guard over every pair of operand forms, against a
-    reference that computes the difference over unbounded integers.
+    """The subtraction over every pair of operand forms, against a
+    reference that computes it the way the checker types it.
 
     ``f(@Nat, @Nat, @Nat, @Bool, @Bool -> @Bool)`` returns
     ``(L) - (R) == @Nat.0``: the left form reads ``@Nat.2`` and ``@Bool.1``
     and a -3, the right form ``@Nat.1`` and ``@Bool.0`` and a -5, and
     ``@Nat.0`` is passed the reference's difference.  Each slot takes a value
     on each side of `i64.MAX` and each flag both values, so a comparison that
-    reads any operand's bits one fixed way fails a cell: a negative
-    difference must trap, and every other must come back equal.  A
-    difference above the u64 range is not this guard's question and is not
-    run."""
+    reads any operand's bits one fixed way fails a cell.
+
+    Where both forms are `@Nat` (:data:`_NAT_TYPED_FORMS`) it is a `@Nat`
+    subtraction, over unbounded integers: a negative difference must trap
+    on its guard, and every other come back equal; a difference above the
+    u64 range is not this guard's question and is not run.  Otherwise it is
+    an `@Int` subtraction (spec §4.4; #1541 types a negative literal-only
+    value `@Int`): every `@Nat` it reads widens and traps above `i64.MAX`,
+    a difference outside the `@Int` range traps on its overflow, and the
+    comparison with `@Nat.0` widens that `@Nat` too — the reference
+    (:func:`_int_reading`) is written from those rules, not from the
+    compiler's."""
+
+    def test_the_forms_are_typed_as_the_reference_reads_them(self) -> None:
+        for form, (src, _value) in _OPERAND_FORMS.items():
+            text = src.format(N="@Nat.2", B="@Bool.1", K=3)
+            source = _sub_program(
+                "@Nat, @Nat, @Nat, @Bool, @Bool", "Bool",
+                f"({text}) == ({text})")
+            program = parse_to_ast(source)
+            _diags, arts = typecheck_with_artifacts(program, source)
+            cmp = program.declarations[0].decl.body.expr
+            ty = arts.expr_types[ast.span_key(cmp.left)]
+            assert (ty == "Nat") == (form in _NAT_TYPED_FORMS), (form, ty)
 
     @pytest.mark.parametrize(("left", "right"), _OPERAND_PAIRS,
                              ids=[f"{a} - {b}" for a, b in _OPERAND_PAIRS])
@@ -1995,6 +2125,7 @@ class TestEveryOperandPairIsReadByItsValue:
                 f"({r_src.format(N='@Nat.1', B='@Bool.0', K=5)}) == @Nat.0")
         compiled = _compile_checked(
             _sub_program("@Nat, @Nat, @Nat, @Bool, @Bool", "Bool", body))
+        nat_sub = left in _NAT_TYPED_FORMS and right in _NAT_TYPED_FORMS
         wrong: list[str] = []
         ran = 0
         for n_l, n_r, b_l, b_r in itertools.product(
@@ -2003,11 +2134,27 @@ class TestEveryOperandPairIsReadByItsValue:
                     - r_val(n_r, b_r, 5))  # type: ignore[operator]
             if diff > _U64_MAX:
                 continue
+            nat0 = max(diff, 0)
+            if nat_sub:
+                expected = _UNDERFLOW if diff < 0 else "ran:1"
+            else:
+                try:
+                    got = (_int_reading(left, n_l, b_l, 3)
+                           - _int_reading(right, n_r, b_r, 5))
+                    if got < -(1 << 63) or got > _I64_MAX:
+                        raise _Trap("overflow")
+                    if nat0 > _I64_MAX:
+                        raise _Trap(_WIDEN_GUARD)
+                    expected = f"ran:{int(got == nat0)}"
+                except _Trap as trap:
+                    expected = str(trap)
             ran += 1
-            run = _run(compiled, [n_l, n_r, max(diff, 0), b_l, b_r])
-            ok = (_UNDERFLOW in run) if diff < 0 else run == "ran:1"
+            run = _run(compiled, [n_l, n_r, nat0, b_l, b_r])
+            ok = (run == expected if expected.startswith("ran:")
+                  else expected in run)
             if not ok:
-                wrong.append(f"{(n_l, n_r, b_l, b_r)}: {diff} -> {run[:60]}")
+                wrong.append(f"{(n_l, n_r, b_l, b_r)}: {expected} -> "
+                             f"{run[:60]}")
         assert ran, "no cell ran"
         assert not wrong, wrong
 
@@ -2033,28 +2180,37 @@ class TestANatReturnRefusesAnUnderflowItDoesNotGuard:
 }
 """
 
-    @pytest.mark.parametrize("body", [
-        "let @Array<Nat> = [@Nat.1];\n  @Array<Nat>.0[0] - @Nat.0",
-        "let @Array<Nat> = [@Nat.1];\n  @Array<Nat>.0[0] - 5",
-        "handle[State<Nat>](@Nat = @Nat.1) {\n"
-        "    get(@Unit) -> { resume(@Nat.0) },\n"
-        "    put(@Nat) -> { resume(()) }\n"
-        "  } in {\n    State.get(()) - @Nat.0\n  }",
-        "(handle[Exn<Int>] {\n    throw(@Int) -> 7\n  } in {\n"
-        "    @Nat.1\n  }) - @Nat.0",
+    @pytest.mark.parametrize(("body", "refusal"), [
+        ("let @Array<Nat> = [@Nat.1];\n  @Array<Nat>.0[0] - @Nat.0",
+         _UNDERFLOW),
+        ("let @Array<Nat> = [@Nat.1];\n  @Array<Nat>.0[0] - 5", _NAT_GUARD),
+        ("handle[State<Nat>](@Nat = @Nat.1) {\n"
+         "    get(@Unit) -> { resume(@Nat.0) },\n"
+         "    put(@Nat) -> { resume(()) }\n"
+         "  } in {\n    State.get(()) - @Nat.0\n  }", _UNDERFLOW),
+        ("(handle[Exn<Int>] {\n    throw(@Int) -> 7\n  } in {\n"
+         "    @Nat.1\n  }) - @Nat.0", _UNDERFLOW),
     ], ids=["an index", "an index less a literal", "an effect operation",
             "a handle"])
-    def test_the_return_refuses_it(self, body: str) -> None:
+    def test_the_return_refuses_it(self, body: str, refusal: str) -> None:
+        """Refused at run time either way.  Where the subtraction has a
+        `@Nat` operand of provenance beside the index, the effect operation
+        or the `handle`, code generation reads those as the checker types
+        them, `@Nat`, as the verifier does — the `@Nat` subtraction's own
+        guard traps, at the site the verifier records `nat_sub` for (PR
+        #1583 review).  Otherwise the return's check refuses it."""
         source = self._PROGRAM.replace("BODY", body)
-        assert _NAT_GUARD in _observe(source, "f", [2, 5]).run
+        assert refusal in _observe(source, "f", [2, 5]).run
         assert _observe(source, "f", [8, 5]).run == "ran:3"
 
     def test_an_effect_operation_leaf_is_refused_by_its_own_return(
         self,
     ) -> None:
         """`State.get(()) - @Nat.0` as the return leaf of an effectful
-        callee: its own return refuses the -3, rather than the caller's
-        `@Int` widening reading it as a u64 above `i64.MAX`."""
+        callee: the callee refuses the -3 — its `@Nat` subtraction's guard,
+        which code generation now plants where the verifier records the
+        `nat_sub` — rather than the caller's `@Int` widening reading it as
+        a u64 above `i64.MAX`."""
         source = """private fn g(@Nat -> @Nat)
   requires(true)
   ensures(true)
@@ -2076,7 +2232,7 @@ public fn f(@Nat, @Nat -> @Int)
   }
 }
 """
-        assert _NAT_GUARD in _observe(source, "f", [2, 5]).run
+        assert _UNDERFLOW in _observe(source, "f", [2, 5]).run
         assert _observe(source, "f", [8, 5]).run == "ran:3"
 
 
@@ -2173,41 +2329,89 @@ class TestAnOperandHoldingANegativeLiteralIsAnInt:
         assert claimed == served
 
 
-class TestAnOperationWithAGenuineNatKeepsItsWidth:
-    """Only an operation of two literal-only operands is classified by
-    value.  One with a genuine `@Nat` operand keeps the checker's width,
-    whatever its other operand folds to, because no machine width serves a
-    `@Nat` that may exceed `i64.MAX` beside a negative value: signed, the
-    `@Nat` is reinterpreted and a large one comes back wrong and silent.
-    Kept unsigned, u64.MAX still refuses — the cells below pin that no
-    classifier change moved such an operation onto the signed width.  The
-    mixed-sign operation's own defect (it refuses values it should admit,
-    `@Nat.0 + (0 - 1)` at 5, and `(0 - 3) - @Nat.0` is an E502) is an
-    operand-widening question this classifier does not answer."""
+#: (body over `f(@Int, @Nat, @Bool)`, its value at `@Nat.0 = 5`).  An
+#: operation mixing a genuine `@Nat` operand with a negative literal-derived
+#: one: `@Nat + Int` is an `@Int` (spec §4.4), computed at the signed width.
+_MIXED_SIGN_CELLS = {
+    "a nat plus a literal": ("@Nat.0 + (0 - 1)", 4),
+    "a literal plus a nat": ("(0 - 3) + @Nat.0", 2),
+    "a nat times a literal": ("@Nat.0 * (0 - 1)", -5),
+    "a literal less a nat": ("(0 - 3) - @Nat.0", -8),
+    "a nat less a literal": ("@Nat.0 - (0 - 3)", 8),
+    "a nat less a handle over a literal": (
+        "@Nat.0 - (handle[Exn<Int>] {\n    throw(@Int) -> 0\n"
+        "  } in {\n    0 - 3\n  })", 8),
+}
 
-    @pytest.mark.parametrize("body", [
-        "@Nat.0 + (5 - 3)", "@Nat.0 + (0 - 1)", "(0 - 3) + @Nat.0",
-    ])
-    @pytest.mark.xfail(strict=False, reason="#1541 types a negative literal-only value `Int`: re-baselined with the operand-widening fix (PR #1583 review)")
-    def test_u64_max_is_refused_not_reinterpreted(self, body: str) -> None:
-        source = _shape_program(body).replace("-> @Int)", "-> @Nat)")
-        assert "overflow" in _observe(source, "f", [0, _U64_MAX, 1]).run
+#: The `@Nat` values the widening refuses: above `i64.MAX` by one, by more,
+#: and the largest.
+_ABOVE_I64_MAX = (2 ** 63, 2 ** 63 + 5, _U64_MAX)
+
+
+class TestAMixedSignOperationWidensItsNat:
+    """An operation with a genuine `@Nat` operand and a negative
+    literal-derived one runs at the signed width, and the `@Nat` operand is
+    widened into it: obligated `nat_to_int_coerce` and guarded where it is
+    evaluated (PR #1583 review, #1588).
+
+    No machine width serves a `@Nat` that may exceed `i64.MAX` beside a
+    negative value: signed, the `@Nat` is reinterpreted, and unsigned, the
+    negative one is.  The signed width with the widening check computes
+    every value an `@Int` holds and traps on a `@Nat` above `i64.MAX`,
+    which is never read as a negative number: at `2^63 + 5`,
+    `@Nat.0 + (0 - 1)` returned -9223372036854775804, and a Tier-1
+    `ensures` over the true sum failed at run time.  A `@Nat` result
+    narrows that `@Int` back, so a negative one is refused.
+    """
+
+    @pytest.mark.parametrize("label", sorted(_MIXED_SIGN_CELLS))
+    @pytest.mark.parametrize("ret", ["Int", "Nat"])
+    def test_in_range_computes_and_above_traps(
+        self, label: str, ret: str,
+    ) -> None:
+        body, value = _MIXED_SIGN_CELLS[label]
+        source = _shape_program(
+            f"let @{ret} = {body};\n  @{ret}.0").replace(
+            "-> @Int)", f"-> @{ret})")
+        observed = _observe(source, "f", [0, 5, 1])
+        widenings = {status for kind, status, _l, _c in observed.obligations
+                     if kind == "nat_to_int_coerce"}
+        assert widenings == {"tier3"}, observed.obligations
+        if ret == "Int":
+            assert observed.errors == (), observed.errors
+        else:
+            # Refused where the verifier cannot show the result
+            # non-negative, as any `@Int` narrowed into `@Nat` is.
+            assert observed.errors in ((), ("E503",)), observed.errors
+        if value >= 0 or ret == "Int":
+            assert observed.run == f"ran:{value}", observed.run
+        else:
+            assert _NAT_GUARD in observed.run, observed.run
+        for big in _ABOVE_I64_MAX:
+            run = _observe(source, "f", [0, big, 1]).run
+            assert _WIDEN_GUARD in run, (big, run)
 
     def test_a_non_negative_literal_part_changes_nothing(self) -> None:
-        """`5 - 3` is 2: the fold, not the shape, decides."""
+        """`5 - 3` is 2: the fold, not the shape, decides, and `@Nat.0 + 2`
+        stays a `@Nat` addition, which widens nothing."""
         source = _shape_program("@Nat.0 + (5 - 3)").replace(
             "-> @Int)", "-> @Nat)")
-        assert _observe(source, "f", [0, 7, 1]).run == "ran:9"
+        observed = _observe(source, "f", [0, 7, 1])
+        assert observed.run == "ran:9", observed.run
+        assert not [o for o in observed.obligations
+                    if o[0] == "nat_to_int_coerce"], observed.obligations
 
-    @pytest.mark.xfail(strict=True, reason="#1541 types a negative literal-only value `Int`: re-baselined with the operand-widening fix (PR #1583 review)")
     def test_a_literal_above_i64_max_beside_a_negative_one_too(self) -> None:
         """The mixed-sign case in literal form: `18446744073709551615` is a
-        `@Nat`-only value, so `18446744073709551615 + (0 - 1)` keeps the
-        unsigned width and refuses, where the signed one returned -2 with
-        nothing on the record (PR #1537 review)."""
+        `@Nat`-only value, so `18446744073709551615 + (0 - 1)` widens it
+        into an `@Int` addition — refused by `vera verify` (E530) and by
+        the guard, where the signed width returned -2 with nothing on the
+        record (PR #1537 review)."""
         source = _shape_program(f"{_U64_MAX} + (0 - 1)").replace(
             "-> @Int)", "-> @Nat)")
-        assert "overflow" in _observe(source, "f", [0, 0, 1]).run
+        observed = _observe(source, "f", [0, 0, 1])
+        assert "E530" in observed.errors, observed.obligations
+        assert _WIDEN_GUARD in observed.run, observed.run
 
 
 class TestTheFoldIsTheMachine:
@@ -2363,24 +2567,35 @@ public fn f(@Nat, @Bool -> @Nat)
         assert observed.errors == (), observed.obligations
         assert observed.run == f"ran:{value}", observed.run
 
-    @pytest.mark.parametrize("call", ["id(0 - 3)", "one(0 - 3)"],
-                             ids=["reaching the result", "ending at the call"])
-    @pytest.mark.xfail(strict=False, reason="#1541 types a negative literal-only value `Int`: re-baselined with the operand-widening fix (PR #1583 review)")
-    def test_a_scalar_argument_keeps_its_target(self, call: str) -> None:
+    _SCALAR_PROGRAM = _PROGRAM.replace(
+        "private forall<T> fn count",
+        "private forall<T> fn id(@T -> @T)\n  requires(true)\n"
+        "  ensures(true)\n  effects(pure)\n{\n  @T.0\n}\n\n"
+        "private forall<T> fn one(@T -> @Nat)\n  requires(true)\n"
+        "  ensures(true)\n  effects(pure)\n{\n  1\n}\n\n"
+        "private forall<T> fn count")
+
+    def test_a_scalar_argument_keeps_its_target(self) -> None:
         """A scalar literal subtraction keeps the instantiated formal as its
-        target, as it has since #747, and E503 refuses the -3 into it, as on
-        `main`.  At `id`, declined, the program would verify and return -3
-        from a `@Nat` function.  At `one(@T -> @Nat)` the refusal is
-        #1541's to lift, with the checker's typing of the literal: this
-        door declines a composite's instantiation only."""
-        source = self._PROGRAM.replace(
-            "private forall<T> fn count",
-            "private forall<T> fn id(@T -> @T)\n  requires(true)\n"
-            "  ensures(true)\n  effects(pure)\n{\n  @T.0\n}\n\n"
-            "private forall<T> fn one(@T -> @Nat)\n  requires(true)\n"
-            "  ensures(true)\n  effects(pure)\n{\n  1\n}\n\n"
-            "private forall<T> fn count").replace("BODY", call)
+        target, as it has since #747.  `id(0 - 3)` returned from a `@Nat`
+        function is `id` at `Nat` — the type its result is expected at
+        fixes the instantiation (#1541) — and E503 refuses the -3 into it,
+        as on `main`.  Declined, the program would verify and return -3
+        from a `@Nat` function."""
+        source = self._SCALAR_PROGRAM.replace("BODY", "id(0 - 3)")
         assert "E503" in _observe(source, "f", [0, 1]).errors
+
+    def test_an_instantiation_ending_at_the_call_is_the_literal_s(
+        self,
+    ) -> None:
+        """`one(@T -> @Nat)` reads nothing at its `T`, so nothing fixes it
+        but the literal, which is an `@Int` by its value (#1541): `one` at
+        `Int` takes the -3, and the call returns 1 — where the checker's
+        bottom-up `Nat` for `0 - 3` refused it (E503)."""
+        observed = _observe(
+            self._SCALAR_PROGRAM.replace("BODY", "one(0 - 3)"), "f", [0, 1])
+        assert observed.errors == (), observed.obligations
+        assert observed.run == "ran:1", observed.run
 
     def test_an_instantiation_that_leaves_the_call_keeps_its_target(
         self,
@@ -2474,29 +2689,30 @@ public fn f(@Nat -> @Bool)
         assert "E503" in observed.errors, observed.obligations
         assert _NAT_GUARD in observed.run, observed.run
 
-    @pytest.mark.xfail(strict=True, reason="#1541 types a negative literal-only value `Int`: re-baselined with the operand-widening fix (PR #1583 review)")
     def test_an_instantiation_the_formal_reads_twice_keeps_its_target(
         self,
     ) -> None:
         """`paired(@Tuple<Array<T>, T>)` reads its `T` at two positions of
-        one formal, so the element -1 and the `@Nat` beside it share an
-        instantiation: the door keeps the target and `vera verify` refuses
-        the -1, as at the base."""
+        one formal, so the element -1 and the value beside it share an
+        instantiation, and the program stays refused.  With the -1 an
+        `@Int` (#1541) that instantiation is `Int`, and the
+        `18446744073709551615` beside it is the value that cannot have it:
+        a `@Nat`-only value widened into an `@Int` (E530), where the base
+        refused the -1 into a `@Nat` (E503)."""
         observed = _observe(self._READER_PROGRAM.replace(
             "BODY", "paired(Tuple([0 - 1, 5], 18446744073709551615)) == 1"),
             "f", [0])
-        assert "E503" in observed.errors, observed.obligations
+        assert "E530" in observed.errors, observed.obligations
 
-    @pytest.mark.xfail(strict=True, reason="#1541 types a negative literal-only value `Int`: re-baselined with the operand-widening fix (PR #1583 review)")
-    def test_an_int_callback_keeps_the_literal_s_instantiation(self) -> None:
-        """A PIN of the residual: the callback is typed `@Int`, but the
-        element type the door records is the one inferred from the literal,
-        `Nat`, so the -1 is refused as at the base, where `main` returns
-        true.  Typing a literal-only expression by its value is #1541's."""
+    def test_an_int_callback_fixes_the_element_type(self) -> None:
+        """The callback's declared `@Int` fixes the element type before the
+        literals can (#1541): the -1 reaches it as -1, and the call returns
+        true, as on `main`, where the base refused it (E503)."""
         observed = _observe(self._READER_PROGRAM.replace(
             "BODY", "array_any([0 - 1, 5], fn(@Int -> @Bool) effects(pure) "
             "{\n    @Int.0 < 0\n  })"), "f", [0])
-        assert "E503" in observed.errors, observed.obligations
+        assert observed.errors == (), observed.obligations
+        assert observed.run == "ran:1", observed.run
 
     def test_every_generic_builtin_is_read_by_its_signature(self) -> None:
         """Which formals the door declines is read off each callee's
@@ -2721,11 +2937,15 @@ public fn f(@Nat -> @Int)
 #
 # The oracle below is the test's own, written from the spec rather than
 # imported from the implementation, so the instrument cannot agree with the
-# code by construction.  A checker type DISAGREES with the value when the
-# checker says `@Nat` for an expression whose value can be negative: a
-# literal-only part of its value-producing tree that evaluates below zero —
-# the #520 idiom, whose value is whatever the literals make it.  A composite
-# disagrees where one of its components does.
+# code by construction.  Before #1541 the checker typed a literal-only
+# expression bottom-up — every literal `@Nat`, `Nat - Nat` a `Nat` — so it
+# said `@Nat` for `0 - 3`, whose value is -3.  Since #1541 it types such an
+# expression by its value, and the table agrees with the value at every
+# literal-only node.  The lever PLANTS the old reading back: at every
+# literal-only node the checker now types `@Int` and the bottom-up rule
+# typed `@Nat`, and at every composite whose component comes from one, the
+# table is given the old `@Nat`.  A decision that reads the table at a
+# literal node moves; one that reads the literal's value cannot.
 
 def _pure_literal(expr: ast.Expr) -> bool:
     """Every value-producing leaf of *expr* is an integer literal."""
@@ -2744,80 +2964,6 @@ def _pure_literal(expr: ast.Expr) -> bool:
     if isinstance(expr, ast.MatchExpr):
         return bool(expr.arms) and all(_pure_literal(a.body)
                                        for a in expr.arms)
-    return False
-
-
-def _literal_values(expr: ast.Expr) -> set[int] | None:
-    """Every value a literal-only *expr* can take — each arm of an `if` or a
-    `match` separately — or None where it cannot be evaluated."""
-    if isinstance(expr, ast.IntLit):
-        return {expr.value}
-    if isinstance(expr, ast.UnaryExpr):
-        inner = _literal_values(expr.operand)
-        return None if inner is None else {-v for v in inner}
-    if isinstance(expr, ast.Block):
-        return None if expr.expr is None else _literal_values(expr.expr)
-    if isinstance(expr, (ast.IfExpr, ast.MatchExpr)):
-        arms = ([expr.then_branch, expr.else_branch]
-                if isinstance(expr, ast.IfExpr)
-                else [a.body for a in expr.arms])
-        out: set[int] = set()
-        for arm in arms:
-            vals = None if arm is None else _literal_values(arm)
-            if vals is None:
-                return None
-            out |= vals
-        return out
-    if isinstance(expr, ast.BinaryExpr) and expr.op in _ARITH:
-        left, right = _literal_values(expr.left), _literal_values(expr.right)
-        if left is None or right is None:
-            return None
-        out = set()
-        for a in left:
-            for b in right:
-                if expr.op == ast.BinOp.ADD:
-                    out.add(a + b)
-                elif expr.op == ast.BinOp.SUB:
-                    out.add(a - b)
-                elif expr.op == ast.BinOp.MUL:
-                    out.add(a * b)
-                elif b == 0:
-                    return None
-                else:
-                    q = int(a / b) if abs(a) < 2 ** 52 else None
-                    if q is None:
-                        return None
-                    out.add(q if expr.op == ast.BinOp.DIV else a - b * q)
-        return out
-    return None
-
-
-def _literal_underflow(expr: ast.Expr) -> bool:
-    """A literal-only part of *expr*'s value can be below zero."""
-    if _pure_literal(expr):
-        vals = _literal_values(expr)
-        return vals is None or min(vals) < 0
-    if isinstance(expr, ast.BinaryExpr) and expr.op in _ARITH:
-        return (_literal_underflow(expr.left)
-                or _literal_underflow(expr.right))
-    if isinstance(expr, ast.UnaryExpr):
-        return _literal_underflow(expr.operand)
-    if isinstance(expr, ast.Block):
-        return expr.expr is not None and _literal_underflow(expr.expr)
-    if isinstance(expr, ast.IfExpr):
-        return (expr.else_branch is not None
-                and (_literal_underflow(expr.then_branch)
-                     or _literal_underflow(expr.else_branch)))
-    if isinstance(expr, ast.MatchExpr):
-        return any(_literal_underflow(a.body) for a in expr.arms)
-    if isinstance(expr, ast.HandleExpr):
-        # A `handle`'s value is its body's, or a clause's that does not
-        # resume (a `resume(...)` is a call, and no literal).
-        return (_literal_underflow(expr.body)
-                or any(_literal_underflow(c.body) for c in expr.clauses))
-    if isinstance(expr, ast.IndexExpr):
-        return any(_literal_underflow(e)
-                   for e in _element_exprs(expr.collection))
     return False
 
 
@@ -2913,17 +3059,26 @@ def _component_exprs(expr: ast.Expr, position: int, ctors: dict) -> list:
     return []
 
 
-def _classified(expr: ast.Expr, ty: Type, ctors: dict) -> Type:
-    """*ty* with the classifier's answer wherever the checker's disagrees."""
-    if ty == NAT and _literal_underflow(expr):
-        return INT
+def _bottom_up_nat(expr: ast.Expr) -> bool:
+    """The checker before #1541 typed *expr* `@Nat`: it is literal-only,
+    and holds no negation (`-3` was an `@Int` then too)."""
+    if not _pure_literal(expr):
+        return False
+    return not any(isinstance(e, ast.UnaryExpr) for e in _exprs(expr))
+
+
+def _planted(expr: ast.Expr, ty: Type, ctors: dict) -> Type:
+    """*ty* with the pre-#1541 bottom-up `@Nat` wherever the checker now
+    says `@Int` for a literal-only value."""
+    if ty == INT and _bottom_up_nat(expr):
+        return NAT
     if isinstance(ty, AdtType) and ty.type_args:
         args = list(ty.type_args)
         for position, arg_ty in enumerate(ty.type_args):
             for source in _component_exprs(expr, position, ctors):
-                fixed = _classified(source, arg_ty, ctors)
-                if fixed != arg_ty:
-                    args[position] = fixed
+                planted = _planted(source, arg_ty, ctors)
+                if planted != arg_ty:
+                    args[position] = planted
                     break
         if tuple(args) != ty.type_args:
             return AdtType(ty.name, tuple(args))
@@ -2946,8 +3101,8 @@ def _exprs(node: object) -> list[ast.Expr]:
     return out
 
 
-def _disagreements(program: ast.Program, table: dict) -> dict:
-    """span key -> (checker's type, the classifier's) where they differ."""
+def _plantings(program: ast.Program, table: dict) -> dict:
+    """span key -> (checker's type, the planted one) where they differ."""
     ctors = _ctor_table(program)
     out = {}
     for expr in _exprs(program):
@@ -2955,17 +3110,17 @@ def _disagreements(program: ast.Program, table: dict) -> dict:
         ty = table.get(key) if key is not None else None
         if ty is None:
             continue
-        fixed = _classified(expr, ty, ctors)
-        if fixed != ty:
-            out[key] = (ty, fixed)
+        planted = _planted(expr, ty, ctors)
+        if planted != ty:
+            out[key] = (ty, planted)
     return out
 
 
 def _pipeline(path: Path, semantic_override: bool) -> tuple:
     """(errors, obligations, checks) for *path* the way `vera verify` and
-    `vera compile` see it — with, when *semantic_override*, the classifier's
-    answer substituted into the entry module's semantic table wherever the
-    checker's disagrees."""
+    `vera compile` see it — with, when *semantic_override*, the old
+    bottom-up `@Nat` planted into the entry module's semantic table at every
+    literal node the checker now types `@Int`."""
     source = path.read_text(encoding="utf-8")
     program = parse_to_ast(source)
     resolver = ModuleResolver(_root=path.parent)
@@ -2978,8 +3133,8 @@ def _pipeline(path: Path, semantic_override: bool) -> tuple:
         return None
     sem = dict(arts.expr_semantic_types)
     if semantic_override:
-        for key, (_checker, fixed) in _disagreements(program, sem).items():
-            sem[key] = fixed
+        for key, (_checker, planted) in _plantings(program, sem).items():
+            sem[key] = planted
     result = verify(
         program, source, file=str(path), resolved_modules=resolved,
         expr_types=sem, expr_target_types=arts.expr_target_types,
@@ -3020,8 +3175,8 @@ _DIFFERENTIAL_PROGRAMS = {
 
 
 def _movers(path: Path) -> list[str]:
-    """What moves when the checker's answer is replaced by the classifier's
-    at every node where they disagree: one line per changed output."""
+    """What moves when the old bottom-up `@Nat` is planted at every literal
+    node the checker now types `@Int`: one line per changed output."""
     plain = _pipeline(path, False)
     fixed = _pipeline(path, True)
     assert plain is not None and fixed is not None, (
@@ -3044,18 +3199,20 @@ def _movers(path: Path) -> list[str]:
 
 
 class TestTypeSourceDifferential:
-    """No guard and no obligation reads the checker's type where it is wrong.
+    """No guard and no obligation reads the checker's type at a literal node.
 
-    The lever is the semantic table itself.  Every node where the checker's
-    type disagrees with the classifier (the oracle above) is overwritten
-    with the classifier's answer, and the verifier and code generation are
-    run on both tables.  A decision that reads the table at such a node —
-    directly, or through a helper — changes an obligation or a guard, and
-    shows here by name.  One that reads only the classifier cannot move.
+    The lever is the semantic table itself.  Every literal-only node the
+    checker types `@Int` by its value, and every composite built from one,
+    is overwritten with the `@Nat` the bottom-up rule gave it before #1541
+    (the oracle above), and the verifier and code generation are run on
+    both tables.  A decision that reads the table at such a node — directly,
+    or through a helper — changes an obligation or a guard, and shows here
+    by name.  One that reads the literal's value cannot move.  Since #1541
+    the table agrees with the value there, so the lever plants the reading
+    that disagrees rather than correcting one.
     """
 
     @pytest.mark.parametrize("label", sorted(_DIFFERENTIAL_PROGRAMS))
-    @pytest.mark.xfail(strict=True, reason="#1541 types a negative literal-only value `Int`: re-baselined with the operand-widening fix (PR #1583 review)")
     def test_the_matrix_does_not_move(
         self, label: str, tmp_path: Path,
     ) -> None:
@@ -3064,14 +3221,14 @@ class TestTypeSourceDifferential:
         program = parse_to_ast(_DIFFERENTIAL_PROGRAMS[label])
         _diags, arts = typecheck_with_artifacts(
             program, _DIFFERENTIAL_PROGRAMS[label], file=str(path))
-        assert _disagreements(program, arts.expr_semantic_types), (
-            "the program holds no disagreement, so it tests nothing"
+        assert _plantings(program, arts.expr_semantic_types), (
+            "the program holds no literal node to plant, so it tests nothing"
         )
         assert _movers(path) == []
 
-    @pytest.mark.xfail(strict=True, reason="#1541 types a negative literal-only value `Int`: re-baselined with the operand-widening fix (PR #1583 review)")
     def test_the_corpus_does_not_move(self) -> None:
-        """Every example and conformance program that holds a disagreement.
+        """Every example and conformance program that holds a literal node
+        to plant.
 
         Asserted non-vacuous first: the sweep must have found programs to
         test, or an oracle that stopped recognising the idiom would pass it
@@ -3088,7 +3245,7 @@ class TestTypeSourceDifferential:
                 program, source, file=str(path), resolved_modules=resolved)
             if resolver.errors or any(d.severity == "error" for d in diags):
                 continue
-            if not _disagreements(program, arts.expr_semantic_types):
+            if not _plantings(program, arts.expr_semantic_types):
                 continue
             tested.append(path.name)
             movers = _movers(path)
@@ -3097,7 +3254,6 @@ class TestTypeSourceDifferential:
         assert len(tested) >= 20, tested
         assert moved == {}, moved
 
-    @pytest.mark.xfail(strict=True, reason="#1541 types a negative literal-only value `Int`: re-baselined with the operand-widening fix (PR #1583 review)")
     def test_the_lever_reports_a_reader_of_the_checker(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -3121,38 +3277,6 @@ class TestTypeSourceDifferential:
             "the differential cannot see a guard that reads the checker"
         )
 
-    @pytest.mark.parametrize("body", [
-        "let @Int = (0 - 3) - @Nat.0;\n  @Int.0",
-        "let @Nat = @Nat.0 + (0 - 1);\n  @Nat.0",
-        "let @Int = @Nat.0 - (handle[Exn<Int>] {\n    throw(@Int) -> 0\n"
-        "  } in {\n    0 - 3\n  });\n  @Int.0",
-    ], ids=["a literal less a nat", "a nat plus a literal",
-            "a nat less a handle over a literal"])
-    @pytest.mark.xfail(strict=True, reason="#1541 types a negative literal-only value `Int`: re-baselined with the operand-widening fix (PR #1583 review)")
-    def test_the_mixed_sign_operation_is_the_residual(
-        self, body: str, tmp_path: Path,
-    ) -> None:
-        """A PIN, not a property: the one place a decision still reads the
-        checker's `@Nat` where the value can be negative.
-
-        An operation mixing a genuine `@Nat` operand with a negative
-        literal-derived one — the verifier's `@Nat`-subtraction test for
-        `(0 - 3) - @Nat.0` and for `@Nat.0` less a `handle` whose body is
-        `0 - 3`, the width of `@Nat.0 + (0 - 1)` — keeps the checker's
-        answer, because the classifier has no correct one to give: the
-        signed width would reinterpret a `@Nat` above `i64.MAX`
-        (`TestAnOperationWithAGenuineNatKeepsItsWidth`).  So replacing the
-        checker's `@Nat` for the literal part MOVES these programs, and this
-        cell says so; it goes red, to be flipped, when mixed-sign arithmetic
-        gains the operand-widening check that decides it (#1544).  The
-        subtraction's guard does not read the table: it compares an
-        operand holding a negative literal signed
-        (`TestANatSubtractionTrapsOnlyAGenuineUnderflow`).
-        """
-        path = tmp_path / "p.vera"
-        path.write_text(_shape_program(body), encoding="utf-8")
-        assert _movers(path)
-
 
 # =====================================================================
 # The reader roster
@@ -3170,7 +3294,9 @@ _MEASURE = ("a `decreases` component's width; a literal-only measure is a "
             "constant, which no recursive call decreases")
 _WIDTH = ("an operand's width, after literal_operation_width has classified "
           "an operation of two literal-only operands by value; a mixed-sign "
-          "operation keeps the checker's (the pinned residual)")
+          "operation reads the checker's `@Int` for its negative literal-only "
+          "operand, which is its value's since #1541, and widens its `@Nat` "
+          "one (PR #1583 review)")
 _READERS: dict[tuple[str, str, str], str] = {
     ("vera/codegen/closures.py",
      "ClosureLiftingMixin._compile_lifted_closure",
@@ -3211,9 +3337,9 @@ _READERS: dict[tuple[str, str, str], str] = {
     ("vera/verifier.py", "ContractVerifier._is_nat_typed",
      "_resolved_type_of"): "the static half of _narrows_into_nat, whose "
                            "underflow-leaf half refutes the literal case; "
-                           "and the @Nat-subtraction test, which a "
-                           "mixed-sign operation reaches (the pinned "
-                           "residual)",
+                           "and the @Nat-subtraction test, which reads a "
+                           "negative literal-only operand as the `@Int` "
+                           "#1541 types it by its value",
     ("vera/verifier.py", "ContractVerifier._narrows_into_refined",
      "_resolved_type_of"): "a refinement's identity, never inferred from "
                            "a literal",

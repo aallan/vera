@@ -31,6 +31,11 @@ A program that is genuinely wrong stays refused: a negative literal whose
 context is `@Nat` is a narrowing, obligated and refused (E503) as before —
 #1541's `get_nat(id(W(0 - 3)))` among them, and a tuple destructure's and a
 refinement of `Nat`'s context too.
+
+With `0 - 3` an `@Int`, `@Nat.0 + (0 - 3)` is a `Nat + Int` — an `@Int`
+operation on the `@Nat`'s bits (PR #1583 review, #1588).  The last blocks
+hold every `@Nat` such an operation reads to its widening: computed in
+range, trapping above `i64.MAX`, obligated and guarded at one site.
 """
 
 from __future__ import annotations
@@ -674,3 +679,296 @@ class TestIntTypedNonNegativeFallsBackToInt:
         col = len("  let Tuple<@Int, @Int> = Tuple(0, ") + 1
         key = (line, col, line, col + len(f"id({expr})"))
         assert arts.expr_types[key] == "Int"
+
+
+# ---------------------------------------------------------------------
+# A genuine `@Nat` operand beside an `@Int` one (PR #1583 review).
+#
+# With `0 - 3` an `Int`, `@Nat.0 + (0 - 3)` is a `Nat + Int`: the operation
+# runs at the signed width, on the `@Nat`'s bits.  A `@Nat` above
+# `i64.MAX` reads there as a negative `@Int`, and the result came back
+# wrong and silent — against a Tier-1 `ensures` too — where `main` had
+# read `0 - 3` as a `Nat` and trapped.  `@Nat.0 + @Int.0` did the same on
+# every revision (#1588).  The `@Nat` operand is widened into the `@Int`
+# operation, so it carries that widening's obligation and its guard.
+#
+# Every operator, both operand orders, each way a `@Nat` reaches the
+# operation (a slot, a call's result, a constructor field, an array
+# element), beside a negative literal and beside an `@Int` slot, with the
+# result read at `@Int` and — for arithmetic — narrowed into `@Nat`.  At
+# `@Nat.0 = 5` each cell computes its value; above `i64.MAX` it traps on
+# the widening and returns nothing.
+# ---------------------------------------------------------------------
+
+_U64_MAX = 2 ** 64 - 1
+_BIG_NATS = (2 ** 63, 2 ** 63 + 5, _U64_MAX)
+_WIDEN_TRAP = "@Nat value above i64.MAX widened into an @Int slot"
+
+_MIXED_PRELUDE = """private data NatBox { NB(Nat) }
+
+private fn nat_of(@Nat -> @Nat)
+  requires(true)
+  ensures(@Nat.result == @Nat.0)
+  effects(pure)
+{
+  @Nat.0
+}
+"""
+
+#: How the `@Nat` operand is read.  The field form binds the constructor's
+#: `@Nat` field as the arm's `@Nat.0`, around the whole body; the element
+#: form indexes an `Array<Nat>` bound first.
+_NAT_OPERANDS = {
+    "slot": "@Nat.0",
+    "call": "nat_of(@Nat.0)",
+    "field": "@Nat.0",
+    "element": "@Array<Nat>.0[0]",
+}
+
+#: The `@Int` sibling, and the value it holds (the slot is passed -3).
+#: Neither operand is zero (`requires`), so a division is not refused for
+#: its divisor.
+_INT_OPERANDS = {"literal": "(0 - 3)", "slot": "@Int.0"}
+
+_MIXED_ARITH = {"+": int.__add__, "-": int.__sub__, "*": int.__mul__,
+                "/": lambda a, b: _trunc_div(a, b),
+                "%": lambda a, b: a - b * _trunc_div(a, b)}
+_MIXED_CMP = {"<": int.__lt__, "<=": int.__le__, ">": int.__gt__,
+              ">=": int.__ge__, "==": int.__eq__, "!=": int.__ne__}
+
+#: A constructor pattern binding a `@Nat` above `i64.MAX` traps as a
+#: negative value on every revision, before the operation is reached
+#: (#1589).  The field form's run above `i64.MAX` is that trap; its
+#: widening is held to its site statically, as every cell's is.
+_FIELD_BIND_TRAP = "Negative value bound into a @Nat slot"
+
+
+def _trunc_div(a: int, b: int) -> int:
+    """`i64.div_s`: truncation toward zero."""
+    q = abs(a) // abs(b)
+    return q if (a >= 0) == (b >= 0) else -q
+
+
+def _mixed_cells() -> list[tuple[str, str, str, int | None, str]]:
+    """(id, source, result type, the value at `@Nat.0 = 5` or None where
+    the program must refuse it: a negative result narrowed into `@Nat`,
+    the operation's text).  An id is `order:op:source:sibling:result`."""
+    cells = []
+    for op, fn in {**_MIXED_ARITH, **_MIXED_CMP}.items():
+        for order in ("nat_left", "nat_right"):
+            for source, nat in _NAT_OPERANDS.items():
+                for sibling, int_text in _INT_OPERANDS.items():
+                    a, b = (5, -3) if order == "nat_left" else (-3, 5)
+                    left, right = ((nat, int_text) if order == "nat_left"
+                                   else (int_text, nat))
+                    expr = f"{left} {op} {right}"
+                    value = fn(a, b)
+                    results = (("Int", "Nat") if op in _MIXED_ARITH
+                               else ("Int",))
+                    for ret in results:
+                        if op in _MIXED_CMP:
+                            body = f"if {expr} then {{ 1 }} else {{ 0 }}"
+                            want: int | None = int(value)
+                        elif ret == "Int":
+                            body = f"let @Int = {expr};\n  @Int.0"
+                            want = value
+                        else:
+                            body = (f"let @Nat = {expr};\n"
+                                    "  nat_to_int(@Nat.0)")
+                            want = value if value >= 0 else None
+                        if source == "element":
+                            body = ("let @Array<Nat> = [@Nat.0];\n  "
+                                    + body)
+                        if source == "field":
+                            body = ("match NB(@Nat.0) {\n"
+                                    f"    NB(@Nat) -> {{\n  {body}\n  }}"
+                                    "\n  }")
+                        program = _MIXED_PRELUDE + (
+                            "public fn f(@Nat, @Int -> @Int)\n"
+                            "  requires(@Nat.0 != 0 && @Int.0 != 0)\n"
+                            "  ensures(true)\n"
+                            f"  effects(pure)\n{{\n  {body}\n}}\n")
+                        cells.append((
+                            f"{order}:{op}:{source}:{sibling}:{ret}",
+                            program, ret, want, expr))
+    return cells
+
+
+_MIXED_CELLS = _mixed_cells()
+
+
+def _compile(source: str):  # type: ignore[no-untyped-def]
+    ast = parse_to_ast(source)
+    diags, arts = typecheck_with_artifacts(
+        ast, source, collect_module_artifacts=True)
+    assert not [d for d in diags if d.severity == "error"], diags
+    result = codegen_compile(
+        ast, source=source,
+        expr_semantic_types=arts.expr_semantic_types,
+        expr_target_types=arts.expr_target_types,
+        module_artifacts=arts.module_artifacts)
+    assert result.ok, result.diagnostics
+    return result
+
+
+def _run_many(source: str, fn: str,
+              args_list: list[list[int]]) -> list[int | str]:
+    """:func:`_run` for several argument lists over one compilation."""
+    result = _compile(source)
+    out: list[int | str] = []
+    for args in args_list:
+        try:
+            out.append(execute(result, fn_name=fn, args=args).value)
+        except WasmTrapError as exc:
+            out.append(f"trap: {exc}")
+    return out
+
+
+def _widening_sites(source: str) -> tuple[set, set]:
+    """The `nat_to_int_coerce` obligations' sites and the widening guards'
+    sites, as (line, column)."""
+    ast = parse_to_ast(source)
+    _diags, arts = typecheck_with_artifacts(
+        ast, source, collect_module_artifacts=True)
+    verified = verify(ast, source,
+                      expr_types=arts.expr_semantic_types,
+                      expr_target_types=arts.expr_target_types,
+                      module_artifacts=arts.module_artifacts)
+    claimed = {(o.line, o.column) for o in verified.obligations
+               if o.kind == "nat_to_int_coerce"}
+    guarded = {(c.line, c.column) for c in _compile(source).emitted_checks
+               if c.emitter == "wasm/operators.py:_emit_int_widen_guard"}
+    return claimed, guarded
+
+
+class TestANatOperandBesideAnIntIsWidened:
+    def test_the_matrix_covers_the_class(self) -> None:
+        ids = [c[0].split(":") for c in _MIXED_CELLS]
+        assert {i[1] for i in ids} == set(_MIXED_ARITH) | set(_MIXED_CMP)
+        assert {i[0] for i in ids} == {"nat_left", "nat_right"}
+        assert {i[2] for i in ids} == set(_NAT_OPERANDS)
+        assert {i[3] for i in ids} == set(_INT_OPERANDS)
+        assert {i[4] for i in ids} == {"Int", "Nat"}
+
+    @pytest.mark.parametrize(
+        ("name", "source", "ret", "want"), [c[:4] for c in _MIXED_CELLS],
+        ids=[c[0] for c in _MIXED_CELLS])
+    def test_computes_in_range_and_traps_above_it(
+            self, name: str, source: str, ret: str,
+            want: int | None) -> None:
+        # A result narrowed into `@Nat` is refused (E503) where the
+        # verifier cannot show it non-negative; nothing else is refused.
+        codes = _codes(source)
+        assert codes == [] or (ret == "Nat" and codes == ["E503"]), (
+            name, codes)
+        runs = _run_many(source, "f", [[5, -3]]
+                         + [[big, -3] for big in _BIG_NATS])
+        if want is None:
+            assert str(runs[0]).startswith("trap:"), (name, runs)
+        else:
+            assert runs[0] == want, (name, runs)
+        trap = _FIELD_BIND_TRAP if ":field:" in name else _WIDEN_TRAP
+        for big, got in zip(_BIG_NATS, runs[1:]):
+            assert trap in str(got), (name, big, got)
+
+    @pytest.mark.parametrize(
+        ("name", "source", "expr"), [(c[0], c[1], c[4]) for c in _MIXED_CELLS],
+        ids=[c[0] for c in _MIXED_CELLS])
+    def test_the_claim_and_the_guard_share_a_site(
+            self, name: str, source: str, expr: str) -> None:
+        """The `@Nat` operand's widening is obligated and guarded at the
+        operand: the verifier's record and code generation's guard name
+        the same sites, and the operation's line holds one."""
+        claimed, guarded = _widening_sites(source)
+        line = next(i for i, ln in enumerate(source.splitlines(), 1)
+                    if expr in ln)
+        assert claimed == guarded, (name, claimed, guarded)
+        assert any(site[0] == line for site in claimed), (
+            name, line, claimed)
+
+
+# The finding's own programs, with a Tier-1 `ensures`: the widening traps
+# before the postcondition could be reached with a reinterpreted value.
+_MIXED_ENSURES = {
+    "nat_plus_literal": ("@Nat.0 + (0 - 1)", "@Int.result >= 0 - 1"),
+    "literal_times_nat": ("(0 - 1) * @Nat.0", "@Int.result <= 0"),
+    "nat_minus_literal": ("@Nat.0 - (0 - 3)", "@Int.result >= 3"),
+    "nat_plus_int": ("@Nat.0 + @Int.0", "@Int.result >= @Int.0"),
+}
+
+
+class TestATierOneEnsuresOverAMixedOperation:
+    @pytest.mark.parametrize("name", sorted(_MIXED_ENSURES))
+    def test_proved_and_never_violated(self, name: str) -> None:
+        expr, post = _MIXED_ENSURES[name]
+        source = ("public fn f(@Nat, @Int -> @Int)\n  requires(true)\n"
+                  f"  ensures({post})\n  effects(pure)\n{{\n  {expr}\n}}\n")
+        ast = parse_to_ast(source)
+        _diags, arts = typecheck_with_artifacts(
+            ast, source, collect_module_artifacts=True)
+        result = verify(ast, source,
+                        expr_types=arts.expr_semantic_types,
+                        expr_target_types=arts.expr_target_types,
+                        module_artifacts=arts.module_artifacts)
+        assert not [d for d in result.diagnostics
+                    if d.severity == "error"], name
+        assert ("ensures", "verified") in {
+            (o.kind, o.status) for o in result.obligations}, (
+            name, result.obligations)
+        runs = _run_many(source, "f", [[5, -1]]
+                         + [[big, -1] for big in _BIG_NATS])
+        assert isinstance(runs[0], int), (name, runs)
+        for got in runs[1:]:
+            assert _WIDEN_TRAP in str(got), (name, got)
+
+
+# The `@Nat`-subtraction guard reads its operands as the verifier's
+# `nat_sub` obligation does, the checker's type first (PR #1583 review).
+# Read from their syntax, a call to a non-generic function declared `@Nat`
+# was no `@Nat`, so the subtraction below was recorded and compiled with no
+# check, and returned -3 from a `@Nat` function (#1557); `(0 - 3) - @Nat.0`
+# was guarded as a `@Nat` subtraction the verifier did not record.
+_NAT_ID = """private fn nat_id(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Nat.0
+}
+"""
+
+
+class TestTheNatSubtractionGuardIsWhereItIsRecorded:
+    @pytest.mark.parametrize(("body", "ret", "recorded"), [
+        ("nat_id(@Nat.1) - @Nat.0", "Nat", True),
+        ("(0 - 3) - @Nat.0", "Int", False),
+    ], ids=["a call declared @Nat", "a negative literal"])
+    def test_claim_and_guard(self, body: str, ret: str,
+                             recorded: bool) -> None:
+        source = _NAT_ID + f"""
+public fn f(@Nat, @Nat -> @{ret})
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  {body}
+}}
+"""
+        ast = parse_to_ast(source)
+        _diags, arts = typecheck_with_artifacts(
+            ast, source, collect_module_artifacts=True)
+        verified = verify(ast, source,
+                          expr_types=arts.expr_semantic_types,
+                          expr_target_types=arts.expr_target_types,
+                          module_artifacts=arts.module_artifacts)
+        claimed = {(o.line, o.column) for o in verified.obligations
+                   if o.kind == "nat_sub"}
+        guarded = {(c.line, c.column) for c in _compile(source).emitted_checks
+                   if c.emitter == "wasm/operators.py:_emit_nat_sub_guard"}
+        assert claimed == guarded, (claimed, guarded)
+        assert bool(claimed) is recorded, claimed
+        runs = _run_many(source, "f", [[2, 5]])
+        if recorded:
+            assert "would be negative" in str(runs[0]), runs
+        else:
+            assert runs[0] == -8, runs
