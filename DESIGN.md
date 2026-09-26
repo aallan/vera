@@ -49,7 +49,7 @@ Technical decisions, rationale, and prior art. For the design philosophy and FAQ
 
 Vera's contracts are checked in two implemented tiers, applied at every call site:
 
-![Three-tier verification: each obligation goes to Z3 — unsat is verified (Tier 1), sat is a compile error with a counterexample, unknown or timeout defers to a Tier 3 runtime guard; Tier 2 (hints) is specified but not yet implemented and also falls to Tier 3.](assets/diagrams/tiers.svg)
+![Three-tier verification: each obligation goes to Z3. Unsat is verified (Tier 1) and sat is a compile error with a counterexample; unknown or timeout goes on to Tier 2, where hints from assert axioms and lemmas extend the solver to quantifiers, calls and arrays, and what remains becomes a Tier 3 runtime guard.](assets/diagrams/tiers.svg)
 
 **Tier 1 — Z3 static (decidable fragment).** The compiler generates a verification condition and sends it to Z3. If Z3 returns `unsat`, the contract is proved for all inputs. This covers linear integer and real arithmetic, boolean logic, strings, ADT constructor discrimination and fields, array lengths and literals, and refinement predicates (spec §6.8).
 

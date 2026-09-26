@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.2.2
 
-Grammar fix and a language-client bump.
+Grammar fix and a language-client bump, released alongside Vera 0.2.0.
 
 - Grammar: the effect rule now carries all ten built-in effects —
   `HttpServer`, `Inference`, `Random` and `DB` were missing, so

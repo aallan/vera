@@ -2,7 +2,7 @@
 	"name": "vera-language",
 	"displayName": "Vera Language",
 	"description": "Proof-aware Vera language support: diagnostics, hover, slot navigation, typed-hole completion, and syntax highlighting.",
-	"version": "0.2.1",
+	"version": "0.2.2",
 	"publisher": "veralang",
 	"license": "MIT",
 	"repository": {

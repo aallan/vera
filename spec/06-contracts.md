@@ -431,7 +431,7 @@ The refinement on `SafeDiv`'s **second** parameter serves as the contract. The c
 
 ## 6.8 Summary of Verification Tiers
 
-![Three-tier verification: each contract obligation goes to Z3 with a ten-second budget — unsat is verified (Tier 1), sat is a compile error with a counterexample, unknown or timeout defers to a Tier 3 runtime guard whose violation traps with a kind, a Fix paragraph, and a backtrace. Tier 2 (hints) is not yet implemented and also falls to Tier 3.](../assets/diagrams/tiers.svg)
+![Three-tier verification: each contract obligation goes to Z3 with a ten-second budget. Unsat is verified (Tier 1) and sat is a compile error with a counterexample; unknown or timeout goes on to Tier 2, where hints from assert axioms and lemmas extend the solver to quantifiers, calls and arrays, and what remains becomes a Tier 3 runtime guard whose violation traps with a kind, a Fix paragraph and a backtrace.](../assets/diagrams/tiers.svg)
 
 | Tier | Scope | Solver | Timeout | Failure mode |
 |------|-------|--------|---------|--------------|

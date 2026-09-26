@@ -44,14 +44,15 @@
     <text class="m" x="460" y="220" text-anchor="middle" font-size="10px" fill="#b07820">10-second budget per obligation</text>
   </g>
 
-  <!-- Tier 2 sidecar (unimplemented) -->
+  <!-- Tier 2: Z3 guided by hints -->
   <g>
-    <rect class="dash" x="706" y="170" width="178" height="52" rx="10"/>
-    <text class="f" x="718" y="190" font-size="12px" font-weight="600" fill="#7a756d">Tier 2 — hints</text>
-    <text class="f desc" x="718" y="205" fill="#a9a49b">assert axioms · lemmas</text>
-    <text class="f desc" x="718" y="217" fill="#a9a49b">not yet implemented</text>
+    <rect class="card" x="706" y="170" width="178" height="52" rx="10"/>
+    <rect x="706.5" y="170.5" width="4" height="51" rx="2" fill="#d4952a"/>
+    <text class="f" x="720" y="190" font-size="12px" font-weight="600" fill="#2d2b28">Tier 2 — Z3 guided</text>
+    <text class="f desc" x="720" y="205">assert axioms · lemmas</text>
+    <text class="f desc" x="720" y="217">quantifiers · calls · arrays</text>
   </g>
-  <polyline class="edge" points="795,222 795,246 686,246" stroke-dasharray="4 3" marker-end="url(#arr)"/>
+  <polyline class="edge" points="795,222 795,246 686,246" marker-end="url(#arr)"/>
 
   <!-- three outcomes -->
   <polyline class="edge" points="330,228 330,268 190,268 190,296" marker-end="url(#arr)"/>
