@@ -8,7 +8,7 @@ Read `SKILL.md` for the full language reference. It covers syntax, slot referenc
 
 ### Conformance programs as reference
 
-The conformance suite in `tests/conformance/` contains 244 small, self-contained programs — often one per language feature — that serve as minimal working examples (most are fully self-contained; the cross-module programs of Chapters 7–9 import companion `_lib`/module fixtures). Each positive program must pass its declared verification level (see `manifest.json` for mappings: `parse`, `check`, `verify`, or `run`); the thirty-eight negative fixtures (`ch02_generic_over_unit_rejected`, `ch02_map_unit_value_rejected`, `ch04_let_unit_rejected`, `ch05_apply_fn_arity`, `ch05_decreases_float_rejected`, `ch05_reserved_fn_name_rejected`, `ch05_reserved_keyword_fn_rejected`, `ch05_reserved_contextual_keyword_fn_rejected`, `ch05_reserved_resume_fn_rejected`, `ch05_where_helper_outer_slot_rejected`, `ch07_handler_state_body_scope_rejected`, `ch07_old_outside_ensures_rejected`, `ch07_state_unit_op_param_read_rejected`, `ch08_ambiguous_import_adt_rejected`, `ch08_ambiguous_import_adt_swapped_rejected`, `ch08_ambiguous_import_rejected`, `ch08_ambiguous_import_swapped_rejected`, `ch08_circular_import`, `ch08_reserved_vera_prefix_rejected`, `ch08_reserved_vera_prefix_reference_rejected`, `ch08_reserved_vera_prefix_binder_rejected`, `ch08_reserved_vera_prefix_effect_rejected`, `ch08_reserved_vera_prefix_ability_rejected`, `ch08_reserved_vera_prefix_constructor_rejected`, `ch08_visibility_private`, `ch09_builtin_effect_redefinition_rejected`, `ch09_builtin_redefinition`, `ch09_ord_adt_rejected`, `ch09_eq_non_derivable_rejected`, `ch09_sql_injection_rejected`, `ch09_sql_placeholder_mismatch_rejected`, `ch09_sql_placeholder_let_mismatch_rejected`, `ch09_sql_numbered_placeholder_rejected`, `ch07_bare_effect_op_rejected`, `ch06_quantifier_array_domain_rejected`, `ch07_handler_state_type_mismatch_rejected`, `ch02_alias_cycle_rejected`, `ch08_module_prelude_adt_contention_rejected`) instead must *fail* with the E-code in their `expected_error` field, at the stage their `expected_error_stage` names — `check` by default, or `compile` for a diagnostic the checker accepts and codegen refuses. When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec.
+The conformance suite in `tests/conformance/` contains 256 small, self-contained programs — often one per language feature — that serve as minimal working examples (most are fully self-contained; the cross-module programs of Chapters 7–9 import companion `_lib`/module fixtures). Each positive program must pass its declared verification level (see `manifest.json` for mappings: `parse`, `check`, `verify`, or `run`); the forty-eight negative fixtures (`ch02_generic_over_unit_rejected`, `ch02_map_unit_value_rejected`, `ch02_nonregular_data_rejected`, `ch04_let_unit_rejected`, `ch05_apply_fn_arity`, `ch05_decreases_float_rejected`, `ch05_reserved_fn_name_rejected`, `ch05_where_helper_duplicate_rejected`, `ch05_reserved_keyword_fn_rejected`, `ch05_reserved_contextual_keyword_fn_rejected`, `ch05_reserved_resume_fn_rejected`, `ch05_where_helper_outer_slot_rejected`, `ch07_handler_state_body_scope_rejected`, `ch07_old_outside_ensures_rejected`, `ch07_state_unit_op_param_read_rejected`, `ch08_ambiguous_import_adt_rejected`, `ch08_ambiguous_import_adt_swapped_rejected`, `ch08_ambiguous_import_rejected`, `ch08_ambiguous_import_swapped_rejected`, `ch08_circular_import`, `ch08_reserved_vera_prefix_rejected`, `ch08_reserved_vera_prefix_reference_rejected`, `ch08_reserved_vera_prefix_binder_rejected`, `ch08_reserved_vera_prefix_effect_rejected`, `ch08_reserved_vera_prefix_ability_rejected`, `ch08_reserved_vera_prefix_constructor_rejected`, `ch08_visibility_private`, `ch09_builtin_effect_redefinition_rejected`, `ch09_builtin_redefinition`, `ch09_ord_adt_rejected`, `ch09_eq_non_derivable_rejected`, `ch09_sql_injection_rejected`, `ch09_sql_placeholder_mismatch_rejected`, `ch09_sql_placeholder_let_mismatch_rejected`, `ch09_sql_numbered_placeholder_rejected`, `ch07_bare_effect_op_rejected`, `ch06_quantifier_array_domain_rejected`, `ch07_handler_state_type_mismatch_rejected`, `ch02_alias_cycle_rejected`, `ch04_pattern_ctor_over_container_rejected`, `ch04_pattern_literal_type_rejected`, `ch05_where_helper_sibling_call_rejected`, `ch08_builtin_adt_redefinition_rejected`, `ch08_builtin_tuple_redefinition_rejected`, `ch08_builtin_ctor_redefinition_rejected`, `ch08_builtin_container_redefinition_rejected`, `ch08_sibling_ctor_collision_rejected`, `ch08_module_prelude_adt_contention_rejected`) instead must *fail* with the E-code in their `expected_error` field, at the stage their `expected_error_stage` names — `check` by default, or `compile` for a diagnostic the checker accepts and codegen refuses. When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec.
 
 ### Workflow
 
@@ -19,8 +19,20 @@ write .vera file -> vera check -> fix errors -> vera verify -> fix errors -> don
 Use **typed holes** (`?`) to build programs incrementally. A `?` in any expression position is valid — `vera check` reports a `W001` warning with the expected type and all available slot bindings:
 
 ```text
-Warning [W001]: Typed hole: expected Int.
-Fix: Replace ? with an expression of type Int. Available bindings: @Int.0: Int; @Int.1: Int.
+warning: [W001] Warning at file.vera, line 6, column 3:
+
+      ?
+      ^
+
+  Typed hole: expected Int.
+
+  ? is a placeholder for an incomplete expression. The compiler reports the expected type and available bindings so the hole can be filled in.
+
+  Fix:
+
+    Replace ? with an expression of type Int. Available bindings: @Int.0: Int; @Int.1: Int.
+
+  See: Chapter 4, Section 4.17 "Typed Holes"
 ```
 
 Programs with holes type-check (`ok: true`) but cannot compile (`E614`). Iterative workflow:
@@ -54,7 +66,7 @@ vera version                      # Print the installed version (also --version,
 vera lsp                          # Serve LSP over stdio (needs the [lsp] extra; see LSP_SERVER.md)
 vera builtins [--json]            # List the built-in function registry (no file needed)
 vera effects [--json]             # List the effect and ability registry (no file needed)
-vera errors [--json]              # List the diagnostic-code registry: E001–E702 + W001/W002 (no file needed)
+vera errors [--json]              # List the diagnostic-code registry: E001–E702 + W001–W003 (no file needed)
 ```
 
 See [TOOLCHAIN.md](TOOLCHAIN.md) for the CLI cookbook — driving the toolchain to write, verify, test, run, and debug Vera, including the `builtins`/`effects`/`errors` introspection commands.
@@ -102,7 +114,7 @@ For machine-parseable errors, use the `--json` flag:
 
 ### Error codes
 
-Every diagnostic has a stable error code. Common codes:
+Diagnostics carry stable codes (errors `E001`–`E702`, warnings `W001`–`W003`); a few still carry none ([#1490](https://github.com/aallan/vera/issues/1490)). Common codes:
 
 | Code | Meaning |
 |------|---------|
@@ -131,12 +143,16 @@ The `verify --json` output includes a verification summary:
   "verification": {
     "tier1_verified": 2,
     "tier3_runtime": 0,
+    "assumptions": 0,
     "total": 2
   }
 }
 ```
 
 Alongside it, an `obligations` array carries one entry per reified proof obligation (`kind`, `status`, `description`, `location`). The summary is derived from that array by `status` — `verified` counts as `tier1_verified`, `tier3`/`timeout` as `tier3_runtime`, and `total` is their sum. Reproduce the counts by *filtering on `status`*, not by taking the array's length: a `violated` or `tier3_unguarded` obligation discharged to no tier, so it is counted nowhere and is surfaced as an error or warning diagnostic instead. On a program with one refuted contract, `total: 2` beside a three-entry array is the expected partition.
+
+`assumptions` sits beside those counts and is NOT part of that identity: it counts the `assume` statements this run took on trust (one W003 warning each, spec §6.2.6), which are not obligations and discharge to no tier. It is derived from the assembled diagnostics, so a consumer reproduces it by counting W003 rather than by reading any obligation's status. A non-zero value is the honest measure of how much of a "verified" result rests on something nobody proved.
+
 
 ### Essential rules
 
@@ -156,7 +172,7 @@ Read `vera/README.md` for architecture docs, module map, and design patterns.
 ### Pipeline
 
 ```
-source -> parse (parser.py) -> transform (transform.py) -> resolve (resolver.py) -> typecheck (checker.py) -> verify (verifier.py) -> compile (codegen/ + wasm/) -> execute (wasmtime or browser/runtime.mjs)
+source -> parse (parser.py) -> transform (transform.py) -> resolve (resolver.py) -> typecheck (checker/) -> verify (verifier.py) -> compile (codegen/ + wasm/) -> execute (wasmtime or browser/runtime.mjs)
 ```
 
 Each stage is a module with a single public API function (`parse_file`, `transform`, `resolve_imports`, `typecheck`, `verify`, `compile`, `execute`, `test`) and is independently testable.
@@ -189,18 +205,20 @@ Each stage is a module with a single public API function (`parse_file`, `transfo
 pytest tests/ -v                       # Run all tests (see TESTING.md)
 pytest tests/test_conformance.py -v    # Conformance suite only
 mypy vera/                             # Type-check the compiler
-python scripts/check_conformance.py    # All 244 conformance programs hold (positives pass; negatives fail with their E-code)
+python scripts/check_conformance.py    # All 256 conformance programs hold (positives pass; negatives fail with their E-code)
 python scripts/check_examples.py       # All 43 examples must pass
-python scripts/check_corpus_canonical.py # All 294 corpus programs in canonical form
+python scripts/check_corpus_canonical.py # All 306 corpus programs in canonical form
 ```
 
 Test helpers follow a pattern: `_check_ok(source)` / `_check_err(source, match)` / `_verify_ok(source)` / `_verify_err(source, match)`. See existing tests for examples.
 
 When implementing a new language feature, write the conformance program *first* — add a `.vera` file and manifest entry in `tests/conformance/`, then implement the feature until the conformance test passes.
 
+A bug fix closes the **class** the report belongs to, not the reported instance: name the class boundary in the PR body and ship a class instrument — an exhaustive matrix over the space the class spans, or a generator — rather than hand-picked cases.  One issue per class, with its instances as a checklist.  See `CONTRIBUTING.md` § Bugs: the class, not the instance, and `TESTING.md` § Class Instruments.
+
 ### Invariants
 
-- All 244 conformance programs in `tests/conformance/` must hold at their declared level — positive entries pass, and the negative fixtures (`ch02_generic_over_unit_rejected`, `ch02_map_unit_value_rejected`, `ch04_let_unit_rejected`, `ch05_apply_fn_arity`, `ch05_decreases_float_rejected`, `ch05_reserved_fn_name_rejected`, `ch05_reserved_keyword_fn_rejected`, `ch05_reserved_contextual_keyword_fn_rejected`, `ch05_reserved_resume_fn_rejected`, `ch05_where_helper_outer_slot_rejected`, `ch07_handler_state_body_scope_rejected`, `ch07_old_outside_ensures_rejected`, `ch07_state_unit_op_param_read_rejected`, `ch08_ambiguous_import_adt_rejected`, `ch08_ambiguous_import_adt_swapped_rejected`, `ch08_ambiguous_import_rejected`, `ch08_ambiguous_import_swapped_rejected`, `ch08_circular_import`, `ch08_reserved_vera_prefix_rejected`, `ch08_reserved_vera_prefix_reference_rejected`, `ch08_reserved_vera_prefix_binder_rejected`, `ch08_reserved_vera_prefix_effect_rejected`, `ch08_reserved_vera_prefix_ability_rejected`, `ch08_reserved_vera_prefix_constructor_rejected`, `ch08_visibility_private`, `ch09_builtin_effect_redefinition_rejected`, `ch09_builtin_redefinition`, `ch09_ord_adt_rejected`, `ch09_eq_non_derivable_rejected`, `ch09_sql_injection_rejected`, `ch09_sql_placeholder_mismatch_rejected`, `ch09_sql_placeholder_let_mismatch_rejected`, `ch09_sql_numbered_placeholder_rejected`, `ch07_bare_effect_op_rejected`, `ch06_quantifier_array_domain_rejected`, `ch07_handler_state_type_mismatch_rejected`, `ch02_alias_cycle_rejected`, `ch08_module_prelude_adt_contention_rejected`) must *fail* with their `expected_error` E-code, at the stage `expected_error_stage` names — `check` by default, or `compile` for a diagnostic the checker accepts and codegen refuses (`ch08_module_prelude_adt_contention_rejected` → E621), which also asserts the program type-checks cleanly first
+- All 256 conformance programs in `tests/conformance/` must hold at their declared level — positive entries pass, and the negative fixtures (`ch02_generic_over_unit_rejected`, `ch02_map_unit_value_rejected`, `ch02_nonregular_data_rejected`, `ch04_let_unit_rejected`, `ch05_apply_fn_arity`, `ch05_decreases_float_rejected`, `ch05_reserved_fn_name_rejected`, `ch05_where_helper_duplicate_rejected`, `ch05_reserved_keyword_fn_rejected`, `ch05_reserved_contextual_keyword_fn_rejected`, `ch05_reserved_resume_fn_rejected`, `ch05_where_helper_outer_slot_rejected`, `ch07_handler_state_body_scope_rejected`, `ch07_old_outside_ensures_rejected`, `ch07_state_unit_op_param_read_rejected`, `ch08_ambiguous_import_adt_rejected`, `ch08_ambiguous_import_adt_swapped_rejected`, `ch08_ambiguous_import_rejected`, `ch08_ambiguous_import_swapped_rejected`, `ch08_circular_import`, `ch08_reserved_vera_prefix_rejected`, `ch08_reserved_vera_prefix_reference_rejected`, `ch08_reserved_vera_prefix_binder_rejected`, `ch08_reserved_vera_prefix_effect_rejected`, `ch08_reserved_vera_prefix_ability_rejected`, `ch08_reserved_vera_prefix_constructor_rejected`, `ch08_visibility_private`, `ch09_builtin_effect_redefinition_rejected`, `ch09_builtin_redefinition`, `ch09_ord_adt_rejected`, `ch09_eq_non_derivable_rejected`, `ch09_sql_injection_rejected`, `ch09_sql_placeholder_mismatch_rejected`, `ch09_sql_placeholder_let_mismatch_rejected`, `ch09_sql_numbered_placeholder_rejected`, `ch07_bare_effect_op_rejected`, `ch06_quantifier_array_domain_rejected`, `ch07_handler_state_type_mismatch_rejected`, `ch02_alias_cycle_rejected`, `ch04_pattern_ctor_over_container_rejected`, `ch04_pattern_literal_type_rejected`, `ch05_where_helper_sibling_call_rejected`, `ch08_builtin_adt_redefinition_rejected`, `ch08_builtin_tuple_redefinition_rejected`, `ch08_builtin_ctor_redefinition_rejected`, `ch08_builtin_container_redefinition_rejected`, `ch08_sibling_ctor_collision_rejected`, `ch08_module_prelude_adt_contention_rejected`) must *fail* with their `expected_error` E-code, at the stage `expected_error_stage` names — `check` by default, or `compile` for a diagnostic the checker accepts and codegen refuses (`ch08_module_prelude_adt_contention_rejected` → E621), which also asserts the program type-checks cleanly first
 - All 43 examples in `examples/` must pass `vera check` and `vera verify`
 - `mypy vera/` must be clean
 - `pytest tests/ -v` must pass
@@ -214,4 +232,4 @@ When implementing a new language feature, write the conformance program *first* 
 
 ### Contributing
 
-See `CONTRIBUTING.md` for guidelines. Pre-commit hooks run mypy, pytest, trailing whitespace checks, and validate all examples on every commit.
+See `CONTRIBUTING.md` for guidelines. Pre-commit hooks run the fast gates on every commit — ruff, mypy, trailing whitespace checks, the doc gates, and the test files the commit stages; CI runs the full test suite, the conformance suite and every example on every pull request.

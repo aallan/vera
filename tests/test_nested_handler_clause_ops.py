@@ -32,7 +32,8 @@ enclosing handler's own clause runs on it.  Host-imported builtins written in
 a clause body must have their imports registered like any other code.  And
 two shapes are refused rather than lowered: SAME-family nesting, where the
 host intrinsics cannot address the outer cell (#1233), and nesting past the
-outward-re-entry depth cap, whose expansion is exponential.
+outward-re-entry depth cap, whose expansion is exponential.  The checker
+refuses both (E339), and code generation's gate stays as the backstop.
 """
 
 from __future__ import annotations
@@ -815,16 +816,22 @@ private fn probe(@Unit -> @Int)
     "source",
     [pytest.param(s, id=i) for i, s in _SAME_FAMILY_CASES],
 )
-def test_same_family_clause_body_op_is_a_loud_skip(source: str) -> None:
-    """Same-family nesting is E602, not a silently hybrid lowering (#1233).
+def test_same_family_clause_body_op_is_refused(source: str) -> None:
+    """Same-family nesting is refused, not a silently hybrid lowering (#1233).
 
     The clause TRANSFORM half routes outward correctly; the CELL half cannot,
-    because `state_put_Int` addresses only the innermost `Int` cell.  Every
-    one of these programs is check-green and verify-clean, so without the gate
-    they compile to a value the spec rule does not describe.
+    because `state_put_Int` addresses only the innermost `Int` cell.  The
+    checker refuses the operation where it is written (E339), and code
+    generation's own gate — the backstop for a program that reaches it
+    without the checker — skips the function (E602).  Without them each of
+    these programs compiles to a value the spec rule does not describe.
     """
-    _check_ok(source)
-    _verify_ok(source)
+    errors = _errors(source)
+    assert errors and {d.error_code for d in errors} == {"E339"}, [
+        (d.error_code, d.description[:90]) for d in errors
+    ]
+    assert all("shadows it" in d.description for d in errors), errors
+    assert all("1233" in d.rationale for d in errors), errors
     result = _compile(source)
     codes = {d.error_code for d in result.diagnostics}
     assert "E602" in codes, (
@@ -863,23 +870,23 @@ def test_a_composite_cell_under_a_different_family_still_lowers() -> None:
 # The outward re-entry is bounded
 # =====================================================================
 
-def _deep_nest(depth: int) -> str:
-    """A `depth`-deep handler nest whose clauses each perform TWO bare ops.
+def _deep_nest(depth: int, ops: int = 2) -> str:
+    """A `depth`-deep handler nest whose clauses each perform `ops` bare ops.
 
     One ADT per level, so every cell family is DISTINCT — repeating a family
     would shadow the outer cell and hit the #1233 refusal above, and the point
-    here is the legal case.  Each clause body's two ops re-enter the enclosing
-    clause, so the emitted code is `2 ** depth`: measured 850 / 1,582 / 4,330 /
-    15,143 WAT lines at depths 2 / 4 / 6 / 8.
+    here is the legal case.  Each clause body's ops re-enter the enclosing
+    clause, so the emitted code is `ops ** depth`: with two, measured 850 /
+    1,582 / 4,330 / 15,143 WAT lines at depths 2 / 4 / 6 / 8.
     """
     decls = "\n".join(
         f"private data C{i} {{ K{i}(Int) }}" for i in range(1, depth + 1)
     )
     open_levels = []
     for i in range(1, depth + 1):
-        body = (
-            f"put(K{i - 1}({i})); put(K{i - 1}({i + 100})); " if i > 1 else ""
-        )
+        body = "".join(
+            f"put(K{i - 1}({i + 100 * j})); " for j in range(ops)
+        ) if i > 1 else ""
         open_levels.append(
             f"handle[State<C{i}>](@C{i} = K{i}(1)) {{\n"
             f"  get(@Unit) -> {{ resume(@C{i}.0) }},\n"
@@ -899,6 +906,39 @@ def _deep_nest(depth: int) -> str:
     )
 
 
+def test_the_checkers_walk_is_linear_in_the_nest() -> None:
+    """The checker follows code generation's inlining without its blow-up.
+
+    Deciding E339 means walking each clause body where an operation inlines
+    it, and a nest whose clauses each perform `ops` operations has
+    `ops ** depth` such paths.  One clause inlined under the same cells at
+    the same depth reaches the same operations every time, so the walk
+    visits it once: doubling the operations per clause at most roughly
+    doubles the walk, where following every path multiplies it by `2 ** 7`
+    at the cap.
+    """
+    from unittest.mock import patch
+
+    from vera.checker.core import TypeChecker
+
+    walked = 0
+    real = TypeChecker._clause_op_walk
+
+    def counting(self: TypeChecker, *args: object) -> None:
+        nonlocal walked
+        walked += 1
+        real(self, *args)  # type: ignore[arg-type]
+
+    counts = []
+    with patch.object(TypeChecker, "_clause_op_walk", counting):
+        for ops in (2, 4):
+            walked = 0
+            _check_ok(_deep_nest(STATE_CLAUSE_INLINE_DEPTH_CAP, ops))
+            counts.append(walked)
+    narrow, wide = counts
+    assert narrow and wide < 3 * narrow, counts
+
+
 def test_bounded_outward_reentry_still_compiles_and_runs() -> None:
     """Well below the cap the nest lowers normally, several levels deep."""
     source = _deep_nest(4)
@@ -915,6 +955,7 @@ def test_outward_reentry_at_the_cap_emits_a_bounded_module() -> None:
     reasonably produce.
     """
     source = _deep_nest(STATE_CLAUSE_INLINE_DEPTH_CAP)
+    _check_ok(source)
     result = _compile(source)
     assert not [d for d in result.diagnostics if d.error_code == "E602"], (
         "the cap must not fire at the cap: "
@@ -933,13 +974,21 @@ def test_outward_reentry_one_past_the_cap_is_the_first_refusal() -> None:
 
     The pair below pinned CAP (accepted) and CAP + 2 (refused), leaving the
     exact transition unpinned — an off-by-one in the comparison would move
-    the boundary by one level and both of those would still pass.  This also
-    pins the CALLER's fate: the dropped `probe` takes `main` with it, so the
+    the boundary by one level and both of those would still pass.  The
+    checker refuses the operations that re-enter too deep (E339), at the
+    depth code generation does.  This also pins the CALLER's fate in code
+    generation's backstop: the dropped `probe` takes `main` with it, so the
     program surfaces E602 **and** the E620 dropped-caller diagnostic rather
     than silently exporting a `main` that cannot run.
     """
     source = _deep_nest(STATE_CLAUSE_INLINE_DEPTH_CAP + 1)
-    _check_ok(source)
+    errors = _errors(source)
+    assert errors and {d.error_code for d in errors} == {"E339"}, [
+        (d.error_code, d.description[:90]) for d in errors
+    ]
+    assert all(
+        str(STATE_CLAUSE_INLINE_DEPTH_CAP) in d.description for d in errors
+    ), errors
     result = _compile(source)
     codes = {d.error_code for d in result.diagnostics}
     assert {"E602", "E620"} <= codes, (
@@ -952,14 +1001,19 @@ def test_outward_reentry_one_past_the_cap_is_the_first_refusal() -> None:
     assert "exponential" in joined, joined
 
 
-def test_outward_reentry_past_the_cap_is_a_loud_skip() -> None:
-    """Past the cap the function is dropped with a located E602 naming it.
+def test_outward_reentry_past_the_cap_is_refused() -> None:
+    """Past the cap the checker refuses it, and code generation drops it.
 
     Without the bound, an 18-deep nest of 106 source lines expanded to ~2M
-    lines of WAT — the runaway this turns into a diagnostic.
+    lines of WAT — the runaway this turns into a diagnostic: E339 where the
+    operations are written, and code generation's located E602 naming the
+    function as the backstop.
     """
     source = _deep_nest(STATE_CLAUSE_INLINE_DEPTH_CAP + 2)
-    _check_ok(source)
+    errors = _errors(source)
+    assert errors and {d.error_code for d in errors} == {"E339"}, [
+        (d.error_code, d.description[:90]) for d in errors
+    ]
     result = _compile(source)
     codes = {d.error_code for d in result.diagnostics}
     assert "E602" in codes, (

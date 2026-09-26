@@ -443,12 +443,13 @@ class TestExecuteTrapMode734:
         """An out-of-bounds index raises WasmTrapError rather than returning."""
         # An out-of-bounds index traps rather than returning a result.
         # The kind is pinned to whatever codegen actually lowers an OOB
-        # index to (a WASM ``unreachable``), characterizing real
-        # behaviour — not asserting an assumed taxonomy.
+        # index to — since #1479 a bounds check that signals
+        # ``index_out_of_bounds`` before its ``unreachable`` —
+        # characterizing real behaviour, not an assumed taxonomy.
         result = _compile(_ARRAY_INDEX_OOB)
         with pytest.raises(WasmTrapError) as excinfo:
             execute(result, fn_name="idx", args=[5])
-        assert excinfo.value.kind == "unreachable"
+        assert excinfo.value.kind == "index_out_of_bounds"
 
 
 # =====================================================================

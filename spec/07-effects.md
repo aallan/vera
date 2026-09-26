@@ -66,6 +66,8 @@ effects(<Exn<String>, IO>)           -- may throw String errors and perform IO
 - `<E>` where `E` is a type variable is a polymorphic effect row.
 - `<IO, E>` is an effect row containing `IO` plus whatever `E` resolves to.
 
+Each name in an effect row must resolve where it is written: to a built-in effect (§7.7), an effect declared in the same module, or an effect type variable of the enclosing `forall`. A declaration further down the file is in scope. Any other name is a compile error (`E338`), reported where it is written, and so is every qualified reference `M.E`: an effect declaration takes a single unqualified name and is module-local (§8.4.1), so a qualified reference names no effect. To perform an effect another module declares, a module declares its own copy of it.
+
 ### 7.3.2 Effect Row Ordering
 
 Set equality governs effect *containment*: `<IO, State<Int>>` and `<State<Int>, IO>` permit exactly the same callees, so for the purposes of §7.8 they are the same effect row.
@@ -90,6 +92,7 @@ The same effect with the same type parameters MUST NOT appear twice (it would be
 
 Within a function that declares an effect, operations are called like regular functions:
 
+<!-- vera:run fn="increment" stdout="" -->
 ```
 public fn increment(@Unit -> @Unit)
   requires(true)
@@ -102,6 +105,7 @@ public fn increment(@Unit -> @Unit)
 }
 ```
 
+<!-- vera:run fn="hello" stdout="hello, world" -->
 ```
 public fn hello(-> @Unit)
   requires(true)
@@ -156,6 +160,8 @@ handle[State<Int>](@Int = 0) {
 }
 ```
 
+> **Status: Not yet implemented.** Code generation compiles handlers only for `State<T>` and `Exn<E>`. A handler for any other effect, a user-declared one included, passes `vera check` and `vera verify`, but the function containing it is dropped at compile time (E602). Tracked in [#1597](https://github.com/aallan/vera/issues/1597).
+
 ### 7.5.1 Handler Syntax
 
 ```
@@ -181,6 +187,7 @@ For the builtin `State` effect the state declaration **is** the `State<T>` cell:
 
 **Cell identity is the RESOLVED `T`, not the spelling.** `State<T>` is one effect instance per resolved `T`, so every spelling that resolves to the same type names the same cell — whether that type is scalar or composite, and whether the alias is plain or parameterized. A `handle[State<MaybeInt>]` under `type MaybeInt = Option<Int>` therefore handles a callee declaring `effects(<State<Option<Int>>>)`, and the two share one cell:
 
+<!-- vera:run fn="run_stash" stdout="7" -->
 ```vera
 type MaybeInt = Option<Int>;
 
@@ -192,7 +199,7 @@ private fn stash(@Unit -> @Unit)
   put(Some(7))
 }
 
-public fn main(@Unit -> @Int)
+public fn run_stash(@Unit -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
@@ -207,9 +214,9 @@ public fn main(@Unit -> @Int)
 }
 ```
 
-`main` returns `7` — `stash` writes to the cell the handler established. The same rule governs `Exn<E>` payloads: `Exn<Msg>` under `type Msg = String` catches a `throw` from a function declaring `effects(<Exn<String>>)`. Two cells are distinct exactly when their resolved types are (`State<Option<Int>>` and `State<Option<Bool>>` are two cells; a handler for one does not handle the other). A refinement is part of that resolved type, predicate included, exactly as it is for the state declaration a handler writes: under `type Pos = { @Int | @Int.0 > 0 }` and `type Neg = { @Int | @Int.0 < 0 }`, `State<Pos>`, `State<Neg>` and `State<Int>` are **three** cells, and a function declaring `effects(<State<Pos>>)` writes the `Pos` one wherever it is called from.
+`run_stash` returns `7` — `stash` writes to the cell the handler established. The same rule governs `Exn<E>` payloads: `Exn<Msg>` under `type Msg = String` catches a `throw` from a function declaring `effects(<Exn<String>>)`. Two cells are distinct exactly when their resolved types are (`State<Option<Int>>` and `State<Option<Bool>>` are two cells; a handler for one does not handle the other). A refinement is part of that resolved type, predicate included, exactly as it is for the state declaration a handler writes: under `type Pos = { @Int | @Int.0 > 0 }` and `type Neg = { @Int | @Int.0 < 0 }`, `State<Pos>`, `State<Neg>` and `State<Int>` are **three** cells, and a function declaring `effects(<State<Pos>>)` writes the `Pos` one wherever it is called from.
 
-Resolved-type identity governs the cell wherever the resolved type is **nameable** — every type with a resolution, which since the mangler was made total over canonical renderings includes the composite carrying a function type (`State<Handler>` under `type Handler = Option<fn(Int -> Int) effects(pure)>` is the `Option<fn(Int -> Int) effects(pure)>` cell, the same one `State<Option<fn(Int -> Int) effects(pure)>>` names). What is left outside the rule is the type expression with **no resolution to name**: one resolving to a bare function type, and one that does not resolve at all (a removed alias, an alias applied at the wrong arity). Family naming is total, so both are named by their alias-opaque **spelling** and two such spellings name two cells rather than sharing one; both are then refused, downstream and at different gates — the unresolvable one at the compilability gate before any cell is declared, the bare function type only when the function reading it is dropped, its cell having been declared in the meantime. That fallback runs in the conservative direction only: it can leave split a cell the resolution would have merged, never merge two the checker keeps apart.
+Resolved-type identity governs the cell wherever the resolved type is **nameable** — every type with a resolution, including the composite carrying a function type (`State<Handler>` under `type Handler = Option<fn(Int -> Int) effects(pure)>` is the `Option<fn(Int -> Int) effects(pure)>` cell, the same one `State<Option<fn(Int -> Int) effects(pure)>>` names). What is left outside the rule is the type expression with **no resolution to name**: one resolving to a bare function type, and one that does not resolve at all (a removed alias, an alias applied at the wrong arity). Family naming is total, so both are named by their alias-opaque **spelling** and two such spellings name two cells rather than sharing one; both are then refused, downstream and at different gates — the unresolvable one at the compilability gate before any cell is declared, the bare function type only when the function reading it is dropped, its cell having been declared in the meantime. That fallback runs in the conservative direction only: it can leave split a cell the resolution would have merged, never merge two the checker keeps apart.
 
 ### 7.5.2 Handler Semantics
 
@@ -230,7 +237,8 @@ For **`State<T>`** these steps have *intrinsic-hybrid* semantics: the operations
 - **`resume` is single-shot and tail-position** in a `State` clause: the clause body's tail expression is exactly one `resume(...)` (reached through a block's trailing expression or a single-arm `match`). To branch on the resumed value, branch *inside* the argument (`resume(if c then a else b)`) — a `resume` per branch arm is not compilable (`resume` types as `Unit`, so the branch is a void block that cannot carry the op's result). A missing, repeated, non-tail, or per-arm `resume` skips the function with a diagnostic. Multi-shot resumption is a FUTURE feature (§7.5.3's `Choice` sketch).
 - **Clause transforms do not cross a call boundary, and a clause never re-enters itself.** An operation performed inside a *called function* (one declaring `effects(<State<T>>)`) performs the **intrinsic** operation against the same dynamically-scoped state cell: the transforms and overrides of the handler that discharges the effect do not apply to it. Extracting a handled body's ops into a helper therefore changes what a transforming clause observes; keep transformed operations syntactically inside the `in { ... }` body. The same holds for a clause seen from inside itself — an operation written in a clause body never re-enters the clause it is written in. Which handler that operation *does* reach is the next rule.
 - **A clause body belongs to the handler's DECLARATION scope, not to the body it refines.** This is one rule with two consequences. A slot reference in a clause body (or in its `with` expression) resolves against the scope where the `handle` expression is written, never against bindings the handled body made before performing the operation (§7.5.1). And a bare `get`/`put` written in a clause body is likewise an operation of the **enclosing** context — the next handler out, or the enclosing function's declared row — never of the handler whose clause it is. It is an operation *site of that enclosing context*, so if the enclosing handler declares a clause for the operation, that clause runs — exactly as it would for the same operation written directly in the enclosing handled body. With two nested handlers over **different** cell types, a bare `put` in the inner handler's clause body therefore writes the **outer** cell, through the outer handler's `put` clause where it has one; to refine the inner cell from its own clause, use `with @T = expr`, which is the clause's own state override. (That a clause cannot re-enter itself is the same rule seen from the other side, and it is what makes clause inlining terminate: each such operation resolves strictly further out.)
-- **A clause-body operation cannot reach a same-family outer cell yet.** When such an operation resolves to a handler for the *same* `State<T>` — `handle[State<Int>]` nested inside `handle[State<Int>]`, or a `handle[State<T>]` written in a function that itself declares `effects(<State<T>>)` — the reference implementation cannot reach the outer cell from inside the inner handler: its state intrinsics address only the innermost cell of each family, so the operation would be routed outward while its cell stayed inward. That operation is refused at compile time (`E602`) rather than lowered to hybrid semantics; outward cell addressing is tracked as [#1233](https://github.com/aallan/vera/issues/1233). Same-family nesting is otherwise supported: it is only a clause body that performs the operation that is refused, so two handlers over the same cell type whose clause bodies perform none of their own operations compile and run normally, and so does an operation written in the inner handler's *handled body*. Nest handlers over distinct cell types, or refine the inner cell with `with @T = expr`.
+- **A clause-body operation cannot reach a same-family outer cell yet.** When such an operation resolves to a handler for the *same* `State<T>` — `handle[State<Int>]` nested inside `handle[State<Int>]`, or a `handle[State<T>]` written in a function that itself declares `effects(<State<T>>)` — the reference implementation cannot reach the outer cell from inside the inner handler: its state intrinsics address only the innermost cell of each family, so the operation would be routed outward while its cell stayed inward. That operation is a compile error (`E339`), reported where it is written, rather than lowered to hybrid semantics — at any distance, since the shadowing cell need not be the adjacent one: in an `Int`/`Nat`/`Int`/`Nat` nest whose clauses re-enter outward, the third level's clause routes to the second, whose cell the fourth's shadows. Outward cell addressing is tracked as [#1233](https://github.com/aallan/vera/issues/1233). One case is not refused at check time yet: a generic that writes `handle[State<T>]` inside a handler over a concrete cell type, which becomes the same family only when `T` is instantiated at that type. The check names the cell by `T`, so the program passes check, and code generation refuses the instantiation instead (`E602`); checking the instantiation is [#1522](https://github.com/aallan/vera/issues/1522). Same-family nesting is otherwise supported: it is only a clause body that performs the operation that is refused, so two handlers over the same cell type whose clause bodies perform none of their own operations compile and run normally, and so does an operation written in the inner handler's *handled body*. Nest handlers over distinct cell types, or refine the inner cell with `with @T = expr`.
+- **Outward re-entry is bounded.** Each clause-body operation that re-enters an enclosing handler's clause expands that clause again, so the lowered code grows exponentially with the depth of the re-entry. A chain of clause-body operations that re-enters more than eight enclosing clauses is also a compile error (`E339`).
 
 The handler may also choose NOT to call `resume`, which aborts the handled body. This is how exceptions are implemented (`Exn` clauses run at the catch boundary and never resume).
 
@@ -293,7 +301,7 @@ Note: when the handler does not call `resume`, the handled body is abandoned. Th
 
 **Choice handler (non-determinism):**
 
-<!-- vera:skip-parse category="FUTURE" reason="handle[Choice] multi-shot resume + array_concat" -->
+<!-- vera:skip-check category="FUTURE" code="E330" reason="handle[Choice]: the Choice effect is a sketch, not declared, and multi-shot resume is not implemented" -->
 ```
 private fn all_choices(@Unit -> @Array<Bool>)
   requires(true)
@@ -305,7 +313,7 @@ private fn all_choices(@Unit -> @Array<Bool>)
       let @Array<Bool> = resume(true);
       let @Array<Bool> = resume(false);
       array_concat(@Array<Bool>.1, @Array<Bool>.0)
-    },
+    }
   } in {
     let @Bool = choose(true);
     [@Bool.0]
@@ -330,7 +338,7 @@ private forall<A, B> fn option_map(@Option<A>, fn(A -> B) effects(<E>) -> @Optio
 {
   match @Option<A>.0 {
     Some(@A) -> Some(apply_fn(@Fn.0, @A.0)),
-    None -> None,
+    None -> None
   }
 }
 ```
@@ -395,7 +403,9 @@ Like `IO`, `Exn<E>` is built-in — no `effect Exn<E> { ... }` declaration is ne
 
 ### 7.7.3 `Diverge`
 
-The `Diverge` effect has no operations. Declaring `effects(<Diverge>)` means the function may not terminate. Functions without `Diverge` in their effect row MUST be proven to terminate (via `decreases` clauses on recursion).
+The `Diverge` effect has no operations. Declaring `effects(<Diverge>)` means the function may not terminate. Functions without `Diverge` in their effect row MUST be proven to terminate (via `decreases` clauses on recursion); a recursive function with neither is rejected with `E137` (Chapter 5, Section 5.6).
+
+A function that declares `Diverge` needs no `decreases` clause, and compiles like any other; it has a termination guard only if it also declares `decreases`. `Diverge` propagates like any effect: a function that calls one declaring `Diverge` must declare it too (`E125`), so a program whose `main` reaches an unbounded loop declares `effects(<Diverge, IO>)` on `main`. It is the row for a loop with no bound, such as a server or a read-eval loop; a loop that counts to a bound takes a measure instead.
 
 ### 7.7.4 `Random`
 
@@ -411,7 +421,7 @@ Like `IO`, `Random` is built-in — no `effect Random { ... }` declaration is ne
 
 ### 7.7.5 `HttpServer`
 
-The `HttpServer` effect has no operations — it is a marker (#305, since v0.0.193).  Declaring `effects(<HttpServer>)` marks a function as an HTTP request handler: a **total**, contract-checked function `handle(Request -> Response)` (§9.5.6).  The accept loop lives in the host `vera serve` driver, not in the program, so handlers do not need `Diverge` — termination-checked request handling is a feature, and per-request effects (`State<T>`, `Exn<E>`) compose inside the handler's row as usual.
+The `HttpServer` effect has no operations — it is a marker ([#305](https://github.com/aallan/vera/issues/305)).  Declaring `effects(<HttpServer>)` marks a function as an HTTP request handler: a **total**, contract-checked function `handle(Request -> Response)` (§9.5.6).  The accept loop lives in the host `vera serve` driver, not in the program, so handlers do not need `Diverge` — termination-checked request handling is a feature, and per-request effects (`State<T>`, `Exn<E>`) compose inside the handler's row as usual.
 
 ### 7.7.6 `Async`
 
@@ -419,7 +429,7 @@ The `Async` effect has no operations — it is a marker. Declaring `effects(<Asy
 
 ### 7.7.7 `DB`
 
-The `DB` effect executes SQL against a relational database (#229, since v0.1.7). Functions that read or write the database must declare `effects(<DB>)`, making database access visible in the type signature.
+The `DB` effect executes SQL against a relational database ([#229](https://github.com/aallan/vera/issues/229)). Functions that read or write the database must declare `effects(<DB>)`, making database access visible in the type signature.
 
 | Operation | Signature | Description |
 |-----------|-----------|-------------|
@@ -428,7 +438,7 @@ The `DB` effect executes SQL against a relational database (#229, since v0.1.7).
 
 The second argument is the **positional parameter list** — the values bound, in order, to the `?` placeholders in the SQL. Each parameter is an `Option<String>`: `Some(v)` binds a value, `None` binds SQL `NULL`. Passing data as parameters — rather than assembling it into the SQL text — is what keeps a value from being parsed as SQL, the standard defence against injection. See §9.5.7 for the row and parameter marshalling.
 
-Like `IO`, `DB` is built-in — no `effect DB { ... }` declaration is needed (and one is `E152`). Both operations return `Result`: a failed statement (malformed SQL, a constraint violation, an unreachable database) surfaces as `Err(String)`, never a trap, so every call site must `match` the failure arm. Operations are host-backed; the connection is chosen by the `VERA_DB_URL` environment variable, defaulting to an in-memory SQLite database (`sqlite::memory:`). In v1 the effect is un-mockable — `handle[DB]` awaits the user-handleable-host-effect machinery (#372) — and targets SQLite only. The browser runtime answers every `DB` operation with `Err` (a deliberate stub, §12), and the wasi-p2 target rejects `<DB>` at compile time.
+Like `IO`, `DB` is built-in — no `effect DB { ... }` declaration is needed (and one is `E152`). Both operations return `Result`: a failed statement (malformed SQL, a constraint violation, an unreachable database) surfaces as `Err(String)`, never a trap, so every call site must `match` the failure arm. Operations are host-backed; the connection is chosen by the `VERA_DB_URL` environment variable, defaulting to an in-memory SQLite database (`sqlite::memory:`). The effect is not mockable — `handle[DB]` awaits the user-handleable-host-effect machinery (#372) — and targets SQLite only. The browser runtime answers every `DB` operation with `Err` (a deliberate stub, §12), and the wasi-p2 target rejects `<DB>` at compile time.
 
 ## 7.8 Effect Subtyping
 
@@ -444,7 +454,7 @@ In general, `effects(<E1>)` is a subtype of `effects(<E1, E2>)`. A function that
 ![Effect subtyping by row inclusion: pure fits where IO is allowed, IO fits where IO plus State is allowed — fewer effects always fit where more are expected.](../assets/diagrams/effect-row-lattice.svg)
 
 This means:
-- A `pure` function can be passed where `Fn(@A -> @B) effects(<IO>)` is expected.
+- A `pure` function can be passed where `fn(A -> B) effects(<IO>)` is expected.
 - A function with `effects(<IO>)` can be passed where `effects(<IO, Exn<String>>)` is expected.
 
 ## 7.9 Effect-Contract Interaction
@@ -482,6 +492,7 @@ The argument to `old` and `new` MUST be an *effect reference* — the name of a 
 
 When a function calls other functions, the effects compose via row union:
 
+<!-- vera:skip-check category="INCOMPLETE" code="E200 E200" reason="calls bar and baz, which the example describes but does not define" -->
 ```
 private fn foo(@Unit -> @Unit)
   requires(true)
@@ -512,7 +523,7 @@ Special case: if the handler does not always call `resume`, the return type of t
 
 ```
 handle[Exn<String>] {
-  throw(@String) -> None,          -- returns Option<Int>
+  throw(@String) -> None           -- returns Option<Int>
 } in {
   Some(risky_computation())        -- body type: Option<Int> with effects <Exn<String>>
 }

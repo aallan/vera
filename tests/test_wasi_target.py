@@ -328,7 +328,7 @@ public fn main(-> @Int)
         assert out == ""
 
     def test_overflow_guard_traps_through_the_dispatch_table(self) -> None:
-        """overflow_trap is a non-WASI op planted in the same table;
+        """`trap` is a non-WASI op planted in the same table;
         the #798 guard must still stop a wrapping add."""
         result = _compile_ok("""\
 public fn main(-> @Int)
@@ -1421,6 +1421,19 @@ public fn handle(@Request -> @Response)
 }
 """
 
+#: #1479: a handler that lets an `Exn<String>` escape — the path it was
+#: asked for, so the message quotes a value the request chose.
+EXN_HANDLER = """\
+public fn handle(@Request -> @Response)
+  requires(true) ensures(true) effects(<HttpServer, Exn<String>>)
+{
+  match @Request.0 {
+    Request(@String, @String, @Map<String, String>, @String) ->
+      throw(@String.1)
+  }
+}
+"""
+
 FORBIDDEN_HEADER_HANDLER = """\
 public fn handle(@Request -> @Response)
   requires(true) ensures(true) effects(<HttpServer>)
@@ -1501,9 +1514,31 @@ public fn handle(@Request -> @Response)
 
     def test_dispatch_table_is_32_slots(self) -> None:
         """Map family lands at slots 16+; the table must grow from the
-        cli world's 16 (design §1.3)."""
+        cli world's (design §1.3)."""
         wat = _emit_server(HTTP_SERVER_EXAMPLE)
         assert '(table $wasi_tbl (export "wasi_tbl") 32 32 funcref)' in wat
+
+    def test_no_two_ops_share_a_dispatch_slot(self) -> None:
+        """The two op tables compose into ONE index space in this world.
+
+        `_OPS` and `_MAP_OPS` are written apart and their slots are picked
+        by hand, so nothing but this stops a new cli op from taking a map
+        op's `elem` index — which does not fail to parse, it silently
+        dispatches one to the other.  #754 nearly did exactly that.
+        """
+        from vera.codegen.wasi import _MAP_OPS, _OPS, _SERVER_TABLE_SIZE
+
+        seen: dict[int, str] = {}
+        for table in (_OPS, _MAP_OPS):
+            for name, spec in table.items():
+                assert spec.slot not in seen, (
+                    f"{name} and {seen[spec.slot]} share slot {spec.slot}"
+                )
+                seen[spec.slot] = name
+        assert max(seen) < _SERVER_TABLE_SIZE, (
+            f"slot {max(seen)} ({seen[max(seen)]}) is outside the server "
+            f"dispatch table ({_SERVER_TABLE_SIZE} entries)"
+        )
 
     def test_every_wasi_version_is_0_2_0(self) -> None:
         wat = _emit_server(MAP_ORDER_HANDLER)
@@ -1641,8 +1676,16 @@ class TestCliWorldPin:
         )
 
     def test_cli_emission_carries_no_server_machinery(self) -> None:
+        from vera.codegen.wasi import _CLI_TABLE_SIZE
+
         wat = emit_wasi_component(_compile_ok(KITCHEN_SINK))
-        assert '(table $wasi_tbl (export "wasi_tbl") 16 16 funcref)' in wat
+        # Read from the emitter's own constant rather than pinned: the size
+        # is one past the highest cli slot, so adding an op (#754 did) moves
+        # it, and a literal here would only record when someone last looked.
+        assert (
+            f'(table $wasi_tbl (export "wasi_tbl") '
+            f'{_CLI_TABLE_SIZE} {_CLI_TABLE_SIZE} funcref)'
+        ) in wat
         assert "wasi:http" not in wat
         assert "serve_handle" not in wat
         assert "$op_map_" not in wat
@@ -1709,14 +1752,16 @@ class _WasmtimeServe:
     assertions)."""
 
     def __init__(self, component_text: str, tmp_path: Path,
-                 name: str = "component.wat") -> None:
+                 name: str = "component.wat",
+                 flags: tuple[str, ...] = ()) -> None:
         import subprocess
         import threading
 
         wat_file = tmp_path / name
         wat_file.write_text(component_text, encoding="utf-8")
         self._proc = subprocess.Popen(
-            ["wasmtime", "serve", "--addr", "127.0.0.1:0", str(wat_file)],
+            ["wasmtime", "serve", *flags, "--addr", "127.0.0.1:0",
+             str(wat_file)],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, encoding="utf-8",
         )
@@ -1937,6 +1982,29 @@ class TestWasmtimeServeSmoke:
         assert "worker failed" in log
         assert "Main!handle" in log
         assert "requires" in log
+
+    def test_an_escaped_exception_is_named_by_the_served_component(
+        self, tmp_path: Path,
+    ) -> None:
+        """#1479: `handle` is an entry point, so an `Exn<T>` it lets escape
+        is named as one leaving `main` is — the component answers 500, and
+        the trap is the adapter's `uncaught_exception` above the export's
+        boundary, with the message on the adapter's stderr.  A program
+        that throws uses the exceptions proposal, which stock `wasmtime
+        serve` enables with `-W exceptions=y`."""
+        wat = _emit_server(EXN_HANDLER)
+        with _WasmtimeServe(wat, tmp_path,
+                            flags=("-W", "exceptions=y")) as srv:
+            status, _, _ = _serve_request(
+                srv.port, "GET", "/no/such/page", [], "")
+            assert status == 500
+            log = srv.settled_log()
+        assert "Adapter!trap_kind_uncaught_exception" in log
+        assert "Main!handle$exn_boundary" in log
+        assert (
+            "An `Exn<String>` escaped `handle`: no `handle[Exn<String>]` "
+            "caught it before the call returned, and the value thrown was "
+            '"/no/such/page"') in log
 
     def test_forbidden_response_header_is_a_graceful_500(
         self, tmp_path: Path,

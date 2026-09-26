@@ -7,7 +7,10 @@ orchestration.
 
 from __future__ import annotations
 
-from vera import ast
+from collections import Counter
+from collections.abc import Callable
+
+from vera import ast, narrowing
 from vera.slots import bare_call_denotes_user_fn
 from vera.checker.sql import (
     count_placeholders,
@@ -17,6 +20,7 @@ from vera.checker.sql import (
 from vera.environment import (
     DB_SQL_OP_NAMES,
     STRING,
+    AdtInfo,
     ConstructorInfo,
     FunctionInfo,
     OpInfo,
@@ -27,11 +31,13 @@ from vera.types import (
     ConcreteEffectRow,
     FunctionType,
     PureEffectRow,
+    RefinedType,
     Type,
     TypeVar,
     UnknownType,
     base_type,
     contains_fresh_typevar,
+    contains_literal_hole,
     contains_typevar,
     erases_to_unit,
     is_effect_subtype,
@@ -41,6 +47,7 @@ from vera.types import (
     pretty_inferred_type,
     strip_builtin_typevar_marker,
     substitute,
+    types_equal,
 )
 
 
@@ -103,6 +110,59 @@ def _compatible_modulo_typevars(
     return is_subtype(a, b) or is_subtype(b, a)
 
 
+
+def _type_var_occurrences(ty: Type, out: Counter[str]) -> None:
+    """Count into *out* every occurrence of a type variable in *ty*, at any
+    depth: through type arguments, a function type's parameters, result and
+    effect row, and a refinement's base."""
+    if isinstance(ty, TypeVar):
+        out[ty.name] += 1
+    elif isinstance(ty, AdtType):
+        for arg in ty.type_args:
+            _type_var_occurrences(arg, out)
+    elif isinstance(ty, FunctionType):
+        for param in ty.params:
+            _type_var_occurrences(param, out)
+        _type_var_occurrences(ty.return_type, out)
+        _effect_type_var_occurrences(ty.effect, out)
+    elif isinstance(ty, RefinedType):
+        _type_var_occurrences(ty.base, out)
+
+
+def _effect_type_var_occurrences(row: object, out: Counter[str]) -> None:
+    """:func:`_type_var_occurrences` over an effect row's type arguments."""
+    if isinstance(row, ConcreteEffectRow):
+        for inst in row.effects:
+            for arg in inst.type_args:
+                _type_var_occurrences(arg, out)
+
+
+def _instantiation_ends_at_formal(fn_info: FunctionInfo, index: int) -> bool:
+    """Whether the instantiation a call infers from argument *index* types
+    nothing but that argument: every type variable formal *index* mentions
+    occurs exactly once in *fn_info*'s whole signature — so in no other
+    parameter (a callback's parameters and result included), not in the
+    result or the effect row, and not twice in the formal itself.
+
+    Read off the signature's structure, so every callee is answered the
+    same way: `array_length(@Array<T>)` qualifies; `array_any(@Array<T>,
+    fn(T -> Bool))`, whose callback reads the elements at `T`, does not."""
+    counts: Counter[str] = Counter()
+    for param in fn_info.param_types:
+        _type_var_occurrences(param, counts)
+    _type_var_occurrences(fn_info.return_type, counts)
+    _effect_type_var_occurrences(fn_info.effect, counts)
+    formal: Counter[str] = Counter()
+    _type_var_occurrences(fn_info.param_types[index], formal)
+    return bool(formal) and all(counts[var] == 1 for var in formal)
+
+
+def _names(name: str) -> Callable[[str], bool]:
+    """The constructor-name test a pattern of constructor *name* makes."""
+    def matches(ctor_name: str) -> bool:
+        return ctor_name == name
+    return matches
+
 class CallsMixin:
     """Methods for checking function calls, constructors, and qualified calls."""
 
@@ -110,12 +170,20 @@ class CallsMixin:
     # Function calls
     # -----------------------------------------------------------------
 
-    def _check_fn_call(self, expr: ast.FnCall) -> Type | None:
-        """Type-check a function call."""
-        return self._check_call_with_args(expr.name, expr.args, expr)
+    def _check_fn_call(self, expr: ast.FnCall, *,
+                       expected: Type | None = None) -> Type | None:
+        """Type-check a function call.
+
+        *expected* is the type the call's result is checked against, where
+        the context supplies one: a generic callee's type arguments that
+        only literals would fix take it (#1541).
+        """
+        return self._check_call_with_args(expr.name, expr.args, expr,
+                                          expected=expected)
 
     def _check_call_with_args(self, name: str, args: tuple[ast.Expr, ...],
-                              node: ast.Node) -> Type | None:
+                              node: ast.Node, *,
+                              expected: Type | None = None) -> Type | None:
         """Check a call to function `name` with given arguments."""
         # apply_fn is a checker special form (#854): it is variadic and
         # effect-polymorphic — its arity, argument types, result type,
@@ -147,7 +215,8 @@ class CallsMixin:
         if bare_call_denotes_user_fn(name, self._user_fn_names):
             fn_info = self._lookup_function_scoped(name)
             if fn_info is not None:
-                return self._check_fn_call_with_info(fn_info, args, node)
+                return self._check_fn_call_with_info(fn_info, args, node,
+                                                     expected=expected)
 
         # Maybe it's an effect operation
         op_info = self.env.lookup_effect_op(name)
@@ -207,17 +276,102 @@ class CallsMixin:
         if ab_op:
             return self._check_ability_op_call(ab_op, args, node)
 
-        # Unresolved — emit warning and continue
+        # #1307: the name resolves to nothing HERE, but the program does
+        # declare it — as a `where` helper of another declaration, which
+        # spec §5.8 makes local to its parent.  Reported as its own error
+        # rather than E200's warning: E200's instruction ("define it in
+        # this file") is false for a name the file already declares, and
+        # codegen has no target for the call either way, so accepting the
+        # program would be a check-green module that cannot be built.
+        owners = self._where_helper_parents.get(name)
+        if owners:
+            # Each owner arrives ready to read: "'holder'" for a helper of
+            # this file, "'phost' in module 'hlib'" for an imported one.
+            owner_list = ", ".join(sorted(owners))
+            plural = "s" if len(owners) > 1 else ""
+            # The two fixes differ in kind, not just in wording: a caller
+            # in this file can move into the parent's body, and a caller in
+            # another file cannot — its repair is to call the parent it
+            # already imports, or to have the module export the helper.
+            imported = any("in module" in o for o in owners)
+            parents_only = ", ".join(
+                sorted(o.split(" in module ")[0] for o in owners)
+            )
+            if imported:
+                repair = (
+                    f"Call {parents_only} instead — a module reaches its "
+                    f"helpers, an importer reaches the module's public "
+                    f"declarations — or, if '{name}' is meant to be shared, "
+                    f"lift it out of the `where` block{plural} to a "
+                    f"top-level 'public fn {name}(...)' in that module and "
+                    f"import it."
+                )
+            else:
+                repair = (
+                    f"Call {parents_only} instead, move this call into the "
+                    f"body of {parents_only}, or — if '{name}' is meant to "
+                    f"be shared — lift it out of the `where` block{plural} "
+                    f"to a top-level 'private fn {name}(...)'."
+                )
+            self._error(
+                node,
+                f"'{name}' is a where-helper of {owner_list} and is not in "
+                f"scope here.",
+                rationale="A function declared in a `where` block is local "
+                          "to the function that declares it: it is visible "
+                          "to that function's body and to its sibling "
+                          "helpers, and to nothing else — not to another "
+                          "declaration in the same file, and not to a file "
+                          "that imports its parent's module.",
+                fix=repair,
+                spec_ref='Chapter 5, Section 5.8 "Function Visibility"',
+                error_code="E178",
+            )
+            for arg in args:
+                self._synth_expr(arg)
+            return UnknownType()
+
+        if name in self._ambiguous_import_fn_names:
+            # #1304: two imports supply this name, so it denotes none of
+            # their declarations, and the E155 at the import is the one
+            # error the program owes.  A second error here would only
+            # restate it, and could name no remedy of its own: qualifying
+            # the call does not lift an E155 (§8.5.2.2).
+            for arg in args:
+                self._synth_expr(arg)
+            return UnknownType()
+
+        # Unresolved — an error (#1513): a call to nothing has no body to
+        # compile, so a warning here let `vera check` pass a program code
+        # generation then refused.  Name the module when one this file can
+        # see declares the function, which is the fix a reader needs.
+        # Sorted: a module checker's `_resolved_modules` is built by walking
+        # a set of import paths, so its order follows the hash seed.
+        declaring = sorted(
+            mod.path for mod in self._resolved_modules
+            if name in self._module_functions.get(mod.path, {})
+        )
+        if declaring:
+            fix = ("Import it from the module that declares it: "
+                   + " or ".join(self._import_line(m, name)
+                                 for m in declaring)
+                   + ".  A module reached only through another module's "
+                     "imports is not visible to this file until it is "
+                     "imported here.")
+        else:
+            fix = (f"Define 'fn {name}(...)' in this file, or import it from "
+                   f"the module that declares it with "
+                   f"'import <module>({name});' (replace <module> with that "
+                   f"module's path, e.g. 'vera.math'); check the spelling "
+                   f"too.")
         self._error(
             node,
             f"Unresolved function '{name}'.",
             rationale="A bare call must resolve to a function, effect "
                       "operation, or ability operation in scope; no "
-                      "declaration named this could be found.",
-            fix=f"Define 'fn {name}(...)' in this file, or import it from the "
-                f"module that declares it with 'import <module>({name});' "
-                f"(replace <module> with that module's path, e.g. 'vera.math').",
-            severity="warning",
+                      "declaration named this could be found, so there is "
+                      "no body to call and the program cannot compile.",
+            fix=fix,
             spec_ref='Chapter 8, Section 8.5.1 "Bare Calls"',
             error_code="E200",
         )
@@ -228,7 +382,9 @@ class CallsMixin:
 
     def _check_fn_call_with_info(self, fn_info: FunctionInfo,
                                  args: tuple[ast.Expr, ...],
-                                 node: ast.Node) -> Type | None:
+                                 node: ast.Node, *,
+                                 expected: Type | None = None,
+                                 ) -> Type | None:
         """Check a call against a known function signature."""
         # Synth arg types.  For non-generic functions pass the declared
         # param type as *expected* so that nested constructors can resolve
@@ -266,9 +422,15 @@ class CallsMixin:
         type_arg_conflict = False
         if fn_info.forall_vars:
             conflicts: set[str] = set()
-            mapping = self._infer_type_args(
-                fn_info.forall_vars, fn_info.param_types, arg_types,
-                conflicts)
+            # #1541/#1565: an argument's literals take their type from the
+            # call's other arguments, then from the type the result is
+            # expected at, and only then from their own values.
+            mapping, soft_mapping = self._infer_type_args_in_context(
+                fn_info.forall_vars, fn_info.param_types, arg_types, args,
+                result_type=fn_info.return_type, expected=expected,
+                conflicts=conflicts)
+            self._record_literal_soft_result(
+                node, substitute(fn_info.return_type, soft_mapping))
             if conflicts:
                 # #898: two arguments pinned the same type parameter to
                 # different, irreconcilable types (`eq2(MkOk("x"), MkOk(5))`
@@ -381,11 +543,38 @@ class CallsMixin:
                 # check (Int <: Nat holds).  Record the instantiated
                 # formal as each argument's target now, so the verifier's
                 # @Nat narrowing walker can obligate it.
+                #
+                # #1503: except a COMPOSITE argument carrying a pure-literal
+                # subtraction at a formal whose instantiation types nothing
+                # else in the callee's signature.  `array_length([0 - 1, 5])`
+                # infers `T = Nat` from the literal itself, because the
+                # checker types `0 - 1` bottom-up as `Nat`; recorded as the
+                # literal's target, it has the construction-position element
+                # leg (#1440) obligate and guard -1 against it — E503 and a
+                # trap on a program whose value is 2.  That instantiation
+                # ends at this call: nothing past it is typed by it, so
+                # declining it declines no fact anything downstream reads.
+                # A formal whose variables reach anything else keeps its
+                # target, as a scalar argument does since #747: the result
+                # (`array_reverse`, `id`), where the instantiation leaves
+                # through the call and is read as a declaration (#1541);
+                # and another parameter, which the callee reads at the same
+                # instantiation — `array_any`'s callback takes each element
+                # as its `@Nat`, so -1 arrived there as 18446744073709551615
+                # in a program that verified clean.
                 if self.expr_target_types is not None:
-                    for c_arg, c_pt in zip(args, param_types):
+                    for index, (c_arg, c_pt) in enumerate(
+                            zip(args, param_types)):
                         key = ast.span_key(c_arg)
-                        if key is not None and not contains_typevar(c_pt):
-                            self.expr_target_types[key] = c_pt
+                        if key is None or contains_typevar(c_pt):
+                            continue
+                        if (_instantiation_ends_at_formal(fn_info, index)
+                                and narrowing.carries_literal_subtraction(
+                                    c_arg)
+                                and not narrowing.holds_literal_subtraction(
+                                    c_arg)):
+                            continue
+                        self.expr_target_types[key] = c_pt
 
         # Check each argument.  When a type-argument conflict was already
         # reported (#898), skip the per-argument subtype check: the merged
@@ -413,6 +602,23 @@ class CallsMixin:
                     if is_subtype(re, param_ty):
                         arg_ty = re
                         arg_types[i] = re
+            # #1541: an argument whose literals the instantiation typed
+            # differently from their own values is checked AGAINST that
+            # instantiation, so each literal meets the type it now has —
+            # a negative one in a `Nat` position is the narrowing it is
+            # (E503), and a nested generic call or constructor takes the
+            # instantiation as its own context.
+            elif (fn_info.forall_vars
+                    and not contains_typevar(param_ty)
+                    and not types_equal(arg_ty, param_ty)
+                    and contains_literal_hole(
+                        self._literal_soft_type(args[i], arg_ty)
+                        or arg_ty)):
+                re = self._synth_expr(args[i], expected=param_ty)
+                if (re is not None and not isinstance(re, UnknownType)
+                        and is_subtype(re, param_ty)):
+                    arg_ty = re
+                    arg_types[i] = re
             # #1010: a constructor argument against a PARTIALLY-generic
             # param (`MkPair(0 - 5, None)` as `@Pair<Nat, T>`) was never
             # re-synthesized — every re-synth above is gated on the WHOLE
@@ -1179,25 +1385,185 @@ class CallsMixin:
     # Constructors
     # -----------------------------------------------------------------
 
+    def _import_line(self, mod_path: tuple[str, ...], name: str) -> str:
+        """The import line that brings *name* in from *mod_path* (#1513).
+
+        When this file already imports that module selectively, the line
+        is that import with *name* added to its list, so following the fix
+        leaves one import of the module rather than a second declaration
+        beside the first.
+        """
+        label = ".".join(mod_path)
+        existing = self._import_names.get(mod_path)
+        names = sorted(existing | {name}) if existing else [name]
+        return f"'import {label}({', '.join(names)});'"
+
+    def _stranger_constructor(
+        self, name: str,
+    ) -> tuple[list[tuple[tuple[str, ...], ConstructorInfo]],
+               ConstructorInfo | None]:
+        """Resolve a constructor of a type this file does not import (#1513).
+
+        Importing a data type is what brings its constructors into scope
+        (§8.3.3, §8.4.2), so a constructor whose type reaches this file only
+        through another declaration's signature — `paint(Green)`, with
+        `Colour` imported by `paint`'s module and not by this file — is not
+        in the environment.  It still denotes exactly one declaration when
+        one module's PUBLIC type declares it, and code generation compiles
+        it (`_namespace_ctor_projection`'s fallback class, which asks the
+        same question of the same modules).
+
+        Returns every module whose public types declare *name*, sorted by
+        path, and the one constructor the name denotes, or
+        ``None`` when it denotes no single declaration.  It denotes one only
+        when exactly one module declares it and its type is one
+        `_stranger_data_type` resolves: a value of it is typed by the bare
+        type name, so a second meaning of that name would let one value pass
+        for another type's.
+
+        A construction and a pattern resolve through here alike, so a
+        pattern is typed by the same declaration: its fields bind at their
+        declared types, and its match is judged against that type's
+        constructors.
+        """
+        # Sorted by path: a module checker's `_resolved_modules` is built by
+        # walking a set of import paths, so its order follows the hash seed.
+        candidates = sorted(
+            ((mod.path, self._module_constructors[mod.path][name])
+             for mod in self._resolved_modules
+             if name in self._module_constructors.get(mod.path, {})),
+            key=lambda pair: pair[0],
+        )
+        if len(candidates) != 1:
+            return candidates, None
+        ci = candidates[0][1]
+        if self._stranger_data_type(ci.parent_type) is None:
+            return candidates, None
+        return candidates, ci
+
+    def _stranger_data_type(self, type_name: str) -> AdtInfo | None:
+        """The declaration a data type name this file does not import
+        denotes (#1513), or ``None``.
+
+        A value of such a type reaches the file through an imported
+        signature (`pick(1)` returning `mb`'s `Colour`), typed by the bare
+        name.  The name denotes one declaration only when no data type of
+        that name is declared or imported here — the prelude's own does not
+        count (#1559) — and exactly one module this file can see declares a
+        type of that name, public or private: two would give one bare name
+        two types.  The pattern rules
+        read it for such a value: which constructors a match on it must
+        cover, and which ones can match it at all.
+        """
+        # A type the file declares or imports bars it; the prelude's own
+        # type of the name does not (#1559).  Every file holds `Json`,
+        # `Request` and the prelude's other types, so counting them refused
+        # every constructor of a module's type named like one: `mk(1)`,
+        # returning `a`'s `Json`, was accepted while `MyK(1)`, building the
+        # same value, was an error.  Such a value meets the prelude's type
+        # by the bare name in this file whichever way it arrives (#1560), so
+        # barring the construction guarded nothing.
+        bound = self.env.data_types.get(type_name)
+        if (bound is not None
+                and bound is not self._builtin_data_types.get(type_name)):
+            return None
+        declared = [
+            types[type_name]
+            for _path, types in sorted(self._module_all_data_types.items())
+            if type_name in types
+        ]
+        if len(declared) != 1:
+            return None
+        return declared[0]
+
+    def _unknown_ctor_fix(
+        self, name: str,
+        candidates: list[tuple[tuple[str, ...], ConstructorInfo]],
+    ) -> str:
+        """The fix for a constructor name that denotes no declaration here."""
+        if not candidates:
+            return (f"Declare '{name}' as a constructor of a 'data' type in "
+                    f"this file, or import the data type that declares it "
+                    f"with 'import <module>(<Type>);' — importing a data "
+                    f"type is what makes its constructors available (check "
+                    f"the spelling and capitalisation too).")
+        imports = " or ".join(
+            self._import_line(path, ci.parent_type)
+            for path, ci in candidates
+        )
+        return (f"Import the data type that declares '{name}': {imports}.  "
+                f"Importing a data type is what makes its constructors "
+                f"available; if more than one module declares '{name}', "
+                f"import the type of the one you mean.")
+
+    # The stranger-constructor warning's text (#1513), shared by E210 and
+    # E214 in a construction and E320 and E322 in a pattern, whose `_error`
+    # calls each carry their code as a literal so the warning-site scans
+    # (`check_diagnostic_fields.py`, the doc gate's plant table,
+    # `test_warning_severity_1513.py`) can read it.
+    _STRANGER_CTOR_RATIONALE = (
+        "Importing a data type is what brings its constructors into scope.  "
+        "This one reaches the file only through another declaration's "
+        "signature; the name denotes exactly one declaration, so the program "
+        "compiles, but the file does not say where it comes from."
+    )
+
+    def _stranger_ctor_message(
+        self, name: str, ci: ConstructorInfo,
+        candidates: list[tuple[tuple[str, ...], ConstructorInfo]],
+    ) -> tuple[str, str]:
+        """The description and fix of the stranger-constructor warning."""
+        mod_path = candidates[0][0]
+        mod_label = ".".join(mod_path)
+        line = self._import_line(mod_path, ci.parent_type)
+        if self._import_names.get(mod_path):
+            fix = (f"Add '{ci.parent_type}' to this file's import of "
+                   f"'{mod_label}': {line}.")
+        else:
+            fix = f"Add the import: {line}."
+        return (
+            f"Constructor '{name}' belongs to data type '{ci.parent_type}' "
+            f"of module '{mod_label}', which this file does not import.",
+            fix,
+        )
+
     def _check_constructor_call(self, expr: ast.ConstructorCall, *,
                                 expected: Type | None = None) -> Type | None:
         """Type-check a constructor call: Ctor(args)."""
         # Tuple is a variadic built-in constructor — handle specially
         if expr.name == "Tuple":
-            return self._check_tuple_constructor(expr)
+            return self._check_tuple_constructor(expr, expected=expected)
 
         ci = self.env.lookup_constructor(expr.name)
+        if ci is None and expr.name in self._refused_ctor_names:
+            # #1497: a constructor of a declaration refused as E158, whose
+            # E158 is the one error the program owes.
+            for arg in expr.args:
+                self._synth_expr(arg)
+            return UnknownType()
+        if ci is None:
+            candidates, ci = self._stranger_constructor(expr.name)
+            if ci is not None:
+                message, fix = self._stranger_ctor_message(
+                    expr.name, ci, candidates)
+                self._error(
+                    expr, message,
+                    rationale=self._STRANGER_CTOR_RATIONALE,
+                    fix=fix,
+                    severity="warning",
+                    spec_ref='Chapter 8, Section 8.5.4 '
+                             '"Constructor Resolution"',
+                    error_code="E210",
+                )
         if ci is None:
             self._error(
                 expr,
                 f"Unknown constructor '{expr.name}'.",
                 rationale="A constructor call must name a constructor declared "
-                          "by some 'data' type in scope; no such constructor "
-                          "is defined or imported.",
-                fix=f"Declare '{expr.name}' as a constructor in a 'data' type, "
-                    f"or import the data type that defines it (importing a "
-                    f"data type makes its constructors available).",
-                severity="warning",
+                          "by a 'data' type in scope; no such constructor is "
+                          "defined or imported, so the call has no value to "
+                          "build and the program cannot compile.",
+                fix=self._unknown_ctor_fix(expr.name, candidates),
                 spec_ref='Chapter 2, Section 2.4 "Algebraic Data Types (ADTs)"',
                 error_code="E210",
             )
@@ -1264,7 +1630,8 @@ class CallsMixin:
                     spec_ref='Chapter 2, Section 2.4 "Algebraic Data Types (ADTs)"',
                     error_code="E211",
                 )
-            return self._ctor_result_type(ci, arg_types, expected=expected)
+            return self._ctor_result_type(ci, arg_types, expected=expected,
+                                          args=expr.args)
 
         if len(expr.args) != len(ci.field_types):
             self._error(
@@ -1281,10 +1648,18 @@ class CallsMixin:
                 ),
                 error_code="E212",
             )
-            return self._ctor_result_type(ci, arg_types, expected=expected)
+            return self._ctor_result_type(ci, arg_types, expected=expected,
+                                          args=expr.args)
 
-        # Infer type args for parameterised ADTs from arg types
-        mapping = self._infer_ctor_type_args(ci, arg_types)
+        # Infer type args for parameterised ADTs from arg types — a
+        # literal argument taking its type from the other fields, then from
+        # the expected type, then from its own value (#1541).
+        soft: dict[str, Type] = {}
+        mapping = self._infer_ctor_type_args(ci, arg_types, args=expr.args,
+                                             expected=expected, soft_out=soft)
+        self._record_literal_soft_result(expr, AdtType(ci.parent_type, tuple(
+            soft.get(tv, TypeVar(tv))
+            for tv in ci.parent_type_params or ())))
 
         # Merge expected-type mapping for unresolved vars
         for tv, exp_ty in expected_mapping.items():
@@ -1294,6 +1669,70 @@ class CallsMixin:
         field_types = ci.field_types
         if mapping:
             field_types = tuple(substitute(ft, mapping) for ft in field_types)
+
+        # #747, at the constructor door: record each argument's INSTANTIATED
+        # field type as its target, whatever the expected type came from.
+        # The generic FUNCTION call has recorded this since #747 and the
+        # constructor never did, so a field type the checker knows only after
+        # inference was invisible to the verifier's narrowing walk, which
+        # consults this table whenever the DECLARED field type is a TypeVar.
+        #
+        # Two shapes measured silent because of it, both with the guard
+        # emitted and nothing on the record:
+        #
+        # * `match Some(0 - 5) { Some(@Nat) -> … }` — the checker infers
+        #   `T = Nat` from the argument (`0 - 5` is two non-negative literals,
+        #   so `Nat - Nat`), types the construction `Option<Nat>`, and the
+        #   narrowing into that `@Nat` field had no target to be read from;
+        # * `MkBox([0 - 5])` into an `Array<Pos>` field — a CONCRETE field
+        #   type, which the expected-type threading above reaches only when
+        #   the constructor is parameterised and the caller supplied an
+        #   `expected`, so a monomorphic constructor's field was never a
+        #   target either.
+        #
+        # Recording only — the `expected` threaded to `_synth_expr` above is
+        # untouched, so no inference decision and no checker diagnostic moves.
+        # A field type still carrying a TypeVar is not recorded, exactly as at
+        # the function door: an uninstantiated target is not a target.
+        # Filling a GAP, never displacing: an entry already here came from the
+        # `expected` the enclosing context forced, which is the instantiation
+        # the caller requires and is strictly more authoritative than one
+        # inferred from the arguments.  `wrap_opt(@Int -> @Option<Nat>)`
+        # returning `Some(@Int.0)` is the case that measures the difference —
+        # `_infer_ctor_type_args` reads `T = Int` off the argument and never
+        # consults the return, so overwriting lost the `nat_bind` that
+        # conformance program exists to pin (the one corpus mover on the
+        # first shape of this change).
+        #
+        # #1503: except where the instantiation is the argument's OWN
+        # bottom-up type and that type is the one the shared classifier
+        # refutes.  `W(0 - 3)` infers `A = Nat` because `0 - 3` is two
+        # non-negative literals; recording that `Nat` as the argument's
+        # target turned a store of -3 into a field of its own type into a
+        # narrowing — E503 at verify and a trapping guard at run time, on a
+        # program that reads the field back at `@Int` and was valid on
+        # `main`.  A target the context forced is untouched (it was recorded
+        # above, through `expected`), and so is an inferred one whose
+        # argument carries no pure-literal subtraction, where the checker's
+        # type is the value's type.  The narrowing such a value can meet is
+        # obligated where a pattern binds it at a scalar position, by the
+        # legs that know the type it is bound at (`vera.narrowing`); a
+        # pattern that binds it within a COMPOSITE is the context of the
+        # construction instead (`_register_pattern_reads`).
+        if self.expr_target_types is not None:
+            for c_arg, c_ft, declared_ft in zip(
+                    expr.args, field_types, ci.field_types):
+                key = ast.span_key(c_arg)
+                if key is None or contains_typevar(c_ft):
+                    continue
+                if (contains_typevar(substitute(declared_ft,
+                                                expected_mapping))
+                        and narrowing.carries_literal_subtraction(c_arg)):
+                    continue
+                recorded = self.expr_target_types.setdefault(key, c_ft)
+                if (isinstance(c_arg, ast.ConstructorCall)
+                        and c_arg.name != "Tuple"):
+                    self._record_nested_ctor_targets(c_arg, recorded)
 
         for i, (arg_ty, field_ty) in enumerate(zip(arg_types, field_types)):
             if arg_ty is None or isinstance(arg_ty, UnknownType):
@@ -1307,6 +1746,33 @@ class CallsMixin:
                 if arg_ty is None or isinstance(arg_ty, UnknownType):
                     continue
                 arg_types[i] = arg_ty
+            # #1541: a field whose literals the field type types
+            # differently from their own values is checked against it —
+            # the function-call door's rule, at the constructor door, for a
+            # declared field (`MkBox(Some(0 - 5))` into `Option<Pos>`) as
+            # for an instantiated one.  Not where the enclosing context
+            # already gave the field its type: the argument was synthesized
+            # against that type above, and it is the more authoritative
+            # target (`Some(Tuple(x, 5))` returned as an
+            # `Option<Tuple<PosInt, Int>>` keeps its `PosInt`).  And only for
+            # an argument the field already admits: the re-check places each
+            # literal at the type it now has, and must not turn a refusal
+            # into an acceptance (a literal in a `@Byte` field stays E213).
+            elif (not contains_typevar(field_ty)
+                    and is_subtype(arg_ty, field_ty)
+                    and not (field_types_for_expected
+                             and i < len(field_types_for_expected)
+                             and not contains_typevar(
+                                 field_types_for_expected[i]))
+                    and not types_equal(arg_ty, field_ty)
+                    and contains_literal_hole(
+                        self._literal_soft_type(expr.args[i], arg_ty)
+                        or arg_ty)):
+                re = self._synth_expr(expr.args[i], expected=field_ty)
+                if (re is not None and not isinstance(re, UnknownType)
+                        and is_subtype(re, field_ty)):
+                    arg_ty = re
+                    arg_types[i] = re
             if not is_subtype(arg_ty, field_ty):
                 self._error(
                     expr.args[i],
@@ -1325,12 +1791,151 @@ class CallsMixin:
                     error_code="E213",
                 )
 
-        return self._ctor_result_type(ci, arg_types, expected=expected)
+        return self._ctor_result_type(ci, arg_types, expected=expected,
+                                      args=expr.args)
+
+    def _register_arm_pattern_reads(
+        self, scrutinee: ast.Expr, pattern: ast.Pattern,
+    ) -> None:
+        """:py:meth:`_register_pattern_reads` for one `match` arm: a
+        constructor pattern reads the scrutinee's components; a binding
+        pattern at a composite type binds the whole scrutinee there, which
+        is then the context of every construction the scrutinee's value
+        flows from."""
+        if isinstance(pattern, ast.ConstructorPattern):
+            self._register_pattern_reads(
+                scrutinee, list(pattern.sub_patterns), _names(pattern.name),
+            )
+        elif isinstance(pattern, ast.BindingPattern):
+            ty = self._pattern_binding_type(pattern.type_expr)
+            if ty is None or not isinstance(base_type(ty), AdtType):
+                return
+            for leaf in narrowing.value_leaves(scrutinee):
+                key = ast.span_key(leaf)
+                if key is not None:
+                    self._pattern_arg_targets.setdefault(key, ty)
+
+    def _register_pattern_reads(
+        self,
+        source: ast.Expr,
+        fields: list[ast.Pattern | ast.TypeExpr],
+        ctor_matches: Callable[[str], bool],
+    ) -> None:
+        """Record the COMPOSITE types a pattern binds the constructor
+        arguments its *source* builds at, BEFORE the source is synthesized
+        (#1503).
+
+        *fields* are the pattern's positions — a destructure's binding
+        types, or a constructor pattern's sub-patterns — and each one's
+        argument sources are found the way the pattern's legs find them
+        (:func:`vera.narrowing.component_sources`), through nested
+        constructor patterns.  An argument bound at a scalar position is
+        classified where it is bound, by the pattern's own legs.  One bound
+        at a composite type — `W(@Array<Nat>)`, a `@Wrap<Nat>` component —
+        is classified by nothing downstream (a composite binding obligates
+        no component), and the constructor door records no type it inferred
+        from a literal subtraction; so the binding's type is the
+        construction's context (``_pattern_arg_targets``, threaded as its
+        expected type by ``_synth_expr``).  `match W([0 - 3]) {
+        W(@Array<Nat>) -> … }` obligates the `0 - 3` it stores in a `Nat`
+        array, and `W(@Array<Int>)` does not."""
+        for index, field in enumerate(fields):
+            for source_ in narrowing.component_sources(
+                    source, index, ctor_matches):
+                if not source_.is_argument:
+                    continue
+                arg = source_.expr
+                key = ast.span_key(arg)
+                if key is None:
+                    continue
+                if isinstance(field, ast.ConstructorPattern):
+                    self._register_pattern_reads(
+                        arg, list(field.sub_patterns),
+                        _names(field.name),
+                    )
+                    continue
+                te = (field.type_expr if isinstance(field, ast.BindingPattern)
+                      else field if isinstance(field, ast.TypeExpr) else None)
+                ty = self._pattern_binding_type(te) if te is not None else None
+                if ty is not None and isinstance(base_type(ty), AdtType):
+                    self._pattern_arg_targets.setdefault(key, ty)
+
+    def _pattern_binding_type(self, te: ast.TypeExpr) -> Type | None:
+        """A pattern binding's type, resolved without reporting: the
+        pattern is checked, and its diagnostics raised, where it is bound;
+        this looks ahead to it.
+
+        Resolution reports through state that outlives the diagnostic:
+        `_error`'s duplicate collapse (`_seen_diag_keys`) and the one-shot
+        E154 and removed-alias sets.  Kept while only the diagnostic is
+        dropped, that state would deduplicate the binding's own resolution
+        away — `match W([()]) { W(@Array<Unit>) -> 1 }` would lose its
+        E135, pass `vera check` and `vera verify`, and fail to compile — so
+        all of it is restored."""
+        before = len(self.errors)
+        seen = set(self._seen_diag_keys)
+        aliases = set(self._reported_alias_errors)
+        reserved = set(self._reported_reserved_type_refs)
+        try:
+            return self._resolve_type(te)
+        finally:
+            del self.errors[before:]
+            self._seen_diag_keys = seen
+            self._reported_alias_errors = aliases
+            self._reported_reserved_type_refs = reserved
+
+    def _record_nested_ctor_targets(
+        self, ctor: ast.ConstructorCall, target: Type,
+    ) -> None:
+        """Carry a target recorded for a constructor application DOWN to
+        its own arguments (#1503).
+
+        A constructor argument is synthesized before its parent records the
+        field type it is placed in, so a nested application —
+        `MkBox(Some(0 - 5))` into a declared `Option<Pos>` field — instantiated
+        its type parameters from its own argument alone.  The gap fill above
+        now declines to record such an instantiation when the argument holds
+        a pure-literal subtraction (the checker's `Nat` for it is the claim
+        the shared classifier refutes), and the parent's field type is the
+        instantiation the value is in fact placed at, so it is recorded here
+        instead: `0 - 5` is obligated against `Pos`, where it goes.  A gap is
+        filled, never displaced — an entry already present came from the
+        argument's own expected type or its own inference, and stays.  A
+        `Tuple` carrier is left alone: its readers take a component's target
+        from the tuple's own node, which the parent has just recorded.
+        """
+        if self.expr_target_types is None:
+            return
+        info = self.env.lookup_constructor(ctor.name)
+        base = base_type(target)
+        if (info is None or not info.parent_type_params
+                or info.field_types is None
+                or not isinstance(base, AdtType)
+                or base.name != info.parent_type
+                or len(base.type_args) != len(info.parent_type_params)):
+            return
+        mapping = dict(zip(info.parent_type_params, base.type_args))
+        for arg, field_ty in zip(ctor.args, info.field_types):
+            instantiated = substitute(field_ty, mapping)
+            key = ast.span_key(arg)
+            if key is None or contains_typevar(instantiated):
+                continue
+            recorded = self.expr_target_types.setdefault(key, instantiated)
+            if isinstance(arg, ast.ConstructorCall) and arg.name != "Tuple":
+                self._record_nested_ctor_targets(arg, recorded)
 
     def _check_tuple_constructor(
-        self, expr: ast.ConstructorCall
+        self, expr: ast.ConstructorCall, *,
+        expected: Type | None = None,
     ) -> Type | None:
-        """Type-check a variadic Tuple constructor: Tuple(a, b, ...)."""
+        """Type-check a variadic Tuple constructor: Tuple(a, b, ...).
+
+        A component is synthesized with no expected type; where *expected*
+        is a tuple whose component is a `Nat` and a generic call in the
+        component let a negative literal fix an `Int` there, the component
+        is checked against it (``_check_in_literal_context``; PR #1583
+        review), so `let @Tuple<Nat, Nat> = Tuple(1, id(0 - 3))` is refused
+        (E503) as `let @Nat = id(0 - 3)` is."""
         if not expr.args:
             self._error(
                 expr,
@@ -1344,9 +1949,16 @@ class CallsMixin:
                 error_code="E216",
             )
             return UnknownType()
+        components: tuple[Type, ...] | None = None
+        base = base_type(expected) if expected is not None else None
+        if (isinstance(base, AdtType) and base.name == "Tuple"
+                and len(base.type_args) == len(expr.args)):
+            components = base.type_args
         arg_types: list[Type] = []
-        for arg in expr.args:
+        for i, arg in enumerate(expr.args):
             t = self._synth_expr(arg)
+            if components is not None:
+                t = self._check_in_literal_context(arg, t, components[i])
             if t is not None and not isinstance(t, UnknownType):
                 arg_types.append(t)
             else:
@@ -1357,16 +1969,32 @@ class CallsMixin:
                                     expected: Type | None = None) -> Type | None:
         """Type-check a nullary constructor: None, Nil, etc."""
         ci = self.env.lookup_constructor(expr.name)
+        if ci is None and expr.name in self._refused_ctor_names:
+            return UnknownType()  # #1497: see `_check_constructor_call`
+        if ci is None:
+            candidates, ci = self._stranger_constructor(expr.name)
+            if ci is not None:
+                message, fix = self._stranger_ctor_message(
+                    expr.name, ci, candidates)
+                self._error(
+                    expr, message,
+                    rationale=self._STRANGER_CTOR_RATIONALE,
+                    fix=fix,
+                    severity="warning",
+                    spec_ref='Chapter 8, Section 8.5.4 '
+                             '"Constructor Resolution"',
+                    error_code="E214",
+                )
         if ci is None:
             self._error(
                 expr,
                 f"Unknown constructor '{expr.name}'.",
                 rationale="A nullary constructor reference must name a "
-                          "constructor declared by some 'data' type in "
-                          "scope; no such constructor is defined or imported.",
-                fix=f"Declare '{expr.name}' as a constructor in a 'data' "
-                    f"type, or import the data type that defines it.",
-                severity="warning",
+                          "constructor declared by a 'data' type in scope; "
+                          "no such constructor is defined or imported, so "
+                          "the name has no value and the program cannot "
+                          "compile.",
+                fix=self._unknown_ctor_fix(expr.name, candidates),
                 spec_ref=(
                     'Chapter 2, Section 2.4 "Algebraic Data Types (ADTs)"'
                 ),
@@ -1403,7 +2031,8 @@ class CallsMixin:
 
     def _ctor_result_type(self, ci: ConstructorInfo,
                           arg_types: list[Type | None], *,
-                          expected: Type | None = None) -> Type:
+                          expected: Type | None = None,
+                          args: tuple[ast.Expr, ...] | None = None) -> Type:
         """Compute the result type of a constructor call.
 
         When *expected* is an AdtType with the same parent name, unresolved
@@ -1412,7 +2041,8 @@ class CallsMixin:
         """
         if ci.parent_type_params:
             # Try to infer type args from argument types
-            mapping = self._infer_ctor_type_args(ci, arg_types)
+            mapping = self._infer_ctor_type_args(
+                ci, arg_types, args=args, expected=expected)
 
             # Fill unresolved TypeVars from expected type (bidirectional).
             # The same-ADT guard (expected.name == ci.parent_type) means every
@@ -1447,23 +2077,45 @@ class CallsMixin:
             # Use fresh TypeVars for any that remain unresolved — prevents
             # self-referential mappings when different ADTs share a param
             # name (e.g. both Option<T> and List<T> use "T").
-            args = tuple(
+            type_args = tuple(
                 mapping.get(tv, self._fresh_typevar(tv))
                 for tv in ci.parent_type_params
             )
-            return AdtType(ci.parent_type, args)
+            return AdtType(ci.parent_type, type_args)
         return AdtType(ci.parent_type, ())
 
     def _infer_ctor_type_args(self, ci: ConstructorInfo,
-                              arg_types: list[Type | None]) -> dict[str, Type]:
-        """Infer type arguments for a parameterised constructor."""
+                              arg_types: list[Type | None], *,
+                              args: tuple[ast.Expr, ...] | None = None,
+                              expected: Type | None = None,
+                              soft_out: dict[str, Type] | None = None,
+                              ) -> dict[str, Type]:
+        """Infer type arguments for a parameterised constructor.
+
+        With the argument expressions in hand (*args*), a literal field
+        takes its type from its context exactly as at a generic call
+        (#1541): the other fields, then *expected*, then its own value —
+        see ``ResolutionMixin._infer_type_args_in_context``.
+        """
         if not ci.parent_type_params or not ci.field_types:
             return {}
-        mapping: dict[str, Type] = {}
-        for field_ty, arg_ty in zip(ci.field_types, arg_types):
-            if arg_ty is None or isinstance(arg_ty, UnknownType):
-                continue
-            self._unify_for_inference(field_ty, arg_ty, mapping)
+        if args is None or len(args) != len(arg_types):
+            mapping: dict[str, Type] = {}
+            for field_ty, arg_ty in zip(ci.field_types, arg_types):
+                if arg_ty is None or isinstance(arg_ty, UnknownType):
+                    continue
+                self._unify_for_inference(field_ty, arg_ty, mapping)
+            return mapping
+        result_pattern = AdtType(ci.parent_type, tuple(
+            TypeVar(tv) for tv in ci.parent_type_params))
+        mapping, soft = self._infer_type_args_in_context(
+            ci.parent_type_params, ci.field_types, arg_types, args,
+            result_type=result_pattern,
+            expected=(expected if isinstance(expected, AdtType)
+                      and expected.name == ci.parent_type else None),
+            callee_vars_opaque=False)
+        if soft_out is not None:
+            soft_out.update(soft)
         return mapping
 
     # -----------------------------------------------------------------
@@ -1498,17 +2150,20 @@ class CallsMixin:
         ):
             self._check_sql_provenance(expr.name, tuple(expr.args), expr)
 
-        # Try as module-qualified function
+        # Unresolved — an error (#1513): code generation has no operation
+        # to call, and used to fail in the WAT assembler instead.
         self._error(
             expr,
             f"Unresolved qualified call '{expr.qualifier}.{expr.name}'.",
             rationale="A qualified call 'Effect.op' must name an operation of "
                       "an effect that is in scope; no effect named "
-                      f"'{expr.qualifier}' declares an op '{expr.name}'.",
+                      f"'{expr.qualifier}' declares an op '{expr.name}', so "
+                      "there is no operation to perform and the program "
+                      "cannot compile.",
             fix=f"Add '{expr.qualifier}' to the function's effects clause and "
                 f"declare 'op {expr.name}(...)' in that effect, or correct "
-                f"the qualifier or operation name.",
-            severity="warning",
+                f"the qualifier or operation name.  A module function is "
+                f"called with '::' ('module::fn(...)'), not '.'.",
             spec_ref='Chapter 7, Section 7.4 "Performing Effects"',
             error_code="E220",
         )
@@ -1516,15 +2171,16 @@ class CallsMixin:
             self._synth_expr(arg)
         return UnknownType()
 
-    def _check_module_call(self, expr: ast.ModuleCall) -> Type | None:
+    def _check_module_call(self, expr: ast.ModuleCall, *,
+                           expected: Type | None = None) -> Type | None:
         """Type-check a module-qualified call: path.to.fn(args).
 
         Lookup order:
-        1. Module not resolved → warning (same as C7a).
+        1. Module not resolved → the file's own path (#1558) or an error.
         2. Name not in selective import list → error.
         2.5. C7c: function is private → error.
         3. Function found (public) → delegate to ``_check_fn_call_with_info``.
-        4. Function not found in module → warning with available list.
+        4. Function not found in module → error with available list.
         """
         mod_path = tuple(expr.path)
         fn_name = expr.name
@@ -1532,20 +2188,22 @@ class CallsMixin:
 
         # 1. Module not resolved
         if mod_path not in self._resolved_module_paths:
+            if mod_path == self._own_module_path:
+                return self._check_own_module_call(expr, expected=expected)
             self._error(
                 expr,
                 f"Module '{mod_label}' not found. "
                 f"Cannot resolve call to '{fn_name}'.",
-                severity="warning",
                 rationale=(
-                    "No module matching this import path was resolved. "
-                    "Check that the file exists and is imported."
+                    "No module matching this path is imported by this file, "
+                    "and the path does not name the file itself: a file's "
+                    "own path is the one its 'module' declaration gives, "
+                    "and only where the program reaches the file by that "
+                    "path.  So the call names no function and the program "
+                    "cannot compile.  A module reached only through another "
+                    "module's imports is not visible here."
                 ),
-                fix=(
-                    f"Add 'import {mod_label};' and create the file "
-                    f"'{mod_label.replace('.', '/')}.vera' relative to the "
-                    f"importing file or project root."
-                ),
+                fix=self._unresolved_module_fix(mod_path, fn_name),
                 spec_ref='Chapter 8, Section 8.6.5 "Resolution Errors"',
                 error_code="E230",
             )
@@ -1607,7 +2265,8 @@ class CallsMixin:
         mod_fns = self._module_functions.get(mod_path, {})
         fn_info = mod_fns.get(fn_name)
         if fn_info is not None:
-            return self._check_fn_call_with_info(fn_info, expr.args, expr)
+            return self._check_fn_call_with_info(fn_info, expr.args, expr,
+                                                 expected=expected)
 
         # 4. Function not found in module
         available = sorted(mod_fns.keys())
@@ -1618,14 +2277,103 @@ class CallsMixin:
             + (f" Available functions: {available}." if available else ""),
             rationale="A module-qualified call must name a public function "
                       "declared in the target module; the module was resolved "
-                      "but declares no such function.",
+                      "but declares no such function, so the program cannot "
+                      "compile.",
             fix=f"Define 'public fn {fn_name}(...)' in module '{mod_label}', "
                 f"or correct the name to one the module exports"
             + (f" (e.g. {available[0]})." if available else "."),
-            severity="warning",
             spec_ref='Chapter 8, Section 8.5.3 "Module-Qualified Calls"',
             error_code="E233",
         )
         for arg in expr.args:
             self._synth_expr(arg)
         return UnknownType()
+
+    def _check_own_module_call(self, expr: ast.ModuleCall, *,
+                               expected: Type | None = None,
+                               ) -> Type | None:
+        """A module-qualified call to the file's OWN path (#1558).
+
+        `ma::two(3)` inside `module ma;` calls the file's own top-level
+        `two`: the path names the module (§8.5.3), and this module is the
+        one the path names.  Its private functions are reachable too, since
+        the call is inside the module that declares them (§8.4.1).  It is
+        checked as the bare call to that top-level function is, with one
+        difference that is the point of writing it: a `where` helper of the
+        same name does not shadow it, as nothing local shadows a
+        module-qualified call — so it reads the top-level table, never the
+        lexical helper chain a bare call reads first.
+        """
+        fn_name = expr.name
+        fn_info = self._top_level_fn_infos.get(fn_name)
+        if fn_info is not None:
+            return self._check_fn_call_with_info(fn_info, expr.args, expr,
+                                                 expected=expected)
+        if fn_name in self._own_fn_names:
+            # A declaration registration refused (E151, E153): its own error
+            # is the one the program owes, and this use restates it.
+            for arg in expr.args:
+                self._synth_expr(arg)
+            return UnknownType()
+        mod_label = ".".join(expr.path)
+        declared = sorted(self._top_level_fn_infos)
+        # This file's own helpers only: the index spans every module the
+        # file resolves, and another module's helper is no function of this
+        # one either way.
+        helper_of = sorted(
+            parent for parent in self._where_helper_parents.get(fn_name, set())
+            if " in module " not in parent)
+        if helper_of:
+            fix = (f"'{fn_name}' is a 'where' helper of {', '.join(helper_of)}, "
+                   f"local to the function that declares it: call it by its "
+                   f"bare name from inside that function, or lift it to a "
+                   f"top-level function of module '{mod_label}'.")
+        else:
+            fix = (f"Define 'fn {fn_name}(...)' at the top level of this "
+                   f"file, or correct the name to one it declares"
+                   + (f" (e.g. {declared[0]})." if declared else "."))
+        self._error(
+            expr,
+            f"Function '{fn_name}' not found in module '{mod_label}', which "
+            f"is this file."
+            + (f" Its functions: {declared}." if declared else ""),
+            rationale="A module-qualified call to the path this file's "
+                      "'module' declaration gives names one of the file's "
+                      "own top-level functions; the file declares none by "
+                      "this name, so the program cannot compile.",
+            fix=fix,
+            spec_ref='Chapter 8, Section 8.5.3 "Module-Qualified Calls"',
+            error_code="E233",
+        )
+        for arg in expr.args:
+            self._synth_expr(arg)
+        return UnknownType()
+
+    def _unresolved_module_fix(
+        self, mod_path: tuple[str, ...], fn_name: str,
+    ) -> str:
+        """E230's fix: import the module — unless the path is this file's.
+
+        A file imported as `ma` that declares no path, or declares another,
+        has no path of its own (#1558), and adding `import ma;` inside it
+        would import the file into itself.  The remedy there is the
+        declaration.
+        """
+        label = ".".join(mod_path)
+        resolved = self._resolved_as
+        if resolved is not None and mod_path in (
+                resolved, self._declared_module_path):
+            here = ".".join(resolved)
+            if self._declared_module_path is None:
+                declares = "declares no module path"
+            else:
+                declares = ("declares 'module "
+                            f"{'.'.join(self._declared_module_path)};'")
+            return (f"This file is imported as '{here}' but {declares}, so "
+                    f"no path names it.  Declare 'module {here};' at the "
+                    f"top of the file and call its own function as "
+                    f"'{here}::{fn_name}(...)', or call it by its bare name, "
+                    f"'{fn_name}(...)'.")
+        return (f"Add 'import {label};' and create the file "
+                f"'{label.replace('.', '/')}.vera' relative to the importing "
+                f"file or project root.")

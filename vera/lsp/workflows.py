@@ -11,38 +11,101 @@ mandatory-contracts philosophy applied to tooling.
 ``vera/proposeEdit`` (Phase F1) — request params (plain JSON)::
 
     {"uri": "<document uri>", "text": "<full proposed source>",
-     "force": false}
+     "force": false, "version": <optional: the version it was made from>}
 
 Response (plain JSON)::
 
     {
-      "applied": true,           # the edit passed the gate (or force)
+      "applied": true,           # the gate passed (or force) AND the
+                                 #   client applied the edit
       "ok": true,                # proposed source parsed + checked
       "proof_delta": {...},      # Phase E shape; null if not compiled
       "diagnostics": <count of error diagnostics in the proposed state>,
+      "client": "applied",       # the client's side: see below
+      "client_reason": null,     # why, when the client side says why
     }
 
-The gate: apply iff the proof delta has no ``newly_undischarged``
-obligations AND the proposed state has no error diagnostics.
-``force: true`` overrides both — "this edit knowingly weakens a proof"
-(or doesn't compile yet) is sometimes the intent, but it must be said
-out loud; the default is the enforced gate.
+The gate: apply iff the proof delta has no ``proof_regressions`` (no
+obligation that was ``verified`` is anything else now — whatever it
+lost its proof to, and wherever in the file it now sits), no
+``newly_undischarged`` obligations (the only conjunct that can see an
+obligation the edit INTRODUCES, which has no ``before`` to regress
+from, so neither list subsumes the other), AND the proposed state has
+no error diagnostics.  ``force: true`` overrides
+all three — "this edit knowingly weakens a proof" (or doesn't compile
+yet) is sometimes the intent, but it must be said out loud; the default
+is the enforced gate.
 
-On apply, three things happen, in order: a ``workspace/applyEdit``
-request (the LSP-native mechanism — the *client* owns the buffer, so
-the server must round-trip the edit rather than silently diverge), the
-canonical :class:`~vera.lsp.documents.DocumentStore` text updates, and
-the document re-analyzes + republishes diagnostics.  The client's
-echoed ``didChange`` then replays as a no-op from the warm session's
-discharge cache — the pre-warming Phase E was designed around.  The
-``applyEdit`` request is fire-and-forget: the response's ``applied``
-reports the *gate* verdict, not the client's asynchronous answer, and
-canonical state is not rolled back if the client declines — a
-declining client's buffer re-converges on its next full-sync
-``didChange``, and blocking the handler on the client round-trip
-would serialise every proposal on editor latency.  On refuse,
-canonical state is untouched: same isolation guarantee as
-``vera/speculativeEdit``.
+The client owns the buffer, so an edit that passes the gate goes to it
+as a ``workspace/applyEdit`` request, and nothing on the server's side
+changes until the client says its buffer did (#1444).  The canonical
+:class:`~vera.lsp.documents.DocumentStore` describes the client's open
+buffer, so it is written by the client's own ``didOpen`` /
+``didChange`` / ``didClose`` and by nothing else — this module included;
+the analysis table and the published diagnostics follow the store.  So
+the request is:
+
+* **Version-guarded.**  One whole-document ``TextDocumentEdit`` naming
+  the document version whose text the gate verified against.  A client
+  must refuse an edit whose version its buffer has moved past, so a
+  ``didChange`` that lands while the edit is pending — the user typed,
+  or another proposal was applied first — is never overwritten by a
+  replacement computed from the text before it.  ``documentChanges`` is
+  the only ``WorkspaceEdit`` form that can carry a version, so a client
+  that does not advertise it (with ``workspace.applyEdit``) is sent
+  nothing, rather than an edit that lands on whatever the buffer holds.
+  The guard protects the newer text only if the edit was made from, and
+  judged against, the text AT that version, so every workflow first
+  checks that the analysis it reads is the open document's (an analysis
+  that raises leaves the table behind the store) and, for a candidate
+  built from the document, that its source text still is — and refuses
+  with ``InvalidParams`` otherwise (:func:`require_current`).  The
+  optional ``version`` param, on all three methods, lets the client say
+  which version it made the request from; any other open version is
+  refused the same way.  Without it, a proposal written against an
+  older text replaces newer text the server has seen -- the risk a
+  client that cannot send it accepts.
+* **Awaited.**  The workflows are coroutines: the server waits for the
+  client's answer, and ``analysis_lock`` is not held while it does, so
+  the notifications that arrive meanwhile are analysed as they come.
+  Z3 work stays serialised; waiting on an editor does not.  The wait is
+  bounded (:data:`APPLY_EDIT_TIMEOUT_S`), and only a boolean ``applied``
+  counts as an answer (:func:`read_answer`), so no proposal is left
+  pending and none is reported applied on an answer the server cannot
+  read.  A wait that runs out answers ``"timeout"``: the edit request is
+  still open, so whether it lands is not yet known.
+* **Reconciled by the client.**  An applied edit reaches the server as
+  the client's own ``didChange``: at the client's actual version, and
+  analysed and published like any other change — replayed from the warm
+  session's discharge cache, which the gate's speculative run just
+  filled (the pre-warming Phase E was designed around).  That
+  notification may arrive before the answer or after it; either way
+  the server publishes nothing for the new text until it does.
+
+``applied`` is ``true`` when the client applied the edit, ``false`` when
+it did not or the edit was never sent, and ``null`` when the server
+cannot tell -- a response states only what the server knows (DESIGN.md
+§1).  ``client`` says what became of the edit on the client's side:
+``null`` (the gate refused; nothing was sent), ``"applied"``,
+``"declined"`` (the client answered ``applied: false`` — typically
+because its buffer is no longer at the verified version), ``"failed"``
+(an error answer or a request that could not be sent, ``applied:
+false``; or an answer whose ``applied`` is not a boolean, ``applied:
+null``), ``"timeout"`` (no answer within the bound; ``applied: null``,
+and the edit request is still open, so the client may yet apply it),
+``"cancelled"`` (the request was cancelled unanswered; ``applied:
+null``), or ``"unsupported"`` (the client cannot take a version-guarded
+edit, so none was sent), with ``client_reason`` saying why when there
+is a why.  A document the client has not
+opened is refused before any of this, with ``InvalidParams``: it has no
+version to guard an edit with.  If the proposal request
+itself is cancelled while the edit is pending, it ends as cancelled —
+an error response, never ``applied`` — and the edit request is left for
+the client to answer.  Whatever the answer, the workflow itself writes
+no canonical state — the same isolation guarantee as
+``vera/speculativeEdit`` — so an applied edit arrives only as the
+client's ``didChange``, and any other outcome leaves the text, version
+and published analysis exactly as they were.
 
 ``vera/addEffect`` (Phase F3) — request params::
 
@@ -59,7 +122,8 @@ functions already naming the effect are skipped), and ONE multi-site
 candidate runs through the proposeEdit pipeline.  The response adds
 ``rewritten``: the affected functions in declaration order; if it is
 empty the row state was already satisfied and nothing ran
-(``applied: false, ok: true, proof_delta: null`` — the no-op shape).
+(``applied: false, ok: true, proof_delta: null, client: null`` — the
+no-op shape).
 Propagation is bounded at handlers (#725): a call site inside a
 ``handle[E]`` body contributes no edge, so a caller that discharges
 the effect around every one of its call sites is left unrewritten.  A
@@ -79,8 +143,10 @@ bound it either, though the checker discharges that one.  Every
 non-match keeps the edge, so the comparison under-prunes rather than
 over-prunes: a surviving edge writes a row the program may not need,
 which still type-checks (#1292).
-Propagation remains single-file (module-qualified calls do not
-propagate across the file boundary).  Row identity, separately, is the
+Propagation remains single-file (a call into another module does not
+propagate across the file boundary; a call by the document's own path,
+``ma::f(...)`` inside ``module ma;``, is the call to ``f`` it is and
+propagates as the bare call does, #1558).  Row identity, separately, is the
 base name before any type arguments, so ``State<Int>`` will not be
 added next to an existing ``State<Bool>``.
 
@@ -106,6 +172,8 @@ project model.
 
 from __future__ import annotations
 
+import asyncio
+
 from typing import TYPE_CHECKING, Any
 
 from lsprotocol import types as lsp
@@ -113,12 +181,27 @@ from lsprotocol import types as lsp
 from vera import ast
 from vera.lsp.documents import Document
 from vera.lsp.extensions import speculative_edit
-from vera.obligations.cache import direct_callee_names, walk_nodes
+from vera.obligations.cache import (
+    called_name,
+    direct_callee_names,
+    walk_nodes,
+)
 from vera.obligations.core import ProofObligation
 from vera.obligations.session import VerificationSession
 
 if TYPE_CHECKING:
+    from vera.lsp.features import Analysis
     from vera.lsp.server import VeraLanguageServer
+
+
+class StaleDocumentError(ValueError):
+    """The server's analysis does not describe the open document, so no
+    edit may be verified against it or built from it (#1444).
+
+    A ``ValueError``, so the edit handlers refuse it as JSON-RPC
+    ``InvalidParams`` alongside the other requests that cannot be served
+    against the document as it stands (no analysis, does not parse).
+    """
 
 
 def propose_edit(
@@ -132,13 +215,45 @@ def propose_edit(
 
     Returns ``(should_apply, response)``.  The caller owns the side
     effects of applying; this function only verifies and decides, so
-    the gate logic is testable without a server.
+    the gate logic is testable without a server.  The response's
+    ``applied`` is therefore the GATE's verdict here, and
+    :func:`apply_propose_edit` settles it from the client's answer.
     """
     speculative = speculative_edit(session, baseline, uri, text)
     delta = speculative["proof_delta"]
     clean = (
         delta is not None
-        and not delta["newly_undischarged"]
+        # #1443 — the proof-preservation question, asked once, of the
+        # whole status vocabulary.  `newly_undischarged` cannot stand in
+        # for it: `proof_delta` sorts by the AFTER status, so an
+        # obligation that went `verified -> timeout` is filed under
+        # `timed_out` and an edit that destroyed a proof looked clean
+        # here.  The verifier records a postcondition timeout as a
+        # warning with `ok=True`, so the diagnostics count did not catch
+        # it either, and `applied` came back True on an edit that lost a
+        # proof.  The categories remain what they are for presentation;
+        # their separation was never permission to apply.
+        and not delta["proof_regressions"]
+        # Kept beside it, and NOT subsumed by it: it is the only
+        # conjunct that can see an obligation the edit INTRODUCES, which
+        # has no `before` for the predicate above to regress from.  (It
+        # is not only that: a same-span `verified -> violated` lands
+        # here too.  What it uniquely covers is the introduced one.)
+        #
+        # Entries whose status did not move are skipped.  They exist
+        # only because `proof_delta` keys its categories on the span:
+        # an obligation that RELOCATED is listed here against the
+        # `before` it was paired with, and one that is undischarged at
+        # both ends of that pair introduced nothing and took nothing
+        # away.  Refusing it made a harmless comment insertion into any
+        # program carrying a Tier-3 obligation need `force` (#1461
+        # review, case A2b).  A pair that WORSENED still has
+        # `status_before != status_after` and is still refused, exactly
+        # as the identical unmoved edit is.
+        and not [
+            item for item in delta["newly_undischarged"]
+            if item["status_before"] != item["status_after"]
+        ]
         and speculative["diagnostics"] == 0
     )
     should_apply = force or clean
@@ -150,21 +265,11 @@ def propose_edit(
     }
 
 
-def full_document_range(doc: Document | None) -> lsp.Range:
-    """The whole-document replacement range for a full-text edit.
-
-    With an open document the end position is computed exactly (last
-    line, UTF-16 end column, via the document's cached line index).
-    Without one — ``proposeEdit`` on a URI the client never opened —
-    fall back to the maximum LSP line number; the spec requires clients
-    to clamp out-of-range positions to the document end, which makes
-    the sentinel a correct whole-file range over unknown content.
-    """
-    if doc is None:
-        return lsp.Range(
-            start=lsp.Position(line=0, character=0),
-            end=lsp.Position(line=2**31 - 1, character=0),
-        )
+def full_document_range(doc: Document) -> lsp.Range:
+    """The whole-document replacement range for a full-text edit of the
+    open document *doc*: from the start to its end, computed exactly
+    (last line, UTF-16 end column, via the document's cached line
+    index)."""
     end_line0 = doc.text.count("\n")
     last_segment = doc.text.rsplit("\n", 1)[-1]
     return lsp.Range(
@@ -176,52 +281,300 @@ def full_document_range(doc: Document | None) -> lsp.Range:
     )
 
 
-def apply_propose_edit(
+def supports_versioned_edits(
+    capabilities: lsp.ClientCapabilities | None,
+) -> bool:
+    """Whether a client with *capabilities* can take a version-guarded
+    whole-document edit.
+
+    Two capabilities, both required: ``workspace.applyEdit`` (the client
+    answers the request at all) and ``workspace.workspaceEdit.
+    documentChanges`` — the only ``WorkspaceEdit`` form whose text edits
+    name the document version they apply to.  The other form,
+    ``changes``, is unversioned: an edit sent that way lands on whatever
+    the buffer holds when it arrives, including typing that came after
+    the text it was verified against.  *capabilities* is ``None`` before
+    the client has initialised.
+    """
+    workspace = capabilities.workspace if capabilities is not None else None
+    if workspace is None or workspace.apply_edit is not True:
+        return False
+    edit = workspace.workspace_edit
+    return edit is not None and edit.document_changes is True
+
+
+def versioned_edit(
+    uri: str, doc: Document, text: str,
+) -> lsp.ApplyWorkspaceEditParams:
+    """The request replacing *uri*'s whole text with *text*, guarded by
+    *doc*'s version: a client whose buffer has moved past it must refuse
+    the edit (LSP 3.17, ``TextDocumentEdit``).
+
+    Only ever built for an OPEN document (:func:`require_current`
+    refuses the rest), so the version is always a number: an unopened
+    document would be ``null`` -- "the file on disk is the master" --
+    which guards nothing.
+    """
+    return lsp.ApplyWorkspaceEditParams(
+        edit=lsp.WorkspaceEdit(
+            document_changes=[
+                lsp.TextDocumentEdit(
+                    text_document=lsp.OptionalVersionedTextDocumentIdentifier(
+                        uri=uri, version=doc.version,
+                    ),
+                    edits=[
+                        lsp.TextEdit(
+                            range=full_document_range(doc), new_text=text,
+                        ),
+                    ],
+                ),
+            ],
+        ),
+    )
+
+
+def _retrieve(answer: asyncio.Future[Any]) -> None:
+    """Mark a settled answer's outcome as retrieved.
+
+    Matters only when the workflow was cancelled while it waited: the
+    answer then settles with nobody awaiting it, and asyncio would log an
+    error it "never retrieved" for an outcome that is no longer anyone's
+    concern.
+    """
+    if not answer.cancelled():
+        answer.exception()
+
+
+_ABSENT = object()
+
+#: Appended to every reason whose outcome leaves ``applied`` unknown.
+_MAY_LAND = (
+    "; the server cannot tell whether the edit was applied, so re-read "
+    "the document before proposing again"
+)
+
+#: How long an edit workflow waits for the client's answer to its
+#: ``workspace/applyEdit`` before it answers ``"timeout"``.  An answer can
+#: fail to arrive without anything cancelling the request -- a write error
+#: pygls swallows, or a client that never answers -- and a request must not
+#: hang forever.  The edit request itself stays open, so the client may
+#: still apply it after the proposal has answered.  A server's
+#: ``apply_edit_timeout_s`` overrides it.
+APPLY_EDIT_TIMEOUT_S = 60.0
+
+
+def read_answer(result: Any) -> tuple[str, bool | None, str | None]:
+    """``(outcome, applied, reason)`` from the client's answer to an edit
+    request.
+
+    Read strictly: only a boolean ``applied`` is an answer.  The server's
+    protocol hands the answer over unstructured
+    (:class:`~vera.lsp.server.VeraProtocol`) -- pygls' plain object for
+    the JSON, with its values as sent -- because pygls' own reading turns
+    ``"applied": "false"`` into ``True`` and drops ``null`` or ``{}`` in
+    its reader.  Anything but a boolean is a failure, with the reason
+    saying what arrived -- and with ``applied`` unknown (``None``): the
+    client answered, but not in a form that says whether it applied the
+    edit.  A declining client's ``failureReason`` is passed on.
+    """
+    if isinstance(result, lsp.ApplyWorkspaceEditResult):
+        applied: Any = result.applied
+        reason: Any = result.failure_reason
+    elif isinstance(result, dict):
+        applied = result.get("applied", _ABSENT)
+        reason = result.get("failureReason")
+    elif result is None:
+        return "failed", None, "the client answered null" + _MAY_LAND
+    else:
+        applied = getattr(result, "applied", _ABSENT)
+        reason = getattr(result, "failureReason", None)
+    if applied is True:
+        return "applied", True, None
+    if applied is False:
+        return "declined", False, reason if isinstance(reason, str) else None
+    if applied is _ABSENT:
+        return "failed", None, (
+            f"the client's answer {result!r} has no `applied`" + _MAY_LAND
+        )
+    return "failed", None, (
+        f"the client's `applied` is {applied!r}, not a boolean" + _MAY_LAND
+    )
+
+
+async def client_outcome(
+    server: VeraLanguageServer, request: lsp.ApplyWorkspaceEditParams,
+) -> tuple[str, bool | None, str | None]:
+    """Send *request* as ``workspace/applyEdit`` and wait for the answer.
+
+    Returns ``(outcome, applied, reason)``: ``"applied"``,
+    ``"declined"``, ``"failed"``, ``"timeout"`` or ``"cancelled"``;
+    whether the edit was applied -- ``None`` when the server cannot tell
+    (DESIGN.md §1: a response states only what the server knows); and
+    what the client or the transport said.  The caller must hold no
+    lock: the answer, and every notification the client sends before
+    it, arrive through the same event loop this coroutine is suspended
+    on.  The wait is bounded (:data:`APPLY_EDIT_TIMEOUT_S`); an answer
+    that does not arrive within it is ``"timeout"``, with ``applied``
+    unknown, because the edit request is still open and the client may
+    yet apply it -- its ``didChange`` then updates the server as any
+    change does.
+
+    The wait is SHIELDED.  Cancelling this coroutine — the client
+    cancelling the proposal request — must not cancel the edit request
+    underneath it: pygls would then fail the client's late answer with
+    ``InvalidStateError`` inside its reader, and the client may apply the
+    edit anyway.  Own cancellation propagates; the edit request's
+    cancellation (pygls cancels every outstanding request at shutdown) is
+    an outcome, reported like any other.
+    """
+    timeout = getattr(server, "apply_edit_timeout_s", APPLY_EDIT_TIMEOUT_S)
+    try:
+        pending = server.workspace_apply_edit(request)
+    except Exception as exc:  # noqa: BLE001 — any failure to SEND is "not applied", which is the one thing this reports
+        return "failed", False, f"the request could not be sent: {exc!r}"
+    answer = asyncio.wrap_future(pending)
+    answer.add_done_callback(_retrieve)
+    try:
+        result = await asyncio.wait_for(asyncio.shield(answer), timeout)
+    except asyncio.CancelledError:
+        task = asyncio.current_task()
+        if task is not None and task.cancelling():
+            raise
+        return "cancelled", None, (
+            "the request was cancelled before the client answered" + _MAY_LAND
+        )
+    except TimeoutError:
+        return "timeout", None, (
+            f"the client did not answer within {timeout:g} s, and the edit "
+            "request is still open: the client may still apply it, and its "
+            "didChange would then update the server" + _MAY_LAND
+        )
+    except Exception as exc:  # noqa: BLE001 — an error answer, of whatever type, is an edit the client did not apply
+        return "failed", False, f"the client answered with an error: {exc}"
+    return read_answer(result)
+
+
+def require_current(
+    uri: str,
+    doc: Document | None,
+    analysis: Analysis | None,
+    base_text: str | None,
+    base_version: int | None,
+) -> tuple[Document, Analysis]:
+    """Refuse unless the request's inputs describe the open document,
+    and return that document and its analysis.
+
+    Every input an edit is made from, or judged against, must be the
+    open buffer's text, because the edit is guarded by the open
+    document's version and that guard protects the client's newer text
+    only if the edit is about the text AT that version:
+
+    * the ANALYSIS the gate judges the edit against -- *analysis* comes
+      from :func:`~vera.lsp.features.current_analysis`, so it is
+      ``None`` exactly when the open document has no analysis of its
+      current text (its latest analysis raised).  A candidate spliced
+      from an older analysis would pass the client's version check and
+      overwrite the newer text; a proposal gated against one would be
+      judged against a text the client no longer has.  ``force`` changes
+      neither: it overrides the gate's verdict, not the question of
+      which text the edit is about;
+    * for a candidate built from the document, as
+      ``vera/strengthenContract`` and ``vera/addEffect`` build theirs,
+      the text it was built from (*base_text*);
+    * when the CLIENT says which version it made the request from
+      (*base_version*, the optional ``version`` param), that version: a
+      proposal made from an older text would otherwise replace newer
+      text the server has already seen.
+
+    A document the client has not opened is refused outright: it has no
+    version to guard an edit with -- the protocol's ``null`` means "the
+    file on disk is the master", which a client applies to whatever its
+    buffer holds by the time the edit lands -- and no analysis to judge
+    one against.
+    """
+    if doc is None:
+        raise StaleDocumentError(
+            f"{uri!r} is not open, so there is no version to guard an "
+            "edit with and no analysis to judge one against; open the "
+            "document first",
+        )
+    if base_version is not None and doc.version != base_version:
+        raise StaleDocumentError(
+            f"the request was made from version {base_version} of "
+            f"{uri!r}, but the open document is at version {doc.version}; "
+            "read the current text, then make the request again",
+        )
+    if analysis is None:
+        raise StaleDocumentError(
+            f"the server's analysis of {uri!r} does not describe the open "
+            f"document (version {doc.version}): its latest text could not "
+            "be analysed, so no edit can be verified against it; change "
+            "the document so it is analysed again, then retry",
+        )
+    if base_text is not None and base_text != doc.text:
+        raise StaleDocumentError(
+            f"the edit was built from a text of {uri!r} that is no longer "
+            f"the open document (version {doc.version}); build it again "
+            "from the current text",
+        )
+    return doc, analysis
+
+
+async def apply_propose_edit(
     server: VeraLanguageServer,
     uri: str,
     text: str,
     force: bool = False,
+    base_text: str | None = None,
+    version: int | None = None,
 ) -> dict[str, Any]:
     """Run the full proposeEdit workflow against *server* state.
 
     The decision runs under ``analysis_lock`` (one Z3 session, strictly
-    serialised).  The apply path then releases the lock before
-    ``analyze_and_publish`` re-acquires it — the re-analysis replays
-    the just-verified state from the discharge cache, so the second
-    pass is cheap by construction.
+    serialised), and the edit it passes goes to the client guarded by
+    the version of the open document (:func:`versioned_edit`) -- once
+    :func:`require_current` has established that the analysis the gate
+    reads, *base_text* when a caller built *text* from the document, and
+    *version* when the client said which version it proposed from, are
+    all that version's.  The lock is released before the wait for
+    the client's answer (:func:`client_outcome`), and nothing here
+    writes the document store, the analysis table or the published
+    diagnostics: the client owns the buffer, so an applied edit reaches
+    the server as the client's own ``didChange``, at the client's own
+    version (#1444).
+
+    Raises :class:`StaleDocumentError` when the analysis, *base_text* or
+    *version* is not the open document's.
     """
     with server.analysis_lock:
-        baseline_analysis = server.analyses.get(uri)
-        baseline = (
-            baseline_analysis.obligations
-            if baseline_analysis is not None
-            else []
+        # Read together, with no await between them for a notification
+        # to land in: the version below is the one the check vouches for.
+        doc, baseline_analysis = require_current(
+            uri, server.store.get(uri), server.current_analysis(uri),
+            base_text, version,
         )
         should_apply, response = propose_edit(
-            server.session, baseline, uri, text, force,
+            server.session, baseline_analysis.obligations, uri, text, force,
         )
-    if not should_apply:
+        request = versioned_edit(uri, doc, text) if should_apply else None
+    response["client"] = None
+    response["client_reason"] = None
+    if request is None:
         return response
-
-    doc = server.store.get(uri)
-    server.workspace_apply_edit(
-        lsp.ApplyWorkspaceEditParams(
-            edit=lsp.WorkspaceEdit(
-                changes={
-                    uri: [
-                        lsp.TextEdit(
-                            range=full_document_range(doc),
-                            new_text=text,
-                        ),
-                    ],
-                },
-            ),
-        ),
-    )
-    server.store.change(
-        uri, text, version=(doc.version + 1) if doc is not None else 0,
-    )
-    server.analyze_and_publish(uri, text)
+    if not supports_versioned_edits(
+        getattr(server, "client_capabilities", None),
+    ):
+        response["applied"] = False
+        response["client"] = "unsupported"
+        response["client_reason"] = (
+            "the client does not advertise workspace.applyEdit and "
+            "workspace.workspaceEdit.documentChanges"
+        )
+        return response
+    outcome, applied, reason = await client_outcome(server, request)
+    response["applied"] = applied
+    response["client"] = outcome
+    response["client_reason"] = reason
     return response
 
 
@@ -281,30 +634,37 @@ def splice_contract(
     return None
 
 
-def strengthen_contract(
+async def strengthen_contract(
     server: VeraLanguageServer,
     uri: str,
     fn_name: str,
     kind: str,
     expr: str,
+    version: int | None = None,
 ) -> dict[str, Any]:
     """Run the full strengthenContract workflow against *server* state.
 
     Splices against the canonical analysis (read under the lock), then
-    delegates to :func:`apply_propose_edit` — which re-verifies the
-    *candidate* from scratch, so a ``didChange`` racing the window
-    between splice and apply degrades to last-writer-wins, exactly the
-    full-document-sync semantics every other path already has.
+    delegates to :func:`apply_propose_edit` with the spliced candidate
+    as *text* and the analysed text it was spliced FROM as *base_text* —
+    which re-verifies the candidate from scratch, sends it only if
+    *base_text* is still the open document's, and guards it with the
+    document's version, so a ``didChange`` that lands after it makes the
+    client refuse the edit rather than lose the newer text to a
+    candidate built without it.
 
     Raises ``ValueError`` for requests that cannot name a splice
-    target (no analysis for the URI, document does not parse, unknown
+    target (no analysis for the URI, an analysis that does not describe
+    the open document, a document that does not parse, an unknown
     function); the handler maps these to JSON-RPC InvalidParams.
     """
     with server.analysis_lock:
-        analysis = server.analyses.get(uri)
-    if analysis is None:
-        raise ValueError(
-            f"no analysis for {uri!r} — open the document first",
+        # Before anything is read off the analysis -- the splice target,
+        # or the answer that there is none -- it has to be the open
+        # document's, at the version the client asked about.
+        _, analysis = require_current(
+            uri, server.store.get(uri), server.current_analysis(uri),
+            None, version,
         )
     if analysis.program is None:
         raise ValueError(
@@ -318,7 +678,10 @@ def strengthen_contract(
         raise ValueError(
             f"no top-level function {fn_name!r} with a {kind} clause",
         )
-    return apply_propose_edit(server, uri, candidate, force=False)
+    return await apply_propose_edit(
+        server, uri, candidate, force=False, base_text=analysis.text,
+        version=version,
+    )
 
 
 def _top_level_fns(program: ast.Program) -> dict[str, ast.FnDecl]:
@@ -410,12 +773,15 @@ def _handled_effect_key(ref: ast.EffectRefNode) -> str:
 
 def _unhandled_callee_names(
     decl: ast.FnDecl, effect: str | None,
+    own_path: tuple[str, ...] | None,
 ) -> frozenset[str]:
     """Direct callees of *decl*, minus those a ``handle[effect]``
     block in *decl* already discharges (#725).
 
     With *effect* ``None`` this is exactly
-    :func:`direct_callee_names` — the handler-unaware call graph.
+    :func:`direct_callee_names` — the handler-unaware call graph.  A call by
+    the program's own path, *own_path*, is a callee as its bare call is
+    (:func:`~vera.obligations.cache.called_name`, #1558).
 
     Containment is structural (the handled sub-tree) rather than
     span-arithmetic: identical answers where both apply, and no
@@ -442,7 +808,7 @@ def _unhandled_callee_names(
     non-match keeps the edge.
     """
     if effect is None:
-        return direct_callee_names(decl)
+        return direct_callee_names(decl, own_path=own_path)
     want = _effect_instance_key(effect)
     # Identity by object, not by value: two structurally equal calls
     # at different sites are distinct nodes, and every node stays
@@ -455,22 +821,27 @@ def _unhandled_callee_names(
         for n in walk_nodes(h.body)
     }
     return frozenset(
-        n.name
+        name
         for n in walk_nodes(decl)
-        if isinstance(n, ast.FnCall) and id(n) not in handled
+        if id(n) not in handled
+        and (name := called_name(n, own_path)) is not None
     )
 
 
 def transitive_callers(
     program: ast.Program, fn_name: str, effect: str | None = None,
+    own_path: tuple[str, ...] | None = None,
 ) -> list[str] | None:
     """*fn_name* plus every top-level function that transitively calls
     it, in declaration order; ``None`` if no such top-level function.
 
-    The inverse closure over the Phase B call walker: plain ``FnCall``
-    names only, so module-qualified calls never propagate across the
-    file boundary, and calls inside ``where`` blocks attribute to
-    their containing top-level function.
+    The inverse closure over the Phase B call walker: bare calls, and
+    calls by the program's own path *own_path* (``ma::f(...)`` inside
+    ``module ma;`` is the call to ``f`` it is, #1558; the language server
+    passes its analysis's answer, and ``None`` is a file with no path of
+    its own).  A call into another module never propagates across the file
+    boundary, and calls inside ``where`` blocks attribute to their
+    containing top-level function.
 
     *effect* bounds the closure at handlers (#725): a call site inside
     a ``handle[effect]`` body contributes no edge, because the handler
@@ -502,7 +873,7 @@ def transitive_callers(
     if fn_name not in fns:
         return None
     callees = {
-        name: _unhandled_callee_names(decl, effect) & fns.keys()
+        name: _unhandled_callee_names(decl, effect, own_path) & fns.keys()
         for name, decl in fns.items()
     }
     affected = {fn_name}
@@ -554,30 +925,39 @@ def effect_row_rewrite(
     return None
 
 
-def add_effect(
+async def add_effect(
     server: VeraLanguageServer,
     uri: str,
     fn_name: str,
     effect: str,
+    version: int | None = None,
 ) -> dict[str, Any]:
     """Run the full addEffect workflow against *server* state.
 
-    Same locking/racing model as :func:`strengthen_contract`.  Raises
-    ``ValueError`` when the request cannot name a target (no analysis,
-    unparseable document, unknown top-level function).
+    Same locking and version-guarding model as
+    :func:`strengthen_contract`: the candidate, rewritten from the
+    canonical analysis's text, goes to :func:`apply_propose_edit` as
+    *text*, and the text it was rewritten FROM as *base_text*, so the
+    edit is sent only while that text is the open document's, under its
+    version.  Raises ``ValueError`` when the request cannot name a
+    target (no analysis, an analysis that does not describe the open
+    document, unparseable document, unknown top-level function).
     """
     with server.analysis_lock:
-        analysis = server.analyses.get(uri)
-    if analysis is None:
-        raise ValueError(
-            f"no analysis for {uri!r} — open the document first",
+        # Before anything is read off the analysis -- the rows to
+        # rewrite, or the answer that there are none -- it has to be the
+        # open document's, at the version the client asked about.
+        _, analysis = require_current(
+            uri, server.store.get(uri), server.current_analysis(uri),
+            None, version,
         )
     if analysis.program is None:
         raise ValueError(
             f"document {uri!r} does not parse; "
             "effect rows cannot be located",
         )
-    affected = transitive_callers(analysis.program, fn_name, effect)
+    affected = transitive_callers(
+        analysis.program, fn_name, effect, own_path=analysis.own_path)
     if affected is None:
         raise ValueError(f"no top-level function {fn_name!r}")
 
@@ -597,12 +977,17 @@ def add_effect(
             "ok": True,
             "proof_delta": None,
             "diagnostics": 0,
+            "client": None,
+            "client_reason": None,
             "rewritten": [],
         }
 
     candidate = analysis.text
     for start, end, replacement in sorted(rewrites, reverse=True):
         candidate = candidate[:start] + replacement + candidate[end:]
-    response = apply_propose_edit(server, uri, candidate, force=False)
+    response = await apply_propose_edit(
+        server, uri, candidate, force=False, base_text=analysis.text,
+        version=version,
+    )
     response["rewritten"] = rewritten
     return response

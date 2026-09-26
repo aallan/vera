@@ -1,0 +1,19 @@
+-- Conformance: a user constructor sharing a prelude constructor's NAME does
+-- not change what the prelude's means (Chapter 9, Section 9.8)
+-- Tests: #1414 — constructor layouts are keyed per owning ADT.
+-- `ZzBox` is never used; before the fix its mere declaration made every
+-- `Ordering` in the program render as `Less(false)`, on a check-clean and
+-- verify-clean program. A positive rather than a negative fixture: §8.4.1
+-- makes the prelude's data types shadowable, so this program is LEGAL and
+-- the bug was that it compiled to the wrong answer.
+private data ZzBox {
+  Less(Bool)
+}
+
+public fn main(-> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  eq(show(compare(1, 2)), "Less") && eq(show(compare(2, 1)), "Greater") && eq(show(compare(2, 2)), "Equal") && eq(show(Less(true)), "Less(true)")
+}

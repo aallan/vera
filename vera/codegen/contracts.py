@@ -8,12 +8,24 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass
+from typing import ClassVar
 
-from vera import ast, naming
+from vera import ast, carriers, naming
 from vera.monomorphize import mangle_type_name
+from vera.narrowing import (
+    measure_component_is_effect_free,
+    measure_component_needs_range_check,
+)
 from vera.skip import CodegenSkip
 from vera.wasm import WasmContext, WasmSlotEnv
-from vera.wasm.helpers import state_type_arg
+from vera.wasm.helpers import (
+    bind_slot_value_from_field,
+    bind_slot_value_from_stack,
+    element_sequence_loop,
+    field_layout,
+    gc_shadow_push,
+    state_type_arg,
+)
 from vera.wasm.inference import substitute_type_vars
 
 # Recursion bound for tuple-component boundary guards (#746).  A *finite* tuple
@@ -32,14 +44,21 @@ class _ComponentGuardSite:
     the ONE decomposition three consumers read: the guard EMITTER, the
     has-guardable predicate that decides whether the return epilogue runs at
     all, and the host-import PRE-SCAN.  Carrying the layout (*field_offset*,
-    *load_wt*) alongside the classification (*guard*, *nested*) is what lets
+    *wt*) alongside the classification (*guard*, *nested*) is what lets
     the emitter consume the same enumeration rather than re-deriving it: a
     component this record does not describe is one no guard is emitted for,
     and one the pre-scan therefore need not register.
     """
 
     field_offset: int
-    load_wt: str
+    #: The component's WASM REPRESENTATION, as `_type_expr_to_wasm_type`
+    #: reports it — not "the load to emit" (#1466).  A pair component is
+    #: ``i32_pair``: two words, of which one load reads half the value, so a
+    #: site saying ``i32`` here let the emitter bind a `@String` component's
+    #: pointer alone and evaluate the predicate against it.  What the
+    #: representation means in locals and loads is
+    #: :func:`vera.wasm.helpers.bind_slot_value_from_field`.
+    wt: str
     #: `(predicate, base slot-name)` — the pair `_refinement_guard_parts`
     #: returns, or the synthesized `@Nat.0 >= 0` for a bare-`@Nat` component.
     #: None when the component is guarded only through its inner components.
@@ -49,8 +68,61 @@ class _ComponentGuardSite:
     nested: ast.TypeExpr | None
 
 
+@dataclass(frozen=True)
+class _ElementGuardSite:
+    """One ELEMENT position of one carrier the boundary guard checks (#1430).
+
+    *projection* is the built-in that turns the container into an array of
+    these elements, or None when the container IS that array — the only thing
+    the carriers differ by, which is why it is data here rather than a branch
+    in the emitter.
+    """
+
+    #: The position's name in `vera.carriers`, for the trap message.
+    kind: str
+    projection: str | None
+    predicate: ast.Expr
+    #: The slot name the predicate's binder reads, as
+    #: `_refinement_guard_parts` returns it.
+    base_name: str
+    load_wt: str
+    #: The WASM load for ONE element.  Not derived from `load_wt`: a `Bool` or
+    #: `Byte` is stored one byte wide and read into an `i32` local, so the
+    #: local's type is the wrong width to read with.
+    load_op: str
+    stride: int
+    #: The element's RESOLVED base name, which is what names the host
+    #: import's type tag for a projected carrier.
+    element_base: str
+
+
 class ContractsMixin:
     """Methods for compiling runtime contract checks."""
+
+    #: How the emitter registers each projection's host import (#1430).  Data
+    #: rather than a branch per carrier, keyed by the SAME projection string
+    #: `vera.carriers` records the position under, so a carrier added to that
+    #: registry without an entry here declines its guard instead of calling
+    #: an import nothing declared.
+    _PROJECTION_IMPORTS: ClassVar[dict[str, tuple[str, str]]] = {
+        "map_keys": ("map", "key"),
+        "map_values": ("map", "value"),
+        "set_to_array": ("set", "element"),
+    }
+
+    #: The element stride per RESOLVED element base — the same set the
+    #: verifier's `_GUARDABLE_ELEMENT_BASES` names, and the reason a
+    #: pair-represented base is declined rather than half-checked.
+    _ELEMENT_STRIDES: ClassVar[dict[str, int]] = {
+        "Int": 8, "Nat": 8, "Float64": 8, "Bool": 1, "Byte": 1,
+    }
+
+    #: The load for one element of each base, paired with the stride above so
+    #: the two cannot disagree about a width.
+    _ELEMENT_LOADS: ClassVar[dict[str, str]] = {
+        "Int": "i64.load", "Nat": "i64.load", "Float64": "f64.load",
+        "Bool": "i32.load8_u", "Byte": "i32.load8_u",
+    }
 
     def _refinement_guard_parts(
         self, te: ast.TypeExpr,
@@ -149,6 +221,8 @@ class ContractsMixin:
         value_local: int,
         message: str,
         base_env: WasmSlotEnv,
+        *,
+        at: ast.Node | None,
     ) -> list[str] | None:
         """Compile a refinement-predicate runtime guard over *value_local*
         (#746).
@@ -193,19 +267,10 @@ class ContractsMixin:
             return None
         if cond is None:
             return None
-        ptr, length = self.string_pool.intern(message)
-        self._needs_contract_fail = True
-        self._needs_memory = True
-        return [
-            *cond,
-            "i32.eqz",
-            "if",
-            f"  i32.const {ptr}",
-            f"  i32.const {length}",
-            "  call $vera.contract_fail",
-            "  unreachable",
-            "end",
-        ]
+        trap = ctx._emit_trap(
+            "codegen/contracts.py:_emit_refinement_check", at=at,
+            message=message)
+        return [*cond, "i32.eqz", "if", *(f"  {i}" for i in trap), "end"]
 
     def _emit_boundary_refinement_guard(
         self,
@@ -214,6 +279,7 @@ class ContractsMixin:
         value_local: int,
         message_head: str,
         env: WasmSlotEnv,
+        at: ast.Node | None,
     ) -> list[str] | None:
         """The two guard halves — classify then lower — as ONE call, for a
         boundary that reaches this layer from inside expression translation
@@ -241,6 +307,8 @@ class ContractsMixin:
         *message_head* is everything before the predicate in the trap text,
         so the message reads in the same shape as every other boundary's
         (``Refinement violation in <where>\\n  <role>: <predicate> failed``).
+        *at* is the node the per-module record locates the check at (#1479):
+        the value the boundary binds.
         """
         parts = self._refinement_guard_parts(te)
         if parts is None:
@@ -248,7 +316,7 @@ class ContractsMixin:
         predicate, base_name = parts
         message = f"{message_head}: {ast.format_expr(predicate)} failed"
         return self._emit_refinement_check(
-            ctx, predicate, base_name, value_local, message, env,
+            ctx, predicate, base_name, value_local, message, env, at=at,
         )
 
     def _resolve_type_alias(self, te: ast.TypeExpr) -> ast.TypeExpr:
@@ -293,6 +361,228 @@ class ContractsMixin:
                 and node.type_args):
             return node
         return None
+
+    def _resolve_carrier_type(self, te: ast.TypeExpr) -> ast.NamedType | None:
+        """Resolve aliases AND unwrap a refinement to the underlying CARRIER
+        (`Array` / `Map` / `Set`) NamedType, else None.
+
+        The twin of :meth:`_resolve_tuple_type`, for the same reason: a
+        refinement OVER a container (`type NonEmpty = { @Array<PosInt> | ... }`)
+        carries no top-level container shape, so without unwrapping, its
+        refined ELEMENTS would cross a boundary unguarded even though the
+        top-level predicate is checked.
+
+        Which names are carriers is read from :data:`vera.carriers.
+        CARRIER_POSITIONS`, the same table the verifier's walk reads, because
+        the two components hold different things — type expressions and an
+        alias table here, the checker's semantic types there — and what must
+        not differ between them is the list.
+        """
+        node = self._resolve_type_alias(te)
+        if isinstance(node, ast.RefinementType):
+            node = self._resolve_type_alias(node.base_type)
+        if (isinstance(node, ast.NamedType)
+                and node.name in carriers.CARRIER_POSITIONS
+                and node.type_args):
+            return node
+        return None
+
+    def _element_guard_parts(
+        self, te: ast.TypeExpr,
+    ) -> list[_ElementGuardSite]:
+        """One entry per ELEMENT position of *te* a boundary guard checks, or
+        EMPTY when any refined position cannot be checked (#1430).
+
+        The container counterpart of the tuple decomposition.  An
+        ``Array<PosInt>`` or ``Map<String, PosInt>`` boundary carries no
+        top-level refinement, so the top-level guard does not fire and the
+        tuple decomposition does not reach it either — which is exactly the
+        hole #1430 stage 1 opened: the verifier began ASSUMING the element
+        refinement under R1 while no boundary checked it, so a violating
+        element laundered through an opaque producer reached a Tier-1-clean
+        callee and refuted its postcondition at run time.
+
+        ALL OR NOTHING, mirroring the verifier's ``all()``: a
+        ``Map<NonEmpty, PosInt>`` has a checkable value position and an
+        unguardable key one, and checking half of it while the status records
+        the obligation guarded would promise more than it delivers.  What
+        makes a position unguardable is a pair-shaped element
+        (``Array<Array<T>>``, ``Array<String>``): its ptr half alone does not
+        carry the value the predicate reads.
+        """
+        node = self._resolve_carrier_type(te)
+        if node is None or not node.type_args:
+            return []
+        type_args = node.type_args
+        sites: list[_ElementGuardSite] = []
+        for kind, index, projection in carriers.CARRIER_POSITIONS[node.name]:
+            if index >= len(type_args):
+                return []
+            elem_te = type_args[index]
+            parts = self._refinement_guard_parts(elem_te)
+            if parts is None:
+                continue  # this position carries no predicate to check
+            if (projection is not None
+                    and projection not in self._PROJECTION_IMPORTS):
+                return []
+            predicate, base_name = parts
+            load_wt = self._type_expr_to_wasm_type(elem_te)
+            if load_wt is None or load_wt == "i32_pair":
+                return []
+            resolved = self._resolve_type_alias(elem_te)
+            if isinstance(resolved, ast.RefinementType):
+                resolved = self._resolve_type_alias(resolved.base_type)
+            if not isinstance(resolved, ast.NamedType):
+                return []
+            # The element stride, keyed on the RESOLVED element name.  Inlined
+            # rather than calling `_element_mem_size`: that helper lives on the
+            # WASM inference mixin, which the contract layer does not compose.
+            # Kept to the same table, and deliberately fail-closed — an element
+            # whose size is not one of these yields no guard rather than a guard
+            # walking the wrong stride.
+            stride = self._ELEMENT_STRIDES.get(resolved.name)
+            load_op = self._ELEMENT_LOADS.get(resolved.name)
+            if stride is None or load_op is None:
+                return []
+            sites.append(_ElementGuardSite(
+                kind=kind, projection=projection, predicate=predicate,
+                base_name=base_name, load_wt=load_wt, load_op=load_op,
+                stride=stride, element_base=resolved.name,
+            ))
+        return sites
+
+    def _emit_element_guards(
+        self,
+        ctx: WasmContext,
+        sig_text: str,
+        te: ast.TypeExpr,
+        ptr_local: int,
+        len_local: int | None,
+        env: WasmSlotEnv,
+        role: str,
+    ) -> list[str]:
+        """Element-wise refinement guard for a carrier boundary (#1430).
+
+        Walks each element SEQUENCE and runs that position's predicate on
+        every element, trapping through the same ``$vera.contract_fail`` path
+        the scalar and tuple-component guards use, so a violating element
+        traps AT THE BOUNDARY rather than surfacing later as a postcondition
+        refutation inside a callee that assumed it.
+
+        *len_local* None means *ptr_local* holds a container HANDLE rather
+        than an array's pointer: the sequence is then obtained by calling the
+        position's projection host import (`map_values` and its siblings),
+        which returns exactly the `(ptr, len)` pair the walk needs.  That call
+        allocates, so the context is marked — the pointer parameters are
+        already shadow-pushed by the GC prologue, which runs before any of
+        these guards.
+
+        A loop rather than the tuple guard's unrolled loads, because the
+        length is a runtime value; the walk itself is
+        :py:func:`vera.wasm.helpers.element_sequence_loop`, shared with the
+        other layer that plants one.
+
+        Costs one pass over the elements at each guarded boundary, plus one
+        projection call for a `Map` or `Set`.  That is the same bargain the
+        scalar guard makes at a smaller size, and it is what the R1 element
+        assumption is paid for: without it the assumption is licensed by
+        nothing, which is the defect this repairs.
+        """
+        sites = self._element_guard_parts(te)
+        if not sites:
+            return []
+        # Every position's PREDICATE is lowered before anything is
+        # registered: `_project_element_sequence` adds a host import, marks
+        # the op used and sets `needs_alloc`, and a later position declining
+        # would leave the module carrying an import and an allocator nothing
+        # calls (CodeRabbit, PR #1447).  The checks are compiled against
+        # locals that belong to the guard either way, so a declined site
+        # costs two unused locals and no module-level state.
+        prepared: list[tuple[_ElementGuardSite, int, int, list[str]]] = []
+        for site in sites:
+            idx = ctx.alloc_local("i32")
+            elem = ctx.alloc_local(site.load_wt)
+            msg = (
+                f"Refinement violation in {sig_text}\n"
+                f"  {role} ({site.kind}): "
+                f"{ast.format_expr(site.predicate)} failed"
+            )
+            check = self._emit_refinement_check(
+                ctx, site.predicate, site.base_name, elem, msg, env, at=te)
+            if check is None:
+                return []
+            prepared.append((site, idx, elem, check))
+        instrs: list[str] = []
+        for site, idx, elem, check in prepared:
+            if site.projection is None:
+                if len_local is None:  # pragma: no cover — caller invariant
+                    return []
+                prologue: list[str] = []
+                seq_ptr, seq_len = ptr_local, len_local
+            else:
+                projected = self._project_element_sequence(
+                    ctx, site, ptr_local)
+                if projected is None:
+                    return []
+                seq_ptr, seq_len, prologue = projected
+            instrs.extend(prologue)
+            instrs.extend(element_sequence_loop(
+                idx_local=idx, ptr_local=seq_ptr, len_local=seq_len,
+                elem_local=elem, load_wt=site.load_wt, load_op=site.load_op,
+                stride=site.stride, check=check,
+            ))
+        return instrs
+
+    def _project_element_sequence(
+        self, ctx: WasmContext, site: _ElementGuardSite, handle_local: int,
+    ) -> tuple[int, int, list[str]] | None:
+        """``(ptr local, len local, instructions)`` for the projected element
+        sequence of a `Map` or `Set` handle (#1430).
+
+        The projections are host imports returning an array's `(ptr, len)`
+        pair, registered through the same helpers an ordinary `map_values(m)`
+        call uses — so a guard calls exactly the import the program would, on
+        every host, and the closure layer's existing import propagation
+        carries it out of a lifted body.
+
+        None when the element's tag has no host-import shape, which is a
+        DECLINE rather than a skip: the verifier's mirror declines the same
+        shapes and records the obligation `tier3_unguarded`, where a
+        `CodegenSkip` would drop the whole function over a guard.
+        """
+        container, slot = self._PROJECTION_IMPORTS[site.projection or ""]
+        tag = ctx._map_wasm_tag(site.element_base)
+        if tag is None:
+            return None
+        if container == "map":
+            wasm_name = ctx._register_map_import(
+                site.projection or "",
+                key_tag=tag if slot == "key" else None,
+                val_tag=tag if slot == "value" else None,
+                extra_params=["i32"], results=["i32", "i32"],
+            )
+        else:
+            wasm_name = ctx._register_set_import(
+                site.projection or "", tag,
+                extra_params=["i32"], results=["i32", "i32"],
+            )
+        ctx.needs_alloc = True  # the projection allocates the array it returns
+        seq_ptr = ctx.alloc_local("i32")
+        seq_len = ctx.alloc_local("i32")
+        return seq_ptr, seq_len, [
+            f"local.get {handle_local}",
+            f"call {wasm_name}",
+            f"local.set {seq_len}",
+            f"local.set {seq_ptr}",
+            # ROOTED before the walk.  The projection allocates the array it
+            # returns, and that array is reachable from nothing else: a
+            # per-element predicate that allocates — a `where` helper building
+            # a string, a concatenation — can collect it mid-loop and the walk
+            # then reads swept memory (CodeRabbit, PR #1447).  A WASM local is
+            # not a GC root; the shadow stack is, and the function's epilogue
+            # restores it from the prologue's saved `$gc_sp`.
+            *gc_shadow_push(seq_ptr),
+        ]
 
     def _tuple_component_guard_sites(
         self, te: ast.TypeExpr, _depth: int = 0,
@@ -346,8 +636,6 @@ class ContractsMixin:
         if node is None:
             return
 
-        _sizes = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 8}
-        _aligns = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 4}
         offset = 4  # after the tag (i32, 4 bytes) — as construction lays it out
         for comp_te in (node.type_args or ()):  # _resolve_tuple_type: non-empty
             wt = self._type_expr_to_wasm_type(comp_te)
@@ -356,10 +644,11 @@ class ContractsMixin:
                 # no value to guard and no offset advance (matching how
                 # construction / extraction skip a Unit field).
                 continue
-            align = _aligns.get(wt, 8)
-            offset = (offset + align - 1) & ~(align - 1)
-            field_offset = offset
-            offset += _sizes.get(wt, 8)
+            # Through the ONE layout (`vera.wasm.helpers.field_layout`), which
+            # is the rule `_translate_constructor_call` lays the object out by:
+            # a decomposition with its own copy of the sizes could read a
+            # component at an offset construction never wrote it to (#1466).
+            field_offset, offset = field_layout(offset, wt)
 
             parts = self._refinement_guard_parts(comp_te)
             resolved = self._resolve_type_alias(comp_te)
@@ -390,11 +679,15 @@ class ContractsMixin:
                 )
             yield _ComponentGuardSite(
                 field_offset=field_offset,
-                # A pair component (String / Array) loads its ptr half — the
-                # length is read from memory by the predicate, exactly as the
-                # i32_pair return guard does (a Vera string / array is
-                # self-describing from its pointer).
-                load_wt="i32" if wt == "i32_pair" else wt,
+                # The component's representation, WHOLE.  This used to yield
+                # the ptr half of a pair on the belief that "a Vera string /
+                # array is self-describing from its pointer"; it is not —
+                # `_translate_slot_ref` reads a pair's length from the local
+                # AFTER its pointer, so binding one local handed the
+                # predicate the pointer and whatever local came next, and
+                # `Tuple("x", 1)` into a `@Tuple<NonEmpty, Int>` trapped on a
+                # value its refinement admits (#1466).
+                wt=wt,
                 guard=guard,
                 nested=comp_te if is_nested else None,
             )
@@ -451,11 +744,15 @@ class ContractsMixin:
         decomposes is the one construction built."""
         instrs: list[str] = []
         for site in self._tuple_component_guard_sites(te, _depth):
-            # Load the component from the heap into a fresh local.
-            comp_local = ctx.alloc_local(site.load_wt)
-            instrs.append(f"local.get {value_local}")
-            instrs.append(f"{site.load_wt}.load offset={site.field_offset}")
-            instrs.append(f"local.set {comp_local}")
+            # Materialise the component's WHOLE representation into the
+            # local(s) its slot binds — one for a scalar or a handle, two
+            # consecutive i32s for a `(ptr, len)` pair (#1466).  The binding
+            # is derived from the type rather than from this emitter's own
+            # convention, which is what a guard reading a pair's pointer as
+            # if it were the value cost.
+            binding = bind_slot_value_from_field(
+                ctx.alloc_local, site.wt, value_local, site.field_offset)
+            instrs.extend(binding.load)
 
             # Guard the component's OWN predicate (a refined component) or the
             # bare-@Nat `>= 0`, THEN — if it also wraps a tuple — recurse into
@@ -469,12 +766,13 @@ class ContractsMixin:
                     f"{ast.format_expr(predicate)} failed"
                 )
                 guard = self._emit_refinement_check(
-                    ctx, predicate, base_name, comp_local, msg, env)
+                    ctx, predicate, base_name, binding.slot_local, msg, env,
+                    at=te)
                 if guard is not None:
                     instrs.extend(guard)
             if site.nested is not None:
                 instrs.extend(self._emit_component_refinement_guards(
-                    ctx, sig_text, site.nested, comp_local, env, role,
+                    ctx, sig_text, site.nested, binding.slot_local, env, role,
                     _depth + 1))
         return instrs
 
@@ -557,6 +855,17 @@ class ContractsMixin:
             parts = self._refinement_guard_parts(te)
             if parts is not None:
                 yield parts[0]
+            # #1430: and each ELEMENT predicate, through the emitter's own
+            # classification, for the same reason the components are here —
+            # a predicate reached only by the element walk is invisible to
+            # the structural scan of the body, so an import or a handler it
+            # needs would be lowered against nothing the module declares
+            # (CodeRabbit, PR #1447).  All-or-nothing in the emitter means
+            # all-or-nothing here: `_element_guard_parts` returns the empty
+            # list for a carrier no guard is emitted for, so registration
+            # equals what is emitted rather than exceeding it.
+            for site in self._element_guard_parts(te):
+                yield site.predicate
             yield from self._component_guard_predicates(te)
 
     def _component_guard_predicates(
@@ -658,14 +967,10 @@ class ContractsMixin:
 
             # Report which contract failed before trapping
             msg = self._format_contract_message(decl, contract)
-            ptr, length = self.string_pool.intern(msg)
-            self._needs_contract_fail = True
-            self._needs_memory = True
-            instrs.append(f"  i32.const {ptr}")
-            instrs.append(f"  i32.const {length}")
-            instrs.append("  call $vera.contract_fail")
-
-            instrs.append("  unreachable")
+            instrs.extend(
+                f"  {i}" for i in ctx._emit_trap(
+                    "codegen/contracts.py:_compile_preconditions",
+                    at=contract, message=msg))
             instrs.append("end")
         return instrs
 
@@ -705,39 +1010,54 @@ class ContractsMixin:
         # top-level refinement still needs per-component exit guards, so don't
         # short-circuit on `refined_ret is None` alone.
         ret_components = self._has_guardable_tuple_components(decl.return_type)
+        # #1430: an `Array<Refined>` return carries no top-level refinement and
+        # no tuple components, so both gates above miss it — which is how a
+        # violating element left a producer unchecked while the verifier
+        # assumed it downstream.
+        ret_elements = bool(self._element_guard_parts(decl.return_type))
 
-        if not ensures_clauses and refined_ret is None and not ret_components:
+        if (not ensures_clauses and refined_ret is None
+                and not ret_components and not ret_elements):
             return []
 
         # Pair returns (String/Array) don't support general ensures checks
-        # — can't bind `@T.result` to a two-value result.  A refinement guard,
-        # however, needs only the value's primary local (the ptr; the length
-        # is read from memory, as the param-guard path shows), so a refined
-        # String *or* Array return IS guarded by saving both halves around the
-        # check.  `_refinement_guard_parts` resolves the canonical base name
-        # for a collection base too, so a `@NonEmptyArray` return is guarded
-        # here despite being Tier-3 *statically* (#746) — see
-        # test_array_return_guard_traps_on_empty.
+        # — can't bind `@T.result` to a two-value result.  A refinement guard
+        # does work over one, because the value is spilled into the two
+        # CONSECUTIVE locals its slot binds — the pointer and, at `ptr + 1`,
+        # the length `_translate_slot_ref` reads — so a refined String *or*
+        # Array return IS guarded.  `_refinement_guard_parts` resolves the
+        # canonical base name for a collection base too, so a `@NonEmptyArray`
+        # return is guarded here despite being Tier-3 *statically* (#746) —
+        # see test_array_return_guard_traps_on_empty.
         if ret_wt == "i32_pair":
-            if refined_ret is None:
+            if refined_ret is None and not ret_elements:
                 return []
-            predicate, base_name = refined_ret
-            ptr_l = ctx.alloc_local("i32")
-            len_l = ctx.alloc_local("i32")
-            msg = self._format_refinement_message(
-                decl, decl.return_type, "return value")
-            guard = self._emit_refinement_check(
-                ctx, predicate, base_name, ptr_l, msg, env)
-            if guard is None:
+            spill = bind_slot_value_from_stack(ctx.alloc_local, "i32_pair")
+            ptr_l, len_l = spill.locals
+            pair_guard: list[str] = []
+            # #1430: elements FIRST.  A refinement over an array may read its
+            # elements (`{ @Array<PosInt> | array_length(...) > 0 }` does not,
+            # but one that indexes would), so establish them before the
+            # top-level predicate — the same ordering the tuple path uses for
+            # the same reason.
+            pair_guard.extend(self._emit_element_guards(
+                ctx, ast.format_fn_signature(decl), decl.return_type,
+                ptr_l, len_l, env, "return value"))
+            if refined_ret is not None:
+                predicate, base_name = refined_ret
+                msg = self._format_refinement_message(
+                    decl, decl.return_type, "return value")
+                top = self._emit_refinement_check(
+                    ctx, predicate, base_name, ptr_l, msg, env,
+                    at=decl.return_type)
+                if top is None and not pair_guard:
+                    return []
+                if top is not None:
+                    pair_guard.extend(top)
+            if not pair_guard:
                 return []
             # Result is (ptr, len) with len on top of the stack.
-            return [
-                f"local.set {len_l}",
-                f"local.set {ptr_l}",
-                *guard,
-                f"local.get {ptr_l}",
-                f"local.get {len_l}",
-            ]
+            return [*spill.load, *pair_guard, *spill.push]
 
         instrs: list[str] = []
 
@@ -767,12 +1087,23 @@ class ContractsMixin:
                 ctx, ast.format_fn_signature(decl), decl.return_type,
                 result_local, env, "return value"))
 
+            # #1430: a `Map` or `Set` return is ONE i32 handle, so it never
+            # reaches the `i32_pair` branch above — and `ret_elements` keeps
+            # this path alive for it, so without this the verifier could
+            # record a guarded return obligation that no emitted check backs
+            # (CodeRabbit, PR #1447).  `None` for the length is what tells
+            # the emitter to project the handle first.
+            instrs.extend(self._emit_element_guards(
+                ctx, ast.format_fn_signature(decl), decl.return_type,
+                result_local, None, env, "return value"))
+
             if refined_ret is not None:
                 predicate, base_name = refined_ret
                 msg = self._format_refinement_message(
                     decl, decl.return_type, "return value")
                 guard = self._emit_refinement_check(
-                    ctx, predicate, base_name, result_local, msg, env)
+                    ctx, predicate, base_name, result_local, msg, env,
+                    at=decl.return_type)
                 if guard is not None:
                     instrs.extend(guard)
 
@@ -786,14 +1117,10 @@ class ContractsMixin:
                 instrs.append("if")
 
                 msg = self._format_contract_message(decl, ensures)
-                ptr, length = self.string_pool.intern(msg)
-                self._needs_contract_fail = True
-                self._needs_memory = True
-                instrs.append(f"  i32.const {ptr}")
-                instrs.append(f"  i32.const {length}")
-                instrs.append("  call $vera.contract_fail")
-
-                instrs.append("  unreachable")
+                instrs.extend(
+                    f"  {i}" for i in ctx._emit_trap(
+                        "codegen/contracts.py:_compile_postconditions",
+                        at=ensures, message=msg))
                 instrs.append("end")
 
             # Push result back
@@ -809,14 +1136,10 @@ class ContractsMixin:
                 instrs.append("if")
 
                 msg = self._format_contract_message(decl, ensures)
-                ptr, length = self.string_pool.intern(msg)
-                self._needs_contract_fail = True
-                self._needs_memory = True
-                instrs.append(f"  i32.const {ptr}")
-                instrs.append(f"  i32.const {length}")
-                instrs.append("  call $vera.contract_fail")
-
-                instrs.append("  unreachable")
+                instrs.extend(
+                    f"  {i}" for i in ctx._emit_trap(
+                        "codegen/contracts.py:_compile_postconditions",
+                        at=ensures, message=msg))
                 instrs.append("end")
 
         return instrs
@@ -976,6 +1299,174 @@ class ContractsMixin:
             comp_values.append([*instrs, f"call {size_fn}"])
         return comp_values
 
+    def _dec_measure_bound_check(
+        self,
+        ctx: WasmContext,
+        contract: ast.Decreases,
+        measured: list[int],
+        name: str,
+        indent: str = "",
+    ) -> list[str]:
+        """Trap when a measure component leaves the range the guard compares
+        in (#1222) — the chain path's entry point, over components it has
+        already evaluated into *measured*.
+
+        The termination guard below compares with ``i64.lt_s`` / ``i64.ge_s``
+        and the prover reasons over unbounded integers, so the two agree
+        exactly while the measure's value is an i64.  A ``@Nat`` measure is a
+        u64 in that i64: above ``i64.MAX`` it reads NEGATIVE, the guard's
+        ``m >= 0`` clause fails, and a program whose termination the verifier
+        PROVED at Tier 1 aborts with "failed to decrease" — a true statement
+        about the machine value and a false one about the program.  Measured:
+        `halve(2^63)` over `decreases(@Nat.0)` traps where `halve(2^63 - 1)`
+        returns.
+
+        The remedy is disclosure, not a wider comparison: the whole compiler
+        treats a ``@Nat`` above ``i64.MAX`` as an edge it discloses (E530 /
+        E531 exist for exactly that), so widening this one comparison would
+        support a range the rest of the language does not.  The verifier
+        obligates ``component <= i64.MAX`` and this is its Tier-3 backstop —
+        so the failure names its own cause instead of borrowing the
+        termination rule's.
+
+        Emitted only for a ``@Nat``-typed component
+        (:meth:`_dec_nat_measure_indices`).  Returns ``[]`` when no component
+        needs it.
+
+        TYPE-driven, not tier-driven, which is this backend's standing rule
+        for a range guard (spec §11.2: the #798 overflow guard is emitted at
+        every classified site "regardless of the verifier's tier").  So a
+        measure a `requires` bounds — obligation `verified` — still pays two
+        dead compares per hop, at the entry check and the self-tail site.
+        That is deliberate: codegen does not read the obligation stream, and
+        making it do so would put the artifact's soundness behind whether
+        `vera verify` had been run, which is precisely the coupling
+        `vera compile` is free of.  The cost is two i64 compares against a
+        constant, on a branch that predicts perfectly.
+        """
+        # By INDEX, never by AST membership: two components can be
+        # structurally equal (`decreases(@Nat.0, @Nat.0)`) and an `in` test
+        # would then pair a check with whichever local matched first.
+        locals_ = [
+            measured[k] for k in self._dec_nat_measure_indices(ctx, contract)
+            if k < len(measured)
+        ]
+        return self._dec_bound_check_pairs(
+            locals_, name, indent, ctx=ctx, at=contract)
+
+    def _dec_bound_check_pairs(
+        self,
+        locals_: list[int],
+        name: str,
+        indent: str = "",
+        *,
+        ctx: WasmContext,
+        at: ast.Node | None,
+    ) -> list[str]:
+        """The emission itself: one range check per component local.
+
+        Both entry points reduce to this — the chain path, which already has
+        the components in locals, and :meth:`_dec_bound_checks_only`, which
+        evaluates them itself when the chain guard is declined — so the check
+        and its message are one derivation rather than two.
+        """
+        checks: list[str] = []
+        for local in locals_:
+            msg = (
+                f"decreases() measure in '{name}' is outside the i64 range "
+                f"the termination check compares in: a @Nat above i64.MAX "
+                f"reads as negative, so the metric cannot be compared"
+            )
+            trap = ctx._emit_trap(
+                "codegen/contracts.py:_dec_bound_check_pairs", at=at,
+                message=msg)
+            checks.extend([
+                f"{indent}local.get {local}",
+                f"{indent}i64.const 0",
+                f"{indent}i64.lt_s",
+                f"{indent}if",
+                *(f"{indent}  {i}" for i in trap),
+                f"{indent}end",
+            ])
+        return checks
+
+    def _dec_nat_measure_indices(
+        self, ctx: WasmContext, contract: ast.Decreases,
+    ) -> list[int]:
+        """The measure components whose readings can differ (#1222).
+
+        The rule is :func:`vera.narrowing.measure_component_needs_range_check`
+        and the table is the CHECKER's, which is what the verifier's own
+        selector reads — so the obligation and the guard cover the same
+        components by construction.  They did not: codegen re-derived the
+        type from its own walker, which answers ``'Int'`` for a call, and
+        ``'Int'`` is also the value meaning "no check needed", so
+        ``decreases(size(@Nat.0))`` was obligated `tier3` and guarded by
+        nothing while `vera run` at 2^63 still reported a failure to
+        decrease.
+        """
+        return [
+            k for k, expr in enumerate(contract.exprs)
+            if measure_component_needs_range_check(
+                ctx._checker_resolved_type(expr))
+        ]
+
+    def _dec_bound_checks_only(
+        self,
+        ctx: WasmContext,
+        contract: ast.Decreases,
+        name: str,
+        env: WasmSlotEnv,
+    ) -> list[str]:
+        """The measure-range checks alone, for a function whose CHAIN guard
+        is declined (#1222).
+
+        The chain guard is declined in three cases — the function declares
+        `Exn` (a throw unwinds past the exit restores and would leave stale
+        chain state), a measure component is untranslatable, or an ADT
+        component has no structural-rank helper — and every one of them is a
+        statement about the CHAIN, not about the range.  A `@Nat` component's
+        range check reads one locally-evaluated value and compares it against
+        a constant: it carries nothing across activations, so nothing that
+        declines the chain applies to it.
+
+        Emitting it here is what keeps the obligation honest.  Recorded as a
+        guarded Tier 3 it claims a runtime check, and folded into the chain
+        guard that claim was false for exactly those shapes — measured on an
+        `Exn`-declaring function, and on a `decreases(@Nat.0, @List<Int>.0)`
+        whose parameterized-ADT SIBLING declines the whole guard while the
+        `@Nat` component translates perfectly well.
+
+        Each component is evaluated exactly once, so a component with a side
+        effect cannot be run twice by this path.  A component that turns out
+        not to translate yields NO checks at all rather than a partial set —
+        the verifier's mirror declines with it.
+        """
+        # Only components an EXTRA evaluation cannot make observable.  On
+        # this path the check evaluates the measure itself — the chain guard
+        # that would otherwise have done so is declined — so an effectful
+        # component would newly run at every entry.  Measured: a
+        # `decreases(risky(@Nat.0))` whose callee throws turned a program
+        # that returned 0 into one that throws before its body.
+        nat_indices = [
+            k for k in self._dec_nat_measure_indices(ctx, contract)
+            if measure_component_is_effect_free(contract.exprs[k])
+        ]
+        if not nat_indices:
+            return []
+        instrs: list[str] = []
+        locals_: list[int] = []
+        for k in nat_indices:
+            value = ctx.translate_expr(contract.exprs[k], env)
+            if value is None:
+                return []
+            local = ctx.alloc_local("i64")
+            instrs.extend(value)
+            instrs.append(f"local.set {local}")
+            locals_.append(local)
+        return instrs + self._dec_bound_check_pairs(
+            locals_, name, ctx=ctx, at=contract)
+
     def _compile_decreases_entry(
         self,
         ctx: WasmContext,
@@ -1044,12 +1535,24 @@ class ContractsMixin:
         # guard rather than a leaky one — the static tier keeps the
         # obligation disclosed (PR #1179 review).
         if self._dec_declares_exn(decl):
-            return [], [], None
+            # #1222: the CHAIN is declined, the range check is not.  The
+            # reason above is entirely about state carried across
+            # activations; a component's range check carries none.
+            return (
+                self._dec_bound_checks_only(ctx, contract, decl.name, env),
+                [], None,
+            )
 
         name = decl.name
         maybe_components = self._dec_translate_measure(ctx, contract, env)
         if maybe_components is None:
-            return [], [], None
+            # #1222: likewise here — a sibling component the backend cannot
+            # translate or rank declines the chain, and says nothing about a
+            # `@Nat` component that translates perfectly well.
+            return (
+                self._dec_bound_checks_only(ctx, contract, name, env),
+                [], None,
+            )
         comp_values = maybe_components
 
         n = len(comp_values)
@@ -1066,6 +1569,11 @@ class ContractsMixin:
         for k in range(n):
             entry.extend(comp_values[k])
             entry.append(f"local.set {measured[k]}")
+        # #1222: before the comparison, not after — a component outside the
+        # comparable range makes every verdict below meaningless, including
+        # the FIRST activation's, which records a baseline without comparing.
+        entry.extend(self._dec_measure_bound_check(
+            ctx, contract, measured, name))
 
         entry.append(f"local.get {saved_active}")
         entry.append("if")
@@ -1103,13 +1611,10 @@ class ContractsMixin:
             f"termination metric must strictly decrease and stay "
             f"non-negative on every recursive call"
         )
-        ptr, length = self.string_pool.intern(msg)
-        self._needs_contract_fail = True
-        self._needs_memory = True
-        entry.append(f"    i32.const {ptr}")
-        entry.append(f"    i32.const {length}")
-        entry.append("    call $vera.contract_fail")
-        entry.append("    unreachable")
+        entry.extend(
+            f"    {i}" for i in ctx._emit_trap(
+                "codegen/contracts.py:_compile_decreases_entry",
+                at=contract, message=msg))
         entry.append("  end")
         entry.append("end")
 
@@ -1197,6 +1702,10 @@ class ContractsMixin:
         for k in range(n):
             prefix.extend(comp_values[k])
             prefix.append(f"local.set {measured[k]}")
+        # #1222, at the site too: a self-tail hop evaluates the measure here
+        # and compares it the same way, so it needs the same backstop.
+        prefix.extend(
+            self._dec_measure_bound_check(ctx, contract, measured, name))
         prefix.append(f"global.get $dec_active_{name}")
         prefix.append("if")
 
@@ -1230,11 +1739,15 @@ class ContractsMixin:
             f"termination metric must strictly decrease and stay "
             f"non-negative on every recursive call"
         )
-        ptr, length = self.string_pool.intern(msg)
-        prefix.append(f"    i32.const {ptr}")
-        prefix.append(f"    i32.const {length}")
-        prefix.append("    call $vera.contract_fail")
-        prefix.append("    unreachable")
+        # `_compile_fn` splices this prefix before every self-recursive
+        # `return_call` — possibly never, possibly several times — and the
+        # record counts every copy of its checks' markers, so each check in
+        # it, this one and those its measure lowered, is recorded here once
+        # and listed once per splice (#1479).
+        prefix.extend(
+            f"    {i}" for i in ctx._emit_trap(
+                "codegen/contracts.py:_dec_self_tail_prefix",
+                at=contract, message=msg))
         prefix.append("  end")
         prefix.append("end")
         prefix.extend(restore)

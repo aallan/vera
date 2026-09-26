@@ -3,6 +3,17 @@
 #
 # Local hooks use `language: system` and assume the venv is active
 # (the same environment where `pip install -e ".[dev]"` was run).
+#
+# Placement.  This file holds the FAST gates — lint, types, the doc and
+# consistency gates, and the tests a commit stages — so a commit takes
+# minutes.  The slow gates run in CI (.github/workflows/ci.yml) on every pull
+# request and on every push to main and release/**, and there only: the full
+# pytest suite on the whole OS x Python matrix (`test`), the conformance suite,
+# the examples' check + verify and their runs, the E602/E604 compile sweep
+# (`lint`), and the conformance and example runs under VERA_EAGER_GC=1
+# (`eager-gc`).  CI also runs every gate below, so a commit that reaches it
+# without these hooks is still gated.  tests/test_gate_placement.py pins both
+# halves.
 
 repos:
   # General hygiene
@@ -28,6 +39,16 @@ repos:
         types: [python]
         pass_filenames: false
 
+      # CI's security step, spelled the way CI spells it.  `ruff check .`
+      # above already applies `S` to vera/ through pyproject's `select`; this
+      # keeps the gate if that list ever changes, as CI's own step does.
+      - id: ruff-security
+        name: ruff security rules (vera/)
+        entry: .venv/bin/ruff check --select S vera/
+        language: system
+        types: [python]
+        pass_filenames: false
+
       - id: mypy
         name: mypy
         entry: .venv/bin/mypy vera/
@@ -35,26 +56,27 @@ repos:
         types: [python]
         pass_filenames: false
 
-      - id: pytest
-        name: pytest
-        entry: .venv/bin/pytest tests/ -q
+      # The test files this commit stages, run in full.  Test-first puts the
+      # test that proves a change in the commit that makes it, so that is the
+      # test a commit runs; the whole suite runs in CI.  Four workers rather
+      # than `-n auto`, because several worktrees commit at once on one
+      # machine.
+      - id: pytest-staged
+        name: pytest (the test files this commit stages)
+        entry: .venv/bin/pytest -q -n 4
         language: system
-        types: [python]
-        pass_filenames: false
+        files: '^tests/test_[^/]*\.py$'
+        require_serial: true
 
-      - id: conformance-suite
-        name: conformance suite
-        entry: .venv/bin/python scripts/check_conformance.py
+      # Every test module still imports and collects.  A rename under vera/
+      # can break an import in a test file no commit staged; collection finds
+      # that in seconds instead of in CI.
+      - id: pytest-collect
+        name: pytest collection (the whole suite)
+        entry: .venv/bin/pytest --collect-only -q
         language: system
         pass_filenames: false
-        files: '(tests/conformance/.*|vera/.*\.py$|vera/grammar\.lark$)'
-
-      - id: vera-examples
-        name: vera examples
-        entry: .venv/bin/python scripts/check_examples.py
-        language: system
-        pass_filenames: false
-        files: '(\.vera$|vera/.*\.py$|vera/grammar\.lark$)'
+        files: '(\.py$|^vera/grammar\.lark$|^pyproject\.toml$)'
 
       - id: corpus-canonical
         name: corpus canonical form
@@ -77,61 +99,33 @@ repos:
         pass_filenames: false
         files: '(examples/README\.md$|examples/.*\.vera$)'
 
-      # The seven doc-block gates below read the inline vera:skip fence
-      # annotations via scripts/doc_annotations.py (#538), so an edit to
-      # that shared module (or the gate script itself) re-runs the gate.
-      - id: readme-examples
-        name: readme examples
-        entry: .venv/bin/python scripts/check_readme_examples.py
+      # #1481 — one gate for every agent-facing document's Vera blocks
+      # (scripts/check_doc_examples.py): each block parses, passes
+      # `vera check` and `vera verify`, and runs every `vera:run` invocation
+      # it names, or carries a vera:skip marker (scripts/doc_annotations.py,
+      # #538) naming the stage it fails.  It also runs the `vera run
+      # examples/...` invocations the documents name and holds every tracked
+      # document with Vera blocks to its DOC_GATES / NOT_GATED lists, so the
+      # trigger is any document, the compiler, the examples (and the stub
+      # modules the blocks import, examples/vera/), and the gate's modules.
+      - id: doc-examples
+        name: doc examples
+        entry: .venv/bin/python scripts/check_doc_examples.py
         language: system
         pass_filenames: false
-        files: '(README\.md$|vera/.*\.py$|vera/grammar\.lark$|scripts/(check_readme_examples|doc_annotations)\.py$)'
+        files: '(\.(md|html|txt)$|vera/.*\.py$|vera/grammar\.lark$|examples/.*\.vera$|scripts/(check_doc_examples|check_examples_run|doc_annotations)\.py$)'
 
-      - id: examples-doc
-        name: examples doc
-        entry: .venv/bin/python scripts/check_examples_doc.py
+      - id: diagnostic-examples
+        name: diagnostic examples
+        entry: .venv/bin/python scripts/check_diagnostic_examples.py
         language: system
         pass_filenames: false
-        files: '(EXAMPLES\.md$|vera/.*\.py$|vera/grammar\.lark$|scripts/(check_examples_doc|doc_annotations)\.py$)'
-
-      - id: skill-examples
-        name: skill examples
-        entry: .venv/bin/python scripts/check_skill_examples.py
-        language: system
-        pass_filenames: false
-        files: '(SKILL\.md$|vera/.*\.py$|vera/grammar\.lark$|scripts/(check_skill_examples|doc_annotations)\.py$)'
-
-      - id: faq-examples
-        name: faq examples
-        entry: .venv/bin/python scripts/check_faq_examples.py
-        language: system
-        pass_filenames: false
-        files: '(FAQ\.md$|vera/.*\.py$|vera/grammar\.lark$|scripts/(check_faq_examples|doc_annotations)\.py$)'
-
-      - id: debruijn-examples
-        name: de bruijn examples
-        entry: .venv/bin/python scripts/check_debruijn_examples.py
-        language: system
-        pass_filenames: false
-        files: '(DE_BRUIJN\.md$|vera/.*\.py$|vera/grammar\.lark$|scripts/(check_debruijn_examples|doc_annotations)\.py$)'
-
-      - id: pypi-readme-examples
-        name: pypi readme examples
-        entry: .venv/bin/python scripts/check_pypi_readme_examples.py
-        language: system
-        pass_filenames: false
-        files: '(PYPI_README\.md$|vera/.*\.py$|vera/grammar\.lark$|scripts/(check_pypi_readme_examples|check_html_examples|doc_annotations)\.py$)'
-
-      - id: html-examples
-        name: html examples
-        entry: .venv/bin/python scripts/check_html_examples.py
-        language: system
-        pass_filenames: false
-        files: '(docs/index\.html$|vera/.*\.py$|vera/grammar\.lark$|scripts/(check_html_examples|doc_annotations)\.py$)'
+        files: '(\.(md|txt)$|vera/.*\.py$|vera/grammar\.lark$|scripts/(check_diagnostic_examples|check_doc_examples|doc_annotations)\.py$)'
 
       # #819 — fails when a doc example *defines* a function named after an
-      # opaque built-in (which `vera check` rejects with E151).  The other doc
-      # validators only parse, so such examples would otherwise slip through.
+      # opaque built-in (which `vera check` rejects with E151).  The doc
+      # example gate above catches that in a block it checks; this scan also
+      # reaches the blocks a vera:skip marker stops before the check stage.
       - id: doc-builtin-shadowing
         name: doc builtin shadowing
         entry: .venv/bin/python scripts/check_doc_builtin_shadowing.py
@@ -167,40 +161,12 @@ repos:
         pass_filenames: false
         files: '(editors/.*|vera/environment\.py$|vera/introspect\.py$|scripts/check_editor_grammars\.py$)'
 
-      # Layer 1 of #626 — fails when any compile of an example or
-      # conformance program emits [E602] (body unsupported) or
-      # [E604] (param unsupported) outside the explicit allowlist
-      # in scripts/check_e602_clean.py.  The warning channel was
-      # the project's only signal for silent translator-skip
-      # failures; this hook turns it into a gating check so new
-      # silent skips can't merge undetected.
-      - id: e602-clean
-        name: no unexpected E602/E604 skips
-        entry: .venv/bin/python scripts/check_e602_clean.py
-        language: system
-        pass_filenames: false
-        files: '(examples/.*\.vera$|tests/conformance/.*\.vera$|vera/.*\.py$|vera/grammar\.lark$|vera/prelude\.py$|scripts/check_e602_clean\.py$)'
-
-      # The examples RUN.  check_examples.py checks + verifies them and
-      # the e602 gate above compiles them; none of that executes one, so
-      # an example could trap at run time and stay green.  The gate runs
-      # every example it can drive and requires the rest to carry a
-      # documented skip property, so a new example cannot be added
-      # without classifying it.  Also cross-checks TESTING.md's
-      # execution-model table against the script's own classification.
-      - id: examples-run
-        name: examples run trap-free
-        entry: .venv/bin/python scripts/check_examples_run.py
-        language: system
-        pass_filenames: false
-        files: '(examples/.*\.vera$|examples/sqlitedb\.sqlite$|vera/.*\.py$|vera/grammar\.lark$|TESTING\.md$|scripts/check_examples_run\.py$)'
-
       - id: doc-counts
         name: doc counts
         entry: .venv/bin/python scripts/check_doc_counts.py
         language: system
         pass_filenames: false
-        files: '(README\.md$|vera/README\.md$|TESTING\.md$|CONTRIBUTING\.md$|CLAUDE\.md$|KNOWN_ISSUES\.md$|HISTORY\.md$|ROADMAP\.md$|docs/index\.html$|tests/test_.*\.py$|tests/conformance/manifest\.json$|examples/.*\.vera$|vera/codegen/api\.py$|scripts/check_doc_counts\.py$|\.pre-commit-config\.yaml$|\.github/workflows/ci\.yml$)'
+        files: '(README\.md$|vera/README\.md$|TESTING\.md$|CONTRIBUTING\.md$|CLAUDE\.md$|AGENTS\.md$|FAQ\.md$|KNOWN_ISSUES\.md$|HISTORY\.md$|ROADMAP\.md$|docs/index\.html$|tests/test_.*\.py$|tests/conformance/manifest\.json$|examples/.*\.vera$|vera/codegen/api\.py$|scripts/check_doc_counts\.py$|\.pre-commit-config\.yaml$|\.github/workflows/ci\.yml$)'
 
       - id: walker-coverage
         name: walker coverage
@@ -255,12 +221,30 @@ repos:
         pass_filenames: false
         files: 'pyproject\.toml$'
 
+      - id: version-sync
+        name: version sync
+        entry: .venv/bin/python scripts/check_version_sync.py
+        language: system
+        pass_filenames: false
+        files: '(pyproject\.toml$|uv\.lock$|vera/__init__\.py$|docs/index\.html$|README\.md$|scripts/check_version_sync\.py$)'
+
       - id: site-assets
         name: site assets
         entry: .venv/bin/python scripts/build_site.py
         language: system
         pass_filenames: false
         files: '(SKILL\.md$|AGENTS\.md$|FAQ\.md$|LSP_SERVER\.md$|vera/__init__\.py$|vera/errors\.py$|vera/grammar\.lark$|docs/index\.html$|scripts/(build_site|doc_annotations)\.py$)'
+
+      # CI's freshness check, after the regeneration above.  It also compares
+      # the facts docs/index.html and docs/index.md each state (#1154), which
+      # regenerating cannot see: build_index_md() is on both sides of that
+      # comparison.
+      - id: site-assets-check
+        name: site assets up to date
+        entry: .venv/bin/python scripts/check_site_assets.py
+        language: system
+        pass_filenames: false
+        files: '(SKILL\.md$|AGENTS\.md$|FAQ\.md$|LSP_SERVER\.md$|vera/__init__\.py$|vera/errors\.py$|vera/grammar\.lark$|docs/.*|scripts/(build_site|check_site_assets|doc_annotations)\.py$)'
 
       - id: browser-parity
         name: browser parity

@@ -6,10 +6,12 @@ from typing import ClassVar
 
 from vera import ast, naming
 from vera.monomorphize import (
+    Monomorphizer,
+    checker_clone_type_name,
     _BUILTIN_PARAMETERIZED_RETURNS,
     _BUILTIN_VERA_RETURN_TYPES,
-    Monomorphizer,
     declared_return_clone_key,
+    pipe_desugared_call,
     resolve_fn_type_alias,
     substitute_type_vars,
 )
@@ -18,7 +20,13 @@ from vera.slots import (
     family_fallback_name,
     type_expr_slot_name,
 )
-from vera.wasm.helpers import _element_wasm_type, state_type_arg
+from vera.wasm.helpers import _strip_future, state_type_arg
+
+#: A built-in data type whose instances take any number of arguments: its
+#: registered type-parameter count is not an arity (`Tuple<Int, Bool>` is an
+#: instance of the 0-parameter registration).  `Tuple` is reserved in the data
+#: namespace (E158, #1397), so no declaration shares the name.
+_VARIADIC_ADTS = frozenset({"Tuple"})
 
 # `substitute_type_vars` was relocated to `vera.monomorphize` (the codegen-free
 # shared monomorphizer, #732) so the verifier can reuse it without importing the
@@ -40,7 +48,6 @@ class InferenceMixin:
     - _infer_vera_type
     - _infer_fncall_vera_type
     - _ctor_to_adt_name
-    - _is_array_type_name (staticmethod)
     - _is_pair_type_name
     - _infer_array_element_type
     - _infer_index_element_type
@@ -200,8 +207,12 @@ class InferenceMixin:
         if isinstance(expr, ast.FnCall):
             return self._infer_fncall_wasm_type(expr)
         if isinstance(expr, ast.ConstructorCall):
+            # ctor-owner-exempt: membership test on a parsed name, not a layout
+            # read
             return "i32" if expr.name in self._ctor_layouts else None
         if isinstance(expr, ast.NullaryConstructor):
+            # ctor-owner-exempt: membership test on a parsed name, not a layout
+            # read
             return "i32" if expr.name in self._ctor_layouts else None
         if isinstance(expr, ast.MatchExpr):
             # #1276 (F4): the FIRST arm that yields a type, not arm 0.  An arm
@@ -224,7 +235,7 @@ class InferenceMixin:
             return None  # pragma: no cover
         if isinstance(expr, ast.IndexExpr):
             elem_type = self._infer_index_element_type(expr)
-            return _element_wasm_type(elem_type) if elem_type else None
+            return self._element_wasm_type(elem_type) if elem_type else None
         if isinstance(expr, ast.ArrayLit):
             return "i32_pair"
         if isinstance(expr, ast.StringLit):
@@ -435,9 +446,22 @@ class InferenceMixin:
         # function — its DECLARED return width, not the ability-op width.  Defer
         # to `_fn_ret_types` (the same registry the general user-fn branch below
         # consults) when the name resolves to a user fn, so the field/element
-        # WASM type matches the emit.  A GENUINE ability op has no `_fn_ret_types`
-        # entry, so it falls through to the special-case width.
-        if expr.name in ("show", "hash") and expr.name in self._fn_ret_types:
+        # WASM type matches the emit.  A GENUINE ability op falls through to
+        # the special-case width.
+        #
+        # Which of the two it is comes from `_bare_call_denotes_op`, the
+        # SHARED gate (#1284/#1299), not from `_fn_ret_types` membership.
+        # That registry is flat: it holds every symbol the whole compilation
+        # absorbed, including another module's `fn show` that this
+        # declaration's lexical scope does not contain.  Asked by membership,
+        # this arm answered "the user's" for `show(42)` in a file that merely
+        # IMPORTS such a module, and typed a String result as `i64` — while
+        # `_translate_call`, narrowed to `_scoped_fns` by #1299, correctly
+        # lowered the ability operation.  The two consultors disagreeing is
+        # what #1299 fixed at the lowering and left here.
+        if (expr.name in ("show", "hash")
+                and not self._bare_call_denotes_op(expr.name)
+                and expr.name in self._fn_ret_types):
             return self._fn_ret_types[expr.name]
         if expr.name == "show":
             return "i32_pair"
@@ -581,10 +605,15 @@ class InferenceMixin:
             if self._is_pair_type_name(name):
                 return "i32_pair"
             base = name.split("<")[0] if "<" in name else name
+            # #1321/#1331: the DECLARED-ADT branch first, as at every other
+            # decider.  Both arms answer "i32", so this ordering is inert
+            # TODAY — which is exactly the width-luck that hid #1309 and
+            # #1331, and the reason it is corrected rather than left to a
+            # future representation to expose.
+            if self._declares_adt(name):
+                return "i32"
             # Opaque handle types — i32 handles managed by host runtime
             if base in ("Decimal", "Map", "Set"):
-                return "i32"
-            if base in self._adt_type_names:
                 return "i32"
             return None  # pragma: no cover
         if isinstance(expr, ast.BinaryExpr):
@@ -622,8 +651,12 @@ class InferenceMixin:
         if isinstance(expr, ast.Block):
             return self._infer_block_result_type(expr)
         if isinstance(expr, ast.ConstructorCall):
+            # ctor-owner-exempt: membership test on a parsed name, not a layout
+            # read
             return "i32" if expr.name in self._ctor_layouts else None
         if isinstance(expr, ast.NullaryConstructor):
+            # ctor-owner-exempt: membership test on a parsed name, not a layout
+            # read
             return "i32" if expr.name in self._ctor_layouts else None
         if isinstance(expr, ast.MatchExpr):
             # #1276 (F4): the first arm that yields a type — see the twin arm
@@ -635,7 +668,7 @@ class InferenceMixin:
             return None
         if isinstance(expr, ast.IndexExpr):
             elem_type = self._infer_index_element_type(expr)
-            return _element_wasm_type(elem_type) if elem_type else None
+            return self._element_wasm_type(elem_type) if elem_type else None
         if isinstance(expr, ast.ArrayLit):
             return "i32_pair"
         if isinstance(expr, (ast.ForallExpr, ast.ExistsExpr)):
@@ -832,6 +865,10 @@ class InferenceMixin:
             if self._reaches_fn_type(te, alias_map):
                 return "i32"
             return "i64"
+        # #1321/#1331: a DECLARED ADT of this namespace beats every built-in
+        # reading of its name — the same precedence `classify_named` gives it.
+        if self._declares_adt(canonical.name):
+            return "i32"
         # Future<T> is transparent — recurse on the inner type.
         if (canonical.name == "Future" and canonical.type_args
                 and len(canonical.type_args) == 1):
@@ -934,7 +971,25 @@ class InferenceMixin:
         return type_name
 
     def _infer_vera_type(self, expr: ast.Expr) -> str | None:
-        """Infer the Vera type name of an expression for call rewriting.
+        """The Vera type name of an expression for call rewriting, from one
+        source: this walker first, the CHECKER second.
+
+        The precedence and its rationale are stated once, on
+        :func:`vera.monomorphize.checker_clone_type_name`.  The discovery twin
+        (``Monomorphizer._infer_vera_type_name``) asks the same two sources in
+        the same order over the same table — the checker's table for the file
+        the body was written in, the entry program's or a module's own
+        (#1509) — so a shape either walker cannot name is named identically
+        for both rather than becoming a clone only one of them believes in —
+        which is what every member of the #1327 family was.
+        """
+        walked = self._walk_vera_type(expr)
+        if walked is not None:
+            return walked
+        return checker_clone_type_name(self._expr_semantic_types, expr)
+
+    def _walk_vera_type(self, expr: ast.Expr) -> str | None:
+        """Infer the Vera type name of an expression, syntactically.
 
         # WALKER_COVERAGE: (#597 — every Expr subclass below has a
         # disposition; check_walker_coverage.py enforces completeness.)
@@ -1024,12 +1079,28 @@ class InferenceMixin:
         if isinstance(expr, ast.ConstructorCall):
             return self._ctor_to_adt_name(expr.name)
         if isinstance(expr, ast.NullaryConstructor):
-            return self._ctor_to_adt_name(expr.name)
+            # #1414: a compiler-generated reference already knows its ADT.
+            # The by-name lookup below reads a table flattened across every
+            # ADT, so a user declaration sharing the name would answer for
+            # it — which is how `compare`'s desugared `Less` came back as
+            # the user's `ZzBox`.
+            return expr.owner or self._ctor_to_adt_name(expr.name)
         if isinstance(expr, ast.BinaryExpr):
             if expr.op in (ast.BinOp.EQ, ast.BinOp.NEQ, ast.BinOp.LT,
                            ast.BinOp.GT, ast.BinOp.LE, ast.BinOp.GE,
                            ast.BinOp.AND, ast.BinOp.OR, ast.BinOp.IMPLIES):
                 return "Bool"
+            piped = pipe_desugared_call(expr)
+            if piped is not None:
+                # #1365: a PIPE names its RIGHT-hand call's RESULT, not the
+                # piped-in value — see the discovery twin
+                # (`Monomorphizer._infer_vera_type_name`), which carries the
+                # identical arm over the identical shared desugar.  Reading
+                # the left operand made a type-CHANGING stage instantiate the
+                # generic at the pre-stage type, and since both consultors
+                # read it the same way they agreed confidently on the wrong
+                # clone: no diagnostic anywhere, and an invalid module.
+                return self._infer_vera_type(piped)
             return self._infer_vera_type(expr.left)
         if isinstance(expr, ast.UnaryExpr):
             if expr.op == ast.UnaryOp.NOT:
@@ -1158,11 +1229,20 @@ class InferenceMixin:
         # checker doesn't reserve these ability-op names), so the Vera element
         # type falls through to the general non-generic user-fn resolution below
         # (which reads the DECLARED return type from `_fn_ret_type_exprs` /
-        # `_fn_ret_types`).  A GENUINE ability op has no `_fn_ret_types` entry, so
-        # it keeps the special-case.  Mirrors the WASM-width guard in
-        # `_infer_fncall_wasm_type` and the `not in self._known_fns` gate in
-        # `_translate_call`.
-        if call.name not in self._fn_ret_types:
+        # `_fn_ret_types`).
+        #
+        # Which of the two it is comes from `_bare_call_denotes_op`, the SHARED
+        # gate (#1284/#1299), not from `_fn_ret_types` membership — the same
+        # correction its WASM-width twin needed (#1379).  That registry is
+        # flat: it holds every symbol the whole compilation absorbed, including
+        # another module's `fn show` that this declaration's lexical scope does
+        # not contain.  Asked by membership, this arm handed back the OTHER
+        # module's declared return for a call the lowering resolves to the
+        # ability operation, so the Vera type and the emitted WASM result
+        # disagreed.  The two consultors and `_translate_call` now ask one
+        # question.
+        if (self._bare_call_denotes_op(call.name)
+                or call.name not in self._fn_ret_types):
             if call.name == "show":
                 return "String"
             if call.name == "hash":
@@ -1207,13 +1287,30 @@ class InferenceMixin:
             for pt, arg in zip(param_types, call.args):
                 self._unify_param_arg_wasm(
                     pt, arg, forall_vars, mapping, constrained_vars)
-            # Use the first param's type to determine return type
-            # (Generic fn return type is typically a type var)
-            # We need to figure out the return type from forall info
-            # Actually, look at the monomorphized fn sig
+            # #769: prefer the callee's DECLARED return TypeExpr substituted
+            # with the inferred instantiation — exactly the substitution
+            # discovery performs (Monomorphizer._generic_return_name), so
+            # both sides mangle the same clone for a generic call in
+            # argument position.  The WAT collapse below names an i32-handle
+            # return "Bool" and a declared-Nat i64 return "Int" — names
+            # discovery never emits (dangling-E602 desyncs pre-#769).
+            # #1509: only a variable the return MENTIONS has to be bound.  A
+            # phantom one no argument determines (`E` in
+            # `result_unwrap_or(Ok(2), 0)`) left this branch answering
+            # nothing, so a generic call nested in a constructor argument
+            # fell to the checker's `Nat` where discovery names the bound
+            # return (`Int`), and the two named different clones for the
+            # call around it.
+            decl_ret = self._fn_ret_type_exprs.get(call.name)
+            if isinstance(decl_ret, ast.RefinementType):
+                decl_ret = decl_ret.base_type
+            if isinstance(decl_ret, ast.NamedType):
+                if decl_ret.name in forall_vars:
+                    return mapping.get(decl_ret.name)
+                return decl_ret.name
             parts = []
             for tv in forall_vars:
-                if tv not in mapping:  # pragma: no cover
+                if tv not in mapping:
                     return None
                 parts.append(mapping[tv])
             # Shared injective mangler (#775) — the registry below is keyed
@@ -1221,20 +1318,8 @@ class InferenceMixin:
             # built by the same encoding.  (The pre-#775 site joined RAW
             # type names with "_", which additionally missed every
             # parameterized instantiation like Map<String, Int>.)
-            # #769: prefer the callee's DECLARED return TypeExpr substituted
-            # with the inferred instantiation — exactly the substitution
-            # discovery performs (Monomorphizer._infer_fncall_vera_type), so
-            # both sides mangle the same clone for a generic call in
-            # argument position.  The WAT collapse below names an i32-handle
-            # return "Bool" and a declared-Nat i64 return "Int" — names
-            # discovery never emits (dangling-E602 desyncs pre-#769).
-            decl_ret = self._fn_ret_type_exprs.get(call.name)
-            if isinstance(decl_ret, ast.RefinementType):
-                decl_ret = decl_ret.base_type
-            if isinstance(decl_ret, ast.NamedType):
-                sub_map = dict(zip(forall_vars, parts))
-                return sub_map.get(decl_ret.name, decl_ret.name)
-            mangled = Monomorphizer._mangle_fn_name(call.name, tuple(parts))
+            mangled = Monomorphizer._mangle_fn_name(
+                call.name, self._canonical_type_args(parts))
             # Look up WASM return type and map back
             ret_wt = self._fn_ret_types.get(mangled)
             if ret_wt == "i64":
@@ -1437,12 +1522,185 @@ class InferenceMixin:
 
     def _ctor_to_adt_name(self, ctor_name: str) -> str | None:
         """Find the ADT type name for a constructor name."""
+        # ctor-owner-exempt: the flat ownership projection itself
         return self._ctor_to_adt.get(ctor_name)
 
-    @staticmethod
-    def _is_array_type_name(type_name: str) -> bool:
-        """Check if a slot type name is an Array<T> type."""
-        return type_name.startswith("Array<")
+    def _strip_future_scoped(self, name: str) -> str:
+        """:func:`~vera.wasm.helpers._strip_future`, asked in this namespace.
+
+        The free function is a textual ``startswith("Future<")`` peel with no
+        namespace to consult, so it ran BEFORE the declared-ADT branch and
+        unwrapped a user ``data Future`` as if it were the transparent
+        built-in wrapper (PR #1372 review) — the mechanism behind the
+        ``data Future`` residue.  A declaration shadows every built-in
+        reading of its name (§8.4.1), so the peel asks the spine first and
+        declines for a name this namespace declares.
+        """
+        if self._declares_adt(name):
+            return name
+        return _strip_future(name)
+
+    def _resolve_element_name(self, elem_type: str) -> str:
+        """An array element's type name, resolved the way the spine resolves
+        one: through the alias chain, with ``Future<…>`` stripped.
+
+        The four size/load/store/type deciders below and
+        :meth:`_is_pair_element_type` must all read the SAME name, or an
+        alias-spelled element takes the primitive table in one and the
+        built-in reading in another (PR #1372 review).
+        """
+        name, _ = self._canonicalize_alias_slot_name(elem_type)
+        return self._resolve_base_type_name(self._strip_future_scoped(name))
+
+    def _is_pair_element_type(self, elem_type: str) -> bool:
+        """Check if an array element type is a pair type (ptr, len).
+
+        String and Array<T> elements are represented as two consecutive
+        i32 values (pointer + length), requiring 8 bytes of storage.
+        Bare "Array" (without type args) also matches, since the element
+        type name from _infer_vera_type may not include type parameters.
+
+        ``Future<…>`` is stripped first (#1045): a ``Future<String>`` /
+        ``Future<Array<T>>`` element is a pair exactly like its payload.
+
+        A METHOD, and on this mixin, because the answer depends on the
+        NAMESPACE (PR #1372 review).  It used to be a module-level free
+        function over a bare ``str`` — no ``self``, no ``AliasEnv``, no ADT
+        table — so it could not be asked the question the spine answers, and
+        it kept saying "pair" for ``Array`` after `_is_pair_type_name` had
+        learned to say "declared ADT".  The two halves then disagreed: with
+        ``private data Array { … }`` the SCRUTINEE side stopped refusing
+        while the ELEMENT side still laid the value out as an 8-byte
+        two-word pair, so an element operation over ``@Array<Array>``
+        compiled at rc 0 with ZERO diagnostics to a `.wasm` no runtime can
+        load — strictly worse than the loud `[E602]` refusal it replaced.
+        Its four derived deciders below all funnel through it, so routing
+        this one routes the element side entirely.
+        """
+        # ALIAS first, then the declared ADT, then the built-in reading —
+        # the spine's order, which this decider could not follow while it was
+        # a free function.  Under `type Array = Int;` the name is the alias's
+        # target, an 8-byte i64 loaded with `i64.load`; answering "pair" for
+        # it returned `None` from `_element_load_op`, which the callers read
+        # as "two loads".  The same walk `_is_pair_type_name` uses, so the
+        # element side and the scrutinee side resolve identically.
+        elem_type, _ = self._canonicalize_alias_slot_name(elem_type)
+        elem_type = self._resolve_base_type_name(
+            self._strip_future_scoped(elem_type))
+        # #1321/#1331: a DECLARED ADT of this namespace beats every built-in
+        # reading of its name, here exactly as at every other decider.
+        if self._declares_adt(elem_type):
+            return False
+        return elem_type == "String" or elem_type == "Array" or elem_type.startswith("Array<")
+
+    def _element_mem_size(self, elem_type: str) -> int | None:
+        """Get memory size in bytes for an array element type.
+
+        Primitive types have fixed sizes.  Pair types (String, Array<T>)
+        use 8 bytes (ptr + len).  All other compound types (ADTs) use
+        4 bytes (i32 heap pointer).
+
+        ``Future<…>`` is stripped first (#1045) so the payload's size is
+        used — e.g. ``Future<Int>`` is an 8-byte i64, not a 4-byte i32.
+        """
+        elem_type = self._resolve_element_name(elem_type)
+        sizes = {
+            "Int": 8,
+            "Nat": 8,
+            "Float64": 8,
+            "Bool": 1,
+            "Byte": 1,
+        }
+        size = sizes.get(elem_type)
+        if size is not None:
+            return size
+        # Pair types: (ptr, len) = 8 bytes
+        if self._is_pair_element_type(elem_type):
+            return 8
+        # ADT / other compound types: i32 heap pointer = 4 bytes
+        return 4
+
+
+    def _element_load_op(self, elem_type: str) -> str | None:
+        """Get the WASM load instruction for an array element type.
+
+        Returns None for pair types (String, Array<T>) which require
+        special two-load handling in the caller.
+
+        ``Future<…>`` is stripped first (#1045) so the payload's load op is
+        used — e.g. ``Future<Int>`` loads with ``i64.load``, not ``i32.load``.
+        """
+        elem_type = self._resolve_element_name(elem_type)
+        ops = {
+            "Int": "i64.load",
+            "Nat": "i64.load",
+            "Float64": "f64.load",
+            "Bool": "i32.load8_u",
+            "Byte": "i32.load8_u",
+        }
+        op = ops.get(elem_type)
+        if op is not None:
+            return op
+        # Pair types need two loads — caller must handle specially
+        if self._is_pair_element_type(elem_type):
+            return None
+        # ADT / other compound types: single i32 load
+        return "i32.load"
+
+
+    def _element_store_op(self, elem_type: str) -> str | None:
+        """Get the WASM store instruction for an array element type.
+
+        Returns None for pair types (String, Array<T>) which require
+        special two-store handling in the caller.
+
+        ``Future<…>`` is stripped first (#1045) so the payload's store op is
+        used — e.g. ``Future<Int>`` stores with ``i64.store``, not
+        ``i32.store``, and ``Future<String>`` returns None (pair, two stores).
+        """
+        elem_type = self._resolve_element_name(elem_type)
+        ops = {
+            "Int": "i64.store",
+            "Nat": "i64.store",
+            "Float64": "f64.store",
+            "Bool": "i32.store8",
+            "Byte": "i32.store8",
+        }
+        op = ops.get(elem_type)
+        if op is not None:
+            return op
+        # Pair types need two stores — caller must handle specially
+        if self._is_pair_element_type(elem_type):
+            return None
+        # ADT / other compound types: single i32 store
+        return "i32.store"
+
+
+    def _element_wasm_type(self, elem_type: str) -> str | None:
+        """Get the WASM value type for an array element type.
+
+        Returns "i32_pair" for pair types (String, Array<T>),
+        "i32" for ADT/compound types, or the native type for primitives.
+
+        ``Future<…>`` is stripped first (#1045) so the payload's value type
+        is used — e.g. ``Future<Int>`` is ``i64``, not ``i32``.
+        """
+        elem_type = self._resolve_element_name(elem_type)
+        types = {
+            "Int": "i64",
+            "Nat": "i64",
+            "Float64": "f64",
+            "Bool": "i32",
+            "Byte": "i32",
+        }
+        wt = types.get(elem_type)
+        if wt is not None:
+            return wt
+        # Pair types: (ptr, len) represented as i32_pair
+        if self._is_pair_element_type(elem_type):
+            return "i32_pair"
+        # ADT / other compound types: i32 heap pointer
+        return "i32"
 
     def _is_pair_type_name(
         self, type_name: str, _seen: frozenset[str] = frozenset(),
@@ -1483,6 +1741,17 @@ class InferenceMixin:
         """
         type_name, _seen = self._canonicalize_alias_slot_name(type_name, _seen)
         resolved = self._resolve_base_type_name(type_name)
+        # #1321/#1331: a DECLARED ADT of this namespace beats every built-in
+        # reading of its name, exactly as in the checker's spine
+        # (`vera.naming.classify_named`).  `data Array { Mk(Int) }` is a
+        # one-word heap pointer, and answering "pair" for it made the match
+        # over it a pair scrutinee — refused with a located E602 whose text
+        # describes `String` / `Array<T>`, its callers dropped behind E620,
+        # and the module shipped with no exports at all.  Ahead of the
+        # `Future` strip too: a user `data Future` carries no transparent
+        # payload.
+        if self._declares_adt(resolved):
+            return False
         if resolved.startswith("Future<") and resolved.endswith(">"):
             return self._is_pair_type_name(resolved[7:-1], _seen)
         return (resolved == "String"
@@ -1490,10 +1759,24 @@ class InferenceMixin:
                 or resolved.startswith("Array<"))
 
     def _infer_array_element_type(self, expr: ast.ArrayLit) -> str | None:
-        """Infer the Vera element type name from an array literal."""
+        """Infer the Vera element type name from an array literal.
+
+        An element that is itself a literal is spelled in full
+        (``Array<Int>``), not by the bare head the walker names it by (#772):
+        the bare ``Array`` is also how a value of a ``data Array { … }``
+        is spelled, and the deciders read it as the declaration wherever
+        one is in scope (#1539), measuring the container's ``(ptr, len)``
+        element as a one-word pointer.  The full spelling carries the
+        container's argument, which no such declaration takes.
+        """
         if not expr.elements:
             return None
-        return self._infer_vera_type(expr.elements[0])
+        first = expr.elements[0]
+        if isinstance(first, ast.ArrayLit):
+            inner = self._infer_array_element_type(first)
+            if inner is not None:
+                return f"Array<{inner}>"
+        return self._infer_vera_type(first)
 
     def _infer_index_element_type(self, expr: ast.IndexExpr) -> str | None:
         """Infer the Vera element type from an index expression's collection.
@@ -1947,6 +2230,8 @@ class InferenceMixin:
             # so sparse constructors like Err(e) bind to the correct ADT type param.
             adt_name = self._ctor_to_adt_name(expr.name)
             if adt_name:
+                # ctor-owner-exempt: resolved in the compiling namespace's
+                # scoped projection (#1436)
                 field_tp_idx = self._ctor_adt_tp_indices.get(expr.name)
                 adt_tp_count = self._adt_tp_counts.get(adt_name, 0)
                 if field_tp_idx is not None and adt_tp_count > 0:
@@ -2198,6 +2483,90 @@ class InferenceMixin:
         alias_map = dict(zip(alias_params, type_args))
         return self._canonical_wasm_type(fn_type.return_type, alias_map)
 
+    def _declares_adt(self, type_name: str, arity: int | None = None) -> bool:
+        """Is *type_name* a ``data`` declaration of the namespace compiling?
+
+        The wasm layer's arm of the resolution spine's DECLARED-ADT branch
+        (:func:`vera.naming.classify_named`), asked over slot-name STRINGS
+        rather than type expressions — which is the currency here.  Spec
+        §8.4.1 lets a declaration take a name a built-in container or the
+        prelude already uses, and the declaration wins, so every derivation
+        that would otherwise answer the built-in's representation asks this
+        first (#1321, #1331).
+
+        ``_adt_type_names`` is the namespace-scoped set the same
+        ``AliasEnv.data_types`` this context's ``_alias_env`` carries — so a
+        sibling module's ADT, or the entry file's, is NOT an ADT here.
+
+        A parameterised spelling (``Box<Int>``) asks about its head, and is
+        an instance of the declaration only with as many arguments as the
+        declaration takes (#1539).  The spelling is a VALUE's type as often
+        as a name this namespace wrote: an array literal's ``Array<Int>``
+        beside a ``data Array { … }`` is the container's, which the head
+        alone cannot say, and reading it as the one-word declaration walked
+        its ``(ptr, len)`` pair as a pointer.  A name this namespace writes
+        always carries the declaration's arity (the checker refuses any
+        other, E135), so the count separates the two exactly when they
+        differ.  When they agree — a built-in ``Decimal`` beside
+        ``data Decimal`` — the checker gives both one type, and so does
+        this.  A bare spelling is the declaration's, as the #772 bare head
+        of a generic declaration's value is.  *arity* is the argument count
+        of a caller that has the name without its arguments.
+        """
+        if "<" in type_name:
+            base = type_name.split("<", 1)[0]
+            if arity is None:
+                arity = len(self._split_type_args(type_name))
+        else:
+            base = type_name
+        if base not in self._adt_type_names:
+            return False
+        if not arity or base in _VARIADIC_ADTS:
+            return True
+        declared = self._adt_tp_counts.get(base)
+        return declared is None or declared == arity
+
+    def _value_adt_key(self, ptype: str) -> str | None:
+        """The data type a VALUE's type names: its layout key, or ``None``
+        for a built-in or primitive (#1534, #1539).
+
+        This namespace's own reading first, arity-aware
+        (:meth:`_declares_adt`); then any user declaration's layout key,
+        which after the #1317 renames names one data type in every
+        namespace (``_value_data_types``).  The second is what a value made
+        elsewhere needs: ``favourite``'s ``Colour`` is a data type in the
+        entry file that imported ``favourite`` alone, and asking the entry's
+        membership dropped every ``show`` / ``hash`` of it (E602).
+        """
+        base = ptype.split("<", 1)[0] if "<" in ptype else ptype
+        if self._declares_adt(ptype):
+            return base
+        if base in self._value_data_types:
+            return base
+        return None
+
+    @staticmethod
+    def _split_type_args(type_name: str) -> list[str]:
+        """The top-level argument spellings of ``Head<A, B<C>>``."""
+        inner = type_name.split("<", 1)[1]
+        inner = inner[:-1] if inner.endswith(">") else inner
+        out: list[str] = []
+        depth = 0
+        cur = ""
+        for ch in inner:
+            if ch == "<":
+                depth += 1
+            elif ch == ">":
+                depth -= 1
+            if ch == "," and depth == 0:
+                out.append(cur.strip())
+                cur = ""
+            else:
+                cur += ch
+        if cur.strip():
+            out.append(cur.strip())
+        return out
+
     @staticmethod
     def _named_type_to_wasm(name: str) -> str | None:
         """Map a concrete type name to its WASM representation."""
@@ -2444,6 +2813,14 @@ class InferenceMixin:
             return "f64"
         if resolved in ("Bool", "Byte"):
             return "i32"
+        # #1321/#1331: this namespace's own `data` declaration beats every
+        # built-in reading of the name — a heap pointer, whatever the
+        # container of that name would have been.  The `_adt_type_names`
+        # test at the bottom of this chain used to sit BELOW the pair,
+        # Future and Map/Set/Decimal arms, so only the names no built-in
+        # claimed ever reached it.
+        if self._declares_adt(resolved):
+            return "i32"
         if self._is_pair_type_name(resolved):
             return "i32_pair"
         # Future<T> is WASM-transparent — same representation as its single type
@@ -2469,10 +2846,14 @@ class InferenceMixin:
         if resolved.startswith("Future<") and resolved.endswith(">"):
             return self._ref_type_name_wasm_type(resolved[7:-1], None, _seen)
         base = resolved.split("<")[0] if "<" in resolved else resolved
+        # Declared ADT before the built-in handles, uniformly (#1321/#1331).
+        # Unreachable for a declared ADT — the `_declares_adt` guard above
+        # answers first — and ordered this way so the chain reads the same
+        # everywhere rather than relying on that guard staying put.
+        if self._declares_adt(resolved):
+            return "i32"
         # Opaque handle types — i32 handles managed by host runtime
         if base in ("Decimal", "Map", "Set"):
-            return "i32"
-        if base in self._adt_type_names:
             return "i32"
         # Function type aliases → i32 (closure pointer).  Resolved through the
         # shared transitive resolver so an alias chain (`type MyFn = InnerFn;`,
@@ -2572,17 +2953,24 @@ class InferenceMixin:
             return "f64"
         if name in ("Bool", "Byte"):
             return "i32"
+        # ADT types are heap pointers.  #1321/#1331: a DECLARED ADT is tested
+        # BEFORE the built-in container names, matching the checker's spine
+        # (`vera.naming.classify_named`) — below them, only a name no built-in
+        # claimed reached this branch, so `data Array` / `data Future` were
+        # measured as the container instead of as the declaration.
+        if self._declares_adt(name):
+            return "i32"
         # Future<T> is WASM-transparent — same representation as T
         if name.startswith("Future<") and name.endswith(">"):
             inner = name[7:-1]
             return self._slot_name_to_wasm_type(inner, _seen)
-        # Map/Set/Decimal are opaque host-import handles (i32)
-        if name.startswith("Map<") or name.startswith("Set<") or name == "Decimal":
+        # Map/Set/Decimal are opaque host-import handles (i32).  A clone is
+        # named after a container's bare head (#772), so `option_unwrap_or$Set`
+        # binds a bare `Set`: it is the same handle.
+        if (name.startswith("Map<") or name.startswith("Set<")
+                or name in ("Map", "Set", "Decimal")):
             return "i32"
-        # ADT types are heap pointers
         base = name.split("<")[0] if "<" in name else name
-        if base in self._adt_type_names:
-            return "i32"
         # Function type aliases are closure pointers (i32) — resolved
         # **transitively** through the shared resolver (#867 / PR #880
         # 4th site) so a refinement-wrapped (`type Foo = { @fn(...) | p }`)

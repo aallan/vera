@@ -36,6 +36,7 @@ Vera supports three comment forms:
 
 They serve as optional human-readable labels for bindings, recovering the readability that structural slot references leave implicit — `@Int.0` records where a value comes from, never what it means:
 
+<!-- vera:run fn="area" args="3 3" stdout="9" -->
 ```
 public fn area(@Int /* width */, @Int /* height */ -> @Int /* area */)
   requires(@Int.1 > 0)
@@ -53,7 +54,7 @@ A label written on a **function parameter** or on the **return slot** is preserv
 
 The following identifiers are reserved keywords and MUST NOT be used as function names:
 
-<!-- vera:skip-parse category="FRAGMENT" reason="'fn  let  if  then ...'" -->
+<!-- vera:skip-parse category="FRAGMENT" reason="the reserved-keyword table, not a program" -->
 ```
 fn          let         if          then        else
 match       data        type        module      import
@@ -104,6 +105,7 @@ Comparison operators are non-associative: `a == b == c` is a syntax error. Chain
 | `!`    | Logical NOT (prefix) | 9 | — |
 | `&&`   | Logical AND | 3 | Left |
 | `\|\|`   | Logical OR | 2 | Left |
+| `==>`  | Logical implication | 1.5 | Right |
 
 ### Other Operators
 
@@ -129,29 +131,29 @@ add(abs(@Int.0), @Int.1)
 | Symbol | Usage |
 |--------|-------|
 | `(` `)` | Grouping, function parameters, function application |
-| `{` `}` | Blocks, record literals, refinement types |
+| `{` `}` | Blocks, refinement types |
 | `[` `]` | Array literals, array indexing |
 | `<` `>` | Type parameters (in type position only) |
 | `@`     | Slot reference prefix |
-| `.`     | Slot index separator, field access |
+| `.`     | Slot index separator, qualified names (`IO.print`, module paths) |
 | `,`     | Separator in lists |
 | `;`     | Statement terminator |
-| `:`     | Type annotation separator |
+| `::`    | Module-qualified call separator (§8.5.3) |
 | `->`    | Function return type, match arm body |
 | `=`     | Binding, assignment in handlers |
-| `\|`     | Refinement type predicate separator, match alternatives |
+| `\|`     | Refinement type predicate separator |
 | `_`     | Wildcard pattern |
+| `?`     | Typed hole (§4.17) |
 
 ## 1.6 Literals
 
 ### Integer Literals
 
-Integer literals are sequences of decimal digits, optionally preceded by a `-` sign:
+Integer literals are sequences of decimal digits. A literal carries no sign; `-17` is the unary negation operator applied to the literal `17`:
 
 ```
 0
 42
--17
 1000000
 ```
 
@@ -163,9 +165,11 @@ Float literals contain a decimal point with digits on both sides:
 
 ```
 3.14
--0.5
+0.5
 100.0
 ```
+
+As with integers, a float literal carries no sign; `-0.5` is negation applied to `0.5`.
 
 One canonical form: no trailing zeros after the last significant digit, except that at least one digit must follow the decimal point. `1.0` is valid; `1.` is not.
 
@@ -192,7 +196,7 @@ Escape sequences:
 | `\r`     | Carriage return |
 | `\0`     | Null |
 | `\u{XXXX}` | Unicode code point (1-6 hex digits) |
-| `\(`...`)` | String interpolation (see §4.6) |
+| `\(`...`)` | String interpolation (see §4.13.1) |
 
 No other escape sequences are valid (except `\(` which begins interpolation).
 
@@ -257,6 +261,7 @@ Rules:
 
 1. **Indentation**: 2 spaces per level. No tabs.
 2. **Braces**: opening brace on the same line, closing brace on its own line aligned with the construct:
+   <!-- vera:skip-parse category="FRAGMENT" reason="canonical formatting of an unnamed signature and its contracts, not a declaration" -->
    ```
    fn(@Int -> @Int)
      requires(@Int.0 > 0)

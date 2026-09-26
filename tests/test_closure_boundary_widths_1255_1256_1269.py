@@ -98,8 +98,14 @@ private fn mk(@Int -> @{T})
 }}
 """
 
+# The opening of a `gc_shadow_push` sequence: the slot-complete overflow
+# bound (#860 — `$gc_sp + 4` against `$gc_stack_limit`, since the store
+# writes four bytes).  Matching the bound rather than the store is what
+# keeps this a PUSH count: the `$gc_sp` restore that closes a function or a
+# match scope reads the same global and stores nothing.
 _SHADOW_PUSH = re.compile(
-    r"global\.get \$gc_sp\n\s*global\.get \$gc_stack_limit")
+    r"global\.get \$gc_sp\n\s*i32\.const 4\n\s*i32\.add"
+    r"\n\s*global\.get \$gc_stack_limit")
 
 
 def _fn_body(wat: str, name: str) -> str:
@@ -324,9 +330,9 @@ class TestPointerNessResolvesThroughTheAliasChain:
         ("template", "fn", "expected"),
         [
             pytest.param(_CLOSURE_RETURN, "anon_0", 0, id="closure_return"),
-            pytest.param(_CLOSURE_PARAM, "anon_0", 4, id="closure_param"),
-            pytest.param(_CLOSURE_CAPTURE, "anon_0", 4, id="closure_capture"),
-            pytest.param(_NAMED_FN, "roundtrip", 3,
+            pytest.param(_CLOSURE_PARAM, "anon_0", 5, id="closure_param"),
+            pytest.param(_CLOSURE_CAPTURE, "anon_0", 5, id="closure_capture"),
+            pytest.param(_NAMED_FN, "roundtrip", 4,
                          id="named_fn_param_and_return"),
         ],
     )
@@ -343,6 +349,14 @@ class TestPointerNessResolvesThroughTheAliasChain:
         the roots their `let @String` intermediate genuinely needs.  A
         scalar wrongly joining them adds exactly one, which is what the
         equality test then reports as an inequality.
+
+        Re-baselined by #1371 (5 / 5 / 4, from 4 / 4 / 3), which is a fall in
+        cost and not a rise: root scoping adds one push — the re-root that
+        carries a scope's value out — against TWO restores, so per function
+        the live roots at the deepest point go 3 → 2, 3 → 2 and 2 → 1.  A
+        raw push count no longer measures what a frame HOLDS, only what it
+        pushes at some point; the equality above is what this class actually
+        turns on, and it is unchanged.
         """
         assert _pushes_for(template, _BASE, fn) == expected
 

@@ -21,6 +21,9 @@ FIX 3 — a user ``data Tuple<A, B>`` fools the ``expr.name == "Tuple"`` gate: t
 construction takes the builtin-Tuple target-table path and emits a widen guard
 (``run`` traps) while the verifier routes the user construction through the
 generic-ctor-field path and emits NO obligation (opposite-direction desync).
+Its discrimination is RETRACTED as of #1397 — the name is reserved in the data
+namespace (E158), so there is no second Tuple to tell apart — and the class
+that pinned it now measures the refusal plus the genuine carrier's guard.
 
 Constants:
     I64_MAX  = 9223372036854775807   ( 2^63 - 1 )  -- sign bit clear, in-range
@@ -39,6 +42,7 @@ from vera.checker import typecheck_with_artifacts
 from vera.codegen import compile as codegen_compile
 from vera.codegen import execute
 from vera.codegen.api import WasmTrapError
+from vera.trap_registry import signal_call_pattern
 from vera.parser import parse_to_ast
 from vera.resolver import ModuleResolver
 from vera.verifier import verify
@@ -86,13 +90,31 @@ def _run(source: str, fn: str, args: list[int]) -> int:
     return exec_result.value
 
 
-def _assert_traps(source: str, fn: str, args: list[int]) -> None:
+def _assert_traps(
+    source: str, fn: str, args: list[int], kind: str = "widen_guard",
+) -> None:
+    """Assert the guard at THIS site fires, by its own trap kind.
+
+    Two guards live in this file's fixtures and they report different kinds:
+    the `@Int` -> `@Nat` narrowing guard carries `nat_guard` (#754), and the
+    `@Nat` -> `@Int` widen guard carries `widen_guard` (#1438, which signals
+    its kind before the `unreachable` on #754's pattern, through the one
+    `vera.trap` import since #1479 — until then the widen side tripped the
+    bare `unreachable` net, indistinguishable from any other).  A union of the two would accept either at every
+    site, so a narrowing guard regressing to the bare net — the exact
+    condition #754 fixed — would leave every cell here green (PR review).
+    Since #1438 the same argument runs in the other direction too: a widen
+    guard losing its signal now fails here instead of quietly passing as
+    `unreachable`.  The default is the widen kind because most sites here are
+    widening; a narrowing site passes its own.
+    """
     result = _compile_with_types(source)
     with pytest.raises(WasmTrapError) as exc_info:
         execute(result, fn_name=fn, args=args)
-    # The widen guard is a bare `unreachable` net (no dedicated trap kind yet),
-    # so pin the kind to prove it is the guard firing, not an unrelated failure.
-    assert exc_info.value.kind == "unreachable", exc_info.value.kind
+    assert exc_info.value.kind == kind, (
+        f"expected the {kind!r} guard at this site, got "
+        f"{exc_info.value.kind!r}"
+    )
 
 
 def _assert_no_trap(source: str, fn: str, args: list[int], expect: int) -> None:
@@ -134,9 +156,11 @@ public fn f(@Nat -> @Int) requires(true) ensures(true) effects(pure)
 # call (returns @Int, so NOT widen-guarded and NOT collected).  The @Nat `0 ->`
 # arm is a bare slot (widen-guarded per-arm, but reachable — not a call).  The
 # recursive @Int arm must keep its `return_call $f` so a deep run is
-# constant-stack.
+# constant-stack.  `f` never returns from a negative `@Int`, so it declares
+# `Diverge` (#1492): that is the honest row, and it leaves the compiled
+# function exactly as it was, with no termination guard.
 _FIX1_TCO = """
-public fn f(@Nat, @Int -> @Int) requires(true) ensures(true) effects(pure)
+public fn f(@Nat, @Int -> @Int) requires(true) ensures(true) effects(<Diverge>)
 { match @Int.0 { 0 -> @Nat.0, _ -> f(@Nat.0, @Int.0 - 1) } }
 """
 
@@ -171,8 +195,14 @@ class TestFix1DeadGuardUnderTailCall:
             "the @Nat widen-guarded arm's call must be reverted to a plain "
             "call so the appended guard is reached"
         )
-        # ...and the live guard (sign check + trap) follows it.
-        assert "i64.lt_s" in wat and "unreachable" in wat
+        # ...and the live guard (sign check + trap) follows it.  Since #1438 the
+        # widen guard's trap signals `widen_guard` (through `vera.trap`, #1479)
+        # then executes `unreachable`, so pin the signal: a bare `unreachable`
+        # appears elsewhere in every module (GC shadow-stack overflow), and
+        # asserting only that word would keep this cell green with no widen
+        # guard emitted at all.
+        assert "i64.lt_s" in wat
+        assert signal_call_pattern("widen_guard").search(wat)
 
     def test_tco_recursive_int_arm_return_call_survives(self) -> None:
         # The GENUINE @Int recursive arm is NOT widen-guarded, so its
@@ -256,7 +286,7 @@ class TestFix4TargetBlindGate:
     def test_int_arm_narrow_guard_intact(self) -> None:
         # Regression companion: FIX 4 must NOT disable the @Int arm's #983
         # narrow guard — a negative @Int into the @Nat return still traps.
-        _assert_traps(_FIX4_NARROW, "pnarrow", [0, -5, 0])
+        _assert_traps(_FIX4_NARROW, "pnarrow", [0, -5, 0], "nat_guard")
 
     def test_let_int_target_still_guards_nat_arm(self) -> None:
         # Control: when the hetero join genuinely TARGETS @Int (a `let @Int`),
@@ -268,13 +298,15 @@ class TestFix4TargetBlindGate:
 
 
 # =====================================================================
-# FIX 3 — user `data Tuple<A, B>` fools the builtin-Tuple gate
+# FIX 3 — the user `data Tuple<A, B>` that fooled the builtin-Tuple gate
+# is refused at check (#1397)
 # =====================================================================
 
-# A user ADT named Tuple.  The verifier routes the construction through the
-# generic-ctor-field path (no coerce obligation, tier3_unguarded at most); at
-# head codegen mis-took it for the builtin Tuple carrier and emitted a widen
-# guard, so run(u64.MAX) trapped — an opposite-direction desync.
+# A user ADT named Tuple.  The desync FIX 3 guarded against no longer has a
+# program to happen in: #1397 reserves the name in the data namespace, so the
+# checker refuses this declaration with E158 and neither the verifier's
+# generic-ctor-field routing nor codegen's target-table path can be reached
+# with a second Tuple in scope.
 _FIX3_USER_TUPLE = """
 private data Tuple<A, B> { Tuple(A, B) }
 public fn f(@Nat -> @Int) requires(true) ensures(true) effects(pure)
@@ -289,20 +321,32 @@ public fn tc(@Nat -> @Int) requires(true) ensures(true) effects(pure)
 """
 
 
-class TestFix3UserTupleGate:
-    def test_user_tuple_verifier_emits_no_guarded_coerce(self) -> None:
-        # The verifier does not runtime-guard the user-Tuple construction.
-        assert "tier3" not in _coerce_statuses(_FIX3_USER_TUPLE)
+class TestFix3UserTupleIsRefused:
+    """#1397 — the collision FIX 3 discriminated is now refused at check.
 
-    def test_user_tuple_run_does_not_trap(self) -> None:
-        # BUG at head: codegen emitted a widen guard the verifier never
-        # obligated, so run(u64.MAX) trapped.  After the fix the user Tuple's
-        # generic field stays unguarded and the value round-trips bit-exactly
-        # (read back as a signed i64, so compare under the u64 mask).
-        _assert_no_trap(_FIX3_USER_TUPLE, "f", [U64_MAX], U64_MAX)
+    FIX 3 taught codegen to tell the builtin variadic carrier (empty
+    ``field_offsets``) from a user ``data Tuple<A, B>`` (a fixed layout), so
+    only the carrier took the target-table widen-guard path.  That
+    discrimination is retracted: `Tuple` is reserved in the data namespace
+    (E158) on the rule that reserves built-in function names (E151) and
+    built-in effect names (E152), because the same name collision ALSO made
+    ``show`` under a user ``data Tuple`` drop the constructor name, and the
+    carrier cannot be told apart at render time.
 
-    def test_user_tuple_in_range(self) -> None:
-        _assert_no_trap(_FIX3_USER_TUPLE, "f", [42], 42)
+    What the class still measures is the half that must not move: the
+    genuine carrier's #820 widen guard is intact, so the retraction is not a
+    quiet withdrawal of the guard it was narrowing.
+    """
+
+    def test_user_tuple_declaration_is_refused_at_check(self) -> None:
+        # The declaration FIX 3 existed to accommodate no longer type-checks,
+        # so codegen never sees a second Tuple and the desync it guarded
+        # against (a widen guard the verifier never obligated, trapping a
+        # legal @Nat at u64.MAX) is unreachable rather than discriminated.
+        program = parse_to_ast(_FIX3_USER_TUPLE)
+        diags, _arts = typecheck_with_artifacts(program, _FIX3_USER_TUPLE)
+        codes = [d.error_code for d in diags if d.severity == "error"]
+        assert "E158" in codes, codes
 
     def test_builtin_tuple_still_traps(self) -> None:
         # Control: the genuine builtin Tuple carrier's widen guard is intact.
@@ -310,3 +354,38 @@ class TestFix3UserTupleGate:
 
     def test_builtin_tuple_in_range(self) -> None:
         _assert_no_trap(_FIX3_BUILTIN_TUPLE, "tc", [42], 42)
+
+    def test_a_user_tuple_CONSTRUCTOR_cannot_disarm_the_carrier_guard(
+        self,
+    ) -> None:
+        """The constructor-namespace twin, found in PR #1404 review.
+
+        `ctor_layouts` is flattened by CONSTRUCTOR name, so a user ADT with
+        a constructor called `Tuple` won the built-in carrier's flat slot
+        with its own FIXED layout.  At `release/v0.2.0` the FIX-3 clause
+        then read that layout, concluded "user ADT", and skipped the widen
+        guard on a GENUINE built-in tuple construction elsewhere in the same
+        program: `tc(u64.MAX)` returned a reinterpreted negative `@Int` with
+        NO trap, on a program the verifier had nothing to say about.
+
+        A `Bool` payload is load-bearing: with an `Int` one the clobbered
+        layout's `int_fields` coincidentally re-guards the same component,
+        which is why the hole is invisible to the obvious repro.
+
+        #1397 closes it at the source — the constructor name is reserved
+        (E158) — so the program is refused before either layout exists.
+        """
+        poisoned = """
+private data ZzBox { Tuple(Bool) }
+""" + _FIX3_BUILTIN_TUPLE
+        program = parse_to_ast(poisoned)
+        diags, _arts = typecheck_with_artifacts(program, poisoned)
+        codes = [d.error_code for d in diags if d.severity == "error"]
+        assert "E158" in codes, codes
+
+    def test_builtin_tuple_coerce_is_still_runtime_guarded(self) -> None:
+        # And the verifier still OBLIGATES it — the half `_coerce_statuses`
+        # used to check on the user side.  Retracting the discrimination must
+        # not leave codegen guarding a site the verifier stopped obligating,
+        # which is the desync in the other direction.
+        assert "tier3" in _coerce_statuses(_FIX3_BUILTIN_TUPLE)

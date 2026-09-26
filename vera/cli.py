@@ -50,7 +50,12 @@ from typing import cast
 
 from lark import Tree
 from vera.codegen.api import WasmTrapError
-from vera.errors import Diagnostic, SourceLocation, VeraError
+from vera.errors import (
+    Diagnostic,
+    SourceLocation,
+    VeraError,
+    partial_diagnostics,
+)
 from vera.introspect import builtins_payload, effects_payload, errors_payload
 from vera.parser import parse
 from vera.transform import transform
@@ -312,9 +317,12 @@ def cmd_verify(path: str, as_json: bool = False, quiet: bool = False,
 
         # First type-check, collecting the #747 semantic-type side-tables
         # so the verifier can obligate projection / generic-instantiation
-        # @Nat narrowings.
+        # @Nat narrowings — and each module's own (#1509), which
+        # instantiation discovery reads for that module's bodies exactly as
+        # `vera compile` / `run` hand them to code generation.
         check_diags, artifacts = typecheck_with_artifacts(
             ast, source, file=str(p), resolved_modules=resolved,
+            collect_module_artifacts=True,
         )
         type_diags = resolver.errors + check_diags
         type_errors = [d for d in type_diags if d.severity == "error"]
@@ -339,7 +347,8 @@ def cmd_verify(path: str, as_json: bool = False, quiet: bool = False,
                         timeout_ms=timeout_ms,
                         resolved_modules=resolved,
                         expr_types=artifacts.expr_semantic_types,
-                        expr_target_types=artifacts.expr_target_types)
+                        expr_target_types=artifacts.expr_target_types,
+                        module_artifacts=artifacts.module_artifacts)
 
         errors = [d for d in result.diagnostics if d.severity == "error"]
         warnings = [d for d in result.diagnostics if d.severity == "warning"]
@@ -356,6 +365,11 @@ def cmd_verify(path: str, as_json: bool = False, quiet: bool = False,
                     "tier1_verified": s.tier1_verified,
                     "tier3_runtime": s.tier3_runtime,
                     "total": s.total,
+                    # #1345: assumptions counted BESIDE the tiers.  Absent
+                    # from this object, an `assume` was counted nowhere at
+                    # all, so a consumer could not tell a proof from a
+                    # promise.
+                    "assumptions": s.assumptions,
                     # #1350: the budget these tiers were measured under.  A
                     # tier near the budget is host-sensitive, so a summary
                     # that does not say which budget produced it cannot be
@@ -513,15 +527,25 @@ def _internal_error_envelope(
         severity="error",
         error_code="E699",
     )
+    # #1429: diagnostics the failing pass had already RECORDED come first, on
+    # both paths.  They are what the user can act on — the E699 says only that
+    # the compiler stopped — and a crash that follows a real refusal used to
+    # hide it completely.  `partial_diagnostics` returns [] for an exception
+    # that carried none, so the ordinary internal error is unchanged.
     try:
+        recorded = partial_diagnostics(exc)
         if as_json:
             payload: dict[str, object] = {
                 "ok": False, "file": path,
-                "diagnostics": [diag.to_dict()], "warnings": [],
+                "diagnostics": [d.to_dict() for d in recorded] + [
+                    diag.to_dict()],
+                "warnings": [],
             }
             payload.update(extra or {})
             print(json.dumps(payload, indent=2))
             return 1
+        for recorded_diag in recorded:
+            print(recorded_diag.format(), file=sys.stderr)
         print(diag.format(), file=sys.stderr)
         return 1
     except Exception:  # noqa: BLE001 — last resort (#1361 review)
@@ -1627,6 +1651,7 @@ def cmd_test(
                                 "args": t.args,
                                 "status": t.status,
                                 "message": t.message,
+                                "trap_kind": t.trap_kind or None,
                             }
                             for t in f.failures[:5]
                         ],

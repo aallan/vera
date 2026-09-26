@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
 """Fail if a documentation example *defines* a function named after a built-in.
 
-Background (#819, root-caused in #817): the other doc validators
-(``check_skill_examples.py``, ``check_spec_examples.py``, …) only **parse**
-example code blocks — they never run ``vera check``. So an example that defines
-``fn clamp`` / ``fn abs`` / ``fn sign`` parses cleanly but would fail
-``vera check`` with **E151** (redefining a built-in, added in #815/v0.0.185).
-Several such examples drifted into ``SKILL.md`` and ``DE_BRUIJN.md`` after the
-E151 work and were caught only by a manual audit. This gate is the automated
+Background (#819, root-caused in #817): an example that defines ``fn clamp`` /
+``fn abs`` / ``fn sign`` parses cleanly but fails ``vera check`` with **E151**
+(redefining a built-in, added in #815/v0.0.185). Several such examples drifted
+into ``SKILL.md`` and ``DE_BRUIJN.md`` after the E151 work, when the doc gates
+only parsed, and were caught only by a manual audit. This gate is the automated
 backstop.
 
-It deliberately does **not** run a full ``vera check`` on every block: many doc
-snippets are intentional fragments (no ``main``, undefined references) that do
-not fully check, so a blanket ``vera check`` would drown the real signal in
-false positives. Instead it scans for the one mechanical signature of the E151
-class — a ``fn <name>`` definition whose name is an *opaque* (non-overridable)
-built-in.
+``check_doc_examples.py`` now runs ``vera check`` on every gated block, so it
+reports E151 in any block that reaches the check stage.  This scan still earns
+its place on the rest: a block a ``vera:skip`` marker stops before the check
+stage (a fragment, a deliberately wrong example) is never checked there, and
+a definition inside it would otherwise go unseen.  It scans for the one
+mechanical signature of the E151 class — a ``fn <name>`` definition whose name
+is an *opaque* (non-overridable) built-in.
 
 ``spec/09-standard-library.md`` is exempt: it documents the built-in
 *signatures themselves* (``fn abs(@Int -> @Int)`` …) as reference material, so
@@ -72,7 +71,16 @@ def find_shadowing_defs(
 # ``.claude`` holds session tooling state (agent worktrees carry full repo
 # copies, so without this the scanner re-flags every spec chapter through
 # ``.claude/worktrees/<name>/spec/...`` whenever a worktree exists).
-_SKIP_DIRS = {".venv", "docs", "mutants", ".git", ".claude", "node_modules", "site"}
+_SKIP_DIRS = {
+    ".venv", "docs", "mutants", ".git", ".claude", "node_modules", "site",
+    # #1374: `scripts/check_corpus_differential.py` materialises a base
+    # checkout here and leaves it in place by default, so a burndown
+    # session that ran the instrument had another revision's `spec/`
+    # walked as if it were this one's.  Named as well as caught by the
+    # nested-checkout rule below, so the common case is pruned without
+    # a `.git` stat.
+    ".corpus-differential",
+}
 
 
 def doc_files(root: Path) -> list[Path]:
@@ -83,13 +91,29 @@ def doc_files(root: Path) -> list[Path]:
     ``_EXEMPT`` reference files and the generated / vendored / artefact trees in
     ``_SKIP_DIRS`` are excluded.
 
+    A NESTED CHECKOUT is pruned too — any directory carrying its own ``.git``
+    (#1374).  That tree is another revision of this repository, or another
+    repository entirely; either way its ``spec/`` is not an authored doc
+    surface of THIS one, and walking it reported ~90 offenders from
+    ``.corpus-differential/vera-base-<sha>/spec/09-standard-library.md``
+    whenever the burndown differential had been run.  The rule is stated as
+    "a tree that carries its own ``.git``" rather than as a name, because
+    the differential's ``--work-dir`` is settable and a stray clone under the
+    repo root is the same hazard whatever it is called.  The root itself is
+    never a candidate — pruning happens on ``dirnames``, and the root is not
+    in one — so this repo's own ``.git`` cannot prune the walk it starts.
+
     Uses ``os.walk`` with in-place pruning of ``_SKIP_DIRS`` from ``dirnames``
     so traversal never *descends* into ``.venv`` / ``node_modules`` etc. — vs.
     ``rglob``, which would stat every file under those (large) trees first and
     only then filter them out (CR #821 review)."""
     out: list[Path] = []
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
+        dirnames[:] = [
+            d for d in dirnames
+            if d not in _SKIP_DIRS
+            and not (Path(dirpath) / d / ".git").exists()
+        ]
         for name in filenames:
             if not name.endswith(".md"):
                 continue

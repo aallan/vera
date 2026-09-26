@@ -57,10 +57,10 @@ node_modules/
 *.wasm
 *.wat
 
-# Leaked temp .vera files — the HTML-doc checkers (scripts/check_html_examples.py,
+# Leaked temp .vera files — the doc checkers (scripts/check_doc_examples.py,
 # tests/test_html.py) write a doc snippet to a temp file to validate it; an
 # interrupted run can strand one in the repo root.  Backstop only — the checkers
-# now write to the system tempdir, not here.
+# write to the system tempdir, not here.
 /tmp*.vera
 
 # Run artifacts from the example corpus.  `examples/file_io.vera` writes the

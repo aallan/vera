@@ -1,6 +1,6 @@
 # History
 
-How the Vera compiler was built, from initial commit through the dual-threaded start of Stages 19 and 20, across 103 active development days.
+How the Vera compiler was built, from initial commit through the dual-threaded start of Stages 19 and 20, across 149 active development days.
 
 Vera was developed in an interleaved spiral — each phase added a complete compiler layer with tests, documentation, and working examples before moving to the next. The compiler was built by a single developer working with Claude Code, with CodeRabbit providing AI code review on pull requests from v0.0.80 onwards. The entire project — language design, specification, compiler, test suite, documentation, website — was built from scratch starting 22 February 2026.
 
@@ -479,6 +479,7 @@ Stages 19 and 20 run dual-threaded: community PRs against the single-source spri
 | v0.1.11 | 13 Aug | **The community-PR queue clears** — seven third-party contributions reviewed and merged. |
 | v0.1.12 | 15 Aug | **The twelve-group burndown** — refusal rails, the JSON accept domain, throw-payload guards, branch-join monomorphization, and release and spec-drift gates. |
 | v0.1.13 | 21 Aug | **The inference response-shape fix** — `Inference.complete` selects text by block type, and every failure names its provider. |
+| v0.2.0 | 28 Sep | **The soundness release** — termination, obligations where the program evaluates, and runtime traps that name their cause ([#1480](https://github.com/aallan/vera/issues/1480)). |
 
 ---
 
@@ -499,4 +500,4 @@ Ten releases, chosen for the capability each one unlocked rather than even spaci
 | Spec chapters | 7 | 10 | 12 | 13 | 13 | 13 | 13 | 14 | 14 | 14 |
 | Python coverage | — | — | 90% | 96% | 95% | 95% | 95% | 95% | 95% | 95% |
 
-Total: **2,000+ commits, 211 tagged releases, 103 active development days.**
+Total: **3,000+ commits, 212 tagged releases, 149 active development days.**

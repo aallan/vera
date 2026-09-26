@@ -21,11 +21,21 @@ The canonical form of a function declaration:
 private fn function_name(@ParamType1, @ParamType2 -> @ReturnType)
   requires(precondition)
   ensures(postcondition)
+  decreases(measure)
   effects(effect_row)
 {
   body_expression
 }
 ```
+
+The clause order is fixed by the grammar (Chapter 10): the signature, then the
+contract clauses — `requires`, `ensures` and `decreases`, in any order among
+themselves, each permitted more than once (repeated clauses conjoin) — then
+exactly one `effects` clause, then the body. A contract clause written after
+`effects` is rejected with **E032**, which names the clause and the move;
+`decreases` is optional (Section 5.6) but takes its place among the contract
+clauses when present. `invariant` belongs to `data` declarations (Section
+2.4.1), not to functions.
 
 An identifier the grammar claims is unavailable as a function name. Three groups are affected, and a fourth name is reserved for a different reason.
 
@@ -47,6 +57,7 @@ The same one-canonical-form reasoning rejects redefining a built-in function (**
 
 ### 5.2.1 Complete Example
 
+<!-- vera:run fn="absolute_value" args="3" stdout="3" -->
 ```
 public fn absolute_value(@Int -> @Nat)
   requires(true)
@@ -65,7 +76,7 @@ public fn absolute_value(@Int -> @Nat)
 
 Multiple `requires` and `ensures` clauses may be specified. They are conjunctive (all must hold):
 
-<!-- vera:skip-verify category="ILLUSTRATIVE" reason="safe_divide with imprecise ensures" -->
+<!-- vera:skip-verify category="ILLUSTRATIVE" code="E500" reason="safe_divide with imprecise ensures" -->
 ```
 public fn safe_divide(@Int, @Int -> @Int)
   requires(@Int.1 != 0)
@@ -80,10 +91,13 @@ public fn safe_divide(@Int, @Int -> @Int)
 
 Multiple `requires` clauses are equivalent to a single `requires` with `&&`. They are provided as separate clauses for readability and for more precise error reporting (the compiler can indicate which specific precondition was violated).
 
+The equivalence rests on §4.6's short-circuit `&&`.  The reference compiler currently evaluates both operands of `&&` ([#1501](https://github.com/aallan/vera/issues/1501)), so until that is fixed a precondition whose later conjunct relies on an earlier one is written as separate clauses: the compiled check evaluates the clauses in order and stops at the first that fails, and the verifier checks each clause under the ones before it.  With `need_pos` requiring a positive argument, `requires(@Int.0 >= 1) requires(need_pos(@Int.0) > 0)` verifies, while `requires(@Int.0 >= 1 && need_pos(@Int.0) > 0)` evaluates `need_pos(0)` on `0`, which traps, and is refused `E501`.
+
 ## 5.3 Parameter Binding Order
 
 Parameters are bound left-to-right, with the leftmost parameter having the highest De Bruijn index and the rightmost parameter having index 0:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="a signature shape, not a declaration" -->
 ```
 fn(@Int, @String, @Int -> @Bool)
 ```
@@ -126,8 +140,16 @@ Effect syntax and semantics are detailed in Chapter 7.
 
 ## 5.6 Recursive Functions
 
-Recursive functions are functions that call themselves (directly or mutually). A recursive function MUST declare a `decreases` clause:
+Recursive functions are functions that call themselves (directly or mutually). A recursive function MUST declare a `decreases` clause, unless its effect row names `Diverge` (Chapter 7, Section 7.7.3). The rule holds for every effect row: an `<IO>` or `<State<T>>` function that recurses is recursive in the same sense as a pure one. A recursive function that declares neither is rejected at check time with `E137`.
 
+Whether a function is recursive is decided over the program's **call graph**. Its nodes are the program's function declarations, `where` helpers at every depth included. Its edges are bare calls, resolved as the checker resolves them (Section 5.6.2), and the calls a module makes by its own path — `ma::f(...)` inside `module ma;` (Chapter 8, Section 8.5.3) — each an edge to the top-level function it names, as the bare call to it is. A declaration refused at check time, such as a redefinition of a built-in (`E151`) or a second declaration of a name in one namespace (`E184`, Chapter 8, Section 8.5.5), is not in the graph, so it draws that refusal alone, and a call to its name reaches the built-in or the first declaration. A call written in the body, including one in a closure or handler clause inside the body, is a **computation edge**. A call written in a contract, or in a refinement predicate of a type the declaration names or of a field of a constructor it applies, is a **specification edge**. A function is recursive when it lies on a cycle of computation edges, which includes a function that calls itself and every function on a cycle through other declarations, whether they are its `where` helpers, its parent, or other top-level functions. A cycle through a specification edge is not recursion: it is rejected with `E138` (below). Two kinds of call are not edges:
+
+- A call through a function value, `apply_fn(f, …)`, whose callee is a closure the checker does not track. Recursion that exists only through such calls, for example a closure stored in a data value and later applied to that value, is not detected, and no measure is required for it.
+- A module-qualified call into another module. The module graph is acyclic (`E011`), so no cycle can pass through one. A call by a module's own path is not such a call: it stays inside the module, and it is an edge.
+
+A contract, or a refinement predicate in a type the function names or in a field of a constructor it applies, MUST NOT call back into its own function, directly or through other calls: such a call is rejected with `E138` (Chapter 6, Section 6.3.1).
+
+<!-- vera:run fn="factorial" args="5" stdout="120" -->
 ```
 public fn factorial(@Nat -> @Nat)
   requires(true)
@@ -152,6 +174,8 @@ The `decreases` clause specifies an expression that must strictly decrease (in a
 2. At each recursive call site, the compiler verifies that the `decreases` expression (with the recursive call's arguments substituted) is strictly less than the value at function entry.
 3. The expression MUST have a type with a well-founded ordering: `Nat`, `Int` (floored at zero — the runtime check rejects a step whose new value is negative), an algebraic data type (ordered by the structural size of its concrete constructors), or a lexicographic tuple of these. A measure of any other type — `Float64` (no well-founded ordering the runtime can check: values are dense below any floor, and `NaN` and the infinities do not participate in the order at all — a float measure never reaches the runtime check, because `E127` rejects it statically), `String`, `Bool`, a function type — is rejected at check time with `E127`.
 
+**The measure's own operations.** The measure is an expression the compiled function evaluates, so each operation in it carries the obligation it would carry in a body (§6.4.3), discharged where the compiled code evaluates it. On entry the measure is evaluated after the refined parameters and every `requires` are checked, so those are its premises. A self-recursive tail call evaluates it on the call's arguments before the call is made (the site check described under *Runtime checking* below), so there the premises are the call site's — the caller's facts and the path to the call — with the arguments substituted, and never the callee's `requires`, which is checked only afterwards; an obligation from that evaluation is reported at the call. A non-tail recursive call evaluates nothing at the call: the callee evaluates the measure on its own entry, after its own `requires`. So the count-up measure `decreases(@Nat.1 - @Nat.0 + 1)` underflows (`E502`) wherever `@Nat.0` can exceed `@Nat.1`, as it does on a count-up loop's last call, where `@Nat.0` is `@Nat.1 + 1`. The loop is written `decreases(@Nat.1 + 1 - @Nat.0)` with `requires(@Nat.0 <= @Nat.1 + 1)`, the invariant each call re-establishes, or with a measure that counts down without a subtraction.
+
 Lexicographic decrease:
 
 ```
@@ -175,7 +199,7 @@ private fn ackermann(@Nat, @Nat -> @Nat)
 
 The tuple `(@Nat.1, @Nat.0)` decreases lexicographically on each recursive call.
 
-**Runtime checking.** Whenever the backend can generate a supported guard — the exclusions are listed below (a parameterized or indirectly parameterized ADT measure, a function declaring `Exn`, a measure the backend cannot translate) — a `decreases` clause is also enforced at run time, for every function regardless of its static tier: for a Tier 3 obligation (`E525`) the guard is the promised fallback, and for a proved obligation it is belt-and-braces against any divergence between the proof and the machine. The measure is evaluated with machine 64-bit arithmetic, so a measure expression whose value exceeds the i64 range traps through the overflow channel even when the static proof (over unbounded integers) succeeded. For a guarded function, on each re-entry, the measure — an ADT component through its structural size — is compared with the previous activation's. A scalar measure MUST be strictly less than the previous value and non-negative. For a lexicographic tuple, the first component that differs MUST be strictly less than its previous value and non-negative, with every earlier component equal; later components are unconstrained on that hop — each is checked on the hop where it becomes the deciding component. A violating re-entry traps through the contract-violation channel with a message naming the function, so a non-terminating recursion in a guarded function fails loudly instead of hanging; an excluded function's obligation remains disclosed by the static tier only. Two consequences of the mechanism:
+**Runtime checking.** Whenever the backend can generate a supported guard — the exclusions are listed below (a parameterized or indirectly parameterized ADT measure, a function declaring `Exn`, a measure the backend cannot translate) — a `decreases` clause is also enforced at run time, for every function regardless of its static tier: for a Tier 3 obligation (`E525`) the guard is the promised fallback, and for a proved obligation it is belt-and-braces against any divergence between the proof and the machine. The measure is evaluated with machine 64-bit arithmetic and compared signed, while the proof reasons over unbounded integers, so the two agree exactly while the measure's value is an i64.  That shared fact is obligated rather than assumed ([#1222](https://github.com/aallan/vera/issues/1222)): each `@Nat` measure component carries a `component <= i64.MAX` obligation, discharged at Tier 1 where a `requires` bounds the measure, reported **E536** where it provably does not hold, and otherwise left to a runtime range check emitted beside the measure's evaluation — or, where no range check is emitted (the function is not compiled, or its chain guard is declined and the component is one the range check does not evaluate), reported as an unguarded **E537** warning, counted in no tier.  A component outside the range therefore names the range as the cause instead of reporting a failure to decrease — the metric does decrease; what it does not do is fit the comparison.  An `@Int` component IS the i64 the guard compares in and carries no such obligation, and an ADT component is ranked by a structural size bounded by the heap. For a guarded function, on each re-entry, the measure — an ADT component through its structural size — is compared with the previous activation's. A scalar measure MUST be strictly less than the previous value and non-negative. For a lexicographic tuple, the first component that differs MUST be strictly less than its previous value and non-negative, with every earlier component equal; later components are unconstrained on that hop — each is checked on the hop where it becomes the deciding component. A violating re-entry traps through the contract-violation channel with a message naming the function, so a non-terminating recursion in a guarded function fails loudly instead of hanging; an excluded function's obligation remains disclosed by the static tier only. Two consequences of the mechanism:
 
 - Tail-call optimization is preserved for self-recursion: a self-recursive tail call keeps its `return_call`, with the hop checked at the call site (the arguments are captured, the measure evaluated over them and compared against the live chain state, and this activation's guard state closed out before the transfer), so guarded iteration runs at constant stack depth — when the call-site check can be generated; a self-tail site whose measure the backend cannot express at the site lowers to a plain call instead, still guarded at entry, at native stack depth. A *mutually*-recursive tail call between two guarded functions lowers to a plain call instead — with the frame elided there is no placement of the state restore that both preserves the chain and unwinds it — so that corner is bounded by the native stack, which the measure itself bounds.
 - An ADT measure is runtime-checked only when its type's reachable field structure is fully concrete. A measure whose type is parameterized (`List<Int>`), or whose fields reach a parameterized type, is not yet runtime-ranked. Static verification still classifies the obligation as usual — a provable measure stays Tier 1; what is absent is the runtime fallback for an obligation the prover cannot discharge (Tier 3).
@@ -183,8 +207,9 @@ The tuple `(@Nat.1, @Nat.0)` decreases lexicographically on each recursive call.
 
 ### 5.6.2 Mutual Recursion
 
-Mutually recursive functions are declared together in a `where` block. Each must have its own `decreases` clause:
+Mutually recursive functions are commonly declared together in a `where` block, but a cycle through top-level functions is mutual recursion in the same sense. Every function on the cycle whose effect row does not name `Diverge` MUST have its own `decreases` clause, and the verifier checks the measure on every call from one member of the cycle to another: the callee's measure, evaluated at the call's arguments, must be strictly less than the caller's measure at entry. The members' measures must therefore have a common type; where they do not, or where a call cannot be proved to decrease, the obligation is Tier 3, and the runtime guard of Section 5.6.1 checks it wherever the backend generates one. Section 5.6.1 lists the exclusions (a parameterized or indirectly parameterized ADT measure, a function declaring `Exn`, a measure the backend cannot translate); for those, the Tier 3 obligation has no runtime check. Two functions on one cycle, each with its own measure:
 
+<!-- vera:run fn="is_even" args="4" stdout="1" -->
 ```
 public fn is_even(@Nat -> @Bool)
   requires(true)
@@ -214,12 +239,17 @@ where {
 }
 ```
 
-A `where`-helper is a closed, param-rooted scope: its body resolves slot references only against its **own** parameters, never the outer function's. The outer function's parameter slots are not in scope inside a helper — everything a helper needs must be passed as an explicit argument (a helper's mandatory contract covers only its own parameters, so an implicit outer-frame capture would move a value across a contract boundary). Reading an outer parameter slot from a helper body is an unresolved-slot error (E130). The parent's `forall` **type** parameters remain in scope, so a helper of a generic parent may still be written over `@T`; only value slots are isolated.
+A `where` block is a **namespace**, and a name may be declared in it only once. Two helpers of one name in the same block are rejected (**E184**): they have no distinguishing spelling, so every call inside the parent would resolve to one of them and the other could never be called. The rule is per block — a helper may carry a `where` block of its own, and the namespace that opens is a different one, so a name used in both is not a collision. It is one instance of the rule every namespace follows (§8.5.5).
+
+A helper's **name** is scoped to its parent as well: it is callable from that function's body and contracts, from any closure or handler clause inside them, and from the parent's other helpers — and from nowhere else. A bare call naming a helper anywhere else is rejected (**E178**) — in the declaring file, and in a file that imports the parent's module, where the helper is no more callable than it is next door. A helper cannot be imported either (**E150**), being no part of that module's namespace. Where the name is also an effect operation's, a call outside the parent resolves the operation, by the ordinary bare-call rule (§7.4).
+
+A `where`-helper is a closed, param-rooted scope: its body resolves slot references only against its **own** parameters, never the outer function's. The outer function's parameter slots are not in scope inside a helper — everything a helper needs must be passed as an explicit argument (a helper's mandatory contract covers only its own parameters, so an implicit outer-frame capture would move a value across a contract boundary). Reading an outer parameter slot from a helper body is an unresolved-slot error (E130). The parent's `forall` **type** parameters remain in scope, so a helper of a generic parent may still be written over `@T`; only value slots are isolated. A helper may also declare `forall` parameters of its own, including one named like a parameter of its parent: inside the helper that name is the helper's parameter, which shadows the parent's, and each call instantiates it independently of the parent's.
 
 ## 5.7 Anonymous Functions (Closures)
 
 Anonymous functions (lambdas/closures) use the same `fn` keyword without a name:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="an anonymous function, an expression rather than a declaration" -->
 ```
 fn(@Int -> @Int) effects(pure) {
   @Int.0 + 1
@@ -269,6 +299,7 @@ private fn filter_positive(@Array<Int> -> @Array<Int>)
 
 Every top-level `fn` and `data` declaration MUST have an explicit visibility modifier: either `public` or `private`. There is no default visibility. Omitting the modifier is a compile error. This enforces design principle 3 ("one canonical form"): every declaration has exactly one valid shape, eliminating ambiguity about whether an unadorned `fn` is public or private.
 
+<!-- vera:run fn="add" args="3 3" stdout="6" -->
 ```
 public fn add(@Int, @Int -> @Int)
   requires(true)
@@ -346,6 +377,8 @@ private forall<A, B> fn pair(@A, @B -> @Tuple<A, B>)
 
 Type variables are introduced by `forall<...>` and are scoped to the entire function declaration (including contracts and body).
 
+A call's type arguments are inferred from its arguments. An argument that is an integer literal, or is built from literals, takes its type from the call's context — the other arguments first, then the type the result is expected at unless a negative literal sits beside a non-negative one at the type argument — and only when neither fixes it from its own value (§4.2).
+
 ### 5.9.1 Effect-Polymorphic Functions
 
 Functions can be polymorphic over effects:
@@ -359,7 +392,7 @@ private forall<A, B> fn option_map(@Option<A>, fn(A -> B) effects(<E>) -> @Optio
 {
   match @Option<A>.0 {
     Some(@A) -> Some(apply_fn(@Fn.0, @A.0)),
-    None -> None,
+    None -> None
   }
 }
 ```
@@ -370,8 +403,9 @@ The stored function value is applied with `apply_fn` (Section 11.10.5). The effe
 
 The type of a function with parameters `P1, P2, ..., Pn`, return type `R`, and effects `E` is:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="a function type template, not a declaration" -->
 ```
-Fn(@P1, @P2, ..., @Pn -> @R) effects(<E>)
+fn(P1, P2, ..., Pn -> R) effects(<E>)
 ```
 
 Functions are first-class values. They can be:
@@ -384,6 +418,7 @@ Functions are first-class values. They can be:
 
 A Vera program's entry point is a function named `main`:
 
+<!-- vera:run fn="main" stdout="Hello, Vera!" -->
 ```
 public fn main(@Unit -> @Unit)
   requires(true)

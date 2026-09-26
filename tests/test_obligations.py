@@ -565,11 +565,17 @@ class TestObligationKinds:
         assert result.summary.tier3_runtime >= 1
         _assert_summary_consistent("refine-bind-tier3", result)
 
-    def test_refine_bind_unguarded_internal_site(self) -> None:
-        """An *internal* Tier-3 refinement narrowing (a `let` over a
-        non-primitive base) has no codegen guard, so it is `tier3_unguarded`
-        and excluded from the totals — NOT overstated as a runtime-checked
-        `tier3_runtime` (the guarded/unguarded distinction mirrors `nat_bind`)."""
+    def test_refine_bind_guarded_narrowing_bind(self) -> None:
+        """A Tier-3 refinement narrowing at a `let` over a non-primitive base
+        IS codegen-guarded since #765, so it counts `tier3_runtime`.
+
+        It read `tier3_unguarded` until the guard existed; the claim is about
+        the artifact, and the artifact now traps — an empty array bound to a
+        `NonEmptyArray` `let` raises the `$vera.contract_fail` refinement
+        violation rather than flowing on.  What stays unguarded is a
+        constructor field or tuple component AT CONSTRUCTION, and a user
+        effect operation's argument (#754); the sibling cell below holds one
+        of those, so this pair still separates the two legs."""
         source = (
             "type NonEmptyArray = "
             "{ @Array<Int> | array_length(@Array<Int>.0) > 0 };\n"
@@ -583,18 +589,18 @@ class TestObligationKinds:
             "{ let @NonEmptyArray = mk(()); 0 }\n"
         )
         result = self._verify_source(source)
-        unguarded = [
+        guarded = [
             o for o in result.obligations
-            if o.kind == "refine_bind" and o.status == "tier3_unguarded"
+            if o.kind == "refine_bind" and o.status == "tier3"
         ]
-        assert len(unguarded) == 1
-        assert unguarded[0].error_code == "E506"
-        # Excluded from totals and NOT counted as a runtime check.
+        assert len(guarded) == 1
+        assert guarded[0].error_code == "E506"
+        # Counted as a runtime check, and no unguarded disclosure remains.
         assert not any(
-            o.kind == "refine_bind" and o.status == "tier3"
+            o.kind == "refine_bind" and o.status == "tier3_unguarded"
             for o in result.obligations
         )
-        _assert_summary_consistent("refine-bind-unguarded", result)
+        _assert_summary_consistent("refine-bind-guarded-let", result)
 
     def test_violated_ensures_carries_counterexample(self) -> None:
         source = (
@@ -1101,14 +1107,17 @@ class TestObligationKinds:
         import vera.smt
 
         src = _pathlib.Path(vera.smt.__file__).read_text(encoding="utf-8")
-        assert "self.solver.add(self._guard_fact(z3_post))" in src, (
+        # Asserted through `assume`, the one writer of the solver's base
+        # context, which states a guarded binder over its projection (#1480).
+        assert "self.assume(self._guard_fact(z3_post))" in src, (
             "the callee postcondition must be guarded by the path conditions"
         )
-        assert "self.solver.add(self._guard_fact(z3_pred))" in src, (
+        assert "self.assume(self._guard_fact(z3_pred))" in src, (
             "the refined-return predicate must be guarded by the path conditions"
         )
-        assert "self.solver.add(z3_post)" not in src, "bare, unguarded postcondition assumption"
-        assert "self.solver.add(z3_pred)" not in src, "bare, unguarded refined-return assumption"
+        for bare in ("self.solver.add(z3_post)", "self.solver.add(z3_pred)",
+                     "self.assume(z3_post)", "self.assume(z3_pred)"):
+            assert bare not in src, f"bare, unguarded assumption: {bare}"
 
     def test_let_nat_subtraction_records_once(self) -> None:
         """A violating call as a @Nat-subtraction operand in a let RHS
@@ -1739,3 +1748,176 @@ class TestLazyExports:
             AttributeError, match="has no attribute 'NoSuchThing'"
         ):
             _ = obl.NoSuchThing
+
+
+# =====================================================================
+# The disclosed path (#1363), which NO corpus program reaches
+# =====================================================================
+
+# The corpus proves nothing about disclosure: with `nat_to_int` guarded, every
+# example and conformance narrowing is covered by an emitted guard, so
+# `tier3_unguarded` is zero across it (pinned in
+# `test_verifier_adt_decreases.py::test_overall_tier_counts`).  That is the
+# desired state for the corpus and a blind spot for the differential above,
+# whose whole value is running the warm and cold paths over the SAME programs.
+# These shapes put the disclosed path back under it.
+_DISCLOSED_SHAPE = """\
+public fn mk(@Int -> @Option<Nat>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  int_to_nat(handle[Exn<Int>] {
+    throw(@Nat) -> { nat_to_int(@Nat.0) }
+  } in {
+    throw(@Int.0)
+  })
+}
+
+public fn use_it(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  match mk(@Int.0) {
+    Some(@Nat) -> nat_to_int(@Nat.0),
+    None -> 0
+  }
+}
+"""
+
+# The same program with nothing disclosed: `mk` takes a `@Nat` directly, so no
+# narrowing is unguarded, and `use_it`'s postcondition is a plain Tier-1 proof.
+# Paired with the shape above it separates "warm agrees with cold" from "warm
+# agrees with cold because neither reached the path".
+_UNDISCLOSED_CONTROL = """\
+public fn mk(@Nat -> @Option<Nat>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Some(@Nat.0)
+}
+
+public fn use_it(@Nat -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  match mk(@Nat.0) {
+    Some(@Nat) -> nat_to_int(@Nat.0),
+    None -> 0
+  }
+}
+"""
+
+
+def _cold_verify_source(source: str, tmp_path: Path) -> VerifyResult:
+    """`_cold_verify` for a source string rather than a corpus path."""
+    path = tmp_path / "d.vera"
+    path.write_text(source, encoding="utf-8")
+    return _cold_verify(path)[0]
+
+
+class TestDisclosedDifferential:
+    """Warm session == cold verify on the path the corpus does not reach."""
+
+    def test_the_shape_actually_discloses(self, tmp_path: Path) -> None:
+        """The premise, asserted before anything is compared against it.
+
+        Without this the two differentials below would still pass if the
+        shape stopped disclosing — comparing warm and cold agreement on a
+        path neither one takes.
+        """
+        cold = _cold_verify_source(_DISCLOSED_SHAPE, tmp_path)
+        statuses = [(o.kind, o.status, o.error_code) for o in cold.obligations]
+        assert ("nat_bind", "tier3_unguarded", "E504") in statuses, statuses
+        assert ("ensures", "tier3", "E534") in statuses, statuses
+
+        control = _cold_verify_source(_UNDISCLOSED_CONTROL, tmp_path)
+        assert not [o for o in control.obligations
+                    if o.status == "tier3_unguarded"], (
+            "the control discloses too, so it controls for nothing"
+        )
+
+    @pytest.mark.parametrize(
+        "source", [_DISCLOSED_SHAPE, _UNDISCLOSED_CONTROL],
+        ids=["disclosed", "control"],
+    )
+    def test_warm_equals_cold_on_the_disclosed_path(
+        self, source: str, tmp_path: Path,
+    ) -> None:
+        """The warm path assembles its stream from cached per-function slices
+        and so never called the shared disclosure rule at all: it answered
+        "nothing disclosed", proved at Tier 1 from facts cold withholds, and
+        diverged in the generous direction.  Divergence toward MORE proof is
+        the one that matters, which is why this is asserted rather than left
+        to the corpus.
+        """
+        path = tmp_path / "d.vera"
+        path.write_text(source, encoding="utf-8")
+        cold = _cold_verify(path)[0]
+
+        session = VerificationSession()
+        warm1 = session.verify_source(source, file=str(path))
+        warm2 = session.verify_source(source, file=str(path))
+
+        assert warm1.summary == cold.summary, (
+            f"warm summary {warm1.summary} != cold {cold.summary}"
+        )
+        assert _obligation_fingerprint(warm1.obligations) == \
+            _obligation_fingerprint(cold.obligations), (
+                "warm obligations diverge from cold on the disclosed path"
+            )
+        assert _diag_fingerprint(warm1.verify_diagnostics) == \
+            _diag_fingerprint(cold.diagnostics)
+        # Re-running on the warm session must not drift: the disclosed set is
+        # carried across runs AND folded into the cache key, so a second run
+        # replays slices only if they were proved under the same set.
+        assert _obligation_fingerprint(warm2.obligations) == \
+            _obligation_fingerprint(warm1.obligations)
+        assert warm2.summary == warm1.summary
+        # Diagnostics are assembled SEPARATELY from obligations, so a
+        # replay-ordering regression that leaves the stream and the summary
+        # intact shows up only here (CR PR-review).
+        assert _diag_fingerprint(warm2.verify_diagnostics) == \
+            _diag_fingerprint(warm1.verify_diagnostics)
+
+    def test_a_session_does_not_carry_disclosure_into_the_next_program(
+        self, tmp_path: Path,
+    ) -> None:
+        """The disclosed set is per-run state on a session that outlives it.
+
+        A session that has just verified a disclosing program must not demote
+        the NEXT program's contracts on the strength of the previous one's
+        disclosures — the names are unrelated, and an editor session verifies
+        file after file on one warm session.  Checked against cold on the
+        control, which is the verdict a fresh process gives.
+        """
+        session = VerificationSession()
+        disclosing = tmp_path / "a.vera"
+        disclosing.write_text(_DISCLOSED_SHAPE, encoding="utf-8")
+        session.verify_source(_DISCLOSED_SHAPE, file=str(disclosing))
+
+        control_path = tmp_path / "b.vera"
+        control_path.write_text(_UNDISCLOSED_CONTROL, encoding="utf-8")
+        after = session.verify_source(
+            _UNDISCLOSED_CONTROL, file=str(control_path),
+        )
+        cold = _cold_verify(control_path)[0]
+        assert after.summary == cold.summary, (
+            f"a prior program's disclosures changed this one's verdict: "
+            f"{after.summary} != cold {cold.summary}"
+        )
+        assert _obligation_fingerprint(after.obligations) == \
+            _obligation_fingerprint(cold.obligations)
+        assert _diag_fingerprint(after.verify_diagnostics) == \
+            _diag_fingerprint(cold.diagnostics), (
+                "the control's DIAGNOSTICS differ from cold after a prior "
+                "program disclosed, even though its obligations match"
+            )
+        assert not [o for o in after.obligations
+                    if o.error_code == "E534"], (
+            "the control's contracts were demoted by another program's "
+            "disclosures"
+        )

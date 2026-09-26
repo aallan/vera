@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 from vera import ast, naming
-from vera.wasm.helpers import WasmSlotEnv, _align_up, gc_shadow_push
+from vera.wasm.helpers import (
+    WasmSlotEnv,
+    _align_up,
+    field_layout,
+    gc_shadow_push,
+)
 
 
 class ClosuresMixin:
@@ -35,24 +40,16 @@ class ClosuresMixin:
 
         # Compute closure struct layout
         # offset 0: func_table_idx (i32, 4 bytes)
-        # Pair-type captures (#535) take 8 bytes: ptr + len, two
-        # consecutive i32 fields, 4-byte aligned.  The matching layout
-        # in `_compile_lifted_closure` reads them back as two i32 loads.
+        # The env block is laid out by the SAME rule a constructed object is
+        # (`helpers.field_layout`), rather than by a copy of its widths: a
+        # pair capture (#535) is ptr + len, two consecutive 4-byte-aligned
+        # i32 fields, and `_compile_lifted_closure` reads them back through
+        # the same rule.
         field_offsets: list[tuple[int, str]] = []
         offset = 4  # skip func_table_idx
         for _tname, _idx, cap_wt in captures:
-            if cap_wt == "i32_pair":
-                offset = _align_up(offset, 4)
-                field_offsets.append((offset, cap_wt))
-                offset += 8  # ptr (4) + len (4)
-            elif cap_wt in ("i64", "f64"):
-                offset = _align_up(offset, 8)
-                field_offsets.append((offset, cap_wt))
-                offset += 8
-            else:  # i32
-                offset = _align_up(offset, 4)
-                field_offsets.append((offset, cap_wt))
-                offset += 4
+            field_off, offset = field_layout(offset, cap_wt)
+            field_offsets.append((field_off, cap_wt))
         total_size = max(_align_up(offset, 8), 8)  # at least 8 bytes
 
         # Emit allocation + stores
@@ -181,11 +178,11 @@ class ClosuresMixin:
             if (formal_te is not None
                     and self._type_expr_base_is_nat(formal_te)
                     and self._narrows_into_nat(arg)):
-                arg_instrs = self._emit_nat_bind_guard(arg_instrs)
+                arg_instrs = self._emit_nat_bind_guard(arg_instrs, at=arg)
             elif (formal_te is not None
                     and self._type_expr_base_is_int(formal_te)
                     and self._result_is_nat(arg)):
-                arg_instrs = self._emit_int_widen_guard(arg_instrs)
+                arg_instrs = self._emit_int_widen_guard(arg_instrs, at=arg)
             instructions.extend(arg_instrs)
             # The parameter's width in the `call_indirect` signature is the
             # DECLARED formal's, not the argument's (#1256).  Both sides of

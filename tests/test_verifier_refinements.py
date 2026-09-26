@@ -1306,12 +1306,14 @@ public fn f(@Unit -> @Int)
 
     def test_literal_destructure_source_not_overassumed(self) -> None:
         """#746 soundness: a *literal* destructure source is excluded from
-        fact-seeding, because the checker types it optimistically.
+        fact-seeding, because the checker's type for it need not describe its
+        value.
 
-        `Tuple(0 - 5, 0 - 5)` is typed `Tuple<Nat, Nat>`, but its component
-        VALUES are negative — that `Int -> Nat` narrowing is deferred to
-        verification, so the `Nat` component type is an unproven claim, not a
-        sound premise.  Were it seeded over the bound slot, `>= 0` over `-5`
+        Before #1541 `Tuple(0 - 5, 0 - 5)` was typed `Tuple<Nat, Nat>` while
+        its component VALUES are negative, and a join such as
+        `if b then { 0 - 5 } else { 1 }` is still typed at its else branch's
+        `Nat` — an `Int -> Nat` narrowing deferred to verification, so a `Nat`
+        component type there is an unproven claim, not a sound premise.  Were it seeded over the bound slot, `>= 0` over `-5`
         would assert a falsehood and vacuously discharge the *later*
         `takes_nat(@Int.0)` obligation.  Asserts that obligation still fires
         ('may be negative'), i.e. the literal source poisoned nothing.  (This
@@ -1838,11 +1840,16 @@ public fn use(@String -> @Int)
         The measured constraint on #1251(b): conjoining or assuming the base
         invariant for a SYMBOLIC ``@Byte`` turns every boundary narrowing into
         a false E505, so the concrete gate must leave this untouched.
+
+        The Tier-3 flavour is `tier3` since #1439 gave the `State` write its
+        predicate guard — what this cell is about is that the demotion
+        SURVIVES the gate rather than becoming a verdict, so it reads the
+        tier and the code, and the guarded flag follows the site.
         """
         result = _verify(self._STATE_INIT)
         binds = [o for o in result.obligations if o.kind == "refine_bind"]
         assert len(binds) == 1, binds
-        assert binds[0].status == "tier3_unguarded", binds[0]
+        assert binds[0].status == "tier3", binds[0]
         assert binds[0].error_code == "E506", binds[0]
         assert not [
             d for d in result.diagnostics if d.severity == "error"
@@ -1943,8 +1950,12 @@ public fn main(@Unit -> @Int)
         `SmallVia`'s predicate routes the byte through a function call, which
         the SMT layer models by the callee's contract rather than by
         evaluation, so `ident(5) < 10` does not fold even though 5 is a
-        literal.  Undecided is undecided: the runtime-guarded disclosure
-        stands rather than a guessed verdict in either direction.
+        literal.  Undecided is undecided: the demotion stands rather than a
+        guessed verdict in either direction.
+
+        It reads `tier3` since #1439 gave the `State` write its predicate
+        guard; the property is the demotion, and the flavour follows the
+        site's guardedness.
         """
         result = _verify("""
 type SmallVia = { @Byte | ident(@Byte.0) < 10 };
@@ -1971,7 +1982,7 @@ public fn main(@Unit -> @Int)
 }
 """)
         binds = [o for o in result.obligations if o.kind == "refine_bind"]
-        assert [o.status for o in binds] == ["tier3_unguarded"], binds
+        assert [o.status for o in binds] == ["tier3"], binds
         assert not [
             d for d in result.diagnostics if d.severity == "error"
         ], [d.description[:90] for d in result.diagnostics]
@@ -2250,12 +2261,14 @@ public fn f(@Int -> @Int)
     @pytest.mark.parametrize(
         ("body", "status"),
         [
-            # An internal narrowing — no codegen guard, so the demotion lands
-            # on the unguarded leg...
-            ("let @Small = 200;\n  0", "tier3_unguarded"),
-            # ... and a call argument, which the callee's entry guard covers,
-            # on the runtime-guarded one.  Both must demote, and neither may
-            # keep the rejection the reachability question failed to justify.
+            # A `let` narrowing, guarded in the body since #765...
+            ("let @Small = 200;\n  0", "tier3"),
+            # ... and a call argument, which the callee's entry guard covers.
+            # Both must demote, and neither may keep the rejection the
+            # reachability question failed to justify.  They now land on the
+            # same leg, so the pair tests two ROUTES to the demotion rather
+            # than two guard verdicts; the guarded/unguarded split itself is
+            # held by the constructor-field and effect-op-argument cells.
             ("byte_to_int(narrow(200))", "tier3"),
         ],
     )

@@ -55,7 +55,7 @@ The base `veralang` installation does not include the optional language
 server dependencies, so keep the `[lsp]` extra in the command. The
 extension finds the binary in this order: the `vera.lsp.path` setting
 (if changed from its default), a workspace-local virtual environment
-(`.venv/bin/vera` or `.venv\\Scripts\\vera.exe`), then `vera` from
+(`.venv/bin/vera` or `.venv\Scripts\vera.exe`), then `vera` from
 `PATH`. If a GUI-launched VS Code cannot see the Python installation,
 set `vera.lsp.path` to the absolute path of the `vera` executable.
 Syntax highlighting works without the binary.

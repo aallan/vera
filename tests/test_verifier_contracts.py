@@ -8,6 +8,7 @@ import pytest
 
 from vera.parser import parse_to_ast
 from vera.checker import typecheck
+from vera.resolver import ModuleResolver
 from vera.verifier import verify
 
 from tests.verifier_helpers import (
@@ -28,13 +29,22 @@ class TestExampleVerification:
 
     @pytest.mark.parametrize("filename", ALL_EXAMPLES)
     def test_example_verifies(self, filename: str) -> None:
-        source = (EXAMPLES_DIR / filename).read_text(encoding="utf-8")
+        path = EXAMPLES_DIR / filename
+        source = path.read_text(encoding="utf-8")
         ast = parse_to_ast(source, file=filename)
-        type_diags = typecheck(ast, source, file=filename)
+        # Resolve the example's imports as `vera verify` does: an import
+        # nothing resolves leaves its calls unresolved, an error since #1513
+        # (`modules.vera` imports `vera.math`).
+        resolver = ModuleResolver(_root=EXAMPLES_DIR)
+        resolved = resolver.resolve_imports(ast, path)
+        assert resolver.errors == [], (
+            f"Resolver errors: {[e.description for e in resolver.errors]}")
+        type_diags = typecheck(ast, source, file=filename,
+                               resolved_modules=resolved)
         type_errors = [d for d in type_diags if d.severity == "error"]
         assert type_errors == [], f"Type errors: {[e.description for e in type_errors]}"
 
-        result = verify(ast, source, file=filename)
+        result = verify(ast, source, file=filename, resolved_modules=resolved)
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert errors == [], f"Verify errors: {[e.description for e in errors]}"
 
@@ -459,8 +469,11 @@ private fn factorial(@Nat -> @Nat)
         # @Nat.0 - 1 underflow obligation (#520) — Tier 1 via path condition
         # #798: @Nat.0 * factorial(...) multiply emits an int_overflow
         # obligation; operands are unbounded so it falls to Tier 3.
+        # #1222: so does `decreases_bound` — `@Nat.0 <= i64.MAX`, the fact
+        # the unbounded-integer termination proof and the i64 runtime
+        # comparison need in common, unprovable for an unconstrained @Nat.
         assert result.summary.tier1_verified == 4
-        assert result.summary.tier3_runtime == 1
+        assert result.summary.tier3_runtime == 2
 
 
 # =====================================================================
@@ -574,9 +587,11 @@ private fn f(@Nat -> @Nat)
         # @Nat.0 - 1 underflow obligation (#520) — Tier 1 via path condition
         # #798: @Nat.0 + f(...) add emits an int_overflow obligation; operands
         # are unbounded so it falls to Tier 3.
-        assert result.summary.total == 5
+        # #1222: `decreases_bound` joins it — `@Nat.0 <= i64.MAX`, likewise
+        # unprovable for an unconstrained @Nat and likewise runtime-guarded.
+        assert result.summary.total == 6
         assert result.summary.tier1_verified == 4
-        assert result.summary.tier3_runtime == 1
+        assert result.summary.tier3_runtime == 2
 
     def test_multiple_functions_accumulate(self) -> None:
         result = _verify("""

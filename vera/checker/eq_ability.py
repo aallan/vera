@@ -131,6 +131,34 @@ def _adt_is_eq_derivable(
         # recurse, so it is non-derivable.
         return False
 
+    # #1429: stop at a declaration whose recursion is NON-REGULAR.  The
+    # cycle-break below keys on the fully-applied name, which terminates a
+    # regular recursion because its instantiation closure is finite — and
+    # never fires for a growing one, where every level's key is new:
+    # `Nest<Int>` -> `Nest<Option<Int>>` -> `Nest<Option<Option<Int>>>`.
+    # Measured, `==`, `!=` and `eq(...)` over such a value each recursed this
+    # walk into a `RecursionError`, surfacing as an internal-compiler `E699`
+    # that also discarded the E129 the checker had already recorded
+    # (PR #1432 re-verification).
+    #
+    # Asked of EVERY member the walk reaches, not just the root: regularity is
+    # per declaration, so a regular `A<T> { CA(B<T>) }` can reach an irregular
+    # `B`, and checking only the entry type would still not terminate.  With
+    # this, the walk descends only through members whose closure is finite, so
+    # the key guard below always terminates — a guarantee from the rule rather
+    # than a bound on depth.  Through the ENV's shared index, so asking it per
+    # field of every `==` costs a dict lookup rather than a walk of the whole
+    # declaration graph.
+    if ty.name in env.refused_non_regular:
+        # Already refused as non-regular, with E129 recorded against the
+        # declaration itself.  Answer as the cycle-break below does so the
+        # user is shown that one root cause and not a second diagnostic
+        # about equality on a type they may not declare at all.  Safe to
+        # claim: a module carrying E129 never reaches codegen.
+        return True
+    if not env.regularity_index().is_regular(ty.name):
+        return False
+
     # Cycle-break on the fully-applied name so a recursive ADT (List<Int>)
     # terminates instead of unfolding forever — the same guard codegen uses.
     key = _canonical(ty)

@@ -7,21 +7,14 @@ imports between context.py and the mixin modules.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
 from vera import ast
 from vera.skip import CodegenInvariantError
 from vera.types import (
-    BOOL,
-    FLOAT64,
-    FunctionType,
-    INT,
-    NAT,
-    STRING,
-    UNIT,
-    PrimitiveType,
     Type,
-    base_type,
+    wasm_representation,
 )
 
 # #705: Vera type names that compile to ``i32`` WASM type but are
@@ -67,6 +60,28 @@ class WasmSlotEnv:
         new_stacks = {k: list(v) for k, v in self._stacks.items()}
         new_stacks.setdefault(type_name, []).append(local_idx)
         return WasmSlotEnv(new_stacks)
+
+    def bindings_added_since(
+        self, older: WasmSlotEnv
+    ) -> list[tuple[str, int]]:
+        """The ``(type_name, local_idx)`` bindings this env has and *older*
+        does not, in binding order.
+
+        The statement-scoped GC rooting (#1371) asks exactly this question:
+        a statement reclaims every shadow root its lowering made and then
+        re-roots what it BOUND, and what it bound is the environment delta.
+        Reading the delta is what lets one rule serve `let`, pair-`let` and
+        `let`-destructure alike, instead of each producer remembering to
+        root its own binding and each then having to remember not to.
+
+        A binding only ever appends to its type's stack, so the delta is
+        the tail of each stack past the older env's length.
+        """
+        added: list[tuple[str, int]] = []
+        for type_name, stack in self._stacks.items():
+            previous = len(older._stacks.get(type_name, ()))
+            added.extend((type_name, idx) for idx in stack[previous:])
+        return added
 
 
 # =====================================================================
@@ -144,6 +159,11 @@ class StateClauseEntry:
         clause: the ``HandlerClause`` to inline.
         family: the resolved cell family — the cell's IDENTITY, so import
             naming and every comparison against another cell (#1218).
+        family_type_expr: the cell's DECLARED type expression, refinement
+            intact (#1439).  `family_base` deliberately strips it, because
+            every #1203 decision is a width; the §2.6.5 predicate guard is
+            the one consumer that needs the predicate itself, and no
+            derived name can reconstruct it.
         family_base: the same family with its refinements stripped — the
             cell's REPRESENTATION, so WASM value type, pointer-ness, and
             which #1203 write guard applies.  Both are carried because a
@@ -184,6 +204,7 @@ class StateClauseEntry:
     decl_effect_op_cells: dict[str, CellNames]
     decl_state_clause_ops: dict[str, "StateClauseEntry"]
     decl_addressable_from: int
+    family_type_expr: ast.TypeExpr | None = None
 
 
 # =====================================================================
@@ -210,6 +231,15 @@ class StringPool:
         self._strings[value] = entry
         self._offset += len(encoded)
         return entry
+
+    def reserve(self, size: int) -> int:
+        """Offset of *size* zero bytes in the data region that no interned
+        string shares — scratch a module may write at run time (#1479: the
+        message an entry point's exception boundary builds).  Never emitted
+        as a data segment; linear memory starts zeroed."""
+        offset = self._offset
+        self._offset += size
+        return offset
 
     def entries(self) -> list[tuple[str, int, int]]:
         """Return all (value, offset, length) sorted by offset."""
@@ -240,8 +270,197 @@ def _align_up(offset: int, align: int) -> int:
 
 
 # =====================================================================
+# The heap-field layout, and the locals one value occupies (#1466)
+# =====================================================================
+
+#: Bytes one value of each WASM representation occupies in a heap field, and
+#: the alignment it is stored at.  THE layout: `_translate_constructor_call`
+#: builds it, the destructure and the boundary-guard decomposition walk it,
+#: and each used to carry its own copy of these two dicts — three statements
+#: of one fact, which is the shape of defect this module exists to remove.
+#:
+#: A ``"unit"`` field is zero-size: it neither aligns nor advances the offset,
+#: which is how construction, extraction and the guard decomposition all skip
+#: an erased component.
+FIELD_SIZES: dict[str, int] = {
+    "i32": 4, "i64": 8, "f64": 8, "i32_pair": 8, "unit": 0,
+}
+FIELD_ALIGNS: dict[str, int] = {
+    "i32": 4, "i64": 8, "f64": 8, "i32_pair": 4, "unit": 1,
+}
+
+#: Where a pair's LENGTH sits, relative to its pointer — in a heap field, and
+#: (as a local INDEX offset) in the slot environment.  The two are the same
+#: number by coincidence of width, and they are different facts; naming it
+#: once keeps the guard's load and the slot's read in step.
+PAIR_LEN_FIELD_OFFSET = 4
+PAIR_LEN_LOCAL_OFFSET = 1
+
+
+def field_layout(offset: int, wt: str) -> tuple[int, int]:
+    """``(this field's offset, the next field's running offset)`` for *wt*.
+
+    The one statement of the constructor layout's advance rule: align up,
+    take the slot, advance by the representation's size.  An unrecognised
+    representation is given the widest size and alignment, exactly as the
+    three hand-written copies did, so an unknown component cannot silently
+    share a slot with its neighbour.
+    """
+    aligned = _align_up(offset, FIELD_ALIGNS.get(wt, 8))
+    return aligned, aligned + FIELD_SIZES.get(wt, 8)
+
+
+@dataclass(frozen=True)
+class SlotValueBinding:
+    """The locals ONE value occupies, and the local its slot binds (#1466).
+
+    A value's WASM representation is not one local for every base.  A scalar
+    is one local of its own width; a `String` or an `Array<T>` is a
+    ``(ptr, len)`` PAIR in two CONSECUTIVE i32 locals, of which the slot
+    environment holds only the pointer — `_translate_slot_ref` reads the
+    length from ``ptr + 1`` — and a `Map`, `Set`, ADT or `Tuple` handle is a
+    single i32.
+
+    Everything that materialises a value for a slot to bind states that
+    layout, and before #1466 each stated it separately: the boundary guard's
+    tuple decomposition allocated ONE local for a pair component and bound
+    it, so the predicate read the pointer and whatever local followed it, and
+    a `{ @String | string_length(@String.0) > 0 }` component refused `"x"`.
+    """
+
+    #: The local the slot environment binds — the value's first local.
+    slot_local: int
+    #: Every local the value occupies, in representation order.
+    locals: tuple[int, ...]
+    #: Instructions that fill those locals from the value's source.
+    load: tuple[str, ...]
+    #: What to emit AFTER the checks when the value was teed rather than
+    #: consumed (:func:`bind_slot_value_from_stack` with *keep_on_stack*):
+    #: the halves the tee could not leave behind.  Empty otherwise.
+    tail: tuple[str, ...] = ()
+
+    @property
+    def push(self) -> list[str]:
+        """Instructions putting the value back on the operand stack."""
+        return [f"local.get {idx}" for idx in self.locals]
+
+
+def slot_value_locals(alloc_local: Callable[[str], int], wt: str) -> tuple[int, ...]:
+    """The local(s) one value of representation *wt* occupies.
+
+    A pair's two locals MUST be consecutive, because that adjacency is what
+    the slot environment reads a length through.  Both allocations come from
+    the one monotonic counter, so they are — and the check is an explicit
+    ``raise`` rather than an ``assert`` so it survives ``python -O``
+    (ruff S101).
+    """
+    if wt == "i32_pair":
+        ptr = alloc_local("i32")
+        length = alloc_local("i32")
+        if length != ptr + PAIR_LEN_LOCAL_OFFSET:  # pragma: no cover
+            raise CodegenInvariantError(
+                f"a pair's locals must be consecutive: ptr={ptr} "
+                f"len={length}", None,
+            )
+        return (ptr, length)
+    return (alloc_local(wt),)
+
+
+def bind_slot_value_from_field(
+    alloc_local: Callable[[str], int], wt: str, base_local: int, offset: int,
+) -> SlotValueBinding:
+    """Materialise a HEAP FIELD's value into the locals its slot binds.
+
+    *base_local* holds the pointer to the object, *offset* the field's own
+    offset within it — the layout :func:`field_layout` computes and
+    ``_translate_constructor_call`` builds.  A pair field is two i32 words,
+    the pointer at *offset* and the length at
+    *offset* + :data:`PAIR_LEN_FIELD_OFFSET`; every other representation is
+    one load at its own width.
+    """
+    locals_ = slot_value_locals(alloc_local, wt)
+    load: list[str] = []
+    if wt == "i32_pair":
+        for index, local_idx in enumerate(locals_):
+            load.extend([
+                f"local.get {base_local}",
+                f"i32.load offset={offset + index * PAIR_LEN_FIELD_OFFSET}",
+                f"local.set {local_idx}",
+            ])
+    else:
+        load.extend([
+            f"local.get {base_local}",
+            f"{wt}.load offset={offset}",
+            f"local.set {locals_[0]}",
+        ])
+    return SlotValueBinding(locals_[0], locals_, tuple(load))
+
+
+def bind_slot_value_from_locals(
+    alloc_local: Callable[[str], int], wt: str, source_local: int,
+) -> SlotValueBinding:
+    """Copy a value out of the locals it ALREADY occupies into the locals its
+    slot binds.
+
+    The third source, beside a heap field and the operand stack: a match
+    scrutinee arrives in locals of its own, and a guard over it needs the
+    whole value under one slot binding.  A pair's halves are read from
+    *source_local* and *source_local* + :data:`PAIR_LEN_LOCAL_OFFSET`, the
+    same adjacency the slot environment reads them by.
+    """
+    locals_ = slot_value_locals(alloc_local, wt)
+    load: list[str] = []
+    for index, local_idx in enumerate(locals_):
+        load.extend([
+            f"local.get {source_local + index}",
+            f"local.set {local_idx}",
+        ])
+    return SlotValueBinding(locals_[0], locals_, tuple(load))
+
+
+def bind_slot_value_from_stack(
+    alloc_local: Callable[[str], int], wt: str, *,
+    keep_on_stack: bool = False,
+) -> SlotValueBinding:
+    """Spill a value from the OPERAND STACK into the locals its slot binds.
+
+    The value is on top of the stack, a pair as ``(ptr, len)`` with the
+    length uppermost, so the locals are filled in reverse.  The caller pushes
+    it back with :attr:`SlotValueBinding.push` once the guard has run.
+
+    *keep_on_stack* is for a guard that sits IN THE MIDDLE of an expression —
+    a `State` write on its way to the cell (#1439) — where the value has to
+    survive the check: every half but the first is spilled, the first is
+    ``local.tee``-d, and :attr:`SlotValueBinding.tail` pushes the rest back
+    afterwards.  For a one-local representation that is the single
+    ``local.tee`` such a site has always emitted; the pair form is what
+    stops the shape from being a convention again.
+    """
+    locals_ = slot_value_locals(alloc_local, wt)
+    if not keep_on_stack:
+        return SlotValueBinding(
+            locals_[0], locals_,
+            tuple(f"local.set {idx}" for idx in reversed(locals_)),
+        )
+    load = [f"local.set {idx}" for idx in reversed(locals_[1:])]
+    load.append(f"local.tee {locals_[0]}")
+    return SlotValueBinding(
+        locals_[0], locals_, tuple(load),
+        tuple(f"local.get {idx}" for idx in locals_[1:]),
+    )
+
+
+# =====================================================================
 # GC shadow stack helper
 # =====================================================================
+
+# The line that opens every ``gc_shadow_push`` sequence.  Named once so the
+# emitter below and :func:`contains_shadow_push` read the SAME spelling — two
+# independently-maintained copies would let a reworded emitter silently stop
+# being detected, and the detector's caller (#1322's match scoping) would then
+# emit no ``$gc_sp`` restore for a match that does push.
+_SHADOW_PUSH_MARKER = "global.get $gc_stack_limit"
+
 
 def gc_shadow_push(local_idx: int) -> list[str]:
     """Generate WAT instructions to push an i32 value onto the GC shadow stack.
@@ -249,12 +468,16 @@ def gc_shadow_push(local_idx: int) -> list[str]:
     Stores the value from ``local_idx`` at the current shadow-stack
     pointer (``$gc_sp``) and advances ``$gc_sp`` by 4 bytes.  Traps
     if the push would overflow the shadow stack into the GC worklist
-    region.
+    region — bounding the FULL four-byte slot, not just its first byte
+    (#791, and its four siblings in #860), so a ``$gc_sp`` that lands
+    within four bytes of ``$gc_stack_limit`` cannot store past the end.
     """
     return [
         "global.get $gc_sp",
-        "global.get $gc_stack_limit",
-        "i32.ge_u",
+        "i32.const 4",
+        "i32.add",
+        _SHADOW_PUSH_MARKER,
+        "i32.gt_u",
         "if",
         "  unreachable",  # shadow stack overflow
         "end",
@@ -266,6 +489,25 @@ def gc_shadow_push(local_idx: int) -> list[str]:
         "i32.add",
         "global.set $gc_sp",
     ]
+
+
+def contains_shadow_push(instructions: Iterable[str]) -> bool:
+    """Whether *instructions* contains at least one :func:`gc_shadow_push`.
+
+    Answers the one question #1322's match scoping needs: did lowering this
+    sub-expression put anything on the shadow stack that a ``$gc_sp`` restore
+    would have to reclaim?  A match that pushed nothing gets no wrapper, so
+    the emitted WAT of a non-rooting match is unchanged and — decisively — a
+    function whose lowering never sets ``needs_alloc`` never acquires a
+    reference to ``$gc_sp``, a global that only exists when it does.
+
+    Several call sites indent the emitted lines before appending them, so the
+    match is on the stripped line.  ``$gc_stack_limit`` is read nowhere else
+    inside a function body: its only other consumers are ``$register_wrapper``
+    and the collector in ``vera/codegen/assembly.py``, which are assembled as
+    whole functions and never flow through an instruction list.
+    """
+    return any(i.strip() == _SHADOW_PUSH_MARKER for i in instructions)
 
 
 # =====================================================================
@@ -317,36 +559,12 @@ def emit_is_ascii_whitespace(byte_local: int, indent: str = "") -> list[str]:
 def wasm_type(t: Type) -> str | None:
     """Map a Vera Type to a WAT value type string.
 
-    Returns "i64" for Int/Nat, "f64" for Float64, "i32" for Bool/Byte/ADT,
-    "i32_pair" for String, None for Unit, or "unsupported" for others.
+    Returns "i64" for Int/Nat, "f64" for Float64, "i32" for Bool, "i32_pair"
+    for String, None for Unit, and "unsupported" for everything else — an
+    ADT included, which is why a caller that needs an ADT's width asks
+    codegen's `_type_expr_to_wasm_type` instead.
     """
-    if isinstance(t, PrimitiveType):
-        if t is INT or t is NAT:
-            return "i64"
-        if t is FLOAT64:
-            return "f64"
-        if t is BOOL:
-            return "i32"
-        if t is STRING:
-            return "i32_pair"
-        if t is UNIT:
-            return None
-    # Byte type
-    bt = base_type(t)
-    if isinstance(bt, PrimitiveType):
-        if bt is INT or bt is NAT:
-            return "i64"
-        if bt is FLOAT64:
-            return "f64"
-        if bt is BOOL:
-            return "i32"
-        if bt is STRING:
-            return "i32_pair"
-        if bt is UNIT:
-            return None
-    if isinstance(t, FunctionType):
-        return "i32"  # closure pointer
-    return "unsupported"
+    return wasm_representation(t)
 
 
 def wasm_type_or_none(t: Type) -> str | None:
@@ -386,21 +604,6 @@ def _strip_future(name: str) -> str:
     while name.startswith("Future<") and name.endswith(">"):
         name = name[7:-1]
     return name
-
-
-def _is_pair_element_type(elem_type: str) -> bool:
-    """Check if an array element type is a pair type (ptr, len).
-
-    String and Array<T> elements are represented as two consecutive
-    i32 values (pointer + length), requiring 8 bytes of storage.
-    Bare "Array" (without type args) also matches, since the element
-    type name from _infer_vera_type may not include type parameters.
-
-    ``Future<…>`` is stripped first (#1045): a ``Future<String>`` /
-    ``Future<Array<T>>`` element is a pair exactly like its payload.
-    """
-    elem_type = _strip_future(elem_type)
-    return elem_type == "String" or elem_type == "Array" or elem_type.startswith("Array<")
 
 
 # Opaque host-handle types: i32 indices into Python-side host stores
@@ -522,116 +725,6 @@ def is_gc_pointer_base(base_name: str) -> bool:
             and not _is_host_handle_type(base_name))
 
 
-def _element_mem_size(elem_type: str) -> int | None:
-    """Get memory size in bytes for an array element type.
-
-    Primitive types have fixed sizes.  Pair types (String, Array<T>)
-    use 8 bytes (ptr + len).  All other compound types (ADTs) use
-    4 bytes (i32 heap pointer).
-
-    ``Future<…>`` is stripped first (#1045) so the payload's size is
-    used — e.g. ``Future<Int>`` is an 8-byte i64, not a 4-byte i32.
-    """
-    elem_type = _strip_future(elem_type)
-    sizes = {
-        "Int": 8,
-        "Nat": 8,
-        "Float64": 8,
-        "Bool": 1,
-        "Byte": 1,
-    }
-    size = sizes.get(elem_type)
-    if size is not None:
-        return size
-    # Pair types: (ptr, len) = 8 bytes
-    if _is_pair_element_type(elem_type):
-        return 8
-    # ADT / other compound types: i32 heap pointer = 4 bytes
-    return 4
-
-
-def _element_load_op(elem_type: str) -> str | None:
-    """Get the WASM load instruction for an array element type.
-
-    Returns None for pair types (String, Array<T>) which require
-    special two-load handling in the caller.
-
-    ``Future<…>`` is stripped first (#1045) so the payload's load op is
-    used — e.g. ``Future<Int>`` loads with ``i64.load``, not ``i32.load``.
-    """
-    elem_type = _strip_future(elem_type)
-    ops = {
-        "Int": "i64.load",
-        "Nat": "i64.load",
-        "Float64": "f64.load",
-        "Bool": "i32.load8_u",
-        "Byte": "i32.load8_u",
-    }
-    op = ops.get(elem_type)
-    if op is not None:
-        return op
-    # Pair types need two loads — caller must handle specially
-    if _is_pair_element_type(elem_type):
-        return None
-    # ADT / other compound types: single i32 load
-    return "i32.load"
-
-
-def _element_store_op(elem_type: str) -> str | None:
-    """Get the WASM store instruction for an array element type.
-
-    Returns None for pair types (String, Array<T>) which require
-    special two-store handling in the caller.
-
-    ``Future<…>`` is stripped first (#1045) so the payload's store op is
-    used — e.g. ``Future<Int>`` stores with ``i64.store``, not
-    ``i32.store``, and ``Future<String>`` returns None (pair, two stores).
-    """
-    elem_type = _strip_future(elem_type)
-    ops = {
-        "Int": "i64.store",
-        "Nat": "i64.store",
-        "Float64": "f64.store",
-        "Bool": "i32.store8",
-        "Byte": "i32.store8",
-    }
-    op = ops.get(elem_type)
-    if op is not None:
-        return op
-    # Pair types need two stores — caller must handle specially
-    if _is_pair_element_type(elem_type):
-        return None
-    # ADT / other compound types: single i32 store
-    return "i32.store"
-
-
-def _element_wasm_type(elem_type: str) -> str | None:
-    """Get the WASM value type for an array element type.
-
-    Returns "i32_pair" for pair types (String, Array<T>),
-    "i32" for ADT/compound types, or the native type for primitives.
-
-    ``Future<…>`` is stripped first (#1045) so the payload's value type
-    is used — e.g. ``Future<Int>`` is ``i64``, not ``i32``.
-    """
-    elem_type = _strip_future(elem_type)
-    types = {
-        "Int": "i64",
-        "Nat": "i64",
-        "Float64": "f64",
-        "Bool": "i32",
-        "Byte": "i32",
-    }
-    wt = types.get(elem_type)
-    if wt is not None:
-        return wt
-    # Pair types: (ptr, len) represented as i32_pair
-    if _is_pair_element_type(elem_type):
-        return "i32_pair"
-    # ADT / other compound types: i32 heap pointer
-    return "i32"
-
-
 def state_type_arg(effect_ref: ast.EffectRefNode) -> ast.TypeExpr:
     """The single type argument of a ``State<T>`` effect reference.
 
@@ -652,3 +745,67 @@ def state_type_arg(effect_ref: ast.EffectRefNode) -> ast.TypeExpr:
         raise CodegenInvariantError(  # pragma: no cover
             "State<T> must have exactly one type argument", effect_ref)
     return effect_ref.type_args[0]
+
+
+def element_sequence_loop(
+    *,
+    idx_local: int,
+    ptr_local: int,
+    len_local: int,
+    elem_local: int,
+    load_wt: str,
+    load_op: str,
+    stride: int,
+    check: list[str],
+) -> list[str]:
+    """The ``for i in 0 .. len`` walk every ELEMENT guard emits (#1430).
+
+    One derivation of the walk, because the layers that plant these guards
+    cannot share a predicate-check primitive: a function or closure boundary
+    checks through ``ContractsMixin._emit_refinement_check``, a handler
+    clause binder through the WASM layer's ``_emit_bind_refine_guard``.  What
+    they DO share is the walk — the index local, the bounds test, the strided
+    load — and a second copy of that is how a stride or a bound goes stale in
+    one place and not the other.
+
+    *check* is the caller's per-element instructions, run with the element
+    already in *elem_local*; they are indented into the loop body.  Labels
+    carry the index local's number, so two element guards in one function — a
+    parameter's and a return's — cannot collide.
+
+    *load_op* is the caller's, not derived from *load_wt*: a `Bool` or `Byte`
+    element is stored one byte wide and read into an `i32` local, so deriving
+    the opcode from the local's TYPE reads four bytes — the predicate would
+    see three adjacent elements, and the last iteration would read past the
+    sequence.  The width belongs with the stride, and both come from the same
+    resolved element base (CodeRabbit, PR #1447).
+    """
+    brk, lp = f"$brk_elem{idx_local}", f"$lp_elem{idx_local}"
+    instrs = [
+        "i32.const 0",
+        f"local.set {idx_local}",
+        f"block {brk}",
+        f"  loop {lp}",
+        f"    local.get {idx_local}",
+        f"    local.get {len_local}",
+        "    i32.ge_s",
+        f"    br_if {brk}",
+        f"    local.get {ptr_local}",
+        f"    local.get {idx_local}",
+        f"    i32.const {stride}",
+        "    i32.mul",
+        "    i32.add",
+        f"    {load_op} offset=0",
+        f"    local.set {elem_local}",
+    ]
+    instrs.extend(f"    {line}" for line in check)
+    instrs.extend([
+        f"    local.get {idx_local}",
+        "    i32.const 1",
+        "    i32.add",
+        f"    local.set {idx_local}",
+        f"    br {lp}",
+        "  end",
+        "end",
+    ])
+    return instrs

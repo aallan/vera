@@ -5,7 +5,7 @@ Architecture documentation for the Vera compiler (`vera/` package). This is for 
 For other documentation:
 - [Root README](../README.md) — project overview, getting started, language examples
 - [SKILL.md](../SKILL.md) — language reference for LLM agents writing Vera code
-- [spec/](../spec/) — formal language specification (13 chapters, 0-12)
+- [spec/](../spec/) — formal language specification (14 chapters, 0-13)
 - [CONTRIBUTING.md](../CONTRIBUTING.md) — contributor workflow and conventions
 
 ## Pipeline Overview
@@ -72,98 +72,108 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | Module | Lines | Stage | Purpose | Key API |
 |--------|------:|-------|---------|---------|
 | `grammar.lark` | 344 | Parse | LALR(1) grammar definition | *(consumed by Lark)* |
-| `parser.py` | 191 | Parse | Lark frontend, error diagnosis | `parse()`, `parse_file()` |
+| `parser.py` | 220 | Parse | Lark frontend, error diagnosis | `parse()`, `parse_file()` |
 | `lexical.py` | 329 | Parse | Shared lexical scanning (comment spans, blanking) | `scan_comments()`, `blank_block_comments()` |
 | `transform.py` | 1,572 | Transform | Lark tree → AST transformer | `transform()` |
 | `ast.py` | 917 | Transform | Frozen dataclass AST nodes, source formatting | `Program`, `Node`, `Expr`, `format_expr` |
-| `types.py` | 859 | Type check | Semantic type representation | `Type`, `is_subtype()` |
+| `types.py` | 1,124 | Type check | Semantic type representation | `Type`, `is_subtype()` |
 | `prelude.py` | 1,115 | Type check | Standard prelude — built-in ADT and combinator injection | `inject_prelude()`, `prelude_adt_names()`, `overridable_builtin_names()` |
-| `naming.py` | 857 | Type check | The ONE slot / slot-reference-key / State-Exn-family renderer (#1208, #1209) — the checker's rendering, as a total pure function over an `AliasEnv`, consumed by the checker, the monomorphizer, the verifier, the SMT layer, codegen, the tester, the LSP, and `vera check --explain-slots`.  Also the ONE refinement-binder derivation, from the type expression for codegen's runtime guard (`refinement_binder_parts`) and from the predicate's own reference for the verifier and SMT layers (`predicate_binder_key`, #1226), both rendering through `slot_name`; and each consumer is handed the env of the module that DECLARED what it is rendering | `slot_name()`, `slot_ref_key()`, `family_name()`, `resolve_type_expr()`, `AliasEnv` |
-| `slots.py` | 427 | Type check | Presentation over `naming.py`: slot resolution tables and their text/JSON rendering, plus the two scope walks the tables need (`forall` narrowing, `where`-helper nesting).  The walks here that are NOT naming say so in their docstrings — the alias-opaque syntactic spelling for WASM representation questions, the last-resort name for a State/Exn cell family that resolves to none, and the bare-call ownership predicate the checker, codegen, and mono discovery all resolve a `get`/`put` call site through | `slot_table()`, `format_slot_table()`, `fn_slot_scope()`, `fn_scopes()`, `type_expr_slot_name()`, `family_fallback_name()`, `bare_call_denotes_user_fn()` |
+| `naming.py` | 1,106 | Type check | The ONE slot / slot-reference-key / State-Exn-family renderer (#1208, #1209) — the checker's rendering, as a total pure function over an `AliasEnv`, consumed by the checker, the monomorphizer, the verifier, the SMT layer, codegen, the tester, the LSP, and `vera check --explain-slots`.  Also the ONE refinement-binder derivation, from the type expression for codegen's runtime guard (`refinement_binder_parts`) and from the predicate's own reference for the verifier and SMT layers (`predicate_binder_key`, #1226), both rendering through `slot_name`; and each consumer is handed the env of the module that DECLARED what it is rendering.  Also the ONE name-resolution SPINE (`classify_named`, #1316/#1321/#1331): which branch a type name takes — type parameter, primitive, alias, declared ADT, built-in — asked by `resolve_type_expr` and by every codegen and WASM derivation that turns a name into a representation, so no consumer can hold a different branch order | `classify_named()`, `slot_name()`, `slot_ref_key()`, `family_name()`, `resolve_type_expr()`, `AliasEnv` |
+| `slots.py` | 487 | Type check | Presentation over `naming.py`: slot resolution tables and their text/JSON rendering, plus the two scope walks the tables need (`forall` narrowing, `where`-helper nesting).  The walks here that are NOT naming say so in their docstrings — the alias-opaque syntactic spelling for WASM representation questions, the last-resort name for a State/Exn cell family that resolves to none, and the bare-call ownership predicate the checker, codegen, and mono discovery all resolve a `get`/`put` call site through | `slot_table()`, `format_slot_table()`, `fn_slot_scope()`, `fn_scopes()`, `type_expr_slot_name()`, `family_fallback_name()`, `bare_call_denotes_user_fn()` |
 | `environment.py` | 2,327 | Type check | Type environment, scope stacks, ability registry, all built-in registrations | `TypeEnv`, `AbilityInfo` |
-| `checker/` | 7,264 | Type check | Two-pass type checker (mixin package) | `typecheck()` |
-| `  core.py` | 1,165 | | TypeChecker class, orchestration, contracts, constraint validation | |
-| `  resolution.py` | 535 | | AST TypeExpr → semantic Type, inference | |
-| `  modules.py` | 476 | | Cross-module registration (C7b/C7c), plus the per-module body check that makes a module's diagnostics independent of which file `vera check` was given (#1244) and the #1304 refusal of a bare function, data-type or constructor name two imports both supply (E155/E156/E157) | |
-| `  registration.py` | 1,032 | | Pass 1 forward declarations, ability registration | |
-| `  expressions.py` | 1,485 | | Expression synthesis (bidirectional), operators, statements | |
-| `  eq_ability.py` | 199 | | Eq ability derivation checks | |
+| `checker/` | 10,434 | Type check | Two-pass type checker (mixin package) | `typecheck()` |
+| `  core.py` | 1,607 | | TypeChecker class, orchestration, contracts, constraint validation | |
+| `  resolution.py` | 1,069 | | AST TypeExpr → semantic Type, inference; the E136 / E338 refusal of a type or effect-row name nothing in scope declares (#1489), with forward references to later declarations kept legal and an instruction that names the cause | |
+| `  modules.py` | 707 | | Cross-module registration (C7b/C7c) — each module registered ONCE per run, in its own namespace with its imports' data types, and its export tables read off that registration once (#1489, #1275) — plus the per-module body check that makes a module's diagnostics independent of which file `vera check` was given (#1244) and the #1304 refusal of a bare function, data-type or constructor name two imports both supply (E155/E156/E157) | |
+| `  registration.py` | 1,623 | | Pass 1 forward declarations, ability registration | |
+| `  expressions.py` | 1,823 | | Expression synthesis (bidirectional), operators, statements | |
+| `  eq_ability.py` | 226 | | Eq ability derivation checks | |
 | `  sql.py` | 309 | | SQL literal-provenance resolution + placeholder counting (#309) | `resolve_literal_string()`, `count_placeholders()` |
-| `  calls.py` | 1,631 | | Function/constructor/module/ability calls | |
-| `  control.py` | 735 | | If/match, patterns, effect handlers | |
-| `resolver.py` | 332 | Resolve | Module path resolution, parse cache | `ModuleResolver` |
-| `monomorphize.py` | 3,380 | Resolve | Shared generic instantiation discovery + AST substitution (verifier and codegen); each clone's De Bruijn recount renders its binder names under the **origin module's** `AliasEnv`, the one its consumers rebuild the clone's scope with (#1208) | `substitute_type_vars()`, `resolve_type_alias()`, `canonicalize_type_aliases()` |
-| `smt.py` | 3,289 | Verify | Z3 translation layer; reads each callee's contract in the module that declared it (`_callee_contract_scope`), swapping the naming env its slots render against and the registry its bare-name calls resolve in as one `CalleeScope` (#1208, #1225) | `SmtContext`, `SlotEnv`, `CalleeScope` |
-| `verifier.py` | 9,446 | Verify | Contract verification; owns the per-module registries every rendering goes through — an imported callee's contract and an imported generic's clone are named, resolved, and quoted in the module that **declared** them (#1208, #1220, #1225) | `verify()` |
-| `wasm/` | 27,524 | Compile | WASM translation layer (package) | `WasmContext`, `WasmSlotEnv`, `StringPool` |
-| ` ├ context.py` | 1,292 | | Composed WasmContext, expression dispatcher, block translation | |
-| ` ├ helpers.py` | 643 | | WasmSlotEnv, StateClauseEntry, StringPool, type mapping, array element helpers | |
-| ` ├ inference.py` | 2,631 | | Type inference, slot/type utilities, operator tables | |
-| ` ├ operators.py` | 2,798 | | Binary/unary operators, if, quantifiers, assert/assume, old/new | |
-| ` ├ calls.py` | 1,313 | | Core dispatcher for `_translate_call` / `_translate_qualified_call`, generic resolution, shared element-type inference (domain mixins below) | |
+| `  calls.py` | 2,262 | | Function/constructor/module/ability calls | |
+| `  control.py` | 1,269 | | If/match, patterns, effect handlers, and the #1233 walk that refuses (E339) a handler-clause State operation code generation cannot lower — mirroring its gate over pushed cell families, declaration-time scopes and clause inlining, each clause visited once per inlining context | |
+| `resolver.py` | 373 | Resolve | Module path resolution, parse cache, the one import-filter derivation | `ModuleResolver`, `merged_import_filters()` |
+| `module_view.py` | 137 | Resolve / Type check / Compile | The ONE derivation of what a namespace sees through its imports (#1489, #1493): the module paths a namespace's imports reach (the walk the #1513 constructor fallback's reach reads too), the resolved modules a namespace reaches with `direct` re-scoped to it, and the data types it imports with every supplier, each read through `merged_import_filters()` — read by the checker's module registration and body checks and by code generation's per-module registrar and ADT membership, so a module's signatures and bodies are measured in the same namespace whichever file is the entry | `reachable_paths()`, `modules_visible_to()`, `imported_data_types()` |
+| `disclosure.py` | 536 | Verify | Per-module disclosed-function manifests: each module's own verification emits the set `disclosed_fn_names` derives, keyed by owner path and carrying the `DisclosureSite` the importer's E534 cites, so the #1363 demotion crosses an import (#1399); computed BOTTOM-UP over the import DAG so each module is verified once and nothing nests, and content-addressed on the module's own source + its closure's + the budget, which is what makes an edit to an imported module invalidate it | `ModuleDisclosureIndex`, `DisclosureSite` |
+| `monomorphize.py` | 4,909 | Resolve | Shared generic instantiation discovery + AST substitution (verifier and codegen); each clone's De Bruijn recount renders its binder names under the **origin module's** `AliasEnv`, the one its consumers rebuild the clone's scope with (#1208) | `substitute_type_vars()`, `resolve_type_alias()`, `canonicalize_type_aliases()` |
+| `regularity.py` | 413 | Type check / Verify | The ONE regular-recursion derivation (#1429), read PER TYPE ARGUMENT of a recursive occurrence: each must be a bare parameter of the enclosing declaration, passed along unchanged, or closed with respect to those parameters — an argument that wraps one inside another type constructor grows at every level and is refused; an occurrence of the declaration's own name must also keep its parameters in their original positions.  Asked by TWO consumers that must not disagree — the checker refuses the declaration (`E129`), and the SMT layer declines to MODEL it, because `verify()` is a public entry point whose check-clean precondition a library caller can violate and the datatype-group closure has no fixed point when it is.  A second copy would be free to drift into one consumer refusing what the other models.  Groups are the strongly connected components of one field-reference graph, so `RegularityIndex` answers for a whole module from a single pass; `recursive_group()` is the straightforward reachability walk it is differentially tested against | `RegularityIndex`, `is_regular()`, `irregular_occurrence()`, `recursive_group()` |
+| `smt.py` | 4,513 | Verify | Z3 translation layer; reads each callee's contract in the module that declared it (`_callee_contract_scope`), swapping the naming env its slots render against and the registry its bare-name calls resolve in as one `CalleeScope` (#1208, #1225) | `SmtContext`, `SlotEnv`, `CalleeScope` |
+| `verifier.py` | 15,559 | Verify | Contract verification; owns the per-module registries every rendering goes through — an imported callee's contract and an imported generic's clone are named, resolved, and quoted in the module that **declared** them (#1208, #1220, #1225) | `verify()` |
+| `narrowing.py` | 1,464 | Verify | The ONE derivation of whether a value narrows into a `@Nat` slot, read by BOTH the verifier's `guarded` claim and codegen's guard emission so the two cannot drift (#1362); the type oracle is a parameter because the verifier reads the checker's semantic types while codegen reads declared names.  Also THE classifier of an integer value's sign every widening guard and obligation reads (#1503): `result_is_nat()` reads each expression form as `RESULT_IS_NAT_READING` says — a literal-only value by its folded value (`literal_range()`), the value-flow forms (`flow_arms()`: a block, an `if`, a `match`, a `handle`) as joins, an index through the array built here (`element_sources()`), and every other form from its declaration — and for a destructured or pattern-bound component `component_sources()` / `subcomponent_sources()` / `component_is_nat()` / `component_narrows()`, which read the constructor argument where the source builds the component and the declaration only where it is opaque, down a nested pattern's path — never the checker's type, which calls `if b then { 0 - 3 } else { 1 }` a `@Nat`; `literal_operation_width()` gives an operation of two literal-only operands its width by value, `operation_width()` any integer operation's, `widened_nat_operands()` names the `@Nat` values an `@Int` arithmetic or comparison operation widens — each operand the checker types `@Nat`, and each `@Nat` arm of a join operand — which the verifier obligates and code generation guards at the same sites (#1588), `is_guarded_nat_subtraction()` is the one test of a `@Nat` subtraction both sides read, and `subtraction_operand_sign()` tells the `@Nat`-subtraction guard how to learn each operand's sign — never negative (a genuine `@Nat`, a guarded subtraction), always negative, its bits' sign bit (an i64-valued literal, a sum or product at the signed width), the arm of a join that produced it, or its operands' (an unsigned sum or product, a quotient, an unguarded difference; a remainder's dividend).  A reader that STANDS A GUARD DOWN on a `@Nat` answer — code generation's #758 exemption at a `@Nat` return — reads `result_is_nat()` through `NARROWING_EXEMPTION_READING`, which trusts no index, effect operation or `handle`.  Also the ONE roster of the construction and bind sites whose §2.6.5 refinement predicate is runtime-guarded (`REFINED_BIND_GUARDED_SITES`, #1426), CONSULTED by codegen's guard emission rather than mirrored by it, so a site is added once and the guard and the guarded status move together | `is_static_nat_typed()`, `has_underflow_leaf()`, `narrows_into_nat()`, `result_is_nat()`, `RESULT_IS_NAT_READING`, `NARROWING_EXEMPTION_READING`, `subtraction_operand_sign()`, `component_sources()`, `subcomponent_sources()`, `component_is_nat()`, `literal_range()`, `operation_width()`, `widened_nat_operands()`, `is_guarded_nat_subtraction()`, `REFINED_BIND_GUARDED_SITES` |
+| `callgraph.py` | 404 | Check / Verify | The ONE answer to "which functions are recursive?" (#1492): the call graph of a program's declarations, `where` helpers at every depth included, with bare calls resolved lexically as the checker resolves them, a call by the program's own module path (`ma::f(...)` in `module ma;`, #1558) as an edge to the top-level function it names, and calls in contracts and refinement predicates marked as specification edges, and its strongly connected components.  It reads what the checker's check phase reads: a refused declaration adds no function and no call, and a body the check phase skips adds no call (#1433, #815).  The checker reads it for the termination rule (`E137`) and the contract-cycle rule (`E138`); the verifier reads it for the calls a `decreases` measure is checked across, by site, so the two agree on what is recursive (#1520).  `iter_calls()` is the one enumeration of where a call can be written, a generic walk over every field: the graph draws its edges from it, and the verifier holds its measure walk to `computation_calls()`, for a generic's monomorphized clone as for a declaration the graph holds | `CallGraph`, `CallSite`, `iter_calls()`, `computation_calls()`, `declares_diverge()`, `declares_decreases()` |
+| `binders.py` | 587 | Verify / Compile | The ONE enumeration of the positions the grammar binds a slot in — a function's parameters and its return, a closure's, a `let`, a destructuring `let`, a match arm's pattern and its sub-patterns, a handler clause's payload binder and its state writes, a constructor's fields, an effect operation's formals, a quantifier's variable — keyed by AST node class, with each position's guard answers beside it.  `narrowing.REFINED_BIND_GUARDED_SITES` and the verifier's two construction rosters are DERIVED from `GUARD_SITES` rather than restated, and `tests/test_binder_positions.py` holds the registry to `vera/ast.py`: every field carrying a `TypeExpr` or a `Pattern` is a registered position or an entry saying why it binds nothing, so a node class added later fails that test rather than going unvisited (#1455) | `BINDER_FIELDS`, `GUARD_SITES`, `binder_positions()`, `site_of()`, `guarded_sites()` |
+| `carriers.py` | 162 | Verify / Compile | The ONE enumeration of the containers whose ELEMENTS can carry a refinement — an `Array`'s elements, a `Map`'s keys and its values, a `Set`'s elements — each with the built-in that projects the container to an array of them (`map_keys` / `map_values` / `set_to_array`; an `Array` is the identity).  That projection is the only thing the three lowerings differ by, so the element fact (a bounded quantifier over the sequence's indices), the boundary guard (one loop over `ptr`/`len`) and the narrowing question are each written once against it rather than per container (#1430) | `ElementCarrier`, `element_carriers()`, `is_carrier()` |
+| `trap_registry.py` | 1,171 | Compile / Run | The ONE statement of every runtime trap (#1479): the kinds a host can report (the code the `vera.trap` signal carries, the description, the Fix paragraph), every code-generation function that emits a check able to trap together with the verifier obligation kinds it is the runtime half of, the `EmittedCheck` record `CompileResult.emitted_checks` lists per module, the roster of every `unreachable` emitted without a signal and the causes the generic `unreachable` Fix paragraph is derived from, the natively trapping instructions — their opcodes, every way each traps, and how each host names it from the engine's trap code or reason and, where it can read one, the trapping instruction — every `throw` code generation emits, the signal's WAT, and the marker comment through which the per-module record is read back from the assembled module | `TRAP_KINDS`, `TRAP_EMITTERS`, `EmittedCheck`, `INTERNAL_TRAPS`, `UNREACHABLE_CAUSES`, `THROW_SITES`, `signal_instructions`, `native_trap_kind`, `native_trap_conditions`, `CHECK_MARKER_RE` |
+| `tail_position.py` | 126 | Verify / Compile | The ONE tail-position analysis (#517): which `FnCall` nodes of a body are in tail position, and each `ModuleCall` by the module's own path, a tail call wherever the bare call would be (#1558).  Codegen lowers them to `return_call`, and the verifier reads the same answer to obligate a `decreases` measure on a self-recursive tail call's arguments, where the compiled code evaluates it before the call (#1480) | `compute_tail_call_sites()` |
+| `builtin_domains.py` | 120 | Verify | The declared domains of the built-ins whose compiled translation traps (#1480): each a Vera `requires` over the built-in's parameters, parsed once, and checked at every call by the SMT layer's call-site precondition machinery with the call's actual arguments substituted — so a literal string's byte length is exact — and recorded when discharged, since the check is made at the call | `BUILTIN_DOMAINS`, `domain_contract()` |
+| `wasm/` | 29,564 | Compile | WASM translation layer (package) | `WasmContext`, `WasmSlotEnv`, `StringPool` |
+| ` ├ context.py` | 1,928 | | Composed WasmContext, expression dispatcher, block translation; the one emission path of a named check's trap (`_emit_trap`) and its entry in the per-module record (#1479) | |
+| ` ├ helpers.py` | 790 | | WasmSlotEnv, StateClauseEntry, StringPool, type mapping; also the ONE `0 .. len` element walk every boundary element guard emits (#1430), since the layers that plant them cannot share a predicate-check primitive but must not diverge on the stride or the bound | |
+| ` ├ inference.py` | 2,868 | | Type inference, slot/type utilities, operator tables; the wasm arm of the resolution spine — `_declares_adt` (arity-aware: a spelling with a different argument count is not the declaration, #1539) and `_value_adt_key` (a value's data type by its layout key, whatever the namespace can name, #1534), the only two readers of the membership, plus every width and array-element-layout decider, all of them methods so each is asked in the namespace it is deciding for (#1321/#1331) | |
+| ` ├ operators.py` | 3,199 | | Binary/unary operators, if, quantifiers, assert/assume, old/new | |
+| ` ├ calls.py` | 1,463 | | Core dispatcher for `_translate_call` / `_translate_qualified_call`, generic resolution, shared element-type inference (domain mixins below) | |
 | ` ├ calls_arrays.py` | 2,694 | | `array_length` / `append` / `range` / `concat` / `slice` / `map` / `filter` / `fold` / `mapi` / `reverse` / `find` / `any` / `all` / `flatten` / `sort_by` | |
 | ` ├ calls_containers.py` | 1,304 | | Map, Set, Decimal (opaque-handle types) | |
 | ` ├ calls_encoding.py` | 2,210 | | Base64 and URL encoding/decoding/parsing | |
-| ` ├ calls_handlers.py` | 2,513 | | Show/Hash ability dispatch, `handle[State<T>]` and `handle[Exn<E>]` | |
+| ` ├ calls_handlers.py` | 2,817 | | Show/Hash ability dispatch, `handle[State<T>]` and `handle[Exn<E>]` | |
 | ` ├ calls_markup.py` | 400 | | JSON, HTML, Markdown, Regex, async/await (#841: fused concurrent lowering for `async(Http.get/post)`, identity otherwise) | |
 | ` ├ async_fusion.py` | 436 | | #841 fusion predicates — the single source of truth shared by the `_scan_io_ops` import pre-scan and the `WasmContext` async/await lowering | `fused_async_target()`, `await_needs_check()`, `compute_future_ret_fns()` |
 | ` ├ calls_math.py` | 635 | | `abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`, Float64 predicates, numeric conversions | |
 | ` ├ calls_parsing.py` | 1,035 | | `parse_nat` / `parse_int` / `parse_bool` / `parse_float64` state machines | |
 | ` ├ calls_strings.py` | 4,185 | | All string ops (length, concat, slice, search, transform, split, join, chars/lines/words, reverse, trim_start/end, pad_start/end, char_to_upper/lower, classifiers) + to-string conversions; `_translate_strip` delegates to the trim helper to keep the whitespace predicate consistent | |
 | ` ├ closures.py` | 582 | | Closures, anonymous functions, free variable analysis | |
-| ` ├ data.py` | 1,515 | | Constructors, match expressions (incl. nested patterns), arrays, indexing | |
+| ` ├ data.py` | 2,406 | | Constructors, match expressions (incl. nested patterns), arrays, indexing | |
 | ` ├ markdown.py` | 651 | | WASM memory marshalling for MdInline/MdBlock ADTs | |
 | ` ├ json_serde.py` | 631 | | WASM memory marshalling for Json ADT | |
 | ` └ html_serde.py` | 261 | | WASM memory marshalling for HtmlNode ADT | |
-| `markdown.py` | 728 | Compile | Python Markdown parser/renderer (§9.7.3 subset) | `parse_markdown()`, `render_markdown()`, `has_heading()`, `has_code_block()`, `extract_code_blocks()` |
-| `obligations/` | 785 | Verify | Reified proof obligations + warm incremental session (#222 A/B) | `ProofObligation`, `VerificationSession` |
-| `  core.py` | 198 | | ProofObligation record: identity (content_key) + discharge outcome | |
-| `  cache.py` | 219 | | Invalidation keys (structural/callee/context hashes), DischargeCache | |
-| `  session.py` | 311 | | Warm-Z3 daemon: per-function replay vs re-verify in declaration order | |
-| `lsp/` | 1,718 | Serve | Language Server Protocol over stdio (#222 C/D/E/F) | `create_server()`, `vera lsp` |
-| `  convert.py` | 218 | | Span/SourceLocation/LSP coordinate conversions, UTF-16 transcoding | |
+| `markdown.py` | 751 | Compile | Python Markdown parser/renderer (§9.7.3 subset) | `parse_markdown()`, `render_markdown()`, `has_heading()`, `has_code_block()`, `extract_code_blocks()` |
+| `markdown_grammar.py` | 147 | Compile | The §9.7.3 grammar, read by BOTH runtimes: patterns, character classes, continuation widths, and the generated copy `runtime.mjs` carries | `PATTERNS`, `CONTINUATION_INDENT`, `fence_close()`, `trim()`, `js_grammar_block()` |
+| `obligations/` | 1,118 | Verify | Reified proof obligations + warm incremental session (#222 A/B) | `ProofObligation`, `VerificationSession` |
+| `  core.py` | 236 | | ProofObligation record: identity (content_key) + discharge outcome | |
+| `  cache.py` | 447 | | Invalidation keys (structural/callee/context hashes), DischargeCache; `FnCacheEntry` also carries `result_disclosed`, the one datum a replay cannot recover from the cached diagnostics and obligations (#1407); `called_name` is the one rule for which calls name a program function, a call by the program's own path included (#1558) | |
+| `  session.py` | 478 | | Warm-Z3 daemon: per-function replay vs re-verify in declaration order; clears the disclosed set per program and re-enters `_verify_source_fixpoint` for one program's fixpoint (#1363) | |
+| `lsp/` | 2,419 | Serve | Language Server Protocol over stdio (#222 C/D/E/F) | `create_server()`, `vera lsp` |
+| `  convert.py` | 220 | | Span/SourceLocation/LSP coordinate conversions, UTF-16 transcoding | |
 | `  documents.py` | 69 | | URI-keyed document store, full-text sync | |
-| `  features.py` | 374 | | Diagnostics + tier hints, hover, slot goto (keyed through `naming.slot_ref_key`, so parameterised and alias-spelled references resolve, and a `where` helper resolves in its own accumulated scope), hole completion | |
-| `  extensions.py` | 153 | | vera/speculativeEdit proof-delta | |
-| `  server.py` | 287 | | pygls wiring, single-session serialisation | |
-| `  workflows.py` | 608 | | Skill-layer workflows: enforced edit sequences (#222 F) | |
-| `codegen/` | 19,686 | Compile | Codegen orchestrator (mixin package) | `compile()`, `execute()` |
-| `  api.py` | 1,402 | | Public API, dataclasses, `compile()`/`execute()` orchestration, core IO host bindings (#421) | |
-| `  memory.py` | 105 | | Compile-time ADT layout helpers (`ConstructorLayout`, alignment) (#421) | |
-| `  core.py` | 3,361 | | CodeGenerator class, orchestration, ability op rewriting (Pass 1.6), skip propagation to callers (#1100) | |
-| `  modules.py` | 1,425 | | Cross-module registration + call detection (C7e), per-module alias + source scopes (#1111/#1186) — `_module_alias_scope` swaps the alias maps *and* the `AliasEnv` every codegen rendering goes through as one pair (#1208) | |
-| `  registration.py` | 499 | | Pass 1 forward declarations, ADT layout | |
-| `  monomorphize.py` | 1,581 | | Generic instantiation, type inference, ability constraint checking (Pass 1.5) | |
-| `  functions.py` | 1,455 | | Function body compilation, GC prologue/epilogue (Pass 2) | |
-| `  tail_position.py` | 106 | | Tail-position analysis for the function body compiler | |
-| `  closures.py` | 1,052 | | Closure lifting, GC instrumentation | |
-| `  contracts.py` | 1,337 | | Runtime pre/postconditions, old state snapshots, decreases termination guard (entry check-and-set, per-function chain state, ADT rank helpers, self-tail site checks); the refinement boundary guard derives its binder from `naming.refinement_binder_parts` and layers the erased-base skip and the nested-base E618 on top.  Also the ONE derivation of what that guard layer lowers — `_tuple_component_guard_sites` decomposes a boundary tuple for the emitter, the return-epilogue gate and the host-import pre-scan alike, and `_signature_refinement_predicates` enumerates every predicate a signature will be guarded by (#1210) | |
-| `  assembly.py` | 1,502 | | WAT module assembly, `$alloc`, `$gc_collect` | |
+| `  features.py` | 455 | | Diagnostics + tier hints, hover, slot goto (keyed through `naming.slot_ref_key`, so parameterised and alias-spelled references resolve, and a `where` helper resolves in its own accumulated scope), hole completion | |
+| `  extensions.py` | 283 | | vera/speculativeEdit proof-delta | |
+| `  server.py` | 405 | | pygls wiring, single-session serialisation, coroutine edit handlers | |
+| `  workflows.py` | 978 | | Skill-layer workflows: enforced edit sequences, applied only through the client (#222 F, #1444) | |
+| `codegen/` | 22,544 | Compile | Codegen orchestrator (mixin package) | `compile()`, `execute()` |
+| `  api.py` | 1,491 | | Public API, dataclasses, `compile()`/`execute()` orchestration, core IO host bindings (#421) | |
+| `  memory.py` | 135 | | Compile-time ADT layout helpers (`ConstructorLayout`, alignment) (#421) | |
+| `  core.py` | 4,080 | | CodeGenerator class, orchestration, ability op rewriting (Pass 1.6), skip propagation to callers (#1100) | |
+| `  modules.py` | 2,182 | | Cross-module registration + call detection (C7e), per-module alias + source scopes (#1111/#1186) — `_module_alias_scope` swaps the alias maps *and* the `AliasEnv` every codegen rendering goes through as one pair (#1208) — and the #1317 per-owner ADT rename (`_contended_adt_renames`), which decides which contended `data` declarations are qualified to `mod$<path>$<Name>` and what each namespace calls them afterwards | |
+| `  registration.py` | 651 | | Pass 1 forward declarations, ADT layout | |
+| `  monomorphize.py` | 1,800 | | Generic instantiation, type inference, ability constraint checking (Pass 1.5) | |
+| `  functions.py` | 1,741 | | Function body compilation, GC prologue/epilogue (Pass 2); the exception boundary an export declaring `Exn<T>` is called through, which names an escaping exception `uncaught_exception` (`_exn_boundary`, #1479) | |
+| `  closures.py` | 1,090 | | Closure lifting, GC instrumentation | |
+| `  contracts.py` | 1,897 | | Runtime pre/postconditions, old state snapshots, decreases termination guard (entry check-and-set, per-function chain state, ADT rank helpers, self-tail site checks); the refinement boundary guard derives its binder from `naming.refinement_binder_parts` and layers the erased-base skip and the nested-base E618 on top.  Also the ONE derivation of what that guard layer lowers — `_tuple_component_guard_sites` decomposes a boundary tuple for the emitter, the return-epilogue gate and the host-import pre-scan alike, and `_signature_refinement_predicates` enumerates every predicate a signature will be guarded by (#1210) | |
+| `  assembly.py` | 1,727 | | WAT module assembly, `$alloc`, `$gc_collect` | |
 | `  compilability.py` | 1,004 | | Compilability checks; the two host-import pre-scans (State/Exn families and IO/Markdown/Regex builtins), walking each function's body, its contract predicates and every signature the guard layer will check — including closures', cycle-guarded | |
 | `  wasi.py` | 4,828 | | WASI Preview 2 component/adapter emitter — `--target wasi-p2` / `--world server` (#237, #853) | |
 | `runtime/` | 5,563 | Execute | wasmtime host layer (#421): traps + per-effect host-binding families | `register_*()`, `WasmTrapError` |
-| `  traps.py` | 493 | | `WasmTrapError`, `_classify_trap` / `_classify_host_error`, source-backtrace resolution | |
-| `  heap.py` | 1,376 | | WASM memory marshalling primitives, ADT/Option/Array/bucket codecs, `_ShadowGuard`, shared collection helpers | |
+| `  traps.py` | 539 | | `WasmTrapError`, `_classify_trap` / `_classify_host_error`, source-backtrace resolution, the trapping instruction a wasmtime trap stopped at (`trapping_instruction`), and the engine's own statement of a trap — its structured code (`trap_code_name`) and the reason after `Caused by:` (`trap_reason`), never the backtrace's function names; the Fix paragraphs are read from `trap_registry.TRAP_KINDS` | |
+| `  heap.py` | 1,452 | | WASM memory marshalling primitives, ADT/Option/Array/bucket codecs, `_ShadowGuard`, shared collection helpers | |
 | `  collections.py` | 16 | | `_VAL_WASM_TYPES` value-type dispatch table (shared by Map/Set) | |
 | `  text.py` | 34 | | `safe_utf8_decode` — the single lossy-decode site (#592) | |
 | `  <effect>.py` ×14 | 3,214 | | one `register_<effect>(linker, …)` per family: random, math, md, json, regex, html, map, set, decimal, http, async_http (#841 fused-async: worker-thread submit + blocking await + kind-4 cancel/evict decref), inference, state, db | |
-| `  wasi_host.py` | 213 | | Built-in `wasi-p2` runner via `add_wasip2` — `vera run --target wasi-p2` (#237, #853) | |
-| `  server.py` | 150 | | `vera serve` HTTP driver for `handle(Request -> Response)` (#305) | |
+| `  wasi_host.py` | 401 | | Built-in `wasi-p2` runner via `add_wasip2` — `vera run --target wasi-p2` (#237, #853); releases its store before it returns or raises and waits for wasmtime to let go of the output callbacks (`_release_store`); reads a trap's kind from the innermost adapter frame's whole name and its message from after the adapter's stderr mark (`message_mark`, #1479) | |
+| `  server.py` | 235 | | `vera serve` HTTP driver for `handle(Request -> Response)` (#305) | |
 | `tester.py` | 1,285 | Test | Z3-guided input generation (parameter types resolved through `naming.py`; a TIER-3 target whose input constraints do not all translate is skipped naming the blocker rather than trialled, while a Tier-1-proved function is reported verified and never trialled at all), WASM execution, tier classification | `test()` |
 | `formatter.py` | 2,036 | Format | Canonical code formatter | `format_source()` |
-| `errors.py` | 813 | All | Diagnostic class, error hierarchy, error code registry | `Diagnostic`, `VeraError`, `ERROR_CODES` |
+| `errors.py` | 1,083 | All | Diagnostic class, error hierarchy, error code registry | `Diagnostic`, `VeraError`, `ERROR_CODES` |
 | `skip.py` | 242 | All | Codegen-internal control-flow exceptions behind structured skip diagnostics (#626) | `CodegenSkip`, `CodegenInvariantError` |
 | `introspect.py` | 127 | All | Payloads for `vera builtins` / `effects` / `errors --json` | `builtins_payload()`, `effects_payload()`, `errors_payload()` |
 | `envflags.py` | 35 | All | One truthiness rule for the `VERA_*` diagnostic flags catalogued in ENVIRONMENT.md; a leaf module (imports `os` only) so any layer can read a flag without a cycle | `flag_enabled()` |
 | `_since.py` | 376 | All | Best-effort `since` version attribution for built-ins, effects, abilities | |
 | `browser/` | 138 | Execute | Browser runtime for compiled WASM (package) | `emit_browser_bundle()` |
 | ` ├ emit.py` | 137 | | Browser bundle emission (wasm + runtime + html) | `emit_browser_bundle()` |
-| ` ├ runtime.mjs` | 3,877 | | Self-contained JS runtime: IO, State, Http, Inference, contracts, Markdown, Json, Html | |
-| ` └ harness.mjs` | 106 | | Node.js test harness for parity testing | |
+| ` ├ runtime.mjs` | 4,209 | | Self-contained JS runtime: IO, State, Http, Inference, contracts, Markdown, Json, Html | |
+| ` └ harness.mjs` | 116 | | Node.js test harness for parity testing | |
 | `cli.py` | 2,224 | All | CLI commands | `main()` |
-| `registration.py` | 126 | Type check | Shared function registration | `register_fn()` |
+| `registration.py` | 158 | Type check | Shared function registration | `register_fn()` |
 
-Total: ~88,000 lines of Python + 344 lines of grammar + 3,983 lines of JavaScript.
+Total: ~125,000 lines of Python + 344 lines of grammar + 4,325 lines of JavaScript.
 
 ## Parsing
 
@@ -206,7 +216,8 @@ Node
 │   ├── ForallExpr, ExistsExpr             Quantifiers (contracts only)
 │   ├── OldExpr, NewExpr                   State snapshots (contracts only)
 │   ├── AssertExpr, AssumeExpr             Assertions
-│   └── IndexExpr, PipeExpr                Postfix operations
+│   ├── HoleExpr                           Typed hole (?)
+│   └── IndexExpr                          Postfix indexing
 │
 ├── TypeExpr                                Type expressions (syntactic)
 │   ├── NamedType                          Simple and parameterised types
@@ -217,7 +228,8 @@ Node
 │   ├── ConstructorPattern                 Some(@Int)
 │   ├── NullaryPattern                     None, Red
 │   ├── BindingPattern                     @Type (binds a value)
-│   ├── LiteralPattern                     0, "x", true
+│   ├── IntPattern, StringPattern          0, "x"
+│   ├── BoolPattern                        true
 │   └── WildcardPattern                    _
 │
 ├── Stmt                                    Statements
@@ -229,7 +241,8 @@ Node
 │   ├── FnDecl                             Function
 │   ├── DataDecl                           ADT
 │   ├── TypeAliasDecl                      Type alias
-│   └── EffectDecl                         Effect
+│   ├── EffectDecl                         Effect
+│   └── AbilityDecl                        Ability
 │
 ├── Contract                                Contract clauses
 │   ├── Requires, Ensures                  Pre/postconditions
@@ -348,7 +361,7 @@ Context flags (`in_ensures`, `in_contract`, `current_return_type`, `current_effe
 
 `TypeEnv._register_builtins()` registers the built-in types and operations. Function names follow the `domain_verb` convention (see spec §9.1.1): `string_` prefix for string ops, `float_` prefix for float predicates, `source_to_target` for conversions, prefix-less for math universals only (`abs`, `min`, `max`, etc.). New built-in functions must follow these patterns.
 
-The **standard prelude** automatically provides `Option<T>`, `Result<T, E>`, `Ordering`, and `UrlParts` in every program without explicit `data` declarations, along with Option/Result combinators and the array built-ins (including `array_length`, `array_append`, `array_range`, `array_concat`, `array_slice`, `array_map`, `array_filter`, `array_fold`, `array_mapi`, `array_reverse`, `array_find`, `array_any`, `array_all`, `array_flatten`, `array_sort_by`). User-defined `data` declarations with the same name shadow the prelude.
+The **standard prelude** automatically provides `Option<T>`, `Result<T, E>`, `Ordering`, and `UrlParts` in every program without explicit `data` declarations (and `Json`, `HtmlNode`, `Request` and `Response` when a program mentions them), along with Option/Result combinators and the array built-ins (including `array_length`, `array_append`, `array_range`, `array_concat`, `array_slice`, `array_map`, `array_filter`, `array_fold`, `array_mapi`, `array_reverse`, `array_find`, `array_any`, `array_all`, `array_flatten`, `array_sort_by`). User-defined `data` declarations with the same name shadow the prelude.
 
 | Built-in | Kind | Details |
 |----------|------|---------|
@@ -358,7 +371,7 @@ The **standard prelude** automatically provides `Option<T>`, `Result<T, E>`, `Or
 | `MdInline` | ADT | `MdText(String)`, `MdCode(String)`, `MdEmph(Array<MdInline>)`, `MdStrong(Array<MdInline>)`, `MdLink(Array<MdInline>, String)`, `MdImage(String, String)` |
 | `MdBlock` | ADT | `MdParagraph(Array<MdInline>)`, `MdHeading(Nat, Array<MdInline>)`, `MdCodeBlock(String, String)`, `MdBlockQuote(Array<MdBlock>)`, `MdList(Bool, Array<Array<MdBlock>>)`, `MdThematicBreak`, `MdTable(Array<Array<Array<MdInline>>>)`, `MdDocument(Array<MdBlock>)` |
 | `State<T>` | Effect | `get(Unit) → T`, `put(T) → Unit` operations |
-| `IO` | Effect | `print`, `read_line`, `read_file`, `write_file`, `args`, `exit`, `get_env` |
+| `IO` | Effect | `print`, `read_line`, `read_char`, `read_file`, `write_file`, `args`, `exit`, `get_env`, `sleep`, `time`, `stderr` |
 | `Async` | Effect | No operations — marker for async computation |
 | `Diverge` | Effect | No operations — marker for non-termination |
 | `array_length` | Function | `forall<T> Array<T> → Int`, pure |
@@ -450,7 +463,7 @@ The spec defines three verification tiers. The compiler implements Tiers 1 and 3
 | **2** | Extended: quantifiers, function call reasoning, array access | Z3 with hints/timeouts | Future |
 | **3** | Everything else | Runtime assertion fallback | Warning emitted |
 
-When a contract or function body contains constructs that can't be translated to Z3, the verifier **does not error** — it classifies the contract as Tier 3 and emits a warning. This means every valid program can be verified (at least partially).
+When a contract or function body contains constructs that can't be translated to Z3, the verifier **does not error** — it classifies the contract as Tier 3 and emits a warning. So an untranslatable construct never fails verification on its own; a program can still be refused for something verification must know first, such as a generic call's type argument (`E622`, see Design Pattern 4).
 
 ### Verification condition generation
 
@@ -520,6 +533,20 @@ When a contract or function body contains constructs that can't be translated to
 | `decreases(e)` | Verified via `e_callee < e_caller` (Nat) or rank function (ADT) |
 | Handle, lambda, quantifier, old/new | `None` (Tier 3) |
 
+### Disclosed facts, and how they cross an import
+
+A declared-type fact is sound to assume only while the obligation establishing it was **discharged**.  When the run instead *disclosed* it — reported it as neither proved nor guarded — a caller's proof that needs it rests on something the run admitted it could not establish, so `check_valid` withholds such facts from the first attempt and reports a goal that then needs them as `disclosed`, which the verifier records as Tier 3 with **E534** (#1363).  `disclosed_fn_names()` is the ONE derivation of which functions are in that state, read by the cold `verify_program` fixpoint and by the warm session alike.
+
+It reads the run's obligation stream, and an imported callee's obligations are never in it — the importer harvests contracts, not proofs.  `disclosure.py` supplies the missing half (#1399): a `ModuleDisclosureIndex` built from the resolved-module closure answers "what did module *p* disclose?" by running *p*'s own verification and asking the same `disclosed_fn_names()`, so a library's disclosure reaches its importers without the importer carrying the library's obligation stream.  Three properties keep it honest:
+
+- **Lazy, and bottom-up.** A module is verified only when a call this walk already found carries declared-type facts asks about it, so importing a module costs nothing until it matters. The first ask then computes every manifest the target depends on in dependency order, so each module is verified exactly once and its imports' answers are already cached when its own verification runs. Answering lazily and letting the answer recurse looks equivalent and is not: it nests one whole verify pipeline per import hop, which is quadratic in the chain and bounded by the interpreter's stack rather than by the closure — a 70-module chain reported `E699` on a program that verifies clean without the manifest at all. Both DAG walks are iterative for the same reason, and the sub-checks share one `body_check_memo` so a module's bodies are checked once for the whole closure.
+- **Content-addressed.** The cache key is the module's own source, its transitive closure's sources, and the solver budget — the complete set of inputs its disclosed set is a function of.  A diamond pays once; an edit to any module in the closure is a different key, which is what makes invalidation automatic for the warm `VerificationSession` rather than a step someone has to remember.
+- **Transitive by recursion.** Computing A's manifest runs A's own verification, which builds its own index over A's closure and asks it about B.  A three-hop chain taints hop by hop with no special case.
+
+`_scrutinee_is_disclosed_call` checks all three places a disclosure can live: this run's set (local callees, and unshadowed imported generics whose clones this run verifies), the `mod$<path>$<name>` key a shadowed or private imported generic's clone is verified under, and the defining module's manifest.  A bare call reaches the manifest through `_imported_fn_modules`, the name → owning-module map recorded where `_register_modules` injects the imported namespace — but only once `_local_fn_names_in_scope` has confirmed the call is not answered lexically first.  That set is the same chain `_scoped_fn_lookup` walks (own `where` helpers, each enclosing parent's, then top-level), as NAMES rather than resolved infos: the disclosure fixpoint re-registers the program and rebuilds `_module_functions` with fresh objects while the registry keeps the first pass's, so an identity comparison answers True on pass one and False on pass two.
+
+Each consulted disclosure records its `DisclosureSite`, and the demotion cites it: across an import the library's `E504` is in the library's run, which the importer discards by design, so `"a fact this run could neither prove nor guard"` names nothing the reader can go and look at — and is not true of the importing run, which reported no such thing.  The sites are per-function state with the same lifetime as the withheld facts they describe.
+
 ### Counterexample extraction
 
 When Z3 finds a satisfying assignment to the negated postcondition (= a counterexample), the verifier extracts concrete values from the Z3 model and includes them in the diagnostic:
@@ -568,7 +595,7 @@ The two-pass architecture mirrors the type checker: pass 1 registers all functio
 
 ### Host-binding families (`vera/runtime/`)
 
-Before #421, `execute()` and every effect's host bindings lived in one ~4,358-line `codegen/api.py`. The wasmtime host layer is now factored into `vera/runtime/`: trap classification (`traps.py`), WASM memory marshalling (`heap.py`, `collections.py`), and **one module per optional effect family**, each exposing a single `register_<family>(linker, …)` that defines and registers its host callbacks. `execute()` calls these in sequence instead of inlining ~3,000 lines of branches. The compiled `.wasm` import interface is unchanged — this is an internal refactor, not a contract change.
+`execute()` lives in `codegen/api.py`; the wasmtime host layer is factored into `vera/runtime/` ([#421](https://github.com/aallan/vera/issues/421)): trap classification (`traps.py`), WASM memory marshalling (`heap.py`, `collections.py`), and **one module per optional effect family**, each exposing a single `register_<family>(linker, …)` that defines and registers its host callbacks. `execute()` calls these in sequence. The compiled `.wasm` import interface does not depend on this layout — it is internal structure, not a contract.
 
 ![The wasmtime host layer: execute() registers one pluggable adapter per optional effect family into the Linker — Decimal, State, and the fused Async adapter carry an explicit store — while IO stays inline as execute()'s observation channel; the module's import interface is the portability contract the browser runtime also implements.](../assets/diagrams/host-families.svg)
 
@@ -586,11 +613,11 @@ Before #421, `execute()` and every effect's host bindings lived in one ~4,358-li
 
 `wasm/markdown.py` provides bidirectional WASM memory marshalling for the `MdInline` and `MdBlock` ADT trees. Write direction (`write_md_inline`, `write_md_block`) allocates ADT nodes in WASM linear memory using the same `$alloc` + tag-dispatch layout as user-defined ADTs. Read direction (`read_md_inline`, `read_md_block`) reconstructs Python objects from WASM memory. Helper functions `_read_i32`, `_read_i64`, and `_write_i64` handle raw memory access for struct fields.
 
-The WASM import interface is the portability contract: the compiled `.wasm` binary declares `(import "vera" "md_parse" ...)` etc., and any host runtime provides matching implementations. The Python implementation in `api.py` is the reference; the browser runtime in `browser/runtime.mjs` provides JavaScript host bindings with the same WASM memory allocation protocol.
+The WASM import interface is the portability contract: the compiled `.wasm` binary declares `(import "vera" "md_parse" ...)` etc., and any host runtime provides matching implementations. The Python implementation in `vera/runtime/md.py` (over `vera/markdown.py`) is the reference; the browser runtime in `browser/runtime.mjs` provides JavaScript host bindings with the same WASM memory allocation protocol.
 
 ### Browser runtime
 
-`browser/runtime.mjs` is a self-contained JavaScript runtime (~3,877 lines) that provides JavaScript implementations of all Vera host bindings. It works with any core Vera `.wasm` module — the default and browser targets share one import ABI, so no code generation is needed; the `--target wasi-p2` component is a different artifact format with its own host.
+`browser/runtime.mjs` is a self-contained JavaScript runtime (~4,200 lines) that provides JavaScript implementations of all Vera host bindings. It works with any core Vera `.wasm` module — the default and browser targets share one import ABI, so no code generation is needed; the `--target wasi-p2` component is a different artifact format with its own host.
 
 **Dynamic import introspection:** Instead of generating per-program glue code, the runtime uses `WebAssembly.Module.imports(module)` at initialization to discover which host functions the module actually needs, then builds the import object dynamically. State\<T\> types are pattern-matched from `state_get_*`/`state_put_*` import names.
 
@@ -598,11 +625,11 @@ The WASM import interface is the portability contract: the compiled `.wasm` bina
 
 **Bundled Markdown parser:** The runtime includes a JavaScript Markdown parser (~400 lines, bundled inline) matching the Python §9.7.3 subset. Zero external dependencies.
 
-**GC reachability discipline (JS host side):** JS host functions that allocate multiple WASM heap blocks and hold intermediates in JS locals must root those intermediates on the shadow stack — otherwise EAGER_GC (and, under pressure, normal GC) reclaims them mid-walk. The runtime exports two helpers: `gcShadowPush(ptr)` writes a pointer to `$gc_sp` and advances it (throws if `$gc_sp` / `$gc_stack_limit` aren't exported, since that means the module was built without GC support but is calling allocators that can trigger GC), and `gcGuard(fn)` saves `$gc_sp` at entry and restores it on exit (success or exception). This is the browser parallel of the CLI-side `_ShadowGuard` context manager added in v0.0.158 (#692). The walkers `writeJson` / `writeHtml` and the parsers `json_parse` / `html_parse` wrap their bodies in `gcGuard` and push intermediates (`arrPtr`, `wrapperPtr`, `jsonPtr`) as soon as each is allocated — see `runtime.mjs` for the canonical pattern. Without this, `Map<K, Json>` / `Set<Json>` and similar heap-pointer-keyed collections drop values under GC pressure (#708).
+**GC reachability discipline (JS host side):** JS host functions that allocate multiple WASM heap blocks and hold intermediates in JS locals must root those intermediates on the shadow stack — otherwise EAGER_GC (and, under pressure, normal GC) reclaims them mid-walk. The runtime exports two helpers: `gcShadowPush(ptr)` writes a pointer to `$gc_sp` and advances it (throws if `$gc_sp` / `$gc_stack_limit` aren't exported, since that means the module was built without GC support but is calling allocators that can trigger GC), and `gcGuard(fn)` saves `$gc_sp` at entry and restores it on exit (success or exception). This is the browser parallel of the CLI-side `_ShadowGuard` context manager ([#692](https://github.com/aallan/vera/issues/692)). The walkers `writeJson` / `writeHtml` and the parsers `json_parse` / `html_parse` wrap their bodies in `gcGuard` and push intermediates (`arrPtr`, `wrapperPtr`, `jsonPtr`) as soon as each is allocated — see `runtime.mjs` for the canonical pattern. Without this, `Map<K, Json>` / `Set<Json>` and similar heap-pointer-keyed collections drop values under GC pressure (#708).
 
-**Parity enforcement:** `tests/test_browser.py` runs the examples the browser target can execute — two explicit lists in that file, not the whole `examples/` directory, since an example that reads stdin interactively, uses a refused host family (file IO, `DB`), or does not compile standalone cannot be compared — plus per-binding batteries over the Map/Set/Decimal/Json/Regex/Markdown host imports, through both Python/wasmtime and Node.js/JS-runtime. The two example lists carry different oracles: the examples exporting `main` are run and compared on stdout, while the ones reached as exported functions are called with fixed arguments and compared on the returned value. The per-binding batteries compare stdout. `json_stringify` and `md_render` are compared the same way and additionally against the canonical form the specification states for each (§9.7.1, §9.7.3), because cross-host equality alone would be satisfied by two hosts agreeing on a wrong answer; `md_render` is also asserted stable under re-render and exercised on `MdBlock` values the test *builds*, since several renderer rules are unreachable through `md_parse`, and `json_stringify`'s number rendering is checked differentially against a real `JSON.stringify`. `json_parse` is compared by accepted domain, the parse-side counterpart: §9.7.1 states the domain — RFC 8259-valid text that decodes to finite numbers and strings of Unicode scalar values — and the battery compares the whole `Err` message across hosts for the JavaScript constants, for a number that overflows to an infinity in either spelling — with an exponent (`1e999`) or as plain digits (`1` followed by 309 zeros, the route `json.loads` decodes to an `int`) — and for a lone-surrogate escape, parameterised over every position a string can occupy (value, key, array element, nested), beside controls the refusals must not disturb: matched surrogate pairs, `"NaN"` as an ordinary string value, the finite boundary values, underflow to `0`, and the band between the largest finite double and the rounding boundary, whose integers are larger than `sys.float_info.max` and still accepted by both hosts. `md_parse` is the one parser still diverging — plain-text run grouping inside a paragraph, and a handful of block markers §9.7.3 does not pin — tracked as [#1301](https://github.com/aallan/vera/issues/1301); for it the suite pins the inputs the two do agree on. The browser stubs are covered on two different shapes: `IO.read_file` and `IO.write_file` get the same per-host pinning, run through both runtimes against a path that really is readable or writable so the native `Ok` and the browser `Err` are each asserted (a missing file or an unwritable directory would `Err` on both sides and prove nothing), while `IO.read_char` is exercised in Node alone — the module links and the stub's `Err` arm returns `0` — with no native run to compare against. `Inference` and `DB` return `Err` from every browser operation, which is a deliberate platform boundary — the credentials they need would be readable from page source — rather than a divergence awaiting a fix. Pre-commit hooks and CI trigger these tests on any change to the host binding surface.
+**Parity enforcement:** `tests/test_browser.py` runs the examples the browser target can execute — two explicit lists in that file, not the whole `examples/` directory, since an example that reads stdin interactively, uses a refused host family (file IO, `DB`), or does not compile standalone cannot be compared — plus per-binding batteries over the Map/Set/Decimal/Json/Regex/Markdown host imports, through both Python/wasmtime and Node.js/JS-runtime. The two example lists carry different oracles: the examples exporting `main` are run and compared on stdout, while the ones reached as exported functions are called with fixed arguments and compared on the returned value. The per-binding batteries compare stdout. `json_stringify` and `md_render` are compared the same way and additionally against the canonical form the specification states for each (§9.7.1, §9.7.3), because cross-host equality alone would be satisfied by two hosts agreeing on a wrong answer; `md_render` is also asserted stable under re-render and exercised on `MdBlock` values the test *builds*, since several renderer rules are unreachable through `md_parse`, and `json_stringify`'s number rendering is checked differentially against a real `JSON.stringify`. `json_parse` is compared by accepted domain, the parse-side counterpart: §9.7.1 states the domain — RFC 8259-valid text that decodes to finite numbers and strings of Unicode scalar values — and the battery compares the whole `Err` message across hosts for the JavaScript constants, for a number that overflows to an infinity in either spelling — with an exponent (`1e999`) or as plain digits (`1` followed by 309 zeros, the route `json.loads` decodes to an `int`) — and for a lone-surrogate escape, parameterised over every position a string can occupy (value, key, array element, nested), beside controls the refusals must not disturb: matched surrogate pairs, `"NaN"` as an ordinary string value, the finite boundary values, underflow to `0`, and the band between the largest finite double and the rounding boundary, whose integers are larger than `sys.float_info.max` and still accepted by both hosts. `md_parse` is compared by ADT: §9.7.3 states the grammar, `vera/markdown_grammar.py` holds its patterns once and the browser runtime carries a generated copy the suite asserts verbatim, and a generated corpus — the divergence classes #1301 measured, every block-opening line template taken one, two and three at a time, every inline shape in the four positions that reach the inline parser, a carriage-return leg and a seeded fuzz leg — is parsed by both hosts with the trees compared byte for byte, because a comparison routed through `md_render` cannot see how a paragraph's plain-text runs are grouped. The browser stubs are covered on two different shapes: `IO.read_file` and `IO.write_file` get the same per-host pinning, run through both runtimes against a path that really is readable or writable so the native `Ok` and the browser `Err` are each asserted (a missing file or an unwritable directory would `Err` on both sides and prove nothing), while `IO.read_char` is exercised in Node alone — the module links and the stub's `Err` arm returns `0` — with no native run to compare against. `Inference` and `DB` return `Err` from every browser operation, which is a deliberate platform boundary — the credentials they need would be readable from page source — rather than a divergence awaiting a fix. Pre-commit hooks and CI trigger these tests on any change to the host binding surface.
 
-`browser/emit.py` provides `emit_browser_bundle()` for the `vera compile --target browser` CLI command, which produces a ready-to-serve directory (module.wasm + vera-runtime.mjs + index.html).
+`browser/emit.py` provides `emit_browser_bundle()` for the `vera compile --target browser` CLI command, which produces a ready-to-serve directory (module.wasm + runtime.mjs + index.html).
 
 ### Runtime contracts
 
@@ -614,7 +641,7 @@ Omitting statically-proven guards is the spec §11.8 aspiration tracked in [#958
 
 Preconditions are checked at function entry. Postconditions store the return value in a temporary local, check the condition, and trap or return.
 
-**Informative violation messages:** Before each `unreachable`, the codegen emits a call to the `vera.contract_fail` host import with a pre-interned message string describing which contract failed (function name, contract kind, expression text). The host callback stores the message; when the trap is caught, `execute()` raises a `RuntimeError` with the stored message instead of a raw WASM trap. `format_expr()` and `format_fn_signature()` in `ast.py` reconstruct source text from AST nodes for the message.
+**Informative violation messages:** Before each `unreachable`, the codegen emits a call to the `vera.contract_fail` host import with a pre-interned message string describing which contract failed (function name, contract kind, expression text). The host callback stores the message; when the trap is caught, `execute()` raises a `RuntimeError` with the stored message instead of a raw WASM trap. `format_expr()` and `format_fn_signature()` in `ast.py` reconstruct source text from AST nodes for the message.  Every other named check calls `vera.trap(kind, ptr, len)` the same way — its kind as a code from `vera/trap_registry.py`'s `TRAP_KINDS`, and its own message where it carries one — through the single emission path `WasmContext._emit_trap`, which also raises the import's flag and records the check in `CompileResult.emitted_checks` (#1479).  An export whose effect row declares `Exn<T>` is exported through a boundary (`FunctionCompilationMixin._exn_boundary`) that catches an exception leaving it and signals `uncaught_exception` with its type and the value thrown.  Every `unreachable` emitted without a signal is on that module's `INTERNAL_TRAPS` roster, from which the generic `unreachable` Fix paragraph is derived; `tests/test_named_traps_1479.py` scans the code-generation package to hold the two together.
 
 ### Memory management
 
@@ -625,8 +652,9 @@ Memory is managed automatically. The allocator and garbage collector are impleme
 ```
 [0, data_end)            String constants (data section)
 [data_end, +16K)         GC shadow stack (4096 root slots)
-[data_end+16K, +32K)     GC mark worklist (4096 entries)
-[data_end+32K, ...)      Heap (objects with 4-byte headers)
+[data_end+16K, +80K)     GC mark worklist (16384 entries)
+[data_end+80K, +144K)    GC wrapper table (4096 entries; only with host-backed values)
+[data_end+80K or +144K, ...)  Heap (objects with 4-byte headers)
 ```
 
 **Allocator** (`$alloc` in `assembly.py`): Bump allocator with free-list overlay. Each allocation prepends a 4-byte header (`mark_bit | size << 1`). Allocation tries free-list first-fit, then bump, triggers GC on OOM, falls back to `memory.grow`.
@@ -636,13 +664,13 @@ Memory is managed automatically. The allocator and garbage collector are impleme
 2. **Mark** — seed worklist from shadow stack roots, drain iteratively; any i32 word that looks like a valid heap pointer (in heap range, properly aligned, below `$heap_ptr`) is treated as one (no type descriptors needed). Because those guards don't prove the word at `val - 4` is actually an object header, the marker also bounds the conservative scan against `$heap_ptr` at two layers — early-skip if `obj_ptr + obj_size > heap_ptr` before marking, plus a per-iteration check inside the scan loop — so a non-pointer payload value that happens to satisfy the seeding guards (e.g. a bit-packed `Nat` row) cannot cause the collector to walk past the heap and trap (#515)
 3. **Sweep** — walk heap, link unmarked objects into free list
 
-**Shadow stack** (`gc_shadow_push` in `helpers.py`): WASM has no stack scanning, so the compiler pushes live heap pointers explicitly. `_compile_fn` in `functions.py` emits a prologue (save `$gc_sp`, push pointer params) and epilogue (save return, restore `$gc_sp`, push return back). Allocation sites in `data.py`, `closures.py`, and `calls.py` push newly allocated pointers after each `call $alloc`. An overflow guard (`$gc_sp >= $gc_stack_limit`) traps if the shadow stack would overflow into the worklist region — this prevents silent GC corruption during deep recursion (#464).
+**Shadow stack** (`gc_shadow_push` in `helpers.py`): WASM has no stack scanning, so the compiler pushes live heap pointers explicitly. `_compile_fn` in `functions.py` emits a prologue (save `$gc_sp`, push pointer params) and epilogue (save return, restore `$gc_sp`, push return back). Allocation sites in `data.py`, `closures.py`, and `calls.py` push newly allocated pointers after each `call $alloc`. A `match` applies that same save/restore/re-root discipline to its own extent (`_scope_match_shadow_roots` in `data.py`), so an arm's roots are reclaimed when the arm produces its value rather than at frame exit; the shadow stack roots ADDRESSES, so a copy of a pointer the producer already rooted is not pushed again (#1322). An overflow guard (`$gc_sp + 4 > $gc_stack_limit` — slot-complete, since the store writes four bytes) traps if the shadow stack would overflow into the worklist region — this prevents silent GC corruption during deep recursion (#464, #791, #860).
 
 **Zero overhead:** The GC infrastructure (globals, shadow stack, worklist, `$gc_collect`) is only emitted when `needs_alloc` is True. Programs that perform no heap allocation have no GC overhead.
 
 ## Error System
 
-**File:** `errors.py` (803 lines)
+**File:** `errors.py` (size in the module map above)
 
 ```
 VeraError (exception hierarchy)
@@ -676,7 +704,7 @@ Every diagnostic includes eight fields designed for LLM consumption:
 
 </details>
 
-`Diagnostic.format()` produces the multi-section natural language output shown in the root README's "What Errors Look Like" section. The format is designed so the compiler's output can be fed directly back to the model that wrote the code.
+`Diagnostic.format()` produces the multi-section natural language output shown in the root README's "Errors are instructions" section. The format is designed so the compiler's output can be fed directly back to the model that wrote the code.
 
 **Parse error patterns:** `diagnose_lark_error()` in `parser.py` maps common Lark exception patterns to specific diagnostics. It checks expected token sets to distinguish "missing contract block" from "missing effects clause" from "malformed slot reference", producing targeted fix suggestions for each.
 
@@ -698,7 +726,7 @@ The type checker and verifier never stop at the first error. All diagnostics are
 
 ### 4. Tiered verification with graceful degradation
 
-`SmtContext.translate_expr()` returns `None` for any construct it can't handle. The verifier interprets `None` as "Tier 3: warn and assume runtime check". This means **no valid program ever fails verification** — contracts that Z3 can't prove get warnings, not errors. As the SMT translation grows (Tier 2, quantifiers, etc.), constructs graduate from Tier 3 to Tier 1.
+`SmtContext.translate_expr()` returns `None` for any construct it can't handle. The verifier interprets `None` as "Tier 3: warn and assume runtime check". This means an untranslatable CONTRACT never fails verification — a predicate Z3 cannot prove gets a warning and a runtime guard, not an error. It is a statement about the SMT translation, not a blanket guarantee that verification accepts every type-checking program: a program can still be refused for something verification must know before it can tier anything, and `E622` is that shape — a generic call whose type argument no walker could name has no determined specialisation to verify, so it is refused rather than tiered against a guess. As the SMT translation grows (Tier 2, quantifiers, etc.), constructs graduate from Tier 3 to Tier 1.
 
 The same pattern applies to code generation: `WasmContext.translate_expr()` returns `None` for unsupported expressions, and the code generator skips those functions with a warning. As codegen support grows, more functions become compilable.
 
@@ -730,30 +758,33 @@ The proof that the two sides agree is a differential, not a unit test: `tests/te
 
 ### 9. LLM-oriented diagnostics
 
-Every diagnostic includes a description (what went wrong), rationale (which language rule), fix (corrected code), spec reference, and a stable code — errors `E001`–`E702`, warnings `W001` (typed holes) and `W002` (an eagerly evaluated `async` argument). The compiler's output is designed to be fed directly back to the model as corrective context. See spec Chapter 0, Section 0.5 "Diagnostics as Instructions" for the philosophy.
+Every diagnostic includes a description (what went wrong), rationale (which language rule), fix (corrected code), spec reference, and a stable code — errors `E001`–`E702`, warnings `W001` (typed holes), `W002` (an eagerly evaluated `async` argument) and `W003` (an unverified `assume`). The compiler's output is designed to be fed directly back to the model as corrective context. See spec Chapter 0, Section 0.5 "Diagnostics as Instructions" for the philosophy.
 
 ### 10. Stable error code taxonomy
 
-Every diagnostic has a unique code grouped by compiler phase:
+Every coded diagnostic has a unique code grouped by compiler phase (a few diagnostics still carry none, [#1490](https://github.com/aallan/vera/issues/1490)):
 
 | Range | Phase | Source |
 |-------|-------|--------|
 | E001–E008 | Parse | `errors.py` factory functions |
 | E009 | Transform: string escapes | `transform.py` |
 | E010 | Transform: unhandled rule | `transform.py` |
+| E011–E013 | Resolve: module imports | `resolver.py` |
 | E020, E021, E023 | Parse: malformed comments (lexical) | `lexical.py` scan + `errors.py` factory |
 | E030, E031 | Parse: `old()`/`new()` applied to an expression | `errors.py` factory |
+| E032 | Parse: contract clause after the effects clause | `errors.py` factory |
 | E1xx | Type check: core + expressions | `checker/core.py`, `checker/expressions.py` |
 | E2xx | Type check: calls | `checker/calls.py` |
 | E3xx | Type check: control flow | `checker/control.py` |
 | E5xx | Verification | `verifier.py` |
 | E6xx | Codegen | `codegen/` |
+| E7xx | Testing | `tester.py` |
 
-The `ERROR_CODES` dict in `errors.py` maps every code to a short description (160 entries — 158 `E` codes and the two `W` warning codes). Codes are stable across versions — they can be used for programmatic filtering, suppression, and documentation lookups. Formatted output shows the code in brackets: `[E130] Error at line 5, column 3:`.
+The `ERROR_CODES` dict in `errors.py` maps every code to a short description (186 entries — 183 `E` codes and 3 `W` warning codes). Codes are stable across versions — they can be used for programmatic filtering, suppression, and documentation lookups. Formatted output shows the code in brackets: `[E130] Error at line 5, column 3:`.
 
 ## Test Suite
 
-Testing spans a **pytest suite** of 12,290 tests across 181 files: compiler-internals unit tests plus a **conformance suite** (244 programs in `tests/conformance/` validating every language feature against the spec) and **example programs** (43 end-to-end demos). The conformance suite is the definitive specification artifact; most programs target a single feature, though some (slot references, match, contracts) span several, and each serves as a minimal working example.
+Testing spans a **pytest suite** of 30,095 tests across 242 files: compiler-internals unit tests plus a **conformance suite** (256 programs in `tests/conformance/` validating every language feature against the spec) and **example programs** (43 end-to-end demos). The conformance suite is the definitive specification artifact; most programs target a single feature, though some (slot references, match, contracts) span several, and each serves as a minimal working example.
 
 See **[TESTING.md](../TESTING.md)** for the comprehensive testing reference -- test file table, conformance suite details, compiler code coverage, language feature coverage, helper conventions, validation scripts, CI pipeline, and guidelines for adding tests.
 
@@ -763,12 +794,11 @@ Honest inventory of what the compiler cannot do, and where each limitation is ad
 
 | Limitation | Why | Planned |
 |-----------|-----|---------|
-| **Verification gaps that downgrade silently** | the effect-operation argument, the generic-instantiated constructor field, the `nat_to_int`/`nat_to_string` conversion-builtin arguments, and the *refined* nested constructor sub-pattern (#765; the `@Nat` nested bind is guarded) have no codegen runtime guard, so an unverified compile can store a negative `@Nat` at one of those sites — or, at the refined nested bind, a value violating its refinement predicate (the E506 disclosure) — every other narrowing **binding site** and the top-level/where-helper and closure **return** positions — nested closures included — are statically obligated (#552, #747, #758, #984, #985) and codegen-guarded | [#754](https://github.com/aallan/vera/issues/754), [#757](https://github.com/aallan/vera/issues/757) |
 | **No effect row variable unification** | Subeffecting implemented; `forall<E>` row variables permissive (full row-variable unification deferred) | [#294](https://github.com/aallan/vera/issues/294) |
 | **No incremental compilation** | Full file processed from scratch each time | [#56](https://github.com/aallan/vera/issues/56) |
 | **No REPL** | No interactive evaluation; all code must be written to files | [#224](https://github.com/aallan/vera/issues/224) |
 | **No date/time, crypto, CSV** | Standard library limited to core types, strings, and arrays | [#233](https://github.com/aallan/vera/issues/233), [#235](https://github.com/aallan/vera/issues/235), [#236](https://github.com/aallan/vera/issues/236) |
-| **Http: GET/POST only** | No custom headers, no PUT/DELETE/PATCH, no status codes, no timeouts, no streaming, no cookies | [#351](https://github.com/aallan/vera/issues/351)–[#356](https://github.com/aallan/vera/issues/356) |
+| **Http: GET/POST only** | No custom headers, no PUT/DELETE/PATCH, no status codes, no timeouts, no streaming, no cookies | [#351](https://github.com/aallan/vera/issues/351), [#352](https://github.com/aallan/vera/issues/352), [#353](https://github.com/aallan/vera/issues/353), [#355](https://github.com/aallan/vera/issues/355), [#356](https://github.com/aallan/vera/issues/356) |
 | **Inference: complete only** | No `embed` (vector embeddings), no streaming, no system prompt; `embed` blocked on [#373](https://github.com/aallan/vera/issues/373) (float array host-alloc infrastructure) | [#371](https://github.com/aallan/vera/issues/371) |
 | **No float array host-alloc** | Host functions cannot return `Array<Float64>`; `_alloc_result_ok_float_array` helper not yet implemented | [#373](https://github.com/aallan/vera/issues/373) |
 | **Inference: no token/temperature controls** | `max_tokens` hardcoded to 1024 for Anthropic; no temperature override | [#370](https://github.com/aallan/vera/issues/370) |
@@ -851,13 +881,13 @@ To add a new WASM type mapping, update `wasm_type()` in `wasm/helpers.py` and th
 
 | Package | Version | Purpose |
 |---------|---------|---------|
-| `lark` | ≥1.1 | LALR(1) parser generator. Chosen for its Python-native implementation, deterministic parsing, and built-in Transformer pattern. |
-| `z3-solver` | ≥4.12 | SMT solver for contract verification. Industry-standard solver supporting QF_LIA and Boolean logic. Note: does not ship `py.typed` — mypy override configured in `pyproject.toml`. |
-| `wasmtime` | ≥15.0 | WebAssembly runtime. Used for WAT→WASM compilation and execution via `vera compile` / `vera run`. Note: does not ship complete type stubs — mypy override configured in `pyproject.toml`. |
+| `lark` | ≥1.3.1 | LALR(1) parser generator. Chosen for its Python-native implementation, deterministic parsing, and built-in Transformer pattern. |
+| `z3-solver` | ≥4.15.5 | SMT solver for contract verification. Industry-standard solver supporting QF_LIA and Boolean logic. Note: does not ship `py.typed` — mypy override configured in `pyproject.toml`. |
+| `wasmtime` | ≥46.0.1 | WebAssembly runtime. Used for WAT→WASM compilation and execution via `vera compile` / `vera run`. Note: does not ship complete type stubs — mypy override configured in `pyproject.toml`. |
 
 ### Development
 
-`pytest`, `pytest-cov` (testing), `mypy` (strict type checking), `pre-commit` (commit hooks).
+`pytest`, `pytest-cov`, `pytest-xdist` (testing), `mypy` (strict type checking), `ruff` (linting), `pre-commit` (commit hooks), `pip-licenses` (licence check); the `[dev]` extra also pulls in the `[lsp]` extra (`pygls`, `lsprotocol`).
 
 ---
 

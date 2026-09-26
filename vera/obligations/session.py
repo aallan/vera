@@ -33,19 +33,46 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from vera import ast
+from vera.callgraph import CallGraph
 from vera.errors import Diagnostic
 from vera.obligations.cache import (
     DischargeCache,
     FnCacheEntry,
     fn_cache_key,
+    TypeEnvironment,
     program_context_hash,
 )
 from vera.obligations.core import ProofObligation
 from vera.parser import parse
-from vera.resolver import ModuleResolver, ResolvedModule
+from vera.resolver import ModuleResolver, ResolvedModule, own_module_path
 from vera.smt import SmtContext, resolve_timeout_ms
 from vera.transform import transform
-from vera.verifier import ContractVerifier, VerifySummary, summarize
+from vera.verifier import (
+    ContractVerifier,
+    VerifySummary,
+    disclosed_fn_names,
+    summarize,
+)
+
+
+def resolve_document_imports(
+    program: ast.Program, file: str,
+) -> tuple[list[ResolvedModule], list[Diagnostic]]:
+    """Resolve *program*'s imports from the directory *file* lives in.
+
+    The one rule for rooting a document's resolver, shared by
+    :meth:`VerificationSession.verify_source` and the language server's
+    own check (`vera.lsp.features.analyze`), so the two passes resolve the
+    same modules — see the comment at the call in ``verify_source`` for why
+    a path-less document resolves none.  Returns the resolved modules and
+    the resolver's diagnostics.
+    """
+    path = Path(file)
+    parent = path.parent
+    if (parent != Path(".") or path.is_file()) and parent.is_dir():
+        resolver = ModuleResolver(_root=parent)
+        return resolver.resolve_imports(program, path), list(resolver.errors)
+    return [], []
 
 
 @dataclass
@@ -103,6 +130,11 @@ class VerificationSession:
         # Phase B: per-function discharge cache (see cache.py for the
         # invalidation-key soundness model).
         self._cache = DischargeCache()
+        # #1363 (PR review): functions this session has found disclosed.
+        # Carried across runs so the warm path verifies under the same
+        # set the cold path computes, and folded into the cache key so a
+        # slice proved under a different set is never replayed.
+        self._disclosed: frozenset[str] = frozenset()
         # Cached AST of the last successfully verified program.
         self.last_program: ast.Program | None = None
         # Cache observability for the most recent verify_source call.
@@ -137,6 +169,27 @@ class VerificationSession:
     ) -> SessionVerifyResult:
         """Parse, type-check, and verify *source* on the warm session.
 
+        The disclosed set belongs to ONE program's fixpoint, so it is cleared
+        here rather than left to accumulate (#1363, PR review).  A session
+        outlives the document it was created for — an editor verifies file
+        after file on one — and a set carried forward demoted the NEXT
+        program's contracts on the strength of the previous one's disclosures,
+        against unrelated names, where cold (a fresh process each time) proves
+        them at Tier 1.  Cleared at the ENTRY point specifically: the fixpoint
+        below re-enters `_verify_source_fixpoint`, which must see the set the
+        previous pass produced, and clearing there would not terminate.
+        """
+        self._disclosed = frozenset()
+        return self._verify_source_fixpoint(source, file, resolved_modules)
+
+    def _verify_source_fixpoint(
+        self,
+        source: str,
+        file: str | None = None,
+        resolved_modules: list[ResolvedModule] | None = None,
+    ) -> SessionVerifyResult:
+        """One pass, re-entered until the disclosed set stops growing.
+
         Mirrors the ``vera verify`` CLI pipeline (cmd_verify): imports
         are resolved from disk relative to *file* when given (and
         *resolved_modules* not supplied); type errors short-circuit
@@ -150,7 +203,6 @@ class VerificationSession:
 
         resolver_errors: list[Diagnostic] = []
         if resolved_modules is None and file is not None:
-            path = Path(file)
             # The resolver roots at the directory the DOCUMENT lives in, so
             # it may only be built when *file* names one (#1246 review).  A
             # path-less document — an `untitled:` buffer, a non-`file:` URI,
@@ -168,7 +220,7 @@ class VerificationSession:
             #
             # `resolved_modules` stays empty in that case: a relative import
             # in a document with no location CANNOT meaningfully resolve, and
-            # the E230 module-not-found warnings then say exactly that.  The
+            # the E230 module-not-found errors then say exactly that.  The
             # directory must also EXIST — a `vscode-vfs://host/a.vera` parses
             # to the non-existent `vscode-vfs:/host` — so the "not found"
             # story comes from the import check rather than from a resolver
@@ -179,17 +231,16 @@ class VerificationSession:
             # CWD.  `is_file()` separates them — a relative document that
             # exists on disk keeps its siblings, which keying on the parent
             # alone had silently taken away (PR #1282 review).
-            parent = path.parent
-            if (parent != Path(".") or path.is_file()) and parent.is_dir():
-                resolver = ModuleResolver(_root=parent)
-                resolved_modules = resolver.resolve_imports(program, path)
-                resolver_errors = resolver.errors
-            else:
-                resolved_modules = []
+            resolved_modules, resolver_errors = resolve_document_imports(
+                program, file)
 
         from vera.checker import typecheck_with_artifacts
+        # #1509: each module's own tables too, which instantiation
+        # discovery reads for that module's bodies — as a cold `verify()`
+        # and every compiling CLI path do.
         check_diags_raw, artifacts = typecheck_with_artifacts(
             program, source, file=file, resolved_modules=resolved_modules,
+            collect_module_artifacts=True,
         )
         check_diags = resolver_errors + check_diags_raw
         if any(d.severity == "error" for d in check_diags):
@@ -207,6 +258,7 @@ class VerificationSession:
             shared_smt=smt,
             expr_types=artifacts.expr_semantic_types,
             expr_target_types=artifacts.expr_target_types,
+            module_artifacts=artifacts.module_artifacts,
         )
         verifier.register_program(program)
 
@@ -238,16 +290,101 @@ class VerificationSession:
             for tld in program.declarations
             if isinstance(tld.decl, ast.FnDecl)
         }
+        # #1458: a type the declaration references is read by whoever
+        # references it, and a NAMED one hides its refinement predicate
+        # behind a declaration — so the closure needs to resolve type names
+        # to see the functions those predicates call.  Both declaration
+        # forms carry a predicate: an alias names its target, and a `data`
+        # declaration's constructor fields are types read at construction
+        # and at destructure.  The declaration TEXT is already covered by
+        # the program context hash; what this reaches is a function the text
+        # names, whose own contract can move while the text does not.
+        type_defs: dict[str, tuple[ast.TypeExpr, ...]] = {}
+        ctor_defs: dict[str, tuple[ast.TypeExpr, ...]] = {}
+        op_defs: dict[tuple[str, str], tuple[ast.TypeExpr, ...]] = {}
+        for tld in program.declarations:
+            if isinstance(tld.decl, ast.TypeAliasDecl):
+                type_defs[tld.decl.name] = (tld.decl.type_expr,)
+            elif isinstance(tld.decl, ast.DataDecl):
+                type_defs[tld.decl.name] = tuple(
+                    field
+                    for ctor in tld.decl.constructors
+                    for field in (ctor.fields or ())
+                )
+                for ctor in tld.decl.constructors:
+                    ctor_defs[ctor.name] = tuple(ctor.fields or ())
+            elif isinstance(tld.decl, (ast.EffectDecl, ast.AbilityDecl)):
+                # A `perform`-style qualified call reads the operation's
+                # signature, and an EFFECT op's PARAMETER refinement is
+                # discharged at the call site — that is the half a cell can
+                # hold to account.  Two pieces here are deliberate
+                # conservatism instead, each measured inert and each costing
+                # one term rather than a branch that would go stale if the
+                # measurement changed: an op's RETURN refinement is not
+                # assumed (the result is `tier3` either way), and a call to
+                # an ABILITY's op raises no obligation at all, so no cell
+                # can red on the `AbilityDecl` arm (#1458 review).
+                for op in tld.decl.operations:
+                    op_defs[(tld.decl.name, op.name)] = (
+                        *op.param_types, op.return_type)
+        # #1558: the path that names this file in a qualified call, derived
+        # once and read by every part of the key that follows a call — the
+        # interface closure below and the cycle key's call graph — so a call
+        # by it is followed wherever the bare call is, and by the one answer
+        # the verifier reads too.
+        own_path = own_module_path(program, None, resolved_modules or [])
+        env = TypeEnvironment(
+            types=type_defs, constructors=ctor_defs, effect_ops=op_defs,
+            own_path=own_path)
 
+        # #1363 (PR review): the warm path must run under the same disclosed
+        # set the cold path computes, or it proves at Tier 1 from facts cold
+        # withholds — a warm/cold divergence in the generous direction.
+        verifier._disclosed_fns = self._disclosed
+        # #1480: every refinement predicate the program declares, discharged
+        # once, first — exactly where the cold `_verify_all_declarations`
+        # runs it, so the two streams agree in order as well as content.  Not
+        # cached per function: it belongs to no function's slice, and a
+        # predicate's callee can change while the declaration text does not.
+        verifier._verify_refinement_declarations(program)
         stats = SessionRunStats()
         out_diags: list[Diagnostic] = list(verifier.errors)
         out_obls: list[ProofObligation] = list(verifier.obligations)
+
+        # #1520: a `decreases` verdict reads the calls that stay on the
+        # declaration's call cycle, and which calls those are depends on
+        # OTHER declarations' bodies — a body edit elsewhere can close or
+        # open a cycle through this one without touching anything
+        # `fn_cache_key` digests.  The cycle's membership goes in the key.
+        call_graph = CallGraph(
+            (tld.decl for tld in program.declarations),
+            # #1558: the verifier's graph draws a call by the file's own
+            # path as an edge, so the key's cycles must too.
+            own_path=own_path,
+        )
+
+        def _cycle_key(root: ast.FnDecl) -> str:
+            stack, names = [root], []
+            while stack:
+                fn = stack.pop()
+                names.append(
+                    f"{fn.name}:" + ",".join(
+                        m.name for m in call_graph.cycle(fn)))
+                stack.extend(fn.where_fns or ())
+            return "|".join(names)
 
         for tld in program.declarations:
             if not isinstance(tld.decl, ast.FnDecl):
                 continue
             decl = tld.decl
-            key = fn_cache_key(decl, fn_map, context_hash)
+            key = fn_cache_key(decl, fn_map, context_hash, env)
+            key = f"{key}\x1f{_cycle_key(decl)}"
+            if self._disclosed:
+                # A slice proved under a DIFFERENT disclosed set is stale:
+                # its statuses depend on which facts were withheld, which is
+                # not a property of the function's own subtree that
+                # `fn_cache_key` digests (#1363, PR review).
+                key = f"{key}\x1f{sorted(self._disclosed)!r}"
             if decl.forall_vars:
                 # #732: a generic's verification depends on its concrete
                 # instantiation set, which is a property of its CALLERS — not of
@@ -264,15 +401,29 @@ class VerificationSession:
             if cached is not None:
                 out_diags.extend(cached.diagnostics)
                 out_obls.extend(cached.obligations)
+                # F2: the slice's whole contribution, `where` helpers with
+                # it.  Seeded back onto the verifier as well as into the
+                # session's set, because a LATER fresh slice consults
+                # `_result_disclosed_fns` for the citation behind a forwarder
+                # and would otherwise see a hole where a replayed slice sat.
+                verifier._result_disclosed_fns.update(cached.result_disclosed)
                 stats.replayed_fns += 1
                 continue
 
             d0 = len(verifier.errors)
             o0 = len(verifier.obligations)
+            before = dict(verifier._result_disclosed_fns)
             verifier._verify_fn(decl)
+            # F2: the DELTA this slice produced — the declaration itself and
+            # any `where` helper of it that forwards a disclosed value.
+            contributed = {
+                k: v for k, v in verifier._result_disclosed_fns.items()
+                if k not in before or before[k] != v
+            }
             entry = FnCacheEntry(
                 diagnostics=list(verifier.errors[d0:]),
                 obligations=list(verifier.obligations[o0:]),
+                result_disclosed=contributed,
             )
             self._cache.put(key, entry)
             out_diags.extend(entry.diagnostics)
@@ -297,7 +448,31 @@ class VerificationSession:
         # exactly as the cold `verify_program` path derives it from its own —
         # so the warm and cold summaries agree by construction (the tier counts
         # can't drift from the obligations a consumer reads).
-        summary = summarize(out_obls)
+        # #1407: the same union `ContractVerifier._disclosed_fn_names` takes —
+        # the obligation stream says which functions failed to establish their
+        # own declared type, `result_disclosed` says which hand such a value
+        # on, and the fixpoint below needs both or it settles one hop early.
+        # ONE term, not two.  The verifier's own map is the superset: a fresh
+        # slice's contribution is already in it, a replayed slice's is seeded
+        # back onto it above, and the imported-generic-clone pass — which runs
+        # AFTER this loop and verifies bodies of its own — reaches only it
+        # (CodeRabbit, PR #1418).  Unioning the per-slice tally beside it was
+        # measured dead: mutating either term away killed nothing, because
+        # each covered the other.  Keeping the superset alone leaves one term
+        # whose removal the warm cells do catch.
+        disclosed = (disclosed_fn_names(out_obls)
+                     | frozenset(verifier._result_disclosed_fns))
+        if not disclosed <= self._disclosed:
+            # Re-run knowing what this pass disclosed, exactly as the cold
+            # `verify_program` fixpoint does.  The set only grows, so this
+            # terminates; the cache is keyed on it, so slices from the previous
+            # set are not replayed.
+            self._disclosed = disclosed
+            return self._verify_source_fixpoint(
+                source, file=file, resolved_modules=resolved_modules,
+            )
+
+        summary = summarize(out_obls, out_diags)
 
         self.last_program = program
         self.last_run_stats = stats

@@ -2,9 +2,9 @@
 
 > Vera is a statically typed, purely functional programming language designed for large language models to write. It uses typed slot references (`@T.n`) instead of variable names, requires contracts (preconditions, postconditions, effect declarations) on every function, and compiles to WebAssembly. Programs run at the command line via wasmtime or in the browser.
 
-Vera uses De Bruijn indexing for bindings: `@Int.0` is the most recent `Int` binding, `@Int.1` the one before. There are no variable names. Contracts are mandatory — every function must declare `requires(...)`, `ensures(...)`, and `effects(...)`. The Z3 SMT solver verifies contracts statically where possible; remaining contracts become runtime assertions. All side effects (IO, Http, HttpServer, State, Exceptions, Async, Inference, DB, Random, Diverge) are tracked in the type system via algebraic effects.
+Vera uses De Bruijn indexing for bindings: `@Int.0` is the most recent `Int` binding, `@Int.1` the one before. There are no variable names. Contracts are mandatory — every function must declare `requires(...)`, `ensures(...)`, and `effects(...)`, and every recursive function a `decreases(...)` measure or the `Diverge` effect. The Z3 SMT solver verifies contracts statically where possible; every contract is also compiled as a runtime check where code generation can express it, and most of what can be neither proved nor guarded is disclosed (#1607 is a contract that is not). All side effects (IO, Http, HttpServer, State, Exceptions, Async, Inference, DB, Random, Diverge) are tracked in the type system via algebraic effects.
 
-Current version: 0.1.13. The reference compiler is written in Python. Install the `veralang` distribution from PyPI or use `pip install -e ".[dev]"` from the repository.
+Current version: 0.2.0. The reference compiler is written in Python. Install the `veralang` distribution from PyPI, or use `pip install -e ".[dev]"` from the repository — the recommended route for agents, since it includes the examples, conformance programs and specification the language reference teaches from.
 
 ## Homepage
 
@@ -18,6 +18,10 @@ Current version: 0.1.13. The reference compiler is written in Python. Install th
 
 - [AGENTS.md](https://raw.githubusercontent.com/aallan/vera/main/AGENTS.md): Instructions for AI agents — workflow, commands, error handling, and essential rules for writing correct Vera.
 - [FAQ](https://raw.githubusercontent.com/aallan/vera/main/FAQ.md): Design rationale — why no variable names, what gets verified, comparison to Dafny/Lean/Koka, research citations.
+- [TOOLCHAIN.md](https://raw.githubusercontent.com/aallan/vera/main/TOOLCHAIN.md): The CLI cookbook — driving the toolchain to write, verify, test, run, and debug Vera, and the `builtins`/`effects`/`errors` introspection commands.
+- [DE_BRUIJN.md](https://raw.githubusercontent.com/aallan/vera/main/DE_BRUIJN.md): Typed slot references in depth — worked examples and the commutative-operations trap.
+- [ENVIRONMENT.md](https://raw.githubusercontent.com/aallan/vera/main/ENVIRONMENT.md): Every `VERA_*` environment variable — provider keys, runtime knobs, and debug flags.
+- [KNOWN_ISSUES.md](https://raw.githubusercontent.com/aallan/vera/main/KNOWN_ISSUES.md): Known bugs and limitations, each with its tracking issue.
 - [LSP_SERVER.md](https://raw.githubusercontent.com/aallan/vera/main/LSP_SERVER.md): The language server — live proof-aware diagnostics, hover, slot go-to-definition, hole completion, and the custom proof-delta methods for coding agents (vera/speculativeEdit, vera/proposeEdit, vera/strengthenContract, vera/addEffect).
 
 ## Specification
@@ -55,6 +59,5 @@ Current version: 0.1.13. The reference compiler is written in Python. Install th
 ## Optional
 
 - [TESTING.md](https://raw.githubusercontent.com/aallan/vera/main/TESTING.md): Test suite architecture, coverage data, and test conventions.
-- [KNOWN_ISSUES.md](https://raw.githubusercontent.com/aallan/vera/main/KNOWN_ISSUES.md): Known bugs and limitations.
 - [CONTRIBUTING.md](https://raw.githubusercontent.com/aallan/vera/main/CONTRIBUTING.md): Contribution guidelines.
-- [Conformance Suite](https://github.com/aallan/vera/tree/main/tests/conformance): 244 programs validating every language feature against the spec.
+- [Conformance Suite](https://github.com/aallan/vera/tree/main/tests/conformance): 256 programs validating every language feature against the spec.

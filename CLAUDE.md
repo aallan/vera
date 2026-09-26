@@ -54,7 +54,7 @@ vera lsp                          # Serve LSP over stdio (needs the [lsp] extra;
 vera version                      # Print the installed version (also --version, -V)
 vera builtins [--json]            # List the built-in function registry (no file needed)
 vera effects [--json]             # List the effect and ability registry (no file needed)
-vera errors [--json]              # List the diagnostic code registry E001–E702 + W001/W002 (no file needed)
+vera errors [--json]              # List the diagnostic code registry E001–E702 + W001–W003 (no file needed)
 
 pytest tests/ -v                  # Run the test suite (see TESTING.md)
 VERA_JS_COVERAGE=1 pytest tests/test_browser.py -v  # Browser tests with JS coverage
@@ -62,19 +62,14 @@ VERA_EAGER_GC=1 vera run file.vera  # Force GC on every alloc (see ENVIRONMENT.m
 VERA_DEBUG_HOST_ERRORS=1 vera run file.vera  # Re-raise a host callback's own exception (see ENVIRONMENT.md, debug knob for host-binding bugs)
 mypy vera/                        # Type-check the compiler itself
 
-python scripts/check_conformance.py    # Verify all 244 conformance programs (positives pass their level; negatives fail with their expected_error E-code)
+python scripts/check_conformance.py    # Verify all 256 conformance programs (positives pass their level; negatives fail with their expected_error E-code)
 python scripts/check_examples.py      # Verify all 43 examples parse + check + verify
 python scripts/check_examples_run.py  # Run every runnable example trap-free under the native runtime; the rest carry a documented skip property, and an example that is neither is an error
-python scripts/check_corpus_canonical.py # Verify all 294 corpus programs are in canonical form (vera fmt)
+python scripts/check_corpus_canonical.py # Verify all 306 corpus programs are in canonical form (vera fmt)
 python scripts/check_examples_readme.py # Verify vera run commands in examples/README.md
-python scripts/check_spec_examples.py # Verify spec code blocks parse
-python scripts/check_readme_examples.py # Verify README code blocks parse
-python scripts/check_examples_doc.py  # Verify EXAMPLES.md code blocks parse
-python scripts/check_skill_examples.py # Verify SKILL.md code blocks parse
-python scripts/check_faq_examples.py  # Verify FAQ code blocks parse
-python scripts/check_debruijn_examples.py # Verify DE_BRUIJN.md code blocks parse
-python scripts/check_pypi_readme_examples.py # Verify PYPI_README code blocks parse + check + verify
-python scripts/check_html_examples.py # Verify HTML code blocks parse + check + verify
+python scripts/check_doc_examples.py  # Verify every Vera block in the agent-facing docs (SKILL.md, README, FAQ, EXAMPLES.md, DE_BRUIJN.md, PYPI_README, spec/, docs/index.html + index.md) parses, passes vera check (no warning outside a named benign set) + vera verify, and prints what each vera:run marker says it prints — or carries a vera:skip marker naming the stage and codes it fails with; a block that exports a function names a vera:run invocation or a vera:no-run property; every `vera run examples/...` a doc names is run unless check_examples_run.py already runs it or skips that example by property; also fails when a tracked doc with Vera blocks is in neither DOC_GATES nor NOT_GATED (#1481)
+python scripts/check_doc_examples.py SKILL.md  # The same gate, for the named documents only
+python scripts/check_diagnostic_examples.py # Verify every vera:diagnostic-annotated ```text fence matches the live diagnostic it shows (#1291)
 python scripts/check_doc_builtin_shadowing.py # Verify no doc example redefines a built-in (E151; #819)
 python scripts/check_editor_grammars.py # Verify every editor grammar under editors/, and the two extension READMEs that repeat the list in prose, carry every built-in effect name from the live registry (#1156)
 python scripts/check_diagnostic_fields.py # Verify every diagnostic carries rationale + spec_ref (+ fix for errors; warnings exempt) or a # diag-fields-exempt reason — waives missing/unresolvable fields only, never a factually wrong spec_ref/error_code (#682)
@@ -82,7 +77,8 @@ python scripts/check_explicit_encoding.py # Verify every text-mode open()/read_t
 python scripts/build_site.py          # Regenerate AI-readable site assets (llms.txt, etc.)
 python scripts/check_site_assets.py   # Verify site assets are up-to-date + docs/index.html ↔ docs/index.md state coherent facts (#1154)
 python scripts/check_version_sync.py  # Verify version consistency
-python scripts/check_doc_counts.py    # Verify documentation counts match codebase
+python scripts/check_doc_counts.py    # Verify documentation counts match codebase; the headline test totals (TESTING/README/FAQ/ROADMAP/vera/README) only against one another, since a fix PR leaves them alone
+python scripts/check_doc_counts.py --release # Also check the headline test totals against the live collection (the release PR sets them; CI runs this mode on any PR or push to main that raises [project].version, via --release-if-version-raised)
 python scripts/check_doc_counts.py --check-bug-issues # Also check KNOWN_ISSUES' Bugs table against the open `bug` issues (GitHub API; release-PR time, not pre-commit)
 python scripts/check_corpus_differential.py --base-ref origin/main  # Compile the corpus at two revisions; report programs whose WAT moved (burndown instrument, not a hook)
 python scripts/check_licenses.py      # Verify all package licenses are MIT-compatible
@@ -99,7 +95,7 @@ See [`TOOLCHAIN.md`](TOOLCHAIN.md) for the CLI cookbook — driving the toolchai
 - `vera/` — Reference compiler: grammar, parser, AST, transformer, type checker, verifier, codegen, CLI
 - `examples/` — 43 example Vera programs (all must pass `vera check` and `vera verify`)
 - `tests/` — Test suite (unit tests + conformance suite)
-- `tests/conformance/` — 244 conformance programs validating every language feature against the spec
+- `tests/conformance/` — 256 conformance programs validating every language feature against the spec
 - `scripts/` — CI and validation scripts
 
 ## Writing Vera code
@@ -119,7 +115,7 @@ This matters when multiple parameters share a type. See `tests/conformance/ch03_
 
 Read `vera/README.md` for architecture docs, module map, and design patterns.
 
-The compiler pipeline: source -> parse (`parser.py`) -> transform (`transform.py`) -> resolve (`resolver.py`) -> typecheck (`checker.py`) -> verify (`verifier.py`) -> compile (`codegen/` + `wasm/`) -> execute (wasmtime).
+The compiler pipeline: source -> parse (`parser.py`) -> transform (`transform.py`) -> resolve (`resolver.py`) -> typecheck (`checker/`) -> verify (`verifier.py`) -> compile (`codegen/` + `wasm/`) -> execute (wasmtime).
 
 The language server (`vera/lsp/`, served by `vera lsp`) and the obligation core it sits on (`vera/obligations/`: reified `ProofObligation` records + the warm incremental `VerificationSession`) are documented in `LSP_SERVER.md` (user/agent surface, including the four custom proof-delta methods) and the `vera/README.md` module map (architecture). The custom methods are the agent-facing way to ask "does this edit still prove?" without round-tripping through `vera verify`.
 
@@ -133,11 +129,16 @@ Before changing code — **adding or removing** — write the test that proves y
 - Choose inputs that **cannot coincide with a fallback/default value**. A default that happens to equal the right answer makes a real bug invisible — a `forall<T>` instantiation-discovery miss once passed CI because the test's where-helper returned `Bool`, the same value as the inference's phantom-var default, so wrong and right looked identical.
 - For cross-component soundness invariants (e.g. the verifier must statically check exactly the set codegen emits), the proving check is a **differential** — run both sides and compare — not a unit test; a green unit suite can hide a desync between the two.
 
+## Fix the class, not the instance
+
+A bug fix closes the **class** the report belongs to — the set of inputs the same mechanism gets wrong — not the reported instance.  When review shows a fix covers the instance but not the class, the class fix goes in the same PR, bounded to the mechanism at fault.  Every fix PR names its class boundary in the body and ships a class instrument: an exhaustive matrix over the space the class spans, or a generator, never hand-picked cases alone.  One issue per class, with its instances as a checklist — a finding that is another instance of an open class extends that issue and its instrument instead of opening a new one.  The canonical statement is `CONTRIBUTING.md` § Bugs: the class, not the instance; the instrument shapes are in `TESTING.md` § Class Instruments.
+
 ## What not to break
 
-- Pre-commit hooks run mypy + pytest + conformance suite + example validation on every commit
-- All 244 conformance programs in `tests/conformance/` must hold at their declared level — positive entries pass, and the negative fixtures (`ch02_generic_over_unit_rejected`, `ch02_map_unit_value_rejected`, `ch04_let_unit_rejected`, `ch05_apply_fn_arity`, `ch05_decreases_float_rejected`, `ch05_reserved_fn_name_rejected`, `ch05_reserved_keyword_fn_rejected`, `ch05_reserved_contextual_keyword_fn_rejected`, `ch05_reserved_resume_fn_rejected`, `ch05_where_helper_outer_slot_rejected`, `ch07_handler_state_body_scope_rejected`, `ch07_old_outside_ensures_rejected`, `ch07_state_unit_op_param_read_rejected`, `ch08_ambiguous_import_adt_rejected`, `ch08_ambiguous_import_adt_swapped_rejected`, `ch08_ambiguous_import_rejected`, `ch08_ambiguous_import_swapped_rejected`, `ch08_circular_import`, `ch08_reserved_vera_prefix_rejected`, `ch08_reserved_vera_prefix_reference_rejected`, `ch08_reserved_vera_prefix_binder_rejected`, `ch08_reserved_vera_prefix_effect_rejected`, `ch08_reserved_vera_prefix_ability_rejected`, `ch08_reserved_vera_prefix_constructor_rejected`, `ch08_visibility_private`, `ch09_builtin_effect_redefinition_rejected`, `ch09_builtin_redefinition`, `ch09_ord_adt_rejected`, `ch09_eq_non_derivable_rejected`, `ch09_sql_injection_rejected`, `ch09_sql_placeholder_mismatch_rejected`, `ch09_sql_placeholder_let_mismatch_rejected`, `ch09_sql_numbered_placeholder_rejected`, `ch07_bare_effect_op_rejected`, `ch06_quantifier_array_domain_rejected`, `ch07_handler_state_type_mismatch_rejected`, `ch02_alias_cycle_rejected`, `ch08_module_prelude_adt_contention_rejected`) must *fail* with their `expected_error` E-code, at the stage `expected_error_stage` names — `check` by default, or `compile` for a diagnostic the checker accepts and codegen refuses (`ch08_module_prelude_adt_contention_rejected` → E621), which also asserts the program type-checks cleanly first
+- The pre-commit hook runs the fast gates on every commit — ruff, mypy, the doc and consistency gates, and the test files the commit stages; CI runs the full pytest suite, the conformance suite and example validation on every pull request and every push to `main` and `release/**`, plus every gate the hook runs (TESTING.md §Pre-commit Hooks)
+- All 256 conformance programs in `tests/conformance/` must hold at their declared level — positive entries pass, and the negative fixtures (`ch02_generic_over_unit_rejected`, `ch02_map_unit_value_rejected`, `ch02_nonregular_data_rejected`, `ch04_let_unit_rejected`, `ch05_apply_fn_arity`, `ch05_decreases_float_rejected`, `ch05_reserved_fn_name_rejected`, `ch05_where_helper_duplicate_rejected`, `ch05_reserved_keyword_fn_rejected`, `ch05_reserved_contextual_keyword_fn_rejected`, `ch05_reserved_resume_fn_rejected`, `ch05_where_helper_outer_slot_rejected`, `ch07_handler_state_body_scope_rejected`, `ch07_old_outside_ensures_rejected`, `ch07_state_unit_op_param_read_rejected`, `ch08_ambiguous_import_adt_rejected`, `ch08_ambiguous_import_adt_swapped_rejected`, `ch08_ambiguous_import_rejected`, `ch08_ambiguous_import_swapped_rejected`, `ch08_circular_import`, `ch08_reserved_vera_prefix_rejected`, `ch08_reserved_vera_prefix_reference_rejected`, `ch08_reserved_vera_prefix_binder_rejected`, `ch08_reserved_vera_prefix_effect_rejected`, `ch08_reserved_vera_prefix_ability_rejected`, `ch08_reserved_vera_prefix_constructor_rejected`, `ch08_visibility_private`, `ch09_builtin_effect_redefinition_rejected`, `ch09_builtin_redefinition`, `ch09_ord_adt_rejected`, `ch09_eq_non_derivable_rejected`, `ch09_sql_injection_rejected`, `ch09_sql_placeholder_mismatch_rejected`, `ch09_sql_placeholder_let_mismatch_rejected`, `ch09_sql_numbered_placeholder_rejected`, `ch07_bare_effect_op_rejected`, `ch06_quantifier_array_domain_rejected`, `ch07_handler_state_type_mismatch_rejected`, `ch02_alias_cycle_rejected`, `ch04_pattern_ctor_over_container_rejected`, `ch04_pattern_literal_type_rejected`, `ch05_where_helper_sibling_call_rejected`, `ch08_builtin_adt_redefinition_rejected`, `ch08_builtin_tuple_redefinition_rejected`, `ch08_builtin_ctor_redefinition_rejected`, `ch08_builtin_container_redefinition_rejected`, `ch08_sibling_ctor_collision_rejected`, `ch08_module_prelude_adt_contention_rejected`) must *fail* with their `expected_error` E-code, at the stage `expected_error_stage` names — `check` by default, or `compile` for a diagnostic the checker accepts and codegen refuses (`ch08_module_prelude_adt_contention_rejected` → E621), which also asserts the program type-checks cleanly first
 - All 43 examples in `examples/` must pass `vera check` and `vera verify`
+- Every Vera block in the agent-facing docs must pass `scripts/check_doc_examples.py`: it parses, checks, verifies and prints what each `vera:run` marker says, or carries a `vera:skip-<stage>` marker with a category, the codes it fails with, and a reason (`scripts/doc_annotations.py`); a block that exports a function names a `vera:run` invocation or a `vera:no-run` property
 - Version must stay in sync across `pyproject.toml`, `vera/__init__.py`, `docs/index.html`, `README.md`, and `uv.lock` (gated by `scripts/check_version_sync.py`); CHANGELOG.md must also carry a matching `## [X.Y.Z]` section
 - All tests must pass: `pytest tests/ -v`
 - Type checking must be clean: `mypy vera/`
@@ -149,7 +150,7 @@ Before changing code — **adding or removing** — write the test that proves y
 
 **Add a CLI command:** Edit `vera/cli.py`. Add a `cmd_<name>` function, wire it in `main()`, add tests in `tests/test_cli.py`.
 
-**Extend the grammar:** Edit `vera/grammar.lark`, update `vera/transform.py` to handle new tree nodes, add AST nodes in `vera/ast.py`, add type-checking in `vera/checker.py`.
+**Extend the grammar:** Edit `vera/grammar.lark`, update `vera/transform.py` to handle new tree nodes, add AST nodes in `vera/ast.py`, add type-checking in `vera/checker/`.
 
 **Add an example:** Create a `.vera` file in `examples/`. It must pass both `vera check` and `vera verify`. The validation script `scripts/check_examples.py` tests all examples automatically.
 
@@ -172,13 +173,16 @@ The summary is *derived* from that array, by `status`. A consumer reproduces the
 | `verified` | `tier1_verified` | — |
 | `tier3`, `timeout` | `tier3_runtime` | an informational warning, for the kinds that carry one |
 | `violated` | *nothing* | an error diagnostic (E500, E501, E502, E505, …) |
-| `tier3_unguarded` | *nothing* | a warning diagnostic (E504, E506, E531) |
+| `tier3_unguarded` | *nothing* | a warning diagnostic (E504, E506, E531, E539, E540), or the E538 **error** |
 
 So `total == tier1_verified + tier3_runtime`, and the array — which is the complete stream — is a *superset* of what the counts cover: `violated` and `tier3_unguarded` discharged to no tier, so they are counted nowhere and appear only as diagnostics. The full accounting is `len(obligations) == total + violated + tier3_unguarded`. A program with one refuted contract therefore reports (say) `total: 2` beside a three-entry array; that is the partition, not a disagreement.
 
+`assumptions` sits beside those counts and is NOT part of that identity: it counts the `assume` statements this run took on trust (one W003 warning each, spec §6.2.6), which are not obligations and discharge to no tier. It is derived from the assembled diagnostics, so a consumer reproduces it by counting W003 rather than by reading any obligation's status. A non-zero value is the honest measure of how much of a "verified" result rests on something nobody proved.
+
+
 ### Error codes
 
-Every diagnostic has a stable code — errors `E001`–`E702`, warnings `W001`/`W002`. Codes are grouped by compiler phase:
+Diagnostics carry stable codes — `E001`–`E702` and `W001`–`W003`; a few still carry none ([#1490](https://github.com/aallan/vera/issues/1490)). The prefix is the **namespace**, not the severity: the `W` codes are all warnings, but a number of `E` codes are warning-severity too (`E504`, `E506`, `E531`, `E539`, `E540` are the ones the partition table above names). Codes are grouped by compiler phase:
 
 | Range | Phase |
 |-------|-------|
@@ -210,7 +214,7 @@ Do NOT use `noreply@anthropic.com` — that email resolves to an unrelated GitHu
 - **No strikethroughs anywhere in docs**: Things are either future (in ROADMAP.md) or past (in HISTORY.md). Do NOT use `<del>` or `~~...~~` to strike through completed items in ROADMAP.md, spec chapters, SKILL.md limitation tables, or anywhere else in the documentation. Instead: delete completed items from wherever they appear as future work, and add a note in HISTORY.md or CHANGELOG.md. Limitation tables in the spec should only list current limitations — fixed items are removed, not struck through, with a reference to the CHANGELOG entry that fixed them.
 - **CHANGELOG link references**: Keep a Changelog format requires `[version]: compare-url` link references at the bottom of CHANGELOG.md. These must be added for every new version. The `[Unreleased]` link must point to `latest-tag...HEAD`.
 - **Roadmap is in ROADMAP.md**: The project roadmap (phase table, priority tiers, completed-phase details) lives in `ROADMAP.md`, not README.md. README.md links to it.
-- **"No known bugs." convention**: When the `KNOWN_ISSUES.md` Bugs section is empty (or after removing the last entry), keep the `## Bugs` heading and use the literal text `No known bugs.` as the section body — do NOT leave an empty markdown table.  Apply the same convention to `SKILL.md`'s "Known Bugs and Workarounds" section when its table becomes empty.  This established at v0.0.155 (#673 merge) and re-applied at v0.0.156 (#685 merge, plus a sweep that found a stale row for the by-then-closed #602).
+- **Zero-state conventions for the bug tables**: The three readings of "how many open bugs are there" — `KNOWN_ISSUES.md`'s `## Bugs` rows, `ROADMAP.md`'s burndown rows, and the burndown header word — must agree, including at zero, and `scripts/check_doc_counts.py` enforces every form below.  **`KNOWN_ISSUES.md`**: keep the `## Bugs` heading AND its description paragraph, delete the table, and make the section's last non-empty line exactly `No known bugs.` — do NOT delete the description, and do NOT leave an empty markdown table.  `SKILL.md`'s "Known Bugs and Workarounds" section uses the same marker text when its table empties, but nothing counts its rows there, so only the heading surviving is gated (by `check_limitations_sync.py`) and the marker's position within the section is free — its shipped form puts the marker before the paragraph that follows it.  **`ROADMAP.md`**: a burndown whose rows are all closed is past, so delete the whole `## The next burndown` section, heading included — its record lives in `HISTORY.md` and `CHANGELOG.md`, and the gate reads the section's absence as zero.  For the window between the last fix and the release that retires it, the section may instead be kept with the header word `Zero` (`*Zero open bugs, driven to zero.*`), its description, no table, and `No open bugs.` as its last non-empty line.  Each marker is a whole line: quoting it inside a sentence is not a claim, text after it is an error, and a marker beside any table line — even a leftover header row — is an error, because the section would claim both some open bugs and none.  A table emptied without a marker stays an error, which is what catches a row deleted by accident.  See TESTING.md § "The zero forms of the bug-count tables".
 - **CHANGELOG gate (`Skip-changelog:` trailer)**: `scripts/check_changelog_updated.py` blocks any PR touching `vera/` or `spec/` unless `CHANGELOG.md` gains a new `[Unreleased]` bullet or a new version section.  Add the entry proactively when making substantive changes.  If a change genuinely doesn't merit a CHANGELOG entry (e.g. a comment-only edit to a `vera/` source file), include `Skip-changelog: <one-line reason>` in a commit message trailer to bypass the gate.  Don't paper-over with empty bullets — the gate exists to keep the release notes accurate.
 - **Release mechanics (automated after merge)**: `.github/workflows/release.yml` detects a strictly increasing `[project].version` on `main`, validates the synchronized version and matching non-empty CHANGELOG section, builds and tests one wheel/sdist artifact, pauses at the approval-protected `pypi` environment, publishes through Trusted Publishing, verifies the registry hashes, then creates the tag and GitHub Release at the merge SHA with those same archives. The maintainer approves the production environment deployment; no manual tag, upload, or release command is part of the ordinary path. See `RELEASING.md` for one-time environment/publisher setup, TestPyPI staging, and recovery.
 - **Published releases are immutable**: after a version reaches PyPI, never move its tag, replace its files, or amend its released CHANGELOG section. A bad release is yanked and followed by a new patch version. An immediate follow-up therefore receives a new version; the old tag-moving/fold-in convention ended when PyPI publication began. If a workflow fails after PyPI accepts the files, rerun only the failed jobs so the verified artifact continues to the tag/Release step.

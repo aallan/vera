@@ -949,6 +949,20 @@
     ]
   },
   {
+    "id": "ch05_where_helper_duplicate_rejected",
+    "file": "ch05_where_helper_duplicate_rejected.vera",
+    "chapter": 5,
+    "title": "Two `where` helpers of one name in one block are a checker error (#1433)",
+    "level": "check",
+    "spec_ref": "Section 5.6.2",
+    "expected_error": "E184",
+    "features": [
+      "where_block",
+      "duplicate_helper_name",
+      "check_error"
+    ]
+  },
+  {
     "id": "ch05_reserved_keyword_fn_rejected",
     "file": "ch05_reserved_keyword_fn_rejected.vera",
     "chapter": 5,
@@ -988,6 +1002,20 @@
       "reserved_fn_name",
       "function_declaration",
       "effect_handler",
+      "check_error"
+    ]
+  },
+  {
+    "id": "ch05_where_helper_sibling_call_rejected",
+    "file": "ch05_where_helper_sibling_call_rejected.vera",
+    "chapter": 5,
+    "title": "A bare call to another declaration's where-helper is a checker error (#1307)",
+    "level": "check",
+    "spec_ref": "Section 5.8",
+    "expected_error": "E178",
+    "features": [
+      "where_block",
+      "bare_call",
       "check_error"
     ]
   },
@@ -1136,6 +1164,19 @@
     ]
   },
   {
+    "id": "ch07_diverge",
+    "file": "ch07_diverge.vera",
+    "chapter": 7,
+    "title": "Diverge effect: unmeasured recursion compiles and runs",
+    "level": "run",
+    "spec_ref": "Section 7.7.3",
+    "features": [
+      "diverge_effect",
+      "recursion",
+      "effect_propagation"
+    ]
+  },
+  {
     "id": "ch07_io",
     "file": "ch07_io.vera",
     "chapter": 7,
@@ -1216,7 +1257,7 @@
     "id": "ch07_state_clause_transform",
     "file": "ch07_state_clause_transform.vera",
     "chapter": 7,
-    "title": "State clause bodies execute — intrinsic-hybrid semantics (#976)",
+    "title": "State clause bodies execute \u2014 intrinsic-hybrid semantics (#976)",
     "level": "run",
     "spec_ref": "Section 7.5.2",
     "features": [
@@ -1275,9 +1316,9 @@
     "id": "ch07_exn_string",
     "file": "ch07_exn_string.vera",
     "chapter": 7,
-    "title": "Exn<String> effect handler — String payload",
+    "title": "Exn<String> effect handler \u2014 String payload",
     "level": "run",
-    "spec_ref": "Section 7.4 Exn<E> handler — String payload",
+    "spec_ref": "Section 7.4 Exn<E> handler \u2014 String payload",
     "features": [
       "exn_handler",
       "string_exception"
@@ -1710,7 +1751,7 @@
     "id": "ch08_transitive_module_import_base",
     "file": "ch08_transitive_module_import_base.vera",
     "chapter": 8,
-    "title": "Transitive import chain — base module",
+    "title": "Transitive import chain \u2014 base module",
     "level": "check",
     "spec_ref": "Section 8.6.4",
     "features": [
@@ -1722,7 +1763,7 @@
     "id": "ch08_transitive_module_import_mid",
     "file": "ch08_transitive_module_import_mid.vera",
     "chapter": 8,
-    "title": "Transitive import chain — middle module",
+    "title": "Transitive import chain \u2014 middle module",
     "level": "verify",
     "spec_ref": "Section 8.6.4",
     "features": [
@@ -2967,6 +3008,20 @@
     ]
   },
   {
+    "id": "ch02_nonregular_data_rejected",
+    "file": "ch02_nonregular_data_rejected.vera",
+    "chapter": 2,
+    "title": "A data declaration may not recurse non-regularly",
+    "level": "check",
+    "spec_ref": "Section 2.4",
+    "expected_error": "E129",
+    "features": [
+      "nonregular_recursion",
+      "data_type",
+      "check_error"
+    ]
+  },
+  {
     "id": "ch03_slot_alias_type_argument",
     "file": "ch03_slot_alias_type_argument.vera",
     "chapter": 3,
@@ -3478,6 +3533,84 @@
     ]
   },
   {
+    "id": "ch08_builtin_adt_redefinition_rejected",
+    "file": "ch08_builtin_adt_redefinition_rejected.vera",
+    "chapter": 8,
+    "title": "A data type may not redefine a special-cased built-in ADT",
+    "level": "check",
+    "spec_ref": "Section 8.4.1",
+    "expected_error": "E158",
+    "features": [
+      "builtin_adt_redefinition",
+      "check_error"
+    ]
+  },
+  {
+    "id": "ch09_user_ctor_shadows_prelude_ctor",
+    "file": "ch09_user_ctor_shadows_prelude_ctor.vera",
+    "chapter": 9,
+    "title": "A user constructor does not displace a prelude constructor of the same name",
+    "level": "run",
+    "spec_ref": "Section 9.8",
+    "features": [
+      "constructor_shadowing",
+      "show",
+      "ord"
+    ]
+  },
+  {
+    "id": "ch08_sibling_ctor_collision_rejected",
+    "file": "ch08_sibling_ctor_collision_rejected.vera",
+    "chapter": 8,
+    "title": "Two data declarations in one namespace may not share a constructor name",
+    "level": "check",
+    "spec_ref": "Section 8.4",
+    "expected_error": "E159",
+    "features": [
+      "constructor_collision",
+      "check_error"
+    ]
+  },
+  {
+    "id": "ch08_builtin_ctor_redefinition_rejected",
+    "file": "ch08_builtin_ctor_redefinition_rejected.vera",
+    "chapter": 8,
+    "title": "A constructor may not take a special-cased built-in ADT name",
+    "level": "check",
+    "spec_ref": "Section 8.4.1",
+    "expected_error": "E158",
+    "features": [
+      "builtin_adt_redefinition",
+      "check_error"
+    ]
+  },
+  {
+    "id": "ch08_builtin_tuple_redefinition_rejected",
+    "file": "ch08_builtin_tuple_redefinition_rejected.vera",
+    "chapter": 8,
+    "title": "A data type may not redefine the built-in Tuple carrier",
+    "level": "check",
+    "spec_ref": "Section 8.4.1",
+    "expected_error": "E158",
+    "features": [
+      "builtin_adt_redefinition",
+      "check_error"
+    ]
+  },
+  {
+    "id": "ch08_builtin_container_redefinition_rejected",
+    "file": "ch08_builtin_container_redefinition_rejected.vera",
+    "chapter": 8,
+    "title": "A data type may not take a built-in container's name",
+    "level": "check",
+    "spec_ref": "Section 8.4.1",
+    "expected_error": "E158",
+    "features": [
+      "builtin_adt_redefinition",
+      "check_error"
+    ]
+  },
+  {
     "id": "ch04_match_pair_scrutinee",
     "file": "ch04_match_pair_scrutinee.vera",
     "chapter": 4,
@@ -3490,6 +3623,34 @@
       "string",
       "array",
       "json_keys"
+    ]
+  },
+  {
+    "id": "ch04_pattern_ctor_over_container_rejected",
+    "file": "ch04_pattern_ctor_over_container_rejected.vera",
+    "chapter": 4,
+    "title": "A constructor pattern over a scrutinee whose type declares no such constructor is a checker error (#1315)",
+    "level": "check",
+    "spec_ref": "Section 4.9.1",
+    "expected_error": "E314",
+    "features": [
+      "match",
+      "constructor_pattern",
+      "check_error"
+    ]
+  },
+  {
+    "id": "ch04_pattern_literal_type_rejected",
+    "file": "ch04_pattern_literal_type_rejected.vera",
+    "chapter": 4,
+    "title": "A literal pattern whose type is not the scrutinee's is a checker error (#1320)",
+    "level": "check",
+    "spec_ref": "Section 4.9.1",
+    "expected_error": "E314",
+    "features": [
+      "match",
+      "literal_pattern",
+      "check_error"
     ]
   },
   {

@@ -7,6 +7,7 @@ reference resolution algorithm.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from vera import ast
 from vera.types import (
@@ -36,6 +37,9 @@ from vera.types import (
 # =====================================================================
 # Registry data structures
 # =====================================================================
+
+if TYPE_CHECKING:  # pragma: no cover — import cycle at runtime
+    from vera.regularity import RegularityIndex
 
 @dataclass
 class FunctionInfo:
@@ -230,6 +234,18 @@ class TypeEnv:
     effects: dict[str, EffectInfo] = field(default_factory=dict)
     abilities: dict[str, AbilityInfo] = field(default_factory=dict)
     constructors: dict[str, ConstructorInfo] = field(default_factory=dict)
+    # #1429: names of `data` declarations this module already refused as
+    # NON-REGULAR (E129).  Recorded by the checker at the moment it emits the
+    # diagnostic, and read by the ability derivations so a refused declaration
+    # yields ONE root-cause diagnostic instead of a cascade — `==` over such a
+    # value would otherwise report "does not derive Eq" (E243) beside it,
+    # which is a true statement about a type the program is not allowed to
+    # declare in the first place.  Distinct from asking `vera.regularity`
+    # directly, which the derivations ALSO do: that answers for any type,
+    # including one reached through an entry point that never ran the data
+    # pass, and is what makes them terminate; this set is only about which
+    # diagnostics the user is shown.
+    refused_non_regular: set[str] = field(default_factory=set)
 
     # Type variables currently in scope (from forall<T>)
     type_params: dict[str, TypeVar] = field(default_factory=dict)
@@ -269,6 +285,37 @@ class TypeEnv:
     # "before" has to order the two registries against EACH OTHER, not just
     # each within itself.
     _decl_counter: int = 0
+
+    #: Memoised :func:`regularity_index` result, with the registry stamp it
+    #: was built from.  Not a `field(default_factory=...)` because it is a
+    #: cache, not state: any consumer may drop it and get the same answers.
+    _regularity_cache: "tuple[tuple[int, int], RegularityIndex] | None" = None
+
+    def regularity_index(self) -> "RegularityIndex":
+        """This module's recursive groups and regularity verdicts (#1429).
+
+        Shared by every consumer holding this env — the checker's E129 test
+        and the `Eq` derivation's termination guard — so a module's groups are
+        computed once rather than once per declaration or, worse, once per
+        field of every `==`.  Deriving them per request re-walked reachability
+        from every member of every group, which is cubic in the number of
+        declarations: measured on a linked chain of 1000, 55.6 s against about
+        a millisecond (PR #1432 re-verification).
+
+        Rebuilt when the registry changes, keyed on the declaration counter —
+        which every `data` registration bumps — AND on the registry's size, so
+        a write that somehow skipped the counter still invalidates.  Built-ins
+        are registered in ``__post_init__``, before any caller exists.
+        """
+        from vera.regularity import RegularityIndex
+
+        stamp = (self._decl_counter, len(self.data_types))
+        cached = self._regularity_cache
+        if cached is None or cached[0] != stamp:
+            index = RegularityIndex(self.data_types)
+            self._regularity_cache = (stamp, index)
+            return index
+        return cached[1]
 
     def next_decl_index(self) -> int:
         """Allocate the next declaration index in this module's index space.

@@ -535,9 +535,10 @@ private fn f(@Nat, @Nat -> @Nat)
         assert not [o for o in result.obligations if o.kind == "nat_bind"]
 
     def test_pure_literal_subtraction_caught(self) -> None:
-        """`let @Nat = 0 - 1`: typed @Nat but valued -1.  #520 exempts the
-        pure-literal subtraction (no @Nat provenance) and defers it here;
-        #552 must catch it (E503)."""
+        """`let @Nat = 0 - 1`: a literal-only expression valued -1, an `@Int`
+        by its value (spec §4.2), narrowed into a `@Nat` slot.  #520 exempts
+        the pure-literal subtraction from the underflow obligation (no @Nat
+        provenance), so the narrowing obligation must catch it (E503, #552)."""
         _verify_err("""
 private fn f(@Unit -> @Nat)
   requires(true)
@@ -940,12 +941,13 @@ private fn f(@Int -> @Nat)
     def test_non_let_tier3_narrowing_warns_unguarded(self) -> None:
         """A narrowing at a *genuinely unguarded* site whose value the SMT
         layer can't translate surfaces an E504 warning + a `tier3_unguarded`
-        obligation — NOT a silent `tier3_runtime` 'runtime check'.  The
-        effect-operation argument is the canonical unguarded site: codegen
-        does not yet emit a runtime guard there (#754), so an untranslatable
-        narrowing into a @Nat effect-op formal (here `array_length`'s opaque
-        @Int into `E.wait(Nat)`) is neither statically proven nor
-        runtime-checked.  Distinct from the concrete @Nat *call argument*
+        obligation — NOT a silent `tier3_runtime` 'runtime check'.  A
+        user-declared effect's operation argument is the canonical
+        unguarded site: code generation does not compile a user-declared
+        effect's operations at all (E603), so no runtime guard exists
+        there, and an untranslatable narrowing into a @Nat effect-op formal
+        (here `array_length`'s opaque @Int into `E.wait(Nat)`) is neither
+        statically proven nor runtime-checked.  Distinct from the concrete @Nat *call argument*
         form, which #747 codegen DOES guard (now a `tier3_runtime`) — the
         `guarded` flag the verifier threads must distinguish them
         (CodeRabbit, PR #756 round 6)."""
@@ -1694,9 +1696,9 @@ class TestBuiltinTupleMatchComponentFacts:
     fallback a match over a `Tuple<Nat, Nat>` PARAMETER bound its `@Nat`
     components with no non-negativity fact, so a valid ensures over a
     component was reported violated (false E500, #1201) while the
-    isomorphic user-`data` twin proved.  A registered user `data Tuple`
-    still takes the registry path (the FIX-3 discrimination's verifier
-    twin)."""
+    isomorphic user-`data` twin proved.  Since #1397 the fallback is the
+    carrier's only reader: `Tuple` is reserved in the data namespace
+    (E158), so no registered constructor of that name can reach it."""
 
     def test_tuple_nat_param_component_ensures_proves(self) -> None:
         """The #1201 repro: E500 before the fallback, Tier-1 after."""

@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 from vera import ast
-from vera.monomorphize import Monomorphizer, resolve_fn_type_alias
+from vera.monomorphize import (
+    Monomorphizer,
+    canonical_type_arg,
+    resolve_fn_type_alias,
+)
 from vera.skip import CodegenSkip
 from vera.slots import bare_call_denotes_user_fn
 from vera.wasm.helpers import WasmSlotEnv
@@ -31,12 +35,17 @@ class CallsMixin:
 
     def _translate_call(
         self, call: ast.FnCall, env: WasmSlotEnv,
-        *, denotes_op: bool | None = None,
+        *, denotes_op: bool | None = None, tail: bool = False,
     ) -> list[str] | None:
         """Translate a function call to WASM call instruction.
 
         If the call name matches an effect operation (e.g. get/put for
         State<T>), redirects to the corresponding host import.
+
+        *tail* marks a call in tail position that is not itself a key of
+        ``_tail_call_sites``: a module-qualified call by the module's own
+        path, which ``translate_expr`` desugars into a fresh ``FnCall``
+        (#1558).  Every other call is looked up by its own id.
 
         *denotes_op* overrides the bare-call ownership question (#1284) for
         a call this dispatcher did not receive bare.  ``None`` — every
@@ -71,7 +80,7 @@ class CallsMixin:
                 )
             if call.name == "string_char_code" and len(call.args) == 2:
                 return self._translate_char_code(
-                    call.args[0], call.args[1], env,
+                    call.args[0], call.args[1], env, at=call,
                 )
             if call.name == "string_from_char_code" and len(call.args) == 1:
                 return self._translate_from_char_code(call.args[0], env)
@@ -157,7 +166,30 @@ class CallsMixin:
             if call.name == "int_to_string" and len(call.args) == 1:
                 return self._translate_to_string(call.args[0], env)
             if call.name == "nat_to_string" and len(call.args) == 1:
-                return self._translate_to_string(call.args[0], env)
+                # #1362 (review): the missed member of the `@Nat`-parameter
+                # guard family its siblings joined in #757 (string_repeat,
+                # string_pad_*, string_from_char_code, md_has_heading).
+                # `nat_to_string` shares its lowering with `int_to_string`, so
+                # it inherited no boundary check and rendered a negative as
+                # "-7" — a wrong ANSWER for a @Nat formal, not a trap.  Guarded
+                # at this entry point only, since the shared translator also
+                # serves the genuinely-@Int callers.
+                #
+                # The guard goes on the ARGUMENT, which is why this does not
+                # simply wrap `_translate_to_string`: that returns the String
+                # (an i32 pair), and `_emit_nat_bind_guard` compares against
+                # `i64.const 0`, so wrapping the RESULT emitted a module that
+                # failed WASM validation outright ("expected i64, found i32")
+                # rather than one that trapped.  `_to_string_core` takes the
+                # argument's instructions, which is the value the boundary is
+                # about.
+                arg_instrs = self.translate_expr(call.args[0], env)
+                if arg_instrs is None:
+                    return None
+                if self._narrows_into_nat(call.args[0]):
+                    arg_instrs = self._emit_nat_bind_guard(
+                        arg_instrs, at=call.args[0])
+                return self._to_string_core(arg_instrs)
             if call.name == "bool_to_string" and len(call.args) == 1:
                 return self._translate_bool_to_string(call.args[0], env)
             if call.name == "byte_to_string" and len(call.args) == 1:
@@ -311,11 +343,11 @@ class CallsMixin:
                     call.args[0], call.args[1], env,
                 )
             if call.name == "floor" and len(call.args) == 1:
-                return self._translate_floor(call.args[0], env)
+                return self._translate_floor(call.args[0], env, at=call)
             if call.name == "ceil" and len(call.args) == 1:
-                return self._translate_ceil(call.args[0], env)
+                return self._translate_ceil(call.args[0], env, at=call)
             if call.name == "round" and len(call.args) == 1:
-                return self._translate_round(call.args[0], env)
+                return self._translate_round(call.args[0], env, at=call)
             if call.name == "sqrt" and len(call.args) == 1:
                 return self._translate_sqrt(call.args[0], env)
             if call.name == "pow" and len(call.args) == 2:
@@ -326,7 +358,8 @@ class CallsMixin:
             if call.name == "int_to_float" and len(call.args) == 1:
                 return self._translate_to_float(call.args[0], env)
             if call.name == "float_to_int" and len(call.args) == 1:
-                return self._translate_float_to_int(call.args[0], env)
+                return self._translate_float_to_int(
+                    call.args[0], env, at=call)
             if call.name == "nat_to_int" and len(call.args) == 1:
                 return self._translate_nat_to_int(call.args[0], env)
             if call.name == "int_to_nat" and len(call.args) == 1:
@@ -609,12 +642,26 @@ class CallsMixin:
                     # in the same shape, so obligation and guard still match
                     # one-for-one.
                     if base == "Int" and self._result_is_nat(call.args[0]):
-                        instructions = self._emit_int_widen_guard(instructions)
+                        instructions = self._emit_int_widen_guard(
+                            instructions, at=call.args[0])
             if refined_payload is None and (is_state_put or is_exn_throw):
                 if base == "Nat" and self._narrows_into_nat(call.args[0]):
-                    instructions = self._emit_nat_bind_guard(instructions)
+                    instructions = self._emit_nat_bind_guard(
+                        instructions, at=call.args[0])
                 elif base == "Int" and self._result_is_nat(call.args[0]):
-                    instructions = self._emit_int_widen_guard(instructions)
+                    instructions = self._emit_int_widen_guard(
+                        instructions, at=call.args[0])
+            # #754's registry contributes NOTHING on this route, and the
+            # reason is a property of the route rather than an omission.
+            # Only `get`, `put` and `throw` have a bare one — every other
+            # operation is E217 at check, "must be called qualified" — and
+            # all three take their formal from the CELL, which a declaration
+            # cannot carry: `State` declares `put(T -> Unit)`, whose `T` is
+            # the handler's instantiation.  So the formals here are the ones
+            # `_effect_op_cells` supplies, above.  The claim that the
+            # bare-routable set is exactly those three is asserted, not
+            # remembered — see `test_guard_completeness`; a fourth op gaining
+            # a bare route turns it red rather than passing unguarded.
             # throw uses WASM throw instruction, not call
             if call.name == "throw":
                 instructions.append(f"throw {target_name}")
@@ -633,7 +680,10 @@ class CallsMixin:
         # locally-shadowed same-module sibling to the module's ``mod$``
         # version (the rename map is empty for every non-mod$ body, so normal
         # compilation is unaffected).  Shadowed siblings are non-generic, so
-        # this never collides with the generic rewrite above.
+        # this never collides with the generic rewrite above.  A module's own
+        # top-level sibling reaches here already renamed (`_register_modules`
+        # renames the module's calls before anything names them), so the
+        # generic rewrite cannot take its bare name first.
         if call_target in self._intra_module_renames:
             call_target = self._intra_module_renames[call_target]
 
@@ -646,6 +696,8 @@ class CallsMixin:
         # in `_known_fns`.
         if (self._known_fns
                 and call_target not in self._known_fns
+                # ctor-owner-exempt: membership test on a parsed call target,
+                # not a layout read
                 and call_target not in self._ctor_layouts):
             raise CodegenSkip(
                 call,
@@ -691,15 +743,15 @@ class CallsMixin:
                 return None
             if (i < len(nat_params) and nat_params[i]
                     and self._narrows_into_nat(arg)):
-                arg_instrs = self._emit_nat_bind_guard(arg_instrs)
+                arg_instrs = self._emit_nat_bind_guard(arg_instrs, at=arg)
             elif (i < len(int_params) and int_params[i]
                     and self._result_is_nat(arg)):
-                arg_instrs = self._emit_int_widen_guard(arg_instrs)
+                arg_instrs = self._emit_int_widen_guard(arg_instrs, at=arg)
             instructions.extend(arg_instrs)
 
         # #517 — emit ``return_call $target`` for tail-position
         # calls whose WASM signature matches the current function's.
-        # The analyzer in ``vera/codegen/tail_position.py`` populates
+        # The analyzer in ``vera/tail_position.py`` populates
         # ``self._tail_call_sites`` with ids of syntactically tail-
         # position FnCalls; the type-match guard ensures WASM
         # ``return_call`` semantics are valid (the callee must
@@ -712,7 +764,7 @@ class CallsMixin:
         # stays bounded; for functions with a runtime postcondition
         # it REVERTS ``return_call`` → ``call`` so the post-check
         # runs.
-        is_tail = id(call) in self._tail_call_sites
+        is_tail = tail or id(call) in self._tail_call_sites
         callee_ret_wt: str | None = None
         if is_tail:
             sig = self._fn_ret_types.get(call_target)
@@ -722,6 +774,36 @@ class CallsMixin:
         else:
             instructions.append(f"call ${call_target}")
         return instructions
+
+    def _guard_effect_op_arg(
+        self,
+        arg: ast.Expr,
+        arg_instrs: list[str],
+        op_formals: tuple[str | None, ...],
+        index: int,
+    ) -> list[str]:
+        """Wrap one effect-operation argument in the guard its FORMAL calls
+        for (#754) — the operation-site twin of the `_fn_nat_params` /
+        `_fn_int_params` bitmaps a function call site reads.
+
+        The two directions, and the same conditions the function call site
+        applies them under: an ``@Int`` value narrowing into a ``@Nat``
+        formal traps if it is negative, and a ``@Nat`` value widening into
+        an ``@Int`` formal traps above i64.MAX (where it would reinterpret
+        as negative).  Both are gated on the VALUE — a value already at the
+        formal's type needs no check — so a program whose arguments are
+        provably in range pays dead instructions and never a trap.
+
+        Returns *arg_instrs* unchanged for a formal the registry has nothing
+        to say about: a type parameter, an ADT, a pair type, or an operation
+        the registry does not know.
+        """
+        base = op_formals[index] if index < len(op_formals) else None
+        if base == "Nat" and self._narrows_into_nat(arg):
+            return self._emit_nat_bind_guard(arg_instrs, at=arg)
+        if base == "Int" and self._result_is_nat(arg):
+            return self._emit_int_widen_guard(arg_instrs, at=arg)
+        return arg_instrs
 
     def _translate_qualified_call(
         self, call: ast.QualifiedCall, env: WasmSlotEnv
@@ -770,11 +852,23 @@ class CallsMixin:
                 env, denotes_op=True,
             )
         instructions: list[str] = []
-        for arg in call.args:
+        # #754: the op's DECLARED formals, from the registry built off the
+        # same table the checker typed this call against.  `_effect_ops`
+        # carries only a dispatch target, so before this an operation
+        # argument was the one narrowing site with no formal to guard
+        # against: `IO.sleep(@Int.0)` handed the host a negative on a
+        # program the verifier had obligated.  The bare route reaches the
+        # unqualified loop above, whose `get`/`put`/`throw` formals come
+        # from the CELL (a property of the handler, not of the declaration);
+        # every other op has no bare route at all (E217), so the two loops
+        # together cover every reachable operation argument.
+        op_formals = self._effect_op_params.get((call.qualifier, call.name), ())
+        for i, arg in enumerate(call.args):
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
                 return None
-            instructions.extend(arg_instrs)
+            instructions.extend(
+                self._guard_effect_op_arg(arg, arg_instrs, op_formals, i))
         # User-defined effect ops (e.g. Exn.throw, State.get/put) — delegate to
         # the effect_ops table, exactly as the unqualified _translate_call path does.
         # Guard: skip for host-import built-ins (Http, Inference, IO) whose op names
@@ -823,6 +917,16 @@ class CallsMixin:
             instructions.append("unreachable")
         return instructions
 
+    def _canonical_type_args(self, parts: list[str]) -> tuple[str, ...]:
+        """*parts* as written in the body being compiled, in the one spelling
+        a clone is named by (:func:`vera.monomorphize.canonical_type_arg`,
+        #1511)."""
+        return tuple(
+            canonical_type_arg(
+                part, self._alias_env.aliases, self._alias_env.alias_params)
+            for part in parts
+        )
+
     def _resolve_generic_call(self, call: ast.FnCall) -> str | None:
         """Resolve a call to a generic function to its mangled name.
 
@@ -840,11 +944,21 @@ class CallsMixin:
         # `eq2(MkErr(5), MkOk("x"))` references a `$Res` clone the emitter named
         # `$Res_LString_C_Int_R`, is dropped, and `main` vanishes (the #878 class).
         partial_adt: dict[str, tuple[str, list[str | None]]] = {}
+        # #1327/#1366: the rewrite side's leg of the fail-closed default —
+        # see the result loop below.
+        unnamed_direct: set[str] = set()
 
         for param_te, arg in zip(param_types, call.args):
             self._unify_param_arg_wasm(
                 param_te, arg, forall_vars, mapping, constrained_vars,
-                partial_adt)
+                partial_adt, unnamed_direct)
+        # #1395: the checker fills holes in a SECOND pass, mirroring the
+        # discovery twin exactly — see `Monomorphizer._infer_type_args_from_args`.
+        if any(tv not in mapping for tv in forall_vars):
+            for param_te, arg in zip(param_types, call.args):
+                self._unify_param_arg_wasm(
+                    param_te, arg, forall_vars, mapping, constrained_vars,
+                    partial_adt, unnamed_direct, True)
 
         for tv, (base_name, slots) in partial_adt.items():
             if all(s is not None for s in slots):
@@ -872,9 +986,27 @@ class CallsMixin:
         parts = []
         for tv in forall_vars:
             if tv not in mapping:
+                # #1327/#1366 — FAIL CLOSED before defaulting.  A var bound by
+                # a DIRECT `@T` parameter is determined by that argument's
+                # type; arriving here means no arm named the argument, so
+                # `Bool` would be a guess.  Answer "inference failed" (this
+                # method's documented `None`), which leaves the call on its
+                # bare name and reaches the guard rail's source-located
+                # [E602] — rather than mangling a symbol on a guess, which
+                # either dangles or, worse, names a clone whose WASM types do
+                # not match the value being passed.  The phantom-var default
+                # is retained for every other var: one no parameter position
+                # determines is not inferable by construction, and the emitted
+                # WASM is identical whatever it is named.
+                if tv in unnamed_direct:
+                    return None
                 mapping[tv] = "Bool"
             parts.append(mapping[tv])
-        return Monomorphizer._mangle_fn_name(call.name, tuple(parts))
+        # #1511: the one spelling discovery names the clone by, resolved in
+        # the namespace this body was written in — the alias maps installed
+        # for it (`_module_alias_scope`).
+        return Monomorphizer._mangle_fn_name(
+            call.name, self._canonical_type_args(parts))
 
     def _unify_param_arg_wasm(
         self,
@@ -884,16 +1016,21 @@ class CallsMixin:
         mapping: dict[str, str],
         constrained_vars: frozenset[str] = frozenset(),
         partial_adt: dict[str, tuple[str, list[str | None]]] | None = None,
+        unnamed_direct: set[str] | None = None,
+        consult_checker: bool = False,
     ) -> None:
         """Unify a parameter TypeExpr against an argument to bind type vars.
 
         Mirrors CodeGenerator._unify_param_arg for use during WASM
-        translation.
+        translation — ``unnamed_direct`` included (#1327/#1366): the set of
+        type variables a DIRECT ``@T`` parameter binds whose argument this
+        namer could not type, which is the rewrite side's evidence that a
+        mangled name would be a guess rather than a resolution.
         """
         if isinstance(param_te, ast.RefinementType):
             self._unify_param_arg_wasm(
                 param_te.base_type, arg, forall_vars, mapping,
-                constrained_vars, partial_adt,
+                constrained_vars, partial_adt, unnamed_direct, consult_checker,
             )
             return
 
@@ -939,6 +1076,12 @@ class CallsMixin:
                                     slots[i] = name
             if vera_type and param_te.name not in mapping:
                 mapping[param_te.name] = vera_type
+            elif not vera_type and unnamed_direct is not None:
+                # #1327/#1366: the parameter IS the type variable, so this
+                # argument's type is the instantiation — and no arm named it.
+                # Mirrors `Monomorphizer._unify_param_arg`'s record so the two
+                # consultors fail closed on the same shapes.
+                unnamed_direct.add(param_te.name)
             return
 
         # Parameterized type like Option<T>
@@ -964,6 +1107,14 @@ class CallsMixin:
                 return
 
             arg_info = self._get_arg_type_info_wasm(arg)
+            if arg_info is None and consult_checker:
+                # #1395: mirrors the discovery twin's parameterised branch —
+                # same missing arms, same hole, same ordering discipline.  The
+                # two sides must fill holes at the same moment or they fill
+                # different ones, which is the dangling clone this family is.
+                from vera.monomorphize import checker_arg_type_info
+                arg_info = checker_arg_type_info(
+                    self._expr_semantic_types, arg)
             if arg_info and arg_info[0] == param_te.name:
                 for param_ta, arg_ta_name in zip(
                     param_te.type_args, arg_info[1]

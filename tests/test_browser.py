@@ -31,6 +31,9 @@ from vera.checker import typecheck
 from vera.parser import parse_file
 from vera.resolver import ModuleResolver
 from vera.transform import transform
+from vera.markdown import parse_markdown
+from vera.markdown_grammar import js_grammar_block
+from tests.md_parse_corpus import CLASS_REPROS, encode_json, md_corpus
 from tests.json_domain_helpers import (
     ERR_PREFIX,
     INT_ROUNDS_TO_INFINITY,
@@ -1980,9 +1983,10 @@ class TestBrowserContracts:
         """#808: an @Int overflow traps in BOTH runtimes with an
         overflow-flavoured message, and the browser bundle still instantiates.
 
-        The #798 guard now declares the `vera.overflow_trap` host import, so
-        `runtime.mjs`'s dynamic import builder must provide a binding — without
-        it `WebAssembly.instantiate` raises a `LinkError` on *any* arithmetic
+        The #798 guard declares the trap-signal host import (`vera.trap`,
+        one import for every kind since #1479), so `runtime.mjs`'s dynamic
+        import builder must provide a binding — without it
+        `WebAssembly.instantiate` raises a `LinkError` on *any* arithmetic
         program.  This is the cross-runtime parity for the wasmtime-side
         `TestOverflowTrapKind808` (which classifies `kind="overflow"`)."""
         source = (
@@ -2010,7 +2014,7 @@ class TestBrowserContracts:
         assert py_error is not None, "Python should trap on overflow"
         assert py_kind == "overflow", py_kind
         assert "overflow" in py_error.lower(), py_error
-        # Node must instantiate (overflow_trap import provided) and surface the
+        # Node must instantiate (trap import provided) and surface the
         # overflow as an error, not a silent wrap.
         assert node_result["error"] is not None, (
             "Node should report the overflow trap"
@@ -2022,6 +2026,106 @@ class TestBrowserContracts:
         safe = _run_node(wasm_path, fn="add", fn_args=["10", "5"])
         assert safe["error"] is None, safe
         assert safe["value"] == 15, safe
+
+    def test_widen_trap_parity(self, tmp_path: Path) -> None:
+        """#1438: the `@Nat` -> `@Int` WIDENING guard's own trap kind reaches
+        the browser bundle, and the bundle still instantiates.
+
+        The exact twin of the narrowing cell below, for the same reason: the
+        guard declares the trap-signal host import (`vera.trap` since
+        #1479), and an unbound import is a `LinkError` on instantiate rather
+        than a wrong message —
+        so the failure would take down every program containing a widening,
+        which is most of them, and it would not look like a diagnostics bug
+        at all.
+        """
+        # A `let @Int = @Nat.0`, not an array element: the element guard
+        # reads the checker's threaded target-type table, which this file's
+        # `_compile_file` does not populate, so that shape emits no guard
+        # here and the cell would measure the helper rather than the guard.
+        source = (
+            "public fn widen(@Nat -> @Int)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{ let @Int = @Nat.0; @Int.0 }\n"
+        )
+        vera_file = tmp_path / "widen.vera"
+        vera_file.write_text(source, encoding="utf-8")
+        wasm_path, result = _compile_file(vera_file, tmp_path)
+
+        # `-1` is `u64.MAX`'s bit pattern, which is what a `@Nat` above
+        # `i64.MAX` IS at the boundary the guard watches.
+        big = "-1"
+        py_error: str | None = None
+        py_kind: str | None = None
+        try:
+            _run_python(result, fn_name="widen", args=[int(big)])
+        except WasmTrapError as exc:
+            py_error = str(exc)
+            py_kind = exc.kind
+
+        node_result = _run_node(wasm_path, fn="widen", fn_args=[big])
+
+        assert py_error is not None, "Python should trap on the widening"
+        assert py_kind == "widen_guard", py_kind
+        assert "i64.MAX" in py_error, py_error
+        assert node_result["error"] is not None, (
+            "Node should report the widening trap"
+        )
+        assert "i64.MAX" in node_result["error"], node_result["error"]
+
+        # The same no-trap companion, for the same reason: a `@Nat` inside
+        # the signed range returns cleanly, so the trap above is the guard
+        # firing rather than the bundle failing to load.
+        safe = _run_node(wasm_path, fn="widen", fn_args=["7"])
+        assert safe["error"] is None, safe
+        assert safe["value"] == 7, safe
+
+    def test_nat_guard_trap_parity(self, tmp_path: Path) -> None:
+        """#754: the `@Int` -> `@Nat` narrowing guard's own trap kind reaches
+        the browser bundle, and the bundle still instantiates.
+
+        The guard declares the trap-signal host import (`vera.trap` since
+        #1479), so `runtime.mjs`'s dynamic import builder must bind it —
+        without the
+        binding `WebAssembly.instantiate` raises a `LinkError` on any program
+        containing a narrowing bind, which is most of them.  The wasmtime
+        side is covered by `test_guard_completeness`; this is the leg that
+        would otherwise fail only incidentally (PR review, L3).
+        """
+        source = (
+            "public fn narrow(@Int -> @Int)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{ let @Nat = @Int.0; nat_to_int(@Nat.0) }\n"
+        )
+        vera_file = tmp_path / "natguard.vera"
+        vera_file.write_text(source, encoding="utf-8")
+        wasm_path, result = _compile_file(vera_file, tmp_path)
+
+        py_error: str | None = None
+        py_kind: str | None = None
+        try:
+            _run_python(result, fn_name="narrow", args=[-5])
+        except WasmTrapError as exc:
+            py_error = str(exc)
+            py_kind = exc.kind
+
+        node_result = _run_node(wasm_path, fn="narrow", fn_args=["-5"])
+
+        assert py_error is not None, "Python should trap on the narrowing"
+        assert py_kind == "nat_guard", py_kind
+        assert "@Nat slot" in py_error, py_error
+        assert node_result["error"] is not None, (
+            "Node should report the narrowing trap"
+        )
+        assert "@Nat slot" in node_result["error"], node_result["error"]
+
+        # Companion no-trap: a non-negative value returns cleanly in Node, so
+        # the trap above is the guard firing rather than the bundle failing
+        # to instantiate — the LinkError this cell exists to catch would take
+        # BOTH runs down and would otherwise read as a guard that works.
+        safe = _run_node(wasm_path, fn="narrow", fn_args=["7"])
+        assert safe["error"] is None, safe
+        assert safe["value"] == 7, safe
 
 
 # =====================================================================
@@ -5091,4 +5195,131 @@ public fn main(@Unit -> @Unit)
 """
         assert _parity_stdout(src, tmp_path, "md_bq_children_adt") == (
             "> first\n>\n> second"
+        )
+
+
+class TestMdParseCrossHostAdtDifferential1301:
+    """`md_parse` produces the SAME ADT on both hosts, byte for byte (#1301).
+
+    Every other Markdown case in this file observes the parser through
+    ``md_render``, which is what let the largest divergence class hide:
+    the browser emitted one ``MdText`` per scan segment where the
+    reference coalesces adjacent runs, so ``**unclosed`` was
+    ``[MdEmph([]), MdText("unclosed")]`` natively and
+    ``[MdText("*"), MdText("*unclosed")]`` in the browser — two different
+    ADTs whose renders are the same string.  A Vera program that matches
+    on ``MdParagraph``'s children sees the difference, which makes it a
+    §12.9.3 violation rather than a cosmetic one.
+
+    So this gate compares the ADTs, not the renders, and it compares them
+    over a *generated* corpus rather than a curated list: the nine
+    measured classes, then every block-opening line template taken one,
+    two and three at a time (a dispatch-order difference shows up as soon
+    as two branches compete for a line), then every inline shape in the
+    four positions that reach the inline parser, then a seeded fuzz leg.
+    A tenth class cannot appear without landing in one of those.
+
+    Both legs are fed the identical corpus from
+    ``tests/md_parse_corpus.py`` — a corpus written twice would let the
+    gate pass on two hosts that were never asked the same question — and
+    the browser leg runs as ONE Node process for the whole corpus, so the
+    gate stays fast enough to actually be run.
+    """
+
+    @staticmethod
+    def _browser_encodings(inputs: list[str], tmp_path: Path) -> list[str]:
+        """Run the whole corpus through the browser parser in one process."""
+        payload = tmp_path / "md_corpus.json"
+        payload.write_text(
+            json.dumps(inputs, ensure_ascii=True), encoding="utf-8",
+        )
+        proc = subprocess.run(
+            [NODE or "node", str(ROOT / "tests" / "md_parse_bridge.mjs"),
+             str(payload)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
+            check=False,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"md_parse bridge failed (rc={proc.returncode}):\n"
+                f"stderr: {proc.stderr}"
+            )
+        return proc.stdout.splitlines()
+
+    def test_every_corpus_input_parses_to_the_same_adt(
+        self, tmp_path: Path,
+    ) -> None:
+        corpus = md_corpus()
+        native = [encode_json(parse_markdown(text)) for _, text in corpus]
+        browser = self._browser_encodings(
+            [text for _, text in corpus], tmp_path,
+        )
+        assert len(browser) == len(native), (
+            f"bridge returned {len(browser)} encodings for "
+            f"{len(native)} inputs"
+        )
+        divergent = [
+            (case_id, text, n, b)
+            for (case_id, text), n, b in zip(corpus, native, browser)
+            if n != b
+        ]
+        if divergent:
+            shown = "\n".join(
+                f"  {case_id}: {text!r}\n"
+                f"    native : {n}\n"
+                f"    browser: {b}"
+                for case_id, text, n, b in divergent[:12]
+            )
+            raise AssertionError(
+                f"{len(divergent)} of {len(corpus)} inputs parse to "
+                f"different ADTs across the hosts:\n{shown}"
+            )
+
+    @pytest.mark.parametrize(
+        ("case_id", "markdown"),
+        CLASS_REPROS,
+        ids=[c[0] for c in CLASS_REPROS],
+    )
+    def test_measured_divergence_class_repro_agrees(
+        self, case_id: str, markdown: str, tmp_path: Path,
+    ) -> None:
+        """Each of the nine classes named in #1301, on its own repro.
+
+        The sweep above would catch these too; naming them one per cell
+        means a regression reports WHICH class came back rather than a
+        count.
+        """
+        native = encode_json(parse_markdown(markdown))
+        browser = self._browser_encodings([markdown], tmp_path)[0]
+        assert browser == native, (
+            f"{case_id} ({markdown!r}) diverges:\n"
+            f"  native : {native}\n"
+            f"  browser: {browser}"
+        )
+
+
+class TestMdGrammarSharedTable1301:
+    """The two parsers read ONE grammar table (#1301).
+
+    ``vera/markdown_grammar.py`` is the single source of every pattern
+    and numeric constant the block dispatch turns on; the browser
+    runtime carries a generated copy of it.  This asserts the copy is
+    byte-identical to what the generator emits, so a pattern edited on
+    one side and not the other cannot reach ``main`` — which is how the
+    ``+`` bullet, the ``n)`` ordered marker and the separator-less table
+    came to be three different grammars in the first place.
+    """
+
+    def test_runtime_mjs_carries_the_generated_block_verbatim(self) -> None:
+        source = (ROOT / "vera" / "browser" / "runtime.mjs").read_text(
+            encoding="utf-8",
+        )
+        assert js_grammar_block() in source, (
+            "vera/browser/runtime.mjs does not carry the generated grammar "
+            "block verbatim.  Regenerate it with:\n"
+            "  python -c \"from vera.markdown_grammar import "
+            "js_grammar_block; print(js_grammar_block())\""
         )

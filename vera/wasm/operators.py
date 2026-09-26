@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from typing import ClassVar
 
-from vera import ast, naming
+from vera import ast, narrowing, naming
+from vera.monomorphize import pipe_desugared_call, resolve_type_alias
+from vera.types import TO_STRING_BUILTINS
 from vera.skip import AdtEqNotDerivableError, CodegenInvariantError
-from vera.wasm.helpers import WasmSlotEnv, state_type_arg
+from vera.wasm.helpers import WasmSlotEnv, field_layout, state_type_arg
 
 
 class OperatorsMixin:
@@ -56,29 +60,66 @@ class OperatorsMixin:
     # Binary operators
     # -----------------------------------------------------------------
 
+    def _translate_widening_binary(
+        self, expr: ast.BinaryExpr, env: WasmSlotEnv
+    ) -> list[str] | None:
+        """Translate a binary operator to WAT, its widened `@Nat` operands
+        arranged first (:py:meth:`_translate_binary` does the rest)."""
+        # Pipe: a |> f(x, y) → f(a, x, y), through the ONE shared desugar
+        # (`vera.monomorphize.pipe_desugared_call`) the checker, discovery and
+        # both type namers use.  #1357: the desugared call keeps the right
+        # operand's own node type, so `a |> m::g()` stays a `ModuleCall` and
+        # its `path` still routes to the declaring module's clone.  Rebuilding
+        # it as a bare-name `FnCall` discarded that path, and the call landed
+        # on a name the importer's flat namespace does not have — a
+        # check-green, verify-clean program whose caller was dropped at
+        # [E602] while the DIRECT spelling of the same call compiled.
+        if expr.op == ast.BinOp.PIPE:
+            desugared = pipe_desugared_call(expr)
+            if desugared is None:
+                raise CodegenInvariantError(  # pragma: no cover
+                    "pipe RHS is neither FnCall nor ModuleCall", expr)
+            # Through `translate_expr`, so each shape takes its OWN arm: a
+            # `ModuleCall` reaches the qualified-target resolver that consumes
+            # its `path`, exactly as the direct spelling of the same call does.
+            return self.translate_expr(desugared, env)
+
+        # PR #1583 review, #1588: a `@Nat` value an `@Int` operation widens
+        # — an operand, or an arm of a join operand that supplies one —
+        # traps above `i64.MAX` as it is evaluated, at the sites the
+        # verifier's `nat_to_int_coerce` obligation reads from the same
+        # classifier.  Arranged before either operand is translated, since
+        # the `@Nat` subtraction translates them on its own path.
+        widened = [
+            id(value) for value in narrowing.widened_nat_operands(
+                expr, self._overflow_codegen_type,
+                self._is_guarded_nat_subtraction)
+            if id(value) not in self._widened_operands]
+        self._widened_operands.update(widened)
+        try:
+            return self._translate_binary(expr, env)
+        finally:
+            self._widened_operands.difference_update(widened)
+
     def _translate_binary(
         self, expr: ast.BinaryExpr, env: WasmSlotEnv
     ) -> list[str] | None:
-        """Translate binary operators to WAT."""
-        # Pipe: a |> f(x, y) → f(a, x, y)
-        if expr.op == ast.BinOp.PIPE:
-            if isinstance(expr.right, ast.FnCall):
-                desugared = ast.FnCall(
-                    name=expr.right.name,
-                    args=(expr.left,) + expr.right.args,
-                    span=expr.span,
-                )
-                return self._translate_call(desugared, env)
-            # C7e: a |> Module.f(x) → f(a, x)
-            if isinstance(expr.right, ast.ModuleCall):
-                desugared = ast.FnCall(
-                    name=expr.right.name,
-                    args=(expr.left,) + expr.right.args,
-                    span=expr.span,
-                )
-                return self._translate_call(desugared, env)
-            raise CodegenInvariantError(  # pragma: no cover
-                "pipe RHS is neither FnCall nor ModuleCall", expr)
+        """Translate binary operators to WAT, once
+        :py:meth:`_translate_widening_binary` has arranged the widened
+        operands."""
+        # @Nat subtraction underflow guard (#520) — mirrors the static
+        # obligation emitted in vera/verifier.py.  When the result is
+        # statically @Nat and at least one operand has @Nat origin, emit a
+        # runtime check that traps on underflow.  Programs that ran `vera
+        # verify` first will have caught the violation statically; this
+        # guard is the safety net for `vera compile` / `vera run` paths that
+        # skipped verification.  Decided BEFORE the operands are translated:
+        # an operand whose sign its bits do not carry records it as it is
+        # evaluated (#1503), and that has to be arranged first.  (The static
+        # rule reads no f64 or `@Byte` operand as a `@Nat`, so neither lowering
+        # below is passed over.)
+        if expr.op == ast.BinOp.SUB and self._is_nat_subtraction(expr):
+            return self._translate_nat_subtraction(expr, env)
 
         left = self.translate_expr(expr.left, env)
         right = self.translate_expr(expr.right, env)
@@ -120,16 +161,8 @@ class OperatorsMixin:
                     raise CodegenInvariantError(  # pragma: no cover
                         "unsupported f64 arithmetic operator", expr)
                 return left + right + [self._ARITH_OPS_F64[op]]
-            # @Nat subtraction underflow guard (#520) — mirrors the
-            # static obligation emitted in vera/verifier.py.  When the
-            # result is statically @Nat and at least one operand has
-            # @Nat origin, emit a runtime check that traps on
-            # underflow.  Programs that ran `vera verify` first will
-            # have caught the violation statically; this guard is the
-            # safety net for `vera compile` / `vera run` paths that
-            # skipped verification.
-            if op == ast.BinOp.SUB and self._is_nat_subtraction(expr):
-                return self._emit_nat_sub_guard(left, right)
+            # A @Nat subtraction took its guarded path above, before its
+            # operands were translated (#520, #1503).
             # #798: @Int/@Nat add/sub/mul wrap at the i64/u64 boundary; emit a
             # runtime overflow guard mirroring the verifier's `int_overflow`
             # obligation (vera/verifier.py:_check_overflow_obligation).  The
@@ -145,11 +178,40 @@ class OperatorsMixin:
             # (coerced) type — the width the i64/u64 op runs at — so a
             # literal-left @Int add and an @Int add narrowed into a @Nat slot
             # are both i64, in lockstep with the verifier (#798).
-            ovf = self._overflow_arith_codegen_type(expr)
+            #
+            # #1417: an UNCLASSIFIED operand pair fails CLOSED.  The
+            # classifier answers `None` when the threaded type table has no
+            # entry for an operand, and skipping the guard on that answer
+            # meant the arithmetic wrapped in silence while the verifier's
+            # `int_overflow` obligation went on claiming a runtime check —
+            # a false guarantee reachable, in principle, by any path that
+            # loses an entry.  An unknown width is treated as `Int`, which
+            # is the safe reading of the pair: `Int` is the wider signed
+            # interpretation, its guard fires on exactly the values that
+            # would wrap, and a `@Nat` pair mistakenly guarded as `Int`
+            # traps only on values that had already left the range its own
+            # obligation covers.  The classifier itself keeps saying `None`
+            # — "I do not know" is a real answer and collapsing it into a
+            # type would put the guess where the verifier's mirror reads.
+            ovf = self._overflow_arith_codegen_type(expr) or "Int"
             if (op in (ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL)
-                    and ovf is not None
                     and not (op == ast.BinOp.SUB and ovf == "Nat")):
-                return self._emit_overflow_guard(left, right, op, ovf)
+                return self._emit_overflow_guard(
+                    left, right, op, ovf, at=expr)
+            if op in (ast.BinOp.DIV, ast.BinOp.MOD):
+                # `i64.div_s` / `i64.rem_s` trap by themselves on a zero
+                # divisor, so the instruction IS the check, and carries its
+                # record entry's marker (#1479).  A signed division also
+                # traps on `INT_MIN / -1`, so it carries that condition's
+                # marker too — keyed on the instruction emitted, not on the
+                # operands' type: a `@Nat` division is `i64.div_s` today as
+                # well, and reads 2^63 and 2^64 - 1 as those two (#1504).
+                instruction = self._ARITH_OPS[op]
+                markers = self._record_check(
+                    "wasm/operators.py:_translate_binary", expr)
+                if instruction.endswith(".div_s"):
+                    markers += self._note_quotient_overflow(expr)
+                return left + right + [instruction + markers]
             return left + right + [self._ARITH_OPS[op]]
 
         # Comparison — choose i32/i64/f64 based on operand types
@@ -235,7 +297,7 @@ class OperatorsMixin:
                 if (op in (ast.BinOp.EQ, ast.BinOp.NEQ)
                         and lv is not None
                         and lv_base not in ("Bool", "Byte")
-                        and lv_base in self._adt_type_names
+                        and self._value_adt_key(lv) is not None
                         and not self._is_lost_type_arg_clone(lv, lv_base)
                         and self._eq_type_name_fully_concrete(lv)):
                     adt_eq = self._translate_adt_eq(left, right, lv, expr)
@@ -439,6 +501,8 @@ class OperatorsMixin:
         base = self._ctor_to_adt_name(operand.name)
         if base is None:
             return None
+        # ctor-owner-exempt: resolved in the compiling namespace's scoped
+        # projection (#1436)
         tp_indices = self._ctor_adt_tp_indices.get(operand.name)
         tp_count = self._adt_tp_counts.get(base, 0)
         if not tp_indices or tp_count == 0:
@@ -509,7 +573,7 @@ class OperatorsMixin:
         base = arg.split("<", 1)[0]
         return (
             base not in self._CONCRETE_NON_ADT_BASES
-            and base not in self._adt_type_names
+            and self._value_adt_key(arg) is None
         )
 
     def _has_free_type_var_arg(self, lv: str) -> bool:
@@ -650,7 +714,7 @@ class OperatorsMixin:
             # wrongly flag as under-parameterized — silently dropping the loud
             # E613 that a non-Eq ``Tuple`` comparison must raise.
             return all(self._eq_type_name_fully_concrete(a) for a in args)
-        if base in self._adt_type_names:
+        if self._value_adt_key(base) is not None:
             if len(args) != self._adt_tp_counts.get(base, 0):
                 return False  # under-parameterized: an argument was erased
             return all(self._eq_type_name_fully_concrete(a) for a in args)
@@ -759,7 +823,7 @@ class OperatorsMixin:
 
         parsed = Monomorphizer._parse_type_name(type_name)
         base = parsed.name
-        if base not in self._adt_type_names:
+        if self._value_adt_key(type_name) is None:
             return None
         fn_name = self._adt_eq_fn_name(type_name)
         if fn_name in self._adt_eq_helpers or fn_name in self._adt_eq_pending:
@@ -819,14 +883,22 @@ class OperatorsMixin:
         tp_names = self._adt_tp_param_names.get(base, ())
         tp_mapping = dict(zip(tp_names, type_args))
 
-        adt_ctors = sorted(
-            (
-                (ctor_name, self._ctor_layouts[ctor_name])
-                for ctor_name, parent in self._ctor_to_adt.items()
-                if parent == base and ctor_name in self._ctor_layouts
-            ),
-            key=lambda x: x[1].tag,
-        )
+        # #1414: enumerate the constructors of the ADT being compared out
+        # of ITS OWN table.  Both maps here are keyed by bare constructor
+        # name across every ADT, so a user declaration sharing one of this
+        # type's constructor names displaces the layout AND the ownership
+        # entry.  LATENT under current coverage, and measured to be:
+        # forcing this branch back to the flat map leaves the whole
+        # tag-index battery green, because the writer fix in
+        # `data.py` already gives the value the right tag and this
+        # enumeration is only reached for types the collision does not
+        # reorder.  Converted anyway, on the same rule as the other
+        # owner-qualified reads — a site holding the owner must not ask a
+        # table that cannot represent one (PR #1419 review).
+        own = self._adt_ctor_layouts.get(base)
+        # Same measured-dead fallback as `_composite_ctor_plans`, removed on
+        # the same evidence.
+        adt_ctors = sorted((own or {}).items(), key=lambda x: x[1].tag)
         if not adt_ctors:
             raise CodegenInvariantError(  # pragma: no cover
                 "ADT equality on a type with no constructors")
@@ -865,6 +937,7 @@ class OperatorsMixin:
                 # resolves positionally to the matching concrete type argument;
                 # any other field deep-substitutes param NAMES nested inside a
                 # parameterized declared type (`List<T>` → `List<Int>`).
+                # ctor-owner-exempt: owner-qualified above; parsed-name path
                 tp_idx = self._ctor_adt_tp_indices.get(cname)
                 raw_types = (
                     layout.field_types
@@ -996,19 +1069,17 @@ class OperatorsMixin:
         Mirrors the construction site (``_translate_constructor_call``): tag at
         offset 0 (4 bytes), then each field aligned to its natural alignment.
         """
-        # #1043: `"unit"` (a zero-size Unit field) is size 0 / align 1, so it
-        # neither aligns nor advances the offset — the same convention
-        # construction (`_translate_constructor_call`) uses.
-        sizes = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 8, "unit": 0}
-        aligns = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 4, "unit": 1}
+        # Through `helpers.field_layout`, the ONE rule construction lays an
+        # object out by, rather than a copy of its widths: `"unit"` (a
+        # zero-size Unit field) is size 0 / align 1 there, so it neither
+        # aligns nor advances the offset, which is the convention
+        # `_translate_constructor_call` uses (#1043).
         offset = 4
         out: list[tuple[int, str]] = []
         for ftype in field_type_names:
             wt = self._eq_field_wasm_type(ftype)
-            align = aligns.get(wt, 8)
-            offset = (offset + align - 1) & ~(align - 1)
-            out.append((offset, wt))
-            offset += sizes.get(wt, 8)
+            field_off, offset = field_layout(offset, wt)
+            out.append((field_off, wt))
         return out
 
     def _eq_field_wasm_type(self, ftype: str) -> str:
@@ -1035,6 +1106,10 @@ class OperatorsMixin:
         if base == "Float64":
             return "f64"
         if base in ("Bool", "Byte"):
+            return "i32"
+        # #1331/#1539: a data type's value is a pointer, a `data Array`'s
+        # among them, which the container arm below would measure as a pair.
+        if self._value_adt_key(ftype) is not None:
             return "i32"
         if base in ("String", "Array"):
             return "i32_pair"
@@ -1081,7 +1156,7 @@ class OperatorsMixin:
                 "call $eq_String",
             ]
         # Nested ADT: recurse into its own helper.
-        if base in self._adt_type_names:
+        if self._value_adt_key(ftype) is not None:
             nested_fn = self._request_adt_eq_helper(ftype)
             if nested_fn is None:
                 return None
@@ -1436,10 +1511,12 @@ class OperatorsMixin:
         # gate drives the FIX-1 tail-call collector, so the two stay in lockstep.
         if self._is_hetero_int_widen_join(expr):
             if self._result_is_nat(expr.then_branch):
-                then = self._emit_int_widen_guard(then)
+                then = self._emit_int_widen_guard(
+                    then, at=expr.then_branch)
             if (expr.else_branch is not None
                     and self._result_is_nat(expr.else_branch)):
-                else_ = self._emit_int_widen_guard(else_)
+                else_ = self._emit_int_widen_guard(
+                    else_, at=expr.else_branch)
 
         # i32_pair → two i32 results (ptr, len)
         if result_type == "i32_pair":
@@ -1469,14 +1546,45 @@ class OperatorsMixin:
     # String interpolation
     # -----------------------------------------------------------------
 
-    # Type -> to_string builtin dispatch (must match checker's map)
-    _INTERP_TO_STRING: ClassVar[dict[str, str]] = {
-        "Int": "to_string",
-        "Nat": "nat_to_string",
-        "Bool": "bool_to_string",
-        "Byte": "byte_to_string",
-        "Float64": "float_to_string",
-    }
+    def _interp_resolved_type_name(self, name: str | None) -> str | None:
+        """Resolve an inferred type NAME to the shape that renders it.
+
+        Interpolation is a representation-level question — "which
+        `*_to_string` builtin takes this value?" — so it uses the walker
+        every representation-level classifier shares
+        (:func:`vera.monomorphize.resolve_type_alias`): refinement layers
+        unwrap, alias chains follow, and a name that is neither is
+        returned unchanged.  Returns *name* untouched when there is no
+        alias environment to resolve against or the chain is cyclic
+        (E132 rejects that upstream), so the dispatch falls to its loud
+        skip rather than guessing.
+
+        The name arrives RENDERED, so a parameterised spelling
+        (``Identity<Int>`` for ``type Identity<T> = T``) does not match
+        the alias table and is returned unchanged — deliberately, rather
+        than re-parsing a rendered name.  Nothing is lost: a value of a
+        generic-alias type has no WASM representation at all, so codegen
+        refuses such a program at its ``let`` (measured at this revision
+        and at the merge base, with and without an interpolation in the
+        body).  Should that gap close, this is the seam to thread the
+        type arguments through.
+        """
+        if name is None:
+            return None
+        env = getattr(self, "_alias_env", None)
+        if env is None:
+            return name
+        resolved = resolve_type_alias(
+            ast.NamedType(name=name, type_args=None),
+            env.aliases, env.alias_params,
+        )
+        if isinstance(resolved, ast.NamedType):
+            return resolved.name
+        return name
+
+    # Type -> to_string builtin dispatch: the checker's table itself
+    # (#1347), not a copy that has to be kept matching it by comment.
+    _INTERP_TO_STRING: ClassVar[dict[str, str]] = TO_STRING_BUILTINS
 
     def _translate_interpolated_string(
         self, expr: ast.InterpolatedString, env: "WasmSlotEnv",
@@ -1502,8 +1610,19 @@ class OperatorsMixin:
                 if p:  # skip empty string fragments
                     parts.append(ast.StringLit(value=p, span=expr.span))
             else:
-                # Determine Vera type for auto-conversion
-                vera_type = self._infer_vera_type(p)
+                # Determine Vera type for auto-conversion, on its
+                # RESOLVED form (#1347).  `_infer_vera_type` answers with
+                # the type's SPELLING — `Celsius` for a `type Celsius =
+                # Float64` slot — and this dispatch used to look that up
+                # directly, so every alias and every refinement missed
+                # the table and fell into the loud-skip branch below: a
+                # check-green program dropped with "Cannot interpolate
+                # value of unknown type".  The walker unwraps refinements
+                # and follows alias chains to the terminal shape, which
+                # is what actually decides how the value renders.
+                vera_type = self._interp_resolved_type_name(
+                    self._infer_vera_type(p),
+                )
                 if vera_type == "String":
                     parts.append(p)
                 elif vera_type in self._INTERP_TO_STRING:
@@ -1594,8 +1713,9 @@ class OperatorsMixin:
     ) -> list[str] | None:
         """Translate assert(expr) → trap if false.
 
-        Evaluates the condition; if it's false (i32.eqz), executes
-        unreachable (WASM trap).  Returns no value (Unit).
+        Evaluates the condition; if it's false (i32.eqz), signals
+        ``assertion_failed`` with the assertion's own text and traps
+        (#1479).  Returns no value (Unit).
         """
         cond = self.translate_expr(expr.expr, env)
         # #657 / #630 [E615]: keep as `return None` — translate_expr returns
@@ -1604,7 +1724,13 @@ class OperatorsMixin:
         # See vera/skip.py, "Reachable None via the [E615] channel".
         if cond is None:
             return None  # pragma: no cover
-        return cond + ["i32.eqz", "if", "unreachable", "end"]
+        trap = self._emit_trap(
+            "wasm/operators.py:_translate_assert", at=expr,
+            message=(
+                f"Assertion failed{self._at_line(expr)}: "
+                f"assert({ast.format_expr(expr.expr)})"
+            ))
+        return cond + ["i32.eqz", "if", *(f"  {i}" for i in trap), "end"]
 
     def _translate_assume(self) -> list[str]:
         """Translate assume(expr) → no-op at runtime.
@@ -1640,6 +1766,21 @@ class OperatorsMixin:
         """
         return self._translate_quantifier(expr, env, is_forall=False)
 
+    def _index_refinement_layers(
+        self, te: ast.TypeExpr,
+    ) -> list[naming.RefinementBinder]:
+        """Each refinement a quantifier's index type carries, outermost
+        first, following aliases — ``[]`` for a plain ``Int`` or ``Nat``."""
+        layers: list[naming.RefinementBinder] = []
+        node: ast.TypeExpr | None = te
+        while node is not None:
+            parts = naming.refinement_binder_parts(node, self._alias_env)
+            if parts is None:
+                break
+            layers.append(parts)
+            node = parts.base if parts.base_is_refinement else None
+        return layers
+
     def _translate_quantifier(
         self,
         expr: ast.ForallExpr | ast.ExistsExpr,
@@ -1656,15 +1797,24 @@ class OperatorsMixin:
           block $qbreak_N
             loop $qloop_N
               if counter >= limit → br $qbreak_N
-              push counter as @T binding
-              evaluate predicate body → i32
-              forall: if false → result=0, br $qbreak_N
-              exists: if true  → result=1, br $qbreak_N
+              if the index type's refinement holds of counter:
+                push counter as @T binding
+                evaluate predicate body → i32
+                forall: if false → result=0, br $qbreak_N
+                exists: if true  → result=1, br $qbreak_N
               counter++
               br $qloop_N
             end
           end
           local.get result
+
+        The index type's refinement is HONOURED (#1506 review): the
+        quantifier ranges over the values below the bound that satisfy it,
+        so ``forall`` means ``P(i) ==> body(i)`` for each index and
+        ``exists`` means ``P(i) && body(i)`` for some.  It was never read —
+        the runtime check of ``forall(@{ @Nat | @Nat.0 < 2 }, 5, ...)``
+        tested every index below 5, and an ``exists`` over a refinement
+        nothing satisfies still answered the body's value.
         """
         # Evaluate domain
         domain_instrs = self.translate_expr(expr.domain, env)
@@ -1698,6 +1848,16 @@ class OperatorsMixin:
         if body_instrs is None:
             return None  # pragma: no cover
 
+        # The index type's refinement, each layer of it: `P(counter)` as an
+        # i32, outermost first.
+        layer_conds: list[list[str]] = []
+        for layer in self._index_refinement_layers(expr.binding_type):
+            cond = self.translate_expr(
+                layer.predicate, env.push(layer.binder_name, counter_local))
+            if cond is None:
+                return None  # pragma: no cover — the [E615] channel above
+            layer_conds.append(cond)
+
         # Unique labels
         qid = self._next_quant_id
         self._next_quant_id += 1
@@ -1725,26 +1885,26 @@ class OperatorsMixin:
         instructions.append("    i64.ge_s")
         instructions.append(f"    br_if {brk}")
 
-        # Evaluate predicate body (counter is in env as @T)
-        for instr in body_instrs:
-            instructions.append(f"    {instr}")
-
-        # Short-circuit check
+        # Evaluate predicate body (counter is in env as @T), and
+        # short-circuit: forall on a false predicate → result=0, break;
+        # exists on a true one → result=1, break.
+        step: list[str] = list(body_instrs)
         if is_forall:
-            # forall: if predicate is false → result=0, break
-            instructions.append("    i32.eqz")
-            instructions.append("    if")
-            instructions.append("      i32.const 0")
-            instructions.append(f"      local.set {result_local}")
-            instructions.append(f"      br {brk}")
-            instructions.append("    end")
+            step += ["i32.eqz", "if", "  i32.const 0",
+                     f"  local.set {result_local}", f"  br {brk}", "end"]
         else:
-            # exists: if predicate is true → result=1, break
-            instructions.append("    if")
-            instructions.append("      i32.const 1")
-            instructions.append(f"      local.set {result_local}")
-            instructions.append(f"      br {brk}")
-            instructions.append("    end")
+            step += ["if", "  i32.const 1",
+                     f"  local.set {result_local}", f"  br {brk}", "end"]
+        # An index outside the refinement is not in the range.  Each layer
+        # guards the step, wrapped outermost first so the INNERMOST is
+        # tested first and each outer layer only where the ones inside it
+        # hold: an outer predicate may be defined only there (`12 / @Pos.0`
+        # over a `Pos` that excludes 0), which an eager `i32.and` of the
+        # layers would evaluate at every index (PR #1508 review).
+        for cond in layer_conds:
+            step = [*cond, "if", *(f"  {i}" for i in step), "end"]
+        for instr in step:
+            instructions.append(f"    {instr}")
 
         # Increment counter
         instructions.append(f"    local.get {counter_local}")
@@ -1835,179 +1995,107 @@ class OperatorsMixin:
         that's Path B (#552) territory, which generalises the
         verifier check to every binding-site narrowing.
         """
-        return (self._is_static_nat_typed(expr.left)
-                and self._is_static_nat_typed(expr.right)
-                and (self._has_nat_origin_codegen(expr.left)
-                     or self._has_nat_origin_codegen(expr.right)))
+        # The one rule the verifier reads (PR #1583 review): a literal-only
+        # operand by its value, any other by the checker's resolved type
+        # first.  Read from the syntax alone, `0 - 3` is two non-negative
+        # literals, so `(0 - 3) - @Nat.0` — an `@Int` subtraction the
+        # verifier records no `nat_sub` for — was guarded as one, and the
+        # guard trapped the -8 of a program `vera verify` passed.
+        return narrowing.is_guarded_nat_subtraction(
+            expr, lambda e: self._overflow_codegen_type(e) == "Nat",
+            self._has_nat_origin_codegen)
 
     def _is_static_nat_typed(self, expr: ast.Expr) -> bool:
         """Return True iff *expr* has static type @Nat.
 
-        Mirrors :py:meth:`ContractVerifier._is_nat_typed`.  Returns
-        True for SlotRef of type @Nat, non-negative IntLits,
-        arithmetic expressions where both operands are @Nat (per
-        vera/checker/expressions.py:264-267 Nat <: Int subtyping
-        rule), IfExpr / MatchExpr with all branches @Nat, and FnCall
-        returning @Nat.  Conservative False elsewhere — UnaryExpr
-        (negation) always produces @Int.
+        Delegates to :func:`vera.narrowing.is_static_nat_typed` — the rule now
+        lives in one place and both this and the verifier's classification read
+        it, so they cannot drift (#1205 parity, re-keyed in #1362).  What stays
+        here is the ORACLE: codegen infers a call's return type from its own
+        tables.
         """
-        if isinstance(expr, ast.SlotRef):
-            return expr.type_name == "Nat"
-        if isinstance(expr, ast.IntLit):
-            return expr.value >= 0
-        if isinstance(expr, ast.BinaryExpr):
-            if expr.op in (
-                ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL,
-                ast.BinOp.DIV, ast.BinOp.MOD,
-            ):
-                return (self._is_static_nat_typed(expr.left)
-                        and self._is_static_nat_typed(expr.right))
-            return False
-        if isinstance(expr, ast.IfExpr):
-            if expr.else_branch is None:
-                return False
-            return (self._is_static_nat_typed(expr.then_branch)
-                    and self._is_static_nat_typed(expr.else_branch))
-        if isinstance(expr, ast.Block):
-            return self._is_static_nat_typed(expr.expr)
-        if isinstance(expr, ast.MatchExpr):
-            if not expr.arms:
-                return False
-            return all(
-                self._is_static_nat_typed(arm.body) for arm in expr.arms
-            )
-        if isinstance(expr, ast.FnCall):
-            ret_type_name = self._infer_fncall_vera_type(expr)
-            return ret_type_name == "Nat"
-        if isinstance(expr, ast.ModuleCall):
-            # ModuleCall is desugared to FnCall in
-            # vera/wasm/context.py:translate_expr (line 315), so the
-            # callee's return type is reachable via the same
-            # _infer_fncall_vera_type lookup once we synthesize the
-            # flattened FnCall shape.
+        return narrowing.is_static_nat_typed(
+            expr, self._infer_fncall_vera_type_for_narrowing)
+
+    def _infer_fncall_vera_type_for_narrowing(self, call: ast.Expr) -> str | None:
+        """Codegen's return-type oracle for the shared narrowing rule.
+
+        A `ModuleCall` is desugared to a `FnCall` before translation, so the
+        same lookup answers both once the flattened shape is synthesised.
+        """
+        if isinstance(call, ast.ModuleCall):
             return self._infer_fncall_vera_type(
-                ast.FnCall(name=expr.name, args=expr.args, span=expr.span),
-            ) == "Nat"
-        return False
+                ast.FnCall(name=call.name, args=call.args, span=call.span))
+        if isinstance(call, ast.FnCall):
+            return self._infer_fncall_vera_type(call)
+        return None
 
     def _result_is_nat(self, expr: ast.Expr) -> bool:
-        """Codegen mirror of ``ContractVerifier._result_is_nat`` (#813).
+        """Whether *expr*'s VALUE is a genuine @Nat — the #813 widening
+        question, answered by THE rule every guard and every obligation reads
+        (:func:`vera.narrowing.result_is_nat`, #1503).
 
-        The *precise* result type — the join over a ``Block`` trailing expr,
-        ``IfExpr`` branches, and ``MatchExpr`` arms — used to decide whether a
-        value widening into an @Int slot needs the @Nat->@Int coercion guard.
-
-        Unlike :py:meth:`_is_static_nat_typed`, a non-negative ``IntLit`` is NOT
-        @Nat here (a literal in an @Int context is just an @Int literal, already
-        range-checked) and arithmetic is @Nat only when *both* operands are — so
-        a single @Int component makes the result @Int.  Must agree with the
-        verifier's ``_result_is_nat`` so the codegen guard fires at exactly the
-        sites the verifier obligates (the verifier<->codegen differential).
-
-        Caveat (no-side-table fallback): when the checker's resolved-type table
-        is absent (an unverified ``transform -> compile``), the ``FnCall`` arm
-        recovers a callee's @Nat return from its *declared* return type — the
-        same coarse basis as :py:meth:`_is_static_nat_typed`, NOT the verifier's
-        precise ``_result_is_nat``.  This is deliberate: the precise join is
-        unavailable without the side-table, and over-classifying a call result
-        as @Nat here only ever suppresses a (dead) guard on a provably-@Nat
-        value — never a wrong runtime verdict — so a verified build (which
-        supplies the table) still matches the verifier site-for-site.
+        Codegen's guard fires at exactly the sites the verifier obligates only
+        if the two ask one rule, so the rule is not written here; this side
+        supplies the declaration leaf (:py:meth:`_declared_result_is_nat`) and
+        nothing else.  A non-negative literal is not a genuine @Nat (it is
+        range-checked against its target, #812) unless it exceeds `i64.MAX`,
+        and arithmetic is @Nat only when both operands are.
         """
-        if isinstance(expr, ast.Block):
-            return expr.expr is not None and self._result_is_nat(expr.expr)
-        if isinstance(expr, ast.IfExpr):
-            # #813 follow-up site 2a: a non-negative literal arm is @Nat-
-            # compatible (always <= i64.MAX, so it never out-of-range-widens nor
-            # false-traps the boundary guard).  Keep a heterogeneous-with-literal
-            # if (`if c then { @Nat.0 } else { 0 }`) classified @Nat so the
-            # boundary guard fires on the real @Nat arm — must mirror the
-            # verifier's `_result_is_nat` exactly (the widening differential).
-            if expr.else_branch is None:
-                return False
-            return (
-                self._arm_nat_compatible(expr.then_branch)
-                and self._arm_nat_compatible(expr.else_branch)
-                and (self._result_is_nat(expr.then_branch)
-                     or self._result_is_nat(expr.else_branch))
-            )
-        if isinstance(expr, ast.MatchExpr):
-            return (
-                bool(expr.arms)
-                and all(self._arm_nat_compatible(a.body) for a in expr.arms)
-                and any(self._result_is_nat(a.body) for a in expr.arms)
-            )
-        if isinstance(expr, ast.SlotRef):
-            return expr.type_name == "Nat"
-        if isinstance(expr, ast.BinaryExpr):
-            if expr.op in (
-                ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL,
-                ast.BinOp.DIV, ast.BinOp.MOD,
-            ):
-                return (self._result_is_nat(expr.left)
-                        and self._result_is_nat(expr.right))
+        return narrowing.result_is_nat(expr, self._declared_result_is_nat)
+
+    def _declared_result_is_nat(self, expr: ast.Expr) -> bool:
+        """The declaration leaf of the shared widening rule, codegen's
+        reading: whether the value of a form the rule does not decompose — a
+        slot, a call, an index into an opaque array, an effect operation —
+        is a genuine @Nat (#1503).
+
+        Consults the checker's resolved-type side-table first — the answer
+        the verifier's leaf reads, so a verified build matches it
+        site-for-site.  A call's @Nat return cannot come from
+        `_infer_fncall_vera_type` alone: it maps the i64 WASM return back to
+        "Int" (both @Nat and @Int lower to i64) and so NEVER yields "Nat",
+        which left every @Nat-returning call result unguarded while the
+        verifier obligated it `tier3` (#813 review).
+
+        Caveat (no-side-table fallback): an unverified `transform -> compile`
+        has no table, so a user callee's DECLARED @Nat return is recovered
+        from `_fn_ret_type_exprs`, mirroring the verifier's
+        `env.lookup_function().return_type` path — `_infer_fncall_vera_type`
+        would make a genuine @Nat -> @Nat tail call (`count_down(@Nat.0 - 1)`)
+        look like a narrowing and break its return_call TCO (#758).
+        Over-classifying a call result as @Nat here only ever suppresses a
+        (dead) guard on a provably-@Nat value — never a wrong runtime verdict.
+        """
+        resolved = self._resolved_codegen_type(expr)
+        if resolved is not None:
+            return resolved == "Nat"
+        if not isinstance(expr, (ast.FnCall, ast.ModuleCall)):
             return False
-        if isinstance(expr, (ast.FnCall, ast.ModuleCall)):
-            # Mirror the verifier: `nat_to_int(x)` explicitly widens its @Nat
-            # argument to @Int.  Its declared @Int return hides the @Nat source
-            # from the side-table, so special-case it so the result is guarded
-            # at every widening boundary (#813 follow-up audit site 1).
-            if (
-                isinstance(expr, ast.FnCall)
-                and expr.name == "nat_to_int"
-                and expr.args
-                and self._result_is_nat(expr.args[0])
-            ):
-                return True
-            # Match the verifier's `_result_is_nat` FnCall branch, which reads
-            # the checker's resolved-type side-table (`_resolved_type_of`).  A
-            # call's @Nat return cannot be recovered from
-            # `_infer_fncall_vera_type`: it maps the i64 WASM return back to
-            # "Int" (both @Nat and @Int lower to i64) and so NEVER yields "Nat",
-            # which left every @Nat-returning call result unguarded at the
-            # return / let / call-argument sites while the verifier obligated it
-            # `tier3` — an unsound silent reinterpretation (#813 review).
-            # Consult the side-table first; fall back to `_infer_fncall_vera_type`
-            # for built-in @Nat returns when codegen runs without the table.
-            resolved = self._resolved_codegen_type(expr)
-            if resolved is not None:
-                return resolved == "Nat"
-            # No side-table (an unverified `vera compile`): recover a user
-            # callee's declared @Nat return from `_fn_ret_type_exprs`, mirroring
-            # the verifier's `env.lookup_function().return_type` path.
-            # `_infer_fncall_vera_type` cannot — it maps the erased i64 return
-            # back to "Int" (both @Nat and @Int lower to i64), which would make
-            # a genuine @Nat -> @Nat tail call (`count_down(@Nat.0 - 1)`) look
-            # like a narrowing and break its return_call TCO (#758).
-            decl_ret = self._fn_ret_type_exprs.get(expr.name)
-            if isinstance(decl_ret, ast.RefinementType):
-                decl_ret = decl_ret.base_type
-            if (isinstance(decl_ret, ast.NamedType)
-                    and not decl_ret.type_args
-                    and self._resolve_base_type_name(decl_ret.name) == "Nat"):
-                return True
-            call = (
-                expr if isinstance(expr, ast.FnCall)
-                else ast.FnCall(name=expr.name, args=expr.args, span=expr.span)
-            )
-            return self._infer_fncall_vera_type(call) == "Nat"
-        # IntLit (literal in target context), UnaryExpr (negation -> @Int), else.
-        return False
+        decl_ret = self._fn_ret_type_exprs.get(expr.name)
+        if isinstance(decl_ret, ast.RefinementType):
+            decl_ret = decl_ret.base_type
+        if (isinstance(decl_ret, ast.NamedType)
+                and not decl_ret.type_args
+                and self._resolve_base_type_name(decl_ret.name) == "Nat"):
+            return True
+        call = (
+            expr if isinstance(expr, ast.FnCall)
+            else ast.FnCall(name=expr.name, args=expr.args, span=expr.span)
+        )
+        return self._infer_fncall_vera_type(call) == "Nat"
 
     def _arm_nat_compatible(self, expr: ast.Expr) -> bool:
-        """Codegen mirror of ``ContractVerifier._arm_nat_compatible`` (#813 site
-        2a): an if/match arm is @Nat-compatible if intrinsically @Nat or a
-        non-negative literal (always <= i64.MAX, so safe at a widening join)."""
-        return self._result_is_nat(expr) or self._is_nonneg_int_literal(expr)
+        """Codegen's reading of :func:`vera.narrowing.arm_nat_compatible` —
+        an if/match arm is @Nat-compatible if intrinsically @Nat or a
+        non-negative literal (#813 site 2a)."""
+        return narrowing.arm_nat_compatible(expr, self._declared_result_is_nat)
 
     @staticmethod
     def _is_nonneg_int_literal(expr: ast.Expr) -> bool:
-        """Codegen mirror: (a block trailing into) a non-negative int literal."""
-        while isinstance(expr, ast.Block):
-            if expr.expr is None:
-                return False
-            expr = expr.expr
-        return isinstance(expr, ast.IntLit) and expr.value >= 0
+        """(A block trailing into) a non-negative int literal — the shared
+        rule, :func:`vera.narrowing.is_nonneg_int_literal`."""
+        return narrowing.is_nonneg_int_literal(expr)
 
     def _is_hetero_int_widen_join(self, expr: ast.Expr) -> bool:
         """Codegen mirror of ``ContractVerifier._is_hetero_int_widen_join``
@@ -2094,8 +2182,215 @@ class OperatorsMixin:
             )
         return False
 
+    def _is_guarded_nat_subtraction(self, expr: ast.Expr) -> bool:
+        """Whether *expr* is a `@Nat` subtraction this guard checks — so its
+        value, when it has one, is never negative."""
+        return (isinstance(expr, ast.BinaryExpr)
+                and expr.op == ast.BinOp.SUB
+                and self._is_nat_subtraction(expr))
+
+    def _runs_unsigned(self, expr: ast.BinaryExpr) -> bool:
+        """Whether an addition or a multiplication is compiled at the
+        unsigned (`@Nat`) width — the width `_translate_binary` gives its
+        overflow guard, read the same way."""
+        return (self._overflow_arith_codegen_type(expr) or "Int") == "Nat"
+
+    def _translate_nat_subtraction(
+        self, expr: ast.BinaryExpr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """A `@Nat` subtraction, guarded to trap where the left operand's
+        value is below the right's (#520).
+
+        Where both operands can hold only non-negative values their bits are
+        their u64s, and the guard compares those (:py:meth:`_emit_nat_sub_guard`).
+        Where either can hold a negative value — a literal-only part, which
+        the static rule calls `@Nat` (`0 - 3` is two non-negative literals) —
+        the bits no longer say which value they are, so each operand's sign
+        is computed from how it is made
+        (:func:`vera.narrowing.subtraction_operand_sign`) and the guard
+        compares the two values:
+        where exactly one is negative it traps iff that one is the left, and
+        otherwise it compares their u64s (#1503).  A sign that only the arm
+        which produced the value knows, or that needs a sub-value the
+        operand consumes, is recorded while the operand is evaluated, by
+        instructions ``translate_expr`` appends to those nodes — so they are
+        arranged before either operand is translated, and withdrawn after.
+        """
+        signs = tuple(
+            narrowing.subtraction_operand_sign(
+                operand, self._is_guarded_nat_subtraction, self._runs_unsigned)
+            for operand in (expr.left, expr.right)
+        )
+        if signs == (narrowing.KnownSign(False), narrowing.KnownSign(False)):
+            left = self.translate_expr(expr.left, env)
+            right = self.translate_expr(expr.right, env)
+            if left is None or right is None:
+                return None  # pragma: no cover — the [E615] channel
+            return self._emit_nat_sub_guard(left, right, at=expr)
+        lhs_tmp = self.alloc_local("i64")
+        rhs_tmp = self.alloc_local("i64")
+        hooks: dict[int, list[str]] = {}
+        captures: dict[int, int] = {}
+        lhs = [f"local.get {lhs_tmp}"]
+        rhs = [f"local.get {rhs_tmp}"]
+        left_neg = self._nat_sub_sign_code(
+            signs[0], lambda: lhs, hooks, captures)
+        right_neg = self._nat_sub_sign_code(
+            signs[1], lambda: rhs, hooks, captures)
+        below = self._nat_sub_below(
+            left_neg, right_neg, lambda: lhs, lambda: rhs)
+        if hooks.keys() & self._nat_sub_hooks.keys():
+            raise CodegenInvariantError(  # pragma: no cover — a tree
+                "a @Nat subtraction's operand node is recorded twice", expr)
+        self._nat_sub_hooks.update(hooks)
+        try:
+            left = self.translate_expr(expr.left, env)
+            right = self.translate_expr(expr.right, env)
+        finally:
+            for key in hooks:
+                del self._nat_sub_hooks[key]
+        if left is None or right is None:
+            return None  # pragma: no cover — the [E615] channel
+        return self._emit_nat_sub_guard(
+            left, right, at=expr, below=below, operands=(lhs_tmp, rhs_tmp))
+
+    def _nat_sub_sign_code(
+        self,
+        sign: narrowing.OperandSign,
+        value: Callable[[], list[str]],
+        hooks: dict[int, list[str]],
+        captures: dict[int, int],
+    ) -> list[str]:
+        """Instructions that push i32 1 iff the value *sign* describes is
+        negative, once that value has been computed; *value* pushes it.
+
+        The instructions run at the guard, after both operands; what they
+        need from inside an operand — a join's arm, a sub-value an operation
+        consumes — is recorded there through *hooks*, keyed by node."""
+        if isinstance(sign, narrowing.KnownSign):
+            return [f"i32.const {int(sign.negative)}"]
+        if isinstance(sign, narrowing.SignBit):
+            return [*value(), "i64.const 0", "i64.lt_s"]
+        if isinstance(sign, narrowing.ArmSign):
+            flag = self.alloc_local("i32")
+            for leaf, arm_sign in sign.arms:
+                code = self._nat_sub_sign_code(
+                    arm_sign, self._nat_sub_capture(leaf, hooks, captures),
+                    hooks, captures)
+                hooks.setdefault(id(leaf), []).extend(
+                    [*code, f"local.set {flag}"])
+            return [f"local.get {flag}"]
+        if isinstance(sign, narrowing.RemainderSign):
+            dividend = self._nat_sub_sign_code(
+                sign.dividend,
+                self._nat_sub_capture(sign.expr.left, hooks, captures),
+                hooks, captures)
+            return [*dividend, *value(), "i64.const 0", "i64.ne", "i32.and"]
+        left_value = self._nat_sub_capture(sign.expr.left, hooks, captures)
+        right_value = self._nat_sub_capture(sign.expr.right, hooks, captures)
+        left = self._nat_sub_sign_code(sign.left, left_value, hooks, captures)
+        right = self._nat_sub_sign_code(
+            sign.right, right_value, hooks, captures)
+        if isinstance(sign, narrowing.DifferenceSign):
+            return self._nat_sub_below(left, right, left_value, right_value)
+        if isinstance(sign, narrowing.QuotientSign):
+            return self._quotient_sign_code(
+                sign, left, right, value, left_value, right_value)
+        code = [*left, *right, "i32.xor"]
+        if sign.expr.op == ast.BinOp.MUL:
+            code += [*value(), "i64.const 0", "i64.lt_s", "i32.and"]
+        return code
+
+    def _quotient_sign_code(
+        self,
+        sign: narrowing.QuotientSign,
+        left: list[str],
+        right: list[str],
+        value: Callable[[], list[str]],
+        left_value: Callable[[], list[str]],
+        right_value: Callable[[], list[str]],
+    ) -> list[str]:
+        """The sign code of a quotient: negative exactly when one operand is
+        and it is not zero — where `i64.div_s` computes the quotient.
+
+        It does not where an operand is a `@Nat` above `i64.MAX`, which it
+        divides as the negative i64 its bits are (#1504): `(2^63 + 10) / -2`
+        comes back as the positive `2^62 - 5`.  There the operand signs say
+        nothing about the value computed, so it is read as the u64 it is, the
+        comparison the guard makes of two genuine operands.  A division by -1
+        is the exception: it negates exactly at the u64 width, so its sign is
+        still its operands'.  An operand above `i64.MAX` is one read as not
+        negative whose sign bit is set."""
+        left_flag = self.alloc_local("i32")
+        right_flag = self.alloc_local("i32")
+
+        def above_i64_max(
+            flag: int, operand: Callable[[], list[str]],
+        ) -> list[str]:
+            return [*operand(), "i64.const 0", "i64.lt_s",
+                    f"local.get {flag}", "i32.eqz", "i32.and"]
+
+        return [
+            *left, f"local.tee {left_flag}",
+            *right, f"local.tee {right_flag}",
+            "i32.xor",
+            *value(), "i64.const 0", "i64.ne", "i32.and",
+            *above_i64_max(left_flag, left_value),
+            *right_value(), "i64.const -1", "i64.ne", "i32.and",
+            *above_i64_max(right_flag, right_value),
+            "i32.or",
+            "i32.eqz", "i32.and",
+        ]
+
+    def _nat_sub_capture(
+        self, node: ast.Expr, hooks: dict[int, list[str]],
+        captures: dict[int, int],
+    ) -> Callable[[], list[str]]:
+        """A pusher of *node*'s value, for sign code that runs after *node*
+        is evaluated: the first use tees the value into a local as *node*
+        produces it, ahead of anything else recorded there."""
+        def push() -> list[str]:
+            local = captures.get(id(node))
+            if local is None:
+                local = self.alloc_local("i64")
+                captures[id(node)] = local
+                hooks.setdefault(id(node), []).insert(0, f"local.tee {local}")
+            return [f"local.get {local}"]
+        return push
+
+    def _nat_sub_below(
+        self,
+        left_neg: list[str],
+        right_neg: list[str],
+        left: Callable[[], list[str]],
+        right: Callable[[], list[str]],
+    ) -> list[str]:
+        """Instructions that push i32 1 iff the left value is below the right,
+        given each one's sign: where exactly one is negative, iff that one is
+        the left; otherwise by their u64s — two non-negative values are their
+        u64s, and two negative i64s order the same way unsigned."""
+        u64_below = [*left(), *right(), "i64.lt_u"]
+        constant = {"i32.const 0": 0, "i32.const 1": 1}
+        if (len(left_neg) == 1 and len(right_neg) == 1
+                and left_neg[0] in constant and right_neg[0] in constant):
+            if left_neg == right_neg:
+                return u64_below
+            return list(left_neg)
+        left_flag = self.alloc_local("i32")
+        right_flag = self.alloc_local("i32")
+        return [
+            *left_neg, f"local.set {left_flag}",
+            *right_neg, f"local.set {right_flag}",
+            f"local.get {left_flag}",
+            *u64_below,
+            f"local.get {left_flag}", f"local.get {right_flag}", "i32.ne",
+            "select",
+        ]
+
     def _emit_nat_sub_guard(
-        self, left: list[str], right: list[str],
+        self, left: list[str], right: list[str], *, at: ast.Node | None,
+        below: list[str] | None = None,
+        operands: tuple[int, int] | None = None,
     ) -> list[str]:
         """Emit a guarded `i64.sub` that traps on underflow.
 
@@ -2105,42 +2400,98 @@ class OperatorsMixin:
             local.set $rhs_tmp     ;; pop rhs into temp
             local.tee $lhs_tmp     ;; pop lhs into temp, leave on stack
             local.get $rhs_tmp     ;; push rhs back (stack: [lhs, rhs])
-            i64.lt_s               ;; lhs < rhs?
+            i64.lt_u               ;; lhs < rhs, as the u64s @Nat is?
             if
-              unreachable          ;; trap; classified as "unreachable"
-            end                    ;;   by vera/codegen/api.py:_classify_trap
+              <vera.trap nat_underflow> unreachable
+            end
             local.get $lhs_tmp
             local.get $rhs_tmp
             i64.sub
 
-        The trap is the bare `unreachable` instruction so it's
-        classified by the existing trap taxonomy as
-        ``kind="unreachable"`` — adding a dedicated ``"underflow"``
-        kind with a specific Fix paragraph requires new
-        host-import scaffolding (mirroring how `vera.contract_fail`
-        works) and is left as a follow-up enhancement.  Users who
-        want a precise diagnostic should run ``vera verify`` first;
-        the guard's role is preventing silent corruption of @Nat
-        slots in programs that skipped verification.
+        The trap names itself (#1479): it signals ``nat_underflow`` with a
+        message quoting the two operands and the ``requires(lhs >= rhs)``
+        that discharges the site's ``nat_sub`` obligation, so a reader is
+        handed the clause to add rather than a bare ``unreachable``.  The
+        comparison is unsigned, as the ``@Nat`` overflow guards are: a
+        ``@Nat`` is a u64 (spec §2.2.1), and a signed compare read one above
+        i64.MAX as negative — trapping ``2^63 - 1`` with a message saying its
+        right operand was the larger, and passing ``1 - 2^63``.
+
+        An operand that can hold a negative value is compared by *below*
+        instead (:py:meth:`_translate_nat_subtraction`), over the locals
+        *operands* names, which it reads after both are set (#1503).
         """
-        lhs_tmp = self.alloc_local("i64")
-        rhs_tmp = self.alloc_local("i64")
+        if below is None or operands is None:
+            lhs_tmp = self.alloc_local("i64")
+            rhs_tmp = self.alloc_local("i64")
+            check = [
+                f"local.set {rhs_tmp}",
+                f"local.tee {lhs_tmp}",
+                f"local.get {rhs_tmp}",
+                "i64.lt_u",
+            ]
+        else:
+            lhs_tmp, rhs_tmp = operands
+            check = [f"local.set {rhs_tmp}", f"local.set {lhs_tmp}", *below]
+        trap = self._emit_trap(
+            "wasm/operators.py:_emit_nat_sub_guard", at=at,
+            message=self._nat_sub_message(at))
         return [
             *left,
             *right,
-            f"local.set {rhs_tmp}",
-            f"local.tee {lhs_tmp}",
-            f"local.get {rhs_tmp}",
-            "i64.lt_s",
+            *check,
             "if",
-            "  unreachable",
+            *(f"  {i}" for i in trap),
             "end",
             f"local.get {lhs_tmp}",
             f"local.get {rhs_tmp}",
             "i64.sub",
         ]
 
-    def _emit_nat_bind_guard(self, value: list[str]) -> list[str]:
+    def _note_quotient_overflow(self, expr: ast.BinaryExpr) -> str:
+        """The record entry for a signed division's second trap condition,
+        ``INT_MIN / -1``, whose quotient leaves the i64 range (#1479); its
+        marker goes on the same ``i64.div_s``.  Returns ``""`` for a literal
+        divisor whose i64 bits are not -1's — -1 itself, or the `@Nat`
+        literal 2^64 - 1, can meet it; any other literal cannot."""
+        divisor = expr.right
+        minus_one = (1 << 64) - 1
+        if (isinstance(divisor, ast.IntLit)
+                and divisor.value % (1 << 64) != minus_one):
+            return ""
+        if (isinstance(divisor, ast.UnaryExpr)
+                and divisor.op == ast.UnaryOp.NEG
+                and isinstance(divisor.operand, ast.IntLit)
+                and divisor.operand.value % (1 << 64) != 1):
+            return ""
+        return self._record_check(
+            "wasm/operators.py:_note_quotient_overflow", expr)
+
+    @staticmethod
+    def _at_line(at: ast.Node | None) -> str:
+        """`` (line N)`` for a trap message, or nothing for an unspanned
+        node — the backtrace names the function, and this names the line."""
+        if at is None or at.span is None:
+            return ""
+        return f" (line {at.span.line})"
+
+    def _nat_sub_message(self, at: ast.Node | None) -> str:
+        """The `nat_underflow` message: the two operands, and the clause that
+        discharges the subtraction."""
+        if isinstance(at, ast.BinaryExpr):
+            lhs, rhs = ast.format_expr(at.left), ast.format_expr(at.right)
+        else:  # pragma: no cover — every caller passes the subtraction
+            lhs, rhs = "lhs", "rhs"
+        return (
+            f"@Nat subtraction `{lhs} - {rhs}` would be negative"
+            f"{self._at_line(at)}: its right operand is larger than its "
+            f"left.  Add `requires({lhs} >= {rhs})` to the enclosing "
+            "function, or compute in @Int."
+        )
+
+    def _emit_nat_bind_guard(
+        self, value: list[str], *, at: ast.Node | None,
+    ) -> list[str]:
         """Emit a guarded value that traps if it is a negative i64.
 
         The binding-site analogue of :py:meth:`_emit_nat_sub_guard`
@@ -2156,21 +2507,27 @@ class OperatorsMixin:
             i64.const 0
             i64.lt_s           ;; value < 0?
             if
-              unreachable      ;; trap; classified "unreachable"
-            end                ;;   by vera/codegen/api.py:_classify_trap
+              <vera.trap nat_guard> unreachable
+            end
             local.get $tmp     ;; restore the (now-checked) value
 
-        Like the #520 guard, the bare ``unreachable`` trap reuses the
-        existing taxonomy; a dedicated "negative-nat" trap kind with a
-        tailored Fix paragraph (#754) needs the contract-fail host-import
-        channel wired through to a guard emitted mid-expression and is
-        tracked as a follow-up.  The guard never fires on a value
-        the verifier proved non-negative, so a Tier-1-clean program pays
-        only dead instructions, never a trap.
+        The trap carries its OWN kind (#754): the guard signals
+        ``nat_guard`` through ``vera.trap`` immediately before the
+        ``unreachable``, so the runtime reports it with a Fix naming the
+        `requires(... >= 0)` that would discharge it rather than the generic
+        ``unreachable`` paragraph.  The guard never fires on a value the
+        verifier proved non-negative, so a Tier-1-clean program pays only
+        dead instructions, never a trap.
         """
-        return self._emit_negative_i64_guard(value)
+        # `_emit_trap` raises the import's flag beside the emission, not at
+        # module assembly — a guard emitted without it would reference an
+        # undeclared `$vera.trap` (the #808 / #1376 discipline).
+        trap = self._emit_trap("wasm/operators.py:_emit_nat_bind_guard", at=at)
+        return self._emit_negative_i64_guard(value, trap=trap)
 
-    def _emit_int_widen_guard(self, value: list[str]) -> list[str]:
+    def _emit_int_widen_guard(
+        self, value: list[str], *, at: ast.Node | None,
+    ) -> list[str]:
         """Emit a guarded value that traps if a @Nat exceeds i64.MAX (#813).
 
         The @Nat -> @Int widening dual of :py:meth:`_emit_nat_bind_guard`: a
@@ -2181,29 +2538,33 @@ class OperatorsMixin:
         when the i64 reads as negative — so the guard traps on ``value < 0``
         (the same negative-i64 mechanism as the nat-bind guard).  Emitted at the
         @Nat -> @Int coercion sites the verifier obligates (return, call
-        argument, let).  The bare ``unreachable`` reuses the existing trap
-        taxonomy (a dedicated *widening* trap kind — modelled on the
-        ``kind="overflow"`` #808 added for arithmetic overflow — is a
-        follow-up); the guard never fires on a value the verifier proved
-        ``<= i64.MAX``, so a Tier-1-clean program pays only dead instructions.
+        argument, let).  It signals ``widen_guard`` through ``vera.trap``
+        immediately before the ``unreachable``, so the runtime names the
+        ``requires(... <= i64.MAX)`` that discharges it (#1438); the guard
+        never fires on a value the verifier proved ``<= i64.MAX``, so a
+        Tier-1-clean program pays only dead instructions.
         """
-        return self._emit_negative_i64_guard(value)
+        trap = self._emit_trap(
+            "wasm/operators.py:_emit_int_widen_guard", at=at)
+        return self._emit_negative_i64_guard(value, trap=trap)
 
-    def _emit_negative_i64_guard(self, value: list[str]) -> list[str]:
+    def _emit_negative_i64_guard(
+        self, value: list[str], *, trap: list[str],
+    ) -> list[str]:
         """Shared mechanism behind the @Int->@Nat narrowing guard (#552) and
         the @Nat->@Int widening guard (#813): leave *value* on the stack, but
-        trap (bare ``unreachable``, classified by ``api.py:_classify_trap``)
-        when it reads as a negative i64.  Both callers reduce to this same
-        sign-bit check today; they stay distinct entry points because each has
-        its own deferred dedicated trap kind (#754 narrowing, and a widening
-        kind modelled on #808's ``kind="overflow"``) that will give them
-        tailored Fix paragraphs.
+        trap when it reads as a negative i64.  Both callers reduce to this
+        same sign-bit check; they stay distinct entry points because they
+        are distinct BOUNDARIES with distinct remedies, which is what *trap*
+        carries: the caller's own signal from ``_emit_trap``, naming its kind
+        (``nat_guard`` or ``widen_guard``) so the runtime reports the
+        boundary that failed rather than the instruction the two share.
 
             [value]
             local.tee $tmp     ;; leave value on stack, copy to temp
             i64.const 0
             i64.lt_s           ;; value < 0?
-            if unreachable end ;; trap
+            if <trap> end
             local.get $tmp     ;; restore the (now-checked) value
         """
         tmp = self.alloc_local("i64")
@@ -2213,7 +2574,7 @@ class OperatorsMixin:
             "i64.const 0",
             "i64.lt_s",
             "if",
-            "  unreachable",
+            *(f"  {i}" for i in trap),
             "end",
             f"local.get {tmp}",
         ]
@@ -2254,10 +2615,12 @@ class OperatorsMixin:
 
         A leaf narrows exactly when ``_narrows_into_nat`` says binding it into a
         @Nat slot needs a ``>= 0`` guard AND it is not intrinsically @Nat
-        (`_result_is_nat` — a genuine @Nat->@Nat tail call resolves its callee's
-        @Nat return here and so is NOT collected), the per-leaf form of the
-        whole-body ``narrow_guarded`` gate.  Descends ``Block`` / ``IfExpr`` /
-        ``MatchExpr`` joins exactly as the verifier does.
+        (the shared rule read through
+        :data:`vera.narrowing.NARROWING_EXEMPTION_READING` — a genuine
+        @Nat->@Nat tail call resolves its callee's @Nat return there and so is
+        NOT collected), the per-leaf form of the whole-body ``narrow_guarded``
+        gate.  Descends ``Block`` / ``IfExpr`` / ``MatchExpr`` joins exactly as
+        the verifier does.
         """
         leaves: set[int] = set()
         self._collect_narrowing_return_leaves_into(body, leaves)
@@ -2280,7 +2643,9 @@ class OperatorsMixin:
             for arm in expr.arms:
                 self._collect_narrowing_return_leaves_into(arm.body, leaves)
             return
-        if self._narrows_into_nat(expr) and not self._result_is_nat(expr):
+        if self._narrows_into_nat(expr) and not narrowing.result_is_nat(
+                expr, self._declared_result_is_nat,
+                narrowing.NARROWING_EXEMPTION_READING):
             leaves.add(id(expr))
 
     def _guard_nat_return_leaf(
@@ -2296,7 +2661,7 @@ class OperatorsMixin:
         tail leaf keeps its ``return_call`` untouched.
         """
         if id(expr) in self._nat_return_leaf_ids:
-            return self._emit_nat_bind_guard(instrs)
+            return self._emit_nat_bind_guard(instrs, at=expr)
         return instrs
 
     def _collect_hetero_widen_arm_calls(self, body: ast.Expr) -> set[int]:
@@ -2366,30 +2731,13 @@ class OperatorsMixin:
                 ids.add(id(node))
 
     def _has_underflow_leaf(self, value: ast.Expr) -> bool:
-        """Codegen mirror of ``ContractVerifier._has_underflow_leaf`` (#552).
+        """Codegen mirror of the shared underflow-leaf rule (#552).
 
-        True iff a statically-@Nat *value*'s value-producing tree
-        contains a pure-literal subtraction (no @Nat provenance) — the
-        #520-exempt ``0 - 1`` idiom, however wrapped (block / if / match)
-        or nested in arithmetic.
+        Delegates to :func:`vera.narrowing.has_underflow_leaf`; the @Nat-origin
+        oracle stays here because it reads codegen's own tables.
         """
-        if isinstance(value, ast.BinaryExpr):
-            if (value.op == ast.BinOp.SUB
-                    and not self._has_nat_origin_codegen(value)):
-                return True
-            return (self._has_underflow_leaf(value.left)
-                    or self._has_underflow_leaf(value.right))
-        if isinstance(value, ast.Block):
-            return self._has_underflow_leaf(value.expr)
-        if isinstance(value, ast.IfExpr):
-            if value.else_branch is None:
-                return False
-            return (self._has_underflow_leaf(value.then_branch)
-                    or self._has_underflow_leaf(value.else_branch))
-        if isinstance(value, ast.MatchExpr):
-            return any(self._has_underflow_leaf(arm.body)
-                       for arm in value.arms)
-        return False
+        return narrowing.has_underflow_leaf(
+            value, self._has_nat_origin_codegen)
 
     # -----------------------------------------------------------------
     # @Int / @Nat integer-overflow runtime guard (#798)
@@ -2446,11 +2794,27 @@ class OperatorsMixin:
         either operand is ``@Int``, else ``@Nat``), NOT the narrowed result
         type.  Keeps the runtime guard in lockstep with the verifier's
         obligation at every ``+``/``-``/``*`` site (#798)."""
-        lt = self._overflow_codegen_type(expr.left)
-        rt = self._overflow_codegen_type(expr.right)
-        if lt is None or rt is None:
+        # #1503: two literal-only operands take their width from their
+        # values, the rule the verifier's width reads first too.
+        return narrowing.operation_width(expr, self._overflow_codegen_type)
+
+    def _checker_resolved_type(self, expr: ast.Expr) -> object | None:
+        """*expr*'s checker-resolved type from the threaded side-table, raw.
+
+        The same lookup :py:meth:`_resolved_codegen_type` performs, without
+        the Int/Nat narrowing of the answer — for a consumer whose rule lives
+        in :mod:`vera.narrowing` and is shared with the verifier, which reads
+        the identical table through ``_resolved_type_of``.  ``None`` when the
+        table was not threaded or carries no entry for this span, which is a
+        distinct answer from any type and must not be collapsed into one.
+        """
+        table = self._expr_semantic_types
+        if table is None:
             return None
-        return "Int" if "Int" in (lt, rt) else "Nat"
+        key = ast.span_key(expr)
+        if key is None:
+            return None
+        return table.get(key)
 
     def _resolved_codegen_type(self, expr: ast.Expr) -> str | None:
         """Look up *expr*'s checker-resolved type as ``"Int"`` / ``"Nat"``,
@@ -2480,6 +2844,95 @@ class OperatorsMixin:
             return "Int"
         return None
 
+    @contextmanager
+    def _handing_down(
+        self, expr: ast.Expr, component_ty: object | None,
+    ) -> Iterator[None]:
+        """Hand *component_ty* to the container literal *expr* stands for,
+        for the length of the block (R-1412 F3).
+
+        The checker records a target for the OUTERMOST literal of a nested
+        construction and none for the literals inside it, while the
+        verifier's descent (``_descend_construction_container``) threads the
+        component type down and obligates what it reaches.  This is the
+        codegen twin of that threading, over the same positions — the caller
+        is a `Tuple` argument, an array-literal element or a ``map_insert``
+        value / receiver — and through the same wrappers: an ``if`` or
+        ``match`` stands where its arms do, and a block where its tail does.
+        The type lands on the `Tuple`, array literal or ``map_insert`` it
+        reaches, which reads it through :py:meth:`_container_target_full` /
+        :py:meth:`_container_target_refined` when its own span has no
+        recorded target.
+
+        Keyed by node rather than held in one ambient variable: an ambient
+        value is visible to EVERYTHING translated beneath the component —
+        a call argument, a block statement, a branch condition — so an
+        unrelated `Tuple` there read the enclosing component's type as its
+        own.  Registered for this component's translation only, so a sibling
+        never sees another's.
+        """
+        keys: list[int] = []
+        if component_ty is not None:
+            self._register_hand_down(expr, component_ty, keys)
+        try:
+            yield
+        finally:
+            for key in keys:
+                self._handed_down_types.pop(key, None)
+
+    def _register_hand_down(
+        self, expr: ast.Expr, component_ty: object, keys: list[int],
+    ) -> None:
+        if isinstance(expr, ast.IfExpr):
+            for arm in (expr.then_branch, expr.else_branch):
+                if arm is not None:
+                    self._register_hand_down(arm, component_ty, keys)
+        elif isinstance(expr, ast.MatchExpr):
+            for match_arm in expr.arms:
+                self._register_hand_down(match_arm.body, component_ty, keys)
+        elif isinstance(expr, ast.Block):
+            if expr.expr is not None:
+                self._register_hand_down(expr.expr, component_ty, keys)
+        elif ((isinstance(expr, ast.ConstructorCall) and expr.name == "Tuple")
+                or isinstance(expr, ast.ArrayLit)
+                or (isinstance(expr, ast.FnCall)
+                    and expr.name == "map_insert")):
+            self._handed_down_types[id(expr)] = (expr, component_ty)
+            keys.append(id(expr))
+
+    def _handed_down_type(self, expr: ast.Expr) -> object | None:
+        entry = self._handed_down_types.get(id(expr))
+        if entry is None or entry[0] is not expr:
+            return None
+        return entry[1]
+
+    def _container_target_full(self, expr: ast.Expr) -> object | None:
+        """A container literal's target (R-1412 F3), with the refinement
+        unwrapped like :py:meth:`_target_codegen_type_full`.
+
+        The type its position handed down comes FIRST, the recorded one
+        second.  The verifier's descent types a nested literal from the
+        position alone and never consults the node's own record, and the
+        record can be wrong where the position is not: a ``map_insert``
+        value's recorded target is the ERASED base, generic unification
+        having resolved ``V`` against the ``map_new()`` receiver, so a
+        `Tuple` stored as a ``Map<String, Tuple<Nat, Int>>`` value is
+        recorded as a ``Tuple<Int, Int>``.  A literal no position reaches
+        has nothing handed down, and reads its record as before.
+        """
+        handed = self._handed_down_type(expr)
+        if handed is not None:
+            return getattr(handed, "base", handed)
+        return self._target_codegen_type_full(expr)
+
+    def _container_target_refined(self, expr: ast.Expr) -> object | None:
+        """:py:meth:`_container_target_full` with the refinement intact, like
+        :py:meth:`_target_codegen_type_refined`."""
+        handed = self._handed_down_type(expr)
+        if handed is not None:
+            return handed
+        return self._target_codegen_type_refined(expr)
+
     def _target_codegen_type_full(self, expr: ast.Expr) -> object | None:
         """The checker-recorded *target* type of *expr* (the ``expected`` it was
         checked against), unwrapping any refinement to its base — the codegen
@@ -2502,6 +2955,89 @@ class OperatorsMixin:
             return None
         return getattr(ty, "base", ty)
 
+    def _target_codegen_type_refined(self, expr: ast.Expr) -> object | None:
+        """The checker-recorded target of *expr* WITHOUT the refinement
+        unwrap :py:meth:`_target_codegen_type_full` performs (#1426).
+
+        The unwrap exists because every caller before #1426 asked a
+        base-shaped question — "is this component a `@Nat`?", "an `@Int`?" —
+        for which the refinement is noise.  A §2.6.5 guard asks the opposite
+        question: the predicate IS the answer, and the base alone cannot
+        reconstruct it.  So this reads the same table and hands back what is
+        in it.
+        """
+        table = self._expr_target_types
+        if table is None:
+            return None
+        key = ast.span_key(expr)
+        if key is None:
+            return None
+        return table.get(key)
+
+    @staticmethod
+    def refined_type_expr(resolved_ty: object | None) -> ast.TypeExpr | None:
+        """A ``TypeExpr`` the §2.6.5 guard lowering can consume, minted from
+        a checker-side ``RefinedType`` — or ``None`` when there is no
+        refinement to guard (#1426).
+
+        Construction positions know their component's type only as the
+        checker's SEMANTIC type: a constructor layout records a field's name
+        with the predicate already discarded, a `Tuple` carrier has no
+        per-field metadata at all, and an array literal carries a name
+        string.  The guard emitter, by contrast, is written against the
+        SYNTAX — it chases a `TypeExpr`'s alias chain to a
+        `ast.RefinementType`.  The two meet here.
+
+        There is no reverse map from a semantic refinement to the alias that
+        declared it, and there could not be a well-defined one: two aliases
+        may resolve to structurally identical types.  What makes the
+        synthesis exact anyway is that `types.RefinedType` keeps the
+        predicate's own AST node, so nothing is reconstructed — the minted
+        node carries the same predicate the checker recorded, over a
+        `NamedType` naming the RESOLVED base.  Resolving the base is what
+        makes the binder agree: `refinement_binder_parts` names the binder
+        from the base, the predicate references the base it was written
+        over, and a resolved base cannot disagree with itself the way a
+        written alias can.
+
+        ``None`` for a non-refinement, for a refinement over a base with no
+        nameable head (a function type, a bare type variable), and for a
+        refinement OVER a refinement — the last because
+        `_emit_bind_refine_guard` refuses that base anyway, and minting a
+        node it will only reject reads as a guard that exists.
+        """
+        if resolved_ty is None or type(resolved_ty).__name__ != "RefinedType":
+            return None
+        base = getattr(resolved_ty, "base", None)
+        predicate = getattr(resolved_ty, "predicate", None)
+        if base is None or predicate is None:
+            return None
+        if type(base).__name__ == "RefinedType":
+            return None
+        base_name = getattr(base, "name", None)
+        if not isinstance(base_name, str):
+            return None
+        return ast.RefinementType(
+            base_type=ast.NamedType(name=base_name, type_args=None),
+            predicate=predicate,
+        )
+
+    @staticmethod
+    def _adt_arg_type(target: object | None, index: int) -> object | None:
+        """*target*'s ``index``-th type argument, refinement INTACT (#1426).
+
+        The sibling predicates beside this one answer base-shaped questions
+        and unwrap; a §2.6.5 guard needs the refinement itself, so this hands
+        back the argument as recorded.  ``None`` whenever the target is not
+        an ADT with that many arguments — a `Tuple` carrier with no threaded
+        target, an unverified `transform -> compile` — which leaves the
+        component where it was rather than guessing at a predicate.
+        """
+        args = getattr(target, "type_args", None)
+        if not isinstance(args, tuple) or index >= len(args):
+            return None
+        return args[index]
+
     @staticmethod
     def _adt_arg_is_int(target: object | None, index: int) -> bool:
         """True iff *target* is an ``AdtType`` whose ``index``-th type argument
@@ -2516,6 +3052,27 @@ class OperatorsMixin:
         arg = args[index]
         base = getattr(arg, "base", arg)
         return getattr(base, "name", None) == "Int"
+
+    @staticmethod
+    def _adt_arg_is_nat(target: object | None, index: int) -> bool:
+        """The narrowing twin of :py:meth:`_adt_arg_is_int` (#1416).
+
+        The widening direction at a tuple component has read the component's
+        target type from the checker's threaded table since #820; the
+        narrowing direction never did, so `Tuple(@Int.0, 2)` into a
+        `Tuple<Nat, Int>` stored the `@Int` unchecked while its `@Nat` twin
+        one field over was guarded.  Same table, same index, opposite base —
+        written as its own method rather than a parameter on one, because
+        each is read at a different arm of the construction site's
+        narrowing/widening chain and a shared one would need the arm to pass
+        the answer it is asking for.
+        """
+        args = getattr(target, "type_args", None)
+        if not args or index >= len(args):
+            return False
+        arg = args[index]
+        base = getattr(arg, "base", arg)
+        return getattr(base, "name", None) == "Nat"
 
     def _is_static_int_typed(self, expr: ast.Expr) -> bool:
         """Return True iff *expr* has static type @Int by AST shape alone.
@@ -2579,34 +3136,38 @@ class OperatorsMixin:
         right: list[str],
         op: ast.BinOp,
         ovf: str,
+        *,
+        at: ast.Node | None,
     ) -> list[str]:
         """Dispatch to the per-(op, type) guarded arithmetic sequence (#798).
 
         Each sequence computes the wrapping result, checks whether the true
         (unbounded) result left the i64 (@Int) / u64 (@Nat) range, and on
-        overflow calls ``vera.overflow_trap`` then ``unreachable`` so the trap
-        classifies as the precise ``kind="overflow"`` (#808) — carrying the
-        overflow Fix paragraph — rather than the generic ``unreachable``;
-        otherwise it leaves the wrapping result on the stack.  @Nat SUB never
-        reaches here (excluded by the caller; it is ``nat_sub`` underflow).
+        overflow signals ``overflow`` through ``vera.trap`` then traps, so
+        the runtime reports the overflow kind and its Fix paragraph (#808)
+        rather than the generic ``unreachable``; otherwise it leaves the
+        wrapping result on the stack.  @Nat SUB never reaches here (excluded
+        by the caller; it is ``nat_sub`` underflow).
+
+        The trap is emitted ONCE, here, and handed to the sequence, which
+        splices it at its single trap site — one check, one signal, one
+        entry in the per-module record (#1479).
         """
-        # #808: every guard below traps through `vera.overflow_trap` + an
-        # `unreachable`, so declare the host import.
-        self._needs_overflow_trap = True
+        trap = self._emit_trap("wasm/operators.py:_emit_overflow_guard", at=at)
         if ovf == "Nat":
             if op == ast.BinOp.ADD:
-                return self._emit_nat_add_guard(left, right)
+                return self._emit_nat_add_guard(left, right, trap)
             # MUL (SUB is excluded by the caller).
-            return self._emit_nat_mul_guard(left, right)
+            return self._emit_nat_mul_guard(left, right, trap)
         # @Int.
         if op == ast.BinOp.ADD:
-            return self._emit_int_add_guard(left, right)
+            return self._emit_int_add_guard(left, right, trap)
         if op == ast.BinOp.SUB:
-            return self._emit_int_sub_guard(left, right)
-        return self._emit_int_mul_guard(left, right)
+            return self._emit_int_sub_guard(left, right, trap)
+        return self._emit_int_mul_guard(left, right, trap)
 
     def _emit_int_add_guard(
-        self, left: list[str], right: list[str],
+        self, left: list[str], right: list[str], trap: list[str],
     ) -> list[str]:
         """@Int ADD, signed i64.  Overflow iff ``((a^r) & (b^r)) < 0`` —
         the Hacker's-Delight 2-12 test: ``a+b`` overflows iff ``a`` and ``b``
@@ -2636,13 +3197,12 @@ class OperatorsMixin:
             "i64.const 0",
             "i64.lt_s",                      # stack: [r, cond]
             "if",
-            "  call $vera.overflow_trap",
-            "  unreachable",
+            *(f"  {i}" for i in trap),
             "end",                           # stack: [r]
         ]
 
     def _emit_int_sub_guard(
-        self, left: list[str], right: list[str],
+        self, left: list[str], right: list[str], trap: list[str],
     ) -> list[str]:
         """@Int SUB, signed i64, ``a - b`` (left=minuend).  Overflow iff
         ``((a^b) & (a^r)) < 0``: ``a-b`` overflows iff ``a`` and ``b`` differ
@@ -2672,13 +3232,12 @@ class OperatorsMixin:
             "i64.const 0",
             "i64.lt_s",                      # stack: [r, cond]
             "if",
-            "  call $vera.overflow_trap",
-            "  unreachable",
+            *(f"  {i}" for i in trap),
             "end",                           # stack: [r]
         ]
 
     def _emit_int_mul_guard(
-        self, left: list[str], right: list[str],
+        self, left: list[str], right: list[str], trap: list[str],
     ) -> list[str]:
         """@Int MUL, signed i64 — the dangerous one.  Division round-trip with
         the ``INT_MIN * -1`` special case.
@@ -2687,10 +3246,12 @@ class OperatorsMixin:
 
         The ``a == 0`` branch avoids ``r/0``; the ``a == -1`` pre-check avoids
         the native ``i64.div_s`` trap on ``INT_MIN / -1`` (testing ``b ==
-        INT_MIN`` instead).  Uses ``local.set r_tmp`` to clear the operand
-        stack before the nested ``if`` blocks (a value left under an ``if``
-        whose arms don't symmetrically consume it is a WASM validation error),
-        then pushes ``r`` at the end.  Leaves ``r`` on the stack."""
+        INT_MIN`` instead).  The two overflow conditions are folded into ONE
+        i32 flag by value-producing ``if`` blocks, and the flag gates the
+        single trap site — so the check signals once, whichever condition
+        fired.  ``local.set r_tmp`` clears the operand stack before the
+        nested blocks, and ``r`` is pushed at the end.  Leaves ``r`` on the
+        stack."""
         a_tmp = self.alloc_local("i64")
         b_tmp = self.alloc_local("i64")
         r_tmp = self.alloc_local("i64")
@@ -2705,36 +3266,32 @@ class OperatorsMixin:
             f"local.set {r_tmp}",          # stack empty
             f"local.get {a_tmp}",
             "i64.eqz",
-            "if",                            # a == 0 → safe, no checks
+            "if (result i32)",               # a == 0 → safe
+            "  i32.const 0",
             "else",
             f"  local.get {a_tmp}",
             "  i64.const -1",
             "  i64.eq",
-            "  if",                          # a == -1
+            "  if (result i32)",             # a == -1: overflow iff b == INT_MIN
             f"    local.get {b_tmp}",
             f"    i64.const {self._I64_MIN_CODEGEN}",
             "    i64.eq",
-            "    if",                        # b == INT_MIN → overflow
-            "      call $vera.overflow_trap",
-            "      unreachable",
-            "    end",
             "  else",                        # a != 0 && a != -1 → safe to divide
             f"    local.get {r_tmp}",
             f"    local.get {a_tmp}",
             "    i64.div_s",
             f"    local.get {b_tmp}",
-            "    i64.ne",
-            "    if",                        # r/a != b → overflow
-            "      call $vera.overflow_trap",
-            "      unreachable",
-            "    end",
+            "    i64.ne",                    # r/a != b → overflow
             "  end",
+            "end",
+            "if",                            # the one trap site
+            *(f"  {i}" for i in trap),
             "end",
             f"local.get {r_tmp}",          # stack: [r]
         ]
 
     def _emit_nat_add_guard(
-        self, left: list[str], right: list[str],
+        self, left: list[str], right: list[str], trap: list[str],
     ) -> list[str]:
         """@Nat ADD, unsigned u64.  Overflow iff ``r <u a`` — an unsigned sum
         wraps iff the carry-out makes the result smaller than an addend.
@@ -2757,13 +3314,12 @@ class OperatorsMixin:
             f"local.get {a_tmp}",
             "i64.lt_u",                      # r <u a ?  stack: [r, cond]
             "if",
-            "  call $vera.overflow_trap",
-            "  unreachable",
+            *(f"  {i}" for i in trap),
             "end",                           # stack: [r]
         ]
 
     def _emit_nat_mul_guard(
-        self, left: list[str], right: list[str],
+        self, left: list[str], right: list[str], trap: list[str],
     ) -> list[str]:
         """@Nat MUL, unsigned u64.  Overflow iff ``a != 0 && r/u a != b``.
         No ``-1`` / INT_MIN hazard (unsigned div only traps on divide-by-zero,
@@ -2790,8 +3346,7 @@ class OperatorsMixin:
             f"  local.get {b_tmp}",
             "  i64.ne",
             "  if",                          # r/u a != b → overflow
-            "    call $vera.overflow_trap",
-            "    unreachable",
+            *(f"    {i}" for i in trap),
             "  end",
             "end",
             f"local.get {r_tmp}",          # stack: [r]

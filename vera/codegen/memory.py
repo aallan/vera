@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from vera.wasm.helpers import FIELD_ALIGNS, FIELD_SIZES
+
 
 @dataclass
 class ConstructorLayout:
@@ -23,11 +25,19 @@ class ConstructorLayout:
     # ``field_offsets`` for user constructors (built in the same loop); ``()``
     # for built-in layouts, where consumers bounds-check (`i < len(...)`)
     # rather than assume a flag exists for every field.
+    #
+    # These describe the DECLARED field types, so they are False at every
+    # instantiation of a generic field, and they are no longer the only
+    # source the construction guard reads: #757 added the argument's own
+    # recorded target type, which is what a `Wrap(@Int.0)` building a
+    # `Box<Nat>` is guarded from.  A consumer wanting "is this field @Nat
+    # HERE" must ask both.
     nat_fields: tuple[bool, ...] = ()
     # #813: per-field "is a concrete @Int field" flags, the dual of
     # ``nat_fields``, for the runtime @Nat -> @Int *widening* guard when a
     # @Nat-typed argument is stored into an @Int field.  Same length / empty
-    # conventions as ``nat_fields``.
+    # conventions as ``nat_fields``, and the same #757 caveat: the generic
+    # instantiation comes from the argument's recorded target, not from here.
     int_fields: tuple[bool, ...] = ()
     # #773: per-field RESOLVED Vera type name (e.g. "Int", "String", "T",
     # "Inner", "Map<String, Int>"), used by structural ``Eq`` auto-derivation to
@@ -42,6 +52,18 @@ class ConstructorLayout:
     # to ``field_offsets``; a built-in layout may leave it ``()`` (consumers
     # then fall back to the scalar-rep basis for that layout).
     field_types: tuple[str, ...] = ()
+    # #1426: the DECLARED field type expressions, kept verbatim.  Every other
+    # per-field table here is a derived scalar — a wasm-type string, two
+    # booleans, a resolved name with the refinement discarded — because every
+    # consumer before #1426 asked a base-shaped question.  The §2.6.5
+    # predicate guard asks the opposite one: the predicate IS the answer, and
+    # no derived name can reconstruct it.  This is the only place the
+    # declared syntax exists (the generator keeps no `DataDecl` and no
+    # checker `Environment`), so a construction-site guard reads it here or
+    # not at all.  Same length / empty conventions as `nat_fields`; a
+    # built-in layout leaves it `()` and its fields go unguarded, which is
+    # what they were.
+    field_type_exprs: tuple[object | None, ...] = ()
 
     def __post_init__(self) -> None:
         # #759: ``nat_fields`` runs parallel to ``field_offsets``.  User
@@ -69,35 +91,41 @@ class ConstructorLayout:
                 f"field_types (len {len(self.field_types)}) must match "
                 f"field_offsets (len {len(self.field_offsets)}) or be empty"
             )
+        # #1426: and so does ``field_type_exprs`` — a mis-indexed entry here
+        # would guard a field with its neighbour's predicate, which is worse
+        # than not guarding it.
+        if (self.field_type_exprs
+                and len(self.field_type_exprs) != len(self.field_offsets)):
+            raise ValueError(
+                f"field_type_exprs (len {len(self.field_type_exprs)}) must "
+                f"match field_offsets (len {len(self.field_offsets)}) or be "
+                "empty"
+            )
 
 
 def _wasm_type_size(wt: str) -> int:
-    """Byte size of a WASM value type."""
-    if wt == "i32":
-        return 4
-    if wt in ("i64", "f64"):
-        return 8
-    if wt == "i32_pair":
-        return 8
-    # #1043: an erases-to-Unit field is zero-size — it occupies no bytes and
-    # does not advance the layout offset, exactly as construction lays it out.
-    if wt == "unit":
-        return 0
-    raise ValueError(f"Unknown WASM type: {wt}")
+    """Byte size of a WASM value type, from the ONE layout table.
+
+    A reader of :data:`vera.wasm.helpers.FIELD_SIZES` rather than a second
+    statement of it: these were a function-shaped copy of the same widths —
+    including `"unit"`, the zero-size erases-to-Unit field that neither
+    aligns nor advances the offset (#1043) — and a copy is what the layout
+    fold removes.  Unlike the table's `.get`, an unknown type RAISES here,
+    which is the property registration wants: a field whose width nobody
+    knows must not be laid out at a guessed one.
+    """
+    try:
+        return FIELD_SIZES[wt]
+    except KeyError:
+        raise ValueError(f"Unknown WASM type: {wt}") from None
 
 
 def _wasm_type_align(wt: str) -> int:
-    """Natural alignment of a WASM value type."""
-    if wt == "i32":
-        return 4
-    if wt in ("i64", "f64"):
-        return 8
-    if wt == "i32_pair":
-        return 4
-    # #1043: a zero-size Unit field imposes no alignment constraint.
-    if wt == "unit":
-        return 1
-    raise ValueError(f"Unknown WASM type: {wt}")
+    """Natural alignment of a WASM value type, from the ONE layout table."""
+    try:
+        return FIELD_ALIGNS[wt]
+    except KeyError:
+        raise ValueError(f"Unknown WASM type: {wt}") from None
 
 
 def _align_up(offset: int, align: int) -> int:

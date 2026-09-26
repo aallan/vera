@@ -20,6 +20,10 @@ from tests.codegen_helpers import (
     _run,
 )
 from tests.module_fixture_helpers import fake_resolved_module
+from vera.trap_registry import signal_call_pattern
+
+#: The nat_sub guard's own signal (#1479).
+_NAT_UNDERFLOW = signal_call_pattern("nat_underflow")
 
 
 # =====================================================================
@@ -95,7 +99,7 @@ public fn main(@Unit -> @Nat)
     def test_safe_subtraction_returns_correct_result(self) -> None:
         """safe(5, 3) returns 2 — guard passes through cleanly.
 
-        The guard is `if (i64.lt_s lhs rhs) then unreachable end`, so
+        The guard is `if (i64.lt_u lhs rhs) then <signal> unreachable end`, so
         when lhs >= rhs the branch is not taken and the subtraction
         proceeds normally.  Confirms the guard doesn't introduce a
         regression on the happy path.
@@ -103,12 +107,14 @@ public fn main(@Unit -> @Nat)
         assert _run(self._SAFE_SUB) == 2
 
     def test_guard_emitted_in_wat_for_nat_sub(self) -> None:
-        """The guarded WAT contains `i64.lt_s` and `unreachable`.
+        """The guarded WAT contains `i64.lt_u` and `unreachable`.
 
         Structural assertion that the codegen actually inserted the
         guard sequence rather than emitting a bare `i64.sub`.  The
         unguarded WAT (e.g. for `@Int - @Int`) would contain
-        `i64.sub` but no `i64.lt_s` paired with `unreachable`.
+        `i64.sub` but no `i64.lt_u` paired with `unreachable`.  Unsigned,
+        because a `@Nat` is a u64 (#1479): a signed compare read one above
+        i64.MAX as negative.
         """
         result = _compile_ok(self._GUARDED_SUB)
         wat = result.wat
@@ -121,8 +127,8 @@ public fn main(@Unit -> @Nat)
         if body_end < 0:
             body_end = len(wat)
         body = wat[unsafe_idx:body_end]
-        assert "i64.lt_s" in body, (
-            f"Expected `i64.lt_s` in unsafe body for underflow guard, "
+        assert "i64.lt_u" in body, (
+            f"Expected `i64.lt_u` in unsafe body for underflow guard, "
             f"got: {body!r}"
         )
         assert "unreachable" in body, (
@@ -145,10 +151,10 @@ public fn main(@Unit -> @Nat)
         not fire on ``5 - 10`` (in range), so the runtime behaviour this test
         cares about (no spurious trap on a negative Int result) is unchanged.
         The discriminator below is therefore the *shape*: the #520 guard
-        compares the two operands directly (``i64.lt_s`` on lhs/rhs straight
+        compares the two operands directly (``i64.lt_u`` on lhs/rhs straight
         after loading them, no ``i64.xor``), whereas the #798 overflow guard
         is XOR-based.  We assert the overflow-guard shape is present and the
-        nat-sub shape (an ``i64.lt_s`` not preceded by the XOR sign-test) is
+        nat-sub shape (an ``i64.lt_u`` not preceded by the XOR sign-test) is
         not the mechanism, by pinning runtime behaviour: ``5 - 10 = -5`` must
         return cleanly, never trap.
         """
@@ -299,10 +305,12 @@ public fn main(@Unit -> @Nat)
         if body_end < 0:
             body_end = len(wat)
         body = wat[countdown_idx:body_end]
-        assert "i64.lt_s" in body and "unreachable" in body, (
+        # The guard's own comparison and signal (#1479), not tokens another
+        # check in the body could supply.
+        assert "i64.lt_u" in body and _NAT_UNDERFLOW.search(body), (
             f"Expected the @Nat.0 - 1 underflow guard "
-            f"(i64.lt_s + unreachable) inside countdown body, got: "
-            f"{body!r}"
+            f"(i64.lt_u + the nat_underflow signal) inside countdown body, "
+            f"got: {body!r}"
         )
 
     def test_modulecall_provenance_emits_guard_and_traps(self) -> None:
@@ -354,7 +362,7 @@ public fn main(@Unit -> @Nat)
         if body_end < 0:
             body_end = len(wat)
         body = wat[fn_idx:body_end]
-        assert "i64.lt_s" in body and "unreachable" in body, (
+        assert "i64.lt_u" in body and _NAT_UNDERFLOW.search(body), (
             f"Expected the underflow guard for ModuleCall-provenance "
             f"@Nat - @Nat inside unsafe_modcall body, got: {body!r}"
         )
@@ -434,7 +442,7 @@ public fn main(@Unit -> @Nat)
         if body_end < 0:
             body_end = len(wat)
         body = wat[fn_idx:body_end]
-        assert "i64.lt_s" in body and "unreachable" in body, (
+        assert "i64.lt_u" in body and _NAT_UNDERFLOW.search(body), (
             f"Expected the underflow guard for rhs-only-provenance "
             f"`0 - @Nat.0` inside lit_minus_slot body, got:\n{body}"
         )
@@ -1012,27 +1020,69 @@ public fn main(@Unit -> @Unit)
         ):
             execute(result, fn_name="main", args=[])
 
-    def test_generic_ctor_field_negative_does_not_trap_today(self) -> None:
-        """The generic-instantiated constructor field is the one #747 narrowing
-        site with NO runtime guard: constructor layouts carry no per-field @Nat
-        mono metadata, so a generic field instantiated to @Nat erases to i64
-        (#757).  `Some(0 - 5)` building an `Option<Nat>` therefore compiles and
-        runs *without* trapping today — it stores -5 silently.  This pins the
-        deferral so it can't regress to a *silent* loss of the obligation: when
-        #757 lands and emits the guard, this test flips to a trap and becomes the
-        regression anchor, symmetric with the #754 effect-op pin
-        (`test_non_let_tier3_narrowing_warns_unguarded`).  The verifier still
-        obligates the narrowing statically (E503), so a verified program is
-        unaffected — this is purely the codegen runtime backstop (review of
-        #756, #760)."""
-        result = _compile_ok("""
+    def test_generic_ctor_field_negative_traps(self) -> None:
+        """The generic-instantiated constructor field, which #757 closed.
+
+        This pinned the DEFERRAL: constructor layouts carry no per-field
+        `@Nat` metadata, so a generic field instantiated to `@Nat` erased to
+        i64 and `Some(0 - 5)` building an `Option<Nat>` stored `-5` in
+        silence.  The cell said it would flip to a trap when #757 landed.
+
+        #757 landed and it did not flip, because it was not measuring the
+        guard.  `_compile_ok` runs a bare `transform -> compile` with no
+        checker artifacts, so `_expr_target_types` is empty; #757's guard
+        reads a generic field's instantiation from exactly that table, and
+        with the table absent it declines and emits nothing.  The cell went
+        on passing for a reason unrelated to its subject — the same shape
+        run through `vera run`, which threads the artifacts, traps.
+
+        So it compiles the way the real pipeline does and asserts the trap.
+        The kind is `nat_guard`: this is the SIGN direction (#757), not the
+        §2.6.5 predicate at a construction position (#1426), which
+        `Option<Nat>` has no refinement to carry.  Found in the #1426
+        release audit.
+        """
+        from vera.checker import typecheck_with_artifacts
+        from vera.parser import parse_to_ast
+
+        src = """\
 public fn f(@Unit -> @Option<Nat>)
   requires(true) ensures(true) effects(pure)
 { Some(0 - 5) }
-""")
-        # No pytest.raises: the deferred-guard state means this MUST NOT trap.
-        # If #757 adds the guard, replace this with a pytest.raises(...) block.
-        execute(result, fn_name="f", args=[])
+"""
+        program = parse_to_ast(src)
+        diags, arts = typecheck_with_artifacts(program, src)
+        assert not [d for d in diags if d.severity == "error"], diags
+        result = compile(
+            program,
+            source=src,
+            expr_semantic_types=arts.expr_semantic_types,
+            expr_target_types=arts.expr_target_types,
+        )
+        with pytest.raises(WasmTrapError) as caught:
+            execute(result, fn_name="f", args=[])
+        assert caught.value.kind == "nat_guard", caught.value.kind
+
+        # The control the file pairs with every trap case: a guard that lost
+        # its `_narrows_into_nat` gate and fired unconditionally would
+        # satisfy the assertions above just as well (CR PR-review).
+        ok_src = """
+public fn f(@Unit -> @Option<Nat>)
+  requires(true) ensures(true) effects(pure)
+{ Some(5) }
+"""
+        ok_program = parse_to_ast(ok_src)
+        ok_diags, ok_arts = typecheck_with_artifacts(ok_program, ok_src)
+        assert not [d for d in ok_diags if d.severity == "error"], ok_diags
+        execute(
+            compile(
+                ok_program,
+                source=ok_src,
+                expr_semantic_types=ok_arts.expr_semantic_types,
+                expr_target_types=ok_arts.expr_target_types,
+            ),
+            fn_name="f", args=[],
+        )
 
 
 class TestNatReturnRuntimeGuard758:

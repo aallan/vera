@@ -33,7 +33,145 @@ let wasm = null;       // WebAssembly instance exports
 let stdoutBuf = '';    // Captured IO.print output
 let stderrBuf = '';    // Captured IO.stderr output (#463)
 let lastViolation = ''; // Last contract violation message
-let lastOverflow = false; // #808: #798 integer-overflow guard fired this call
+let lastTrap = null; // #1479: { code, message } a named check passed to vera.trap
+
+// BEGIN GENERATED TRAP TABLE: vera/trap_registry.py browser_trap_table().
+// tests/test_named_traps_1479.py requires this block to equal that function's
+// output, so this runtime names every trap exactly as wasmtime and the WASI
+// host do.  Regenerate it from there rather than editing it here.
+const TRAP_TABLE = {
+  "kinds": {
+    "assertion_failed": {
+      "code": 5,
+      "description": "Assertion failed",
+      "fix": "An `assert(...)` evaluated to false at run time: the property it states did not hold at that point, so either the property or the code reaching it is wrong \u2014 the message quotes the assertion.  When the property follows from the function's inputs, state it as a `requires(...)` so every caller must establish it and `vera verify` proves the assertion at compile time (Tier 1); `vera verify` also reports an assertion it can prove false as E507.",
+      "siteMessage": true
+    },
+    "contract_violation": {
+      "code": 0,
+      "description": "Contract violation",
+      "fix": "",
+      "siteMessage": true
+    },
+    "divide_by_zero": {
+      "code": 0,
+      "description": "Integer division by zero",
+      "fix": "Add a precondition `requires(divisor != 0)` on the function performing the division, or guard the division site with a non-zero check.  The Z3 verifier will then prove the division is safe at every call site at compile time.",
+      "siteMessage": false
+    },
+    "float_conversion": {
+      "code": 8,
+      "description": "Float64 value outside the @Int range",
+      "fix": "A `Float64` \u2192 `Int` conversion (`float_to_int`, `floor`, `ceil` or `round`) was given NaN, an infinity, or a value whose integer part lies outside `@Int`'s range `[-2^63, 2^63)`, none of which an `@Int` can hold.  Check the value first \u2014 `float_is_nan(x)`, `float_is_infinite(x)` and a range bound \u2014 in a `requires(...)` or an explicit branch; `vera verify` reports a constant argument it can prove out of the domain as E529.",
+      "siteMessage": true
+    },
+    "heap_exhausted": {
+      "code": 9,
+      "description": "Heap exhausted",
+      "fix": "The program ran out of heap memory.  The heap has a 2 GiB ceiling \u2014 one allocation, and all live data together, must stay below 2^31 bytes (`$alloc` in `vera/codegen/assembly.py`) \u2014 and the host may refuse to grow memory before that.  The collector has already reclaimed everything unreachable when this fires, so the live data itself is too large: build smaller values (a very long `string_repeat`, `array_range` or accumulated string is the usual cause), or process the input in pieces instead of holding it all at once.  Under `--target wasi-p2`, one host result (an argument list, a line of input) must also fit the adapter's 64 KiB arena.",
+      "siteMessage": false
+    },
+    "host_error": {
+      "code": 0,
+      "description": "Host binding error",
+      "fix": "",
+      "siteMessage": true
+    },
+    "index_out_of_bounds": {
+      "code": 6,
+      "description": "Array index out of bounds",
+      "fix": "An array index fell outside `[0, array_length(arr))`, so the read would have been outside the array.  Add a precondition naming the index and the array \u2014 `requires(i >= 0 && i < array_length(arr))` \u2014 or guard the access with an explicit branch, and `vera verify` proves the index in bounds at compile time (Tier 1); it reports an index it can prove out of bounds as E527.",
+      "siteMessage": true
+    },
+    "nat_guard": {
+      "code": 2,
+      "description": "Negative value bound into a @Nat slot",
+      "fix": "A negative `@Int` was bound into a `@Nat` slot \u2014 a `let @Nat = <@Int>`, a match or tuple-destructure binding, a constructor field, or a call / effect-operation argument whose formal is `@Nat`.  The verifier could not prove the value non-negative, so it left a runtime check here (Tier 3).  Add a `requires(... >= 0)` precondition, or narrow through an explicit branch (`if x >= 0 then { ... }`), so Z3 discharges it at compile time and the check becomes dead.",
+      "siteMessage": false
+    },
+    "nat_underflow": {
+      "code": 4,
+      "description": "@Nat subtraction would be negative",
+      "fix": "A `@Nat` subtraction's right operand was larger than its left, so the result would have been negative, which no `@Nat` can hold.  The verifier could not prove the operands ordered, so it left a runtime check here (Tier 3).  Add the `requires(lhs >= rhs)` the message names to the enclosing function, or branch on the comparison first (`if lhs >= rhs then { lhs - rhs } else { ... }`), or compute in `@Int` where a negative result means something; `vera verify` then discharges the `nat_sub` obligation at compile time.",
+      "siteMessage": true
+    },
+    "out_of_bounds": {
+      "code": 0,
+      "description": "Out-of-bounds memory access",
+      "fix": "A linear-memory load or store fell outside the module's memory.  Every array index and `string_char_code` index is bounds-checked before its access and reports `index_out_of_bounds` or `string_index_out_of_bounds` instead, and `string_slice` clamps its indices, so no check on a value your program computed reaches this kind: a runtime helper (`gc_collect`, `alloc`, a host binding) read or wrote outside memory, which is a bug in Vera rather than in the program \u2014 please file a minimal reproducer at https://github.com/aallan/vera/issues/new.",
+      "siteMessage": false
+    },
+    "overflow": {
+      "code": 1,
+      "description": "Integer overflow",
+      "fix": "Integer arithmetic produced a value outside the representable range \u2014 the signed i64 range `[-2^63, 2^63)` for `@Int`, or the unsigned u64 range `[0, 2^64)` for `@Nat` (#808 routes `@Nat` overflows here too).  Add a `requires` precondition that constrains the operands so Z3 can prove the result is representable, or change the operation to a saturating / checked variant via a helper function.",
+      "siteMessage": false
+    },
+    "stack_exhausted": {
+      "code": 0,
+      "description": "WASM call stack exhausted",
+      "fix": "Vera compiles tail-position calls to WASM `return_call` (#517, shipped in v0.0.126; allocating tail calls covered by GC-aware TCO in #549, v0.0.154), so iteration-shaped recursion runs in constant stack space \u2014 if you're still hitting this trap the recursion isn't actually in tail position.  Restructure with an accumulator parameter so the recursive call is the LAST thing the function does (no work after it, no `let`-binding of its result, no enclosing arithmetic).  One remaining exception: functions with a non-trivial runtime postcondition (`ensures` that emits a Tier-3 check) revert to plain `call` so the post-check runs after each call \u2014 either simplify the postcondition to one the verifier can discharge statically (Tier 1), or iterate via `array_fold` / `array_map` (which compile to WASM loops rather than recursion).",
+      "siteMessage": false
+    },
+    "string_index_out_of_bounds": {
+      "code": 7,
+      "description": "String index out of bounds",
+      "fix": "`string_char_code(s, i)` reads the byte at index `i`, so `i` must lie in `[0, string_length(s))`.  `string_length` counts the BYTES of the UTF-8 encoding, not characters, so a string holding non-ASCII text is longer than its character count.  Add `requires(i >= 0 && i < string_length(s))`, or guard the call with an explicit branch.",
+      "siteMessage": true
+    },
+    "uncaught_exception": {
+      "code": 10,
+      "description": "Uncaught exception",
+      "fix": "An `Exn<T>` was thrown and no `handle[Exn<T>]` caught it before the call returned to the host: the entry point declares `Exn<T>` in its effect row, which lets the exception leave it.  Catch it where the program starts \u2014 wrap the throwing call in `handle[Exn<T>] { throw(@T) -> ... } in { ... }` inside `main`, or inside the function `vera run --fn` or `vera test` called \u2014 or stop declaring `Exn<T>` on that function once nothing in it throws.",
+      "siteMessage": true
+    },
+    "unknown": {
+      "code": 0,
+      "description": "Unclassified trap",
+      "fix": "",
+      "siteMessage": false
+    },
+    "unreachable": {
+      "code": 0,
+      "description": "Reached `unreachable` WASM instruction",
+      "fix": "Five causes reach this trap, and none of them is a check on a value the program computed \u2014 every such check reports its own kind.  (1) GC shadow-stack overflow, which is what a DEEP RECURSION through a function holding heap references hits: every live frame roots its pointer parameters, its allocations, and the values it binds out of them, and the shadow stack holds 4 096 roots in total (16 KiB \u2014 `GC_STACK_SIZE` in `vera/codegen/assembly.py`).  A recursion that traps at a depth close to 4 096 divided by a small integer is this one: reduce the heap values live across the recursive call, or restructure so the call is in tail position (#549 GC-aware TCO restores `$gc_sp` at each hop, so the chain runs in constant shadow space).  (2) The collector's mark worklist overflowed: more heap objects were waiting to be marked at one time than its 16 384 entries hold (`GC_WORKLIST_SIZE` in `vera/codegen/assembly.py`), which one very wide live structure \u2014 an array or map holding more heap values than that \u2014 can reach.  Split the structure, or hold fewer heap values in it at once.  (3) More than 4 096 host-backed values \u2014 `Decimal` values and pending async requests \u2014 were alive at once, and a collection freed none of them, so the table that tracks their host handles had no room for another.  Let values you no longer need become unreachable, and hold fewer of them at once.  (4) Under `--target wasi-p2`, a standard stream, file or HTTP body the host provides failed part-way through an operation \u2014 a write to a closed stdout, a read error on stdin \u2014 and the adapter stopped the program rather than lose data.  The host's I/O failed, not the program's logic: check what the program's input and output are connected to.  (5) An internal consistency check failed: a garbage-collector invariant (`VERA_GC_CHECK_MARKS`), a runtime tripwire, or code the compiler places where execution cannot arrive \u2014 after a call that never returns (`IO.exit`, a handler that always throws) or in a function it dropped.  A well-typed program cannot reach any of these, so reaching one is a bug in Vera: please file a minimal reproducer at https://github.com/aallan/vera/issues/new.",
+      "siteMessage": false
+    },
+    "widen_guard": {
+      "code": 3,
+      "description": "@Nat value above i64.MAX widened into an @Int slot",
+      "fix": "A `@Nat` value above `i64.MAX` was widened into an `@Int` slot \u2014 a return, a `let`, a call argument, a constructor field, an array element or a tuple component whose target is `@Int`.  `Nat` (u64) and `Int` (i64) share one machine representation, so such a value REINTERPRETS as a negative `@Int` (`u64.MAX` becomes `-1`); the verifier could not prove it in range, so it left a runtime check here (Tier 3).  Add a `requires(... <= i64.MAX)` precondition, or keep the value in `@Nat` and widen only where a bound is known, so Z3 discharges it at compile time and the check becomes dead.",
+      "siteMessage": false
+    }
+  },
+  "native": [
+    [
+      "divide by zero",
+      "divide_by_zero"
+    ],
+    [
+      "remainder by zero",
+      "divide_by_zero"
+    ],
+    [
+      "divide result unrepresentable",
+      "overflow"
+    ],
+    [
+      "float unrepresentable in integer range",
+      "float_conversion"
+    ],
+    [
+      "memory access out of bounds",
+      "out_of_bounds"
+    ],
+    [
+      "unreachable",
+      "unreachable"
+    ]
+  ]
+};
+// END GENERATED TRAP TABLE
 const stateCells = {}; // State<T> stacks: { TypeName: [value, ...] } — top is [-1]
 // #920: the WASM value type (`i32`/`i64`/`f64`) of each State<T> cell, keyed
 // by the mangled type suffix — the SAME key as `stateCells`.  Populated from
@@ -140,7 +278,12 @@ function gcRooted(ptr, fn) {
     return fn();
   }
   const sp = wasm.gc_sp.value;
-  if (sp >= wasm.gc_stack_limit.value) {
+  // #860, following #791: slot-complete bound.  The write below is FOUR
+  // bytes at [sp..sp+3], so an sp with 1-3 bytes of headroom passed
+  // `sp >= limit` and then spilled past the window.  Unreachable while
+  // generated code advances $gc_sp in 4-byte steps from a 4-aligned base
+  // — defence in depth, matching the CLI `_ShadowGuard.push` predicate.
+  if (sp < 0 || sp + 4 > wasm.gc_stack_limit.value) {
     throw new Error('GC shadow stack overflow in browser runtime (gcRooted)');
   }
   writeI32(sp, ptr | 0);
@@ -196,7 +339,8 @@ function gcShadowPush(value) {
     );
   }
   const sp = wasm.gc_sp.value;
-  if (sp >= wasm.gc_stack_limit.value) {
+  // #860, following #791: slot-complete bound — see `gcRooted` above.
+  if (sp < 0 || sp + 4 > wasm.gc_stack_limit.value) {
     throw new Error('GC shadow stack overflow in browser runtime');
   }
   writeI32(sp, value | 0);
@@ -476,14 +620,68 @@ function hostContractFail(ptr, len) {
 }
 
 /**
- * vera.overflow_trap() → signal an integer overflow; WASM executes unreachable.
- * #808: the #798 `@Int` / `@Nat` arithmetic-overflow guard calls this right
- * before its `unreachable`, so `call()` reports "Integer overflow" instead of
- * the generic trap (mirrors `hostContractFail`; parameterless — the message is
- * fixed, not interned).
+ * vera.trap(code, ptr, len) → a named check failed; WASM executes unreachable.
+ * #1479: the one signal every named check raises — the kind as a code in
+ * TRAP_TABLE, and the check's own message (when it carries one) as an interned
+ * (ptr, len) — so `call()` reports that kind, message and Fix paragraph instead
+ * of V8's bare "unreachable" (mirrors `host_trap` in vera/codegen/api.py).
  */
-function hostOverflowTrap() {
-  lastOverflow = true;
+function hostTrap(code, ptr, len) {
+  lastTrap = { code, message: len ? readString(ptr, len) : '' };
+}
+
+/** A runtime trap, named: `kind`, the message, and the kind's Fix paragraph. */
+class VeraTrap extends Error {
+  constructor(kind, message, fix) {
+    super(message);
+    this.name = 'VeraTrap';
+    this.kind = kind;
+    this.fix = fix;
+  }
+}
+
+function trapOfKind(kind, message) {
+  const row = TRAP_TABLE.kinds[kind];
+  return new VeraTrap(kind, message || row.description, row.fix);
+}
+
+/**
+ * Name what escaped an export the way `execute()` does on the native host:
+ * the contract channel first, then the kind `vera.trap` signalled, then V8's
+ * own message for an instruction that trapped by itself.  An exception that
+ * left an export no boundary catches is `uncaught_exception`; anything else
+ * is a host binding's own refusal, `host_error` with the binding's message —
+ * so every error leaving `call()` carries a kind (#1479).
+ */
+function classifyTrap(e) {
+  if (e instanceof RangeError && /call stack/i.test(String(e.message))) {
+    // V8 reports call-stack exhaustion, WASM frames included, as a
+    // RangeError ("Maximum call stack size exceeded"); any other RangeError
+    // is a host binding's own.
+    return trapOfKind('stack_exhausted', '');
+  }
+  if (typeof WebAssembly.Exception === 'function'
+      && e instanceof WebAssembly.Exception) {
+    return trapOfKind('uncaught_exception', '');
+  }
+  if (!(e instanceof WebAssembly.RuntimeError)) {
+    const message = e && typeof e === 'object'
+      ? (e.message || e.name || String(e)) : String(e);
+    return trapOfKind('host_error', message);
+  }
+  if (lastViolation) return trapOfKind('contract_violation', lastViolation);
+  if (lastTrap) {
+    for (const [name, row] of Object.entries(TRAP_TABLE.kinds)) {
+      if (row.code && row.code === lastTrap.code) {
+        return trapOfKind(name, lastTrap.message);
+      }
+    }
+  }
+  const msg = String(e.message).toLowerCase();
+  for (const [needle, kind] of TRAP_TABLE.native) {
+    if (msg.includes(needle)) return trapOfKind(kind, '');
+  }
+  return new VeraTrap('unknown', e.message, '');
 }
 
 // ---------------------------------------------------------------------------
@@ -511,164 +709,289 @@ class MdThematicBreak { constructor() { this.tag = 'MdThematicBreak'; } }
 class MdTable { constructor(rows) { this.tag = 'MdTable'; this.rows = rows; } }
 class MdDocument { constructor(children) { this.tag = 'MdDocument'; this.children = children; } }
 
+// --- BEGIN GENERATED: §9.7.3 Markdown grammar ---
+// Source of truth: vera/markdown_grammar.py.  Do not hand-edit — the
+// #1301 gate in tests/test_browser.py asserts this block is byte-for-byte
+// what the generator emits.  Regenerate with:
+//   python -c "from vera.markdown_grammar import js_grammar_block as g; print(g())"
+
+const MD_WS_CHARS = " \t\r\u000b\f";
+const MD_WS = "[ \\t\\r\\x0b\\x0c]";
+const MD_PATTERNS = {
+  "atx_heading": "^(#{1,6})[ \\t\\r\\x0b\\x0c]+([^\\n]*?)(?:[ \\t\\r\\x0b\\x0c]+#+[ \\t\\r\\x0b\\x0c]*)?$",
+  "fence_open": "^(`{3,}|~{3,})[ \\t\\r\\x0b\\x0c]*([^\\n]*?)$",
+  "thematic_break": "^(?:---+|\\*\\*\\*+|___+)[ \\t\\r\\x0b\\x0c]*$",
+  "blockquote_line": "^>[ \\t\\r\\x0b\\x0c]?([^\\n]*)",
+  "unordered_item": "^[-*+][ \\t\\r\\x0b\\x0c]+([^\\n]*)",
+  "ordered_item": "^([0-9]+)[.)][ \\t\\r\\x0b\\x0c]+([^\\n]*)",
+  "table_row": "^\\|([^\\n]+)\\|?[ \\t\\r\\x0b\\x0c]*$",
+  "table_sep": "^\\|[ \\t\\r\\x0b\\x0c:]*-[- \\t\\r\\x0b\\x0c:|]*\\|?[ \\t\\r\\x0b\\x0c]*$",
+};
+const MD_CONTINUATION_INDENT = {
+  "unordered": 2,
+  "ordered": 3,
+};
+const MD_RE = {};
+for (const [key, pattern] of Object.entries(MD_PATTERNS)) {
+  MD_RE[key] = new RegExp(pattern);
+}
+function mdFenceClose(fenceChar, fenceLen) {
+  const escaped = fenceChar === '`' ? '\\`' : '~';
+  return new RegExp('^' + escaped + '{' + fenceLen + ',}' + MD_WS + '*$');
+}
+// --- END GENERATED: §9.7.3 Markdown grammar ---
+
+/**
+ * `str.strip()` over the grammar's own whitespace class.
+ *
+ * NOT `String.prototype.trim`, which strips a different set from
+ * Python's `str.strip` — Unicode space separators and U+FEFF on one
+ * side, the C1-adjacent controls on the other.  Two hosts trimming
+ * different characters is the same drift the shared patterns close, one
+ * level down (#1301).
+ */
+function mdTrim(text) {
+  let start = 0;
+  let end = text.length;
+  while (start < end && MD_WS_CHARS.includes(text[start])) start++;
+  while (end > start && MD_WS_CHARS.includes(text[end - 1])) end--;
+  return text.slice(start, end);
+}
+
+/** Is this line nothing but grammar whitespace? */
+function mdIsBlank(line) {
+  return mdTrim(line) === '';
+}
+
 // -- Inline parser --
 
+/**
+ * Parse inline content, mirroring `_parse_inlines` in vera/markdown.py
+ * statement for statement (#1301).
+ *
+ * Two properties of that mirror are load-bearing and were both absent
+ * before.  Plain text accumulates in ONE buffer that is flushed only
+ * when a real node is emitted, so a paragraph's text runs are maximal —
+ * the browser used to push one `MdText` per scan segment, which renders
+ * to the same string and is a different ADT, and that alone was 82% of
+ * the measured divergence.  And a delimiter run is scanned by its
+ * LENGTH rather than two characters at a time, so `***both***` opens a
+ * three-long run whose leftover delimiter is resolved after the strong
+ * span closes, instead of being read as `**` plus a stray `*`.
+ */
 function parseInlines(text) {
   const result = [];
   let i = 0;
-  const n = text.length;
+  let buf = '';  // accumulator for plain text
 
-  while (i < n) {
-    // Code span: a run of N backticks closes on the next run of N,
-    // mirroring _parse_inlines in vera/markdown.py.  This scanned for
-    // the next *single* backtick, so ``x`` opened an empty span at the
-    // first tick and dropped the content out of the span entirely.
-    // With no closing run the scan falls through to the plain-text
-    // accumulator below, as it did before.
-    if (text[i] === '`') {
-      let runEnd = i;
-      while (runEnd < n && text[runEnd] === '`') runEnd++;
-      const runLen = runEnd - i;
-      const closeIdx = text.indexOf('`'.repeat(runLen), runEnd);
-      if (closeIdx !== -1) {
-        let content = text.slice(runEnd, closeIdx);
-        // Undo the renderer's padding: exactly one leading and one
-        // trailing space, and only when both are present.
-        if (content.length >= 2 && content.startsWith(' ')
-            && content.endsWith(' ')) {
-          content = content.slice(1, -1);
-        }
-        result.push(new MdCode(content));
-        i = closeIdx + runLen;
-        continue;
-      }
+  function flushText() {
+    if (buf) {
+      result.push(new MdText(buf));
+      buf = '';
     }
-
-    // Image: ![alt](url)
-    if (text[i] === '!' && i + 1 < n && text[i + 1] === '[') {
-      const altEnd = text.indexOf(']', i + 2);
-      if (altEnd !== -1 && altEnd + 1 < n && text[altEnd + 1] === '(') {
-        const urlEnd = text.indexOf(')', altEnd + 2);
-        if (urlEnd !== -1) {
-          const alt = text.slice(i + 2, altEnd);
-          const url = text.slice(altEnd + 2, urlEnd);
-          result.push(new MdImage(alt, url));
-          i = urlEnd + 1;
-          continue;
-        }
-      }
-    }
-
-    // Link: [text](url)
-    if (text[i] === '[') {
-      const textEnd = text.indexOf(']', i + 1);
-      if (textEnd !== -1 && textEnd + 1 < n && text[textEnd + 1] === '(') {
-        const urlEnd = text.indexOf(')', textEnd + 2);
-        if (urlEnd !== -1) {
-          const linkText = text.slice(i + 1, textEnd);
-          const url = text.slice(textEnd + 2, urlEnd);
-          result.push(new MdLink(parseInlines(linkText), url));
-          i = urlEnd + 1;
-          continue;
-        }
-      }
-    }
-
-    // Strong: ** or __
-    if ((text[i] === '*' && i + 1 < n && text[i + 1] === '*') ||
-        (text[i] === '_' && i + 1 < n && text[i + 1] === '_')) {
-      const marker = text.slice(i, i + 2);
-      const end = text.indexOf(marker, i + 2);
-      if (end !== -1) {
-        result.push(new MdStrong(parseInlines(text.slice(i + 2, end))));
-        i = end + 2;
-        continue;
-      }
-    }
-
-    // Emphasis: * or _
-    if (text[i] === '*' || text[i] === '_') {
-      const marker = text[i];
-      // Avoid matching ** as emphasis
-      if (i + 1 < n && text[i + 1] !== marker) {
-        const end = text.indexOf(marker, i + 1);
-        if (end !== -1) {
-          result.push(new MdEmph(parseInlines(text.slice(i + 1, end))));
-          i = end + 1;
-          continue;
-        }
-      }
-    }
-
-    // Plain text — accumulate until next special character
-    let textStart = i;
-    i++;
-    while (i < n && !'`*_!['.includes(text[i])) {
-      i++;
-    }
-    result.push(new MdText(text.slice(textStart, i)));
   }
+
+  while (i < text.length) {
+    const ch = text[i];
+
+    // Inline code span: a run of N backticks closes on the next run of N.
+    if (ch === '`') {
+      const runStart = i;
+      while (i < text.length && text[i] === '`') i++;
+      const runLen = i - runStart;
+      const closePat = '`'.repeat(runLen);
+      const closeIdx = text.indexOf(closePat, i);
+      if (closeIdx !== -1) {
+        flushText();
+        let codeContent = text.slice(i, closeIdx);
+        // Strip one leading/trailing space if both present — the pad the
+        // renderer adds so a span's own spaces survive.
+        if (codeContent.length >= 2 && codeContent[0] === ' '
+            && codeContent[codeContent.length - 1] === ' ') {
+          codeContent = codeContent.slice(1, -1);
+        }
+        result.push(new MdCode(codeContent));
+        i = closeIdx + runLen;
+      } else {
+        buf += closePat;
+      }
+      continue;
+    }
+
+    // Image: ![alt](src)
+    if (ch === '!' && i + 1 < text.length && text[i + 1] === '[') {
+      const closeBracket = findMatchingBracket(text, i + 1);
+      if (closeBracket !== null && closeBracket + 1 < text.length
+          && text[closeBracket + 1] === '(') {
+        const closeParen = text.indexOf(')', closeBracket + 2);
+        if (closeParen !== -1) {
+          flushText();
+          result.push(new MdImage(
+            text.slice(i + 2, closeBracket),
+            text.slice(closeBracket + 2, closeParen),
+          ));
+          i = closeParen + 1;
+          continue;
+        }
+      }
+      buf += ch;
+      i++;
+      continue;
+    }
+
+    // Link: [text](url).  The closing bracket is the MATCHING one, so a
+    // nested `[b]` inside the label does not end it early.
+    if (ch === '[') {
+      const closeBracket = findMatchingBracket(text, i);
+      if (closeBracket !== null && closeBracket + 1 < text.length
+          && text[closeBracket + 1] === '(') {
+        const closeParen = text.indexOf(')', closeBracket + 2);
+        if (closeParen !== -1) {
+          flushText();
+          result.push(new MdLink(
+            parseInlines(text.slice(i + 1, closeBracket)),
+            text.slice(closeBracket + 2, closeParen),
+          ));
+          i = closeParen + 1;
+          continue;
+        }
+      }
+      buf += ch;
+      i++;
+      continue;
+    }
+
+    // Strong (**) or emphasis (*), by delimiter-run length.
+    if (ch === '*' || ch === '_') {
+      const delim = ch;
+      const runStart = i;
+      while (i < text.length && text[i] === delim) i++;
+      let runLen = i - runStart;
+
+      if (runLen >= 2) {
+        // Try strong first.
+        const closeIdx = text.indexOf(delim + delim, i);
+        if (closeIdx !== -1) {
+          flushText();
+          result.push(new MdStrong(parseInlines(text.slice(i, closeIdx))));
+          i = closeIdx + 2;
+          // Handle remaining delimiters from the opening run.
+          const remaining = runLen - 2;
+          if (remaining > 0) {
+            const closeSingle = text.indexOf(delim, i);
+            if (remaining === 1 && closeSingle !== -1) {
+              result.push(new MdEmph(parseInlines(text.slice(i, closeSingle))));
+              i = closeSingle + 1;
+            } else {
+              buf += delim.repeat(remaining);
+            }
+          }
+          continue;
+        }
+        // Fall through to try single emphasis.
+        i = runStart + 1;
+        runLen = 1;
+      }
+
+      if (runLen === 1) {
+        const closeIdx = text.indexOf(delim, i);
+        if (closeIdx !== -1) {
+          flushText();
+          result.push(new MdEmph(parseInlines(text.slice(i, closeIdx))));
+          i = closeIdx + 1;
+        } else {
+          buf += delim;
+        }
+        continue;
+      }
+    }
+
+    // Plain character
+    buf += ch;
+    i++;
+  }
+
+  flushText();
   return result;
+}
+
+/** Find the matching `]` for a `[` at `start`; null if there is none. */
+function findMatchingBracket(text, start) {
+  if (start >= text.length || text[start] !== '[') return null;
+  let depth = 0;
+  let i = start;
+  while (i < text.length) {
+    if (text[i] === '[') depth++;
+    else if (text[i] === ']') {
+      depth--;
+      if (depth === 0) return i;
+    }
+    i++;
+  }
+  return null;
 }
 
 // -- Block parser --
 
 /**
- * Does this line open a block-level construct?  Mirrors
- * `_is_block_start` in vera/markdown.py, regex for regex.  It is the
- * predicate that bounds a blockquote's lazy continuation: an unmarked
- * line belongs to the open quote unless it starts a block of its own.
+ * Does this line open a block-level construct?  The disjunction of the
+ * six branch predicates in `parseBlocks`, and the SAME regexes those
+ * branches use — mirroring `_is_block_start` in vera/markdown.py.
+ *
+ * That identity is what makes the paragraph fallback terminate.  The old
+ * port hand-wrote a second, slightly different list here and a third
+ * inside the paragraph loop, so a line could be excluded from the
+ * paragraph while no branch claimed it: `md_parse("# heading\r")` — an
+ * ordinary CRLF document — spun forever, because ECMAScript's `.` does
+ * not match `\r` and the heading branch therefore declined a line the
+ * paragraph loop still refused.
  */
 function isBlockStart(line) {
-  return /^#{1,6}\s/.test(line)              // ATX heading
-    || /^(`{3,}|~{3,})/.test(line)           // fence
-    || /^(?:---+|\*{3,}|_{3,})\s*$/.test(line)  // thematic break
-    || /^>/.test(line)                       // block quote
-    || /^[-*+]\s/.test(line)                 // unordered item
-    || /^\d+[.)]\s/.test(line);              // ordered item
+  return MD_RE.atx_heading.test(line)
+    || MD_RE.fence_open.test(line)
+    || MD_RE.thematic_break.test(line)
+    || MD_RE.blockquote_line.test(line)
+    || MD_RE.unordered_item.test(line)
+    || MD_RE.ordered_item.test(line);
 }
 
-function parseBlocks(text) {
-  const lines = text.split('\n');
+/**
+ * Parse `lines[start..end)` into blocks, mirroring `_parse_blocks` in
+ * vera/markdown.py — including the ORDER the constructs are tried in,
+ * which decides which branch claims a line two of them could open.
+ */
+function parseBlocks(lines, start, end) {
   const blocks = [];
-  let i = 0;
+  let i = start;
 
-  while (i < lines.length) {
+  while (i < end) {
     const line = lines[i];
 
-    // Empty line — skip
-    if (line.trim() === '') {
+    // Blank line — skip
+    if (mdIsBlank(line)) {
       i++;
       continue;
     }
 
-    // ATX heading: # ... ######
-    const headingMatch = line.match(/^(#{1,6})\s+(.*?)(?:\s+#+)?$/);
-    if (headingMatch) {
-      const level = headingMatch[1].length;
-      const content = headingMatch[2].trim();
-      blocks.push(new MdHeading(level, parseInlines(content)));
+    // ATX heading
+    const heading = MD_RE.atx_heading.exec(line);
+    if (heading) {
+      blocks.push(new MdHeading(
+        heading[1].length, parseInlines(mdTrim(heading[2])),
+      ));
       i++;
       continue;
     }
 
-    // Thematic break: --- or *** or ___ (3+ characters)
-    if (/^(\*{3,}|-{3,}|_{3,})\s*$/.test(line)) {
-      blocks.push(new MdThematicBreak());
-      i++;
-      continue;
-    }
-
-    // Fenced code block: ``` or ~~~
-    const fenceMatch = line.match(/^(`{3,}|~{3,})(.*?)$/);
-    if (fenceMatch) {
-      const fence = fenceMatch[1];
-      const lang = fenceMatch[2].trim();
+    // Fenced code block
+    const fence = MD_RE.fence_open.exec(line);
+    if (fence) {
+      const closeRe = mdFenceClose(fence[1][0], fence[1].length);
+      const lang = mdTrim(fence[2]);
       const codeLines = [];
       i++;
-      while (i < lines.length) {
-        if (lines[i].startsWith(fence[0].repeat(fence.length)) &&
-            lines[i].trim() === fence[0].repeat(fence.length)) {
+      while (i < end) {
+        if (closeRe.test(lines[i])) {
           i++;
           break;
         }
@@ -679,76 +1002,38 @@ function parseBlocks(text) {
       continue;
     }
 
-    // Block quote: '>' optionally followed by ONE whitespace character,
-    // mirroring _BLOCKQUOTE_LINE = ^>\s? in vera/markdown.py.  The old
-    // predicate demanded the space, so `>no space` fell through to the
-    // paragraph branch and parsed as literal text where the reference
-    // read a quote.
-    if (/^>/.test(line)) {
-      const quoteLines = [];
-      while (i < lines.length) {
-        const marked = lines[i].match(/^>\s?(.*)$/);
+    // Thematic break
+    if (MD_RE.thematic_break.test(line)) {
+      blocks.push(new MdThematicBreak());
+      i++;
+      continue;
+    }
+
+    // Block quote
+    if (MD_RE.blockquote_line.test(line)) {
+      const bqLines = [];
+      while (i < end) {
+        const marked = MD_RE.blockquote_line.exec(lines[i]);
         if (marked) {
-          quoteLines.push(marked[1]);
-        } else if (lines[i].trim() !== '' && !isBlockStart(lines[i])) {
-          // Lazy continuation (markdown.py's `elif` in the same loop):
-          // an unmarked, non-blank line that opens no block of its own
-          // continues the quote's paragraph.  Without this branch the
-          // line escaped the quote entirely.
-          quoteLines.push(lines[i]);
+          bqLines.push(marked[1]);
+        } else if (!mdIsBlank(lines[i]) && !isBlockStart(lines[i])) {
+          // Lazy continuation
+          bqLines.push(lines[i]);
         } else {
           break;
         }
         i++;
       }
-      const inner = parseBlocks(quoteLines.join('\n'));
-      blocks.push(new MdBlockQuote(inner));
+      blocks.push(new MdBlockQuote(parseBlocks(bqLines, 0, bqLines.length)));
       continue;
     }
 
-    // Unordered list: - or * (with space)
-    if (/^[-*]\s/.test(line)) {
-      const items = [];
-      while (i < lines.length && /^[-*]\s/.test(lines[i])) {
-        const itemLines = [lines[i].slice(2)];
-        i++;
-        // Continuation lines (indented)
-        while (i < lines.length && /^\s{2,}/.test(lines[i]) && lines[i].trim() !== '') {
-          itemLines.push(lines[i].trimStart());
-          i++;
-        }
-        items.push(parseBlocks(itemLines.join('\n')));
-      }
-      blocks.push(new MdList(false, items));
-      continue;
-    }
-
-    // Ordered list: 1. 2. etc.
-    if (/^\d+\.\s/.test(line)) {
-      const items = [];
-      while (i < lines.length && /^\d+\.\s/.test(lines[i])) {
-        const dotIdx = lines[i].indexOf('. ');
-        const itemLines = [lines[i].slice(dotIdx + 2)];
-        i++;
-        while (i < lines.length && /^\s{2,}/.test(lines[i]) && lines[i].trim() !== '') {
-          itemLines.push(lines[i].trimStart());
-          i++;
-        }
-        items.push(parseBlocks(itemLines.join('\n')));
-      }
-      blocks.push(new MdList(true, items));
-      continue;
-    }
-
-    // GFM table: | ... | ... |
-    if (line.includes('|') && i + 1 < lines.length && /^\|?\s*[-:]+/.test(lines[i + 1])) {
-      const rows = [];
-      // Header row
-      rows.push(parseTableRow(line));
-      i++; // skip separator
-      i++;
-      // Body rows
-      while (i < lines.length && lines[i].includes('|') && lines[i].trim() !== '') {
+    // GFM table (must have header + separator row)
+    if (MD_RE.table_row.test(line) && i + 1 < end
+        && MD_RE.table_sep.test(lines[i + 1])) {
+      const rows = [parseTableRow(line)];
+      i += 2;  // skip separator
+      while (i < end && MD_RE.table_row.test(lines[i])) {
         rows.push(parseTableRow(lines[i]));
         i++;
       }
@@ -756,27 +1041,73 @@ function parseBlocks(text) {
       continue;
     }
 
-    // Paragraph — collect consecutive non-blank, non-special lines
+    // Unordered list
+    if (MD_RE.unordered_item.test(line)) {
+      const items = [];
+      const width = MD_CONTINUATION_INDENT.unordered;
+      const indent = ' '.repeat(width);
+      while (i < end) {
+        const item = MD_RE.unordered_item.exec(lines[i]);
+        if (!item) break;
+        const itemLines = [item[1]];
+        i++;
+        // Continuation lines lose a FIXED width — the marker plus its
+        // space — not all their leading whitespace, which is what keeps
+        // a third nesting level distinguishable from a second.
+        while (i < end && lines[i].startsWith(indent) && !mdIsBlank(lines[i])) {
+          itemLines.push(lines[i].slice(width));
+          i++;
+        }
+        // Skip blank lines between items, but only while the list
+        // continues — a loose list is ONE list, not two.
+        while (i < end && mdIsBlank(lines[i])) {
+          i++;
+          if (i < end && !MD_RE.unordered_item.test(lines[i])) break;
+        }
+        items.push(parseBlocks(itemLines, 0, itemLines.length));
+      }
+      blocks.push(new MdList(false, items));
+      continue;
+    }
+
+    // Ordered list
+    if (MD_RE.ordered_item.test(line)) {
+      const items = [];
+      const width = MD_CONTINUATION_INDENT.ordered;
+      const indent = ' '.repeat(width);
+      while (i < end) {
+        const item = MD_RE.ordered_item.exec(lines[i]);
+        if (!item) break;
+        const itemLines = [item[2]];
+        i++;
+        while (i < end && lines[i].startsWith(indent) && !mdIsBlank(lines[i])) {
+          itemLines.push(lines[i].slice(width));
+          i++;
+        }
+        while (i < end && mdIsBlank(lines[i])) {
+          i++;
+          if (i < end && !MD_RE.ordered_item.test(lines[i])) break;
+        }
+        items.push(parseBlocks(itemLines, 0, itemLines.length));
+      }
+      blocks.push(new MdList(true, items));
+      continue;
+    }
+
+    // Paragraph (default fallback — collect until blank or block start).
+    // Reached only when `isBlockStart(line)` is false, so it always
+    // consumes at least this line: that is the termination argument.
     const paraLines = [];
-    while (i < lines.length && lines[i].trim() !== '' &&
-           !lines[i].match(/^#{1,6}\s/) &&
-           !lines[i].match(/^(`{3,}|~{3,})/) &&
-           // '^>' , not "starts with '> '": a paragraph ends at any
-           // quote marker, spaced or not (mirrors _BLOCKQUOTE_LINE).
-           !/^>/.test(lines[i]) &&
-           !/^[-*]\s/.test(lines[i]) &&
-           !/^\d+\.\s/.test(lines[i]) &&
-           !/^(\*{3,}|-{3,}|_{3,})\s*$/.test(lines[i])) {
+    while (i < end && !mdIsBlank(lines[i]) && !isBlockStart(lines[i])) {
       paraLines.push(lines[i]);
       i++;
     }
     if (paraLines.length > 0) {
-      // #1294: joined with a space, not a newline.  Spec §9.7.3 excludes
-      // hard and soft line breaks from the ADT — "collapsed into
-      // paragraph text" — so a paragraph's internal breaks have to go
-      // somewhere at parse time or they survive into MdText, where no
-      // renderer can tell them from text the author wrote.  This is what
-      // `" ".join(para_lines)` does in vera/markdown.py.
+      // Joined with a space, not a newline.  Spec §9.7.3 excludes hard
+      // and soft line breaks from the ADT — "collapsed into paragraph
+      // text" — so a paragraph's internal breaks have to go somewhere at
+      // parse time or they survive into MdText, where no renderer can
+      // tell them from text the author wrote.
       blocks.push(new MdParagraph(parseInlines(paraLines.join(' '))));
     }
   }
@@ -785,15 +1116,23 @@ function parseBlocks(text) {
 
 function parseTableRow(line) {
   // Strip leading/trailing pipes and split
-  let trimmed = line.trim();
-  if (trimmed.startsWith('|')) trimmed = trimmed.slice(1);
-  if (trimmed.endsWith('|')) trimmed = trimmed.slice(0, -1);
-  return trimmed.split('|').map(cell => parseInlines(cell.trim()));
+  let content = mdTrim(line);
+  if (content.startsWith('|')) content = content.slice(1);
+  if (content.endsWith('|')) content = content.slice(0, -1);
+  return content.split('|').map(cell => parseInlines(mdTrim(cell)));
 }
 
 function parseMarkdown(text) {
-  return new MdDocument(parseBlocks(text));
+  const lines = text.split('\n');
+  return new MdDocument(parseBlocks(lines, 0, lines.length));
 }
+
+// Exported for the cross-runtime `md_parse` parity gate (#1301), which
+// compares THIS parser's ADT against the Python reference's directly.  A
+// comparison routed through `md_render` cannot see how a paragraph's
+// plain-text runs are grouped — the runs concatenate to the same string —
+// and that class was 82% of the measured divergence.
+export { parseMarkdown };
 
 // -- Renderer --
 
@@ -1638,9 +1977,9 @@ function buildImportObject(module, moduleBytes) {
     imports.vera.contract_fail = hostContractFail;
   }
 
-  // #808: integer-overflow trap signal (declared by the #798 overflow guard)
-  if (needed.has('overflow_trap')) {
-    imports.vera.overflow_trap = hostOverflowTrap;
+  // #1479: the one trap signal every named check (and the allocator) calls
+  if (needed.has('trap')) {
+    imports.vera.trap = hostTrap;
   }
 
   // State<T> bindings — dynamically created from import names.
@@ -3791,7 +4130,7 @@ export function call(fnName, ...args) {
   }
   exitCode = null;
   lastViolation = '';
-  lastOverflow = false;
+  lastTrap = null;
   try {
     return fn(...args);
   } catch (e) {
@@ -3799,15 +4138,8 @@ export function call(fnName, ...args) {
       exitCode = e.code;
       return undefined;
     }
-    // Check for contract violation message
-    if (lastViolation && e instanceof WebAssembly.RuntimeError) {
-      throw new Error(lastViolation);
-    }
-    // #808: integer-overflow guard fired before the trap
-    if (lastOverflow && e instanceof WebAssembly.RuntimeError) {
-      throw new Error('Integer overflow');
-    }
-    throw e;
+    // #1479: everything leaves here named — kind, message and Fix.
+    throw classifyTrap(e);
   }
 }
 
@@ -3858,7 +4190,7 @@ export function reset() {
   stdoutBuf = '';
   stderrBuf = '';
   lastViolation = '';
-  lastOverflow = false;
+  lastTrap = null;
   exitCode = null;
   resetState();
   stdinQueue = [];
@@ -3873,5 +4205,5 @@ export function getExports() {
     .filter(k => k !== 'alloc');
 }
 
-export { VeraExit };
+export { VeraExit, VeraTrap };
 export default init;

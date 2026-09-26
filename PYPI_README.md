@@ -3,7 +3,13 @@
 Vera is a programming language designed for large language models to write. It
 has mandatory contracts, algebraic effects, typed slot references instead of
 variable names, and a compiler that emits WebAssembly. Contracts are verified
-statically with Z3 where possible, and SQL injection is a compile-time error.
+statically with Z3 where possible, and the compiled program also checks its
+contracts at run time wherever code generation can express them. A contract it
+cannot express, such as a quantified `ensures`, is reported as a runtime check
+but is not compiled into one ([#1607](https://github.com/aallan/vera/issues/1607)).
+Recursion must be shown to terminate (`decreases`) or declare that it may not
+(`Diverge`), every runtime trap names its cause, and SQL injection is a
+compile-time error.
 
 Full documentation, examples, and the language specification are available at
 [veralang.dev](https://veralang.dev) and in the
@@ -39,6 +45,14 @@ ERAV citizen-science project on PyPI. The wheel ships the compiler and the
 `vera` command only — the bundled examples, the conformance suite, and the
 specification live in the GitHub repository.
 
+**Upgrading to 0.2.0:** the checker and verifier are stricter than in 0.1.x, so
+a program 0.1.13 accepted may be refused — most often a recursive function with
+neither `decreases` nor `Diverge` (`E137`), a `decreases` measure that is not
+proved to decrease (`E502`), or a name, type or effect the checker cannot
+resolve. The
+[CHANGELOG](https://github.com/aallan/vera/blob/main/CHANGELOG.md) lists each
+new check.
+
 ## Install from GitHub source
 
 The source route provides the full environment — the examples, conformance
@@ -59,6 +73,7 @@ Use `python -m pip install -e ".[lsp]"` for the language server or
 
 ## Try it
 
+<!-- vera:run fn="main" stdout="5" -->
 ```vera
 public fn safe_divide(@Int, @Int -> @Int)
   requires(@Int.1 != 0)
@@ -81,6 +96,7 @@ public fn main(-> @Int)
 vera check program.vera
 vera verify program.vera    # proves main returns 5 from safe_divide's contract
 vera run program.vera       # prints 5
+vera verify --timeout-ms 60000 program.vera  # raise the per-query Z3 budget
 ```
 
 See the [CLI cookbook](https://github.com/aallan/vera/blob/main/TOOLCHAIN.md),

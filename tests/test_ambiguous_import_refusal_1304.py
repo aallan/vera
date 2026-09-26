@@ -423,18 +423,18 @@ class TestTheDataSideFlapShapes:
                     if d["error_code"] == "E157")
         assert "Sq" in ctor["description"]
 
-    def test_renaming_is_the_remedy_the_diagnostic_offers(
+    def test_every_remedy_the_diagnostic_offers_actually_works(
         self, tmp_path: Path,
     ) -> None:
-        """And it is offered because it is the one that works.
+        """The fix text names three routes, and each is measured here.
 
-        The function side's two remedies are deliberately absent from the
-        data-side fix text: E609 refuses two modules' same-named data
-        declarations by DECLARATION, with none of the visibility, filter or
-        shadowing relaxation E608 received in #1281, so neither narrowing an
-        import nor declaring the type locally clears it.  Both were measured
-        against this fixture and both still died at `run` with E609; the cell
-        below pins that, so the fix text cannot drift into prescribing them.
+        Renaming was the only one that worked until #1317: E609 refused two
+        modules' same-named data declarations by DECLARATION, with none of
+        the visibility, filter or shadowing relaxation E608 received in
+        #1281.  Per-owner ADT identity added the other two, under one
+        condition the text states — no namespace may reach both
+        declarations — so the cell asserts the text offers all three and
+        the sibling cells above run each of them.
         """
         files = dict(_ADT_FILES["ab"])
         # BOTH names, because both namespaces clashed: renaming the type
@@ -447,13 +447,15 @@ class TestTheDataSideFlapShapes:
                               seed="0")
         fix = next(d["fix"] for d in payload["diagnostics"]
                    if d["error_code"] == "E156")
-        assert "Rename" in fix
-        assert "does not resolve it" in fix
+        assert "Import at most one supplier" in fix
+        assert "in this file resolves it" in fix
+        assert "rename" in fix
+        assert "no namespace can reach both declarations" in fix
 
     def test_a_shared_constructor_is_backstopped_by_E610(
         self, tmp_path: Path,
     ) -> None:
-        """The E610 axis, pinned at both layers (#1317 evidence).
+        """The E610 axis, pinned at both layers.
 
         Two DIFFERENTLY-named types sharing one constructor: the checker
         refuses `Sq` (E157) and codegen's constructor rail refuses the pair
@@ -461,6 +463,12 @@ class TestTheDataSideFlapShapes:
         than assumed.  It is the shape that shows the collision is not about
         the type name — `Alpha` and `Beta` never clash — which is why the
         two codes are separate on both sides.
+
+        `midc` imports both modules wholesale, so it can name both `Alpha`
+        and `Beta` and therefore both suppliers of `Sq`; that is the
+        AMBIGUOUS shape, which #1317's per-owner identity declines to
+        qualify apart (§8.5.2.2 refuses it rather than picking) and which
+        the codegen rail therefore still backstops.
         """
         files = {
             "liba.vera": _ADT_A.replace("data Shape", "data Alpha"),
@@ -476,16 +484,20 @@ class TestTheDataSideFlapShapes:
         assert [c for c, _ in cg_errors if c == "E610"], cg_errors
 
     @pytest.mark.parametrize("remedy", ["selective", "local", "private"])
-    def test_the_function_remedies_do_not_clear_a_data_clash(
+    def test_the_function_remedies_now_clear_a_data_clash(
         self, tmp_path: Path, remedy: str,
     ) -> None:
-        """Measured, not assumed — this is why the fix texts differ.
+        """Measured, not assumed — this is what the fix text may promise.
 
         Each leaves the clash out of the checker's view (one supplier, or a
         local declaration that owns the name), so E156/E157 correctly fall
-        silent; codegen still refuses the program. A future relaxation of
-        E609 to match #1281 would turn these cells green at `run`, which is
-        the signal to revisit the data-side fix text.
+        silent.  Codegen used to refuse the program anyway, which is why
+        `_ambiguous_data_fix` once prescribed renaming alone; #1317's
+        per-owner ADT identity compiles each declaration under its own
+        `mod$<path>$<Name>` symbol, so all three now carry through to the
+        runtime value.  `doorc` matches `Sq(3)` against `liba`'s `Shape`
+        (the `local` remedy against `midc`'s own, which is the same layout),
+        so the answer is 3 in every arm.
         """
         files = dict(_ADT_FILES["ab"])
         if remedy == "private":
@@ -508,8 +520,9 @@ public fn helper(@Unit -> @Int)
             )
         assert _error_codes(_check_json(_write(tmp_path / "c", files),
                                         seed="0")) == []
-        _, _result, cg_errors = build_multi_module(tmp_path, files)
-        assert [c for c, _ in cg_errors if c == "E609"], cg_errors
+        _, result, cg_errors = build_multi_module(tmp_path, files)
+        assert cg_errors == [], cg_errors
+        assert module_value(result) == ("ok", 3)
 
 
 class TestTheRefusedDataNamesBindToNothing:
@@ -853,27 +866,28 @@ class TestTheFlapShapes:
             ))
             for order, files in _FLAP_FILES.items()
         }
-        assert codes["ab"] == codes["ba"] == ["E155", "E200"]
+        assert codes["ab"] == codes["ba"] == ["E155"]
 
     def test_the_refused_name_binds_to_nothing(
         self, tmp_path: Path,
     ) -> None:
-        """The bare call misses (E200) rather than resolving to a supplier.
+        """The bare call resolves to no supplier, and draws nothing of its own.
 
         The other half of "no pick": had the checker reported the clash and
         then injected one supplier anyway, the follow-on diagnostics would
-        still be keyed to whichever module the injection loop reached first,
-        and E155 would be a label on a nondeterminism it had not removed.
-        Here the ambiguous name is in no namespace, so what follows a bare
-        call to it is the same miss under every seed.
+        still be keyed to whichever module the injection loop reached first
+        (`libbool`'s `gen` returns `@Bool`, an E121 in `doorc`), and E155
+        would be a label on a nondeterminism it had not removed.  Here the
+        ambiguous name is in no namespace, and the E155 at `midc`'s import is
+        the one diagnostic the program owes: the call to it adds none (#1513;
+        an E200 there would only restate the E155), under every seed.
         """
         main_path = _write(tmp_path, _FLAP_FILES["ab"])
         payload = _check_json(main_path, seed="0")
-        misses = [d for d in payload["warnings"]
-                  if d["error_code"] == "E200"]
-        assert len(misses) == 1, payload["warnings"]
-        assert "gen" in misses[0]["description"]
-        assert misses[0]["location"]["file"].endswith("midc.vera")
+        assert _codes(payload) == ["E155"], payload
+        (refusal,) = payload["diagnostics"]
+        assert "gen" in refusal["description"]
+        assert refusal["location"]["file"].endswith("midc.vera")
 
 
 class TestTheRefusalIsDefinitionGated:

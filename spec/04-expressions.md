@@ -12,13 +12,23 @@ Literal expressions produce values of the corresponding primitive type:
 
 | Literal | Type | Examples |
 |---------|------|----------|
-| Integer | `Int` | `0`, `42`, `-17` |
-| Floating-point | `Float64` | `3.14`, `-0.5`, `100.0` |
+| Integer | `Int` or `Nat`, from its context (below) | `0`, `42`, `17` |
+| Floating-point | `Float64` | `3.14`, `0.5`, `100.0` |
 | String | `String` | `"hello"`, `""`, `"line\nbreak"` |
 | Boolean | `Bool` | `true`, `false` |
 | Unit | `Unit` | `()` |
 
-Integer literals in a context expecting `Nat` are checked for non-negativity at compile time.
+Integer literals in a context expecting `Nat` are checked for non-negativity at compile time.  A leading `-` is negation, not part of a literal (below).
+
+**An integer literal takes its type from its context.** Where the context names a type — a `let` binding, a parameter, a return, a constructor field — the literal is checked at that type. Where nothing names one, a non-negative literal is a `Nat` and a negative one an `Int`. An expression built from integer literals alone with `+`, `-`, `*`, `/`, `%` and negation is an `Int` when its value is negative, and otherwise has the type its operators give it: `0 - 3` and `(1 - 4) * 2` are `Int`, `5 - 2` is `Nat`, and `(0 - 3) - (0 - 5)` is `Int` (its operands are).
+
+A literal can also fix a type argument that is being inferred: a generic function's (§5.9) or a generic constructor's, directly or from inside an argument — an array literal's elements, a tuple's or a constructor's fields, a branch of an `if` or `match`, or a nested generic call whose own literals decided it. Its context there is, in order:
+
+1. the other arguments. In `array_fold(@Array<Int>.0, 0, fn(@Int, @Int -> @Int) effects(pure) { @Int.1 + @Int.0 })` the closure's declared parameters fix the accumulator type at `Int`, so the literal `0` is an `Int` and the sum may go negative;
+2. the type the result is expected at: with `forall<T> fn id(@T -> @T)`, `let @Int = id(5)` instantiates `id` at `Int`. Not where a negative literal sits beside a non-negative one at the same type argument: the call need not return the negative one — with `forall<T> fn second(@T, @T -> @T)`, `second(-3, 5)` may be 5 — so where the expected type puts a scalar `Nat` there it does not fix it, and rule 3 does. `let @Nat = second(-3, 5)` instantiates `second` at `Int`, and its result is narrowed into the scalar `@Nat` as any `Int` is (§6.4.3): obligated, and guarded at run time, so `let @Nat = second(5, -3)`, which does return the -3, verifies and then traps. Where the expected type puts the `Nat` in a collection's element or key type (`Array`, `Set`, `Map`), it does fix it, because binding an `Array<Int>` into an `Array<Nat>` is not checked element by element: `let @Array<Nat> = array_reverse([0 - 1, 5])` instantiates `array_reverse` at `Nat` and the -1 is refused (**E503**). The same rule refuses a call that returns only the non-negative elements: `let @Array<Nat> = array_slice([-3, 5], 1, 2)` is `[5]`, and is refused (**E503**) all the same. Admitting it needs an element-wise obligation on the coercion ([#1542](https://github.com/aallan/vera/issues/1542), [#1605](https://github.com/aallan/vera/issues/1605)). Where every literal at the type argument is negative, the call can return only one of them, since a generic function has no other value of its type argument, so the expected type fixes it;
+3. only when neither fixes it, the literals' own types by value, joined: `id(0 - 3)` instantiates `id` at `Int`, and so does `array_reverse([5, 0 - 1])`, whose elements are `5` and `-1`.
+
+A literal whose context turns out to be `Nat` is checked for non-negativity like any other. With `forall<T> fn pick(@T, @T -> @T)`, `pick(@Nat.0, 0 - 1)` has `T` fixed at `Nat` by the `@Nat` argument, and `0 - 1` is a narrowing the verifier refutes (**E503**); so is `let @Nat = id(0 - 3)`. A destructuring `let` gives its source the tuple of its bindings' types, so `let Tuple<@Nat, @Nat> = id(Tuple(1, 0 - 3))` is refused the same way. The type a context expects reaches the call through whatever form the call is written in: the branches of an `if` or a `match` and the result of a block; a tuple's component and an array literal's element (`let @Tuple<Nat, Nat> = Tuple(1, id(0 - 3))` instantiates `id` at `Nat`); a pipe, which is the call it desugars to (`let @Nat = (0 - 3) |> id()` is `let @Nat = id(0 - 3)`); and an element read from an array, whose array is expected at the element's type (`let @Nat = array_reverse([0 - 3])[0]` instantiates `array_reverse` at `Nat`, while `let @Nat = array_reverse([0 - 3, 5])[0]` instantiates it at `Int`, by rule 2, and returns 5). A refinement of `Nat` gives its base: with `type Small = { @Nat | @Nat.0 < 100 }`, `let @Small = id(0 - 3)` instantiates `id` at `Nat`, and the -3 is refused (**E503**).
 
 Integer literals are also range-checked against their target machine type at compile time ([#812](https://github.com/aallan/vera/issues/812)): `Int` is a signed 64-bit integer (range `-2^63 .. 2^63 - 1`), `Nat` an unsigned one (`0 .. 2^64 - 1`), and a `Byte` holds `0 .. 255`.  A value outside its target's range is a compile error (**E149**) rather than an opaque codegen failure or a silent reinterpretation of its bit pattern — for example `18446744073709551615` is valid as `Nat` but not as `Int`, and `999` is valid as either but not as `Byte`.
 
@@ -51,7 +61,7 @@ Arithmetic operators work on numeric types (`Int`, `Nat`, `Float64`):
 
 Division by zero is undefined behaviour in Vera. The compiler SHOULD verify that the divisor is non-zero via contracts or refinement types. If it cannot, it MUST insert a runtime check.
 
-**Result type of mixed `Int`/`Nat` arithmetic.** The type of a binary arithmetic expression is the least upper bound of its operand types under the *formal* subtyping lattice, in which the only relation among the numeric primitives is `Nat <: Int` (§2.2.1). So `Nat <op> Nat` is `Nat`, `Int <op> Int` is `Int`, and any mix of `Int` and `Nat` (in either operand order) is `Int` — the `@Nat` operand widens to `@Int`, the common supertype. The result is **not** `Nat`: the checker does not treat the verifier-mediated `Int -> Nat` narrowing relaxation (§2.8 rule 5) as a widening, because doing so would silently assert non-negativity of a possibly-negative result (e.g. `@Int.0 - 2`) with no verification obligation, contrary to §0.2.2. A mixed result flowing into a `@Nat` position is then a `@Nat`-narrowing binding site, obligated and guarded like any other (§6.4.3, §11.2.1). `Int` and `Float64` never mix (see below).
+**Result type of mixed `Int`/`Nat` arithmetic.** The type of a binary arithmetic expression is the least upper bound of its operand types under the *formal* subtyping lattice, in which the only relation among the numeric primitives is `Nat <: Int` (§2.2.1). So `Nat <op> Nat` is `Nat` (except that an expression of literals alone whose value is negative is `Int`, so `0 - 3` is `Int`; §4.2), `Int <op> Int` is `Int`, and any mix of `Int` and `Nat` (in either operand order) is `Int` — the `@Nat` operand widens to `@Int`, the common supertype, and that widening is checked like any other: a `@Nat` above `i64.MAX` cannot be read as an `@Int`, so it traps rather than computing on a reinterpreted value (§11.2.1). The one exception is a `@Nat` sum or product that holds a negative literal-only part, such as `@Nat.0 + (if @Bool.0 then { 0 - 3 } else { 0 })`: its sign bit does not say whether it holds a value above `i64.MAX` or a negative one, so it is not yet checked, and a value above `i64.MAX` in it is read as a negative number ([#1591](https://github.com/aallan/vera/issues/1591)). The same holds for a comparison of a `@Nat` with an `@Int`. The result is **not** `Nat`: the checker does not treat the verifier-mediated `Int -> Nat` narrowing relaxation (§2.8 rule 5) as a widening, because doing so would silently assert non-negativity of a possibly-negative result (e.g. `@Int.0 - 2`) with no verification obligation, contrary to §0.2.2. A mixed result flowing into a `@Nat` position is then a `@Nat`-narrowing binding site, obligated and guarded like any other (§6.4.3, §11.2.1). `Int` and `Float64` never mix (see below).
 
 Subtraction on `Nat` is undefined behaviour when it would underflow (`lhs < rhs` produces a negative value below `Nat`'s `>= 0` range). The compiler SHOULD verify `lhs >= rhs` via contracts or refinement types. If it cannot, it MUST insert a runtime check that traps on underflow. `Byte` arithmetic is not currently supported by the type checker (`Byte` is excluded from the numeric-types set in `vera/types.py`); user code that needs byte-level arithmetic uses `byte_to_int` to convert before arithmetic and `int_to_byte` to convert back. Allowing `Byte` arithmetic with both underflow and overflow guards is tracked speculatively as [#564](https://github.com/aallan/vera/issues/564).
 
@@ -82,13 +92,12 @@ Comparison operators produce `Bool`:
 @Int.0 >= @Int.1       -- greater or equal
 ```
 
-Equality (`==`, `!=`) is defined on all types. It is structural equality:
+Equality (`==`, `!=`) is defined on the types that support `Eq` (Chapter 9, Section 9.8): the primitives, `String`, and ADTs whose fields all support `Eq`. It is structural equality:
 - Primitives: value equality
-- Tuples: element-wise equality
-- Arrays: element-wise equality (same length and all elements equal)
 - ADTs: same constructor and recursively equal fields
-- Strings: character-by-character equality
-- Functions: not comparable (compile error)
+- Strings: content equality
+
+Arrays, tuples, maps, sets and functions do not support `Eq`; comparing them with `==` or `!=` is a compile error (E243).
 
 Ordering (`<`, `>`, `<=`, `>=`) is defined only on `Int`, `Nat`, `Float64`, `Byte`, and `String` (lexicographic).
 
@@ -182,7 +191,7 @@ Match expressions perform exhaustive pattern matching on algebraic data types:
 ```
 match @Option<Int>.0 {
   Some(@Int) -> @Int.0 + 1,
-  None -> 0,
+  None -> 0
 }
 ```
 
@@ -192,10 +201,13 @@ match @Option<Int>.0 {
 |---------|---------|---------------------|
 | `ConstructorName(@T1, @T2, ...)` | ADT variant with fields | One per field |
 | `ConstructorName` | ADT variant with no fields | None |
+| `Tuple(@T1, @T2, ...)` | A tuple of exactly that many components | One per component |
 | `_` | Anything (wildcard) | None |
 | Literal (`42`, `"hi"`, `true`) | Exact value | None |
 
 Patterns are matched top-to-bottom. The first matching arm is taken.
+
+Every arm's pattern MUST be one the scrutinee's type can take: a constructor pattern names a constructor of that type, a literal pattern has that type (an integer literal matches `Int`, `Nat` or `Byte`), and a binding pattern `@T` names a type related to it by subtyping. A `Tuple` pattern supplies exactly one sub-pattern per component of the scrutinee's tuple type, and matches no other type. A pattern that can never match is rejected (**E314**) — a `Map<K, V>` has no constructors, so `Some(...)` over one is not an unreachable arm but a type error, and an `Int` can equal no `Bool`. The rule is decided from what the checker knows: it does not apply where the scrutinee's type is a type variable (a `forall<T>` body cannot know which type `T` will be) or a named type the module does not declare.
 
 ### 4.9.2 Exhaustiveness
 
@@ -215,7 +227,7 @@ Patterns can be nested:
 match @List<Option<Int>>.0 {
   Cons(Some(@Int), @List<Option<Int>>) -> @Int.0,
   Cons(None, @List<Option<Int>>) -> 0,
-  Nil -> -1,
+  Nil -> -1
 }
 ```
 
@@ -360,7 +372,7 @@ string_strip(@String.0)                 -- returns String (trim whitespace)
 
 String concatenation uses a function, not an operator. There is no `+` on strings.
 
-String memory is managed by the conservative mark-sweep garbage collector (shipped v0.0.65, [#51](https://github.com/aallan/vera/issues/51)). See Chapter 11, Section 11.5 for the string pool implementation.
+String memory is managed by the conservative mark-sweep garbage collector. See Chapter 11, Section 11.5 for the string pool implementation.
 
 ### 4.13.1 String Interpolation
 
@@ -379,6 +391,8 @@ String interpolation provides ergonomic syntax for building strings from mixed t
 - If the expression has type String, it is used directly.
 - If the expression has type Int, Nat, Bool, Byte, or Float64, it is automatically converted using the appropriate built-in (`to_string`, `nat_to_string`, `bool_to_string`, `byte_to_string`, `float_to_string`).
 - All other types produce error E148.
+
+Membership is decided on the expression's **resolved** type, not on how that type is spelled: a type alias and a refinement type both interpolate exactly as the primitive they resolve to (`type Warm = { @Float64 | @Float64.0 > 0.0 };` renders as a `Float64`). A refinement predicate constrains which values exist; it does not change how one of them prints.
 
 **Canonical form.** `InterpolatedString` is a first-class AST node and the canonical representation for strings with embedded expressions. The formatter preserves interpolation syntax — it does not desugar to `string_concat`/`to_string` chains.
 
@@ -404,14 +418,15 @@ From highest to lowest precedence:
 | 5 | `<`, `>`, `<=`, `>=` | None |
 | 4 | `==`, `!=` | None |
 | 3 | `&&` | Left |
-| 2 | `||` | Left |
-| 1 | `|>` | Left |
+| 2 | `\|\|` | Left |
+| 1.5 | `==>` | Right |
+| 1 | `\|>` | Left |
 
 Parentheses can override precedence: `(@Int.0 + @Int.1) * @Int.2`.
 
 ## 4.15 No Loops
 
-Vera has no loop constructs (`for`, `while`, `loop`). All iteration is expressed as recursion. Recursive functions must declare a `decreases` clause for termination checking (see Chapter 6).
+Vera has no loop constructs (`for`, `while`, `loop`). All iteration is expressed as recursion. Recursive functions must declare a `decreases` clause for termination checking (see Chapter 6), unless their effect row names `Diverge` (Chapter 7, Section 7.7.3).
 
 This is deliberate: loops require reasoning about mutable state across iterations, which is a known weakness of LLMs. Recursion with explicit base cases and structural decomposition is a more pattern-matchable structure.
 
@@ -437,6 +452,7 @@ A hole is a development aid, not a runtime value:
 
 For example, a hole can stand in for an unwritten sub-expression:
 
+<!-- vera:no-run category="typed-hole" reason="it holds a typed hole, which vera run refuses (E614)" -->
 ```vera
 public fn scale(@Int -> @Int)
   requires(true)

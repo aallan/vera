@@ -1,0 +1,22 @@
+-- Conformance: constructor names are unique per NAMESPACE (Chapter 8, Section 8.4)
+-- Tests: E159 — two data declarations in one file share a constructor name (#1425).
+-- The intra-namespace sibling of E610 (two modules) and E157 (two imports);
+-- spec §8.4 puts all three under one rule. Accepting it left resolution to
+-- last-declaration-wins, so a use produced diagnostics naming neither
+-- declaration. Shadowing a PRELUDE or IMPORTED constructor stays legal —
+-- the rule is two declarations in one namespace.
+private data A1 {
+  Pair(Int, Int)
+}
+
+private data A2 {
+  Pair(Bool, Bool)
+}
+
+public fn main(-> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  0
+}

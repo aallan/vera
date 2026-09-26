@@ -9,8 +9,9 @@ Int value).
 return the wrapper pointer directly — the wrapper's bucket array (in
 ``vera/codegen/api.py``) IS the map / set, so there is no host-side
 store and no per-call wrap/unwrap.  Copy-on-write ops (insert / add /
-remove / new) return a fresh wrapper that the call-site shadow-roots
-(``_emit_root_result``).  Decimal is the one type that keeps the
+remove / new) return a fresh wrapper, rooted where it LANDS by the
+call-result rule in ``WasmContext._root_landed_value`` (#1379) rather
+than by a per-site push here.  Decimal is the one type that keeps the
 value-typed Python store and the #573 wrap/unwrap scheme: its
 call-sites still wrap a raw handle in an ADT (tag at offset 0, handle
 at offset 4), register it with ``$register_wrapper``, and unwrap via
@@ -161,6 +162,11 @@ class CallsContainersMixin:
         # these per-call pushes, so the shadow stack doesn't
         # grow unbounded across iterations of an enclosing
         # ``array_fold``.
+        # `needs_alloc` beside the push (#1376/#1379): the flag is what
+        # declares `$gc_sp`, so a push without it emits a reference to
+        # an undeclared global whenever nothing else in the module
+        # allocates — and `_scope_shadow_roots` refuses it outright.
+        self.needs_alloc = True
         seq.extend(gc_shadow_push(wrapper_temp))
         # #706: no wrap kind needs a bucket any more (``PyDecimal`` is
         # value-typed; #841 Future handles index a host-side future
@@ -199,25 +205,6 @@ class CallsContainersMixin:
             "i32.const 0x7FFFFFFF",
             "i32.and",
         ]
-
-    def _emit_root_result(self, wrapper_temp: int) -> list[str]:
-        """#706: shadow-root a host-returned bucket-as-truth wrapper_ptr.
-
-        The migrated Map / Set host imports return the wrapper pointer
-        directly — there is no raw handle to re-wrap.  Shadow-push it so
-        a subsequent allocation in the same function frame can't sweep
-        it, then leave it on the operand stack as the call's result.
-        The function epilogue's ``gc_sp`` restore clears the push, so the
-        shadow stack doesn't grow across enclosing-loop iterations.
-        """
-        seq = [f"local.set {wrapper_temp}"]
-        seq.extend(gc_shadow_push(wrapper_temp))
-        seq.append(f"local.get {wrapper_temp}")
-        return seq
-
-    # -----------------------------------------------------------------
-    # Decimal built-in operations (§9.7.2)
-    # -----------------------------------------------------------------
 
     def _register_decimal_import(
         self, op: str, params: list[str], results: list[str],
@@ -600,7 +587,8 @@ class CallsContainersMixin:
 
         The host returns the wrapper pointer for a fresh empty Map (its
         bucket_ptr is 0 until the first insert builds a bucket); the
-        call-site shadow-roots it.  Reclaimed by ordinary mark-sweep
+        call result is rooted where it lands (#1379).  Reclaimed by
+        ordinary mark-sweep
         when unreachable — no host store, no Phase 2c destructor.
         """
         wasm_name = "$vera.map_new"
@@ -609,10 +597,8 @@ class CallsContainersMixin:
         self._map_ops_used.add("map_new")
         self.needs_alloc = True
         # #706: the host returns a wrapper_ptr (empty bucket-as-truth
-        # Map) directly; shadow-root it as the result.
+        # Map) directly; `_root_landed_value` roots it (#1379).
         ins: list[str] = [f"call {wasm_name}"]
-        wrapper_tmp = self.alloc_local("i32")
-        ins.extend(self._emit_root_result(wrapper_tmp))
         return ins
 
     def _translate_map_insert(
@@ -623,8 +609,8 @@ class CallsContainersMixin:
         Emits a type-specific host import based on the key and value
         types.  #706 (bucket-as-truth): the input ``m`` is a wrapper
         pointer passed straight to the host (no unwrap); the host
-        decodes its bucket, inserts, and returns a fresh wrapper_ptr
-        that the call-site shadow-roots via ``_emit_root_result``.
+        decodes its bucket, inserts, and returns a fresh wrapper_ptr,
+        rooted where it lands by ``_root_landed_value`` (#1379).
         """
         key_type = self._container_entry_type_name(call.args[1])
         val_type = self._container_entry_type_name(call.args[2])
@@ -650,23 +636,44 @@ class CallsContainersMixin:
             extra_params=params, results=["i32"],
         )
         ins: list[str] = []
+        # #1426: the §2.6.5 predicate on the VALUE going into the map.  The
+        # value argument's own recorded target is the ERASED base — generic
+        # unification resolves `V` against the `map_new()` receiver — so the
+        # refinement is read from the CALL's target instead, which carries
+        # `Map<K, {refined}>` whole.  Same asymmetry the verifier hit
+        # obligating this site, answered from the same place.  R-1412 F3: a
+        # `map_insert` NESTED in a container position has no recorded target
+        # of its own, so the one its position handed down stands in for it.
+        map_target = self._container_target_refined(call)
+        value_component = self._adt_arg_type(map_target, 1)
         # #706: pass the Map wrapper_ptr directly (bucket-as-truth — no
-        # handle to unwrap); the host returns a fresh wrapper_ptr.
-        arg0 = self.translate_expr(call.args[0], env)
+        # handle to unwrap); the host returns a fresh wrapper_ptr.  A chained
+        # insert builds the same map, so the receiver is handed the map's
+        # own type, as the verifier's descent obligates it (R-1412 F3).
+        with self._handing_down(call.args[0], map_target):
+            arg0 = self.translate_expr(call.args[0], env)
         if arg0 is None:
             return None
         ins.extend(arg0)
         # Eval remaining args.
-        for arg in call.args[1:]:
-            arg_instrs = self.translate_expr(arg, env)
+        for pos, arg in enumerate(call.args[1:], start=1):
+            with self._handing_down(
+                    arg, value_component if pos == 2 else None):
+                arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
                 return None
+            if pos == 2:
+                arg_instrs = self._emit_construction_refine_guard(
+                    arg_instrs, arg, "map value", "map value insert", env,
+                    component_ty=value_component,
+                )
+                # #1440: the SIGN obligation at the same insert.
+                arg_instrs = self._emit_construction_nat_guard(
+                    arg_instrs, arg, value_component)
             ins.extend(arg_instrs)
         ins.append(f"call {wasm_name}")
         # Shadow-root the returned wrapper_ptr as the result.
         self.needs_alloc = True
-        wrapper_tmp = self.alloc_local("i32")
-        ins.extend(self._emit_root_result(wrapper_tmp))
         return ins
 
     def _translate_map_get(
@@ -905,8 +912,6 @@ class CallsContainersMixin:
             ins.extend(arg_instrs)
         ins.append(f"call {wasm_name}")
         self.needs_alloc = True
-        wrapper_tmp = self.alloc_local("i32")
-        ins.extend(self._emit_root_result(wrapper_tmp))
         return ins
 
     def _translate_map_size(
@@ -1123,10 +1128,8 @@ class CallsContainersMixin:
         self._set_ops_used.add("set_new")
         self.needs_alloc = True
         # #706: the host returns a wrapper_ptr (empty bucket-as-truth
-        # Set); shadow-root it as the result.
+        # Set); `_root_landed_value` roots it (#1379).
         ins: list[str] = [f"call {wasm_name}"]
-        wrapper_tmp = self.alloc_local("i32")
-        ins.extend(self._emit_root_result(wrapper_tmp))
         return ins
 
     def _translate_set_add(
@@ -1172,8 +1175,6 @@ class CallsContainersMixin:
             ins.extend(arg_instrs)
         ins.append(f"call {wasm_name}")
         self.needs_alloc = True
-        wrapper_tmp = self.alloc_local("i32")
-        ins.extend(self._emit_root_result(wrapper_tmp))
         return ins
 
     def _translate_set_contains(
@@ -1252,8 +1253,6 @@ class CallsContainersMixin:
             ins.extend(arg_instrs)
         ins.append(f"call {wasm_name}")
         self.needs_alloc = True
-        wrapper_tmp = self.alloc_local("i32")
-        ins.extend(self._emit_root_result(wrapper_tmp))
         return ins
 
     def _translate_set_size(

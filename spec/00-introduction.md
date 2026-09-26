@@ -66,7 +66,7 @@ Every diagnostic — parse errors, type errors, contract violations, effect mism
 
 Every diagnostic MUST include:
 
-1. **Diagnostic code and location.** A stable diagnostic code (`E001`–`E702` for errors, `W001`–`W002` for warnings), file path, line number, and column, with the offending source line quoted and the error position indicated. The error code provides a machine-readable identifier, but every code is always accompanied by a full natural language explanation — the code alone is never the message.
+1. **Diagnostic code and location.** A stable diagnostic code (`E001`–`E702` for errors, `W001`–`W003` for warnings), file path, line number, and column, with the offending source line quoted and the error position indicated. The error code provides a machine-readable identifier, but every code is always accompanied by a full natural language explanation — the code alone is never the message.
 2. **Description.** A plain English explanation of the problem, written to tell the model what went wrong and how to fix it.
 3. **Rationale.** Why this is an error — which language rule was violated.
 4. **Fix.** A concrete code example showing the corrected form. This is not a hint; it is a template the model can apply directly.
@@ -77,16 +77,14 @@ When a diagnostic prints an inferred type it could not fully determine, the unkn
 ### 0.5.2 Example
 
 ```
-[E001] Error at main.vera, line 14, column 1:
+[E001] Error at main.vera, line 2, column 1:
 
     {
     ^
 
-  Function is missing its contract block. Every function in Vera must declare
-  requires(), ensures(), and effects() clauses between the signature and the body.
+  Function is missing its contract block. Every function in Vera must declare requires(), ensures(), and effects() clauses between the signature and the body.
 
-  Vera requires all functions to have explicit contracts so that every function's
-  behaviour is mechanically checkable.
+  Vera requires all functions to have explicit contracts so that every function's behaviour is mechanically checkable.
 
   Fix:
 
@@ -113,7 +111,7 @@ Diagnostics occur at every phase of compilation:
 | Type checking | Type mismatches, invalid refinement predicates, subtyping violations |
 | Effect checking | Undeclared effects, missing handlers, effect row mismatches |
 | Verification (Tier 1) | Contract violations with SMT counterexamples, explained in plain language |
-| Verification (Tier 2) | Suggestions for lemmas or hints that would help the solver |
+| Verification (Tier 2) | Suggestions for lemmas or hints that would help the solver (not yet implemented; [#427](https://github.com/aallan/vera/issues/427)) |
 | Verification (Tier 3) | Runtime check insertion points, with explanation of what could not be proven |
 | Reachability | Unreachable branches (when preconditions or types make a case impossible) |
 | Call-site analysis | Arguments that cannot be proven to satisfy a callee's preconditions |

@@ -61,6 +61,7 @@ from vera.runtime.traps import (
     _classify_host_error,
     _classify_trap,
     _resolve_trap_frames,
+    trapping_instruction,
 )
 
 if TYPE_CHECKING:
@@ -68,6 +69,7 @@ if TYPE_CHECKING:
 
     from vera.errors import Diagnostic
     from vera.resolver import ResolvedModule
+    from vera.trap_registry import EmittedCheck
     from vera.types import ModuleArtifacts, Type
 
 
@@ -110,6 +112,36 @@ class CompileResult:
     # are deliberately *not* in this set — the (ptr, len) representation
     # is the same shape but the bytes-at-ptr aren't UTF-8.
     fn_string_returns: set[str] = field(default_factory=set)
+    # #1442 — the VERA-level signature: per function, the declared-ADT
+    # name of each parameter and of the return, or None where that
+    # position is not a declared ADT (a primitive, a String, an Array,
+    # a bare type variable).  `fn_param_types` above is the LOWERED
+    # signature and cannot stand in for this one: Bool, every heap ADT
+    # and every boxed value share the `i32` shape, so the ABI says
+    # nothing about which type a pointer points at.
+    #
+    # Consumed by `validate_handler` (`vera/runtime/server.py`), the
+    # guard both serving surfaces share, which marshals a host
+    # `HttpRequestData` into a guest `Request` and decodes the returned
+    # pointer as a `Response` — raw linear-memory work that is only
+    # sound if `handle` really has those types.  Populated in
+    # `compile_program` via `_declared_adt_name`, whose docstring gives
+    # the resolution rules (aliases resolved, refinements transparent,
+    # `Future<T>` and type arguments deliberately not stripped).
+    fn_adt_signatures: dict[
+        str, tuple[tuple[str | None, ...], str | None]
+    ] = field(default_factory=dict)
+    # #1442 — the ADT names the prelude INJECTION supplied for this
+    # program.  Not the same question as `name in adt_layouts`: an
+    # injection is demand-driven and an entry-file declaration of the
+    # same name shadows it (spec 8.4.1), so the layout map holds one
+    # slot per NAME with no record of whose declaration filled it.
+    # Consumers that must distinguish the prelude's `Request` from a
+    # user type spelled `Request` ask this set — the ownership-aware
+    # half of the handler guard.  Note this covers `inject_prelude`'s
+    # blocks, not the `_register_builtin_adts` set (Option, Result,
+    # Tuple, Ordering, ...), which is registered before injection runs.
+    prelude_injected_adts: set[str] = field(default_factory=set)
     # #305: constructor layouts by ADT name, exported so the `vera
     # serve` driver can marshal the prelude Request/Response ADTs with
     # the exact offsets this compilation computed (never hardcoded).
@@ -154,6 +186,14 @@ class CompileResult:
     # Names are the emitted WASM symbol names, so they compare directly
     # against `exports` and against a `--fn` request.
     dropped_fns: dict[str, "Diagnostic | None"] = field(default_factory=dict)
+    # #1479 — the per-module record of runtime checks: one
+    # `vera.trap_registry.EmittedCheck` per check the module contains, with
+    # the trap kind it reports, the verifier obligation kinds it is the
+    # runtime half of, the WASM function it sits in and its source span.
+    # Read back from the assembled module's text, so it lists exactly the
+    # checks the module holds.  Empty for a compile that failed before
+    # assembly.
+    emitted_checks: list["EmittedCheck"] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -861,20 +901,30 @@ def execute(
         host_contract_fail, access_caller=True,
     )
 
-    # Host function: vera.overflow_trap() -> ()  (#808)
-    # Signals that the #798 integer-overflow guard fired, so `_classify_trap`
-    # reports the precise `kind="overflow"` (with its Fix paragraph) instead of
-    # the generic `unreachable` a bare trap instruction yields.  Mirrors
-    # `host_contract_fail`'s store-then-trap channel; parameterless because the
-    # diagnostic is per-kind — there is no dynamic message to intern.
-    last_overflow: list[object] = []
+    # Host function: vera.trap(kind: i32, ptr: i32, len: i32) -> ()  (#1479)
+    # The one signal every named check calls immediately before its
+    # `unreachable`: the kind as a code (`vera.trap_registry.TRAP_KINDS`) and
+    # the check's own message, when it carries one, as an interned
+    # (ptr, len).  `_classify_trap` then reports that kind, message and Fix
+    # instead of the generic `unreachable` the instruction alone produces —
+    # the channel #808 opened for overflow, carrying every kind at once so
+    # naming a trap never needs an import of its own.
+    last_trap: list[tuple[int, str]] = []
 
-    def host_overflow_trap() -> None:
-        last_overflow.append(True)
+    def host_trap(
+        caller: wasmtime.Caller, code: int, ptr: int, length: int,
+    ) -> None:
+        last_trap.clear()
+        message = _read_wasm_string(caller, ptr, length) if length else ""
+        last_trap.append((code, message))
 
-    overflow_trap_type = wasmtime.FuncType([], [])
+    trap_type = wasmtime.FuncType(
+        [wasmtime.ValType.i32(), wasmtime.ValType.i32(),
+         wasmtime.ValType.i32()],
+        [],
+    )
     linker.define_func(
-        "vera", "overflow_trap", overflow_trap_type, host_overflow_trap,
+        "vera", "trap", trap_type, host_trap, access_caller=True,
     )
 
     # State<T> host functions
@@ -1343,7 +1393,8 @@ def execute(
             # don't admit a generic suggestion: contract_violation /
             # unknown).
             kind, message, fix = _classify_trap(
-                exc, last_violation, last_overflow,
+                exc, last_violation, last_trap,
+                instruction=trapping_instruction(exc, result.wasm_bytes),
             )
         else:
             # Diagnostic escape hatch (ENVIRONMENT.md,

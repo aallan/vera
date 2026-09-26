@@ -120,7 +120,7 @@ private fn checked_nat(@Int -> @Result<Nat, String>)
 
 ### 9.3.3 UrlParts
 
-<!-- vera:skip-check category="INCOMPLETE" reason="data UrlParts (no visibility keyword)" -->
+<!-- vera:skip-check category="ILLUSTRATIVE" code="none" reason="prelude-injected UrlParts declaration shown without visibility" -->
 ```
 data UrlParts {
   UrlParts(String, String, String, String, String)
@@ -136,7 +136,7 @@ See §9.6.18 for the `url_parse` and `url_join` function specifications.
 
 ### 9.3.4 Future\<T\>
 
-<!-- vera:skip-check category="INCOMPLETE" reason="data Future<T> (no visibility keyword)" -->
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E158 E158 none" reason="prelude-injected Future<T> declaration shown without visibility" -->
 ```
 data Future<T> { Future(T) }
 ```
@@ -240,7 +240,7 @@ let @Array<Int> = [1, 2, 3];
 - Fixed size: the length is determined at creation and cannot change.
 - Immutable: elements cannot be modified after creation.
 - Zero-indexed: the first element is at index 0.
-- Bounds-checked: indexing with an out-of-range index causes a runtime trap (see Chapter 12).
+- Bounds-checked: indexing with an out-of-range index causes an `index_out_of_bounds` runtime trap (Section 11.12.3).
 
 **Element types:** Arrays can contain any type for which a WASM representation exists, including primitives (`Int`, `Nat`, `Bool`, `Byte`, `Float64`), ADT types (`Option<Int>`, `Result<Nat, String>`), `String`, and nested arrays (`Array<Array<Int>>`).
 
@@ -252,7 +252,7 @@ For the compilation model of arrays, see Chapter 11, Section 11.12.
 
 `Set<T>` is an unordered collection of unique elements. It requires the `Eq` and `Hash` abilities on `T` (see Section 9.8). Element types must be hashable primitives: `Int`, `Nat`, `Bool`, `Float64`, `String`, or `Byte`.
 
-Set is an opaque built-in type implemented via host imports. The runtime maintains the underlying set; WASM code interacts with sets through `i32` handles. All operations are pure — `set_add` and `set_remove` return new sets (functional semantics).
+Set is an opaque built-in type. A set lives on the WASM heap, as a wrapper pointing to the bucket that holds its elements; WASM code holds it as one `i32` pointer, and the operations are host imports that read the bucket and build a new one. All operations are pure — `set_add` and `set_remove` return new sets (functional semantics).
 
 **Operations:**
 
@@ -279,9 +279,9 @@ private fn set_demo(-> @Int)
 
 ### 9.4.3 Map\<K, V\>
 
-`Map<K, V>` is a key-value mapping. It requires the `Eq` and `Hash` abilities on `K` (see Section 9.8). Keys must be hashable primitive types: `Int`, `Nat`, `Bool`, `Float64`, `String`, or `Byte`. Values must be primitives (`Int`, `Nat`, `Bool`, `Byte`, `Float64`, `String`), ADT heap-pointer types (`Option<T>`, `Result<T, E>`), or other `Map` handles. `Array<T>` values are not yet supported as Map values (tracked as a future enhancement).
+`Map<K, V>` is a key-value mapping. It requires the `Eq` and `Hash` abilities on `K` (see Section 9.8). Keys must be hashable primitive types: `Int`, `Nat`, `Bool`, `Float64`, `String`, or `Byte`. Values must be primitives (`Int`, `Nat`, `Bool`, `Byte`, `Float64`, `String`), ADT heap-pointer types (`Option<T>`, `Result<T, E>`), or other `Map` values. `Array<T>` values are not yet supported as Map values (tracked as a future enhancement).
 
-Map is an opaque built-in type implemented via host imports. The runtime maintains the underlying hash table; WASM code interacts with maps through `i32` handles. All operations are pure — `map_insert` and `map_remove` return new maps (functional semantics).
+Map is an opaque built-in type. A map lives on the WASM heap, as a wrapper pointing to the bucket that holds its entries; WASM code holds it as one `i32` pointer, and the operations are host imports that read the bucket and build a new one. All operations are pure — `map_insert` and `map_remove` return new maps (functional semantics).
 
 **Operations:**
 
@@ -310,7 +310,7 @@ private fn map_demo(-> @Int)
 }
 ```
 
-`Map` is needed by the proposed `Json` ADT (Section 9.7.1), where `JObject` wraps a `Map<String, Json>`.
+The `Json` ADT (Section 9.7.1) uses `Map`: `JObject` wraps a `Map<String, Json>`.
 
 ## 9.5 Built-in Effects
 
@@ -352,6 +352,7 @@ private fn hello(-> @Unit)
 
 File operations return `Result` types for error handling:
 
+<!-- vera:no-run category="fixture" reason="reads data.txt, which the block does not create" -->
 ```
 public fn main(-> @Unit)
   requires(true)
@@ -414,7 +415,7 @@ For the runtime implementation of `State<T>`, see Chapter 12, Section 12.4.2.
 
 ### 9.5.3 Http
 
-> **Status: Implemented.** Tracked in [#57](https://github.com/aallan/vera/issues/57). `Http.get` and `Http.post` are fully compilable and execute via host imports (Python `urllib` / JavaScript `fetch`). Returns `Result<String, String>` — `Ok` with the response body, `Err` with the error message. New conformance test `ch09_http` (62 programs, was 61). New example `http.vera`.
+> **Status: Implemented.** Tracked in [#57](https://github.com/aallan/vera/issues/57). `Http.get` and `Http.post` are fully compilable and execute via host imports (Python `urllib` / a synchronous `XMLHttpRequest` in the browser). Returns `Result<String, String>` — `Ok` with the response body, `Err` with the error message. The conformance test `ch09_http` and the example `http.vera` exercise it.
 
 Network I/O is modelled as a built-in algebraic effect with two operations: `get` and `post`. Functions performing network access declare `effects(<Http>)`. The effect is built-in — no `effect Http { ... }` declaration is needed (and one is `E152`).
 
@@ -431,6 +432,7 @@ This fits naturally with Vera's algebraic effect system and makes network I/O ex
 
 `Http.get` returns a string. To get typed data, compose with `json_parse`:
 
+<!-- vera:no-run category="network" reason="calls Http, so a run would reach the network" -->
 ```
 public fn fetch_json(@String -> @Result<Json, String>)
   requires(string_length(@String.0) > 0)
@@ -450,7 +452,7 @@ This follows the same pattern as Markdown: `json_parse(Http.get(url))`, not a de
 **Implementation notes:**
 
 - The Python runtime uses `urllib.request.urlopen` (stdlib, no external dependencies).
-- The browser/Node.js runtime uses the `fetch` API.
+- The browser runtime uses a synchronous `XMLHttpRequest`. Node.js has no `XMLHttpRequest`, so there both operations return `Err`.
 - `Http.post` sends the body with `Content-Type: application/json`.
 - Responses are returned as the full response body string. Status codes are not currently exposed — non-2xx responses produce `Err`.
 - HTTPS is supported. Certificate verification follows the platform default.
@@ -573,8 +575,9 @@ private fn classify(@String -> @Result<String, String>)
 
 ### 9.5.6 HttpServer
 
-The `HttpServer` effect (a marker, §7.7.5 — no operations) enables **verified HTTP request handling** (#305, since v0.0.193).  A server program defines a total, contract-checked handler:
+The `HttpServer` effect (a marker, §7.7.5 — no operations) enables **verified HTTP request handling** (#305).  A server program defines a total, contract-checked handler:
 
+<!-- vera:no-run category="non-scalar-entry" reason="its exported functions take Request parameters" -->
 ```vera
 public fn handle(@Request -> @Response)
   requires(true)
@@ -590,13 +593,31 @@ public fn handle(@Request -> @Response)
 
 **Built-in types** (prelude ADTs, injected when referenced; user definitions shadow them):
 
-<!-- vera:skip-check category="ILLUSTRATIVE" reason="prelude-injected Request/Response decls shown without visibility (#305)" -->
+<!-- vera:skip-check category="ILLUSTRATIVE" code="none none" reason="prelude-injected Request/Response decls shown without visibility (#305)" -->
 ```
 data Request { Request(String, String, Map<String, String>, String) }
 data Response { Response(Int, Map<String, String>, String) }
 ```
 
 `Request` fields are method, path, headers, body; `Response` fields are status, headers, body.
+
+**Handler validation.**  Both serving surfaces — `vera serve` and
+`--target wasi-p2 --world server` — refuse a program whose `handle` is
+not a handler, and they ask the same question of it, about the
+**declared Vera types**: exactly one parameter, that parameter the
+prelude's `Request`, and the return the prelude's `Response`.  The
+lowered ABI cannot answer it — `Bool`, every heap ADT and every boxed
+value share the `i32` shape — and neither can the presence of the
+`Request` / `Response` layouts, which the prelude injects whenever the
+*program* mentions those types, so any other function can supply them
+while `handle` has some unrelated signature.  The check is
+ownership-aware in the sense of §11.16: an entry file that declares its
+own `data Request` shadows the prelude's, and the handler is then typed
+by a different type that happens to share the name, so it is refused
+too.  This matters because the host marshals raw bytes through those
+layouts — it builds the `Request` in guest memory and decodes the
+returned pointer as a `Response` — and a wrong type there is not a
+type error but a read at an address that was never a `Response`.
 
 **Execution model.**  `vera serve prog.vera [--port N]` hosts the accept loop: each incoming request is marshalled into a `Request` value, the handler is called on a **fresh module instance** (per-request isolation — `State<T>` mutations cannot leak between requests), and the returned `Response` becomes the HTTP response.  Because the loop lives in the host, handlers are ordinary total functions — no `Diverge`, and every contract on the handler (or its helpers) is an ordinary Tier-1/Tier-3 obligation.  A runtime contract violation (or any trap) inside a handler answers **500** with the trap diagnostic in a JSON body; the connection is always answered.
 
@@ -609,8 +630,9 @@ data Response { Response(Int, Map<String, String>, String) }
 
 ### 9.5.7 DB
 
-The `DB` effect (a built-in, §7.7.7) executes SQL through the host (#229, since v0.1.7). `execute` runs writes and returns the affected-row count; `query` runs reads and returns a grid of cells:
+The `DB` effect (a built-in, §7.7.7) executes SQL through the host (#229). `execute` runs writes and returns the affected-row count; `query` runs reads and returns a grid of cells:
 
+<!-- vera:run fn="seed_and_count" stdout="1" -->
 ```vera
 public fn seed_and_count(-> @Int)
   requires(true)
@@ -696,6 +718,7 @@ public fn array_range(@Int, @Int -> @Array<Int>)
 
 Produces an array of integers over the half-open interval `[start, end)`. The first argument is the start (inclusive) and the second is the end (exclusive). If `start >= end`, the result is an empty array. The elements are consecutive integers from `start` to `end - 1`.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="bare array_range calls with their results in comments" -->
 ```vera
 array_range(0, 5)       -- [0, 1, 2, 3, 4]
 array_range(3, 7)       -- [3, 4, 5, 6]
@@ -715,6 +738,7 @@ public forall<T> fn array_concat(@Array<T>, @Array<T> -> @Array<T>)
 
 Merges two arrays into a single array. The elements of the first array appear before the elements of the second. The result has length `array_length(first) + array_length(second)`. Both input arrays are unchanged (arrays are immutable values). `array_concat` is generic over the element type.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="bare array_concat calls with their results in comments" -->
 ```vera
 array_concat([1, 2, 3], [4, 5])       -- [1, 2, 3, 4, 5]
 array_concat([], [1, 2])               -- [1, 2]
@@ -734,6 +758,7 @@ public forall<T> fn array_slice(@Array<T>, @Int, @Int -> @Array<T>)
 
 Returns a new array containing elements from index `start` (inclusive) to `end` (exclusive). Indices are clamped to `[0, array_length(input)]`, so out-of-range values produce shorter slices rather than traps. If `start >= end` after clamping, returns an empty array. The original array is unchanged.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="bare array_slice calls with their results in comments" -->
 ```vera
 array_slice([10, 20, 30, 40, 50], 1, 4)  -- [20, 30, 40]
 array_slice([10, 20, 30], 0, 2)          -- [10, 20]
@@ -753,6 +778,7 @@ public forall<A, B> fn array_map(@Array<A>, fn(A -> B) effects(pure) -> @Array<B
 
 Applies a function to each element of the array and returns a new array of the results. The result has the same length as the input. The element type may change (e.g. mapping `Int` to `String`).
 
+<!-- vera:skip-parse category="FRAGMENT" reason="bare array_map calls with their results in comments" -->
 ```vera
 array_map([1, 2, 3], fn(@Int -> @Int) effects(pure) { @Int.0 * 10 })
 -- [10, 20, 30]
@@ -770,6 +796,7 @@ public forall<T> fn array_filter(@Array<T>, fn(T -> Bool) effects(pure) -> @Arra
 
 Returns a new array containing only the elements for which the predicate returns `true`. The result length is between 0 and the input length. Element order is preserved.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="bare array_filter calls with their results in comments" -->
 ```vera
 array_filter([1, 2, 3, 4, 5, 6], fn(@Int -> @Bool) effects(pure) { @Int.0 > 3 })
 -- [4, 5, 6]
@@ -787,6 +814,7 @@ public forall<T, U> fn array_fold(@Array<T>, @U, fn(U, T -> U) effects(pure) -> 
 
 Reduces an array to a single value by applying a function to an accumulator and each element, left to right. The second argument is the initial accumulator value. The accumulator type may differ from the element type.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="bare array_fold calls with their results in comments" -->
 ```vera
 array_fold([1, 2, 3, 4], 0, fn(@Int, @Int -> @Int) effects(pure) { @Int.1 + @Int.0 })
 -- 10 (0 + 1 + 2 + 3 + 4)
@@ -860,7 +888,7 @@ public fn floor(@Float64 -> @Int)
   effects(pure)
 ```
 
-Returns the largest integer less than or equal to the input. Compiles to `f64.floor` followed by `i64.trunc_f64_s`. Traps on NaN or out-of-range values (WASM semantics).
+Returns the largest integer less than or equal to the input. Compiles to `f64.floor` followed by `i64.trunc_f64_s`, behind a domain check: NaN, an infinity, or a result outside `[-2^63, 2^63)` traps as `float_conversion` (Section 11.8.5), so each call carries the `E529` domain obligation over the rounded value (§6.4.3): decided for a constant argument, checked at run time for a computed one.
 
 ```
 floor(3.7)
@@ -878,7 +906,7 @@ public fn ceil(@Float64 -> @Int)
   effects(pure)
 ```
 
-Returns the smallest integer greater than or equal to the input. Compiles to `f64.ceil` followed by `i64.trunc_f64_s`. Traps on NaN or out-of-range values (WASM semantics).
+Returns the smallest integer greater than or equal to the input. Compiles to `f64.ceil` followed by `i64.trunc_f64_s`, behind a domain check: NaN, an infinity, or a result outside `[-2^63, 2^63)` traps as `float_conversion` (Section 11.8.5), so each call carries the `E529` domain obligation over the rounded value (§6.4.3): decided for a constant argument, checked at run time for a computed one.
 
 ```
 ceil(3.2)
@@ -896,7 +924,7 @@ public fn round(@Float64 -> @Int)
   effects(pure)
 ```
 
-Rounds to the nearest integer using banker's rounding (IEEE 754 roundTiesToEven). This means `round(2.5)` evaluates to `2`, not `3` — ties round to the nearest even integer. Compiles to `f64.nearest` followed by `i64.trunc_f64_s`. Traps on NaN or out-of-range values (WASM semantics).
+Rounds to the nearest integer using banker's rounding (IEEE 754 roundTiesToEven). This means `round(2.5)` evaluates to `2`, not `3` — ties round to the nearest even integer. Compiles to `f64.nearest` followed by `i64.trunc_f64_s`, behind a domain check: NaN, an infinity, or a result outside `[-2^63, 2^63)` traps as `float_conversion` (Section 11.8.5), so each call carries the `E529` domain obligation over the rounded value (§6.4.3): decided for a constant argument, checked at run time for a computed one.
 
 ```
 round(3.7)
@@ -966,6 +994,7 @@ Most log and trig functions are uninterpreted in Z3's real-arithmetic fragment, 
 
 The argument order for `atan2` is `(y, x)`, matching POSIX, Python's `math.atan2`, and JavaScript's `Math.atan2` — `atan2(1.0, 1.0)` is `π/4`, `atan2(1.0, -1.0)` is `3π/4`.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="let statements outside a function body, with their results in comments" -->
 ```vera
 let @Float64 = log(e())          -- evaluates to 1.0
 let @Float64 = atan2(1.0, 1.0)   -- evaluates to π/4 ≈ 0.785
@@ -1037,7 +1066,7 @@ public fn float_to_int(@Float64 -> @Int)
   effects(pure)
 ```
 
-Truncates a floating-point number toward zero. Traps on NaN or Infinity (consistent with `floor`, `ceil`, and `round`). Compiled to `i64.trunc_f64_s`.
+Truncates a floating-point number toward zero. Traps as `float_conversion` on NaN, an infinity, or a value outside `[-2^63, 2^63)` (consistent with `floor`, `ceil`, and `round`; Section 11.8.5), and each call carries the `E529` domain obligation (§6.4.3). Compiled to `i64.trunc_f64_s` behind that domain check.
 
 ```
 float_to_int(3.9)
@@ -1083,7 +1112,7 @@ match int_to_byte(65) {
 
 This expression evaluates to `65`.
 
-#### float_to_string (total over all Float64 values)
+#### float_to_string
 
 <!-- vera:skip-parse category="FRAGMENT" reason="float_to_string signature (no body)" -->
 ```
@@ -1093,7 +1122,7 @@ public fn float_to_string(@Float64 -> @String)
   effects(pure)
 ```
 
-Renders a `Float64` as its decimal string (up to six fractional digits, trailing zeros trimmed but at least one kept, so `42.0` stays `"42.0"`). This function is **total**: it is defined for every `Float64` value, including the three IEEE 754 non-finite classes, which render as fixed ASCII spellings:
+Renders a `Float64` as its decimal string (up to six fractional digits, trailing zeros trimmed but at least one kept, so `42.0` stays `"42.0"`). It is defined for every non-finite `Float64` and for every finite value whose magnitude is below 2^63. The three IEEE 754 non-finite classes render as fixed ASCII spellings:
 
 | Input | Output |
 |-------|--------|
@@ -1102,6 +1131,8 @@ Renders a `Float64` as its decimal string (up to six fractional digits, trailing
 | `-∞` (e.g. `log(0.0)`, `0.0 - infinity()`) | `"-inf"` |
 
 These spellings are chosen for cross-runtime parity: `float_to_string` compiles to inline WASM (no host import), so the Python host runtime and the browser runtime execute the same module and emit these bytes identically by construction. Because the math built-ins commit to IEEE 754 semantics — `log(0.0)` returns `-∞` and out-of-domain inputs return `NaN` (§9.6.10) — these are ordinary, reachable values, not errors; rendering them never traps ([#857](https://github.com/aallan/vera/issues/857)).
+
+A finite value of magnitude 2^63 or more does trap: the integer part is extracted with `i64.trunc_f64_s`, which that magnitude overflows. Each call therefore carries the `E529` domain obligation (§6.4.3), as does every `show` or string interpolation of a `@Float64`, which lower to this function — decided for a constant argument, checked at run time for a computed one.
 
 ```
 float_to_string(log(0.0))
@@ -1125,6 +1156,7 @@ public fn float_is_nan(@Float64 -> @Bool)
 
 Tests whether a Float64 value is NaN (not a number). NaN is the only value that is not equal to itself. Compiled to `f64.ne(x, x)`.
 
+<!-- vera:run fn="test_is_nan" stdout="1" -->
 ```vera
 public fn test_is_nan(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -1143,6 +1175,7 @@ public fn float_is_infinite(@Float64 -> @Bool)
 
 Tests whether a Float64 value is positive or negative infinity. Compiled to `f64.eq(f64.abs(x), inf)`. Returns `false` for NaN.
 
+<!-- vera:run fn="test_is_infinite" stdout="1" -->
 ```vera
 public fn test_is_infinite(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -1163,6 +1196,7 @@ public fn nan(-> @Float64)
 
 Returns a quiet NaN value. Compiled to `f64.const nan`.
 
+<!-- vera:run fn="test_nan" stdout="nan" -->
 ```vera
 public fn test_nan(@Unit -> @Float64)
   requires(true) ensures(true) effects(pure)
@@ -1179,6 +1213,7 @@ public fn infinity(-> @Float64)
 
 Returns positive infinity. Negative infinity can be obtained via `0.0 - infinity()`. Compiled to `f64.const inf`.
 
+<!-- vera:run fn="test_infinity" stdout="inf" -->
 ```vera
 public fn test_infinity(@Unit -> @Float64)
   requires(true) ensures(true) effects(pure)
@@ -1187,7 +1222,7 @@ public fn test_infinity(@Unit -> @Float64)
 
 ### 9.6.13 String Search
 
-String search functions test for the presence or position of substrings. All are pure, take `String` arguments, and operate on raw bytes (ASCII). All are Tier 3 for verification (String is not modeled in Z3).
+String search functions test for the presence or position of substrings. All are pure, take `String` arguments, and operate on raw bytes (ASCII). The verifier models `string_contains`, `string_starts_with` and `string_ends_with` as the Z3 string operations `Contains`, `PrefixOf` and `SuffixOf`, so a contract that uses them can verify at Tier 1; `string_index_of` is Tier 3.
 
 #### string_contains
 
@@ -1199,6 +1234,7 @@ public fn string_contains(@String, @String -> @Bool)
 
 Returns `true` if the second argument (needle) appears as a contiguous substring of the first (haystack). An empty needle always matches. Uses a naive O(n×m) byte comparison.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="bare string_contains calls with their results in comments" -->
 ```vera
 string_contains("hello world", "world")  -- true
 string_contains("hello", "xyz")          -- false
@@ -1215,6 +1251,7 @@ public fn string_starts_with(@String, @String -> @Bool)
 
 Returns `true` if the haystack begins with the given prefix. An empty prefix always matches. If the prefix is longer than the haystack, returns `false`.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="bare string_starts_with calls with their results in comments" -->
 ```vera
 string_starts_with("hello world", "hello")  -- true
 string_starts_with("hello", "world")        -- false
@@ -1231,6 +1268,7 @@ public fn string_ends_with(@String, @String -> @Bool)
 
 Returns `true` if the haystack ends with the given suffix. An empty suffix always matches. If the suffix is longer than the haystack, returns `false`.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="bare string_ends_with calls with their results in comments" -->
 ```vera
 string_ends_with("hello world", "world")  -- true
 string_ends_with("hello", "world")        -- false
@@ -1247,6 +1285,7 @@ public fn string_index_of(@String, @String -> @Option<Nat>)
 
 Returns `Some(i)` where `i` is the byte offset of the first occurrence of the needle in the haystack, or `None` if not found. An empty needle matches at position 0. The returned index is a `Nat` (natural number).
 
+<!-- vera:skip-parse category="FRAGMENT" reason="a bare match expression" -->
 ```vera
 match string_index_of("hello world", "world") {
   Some(@Nat) -> @Nat.0,
@@ -1269,6 +1308,7 @@ public fn string_strip(@String -> @String)
 
 Returns a new string with leading and trailing ASCII whitespace removed. Whitespace bytes are: space (32), tab (9), carriage return (13), and newline (10). Interior whitespace is preserved.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="bare string_strip calls with their results in comments" -->
 ```vera
 string_strip("  hello  ")   -- "hello"
 string_strip("\thello\n")    -- "hello"
@@ -1281,11 +1321,12 @@ string_strip("  ")           -- "" (empty)
 <!-- vera:skip-parse category="FRAGMENT" reason="string_char_code signature (no body)" -->
 ```
 public fn string_char_code(@String, @Int -> @Nat)
-  requires(true) ensures(true) effects(pure)
+  requires(@Int.0 >= 0 && @Int.0 < string_length(@String.0)) ensures(true) effects(pure)
 ```
 
-Returns the ASCII code point (as a `Nat`) of the byte at the given index in the string. The index is zero-based. Traps if the index is out of bounds.
+Returns the unsigned byte value (as a `Nat`) at the given index in the string. The index is zero-based, and counts bytes: it must lie in `[0, string_length(s))`, the string's length in BYTES, or the call traps as `string_index_out_of_bounds` (Section 11.8.5). That range is the declared precondition, obligated at each call site like any `requires` (§6.4.2) — proved where the index is bounded against a string literal, `E501` where it may not hold, and checked at run time (`E532`) where the string's byte length is not known statically (§6.4.3) or where it is refuted only over a value the verifier cannot state, such as an effect operation's result (§6.4.2).
 
+<!-- vera:skip-parse category="FRAGMENT" reason="bare string_char_code calls with their results in comments" -->
 ```vera
 string_char_code("A", 0)     -- 65
 string_char_code("hello", 1) -- 101 (ASCII 'e')
@@ -1302,6 +1343,7 @@ public fn string_upper(@String -> @String)
 
 Returns a new string with all ASCII lowercase letters (a–z, bytes 97–122) converted to uppercase (A–Z, bytes 65–90). Non-ASCII bytes and non-letter bytes are unchanged.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="bare string_upper calls with their results in comments" -->
 ```vera
 string_upper("hello")   -- "HELLO"
 string_upper("Hello!")   -- "HELLO!"
@@ -1318,6 +1360,7 @@ public fn string_lower(@String -> @String)
 
 Returns a new string with all ASCII uppercase letters (A–Z, bytes 65–90) converted to lowercase (a–z, bytes 97–122). Non-ASCII bytes and non-letter bytes are unchanged.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="bare string_lower calls with their results in comments" -->
 ```vera
 string_lower("HELLO")   -- "hello"
 string_lower("Hello!")   -- "hello!"
@@ -1334,6 +1377,7 @@ public fn string_replace(@String, @String, @String -> @String)
 
 Replaces all non-overlapping occurrences of the needle (second argument) in the haystack (first argument) with the replacement (third argument). If the needle is empty, returns a copy of the haystack. Uses a two-pass algorithm: pass 1 counts occurrences, then allocates the output buffer; pass 2 copies bytes with substitutions.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="bare string_replace calls with their results in comments" -->
 ```vera
 string_replace("hello world", "world", "vera")  -- "hello vera"
 string_replace("aaa", "a", "bb")                -- "bbbbbb"
@@ -1351,6 +1395,7 @@ public fn string_split(@String, @String -> @Array<String>)
 
 Splits the string at each non-overlapping occurrence of the delimiter, returning an `Array<String>`. If the delimiter is empty, returns a single-element array containing the original string. Consecutive delimiters produce empty string segments. Uses a two-pass algorithm: pass 1 counts delimiters, then allocates the array and segment buffers in pass 2.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="bare string_split calls with their results in comments" -->
 ```vera
 string_split("a,b,c", ",")     -- Array with 3 elements: "a", "b", "c"
 string_split("hello", ",")     -- Array with 1 element: "hello"
@@ -1367,6 +1412,7 @@ public fn string_join(@Array<String>, @String -> @String)
 
 Joins an array of strings with the given separator between each pair of elements. An empty array produces an empty string. Uses a two-pass algorithm: pass 1 sums the total length, pass 2 copies bytes.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="bare string_join calls with their results in comments" -->
 ```vera
 string_join(string_split("a,b,c", ","), "-")  -- "a-b-c"
 string_join(string_split("hello", ","), "-")  -- "hello"
@@ -1382,6 +1428,7 @@ public fn string_from_char_code(@Nat -> @String)
 
 Creates a single-character (1-byte) string from an ASCII code point. Inverse of `string_char_code`. Allocates 1 byte of heap memory for the result.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="bare string_from_char_code, string_char_code, string_concat calls with their results in comments" -->
 ```vera
 string_from_char_code(65)                        -- "A"
 string_char_code(string_from_char_code(65), 0)          -- 65 (roundtrip)
@@ -1398,6 +1445,7 @@ public fn string_repeat(@String, @Nat -> @String)
 
 Repeats a string a given number of times. Allocates `length(s) × n` bytes of heap memory and fills the result by cycling through the source bytes.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="bare string_repeat calls with their results in comments" -->
 ```vera
 string_repeat("ab", 3)                   -- "ababab"
 string_repeat("x", 5)                    -- "xxxxx"
@@ -1431,6 +1479,7 @@ Error messages:
 - `"empty string"` — the input is empty or contains only whitespace
 - `"invalid digit"` — a non-digit character was encountered
 
+<!-- vera:skip-parse category="FRAGMENT" reason="bare parse_nat calls with their results in comments" -->
 ```vera
 parse_nat("42")        -- Ok(42)
 parse_nat("  7  ")     -- Ok(7)   (whitespace stripped)
@@ -1454,6 +1503,7 @@ Error messages:
 - `"empty string"` — the input is empty or contains only whitespace
 - `"invalid character"` — a non-digit character was encountered (after any sign)
 
+<!-- vera:skip-parse category="FRAGMENT" reason="bare parse_int calls with their results in comments" -->
 ```vera
 parse_int("42")        -- Ok(42)
 parse_int("-7")        -- Ok(-7)
@@ -1478,6 +1528,7 @@ Error messages:
 - `"empty string"` — the input is empty or contains only whitespace
 - `"invalid character"` — a non-digit, non-`.`, non-`e`/`E` character was encountered
 
+<!-- vera:skip-parse category="FRAGMENT" reason="bare parse_float64 calls with their results in comments" -->
 ```vera
 parse_float64("3.14")      -- Ok(3.14)
 parse_float64("-2.5")      -- Ok(-2.5)
@@ -1500,6 +1551,7 @@ Parses a boolean from a string. After stripping whitespace, the remaining conten
 Error messages:
 - `"expected true or false"` — the input does not match `"true"` or `"false"` after whitespace stripping
 
+<!-- vera:skip-parse category="FRAGMENT" reason="bare parse_bool calls with their results in comments" -->
 ```vera
 parse_bool("true")         -- Ok(true)
 parse_bool("false")        -- Ok(false)
@@ -1524,6 +1576,7 @@ public fn base64_encode(@String -> @String)
 
 Encodes a UTF-8 string to standard Base64 (RFC 4648). Every 3 input bytes produce 4 output characters from the alphabet `A`–`Z`, `a`–`z`, `0`–`9`, `+`, `/`. Remaining 1–2 bytes are padded with `=`. An empty input produces an empty string.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="bare base64_encode calls with their results in comments" -->
 ```vera
 base64_encode("Hello, World!")   -- "SGVsbG8sIFdvcmxkIQ=="
 base64_encode("ABC")             -- "QUJD"
@@ -1548,6 +1601,7 @@ Decodes a standard Base64 string (RFC 4648) to its original UTF-8 bytes. Returns
 - `"invalid base64 length"` — the input length is not a multiple of 4
 - `"invalid base64"` — the input contains characters outside the Base64 alphabet
 
+<!-- vera:skip-parse category="FRAGMENT" reason="bare base64_decode calls with their results in comments" -->
 ```vera
 base64_decode("QUJD")                  -- Ok("ABC")
 base64_decode("SGVsbG8sIFdvcmxkIQ==")  -- Ok("Hello, World!")
@@ -1571,6 +1625,7 @@ public fn url_encode(@String -> @String)
 
 Percent-encodes a string for use in URLs (RFC 3986). Unreserved characters (`A`–`Z`, `a`–`z`, `0`–`9`, `-`, `_`, `.`, `~`) pass through unchanged. All other bytes are encoded as `%XX` where `XX` is the uppercase hexadecimal representation of the byte value.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="bare url_encode calls with their results in comments" -->
 ```vera
 url_encode("Hello, World!")     -- "Hello%2C%20World%21"
 url_encode("foo@bar.com")       -- "foo%40bar.com"
@@ -1595,6 +1650,7 @@ Decodes a percent-encoded string (RFC 3986). Each `%XX` sequence is converted to
 
 - `"invalid percent-encoding"` — truncated `%` sequence (fewer than 2 hex digits following `%`) or invalid hex digits
 
+<!-- vera:skip-parse category="FRAGMENT" reason="bare url_decode calls with their results in comments" -->
 ```vera
 url_decode("Hello%2C%20World%21")  -- Ok("Hello, World!")
 url_decode("%41%42%43")            -- Ok("ABC")
@@ -1648,7 +1704,7 @@ url_join(UrlParts("", "", "", "", ""))
 
 ### 9.6.19 similarity (Future)
 
-> **Status: Not yet implemented.** Requires `Inference.embed` (returning `Array<Float64>`) which is deferred to a follow-up release. `Inference.complete` was implemented in v0.0.101 ([#61](https://github.com/aallan/vera/issues/61)); `embed` is tracked separately ([#371](https://github.com/aallan/vera/issues/371)).
+> **Status: Not yet implemented.** Requires `Inference.embed` (returning `Array<Float64>`) which is deferred to a follow-up release. `Inference.complete` is implemented ([#61](https://github.com/aallan/vera/issues/61)); `embed` is tracked separately ([#371](https://github.com/aallan/vera/issues/371)).
 
 <!-- vera:skip-parse category="FRAGMENT" reason="similarity signature (no body)" -->
 ```
@@ -1678,6 +1734,7 @@ public fn regex_match(@String, @String -> @Result<Bool, String>)
 
 Tests whether the input string (first argument) contains a substring matching the regex pattern (second argument). Returns `Ok(true)` if a match is found, `Ok(false)` otherwise, or `Err(msg)` if the pattern is invalid.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="let statements outside a function body, with their results in comments" -->
 ```vera
 let @Result<Bool, String> = regex_match("hello123", "\\d+");
 -- Ok(true) — digits found
@@ -1695,6 +1752,7 @@ public fn regex_find(@String, @String -> @Result<Option<String>, String>)
 
 Returns the first substring of the input that matches the pattern. Returns `Ok(Some(match))` if found, `Ok(None)` if not found, or `Err(msg)` for invalid patterns.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="let statements outside a function body, with their results in comments" -->
 ```vera
 let @Result<Option<String>, String> = regex_find("abc123def", "\\d+");
 -- Ok(Some("123"))
@@ -1712,6 +1770,7 @@ public fn regex_find_all(@String, @String -> @Result<Array<String>, String>)
 
 Returns all non-overlapping substrings of the input that match the pattern. Always returns full match strings (group 0), even when the pattern contains capture groups. Returns `Ok([])` (empty array) if no matches are found, or `Err(msg)` for invalid patterns.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="let statements outside a function body, with their results in comments" -->
 ```vera
 let @Result<Array<String>, String> = regex_find_all("a1b2c3", "\\d");
 -- Ok(["1", "2", "3"])
@@ -1729,6 +1788,7 @@ public fn regex_replace(@String, @String, @String -> @Result<String, String>)
 
 Replaces the **first** occurrence of the pattern in the input string with the replacement string (third argument). Returns the modified string, or the original string unchanged if no match is found. Returns `Err(msg)` for invalid patterns.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="let statements outside a function body, with their results in comments" -->
 ```vera
 let @Result<String, String> = regex_replace("hello world", "world", "vera");
 -- Ok("hello vera")
@@ -1748,6 +1808,7 @@ public forall<A, B> fn array_mapi(@Array<A>, fn(A, Nat -> B) effects(pure) -> @A
 
 `array_mapi` maps a function over the array, passing each element along with its zero-based position as the second argument. Same return shape as `array_map`; the index is provided so the caller can avoid the recursive-accumulator-with-index pattern that has historically been a leading source of De Bruijn indexing mistakes. Matches `mapi` from OCaml's `List`, `enumerate().map()` from Rust, and `arr.map((x, i) => ...)` from JavaScript.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="bare array_mapi calls with their results in comments" -->
 ```vera
 array_mapi([10, 20, 30], fn(@Int, @Nat -> @Int) effects(pure) {
   @Int.0 + @Nat.0
@@ -1763,6 +1824,7 @@ public forall<T> fn array_reverse(@Array<T> -> @Array<T>)
 
 `array_reverse` returns a new array with the elements in reverse order. Length and element values are preserved. Single-pass O(n).
 
+<!-- vera:skip-parse category="FRAGMENT" reason="bare array_reverse calls with their results in comments" -->
 ```vera
 array_reverse([1, 2, 3, 4, 5])  -- [5, 4, 3, 2, 1]
 ```
@@ -1775,6 +1837,7 @@ public forall<T> fn array_find(@Array<T>, fn(T -> Bool) effects(pure) -> @Option
 
 `array_find` returns `Some(x)` for the first element where the predicate is `true`, or `None` if no element matches. Short-circuits on the first match — the predicate is not invoked for elements past the match.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="bare array_find calls with their results in comments" -->
 ```vera
 array_find([1, 3, 5, 7, 9], fn(@Int -> @Bool) effects(pure) { @Int.0 > 4 })
 -- Some(5)
@@ -1791,6 +1854,7 @@ public forall<T> fn array_all(@Array<T>, fn(T -> Bool) effects(pure) -> @Bool)
 
 `array_any` returns `true` if at least one element satisfies the predicate, `false` otherwise. `array_all` returns `true` only when every element satisfies the predicate. Both short-circuit: `array_any` exits on the first true result, `array_all` exits on the first false. Empty-array convention follows the standard mathematical reading: `array_any([], _) == false` (no element to satisfy), `array_all([], _) == true` (vacuously true).
 
+<!-- vera:skip-parse category="FRAGMENT" reason="bare array_any, array_all calls with their results in comments" -->
 ```vera
 array_any([1, 2, 3], fn(@Int -> @Bool) effects(pure) { @Int.0 > 2 })  -- true
 array_all([1, 2, 3], fn(@Int -> @Bool) effects(pure) { @Int.0 > 0 })  -- true
@@ -1805,6 +1869,7 @@ public forall<T> fn array_flatten(@Array<Array<T>> -> @Array<T>)
 
 `array_flatten` concatenates one level of nested arrays. Two-pass: the first pass sums the inner lengths to size the destination, the second pass copies each inner array contiguously. Empty inner arrays are skipped without overhead.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="bare array_flatten calls with their results in comments" -->
 ```vera
 array_flatten([[1, 2], [3, 4], [5, 6]])  -- [1, 2, 3, 4, 5, 6]
 array_flatten([[1, 2], [], [3]])         -- [1, 2, 3]
@@ -1818,6 +1883,7 @@ public forall<T> fn array_sort_by(@Array<T>, fn(T, T -> Ordering) effects(pure) 
 
 `array_sort_by` returns a new array sorted using a caller-supplied comparator. The comparator receives two elements and returns an `@Ordering` value (`Less`, `Equal`, or `Greater`); the convention `cmp(a, b) == Less when a < b` produces ascending order. Implementation is insertion sort — stable, O(n²) worst-case, well-suited to the small-to-medium arrays Vera programs typically handle. A future release will add `array_sort<T> where Ord<T>` so the comparator can be inferred from the element type's `Ord` ability rather than supplied explicitly.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="a bare array_sort_by call with its result in a comment" -->
 ```vera
 array_sort_by(
   [3, 1, 4, 1, 5, 9, 2, 6],
@@ -1862,6 +1928,7 @@ public fn string_words(@String -> @Array<String>)
 
 `string_words` follows Python's `str.split()` with no arguments: splits on runs of ASCII whitespace (the same set as `is_whitespace` — space, tab, `\n`, `\v`, `\f`, `\r`), and discards empty segments. `string_words("  ")` returns the empty array.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="bare string_chars, string_lines, string_words calls with their results in comments" -->
 ```vera
 string_chars("abc")           -- ["a", "b", "c"]
 string_lines("a\nb\r\nc\rd")  -- ["a", "b", "c", "d"]
@@ -1890,6 +1957,7 @@ public fn string_trim_end(@String -> @String)
 
 `string_trim_start` strips leading ASCII whitespace (the same set as `is_whitespace` — space, tab, `\n`, `\v`, `\f`, `\r`); `string_trim_end` strips trailing whitespace. Each preserves the opposite end exactly. The all-whitespace input returns the empty string.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="bare string_reverse, string_trim_start, string_trim_end calls with their results in comments" -->
 ```vera
 string_reverse("hello")       -- "olleh"
 string_trim_start("  hi  ")   -- "hi  "
@@ -1913,6 +1981,7 @@ public fn string_pad_end(@String, @Nat, @String -> @String)
 - The fill cycles left-to-right and is truncated to exactly the padding length, not the next multiple of `string_length(fill)`.
 - An empty `fill` is a no-op (returns the input unchanged) — `pad_start` cannot infinitely loop.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="bare string_pad_start, string_pad_end calls with their results in comments" -->
 ```vera
 string_pad_start("7", 5, "0")     -- "00007"
 string_pad_end("ok", 8, ".")      -- "ok......"
@@ -1933,6 +2002,7 @@ public fn char_to_lower(@String -> @String)
 
 `char_to_upper` converts the first byte of the input to uppercase if it is an ASCII lowercase letter (`a..z`); other bytes pass through unchanged. `char_to_lower` is the dual. Only the first byte is transformed — these are deliberately first-character operations, useful for title-casing tokens.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="bare char_to_upper, char_to_lower calls with their results in comments" -->
 ```vera
 char_to_upper("alice")  -- "Alice"
 char_to_upper("5xyz")   -- "5xyz"
@@ -1967,6 +2037,7 @@ Each classifier inspects the **first byte** of the input string and returns a `@
 
 Every classifier returns `false` for the empty string — there is no first byte to inspect, so no predicate can hold.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="bare is_digit, is_alpha, is_whitespace calls with their results in comments" -->
 ```vera
 is_digit("5")   -- true
 is_digit("x")   -- false
@@ -2011,6 +2082,7 @@ Each `json_as_*` returns `Some(value)` when the Json's constructor matches the r
 
 `json_as_int` is the one asymmetric case: it applies `float_to_int` to the underlying `Float64`, truncating toward zero. `float_to_int` (aka WASM's `i64.trunc_f64_s`) traps on NaN, ±infinity, and any finite float outside the closed-open i64 range `[-2^63, 2^63)` — that is, `f < -2^63` or `f >= 2^63`. The range is asymmetric because two's-complement i64 can represent `-2^63 = INT64_MIN` exactly but not `+2^63`. `json_as_int` guards all four trap paths (`float_is_nan`, `float_is_infinite`, plus explicit bounds `f >= 9223372036854775808.0` and `f < -9223372036854775808.0`) and returns `None` for every non-representable-as-Int input. At the inclusive lower bound, `json_as_int(JNumber(-9223372036854775808.0))` correctly returns `Some(INT64_MIN)`.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="bare json_as_string, json_as_int calls with their results in comments" -->
 ```vera
 json_as_string(JString("hi"))              -- Some("hi")
 json_as_string(JNumber(1.0))               -- None
@@ -2044,6 +2116,7 @@ Each `json_get_X(j, key)` is definitionally equivalent to chaining `json_get(j, 
 
 There is no `json_get_object` — chained field access is handled by `json_get` returning `Option<Json>`, then letting the caller recurse.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="bare json_get_string, json_get_int, json_get_bool calls with their results in comments" -->
 ```vera
 -- Assume parsed: {"name":"Alice","age":30,"active":true,"tags":[1,2,3]}
 json_get_string(obj, "name")               -- Some("Alice")
@@ -2168,6 +2241,7 @@ Decimal is an opaque built-in type implemented via host imports, following the s
 
 **`decimal_from_string` grammar:** both runtimes accept exactly the language `[+-]? ( digits ( "." digits? )? | "." digits ) ( ("e" | "E") [+-]? digits )?` where `digits` is one or more ASCII `0`–`9`, applied after ignoring surrounding whitespace — the six code points `is_whitespace` names (`0x09`, `0x0A`, `0x0B`, `0x0C`, `0x0D`, `0x20`) and no others, stated here because the two host libraries' own trim functions disagree about the rest in both directions, and the exponent token (when present) MUST satisfy `|exp| <= 999999` — the default context's exponent floor, cited by the `decimal_round` fallback below and chosen to keep operand magnitudes bounded and the exponent-token check exact. Only finite decimals are accepted: special values (`NaN`, `sNaN`, `Infinity`), digit-group underscores (`1_000`), non-ASCII digits, and out-of-range exponent tokens are all rejected with `None`, even where a host decimal library would accept them. The accepted domain is defined by this grammar rather than inherited from whatever the host library parses (DESIGN.md: explicit over implicit) — the Python host pre-validates with this grammar before constructing a `decimal.Decimal`, and the browser runtime's parser recognises the same language, checking the exponent token as a string before any numeric conversion (an unbounded token would otherwise round silently above 2^53). This `|exp| <= 999999` bound constrains **input literals** only; exact arithmetic on accepted operands can grow the exponent past it, as squaring the largest accepted literal shows, and such results are computed and rendered identically in both runtimes (the Python host runs the binary operations in a context whose exponent range is widened to the library maximum, `±10^18`, so a finite result never overflows and matches the browser's unbounded engine).
 
+<!-- vera:run fn="square_of_the_largest_literal" stdout="1E+1999998" -->
 ```
 -- The |exp| <= 999999 bound constrains input LITERALS.  Exact
 -- arithmetic on accepted operands can carry the exponent past it.
@@ -2272,14 +2346,14 @@ public data MdBlock {
 **Design note.** The following Markdown constructs are intentionally excluded per the one-canonical-form principle (§0.2.3). Each has a canonical equivalent in the ADT:
 
 - **Raw HTML** (block and inline) — not safe for verification, not appropriate for agent-to-agent communication.
-- **Link reference definitions** — resolved to inline `MdLink` during parsing. The parsed ADT has no reference indirection.
-- **Setext headings** — merged with ATX headings into `MdHeading`. Both surface syntaxes parse to the same constructor.
-- **Indented code blocks** — merged with fenced code blocks into `MdCodeBlock` (with an empty language string).
+- **Link reference definitions** — not recognised: `md_parse` keeps the reference link and the definition as paragraph text. The canonical form is an inline link (`MdLink`).
+- **Setext headings** — not recognised: the title and its underline parse as one paragraph. The canonical form is an ATX heading (`MdHeading`).
+- **Indented code blocks** — not recognised: the indented lines parse as paragraph text. The canonical form is a fenced code block (`MdCodeBlock`).
 - **Hard and soft line breaks** — collapsed into paragraph text. Not structurally significant for agent communication.
 
 **Parse and render operations:**
 
-<!-- vera:skip-parse category="FUTURE" reason="md_parse signature (no body)" -->
+<!-- vera:skip-parse category="FRAGMENT" reason="md_parse signature (no body)" -->
 ```
 public fn md_parse(@String -> @Result<MdBlock, String>)
   requires(true)
@@ -2289,7 +2363,45 @@ public fn md_parse(@String -> @Result<MdBlock, String>)
 
 Parses a Markdown string into an `MdDocument`. Returns `Err` if parsing fails. This is pure — it transforms one value to another with no side effects.
 
-<!-- vera:skip-parse category="FUTURE" reason="md_render" -->
+Every runtime produces the same `MdBlock` (§12.9.3), and the rules below are what makes that a checkable claim rather than a coincidence of two hand-written parsers. They pin the *grammar*, where the constructors above pin only the result: a document that parses to different ADTs on two hosts is a §12.9.3 violation even when the two render to the same text, because a program can `match` on a paragraph's children and count them.
+
+**Character classes.** The grammar names its own, and MUST NOT be written in a host regex language's shorthands, which denote different sets in different hosts — `\s` matches Unicode whitespace in some and a different Unicode set in others, `\d` matches Unicode digits in some and `0`–`9` in others, and `.` excludes a carriage return in some and not others. A grammar written in shorthands is a different grammar on each host: the same pattern read a CRLF document's heading in one and refused it in the other.
+
+- *whitespace* is one of space, tab, carriage return, line tabulation (U+000B), form feed (U+000C) — never a line feed, which the line split consumes;
+- *digit* is `0`–`9`;
+- *any* is any character but a line feed.
+
+Trimming, wherever these rules call for it, removes *whitespace* from both ends — not whatever a host's own string-trim function happens to remove.
+
+**Block structure.** The parser walks lines in order, and each line is claimed by the FIRST construct below whose pattern matches it. The order is part of the grammar: a line two constructs could open belongs to the earlier one.
+
+| # | construct | pattern (`ws` = *whitespace*, `any` = *any*) |
+|---|---|---|
+| 1 | blank line — skipped | the whole line is *whitespace* |
+| 2 | `MdHeading` | `^(#{1,6})ws+(any*?)(?:ws+#+ws*)?$` — level is the run of `#`, content is group 2 trimmed |
+| 3 | `MdCodeBlock` | ``^(`{3,}\|~{3,})ws*(any*?)$`` — closes on `^<same char>{n,}ws*$` for the opener's length `n`, or at the end of input |
+| 4 | `MdThematicBreak` | `^(?:---+\|\*\*\*+\|___+)ws*$` — three or more of one character, with no interior *whitespace*, so `* * *` is a list, not a break |
+| 5 | `MdBlockQuote` | `^>ws?(any*)` — a following line with no marker continues the quote unless it opens a block (2, 3, 4, 5, 7 or 8) |
+| 6 | `MdTable` | `^\|(any+)\|?ws*$` on the line AND `^\|[ws:]*-[-ws:\|]*\|?ws*$` on the next; body rows continue while the row pattern matches. A row without that separator line beneath it is not a table |
+| 7 | `MdList` (unordered) | `^[-*+]ws+(any*)` — `-`, `*` and `+` are the same marker |
+| 8 | `MdList` (ordered) | `^(digit+)[.)]ws+(any*)` — `.` and `)` are the same marker |
+| 9 | `MdParagraph` | anything else, taking lines until a blank one or one matching 2, 3, 4, 5, 7 or 8 |
+
+Rule 9's stopping set is exactly the patterns of the constructs that claim a line, which is what makes the walk terminate: a line no construct claims is a line the paragraph takes. (Rule 6 is absent from it because a table needs its second line, so its first line alone belongs to the paragraph.)
+
+**A list item's continuation loses a fixed width.** A line under an item, indented by at least the marker's width — two spaces unordered, three ordered — belongs to that item with exactly that many characters removed, not with all its leading whitespace removed. The excess is what distinguishes a third nesting level from a second: under `- a`, the line `  - b` is an item of a nested list and `    - c` is an item nested inside *that*.
+
+**A blank line does not close a list** while the next non-blank line is another item of the same kind. `- a`, blank, `- b` is one list of two items.
+
+**Inline structure.** Within a heading, a paragraph, a quote's text or a table cell:
+
+- **Text runs are maximal.** Adjacent characters that open no other node form ONE `MdText`, the characters of a delimiter that failed to open one included. Emitting one node per scan step produces a different ADT that renders to the same string, which is why this rule is stated rather than left to the implementation.
+- **A code span closes at the next occurrence of its own run length.** An opening run of *n* backticks closes at the next *n* consecutive backticks. Where that occurrence is the leading *n* of a longer run, the opener MUST still close there and the remainder of the run stays literal text, so `` `x`` `` is a span holding `x` followed by a literal backtick. That is what makes the renderer's fence rule sufficient: a fence one backtick longer than the longest run inside the content cannot be entered early. If no such occurrence follows, the opening run is literal text. One leading and one trailing space are removed together when the fenced text is at least two characters long and both of its ends are spaces, so `` ` ` `` keeps its single space and `` `  ` `` is an empty span.
+- **A delimiter run is measured before it is read.** A run of `*` or `_` two or more long opens `MdStrong` if a closing pair follows; the run's leftover delimiters are resolved after that span closes, a single leftover as an `MdEmph` reaching the next lone delimiter and a larger leftover as literal text. If no closing pair follows, the run is retried as an `MdEmph` opened by its FIRST character and closing on the next lone delimiter — which the run's own second character supplies. So a run of two or more with no partner yields an EMPTY emphasis and re-scans what is left, rather than falling back to literal text: `**unclosed` is `[MdEmph([]), MdText("unclosed")]` and `****unclosed` is two empty emphases followed by the text. Only a LONE unpaired delimiter is literal text.
+- **A link or image label ends at its MATCHING bracket**, so `[a[b]c](url)` is one link.
+
+
+<!-- vera:skip-parse category="FRAGMENT" reason="md_render" -->
 ```
 public fn md_render(@MdBlock -> @String)
   requires(true)
@@ -2314,6 +2426,7 @@ The rules are visible from a value a program builds, which is where they
 bite: a parser cannot produce an empty list item or a space-bounded code
 span, so only a constructed `MdBlock` reaches them.
 
+<!-- vera:run fn="quote_rules" stdout="> one\n>\n> ```sh\n> a\n> b\n> ```\n\n>" -->
 ```
 -- A container prefixes every line of every child, separates adjacent
 -- children with a bare '>', and still writes a line for an empty one.
@@ -2331,6 +2444,7 @@ Renders `> one`, `>`, `> ```sh`, `> a`, `> b`, `> ``` `, a blank line, and
 `>` separates the quote's two children, and the empty quote still occupies
 its own line.
 
+<!-- vera:run fn="span_rules" stdout="``a`b`` `  x  `\n\n- " -->
 ```
 -- A code span is fenced longer than its content, and padded when the
 -- content would otherwise merge with the fence or lose its own spaces.
@@ -2350,7 +2464,7 @@ the empty item keeps its place as a marker and a space.
 
 **Accessor functions for contracts:**
 
-<!-- vera:skip-parse category="FUTURE" reason="md_has_heading" -->
+<!-- vera:skip-parse category="FRAGMENT" reason="md_has_heading" -->
 ```
 public fn md_has_heading(@MdBlock, @Nat -> @Bool)
   requires(@Nat.0 >= 1 && @Nat.0 <= 6)
@@ -2360,7 +2474,7 @@ public fn md_has_heading(@MdBlock, @Nat -> @Bool)
 
 Returns `true` if the document contains a heading of the given level.
 
-<!-- vera:skip-parse category="FUTURE" reason="md_has_code_block" -->
+<!-- vera:skip-parse category="FRAGMENT" reason="md_has_code_block" -->
 ```
 public fn md_has_code_block(@MdBlock, @String -> @Bool)
   requires(true)
@@ -2370,7 +2484,7 @@ public fn md_has_code_block(@MdBlock, @String -> @Bool)
 
 Returns `true` if the document contains a code block with the given language tag.
 
-<!-- vera:skip-parse category="FUTURE" reason="md_extract_code_blocks" -->
+<!-- vera:skip-parse category="FRAGMENT" reason="md_extract_code_blocks" -->
 ```
 public fn md_extract_code_blocks(@MdBlock, @String -> @Array<String>)
   requires(true)
@@ -2445,7 +2559,7 @@ public data HtmlNode {
 
 **Parse and serialize operations:**
 
-<!-- vera:skip-parse category="FUTURE" reason="html_parse" -->
+<!-- vera:skip-parse category="FRAGMENT" reason="html_parse" -->
 ```
 public fn html_parse(@String -> @Result<HtmlNode, String>)
   requires(true)
@@ -2455,7 +2569,7 @@ public fn html_parse(@String -> @Result<HtmlNode, String>)
 
 Parses an HTML string into an `HtmlNode` tree. The parser is lenient (like browsers) — malformed HTML produces a best-effort tree rather than an error. Returns `Err` only on catastrophic parse failures.
 
-<!-- vera:skip-parse category="FUTURE" reason="html_to_string" -->
+<!-- vera:skip-parse category="FRAGMENT" reason="html_to_string" -->
 ```
 public fn html_to_string(@HtmlNode -> @String)
   requires(true)
@@ -2467,7 +2581,7 @@ Serializes an `HtmlNode` tree back to an HTML string.
 
 **Query and extraction operations:**
 
-<!-- vera:skip-parse category="FUTURE" reason="html_query" -->
+<!-- vera:skip-parse category="FRAGMENT" reason="html_query" -->
 ```
 public fn html_query(@HtmlNode, @String -> @Array<HtmlNode>)
   requires(true)
@@ -2477,7 +2591,7 @@ public fn html_query(@HtmlNode, @String -> @Array<HtmlNode>)
 
 Queries the tree using a simple CSS selector subset. Returns all matching elements. Supported selectors: tag name (`div`), class (`.classname`), ID (`#id`), attribute presence (`[href]`), and descendant combinator (`div p`).
 
-<!-- vera:skip-parse category="FUTURE" reason="html_text" -->
+<!-- vera:skip-parse category="FRAGMENT" reason="html_text" -->
 ```
 public fn html_text(@HtmlNode -> @String)
   requires(true)
@@ -2487,7 +2601,7 @@ public fn html_text(@HtmlNode -> @String)
 
 Extracts all text content from the node and its descendants, recursively concatenated. Comments are excluded.
 
-<!-- vera:skip-parse category="FUTURE" reason="html_attr" -->
+<!-- vera:skip-parse category="FRAGMENT" reason="html_attr" -->
 ```
 public fn html_attr(@HtmlNode, @String -> @Option<String>)
   requires(true)
@@ -2505,6 +2619,7 @@ Returns the value of the named attribute if the node is an `HtmlElement` with th
 
 Vera supports restricted abilities for constraining type variables in generic functions. To support practical generic programming — sorting, hashing, serialisation — type variables need constraints. Vera adopts restricted abilities rather than full typeclasses:
 
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E185 E185" reason="the built-in Eq and Ord abilities' interfaces, shown as declarations beside a use; a program declaring either is refused" -->
 ```
 ability Eq<T> {
   op eq(T, T -> Bool);
@@ -2539,12 +2654,15 @@ Key design points:
 
 This design draws on Roc's abilities (deliberately no HKTs, auto-derivable) and Gleam's validation that useful languages need not have typeclasses.
 
+Ability **operation** names form one namespace across every ability in scope, the built-in abilities included: a bare call `size(x)` names the operation and not its ability. A second declaration of an operation name, in the same ability or another, is refused (**E184**, §8.5.5). A user ability named after a built-in ability, or an operation named after a built-in ability's operation, is refused as well (**E185**): code generation compiles `eq`, `compare`, `hash` and `show` against the built-in whatever a declaration says.
+
 ### 9.8.1 Built-in Abilities
 
-Four abilities are built into the language. Each is auto-satisfied for primitive types and (where noted) for ADTs composed of satisfying types.
+Four abilities are built into the language. Each is auto-satisfied for primitive types and (where noted) for ADTs composed of satisfying types. The declarations below show their interfaces; the abilities are in scope in every program, and a program that declares one of them is refused (**E185**).
 
 **Eq\<T\>** — Equality comparison.
 
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E185" reason="the built-in Eq ability's interface; a program declaring it is refused" -->
 ```
 ability Eq<T> {
   op eq(T, T -> Bool);
@@ -2557,6 +2675,7 @@ Satisfied by: Int, Nat, Bool, Float64, String, Byte, Unit, and ADTs whose constr
 
 **Ord\<T\>** — Ordering comparison.
 
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E185" reason="the built-in Ord ability's interface; a program declaring it is refused" -->
 ```
 ability Ord<T> {
   op compare(T, T -> Ordering);
@@ -2579,6 +2698,7 @@ Satisfied by: Int, Nat, Float64, Byte, String — exactly the orderable types on
 
 **Hash\<T\>** — Hashing.
 
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E185" reason="the built-in Hash ability's interface; a program declaring it is refused" -->
 ```
 ability Hash<T> {
   op hash(T -> Int);
@@ -2591,6 +2711,7 @@ Satisfied by: Int, Nat, Bool, Float64, String, Byte, Unit, and composite types �
 
 **Show\<T\>** — String representation.
 
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E185" reason="the built-in Show ability's interface; a program declaring it is refused" -->
 ```
 ability Show<T> {
   op show(T -> String);
@@ -2601,7 +2722,7 @@ Operation: `show(@T -> @String)`. Returns a human-readable string representation
 
 Satisfied by: Int, Nat, Bool, Float64, String, Byte, Unit, and composite types — ADTs, `Tuple`, `Option`, `Result`, and `Array` — whose fields/elements are themselves `Show`-satisfying (structural auto-derivation, §9.8.2).
 
-`show(@Float64)` is backed by `float_to_string` and is therefore **total** over all `Float64` values: the non-finite classes render as `"nan"`, `"inf"`, and `"-inf"` (§9.6.11, [#857](https://github.com/aallan/vera/issues/857)), with the same spellings in both the Python and browser runtimes.
+`show(@Float64)` is backed by `float_to_string` and shares its domain: the non-finite classes render as `"nan"`, `"inf"`, and `"-inf"` (§9.6.11, [#857](https://github.com/aallan/vera/issues/857)), with the same spellings in both the Python and browser runtimes, and a finite value of magnitude 2^63 or more traps.
 
 ### 9.8.2 ADT Auto-Derivation
 

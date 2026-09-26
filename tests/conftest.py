@@ -1,7 +1,10 @@
 """Shared pytest fixtures.
 
-Provides opt-in JavaScript coverage collection for the browser runtime.
-Set ``VERA_JS_COVERAGE=1`` to enable V8 coverage during ``test_browser.py``.
+Scrubs the inherited environment variables that would change what the suite
+measures (``VERA_Z3_TIMEOUT_MS``) or which repository its git commands act on
+(``GIT_*``), and provides opt-in JavaScript coverage collection for the
+browser runtime.  Set ``VERA_JS_COVERAGE=1`` to enable V8 coverage during
+``test_browser.py``.
 """
 
 from __future__ import annotations
@@ -47,11 +50,38 @@ def _default_z3_budget():  # type: ignore[no-untyped-def]
     before every other fixture, so it needs its own ``MonkeyPatch`` — the
     injected ``monkeypatch`` is function-scoped and cannot be requested here.
 
-    Mirrors ``_hermetic_git_env`` in ``test_release.py``, which scrubs
-    inherited ``GIT_*`` for the same reason.
+    ``_scrub_inherited_git_env`` below clears inherited ``GIT_*`` the same
+    way.
     """
     mp = pytest.MonkeyPatch()
     mp.delenv("VERA_Z3_TIMEOUT_MS", raising=False)
+    yield
+    mp.undo()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _scrub_inherited_git_env():  # type: ignore[no-untyped-def]
+    """Clear every inherited ``GIT_*`` variable, once, for the whole suite.
+
+    Under pre-commit, git exports ``GIT_DIR`` and ``GIT_INDEX_FILE`` for the
+    repository being committed (githooks(5)), and git honours them ahead of
+    a subprocess's ``cwd`` or ``-C``.  A test that runs git against a
+    repository of its own therefore acts on the developer's instead.  A
+    ``git init`` re-initialises it, and from a linked worktree, whose gitdir
+    does not end in ``.git``, marks the shared repository
+    ``core.bare = true``: every worktree of it then fails with "this
+    operation must be run in a work tree" until the setting is reset (PR
+    #1484).  Clearing the variables here covers every test, including one
+    written without knowing this, and ``test_git_hermetic.py`` proves it
+    against a decoy repository.
+
+    Session-scoped for the reason ``_default_z3_budget`` gives: it runs
+    before every other fixture.  A test that exercises the variables sets
+    them through its own ``monkeypatch`` after this has run.
+    """
+    mp = pytest.MonkeyPatch()
+    for name in [k for k in os.environ if k.startswith("GIT_")]:
+        mp.delenv(name, raising=False)
     yield
     mp.undo()
 

@@ -178,7 +178,7 @@ class CallsMarkupMixin:
         # #757: runtime-guard an @Int -> @Nat narrowing of the heading level
         # before it is passed to the host import (CR #756).
         if self._narrows_into_nat(level_arg):
-            l_instrs = self._emit_nat_bind_guard(l_instrs)
+            l_instrs = self._emit_nat_bind_guard(l_instrs, at=level_arg)
         ins: list[str] = []
         ins.extend(b_instrs)
         ins.extend(l_instrs)

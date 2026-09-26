@@ -282,7 +282,8 @@ public fn f(@Array<Int>, @Array<Int> -> @Array<Int>)
         assert not errors
         narrows = [
             o for o in result.obligations
-            if o.kind == "nat_bind" and o.status == "tier3"
+            if o.kind == "nat_bind"
+            and o.status in ("tier3", "tier3_unguarded")
         ]
         # Exactly TWO records, and the count is the assertion (a stopped
         # descent drops to 1, a double-record rises to 3): the nested
@@ -297,6 +298,21 @@ public fn f(@Array<Int>, @Array<Int> -> @Array<Int>)
             "nat_to_int-argument record must both be obligated — "
             f"got {len(narrows)}"
         )
+        # Both are `tier3`, and both are TRUE of the emitted module: the
+        # closure's @Nat return is covered by the lifted closure's return
+        # guard, and the `nat_to_int` argument by the narrowing guard that
+        # builtin now emits.  This assertion has held three different values,
+        # which is the history worth keeping.  It read `["tier3", "tier3"]`
+        # when the argument site hardcoded `guarded=True` — true by accident,
+        # since nothing guarded it; `["tier3", "tier3_unguarded"]` under #1362,
+        # which stopped the site claiming a guard it did not have and reported
+        # the shortfall; and `["tier3", "tier3"]` again now that the guard
+        # exists.  The first and third agree on the STATUS and disagree on
+        # whether it is warranted, which is exactly why the parity
+        # differential in `test_verifier_truth_consult_status.py` checks the
+        # claim against the artifact rather than against another claim.
+        by_status = sorted(o.status for o in narrows)
+        assert by_status == ["tier3", "tier3"], by_status
 
 
 # =====================================================================
@@ -514,12 +530,14 @@ public fn f(@Int -> @Int)
         assert len(obls) == 1
         assert obls[0].status == "tier3"
 
-    def test_refined_let_in_closure_discloses_unguarded(self) -> None:
-        """A refined narrowing inside a closure has no interior codegen
-        guard and an untranslatable predicate under the empty env — it
-        must disclose honestly: `tier3_unguarded` + the E506 warning (the
-        only user-visible signal), never a silent pass or a false
-        verdict."""
+    def test_refined_let_in_closure_is_guarded_tier3(self) -> None:
+        """A refined narrowing inside a closure has an untranslatable
+        predicate under the empty env, so it stays Tier-3 — but since #765
+        the closure body DOES carry the interior guard, so the honest
+        disclosure is the guarded `tier3` + its informational E506, not the
+        `tier3_unguarded` this asserted while the guard was missing.
+        Measured: `array_map` over a negative element traps on the
+        refinement violation inside the lifted closure."""
         result = _verify("""
 type Pos = { @Int | @Int.0 > 0 };
 
@@ -535,11 +553,11 @@ public fn f(@Array<Int> -> @Array<Int>)
         assert not errors
         refined = [o for o in result.obligations if o.kind == "refine_bind"]
         assert len(refined) == 1
-        assert refined[0].status == "tier3_unguarded"
+        assert refined[0].status == "tier3"
         warnings = [d for d in result.diagnostics if d.severity == "warning"]
         assert any(w.error_code == "E506" for w in warnings), (
             "the E506 disclosure is the only user-visible signal of an "
-            "unguarded unproven refinement narrowing in a closure"
+            "unproven refinement narrowing in a closure"
         )
 
     def test_refined_let_literal_in_closure_proves(self) -> None:
@@ -875,11 +893,17 @@ public fn go(@Nat -> @Int)
         assert len(obls) == 1
         assert obls[0].status == "tier3"
 
-    def test_refined_update_discloses_unguarded(self) -> None:
-        """`with @Pos = <clause slot>` — the refined predicate has no
-        handler-boundary guard; the obligation records tier3_unguarded
-        with the E506 disclosure (a guarded claim here would be false —
-        the adversarial round's pre-armed-desync finding)."""
+    def test_refined_update_counts_its_guard(self) -> None:
+        """`with @Pos = <clause slot>` — the refined predicate is guarded
+        at the write, so the obligation records `tier3`.
+
+        It recorded `tier3_unguarded` when this cell was written, and that
+        was truthful then: the three `State` writes lowered the sign guard
+        and never the predicate, so a guarded claim here would have been
+        false — the adversarial round's pre-armed-desync finding.  #1439
+        lowered the predicate at all three, and R-1412 F1 pointed the
+        verifier's guardedness lookup at the same table key codegen uses, so
+        the record now counts the check that exists."""
         result = _verify("""
 type Pos = { @Int | @Int.0 > 0 };
 
@@ -899,12 +923,12 @@ public fn go(@Int -> @Int)
 """)
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert not errors, [e.error_code for e in errors]
-        unguarded = [o for o in result.obligations
-                     if o.kind == "refine_bind"
-                     and o.status == "tier3_unguarded"]
-        assert len(unguarded) == 1, (
-            f"the untranslatable update narrowing must disclose "
-            f"tier3_unguarded, got "
+        guarded = [o for o in result.obligations
+                   if o.kind == "refine_bind"
+                   and o.status == "tier3"]
+        assert len(guarded) == 1, (
+            f"the untranslatable update narrowing must count its guard as "
+            f"tier3, got "
             f"{[(o.kind, o.status) for o in result.obligations]}"
         )
 

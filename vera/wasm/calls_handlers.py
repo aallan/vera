@@ -11,7 +11,8 @@ from typing import Callable, ClassVar
 
 from dataclasses import fields, is_dataclass
 
-from vera import ast, naming
+from vera import ast, binders, naming, narrowing
+from vera.naming import display_adt_name
 from vera.monomorphize import mangle_type_name
 from vera.slots import effect_op_result_names, type_expr_slot_name
 from vera.skip import STATE_CLAUSE_INLINE_DEPTH_CAP, CodegenSkip
@@ -19,10 +20,8 @@ from vera.wasm.helpers import (
     CellNames,
     StateClauseEntry,
     WasmSlotEnv,
-    _element_load_op,
-    _element_mem_size,
     _is_host_handle_type,
-    _is_pair_element_type,
+    bind_slot_value_from_stack,
     gc_shadow_push,
 )
 
@@ -68,7 +67,10 @@ class CallsHandlersMixin:
     _addressable_from: int
     _clause_inline_depth: int
     _refinement_guard_emitter: (
-        Callable[[ast.TypeExpr, int, str, WasmSlotEnv], list[str] | None]
+        Callable[
+            [ast.TypeExpr, int, str, WasmSlotEnv, ast.Node | None],
+            list[str] | None,
+        ]
         | None
     )
 
@@ -125,8 +127,10 @@ class CallsHandlersMixin:
             offset, length = self.string_pool.intern("unit")
             return [f"i32.const {offset}", f"i32.const {length}"]
 
-        # Decimal → decimal_to_string host import
-        if vera_type == "Decimal":
+        # Decimal → decimal_to_string host import.  #1321/#1331: unless this
+        # namespace declares its own `Decimal`, which is an ADT with a tag
+        # and fields, not an opaque host handle the host can stringify.
+        if vera_type == "Decimal" and not self._declares_adt(vera_type):
             desugared = ast.FnCall(
                 name="decimal_to_string", args=(arg,), span=arg.span,
             )
@@ -366,6 +370,15 @@ class CallsHandlersMixin:
             recovered = self._recover_ctor_ptype(arg, bare)
             if recovered is not None:
                 return recovered
+            # A non-generic data type takes no arguments.  The positional
+            # fallback below lists the constructor's FIELD types in their
+            # place (`MkArr(3)` as `Array<Int>`), which reads as another
+            # type now that the argument count says whose a spelling is
+            # (#1539): a `data Array`'s value rendered as the container.
+            adt = self._ctor_to_adt_name(arg.name)
+            if (adt is not None and arg.name != "Tuple"
+                    and not self._adt_tp_counts.get(adt, 0)):
+                return adt
 
         info = self._get_arg_type_info_wasm(arg)
         if info is None:
@@ -414,6 +427,8 @@ class CallsHandlersMixin:
         tp_count = self._adt_tp_counts.get(adt_name, 0)
         if tp_count == 0:
             return None  # non-generic ADT — bare name already correct
+        # ctor-owner-exempt: resolved in the compiling namespace's scoped
+        # projection (#1436)
         field_tp_idx = self._ctor_adt_tp_indices.get(arg.name)
         if field_tp_idx is None:
             return None
@@ -459,14 +474,33 @@ class CallsHandlersMixin:
         tp_names = self._adt_tp_param_names.get(adt_name, ())
         # Parent parameter NAME → its slot index (`T` → 0).
         name_to_slot = {name: i for i, name in enumerate(tp_names)}
-        layout = self._ctor_layouts.get(arg.name)
+        # #1414: prefer the OWNER-qualified layout.  `adt_name` is the ADT
+        # whose parameters this pass is recovering, so its own table answers
+        # for `arg.name`; the flat by-name map would hand back another ADT's
+        # layout after a same-named constructor collision and the recovered
+        # generic type would be built from the wrong `field_types`.  LATENT
+        # today rather than a live miscompile, and for a reason worth
+        # stating exactly: the CHECKER resolves a constructor call through
+        # the same last-declaration-wins by-name rule, so whenever the flat
+        # map here holds the wrong ADT's layout the checker has already
+        # refused the call against that same wrong resolution — measured,
+        # `data Rose<T> { Leaf(T), Node(T, Rose<T>) }` followed by
+        # `data ZzBox { Node(Bool) }` makes `Node(1, Leaf(2))` an `[E212]`
+        # ("expects 1 field(s), got 2"), while the reverse declaration
+        # order leaves Rose in the slot and compiles.  Two layers being
+        # wrong the same way is a coincidence, not a rail, which is exactly
+        # why this read is owner-qualified: the next change to either
+        # resolution would inherit the wrong layout silently.  The flat map
+        # stays as the fallback for a namespace whose per-owner table was
+        # not threaded (PR #1419 review).
+        layout = self._owned_ctor_layout(adt_name, arg.name)
         field_types = layout.field_types if layout else ()
         for field_i, decl in enumerate(field_types):
             if field_i >= len(arg.args):
                 break
             fbase, fargs = self._split_param_type(decl)
             # Only nested GENERIC ADT fields carry a recoverable parameter.
-            if not fargs or fbase not in self._adt_type_names:
+            if not fargs or self._value_adt_key(decl) is None:
                 continue
             # Which nested type-arg positions ARE a parent parameter still
             # needing a value?  (`Rose<T>` → position 0 holds `T`.)
@@ -583,7 +617,10 @@ class CallsHandlersMixin:
         instantiation lays out an i32_pair, not a bare pointer.
         """
         base, type_args = self._split_param_type(ptype)
-        if base not in self._adt_type_names:
+        # #1534/#1539: the VALUE's type says which data type this is, not
+        # the membership of the namespace compiling the show: a value made
+        # in another module has a type the entry file may not name.
+        if self._value_adt_key(ptype) is None:
             return None
 
         # Tuple is a VARIADIC product with an empty registered layout — its
@@ -612,21 +649,38 @@ class CallsHandlersMixin:
         tp_names = self._adt_tp_param_names.get(base, ())
         tp_mapping = dict(zip(tp_names, type_args))
 
-        ctors = sorted(
-            (
-                (cname, self._ctor_layouts[cname])
-                for cname, parent in self._ctor_to_adt.items()
-                if parent == base and cname in self._ctor_layouts
-            ),
-            key=lambda x: x[1].tag,
-        )
+        # #1414: read the layouts of the ADT we are rendering, not whatever
+        # the flat by-name table happens to hold.  Both tables here are keyed
+        # by bare constructor name across every ADT, so a user declaration
+        # sharing one of this type's constructor names displaced BOTH the
+        # layout and the `_ctor_to_adt` ownership entry — measured, a
+        # `data ZzBox { Less(Bool) }` anywhere in the program dropped
+        # `Ordering`'s own `Less` out of this list and rendered every
+        # `Ordering` as the user's constructor.  The per-owner map answers
+        # for the type actually being rendered; the flat one is the fallback
+        # for a namespace whose layouts were not threaded.
+        # The flat-map fallback that used to sit here was instrumented over
+        # the full pytest suite, the conformance suite twice (the second
+        # under VERA_EAGER_GC=1), the examples' check/verify and run gates,
+        # and a compile of all 302 corpus programs: reached zero times.  It
+        # is gone rather than kept as a comfort branch, because re-resolving
+        # by bare name is the defect this method was fixed for.
+        own = self._adt_ctor_layouts.get(base)
+        if own is None:
+            return None
+        ctors = sorted(own.items(), key=lambda x: x[1].tag)
         if not ctors:
             return None
 
         plans: list[tuple[str, int, list[tuple[int, str, str]]]] = []
         for cname, layout in ctors:
             n_fields = len(layout.field_offsets)
-            tp_idx = self._ctor_adt_tp_indices.get(cname)
+            # #1534: read per OWNER, as the layouts above are.  The by-name
+            # table is this namespace's projection, so it answered for a
+            # same-named constructor of another type: an entry-file `MkDuo`
+            # ordering its parameters the other way laid out an imported
+            # `Duo<Int, String>` as `(Int, String)`.
+            tp_idx = self._adt_owned_tp_indices.get(base, {}).get(cname)
             raw_types = (
                 layout.field_types
                 if layout.field_types
@@ -798,6 +852,11 @@ class CallsHandlersMixin:
         body locals.
         """
         gc_sp_save = self.alloc_local("i32")
+        # `needs_alloc` beside the push (#1376/#1379): the flag is what
+        # declares `$gc_sp`, so a push without it emits a reference to an
+        # undeclared global whenever nothing else in the module allocates —
+        # and `_scope_shadow_roots` refuses it outright.
+        self.needs_alloc = True
         prologue = [
             "global.get $gc_sp",
             f"local.set {gc_sp_save}",
@@ -860,7 +919,11 @@ class CallsHandlersMixin:
             # value_instrs leaves nothing useful; drop it and emit "unit".
             return self._const_string("unit")
 
-        if base == "Array":
+        # #1321/#1331: a DECLARED `data Array` is not the container — it is
+        # this namespace's own one-word ADT, and falling through to
+        # `_show_adt` below is what renders it.  Taking the array arm would
+        # walk its heap pointer as a (ptr, len) pair.
+        if base == "Array" and not self._declares_adt(ptype):
             elem_type = type_args[0] if type_args else None
             if elem_type is None:
                 return None
@@ -924,6 +987,11 @@ class CallsHandlersMixin:
         instrs: list[str] = []
         instrs.extend(value_instrs)
         instrs.append(f"local.set {ptr}")
+        # `needs_alloc` beside the push, as every other push site does
+        # (#1371): the flag is what declares `$gc_sp`, so a push without
+        # it references an undeclared global whenever nothing else in
+        # the module allocates.
+        self.needs_alloc = True
         instrs.extend(gc_shadow_push(ptr))
         # One shadow slot roots the running accumulator across the per-field
         # concat allocations (seeded with the struct pointer, overwritten with
@@ -936,12 +1004,21 @@ class CallsHandlersMixin:
         # constructor's String into (result_ptr, result_len).
         def render_ctor(cname: str, fields: list[tuple[int, str, str]]) -> None:
             # Head: `Ctor(` (or `(` for a Tuple; bare `Ctor` for nullary).
+            # The name is baked into the DATA SECTION and reaches stdout, so
+            # it is the user's spelling and not the registry key: #1317 gives
+            # a contended module ADT's constructors an owner-qualified
+            # `mod$<path>$Sq` symbol, and `show(Sq(3))` printed exactly that
+            # (measured: `mod$liba$Sq(3)`, and `string_length` of it 14 where
+            # 5 is right).  `display_adt_name` is the ONE strip, shared with
+            # the diagnostic boundary; a name that was never qualified passes
+            # through unchanged, so nothing else about this rendering moves.
+            display = display_adt_name(cname)
             if is_tuple:
                 head = "("
             elif fields:
-                head = f"{cname}("
+                head = f"{display}("
             else:
-                head = cname
+                head = display
             piece = self._const_string(head)
             instrs.extend(f"  {i}" for i in piece)
             instrs.append(f"  local.set {acc_len}")
@@ -1008,7 +1085,7 @@ class CallsHandlersMixin:
         acc_len = self.alloc_local("i32")
         sp_save = self.alloc_local("i32")
 
-        elem_size = _element_mem_size(elem_type)
+        elem_size = self._element_mem_size(elem_type)
         if elem_size is None:
             return None
 
@@ -1024,6 +1101,7 @@ class CallsHandlersMixin:
         instrs.extend(value_instrs)  # (ptr, len)
         instrs.append(f"local.set {arr_len}")
         instrs.append(f"local.set {arr_ptr}")
+        self.needs_alloc = True  # declares `$gc_sp` for the push (#1371)
         instrs.extend(gc_shadow_push(arr_ptr))
 
         # acc = "["
@@ -1107,6 +1185,7 @@ class CallsHandlersMixin:
         # Capture the slot address (current $gc_sp) BEFORE the push advances it.
         instrs.append(f"{indent}global.get $gc_sp")
         instrs.append(f"{indent}local.set {slot_addr}")
+        self.needs_alloc = True  # declares `$gc_sp` for the push (#1371)
         instrs.extend(indent + i for i in gc_shadow_push(init_ptr))
         return slot_addr
 
@@ -1172,8 +1251,8 @@ class CallsHandlersMixin:
         self, arr_ptr: int, idx: int, elem_type: str, elem_size: int,
     ) -> list[str] | None:
         """Instructions leaving arr[idx] on the stack (natural WASM shape)."""
-        is_pair = _is_pair_element_type(elem_type)
-        load_op = _element_load_op(elem_type)
+        is_pair = self._is_pair_element_type(elem_type)
+        load_op = self._element_load_op(elem_type)
         if load_op is None and not is_pair:
             return None
         addr: list[str] = [f"local.get {arr_ptr}", f"local.get {idx}"]
@@ -1191,7 +1270,7 @@ class CallsHandlersMixin:
                 f"local.get {tmp}", "i32.load offset=0",
                 f"local.get {tmp}", "i32.load offset=4",
             ]
-        return addr + [load_op]  # type: ignore[list-item]
+        return addr + [load_op]
 
     # ---- hash ---------------------------------------------------------
 
@@ -1224,7 +1303,8 @@ class CallsHandlersMixin:
             return ["i64.const 0"]
         if base == "String":
             return self._translate_hash_string(value_instrs)
-        if base == "Array":
+        # The hash twin of the show arm above (#1321/#1331).
+        if base == "Array" and not self._declares_adt(ptype):
             elem_type = type_args[0] if type_args else None
             if elem_type is None:
                 return None
@@ -1284,6 +1364,7 @@ class CallsHandlersMixin:
         instrs: list[str] = []
         instrs.extend(value_instrs)
         instrs.append(f"local.set {ptr}")
+        self.needs_alloc = True  # declares `$gc_sp` for the push (#1371)
         instrs.extend(gc_shadow_push(ptr))
         # Seed with the FNV basis, then mix the tag (distinguishes
         # constructors) and each field's hash.
@@ -1338,7 +1419,7 @@ class CallsHandlersMixin:
         acc = self.alloc_local("i64")
         sp_save = self.alloc_local("i32")
 
-        elem_size = _element_mem_size(elem_type)
+        elem_size = self._element_mem_size(elem_type)
         if elem_size is None:
             return None
         elem_load = self._load_array_element(arr_ptr, idx, elem_type, elem_size)
@@ -1352,6 +1433,7 @@ class CallsHandlersMixin:
         instrs.extend(value_instrs)  # (ptr, len)
         instrs.append(f"local.set {arr_len}")
         instrs.append(f"local.set {arr_ptr}")
+        self.needs_alloc = True  # declares `$gc_sp` for the push (#1371)
         instrs.extend(gc_shadow_push(arr_ptr))
         # Seed with basis, mix the length, then each element hash.
         instrs.append(f"i64.const {self._FNV_BASIS}")
@@ -1533,12 +1615,17 @@ class CallsHandlersMixin:
             # getattr skipped both branches for refined binders while the
             # verifier recorded the obligation).  `type_name` survives as
             # the nameability gate alone.
+            init_instrs = self._emit_state_write_refine_guard(
+                init_instrs, type_arg, expr.state.init_expr,
+                "State cell init", env)
             if (family_base == "Nat"
                     and self._narrows_into_nat(expr.state.init_expr)):
-                init_instrs = self._emit_nat_bind_guard(init_instrs)
+                init_instrs = self._emit_nat_bind_guard(
+                    init_instrs, at=expr.state.init_expr)
             elif (family_base == "Int"
                     and self._result_is_nat(expr.state.init_expr)):
-                init_instrs = self._emit_int_widen_guard(init_instrs)
+                init_instrs = self._emit_int_widen_guard(
+                    init_instrs, at=expr.state.init_expr)
             instructions.extend(init_instrs)
 
         # 2. Push a fresh state cell (isolates this handler from any outer
@@ -1669,6 +1756,7 @@ class CallsHandlersMixin:
                 clause=clause,
                 family=family,
                 family_base=family_base,
+                family_type_expr=type_arg,
                 state_slot_name=state_slot_name,
                 decl_env=env,
                 get_import=get_import,
@@ -1693,6 +1781,15 @@ class CallsHandlersMixin:
         self._addressable_from = len(self._pushed_cell_families)
         try:
             body_instrs = self.translate_block(expr.body, env)
+            # Record this handle expression's stack shape HERE, while
+            # the handler's effect-op registries are still installed
+            # (#1371).  A `handle`'s value is its body's, and the body's
+            # ops resolve through registries the `finally` below
+            # restores — so asked afterwards, from the scoping wrapper,
+            # a nested handler's `get` answers with the ENCLOSING
+            # handler's result width.
+            self._scoped_expr_shape[id(expr)] = (
+                self._compute_stack_shape(expr))
         finally:
             # 5. Restore effect_ops (and the clause registry — nested
             #    handlers).  In a `finally` because the body translation
@@ -1940,12 +2037,17 @@ class CallsHandlersMixin:
                 return None
             # #1203: put's argument writes the state cell — guard the
             # narrowing/widening at the boundary (the `let` guard's twin).
+            arg_instrs = self._emit_state_write_refine_guard(
+                arg_instrs, entry.family_type_expr, call.args[0],
+                "State put(…) write", env)
             if (family_base == "Nat"
                     and self._narrows_into_nat(call.args[0])):
-                arg_instrs = self._emit_nat_bind_guard(arg_instrs)
+                arg_instrs = self._emit_nat_bind_guard(
+                    arg_instrs, at=call.args[0])
             elif (family_base == "Int"
                     and self._result_is_nat(call.args[0])):
-                arg_instrs = self._emit_int_widen_guard(arg_instrs)
+                arg_instrs = self._emit_int_widen_guard(
+                    arg_instrs, at=call.args[0])
             arg_local = self.alloc_local(state_wt)
             instructions.extend(arg_instrs)
             instructions.append(f"local.set {arg_local}")
@@ -1997,6 +2099,9 @@ class CallsHandlersMixin:
                     clause.params[0],
                     "handler clause parameter has no slot name",
                 )
+            instructions.extend(self._emit_clause_binder_guard(
+                clause.params[0], arg_local, family_base, entry.family_type_expr,
+                f"{clause.op_name}(…) clause binder", clause, clause_env))
             clause_env = clause_env.push(param_slot, arg_local)
         if state_slot_name is not None and state_local is not None:
             clause_env = clause_env.push(state_slot_name, state_local)
@@ -2077,25 +2182,149 @@ class CallsHandlersMixin:
             if resume_arg is not None:
                 if (family_base == "Nat"
                         and self._narrows_into_nat(resume_arg)):
-                    body_instrs = self._emit_nat_bind_guard(body_instrs)
+                    body_instrs = self._emit_nat_bind_guard(
+                        body_instrs, at=resume_arg)
                 elif (family_base == "Int"
                         and self._result_is_nat(resume_arg)):
-                    body_instrs = self._emit_int_widen_guard(body_instrs)
+                    body_instrs = self._emit_int_widen_guard(
+                        body_instrs, at=resume_arg)
         instructions.extend(body_instrs)
         if clause.state_update is not None:
             if upd_instrs is None:
                 return None
             # #1203: `with @T = <expr>` overrides the state cell — the
             # third write boundary; same guard pair as put's argument.
+            upd_instrs = self._emit_state_write_refine_guard(
+                upd_instrs, entry.family_type_expr, clause.state_update[1],
+                "State with(…) override", env)
             if (family_base == "Nat"
                     and self._narrows_into_nat(clause.state_update[1])):
-                upd_instrs = self._emit_nat_bind_guard(upd_instrs)
+                upd_instrs = self._emit_nat_bind_guard(
+                    upd_instrs, at=clause.state_update[1])
             elif (family_base == "Int"
                     and self._result_is_nat(clause.state_update[1])):
-                upd_instrs = self._emit_int_widen_guard(upd_instrs)
+                upd_instrs = self._emit_int_widen_guard(
+                    upd_instrs, at=clause.state_update[1])
             instructions.extend(upd_instrs)
             instructions.append(f"call {put_import}")
         return instructions
+
+    def _emit_state_write_refine_guard(
+        self,
+        value: list[str],
+        te: ast.TypeExpr | None,
+        arg: ast.Node,
+        where: str,
+        env: "WasmSlotEnv",
+    ) -> list[str]:
+        """The §2.6.5 predicate at a `State` write boundary (#1439).
+
+        All three writes — the `handle` init, `put`'s argument, and a
+        clause's `with @T = …` override — already guard the SIGN direction
+        (#1203), keyed off the cell's REPRESENTATION because that is what a
+        width question needs.  The predicate was the other half and was
+        never emitted, so a `State<{ @Int | @Int.0 > 0 }>` cell took a `-4`
+        and a later reader binding it at the refinement reasoned from a
+        predicate that does not hold.  The `Exn` `throw` payload has taken
+        this guard since #1268; this is the same lowering at the boundary
+        beside it.
+
+        Reads the cell's DECLARED type expression rather than
+        `family_base`, which strips the refinement by design.  Returns
+        *value* untouched for an unrefined cell, or one whose base no guard
+        can be emitted for at all.
+
+        The value is bound by its REPRESENTATION (#1439).  This site used to
+        ask `_refined_component_wasm_type`, which answers only for the five
+        bases a CONSTRUCTION store can tee into a scalar local — so a cell
+        over a `Map`, a `Set`, a `Tuple` or an ADT was declined although its
+        value is exactly the one i32 the store already tees, while the
+        verifier went on recording the write `tier3`: a claim with no check
+        behind it, and the artifact admitted a value the cell's own type
+        forbids.  The roster is about construction stores; a write boundary
+        binds the value where it already is, so the only question here is
+        how many locals it occupies.
+
+        A cell whose representation is a `(ptr, len)` pair never reaches
+        this site — `_register_state_cell` refuses one with E607 before any
+        body compiles — so the binding below is a single `local.tee` in
+        every reachable case.  It goes through the shared helper anyway,
+        because "one local" is a property of the type rather than of this
+        emitter, and that is the whole defect.
+        """
+        if te is None:
+            return value
+        if "State write boundary" not in narrowing.REFINED_BIND_GUARDED_SITES:
+            return value
+        wasm_ty = self._refined_slot_wasm_type(te)
+        if wasm_ty is None:
+            return value
+        binding = bind_slot_value_from_stack(
+            self.alloc_local, wasm_ty, keep_on_stack=True)
+        guard = self._emit_bind_refine_guard(
+            te, binding.slot_local, where, arg, env)
+        if not guard:
+            return value
+        return [*value, *binding.load, *guard, *binding.tail]
+
+    def _emit_clause_binder_guard(
+        self,
+        te: object,
+        value_local: int,
+        family_base: str | None,
+        payload_te: ast.TypeExpr | None,
+        where: str,
+        node: ast.Node,
+        env: "WasmSlotEnv",
+    ) -> list[str]:
+        """Guard a handler-clause binder declared NARROWER than the payload
+        it receives (#1445, #1448).
+
+        A clause binder is a binder position — `ast.HandlerClause.params` in
+        :data:`vera.binders.BINDER_FIELDS` — and it was the one pattern-bind
+        site with no guard.  The clause body then reasons from a declared
+        type the value need not satisfy.
+
+        Emitted over the local the binder is about to be pushed under, so the
+        check runs before any of the body does, and gated on the site being
+        in `vera.narrowing.REFINED_BIND_GUARDED_SITES` — the same table the
+        verifier's classification reads, asked with the same site name from
+        the same registry, so the guard and the guarded status cannot
+        disagree.
+
+        Both directions, because the two spellings fail differently: the sign
+        guard for a `@Nat` binder over a plain payload, and the §2.6.5
+        predicate for a refined one.  `family_base` is the payload's own
+        base, so a binder no narrower than what it receives is left alone.
+        """
+        site = binders.site_of(ast.HandlerClause, "params")
+        if site not in narrowing.REFINED_BIND_GUARDED_SITES:
+            return []
+        if not isinstance(te, ast.TypeExpr):
+            return []
+        # NARROWER, asked through the ONE derivation the verifier's
+        # obligation also calls: `narrows_into_refinement` over the conjoined
+        # chains, with this side's oracle — the source's type expressions and
+        # the alias table, where the verifier has the checker's semantic
+        # types.  A comparison of refinement-preserving NAMES stood here and
+        # answered a different question from the verifier's condition, so the
+        # two disagreed on every program where both types are refined: a
+        # disjoint binder over a refined payload was guarded and recorded
+        # nowhere (R-1465 review).  Neither side decides this any more.
+        if payload_te is not None and not narrowing.narrows_into_refinement(
+                naming.refined_type_expr_chain(payload_te, self._alias_env),
+                naming.refined_type_expr_chain(te, self._alias_env)):
+            return []
+        guard: list[str] = []
+        base = self._resolve_base_type_name(
+            self._type_expr_to_slot_name(te) or "")
+        if base == "Nat" and family_base != "Nat":
+            guard.extend(self._emit_nat_bind_guard(
+                [f"local.get {value_local}"], at=node))
+            guard.append("drop")
+        guard.extend(self._emit_bind_refine_guard(
+            te, value_local, where, node, env))
+        return guard
 
     @staticmethod
     def _contains_resume(node: object) -> bool:
@@ -2299,24 +2528,19 @@ class CallsHandlersMixin:
             "  payload"
         )
         if self._is_pair_type_name(cell.base):
-            # A `String`-based payload is (ptr, len) in two CONSECUTIVE
-            # locals, checked over the ptr — the same shape the lifted
-            # closure's i32_pair return guard uses.
-            ptr_local = self.alloc_local("i32")
-            len_local = self.alloc_local("i32")
-            guard = emitter(payload_te, ptr_local, head, env)
+            # A `String`-based payload is a pair, spilled through the shared
+            # binding (#1466) — the same call the named and closure return
+            # guards make, rather than the six instructions it returns
+            # written out again here.
+            binding = bind_slot_value_from_stack(
+                self.alloc_local, "i32_pair")
+            guard = emitter(
+                payload_te, binding.slot_local, head, env, call.args[0])
             if guard is None:
                 return value
-            return [
-                *value,
-                f"local.set {len_local}",
-                f"local.set {ptr_local}",
-                *guard,
-                f"local.get {ptr_local}",
-                f"local.get {len_local}",
-            ]
+            return [*value, *binding.load, *guard, *binding.push]
         value_local = self.alloc_local(self._type_name_to_wasm(cell.base))
-        guard = emitter(payload_te, value_local, head, env)
+        guard = emitter(payload_te, value_local, head, env, call.args[0])
         if guard is None:
             return value
         return [
@@ -2446,6 +2670,15 @@ class CallsHandlersMixin:
         # Compile body
         try:
             body_instrs = self.translate_block(expr.body, env)
+            # Record this handle expression's stack shape HERE, while
+            # the handler's effect-op registries are still installed
+            # (#1371).  A `handle`'s value is its body's, and the body's
+            # ops resolve through registries the `finally` below
+            # restores — so asked afterwards, from the scoping wrapper,
+            # a nested handler's `get` answers with the ENCLOSING
+            # handler's result width.
+            self._scoped_expr_shape[id(expr)] = (
+                self._compute_stack_shape(expr))
         finally:
             # Restore effect_ops
             self._effect_ops = saved_ops
@@ -2461,16 +2694,17 @@ class CallsHandlersMixin:
             )
         clause = expr.clauses[0]  # Exn<E> has exactly one op: throw
 
-        # Allocate locals for the caught exception value.
-        # Pair types (String, Array<T>) use two consecutive i32 locals
-        # (ptr at thrown_local, len at thrown_local + 1) matching the
-        # convention used by _translate_slot_ref for pair types.
-        if is_pair:
-            thrown_local = self.alloc_local("i32")  # ptr
-            _len_local = self.alloc_local("i32")    # len (consecutive: thrown_local + 1)
-        else:
-            thrown_wt = self._type_name_to_wasm(family_base)
-            thrown_local = self.alloc_local(thrown_wt)
+        # The locals the caught exception value occupies, from the ONE
+        # representation-derived binding (#1466): two consecutive i32s for a
+        # pair (ptr at `thrown_local`, len at `thrown_local + 1`, which is
+        # what `_translate_slot_ref` reads and what the clause binder's guard
+        # below is handed), one local of its own width otherwise.  Written
+        # out here, the adjacency was a property of two `alloc_local` calls
+        # eighteen lines above the guard rather than of the type.
+        thrown_wt = ("i32_pair" if is_pair
+                     else self._type_name_to_wasm(family_base))
+        thrown = bind_slot_value_from_stack(self.alloc_local, thrown_wt)
+        thrown_local = thrown.slot_local
 
         # Push caught value into slot env for handler body, under the
         # clause PATTERN's own slot name in the checker's canonical form
@@ -2484,6 +2718,9 @@ class CallsHandlersMixin:
                     clause.params[0],
                     "handler clause parameter has no slot name",
                 )
+            binder_guard = self._emit_clause_binder_guard(
+                clause.params[0], thrown_local, family_base, type_arg,
+                f"{clause.op_name}(…) clause binder", clause, env)
             handler_env = env.push(caught_slot, thrown_local)
         else:
             # A patternless `throw()` clause binds nothing in the checker
@@ -2491,9 +2728,19 @@ class CallsHandlersMixin:
             # skewed the clause body's same-typed references onto it (PR
             # #1202 adversarial round, F2).
             handler_env = env
+            # A clause that binds nothing narrows nothing, so there is no
+            # guard to plant — but the name is still read below, and leaving
+            # it undefined here raised `UnboundLocalError` on every
+            # patternless `throw()` clause.
+            binder_guard = []
         handler_instrs = self.translate_expr(clause.body, handler_env)
         if handler_instrs is None:
             return None  # pragma: no cover
+        # #1445/#1448: the binder's guard runs BEFORE the clause body, which
+        # is the whole point — the body reasons from the binder's declared
+        # type, so a check after it would be reading a value the body has
+        # already trusted.
+        handler_instrs = binder_guard + handler_instrs
 
         # Assemble the try_table structure.
         # i32_pair (String, Array<T>) must expand to "i32 i32" in WAT result
@@ -2522,13 +2769,13 @@ class CallsHandlersMixin:
         instructions.append("    end")
         instructions.append(f"    br {done_label}")
         instructions.append("  end")
-        # Caught value(s) are on the stack — store into local(s).
-        # Pair types: catch pushes (ptr, len); set len first (LIFO), then ptr.
-        if is_pair:
-            instructions.append(f"  local.set {_len_local}")
-            instructions.append(f"  local.set {thrown_local}")
-        else:
-            instructions.append(f"  local.set {thrown_local}")
+        # Caught value(s) are on the stack — stored into the local(s) the
+        # binding above allocated, by the same helper that allocated them:
+        # a pair arrives as (ptr, len) and is filled in reverse, a scalar is
+        # one store.  Emitting the order here was a second statement of the
+        # representation, in a branch that had to agree with the allocation
+        # eighty lines up (#1466).
+        instructions.extend(f"  {i}" for i in thrown.load)
         instructions.extend(f"  {i}" for i in handler_instrs)
         instructions.append("end")
         if diverges:  # #1276 — see the `diverges` derivation above

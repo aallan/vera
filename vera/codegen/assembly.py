@@ -6,9 +6,12 @@ memory, data sections, and closure infrastructure.
 
 from __future__ import annotations
 
+import re
+
 from vera.envflags import flag_enabled
 from vera.monomorphize import mangle_type_name
 from vera.skip import CodegenInvariantError
+from vera.trap_registry import TRAP_IMPORT_WAT, signal_instructions
 from vera.wasm.helpers import MAX_INLINE_I32_VALUE
 
 # The two fixed regions between the data section and the GC heap.  Named
@@ -29,10 +32,70 @@ GC_STACK_SIZE = 16384  # 16 KiB shadow stack (4 096 roots)
 # trap entirely via iterative deepening or dynamic worklist growth is
 # tracked separately for follow-up.
 GC_WORKLIST_SIZE = 65536  # 64 KiB worklist (16 384 entries)
+# #573: the wrapper table — 16 bytes per entry (obj_ptr / kind / handle /
+# reserved), 4 096 entries.
+GC_WRAPTABLE_SIZE = 65536
+GC_WRAPTABLE_ENTRY_SIZE = 16
+
+
+def heap_trap(indent: str) -> str:
+    """The allocator's heap-exhaustion trap as WAT text, at *indent* (#1479).
+
+    ``$alloc`` and ``$gc_collect`` are runtime functions, emitted once per
+    module and belonging to no source site, so they render the signal
+    directly rather than through ``WasmContext._emit_trap``; the import is
+    declared whenever they are (``_needs_alloc``)."""
+    return "".join(
+        f"{indent}{instr}\n" for instr in signal_instructions("heap_exhausted"))
+
+# #1433: the two ways a module BINDS a function identifier — a definition,
+# `(func $name ...)` opening its line, and a function import,
+# `(import "m" "f" (func $name ...))`.  Both are in the one function index
+# space, so any two binding one name is wasm-tools' `duplicate func
+# identifier`.  An export `(export "x" (func $name))`, an `elem` segment's
+# `func $a $b` and a `call $name` REFERENCE an identifier and bind none.
+_WAT_FUNC_DEF_RE = re.compile(r"^[ \t]*\(func \$([^\s()]+)", re.MULTILINE)
+_WAT_FUNC_IMPORT_RE = re.compile(
+    r'^[ \t]*\(import "[^"]*" "[^"]*" \(func \$([^\s()]+)', re.MULTILINE,
+)
 
 
 class AssemblyMixin:
     """Methods for assembling the WAT module."""
+
+    @staticmethod
+    def _assert_unique_func_names(wat: str) -> None:
+        """Refuse a module that binds one function identifier twice (#1433).
+
+        Run over the ASSEMBLED module — every definition and every function
+        import, user code and generated code alike — because that is the
+        whole set wasm-tools will bind, and nothing short of it is.  Two
+        declarations of one name are refused at check (E184); this is the
+        backstop behind that rule, because the failure it replaces was
+        reached with ``check`` and ``verify`` both passing, and surfaced as
+        ``duplicate func identifier`` against a symbol the author never
+        wrote.
+
+        It raises :class:`~vera.skip.CodegenInvariantError`, which
+        ``_compile_program`` reports as E699: reaching here is a compiler bug
+        rather than a property of the program — the posture `vera/skip.py`
+        documents for codegen invariants.
+        """
+        seen: set[str] = set()
+        for match in (*_WAT_FUNC_IMPORT_RE.finditer(wat),
+                      *_WAT_FUNC_DEF_RE.finditer(wat)):
+            name = match.group(1)
+            if name in seen:
+                raise CodegenInvariantError(
+                    f"the module binds the function identifier ${name} "
+                    f"twice, which WebAssembly refuses as a duplicate func "
+                    f"identifier. Two declarations of one name in one "
+                    f"namespace are refused at check (E184), so a module "
+                    f"reaching here either bypassed the checker or has a "
+                    f"declaration named after a symbol code generation also "
+                    f"emits."
+                )
+            seen.add(name)
 
     def _assemble_module(self, functions: list[str]) -> str:
         """Assemble a complete WAT module from compiled functions."""
@@ -353,13 +416,14 @@ class AssemblyMixin:
                 "(func $vera.contract_fail (param i32 i32)))"
             )
 
-        # #808: import overflow_trap so the #798 integer-overflow guard
-        # surfaces the precise `kind="overflow"` diagnostic.
-        if self._needs_overflow_trap:
-            parts.append(
-                '  (import "vera" "overflow_trap" '
-                "(func $vera.overflow_trap))"
-            )
+        # #1479: the one signal every named check raises, its kind a code.
+        # Declared when a check called it, or when the module carries the
+        # allocator — `$alloc` and `$gc_collect` report heap exhaustion
+        # through it, and they are emitted exactly when `_needs_alloc` is
+        # set, so the two conditions together are the calls this module
+        # makes.  A call with no declaration is a module that will not load.
+        if self._needs_trap or self._needs_alloc:
+            parts.append(TRAP_IMPORT_WAT)
 
         # Import State<T> host functions if needed.
         # #914: composite T (`Tuple<Int, Int>`, `Option<Int>`) is routed
@@ -420,11 +484,10 @@ class AssemblyMixin:
             # cost — `_needs_wrap_table` gates inclusion of both
             # this region and the corresponding sweep pass.
             #
-            # Note: only Map<K, V> migrates in this release
-            # (#573 phase 1 — Plan B).  Set / Decimal / JSON / HTML
-            # follow in tracked follow-ups so each migration's
-            # design choices can be reviewed independently.
-            gc_wraptable_size = 65536  # 64 KiB / 4 096 wrapper entries
+            # It holds the values `vera.trap_registry.WRAP_TABLE_VALUES`
+            # lists — `Decimal` values and pending async requests; `Map`
+            # and `Set` values are plain heap objects since #706.
+            gc_wraptable_size = GC_WRAPTABLE_SIZE
             wrap_enabled = self._needs_wrap_table
             wraptable_overhead = gc_wraptable_size if wrap_enabled else 0
             gc_wraptable_base = (
@@ -513,6 +576,14 @@ class AssemblyMixin:
             parts.append(
                 "  (global $gc_free_head (mut i32) (i32.const 0))"
             )
+            # #1382: origin of the transient object-base bitmap, rebuilt
+            # at the top of every collection (see ``_emit_gc_collect``
+            # Phase 0).  It lives immediately above ``$heap_ptr`` — scratch
+            # that the next ``$alloc`` bump is free to overwrite, because
+            # the bitmap is only live for the duration of one collection.
+            parts.append(
+                "  (global $gc_bm_base (mut i32) (i32.const 0))"
+            )
             if wrap_enabled:
                 gc_wraptable_end = gc_wraptable_base + gc_wraptable_size
                 parts.append(
@@ -542,6 +613,7 @@ class AssemblyMixin:
                     '  (export "register_wrapper" '
                     '(func $register_wrapper))'
                 )
+            parts.append(self._emit_gc_base_bitmap_helpers())
             parts.append(self._emit_gc_collect())
 
         # #1172: per-guarded-function termination-measure state.  Each
@@ -650,6 +722,12 @@ class AssemblyMixin:
         signal for debugging GC-rooting regressions (#593).  Slow —
         orders of magnitude slower than normal — never enable in
         production.
+
+        Every way it can run out of heap — a request of 2 GiB or more, a
+        ``memory.grow`` the host refuses, a heap that would pass the 2 GiB
+        ceiling — signals ``heap_exhausted`` through ``vera.trap`` before
+        trapping (#1479), so the runtime names the limit and the remedy
+        instead of the generic ``unreachable``.
         """
         eager = flag_enabled("VERA_EAGER_GC")
         eager_prefix = (
@@ -676,8 +754,8 @@ class AssemblyMixin:
             "    i32.const 0x80000000\n"
             "    i32.and\n"
             "    if\n"
-            "      unreachable\n"
-            "    end\n"
+            + heap_trap("      ")
+            + "    end\n"
             "    ;; total = align_up(size + 4, 8)\n"
             "    local.get $size\n"
             "    i32.const 4\n"
@@ -844,8 +922,8 @@ class AssemblyMixin:
             "        i32.const -1\n"
             "        i32.eq\n"
             "        if\n"
-            "          unreachable\n"
-            "        end\n"
+            + heap_trap("          ")
+            + "        end\n"
             "      end\n"
             "    end\n"
             "\n"
@@ -859,19 +937,6 @@ class AssemblyMixin:
             "    ;; spurious-retention bug.  Programs we have measured\n"
             "    ;; stay well below the 2 GiB ceiling; this trap fires\n"
             "    ;; only when something has gone very wrong.\n"
-            # TODO (#578 follow-up): the heap-ceiling traps below
-            # surface via the trap classifier as the generic
-            # ``unreachable`` kind with a Fix message about match
-            # arms — misleading for this case.  Practical programs
-            # never hit these traps (heap << 2 GiB) so the polish
-            # is deferred; a follow-up would either populate
-            # ``last_violation`` via a host import or add a
-            # dedicated classifier kind.  Kept as a Python comment
-            # rather than a WAT comment so the emitted WAT stays
-            # compact and the adjacent-sequence regex in
-            # tests/test_codegen_collections.py::TestWrapperHandleTagging578::
-            # test_alloc_emits_heap_ceiling_guard stays simple.
-            #
             # Two-step overflow-safe form:
             # 1. Reject ``total >= 0x80000000`` outright (the
             #    single allocation is larger than the ceiling).
@@ -891,8 +956,8 @@ class AssemblyMixin:
             "    i32.const 0x80000000\n"
             "    i32.ge_u\n"
             "    if\n"
-            "      unreachable\n"
-            "    end\n"
+            + heap_trap("      ")
+            + "    end\n"
             "    ;; Step 2: heap_ptr < 0x80000000 - total\n"
             "    global.get $heap_ptr\n"
             "    i32.const 0x80000000\n"
@@ -900,8 +965,8 @@ class AssemblyMixin:
             "    i32.sub\n"
             "    i32.ge_u\n"
             "    if\n"
-            "      unreachable\n"
-            "    end\n"
+            + heap_trap("      ")
+            + "    end\n"
             "\n"
             "    ;; Bump: store header, advance heap_ptr, return payload\n"
             "    global.get $heap_ptr\n"
@@ -973,9 +1038,16 @@ class AssemblyMixin:
             "      ;; collect.  Without the push, Phase 2b marks the\n"
             "      ;; in-flight wrapper unreachable and Phase 3\n"
             "      ;; frees it; we'd append to a freed object.\n"
+            "      ;; Slot-complete bound (#860, following #791): the\n"
+            "      ;; store below writes FOUR bytes, so the check is on\n"
+            "      ;; $gc_sp + 4, not on $gc_sp — a $gc_sp within four\n"
+            "      ;; bytes of the limit passed `i32.ge_u` and then\n"
+            "      ;; stored past the end of the shadow stack.\n"
             "      global.get $gc_sp\n"
+            "      i32.const 4\n"
+            "      i32.add\n"
             "      global.get $gc_stack_limit\n"
-            "      i32.ge_u\n"
+            "      i32.gt_u\n"
             "      if\n"
             "        unreachable\n"
             "      end\n"
@@ -1125,6 +1197,129 @@ class AssemblyMixin:
             "\n"
         )
 
+    def _emit_gc_base_bitmap_helpers(self) -> str:
+        """Emit ``$gc_set_base`` / ``$gc_is_base`` for #1382.
+
+        The conservative mark phase classifies a word as a heap pointer
+        from two cheap tests — heap range and ``(val - $gc_heap_start) &
+        7 == 4``.  Those are sound for *reads* (a false positive costs
+        retention, nothing more) but the mark phase also **writes**: it
+        ORs the mark bit into the word four bytes below the candidate.
+        A false positive that lands in the interior or the tail padding
+        of a live object therefore corrupts live data — observed as an
+        ``Array<Int>`` element whose high word flipped from 0 to 1
+        because a candidate's "header" read as 0 and ``0 | 1`` was
+        stored over it.
+
+        The fix is to make the *write* conditional on the candidate
+        actually being an object base.  Phase 1 already walks every
+        object along the exact ``align_up(size + 4, 8)`` chain that
+        ``$alloc`` bumps by, so it knows every valid body address for
+        free; it records them here, one bit per 8-byte granule, and both
+        the Phase 2 shadow-stack seed and the Phase 2b transitive scan
+        consult the bit before enqueueing (and therefore before any mark
+        store).  Reads stay conservative; only the write is narrowed.
+
+        Bit for body address ``p`` is granule ``(p - $gc_heap_start) >>
+        3``, held in byte ``$gc_bm_base + (granule >> 3)`` at position
+        ``granule & 7``.  Callers must range-check ``p`` first — both
+        call sites do, inside the existing heap-range guards.
+        """
+        index = (
+            "    local.get $p\n"
+            "    global.get $gc_heap_start\n"
+            "    i32.sub\n"
+            "    i32.const 3\n"
+            "    i32.shr_u\n"
+            "    local.set $bi\n"
+            "    global.get $gc_bm_base\n"
+            "    local.get $bi\n"
+            "    i32.const 3\n"
+            "    i32.shr_u\n"
+            "    i32.add\n"
+        )
+        return (
+            "  (func $gc_set_base (param $p i32)\n"
+            "    (local $bi i32)\n"
+            "    (local $ba i32)\n"
+            + index
+            + "    local.set $ba\n"
+            "    local.get $ba\n"
+            "    local.get $ba\n"
+            "    i32.load8_u\n"
+            "    i32.const 1\n"
+            "    local.get $bi\n"
+            "    i32.const 7\n"
+            "    i32.and\n"
+            "    i32.shl\n"
+            "    i32.or\n"
+            "    i32.store8\n"
+            "  )\n"
+            "  (func $gc_is_base (param $p i32) (result i32)\n"
+            "    (local $bi i32)\n"
+            + index
+            + "    i32.load8_u\n"
+            "    i32.const 1\n"
+            "    local.get $bi\n"
+            "    i32.const 7\n"
+            "    i32.and\n"
+            "    i32.shl\n"
+            "    i32.and\n"
+            "    i32.const 0\n"
+            "    i32.ne\n"
+            "  )"
+            + (self._emit_gc_assert_base()
+               if flag_enabled("VERA_GC_CHECK_MARKS") else "")
+        )
+
+    def _emit_gc_assert_base(self) -> str:
+        """Emit ``$gc_assert_base`` — the ``VERA_GC_CHECK_MARKS`` invariant.
+
+        Traps unless ``$p`` is a real object body address, established the
+        only way that does not itself depend on the bitmap: by walking the
+        heap from ``$gc_heap_start`` along the same
+        ``align_up(size + 4, 8)`` chain ``$alloc`` bumps by.  Deliberately
+        base-independent, so the same assertion can be dropped into a
+        pre-#1382 collector and will fire there — which is what makes it a
+        red-first check rather than a restatement of the fix.  O(heap) per
+        mark store: a debugging knob, never production.
+        """
+        return (
+            "\n  (func $gc_assert_base (param $p i32)\n"
+            "    (local $w i32)\n"
+            "    global.get $gc_heap_start\n"
+            "    local.set $w\n"
+            "    block $ab_found\n"
+            "    loop $ab_walk\n"
+            "      local.get $w\n"
+            "      global.get $heap_ptr\n"
+            "      i32.ge_u\n"
+            "      if\n"
+            "        unreachable\n"
+            "      end\n"
+            "      local.get $w\n"
+            "      i32.const 4\n"
+            "      i32.add\n"
+            "      local.get $p\n"
+            "      i32.eq\n"
+            "      br_if $ab_found\n"
+            "      local.get $w\n"
+            "      i32.load\n"
+            "      i32.const 1\n"
+            "      i32.shr_u\n"
+            "      i32.const 11\n"
+            "      i32.add\n"
+            "      i32.const -8\n"
+            "      i32.and\n"
+            "      local.get $w\n"
+            "      i32.add\n"
+            "      local.set $w\n"
+            "      br $ab_walk\n"
+            "    end\n"
+            "    end\n"
+            "  )"
+        )
+
     def _emit_gc_collect(self) -> str:
         """Emit the $gc_collect function: mark-sweep garbage collector.
 
@@ -1159,6 +1354,8 @@ class AssemblyMixin:
             "    (local $wl_end i32)\n"
             "    (local $obj_ptr i32)\n"
             "    (local $free_head i32)\n"
+            "    (local $bm_bytes i32)\n"
+            "    (local $bm_i i32)\n"
             + wrap_locals
             + "\n"
             "    ;; Worklist region: gc_stack_limit .. gc_worklist_end.\n"
@@ -1173,6 +1370,70 @@ class AssemblyMixin:
             "    local.set $wl_ptr\n"
             "    global.get $gc_worklist_end\n"
             "    local.set $wl_end\n"
+            "\n"
+            "    ;; === Phase 0 (#1382): reset the object-base bitmap ===\n"
+            "    ;; Transient scratch immediately above $heap_ptr — one bit\n"
+            "    ;; per 8-byte heap granule.  $heap_ptr cannot move during a\n"
+            "    ;; collection (the only caller allocates after we return),\n"
+            "    ;; so the region is stable here and free for the next bump\n"
+            "    ;; to reuse afterwards.  Phase 1 fills it as it walks.\n"
+            "    global.get $heap_ptr\n"
+            "    global.set $gc_bm_base\n"
+            "    global.get $heap_ptr\n"
+            "    global.get $gc_heap_start\n"
+            "    i32.sub\n"
+            "    i32.const 6\n"
+            "    i32.shr_u\n"
+            "    i32.const 1\n"
+            "    i32.add\n"
+            "    local.set $bm_bytes\n"
+            "    ;; Grow memory if the bitmap would run past the end.\n"
+            "    global.get $gc_bm_base\n"
+            "    local.get $bm_bytes\n"
+            "    i32.add\n"
+            "    memory.size\n"
+            "    i32.const 16\n"
+            "    i32.shl\n"
+            "    i32.gt_u\n"
+            "    if\n"
+            "      global.get $gc_bm_base\n"
+            "      local.get $bm_bytes\n"
+            "      i32.add\n"
+            "      memory.size\n"
+            "      i32.const 16\n"
+            "      i32.shl\n"
+            "      i32.sub\n"
+            "      i32.const 65535\n"
+            "      i32.add\n"
+            "      i32.const 16\n"
+            "      i32.shr_u\n"
+            "      memory.grow\n"
+            "      i32.const -1\n"
+            "      i32.eq\n"
+            "      if\n"
+            + heap_trap("        ")
+            + "      end\n"
+            "    end\n"
+            "    i32.const 0\n"
+            "    local.set $bm_i\n"
+            "    block $bz_done\n"
+            "    loop $bz_loop\n"
+            "      local.get $bm_i\n"
+            "      local.get $bm_bytes\n"
+            "      i32.ge_u\n"
+            "      br_if $bz_done\n"
+            "      global.get $gc_bm_base\n"
+            "      local.get $bm_i\n"
+            "      i32.add\n"
+            "      i32.const 0\n"
+            "      i32.store8\n"
+            "      local.get $bm_i\n"
+            "      i32.const 1\n"
+            "      i32.add\n"
+            "      local.set $bm_i\n"
+            "      br $bz_loop\n"
+            "    end\n"
+            "    end\n"
             "\n"
             "    ;; === Phase 1: Clear all mark bits ===\n"
             "    global.get $gc_heap_start\n"
@@ -1190,6 +1451,11 @@ class AssemblyMixin:
             "      i32.const -2\n"
             "      i32.and\n"
             "      i32.store\n"
+            "      ;; #1382: record body = ptr + 4 as a real object base.\n"
+            "      local.get $ptr\n"
+            "      i32.const 4\n"
+            "      i32.add\n"
+            "      call $gc_set_base\n"
             "      ;; Advance: ptr += align_up(size + 4, 8)\n"
             "      local.get $ptr\n"
             "      i32.load\n"
@@ -1255,6 +1521,13 @@ class AssemblyMixin:
             "          i32.and\n"
             "          i32.const 4\n"
             "          i32.eq\n"
+            "          ;; Layer 2 (issues #515, #1382): and it must be a REAL\n"
+            "          ;; object base.  The mark store writes through this\n"
+            "          ;; candidate, so a false positive that merely looks\n"
+            "          ;; aligned would corrupt whatever it points into.\n"
+            "          local.get $val\n"
+            "          call $gc_is_base\n"
+            "          i32.and\n"
             "          if\n"
             "            ;; Push onto worklist.  #348: pre-fix this\n"
             "            ;; silently dropped pushes when the worklist\n"
@@ -1320,20 +1593,18 @@ class AssemblyMixin:
             "      ;; The Phase 2 worklist push only guards on alignment and\n"
             "      ;; range, not on header validity.  A non-pointer i32 in\n"
             "      ;; payload data can satisfy those guards, in which case\n"
-            "      ;; $header here is garbage and $obj_size can be wildly\n"
-            "      ;; larger than the heap.  Skip this entry entirely if\n"
-            "      ;; obj_ptr + obj_size walks past heap_ptr — without this,\n"
-            "      ;; the scan below traps reading past the memory boundary,\n"
-            "      ;; and the mark store further down would corrupt a random\n"
-            "      ;; payload word.\n"
-            "      local.get $obj_ptr\n"
-            "      local.get $obj_size\n"
-            "      i32.add\n"
-            "      global.get $heap_ptr\n"
-            "      i32.gt_u\n"
-            "      if\n"
-            "        br $m_loop\n"
-            "      end\n"
+            "      ;; #1382: the pre-#1382 guard here (skip when\n"
+            "      ;;   obj_ptr + obj_size > heap_ptr) existed only to\n"
+            "      ;;   stop a false-positive candidate's garbage header\n"
+            "      ;;   from driving an out-of-bounds scan and a mark\n"
+            "      ;;   store into a random payload word.  It caught only\n"
+            "      ;;   the LARGE-size false positive; a candidate whose\n"
+            "      ;;   header read as 0 passed it and corrupted live\n"
+            "      ;;   data.  Candidates are now validated against the\n"
+            "      ;;   object-base bitmap before they are ever enqueued,\n"
+            "      ;;   so $obj_ptr is a real body address and $header a\n"
+            "      ;;   real header: the bound holds by construction and\n"
+            "      ;;   the partial guard is gone (one mechanism).\n"
             "      ;; Already marked? Skip.\n"
             "      local.get $header\n"
             "      i32.const 1\n"
@@ -1341,7 +1612,13 @@ class AssemblyMixin:
             "      if\n"
             "        br $m_loop\n"
             "      end\n"
-            "      ;; Set mark bit\n"
+            + (
+                "      local.get $obj_ptr\n"
+                "      call $gc_assert_base\n"
+                if flag_enabled("VERA_GC_CHECK_MARKS")
+                else ""
+            )
+            + "      ;; Set mark bit\n"
             "      local.get $obj_ptr\n"
             "      i32.const 4\n"
             "      i32.sub\n"
@@ -1396,6 +1673,13 @@ class AssemblyMixin:
             "            i32.and\n"
             "            i32.const 4\n"
             "            i32.eq\n"
+            "            ;; Layer 2 (issues #515, #1382): and it must be a REAL\n"
+            "            ;; object base.  The mark store writes through this\n"
+            "            ;; candidate, so a false positive that merely looks\n"
+            "            ;; aligned would corrupt whatever it points into.\n"
+            "            local.get $val\n"
+            "            call $gc_is_base\n"
+            "            i32.and\n"
             "            if\n"
             "              ;; Not already marked? Push to worklist.\n"
             "              ;; #348: trap on overflow rather than\n"

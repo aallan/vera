@@ -72,8 +72,8 @@ Examples that use only the IO and Random host families (e.g. `hello_world.vera`,
 
 | Example | Run | Demonstrates |
 |---------|-----|-------------|
-| `array_utilities.vera` | `vera run examples/array_utilities.vera --fn merge_sections` | array_flatten, array_mapi, array_sort_by, array_reverse, array_slice, array_find, array_any, array_all |
-| `string_ops.vera` | `vera run examples/string_ops.vera` | String search, transform, split, join |
+| `array_utilities.vera` | `vera run examples/array_utilities.vera --fn merge_sections` | The #466 phase-1 array utility built-ins: `array_flatten`, `array_mapi`, `array_sort_by`, `array_reverse`, `array_find`, `array_any`, `array_all` |
+| `string_ops.vera` | `vera run examples/string_ops.vera` | String and numeric conversions: `string_length`, `string_concat`, `string_slice`, `string_char_code`, `string_strip`, `parse_nat`, `parse_float64`, `parse_int`, `parse_bool`, `to_string`, `bool_to_string`, `nat_to_string`, `int_to_string`, `float_to_string` |
 | `string_utilities.vera` | `vera run examples/string_utilities.vera --fn padded_id` | string_chars, string_lines, string_words, string_pad_*, string_trim_*, string_reverse, char_to_*, is_digit/alpha/alphanumeric/whitespace/upper/lower |
 | `regex.vera` | `vera run examples/regex.vera` | regex_match, regex_find, regex_find_all, regex_replace |
 | `markdown.vera` | `vera run examples/markdown.vera` | md_parse, pattern matching on MdBlock ADT |

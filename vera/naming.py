@@ -101,6 +101,8 @@ is what makes the iterative resolution's dependency graph a DAG.
 
 from __future__ import annotations
 
+import enum
+import re
 import sys
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -127,12 +129,19 @@ from vera.types import (
 
 __all__ = [
     "EMPTY_ALIAS_ENV",
+    "UNBOUNDED",
     "AliasEnv",
+    "NameSort",
     "RefinementBinder",
+    "alias_body",
     "alias_env_from_environment",
+    "classify_named",
+    "display_adt_name",
     "family_base_name",
     "family_name",
     "predicate_binder_key",
+    "refined_type_chain",
+    "refined_type_expr_chain",
     "refinement_binder_parts",
     "resolve_type_expr",
     "slot_name",
@@ -266,6 +275,47 @@ def with_type_params(env: AliasEnv, params: Iterable[str]) -> AliasEnv:
 
 
 # =====================================================================
+# Display — the one spelling a USER is shown for a compiler-minted symbol
+# =====================================================================
+
+_OWNER_QUALIFIED = re.compile(r"^mod\$(?:[A-Za-z_][A-Za-z_0-9]*\$)+")
+
+
+def display_adt_name(name: str) -> str:
+    """The spelling a USER sees for an ADT or constructor name (#1317).
+
+    #1317 gives a CONTENDED module ``data`` declaration and its
+    constructors an owner-qualified symbol, ``mod$<path>$<Name>``, so two
+    modules' ``Shape``s stop contending for one registry slot.  That symbol
+    is a WASM detail and is never a spelling the reader is asked to know
+    (#187's own design note), so every surface that renders such a name TO
+    A PERSON strips the prefix here — and nothing else does it, so the
+    answer cannot differ between two of them.
+
+    The surfaces, and they are the ones a battery in
+    ``tests/test_per_owner_adt_identity_1317.py`` greps for ``mod$``:
+    ``show``'s constructor head, which is baked into the data section and
+    is the one that reaches STDOUT; and codegen's diagnostics, through
+    ``CodeGenerator._unmangle_adt_names``, which rewrites inside prose and
+    so works from the rename table rather than from a bare symbol — the
+    two are pinned equal.  The check-phase surfaces (LSP hover, ``vera
+    ast --json``, ``vera parse``, every ``vera check`` diagnostic) need no
+    strip at all and must not grow one: the rename is applied to a REPLACED
+    list of resolved modules inside codegen, so no mangled name exists
+    before then.  WAT symbol names are the other side of that line and are
+    never passed through here — they are the identity the rename exists to
+    make unique.
+
+    Total and idempotent: a name with no prefix is returned unchanged, and
+    the prefix cannot be forged, since ``$`` is illegal in a Vera
+    identifier.  Applied to a function's ``mod$…`` mangling it would strip
+    too much (``mod$lib$compute$where$g`` is not an ADT name), which is why
+    it is documented as the ADT/constructor renderer and called only there.
+    """
+    return _OWNER_QUALIFIED.sub("", name, count=1)
+
+
+# =====================================================================
 # Resolution — the checker's `_resolve_type`, as a pure function
 # =====================================================================
 
@@ -278,6 +328,130 @@ and only by its own declaration index.  A sentinel rather than
 ``len(env.aliases)``, because the index space is shared with the ADTs and so
 runs past the alias count.
 """
+
+UNBOUNDED = _UNBOUNDED
+"""Public spelling of the unbounded visibility limit, for callers of
+:func:`classify_named` outside an alias body — which is every consumer that
+is not this module's own alias resolution."""
+
+
+class NameSort(enum.Enum):
+    """Which branch of the ONE resolution spine a type NAME takes.
+
+    The spine is :func:`classify_named`, and this is its answer.  Every
+    derivation that needs to know what a name MEANS — the checker's
+    ``_resolve_named``, codegen's WAT-width derivation, the WASM layer's
+    canonicalisation — asks for this rather than re-implementing the branch
+    order, because a derivation that orders the branches differently
+    disagrees with the type the program was checked and verified against
+    (#1309, #1316, #1321, #1331).
+    """
+
+    TYPE_PARAM = "type_param"
+    """A ``forall`` variable or an alias's own parameter.  Shadows everything."""
+
+    PRIMITIVE = "primitive"
+    """A member of :data:`vera.types.PRIMITIVES`, written without arguments."""
+
+    ALIAS = "alias"
+    """A ``type`` alias visible here, applied at its declared arity.
+    :func:`alias_body` gives the body with the supplied arguments substituted."""
+
+    ALIAS_ARITY_MISMATCH = "alias_arity_mismatch"
+    """A visible alias applied at the WRONG arity — the checker reports E133
+    and produces an unknown type.  A separate sort because the name IS the
+    alias's; it is only unusable at this application."""
+
+    DECLARED_ADT = "declared_adt"
+    """A ``data`` declaration this namespace can see, at or before this
+    point in the shared declaration-index space.  Ahead of every built-in
+    interpretation of the name: §8.4.1 lets a declaration take a name the
+    prelude or a built-in container already uses, and the declaration wins."""
+
+    BUILTIN = "builtin"
+    """Nothing this namespace declares — so whatever the name means globally:
+    a built-in container (``Array`` / ``Map`` / ``Set`` / ``Tuple``), the
+    opaque ``Decimal``, a removed alias, or an unknown name that resolves to
+    an opaque ADT.  Which of those it is a REPRESENTATION question, and the
+    caller answers it; the spine's job ends at "not declared here"."""
+
+
+def classify_named(
+    te: ast.NamedType,
+    env: AliasEnv,
+    *,
+    type_params: frozenset[str] | None = None,
+    limit: int = _UNBOUNDED,
+) -> NameSort:
+    """THE resolution spine: which branch does ``te.name`` take in *env*?
+
+    Type parameter (SHADOWS everything) -> primitive -> alias (arity-checked)
+    -> DECLARED ADT -> everything built-in.  This is the order
+    :func:`_resolve_named` documents and the order the checker resolves in;
+    it lives here, once, so no consumer can hold a different one.
+
+    *type_params* defaults to ``env.type_params``; *limit* bounds visibility
+    to declarations with index ``< limit`` and is only ever narrowed inside an
+    alias BODY (see :func:`_resolve_alias`).  Every other caller leaves it
+    :data:`UNBOUNDED`.
+
+    Pure and total: no diagnostics, no exceptions, no state.
+    """
+    params = env.type_params if type_params is None else type_params
+    name = te.name
+    if name in params:
+        return NameSort.TYPE_PARAM
+    if name in PRIMITIVES and not te.type_args:
+        return NameSort.PRIMITIVE
+    idx = env._order.get(name)
+    # ``name in env.aliases`` is what makes the branch TOTAL: the two maps
+    # agree for every environment this module builds, but an env assembled
+    # elsewhere with an ``_order`` entry and no body must fall through to the
+    # ADT branch rather than raise.
+    if idx is not None and idx < limit and name in env.aliases:
+        declared = env.alias_params.get(name) or ()
+        supplied = len(te.type_args) if te.type_args else 0
+        if supplied != len(declared):
+            return NameSort.ALIAS_ARITY_MISMATCH
+        return NameSort.ALIAS
+    adt_idx = env.data_types.get(name)
+    if adt_idx is not None and adt_idx < limit:
+        return NameSort.DECLARED_ADT
+    return NameSort.BUILTIN
+
+
+def alias_body(
+    te: ast.NamedType,
+    env: AliasEnv,
+    *,
+    type_params: frozenset[str] | None = None,
+    limit: int = _UNBOUNDED,
+) -> ast.TypeExpr:
+    """The SYNTACTIC body an :attr:`NameSort.ALIAS` classification names,
+    with ``te``'s arguments substituted for the alias's own parameters.
+
+    The syntactic counterpart of the semantic substitution
+    :func:`_resolve_named` performs — for the consumers that must keep
+    walking type EXPRESSIONS (codegen's width derivation, the WASM layer's
+    canonicalisation) rather than land on a :class:`~vera.types.Type`.  Both
+    halves therefore take one branch decision from :func:`classify_named` and
+    substitute the same arguments into the same body.
+
+    Only meaningful when :func:`classify_named` returned
+    :attr:`NameSort.ALIAS`; calling it otherwise raises ``KeyError``.
+    """
+    # Imported inside the call because :mod:`vera.monomorphize` imports THIS
+    # module.  ``substitute_type_vars`` is a pure ``TypeExpr -> TypeExpr``
+    # walker with no monomorphization state, and it is the substitution every
+    # existing consumer of an alias body already performs — sharing it is what
+    # keeps the syntactic half of the spine identical to the semantic half.
+    from vera.monomorphize import substitute_type_vars
+
+    body = env.aliases[te.name]
+    declared = env.alias_params.get(te.name) or ()
+    if te.type_args and declared and len(declared) == len(te.type_args):
+        return substitute_type_vars(body, dict(zip(declared, te.type_args)))
+    return body
 
 
 def resolve_type_expr(te: ast.TypeExpr, env: AliasEnv) -> Type:
@@ -325,6 +499,10 @@ def _resolve_named(
 ) -> Type:
     """``_resolve_named_type``'s branch order, exactly.
 
+    The order itself lives in :func:`classify_named` — the ONE spine every
+    derivation asks — and this function is its semantic arm: given the
+    branch, produce the :class:`~vera.types.Type` the checker would.
+
     Type parameter (SHADOWS everything) -> primitive -> alias (arity-checked,
     substituted) -> DECLARED ADT -> ``Decimal`` (opaque, arguments dropped)
     -> removed alias (``?``) -> opaque ADT.  The checker's built-in-container
@@ -351,29 +529,23 @@ def _resolve_named(
     whichever branch it takes.
     """
     name = te.name
-    if name in type_params:
+    sort = classify_named(te, env, type_params=type_params, limit=limit)
+    if sort is NameSort.TYPE_PARAM:
         # `env.type_params` maps every name to `TypeVar(name)`.
         return TypeVar(name)
-    if name in PRIMITIVES and not te.type_args:
+    if sort is NameSort.PRIMITIVE:
         return PRIMITIVES[name]
-    idx = env._order.get(name)
-    # ``name in env.aliases`` is what makes the branch TOTAL: the two maps
-    # agree for every environment this module builds, but an env assembled
-    # elsewhere with an ``_order`` entry and no body must fall through to the
-    # ADT branch rather than raise.
-    if idx is not None and idx < limit and name in env.aliases:
+    if sort is NameSort.ALIAS_ARITY_MISMATCH:
+        return UnknownType()  # checker: E133, then UnknownType
+    if sort is NameSort.ALIAS:
         params = env.alias_params.get(name) or ()
-        n_supplied = len(te.type_args) if te.type_args else 0
-        if n_supplied != len(params):
-            return UnknownType()  # checker: E133, then UnknownType
         body = _resolve_alias(name, env)
         if te.type_args and params:
             args = tuple(
                 _resolve(a, env, type_params, limit) for a in te.type_args)
             return substitute(body, dict(zip(params, args)))
         return body
-    adt_idx = env.data_types.get(name)
-    if adt_idx is None or adt_idx >= limit:
+    if sort is NameSort.BUILTIN:
         if name == "Decimal":
             return AdtType("Decimal", ())  # checker: E134 when args supplied
         if name in REMOVED_ALIASES:
@@ -611,6 +783,44 @@ def slot_ref_key(ref: ast.SlotRef, env: AliasEnv) -> str:
         ast.NamedType(name=ref.type_name, type_args=ref.type_args), env)
 
 
+def refined_type_chain(ty: Type) -> tuple[Type, list[ast.Expr]] | None:
+    """The base a refinement chain bottoms out in, and every predicate on it.
+
+    ``type Small = { @Pos | @Pos.0 < 10 }`` over
+    ``type Pos = { @Int | @Int.0 > 0 }`` means ``0 < x < 10``: membership is
+    the CONJUNCTION over the whole chain, and reading one level takes the base
+    to ``Pos`` — not a modelled primitive — so every consumer that gates on the
+    base declines and the type goes unmodelled (#1434).
+
+    Innermost predicate first, so a rendered conjunction reads in the order the
+    aliases were declared; the conjunction itself is commutative, so the order
+    is for the reader.
+
+    Lives here rather than on the verifier because three consumers need the
+    same answer and `vera/smt.py` cannot import `vera/verifier.py` — the
+    dependency runs the other way.  A second copy of the walk in the SMT layer
+    is exactly the drift this module exists to prevent: the refined-return
+    assumption, the violation message, and the concrete-value fold must agree
+    about what membership in a chain IS, or a program is refuted against one
+    reading and reported against another (R-1431 review of PR #1453).
+
+    Returns None for a type that is not refined at all.  Terminates on any
+    well-formed type: each step is a strict sub-term.  A cyclic alias never
+    reaches here — the checker refuses it (`ch02_alias_cycle_rejected`) — so
+    this is a walk, not a fixpoint, and it must not silently tolerate a cycle
+    by capping its depth.
+    """
+    predicates: list[ast.Expr] = []
+    current = ty
+    while isinstance(current, RefinedType):
+        predicates.append(current.predicate)
+        current = current.base
+    if not predicates:
+        return None
+    predicates.reverse()
+    return (current, predicates)
+
+
 def predicate_binder_key(predicate: ast.Expr, env: AliasEnv) -> str | None:
     """The key a refinement predicate's BINDER must be pushed under (#1226).
 
@@ -764,6 +974,45 @@ class RefinementBinder:
     binder_name: str
     base: ast.TypeExpr
     base_is_refinement: bool
+
+
+def refined_type_expr_chain(
+    te: ast.TypeExpr, env: AliasEnv,
+) -> tuple[str, frozenset[str]]:
+    """A type EXPRESSION's refinement chain, as (base name, predicate texts).
+
+    The syntactic twin of :func:`refined_type_chain`, which answers the same
+    question about a resolved :class:`~vera.types.Type`.  Two answers rather
+    than one because the two consumers hold different things — the verifier
+    has the checker's semantic types, code generation has the source's type
+    expressions and the alias table — and `vera/narrowing.py` takes the
+    answer as an ORACLE for exactly that reason.  What must not differ is the
+    RULE, which is
+    :func:`vera.narrowing.narrows_into_refinement`, and
+    `test_refinement_chain_convergence.py` is the differential that keeps
+    these two from drifting apart, the way
+    `test_refinement_binder_convergence_1208.py` keeps
+    :func:`refinement_binder_parts` and its reference side together.
+
+    A type that carries no refinement answers ``(its own name, frozenset())``
+    rather than ``None``: "no predicates" is an answer, and it is the one that
+    makes a plain `@Int` payload compare correctly against a `@Pos` binder.
+    Predicates are keyed by their rendered text, which is what the semantic
+    side can also produce for the same declaration.
+    """
+    predicates: set[str] = set()
+    node: ast.TypeExpr = te
+    seen: set[int] = set()
+    while True:
+        parts = refinement_binder_parts(node, env)
+        if parts is None:
+            break
+        predicates.add(ast.format_expr(parts.predicate))
+        if id(parts.base) in seen:  # pragma: no cover — checker refuses cycles
+            break
+        seen.add(id(parts.base))
+        node = parts.base
+    return (slot_name(node, env) or "", frozenset(predicates))
 
 
 def refinement_binder_parts(

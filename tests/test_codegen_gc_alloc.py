@@ -363,8 +363,16 @@ public fn f(@Unit -> @Int)
         $gc_collect itself.
 
         Two layers of defence are now emitted:
-          - Layer 2 (early skip): before marking or scanning, verify
-            obj_ptr + obj_size <= heap_ptr.
+          - Layer 2 (#1382): the candidate must have its bit set in the
+            object-base bitmap Phase 1 fills as it walks.  This REPLACED
+            the original #515 skip (`obj_ptr + obj_size <= heap_ptr`),
+            which was the weaker half of the same idea: it rejected only
+            a candidate whose garbage header decoded to a LARGE size, so
+            one whose header read 0 passed it and the mark store landed
+            in live data.  Validating the base settles the question the
+            docstring above poses — "none of those guards prove the word
+            at val-4 is an actual object header" — and makes the old
+            arithmetic bound redundant, so it is gone (one mechanism).
           - Layer 1 (per-iter): each scan-loop iteration also checks
             obj_ptr + scan_ptr + 4 <= heap_ptr before issuing the
             i32.load.
@@ -424,20 +432,30 @@ public fn f(-> @Int)
                     break
             return " ".join(tokens[:n])
 
-        # Layer 2: the bound-check pattern is —
-        #   local.get $obj_ptr ; local.get $obj_size ; i32.add ;
-        #   global.get $heap_ptr ; i32.gt_u ; if ; br $m_loop
-        # which is 11 whitespace-split tokens (each `local.get $foo`
-        # splits into two: opcode + identifier).
-        layer2_expected = (
-            "local.get $obj_ptr local.get $obj_size i32.add "
-            "global.get $heap_ptr i32.gt_u if br $m_loop"
-        )
+        # Layer 2 (#1382): the candidate must be a real object base.
+        # The pattern is — local.get $val ; call $gc_is_base ; i32.and ;
+        # if — ANDed onto the alignment test so the enqueue, and hence
+        # the mark store, is reached only for a validated base.
+        layer2_expected = "local.get $val call $gc_is_base i32.and if"
         layer2 = _opcodes_after(
-            wat, "Layer 2 (issue #515)", len(layer2_expected.split()),
+            wat, "Layer 2 (issues #515, #1382)",
+            len(layer2_expected.split()),
         )
         assert layer2 == layer2_expected, (
             f"Layer 2 opcode pattern drifted: {layer2!r}"
+        )
+        # The gate is worthless unless BOTH candidate sites carry it —
+        # the Phase 2 shadow-stack seed and the Phase 2b transitive
+        # scan — and unless Phase 1 actually fills the bitmap they read.
+        assert wat.count("call $gc_is_base") == 2, (
+            "both candidate sites (Phase 2 seed, Phase 2b scan) must "
+            "consult the object-base bitmap"
+        )
+        assert wat.count("call $gc_set_base") == 1, (
+            "Phase 1's walk must record every object base"
+        )
+        assert "obj_ptr + obj_size walks past" not in wat, (
+            "the superseded #515 arithmetic bound should be gone"
         )
 
         # Layer 1: the per-iter check pattern is —

@@ -10,6 +10,12 @@ assignees: ''
 
 A clear description of the bug.
 
+## Class and Instances
+
+Which class of input does the mechanism get wrong? List the known instances as a checklist — a further sighting of the same mechanism extends this issue rather than opening a new one.
+
+- [ ]
+
 ## Steps to Reproduce
 
 1. ...

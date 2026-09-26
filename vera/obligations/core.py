@@ -69,7 +69,8 @@ ObligationKind = Literal[
                      # precondition / path condition); loud E527 when the
                      # index is provably out of bounds; else honest tier3
                      # (length is uninterpreted — beyond Tier 1, see #427 —
-                     # and codegen's `out_of_bounds` trap is the guard).
+                     # and codegen's `index_out_of_bounds` check is the
+                     # guard).
     "int_overflow",  # @Int/@Nat `+`/`-`/`*` range obligation at one site
                      # (#798).  Two-check like index_bounds: result provably in
                      # i64 (@Int) / u64 (@Nat) range -> tier-1; provably out of
@@ -79,13 +80,13 @@ ObligationKind = Literal[
     "assert",     # a body `assert(P)` predicate (#800, spec §6.2.5).  Two-
                   # check like index_bounds: prove P -> tier-1, prove ¬P ->
                   # loud E507 (always traps at runtime), else tier3 (the
-                  # §11.14.1 `unreachable` trap is the guard).
+                  # §11.14.1 `assertion_failed` check is the guard).
     "float_to_int_domain",  # float_to_int(x) domain obligation at one site
-                  # (#807).  `i64.trunc_f64_s` traps on NaN / +/-Inf /
-                  # out-of-i64-range.  Concrete-gated: a concrete finite
-                  # in-range arg -> tier-1; a concrete NaN/Inf/out-of-range arg
-                  # -> loud E529; a symbolic arg -> honest tier3 (Z3's FP<->Real
-                  # reasoning is unreliable; the codegen trunc trap is the
+                  # (#807).  NaN / +/-Inf / out-of-i64-range trap.
+                  # Concrete-gated: a concrete finite in-range arg -> tier-1;
+                  # a concrete NaN/Inf/out-of-range arg -> loud E529; a
+                  # symbolic arg -> honest tier3 (Z3's FP<->Real reasoning is
+                  # unreliable; codegen's `float_conversion` check is the
                   # guard).
     "nat_to_int_coerce",  # @Nat value widening into an @Int slot at one
                   # coercion site (#813) — the dual of `nat_bind`.  @Nat is u64
@@ -95,6 +96,18 @@ ObligationKind = Literal[
                   # `> i64.MAX` -> loud E530; else honest tier3 (the codegen
                   # coercion trap is the guard, so the postcondition stays
                   # sound).
+    "decreases_bound",  # a @Nat `decreases` measure component fitting the
+                  # i64 the runtime termination guard compares in (#1222).  The
+                  # proof reasons over unbounded integers and the guard uses
+                  # `i64.lt_s` / `i64.ge_s`, so the two agree only while the
+                  # measure IS an i64 — above i64.MAX a @Nat reads negative and
+                  # a Tier-1-proved termination aborts as "failed to decrease".
+                  # Two-check like `nat_to_int_coerce`: provably `<= i64.MAX` ->
+                  # tier-1; provably `> i64.MAX` -> loud E536; else tier3, with
+                  # `_dec_measure_bound_check` as the guard so the failure names
+                  # the range rather than borrowing the termination rule's
+                  # message.  Recorded only for a @Nat component: an @Int one IS
+                  # the i64, an ADT one is ranked by a heap-bounded size.
     "state_decl",  # a generic handler's declared state type diverging from
                   # the instantiated State<T> cell (#1206's E336 defers on a
                   # TypeVar cell; the monomorphized clone re-checks it and a
@@ -144,6 +157,15 @@ class ProofObligation:
     #: obligation ``_record_obligation`` reifies carries one whenever the
     #: verifier was given a file at all.
     file: str | None = None
+    #: The TOP-LEVEL function owning this obligation's `where` helper, or ``""``
+    #: for an obligation of a top-level function.  `fn_name` alone is a helper's
+    #: bare name, which means a different function in every owner, so the
+    #: disclosed set keyed on it let one owner's tainted helper demote another
+    #: owner's clean caller (#1418 review F3).  Deliberately NOT part of
+    #: `content_key`: the span and file already separate two helpers of the
+    #: same name, so hashing it would split cache entries without
+    #: distinguishing anything.
+    owner: str = ""
 
     def content_key(self) -> str:
         """Stable identity digest for this obligation.
@@ -171,6 +193,23 @@ class ProofObligation:
         for the speculative stream (#1246).  A future caller that hands the
         session a raw URI, or an un-normalised path, breaks the delta without
         breaking anything the cache would notice (PR #1283 review).
+
+        The span is also why this key is not the whole story for the
+        ``proposeEdit`` gate.  One inserted line above an obligation gives
+        it a new key, so it presents as a removal plus a rediscovery -- the
+        right answer for a display of POSITIONS, and the wrong one for
+        "did this edit take a proof away?", which an edit that shifts a
+        line would otherwise walk past.  So the presentation categories
+        keep partitioning the speculative stream by this digest -- a
+        relocated obligation is a removal at its old span plus an entry at
+        its new one, which is what a display of positions should say --
+        while :func:`vera.lsp.extensions.proof_delta` additionally pairs
+        the leftovers span-insensitively, on
+        :func:`vera.lsp.extensions._relocation_key`, and reports each
+        entry against the ``before`` it paired with.  So the gate reasons
+        about identity and the presentation reports positions, out of one
+        set of records: the categories say WHERE, the ``status_before``
+        on each says WHAT HAPPENED TO IT.
         """
         ident = (
             f"{self.fn_name}\x1f{self.kind}\x1f{self.expr_text}"

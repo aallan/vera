@@ -25,6 +25,19 @@ Runs in a few seconds — fast enough for a pre-commit hook.  Everything it
 does is local: the one check that needs the GitHub API, the Bugs table
 against the open `bug`-labelled issues, is opt-in behind --check-bug-issues,
 for the release PR.  A commit hook must not depend on a network call.
+
+Two modes, which differ only in the HEADLINE test totals (see the section
+of that name below for the rule that decides which counts are headline).
+By default — the pre-commit hook, and CI on every change that keeps the
+version — each headline figure is read and checked against the other
+citations of the same figure, but not against the live collection: every
+fix PR moves those totals, so gating them on every PR would make each merge
+conflict with every other open PR.  ``--release`` — the release PR — checks
+them against the live collection as well, so a stale headline is caught when
+the release is cut.  CI passes ``--release-if-version-raised <base>``, which
+turns release mode on exactly when ``[project].version`` rose against the
+base: a pull request against its base branch, a push against the commit
+before it (#1536).  Every other count is checked in both modes.
 """
 
 import argparse
@@ -34,6 +47,7 @@ import re
 import subprocess
 import sys
 import tomllib
+from collections.abc import Callable
 from pathlib import Path
 from typing import NamedTuple
 from urllib.request import Request, urlopen
@@ -92,8 +106,14 @@ _TESTS_BREAKDOWN = re.compile(
 )
 
 
-def check_tests_breakdown(testing_text: str, live_total: int) -> list[str]:
+def check_tests_breakdown(
+    testing_text: str, total: int, against: str = "the collected total"
+) -> list[str]:
     """Check that TESTING.md's tests breakdown sums to the gated total.
+
+    `total` is the collected count in release mode and the row's own
+    stated total by default (see `check_headline_totals`); `against` names
+    which, for the message.
 
     All three parts name a pytest *disposition*, which is what makes the
     sum readable: the 26 are deselected before the run by
@@ -129,14 +149,14 @@ def check_tests_breakdown(testing_text: str, live_total: int) -> list[str]:
             " reworded, so the breakdown is no longer gated"
         ]
     parts = [int(g.replace(",", "")) for g in m.groups()]
-    total = sum(parts)
-    if total != live_total:
+    summed = sum(parts)
+    if summed != total:
         passed, stress, skipped = parts
         return [
             f"TESTING.md tests breakdown: {passed:,} passed"
             f" + {stress:,} stress-deselected + {skipped:,} skipped"
-            f" = {total:,},"
-            f" but the collected total is {live_total:,}"
+            f" = {summed:,},"
+            f" but {against} is {total:,}"
         ]
     return []
 
@@ -170,14 +190,28 @@ def _test_suite_section(readme_text: str) -> str | None:
     return rest if nxt is None else rest[: nxt.start()]
 
 
+def _vera_readme_test_suite(readme_text: str) -> re.Match[str] | None:
+    """The Test Suite paragraph's four counts, read from that section only."""
+    section = _test_suite_section(readme_text)
+    return None if section is None else _VERA_README_TESTS.search(section)
+
+
+_VERA_README_UNREADABLE = (
+    "vera/README.md: the Test Suite paragraph's counts did not match"
+    " ('N tests across N files … (N programs in `tests/conformance/`"
+    " …) … (N end-to-end demos)') under a '## Test Suite' heading —"
+    " the heading or the sentence moved or was reworded, so it is"
+    " no longer gated"
+)
+
+
 def check_vera_readme_test_counts(
     readme_text: str,
-    live_total_tests: int,
-    live_test_files: int,
     live_conformance: int,
     live_examples: int,
 ) -> list[str]:
-    """Pin the four counts in vera/README.md's "Test Suite" paragraph.
+    """Pin the conformance and example counts in vera/README.md's "Test
+    Suite" paragraph.
 
     Only the module map is otherwise gated in that file, which leaves this
     sentence free to drift release after release — the same class as
@@ -186,21 +220,15 @@ def check_vera_readme_test_counts(
     from the "## Test Suite" section alone (see :func:`_test_suite_section`),
     never from the file at large.  A missing heading or a missing pattern
     is an error, not a skip.
+
+    The paragraph's other two counts, the total tests and the test files,
+    are headline totals: `check_headline_totals` owns them.
     """
-    section = _test_suite_section(readme_text)
-    m = None if section is None else _VERA_README_TESTS.search(section)
+    m = _vera_readme_test_suite(readme_text)
     if m is None:
-        return [
-            "vera/README.md: the Test Suite paragraph's counts did not match"
-            " ('N tests across N files … (N programs in `tests/conformance/`"
-            " …) … (N end-to-end demos)') under a '## Test Suite' heading —"
-            " the heading or the sentence moved or was reworded, so it is"
-            " no longer gated"
-        ]
+        return [_VERA_README_UNREADABLE]
     errors: list[str] = []
     for label, cited_s, live in (
-        ("total tests", m.group(1), live_total_tests),
-        ("test file count", m.group(2), live_test_files),
         ("conformance programs", m.group(3), live_conformance),
         ("example programs", m.group(4), live_examples),
     ):
@@ -857,8 +885,11 @@ def check_module_map(readme_text: str, root: Path) -> list[str]:
 # ---------------------------------------------------------------------------
 
 _STATUS_LINE = re.compile(r"^.*?\btests, \d+% Python code coverage.*$", re.M)
+_STATUS_LINE_MISSING = (
+    "README.md: could not find the project-status line "
+    "(`… tests, N% Python code coverage …`)"
+)
 _STATUS_FIGURES = (
-    (r"([\d,]+) tests,", "tests"),
     (r"([\d,]+) conformance programs", "conformance programs"),
     (r"([\d,]+) examples", "examples"),
     (r"(\d+)-chapter specification", "spec chapters"),
@@ -867,19 +898,19 @@ _STATUS_FIGURES = (
 
 def check_project_status(
     readme_text: str,
-    live_tests: int,
     live_conformance: int,
     live_examples: int,
     live_chapters: int,
 ) -> list[str]:
-    """Check every count on README.md's project-status line."""
+    """Check every count on README.md's project-status line.
+
+    Except its test total, which is a headline total and read by
+    `check_headline_totals`.
+    """
     line = _STATUS_LINE.search(readme_text)
     if line is None:
-        return [
-            "README.md: could not find the project-status line "
-            "(`… tests, N% Python code coverage …`)"
-        ]
-    expected = (live_tests, live_conformance, live_examples, live_chapters)
+        return [_STATUS_LINE_MISSING]
+    expected = (live_conformance, live_examples, live_chapters)
     errors: list[str] = []
     for (pattern, label), live in zip(_STATUS_FIGURES, expected, strict=True):
         found = re.search(pattern, line.group(0))
@@ -893,6 +924,167 @@ def check_project_status(
             errors.append(
                 f"README.md project-status {label}: doc says {cited}, live is {live}"
             )
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# The headline test totals
+#
+# The rule that makes a count HEADLINE: every independent fix PR necessarily
+# changes it.  Such a count sits on a line every open PR edits, so each merge
+# makes every other open PR conflict there and need a hand rebase.  Two
+# figures meet the rule — the total test count, which a fix PR moves because it
+# adds the test that proves the fix, and the test-FILE count, which a fix PR
+# moves whenever its test lands in a new issue-numbered file, as most do —
+# together with TESTING.md's passed/stress-deselected/skipped breakdown, which
+# sums to the total.  Five documents state them: TESTING.md's overview row,
+# README.md's project-status line, FAQ.md's by-the-numbers list, ROADMAP.md's
+# "Where we are" line and vera/README.md's Test Suite paragraph.
+#
+# No other count meets the rule, so every other check here runs in both modes.
+# A per-file row belongs to the PR that touches its file.  The conformance,
+# example and corpus counts move only when a PR adds a program, so two open PRs
+# rarely meet on those lines — even where one shares a line with a headline
+# total, as the conformance count does on README's status line.
+#
+# By default the headline figures are READ — one reworded away is an error in
+# both modes — and checked against each other: every citation of the total
+# states one number, both citations of the file count state one number, and
+# the breakdown sums to the total beside it.  A fix PR leaves them alone, so
+# they keep agreeing at the values the last release set.  `--release` checks
+# each against the live collection instead; that is where a stale headline is
+# caught, on the PR that cuts the release.
+# ---------------------------------------------------------------------------
+
+HEADLINE_DOCS = ("TESTING.md", "README.md", "FAQ.md", "ROADMAP.md", "vera/README.md")
+
+
+class HeadlineFigure(NamedTuple):
+    """One citation of a headline total."""
+
+    where: str
+    figure: str  # "tests" or "test files"
+    cited: int
+
+
+_HEADLINE_OVERVIEW = re.compile(
+    r"\*\*Tests\*\*\s*\|\s*([\d,]+)\s+across\s+([\d,]+)\s+files"
+)
+_HEADLINE_FAQ = re.compile(r"([\d,]+) tests, including")
+_HEADLINE_TESTS = re.compile(r"([\d,]+) tests,")
+_ROADMAP_WHERE_WE_ARE = re.compile(r"## Where we are\n(.*?)(?=\n##|\Z)", re.DOTALL)
+
+
+def _count(text: str) -> int:
+    return int(text.replace(",", ""))
+
+
+def read_headline_figures(
+    docs: dict[str, str],
+) -> tuple[list[HeadlineFigure], list[str]]:
+    """Every headline citation in `HEADLINE_DOCS`, and every one not found.
+
+    A citation that cannot be found is an error in both modes: the default
+    mode compares the citations with one another, and one it cannot read
+    would drop out of that comparison in silence.
+    """
+    figures: list[HeadlineFigure] = []
+    errors: list[str] = []
+
+    m = _HEADLINE_OVERVIEW.search(docs["TESTING.md"])
+    if m is None:
+        errors.append(
+            "TESTING.md: could not find the overview row's headline totals"
+            " ('| **Tests** | N across N files …') — it moved or was"
+            " reworded, so they are no longer gated"
+        )
+    else:
+        figures.append(HeadlineFigure("TESTING.md overview row", "tests", _count(m.group(1))))
+        figures.append(HeadlineFigure("TESTING.md overview row", "test files", _count(m.group(2))))
+
+    line = _STATUS_LINE.search(docs["README.md"])
+    m = None if line is None else _HEADLINE_TESTS.search(line.group(0))
+    if line is None:
+        errors.append(_STATUS_LINE_MISSING)
+    elif m is None:
+        errors.append("README.md project-status line: could not find the tests count")
+    else:
+        figures.append(HeadlineFigure("README.md project-status line", "tests", _count(m.group(1))))
+
+    m = _HEADLINE_FAQ.search(docs["FAQ.md"])
+    if m is None:
+        errors.append(
+            "FAQ.md: headline test-count line ('N tests, including ...') not found"
+        )
+    else:
+        figures.append(HeadlineFigure("FAQ.md by-the-numbers list", "tests", _count(m.group(1))))
+
+    section = _ROADMAP_WHERE_WE_ARE.search(docs["ROADMAP.md"])
+    m = None if section is None else _HEADLINE_TESTS.search(section.group(1))
+    if section is None:
+        errors.append("ROADMAP.md: could not find '## Where we are' section")
+    elif m is None:
+        errors.append(
+            "ROADMAP.md: could not find the test count ('N tests,') in the"
+            " 'Where we are' section"
+        )
+    else:
+        figures.append(HeadlineFigure("ROADMAP.md 'Where we are' line", "tests", _count(m.group(1))))
+
+    m = _vera_readme_test_suite(docs["vera/README.md"])
+    if m is None:
+        errors.append(_VERA_README_UNREADABLE)
+    else:
+        figures.append(HeadlineFigure("vera/README.md Test Suite paragraph", "tests", _count(m.group(1))))
+        figures.append(HeadlineFigure("vera/README.md Test Suite paragraph", "test files", _count(m.group(2))))
+    return figures, errors
+
+
+def check_headline_totals(
+    docs: dict[str, str],
+    live_tests: int,
+    live_test_files: int,
+    *,
+    release: bool,
+) -> list[str]:
+    """The headline test totals, in the mode the run asked for.
+
+    `release` checks every citation against the live collection.  Without
+    it every citation must agree with every other citation of the same
+    figure, and the breakdown must sum to the total its own row states.
+    """
+    figures, errors = read_headline_figures(docs)
+    testing = docs["TESTING.md"]
+    if release:
+        live = {"tests": live_tests, "test files": live_test_files}
+        for fig in figures:
+            if fig.cited != live[fig.figure]:
+                errors.append(
+                    f"{fig.where} {fig.figure}: doc says {fig.cited:,},"
+                    f" live is {live[fig.figure]:,}"
+                )
+        errors.extend(check_tests_breakdown(testing, live_tests))
+        return errors
+
+    for figure in ("tests", "test files"):
+        cited = [fig for fig in figures if fig.figure == figure]
+        if len({fig.cited for fig in cited}) > 1:
+            errors.append(
+                f"the headline {figure} count disagrees across documents ("
+                + "; ".join(f"{fig.where} says {fig.cited:,}" for fig in cited)
+                + ") — a fix PR leaves every headline total alone, and the"
+                " release PR sets them all against the live collection"
+                " (`scripts/check_doc_counts.py --release`)"
+            )
+    own = next(
+        (fig.cited for fig in figures
+         if fig.where.startswith("TESTING.md") and fig.figure == "tests"),
+        None,
+    )
+    # With no readable total the row is already reported above, and the
+    # breakdown has nothing to be summed against.
+    if own is not None:
+        errors.extend(check_tests_breakdown(testing, own, "the row's own total"))
     return errors
 
 
@@ -1054,42 +1246,115 @@ def check_dual_target_row(
 _BUGS_SECTION = re.compile(r"^## Bugs[ \t]*$(.*?)(?=^## |\Z)", re.M | re.S)
 _ISSUE_LINK = re.compile(r"\[#(\d+)\]\(https://github\.com/[\w.-]+/[\w.-]+/issues/(\d+)\)")
 _NO_BUGS = "No known bugs."
+_NO_OPEN_BUGS = "No open bugs."
+
+
+def _read_bug_table(
+    body: str, *, issue_cell: int, marker: str, where: str
+) -> list[int] | str:
+    """Issue numbers from one bug-count table, or why it could not be read.
+
+    Two tables have this shape and are read here once, so the counts they
+    produce are like for like at every value including zero:
+    KNOWN_ISSUES.md's `## Bugs` (whose Issue column is the LAST cell, so
+    prose carrying a `|` cannot shift it) and ROADMAP.md's burndown
+    (whose Issue column is the FIRST).  `issue_cell` selects which.
+
+    Only the Issue column is read.  It is a row's canonical tracker, and
+    rows cross-link other issues in their prose — counting those would
+    make one bug's context read as another bug's row.
+
+    The zero state is a MARKER, not an absence (#1401): the section keeps
+    its heading and its standing description of what the table is, the
+    table is GONE, and the body's last line is `marker`.  Recognising the
+    marker BESIDE the description rather than instead of it is what makes
+    a burndown driven to zero writable at all, while a table emptied
+    WITHOUT one stays unreadable — which is what keeps "the last row was
+    deleted by accident" an error rather than a clean bill of health.
+
+    The marker and a table cannot coexist, in either order.  A section
+    carrying both claims some open bugs and none at once, and which half
+    a reader believes must not depend on which one happens to come last:
+    the guard was written as "the marker is the last line, and there are
+    rows", which read the marker ABOVE a table as no marker at all and
+    returned the rows clean — a false PASS on the ordinary shape, since
+    at zero the section ends with the marker and the next bug's table is
+    appended below it (PR #1411 review).  Any line starting with `|`
+    counts, a leftover header and separator included, so the written form
+    is the one the prose describes rather than the one the row scanner
+    happens to tolerate.
+
+    Returns the issue numbers in row order (``[]`` at the zero state), or
+    the sentence naming why the body is not a readable count.
+    """
+    table_lines = [line for line in body.splitlines() if line.startswith("|")]
+    # The marker is compared as a whole stripped line, anywhere in the
+    # body.  A substring test would accept it inside a sentence, and the
+    # standing description is exactly the place that would one day quote
+    # it; a last-line-only test would miss it above a table.
+    lines = [line.strip() for line in body.splitlines() if line.strip()]
+    marker_at = [index for index, line in enumerate(lines) if line == marker]
+    if marker_at and table_lines:
+        return (
+            f"{where} carries the `{marker}` marker AND {len(table_lines)} "
+            f"table line(s), which claims both some open bugs and none. The "
+            f"zero form has no table at all — not even a leftover header row"
+        )
+
+    numbers: list[int] = []
+    for line in table_lines:
+        if set(line) <= set("|- "):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if cells[issue_cell] == "Issue":
+            continue
+        links = [
+            int(number)
+            for number, url_number in _ISSUE_LINK.findall(cells[issue_cell])
+            if number == url_number
+        ]
+        if len(links) != 1:
+            return (
+                f"{where} has a row whose Issue column does not hold exactly one "
+                f"`[#N](…/issues/N)` link whose number matches its URL"
+            )
+        numbers.append(links[0])
+    if numbers:
+        return numbers
+    if marker_at and marker_at[-1] == len(lines) - 1:
+        return []
+    if marker_at:
+        return (
+            f"{where} carries the `{marker}` marker but does not END with "
+            f"it. Text after the marker qualifies the claim, and the gate "
+            f"cannot know how"
+        )
+    return (
+        f"{where} has no issue rows and does not end with the `{marker}` "
+        f"marker. A table driven to zero is written by keeping the section's "
+        f"description, deleting the table, and ending the section with that "
+        f"line on its own"
+    )
 
 
 def bug_rows(known_issues_text: str) -> list[int] | None:
     """Issue numbers from the Bugs table's Issue column, in order.
 
-    The Issue column is a row's canonical tracker, and it is the only place
-    read: rows cross-link other issues in their prose, and counting those
-    would make one bug's context read as another bug's row.
-
-    ``[]`` is the documented empty state — the section body is exactly "No
-    known bugs." — and ``None`` means the section could not be read at all.
-    The two are different problems and a caller must not conflate them.
+    ``[]`` is the documented empty state — the section keeps its heading
+    and its description and ends with "No known bugs." — and ``None``
+    means the section could not be read at all.  The two are different
+    problems and a caller must not conflate them.
     """
     section = _BUGS_SECTION.search(known_issues_text)
     if section is None:
         return None
-    body = section.group(1).strip()
-    if body == _NO_BUGS:
-        return []
-    numbers: list[int] = []
-    for line in body.splitlines():
-        if not line.startswith("|") or set(line) <= set("|- "):
-            continue
-        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
-        if cells[-1] == "Issue":
-            continue
-        # The last cell, so prose carrying a `|` cannot shift the column.
-        links = [
-            int(number)
-            for number, url_number in _ISSUE_LINK.findall(cells[-1])
-            if number == url_number
-        ]
-        if len(links) != 1:
-            return None
-        numbers.append(links[0])
-    return numbers or None
+    read = _read_bug_table(
+        section.group(1),
+        issue_cell=-1,
+        marker=_NO_BUGS,
+        where="KNOWN_ISSUES.md: the `## Bugs` section",
+    )
+    return None if isinstance(read, str) else read
 
 
 def check_faq_example_count(faq_text: str, live_examples: int) -> list[str]:
@@ -1133,14 +1398,24 @@ def check_faq_example_count(faq_text: str, live_examples: int) -> list[str]:
 
 
 def check_bug_rows(known_issues_text: str) -> list[str]:
-    """Check the Bugs table's shape: one well-formed, unique issue per row."""
-    numbers = bug_rows(known_issues_text)
-    if numbers is None:
-        return [
-            "KNOWN_ISSUES.md: the `## Bugs` table was not found, or a row's "
-            "Issue column does not hold exactly one `[#N](…/issues/N)` link. "
-            "An empty section is written `No known bugs.`"
-        ]
+    """Check the Bugs table's shape: one well-formed, unique issue per row.
+
+    Each way of being unreadable gets its own sentence.  The one message
+    that covered them all prescribed the empty form it had just rejected
+    (#1401), which is the worst thing a gate's error text can do.
+    """
+    section = _BUGS_SECTION.search(known_issues_text)
+    if section is None:
+        return ["KNOWN_ISSUES.md: the `## Bugs` section was not found"]
+    read = _read_bug_table(
+        section.group(1),
+        issue_cell=-1,
+        marker=_NO_BUGS,
+        where="KNOWN_ISSUES.md: the `## Bugs` section",
+    )
+    if isinstance(read, str):
+        return [read]
+    numbers = read
     duplicates = sorted({n for n in numbers if numbers.count(n) > 1})
     return [
         f"KNOWN_ISSUES.md: issue #{number} has a Bugs row twice"
@@ -1148,22 +1423,217 @@ def check_bug_rows(known_issues_text: str) -> list[str]:
     ]
 
 
+# ---------------------------------------------------------------------------
+# ROADMAP's burndown header word vs. the burndown table vs. KNOWN_ISSUES'
+# Bugs table (#1370-class): three independent counts of "how many open bugs
+# are there right now" that must read as one fact.  Two parallel PRs each
+# hand-wrote the header word from their own stale count on the same night —
+# whichever merged second was wrong, and nothing caught it.  This gate makes
+# the drift structural: the header word is PARSED into a number (not
+# eyeballed), and compared against both row counts.
+# ---------------------------------------------------------------------------
+
+# The heading is `## The next burndown`: the burndown names no release,
+# because which release empties it is not known when a row is added.  A
+# versioned heading (`## The v0.2.1 burndown`) is still read as the
+# section, so an older spelling is checked rather than taken for retired.
+_ROADMAP_BURNDOWN_SECTION = re.compile(
+    r"^## The (?:next|v[\d.]+) burndown[ \t]*$(.*?)(?=^## |\Z)", re.M | re.S
+)
+# The noun may be singular: a burndown with one row left reads "*One open
+# bug, driven to zero.*", which the plural-only spelling made unwritable in
+# English.  Only the NUMBER is checked against the row counts — the fixtures
+# in `tests/test_check_doc_counts.py` write "One open bugs" deliberately,
+# since what they are about is the count and not the grammar.
+_BURNDOWN_HEADER = re.compile(
+    r"^\*([A-Za-z-]+) open bugs?, driven to zero\.\*[ \t]*$", re.M
+)
+
+_ONES_WORDS = {
+    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11,
+    "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+    "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19,
+}
+_TENS_WORDS = {
+    "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60,
+    "seventy": 70, "eighty": 80, "ninety": 90,
+}
+
+
+def _english_number_word_to_int(word: str) -> int | None:
+    """Parse an English number word (0-99, including a hyphenated
+    compound like 'twenty-one') into an int, or None if `word` is not
+    one.  Deliberately small (this repo's bug count is never going to
+    need "one hundred") rather than pulling in a parsing dependency
+    for a single doc sentence."""
+    lowered = word.lower()
+    if lowered in _ONES_WORDS:
+        return _ONES_WORDS[lowered]
+    if lowered in _TENS_WORDS:
+        return _TENS_WORDS[lowered]
+    if "-" in lowered:
+        tens_part, _, ones_part = lowered.partition("-")
+        # The half after the hyphen is a units word (one..nine) and nothing
+        # else: "twenty-ten" and "thirty-nineteen" are not English numbers,
+        # and accepting them would let a malformed header pass whenever the
+        # arithmetic happened to match the live row count.
+        if (tens_part in _TENS_WORDS and ones_part in _ONES_WORDS
+                and 1 <= _ONES_WORDS[ones_part] <= 9):
+            return _TENS_WORDS[tens_part] + _ONES_WORDS[ones_part]
+    return None
+
+
+def roadmap_burndown_rows(roadmap_text: str) -> list[int] | None:
+    """Issue numbers from the CURRENT '## The next burndown' table's
+    Issue column, in the same shape `bug_rows` reads KNOWN_ISSUES.md's
+    Bugs table — the same reader, so the two are compared like for like
+    at every value including zero, where a present-but-emptied table is
+    written `No open bugs.` beside its description.
+
+    ``None`` means the section is absent OR its body is not a readable
+    count; `check_burndown_header_matches_rows` separates those, because
+    only the first is a zero state.
+    """
+    section = _ROADMAP_BURNDOWN_SECTION.search(roadmap_text)
+    if section is None:
+        return None
+    read = _read_bug_table(
+        section.group(1),
+        issue_cell=0,
+        marker=_NO_OPEN_BUGS,
+        where="ROADMAP.md: the burndown section",
+    )
+    return None if isinstance(read, str) else read
+
+
+def check_burndown_header_matches_rows(
+    roadmap_text: str, known_issues_text: str,
+) -> list[str]:
+    """The burndown header word, the burndown table's row count, and
+    KNOWN_ISSUES.md's Bugs table row count must all agree — three
+    numbers, one fact.  A mismatch on any pair is reported together
+    (not as separate errors per pair) so the message reads as the one
+    underlying disagreement it is.
+
+    A burndown driven to zero has two written forms, and both read as
+    zero (#1401).  A burndown whose rows are all closed is PAST, so by
+    the project's future-vs-past rule its section is RETIRED — deleted
+    from ROADMAP.md, its record living in HISTORY.md and CHANGELOG.md —
+    and the ABSENCE of the section is therefore the primary zero form.
+    The section may also be kept with its table replaced by the
+    `No open bugs.` marker, for the window between the last fix and the
+    release that retires it.  Neither is a way past the gate: both are
+    still cross-checked against KNOWN_ISSUES.md's Bugs table, so a
+    retired section beside a non-empty Bugs table is an error.
+    """
+    bugs = bug_rows(known_issues_text)
+    if bugs is None:
+        return [
+            "KNOWN_ISSUES.md: the `## Bugs` table could not be read — cannot "
+            "cross-check against ROADMAP.md's burndown header"
+        ]
+
+    section = _ROADMAP_BURNDOWN_SECTION.search(roadmap_text)
+    if section is None:
+        if bugs:
+            return [
+                "ROADMAP.md: there is no '## The next burndown' section, "
+                f"which reads as zero open bugs, but KNOWN_ISSUES.md's Bugs "
+                f"table has {len(bugs)} row(s): "
+                f"{', '.join(f'#{n}' for n in bugs)}"
+            ]
+        return []
+
+    header_match = _BURNDOWN_HEADER.search(section.group(1))
+    if header_match is None:
+        return [
+            "ROADMAP.md: burndown section has no "
+            "'*<Word> open bugs, driven to zero.*' header line"
+        ]
+    header_word = header_match.group(1)
+    header_number = _english_number_word_to_int(header_word)
+    if header_number is None:
+        return [
+            f"ROADMAP.md: burndown header word {header_word!r} is not a "
+            "recognised English number word (0-99)"
+        ]
+
+    table_read = _read_bug_table(
+        section.group(1),
+        issue_cell=0,
+        marker=_NO_OPEN_BUGS,
+        where="ROADMAP.md: the burndown section",
+    )
+    if isinstance(table_read, str):
+        return [table_read]
+    burndown_rows = table_read
+
+    values = {
+        "burndown header word": header_number,
+        "burndown table rows": len(burndown_rows),
+        "KNOWN_ISSUES.md Bugs table rows": len(bugs),
+    }
+    if len(set(values.values())) > 1:
+        detail = ", ".join(f"{k} = {v}" for k, v in values.items())
+        return [
+            f"ROADMAP.md burndown header {header_word!r} does not match "
+            f"the row counts it should agree with: {detail}"
+        ]
+    return []
+
+
 def check_bug_issue_parity(rows: list[int], open_bugs: list[int]) -> list[str]:
-    """Check the Bugs table against the open `bug`-labelled issues."""
-    if not open_bugs:
+    """Check the Bugs table against the open `bug`-labelled issues.
+
+    Zero on BOTH sides is the burndown's success state and passes: the
+    file claims no open bugs and the tracker has none, which is the two
+    agreeing (#1401).  What cannot pass is zero on the tracker side
+    ALONE, because a query that came back empty is indistinguishable
+    from one that failed — except that `open_bug_issues` raises
+    `BugQueryError` rather than returning `[]` on a transport or payload
+    failure, so the distinction is drawn where the query is made and an
+    empty list reaching here is a real answer.  Rows without it are
+    still reported, since a row for an issue the tracker does not carry
+    as an open bug is wrong either way.
+    """
+    if not open_bugs and rows:
         return [
             "KNOWN_ISSUES.md: an open `bug`-labelled issue was not found at "
-            "all, so the Bugs table has nothing to be checked against. An "
-            "empty query is a failed one, not a clean bill of health."
+            f"all, so the Bugs table's {len(rows)} row(s) have nothing to be "
+            "checked against. An empty query is a failed one, not a clean "
+            "bill of health."
         ]
+    bug_set, row_set = set(open_bugs), set(rows)
+    matched = bug_set & row_set
+    missing_rows = sorted(bug_set - row_set)
     errors = [
         f"KNOWN_ISSUES.md: issue #{number} is an open bug with no Bugs row"
-        for number in sorted(set(open_bugs) - set(rows))
+        for number in missing_rows
     ]
     errors += [
         f"KNOWN_ISSUES.md: the Bugs row for #{number} is not an open bug issue"
-        for number in sorted(set(rows) - set(open_bugs))
+        for number in sorted(row_set - bug_set)
     ]
+    # Every open bug is either MATCHED (has a row) or reported above as a
+    # missing row — matched and missing_rows partition open_bugs exactly,
+    # by construction of the two set operations above.  This can only be
+    # violated by a bug in that construction itself (a future refactor
+    # that computes one of them some other way, or a type mismatch
+    # between `rows` and `open_bugs` — e.g. one holding strings where the
+    # other holds ints, which would make membership tests silently wrong
+    # rather than raise) — not by any state KNOWN_ISSUES.md or the
+    # tracker can be in, so this never fires against real data (#1377
+    # review: "a dropped issue should surface as an inconsistency rather
+    # than as silence").
+    if len(matched) + len(missing_rows) != len(bug_set):
+        errors.append(
+            "KNOWN_ISSUES.md: internal inconsistency in the parity check "
+            f"itself — {len(matched)} matched + {len(missing_rows)} "
+            f"missing-row divergences should account for all "
+            f"{len(bug_set)} open bugs; this is a bug in the "
+            f"reconciliation logic, not in KNOWN_ISSUES.md"
+        )
     return errors
 
 
@@ -1206,9 +1676,529 @@ def open_bug_issues(repo: str = "aallan/vera") -> list[int]:
     return numbers
 
 
+# ---------------------------------------------------------------------------
+# The enumerated negative-conformance-fixture lists in the two agent
+# orientation files, against the manifest that decides which fixtures are
+# negative.  Both files spell the list out in full — the only place in the
+# documentation that enumerates a set the manifest already holds — and
+# AGENTS.md also spells its size as an English word.  Nothing gated any of
+# it, so a fixture added to the manifest simply did not appear in either
+# list, and the word went stale with it.
+# ---------------------------------------------------------------------------
+
+_NEGATIVE_FIXTURES = re.compile(
+    r"(?P<lead>(?:[A-Za-z0-9-]+ ){0,2})negative fixtures \((?P<names>[^)]*)\)"
+)
+_FIXTURE_NAME = re.compile(r"`([A-Za-z0-9_]+)`")
+# Exactly one of the three enumerated fixture lists states a size:
+# AGENTS.md's first.  CLAUDE.md's and AGENTS.md's second introduce the
+# set without a count, so this family cannot take the per-sentence rule
+# the TESTING.md families do — pinning HOW MANY sentences carry a count
+# is what keeps that asymmetry honest in both directions.
+_COUNTED_FIXTURE_LISTS = 1
+# Words that introduce the phrase without counting it.  Anything ELSE in
+# the slot is read as a count and must parse — a positional pattern that
+# only recognised `the <word> ` left "the 42", "all four" and "forty
+# three" silently unchecked, with the global "no count anywhere" backstop
+# as the only net (PR #1411 review).
+_COUNT_DETERMINERS = frozenset(
+    {"the", "its", "their", "those", "these", "and", "a", "an", "same",
+     "all", "every", "both", "of"}
+)
+
+
+def _count_token(lead: str) -> str | None:
+    """What sits in a list's count slot, or None when only determiners do.
+
+    The WHOLE slot, not its last word: reading the last one alone made
+    "the forty three" report as "says 'three' (3)" — a misleading
+    message, and a silent PASS wherever the manifest happened to hold
+    three (PR #1411 review).  A slot that still has two words after the
+    determiners come out is not a count this can read, and says so with
+    the words the author actually wrote.
+    """
+    words = [w for w in lead.split() if w.lower() not in _COUNT_DETERMINERS]
+    return " ".join(words) if words else None
+
+
+def _parse_count(token: str) -> int | None:
+    """A count written as digits or as one English number word."""
+    if " " in token:
+        return None
+    if token.isdigit():
+        return int(token)
+    return _english_number_word_to_int(token)
+
+
+def _count_backstop(matched: bool, counted: int, subject: str) -> list[str]:
+    """Every enumerated set must still state its size somewhere.
+
+    `_check_enumeration` returns no error when the count SLOT holds only
+    a determiner, which is right for a list that never stated a size —
+    and wrong as the only rule, because rewording "Forty-three of them"
+    to "The rest of them" then leaves the names gated and the
+    manifest-backed count silently ungated.
+
+    Called once per SENTENCE.  A family-wide tally was the same fault
+    one level up: the level family has one sentence per level, so the
+    `verify` sentence's count stood in for the `check` sentence's and
+    dropping the latter was clean (PR #1411 review).  `subject` names
+    the sentence and already carries its own file prefix.
+    """
+    if matched and not counted:
+        return [
+            f"{subject} no longer states a count — the number in front of"
+            f" the names was reworded away, so nothing checks it against"
+            f" the manifest"
+        ]
+    return []
+
+
+def _check_enumeration(
+    where: str, match: re.Match[str], wanted: set[str], subject: str
+) -> tuple[int, list[str]]:
+    """One enumerated set of conformance programs, against the manifest.
+
+    Three documents spell such a set out by hand, and every one of them
+    had drifted: the names, whether any are duplicated, and — where the
+    prose states one — the count in front of them.  Returns how many
+    counts this occurrence carried (0 or 1, for the caller's "the count
+    is no longer spelled out anywhere" backstop) and the errors found.
+    """
+    errors: list[str] = []
+    names = _FIXTURE_NAME.findall(match.group("names"))
+    duplicates = sorted({n for n in names if names.count(n) > 1})
+    if duplicates:
+        errors.append(
+            f"{where}: names the same program twice: {', '.join(duplicates)}"
+        )
+    missing = sorted(wanted - set(names))
+    extra = sorted(set(names) - wanted)
+    if missing:
+        errors.append(
+            f"{where}: {len(missing)} manifest {subject} are not listed:"
+            f" {', '.join(missing)}"
+        )
+    if extra:
+        errors.append(
+            f"{where}: lists {len(extra)} program(s) the manifest does not"
+            f" hold as {subject}: {', '.join(extra)}"
+        )
+    word = _count_token(match.group("lead"))
+    if word is None:
+        return 0, errors
+    value = _parse_count(word)
+    if value is None:
+        errors.append(
+            f"{where}: {word!r} sits where the count goes but is neither"
+            f" digits nor a recognised English number word (0-99), so the"
+            f" count is unchecked"
+        )
+    elif value != len(wanted):
+        errors.append(
+            f"{where}: says {word!r} {subject} ({value}), the manifest has"
+            f" {len(wanted)}"
+        )
+    return 1, errors
+
+
+# TESTING.md is the THIRD document that spells one of these sets out, and
+# it drifted by the same mechanism and on the same fixture as the two the
+# gate above reads.  Gating two of the three would be this PR's own
+# argument left one step short (PR #1411 review).
+_LEVEL_PROSE = re.compile(
+    r"(?P<lead>(?:[A-Za-z0-9-]+ ){0,2})programs \((?P<names>[^)]*)\) are at"
+    r" the `(?P<level>[a-z]+)` level"
+)
+_NEGATIVE_PROSE = re.compile(
+    r"(?P<lead>(?:[A-Za-z0-9-]+ ){0,2})of them — (?P<names>[^—]*) — are"
+    r" \*\*negative tests\*\*"
+)
+# The compile-stage negatives are introduced separately, because the
+# property they pin is different: the checker ACCEPTS the program and
+# codegen refuses it.  Gating them as one set with the check-stage ones
+# would ask the prose to name each fixture twice (PR #1411 review).
+_COMPILE_NEGATIVE_PROSE = re.compile(
+    r"(?P<lead>(?:[A-Za-z0-9-]+ ){0,2})more — (?P<names>[^—]*) — (?:is a"
+    r" negative|are negatives) at the `compile` stage"
+)
+
+
+# The prose does not only NAME the negatives — it lists their diagnostic
+# codes "respectively", a fourth hand-maintained parallel list, and the
+# one where drift is silent: a fixture appended to the names without a
+# code shifts every code after it onto the wrong fixture.
+_CODE = re.compile(r"\bE\d{3}\b")
+_RESPECTIVE_CODES = re.compile(
+    r"that assert a specific diagnostic \((?P<codes>[^)]*)respectively\)"
+)
+_COMPILE_CODES = re.compile(r"beside `expected_error: (?P<codes>E\d{3})`")
+
+
+def _codes_after(
+    text: str, match: re.Match[str], pattern: re.Pattern[str]
+) -> list[str] | None:
+    """The diagnostic codes the prose attaches to the list `match` found.
+
+    Read from a window after the names rather than from the whole
+    document, so one sentence's codes cannot be checked against another
+    sentence's names.  ``None`` means the sentence no longer carries
+    them at all.
+    """
+    tail = text[match.end() : match.end() + 600]
+    found = pattern.search(tail)
+    return None if found is None else _CODE.findall(found.group("codes"))
+
+
+def _check_respective_codes(
+    where: str,
+    names: list[str],
+    codes: list[str] | None,
+    by_name: dict[str, str],
+) -> list[str]:
+    """The codes list against the manifest, one per name, in order.
+
+    "Respectively" is a positional claim, so this is a positional check:
+    a count comparison alone would pass a list that names the right
+    codes against the wrong fixtures.
+    """
+    if not names:
+        return []
+    if codes is None:
+        return [
+            f"{where}: names {len(names)} fixture(s) but no"
+            f" 'respectively' code list follows — it moved or was"
+            f" reworded, so the codes are no longer gated"
+        ]
+    if len(codes) != len(names):
+        return [
+            f"{where}: names {len(names)} fixture(s) but lists"
+            f" {len(codes)} diagnostic code(s); 'respectively' needs one"
+            f" per name, in the same order"
+        ]
+    errors: list[str] = []
+    for position, (name, code) in enumerate(zip(names, codes), start=1):
+        want = by_name.get(name)
+        # A name the manifest does not hold is already reported as such;
+        # reporting its code too would be the same fault twice.
+        if want is not None and code != want:
+            errors.append(
+                f"{where}: position {position} is `{name}`, whose manifest"
+                f" `expected_error` is {want}, but the codes list says"
+                f" {code}"
+            )
+    return errors
+
+
+def _expected_error_codes(
+    manifest: list[dict[str, object]],
+) -> dict[str, str]:
+    return {
+        name: str(entry["expected_error"])
+        for entry in manifest
+        if entry.get("expected_error") is not None
+        and (name := _stem(entry)) is not None
+    }
+
+
+def _negatives_at_stage(
+    manifest: list[dict[str, object]], stage: str
+) -> set[str]:
+    """Negative fixtures whose diagnostic fires at `stage`.
+
+    `expected_error_stage` defaults to "check", the same default
+    `scripts/check_conformance.py` applies when it decides which stage to
+    run the fixture through.
+    """
+    return {
+        name
+        for entry in manifest
+        if entry.get("expected_error") is not None
+        and entry.get("expected_error_stage", "check") == stage
+        and (name := _stem(entry)) is not None
+    }
+
+
+# The prose states the `run` level as "almost all programs" and does not
+# spell it out; every other level the manifest holds must be enumerated.
+_UNENUMERATED_LEVEL = "run"
+
+
+def check_manifest_entries(manifest: list[dict[str, object]]) -> list[str]:
+    """Every manifest entry must carry the fields these gates read.
+
+    An entry missing `file` or `level` used to reach the readers as a
+    KeyError traceback rather than a diagnostic, and the first reader to
+    hit one is the level breakdown in `main`, so it crashed before any
+    of this ran (PR #1411 review).  A gate that crashes says less than
+    one that reports.  Named by index when there is no `file` to name it
+    by.
+
+    Field VALUES, not only their presence: `{"level": []}` satisfied a
+    presence test and then went into `level_counts` as a key, raising
+    TypeError before the validation errors could be printed, and a
+    `null` `file` was skipped by the readers without ever being reported
+    (PR #1411 review, fourth pass).  Both fields must be non-empty
+    strings.
+    """
+    errors: list[str] = []
+    where = "tests/conformance/manifest.json"
+    for index, entry in enumerate(manifest):
+        if not isinstance(entry, dict):
+            errors.append(
+                f"{where}: entry {index} is not an object"
+                f" ({type(entry).__name__})"
+            )
+            continue
+        raw = entry.get("file")
+        name = (
+            raw
+            if isinstance(raw, str) and raw.strip()
+            else str(entry.get("id") or f"entry {index}")
+        )
+        missing = [field for field in ("file", "level") if field not in entry]
+        if missing:
+            fields = " and ".join(f"`{field}`" for field in missing)
+            errors.append(f"{where}: {name} is missing {fields}")
+        for field in ("file", "level"):
+            if field not in entry:
+                continue
+            value = entry[field]
+            if not isinstance(value, str) or not value.strip():
+                errors.append(
+                    f"{where}: {name}'s `{field}` is {value!r}, not a"
+                    f" non-empty string"
+                )
+    return errors
+
+
+def level_counts_of(manifest: list[dict[str, object]]) -> dict[str, int]:
+    """The manifest's level breakdown, skipping entries whose `level` is
+    not a usable string.
+
+    A function rather than a loop inside `main` so the path that used to
+    crash on a malformed entry is reachable from a test.
+    """
+    counts: dict[str, int] = {}
+    for entry in manifest:
+        if not isinstance(entry, dict):
+            continue
+        level = entry.get("level")
+        if not isinstance(level, str) or not level.strip():
+            continue
+        counts[level] = counts.get(level, 0) + 1
+    return counts
+
+
+def _stem(entry: dict[str, object]) -> str | None:
+    """A fixture's name, or None for an entry with no `file` — which
+    `check_manifest_entries` has already reported, so the readers below
+    skip it rather than reporting the same fault a second time."""
+    name = entry.get("file")
+    if not isinstance(name, str) or not name.strip():
+        return None
+    return name.removesuffix(".vera")
+
+
+def _programs_at_level(
+    manifest: list[dict[str, object]], level: str
+) -> set[str]:
+    return {
+        name
+        for entry in manifest
+        if entry.get("level") == level and (name := _stem(entry)) is not None
+    }
+
+
+def check_conformance_level_prose(
+    testing_text: str, manifest: list[dict[str, object]]
+) -> list[str]:
+    """TESTING.md's per-level program enumerations, against the manifest.
+
+    Three shapes, each spelled out by hand and each carrying its own
+    count word: "<Count> programs (…) are at the `<level>` level", the
+    check-stage negatives among them ("<Count> of them — … — are
+    **negative tests**"), and the compile-stage negatives, which the
+    prose introduces separately because the property they pin is
+    different — the checker ACCEPTS the program and codegen refuses it.
+    A shape that matches nothing is an error, not a skip — and so is a
+    single LEVEL whose sentence is gone, which the family-wide check
+    cannot see while its siblings still match.  Each sentence is
+    required to state its own count for the same reason.
+    """
+    errors: list[str] = []
+    levels = list(_LEVEL_PROSE.finditer(testing_text))
+    if not levels:
+        errors.append(
+            "TESTING.md: no '<Count> programs (...) are at the `<level>`"
+            " level' sentence found — it moved or was reworded, so the"
+            " per-level program lists are no longer gated"
+        )
+    for match in levels:
+        level = match.group("level")
+        where = f"TESTING.md: the `{level}`-level program list"
+        carried, found = _check_enumeration(
+            where,
+            match,
+            _programs_at_level(manifest, level),
+            f"`{level}`-level programs",
+        )
+        errors += found
+        # PER SENTENCE, not per family.  The level family has one
+        # sentence per level, so a family-wide tally let the `verify`
+        # sentence's count stand in for the `check` sentence's: dropping
+        # the number in front of the 56 check-level programs was CLEAN
+        # while `Twenty` still sat in front of the verify list (PR #1411
+        # review).
+        errors += _count_backstop(True, carried, where)
+    # A level whose sentence is gone is not gated at all, and the family
+    # is not empty, so the blanket check above cannot see it.  Which
+    # levels must be enumerated is read from the manifest rather than
+    # listed here: `run` is the one the prose states as "almost all"
+    # without spelling it out.
+    named = {match.group("level") for match in levels}
+    for level in sorted(
+        set(level_counts_of(manifest)) - {_UNENUMERATED_LEVEL}
+    ):
+        if level not in named:
+            errors.append(
+                f"TESTING.md: the manifest holds `{level}`-level programs"
+                f" but no '<Count> programs (...) are at the `{level}`"
+                f" level' sentence names them — that list is no longer"
+                f" gated at all"
+            )
+
+    by_name = _expected_error_codes(manifest)
+    for pattern, codes_pattern, stage, label, cue in (
+        (
+            _NEGATIVE_PROSE,
+            _RESPECTIVE_CODES,
+            "check",
+            "the check-stage negative-test subset",
+            "'<Count> of them — ... — are **negative tests**'",
+        ),
+        (
+            _COMPILE_NEGATIVE_PROSE,
+            _COMPILE_CODES,
+            "compile",
+            "the compile-stage negative(s)",
+            "'<Count> more — ... — is a negative at the `compile` stage'",
+        ),
+    ):
+        matches = list(pattern.finditer(testing_text))
+        if not matches:
+            errors.append(
+                f"TESTING.md: no {cue} sentence found — it moved or was"
+                f" reworded, so the {stage}-stage negatives are no longer"
+                f" gated"
+            )
+        for match in matches:
+            where = f"TESTING.md: {label}"
+            carried, found = _check_enumeration(
+                where,
+                match,
+                _negatives_at_stage(manifest, stage),
+                f"{stage}-stage negative tests",
+            )
+            errors += found
+            errors += _count_backstop(True, carried, where)
+            errors += _check_respective_codes(
+                where,
+                _FIXTURE_NAME.findall(match.group("names")),
+                _codes_after(testing_text, match, codes_pattern),
+                by_name,
+            )
+    return errors
+
+
+def negative_fixture_names(manifest: list[dict[str, object]]) -> list[str]:
+    """The conformance fixtures the manifest marks as negative, sorted.
+
+    A negative fixture is one carrying `expected_error`: the manifest is
+    what decides, which is exactly why the prose lists must be read
+    against it rather than maintained beside it.
+
+    Selected on the key being PRESENT — `is not None`, not truthiness —
+    because that is how `scripts/check_conformance.py` and
+    `tests/test_conformance.py` partition the same manifest.  A gate that
+    split the set differently from the runner it documents would be
+    describing a set nothing else believes in, and would excuse an
+    empty-coded fixture from the prose lists while the runner still
+    demanded it fail.
+    """
+    return sorted(
+        name
+        for entry in manifest
+        if entry.get("expected_error") is not None
+        and (name := _stem(entry)) is not None
+    )
+
+
+def check_negative_fixture_lists(
+    docs: dict[str, str],
+    expected: list[str],
+    counted_lists: int = _COUNTED_FIXTURE_LISTS,
+) -> list[str]:
+    """Gate the enumerated lists (and the spelled count) against the manifest.
+
+    Every occurrence is checked, not the first: AGENTS.md carries the
+    list twice, and a gate reading one of them would let the other drift
+    — the failure this replaces, one level down.  A file with no list at
+    all is an error rather than a skip, for the reason every pattern in
+    this script is: rewording the sentence would otherwise switch the
+    check off silently.
+
+    The count is checked wherever a sentence states one, and parsed with
+    the same English-word table the burndown header uses, so the two
+    spellings of "how many" in the documentation cannot disagree about
+    what a word means.
+
+    Its backstop is FAMILY-WIDE here, unlike the per-sentence rule the
+    TESTING.md families follow, because two of these three lists
+    legitimately state no size at all — CLAUDE.md's, and the second of
+    AGENTS.md's — so requiring one per sentence would fail the documents
+    as written.  What is pinned instead is how many sentences carry a
+    count (`_COUNTED_FIXTURE_LISTS`), which catches the loss of the one
+    that does AND an addition that would let it go stale unnoticed; a
+    deliberate change to the prose updates the constant with it.
+    """
+    errors: list[str] = []
+    wanted = set(expected)
+    seen_lists = 0
+    seen_words = 0
+    for doc, text in sorted(docs.items()):
+        matches = list(_NEGATIVE_FIXTURES.finditer(text))
+        if not matches:
+            errors.append(
+                f"{doc}: no 'negative fixtures (...)' list found — it moved"
+                f" or was reworded, so the list is no longer gated"
+            )
+            continue
+        for index, match in enumerate(matches, start=1):
+            seen_lists += 1
+            counted, found = _check_enumeration(
+                f"{doc} (list {index} of {len(matches)})",
+                match,
+                wanted,
+                "negative fixtures",
+            )
+            seen_words += counted
+            errors += found
+    if seen_lists and seen_words != counted_lists:
+        errors.append(
+            f"{seen_words} of the {seen_lists} negative-fixture list(s) in "
+            + ", ".join(sorted(docs))
+            + f" state a count; {counted_lists} did. Losing the one"
+            " that does leaves the count ungated, and adding another lets"
+            " that one go stale unnoticed — if the prose changed on purpose,"
+            " move `_COUNTED_FIXTURE_LISTS` with it"
+        )
+    return errors
+
+
 _ERROR_CODES_CITATION = re.compile(
     r"maps every code to a short description \((\d+) entries — (\d+) `E` codes "
-    r"and the two `W` warning codes\)"
+    r"and (\d+) `W` warning codes\)"
 )
 
 
@@ -1216,18 +2206,21 @@ def check_error_codes_count(readme_text: str, registry: dict[str, object]) -> li
     """Check vera/README.md's `ERROR_CODES` figures against the registry.
 
     Three numbers in one sentence, and none was gated: the total, the `E`
-    count, and the claim that the remainder is exactly the two `W` codes.
-    The registry is the only source for any of them, so the sentence could
-    drift on every code added (#1330 review).
+    count, and the `W` count.  The registry is the only source for any of
+    them, so the sentence could drift on every code added (#1330 review).
+    The `W` figure was spelled out in prose ("the two `W` warning codes"),
+    which made a third `W` code a PARSE failure rather than a count
+    mismatch — the gate reporting that it could not find the sentence
+    instead of which number was wrong (#1345 added one).
     """
     found = _ERROR_CODES_CITATION.search(readme_text)
     if found is None:
         return [
             "vera/README.md: could not find the ERROR_CODES count sentence "
             "('maps every code to a short description (N entries — N `E` "
-            "codes and the two `W` warning codes)')"
+            "codes and N `W` warning codes)')"
         ]
-    cited_total, cited_e = (int(g) for g in found.groups())
+    cited_total, cited_e, cited_w = (int(g) for g in found.groups())
     live_e = sum(1 for code in registry if code.startswith("E"))
     live_w = sum(1 for code in registry if code.startswith("W"))
     errors: list[str] = []
@@ -1241,15 +2234,15 @@ def check_error_codes_count(readme_text: str, registry: dict[str, object]) -> li
             f"vera/README.md ERROR_CODES E-code count: doc says {cited_e}, "
             f"live is {live_e}"
         )
-    if live_w != 2:
+    if cited_w != live_w:
         errors.append(
-            f"vera/README.md says the remainder is two `W` codes; the "
-            f"registry has {live_w}"
+            f"vera/README.md ERROR_CODES W-code count: doc says {cited_w}, "
+            f"live is {live_w}"
         )
     return errors
 
 
-def main() -> int:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--check-bug-issues",
@@ -1260,65 +2253,147 @@ def main() -> int:
             "not for pre-commit)"
         ),
     )
-    args = parser.parse_args()
-    root = Path(__file__).resolve().parent.parent
-    errors: list[str] = []
-
-    # ------------------------------------------------------------------
-    # 1. Derive live counts from the filesystem + pytest collection
-    # ------------------------------------------------------------------
-
-    # Conformance programs: count manifest entries
-    manifest = json.loads(
-        (root / "tests/conformance/manifest.json").read_text(encoding="utf-8")
+    parser.add_argument(
+        "--release",
+        action="store_true",
+        help=(
+            "also check the headline test totals against the live collection "
+            "(the release PR)"
+        ),
     )
-    live_conformance = len(manifest)
+    parser.add_argument(
+        "--release-if-version-raised",
+        metavar="BASE",
+        help=(
+            "run in --release mode when pyproject.toml's [project].version is "
+            "higher than at BASE: a branch name (read as origin/BASE, as a CI "
+            "checkout has it) or a commit.  CI passes a pull request's base "
+            "branch and a push's previous commit (#1536)"
+        ),
+    )
+    return parser.parse_args(argv)
 
-    # Conformance level breakdown
-    level_counts: dict[str, int] = {}
-    for entry in manifest:
-        lvl = entry["level"]
-        level_counts[lvl] = level_counts.get(lvl, 0) + 1
 
-    # Examples: count .vera files
-    live_examples = len(list((root / "examples").glob("*.vera")))
+# ---------------------------------------------------------------------------
+# Release mode keys on the version bump (#1536).  The release PR is the pull
+# request that raises `[project].version` against its base — the same signal
+# `release.yml` publishes on — so the choice does not depend on which branch
+# fix PRs target.
+# ---------------------------------------------------------------------------
 
-    # Test files: count test_*.py
-    test_files = sorted((root / "tests").glob("test_*.py"))
-    live_test_files = len(test_files)
 
-    # Per-file line counts
-    file_lines: dict[str, int] = {}
-    for f in test_files:
-        file_lines[f.name] = len(f.read_text(encoding="utf-8").splitlines())
+class ReleaseModeError(Exception):
+    """The base's version could not be read, so the mode cannot be chosen.
 
-    # Pre-commit hooks: parse YAML manually (avoid PyYAML dependency)
-    precommit_text = (root / ".pre-commit-config.yaml").read_text(encoding="utf-8")
-    live_hooks = len(re.findall(r"^\s+- id:\s", precommit_text, re.MULTILINE))
+    Raised rather than answered "not a release": a base that reads as
+    nothing would otherwise skip the release checks on the release PR.
+    """
 
-    # CI jobs: count top-level keys under "jobs:"
-    ci_text = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-    in_jobs = False
-    live_ci_jobs = 0
-    for line in ci_text.splitlines():
-        if line.rstrip() == "jobs:":
-            in_jobs = True
+
+_NO_PREVIOUS_COMMIT = re.compile(r"^0{40}$")
+
+
+def _project_version(pyproject_text: str) -> tuple[int, ...]:
+    try:
+        version = tomllib.loads(pyproject_text)["project"]["version"]
+        parts = tuple(int(part) for part in str(version).split("."))
+    except (tomllib.TOMLDecodeError, KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"no readable [project].version ({exc})") from exc
+    if not parts:
+        raise ValueError("an empty [project].version")
+    return parts
+
+
+def version_raised(base_pyproject: str, head_pyproject: str) -> bool:
+    """Whether the head's `[project].version` is higher than the base's,
+    compared as numbers (`0.2.10` is above `0.2.9`)."""
+    return _project_version(head_pyproject) > _project_version(base_pyproject)
+
+
+def _pyproject_at(ref: str, root: Path) -> str | None:
+    # `GIT_*` from a hook names the repository the hook runs in; this reads
+    # the tree at `root`, whichever that is.
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    for candidate in (f"origin/{ref}", ref):
+        # Bounded, like every other subprocess here: this runs in CI and a
+        # blocked git would hang the job.  A candidate git could not answer
+        # for is unreadable, so a base that yields none reaches the caller's
+        # `ReleaseModeError` rather than a hang or a traceback.
+        try:
+            result = subprocess.run(
+                ["git", "show", f"{candidate}:pyproject.toml"],
+                cwd=root, env=env, capture_output=True, text=True, check=False,
+                encoding="utf-8", timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError):
             continue
-        if in_jobs:
-            # A top-level job is a line with exactly 2-space indent + name + colon
-            if re.match(r"^  [a-zA-Z_-]+:", line):
-                live_ci_jobs += 1
-            # Stop at next top-level key
-            elif re.match(r"^[a-z]", line):
-                break
+        if result.returncode == 0:
+            return result.stdout
+    return None
 
-    # Pytest collection: total tests + per-file counts.
-    # `-o addopts=""` overrides the default `-m 'not stress'`
-    # from pyproject.toml (#596 stress-marker registration) so
-    # the collection sees every test file including
-    # `test_stress.py`.  Without this override the per-file
-    # counter wouldn't see stress tests and would report them
-    # as a missing row in TESTING.md.
+
+def release_mode_for(base: str, root: Path) -> tuple[bool, str]:
+    """Whether the tree at `root` raises the version against `base`, and
+    the reason, for the log.
+
+    A push that creates a branch has no previous commit (an all-zero SHA),
+    so it has no version to raise and runs in the default mode.  Any other
+    base that does not resolve is an error.
+    """
+    if _NO_PREVIOUS_COMMIT.match(base):
+        return False, "no previous commit (a new branch)"
+    if not base:
+        raise ReleaseModeError("no base was given to compare the version with")
+    base_text = _pyproject_at(base, root)
+    if base_text is None:
+        raise ReleaseModeError(
+            f"cannot read pyproject.toml at {base!r} (tried origin/{base} "
+            f"and {base})"
+        )
+    head_text = (root / "pyproject.toml").read_text(encoding="utf-8")
+    try:
+        raised = version_raised(base_text, head_text)
+        old = ".".join(map(str, _project_version(base_text)))
+        new = ".".join(map(str, _project_version(head_text)))
+    except ValueError as exc:
+        raise ReleaseModeError(str(exc)) from exc
+    verdict = "raised" if raised else "not raised"
+    return raised, f"[project].version {old} -> {new} against {base}: {verdict}"
+
+
+# A TESTING.md per-file row: `| `test_x.py` | <tests> | <lines> | ...`.
+_TEST_FILE_ROW = re.compile(r"\| `(test_\w+\.py)` \| ([\d,]+) \| ([\d,]+) \|")
+
+
+class Live(NamedTuple):
+    """What the tree measures: gathered once by `gather`, read by `check_all`.
+
+    Kept apart from the checks so a test can drive every check, in both
+    modes, against the real documents and measurements it chose — the way
+    to show which checks the mode reaches and which it leaves alone.
+    """
+
+    manifest: list[dict[str, object]]
+    examples: int
+    test_files: list[Path]
+    file_lines: dict[str, int]
+    hooks: int
+    ci_jobs: int
+    total_tests: int
+    file_tests: dict[str, int]
+    tags: list[str] | None
+    dual_target: DualTargetSplit | None
+
+
+def collect_tests(root: Path) -> tuple[int, dict[str, int]] | str:
+    """The collected total and each file's count, or why collection failed.
+
+    `-o addopts=""` overrides the default `-m 'not stress'` from
+    pyproject.toml (#596 stress-marker registration) so the collection sees
+    every test file including `test_stress.py`.  Without this override the
+    per-file counter wouldn't see stress tests and would report them as a
+    missing row in TESTING.md.
+    """
     pytest_bin = root / ".venv/bin/pytest"
     if not pytest_bin.exists():
         pytest_bin = Path("pytest")  # fall back to PATH
@@ -1332,15 +2407,11 @@ def main() -> int:
         check=False,
     )
     if result.returncode != 0:
-        print(
-            f"ERROR: pytest collection failed:\n{result.stderr}",
-            file=sys.stderr,
-        )
-        return 1
+        return f"pytest collection failed:\n{result.stderr}"
 
     # Parse "N tests collected"
     m = re.search(r"(\d+) tests? collected", result.stdout)
-    live_total_tests = int(m.group(1)) if m else 0
+    total = int(m.group(1)) if m else 0
 
     # Per-file test counts from collection output
     file_tests: dict[str, int] = {}
@@ -1348,6 +2419,102 @@ def main() -> int:
         if "::" in line:
             fname = line.split("::")[0].replace("tests/", "")
             file_tests[fname] = file_tests.get(fname, 0) + 1
+    return total, file_tests
+
+
+def gather(
+    root: Path,
+    *,
+    collect: Callable[[Path], tuple[int, dict[str, int]] | str] = collect_tests,
+    tags: Callable[[Path], list[str] | None] = release_tags,
+    dual_target: Callable[[Path], DualTargetSplit | None] = dual_target_split,
+) -> Live | str:
+    """Measure the tree under `root`, or say why it could not be measured.
+
+    The three measurements that run a subprocess — the pytest collection,
+    `git tag`, and the dual-target differential — are parameters, so a test
+    can supply its own without spawning one.
+    """
+    # Conformance programs: count manifest entries
+    manifest = json.loads(
+        (root / "tests/conformance/manifest.json").read_text(encoding="utf-8")
+    )
+
+    # Examples: count .vera files
+    examples = len(list((root / "examples").glob("*.vera")))
+
+    # Test files and their line counts
+    test_files = sorted((root / "tests").glob("test_*.py"))
+    file_lines = {
+        f.name: len(f.read_text(encoding="utf-8").splitlines())
+        for f in test_files
+    }
+
+    # Pre-commit hooks: parse YAML manually (avoid PyYAML dependency)
+    precommit_text = (root / ".pre-commit-config.yaml").read_text(encoding="utf-8")
+    hooks = len(re.findall(r"^\s+- id:\s", precommit_text, re.MULTILINE))
+
+    # CI jobs: count top-level keys under "jobs:"
+    ci_text = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    in_jobs = False
+    ci_jobs = 0
+    for line in ci_text.splitlines():
+        if line.rstrip() == "jobs:":
+            in_jobs = True
+            continue
+        if in_jobs:
+            # A top-level job is a line with exactly 2-space indent + name + colon
+            if re.match(r"^  [a-zA-Z_-]+:", line):
+                ci_jobs += 1
+            # Stop at next top-level key
+            elif re.match(r"^[a-z]", line):
+                break
+
+    collected = collect(root)
+    if isinstance(collected, str):
+        return collected
+    total_tests, file_tests = collected
+    return Live(
+        manifest=manifest,
+        examples=examples,
+        test_files=test_files,
+        file_lines=file_lines,
+        hooks=hooks,
+        ci_jobs=ci_jobs,
+        total_tests=total_tests,
+        file_tests=file_tests,
+        tags=tags(root),
+        dual_target=dual_target(root),
+    )
+
+
+def check_all(root: Path, live: Live, args: argparse.Namespace) -> list[str]:
+    """Every check: the documents under `root` against the measurements in
+    `live`, in the mode `args` asks for.  Returns the errors found."""
+    errors: list[str] = []
+    m: re.Match[str] | None
+
+    # ------------------------------------------------------------------
+    # 1. Unpack the live counts
+    # ------------------------------------------------------------------
+
+    manifest = live.manifest
+    errors.extend(check_manifest_entries(manifest))
+    live_conformance = len(manifest)
+
+    # Conformance level breakdown.  A malformed entry is reported above
+    # rather than raised here.
+    level_counts = level_counts_of(manifest)
+
+    live_examples = live.examples
+    test_files = live.test_files
+    live_test_files = len(test_files)
+    file_lines = live.file_lines
+    live_hooks = live.hooks
+    live_ci_jobs = live.ci_jobs
+    ci_text = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    live_total_tests = live.total_tests
+    file_tests = live.file_tests
 
     # ------------------------------------------------------------------
     # 2. Check TESTING.md overview table
@@ -1366,16 +2533,8 @@ def main() -> int:
                 f"TESTING.md {label}: doc says {doc_val}, live is {expected}"
             )
 
-    check_testing(
-        r"\*\*Tests\*\*\s*\|\s*([\d,]+)\s+across",
-        live_total_tests,
-        "total tests",
-    )
-    check_testing(
-        r"\*\*Tests\*\*\s*\|.*across\s+(\d+)\s+files",
-        live_test_files,
-        "test file count",
-    )
+    # The overview row's test total, file count and breakdown are headline
+    # totals, checked in section 2a with their citations elsewhere.
     check_testing(
         r"\*\*Conformance programs\*\*\s*\|\s*(\d+)",
         live_conformance,
@@ -1386,15 +2545,25 @@ def main() -> int:
         live_examples,
         "example programs",
     )
-    errors.extend(check_tests_breakdown(testing_md, live_total_tests))
+
+    # ------------------------------------------------------------------
+    # 2a. The headline test totals, in all five documents that state them
+    # ------------------------------------------------------------------
+
+    errors.extend(
+        check_headline_totals(
+            {name: (root / name).read_text(encoding="utf-8") for name in HEADLINE_DOCS},
+            live_total_tests,
+            live_test_files,
+            release=args.release,
+        )
+    )
 
     # ------------------------------------------------------------------
     # 3. Check TESTING.md per-file test table
     # ------------------------------------------------------------------
 
-    for m in re.finditer(
-        r"\| `(test_\w+\.py)` \| ([\d,]+) \| ([\d,]+) \|", testing_md
-    ):
+    for m in _TEST_FILE_ROW.finditer(testing_md):
         name = m.group(1)
         doc_tests = int(m.group(2).replace(",", ""))
         doc_lines = int(m.group(3).replace(",", ""))
@@ -1591,13 +2760,13 @@ def main() -> int:
     readme_md = (root / "README.md").read_text(encoding="utf-8")
 
     # One sentence carries six live figures.  Its four countable ones are
-    # gated together, each an error when it goes missing: the four patterns
-    # that used to sit here beside the tests one matched no README text at
-    # all, and returned silently rather than saying so.
+    # gated, each an error when it goes missing: the four patterns that used
+    # to sit here beside the tests one matched no README text at all, and
+    # returned silently rather than saying so.  Three are checked here; the
+    # tests figure is a headline total, read in section 2a.
     errors.extend(
         check_project_status(
             readme_md,
-            live_total_tests,
             live_conformance,
             live_examples,
             len(list((root / "spec").glob("*.md"))),
@@ -1694,24 +2863,8 @@ def main() -> int:
                 f" live is {live_conformance}"
             )
 
-    # The by-the-numbers test count ("8,840 tests, including a ...").
-    # This line drifted silently through two releases because only the
-    # conformance half of the sentence was pinned.  A missing pattern is
-    # an error, not a skip — otherwise rewording the line disables the
-    # check and reopens the same blind spot one level up.
-    m = re.search(r"([\d,]+) tests, including", faq_md)
-    if not m:
-        errors.append(
-            "FAQ.md: headline test-count line"
-            " ('N tests, including ...') not found"
-        )
-    else:
-        doc_tests = int(m.group(1).replace(",", ""))
-        if doc_tests != live_total_tests:
-            errors.append(
-                f"FAQ.md: tests count: doc says {doc_tests},"
-                f" live is {live_total_tests}"
-            )
+    # The by-the-numbers test count ("8,840 tests, including a ...") is a
+    # headline total, read in section 2a.
 
     errors.extend(check_faq_example_count(faq_md, live_examples))
 
@@ -1767,33 +2920,21 @@ def main() -> int:
 
     roadmap_md = (root / "ROADMAP.md").read_text(encoding="utf-8")
 
-    where_m = re.search(
-        r"## Where we are\n(.*?)(?=\n##|\Z)", roadmap_md, re.DOTALL
-    )
+    # The line's test count is a headline total, read in section 2a.
+    where_m = _ROADMAP_WHERE_WE_ARE.search(roadmap_md)
     if not where_m:
         errors.append(
             "ROADMAP.md: could not find '## Where we are' section"
         )
     else:
-        where_section = where_m.group(1)
-        m = re.search(
-            r"([\d,]+) tests,.*?(\d+) conformance programs",
-            where_section,
-            re.DOTALL,
-        )
+        m = re.search(r"(\d+) conformance programs", where_m.group(1))
         if not m:
             errors.append(
-                "ROADMAP.md: could not find test/conformance count"
-                " pattern in 'Where we are' section"
+                "ROADMAP.md: could not find the conformance count"
+                " ('N conformance programs') in the 'Where we are' section"
             )
         else:
-            doc_tests = int(m.group(1).replace(",", ""))
-            doc_conf = int(m.group(2))
-            if doc_tests != live_total_tests:
-                errors.append(
-                    f"ROADMAP.md: test count: doc says {doc_tests},"
-                    f" live is {live_total_tests}"
-                )
+            doc_conf = int(m.group(1))
             if doc_conf != live_conformance:
                 errors.append(
                     f"ROADMAP.md: conformance count: doc says {doc_conf},"
@@ -1819,7 +2960,7 @@ def main() -> int:
     # both.  They are checked against each other AND against `git tag`,
     # because agreeing with each other is what they did all the way from
     # v0.1.8 while both were two behind the repository.
-    tags = release_tags(root)
+    tags = live.tags
     if tags is None:
         print(
             "NOTE: no release tags in this checkout — the release count"
@@ -1841,8 +2982,6 @@ def main() -> int:
     errors.extend(
         check_vera_readme_test_counts(
             vera_readme_md,
-            live_total_tests,
-            live_test_files,
             live_conformance,
             live_examples,
         )
@@ -1871,7 +3010,7 @@ def main() -> int:
     # 20. Check TESTING.md's dual-target row against a live run
     # ------------------------------------------------------------------
 
-    split = dual_target_split(root)
+    split = live.dual_target
     if split is None:
         errors.append(
             f"TESTING.md: the dual-target differential ({_DUAL_TARGET_TEST}) "
@@ -1887,8 +3026,25 @@ def main() -> int:
     # 21. Check KNOWN_ISSUES.md's Bugs table
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # 21a. Check the enumerated negative-fixture lists against the manifest
+    # ------------------------------------------------------------------
+
+    # `manifest` is the one loaded and validated in section 1.
+    errors.extend(
+        check_negative_fixture_lists(
+            {
+                name: (root / name).read_text(encoding="utf-8")
+                for name in ("AGENTS.md", "CLAUDE.md")
+            },
+            negative_fixture_names(manifest),
+        )
+    )
+    errors.extend(check_conformance_level_prose(testing_md, manifest))
+
     known_issues = (root / "KNOWN_ISSUES.md").read_text(encoding="utf-8")
     errors.extend(check_bug_rows(known_issues))
+    errors.extend(check_burndown_header_matches_rows(roadmap_md, known_issues))
     if args.check_bug_issues:
         rows = bug_rows(known_issues)
         if rows is not None:
@@ -1896,6 +3052,48 @@ def main() -> int:
                 errors.extend(check_bug_issue_parity(rows, open_bug_issues()))
             except BugQueryError as exc:
                 errors.append(f"KNOWN_ISSUES.md: {exc}")
+
+    return errors
+
+
+def main() -> int:
+    args = parse_args()
+    root = Path(__file__).resolve().parent.parent
+    # This script's several `from vera...` imports, in `check_all` and the
+    # checks it calls, are IN-PROCESS, unlike the pytest/subprocess calls in
+    # `gather` that already pin `root / ".venv/bin/pytest"` (falling back to
+    # PATH only if that venv is absent).  A plain `import vera` instead
+    # falls through to whichever venv's editable-install finder answers
+    # first — a `__editable__.veralang-*.pth` file pinned to WHATEVER
+    # checkout `pip install -e` last ran in, which can be a different
+    # worktree entirely (that finder only engages when nothing earlier on
+    # `sys.path` already resolved `vera`).  Inserting `root` here — ahead of
+    # site-packages, so ahead of that finder, and before `check_all` runs
+    # any of those imports — makes `vera` resolve as the plain on-disk
+    # package under `root/vera/` instead: unambiguously the tree this
+    # script's own `__file__` lives in, regardless of which interpreter or
+    # editable install happens to be active.  The equivalent trap on the
+    # pytest side (a test file measuring the wrong checkout because
+    # pytest's OWN rootdir detection wins) is documented in TESTING.md's
+    # "Running against ANOTHER checkout" section — a different mechanism
+    # with a different remedy (relocate the test file into the target
+    # tree), not this one.
+    sys.path.insert(0, str(root))
+
+    if args.release_if_version_raised is not None:
+        try:
+            raised, why = release_mode_for(args.release_if_version_raised, root)
+        except ReleaseModeError as exc:
+            print(f"ERROR: release mode: {exc}", file=sys.stderr)
+            return 1
+        print(f"Release mode {'on' if raised else 'off'}: {why}.")
+        args.release = args.release or raised
+
+    live = gather(root)
+    if isinstance(live, str):
+        print(f"ERROR: {live}", file=sys.stderr)
+        return 1
+    errors = check_all(root, live, args)
 
     # ------------------------------------------------------------------
     # Report
@@ -1912,10 +3110,16 @@ def main() -> int:
 
     print(
         f"Documentation counts are consistent"
-        f" ({live_total_tests} tests, {live_test_files} files,"
-        f" {live_conformance} conformance, {live_examples} examples,"
-        f" {live_hooks} hooks, {live_ci_jobs} CI jobs)."
+        f" ({live.total_tests} tests, {len(live.test_files)} files,"
+        f" {len(live.manifest)} conformance, {live.examples} examples,"
+        f" {live.hooks} hooks, {live.ci_jobs} CI jobs)."
     )
+    if not args.release:
+        print(
+            "The headline test totals were checked against one another, not"
+            " against the live collection; the release PR checks them with"
+            " --release."
+        )
     return 0
 
 

@@ -187,18 +187,11 @@ class TestBuiltinContainerNameShadow:
         COMBINATOR BODIES (``json_get``, ``html_attr``) are emitted into
         every module and render their own ``@Json`` / ``@HtmlNode``
         parameters against the flat ``_type_aliases`` map, which a main-file
-        alias of that name pollutes.  That is an alias-ENV SCOPING defect
-        (#1316 — spec §8.4.1 makes the namespace module-scoped, so a prelude
-        body must render against the prelude's env), not the branch-ORDER
-        defect fixed here, and out of #1309's scope.
-
-        It is NOT, however, an unchanged failure, and an earlier draft of
-        this docstring said it was.  The reorder moves it: 17 prelude
-        ``json_*`` signatures flip from ``(param $p0 i32)`` to ``(param $p0
-        i64)``, the loader's complaint reverses from ``expected i64, found
-        i32`` to ``expected i32, found i64``, its offset shifts, and
-        ``html_attr`` loses one shadow-stack push.  Same root cause, same
-        frame in the backtrace, a later point inside it.
+        alias of that name pollutes.  That was an alias-ENV SCOPING defect
+        (spec §8.4.1 makes the namespace module-scoped, so a prelude body
+        must render against the prelude's env), not the branch-ORDER defect
+        fixed here; #1316 closed it and ``test_name_resolution_spine_1316.py``
+        pins it.
         """
         source = _program(name, "Int", "21", "@{A}.0 + @{A}.0", "@Int")
         assert _run(source, fn="main") == 42
@@ -206,14 +199,15 @@ class TestBuiltinContainerNameShadow:
     def test_primitive_shadow_runs_at_the_primitive_width(self) -> None:
         """The behavioural half, and the one that can go wrong silently.
 
-        ``type Bool = Int;`` then using ``@Bool`` AS a Bool is check-green
-        and runs: the primitive branch wins, so the slot stays i32.  Hoist
-        the alias branch above the primitives and ``@Bool`` becomes i64 —
-        which is why the unit assertions below are not the whole story, and
-        why the claim they once carried (that the checker refuses every
-        program exercising this) was simply false.  ``@Bool.0 + @Bool.0``
-        is indeed E140 and ``type Int = Int;`` is E132, but reading the
-        slot as the primitive it resolves to is neither.
+        ``type Bool = Int;`` then using ``@Bool`` AS a Bool.  The checker
+        refuses the alias (E158, #1497: a primitive's name could never be
+        named), so this drives a compile that skips the checker, and code
+        generation must still resolve the primitive first: the primitive
+        branch wins, so the slot stays i32.  Hoist the alias branch above
+        the primitives and ``@Bool`` becomes i64 — which is why the unit
+        assertions below are not the whole story.  The check-time refusal
+        does not make this test redundant: code generation is reachable
+        without the checker, and its width must not depend on it.
         """
         source = """\
 type Bool = Int;

@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests.checker_helpers import _check_ok
+from tests.checker_helpers import _check_err, _check_ok
 from tests.codegen_helpers import _compile, _run, wat_calls
 from tests.verifier_helpers import _verify_ok
 
@@ -288,20 +288,84 @@ def test_a_family_the_row_does_not_declare_is_loud_on_both_sides(
 ) -> None:
     """`new()` and `old()` fail the SAME way on a family with no cell.
 
-    The checker accepts a contract naming a `State<T>` the effect row does
-    not declare (tracked as #1298), so codegen is where it lands.  `old()`
-    has always reported E699 here — there is no snapshot local.  `new()`
-    could not: the name-keyed lookup found the row's OTHER getter and read
-    the wrong cell, which is #1285 with the two questions maximally far
-    apart.  Pinning both together is what keeps the family keying honest:
-    a `new()` that fell back to any getter would pass this file's other
-    cases and fail only here.
+    The CHECKER now refuses both (#1298): a contract may only name a
+    `State<T>` the enclosing function's effect row declares, so the program
+    never reaches codegen.  It used to be check-green and land on codegen's
+    E699 — the internal-compiler-error diagnostic whose own text says the
+    type checker should have rejected the input, which was exactly the
+    situation, with a bug-report request the user should not act on.
+
+    Pinning both forms together is what keeps the family keying honest: a
+    `new()` that fell back to any getter would pass this file's other cases
+    and fail only here.  They are rejected by ONE rule, since both read the
+    same cell.
     """
     source = _UNDECLARED_FAMILY.format(form=form)
+    diags = _check_err(source, "State<Bool>")
+    codes = [d.error_code for d in diags]
+    assert "E177" in codes, [(d.error_code, d.description) for d in diags]
+    named = next(d for d in diags if d.error_code == "E177")
+    # The diagnostic names the UNDECLARED family and the row that was
+    # declared instead; without both a reader cannot tell which of the two
+    # to change.
+    assert "State<Bool>" in named.description, named.description
+    assert "State<Int>" in named.description, named.description
+
+
+def test_an_open_row_tail_may_supply_the_family() -> None:
+    """The carve-out, pinned: an OPEN row is not refused.
+
+    A row entry naming a `forall` type parameter is a row VARIABLE, and its
+    tail may be instantiated at a call site that supplies the family — so
+    refusing here would reject a program legal under some instantiation. The
+    rule E177 enforces is membership in a CLOSED row.
+
+    Worth stating how this cell arrived: a first pass concluded open rows were
+    not expressible and asserted that instead. A tripwire over the compiler's
+    own `row_var` assignments refuted it — `resolution.py` sets one whenever a
+    row entry names a type parameter — which is the shape below.
+    """
+    source = """
+public forall<E> fn probe(@Unit -> @Int)
+  requires(true)
+  ensures(new(State<Bool>) == false)
+  effects(<State<Int>, E>)
+{
+  7
+}
+"""
     _check_ok(source)
-    result = _compile(source)
-    codes = [d.error_code for d in result.diagnostics]
-    assert "E699" in codes, [d.description for d in result.diagnostics]
+
+
+def test_the_declared_family_is_still_accepted() -> None:
+    """The over-rejection control: a contract naming the row's OWN family
+    checks clean, so the new rule refuses only what the row omits."""
+    source = """
+public fn probe(@Unit -> @Int)
+  requires(true)
+  ensures(new(State<Int>) == 0)
+  effects(<State<Int>>)
+{
+  7
+}
+"""
+    _check_ok(source)
+
+
+@pytest.mark.parametrize("form", ["new", "old"])
+def test_a_second_declared_family_is_accepted(form: str) -> None:
+    """A row declaring TWO families accepts either — the rule is membership,
+    not "the first one"."""
+    source = f"""
+public fn probe(@Unit -> @Int)
+  requires(true)
+  ensures({form}(State<Bool>) == false)
+  effects(<State<Int>, State<Bool>>)
+{{
+  7
+}}
+"""
+    _check_ok(source)
 
 
 def test_a_false_postcondition_still_traps() -> None:

@@ -2047,6 +2047,32 @@ _SCOPE_MODULE_CASES: dict[str, tuple[str, str, tuple[str, ...]]] = {
             "{ pub_entry(7) }\n"
         ),
     ),
+    # A module whose body uses a demand-injected prelude block that the
+    # ENTRY never names (PR #1508 review).  Both sides inject the block for
+    # the module's sake, so its functions are the prelude's in every
+    # namespace on both; demanded on one side only, the entry's own scope
+    # differed by the Json combinators.
+    "module_demands_a_prelude_block": (
+        "mj",
+        "public forall<T> fn gen(@T -> @Int)\n"
+        "  requires(true) ensures(true) effects(pure)\n"
+        "{ 1 }\n"
+        "public fn g(@String -> @Int)\n"
+        "  requires(true) ensures(true) effects(pure)\n"
+        "{\n"
+        "  match json_parse(@String.0) {\n"
+        "    Ok(@Json) -> option_unwrap_or(json_get_int(@Json.0, \"a\"), "
+        "gen(0)),\n"
+        "    Err(@String) -> 0\n"
+        "  }\n"
+        "}\n",
+        (
+            "import mj(g);\n"
+            "public fn main(@Unit -> @Int)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{ g(\"{}\") }\n"
+        ),
+    ),
 }
 
 

@@ -16,6 +16,7 @@ Vera reads a small set of `VERA_*` environment variables.  This document is the 
 | [`VERA_JS_COVERAGE`](#vera_js_coverage) | Opt-in V8 coverage during browser-parity tests | dev / CI | optional |
 | [`VERA_Z3_TIMEOUT_MS`](#vera_z3_timeout_ms) | Per-query Z3 budget in milliseconds — raises or lowers the Tier 1 / Tier 3 boundary | verify / test / language server | optional (defaults to `10000`) |
 | [`VERA_EAGER_GC`](#vera_eager_gc) | Force `$gc_collect` on every allocation — debugging knob for GC-rooting bugs | compile-time (dev) | optional |
+| [`VERA_GC_CHECK_MARKS`](#vera_gc_check_marks) | Trap if a GC mark store targets an address that is not an object body — debugging knob for conservative-scan false positives | compile-time (dev) | optional |
 | [`VERA_DEBUG_HOST_ERRORS`](#vera_debug_host_errors) | Re-raise a host callback's original exception instead of converting it — debugging knob for host-binding bugs | runtime (dev) | optional |
 
 ## Inference provider keys
@@ -29,12 +30,14 @@ The `Inference` effect ([spec/07-effects.md](spec/07-effects.md)) reaches an LLM
 - `VERA_XAI_API_KEY` (Grok)
 - `VERA_DEEPSEEK_API_KEY`
 
-The order above is the registry order, and detection walks it and takes the **first** provider whose key is set to a NON-EMPTY value — a variable exported as the empty string is skipped, as if unset — so setting more than one key is deterministic rather than ambiguous, but silently ignores every key after the first.  Set exactly one, or use [`VERA_INFERENCE_PROVIDER`](#explicit-provider--model-overrides) to name the one you mean.  The conformance tests `tests/conformance/ch09_inference.vera` and `tests/conformance/ch09_http.vera` are skipped in CI because no provider key is set there; to run them locally:
+The order above is the registry order, and detection walks it and takes the **first** provider whose key is set to a NON-EMPTY value — a variable exported as the empty string is skipped, as if unset — so setting more than one key is deterministic rather than ambiguous, but silently ignores every key after the first.  Set exactly one, or use [`VERA_INFERENCE_PROVIDER`](#explicit-provider--model-overrides) to name the one you mean.  The conformance programs `tests/conformance/ch09_inference.vera` and `tests/conformance/ch09_http.vera` are held at `check` level in the manifest, so CI type-checks them but never runs them (one needs a provider key, the other network access). To run the inference one locally:
 
 ```bash
 export VERA_ANTHROPIC_API_KEY=sk-ant-...   # or any other key above, e.g. VERA_XAI_API_KEY=xai-...
-vera run tests/conformance/ch09_inference.vera
+vera run tests/conformance/ch09_inference.vera --fn classify_and_print -- "I love this"
 ```
+
+With no key set it prints `unknown`, the program's fallback for an `Err`.
 
 The same export works for `examples/inference.vera` from `README.md`.
 
@@ -123,6 +126,22 @@ This was the diagnostic that cracked [#593](https://github.com/aallan/vera/issue
 
 **Cost.**  Programs run orders of magnitude slower with `$gc_collect` on every allocation — never enable it in production or in normal test runs.  It's a debugging knob, not a release-build option.  Tests that exercise this knob live in `tests/test_codegen_closures.py::TestClosureReturnShadowPushBalance`.
 
+## `VERA_GC_CHECK_MARKS`
+
+A diagnostic knob for the collector's own soundness, not for a program's.
+
+```bash
+VERA_GC_CHECK_MARKS=1 VERA_EAGER_GC=1 vera run program.vera
+```
+
+Set to `1`, `true`, `yes` or `on` — the same spellings [`VERA_EAGER_GC`](#vera_eager_gc) accepts, because both read the one predicate in `vera/envflags.py` — to make the mark phase assert, before every mark store, that the address it is about to write is a real object body.
+
+The mark phase is conservative: it classifies a word as a heap pointer from two cheap tests (heap range, and `(val - $gc_heap_start) & 7 == 4`). Those are sound for the *reads* a conservative collector makes — a false positive costs retention and nothing more — but marking also **writes**, ORing the mark bit into the word four bytes below the candidate. A false positive that lands inside a live object therefore corrupts it ([#1382](https://github.com/aallan/vera/issues/1382)).
+
+Candidates are validated against an object-base bitmap that Phase 1 fills as it walks, so the store cannot escape its object. This knob is the independent check on that: it re-derives the answer by walking the heap from `$gc_heap_start` along the allocator's own `align_up(size + 4, 8)` chain and traps when the target is not a body address it reached. Deliberately independent of the bitmap — dropped into a collector without the bitmap it fires, which is what makes it a check rather than a restatement of the fix.
+
+O(heap) per mark store on top of whatever `VERA_EAGER_GC` already costs, so it is slower still than that knob. Pair the two when a wrong answer smells like heap corruption; use neither in production.
+
 ## `VERA_DEBUG_HOST_ERRORS`
 
 A diagnostic knob for debugging the host bindings themselves.  Set to `1`, `true`, `yes` or `on` — the same spellings [`VERA_EAGER_GC`](#vera_eager_gc) accepts, because both read the one predicate in `vera/envflags.py` — to make `execute()` re-raise a host callback's original Python exception instead of converting it to a `WasmTrapError`:
@@ -133,9 +152,9 @@ VERA_DEBUG_HOST_ERRORS=1 vera run program.vera
 
 Read by `vera/codegen/api.py::execute`; affects how a failure is *presented*, never whether one happens.
 
-**When to use it.**  [#1302](https://github.com/aallan/vera/issues/1302) made every exception escaping the guest invocation arrive as a classified Vera error — a one-line `Error:` with the host's own sentence, the captured `stdout`, and a source backtrace — because a user-level program must never produce a Python traceback regardless of what it does.  That is right for someone running a Vera program and unhelpful for someone who suspects the *binding* is wrong: the sentence survives, the Python frames that say where in the binding it came from do not.  They remain on the exception's `__cause__`, which serves a library caller and not a person reading a terminal.  This knob puts the frames back.
+**When to use it.**  Every exception escaping the guest invocation arrives as a classified Vera error ([#1302](https://github.com/aallan/vera/issues/1302)) — a one-line `Error:` with the host's own sentence, the captured `stdout`, and a source backtrace — because a user-level program must never produce a Python traceback regardless of what it does.  That is right for someone running a Vera program and unhelpful for someone who suspects the *binding* is wrong: the sentence survives, the Python frames that say where in the binding it came from do not.  They remain on the exception's `__cause__`, which serves a library caller and not a person reading a terminal.  This knob puts the frames back.
 
-**Cost.**  None at runtime — the variable is read only on the failure path, and only after a host callback has already raised.  It is still a debugging knob rather than a mode, and it disables more than a message.  With it set, a program that would have exited with a clean Vera diagnostic exits with an interpreter traceback instead, so nothing that parses `vera run` output should be run under it — and `vera serve` reverts to its pre-[#1302](https://github.com/aallan/vera/issues/1302) behaviour, where the raw exception bypasses the `WasmTrapError` handler that answers the request, leaving the connection unanswered rather than returning a 500.  The knob turns off the stronger invariant, not just the prettier output.  Tests that exercise this knob live in `tests/test_runtime_traps.py::TestHostErrorDebugKnob1302`.
+**Cost.**  None at runtime — the variable is read only on the failure path, and only after a host callback has already raised.  It is still a debugging knob rather than a mode, and it disables more than a message.  With it set, a program that would have exited with a clean Vera diagnostic exits with an interpreter traceback instead, so nothing that parses `vera run` output should be run under it — and under `vera serve` the raw exception bypasses the `WasmTrapError` handler that answers the request, leaving the connection unanswered rather than returning a 500.  The knob turns off the stronger invariant, not just the prettier output.  Tests that exercise this knob live in `tests/test_runtime_traps.py::TestHostErrorDebugKnob1302`.
 
 ## Adding a new environment variable
 

@@ -37,6 +37,7 @@ import subprocess
 import threading
 from pathlib import Path, PureWindowsPath
 from typing import Any
+from unittest import mock
 
 import pytest
 
@@ -893,3 +894,78 @@ class TestBaseCheckoutReuse:
         ).stdout.strip()
         assert head == sha
         assert (dest / "vera" / "__init__.py").is_file()
+
+
+# =====================================================================
+# #1374 — the base checkout does not outlive the run unless asked to
+# =====================================================================
+
+
+class TestBaseCheckoutCleanup:
+    """The instrument tidies up after itself by default.
+
+    Leaving the checkout in place was a deliberate reuse optimisation — a
+    burndown session runs the differential repeatedly against one base and
+    paid for one checkout — but the tree it leaves is a full second copy of
+    the repository INSIDE the repository, and `pytest tests/` then walked its
+    `spec/` as an authored doc surface (#1374).  The default is now removal;
+    `--keep-base` is how a repeated-run session opts back into the reuse.
+    """
+
+    def test_keep_base_defaults_to_off(self) -> None:
+        assert _MOD._parse_args([]).keep_base is False
+
+    def test_keep_base_is_settable(self) -> None:
+        assert _MOD._parse_args(["--keep-base"]).keep_base is True
+
+    def test_release_removes_a_worktree_it_created(self, tmp_path: Path) -> None:
+        """Removal goes through `git worktree remove`, not a tree delete.
+
+        `base_checkout` creates the checkout with `git worktree add`, so the
+        repository's worktree registry holds an entry for it; deleting the
+        directory alone would leave that entry behind as a prunable stale
+        record, which the next run's cleanliness check cannot see.
+        """
+        calls: list[list[str]] = []
+
+        def fake_run(cmd: list[str], **kw: object) -> Any:
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        with mock.patch.object(_MOD.subprocess, "run", fake_run):
+            _MOD.release_base_checkout(tmp_path / "repo", tmp_path / "base")
+
+        assert calls, "nothing was run"
+        assert calls[0][:4] == ["git", "-C", str(tmp_path / "repo"), "worktree"]
+        assert "remove" in calls[0]
+        assert str(tmp_path / "base") in calls[0]
+
+    def test_release_is_silent_when_git_cannot_start(
+        self, tmp_path: Path,
+    ) -> None:
+        """`check=False` suppresses a non-zero EXIT, not a failure to START.
+
+        A missing `git`, an exhausted descriptor table or a permission error
+        raises `OSError` out of `subprocess.run` — and this runs from a
+        `finally`, so the exception would replace the verdict the whole run
+        exists to produce with a traceback (PR #1372 review).
+        """
+        def fake_run(cmd: list[str], **kw: object) -> Any:
+            raise OSError(2, "No such file or directory: 'git'")
+
+        with mock.patch.object(_MOD.subprocess, "run", fake_run):
+            _MOD.release_base_checkout(tmp_path / "repo", tmp_path / "base")
+
+    def test_release_is_silent_when_git_declines(self, tmp_path: Path) -> None:
+        """Cleanup is best-effort: a failed removal must not turn a clean
+        differential into a failing one.
+
+        The verdict this script exists to report is already computed by the
+        time cleanup runs, and losing it to a housekeeping error would be a
+        worse failure than the leftover directory.
+        """
+        def fake_run(cmd: list[str], **kw: object) -> Any:
+            return subprocess.CompletedProcess(cmd, 128, "", "fatal: nope")
+
+        with mock.patch.object(_MOD.subprocess, "run", fake_run):
+            _MOD.release_base_checkout(tmp_path / "repo", tmp_path / "base")

@@ -34,17 +34,28 @@ from lsprotocol import types as lsp
 
 from vera import ast, naming
 from vera.checker.core import CheckArtifacts
-from vera.errors import Diagnostic, ParseError, TransformError
+from vera.errors import (
+    Diagnostic,
+    ParseError,
+    SourceLocation,
+    TransformError,
+    partial_diagnostics,
+)
 from vera.lsp.convert import (
     LineIndex,
     location_to_range,
     span_to_range,
     uri_to_path,
 )
+from vera.lsp.documents import Document
 from vera.obligations.cache import walk_nodes
 from vera.obligations.core import ProofObligation
-from vera.obligations.session import VerificationSession
+from vera.obligations.session import (
+    VerificationSession,
+    resolve_document_imports,
+)
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv
+from vera.resolver import own_module_path
 from vera.slots import fn_scopes, fn_slot_scope, slot_table
 
 _SEVERITY = {
@@ -77,6 +88,12 @@ class Analysis:
     # alias table.  Empty when the pipeline stopped at parse/transform — there
     # is no check, so there are no aliases to name against.
     alias_env: AliasEnv = EMPTY_ALIAS_ENV
+    #: #1558: the path that names this document's own file in a qualified
+    #: call (`vera.resolver.own_module_path`, over the modules this analysis
+    #: resolved), so a workflow that follows calls reads `ma::f(...)` inside
+    #: `module ma;` as the call to `f` it is.  ``None`` for a document with
+    #: no path of its own, or one that did not parse.
+    own_path: tuple[str, ...] | None = None
 
 
 def analyze(
@@ -106,22 +123,29 @@ def analyze(
         return analysis
 
     analysis.program = program
-    check_diags, artifacts = typecheck_with_artifacts(program, text, file=path)
+    # Module-AWARE, by the same rooting rule `verify_source` uses (#1513).
+    # A module-blind check reports every imported name as unresolved, which
+    # was only survivable while E200/E230 were warnings; as errors they
+    # would stop every document that imports anything short of verification
+    # and publish a false error on each imported call.
+    resolved, resolver_errors = resolve_document_imports(program, path)
+    analysis.own_path = own_module_path(program, None, resolved)
+    check_diags, artifacts = typecheck_with_artifacts(
+        program, text, file=path, resolved_modules=resolved,
+    )
     analysis.artifacts = artifacts
     analysis.alias_env = artifacts.alias_env
-    analysis.diagnostics = list(check_diags)
+    analysis.diagnostics = resolver_errors + list(check_diags)
 
-    if not any(d.severity == "error" for d in check_diags):
+    if not any(d.severity == "error" for d in analysis.diagnostics):
         result = session.verify_source(text, file=path)
-        # The check above ran module-BLIND (no `resolved_modules`), and
-        # `verify_source` re-checks module-AWARE.  Only the second sees the
-        # resolver's errors and any error that needs an imported signature
-        # to detect, and it hands them back as `check_diagnostics` — which
-        # was discarded, so `glib::takes_int("nope")` published a warning,
-        # produced no obligations, and said nothing about the E202 that had
-        # stopped verification (PR #1282 review).  Appended here, minus
-        # anything the blind check already reported: the module-aware pass
-        # re-derives those, and a straight append shows each twice.
+        # `verify_source` re-checks, and hands its check diagnostics back as
+        # `check_diagnostics` — which were once discarded, so
+        # `glib::takes_int("nope")` published a warning, produced no
+        # obligations, and said nothing about the E202 that had stopped
+        # verification (PR #1282 review).  Appended here, minus anything
+        # the check above already reported: the second pass re-derives
+        # those, and a straight append shows each twice.
         seen = {_diag_key(d) for d in analysis.diagnostics}
         analysis.diagnostics += [
             d for d in result.check_diagnostics if _diag_key(d) not in seen
@@ -173,7 +197,18 @@ def _tier_hints(analysis: Analysis) -> list[lsp.Diagnostic]:
         if any(o.status == "violated" for o in obs):
             continue
         runtime = sum(1 for o in obs if o.status in ("tier3", "timeout"))
-        if runtime == 0:
+        # #1451: an obligation discharged in no tier is not a proof, and a
+        # function whose premises have no model has a whole slice of them.
+        # `runtime == 0` alone called that "all contracts proven by Z3" — the
+        # editor's own copy of the false Tier 1 the premise check exists to
+        # stop (#1457 review, Medium 2).
+        unproved = sum(1 for o in obs if o.status == "tier3_unguarded")
+        if unproved:
+            message = (
+                f"{fn_name}: not verified — {unproved} of {len(obs)} "
+                f"obligation(s) were neither proved nor guarded"
+            )
+        elif runtime == 0:
             message = f"{fn_name}: Tier 1 — all contracts proven by Z3"
         else:
             message = (
@@ -195,29 +230,92 @@ def _tier_hints(analysis: Analysis) -> list[lsp.Diagnostic]:
     return hints
 
 
+def current_analysis(
+    doc: Document | None, analysis: Analysis | None,
+) -> Analysis | None:
+    """*analysis* if it is an analysis of the open document *doc*'s
+    text, else ``None``.
+
+    The currency check behind the one reader of the per-URI analysis
+    table, ``VeraLanguageServer.current_analysis`` (#1444).  Hover,
+    definition, completion, the proof delta and the edit workflows all
+    read through it, so none of them answers from an analysis of a text
+    the buffer has left.  ``analyze_and_publish`` keeps the table that
+    way -- an analysis that raises removes the entry instead of leaving
+    the previous text's -- and this checks it again at the read.
+    """
+    if analysis is None or doc is None or analysis.text != doc.text:
+        return None
+    return analysis
+
+
+def _to_lsp(d: Diagnostic, index: LineIndex) -> lsp.Diagnostic:
+    """One Vera diagnostic in LSP shape.
+
+    The editor surface honours the same diagnostics-as-instructions
+    contract as --json: description, then the rationale paragraph, then
+    the Fix: paragraph (#728).
+    """
+    message = d.description
+    if d.rationale:
+        message += f"\n\n{d.rationale}"
+    if d.fix:
+        message += f"\n\nFix: {d.fix}"
+    return lsp.Diagnostic(
+        range=location_to_range(d.location, index),
+        message=message,
+        severity=_SEVERITY.get(d.severity, lsp.DiagnosticSeverity.Error),
+        source="vera",
+        code=d.error_code or None,
+        data={"tier": d.tier} if d.tier is not None else None,
+    )
+
+
 def to_lsp_diagnostics(analysis: Analysis) -> list[lsp.Diagnostic]:
     """Map Vera diagnostics (+ synthesised tier hints) to LSP shape."""
-    out: list[lsp.Diagnostic] = []
-    for d in analysis.diagnostics:
-        data = {"tier": d.tier} if d.tier is not None else None
-        # The editor surface honours the same diagnostics-as-
-        # instructions contract as --json: description, then the
-        # rationale paragraph, then the Fix: paragraph (#728).
-        message = d.description
-        if d.rationale:
-            message += f"\n\n{d.rationale}"
-        if d.fix:
-            message += f"\n\nFix: {d.fix}"
-        out.append(lsp.Diagnostic(
-            range=location_to_range(d.location, analysis.index),
-            message=message,
-            severity=_SEVERITY.get(d.severity, lsp.DiagnosticSeverity.Error),
-            source="vera",
-            code=d.error_code or None,
-            data=data,
-        ))
+    out = [_to_lsp(d, analysis.index) for d in analysis.diagnostics]
     out.extend(_tier_hints(analysis))
     return out
+
+
+def analysis_failure(
+    uri: str, text: str, exc: BaseException,
+) -> list[lsp.Diagnostic]:
+    """What is published for *uri* when analysing *text* raised: the
+    diagnostics the failing pass had already recorded, then one
+    ``E699`` naming the failure and what it stops.
+
+    The same report the CLI's backstop makes for an exception that
+    escapes a command (#1429 there: what the pass recorded comes first,
+    because it is what the user can act on), so the client learns there
+    was a compiler bug rather than seeing the previous text's
+    diagnostics stay up, or none.
+    """
+    path = uri_to_path(uri)
+    index = LineIndex(text)
+    recorded = [_to_lsp(d, index) for d in partial_diagnostics(exc)]
+    return recorded + [_to_lsp(Diagnostic(
+        description=(
+            f"Internal compiler error while analysing '{path}': "
+            f"{type(exc).__name__}: {exc}"
+        ),
+        location=SourceLocation(file=path, line=0, column=0),
+        rationale=(
+            "The compiler raised an unexpected exception. This is a bug in "
+            "the compiler, not a property of the program -- the text may "
+            "well be valid. Until a change the server can analyse, it has "
+            "no analysis of this document: hover, go-to-definition and "
+            "completion answer nothing, a proof delta has no baseline, and "
+            "the edit methods refuse."
+        ),
+        fix=(
+            "Please file a bug report with the offending program at "
+            "https://github.com/aallan/vera/issues"
+        ),
+        spec_ref='Chapter 0, Section 0.5.1 "Diagnostic Structure"',
+        severity="error",
+        error_code="E699",
+    ), index)]
 
 
 def _span_contains(

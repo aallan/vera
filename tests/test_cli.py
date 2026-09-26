@@ -70,13 +70,19 @@ def test_usage_lists_every_dispatched_command() -> None:
 # =====================================================================
 
 
-# A warnings-only program: the unresolved bare call draws an E200
-# warning (not an error), exercising the warning channel end-to-end.
 # Shared by test_warning_only_source and test_json_with_warnings.
-_UNRESOLVED_CALL_SRC = """\
+# A warnings-only program: an unreachable arm after a catch-all is E310, a
+# warning whose program compiles and runs.  An unresolved call served here
+# until #1513 made it the error it is (code generation has no body to call).
+_WARNING_ONLY_SRC = """\
 public fn main(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
-{ no_such_fn(1) }
+{
+  match 3 {
+    _ -> 1,
+    3 -> 2
+  }
+}
 """
 
 
@@ -360,9 +366,10 @@ class TestCmdCheck:
         """A warnings-only program exits 0 with the warning on stderr.
 
         Used closures.vera until #854 made its `apply_fn` call
-        warning-free; a genuinely-unresolved call keeps exercising the
-        warning path (E200 is a warning, not an error)."""
-        path = _bad_vera(tmp_path, _UNRESOLVED_CALL_SRC)
+        warning-free, then an unresolved call until #1513 made E200 an
+        error; an unreachable arm (E310) keeps exercising the warning
+        path."""
+        path = _bad_vera(tmp_path, _WARNING_ONLY_SRC)
         rc = cmd_check(path)
         assert rc == 0
         captured = capsys.readouterr()
@@ -424,9 +431,10 @@ class TestCmdCheck:
         """Warnings-only file has ok: true with warnings in JSON.
 
         Used closures.vera until #854 made its `apply_fn` call
-        warning-free; a genuinely-unresolved call keeps exercising the
-        warnings channel (E200 is a warning, not an error)."""
-        path = _bad_vera(tmp_path, _UNRESOLVED_CALL_SRC)
+        warning-free, then an unresolved call until #1513 made E200 an
+        error; an unreachable arm (E310) keeps exercising the warnings
+        channel."""
+        path = _bad_vera(tmp_path, _WARNING_ONLY_SRC)
         rc = cmd_check(path, as_json=True)
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
@@ -982,7 +990,8 @@ class TestCmdCompile:
         "public fn bad(@Int -> @Int) "
         "requires(true) ensures(true) effects(pure) { true }\n"
         "public fn main(@Unit -> @Int) "
-        "requires(true) ensures(true) effects(pure) { no_such_fn(1) }\n"
+        "requires(true) ensures(true) effects(pure) "
+        "{ match 3 { _ -> 1, 3 -> 2 } }\n"
     )
 
     def test_compile_type_warnings_shown_on_error_path_1004(
@@ -993,7 +1002,7 @@ class TestCmdCompile:
         """#1004 review: type_warnings print on the text type-error path.
 
         ``bad`` has a type error (E121, Bool body vs Int return); ``main`` has
-        an unresolved bare call (E200 warning).  The text error path prints the
+        an unreachable arm (E310, a warning).  The text error path prints the
         warning too, not just the error — the sibling of the codegen-error
         branch the #1004 fix corrected.  (The JSON envelope already carried it.)
         """
@@ -1002,7 +1011,7 @@ class TestCmdCompile:
         assert rc == 1
         err = capsys.readouterr().err
         assert "[E121]" in err  # the type error still shows
-        assert "[E200]" in err  # the type warning previously dropped in text mode
+        assert "[E310]" in err  # the type warning previously dropped in text mode
 
     # `main` uses `<Http>` (unsupported by wasi-p2), so `emit_wasi_component`
     # raises AFTER a successful compile; `unused` is dropped with an E602 skip
@@ -4547,7 +4556,19 @@ class TestNatIntWideningCliThreading820:
         # Nulling cmd_run's expr_target_types drops the element guard: this run
         # returns -1 with exit 0 instead of trapping.
         assert result.returncode != 0, result.stdout
-        assert "unreachable" in (result.stdout + result.stderr).lower()
+        # #1438 gave the widening guard its own `widen_guard` kind, signalled
+        # through `vera.trap` since #1479, so the CLI names the boundary that
+        # was crossed.
+        # Before that the guard trapped anonymously and this cell could only
+        # look for the word "unreachable" — which the run no longer prints at
+        # all, and which never distinguished the guard from a non-exhaustive
+        # match anyway.  Assert the guard's own message so a run that traps for
+        # some OTHER reason (and so would not prove the element guard is
+        # threaded) fails here.
+        combined = result.stdout + result.stderr
+        assert "@Nat value above i64.MAX widened into an @Int slot" in combined, (
+            combined
+        )
 
     def test_run_array_elem_widening_in_range_exact(self, tmp_path) -> None:
         # In-range control (42 -> exit 0, prints 42) so the trap test above
@@ -4565,9 +4586,15 @@ class TestNatIntWideningCliThreading820:
     # ---- cmd_compile: nulling its expr_target_types drops the WAT guard ----
 
     def test_compile_wat_array_elem_emits_widen_guard(self, tmp_path) -> None:
-        # The widen guard is a negative-i64 sign-bit check (`i64.lt_s` feeding a
-        # trapping `unreachable`); it appears in the emitted `$ae` function only
-        # when cmd_compile threads expr_target_types.
+        # The widen guard is a negative-i64 sign-bit check (`i64.lt_s`) whose
+        # taken branch signals `widen_guard` through `vera.trap` and then falls
+        # into a trapping `unreachable`; it appears in the emitted `$ae`
+        # function only when cmd_compile threads expr_target_types.  The
+        # signal is #1438's addition (one import for every kind since #1479)
+        # — before it the branch was a bare `unreachable`, so the runtime
+        # could not tell this guard from any other.  Pin both halves:
+        # `i64.lt_s` alone would stay green if the signal were dropped, which
+        # is exactly how the dedicated `widen_guard` kind is lost.
         path = self._write(tmp_path, self._WIDEN)
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "compile", "--wat", path],
@@ -4577,11 +4604,15 @@ class TestNatIntWideningCliThreading820:
         assert result.returncode == 0, result.stderr
         body = self._wat_function(result.stdout, "ae")
         assert "i64.lt_s" in body, body
+        # The signal carrying THIS kind's code, not merely some `vera.trap`
+        # call — the overflow guard's signal would match a bare substring.
+        from vera.trap_registry import signal_call_pattern
+        assert signal_call_pattern("widen_guard").search(body), body
 
     def test_compile_wat_no_widening_control_lacks_guard(self, tmp_path) -> None:
         # Control: an @Int-source array carries no `i64.lt_s` sign-bit guard in
         # `$ae`, pinning the guard above to the widening rather than to array
-        # codegen in general (array bounds checks use i32 comparisons).
+        # codegen in general (an array bounds check compares `i64.ge_u`).
         path = self._write(tmp_path, self._CONTROL)
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "compile", "--wat", path],

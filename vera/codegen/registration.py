@@ -7,7 +7,8 @@ aliases so forward references resolve during compilation.
 from __future__ import annotations
 
 from vera import ast
-from vera.codegen.memory import ConstructorLayout, _align_up, _wasm_type_align, _wasm_type_size
+from vera.codegen.memory import ConstructorLayout, _align_up, _wasm_type_align
+from vera.wasm.helpers import field_layout
 from vera.wasm.inference import substitute_type_vars
 
 
@@ -15,13 +16,32 @@ class RegistrationMixin:
     """Methods for Pass 1 registration and ADT layout computation."""
 
     def _register_all(self, program: ast.Program) -> None:
-        """Register all function signatures, ADT layouts, and type aliases."""
+        """Register all function signatures, ADT layouts, and type aliases.
+
+        TYPES FIRST, then functions.  A function's WASM signature is derived
+        by asking the resolution spine what each parameter's type NAME means
+        (``_type_expr_to_wasm_type`` -> :func:`vera.naming.classify_named`),
+        and the spine reads ``_alias_env`` — so every declaration this
+        namespace makes has to be in that env before the first signature is
+        derived, or a function declared above a ``data`` or ``type`` it names
+        is measured against a namespace that does not contain it.  One
+        source-order walk over the TYPE declarations keeps the shared
+        declaration-index space (#1208) exactly as it was: only ``data`` and
+        ``type`` are stamped, and their relative order is unchanged by
+        skipping the functions between them.
+
+        Pre-split, the walk registered in one pass and synced at the end, so
+        Pass 1 ran entirely against the PREVIOUS env and leaned on the
+        Pass-1.9 re-registration to repair whatever came out
+        ``"unsupported"``.  That repair is still there — it also covers the
+        prelude's ADTs, which register later still — but it is now a backstop
+        rather than the mechanism.
+        """
         self._register_builtin_adts()
+        self._sync_alias_env()
         for tld in program.declarations:
             decl = tld.decl
-            if isinstance(decl, ast.FnDecl):
-                self._register_fn(decl)
-            elif isinstance(decl, ast.DataDecl):
+            if isinstance(decl, ast.DataDecl):
                 self._register_data(decl)
             elif isinstance(decl, ast.TypeAliasDecl):
                 # #1208: aliases and ADTs share ONE index space, so the stamp
@@ -31,8 +51,39 @@ class RegistrationMixin:
                 self._type_aliases[decl.name] = decl.type_expr
                 if decl.type_params:
                     self._type_alias_params[decl.name] = decl.type_params
-        # #1208: the naming env describes the maps just populated.
-        self._sync_alias_env()
+            else:
+                continue
+            # #1208: the naming env describes the maps, so it is re-derived
+            # as each TYPE declaration lands — not once at the end.  A
+            # constructor field naming an earlier `type` or `data` is
+            # measured through this env (`_resolve_field_wasm_type` ->
+            # `_type_expr_to_wasm_type` -> `classify_named`), so a
+            # once-at-the-end sync would measure `data PA { MkPA(U, BB) }`
+            # under `type U = Unit;` against an env that held neither, and
+            # the erased field would take a 4-byte i32 slot construction
+            # never writes (#1043's differential).
+            self._sync_alias_env()
+        # #1316: this namespace's own `data` names join `_namespace_declared
+        # _adts`, which is what `_adt_members_in_scope` subtracts from the
+        # registered layouts to recover global infrastructure.  A UNION, not
+        # an assignment: `_build_adt_membership` (Pass 0.5) has already put
+        # every module's there and states the same thing about the entry
+        # program, and it returns early for a single-file program — where
+        # nothing else records the entry's declarations at all, and the
+        # PRELUDE's membership would then take `data Array { … }` for
+        # infrastructure and read its own `Array<T>` parameters as a one-word
+        # ADT pointer.
+        self._namespace_declared_adts |= frozenset(
+            tld.decl.name for tld in program.declarations
+            if isinstance(tld.decl, ast.DataDecl)
+        )
+        # #754: after the aliases, so a `type Count = Nat;` effect formal
+        # resolves; before the functions, which is where op call sites are
+        # lowered from.
+        self._register_effect_op_params(program)
+        for tld in program.declarations:
+            if isinstance(tld.decl, ast.FnDecl):
+                self._register_fn(tld.decl)
 
     def _register_fn(self, decl: ast.FnDecl) -> None:
         """Register a function's WASM signature."""
@@ -245,9 +296,29 @@ class RegistrationMixin:
         # for concrete (non-type-variable) fields.  This lets the monomorphizer
         # and WASM type inference correctly bind Err(e) to E (index 1 in
         # Result<T, E>), not to T (index 0) as naïve positional zipping would do.
+        # ctor-owner-exempt: registers the built-in layouts; no user owner
+        # exists yet
+        self._adt_ctor_tp_indices.setdefault("Option", {})["None"] = ()
+        # ctor-owner-exempt: the flat mirror of the built-in tp-indices; the
+        # per-owner map is written beside it (#1436)
         self._ctor_adt_tp_indices["None"] = ()         # Option<T>: no fields
+        # ctor-owner-exempt: registers the built-in layouts; no user owner
+        # exists yet
+        self._adt_ctor_tp_indices.setdefault("Option", {})["Some"] = (0,)
+        # ctor-owner-exempt: the flat mirror of the built-in tp-indices; the
+        # per-owner map is written beside it (#1436)
         self._ctor_adt_tp_indices["Some"] = (0,)       # field 0 → T (index 0)
+        # ctor-owner-exempt: registers the built-in layouts; no user owner
+        # exists yet
+        self._adt_ctor_tp_indices.setdefault("Result", {})["Ok"] = (0,)
+        # ctor-owner-exempt: the flat mirror of the built-in tp-indices; the
+        # per-owner map is written beside it (#1436)
         self._ctor_adt_tp_indices["Ok"] = (0,)         # field 0 → T (index 0)
+        # ctor-owner-exempt: registers the built-in layouts; no user owner
+        # exists yet
+        self._adt_ctor_tp_indices.setdefault("Result", {})["Err"] = (1,)
+        # ctor-owner-exempt: the flat mirror of the built-in tp-indices; the
+        # per-owner map is written beside it (#1436)
         self._ctor_adt_tp_indices["Err"] = (1,)        # field 0 → E (index 1)
         self._adt_tp_counts["Option"] = 1
         self._adt_tp_counts["Result"] = 2
@@ -292,8 +363,19 @@ class RegistrationMixin:
                         indices.append(tp_index[field_te.name])
                     else:
                         indices.append(None)
+                # #1436: recorded per OWNING ADT as well as flat, so the
+                # namespace-scoped projection can rebuild the by-name table
+                # for the namespace compiling instead of inheriting whichever
+                # declaration registered last.
+                self._adt_ctor_tp_indices.setdefault(
+                    decl.name, {})[ctor.name] = tuple(indices)
+                # ctor-owner-exempt: the flat mirror, rebuilt per namespace by
+                # `_namespace_ctor_projection`
                 self._ctor_adt_tp_indices[ctor.name] = tuple(indices)
             else:
+                self._adt_ctor_tp_indices.setdefault(
+                    decl.name, {})[ctor.name] = ()
+                # ctor-owner-exempt: the flat mirror, as above
                 self._ctor_adt_tp_indices[ctor.name] = ()
 
     def _compute_constructor_layout(
@@ -312,14 +394,19 @@ class RegistrationMixin:
         nat_fields: list[bool] = []
         int_fields: list[bool] = []
         field_types: list[str] = []
+        field_type_exprs: list[object | None] = []
 
         if ctor.fields is not None:
             for field_te in ctor.fields:
                 wt = self._resolve_field_wasm_type(field_te, decl)
-                align = _wasm_type_align(wt)
-                offset = _align_up(offset, align)
-                field_offsets.append((offset, wt))
-                offset += _wasm_type_size(wt)
+                # Through the ONE layout rule, so the registered offsets and
+                # the ones construction emits cannot be computed differently
+                # (#1466).  `_wasm_type_align` below still guards the width
+                # question itself: an unknown type raises there rather than
+                # being laid out at a guessed width.
+                _wasm_type_align(wt)
+                field_off, offset = field_layout(offset, wt)
+                field_offsets.append((field_off, wt))
                 # #747: a concrete @Nat field receives the runtime
                 # narrowing guard at construction.  A generic field
                 # (type param) instantiated to @Nat is erased to i64
@@ -332,6 +419,11 @@ class RegistrationMixin:
                 # structural Eq derivation (type params stay bare, e.g. "T";
                 # aliases and refinements resolve to their ground type).
                 field_types.append(self._field_vera_type_name(field_te, decl))
+                # #1426: and the declared expression itself, for the §2.6.5
+                # predicate guard at construction — the derived name above
+                # resolves a refinement to its base by design, so it cannot
+                # serve.
+                field_type_exprs.append(field_te)
 
         total_size = _align_up(offset, 8) if offset > 0 else 8
         return ConstructorLayout(
@@ -340,6 +432,7 @@ class RegistrationMixin:
             total_size=total_size,
             nat_fields=tuple(nat_fields),
             int_fields=tuple(int_fields),
+            field_type_exprs=tuple(field_type_exprs),
             field_types=tuple(field_types),
         )
 
@@ -437,6 +530,70 @@ class RegistrationMixin:
         argument widens it, and a @Nat value above i64.MAX reinterprets to a
         negative @Int, so the call site needs the runtime widening guard."""
         return self._type_resolves_to_base(te, "Int")
+
+    def _register_effect_op_params(self, program: ast.Program) -> None:
+        """Per-formal base type NAME for every effect operation (#754).
+
+        A call site guards its arguments from the callee's formals — the
+        `_fn_nat_params` / `_fn_int_params` bitmaps for a function, the cell
+        for a `State` write or an `Exn` payload.  An effect OPERATION had
+        neither: `_effect_ops` carries a dispatch target and nothing about
+        types, so `IO.sleep(@Int.0)` — whose declared formal is `@Nat` —
+        passed a negative straight to the host on a program `vera verify`
+        obligated (E503 on a refutable argument, E504 when opaque).
+
+        Both sources are the ones the CHECKER used, so a formal cannot be
+        obligated without being visible here: :class:`~vera.environment.TypeEnv`
+        for the built-in effects and abilities, and the program's own
+        ``effect`` / ``ability`` declarations for the rest.  Keyed on
+        ``(effect_name, op_name)`` rather than on the op name alone: two
+        effects may declare the same op name (``State.get`` and ``Http.get``
+        do), and a name-keyed table would guard one call site from the
+        other's formals.
+
+        A formal whose base is not a primitive — a type parameter, an ADT, a
+        pair type — records ``None``, which every consumer reads as "no
+        guard from this table".  ``State``'s ``put(T -> Unit)`` is exactly
+        that shape: its formal is the CELL's instantiation, which is a
+        property of the handler rather than of the declaration, and the
+        `_effect_op_cells` registry already answers it.
+        """
+        from vera.environment import TypeEnv
+
+        def _base_of(ty: object) -> str | None:
+            """The base primitive's name, through a refinement."""
+            base = getattr(ty, "base", ty)
+            name = getattr(base, "name", None)
+            return name if isinstance(name, str) else None
+
+        env = TypeEnv()
+        for eff_name, info in env.effects.items():
+            for op_name, op in info.operations.items():
+                self._effect_op_params[(eff_name, op_name)] = tuple(
+                    _base_of(t) for t in (getattr(op, "param_types", ()) or ())
+                )
+        for tld in program.declarations:
+            decl = tld.decl
+            if not isinstance(decl, (ast.EffectDecl, ast.AbilityDecl)):
+                continue
+            for op_decl in decl.operations:
+                self._effect_op_params[(decl.name, op_decl.name)] = tuple(
+                    self._formal_base_name(pt) for pt in op_decl.param_types
+                )
+
+    def _formal_base_name(self, te: ast.TypeExpr) -> str | None:
+        """``"Nat"`` / ``"Int"`` / ``"Byte"`` when *te* resolves to one of the
+        guardable primitive bases, else ``None`` (#754).
+
+        Layered on ``_type_resolves_to_base`` — the same alias / refinement
+        walk the function-formal bitmaps use — rather than on a fresh one, so
+        an aliased or refined effect formal is guarded exactly where an
+        aliased or refined function formal is.
+        """
+        for name in ("Nat", "Int", "Byte"):
+            if self._type_resolves_to_base(te, name):
+                return name
+        return None
 
     def _type_resolves_to_base(
         self, te: ast.TypeExpr, base_name: str,

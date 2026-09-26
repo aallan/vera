@@ -12,13 +12,7 @@ from vera.monomorphize import Monomorphizer
 from vera.skip import CodegenSkip
 from vera.wasm.helpers import (
     WasmSlotEnv,
-    _element_load_op,
-    _element_mem_size,
-    _element_store_op,
-    _element_wasm_type,
     _is_host_handle_type,
-    _is_pair_element_type,
-    _strip_future,
     gc_shadow_push,
 )
 
@@ -84,13 +78,13 @@ class CallsArraysMixin:
             raise CodegenSkip(
                 arr_arg, f"could not infer {role} element type"
             )
-        size = _element_mem_size(t)
+        size = self._element_mem_size(t)
         if size is None:  # pragma: no cover — defensive: helper falls back to 4 for any non-primitive non-pair type
             raise CodegenSkip(
                 arr_arg,
                 f"unsupported {role} element type for memory layout",
             )
-        wt = _element_wasm_type(t)
+        wt = self._element_wasm_type(t)
         if wt is None:  # pragma: no cover — defensive: helper falls back to "i32" for any non-primitive non-pair type
             raise CodegenSkip(
                 arr_arg, f"no WASM type for {role} element"
@@ -154,15 +148,15 @@ class CallsArraysMixin:
         # or non-alias name passes through unchanged.
         elem_type, _ = self._canonicalize_alias_slot_name(elem_type)
         elem_type = self._resolve_base_type_name(elem_type)
-        elem_size = _element_mem_size(elem_type)
+        elem_size = self._element_mem_size(elem_type)
         if elem_size is None:  # pragma: no cover — defensive: _element_mem_size never returns None (falls back to 4)
             raise CodegenSkip(
                 elem_arg,
                 "unsupported array_append element type for memory layout",
             )
 
-        is_pair = _is_pair_element_type(elem_type)
-        store_op = _element_store_op(elem_type)
+        is_pair = self._is_pair_element_type(elem_type)
+        store_op = self._element_store_op(elem_type)
         if store_op is None and not is_pair:
             raise CodegenSkip(
                 elem_arg, "no store op for array_append element type"
@@ -185,7 +179,7 @@ class CallsArraysMixin:
             # too a `Future<Int>` payload (i64) is `local.set` into an i32
             # local — a "expected i32, found i64" validation trap on a
             # check+verify-green `array_append` (#1057).
-            bare_elem = _strip_future(elem_type)
+            bare_elem = self._strip_future_scoped(elem_type)
             elem_val = self.alloc_local(
                 "i64" if bare_elem in ("Int", "Nat") else
                 "f64" if bare_elem == "Float64" else "i32"
@@ -402,7 +396,7 @@ class CallsArraysMixin:
             # Both empty literals — no bytes to copy, use any size
             elem_size = 8
         else:
-            size = _element_mem_size(elem_type)
+            size = self._element_mem_size(elem_type)
             if size is None:  # pragma: no cover — defensive: _element_mem_size never returns None (falls back to 4)
                 raise CodegenSkip(
                     arr_a_arg,
@@ -558,7 +552,7 @@ class CallsArraysMixin:
                     "elements are recoverable from the expression)",
                 )
         else:
-            size = _element_mem_size(elem_type)
+            size = self._element_mem_size(elem_type)
             if size is None:  # pragma: no cover — defensive: _element_mem_size never returns None (falls back to 4)
                 raise CodegenSkip(
                     arr_arg,
@@ -767,21 +761,21 @@ class CallsArraysMixin:
         a_type, a_size, a_wasm = self._array_elem_triad_or_skip(
             arr_arg, role="array_map input"
         )
-        a_is_pair = _is_pair_element_type(a_type)
+        a_is_pair = self._is_pair_element_type(a_type)
 
         b_type = self._infer_closure_return_vera_type(fn_arg)
         if b_type is None:
             raise CodegenSkip(
                 fn_arg, "could not infer array_map closure return type"
             )
-        b_size = _element_mem_size(b_type)
+        b_size = self._element_mem_size(b_type)
         if b_size is None:  # pragma: no cover — defensive: _element_mem_size never returns None (falls back to 4)
             raise CodegenSkip(
                 fn_arg,
                 "unsupported array_map output element type for memory layout",
             )
-        b_is_pair = _is_pair_element_type(b_type)
-        b_wasm = _element_wasm_type(b_type)
+        b_is_pair = self._is_pair_element_type(b_type)
+        b_wasm = self._element_wasm_type(b_type)
         if b_wasm is None:  # pragma: no cover — defensive: _element_wasm_type never returns None (falls back to 'i32')
             raise CodegenSkip(
                 fn_arg, "no WASM type for array_map output element"
@@ -886,7 +880,7 @@ class CallsArraysMixin:
             instructions.append(f"    local.get {src_slot}")
             instructions.append("    i32.load offset=4")
         else:
-            a_load = _element_load_op(a_type)
+            a_load = self._element_load_op(a_type)
             if a_load is None:  # pragma: no cover — defensive: helper returns None only for pair types, and this branch is the non-pair else
                 raise CodegenSkip(
                     arr_arg, "no load op for array_map input element"
@@ -917,7 +911,7 @@ class CallsArraysMixin:
             instructions.append(f"    local.get {ret_len}")
             instructions.append("    i32.store offset=4")
         else:
-            b_store = _element_store_op(b_type)
+            b_store = self._element_store_op(b_type)
             if b_store is None:  # pragma: no cover — defensive: helper returns None only for pair types, and this branch is the non-pair else
                 raise CodegenSkip(
                     fn_arg, "no store op for array_map output element"
@@ -997,7 +991,7 @@ class CallsArraysMixin:
         t_type, t_size, t_wasm = self._array_elem_triad_or_skip(
             arr_arg, role="array_filter"
         )
-        t_is_pair = _is_pair_element_type(t_type)
+        t_is_pair = self._is_pair_element_type(t_type)
 
         self.needs_alloc = True
 
@@ -1080,7 +1074,7 @@ class CallsArraysMixin:
             instructions.append("    i32.load offset=4")
             instructions.append(f"    local.set {src_len}")
         else:
-            t_load = _element_load_op(t_type)
+            t_load = self._element_load_op(t_type)
             if t_load is None:  # pragma: no cover — defensive: helper returns None only for pair types, and this branch is the non-pair else
                 raise CodegenSkip(arr_arg, "no load op for array_filter element")
             instructions.append(f"    local.get {src_slot}")
@@ -1116,7 +1110,7 @@ class CallsArraysMixin:
             instructions.append(f"      local.get {src_len}")
             instructions.append("      i32.store offset=4")
         else:
-            t_store = _element_store_op(t_type)
+            t_store = self._element_store_op(t_type)
             if t_store is None:  # pragma: no cover — defensive: helper returns None only for pair types, and this branch is the non-pair else
                 raise CodegenSkip(arr_arg, "no store op for array_filter element")
             instructions.append(f"      local.get {dst_slot}")
@@ -1238,15 +1232,15 @@ class CallsArraysMixin:
         t_type, t_size, t_wasm = self._array_elem_triad_or_skip(
             arr_arg, role="array_fold input"
         )
-        t_is_pair = _is_pair_element_type(t_type)
+        t_is_pair = self._is_pair_element_type(t_type)
 
         u_type = self._infer_fold_init_vera_type(init_arg, fn_arg)
         if u_type is None:
             raise CodegenSkip(
                 init_arg, "could not infer array_fold accumulator type"
             )
-        u_is_pair = _is_pair_element_type(u_type)
-        u_wasm = _element_wasm_type(u_type)
+        u_is_pair = self._is_pair_element_type(u_type)
+        u_wasm = self._element_wasm_type(u_type)
         if u_wasm is None:  # pragma: no cover — defensive: _element_wasm_type never returns None (falls back to 'i32')
             raise CodegenSkip(
                 init_arg, "no WASM type for array_fold accumulator"
@@ -1276,6 +1270,23 @@ class CallsArraysMixin:
         fn_tmp = self.alloc_local("i32")
         idx = self.alloc_local("i32")
         src_slot = self.alloc_local("i32")
+        # The ADDRESS of the accumulator's shadow slot, captured at push time
+        # (PR #1384 review).  The per-iteration write-back used to compute it
+        # as `$gc_sp - 8` — "arr_ptr, acc, fn_tmp, so the accumulator is two
+        # slots down".  That arithmetic reads the LAYOUT off a count of the
+        # pushes this method makes, and the callback expression between them
+        # makes pushes of its own: an anonymous-function `fn` argument lowers
+        # to a closure allocation whose result is re-rooted, so the real
+        # layout is `arr_ptr, acc, <closure re-root>, fn_tmp` and `- 8`
+        # addresses the closure's slot.  It is sound only by accident (the
+        # closure handle is also held by `fn_tmp`'s root), and stops being so
+        # the moment the callback lowering pushes a different number of roots.
+        # The address does not have to be inferred — it is known exactly at
+        # the moment of the push — so capture it there and store through it.
+        # Only where a root exists to address: a scalar accumulator is not
+        # rooted, so allocating this unconditionally emitted a local nothing
+        # touches and made two corpus programs pure WAT churn (PR review).
+        acc_root_addr = self.alloc_local("i32") if u_needs_root else -1
         if u_is_pair:
             acc_ptr = self.alloc_local("i32")
             acc_len = self.alloc_local("i32")
@@ -1288,18 +1299,29 @@ class CallsArraysMixin:
         instructions.extend(arr_instrs)
         instructions.append(f"local.set {arr_len}")
         instructions.append(f"local.set {arr_ptr}")
+        # `needs_alloc` beside the push (#1376/#1379): the flag is what
+        # declares `$gc_sp`, so a push without it emits a reference to
+        # an undeclared global whenever nothing else in the module
+        # allocates — and `_scope_shadow_roots` refuses it outright.
+        self.needs_alloc = True
         instructions.extend(gc_shadow_push(arr_ptr))
 
         # 2. Evaluate init → U, save.  For pair U, stack order is
         # (ptr, len) from most recent push; pop len then ptr.
         instructions.extend(init_instrs)
+        # `gc_shadow_push` stores at `$gc_sp` and THEN advances it, so the
+        # slot's address is the pre-push `$gc_sp`.  Read once, here.
         if u_is_pair:
             instructions.append(f"local.set {acc_len}")
             instructions.append(f"local.set {acc_ptr}")
+            instructions.append("global.get $gc_sp")
+            instructions.append(f"local.set {acc_root_addr}")
             instructions.extend(gc_shadow_push(acc_ptr))
         else:
             instructions.append(f"local.set {acc}")
             if u_needs_root:
+                instructions.append("global.get $gc_sp")
+                instructions.append(f"local.set {acc_root_addr}")
                 instructions.extend(gc_shadow_push(acc))
 
         # 3. Evaluate fn → handle, save, shadow-push.
@@ -1354,7 +1376,7 @@ class CallsArraysMixin:
             instructions.append(f"    local.get {src_slot}")
             instructions.append("    i32.load offset=4")
         else:
-            t_load = _element_load_op(t_type)
+            t_load = self._element_load_op(t_type)
             if t_load is None:  # pragma: no cover — defensive: helper returns None only for pair types, and this branch is the non-pair else
                 raise CodegenSkip(arr_arg, "no load op for array_fold element")
             instructions.append(f"    local.get {src_slot}")
@@ -1391,19 +1413,15 @@ class CallsArraysMixin:
             instructions.append("    global.set $gc_sp")
 
         if u_is_pair:
-            # Overwrite shadow-stack root with the new acc_ptr.
-            # The slot was pushed second-to-last (after arr_ptr and
-            # before fn_tmp), so its address is gc_sp - 8.
-            instructions.append("    global.get $gc_sp")
-            instructions.append("    i32.const 8")
-            instructions.append("    i32.sub")
+            # Overwrite the accumulator's shadow root with the new acc_ptr,
+            # through the address captured at push time — not through a
+            # count of the pushes between here and there.
+            instructions.append(f"    local.get {acc_root_addr}")
             instructions.append(f"    local.get {acc_ptr}")
             instructions.append("    i32.store")
         elif u_needs_root:
-            # ADT handle acc: slot is at gc_sp - 8 (same layout).
-            instructions.append("    global.get $gc_sp")
-            instructions.append("    i32.const 8")
-            instructions.append("    i32.sub")
+            # ADT handle acc: same slot, same captured address.
+            instructions.append(f"    local.get {acc_root_addr}")
             instructions.append(f"    local.get {acc}")
             instructions.append("    i32.store")
 
@@ -1456,7 +1474,7 @@ class CallsArraysMixin:
         t_type, t_size, t_wasm = self._array_elem_triad_or_skip(
             arr_arg, role="array_reverse"
         )
-        t_is_pair = _is_pair_element_type(t_type)
+        t_is_pair = self._is_pair_element_type(t_type)
 
         self.needs_alloc = True
 
@@ -1522,8 +1540,8 @@ class CallsArraysMixin:
             ins.append("    i32.load offset=4")
             ins.append("    i32.store offset=4")
         else:
-            t_load = _element_load_op(t_type)
-            t_store = _element_store_op(t_type)
+            t_load = self._element_load_op(t_type)
+            t_store = self._element_store_op(t_type)
             if t_load is None or t_store is None:  # pragma: no cover — defensive: helpers return None only for pair types, guarded above
                 raise CodegenSkip(arr_arg, "no load/store op for array_reverse element")
             ins.append(f"    local.get {dst_slot}")
@@ -1565,21 +1583,21 @@ class CallsArraysMixin:
         a_type, a_size, a_wasm = self._array_elem_triad_or_skip(
             arr_arg, role="array_mapi input"
         )
-        a_is_pair = _is_pair_element_type(a_type)
+        a_is_pair = self._is_pair_element_type(a_type)
 
         b_type = self._infer_closure_return_vera_type(fn_arg)
         if b_type is None:
             raise CodegenSkip(
                 fn_arg, "could not infer array_mapi closure return type"
             )
-        b_size = _element_mem_size(b_type)
+        b_size = self._element_mem_size(b_type)
         if b_size is None:  # pragma: no cover — defensive: _element_mem_size never returns None (falls back to 4)
             raise CodegenSkip(
                 fn_arg,
                 "unsupported array_mapi output element type for memory layout",
             )
-        b_is_pair = _is_pair_element_type(b_type)
-        b_wasm = _element_wasm_type(b_type)
+        b_is_pair = self._is_pair_element_type(b_type)
+        b_wasm = self._element_wasm_type(b_type)
         if b_wasm is None:  # pragma: no cover — defensive: _element_wasm_type never returns None (falls back to 'i32')
             raise CodegenSkip(
                 fn_arg, "no WASM type for array_mapi output element"
@@ -1671,7 +1689,7 @@ class CallsArraysMixin:
             ins.append(f"    local.get {src_slot}")
             ins.append("    i32.load offset=4")
         else:
-            a_load = _element_load_op(a_type)
+            a_load = self._element_load_op(a_type)
             if a_load is None:  # pragma: no cover — defensive: helper returns None only for pair types, and this branch is the non-pair else
                 raise CodegenSkip(arr_arg, "no load op for array_mapi element")
             ins.append(f"    local.get {src_slot}")
@@ -1702,7 +1720,7 @@ class CallsArraysMixin:
             ins.append(f"    local.get {ret_len}")
             ins.append("    i32.store offset=4")
         else:
-            b_store = _element_store_op(b_type)
+            b_store = self._element_store_op(b_type)
             if b_store is None:  # pragma: no cover — defensive: helper returns None only for pair types, and this branch is the non-pair else
                 raise CodegenSkip(arr_arg, "no store op for array_mapi element")
             ins.append(f"    local.get {dst_slot}")
@@ -1782,7 +1800,7 @@ class CallsArraysMixin:
         t_type, t_size, t_wasm = self._array_elem_triad_or_skip(
             arr_arg, role=name
         )
-        t_is_pair = _is_pair_element_type(t_type)
+        t_is_pair = self._is_pair_element_type(t_type)
 
         arr_ptr = self.alloc_local("i32")
         arr_len = self.alloc_local("i32")
@@ -1795,6 +1813,11 @@ class CallsArraysMixin:
         ins.extend(arr_instrs)
         ins.append(f"local.set {arr_len}")
         ins.append(f"local.set {arr_ptr}")
+        # `needs_alloc` beside the push (#1376/#1379): the flag is what
+        # declares `$gc_sp`, so a push without it emits a reference to
+        # an undeclared global whenever nothing else in the module
+        # allocates — and `_scope_shadow_roots` refuses it outright.
+        self.needs_alloc = True
         ins.extend(gc_shadow_push(arr_ptr))
 
         ins.extend(fn_instrs)
@@ -1843,7 +1866,7 @@ class CallsArraysMixin:
             ins.append(f"    local.get {src_slot}")
             ins.append("    i32.load offset=4")
         else:
-            t_load = _element_load_op(t_type)
+            t_load = self._element_load_op(t_type)
             if t_load is None:  # pragma: no cover — defensive: helper returns None only for pair types, and this branch is the non-pair else
                 raise CodegenSkip(arr_arg, f"no load op for {name} element")
             ins.append(f"    local.get {src_slot}")
@@ -1906,7 +1929,7 @@ class CallsArraysMixin:
         t_type, t_size, t_wasm = self._array_elem_triad_or_skip(
             arr_arg, role="array_find"
         )
-        t_is_pair = _is_pair_element_type(t_type)
+        t_is_pair = self._is_pair_element_type(t_type)
 
         self.needs_alloc = True
 
@@ -1971,7 +1994,7 @@ class CallsArraysMixin:
             ins.append(f"    local.get {src_slot}")
             ins.append("    i32.load offset=4")
         else:
-            t_load = _element_load_op(t_type)
+            t_load = self._element_load_op(t_type)
             if t_load is None:  # pragma: no cover — defensive: helper returns None only for pair types, and this branch is the non-pair else
                 raise CodegenSkip(arr_arg, "no load op for array_find element")
             ins.append(f"    local.get {src_slot}")
@@ -1995,8 +2018,8 @@ class CallsArraysMixin:
             ins.append("      i32.load offset=4")
             ins.append("      i32.store offset=12")
         else:
-            t_load2 = _element_load_op(t_type)
-            t_store = _element_store_op(t_type)
+            t_load2 = self._element_load_op(t_type)
+            t_store = self._element_store_op(t_type)
             if t_load2 is None or t_store is None:  # pragma: no cover — defensive: helpers return None only for pair types, guarded above
                 raise CodegenSkip(arr_arg, "no load/store op for array_find element")
             ins.append(f"      local.get {out}")
@@ -2144,13 +2167,13 @@ class CallsArraysMixin:
         # opaque-pointer stride and the second pass reads past the
         # destination allocation.
         t_type = self._canonicalize_alias_slot_name(t_type)[0]
-        t_size = _element_mem_size(t_type)
+        t_size = self._element_mem_size(t_type)
         if t_size is None:  # pragma: no cover — defensive: _element_mem_size never returns None (falls back to 4)
             raise CodegenSkip(
                 arr_arg,
                 "unsupported array_flatten element type for memory layout",
             )
-        t_is_pair = _is_pair_element_type(t_type)
+        t_is_pair = self._is_pair_element_type(t_type)
 
         self.needs_alloc = True
 
@@ -2274,8 +2297,8 @@ class CallsArraysMixin:
             ins.append("        i32.load offset=4")
             ins.append("        i32.store offset=4")
         else:
-            t_load = _element_load_op(t_type)
-            t_store = _element_store_op(t_type)
+            t_load = self._element_load_op(t_type)
+            t_store = self._element_store_op(t_type)
             if t_load is None or t_store is None:  # pragma: no cover — defensive: helpers return None only for pair types, guarded above
                 raise CodegenSkip(arr_arg, "no load/store op for array_flatten element")
             ins.append(f"        local.get {dst_slot}")
@@ -2376,7 +2399,7 @@ class CallsArraysMixin:
         t_type, t_size, t_wasm = self._array_elem_triad_or_skip(
             arr_arg, role="array_sort_by"
         )
-        t_is_pair = _is_pair_element_type(t_type)
+        t_is_pair = self._is_pair_element_type(t_type)
 
         self.needs_alloc = True
 
@@ -2490,8 +2513,8 @@ class CallsArraysMixin:
             ins.append("    i32.load offset=4")
             ins.append("    i32.store offset=4")
         else:
-            t_load = _element_load_op(t_type)
-            t_store = _element_store_op(t_type)
+            t_load = self._element_load_op(t_type)
+            t_store = self._element_store_op(t_type)
             if t_load is None or t_store is None:  # pragma: no cover — defensive: helpers return None only for pair types, guarded above
                 raise CodegenSkip(arr_arg, "no load/store op for array_sort_by element")
             ins.append(f"    local.get {cur_slot}")
@@ -2517,8 +2540,8 @@ class CallsArraysMixin:
             self._closure_sigs[sig_key] = sig_name
         sig_name = self._closure_sigs[sig_key]
 
-        t_load2 = _element_load_op(t_type) if not t_is_pair else None
-        t_store2 = _element_store_op(t_type) if not t_is_pair else None
+        t_load2 = self._element_load_op(t_type) if not t_is_pair else None
+        t_store2 = self._element_store_op(t_type) if not t_is_pair else None
         if not t_is_pair and (t_load2 is None or t_store2 is None):
             raise CodegenSkip(
                 arr_arg,

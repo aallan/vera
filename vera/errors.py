@@ -7,6 +7,7 @@ See spec/00-introduction.md, Section 0.5 "Diagnostics as Instructions".
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Sequence
 from typing import Optional
 
 from vera.lexical import CommentProblemKind
@@ -173,6 +174,49 @@ class VerifyError(VeraError):
 # a Diagnostic with a tailored message and fix suggestion.
 
 
+_PARTIAL_DIAGNOSTICS_ATTR = "__vera_partial_diagnostics__"
+
+
+def attach_partial_diagnostics(
+    exc: BaseException, diagnostics: Sequence[Diagnostic],
+) -> None:
+    """Carry diagnostics already RECORDED when *exc* escaped a pass.
+
+    A compiler pass builds its diagnostic list incrementally and returns it at
+    the end, so an exception raised part-way through discards everything the
+    pass had already established about the program.  That is the wrong thing
+    to lose: those diagnostics are frequently the CAUSE.  A non-regular `data`
+    declaration is refused with E129 and then, in a build that still let the
+    walk run, sent the ability derivation into a ``RecursionError``; the
+    command boundary reported only "internal compiler error", and the one
+    diagnostic that told the user what to fix never reached them (#1429,
+    PR #1432 re-verification).
+
+    Attached to the EXCEPTION rather than kept in a module global so it is
+    scoped to the failing call and safe under concurrent checks.  Storing a
+    copy: the pass's own list may keep being mutated by an outer handler.
+    """
+    try:
+        setattr(exc, _PARTIAL_DIAGNOSTICS_ATTR, list(diagnostics))
+    except AttributeError:  # pragma: no cover — exotic exception types
+        # Some built-in exceptions forbid attribute assignment.  Losing the
+        # partial list is strictly better than replacing the original
+        # exception with an error about carrying it.
+        pass
+
+
+def partial_diagnostics(exc: BaseException) -> list[Diagnostic]:
+    """The diagnostics :func:`attach_partial_diagnostics` carried, if any.
+
+    Returns ``[]`` for an exception that never passed through a recording
+    pass, so the caller needs no attribute test of its own.
+    """
+    found = getattr(exc, _PARTIAL_DIAGNOSTICS_ATTR, None)
+    if not isinstance(found, list):
+        return []
+    return [d for d in found if isinstance(d, Diagnostic)]
+
+
 def _get_source_line(source: str, line: int) -> str:
     """Extract a specific line from source text."""
     lines = source.splitlines()
@@ -210,6 +254,90 @@ def missing_contract_block(
         spec_ref='Chapter 5, Section 5.2 "Function Declaration Syntax"',
         error_code="E001",
     )
+
+
+# The illustrative E001 example shown in every doc mirror (README.md,
+# docs/index.html, docs/index.md, spec/00-introduction.md) and used by
+# tests/test_errors.py's TestErrorDisplaySync drift guard.  One example,
+# one place: "which sample program illustrates E001" cannot fork across
+# the docs because every mirror calls `render_e001_doc_example()` (or,
+# for docs/index.html, `render_e001_doc_example_html()`) rather than
+# hand-copying a rendering of it (#954).
+E001_EXAMPLE_FILE = "main.vera"
+E001_EXAMPLE_SOURCE = "private fn add(@Int, @Int -> @Int)\n{"
+E001_EXAMPLE_LINE = 2
+E001_EXAMPLE_COLUMN = 1
+
+
+def e001_doc_example() -> Diagnostic:
+    """The canonical E001 :class:`Diagnostic` every doc mirror renders."""
+    return missing_contract_block(
+        E001_EXAMPLE_FILE, E001_EXAMPLE_SOURCE, E001_EXAMPLE_LINE, E001_EXAMPLE_COLUMN
+    )
+
+
+def render_e001_doc_example() -> str:
+    """Plain-text rendering of the canonical E001 example, byte-identical
+    to what ``vera check`` prints for it (modulo trailing whitespace on
+    otherwise-blank lines, stripped for the same reason a markdown
+    fenced block shouldn't carry invisible trailing spaces).  Embedded
+    verbatim in README.md, spec/00-introduction.md, and (via
+    ``scripts/build_site.py``) docs/index.md."""
+    text = e001_doc_example().format()
+    return "\n".join(line.rstrip() for line in text.splitlines())
+
+
+def render_e001_doc_example_html() -> str:
+    """HTML rendering of the canonical E001 example for docs/index.html's
+    ``<pre>`` sample block, wrapping each semantic piece of
+    :meth:`Diagnostic.format` in the same ``err-*`` span classes the
+    page's stylesheet already targets — the HTML mirror of
+    :func:`render_e001_doc_example`, built from the same
+    :class:`Diagnostic` rather than a hand-copied re-rendering of it.
+
+    Mirrors :meth:`Diagnostic.format`'s own per-section indentation
+    (a 2-space indent for the message, 4-space for the fix body) with
+    one cosmetic difference: each span's OPENING line has its native
+    indent moved to before the ``<span>`` tag rather than inside it —
+    matching how the hand-written original was authored, with no
+    rendered difference either way.
+    """
+    diag = e001_doc_example()
+    parts: list[str] = [
+        f'<span class="err-head">[{diag.error_code}] '
+        f"Error at {diag.location}:</span>"
+    ]
+    if diag.source_line:
+        stripped = diag.source_line.rstrip()
+        parts.append("")
+        parts.append(f'    <span class="err-code">{stripped}</span>')
+        if diag.location.column > 0:
+            pointer_indent = " " * (diag.location.column - 1 + 4)
+            parts.append(f'{pointer_indent}<span class="err-caret">^</span>')
+
+    msg_lines: list[str] = list(diag.description.splitlines())
+    if diag.rationale:
+        msg_lines.append("")
+        msg_lines.extend(diag.rationale.splitlines())
+    if msg_lines:
+        parts.append("")
+        first, *rest = msg_lines
+        indented_rest = [f"  {line}" if line else "" for line in rest]
+        content = "\n".join([first, *indented_rest])
+        parts.append(f'  <span class="err-msg">{content}</span>')
+
+    if diag.fix:
+        parts.append("")
+        fix_lines = ["Fix:", ""] + [
+            f"    {line}" if line else "" for line in diag.fix.splitlines()
+        ]
+        parts.append(f'  <span class="err-fix">{chr(10).join(fix_lines)}</span>')
+
+    if diag.spec_ref:
+        parts.append("")
+        parts.append(f'  <span class="err-ref">See: {diag.spec_ref}</span>')
+
+    return "\n".join(parts)
 
 
 def missing_effect_clause(
@@ -322,6 +450,107 @@ def module_call_dot_syntax(
     )
 
 
+
+# The contract clauses spec §5.2 orders before `effects` (#1348).
+# `invariant` is NOT among them: the grammar attaches it to `data`
+# declarations alone (`data_decl`), so an `invariant` in a function is not
+# a misplaced clause but a clause that has no place there — it keeps the
+# generic fallback rather than being told to move somewhere it cannot go.
+_CONTRACT_CLAUSE_KEYWORDS = frozenset({"requires", "ensures", "decreases"})
+
+
+def contract_clause_after_effects(
+    file: Optional[str],
+    source: str,
+    line: int,
+    column: int,
+    keyword: str,
+) -> Diagnostic:
+    """A contract clause written after the effect clause (#1348).
+
+    The grammar fixes the order — `contract_block` then `effect_clause`
+    (spec §10) — so this program is correctly rejected; what was wrong
+    was the diagnostic.  It fell to the `unexpected_token` fallback,
+    which offered "replace the unexpected token with one of the expected
+    tokens, or check for a missing delimiter": inapplicable advice, since
+    replacing `decreases` with `,` is not a repair and no delimiter is
+    missing.  The repair is a move, and it is stated here.
+    """
+    return Diagnostic(
+        description=(
+            f"Contract clause '{keyword}' appears after the 'effects' "
+            f"clause. Every contract clause comes first, then 'effects', "
+            f"then the body."
+        ),
+        location=SourceLocation(file=file, line=line, column=column),
+        source_line=_get_source_line(source, line),
+        rationale=(
+            "A function declaration has a fixed clause order: the "
+            "signature, then its contract clauses ('requires', 'ensures' "
+            "and 'decreases') in any order among themselves, then "
+            "exactly one 'effects' clause, then the body. Once 'effects' "
+            "has been read the parser expects the body, so a contract "
+            "keyword here begins no construct it can accept."
+        ),
+        fix=(
+            f"Move the '{keyword}(...)' clause above the 'effects' clause, "
+            f"so the declaration reads: requires / ensures / decreases, "
+            f"then effects, then the body in braces."
+        ),
+        spec_ref='Chapter 5, Section 5.2 "Function Declaration Syntax"',
+        error_code="E032",
+    )
+
+
+# #1349: how a grammar terminal is shown to the reader.
+#
+# Lark names a terminal the grammar author did not: a literal written
+# inline in a rule becomes `__ANON_<n>`.  Those names reached users
+# verbatim in `Expected one of:` lists — `__ANON_0` for `->` — telling a
+# reader (and a model acting on the message) to supply a token that
+# appears nowhere in the language.  The knowledge was already in the
+# file, as a special case keyed on `__ANON_9` for `"::"`; what was
+# missing is that it applies to every terminal, not one.
+#
+# The table is DERIVED from the parser's own terminal list rather than
+# hand-written, so it cannot fall behind `grammar.lark`: a terminal whose
+# pattern is a literal string shows that string (the most useful thing a
+# reader can be told), and one whose pattern is a regular expression
+# keeps its grammar name, because a class of tokens has no single
+# spelling to show.  `tests/test_parse_error_instructions_1348_1349.py`
+# walks every terminal the live parser has and fails on any that would
+# still render as a raw Lark name.
+_TERMINAL_DISPLAY: Optional[dict[str, str]] = None
+
+
+def _terminal_display_table() -> dict[str, str]:
+    """Build (once) the terminal-name → display-form table."""
+    global _TERMINAL_DISPLAY
+    if _TERMINAL_DISPLAY is None:
+        # Imported here, not at module scope: `vera.parser` imports this
+        # module for its diagnostics, so a top-level import is a cycle.
+        from vera.parser import _get_parser
+
+        table: dict[str, str] = {}
+        for term in _get_parser().terminals:
+            pattern = term.pattern
+            value = getattr(pattern, "value", None)
+            if type(pattern).__name__ == "PatternStr" and value:
+                table[term.name] = f'"{value}"'
+        _TERMINAL_DISPLAY = table
+    return _TERMINAL_DISPLAY
+
+
+def terminal_display(name: str) -> str:
+    """The reader-facing form of a grammar terminal name (#1349).
+
+    A literal terminal shows its spelling in quotes (`__ANON_0` → `"->"`,
+    `COMMA` → `","`); a pattern terminal and an unknown name are returned
+    unchanged, so a caller can always render the result.
+    """
+    return _terminal_display_table().get(name, name)
+
+
 def unexpected_token(
     file: Optional[str],
     source: str,
@@ -331,8 +560,9 @@ def unexpected_token(
     expected: set[str],
 ) -> Diagnostic:
     """Fallback diagnostic for unexpected tokens not matching a known pattern."""
-    expected_str = ", ".join(sorted(expected)[:8])
-    if len(expected) > 8:
+    shown = sorted({terminal_display(name) for name in expected})
+    expected_str = ", ".join(shown[:8])
+    if len(shown) > 8:
         expected_str += ", ..."
 
     return Diagnostic(
@@ -601,6 +831,17 @@ def diagnose_lark_error(
         if token == "(" and "__ANON_9" in expected:  # noqa: S105
             return module_call_dot_syntax(file, source, line, column)
 
+        # Pattern: a contract clause after the effect clause (#1348).
+        # Once `effects` is consumed the parser wants the body, so LBRACE
+        # in the expected set beside a contract keyword identifies the
+        # shape exactly — and a legal program cannot produce it, because
+        # a contract clause in its proper place is EXPECTED there rather
+        # than surprising.
+        if token in _CONTRACT_CLAUSE_KEYWORDS and "LBRACE" in expected:
+            return contract_clause_after_effects(
+                file, source, line, column, token,
+            )
+
         # Fallback
         return unexpected_token(file, source, line, column, token, expected)
 
@@ -644,6 +885,7 @@ def diagnose_lark_error(
 ERROR_CODES: dict[str, str] = {
     # W0xx — Warnings
     "W001": "Typed hole",
+    "W003": "Unverified assumption (assume statement)",
     "W002": "Async argument evaluates eagerly",
     # E0xx — Parse & Transform
     "E001": "Missing contract block",
@@ -667,6 +909,7 @@ ERROR_CODES: dict[str, str] = {
     # E03x — Contract constructs (parse)
     "E030": "old() argument is not an effect reference",
     "E031": "new() argument is not an effect reference",
+    "E032": "Contract clause after the effects clause",
     # E1xx — Type Checker: Core & Expressions
     "E120": "Data invariant not Bool",
     "E121": "Function body type mismatch",
@@ -677,12 +920,16 @@ ERROR_CODES: dict[str, str] = {
     "E126": "Refinement predicate not Bool",
     "E127": "Decreases measure not well-founded",
     "E128": "Quantifier bound not an integer",
+    "E129": "Non-regular recursion in a data declaration",
     "E130": "Unresolved slot reference",
     "E131": "Result ref outside ensures",
     "E132": "Cyclic type alias",
     "E133": "Type alias arity mismatch",
     "E134": "Type does not take type arguments",
     "E135": "Array/Map/Set with a zero-size element, key, or value type",
+    "E136": "Unknown type name",
+    "E137": "Recursive function declares neither decreases nor Diverge",
+    "E138": "Contract calls back into its own function",
     "E140": "Arithmetic requires numeric operands",
     "E141": "Arithmetic requires matching numeric types",
     "E142": "Cannot compare incompatible types",
@@ -701,6 +948,8 @@ ERROR_CODES: dict[str, str] = {
     "E155": "Bare function name supplied by two imports",
     "E156": "Bare data type name supplied by two imports",
     "E157": "Bare constructor name supplied by two imports",
+    "E158": "Declaration takes a reserved built-in type name",
+    "E159": "Two data declarations share a constructor name",
     "E160": "Array index must be Int or Nat",
     "E161": "Cannot index non-array type",
     "E170": "Let binding type mismatch",
@@ -710,10 +959,16 @@ ERROR_CODES: dict[str, str] = {
     "E174": "old() outside ensures",
     "E175": "new() outside ensures",
     "E176": "Unknown expression type",
+    "E177": "old()/new() names an effect the row does not declare",
+    "E178": "Bare call to a where-helper from outside its parent",
+    "E179": "Quantifier predicate is not a function of the index to Bool",
     "E180": "Unknown ability in constraint",
     "E181": "Constraint references undeclared type variable",
     "E182": "Slot reference to a zero-size type",
     "E183": "Let binding of a zero-size type",
+    "E184": "Name declared twice in one namespace",
+    "E185": "Declaration takes a built-in ability's name or operation",
+    "E186": "Quantifier index type is not Int or Nat",
     # E2xx — Type Checker: Calls
     "E200": "Unresolved function",
     "E201": "Wrong argument count",
@@ -750,6 +1005,7 @@ ERROR_CODES: dict[str, str] = {
     "E311": "Non-exhaustive match (ADT)",
     "E312": "Non-exhaustive match (Bool)",
     "E313": "Non-exhaustive match (infinite type)",
+    "E314": "Pattern cannot match the scrutinee's type",
     "E320": "Unknown constructor in pattern",
     "E321": "Pattern constructor wrong arity",
     "E322": "Unknown nullary constructor in pattern",
@@ -762,6 +1018,8 @@ ERROR_CODES: dict[str, str] = {
     "E335": "State update expression type mismatch",
     "E336": "Handler state diverges from the State<T> cell type",
     "E337": "Builtin effect handler type-argument arity",
+    "E338": "Unknown effect in an effect row",
+    "E339": "Handler-clause State operation code generation cannot lower",
     # E5xx — Verification
     "E500": "Postcondition verified false",
     "E501": "Call-site precondition violation",
@@ -780,11 +1038,18 @@ ERROR_CODES: dict[str, str] = {
     "E526": "Division or modulo by zero",
     "E527": "Array index out of bounds",
     "E528": "Arithmetic overflow",
-    "E529": "float_to_int domain (NaN, infinity, or out of i64 range)",
+    "E529": "Float-to-integer truncation domain (NaN, infinity, or out of i64 range)",
     "E530": "Nat-to-Int widening out of i64 range",
     "E531": "Nat-to-Int widening unverified and not runtime-guarded",
     "E532": "Cannot verify call-site precondition (undecidable)",
+    "E535": "Cannot statically verify assertion (runtime-checked)",
+    "E534": "Contract holds only from a disclosed fact",
     "E533": "Instantiated handler state diverges from the State<T> cell type",
+    "E536": "Termination metric outside the i64 range the guard compares in",
+    "E537": "Termination metric range unverified and not runtime-guarded",
+    "E538": "Premise set unsatisfiable (no call can reach the body)",
+    "E539": "Premise set contradictory beyond the author's premises",
+    "E540": "Premise satisfiability not established (Tier 1 withheld)",
     # E6xx — Codegen
     "E600": "Unsupported parameter type",
     "E601": "Unsupported return type",
@@ -808,6 +1073,8 @@ ERROR_CODES: dict[str, str] = {
     "E619": "Cannot infer type argument for ability-constrained parameter",
     "E620": "Function dropped: skipped callee or no function table",
     "E621": "Name collision: module ADT contends with a prelude data type",
+    "E622": "Cannot infer a generic call's type argument",
+    "E623": "Name collision: entry-file ADT contends with a module data type",
     "E699": "Internal compiler error",
     # E7xx — Testing
     "E700": "Contract violation during testing",

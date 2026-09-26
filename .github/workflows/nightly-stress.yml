@@ -14,15 +14,15 @@ name: Stress tests
 #    small.  Failures auto-file (or comment on) a tracking
 #    issue with the `stress-regression` label.
 # 2. Path-filtered PRs touching `vera/codegen/`, `vera/wasm/`,
-#    `vera/checker/`, or `tests/test_stress.py` — fail-fast for
-#    PRs that change the code most likely to break stress
-#    invariants.  `vera/checker/` is included because the AST
-#    shape it produces flows into codegen — a checker change
-#    that subtly alters the AST can break runtime invariants
-#    without touching `vera/codegen/` or `vera/wasm/`.  Failures
-#    fail the PR check directly; no tracking issue is filed
-#    (the PR author already sees the failure in the PR's checks
-#    tab).
+#    `vera/checker/`, `tests/test_stress.py`, or
+#    `tests/test_codegen_gc_reclamation.py` — fail-fast for PRs
+#    that change the code most likely to break stress invariants.
+#    `vera/checker/` is included because the AST shape it
+#    produces flows into codegen — a checker change that subtly
+#    alters the AST can break runtime invariants without
+#    touching `vera/codegen/` or `vera/wasm/`.  Failures fail the
+#    PR check directly; no tracking issue is filed (the PR
+#    author already sees the failure in the PR's checks tab).
 # 3. Manual workflow_dispatch — anyone can trigger from the
 #    Actions tab for local-suspicious commits.  Failures are
 #    visible to whoever triggered the run; no tracking issue
@@ -40,6 +40,7 @@ on:
       - 'vera/wasm/**'
       - 'vera/checker/**'
       - 'tests/test_stress.py'
+      - 'tests/test_codegen_gc_reclamation.py'
       - '.github/workflows/nightly-stress.yml'
   workflow_dispatch:
 
@@ -72,8 +73,15 @@ jobs:
 
       - name: Run stress tests
         # `-m stress` overrides the default `-m 'not stress'`
-        # addopts; runs ONLY the stress-marked tests.
-        run: pytest -v -m stress tests/test_stress.py
+        # addopts; runs ONLY the stress-marked tests.  Scoped to
+        # the `tests/` directory (matching pyproject's own
+        # `testpaths`), NOT a single file — `tests/test_stress.py`
+        # alone silently dropped `TestHostHandleReclamation573`'s
+        # 10 instances in `tests/test_codegen_gc_reclamation.py`
+        # from every automated lane (#1328).  `tests/` also picks
+        # up any future stress-marked class wherever it lives,
+        # rather than requiring this line to be extended again.
+        run: pytest -v -m stress tests/
 
       # Auto-file a tracking issue on cron failure (option A from
       # #669 review).  Skipped on `pull_request` (PR's own check
@@ -107,7 +115,7 @@ jobs:
               ``,
               `**Run logs**: ${runUrl}`,
               ``,
-              `This is a regression on \`main\`; bisect against the green commits before this run.  See \`tests/test_stress.py\` for the failing test's docstring (each test names the bug class it guards against, which narrows the regression family).`,
+              `This is a regression on \`main\`; bisect against the green commits before this run.  See the failing test's docstring (each stress test names the bug class it guards against, which narrows the regression family) — the battery spans \`tests/test_stress.py\` and \`tests/test_codegen_gc_reclamation.py\`.`,
             ].join("\n");
 
             // Ensure the label exists (idempotent — create on first failure).

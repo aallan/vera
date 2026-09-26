@@ -26,8 +26,9 @@ that framing does not hold and the defect is wider:
 The issue's own repro additionally matches ``Some``/``None`` against an
 ``Array<String>``.  A pair type has no constructors and no tag, so codegen
 cannot lower that; it now raises a LOUD skip naming the situation instead
-of emitting a tag read over the array's first four bytes.  (The checker
-accepting that program at all is a separate hole, #1315, outside this fix.)
+of emitting a tag read over the array's first four bytes -- defense in
+depth, since the checker refuses this shape with E314 before code generation
+sees it (#1315).
 """
 from __future__ import annotations
 
@@ -236,7 +237,14 @@ _UNLOWERABLE_ARMS: list[tuple[str, str, str, str]] = [
     ("string-int", "@String", '"q"', "1 -> 100,"),
     ("array-bool", "@Array<Int>", "[1, 2]", "true -> 100,"),
     ("array-int", "@Array<Int>", "[1, 2]", "1 -> 100,"),
-    ("string-string", "@String", '"q"', '"yes" -> 100,'),
+    # #1380: a string literal over a STRING scrutinee left this table — it
+    # has a lowering now (`$eq_String`, the comparison `==` already uses),
+    # and `tests/test_codegen_match_literal_arms.py` runs it.  Its
+    # ARRAY-scrutinee twin stays, and is the cell that keeps the admission
+    # keyed on the scrutinee's Vera type rather than on its representation:
+    # an `Array<T>` is the same (ptr, len) pair, and comparing one against
+    # an interned literal would read the element buffer as UTF-8.
+    ("array-string", "@Array<Int>", "[1, 2]", '"yes" -> 100,'),
 ]
 
 
@@ -255,6 +263,11 @@ class TestPairScrutineeGuardIsAWhitelist:
     that died at instantiation with no diagnostic and no E-code.
 
     So the guard is a whitelist, and these cells are what makes it one.
+    What the whitelist admits is "the forms that HAVE a lowering", which is
+    why #1380 could add the string literal over a String scrutinee to it
+    without weakening the rule: the arm compares two (ptr, len) pairs
+    through `$eq_String`.  Everything here is a form that still has no
+    lowering over the representation it is written against.
     """
 
     @pytest.mark.parametrize(
@@ -405,19 +418,29 @@ def _pair_locals(wat_body: str) -> set[tuple[int, int]]:
 
 
 class TestPairScrutineeRooting:
-    """The pointer half of a pair scrutinee is shadow-pushed — as EMISSION.
+    """A pair scrutinee adds NO shadow roots — as EMISSION (#1322).
 
-    Deliberately a WAT assertion and not a behavioural one.  Deleting both
-    pushes leaves the whole suite green, the GC rooting and reclamation
-    suites green, and four hostile allocate-inside-the-arm probes green
-    under ``VERA_EAGER_GC=1``: nothing distinguishes them at run time
-    today.  They are defensive depth — the same #705 discipline
-    ``_destructure_let`` and ``_extract_constructor_fields`` already follow
-    for a pointer that becomes invisible to the conservative scan the
-    moment it lives only in a WASM local — so what these tests can honestly
-    pin is that the emission is there and complete, not that a program
-    observes it.  Asserting it any other way would be asserting a
-    difference no probe has produced.
+    Both pushes this class originally pinned are gone.  They rooted an
+    ADDRESS the producer had already rooted (a parameter in the prologue, an
+    allocation at its ``$alloc``, a call's result in the callee's epilogue):
+    the scrutinee copy, and then the binder's copy of that copy.  The shadow
+    stack roots addresses, not locals, so the duplicates bought the mark
+    phase nothing while costing two slots for the whole frame — three roots
+    per frame took a ``String``-scrutinee recursion to a bare `unreachable`
+    at depth 1 364 (#1322).
+
+    That the pushes were never load-bearing was already on the record here:
+    deleting both left the whole suite, the GC rooting and reclamation
+    suites, and four hostile allocate-inside-the-arm probes green under
+    ``VERA_EAGER_GC=1``.  What makes deleting them SAFE rather than merely
+    untested is ``_scope_match_shadow_roots``: its ``$gc_sp`` snapshot is
+    taken before the scrutinee, so the producer's root is reclaimed only
+    once the arm is done with it.
+
+    Still a WAT assertion rather than a behavioural one, for the same reason
+    as before — no probe distinguishes the emissions at run time.  The
+    direction of the pin is what changed: the delta against the match-free
+    twin must now be ZERO, so re-adding either duplicate goes red.
     """
 
     _SOURCE = """\
@@ -434,7 +457,7 @@ public fn f(@String -> @Int)
 
     # The same body with the match removed.  Everything else — the parameter
     # prologue's own rooting, the `string_concat` intermediates — is
-    # identical, so the DIFFERENCE is exactly the two pushes this fix adds.
+    # identical, so the DIFFERENCE is exactly what the match contributes.
     _CONTROL = """\
 public fn f(@String -> @Int)
   requires(true)
@@ -445,26 +468,37 @@ public fn f(@String -> @Int)
 }
 """
 
-    def test_the_match_adds_exactly_two_pushes_over_the_no_match_control(
+    def test_the_match_adds_no_pushes_over_the_no_match_control(
         self,
     ) -> None:
         """A differential, not an absolute count.
 
         An absolute number would pin whatever the surrounding lowering
-        happens to root as well (four, here) and would move for reasons
-        that have nothing to do with this fix.  The delta against the
-        match-free twin isolates the scrutinee push and the binder push,
-        and goes red if either is dropped.
+        happens to root as well and would move for reasons that have
+        nothing to do with a match.  The delta against the match-free twin
+        isolates the scrutinee copy and the binder copy — the two roots
+        #1322 removed — and goes red if either is re-added.
         """
         matched = _push_pattern().findall(
             wat_fn_body(_compile_ok(self._SOURCE).wat, "f"))
         control = _push_pattern().findall(
             wat_fn_body(_compile_ok(self._CONTROL).wat, "f"))
-        assert len(matched) - len(control) == 2, (
+        # An equality between two counts is satisfied by 0 == 0, so a
+        # pattern that stopped matching the emitted push shape would turn
+        # this into a green test that pins nothing.  Both bodies DO push —
+        # the parameter prologue's root and the `string_concat`
+        # intermediates — so requiring a match is a property of the
+        # programs, not of the fix.
+        assert control, (
+            "_push_pattern matched no push in a body that allocates: the "
+            "pattern has drifted from the emitted `gc_shadow_push` shape "
+            "and the delta below would hold vacuously"
+        )
+        assert len(matched) == len(control), (
             f"match body has {len(matched)} shadow pushes (locals {matched}), "
             f"match-free control has {len(control)} (locals {control}); "
-            f"expected exactly 2 more — the scrutinee's pointer and the "
-            f"binder's"
+            f"a pair scrutinee and its binder are copies of an address the "
+            f"producer already rooted, so the match must add none"
         )
 
     def test_the_pushed_local_is_the_pointer_half_not_the_length(self) -> None:
@@ -472,9 +506,12 @@ public fn f(@String -> @Int)
 
         The first version of this test inferred "is a length" from local
         NUMBERING — no pushed local may be another's successor — and that
-        does not check its own name: rooting the length at BOTH sites
-        pushes ``{0, 3, 5, 10}``, where no element is another's successor,
-        so the wrong half passed while the delta stayed 2.
+        does not check its own name: rooting the length at both of the
+        (since removed, #1322) match sites pushed ``{0, 3, 5, 10}``, where
+        no element is another's successor, so the wrong half passed while
+        the delta stayed 2.  The rule it enforces still binds every push
+        the body does make: the parameter prologue's and the
+        ``string_concat`` intermediates'.
 
         So recover the pairs instead of guessing them.  A (ptr, len) pair is
         visible in the emitted code as one of exactly two idioms — the
@@ -495,11 +532,9 @@ public fn f(@String -> @Int)
             f"pointer half is a heap reference; rooting the length roots a "
             f"byte count and leaves the buffer unrooted."
         )
-        rooted_right = [(p, ln) for p, ln in pairs if p in pushed]
-        assert len(rooted_right) == 2, (
-            f"expected exactly 2 pairs rooted by their pointer (the "
-            f"scrutinee's and the binder's), found {len(rooted_right)}: "
-            f"pairs={sorted(pairs)} pushed={sorted(pushed)}"
+        assert pushed, (
+            "no shadow pushes at all in this body: the assertion above "
+            "would hold vacuously, so it no longer checks its own name"
         )
 
 

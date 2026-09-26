@@ -6,13 +6,18 @@ to module-level WASM functions with explicit environment parameters.
 
 from __future__ import annotations
 
+import functools
 from collections import deque
 
 from vera import ast
-from vera.codegen.memory import ConstructorLayout, _align_up
 from vera.skip import CodegenInvariantError, CodegenSkip
 from vera.wasm import WasmContext, WasmSlotEnv
-from vera.wasm.helpers import gc_shadow_push, is_gc_pointer_base
+from vera.wasm.helpers import (
+    bind_slot_value_from_stack,
+    field_layout,
+    gc_shadow_push,
+    is_gc_pointer_base,
+)
 
 
 class ClosureLiftingMixin:
@@ -312,18 +317,27 @@ class ClosureLiftingMixin:
         more closures on that inner ctx; without this hook they would be
         dropped on the floor when the inner ctx goes out of scope.
         """
-        # Flatten ADT layouts for context
-        ctor_layouts: dict[str, ConstructorLayout] = {}
-        ctor_to_adt: dict[str, str] = {}
-        for adt_name, layouts in self._adt_layouts.items():
-            ctor_layouts.update(layouts)
-            for ctor_name in layouts:
-                ctor_to_adt[ctor_name] = adt_name
+        # #1436: namespace-scoped, as in `functions.py` — a lifted closure
+        # body belongs to the declaration that contains it and resolves
+        # constructor names in that declaration's namespace.
+        ctor_layouts, ctor_to_adt, ns_tp_indices = (
+            self._namespace_ctor_projection())
 
         ctx = WasmContext(
             self.string_pool,
+            # #1479: one record for the whole module, read back from its text.
+            checks=self._emitted_checks,
             ctor_layouts=ctor_layouts,
-            adt_type_names=set(self._adt_layouts.keys()),
+            # #1414: the LIVE nested map, not a copy of it — the flat
+            # `ctor_layouts` above is already derived from it, and a
+            # third copy is one more thing to drift (PR #1419 review).
+            adt_ctor_layouts=self._adt_layouts,
+            # #1253/#1316: the namespace's data types, as in `functions.py`
+            # — a lifted closure body belongs to the declaration that
+            # contains it, so it resolves names in that declaration's scope.
+            adt_type_names=set(self._alias_env.data_types),
+            value_data_types=self._value_data_type_names(),
+            adt_ctor_tp_indices=self._adt_ctor_tp_indices,
             # #873: a generic called ONLY from inside a closure body must be
             # rewritten to its monomorphized clone here too — mono discovery
             # already walks closure bodies (the total AST walk) and emits the
@@ -340,7 +354,10 @@ class ClosureLiftingMixin:
             # that lifts outside a function compile) falls back to the flat
             # registry inside `WasmContext`, which is the pre-#1299 answer.
             scoped_fns=scoped_fns,
-            ctor_adt_tp_indices=getattr(self, "_ctor_adt_tp_indices", None),
+            # #1436: the namespace-scoped table, not the flat one —
+            # a generic entry declaration otherwise reached a module's
+            # structural-Eq through this map alone.
+            ctor_adt_tp_indices=ns_tp_indices,
             adt_tp_counts=getattr(self, "_adt_tp_counts", None),
             adt_tp_param_names=getattr(self, "_adt_tp_param_names", None),
         )
@@ -386,18 +403,30 @@ class ClosureLiftingMixin:
         # #813: per-parameter concrete-@Int flags for the call-site
         # runtime @Nat -> @Int widening guard inside closure bodies too.
         ctx.set_fn_int_params(self._fn_int_params)
+        # #754: per-formal base type names for every effect
+        # operation, so an op call site guards its narrowing
+        # arguments the way a function call site does.
+        ctx.set_effect_op_params(self._effect_op_params)
         # #865: per-parameter concrete-@Byte flags for the call-site
         # int-literal → i32.const coercion inside closure bodies too.
         ctx.set_fn_byte_params(self._fn_byte_params)
         ctx.set_alias_env(self._alias_env)
-        # No `set_refinement_guard_emitter` here (#1268), deliberately: this
-        # context is built with no `effect_op_cells`, so a `throw` in a
-        # closure body reaches no cell and is not a write boundary the guard
-        # could key on — it does not compile at all today (`call target
-        # 'throw' not registered in this module`, a closure skip).  Threading
-        # the op registries in is what would make the boundary real, and the
-        # emitter's absence then fails CLOSED at a loud skip rather than
-        # emitting an unguarded payload the verifier records as guarded.
+        # #765: the §2.6.5 predicate lowering, bound to THIS context.  #1268
+        # deliberately left it out — the only boundary it served then was a
+        # `throw` payload, and this context carries no `effect_op_cells`, so
+        # no `throw` here is a write boundary the guard could key on.  A
+        # narrowing PATTERN BIND is a boundary that does occur in a closure
+        # body (`array_map(a, fn(@Int -> @Int) … { match @Int.0 { @Pos -> … } })`
+        # compiles today), and the emitter's absence there would fail CLOSED
+        # and refuse a program that used to compile.  Installing it is also
+        # what makes the closure body's guard identical to the top-level one,
+        # rather than a second lowering that could drift; the trap message
+        # interns into the shared string pool and the contract-fail import
+        # flag is raised on the generator that assembles the module, both of
+        # which are per-generator, not per-context.
+        ctx.set_refinement_guard_emitter(
+            functools.partial(self._emit_boundary_refinement_guard, ctx),
+        )
         # #814/#774: a qualified call inside a closure body must resolve the
         # same way it does in a top-level body — to the module's function
         # (`mod$…` for a shadowed fn) and, for a shadowed imported generic, to
@@ -494,9 +523,9 @@ class ClosureLiftingMixin:
         # matches the codegen-unguardable @Unit refinement (the verifier records
         # that narrowing `tier3_unguarded`, claiming no runtime guard).
         refined_param_checks: list[
-            tuple[int, tuple[ast.Expr, str]]
+            tuple[int, tuple[ast.Expr, str], ast.TypeExpr]
         ] = [
-            (value_local, parts)
+            (value_local, parts, param_te)
             for _i, param_te, value_local in param_info
             if (parts := self._refinement_guard_parts(param_te)) is not None
         ]
@@ -518,28 +547,38 @@ class ClosureLiftingMixin:
             for _i, param_te, value_local in param_info
             if self._resolve_tuple_type(param_te) is not None
         ]
+        # #1430: an `Array<Refined>` closure formal carries no top-level
+        # refinement and is not a tuple, so neither collection above reaches
+        # its ELEMENTS — while the verifier assumes them under R1 and records
+        # the `apply_fn` argument `tier3` on the strength of a guard at this
+        # boundary.  Measured before this: `apply_fn(fn(@Array<Pos> -> @Int)
+        # …, launder([1]))` reported `tier3` with NO element loop anywhere in
+        # the module and ran to completion on a violating element.  The len
+        # half is `value_local + 1` by the pair convention `param_info`
+        # records above.
+        element_param_checks: list[tuple[int, int | None, ast.TypeExpr]] = [
+            # A pair-shaped carrier walks its own `(ptr, len)`; a `Map` or
+            # `Set` formal is one i32 handle the guard projects first, which
+            # is what `None` means here (CodeRabbit, PR #1447).
+            (value_local,
+             value_local + 1
+             if self._type_expr_to_wasm_type(param_te) == "i32_pair" else None,
+             param_te)
+            for _i, param_te, value_local in param_info
+            if self._element_guard_parts(param_te)
+        ]
 
-        # Compute capture layout (must match _translate_anon_fn).
-        # Pair-type captures (#535) take 8 bytes: ptr (i32) + len (i32),
-        # two consecutive 4-byte fields.  The matching emit in
-        # `_translate_anon_fn` writes both halves; we read both halves
-        # here into two consecutive i32 locals so the closure body can
-        # resolve the pair as if it were a parameter or let-binding.
+        # The capture layout, by the SAME rule `_translate_anon_fn` writes it
+        # with (`helpers.field_layout`) rather than a second copy of the
+        # widths.  A pair capture (#535) is ptr (i32) + len (i32), two
+        # consecutive fields, read below into two consecutive i32 locals so
+        # the closure body resolves the pair as a parameter or let-binding
+        # would.
         cap_offsets: list[tuple[int, str]] = []
         offset = 4  # skip func_table_idx
         for _tname, _cidx, cap_wt in captures:
-            if cap_wt == "i32_pair":
-                offset = _align_up(offset, 4)
-                cap_offsets.append((offset, cap_wt))
-                offset += 8
-            elif cap_wt in ("i64", "f64"):
-                offset = _align_up(offset, 8)
-                cap_offsets.append((offset, cap_wt))
-                offset += 8
-            else:  # i32
-                offset = _align_up(offset, 4)
-                cap_offsets.append((offset, cap_wt))
-                offset += 4
+            field_off, offset = field_layout(offset, cap_wt)
+            cap_offsets.append((field_off, cap_wt))
 
         # Load captured values from env into locals (allocated AFTER params)
         cap_locals: list[tuple[str, int]] = []  # (type_name, ptr_or_only_local)
@@ -784,8 +823,12 @@ class ClosureLiftingMixin:
         ret_has_components = self._has_guardable_tuple_components(
             anon_fn.return_type)
         refine_guard_instrs: list[str] = []
+        ret_has_elements = (
+            bool(self._element_guard_parts(anon_fn.return_type)))
         if (refined_param_checks or component_param_checks
-                or ret_refined_parts is not None or ret_has_components):
+                or element_param_checks
+                or ret_refined_parts is not None or ret_has_components
+                or ret_has_elements):
             param_sig = ", ".join(
                 ast.format_type_expr(p) for p in anon_fn.params)
             ret_sig = ast.format_type_expr(anon_fn.return_type)
@@ -795,14 +838,23 @@ class ClosureLiftingMixin:
                     self._emit_component_refinement_guards(
                         ctx, closure_sig, param_te, value_local, env,
                         "parameter"))
-            for value_local, parts in refined_param_checks:
+            # #1430: element-wise entry guards, the named path's twin
+            # (`_compile_fn`), so a lifted body reads no element its formal's
+            # type forbids.
+            for ptr_local, elem_len_local, param_te in element_param_checks:
+                refine_guard_instrs.extend(
+                    self._emit_element_guards(
+                        ctx, closure_sig, param_te, ptr_local,
+                        elem_len_local, env, "parameter"))
+            for value_local, parts, param_te in refined_param_checks:
                 predicate, base_name = parts
                 msg = (
                     f"Refinement violation in {closure_sig}\n"
                     f"  parameter: {ast.format_expr(predicate)} failed"
                 )
                 guard = self._emit_refinement_check(
-                    ctx, predicate, base_name, value_local, msg, env)
+                    ctx, predicate, base_name, value_local, msg, env,
+                    at=param_te)
                 if guard is not None:
                     refine_guard_instrs.extend(guard)
             # #1032: a REFINED closure RETURN carries a runtime predicate guard
@@ -822,32 +874,39 @@ class ClosureLiftingMixin:
             # the verifier records it tier3_unguarded).  Appended to
             # `body_instrs` so the check runs before the GC epilogue re-roots
             # the (now-checked) value.
-            if ret_refined_parts is not None or ret_has_components:
+            if (ret_refined_parts is not None or ret_has_components
+                    or ret_has_elements):
                 msg = (
                     f"Refinement violation in {closure_sig}\n"
                     f"  return value: "
                     f"{ast.format_expr(ret_refined_parts[0])} failed"
                 ) if ret_refined_parts is not None else ""
                 if ret_wt == "i32_pair":
-                    ptr_l = ctx.alloc_local("i32")
-                    len_l = ctx.alloc_local("i32")
+                    # Spilled into the two CONSECUTIVE locals a pair's slot
+                    # binds — the pointer, and the length at `ptr + 1` that
+                    # `_translate_slot_ref` reads (#1466).
+                    spill = bind_slot_value_from_stack(
+                        ctx.alloc_local, "i32_pair")
+                    ptr_l, len_l = spill.locals
                     ret_guard = self._emit_component_refinement_guards(
                         ctx, closure_sig, anon_fn.return_type, ptr_l, env,
                         "return value")
+                    # #1430: the elements of an `Array<Refined>` result, over
+                    # the (ptr, len) pair already spilled here.
+                    ret_guard.extend(self._emit_element_guards(
+                        ctx, closure_sig, anon_fn.return_type, ptr_l, len_l,
+                        env, "return value"))
                     if ret_refined_parts is not None:
                         predicate, base_name = ret_refined_parts
                         guard = self._emit_refinement_check(
-                            ctx, predicate, base_name, ptr_l, msg, env)
+                            ctx, predicate, base_name, ptr_l, msg, env,
+                            at=anon_fn.return_type)
                         if guard is not None:
                             ret_guard.extend(guard)
                     if ret_guard:
                         body_instrs = [
-                            *body_instrs,
-                            f"local.set {len_l}",
-                            f"local.set {ptr_l}",
-                            *ret_guard,
-                            f"local.get {ptr_l}",
-                            f"local.get {len_l}",
+                            *body_instrs, *spill.load, *ret_guard,
+                            *spill.push,
                         ]
                 elif ret_wt:
                     ret_local = ctx.alloc_local(ret_wt)
@@ -857,9 +916,15 @@ class ClosureLiftingMixin:
                     if ret_refined_parts is not None:
                         predicate, base_name = ret_refined_parts
                         guard = self._emit_refinement_check(
-                            ctx, predicate, base_name, ret_local, msg, env)
+                            ctx, predicate, base_name, ret_local, msg, env,
+                            at=anon_fn.return_type)
                         if guard is not None:
                             ret_guard.extend(guard)
+                    # #1430: a `Map` or `Set` result is one i32 handle, so
+                    # the pair branch above never sees it.
+                    ret_guard.extend(self._emit_element_guards(
+                        ctx, closure_sig, anon_fn.return_type, ret_local,
+                        None, env, "return value"))
                     if ret_guard:
                         body_instrs = [
                             *body_instrs,
@@ -880,7 +945,8 @@ class ClosureLiftingMixin:
         # not as a whole-body wrap here — see that block for why.
         if (ctx._type_expr_base_is_int(anon_fn.return_type)
                 and ctx._result_is_nat(anon_fn.body)):
-            body_instrs = ctx._emit_int_widen_guard(body_instrs)
+            body_instrs = ctx._emit_int_widen_guard(
+                body_instrs, at=anon_fn.body)
 
         # Propagate host-import tracking from closure ctx to module level
         self._map_ops_used.update(ctx._map_ops_used)
@@ -895,12 +961,14 @@ class ClosureLiftingMixin:
         # its host imports on the closure ctx (the _scan_io_ops AnonFn
         # branch also covers these — same belt-and-braces as #808).
         self._async_ops_used.update(ctx._async_ops_used)
-        # #808: a #798 integer-overflow guard inside a lifted closure body sets
-        # this on the closure ctx; OR it into the module ``self`` so
-        # ``_assemble_module`` emits the ``vera.overflow_trap`` import (same
-        # propagation the per-function merge does in functions.py).
-        self._needs_overflow_trap = (
-            self._needs_overflow_trap or ctx._needs_overflow_trap
+        # #1479: a check inside a lifted closure body raises its signal's
+        # flag on the closure ctx; OR it into the module ``self`` so
+        # ``_assemble_module`` declares the import (the same propagation the
+        # per-function merge does in functions.py).  A closure whose only
+        # check is here links only through this merge.
+        self._needs_trap = self._needs_trap or ctx._needs_trap
+        self._needs_contract_fail = (
+            self._needs_contract_fail or ctx._needs_contract_fail
         )
         # #773: structural-Eq helpers generated inside a lifted closure body.
         self._adt_eq_helpers.update(ctx._adt_eq_helpers)

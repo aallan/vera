@@ -169,8 +169,45 @@ def _run(tmp_path: Path, source: str, arg: int,
     return _cli("run", str(p), "--fn", fn, "--", str(arg))
 
 
+#: What a tripped `@Int` -> `@Nat` narrowing guard says.  Since #754 the guard
+#: signals `nat_guard` before its `unreachable` (through `vera.trap` since
+#: #1479), so the trap carries its own kind and its own message instead of the
+#: generic instruction name — which is a STRONGER reading here, not merely a
+#: different one: "unreachable" also matches a shadow-stack overflow, which
+#: would have read as "the narrowing guard fired".
+_NAT_GUARD_TRAP = "Negative value bound into a @Nat slot"
+
+
 def _traps(proc: subprocess.CompletedProcess[str]) -> bool:
-    return proc.returncode != 0 and "unreachable" in (proc.stdout + proc.stderr)
+    """ANY failed run — for the cells asserting that none occurs.
+
+    Deliberately broad on that side: a cell claiming a proved narrowing does
+    not trap must fail on an unexpected trap of any kind, so widening this
+    predicate makes those assertions stronger, not weaker.  So it reads the
+    exit status, the one thing every trap shares: since #1479 each runtime
+    check reports its own kind and message, and the word "unreachable" names
+    only the runtime's internal limits, so a predicate keyed on that word
+    missed a `@Nat` subtraction underflow, a failed `assert` or an index out
+    of bounds (and a refinement guard's `contract_violation` before that).
+    A verify-clean program that fails to run for any other reason contradicts
+    the claim just as much, so nothing is lost by counting it.
+    """
+    return proc.returncode != 0
+
+
+def _traps_on_the_narrowing_guard(
+    proc: subprocess.CompletedProcess[str],
+) -> bool:
+    """The NARROWING guard specifically — for the cells expecting it.
+
+    `_traps` accepts any failed run, which includes a bare `unreachable`
+    from a shadow-stack overflow and every other kind of trap.  Used on the
+    expecting side it would let a regression that removes the `nat_guard`
+    signal — the exact thing #754 added — pass as a guard that fired (PR
+    review).
+    """
+    out = proc.stdout + proc.stderr
+    return proc.returncode != 0 and _NAT_GUARD_TRAP in out
 
 
 # ---------------------------------------------------------------------------
@@ -345,7 +382,7 @@ def test_the_negative_input_really_reaches_the_guard(tmp_path: Path) -> None:
     `verified` a lie rather than a harmless imprecision.
     """
     proc = _run(tmp_path, _construction("true"), _NEGATIVE)
-    assert _traps(proc), (
+    assert _traps_on_the_narrowing_guard(proc), (
         f"expected a trap at {_NEGATIVE}\n"
         f"exit={proc.returncode} stdout={proc.stdout}\nstderr={proc.stderr}"
     )
@@ -509,8 +546,10 @@ def test_opaque_scrutinee_still_carries_its_declared_facts(tmp_path: Path) -> No
 # a single shape can only ever pin the spelling someone happened to think of.
 #
 # Each shape is paired with a family (`@Nat` and refined) since the two travel
-# through different obligation kinds and the refined one has no runtime guard
-# at all.
+# through different obligation kinds.  The refined one had no runtime guard at
+# all when this suite was written; #765 gave it one at the pattern binds and
+# #1426 at the construction positions, so both families are now checked at run
+# time and the differential below reads the same either way.
 
 _FAMILY = {
     # family: (prelude, component type, binder, arm body, obligation kind)
@@ -597,8 +636,11 @@ def test_no_shape_is_proved_and_then_wrong(
     """The soundness differential, over every shape.
 
     Verify-clean must imply the program is right on the value the narrowing
-    forbids: for `@Nat` that means no trap, for the refined family — which has
-    no runtime guard — that means not returning the forbidden value.
+    forbids, and BOTH halves are asserted for both families: no trap, and not
+    returning the forbidden value.  When this was written the refined family
+    had no runtime guard, so only the second half could bite for it; since
+    #765 and #1426 it is guarded too, and a proved program that trapped would
+    be just as much a contradiction there.
     """
     source = _shaped(shape, family)
     result = _verify(tmp_path, source, name="s.vera")
@@ -707,7 +749,7 @@ def test_the_mixed_branch_traps_when_it_is_believed(tmp_path: Path) -> None:
         }
         """)
     proc = _run(tmp_path, source, _NEGATIVE, name="box.vera")
-    assert _traps(proc), (
+    assert _traps_on_the_narrowing_guard(proc), (
         f"expected the destructure guard to fire at {_NEGATIVE}\n"
         f"exit={proc.returncode} stdout={proc.stdout}\nstderr={proc.stderr}"
     )

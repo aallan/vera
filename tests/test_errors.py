@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html as html_mod
+import importlib.util
 import json
 import re
 from pathlib import Path
@@ -15,9 +16,12 @@ from vera.errors import (
     SourceLocation,
     VeraError,
     diagnose_lark_error,
+    e001_doc_example,
     missing_contract_block,
     missing_effect_clause,
     malformed_slot_reference,
+    render_e001_doc_example,
+    render_e001_doc_example_html,
     unclosed_block,
     unexpected_token,
     _get_source_line,
@@ -366,21 +370,32 @@ def _extract_spec_error_block() -> str:
     return "\n".join(block_lines)
 
 
-def _extract_build_site_error_block() -> str:
-    """Extract the rendered E001 example block from scripts/build_site.py.
+def _load_build_site():
+    """Load scripts/build_site.py as a module (it lives in scripts/, not
+    the vera package, so importlib rather than a regular import — same
+    approach tests/test_build_site.py uses)."""
+    spec = importlib.util.spec_from_file_location("build_site", BUILD_SITE)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
-    The block is embedded in a Python f-string that generates docs/index.md,
-    so literal braces are doubled ({{ / }}); un-double them to recover the
-    rendered plaintext the way docs/index.md sees it.
-    """
-    text = BUILD_SITE.read_text(encoding="utf-8")
+
+def _extract_build_site_error_block() -> str:
+    """Extract the rendered E001 example block from build_index_md()'s
+    OUTPUT (#954: the block is generated via ``render_e001_doc_example()``,
+    not hand-copied text in build_site.py's own source, so this measures
+    what docs/index.md actually receives rather than grepping the .py
+    file's literal bytes)."""
+    build_site = _load_build_site()
+    rendered = build_site.build_index_md(build_site._version())
     # Anchor the block end on the closing code fence, not the spec_ref text.
     # Anchoring on the spec_ref value would make extraction fail opaquely if
     # build_site.py's spec_ref ever drifts, hiding the precise mismatch that
     # test_build_site_has_spec_ref is meant to surface.
-    match = re.search(r"\[E001\] Error at.*?\n```", text, re.DOTALL)
-    assert match, "Could not find E001 error block in scripts/build_site.py"
-    return match.group(0).replace("{{", "{").replace("}}", "}")
+    match = re.search(r"\[E001\] Error at.*?\n```", rendered, re.DOTALL)
+    assert match, "Could not find E001 error block in build_index_md()'s output"
+    return match.group(0).removesuffix("\n```")
 
 
 def _extract_agents_diagnostic() -> dict[str, object]:
@@ -417,13 +432,11 @@ class TestErrorDisplaySync:
 
     @pytest.fixture()
     def canonical(self) -> Diagnostic:
-        """Generate the canonical E001 diagnostic."""
-        return missing_contract_block(
-            "main.vera",
-            "private fn add(@Int, @Int -> @Int)\n{",
-            2,
-            1,
-        )
+        """Generate the canonical E001 diagnostic — the same
+        ``e001_doc_example()`` call every doc mirror's renderer uses
+        (#954), so this fixture and the docs cannot name two different
+        examples."""
+        return e001_doc_example()
 
     # -- README.md --------------------------------------------------------
 
@@ -510,12 +523,31 @@ class TestErrorDisplaySync:
             r"\[E001\] Error at .+, line \d+, column \d+:", block
         ), "HTML error block header doesn't match expected format"
 
+    def test_html_matches_generated_render(self) -> None:
+        """#954: docs/index.html's E001 block is single-sourced — its raw
+        markup (span tags included) must be byte-identical to
+        ``render_e001_doc_example_html()``, generated straight from
+        ``vera.errors``.  This subsumes every field-by-field test above
+        for this mirror; both are kept because the field-by-field
+        failures are more specific about WHAT drifted."""
+        text = INDEX_HTML.read_text(encoding="utf-8")
+        match = re.search(r"<pre>(<span[^>]*>\[E001\].*?)</pre>", text, re.DOTALL)
+        assert match, "Could not find E001 error block in docs/index.html"
+        assert match.group(1) == render_e001_doc_example_html()
+
     def test_readme_has_header_format(self, canonical: Diagnostic) -> None:
         """The header line should follow the [CODE] Error at FILE, line N format."""
         block = _extract_readme_error_block()
         assert re.search(
             r"\[E001\] Error at .+, line \d+, column \d+:", block
         ), "README error block header doesn't match expected format"
+
+    def test_readme_matches_generated_render(self) -> None:
+        """#954: README.md's E001 block is single-sourced — byte-identical
+        to ``render_e001_doc_example()``.  Kept alongside the
+        field-by-field tests above, which localise WHAT drifted when
+        this one fails."""
+        assert _extract_readme_error_block() == render_e001_doc_example()
 
     # -- spec/00-introduction.md ------------------------------------------
 
@@ -562,6 +594,13 @@ class TestErrorDisplaySync:
             r"\[E001\] Error at .+, line \d+, column \d+:", block
         ), "Spec error block header doesn't match expected format"
 
+    def test_spec_matches_generated_render(self) -> None:
+        """#954: spec/00-introduction.md's E001 block is single-sourced —
+        byte-identical to ``render_e001_doc_example()``.  Kept alongside
+        the field-by-field tests above, which localise WHAT drifted
+        when this one fails."""
+        assert _extract_spec_error_block() == render_e001_doc_example()
+
     # -- scripts/build_site.py (generates docs/index.md) ------------------
 
     def test_build_site_has_error_code(self, canonical: Diagnostic) -> None:
@@ -606,6 +645,15 @@ class TestErrorDisplaySync:
         assert re.search(
             r"\[E001\] Error at .+, line \d+, column \d+:", block
         ), "build_site.py error block header doesn't match expected format"
+
+    def test_build_site_matches_generated_render(self) -> None:
+        """#954: build_index_md()'s E001 block IS ``render_e001_doc_example()``
+        — build_site.py calls it directly rather than hand-copying a
+        rendering of it, so this mirror cannot drift by construction.
+        The field-by-field tests above are now redundant with this one
+        for this mirror specifically, but stay for their more precise
+        failure messages."""
+        assert _extract_build_site_error_block() == render_e001_doc_example()
 
     # -- AGENTS.md (embedded example --json block) ------------------------
     # `_extract_agents_diagnostic()` runs the block through `json.loads`, which

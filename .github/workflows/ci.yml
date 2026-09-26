@@ -77,7 +77,7 @@ jobs:
 
       - name: Upload coverage to Codecov
         if: matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest'
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage.xml
@@ -147,29 +147,14 @@ jobs:
       - name: Check version numbers are in sync
         run: python scripts/check_version_sync.py
 
-      - name: Check spec code blocks parse correctly
-        run: python scripts/check_spec_examples.py
+      - name: Check every agent-facing document's Vera blocks parse, check, verify and run (#1481)
+        run: python scripts/check_doc_examples.py
 
       - name: Check spec EBNF and Lark grammar agree on rule names (#683)
         run: python scripts/check_grammar_alignment.py
 
-      - name: Check README code blocks parse correctly
-        run: python scripts/check_readme_examples.py
-
-      - name: Check SKILL.md code blocks parse correctly
-        run: python scripts/check_skill_examples.py
-
-      - name: Check FAQ code blocks parse correctly
-        run: python scripts/check_faq_examples.py
-
-      - name: Check DE_BRUIJN.md code blocks parse correctly
-        run: python scripts/check_debruijn_examples.py
-
-      - name: Check PYPI_README code blocks parse, check, and verify
-        run: python scripts/check_pypi_readme_examples.py
-
-      - name: Check HTML code blocks parse, check, and verify
-        run: python scripts/check_html_examples.py
+      - name: Check vera:diagnostic examples match live output
+        run: python scripts/check_diagnostic_examples.py
 
       - name: Check no doc example redefines a built-in (E151)
         run: python scripts/check_doc_builtin_shadowing.py
@@ -186,6 +171,9 @@ jobs:
       - name: Check every diagnostic carries rationale/fix/spec_ref (#682)
         run: python scripts/check_diagnostic_fields.py
 
+      - name: Check every walker covers every Expr subclass (#597)
+        run: python scripts/check_walker_coverage.py
+
       - name: Check text-mode file I/O passes explicit encoding (#645)
         run: python scripts/check_explicit_encoding.py
 
@@ -196,7 +184,13 @@ jobs:
         run: python scripts/check_licenses.py
 
       - name: Check documentation counts are consistent
-        run: python scripts/check_doc_counts.py
+        # The headline test totals are checked against the live collection
+        # on a change that raises [project].version (the release PR, whatever
+        # its base, and the push that merges it), and against one another
+        # only on every other change, since every fix PR moves them (#1536).
+        # A pull request is compared with its base branch, a push with the
+        # commit before it.  The rule is in scripts/check_doc_counts.py.
+        run: python scripts/check_doc_counts.py --release-if-version-raised "${{ github.event_name == 'pull_request' && github.base_ref || github.event.before }}"
 
       - name: Check limitation tables are in sync
         run: python scripts/check_limitations_sync.py
@@ -206,6 +200,16 @@ jobs:
 
       - name: Security lint (ruff S rules)
         run: ruff check --select S vera/
+
+      - name: Hygiene hooks (pre-commit-hooks) on every file
+        # The local hook runs these on the files a commit stages; here they
+        # cover every file, so a commit that skipped the hook is still held
+        # to them.  check-added-large-files stays at the commit: it inspects
+        # the files a commit ADDS, which only the commit's own index records.
+        run: |
+          for hook in trailing-whitespace end-of-file-fixer check-yaml check-toml check-merge-conflict debug-statements; do
+            pre-commit run --all-files --show-diff-on-failure "$hook"
+          done
 
       - name: Verify uv.lock is up to date
         run: |
@@ -344,6 +348,42 @@ jobs:
           path: sbom.json
           retention-days: 90
 
+  eager-gc:
+    # #1379/#1382: `VERA_EAGER_GC=1` forces a collection at every `$alloc`,
+    # which turns a rooting bug from a timing accident into a deterministic
+    # failure (ENVIRONMENT.md).  Both defects this lane would have caught
+    # were found by hand; without the lane the class re-enters silently,
+    # because the ordinary run is green on exactly the programs that fail
+    # here.  Its own job rather than a step on `test`: it re-runs the whole
+    # conformance corpus and every runnable example under a knob that makes
+    # them slower, and a failure here should name itself rather than arrive
+    # as a line inside the main suite's output.
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Conformance suite under eager GC
+        run: python scripts/check_conformance.py
+        env:
+          VERA_EAGER_GC: "1"
+
+      - name: Examples run under eager GC
+        run: python scripts/check_examples_run.py
+        env:
+          VERA_EAGER_GC: "1"
+
   browser-parity:
     permissions:
       contents: read
@@ -377,7 +417,7 @@ jobs:
 
       - name: Upload JS coverage to Codecov
         if: always()
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: js-coverage/lcov.info

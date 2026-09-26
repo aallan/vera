@@ -1,0 +1,26 @@
+-- Conformance: a constructor pattern over a scrutinee whose type declares no
+-- such constructor is a checker error (Chapter 4, Section 4.9.1).
+-- Tests: E314 — `Some` and `None` are constructors of Option<T>, and the
+-- scrutinee here is the Map<String, Int> that map_new() returns.  A Map is a
+-- built-in container: it is an ADT with no constructors at all, so neither arm
+-- can ever be taken.  The exhaustiveness pass cannot see this — a type with no
+-- constructor registry reads to it as one it does not know — so the pattern is
+-- typed against the scrutinee instead, once, for every pattern form (#1315).
+public fn count(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match map_new() {
+    Some(@Int) -> 1,
+    None -> 2
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  count(())
+}

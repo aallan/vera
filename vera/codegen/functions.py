@@ -12,9 +12,10 @@ from typing import TYPE_CHECKING, cast
 from vera import ast
 from vera.skip import AdtEqNotDerivableError, CodegenInvariantError, CodegenSkip
 from vera.codegen.compilability import contract_exprs
-from vera.codegen.tail_position import compute_tail_call_sites
+from vera.tail_position import compute_tail_call_sites
 from vera.monomorphize import mangle_type_name
 from vera.slots import effect_op_result_names, type_expr_slot_name
+from vera.trap_registry import signal_instructions
 from vera.wasm import WasmContext, WasmSlotEnv
 from vera.wasm.helpers import (
     CellNames,
@@ -26,8 +27,221 @@ if TYPE_CHECKING:
     from vera.types import SpanTypeTable
 
 
+#: The most bytes of a thrown `String` an escaped exception's message
+#: quotes; a longer one is cut there and marked with an ellipsis.
+_EXN_BOUNDARY_STRING_BYTES = 64
+
+#: The locals the exception boundary uses for a caught payload and the
+#: message it builds from it.
+_EXN_BOUNDARY_LOCALS = (
+    "(local $xb_i64 i64) (local $xb_i32 i32) "
+    "(local $xb_ptr i32) (local $xb_len i32) (local $xb_mag i64) "
+    "(local $xb_t i64) (local $xb_k i32) (local $xb_n i32) "
+    "(local $xb_pos i32) (local $xb_at i32) (local $xb_total i32)"
+)
+
+
+def _exn_boundary_digits(dst: int) -> list[str]:
+    """Write the decimal digits of the u64 in ``$xb_mag`` at ``dst + $xb_n``
+    and add their count to ``$xb_n`` — the formatter the exception boundary
+    quotes an integer payload with, into scratch that belongs to no heap
+    object, so building the message never allocates (#1479).  Divides only
+    by the constant 10."""
+    return [
+        # Count the digits: at least one.
+        "local.get $xb_mag", "local.set $xb_t",
+        "i32.const 0", "local.set $xb_k",
+        "block $xb_counted", "  loop $xb_count",
+        "    local.get $xb_k", "    i32.const 1", "    i32.add",
+        "    local.set $xb_k",
+        "    local.get $xb_t", "    i64.const 10", "    i64.div_u",
+        "    local.tee $xb_t", "    i64.eqz", "    br_if $xb_counted",
+        "    br $xb_count", "  end", "end",
+        # Write them from the last one back.
+        "local.get $xb_n", "local.get $xb_k", "i32.add", "local.set $xb_n",
+        f"i32.const {dst}", "local.get $xb_n", "i32.add",
+        "i32.const 1", "i32.sub", "local.set $xb_pos",
+        "local.get $xb_mag", "local.set $xb_t",
+        "block $xb_written", "  loop $xb_write",
+        "    local.get $xb_pos",
+        "    local.get $xb_t", "    i64.const 10", "    i64.rem_u",
+        "    i32.wrap_i64", "    i32.const 48", "    i32.add",
+        "    i32.store8",
+        "    local.get $xb_pos", "    i32.const 1", "    i32.sub",
+        "    local.set $xb_pos",
+        "    local.get $xb_t", "    i64.const 10", "    i64.div_u",
+        "    local.tee $xb_t", "    i64.eqz", "    br_if $xb_written",
+        "    br $xb_write", "  end", "end",
+    ]
+
+
 class FunctionCompilationMixin:
     """Methods for compiling function bodies to WAT."""
+
+    def _exn_boundary(
+        self, decl: ast.FnDecl, param_parts: list[str], result_part: str,
+    ) -> str | None:
+        """The export that names an exception escaping *decl* (#1479).
+
+        An entry point whose effect row declares ``Exn<T>`` can let an
+        exception leave it, and the engine then reports only that one was
+        thrown.  So *decl* is exported through this wrapper instead of
+        directly: it calls *decl*, catches every tag the row declares (and
+        any other), and signals ``uncaught_exception`` with a message
+        naming the exception's type and — for an `Int`, `Nat`, `Byte`,
+        `Bool` or `String` payload — the value thrown.  The message is built
+        in scratch that belongs to no heap object, so no allocation runs on
+        the way to the trap.  Internal calls still reach *decl* itself, so a
+        `handle[Exn<T>]` anywhere below the entry point catches as before.
+        Returns None when *decl* declares no ``Exn``.
+        """
+        if not isinstance(decl.effect, ast.EffectSet):
+            return None
+        tags: list[tuple[str, list[str], str, str]] = []
+        for eff in decl.effect.effects:
+            if not (isinstance(eff, ast.EffectRef) and eff.name == "Exn"
+                    and eff.type_args and len(eff.type_args) == 1):
+                continue
+            te = eff.type_args[0]
+            family = self._family_name_te(te)
+            wt = self._type_expr_to_wasm_type(te)
+            if not family or wt is None or wt == "unsupported":
+                continue
+            params = ["i32", "i32"] if wt == "i32_pair" else [wt]
+            tag = f"$exn_{mangle_type_name(family)}"
+            if any(t[0] == tag for t in tags):
+                continue
+            # The message names the type as the row spells it — `Exn<Pos>`,
+            # not the refinement it resolves to (the slot form without its
+            # `@`s) — so the `handle[Exn<T>]` the Fix asks for is one the
+            # reader can write.
+            tags.append((tag, params,
+                         ast.format_type_expr(te).replace("@", ""),
+                         self._family_base_te(te) or family))
+        if not tags:
+            return None
+        self._needs_trap = True
+        self._needs_memory = True
+        name = decl.name
+        n_params = sum(part.count("(param ") for part in param_parts)
+        result_spec = result_part.strip()
+        lines = [f'  (func ${name}$exn_boundary (export "{name}")'
+                 + (" " + " ".join(param_parts) if param_parts else "")
+                 + result_part,
+                 f"    {_EXN_BOUNDARY_LOCALS}"]
+        # Each catch lands after its own block's `end` with the payload on
+        # the stack; its report leaves the message in $xb_at / $xb_total and
+        # branches to the one signal below.  `catch_all` (an exception of a
+        # type the row does not declare, which a checked program never
+        # throws here) lands after $xb_any with a message of its own.
+        any_ptr, any_len = self.string_pool.intern(
+            f"An exception escaped `{name}`: no `handle[Exn<T>]` caught it "
+            "before the call returned.")
+        body: list[str] = ["block $xb_signal", "block $xb_any"]
+        for i, (_tag, params, _family, _base) in enumerate(tags):
+            body.append(f"block $xb_{i} (result {' '.join(params)})")
+        catches = " ".join(
+            f"(catch {tag} $xb_{i})" for i, (tag, *_rest) in enumerate(tags))
+        body.append(f"try_table {result_spec} {catches} (catch_all $xb_any)"
+                    .replace("  ", " "))
+        body.extend(f"  local.get {k}" for k in range(n_params))
+        body.append(f"  call ${name}")
+        body.append("end")
+        body.append("return")
+        for i in reversed(range(len(tags))):
+            body.append("end")
+            body.extend(self._exn_boundary_report(name, *tags[i][1:]))
+            body.append("br $xb_signal")
+        body += ["end", f"i32.const {any_ptr}", "local.set $xb_at",
+                 f"i32.const {any_len}", "local.set $xb_total", "end"]
+        body.extend(signal_instructions(
+            "uncaught_exception",
+            operands=("local.get $xb_at", "local.get $xb_total")))
+        lines.extend(f"    {instr}" for instr in body)
+        lines.append("  )")
+        return "\n".join(lines)
+
+    def _exn_boundary_report(
+        self, name: str, params: list[str], shown: str, base: str,
+    ) -> list[str]:
+        """With one tag's payload on the stack, leave the message naming it
+        escaping *name* in ``$xb_at`` / ``$xb_total``, for the one signal
+        :meth:`_exn_boundary` raises.  *shown* is the payload type as the
+        effect row spells it; *base*, the type its value is printed as."""
+        exn = f"`Exn<{shown}>`"
+        stated = (f"An {exn} escaped `{name}`: no `handle[Exn<{shown}>]` "
+                  "caught it before the call returned")
+        printable = base in ("Int", "Nat", "Byte", "Bool", "String")
+        prefix = stated + (", and the value thrown was " if printable else ".")
+        ptr, length = self.string_pool.intern(prefix)
+        if not printable:
+            return ["drop"] * len(params) + [
+                f"i32.const {ptr}", "local.set $xb_at",
+                f"i32.const {length}", "local.set $xb_total"]
+        room = _EXN_BOUNDARY_STRING_BYTES + 8 if base == "String" else 24
+        scratch = self.string_pool.reserve(length + room)
+        dst = scratch + length
+        out: list[str] = []
+        if base == "String":
+            out += ["local.set $xb_len", "local.set $xb_ptr"]
+        elif params == ["i64"]:
+            out += ["local.set $xb_i64"]
+        else:
+            out += ["local.set $xb_i32"]
+        out += [f"i32.const {scratch}", f"i32.const {ptr}",
+                f"i32.const {length}", "memory.copy",
+                "i32.const 0", "local.set $xb_n"]
+        if base == "Int":
+            out += [
+                "local.get $xb_i64", "i64.const 0", "i64.lt_s", "if",
+                f"  i32.const {dst}", "  i32.const 45", "  i32.store8",
+                "  i64.const 0", "  local.get $xb_i64", "  i64.sub",
+                "  local.set $xb_mag", "  i32.const 1", "  local.set $xb_n",
+                "else", "  local.get $xb_i64", "  local.set $xb_mag", "end",
+                *_exn_boundary_digits(dst),
+            ]
+        elif base == "Nat":
+            out += ["local.get $xb_i64", "local.set $xb_mag",
+                    *_exn_boundary_digits(dst)]
+        elif base == "Byte":
+            out += ["local.get $xb_i32", "i64.extend_i32_u",
+                    "local.set $xb_mag", *_exn_boundary_digits(dst)]
+        elif base == "Bool":
+            true_ptr, true_len = self.string_pool.intern("true")
+            false_ptr, false_len = self.string_pool.intern("false")
+            out += [
+                f"i32.const {dst}", "local.get $xb_i32", "if (result i32)",
+                f"  i32.const {true_ptr}", "else", f"  i32.const {false_ptr}",
+                "end", "local.get $xb_i32", "if (result i32)",
+                f"  i32.const {true_len}", "else", f"  i32.const {false_len}",
+                "end", "local.tee $xb_n", "memory.copy",
+            ]
+        else:  # String: quoted, cut at a fixed length
+            cut = _EXN_BOUNDARY_STRING_BYTES
+            ellipsis_ptr, ellipsis_len = self.string_pool.intern("…")
+            out += [
+                f"i32.const {dst}", "i32.const 34", "i32.store8",
+                "local.get $xb_len", f"i32.const {cut}", "i32.gt_u",
+                "if (result i32)", f"  i32.const {cut}", "else",
+                "  local.get $xb_len", "end", "local.set $xb_k",
+                f"i32.const {dst + 1}", "local.get $xb_ptr",
+                "local.get $xb_k", "memory.copy",
+                "local.get $xb_k", "i32.const 1", "i32.add",
+                "local.set $xb_n",
+                "local.get $xb_len", f"i32.const {cut}", "i32.gt_u", "if",
+                f"  i32.const {dst}", "  local.get $xb_n", "  i32.add",
+                f"  i32.const {ellipsis_ptr}", f"  i32.const {ellipsis_len}",
+                "  memory.copy",
+                "  local.get $xb_n", f"  i32.const {ellipsis_len}", "  i32.add",
+                "  local.set $xb_n", "end",
+                f"i32.const {dst}", "local.get $xb_n", "i32.add",
+                "i32.const 34", "i32.store8",
+                "local.get $xb_n", "i32.const 1", "i32.add",
+                "local.set $xb_n",
+            ]
+        return out + [f"i32.const {scratch}", "local.set $xb_at",
+                      f"i32.const {length}", "local.get $xb_n", "i32.add",
+                      "local.set $xb_total"]
 
     def _emit_adt_eq_not_derivable(
         self, ctx: WasmContext, nde: AdtEqNotDerivableError,
@@ -240,6 +454,7 @@ class FunctionCompilationMixin:
             tuple[SpanTypeTable | None, SpanTypeTable | None] | None
         ) = None,
         where_scope: frozenset[str] = frozenset(),
+        own_path: tuple[str, ...] | None = None,
     ) -> str | None:
         """Compile a single function to WAT.
 
@@ -273,6 +488,10 @@ class FunctionCompilationMixin:
         pre-#987 behaviour: those component sites stay unguarded, never
         false-guarded.  Fn-type-based recovery (closure formal / return types) is
         NOT span-keyed and is unaffected either way.
+
+        *own_path* (#1558) is the path that names *decl*'s own file in a
+        qualified call; the tail-call analyzer marks a tail call by it as it
+        marks the bare call (``compute_tail_call_sites``).
         """
         # #987: an imported body's span-keyed tables are ITS module's own (or
         # None when none were threaded) — never the main-file tables, whose
@@ -430,24 +649,37 @@ class FunctionCompilationMixin:
                         )
                         effect_op_cells["throw"] = exn_cell
 
-        # Flatten ADT layouts into ctor_name -> layout for WasmContext
-        ctor_layouts = {}
-        ctor_to_adt: dict[str, str] = {}
-        for adt_name, layouts in self._adt_layouts.items():
-            ctor_layouts.update(layouts)
-            for ctor_name in layouts:
-                ctor_to_adt[ctor_name] = adt_name
-        adt_type_names = set(self._adt_layouts.keys())
+        # #1436: the by-name projections, scoped to the namespace whose
+        # body is compiling.  Flattening `_adt_layouts` across every
+        # namespace let one namespace's declaration answer for another's.
+        ctor_layouts, ctor_to_adt, ns_tp_indices = (
+            self._namespace_ctor_projection())
+        # #1253/#1316: the NAMESPACE's data types, not every layout this
+        # compilation registered.  `_adt_layouts` is one map across every
+        # absorbed namespace; `_alias_env.data_types` is the set
+        # `_adt_members_in_scope` scoped to the module (or the prelude) whose
+        # declaration is compiling, which is what the checker saw.  Handing
+        # the wasm layer the flat map made its `base in _adt_type_names`
+        # tests answer over a larger set than `naming._resolve_named` does.
+        adt_type_names = set(self._alias_env.data_types)
 
         ctx = WasmContext(
             self.string_pool,
+            # #1479: one record for the whole module, read back from its text.
+            checks=self._emitted_checks,
             effect_ops=effect_ops,
             effect_op_result_wt=effect_op_result_wt,
             effect_op_result_vera=effect_op_result_vera,
             effect_op_cells=effect_op_cells,
             state_getters=state_getters,
             ctor_layouts=ctor_layouts,
+            # #1414: the LIVE nested map, not a copy of it — the flat
+            # `ctor_layouts` above is already derived from it, and a
+            # third copy is one more thing to drift (PR #1419 review).
+            adt_ctor_layouts=self._adt_layouts,
             adt_type_names=adt_type_names,
+            value_data_types=self._value_data_type_names(),
+            adt_ctor_tp_indices=self._adt_ctor_tp_indices,
             generic_fn_info=getattr(self, "_generic_fn_info", None),
             generic_constrained_vars=getattr(
                 self, "_generic_constrained_vars", None),
@@ -457,7 +689,10 @@ class FunctionCompilationMixin:
             # `known_fns` above stays flat for the guard rail, which asks
             # whether a resolved target has a symbol, not whose name it is.
             scoped_fns=self._scoped_fn_names(where_scope, decl.name),
-            ctor_adt_tp_indices=getattr(self, "_ctor_adt_tp_indices", None),
+            # #1436: the namespace-scoped table, not the flat one —
+            # a generic entry declaration otherwise reached a module's
+            # structural-Eq through this map alone.
+            ctor_adt_tp_indices=ns_tp_indices,
             adt_tp_counts=getattr(self, "_adt_tp_counts", None),
             adt_tp_param_names=getattr(self, "_adt_tp_param_names", None),
         )
@@ -512,6 +747,10 @@ class FunctionCompilationMixin:
         # #813: per-parameter concrete-@Int flags for the call-site
         # runtime @Nat -> @Int widening guard.
         ctx.set_fn_int_params(self._fn_int_params)
+        # #754: per-formal base type names for every effect
+        # operation, so an op call site guards its narrowing
+        # arguments the way a function call site does.
+        ctx.set_effect_op_params(self._effect_op_params)
         # #865: per-parameter concrete-@Byte flags for the call-site
         # int-literal → i32.const coercion.
         ctx.set_fn_byte_params(self._fn_byte_params)
@@ -559,6 +798,11 @@ class FunctionCompilationMixin:
         # `_emit_component_refinement_guards`).  Collected alongside the
         # directly-refined params and emitted in the same pre-body block.
         component_param_checks: list[tuple[int, ast.TypeExpr]] = []
+        #: `(ptr-or-handle local, len local, declared type)` per carrier
+        #: param whose elements codegen guards at entry (#1430).  The len is
+        #: None for a `Map` or `Set`, whose single i32 is a HANDLE the guard
+        #: projects to a sequence rather than a pointer it can walk.
+        element_param_checks: list[tuple[int, int | None, ast.TypeExpr]] = []
         for i, param_te in enumerate(decl.params):
             wt = self._type_expr_to_wasm_type(param_te)
             if wt is None:
@@ -591,7 +835,7 @@ class FunctionCompilationMixin:
             if wt == "i32_pair":
                 # String/Array types use two consecutive i32 params (ptr, len)
                 ptr_idx = ctx.alloc_param()
-                _len_idx = ctx.alloc_param()
+                len_idx = ctx.alloc_param()
                 param_parts.append(f"(param $p{i}_ptr i32)")
                 param_parts.append(f"(param $p{i}_len i32)")
                 type_name = self._type_expr_to_slot_name(param_te)
@@ -599,6 +843,13 @@ class FunctionCompilationMixin:
                     env = env.push(type_name, ptr_idx)
                 if self._refinement_guard_parts(param_te) is not None:
                     refined_param_checks.append((ptr_idx, param_te))
+                # #1430: an `Array<Refined>` parameter carries no top-level
+                # refinement and is not a tuple, so neither guard above
+                # reaches its ELEMENTS — and the verifier assumes them under
+                # R1.  The length half is what makes the guard possible, and
+                # it is already in hand here.
+                if self._element_guard_parts(param_te):
+                    element_param_checks.append((ptr_idx, len_idx, param_te))
                 gc_pointer_params.append(ptr_idx)
                 continue
             local_idx = ctx.alloc_param()
@@ -623,6 +874,12 @@ class FunctionCompilationMixin:
             # input: that one is the syntactic head (it has to be, it keys
             # the binding table), which classified a refined or aliased
             # `@Byte` formal as a heap pointer.
+            # #1430: a `Map` or `Set` formal is one i32 handle, so its
+            # elements are reached by projecting it — the guard calls
+            # `map_values` and walks the pair that comes back, which is why
+            # the len half is None here where an array's is a real local.
+            if self._element_guard_parts(param_te):
+                element_param_checks.append((local_idx, None, param_te))
             if wt == "i32" and is_gc_pointer_base(
                 self._family_base_te(param_te)
             ):
@@ -687,10 +944,13 @@ class FunctionCompilationMixin:
         # ``self_ret_wt`` argument is the function's WASM return
         # type, used by the translator's type-match guard to ensure
         # WASM ``return_call`` semantics are valid (callee signature
-        # must match caller).  See ``vera/codegen/tail_position.py``
+        # must match caller).  See ``vera/tail_position.py``
         # for the analyzer rules and ``_translate_call`` in
         # ``vera/wasm/calls.py`` for the emit site.
-        tail_sites = compute_tail_call_sites(decl)
+        # #1558: a tail call by *own_path*, the path naming this body's own
+        # file, is the bare tail call to that top-level function and is
+        # marked with it.
+        tail_sites = compute_tail_call_sites(decl, own_path)
 
         # #758/#983 — per-narrowing-leaf @Int->@Nat return guard.  Collect the
         # tail-position return leaves that narrow into a bare @Nat return so
@@ -783,6 +1043,16 @@ class FunctionCompilationMixin:
                         ctx, ast.format_fn_signature(decl), param_te,
                         value_local, env, "parameter"))
 
+            # #1430: element-wise entry guards for `Array<Refined>` params.
+            # This is what backs the R1 element assumption at a CALL ARGUMENT
+            # boundary — the caller's obligation may be undecided, and the
+            # callee still may not read an element the refinement forbids.
+            for ptr_local, len_local, param_te in element_param_checks:
+                refine_guard_instrs.extend(
+                    self._emit_element_guards(
+                        ctx, ast.format_fn_signature(decl), param_te,
+                        ptr_local, len_local, env, "parameter"))
+
             for value_local, param_te in refined_param_checks:
                 parts = self._refinement_guard_parts(param_te)
                 if parts is None:  # pragma: no cover — collected only when not None
@@ -791,7 +1061,8 @@ class FunctionCompilationMixin:
                 msg = self._format_refinement_message(
                     decl, param_te, "parameter")
                 guard = self._emit_refinement_check(
-                    ctx, predicate, base_name, value_local, msg, env)
+                    ctx, predicate, base_name, value_local, msg, env,
+                    at=param_te)
                 if guard is not None:
                     refine_guard_instrs.extend(guard)
         except (AdtEqNotDerivableError, CodegenSkip) as exc:
@@ -1066,7 +1337,7 @@ class FunctionCompilationMixin:
             and ctx._result_is_nat(decl.body)
         )
         if widen_guarded:
-            body_instrs = ctx._emit_int_widen_guard(body_instrs)
+            body_instrs = ctx._emit_int_widen_guard(body_instrs, at=decl.body)
 
         # #758/#983: an @Int body narrowing into a @Nat return can be negative
         # (`to_nat(0 - 5)` = -5), so trap rather than store a negative in the
@@ -1184,7 +1455,7 @@ class FunctionCompilationMixin:
         # postconditions) dropped any flag a builtin or allocation set while
         # lowering an ``ensures(...)`` predicate, so the import / memory / GC
         # declaration was omitted and the orphaned `call`/`global.get` failed
-        # WAT compilation (#808 for `vera.overflow_trap`; #823 for the other
+        # WAT compilation (#808 for the overflow signal; #823 for the other
         # host-import families and `$alloc`/`$gc_sp`).  Nothing between the old
         # position and here reads these flags — they are consumed only at module
         # assembly — so the move is purely additive in correctness.
@@ -1205,8 +1476,14 @@ class FunctionCompilationMixin:
         self._db_ops_used.update(ctx._db_ops_used)  # #229
         self._random_ops_used.update(ctx._random_ops_used)
         self._math_ops_used.update(ctx._math_ops_used)
-        self._needs_overflow_trap = (
-            self._needs_overflow_trap or ctx._needs_overflow_trap
+        # #1479: the trap signal and the contract channel, merged HERE —
+        # after the precondition, body, lifted-closure and postcondition
+        # phases — because a check lowered in any of them raises its flag on
+        # this context, and one merged earlier would leave a postcondition's
+        # `call $vera.trap` pointing at an undeclared import.
+        self._needs_trap = self._needs_trap or ctx._needs_trap
+        self._needs_contract_fail = (
+            self._needs_contract_fail or ctx._needs_contract_fail
         )
         # #773: structural-Eq helper functions generated while lowering this
         # body (deduped by name across the whole module at assembly).
@@ -1412,8 +1689,12 @@ class FunctionCompilationMixin:
                 gc_epilogue.append(f"local.get {gc_sp_save}")
                 gc_epilogue.append("global.set $gc_sp")
 
-        # Assemble function WAT
-        export_part = f' (export "{decl.name}")' if export else ""
+        # Assemble function WAT.  #1479: an entry point declaring `Exn<T>`
+        # is exported through the boundary that names an escaping exception.
+        boundary = (self._exn_boundary(decl, param_parts, result_part)
+                    if export else None)
+        export_part = (f' (export "{decl.name}")'
+                       if export and boundary is None else "")
         header = f"  (func ${decl.name}{export_part}"
         if param_parts:
             header += " " + " ".join(param_parts)
@@ -1465,4 +1746,6 @@ class FunctionCompilationMixin:
             lines.append(f"    {instr}")
 
         lines.append("  )")
+        if boundary is not None:
+            lines.append(boundary)
         return "\n".join(lines)

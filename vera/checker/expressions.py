@@ -12,34 +12,38 @@ from collections.abc import Sequence
 from typing import ClassVar
 
 from vera import ast
+from vera.checker.resolution import is_literal_only, literal_int_value
 from vera.checker.sql import resolve_array_len, resolve_literal_string
 from vera.types import (
+    AdtType,
+    base_type,
     BOOL,
     BYTE,
-    FLOAT64,
-    INT,
-    NAT,
-    NUMERIC_TYPES,
-    ORDERABLE_TYPES,
-    STRING,
-    UNIT,
-    AdtType,
-    PrimitiveType,
-    RefinedType,
-    TypeVar,
-    EffectInstance,
-    FunctionType,
-    Type,
-    UnknownType,
+    ConcreteEffectRow,
     contains_fresh_typevar,
     contains_typevar,
-    base_type,
+    EffectInstance,
     erases_to_unit,
+    FLOAT64,
+    FunctionType,
+    INT,
     is_subtype,
+    NAT,
+    negative_literal_meets_nat,
     numeric_join,
-    pretty_type,
+    NUMERIC_TYPES,
+    ORDERABLE_TYPES,
     pretty_inferred_type,
+    pretty_type,
+    PrimitiveType,
+    RefinedType,
+    STRING,
+    TO_STRING_BUILTINS,
+    Type,
     types_equal,
+    TypeVar,
+    UNIT,
+    UnknownType,
 )
 
 # Machine bounds for the integer types (#812): `@Int` is i64, `@Nat` is u64.  An
@@ -113,6 +117,13 @@ class ExpressionsMixin:
         whole tree.  With collection off (``self.expr_types is None``,
         the default), this adds a single attribute test per expression.
         """
+        if (expected is None and self._pattern_arg_targets
+                and isinstance(expr, (ast.ConstructorCall, ast.ArrayLit))):
+            # #1503: a pattern that binds this construction at a composite
+            # type is its context (`_register_pattern_reads`).
+            pattern_key = ast.span_key(expr)
+            if pattern_key is not None:
+                expected = self._pattern_arg_targets.get(pattern_key)
         result = self._synth_expr_impl(expr, expected=expected)
         if self.expr_types is not None and expr.span is not None:
             key = ast.span_key(expr)
@@ -278,13 +289,13 @@ class ExpressionsMixin:
         if isinstance(expr, ast.ResultRef):
             return self._check_result_ref(expr)
         if isinstance(expr, ast.BinaryExpr):
-            return self._check_binary(expr)
+            return self._check_binary(expr, expected=expected)
         if isinstance(expr, ast.UnaryExpr):
             return self._check_unary(expr)
         if isinstance(expr, ast.IndexExpr):
-            return self._check_index(expr)
+            return self._check_index(expr, expected=expected)
         if isinstance(expr, ast.FnCall):
-            result = self._check_fn_call(expr)
+            result = self._check_fn_call(expr, expected=expected)
             # Bidirectional coercion: when a generic call returns a type
             # with unresolved TypeVars (e.g. map_new() → Map<K, V>) and
             # we have an expected concrete type (e.g. Map<String, Int>),
@@ -306,7 +317,7 @@ class ExpressionsMixin:
         if isinstance(expr, ast.QualifiedCall):
             return self._check_qualified_call(expr)
         if isinstance(expr, ast.ModuleCall):
-            return self._check_module_call(expr)
+            return self._check_module_call(expr, expected=expected)
         if isinstance(expr, ast.IfExpr):
             return self._check_if(expr, expected=expected)
         if isinstance(expr, ast.MatchExpr):
@@ -354,14 +365,10 @@ class ExpressionsMixin:
     # String interpolation
     # -----------------------------------------------------------------
 
-    # Types that have a corresponding *_to_string builtin.
-    _TO_STRING_TYPES: ClassVar[dict[str, str]] = {
-        "Int": "to_string",
-        "Nat": "nat_to_string",
-        "Bool": "bool_to_string",
-        "Byte": "byte_to_string",
-        "Float64": "float_to_string",
-    }
+    # Types that have a corresponding *_to_string builtin — the shared
+    # table (#1347), not a copy of it; codegen's dispatch reads the same
+    # object, so the two sides cannot drift about what is interpolable.
+    _TO_STRING_TYPES: ClassVar[dict[str, str]] = TO_STRING_BUILTINS
 
     def _check_interpolated_string(
         self, expr: ast.InterpolatedString,
@@ -376,10 +383,19 @@ class ExpressionsMixin:
             # String expressions are fine as-is
             if is_subtype(part_ty, STRING):
                 continue
-            # Check for auto-convertible primitive types
+            # Check for auto-convertible primitive types, on the type's
+            # RESOLVED form (#1347).  `base_type` unwraps refinement
+            # layers; an alias is already resolved by the time a type
+            # reaches here.  A refinement renders exactly as the
+            # primitive it refines — the predicate constrains which
+            # values exist, not how one prints — so testing
+            # `isinstance(part_ty, PrimitiveType)` rejected
+            # `{ @Float64 | ... }` while accepting `type C = Float64`,
+            # two spellings of the same runtime value.
+            resolved = base_type(part_ty)
             type_name = (
-                part_ty.name
-                if isinstance(part_ty, PrimitiveType)
+                resolved.name
+                if isinstance(resolved, PrimitiveType)
                 else None
             )
             if type_name not in self._TO_STRING_TYPES:
@@ -525,6 +541,14 @@ class ExpressionsMixin:
             )
             return UnknownType()
 
+        # #1489: a result reference's type ARGUMENTS name types, and resolve
+        # like a slot reference's (`_check_slot_name_args`), so a name in one
+        # that nothing declares is refused (E136) instead of being ignored.
+        # The head is a slot-name head, not a type to resolve: a function-
+        # typed result is `@Fn.result`, and `Fn` names no declaration.
+        self._check_slot_name_args(
+            ast.NamedType(name=ref.type_name, type_args=ref.type_args))
+
         ret = self.env.current_return_type
         if ret is None:
             return UnknownType()
@@ -534,11 +558,14 @@ class ExpressionsMixin:
     # Binary operators
     # -----------------------------------------------------------------
 
-    def _check_binary(self, expr: ast.BinaryExpr) -> Type | None:
-        """Type-check a binary operator expression."""
+    def _check_binary(self, expr: ast.BinaryExpr, *,
+                      expected: Type | None = None) -> Type | None:
+        """Type-check a binary operator expression.  Only a pipe reads
+        *expected*: it is a call, and a call's result is checked against
+        the type its context expects."""
         # Pipe is special
         if expr.op == ast.BinOp.PIPE:
-            return self._check_pipe(expr)
+            return self._check_pipe(expr, expected=expected)
 
         left_ty = self._synth_expr(expr.left)
         right_ty = self._synth_expr(expr.right)
@@ -611,6 +638,17 @@ class ExpressionsMixin:
             # non-negativity with no verifier obligation (§0.2.2).
             joined = numeric_join(left_base, right_base)
             if joined is not None:
+                # #1541: a literal-only expression whose value is negative is
+                # an `Int`.
+                # `0 - 3` is two non-negative literals, and `Nat - Nat` would
+                # make it a `Nat` holding -3; whatever instantiation it then
+                # fixed (`id(0 - 3)`, `[0 - 1, 5]`) declared the value
+                # non-negative, and the `@Nat` guards on it refused or
+                # trapped a program whose value is plainly -3.
+                if types_equal(joined, NAT) and is_literal_only(expr):
+                    value = literal_int_value(expr)
+                    if value is not None and value < 0:
+                        return INT
                 return joined
             self._error(
                 expr,
@@ -863,8 +901,13 @@ class ExpressionsMixin:
             error_code="E243",
         )
 
-    def _check_pipe(self, expr: ast.BinaryExpr) -> Type | None:
-        """Type-check pipe: left |> right (right must be a FnCall/ModuleCall)."""
+    def _check_pipe(self, expr: ast.BinaryExpr, *,
+                    expected: Type | None = None) -> Type | None:
+        """Type-check pipe: left |> right (right must be a FnCall/ModuleCall).
+
+        The desugared call is checked against *expected* as the call
+        written out would be (PR #1583 review): `let @Nat = (0 - 3) |> id()`
+        instantiates `id` at `Nat`, as `let @Nat = id(0 - 3)` does."""
         left_ty = self._synth_expr(expr.left)
         if left_ty is None:
             return None
@@ -874,7 +917,7 @@ class ExpressionsMixin:
             # Create a virtual call with left prepended
             all_args = (expr.left,) + expr.right.args
             return self._check_call_with_args(
-                expr.right.name, all_args, expr.right)
+                expr.right.name, all_args, expr.right, expected=expected)
         # Module-qualified pipe: left |> mod::fn(args) → mod::fn(left, args)
         if isinstance(expr.right, ast.ModuleCall):
             desugared = ast.ModuleCall(
@@ -883,7 +926,7 @@ class ExpressionsMixin:
                 args=(expr.left,) + expr.right.args,
                 span=expr.right.span,
             )
-            return self._check_module_call(desugared)
+            return self._check_module_call(desugared, expected=expected)
         # Fallback: just synth the right side
         return self._synth_expr(expr.right)
 
@@ -977,9 +1020,21 @@ class ExpressionsMixin:
     # Index
     # -----------------------------------------------------------------
 
-    def _check_index(self, expr: ast.IndexExpr) -> Type | None:
-        """Type-check array index: collection[index]."""
+    def _check_index(self, expr: ast.IndexExpr, *,
+                     expected: Type | None = None) -> Type | None:
+        """Type-check array index: collection[index].
+
+        An element expected at a type is read from an array of that type:
+        where the collection's literals decided an `Int` element that
+        *expected* makes a `Nat`, the collection is checked against it
+        (:meth:`_check_in_literal_context`; PR #1583 review), so
+        `let @Nat = array_reverse([0 - 3])[0]` is refused (E503) as
+        `let @Nat = id(0 - 3)` is."""
         coll_ty = self._synth_expr(expr.collection)
+        if expected is not None:
+            coll_ty = self._check_in_literal_context(
+                expr.collection, coll_ty, AdtType("Array", (expected,)),
+                element_reads=1)
         idx_ty = self._synth_expr(expr.index)
         if coll_ty is None or idx_ty is None:
             return None
@@ -1127,13 +1182,106 @@ class ExpressionsMixin:
 
     def _check_let_destruct(self, stmt: ast.LetDestruct) -> None:
         """Type-check a destructuring let."""
-        self._synth_expr(stmt.value)
+        tuple_shape = stmt.constructor == "Tuple"
+        self._register_pattern_reads(
+            stmt.value, list(stmt.type_bindings),
+            lambda name: (name == "Tuple") == tuple_shape,
+        )
+        value_ty = self._synth_expr(stmt.value)
 
+        resolved_types: list[Type] = []
         for te in stmt.type_bindings:
             self._check_refinement_predicates(te)  # #861
-            resolved = self._resolve_type(te)
+            resolved_types.append(self._resolve_type(te))
+
+        # #1541, PR #1583 review: a tuple destructure's bindings are the
+        # type its source is expected at, as a `let`'s declared type is,
+        # whatever the source's form: a generic call, or one reached
+        # through `if`, `match` and block tails, a pipe or an index.  So
+        # `let Tuple<@Nat, @Nat> = id(Tuple(1, 0 - 3))` is refused (E503)
+        # as `let @Nat = id(0 - 3)` is, and so is the same call in an `if`
+        # branch.
+        if tuple_shape:
+            self._check_in_literal_context(
+                stmt.value, value_ty, AdtType("Tuple", tuple(resolved_types)))
+
+        for te, resolved in zip(stmt.type_bindings, resolved_types):
             tname = self._type_expr_to_slot_name(te)
             self.env.bind(tname, resolved, "destruct")
+
+    def _check_in_literal_context(self, expr: ast.Expr, ty: Type | None,
+                                  context: Type, *,
+                                  element_reads: int = 0,
+                                  ) -> Type | None:
+        """*expr*, synthesized as *ty* without an expected type, checked
+        again against *context* where a generic call it reaches let its
+        literals fix an `Int` that *context* makes a `Nat`
+        (:meth:`_call_literal_meets_nat`; #1541, PR #1583 review).
+
+        `if`, `match`, a block, a tuple, an array literal, a pipe and an
+        index each thread the expected type to the call, which then places
+        each literal at the type *context* gives it, where a negative one
+        is a narrowing the verifier refutes (E503).  A literal the source
+        builds directly is not re-checked: the destructure's or the
+        binding's own narrowing reads it where it is.  *element_reads*
+        counts the indexes that read one element out of *context*
+        (:meth:`_call_literal_meets_nat`).  Returns the type the check
+        settled on."""
+        if (ty is None or isinstance(ty, UnknownType)
+                or contains_typevar(context)
+                or not self._call_literal_meets_nat(
+                    expr, context, element_reads=element_reads)):
+            return ty
+        rechecked = self._synth_expr(expr, expected=context)
+        if rechecked is None or isinstance(rechecked, UnknownType):
+            return ty
+        return rechecked
+
+    def _call_literal_meets_nat(self, expr: ast.Expr, context: Type, *,
+                                element_reads: int = 0) -> bool:
+        """Whether a generic call that *expr* evaluates to, or builds into
+        the value, fixed a type argument at `Int` from its literals' values
+        where *context* holds a `Nat` (:func:`negative_literal_meets_nat`
+        over the call's recorded soft result).  Read through a block's
+        result, the branches of an `if` and the arms of a `match`, a
+        tuple's fields, an array literal's elements, a pipe, and the array
+        an index reads — one element of it, so that array level is no
+        collection of the value (*element_reads* counts such reads)."""
+        while isinstance(context, RefinedType):
+            context = context.base
+        if isinstance(expr, ast.Block):
+            return self._call_literal_meets_nat(
+                expr.expr, context, element_reads=element_reads)
+        if isinstance(expr, ast.IfExpr):
+            return any(
+                self._call_literal_meets_nat(
+                    branch, context, element_reads=element_reads)
+                for branch in (expr.then_branch, expr.else_branch))
+        if isinstance(expr, ast.MatchExpr):
+            return any(self._call_literal_meets_nat(
+                arm.body, context, element_reads=element_reads)
+                for arm in expr.arms)
+        if isinstance(expr, ast.IndexExpr):
+            return self._call_literal_meets_nat(
+                expr.collection, AdtType("Array", (context,)),
+                element_reads=element_reads + 1)
+        if (isinstance(expr, ast.BinaryExpr) and expr.op == ast.BinOp.PIPE
+                and isinstance(expr.right, (ast.FnCall, ast.ModuleCall))):
+            expr = expr.right
+        if (isinstance(expr, ast.ConstructorCall) and expr.name == "Tuple"
+                and isinstance(context, AdtType) and context.name == "Tuple"
+                and len(context.type_args) == len(expr.args)):
+            return any(self._call_literal_meets_nat(a, c)
+                       for a, c in zip(expr.args, context.type_args))
+        if (isinstance(expr, ast.ArrayLit) and isinstance(context, AdtType)
+                and context.name == "Array" and len(context.type_args) == 1):
+            return any(self._call_literal_meets_nat(e, context.type_args[0])
+                       for e in expr.elements)
+        if isinstance(expr, (ast.FnCall, ast.ModuleCall)):
+            soft = self._literal_soft_results.get(ast.span_key(expr))
+            return soft is not None and negative_literal_meets_nat(
+                soft, context, element_reads=element_reads)
+        return False
 
     # -----------------------------------------------------------------
     # Anonymous functions
@@ -1190,9 +1338,23 @@ class ExpressionsMixin:
         if not expr.elements:
             return AdtType("Array", (UnknownType(),))
 
+        # An element is synthesized with no expected type; where *expected*
+        # makes it a `Nat` and a generic call in it let a negative literal
+        # fix an `Int` there, it is checked against the element type
+        # (`_check_in_literal_context`; PR #1583 review).
+        expected_base = base_type(expected) if expected is not None else None
+        element_ctx = (
+            expected_base.type_args[0]
+            if (isinstance(expected_base, AdtType)
+                and expected_base.name == "Array"
+                and len(expected_base.type_args) == 1)
+            else None)
         elem_types: list[Type | None] = []
         for elem in expr.elements:
-            elem_types.append(self._synth_expr(elem))
+            et = self._synth_expr(elem)
+            if element_ctx is not None:
+                et = self._check_in_literal_context(elem, et, element_ctx)
+            elem_types.append(et)
 
         first = None
         for et in elem_types:
@@ -1221,7 +1383,6 @@ class ExpressionsMixin:
         # strip to the base first (as `erases_to_unit` itself does) — otherwise
         # the refined shape misses this guard and the literal-level E135
         # double-fires alongside the annotation's (PR #938 review).
-        expected_base = base_type(expected) if expected is not None else None
         expected_is_zero_size_array = (
             isinstance(expected_base, AdtType)
             and expected_base.name == "Array"
@@ -1369,18 +1530,145 @@ class ExpressionsMixin:
     def _check_forall_expr(self, expr: ast.ForallExpr) -> Type | None:
         """Type-check forall(type, domain, predicate)."""
         self._check_refinement_predicates(expr.binding_type)  # #861
-        self._resolve_type(expr.binding_type)
+        self._check_quantifier_index(expr.binding_type, "forall")
         self._check_quantifier_bound(expr.domain, "forall")
+        self._check_quantifier_predicate(expr.predicate, "forall")
         self._synth_expr(expr.predicate)
         return BOOL
 
     def _check_exists_expr(self, expr: ast.ExistsExpr) -> Type | None:
         """Type-check exists(type, domain, predicate)."""
         self._check_refinement_predicates(expr.binding_type)  # #861
-        self._resolve_type(expr.binding_type)
+        self._check_quantifier_index(expr.binding_type, "exists")
         self._check_quantifier_bound(expr.domain, "exists")
+        self._check_quantifier_predicate(expr.predicate, "exists")
         self._synth_expr(expr.predicate)
         return BOOL
+
+    def _check_quantifier_index(self, te: ast.TypeExpr, form: str) -> None:
+        """The index type is ``Int`` or ``Nat``, or a refinement of one
+        (spec §6.3.3, E186).
+
+        A refinement of the index is honoured: the quantifier ranges over the
+        values below the bound that satisfy it (``forall`` holds when the
+        predicate holds for each of them, ``exists`` when it holds for one),
+        in the runtime check code generation emits.  Any other index type has
+        no meaning there — the index is a count — and was accepted and never
+        read, so ``forall(@String, 3, ...)`` checked and ran.  A type
+        parameter defers to the instantiation, as the bound's does (PR #1202):
+        the generic's integer instantiations are the ones that run, and
+        checking the others where the types are known is #1506's remaining
+        work.
+        """
+        before = len(self.errors)
+        ty = self._resolve_type(te)
+        if len(self.errors) > before:
+            return
+        base = ty
+        while isinstance(base, RefinedType):
+            base = base.base
+        if (base is None or isinstance(base, (UnknownType, TypeVar))
+                or base in (INT, NAT)):
+            return
+        what = pretty_type(base)
+        self._error(
+            te,
+            f"The {form}() index type must be Int or Nat, or a refinement "
+            f"of one: it is {what}.",
+            rationale=(
+                "A quantifier's first argument is the type of its index, "
+                "which runs over 0 up to the bound: a count.  A refinement of "
+                "Int or Nat narrows the values it ranges over; any other type "
+                "names no count."
+            ),
+            fix=(
+                "Give the index type @Nat or @Int — or a refinement such as "
+                "@{ @Nat | @Nat.0 > 0 } to range over the values that "
+                "satisfy it — and read anything else inside the predicate."
+            ),
+            spec_ref='Chapter 6, Section 6.3.3 "Quantified Expressions"',
+            error_code="E186",
+        )
+
+    def _check_quantifier_predicate(
+        self, pred: ast.AnonFn, form: str,
+    ) -> None:
+        """The predicate is a function of the INDEX to Bool (#1506, E179).
+
+        Spec §6.3.3: the index runs over ``0 .. bound-1`` and the predicate is
+        applied to each value, so it takes exactly one parameter, the index —
+        of type ``Int`` or ``Nat``, or an alias of either — and returns
+        ``Bool``.  Nothing checked it, and code generation, which lowers the
+        quantifier as a loop binding an i64 counter under the parameter's type
+        and reading an i32 result, stopped with E699 on a refined parameter or
+        a wrong arity, and emitted a module that fails to load for a ``Bool``
+        parameter or an ``Int`` result.
+
+        A refinement of the PARAMETER is refused.  The predicate is applied
+        to every value of the index, so a refinement narrower than the index
+        type cannot hold for all of them, and binding a value the declared
+        type excludes would mislead every guard downstream.  A refinement
+        that means "range over these values" belongs on the index type,
+        where it is honoured (`_check_quantifier_index`), or in the body, as
+        ``P ==> ...`` for ``forall`` and ``P && ...`` for ``exists``.
+
+        A type parameter defers to the instantiation, as E128 does for the
+        bound: the generic's integer instantiations are the ones that run.
+        Checking the others where the types are known is #1506's remaining
+        work.
+        """
+        connective = "==>" if form == "forall" else "&&"
+
+        def refuse(node: ast.Node, what: str) -> None:
+            self._error(
+                node,
+                f"The {form}() predicate must be a function of the index to "
+                f"Bool, fn(@Nat -> @Bool) or fn(@Int -> @Bool): {what}.",
+                rationale=(
+                    "A quantifier applies its predicate to every value of "
+                    "the index, 0 up to the bound, so the predicate takes "
+                    "exactly one parameter — the index, an Int or a Nat — "
+                    "and returns Bool.  A refinement narrower than the index "
+                    "type cannot hold for every value in the range, and any "
+                    "other shape has no lowering: code generation binds the "
+                    "index as a 64-bit integer and reads a Bool."
+                ),
+                fix=(
+                    f"Write the predicate as fn(@Nat -> @Bool) (or @Int, or "
+                    f"an alias of either).  For a refinement {{ @Nat | P }}, "
+                    f"refine the index type instead — "
+                    f"{form}(@{{ @Nat | P }}, ...) — or test P in the body: "
+                    f"fn(@Nat -> @Bool) effects(pure) {{ P {connective} ... }}."
+                ),
+                spec_ref='Chapter 6, Section 6.3.3 "Quantified Expressions"',
+                error_code="E179",
+            )
+
+        def resolve(te: ast.TypeExpr) -> Type | None:
+            """*te* resolved — or ``None`` when resolving it was itself
+            refused (an unknown name, E136; an alias arity, E133), which is
+            the one diagnostic that mistake gets."""
+            before = len(self.errors)
+            ty = self._resolve_type(te)
+            return None if len(self.errors) > before else ty
+
+        if len(pred.params) != 1:
+            refuse(pred, f"this one takes {len(pred.params)} parameters")
+        else:
+            param = resolve(pred.params[0])
+            if isinstance(param, RefinedType):
+                refuse(pred.params[0], "its parameter is a refinement type")
+            elif not (param is None
+                      or isinstance(param, (TypeVar, UnknownType))
+                      or param in (INT, NAT)):
+                refuse(pred.params[0],
+                       f"its parameter is {pretty_type(param)}")
+        result = resolve(pred.return_type)
+        while isinstance(result, RefinedType):
+            result = result.base
+        if not (result is None or result == BOOL
+                or isinstance(result, (TypeVar, UnknownType))):
+            refuse(pred.return_type, f"it returns {pretty_type(result)}")
 
     def _check_quantifier_bound(self, domain: ast.Expr, form: str) -> None:
         """The quantifier's domain is a numeric BOUND (spec §6.3.3:
@@ -1451,6 +1739,7 @@ class ExpressionsMixin:
             )
         ei = self._resolve_effect_ref(expr.effect_ref)
         if ei:
+            self._check_effect_ref_declared(expr, ei, "old")
             return self._effect_state_type(ei)
         return UnknownType()
 
@@ -1474,8 +1763,68 @@ class ExpressionsMixin:
             )
         ei = self._resolve_effect_ref(expr.effect_ref)
         if ei:
+            self._check_effect_ref_declared(expr, ei, "new")
             return self._effect_state_type(ei)
         return UnknownType()
+
+    def _check_effect_ref_declared(
+        self, expr: ast.Expr, ei: EffectInstance, form: str,
+    ) -> None:
+        """Refuse an ``old()`` / ``new()`` naming an effect the row omits (#1298).
+
+        Both forms read the same cell, so one rule serves both.  The cell is
+        keyed by effect FAMILY (`State<Bool>` and `State<Int>` are different
+        cells since #1285), and a family the enclosing row never declares has
+        no cell at all: `old()` finds no snapshot local and `new()` no
+        registered getter, so codegen raised E699 — the
+        internal-compiler-error diagnostic whose own text says the type
+        checker should have rejected the input, on a check-green program,
+        carrying a bug-report request the user should not act on.
+
+        Checked here because this is where the rest of the clause is checked
+        and where the declared row is in scope: `env.current_effect_row` is
+        the enclosing function's, restored around each declaration, and a
+        `handle` block extends it for its own body, so a form written under a
+        handler still sees what is actually available.
+        """
+        row = self.env.current_effect_row
+        if row is None:
+            return
+        declared: frozenset[EffectInstance] = (
+            row.effects if isinstance(row, ConcreteEffectRow) else frozenset()
+        )
+        if ei in declared:
+            return
+        if isinstance(row, ConcreteEffectRow) and row.row_var is not None:
+            # An OPEN row's tail may carry the family at a call site, so the
+            # declaration here does not settle it.  Refusing would reject a
+            # program that is legal under some instantiation.
+            return
+        def _render(e: EffectInstance) -> str:
+            if not e.type_args:
+                return e.name
+            return f"{e.name}<{', '.join(pretty_type(a) for a in e.type_args)}>"
+
+        named = _render(ei)
+        have = ", ".join(sorted(_render(e) for e in declared)) or "pure"
+        self._error(
+            expr,
+            f"{form}({named}) names an effect this function does not "
+            f"declare. Declared: {have}.",
+            rationale=(
+                f"{form}() reads the state cell of the effect it names, and "
+                f"cells are keyed by effect family — {named} and a different "
+                f"instantiation of the same effect are different cells. A "
+                f"family absent from the effect row has no cell in this "
+                f"function, so there is no state for the contract to refer to."
+            ),
+            fix=(
+                f"Add {named} to the effects row — effects(<{named}>) — or "
+                f"name a family the row already declares."
+            ),
+            spec_ref='Chapter 7, Section 7.9 "Effect-Contract Interaction"',
+            error_code="E177",
+        )
 
     def _effect_state_type(self, ei: EffectInstance) -> Type:
         """Get the state type of a State-like effect."""

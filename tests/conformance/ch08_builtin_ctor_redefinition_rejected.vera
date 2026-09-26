@@ -1,0 +1,23 @@
+-- Conformance: a special-cased built-in name is reserved in the CONSTRUCTOR
+-- namespace too (Chapter 8, Section 8.4.1)
+-- Tests: E158 — a constructor named `Tuple` is rejected at check (#1397).
+-- The third of the E158 fixtures. Its siblings reserve the `data` TYPE
+-- name (ch08_builtin_adt_redefinition_rejected for `Future`,
+-- ch08_builtin_tuple_redefinition_rejected for `Tuple`); this one reserves
+-- the constructor name, which code generation keys separately: constructor
+-- layouts are flattened by name across every ADT, so this declaration's
+-- fixed layout displaced the built-in carrier's and silently disabled the
+-- `@Nat` -> `@Int` widening guard on a genuine built-in tuple construction
+-- elsewhere in the same program. A `Bool` payload is deliberate: an `Int`
+-- one re-guards the component by coincidence and hides the hole.
+private data ZzBox {
+  Tuple(Bool)
+}
+
+public fn main(-> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  0
+}

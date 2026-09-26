@@ -31,15 +31,26 @@ from vera.types import (
     PureEffectRow,
     RefinedType,
 )
+from vera.wasm.context import WasmContext
 from vera.wasm.helpers import (
-    _element_load_op,
-    _element_mem_size,
-    _element_store_op,
-    _element_wasm_type,
+    StringPool,
     is_compilable_type,
     wasm_type,
     wasm_type_or_none,
 )
+
+
+def _elem_ctx(adt_names: set[str] | None = None) -> WasmContext:
+    """A context to ask the element-layout deciders through (PR #1372).
+
+    They were module-level free functions over a bare ``str`` until the
+    element side was found disagreeing with the scrutinee side about a
+    ``data`` declaration named after a container: a free function has no
+    namespace to ask, so it could not take the DECLARED-ADT branch the spine
+    gives every other decider.  They are methods now, and a test that wants
+    one has to say which namespace it is asking in — which is the point.
+    """
+    return WasmContext(StringPool(), adt_type_names=adt_names or set())
 
 
 # =====================================================================
@@ -199,44 +210,44 @@ class TestHelperFunctions:
 
     def test_element_mem_size_string(self) -> None:
         """String element: pair type → 8 bytes."""
-        assert _element_mem_size("String") == 8
+        assert _elem_ctx()._element_mem_size("String") == 8
 
     def test_element_mem_size_adt(self) -> None:
         """ADT element: i32 heap pointer → 4 bytes."""
-        assert _element_mem_size("Option") == 4
+        assert _elem_ctx()._element_mem_size("Option") == 4
 
     def test_element_load_op_adt(self) -> None:
         """ADT element type → i32.load."""
-        assert _element_load_op("Unknown") == "i32.load"
+        assert _elem_ctx()._element_load_op("Unknown") == "i32.load"
 
     def test_element_load_op_string(self) -> None:
         """String element: pair type → None (special handling)."""
-        assert _element_load_op("String") is None
+        assert _elem_ctx()._element_load_op("String") is None
 
     def test_element_store_op_adt(self) -> None:
         """ADT element type → i32.store."""
-        assert _element_store_op("Unknown") == "i32.store"
+        assert _elem_ctx()._element_store_op("Unknown") == "i32.store"
 
     def test_element_store_op_string(self) -> None:
         """String element: pair type → None (special handling)."""
-        assert _element_store_op("String") is None
+        assert _elem_ctx()._element_store_op("String") is None
 
     def test_element_wasm_type_string(self) -> None:
         """String element → i32_pair."""
-        assert _element_wasm_type("String") == "i32_pair"
+        assert _elem_ctx()._element_wasm_type("String") == "i32_pair"
 
     def test_element_wasm_type_adt(self) -> None:
         """ADT element → i32."""
-        assert _element_wasm_type("Option") == "i32"
+        assert _elem_ctx()._element_wasm_type("Option") == "i32"
 
     def test_element_wasm_type_float64(self) -> None:
-        assert _element_wasm_type("Float64") == "f64"
+        assert _elem_ctx()._element_wasm_type("Float64") == "f64"
 
     def test_element_mem_size_byte(self) -> None:
-        assert _element_mem_size("Byte") == 1
+        assert _elem_ctx()._element_mem_size("Byte") == 1
 
     def test_element_store_op_byte(self) -> None:
-        assert _element_store_op("Byte") == "i32.store8"
+        assert _elem_ctx()._element_store_op("Byte") == "i32.store8"
 
     def test_wasm_type_byte(self) -> None:
         """Byte is a PrimitiveType but not in the first-pass set, so

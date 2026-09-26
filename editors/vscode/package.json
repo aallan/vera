@@ -2,7 +2,7 @@
 	"name": "vera-language",
 	"displayName": "Vera Language",
 	"description": "Proof-aware Vera language support: diagnostics, hover, slot navigation, typed-hole completion, and syntax highlighting.",
-	"version": "0.2.1",
+	"version": "0.2.2",
 	"publisher": "veralang",
 	"license": "MIT",
 	"repository": {
@@ -86,10 +86,10 @@
 		"vscode:prepublish": "npm run build"
 	},
 	"dependencies": {
-		"vscode-languageclient": "^10.1.0"
+		"vscode-languageclient": "^10.1.1"
 	},
 	"devDependencies": {
-		"@vscode/vsce": "3.9.2",
+		"@vscode/vsce": "4.0.0",
 		"esbuild": "0.28.2"
 	}
 }

@@ -1738,7 +1738,10 @@ class TestPreludeAliasesAreCodegenInternal:
     E154), the six public spellings become ordinary unknown names both sides
     treat opaquely, and a reference to a reserved name is refused where it is
     written.  The checker's ignorance is then correct by construction — no
-    name it leaves opaque is a name codegen resolves.
+    name it leaves opaque is a name codegen resolves.  An unknown name is
+    refused where it is written too (E136, #1489), and the checker names it
+    opaquely while it reports it, so the partition the cells below compare
+    is the one every consumer of the checker's names sees.
     """
 
     def test_the_checker_keeps_the_two_stacks_apart(self) -> None:
@@ -1869,10 +1872,21 @@ class TestPreludeAliasesAreCodegenInternal:
         assert "VeraOptionMapFn" in errors[0].description, errors[0].description
 
     def test_an_ordinary_vera_containing_name_stays_ordinary(self) -> None:
-        """The reservation is anchored: ``Veranda`` is not the prelude's."""
+        """The reservation is anchored: ``Veranda`` is not the prelude's.
+
+        Undeclared, it is an unknown name (E136, #1489), never a reserved one;
+        declared, it is an ordinary alias the program may name.
+        """
         src = _PRELUDE_ALIAS_SRC.replace("ArrayMapFn", "Veranda")
         errors = [
             d for d in typecheck(parse_to_ast(src), src)
+            if d.severity == "error"
+        ]
+        assert {d.error_code for d in errors} == {"E136"}, errors
+        assert all("Veranda" in d.description for d in errors), errors
+        declared = "type Veranda<A, B> = fn(A -> B) effects(pure);\n\n" + src
+        errors = [
+            d for d in typecheck(parse_to_ast(declared), declared)
             if d.severity == "error"
         ]
         assert not errors, errors

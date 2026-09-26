@@ -190,6 +190,16 @@ public fn ae(@Nat -> @Int)
   requires(true) ensures(true) effects(pure)
 { let @Array<Int> = [@Nat.0]; @Array<Int>.0[0] }
 """, "ae"),
+    # #757: a GENERIC field instantiated to @Int (`Some(@Nat.0)` into
+    # `Option<Int>`).  The per-ADT `int_fields` bitmap describes the DECLARED
+    # field type and is False for every instantiation of `Option<T>`, so this
+    # was E531-disclosed; the guard now keys on the argument's own recorded
+    # target — the same table the verifier's `_int_widening_target` reads.
+    ("generic_field", """
+public fn gf(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let @Option<Int> = Some(@Nat.0); match @Option<Int>.0 { Some(@Int) -> @Int.0, None -> 0 } }
+""", "gf"),
     # tuple construction: a @Nat component widening into an @Int tuple slot.
     # The Tuple carrier's layout has no per-component int flags; the target
     # type `Tuple<Int, Int>` supplies them, so construction guards each @Nat
@@ -251,12 +261,15 @@ public fn f(@Nat -> @Int) requires(true) ensures(true) effects(pure)
     # routes u64.MAX to the terminal `_` arm (a distinct codegen guard site), so
     # the non-terminal conditional-arm widen guard is otherwise untested —
     # neutering it lets the middle @Nat arm silently reinterpret to -1.  A local
-    # `let @Int = 1` scrutinee routes to the middle `1 -> @Nat.0` arm (the arg
+    # `let @Int` of 1 routes to the middle `1 -> @Nat.0` arm (the arg
     # value can't double as the scrutinee — u64.MAX would fall to `_`); the
     # `0 -> @Int.0` arm makes the join genuinely @Int (hetero, guarded per-arm).
+    # The 1 comes through a closure the verifier cannot read: from a literal
+    # `let @Int = 1` it reads that the `1` arm always matches (#1576), so the
+    # terminal `_` arm never runs and its widening is vacuously verified.
     ("hetero_match_middle_arm", """
 public fn f(@Nat -> @Int) requires(true) ensures(true) effects(pure)
-{ let @Int = 1; match @Int.0 { 0 -> @Int.0, 1 -> @Nat.0, _ -> @Nat.0 } }
+{ let @Int = apply_fn(fn(@Int -> @Int) effects(pure) { @Int.0 }, 1); match @Int.0 { 0 -> @Int.0, 1 -> @Nat.0, _ -> @Nat.0 } }
 """, "f"),
     # #820 per-arm guard POSITION — the @Nat arm in the ELSE branch of a hetero
     # if.  The committed hetero_if_slot always puts the @Nat arm in THEN (a
@@ -270,16 +283,16 @@ public fn f(@Nat -> @Int) requires(true) ensures(true) effects(pure)
 """, "f"),
 ]
 
-_DISCLOSED = [
-    # A generic-instantiated @Int field (`Some(@Nat.0)` into `Option<Int>`)
-    # erases to i64 with no per-field mono metadata — the #757 narrowing-dual
-    # blocker — so it stays honestly E531-disclosed, NOT runtime-guarded.
-    ("generic_field", """
-public fn gf(@Nat -> @Int)
-  requires(true) ensures(true) effects(pure)
-{ let @Option<Int> = Some(@Nat.0); match @Option<Int>.0 { Some(@Int) -> @Int.0, None -> 0 } }
-""", "gf"),
-]
+#: EMPTY, and that is the finding rather than an omission.  Every `@Nat` ->
+#: `@Int` coercion site the verifier obligates is now runtime-guarded: #820
+#: gave the array element, tuple construction and heterogeneous arm their
+#: target-table guards, #757 the generic-instantiated field, and #1416 the
+#: tuple-destructure component — the last member this list held.  An empty
+#: parametrisation would make the disclosed-leg test vacuously green, so it
+#: is asserted empty ON PURPOSE below, and the disclosure PATH is exercised
+#: directly instead.  A future unguarded site joins this list and the leg
+#: starts running again.
+_DISCLOSED: list = []
 
 
 class TestWideningDifferential813:
@@ -298,6 +311,19 @@ class TestWideningDifferential813:
             f"did NOT trap — an unsound silent reinterpretation"
         )
         assert _run(source, fn, 42) == 42, f"{label}: in-range widen not exact"
+
+    def test_no_widening_site_is_disclosed_unguarded(self) -> None:
+        """The disclosed leg has no members left, and that is a claim.
+
+        `_DISCLOSED` being empty makes the parametrised leg below run zero
+        cases, which is indistinguishable from a leg that was deleted.  So
+        the emptiness is asserted: every obligated `@Nat` -> `@Int` coercion
+        site is guarded, and a site that stops being guarded has to be added
+        back to the list rather than quietly vanish from the differential.
+        """
+        assert _DISCLOSED == [], (
+            f"the disclosed leg has members again — run them: {_DISCLOSED}"
+        )
 
     @pytest.mark.parametrize("label,source,fn", _DISCLOSED,
                              ids=[c[0] for c in _DISCLOSED])

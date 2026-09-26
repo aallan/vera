@@ -7,6 +7,7 @@ This module extracts that shared logic to avoid duplication.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Callable
 
 from vera import ast
@@ -90,6 +91,31 @@ def build_fn_info(
         env.type_params = saved_params
 
 
+def where_helper_parents(
+    decls: Iterable[ast.FnDecl],
+) -> dict[str, set[str]]:
+    """Map each ``where``-helper name to the declarations that own one (#1307).
+
+    The complement of :func:`register_fn`'s silence about helpers: they are
+    unreachable by name from outside their parent, so the two places that
+    have to SAY so — the bare-call diagnostic (E178) and the selective-import
+    check (E150) — need to know which declaration a name they cannot resolve
+    belongs to.  Recurses, so a helper's own helpers are recorded against the
+    helper that declares them: the scope a call from the grandparent is
+    outside of, just as much as a sibling's is.
+    """
+    owners: dict[str, set[str]] = {}
+
+    def walk(decl: ast.FnDecl) -> None:
+        for wfn in decl.where_fns or ():
+            owners.setdefault(wfn.name, set()).add(decl.name)
+            walk(wfn)
+
+    for decl in decls:
+        walk(decl)
+    return owners
+
+
 def register_fn(
     env: TypeEnv,
     decl: ast.FnDecl,
@@ -101,15 +127,25 @@ def register_fn(
 
     Resolves type parameters, parameter types, return type, and effect
     row using the provided callbacks, then stores the FunctionInfo.
-    Recursively registers where-block functions.
+
+    ``where`` helpers are NOT registered here (#1307).  ``env.functions``
+    is the module's flat, program-wide namespace, and a helper is "always
+    local to the parent function" (spec §5.8): publishing it there made a
+    bare call in a SIBLING declaration resolve to another function's
+    helper, which the checker then accepted and codegen — where a helper
+    is emitted as ``parent$where$name`` (#1299) — could not lower.  The
+    checker's :meth:`~vera.checker.core.TypeChecker._lookup_function_scoped`
+    and the verifier's ``_scoped_fn_lookup`` both build a helper's
+    ``FunctionInfo`` on demand from its declaration while walking the
+    enclosing frames, so the lexical scope remains fully reachable
+    without a flat entry — and only from inside it.
     """
-    # Bind this function's forall vars for the duration of BOTH its own
-    # signature resolution AND its where-helper registration: a helper of a
-    # generic parent is written over the parent's ``@T`` (spec §5), so it must
-    # be registered with the parent's type params still in scope.  ``build_fn_info``
-    # re-binds/restores the same names internally (a no-op net of our binding,
-    # since ``TypeVar`` equality is by name), leaving our binding live for the
-    # recursion below.
+    # Bind this function's forall vars for its own signature resolution: a
+    # helper of a generic parent is written over the parent's ``@T`` (spec
+    # §5), and the scoped lookups that build a helper's info re-bind the
+    # parent's params the same way.  ``build_fn_info`` re-binds/restores
+    # the same names internally (a no-op net of our binding, since
+    # ``TypeVar`` equality is by name).
     saved_params = dict(env.type_params)
     if decl.forall_vars:
         for tv in decl.forall_vars:
@@ -118,9 +154,5 @@ def register_fn(
     env.functions[decl.name] = build_fn_info(
         env, decl, resolve_type, resolve_effect_row, visibility,
     )
-
-    if decl.where_fns:
-        for wfn in decl.where_fns:
-            register_fn(env, wfn, resolve_type, resolve_effect_row)
 
     env.type_params = saved_params

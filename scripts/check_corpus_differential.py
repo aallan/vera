@@ -529,10 +529,19 @@ def base_checkout(
 ) -> tuple[Path | None, str]:
     """A checkout of `sha`, materialised under `work_dir` if need be.
 
-    Returns ``(path, "")`` or ``(None, error)``.  Named by SHA and
-    reused when it is already there, so a burndown session that runs the
-    differential repeatedly against one base pays for one checkout.  It
-    is never removed — see the module docstring.
+    Returns ``(path, "")`` or ``(None, error)``.  Named by SHA and reused
+    when it is already there, so a session running the differential
+    repeatedly against one base under ``--keep-base`` pays for one checkout.
+
+    Removed by :func:`release_base_checkout` when the run ends, unless
+    ``--keep-base`` (#1374): what it leaves behind is a full second copy of
+    the repository INSIDE the repository, and the doc-surface walk in
+    ``scripts/check_doc_builtin_shadowing.py`` read that copy's ``spec/`` as
+    an authored surface of this one — so running the documented instrument
+    turned ``pytest tests/`` red.  That walk now prunes nested checkouts as
+    well; both halves are kept, because either alone leaves the other's
+    failure mode reachable by a renamed ``--work-dir`` or by a `--keep-base`
+    session.
     """
     dest = work_dir / f"vera-base-{sha[:12]}"
 
@@ -591,6 +600,42 @@ def base_checkout(
             f"{result.stderr.strip() or result.stdout.strip()}"
         )
     return dest, ""
+
+
+def release_base_checkout(repo_root: Path, base_root: Path) -> None:
+    """Remove the worktree :func:`base_checkout` created (#1374).
+
+    Through ``git worktree remove``, not a directory delete: the checkout was
+    created with ``git worktree add``, so the repository's worktree registry
+    holds an entry for it, and removing the directory alone would leave that
+    entry behind as a stale record the next run's cleanliness check cannot
+    see.
+
+    BEST EFFORT, deliberately.  The verdict this script exists to report is
+    already computed by the time this runs, and losing it to a housekeeping
+    error would be a worse failure than a leftover directory — which the
+    doc-surface walk now prunes anyway.  A checkout this cannot remove is
+    reported by the next run's own cleanliness check, which already refuses
+    a dirty or mismatched reuse.
+    """
+    try:
+        subprocess.run(
+            ["git", "-C", str(repo_root), "worktree", "remove", "--force",
+             str(base_root)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+    except OSError:
+        # `check=False` suppresses a non-zero EXIT, not a failure to start the
+        # process at all (PR #1372 review).  A missing `git`, an exhausted
+        # descriptor table or a permission error raises here, and this runs
+        # from a `finally` — so the exception would replace the verdict the
+        # whole run exists to produce with a traceback.  Best effort means
+        # best effort at the Python boundary too; a checkout this cannot
+        # remove is caught by the next run's own cleanliness check.
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -710,8 +755,14 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--work-dir",
         default=str(_DEFAULT_WORK_DIR),
         help="where the base revision is checked out; the checkout is "
-             "keyed by SHA, reused, and never deleted "
+             "keyed by SHA and removed when the run ends "
              "(default: %(default)s)",
+    )
+    parser.add_argument(
+        "--keep-base", action="store_true",
+        help="leave the base checkout in place when the run ends, so a "
+             "session comparing repeatedly against one base pays for one "
+             "checkout (default: remove it)",
     )
     parser.add_argument(
         "--jobs", type=int, default=min(8, os.cpu_count() or 1),
@@ -752,8 +803,31 @@ def main(argv: list[str] | None = None) -> int:
     if base_root is None:
         print(f"ERROR: {problem}", file=sys.stderr)
         return 1
-    print(f"Base checkout (left in place): {base_root}", file=sys.stderr)
+    disposition = "left in place" if args.keep_base else "removed at exit"
+    print(f"Base checkout ({disposition}): {base_root}", file=sys.stderr)
 
+    try:
+        return _run(args, repo_root, files, sha, base_root)
+    finally:
+        # Every exit path, including the canary refusals below: a run that
+        # bailed still materialised the checkout, and leaving it behind on
+        # the failure paths only would make the leftover appear at random.
+        if not args.keep_base:
+            release_base_checkout(repo_root, base_root)
+
+
+def _run(
+    args: argparse.Namespace,
+    repo_root: Path,
+    files: list[Path],
+    sha: str,
+    base_root: Path,
+) -> int:
+    """The run itself, once the base checkout exists (#1374).
+
+    Split from :func:`main` so the checkout's release is one ``finally``
+    around every exit path rather than a call repeated at each ``return``.
+    """
     # Both canaries before either side's corpus run: a side pointing at
     # the wrong compiler makes the whole differential vacuous, and that
     # must be a refusal rather than a green run.

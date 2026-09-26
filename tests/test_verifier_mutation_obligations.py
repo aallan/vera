@@ -860,13 +860,16 @@ private fn sp_opaque_nat_387(@Unit -> @Nat)
         assert o.status == "tier3", o.status
         assert result.summary.tier3_runtime == 1, result.summary.tier3_runtime
 
-    def test_opaque_refined_subpattern_unguarded_tier3(self) -> None:
+    def test_opaque_refined_subpattern_guarded_tier3(self) -> None:
         """Opaque scrutinee ``Some(@Pos387)`` on ``Option<Int>`` → the
-        unprojectable refined tail (3864-3870): an UNGUARDED Tier-3 refine_bind
-        (E506 warning, ``tier3_unguarded``, excluded from totals — refined
-        narrowings have no codegen runtime guard).  Distinguishes the
-        ``guarded=False`` refined opaque path from the ``guarded=True`` nat one:
-        a mutation flipping the flag would mis-claim a runtime guard."""
+        unprojectable refined tail: a GUARDED Tier-3 refine_bind (E506
+        informational, ``tier3``, counted in the totals).  Unprojectable is a
+        statement about the SMT layer, not about codegen: the sub-pattern
+        bind carries its predicate guard since #765 whether or not the
+        scrutinee could be projected, so the honest disclosure is the guarded
+        leg.  A mutation dropping the site from
+        ``_REFINED_BIND_GUARDED_SITES`` puts it back on the unguarded one and
+        under-counts a runtime check that does fire."""
         result = _verify("""
 type Pos387 = { @Int | @Int.0 > 0 };
 effect OptSrc2387 { op mk(Unit -> Option<Int>); }
@@ -880,9 +883,9 @@ private fn sp_opaque_ref_387(@Unit -> @Int)
                  if o.kind == "refine_bind" and o.fn_name == "sp_opaque_ref_387"]
         assert len(binds) == 1, [(o.kind, o.status) for o in result.obligations]
         o = binds[0]
-        assert o.status == "tier3_unguarded", o.status
+        assert o.status == "tier3", o.status
         assert o.error_code == "E506", o.error_code
         warns = [d for d in result.diagnostics if d.error_code == "E506"]
         assert len(warns) == 1, [d.description for d in result.diagnostics]
-        # Unguarded refined Tier-3 does NOT increment tier3_runtime (R7).
-        assert result.summary.tier3_runtime == 0, result.summary.tier3_runtime
+        # A guarded refined Tier-3 IS a runtime check, so it is counted.
+        assert result.summary.tier3_runtime == 1, result.summary.tier3_runtime

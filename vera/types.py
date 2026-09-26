@@ -162,6 +162,32 @@ REMOVED_ALIASES: dict[str, str] = {
 NUMERIC_TYPES: frozenset[Type] = frozenset({INT, NAT, FLOAT64})
 ORDERABLE_TYPES: frozenset[Type] = frozenset({INT, NAT, FLOAT64, BYTE, STRING})
 
+# The primitives a string interpolation can render, and the built-in that
+# renders each (#1347).  ONE table, because it is one language rule asked
+# by two subsystems: the checker decides whether `"\(e)"` is well-typed
+# and code generation picks the conversion to emit.  They were separate
+# copies — `ExpressionsMixin._TO_STRING_TYPES` and
+# `OperatorsMixin._INTERP_TO_STRING`, the second carrying the comment
+# "must match checker's map" — and a comment is not a mechanism: the two
+# sides disagreed about what was interpolable at all, so a program the
+# checker accepted was dropped by codegen with no diagnostic naming the
+# rule.  `String` is absent deliberately: it needs no conversion, and both
+# consumers test it before consulting this table.
+#
+# Membership is decided on the type's RESOLVED form, never its spelling:
+# an alias and a refinement over one of these render exactly as the
+# primitive they resolve to (`vera.monomorphize.resolve_type_alias` is the
+# shared walker that answers that, unwrapping refinements and following
+# alias chains).  A predicate constrains which values exist; it says
+# nothing about how one prints.
+TO_STRING_BUILTINS: dict[str, str] = {
+    "Int": "to_string",
+    "Nat": "nat_to_string",
+    "Bool": "bool_to_string",
+    "Byte": "byte_to_string",
+    "Float64": "float_to_string",
+}
+
 
 # =====================================================================
 # Utility functions
@@ -442,6 +468,115 @@ def base_type(ty: Type) -> Type:
     while isinstance(ty, RefinedType):
         ty = ty.base
     return ty
+
+
+def wasm_representation(t: Type) -> str | None:
+    """Map a Vera Type to its WAT value type string.
+
+    Returns "i64" for Int/Nat, "f64" for Float64, "i32" for Bool/Byte/ADT,
+    "i32_pair" for String and Array, None for Unit, or "unsupported" for a
+    type with no runtime representation.
+
+    Here rather than in the backend because BOTH sides ask it: code
+    generation for every width decision it makes, and the verifier for the
+    one question a status depends on — whether a `State` cell of this
+    representation is registered at all (#1439).  `vera/wasm/helpers.py`
+    keeps the name `wasm_type` its callers know and delegates here, the way
+    :func:`erases_to_unit` below already mirrors codegen's erasure.
+    """
+    if isinstance(t, PrimitiveType):
+        if t is INT or t is NAT:
+            return "i64"
+        if t is FLOAT64:
+            return "f64"
+        if t is BOOL:
+            return "i32"
+        if t is STRING:
+            return "i32_pair"
+        if t is UNIT:
+            return None
+    bt = base_type(t)
+    if isinstance(bt, PrimitiveType):
+        if bt is INT or bt is NAT:
+            return "i64"
+        if bt is FLOAT64:
+            return "f64"
+        if bt is BOOL:
+            return "i32"
+        if bt is STRING:
+            return "i32_pair"
+        if bt is UNIT:
+            return None
+    if isinstance(bt, FunctionType):
+        # The UNWRAPPED base, like every branch above it: a refinement over a
+        # function type is a closure pointer exactly as the bare spelling is,
+        # and testing `t` here answered "unsupported" for the refined one
+        # (CodeRabbit on PR #1478).
+        return "i32"  # closure pointer
+    return "unsupported"
+
+
+#: A `State<T>` cell's value crosses four host imports — `state_get_X (result W)`,
+#: `state_put_X (param W)` and the two scope markers — whose signatures carry
+#: ONE word.  So a `(ptr, len)` pair cannot be a cell however well the write
+#: guard could bind it: the value has no way through the import, which is a
+#: property of the cell's ABI rather than of the guard.  `vera/codegen`
+#: refuses one at registration and this is the rule both sides read, so the
+#: obligation stream cannot record a runtime check for a write in a function
+#: code generation never emits.  The rule is :func:`state_cell_lowerable`.
+
+
+def is_pair_represented(ty: Type) -> bool:
+    """True if a value of *ty* occupies TWO WASM locals — a `(ptr, len)`
+    pair.
+
+    `String` and `Array<T>`, through the transparent wrappers: a refinement
+    over one is one, and `Future<T>` has its payload's representation (#841),
+    exactly as :func:`erases_to_unit` reads them.
+    """
+    base = base_type(ty)
+    if isinstance(base, PrimitiveType):
+        return base is STRING
+    if isinstance(base, AdtType):
+        if base.name == "Future" and len(base.type_args) == 1:
+            return is_pair_represented(base.type_args[0])
+        return base.name == "Array"
+    return False
+
+
+def has_no_wasm_representation(ty: Type) -> bool:
+    """True if code generation has NO width for *ty* at all.
+
+    Wider than :func:`erases_to_unit`, which answers "zero-size": a `Never`
+    has no values and therefore no representation either, and neither has a
+    `Future<Never>`, which is representation-transparent (#841).  Code
+    generation answers the same way through its own walk —
+    `_type_expr_to_wasm_type` returns `"unsupported"` for both — so a
+    consumer that asks only about erasure believes a cell is lowerable that
+    registration refuses with E607 (CodeRabbit on PR #1478: a refined
+    `State<Never>` recorded a guarded Tier-3 for a function the backend
+    drops).
+    """
+    if erases_to_unit(ty):
+        return True
+    base = base_type(ty)
+    if isinstance(base, AdtType) and base.name == "Future" and base.type_args:
+        return has_no_wasm_representation(base.type_args[0])
+    return base is NEVER
+
+
+def state_cell_lowerable(*, representable: bool, pair: bool) -> bool:
+    """Whether code generation registers a `State<T>` cell whose value is
+    *representable* at all and is or is not a *pair* (#1439).
+
+    THE rule, once, for two components that answer its inputs with different
+    oracles — `_register_state_cell` from the cell's TYPE EXPRESSION through
+    `_type_expr_to_wasm_type`, the verifier from the checker's semantic type
+    through :func:`erases_to_unit` and :func:`is_pair_represented`.  What
+    legitimately differs is the oracle; what must not is the answer, because
+    the verifier's answer is a claim about the backend's.
+    """
+    return representable and not pair
 
 
 def erases_to_unit(ty: Type) -> bool:
@@ -742,6 +877,229 @@ def contains_fresh_typevar(ty: Type) -> bool:
     return False
 
 
+#: The hole a LITERAL leaves in an argument's type while a call's type
+#: arguments are inferred (#1541, #1565).
+#:
+#: An integer literal takes its type from its context (spec §4.2), so the
+#: `Nat` the checker synthesizes for `0` — and the `Int` it synthesizes for
+#: `0 - 3` — is the literal's type only when nothing else fixes it.  During
+#: inference each such position is this placeholder instead: a fresh var
+#: (`$` in the name), so any sibling binding a declared type supplies fills
+#: it by the same #293 precedence a nullary constructor's hole already has.
+#: A position nothing else filled is then given the type the call's result
+#: is expected at, and failing that the literal's own type by value — see
+#: `ResolutionMixin._infer_type_args_in_context`.  Never leaves inference.
+#:
+#: The hole carries that last resort, and the signs of the values at the
+#: position: :data:`LITERAL_HOLE` where every literal there is a `Nat`;
+#: :data:`INT_LITERAL_HOLE` where one is an `Int` but none has a negative
+#: value (`-0`, `(0 - 3) + 4`); :data:`NEGATIVE_LITERAL_HOLE` where every
+#: one has a negative value; and :data:`MIXED_LITERAL_HOLE` where a negative
+#: value sits beside one that is not (`second(-3, 5)`).  The last three
+#: fall back to `Int`.
+LITERAL_HOLE = TypeVar("$lit")
+INT_LITERAL_HOLE = TypeVar("$lit0")
+NEGATIVE_LITERAL_HOLE = TypeVar("$lit-")
+MIXED_LITERAL_HOLE = TypeVar("$lit+-")
+_LITERAL_HOLE_NAMES = frozenset(h.name for h in (
+    LITERAL_HOLE, INT_LITERAL_HOLE, NEGATIVE_LITERAL_HOLE,
+    MIXED_LITERAL_HOLE))
+
+
+def is_literal_hole(ty: Type) -> bool:
+    """True iff *ty* is one of the literal holes."""
+    return isinstance(ty, TypeVar) and ty.name in _LITERAL_HOLE_NAMES
+
+
+def join_literal_holes(a: Type, b: Type) -> Type:
+    """The hole for a position two literals share: `Int` if either is, and
+    mixed where one has a negative value and the other one that is not."""
+    names = {a.name if isinstance(a, TypeVar) else "",
+             b.name if isinstance(b, TypeVar) else ""}
+    negative = bool(names & {NEGATIVE_LITERAL_HOLE.name,
+                             MIXED_LITERAL_HOLE.name})
+    other = bool(names & {LITERAL_HOLE.name, INT_LITERAL_HOLE.name,
+                          MIXED_LITERAL_HOLE.name})
+    if negative and other:
+        return MIXED_LITERAL_HOLE
+    if negative:
+        return NEGATIVE_LITERAL_HOLE
+    if INT_LITERAL_HOLE.name in names:
+        return INT_LITERAL_HOLE
+    return LITERAL_HOLE
+
+
+def default_literal_holes(ty: Type) -> Type:
+    """*ty* with every hole given the type its literals have by value:
+    `Nat` for :data:`LITERAL_HOLE`, `Int` for the others."""
+    if is_literal_hole(ty):
+        return NAT if ty == LITERAL_HOLE else INT
+    if isinstance(ty, AdtType):
+        return AdtType(ty.name, tuple(default_literal_holes(a)
+                                      for a in ty.type_args))
+    if isinstance(ty, FunctionType):
+        return FunctionType(tuple(default_literal_holes(p)
+                                  for p in ty.params),
+                            default_literal_holes(ty.return_type), ty.effect)
+    return ty
+
+
+def contains_literal_hole(ty: Type) -> bool:
+    """True iff a literal hole (:func:`is_literal_hole`) occurs anywhere in
+    *ty*."""
+    if isinstance(ty, TypeVar):
+        return is_literal_hole(ty)
+    if isinstance(ty, AdtType):
+        return any(contains_literal_hole(a) for a in ty.type_args)
+    if isinstance(ty, FunctionType):
+        return (any(contains_literal_hole(p) for p in ty.params)
+                or contains_literal_hole(ty.return_type))
+    if isinstance(ty, RefinedType):
+        return contains_literal_hole(ty.base)
+    return False
+
+
+def negative_literal_meets_nat(soft: Type, context: Type,
+                               in_collection: bool = False,
+                               element_reads: int = 0) -> bool:
+    """True iff *context* holds a `Nat`, or a refinement of one, at a
+    position where *soft* holds a hole the literals' values fixed at `Int`
+    and a `Nat` context may fill (:func:`context_may_fill`), at any depth
+    of a composite (#1541, PR #1583 review).
+
+    *soft* is a generic call's result with each position its literals
+    decided a hole (``ResolutionMixin._literal_soft_type``).  Checked
+    against *context*, such a position is a `Nat`, and each literal there
+    meets it: a negative one is a narrowing the verifier refutes, which
+    only checking the call against *context* puts on the record.  The
+    checker admits `Int` where `Nat` is expected and leaves the
+    non-negativity to the verifier, so this is the question
+    :func:`is_subtype` does not answer.
+
+    *in_collection* is whether the position lies within a collection's
+    element type (:func:`context_may_fill`).  *element_reads* counts the
+    indexes that read one element out of *context*, outermost first: each
+    array level they read is no collection of the value, since a read
+    returns one element, not all of them (`xs[0][1]` reads two levels,
+    `xs[0]` one)."""
+    while isinstance(context, RefinedType):
+        context = context.base
+    if is_literal_hole(soft):
+        return (soft != LITERAL_HOLE
+                and context_may_fill(soft, in_collection)
+                and isinstance(context, PrimitiveType)
+                and context.name == "Nat")
+    if (isinstance(soft, AdtType) and isinstance(context, AdtType)
+            and soft.name == context.name
+            and len(soft.type_args) == len(context.type_args)):
+        within = in_collection or (
+            soft.name in COLLECTION_TYPES and element_reads == 0)
+        return any(negative_literal_meets_nat(
+                       h, c, within, max(element_reads - 1, 0))
+                   for h, c in zip(soft.type_args, context.type_args))
+    return False
+
+
+#: The built-in collections, each of whose type arguments holds every
+#: element (or key) the collection was built from.
+COLLECTION_TYPES = frozenset({"Array", "Set", "Map"})
+
+
+def context_may_fill(hole: Type, in_collection: bool = False) -> bool:
+    """Whether the type a call's result is expected at may decide the
+    literal hole *hole* (spec §4.2 rule 2).
+
+    Not a mixed one at a scalar position: a negative literal beside a
+    non-negative one at the same type argument need not reach the result
+    (`second(-3, 5)` is 5), so a `Nat` context must not make the -3 a
+    narrowing; the position takes the literals' own type, `Int`, and the
+    result is narrowed into the context as any `Int` is.  Where every
+    literal there is negative the result can only be one of them — a
+    generic function has no other value of its type argument to return —
+    so the context decides it, and a `Nat` refuses it.
+
+    A mixed hole *in_collection*, an element (or key) type of an `Array`,
+    a `Set` or a `Map`, is decided by the context as well (PR #1583
+    review): the collection holds every element its call was given, so the
+    -3 does reach the value, and a whole `Array<Int>` bound into an
+    `Array<Nat>` is neither obligated nor guarded (#1542)."""
+    return in_collection or hole != MIXED_LITERAL_HOLE
+
+
+def collection_element_vars(ty: Type, inside: bool = False) -> set[str]:
+    """The type variables of *ty* that occur within an element (or key)
+    type of a collection (:data:`COLLECTION_TYPES`), at any depth."""
+    if isinstance(ty, TypeVar):
+        return {ty.name} if inside else set()
+    if isinstance(ty, AdtType):
+        within = inside or ty.name in COLLECTION_TYPES
+        out: set[str] = set()
+        for arg in ty.type_args:
+            out |= collection_element_vars(arg, within)
+        return out
+    if isinstance(ty, RefinedType):
+        return collection_element_vars(ty.base, inside)
+    return set()
+
+
+def fill_literal_holes(ty: Type, source: Type | None,
+                       in_collection: bool = False) -> Type:
+    """*ty* with each literal hole replaced by the `Int` or `Nat` at the
+    same position of *source*.
+
+    A hole aligned with a refinement takes the refinement's integer base.
+    A hole whose aligned position in *source* is anything else — missing,
+    another type — stays a hole, so a later source (or the final default)
+    decides it: a literal is never given a type it cannot have.  A
+    refinement is not adopted into the instantiation: the literal still
+    meets it as the target of the argument it sits in, and adopting it
+    would give the whole construction the refined type, which a join with
+    a sibling of the base type then reads as its own.
+    """
+    if is_literal_hole(ty):
+        if not context_may_fill(ty, in_collection):
+            return ty
+        # A refinement's integer base is the literal's type there (PR #1583
+        # review): `let @Small = id(0 - 3)` over a refinement of `Nat` is
+        # `id` at `Nat`, where the -3 is refused as `let @Nat = id(0 - 3)`
+        # is.  The refinement itself is not adopted (above).
+        while isinstance(source, RefinedType):
+            source = source.base
+        if (isinstance(source, PrimitiveType)
+                and source.name in ("Int", "Nat")):
+            return source
+        return ty
+    if (isinstance(ty, AdtType) and isinstance(source, AdtType)
+            and ty.name == source.name
+            and len(ty.type_args) == len(source.type_args)):
+        within = in_collection or ty.name in COLLECTION_TYPES
+        return AdtType(ty.name, tuple(
+            fill_literal_holes(a, b, within)
+            for a, b in zip(ty.type_args, source.type_args)))
+    if (isinstance(ty, FunctionType) and isinstance(source, FunctionType)
+            and len(ty.params) == len(source.params)):
+        return FunctionType(
+            tuple(fill_literal_holes(a, b)
+                  for a, b in zip(ty.params, source.params)),
+            fill_literal_holes(ty.return_type, source.return_type),
+            ty.effect)
+    return ty
+
+
+def _literal_can_have(ty: Type) -> bool:
+    """Whether an integer literal can have type *ty*: an integer type (a
+    literal is typed `Byte` in a `Byte` context) or a refinement of one.
+    A literal meeting any other type in a shared type head is the same
+    conflict its `Nat` was before holes existed (#898, #1541).  A type
+    variable never reaches here: `merge_inferred_types` settles a hole
+    against one first."""
+    base = ty
+    while isinstance(base, RefinedType):
+        base = base.base
+    return (isinstance(base, PrimitiveType)
+            and base.name in ("Int", "Nat", "Byte"))
+
+
 def merge_inferred_types(
     a: Type, b: Type, nested: bool = False,
 ) -> tuple[Type, bool]:
@@ -776,9 +1134,31 @@ def merge_inferred_types(
     whether we are already inside such a structural merge.
     """
     # A fresh placeholder is a hole — take the other (more-determined) side.
+    # Between two holes, a literal's (#1541) outranks a nullary
+    # constructor's: the literal still has a type to fall back on, and the
+    # other hole has none, so keeping it would leave the variable unresolved.
     if _is_fresh_typevar(a):
+        if is_literal_hole(a) and is_literal_hole(b):
+            return (join_literal_holes(a, b), False)
+        if is_literal_hole(a) and _is_fresh_typevar(b):
+            return (a, False)
+        if is_literal_hole(a):
+            if isinstance(b, TypeVar):
+                return (a, False)  # the same rule, in the other order
+            return (b, nested and not _literal_can_have(b))
         return (b, False)
     if _is_fresh_typevar(b):
+        if is_literal_hole(b):
+            if isinstance(a, TypeVar):
+                # A type variable yields to the literal: one leaked
+                # unresolved from a nested generic call, as it yields to any
+                # concrete type (#970's dual in `_unify_for_inference`), and
+                # the enclosing function's rigid one, which a literal cannot
+                # have.  The hole then takes the literal's own type, and the
+                # argument the variable types is checked against it — a
+                # rigid `T` there is refused (E202), as before #1541.
+                return (b, False)
+            return (a, nested and not _literal_can_have(a))
         return (a, False)
     # Already structurally identical — nothing to reconcile.
     if types_equal(a, b):
