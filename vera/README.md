@@ -463,7 +463,7 @@ The spec defines three verification tiers. The compiler implements Tiers 1 and 3
 | **2** | Extended: quantifiers, function call reasoning, array access | Z3 with hints/timeouts | Future |
 | **3** | Everything else | Runtime assertion fallback | Warning emitted |
 
-When a contract or function body contains constructs that can't be translated to Z3, the verifier **does not error** — it classifies the contract as Tier 3 and emits a warning. This means every valid program can be verified (at least partially).
+When a contract or function body contains constructs that can't be translated to Z3, the verifier **does not error** — it classifies the contract as Tier 3 and emits a warning. So an untranslatable construct never fails verification on its own; a program can still be refused for something verification must know first, such as a generic call's type argument (`E622`, see Design Pattern 4).
 
 ### Verification condition generation
 
@@ -784,7 +784,7 @@ The `ERROR_CODES` dict in `errors.py` maps every code to a short description (18
 
 ## Test Suite
 
-Testing spans a **pytest suite** of 27,410 tests across 242 files: compiler-internals unit tests plus a **conformance suite** (256 programs in `tests/conformance/` validating every language feature against the spec) and **example programs** (43 end-to-end demos). The conformance suite is the definitive specification artifact; most programs target a single feature, though some (slot references, match, contracts) span several, and each serves as a minimal working example.
+Testing spans a **pytest suite** of 27,413 tests across 242 files: compiler-internals unit tests plus a **conformance suite** (256 programs in `tests/conformance/` validating every language feature against the spec) and **example programs** (43 end-to-end demos). The conformance suite is the definitive specification artifact; most programs target a single feature, though some (slot references, match, contracts) span several, and each serves as a minimal working example.
 
 See **[TESTING.md](../TESTING.md)** for the comprehensive testing reference -- test file table, conformance suite details, compiler code coverage, language feature coverage, helper conventions, validation scripts, CI pipeline, and guidelines for adding tests.
 

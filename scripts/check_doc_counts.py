@@ -2315,11 +2315,18 @@ def _pyproject_at(ref: str, root: Path) -> str | None:
     # the tree at `root`, whichever that is.
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     for candidate in (f"origin/{ref}", ref):
-        result = subprocess.run(
-            ["git", "show", f"{candidate}:pyproject.toml"],
-            cwd=root, env=env, capture_output=True, text=True, check=False,
-            encoding="utf-8",
-        )
+        # Bounded, like every other subprocess here: this runs in CI and a
+        # blocked git would hang the job.  A candidate git could not answer
+        # for is unreadable, so a base that yields none reaches the caller's
+        # `ReleaseModeError` rather than a hang or a traceback.
+        try:
+            result = subprocess.run(
+                ["git", "show", f"{candidate}:pyproject.toml"],
+                cwd=root, env=env, capture_output=True, text=True, check=False,
+                encoding="utf-8", timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
         if result.returncode == 0:
             return result.stdout
     return None

@@ -418,9 +418,9 @@ From highest to lowest precedence:
 | 5 | `<`, `>`, `<=`, `>=` | None |
 | 4 | `==`, `!=` | None |
 | 3 | `&&` | Left |
-| 2 | `||` | Left |
+| 2 | `\|\|` | Left |
 | 1.5 | `==>` | Right |
-| 1 | `|>` | Left |
+| 1 | `\|>` | Left |
 
 Parentheses can override precedence: `(@Int.0 + @Int.1) * @Int.2`.
 

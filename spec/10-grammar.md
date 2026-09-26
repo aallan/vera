@@ -438,7 +438,7 @@ tuple_literal: UPPER_IDENT LPAREN arg_list RPAREN
 | 5 | `<`, `>`, `<=`, `>=` | None | `cmp_expr` |
 | 4 | `==`, `!=` | None | `eq_expr` |
 | 3 | `&&` | Left | `and_expr` |
-| 2 | `||` | Left | `or_expr` |
+| 2 | `\|\|` | Left | `or_expr` |
 | 1.5 | `==>` | Right | `implies_expr` |
 | 1 | `\|>` | Left | `pipe_expr` |
 

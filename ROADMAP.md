@@ -12,13 +12,13 @@ Ordering derives from the design principles ([DESIGN.md](DESIGN.md)): verificati
 
 ## Where we are
 
-27,410 tests, 256 conformance programs, 43 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs (burndown material rather than stage work), plus the *limitations* the stages below retire.
+27,413 tests, 256 conformance programs, 43 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs (burndown material rather than stage work), plus the *limitations* the stages below retire.
 
 The next release is a feature release, v0.3.0: the `Decision` effect ([#1467](https://github.com/aallan/vera/issues/1467)), which waits on [#351](https://github.com/aallan/vera/issues/351), [#352](https://github.com/aallan/vera/issues/352), [#372](https://github.com/aallan/vera/issues/372) and [#373](https://github.com/aallan/vera/issues/373).
 
 ## The next burndown
 
-*Seventy-seven open bugs, driven to zero.*
+*Seventy-nine open bugs, driven to zero.*
 
 A bug class outranks stage work, so the open `bug`-labelled set is the queue the fix releases work from, soundness defects first.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) carries each row's full account and stays the one place the detail lives; this table is the order of attack.
 
@@ -101,6 +101,8 @@ A bug class outranks stage work, so the open `bug`-labelled set is the queue the
 | [#1605](https://github.com/aallan/vera/issues/1605) | A `Nat` collection context refuses a call returning only the non-negative elements of a collection built beside a negative literal (`array_slice([-3, 5], 1, 2)`); lifts with #1542. |
 | [#1607](https://github.com/aallan/vera/issues/1607) | A quantified `ensures` is counted as a Tier 3 runtime check (**E523**), but code generation emits no check. |
 | [#1608](https://github.com/aallan/vera/issues/1608) | A `map_insert` value outside a `let` or return is guarded at the store but never obligated, so `vera verify` omits a check the module holds. |
+| [#1609](https://github.com/aallan/vera/issues/1609) | An integer `match` over a call returning `@Byte` is dropped at compile (**E602**): the scrutinee is typed `Bool`. |
+| [#1610](https://github.com/aallan/vera/issues/1610) | `vera/proposeEdit` applies an edit that introduces a `timeout` obligation, where it refuses an introduced `tier3`. |
 
 ## Stage 19 — The verification completeness sprint
 
@@ -137,6 +139,8 @@ Exit criterion: each listed drift class has a generator or a gate, and a release
 | [#1529](https://github.com/aallan/vera/issues/1529) | Each fix PR carries its own CHANGELOG fragment, assembled at release, so fix PRs share no lines. |
 | [#1531](https://github.com/aallan/vera/issues/1531) | Close two more ways a CI gate line can exit 0 unseen by the gate-placement test. |
 | [#1532](https://github.com/aallan/vera/issues/1532) | Pin the nested refused-constructor search in the #1433 duplicate-name tests. |
+| [#1611](https://github.com/aallan/vera/issues/1611) | Five test cells that can pass without exercising what they assert — each shown by a mutation or a direct run. |
+| [#1612](https://github.com/aallan/vera/issues/1612) | Stale comments and docstrings in tests and two compiler helpers, a test cache that never hits, and a mis-positioned constructor call. |
 
 ## Stage 21 — The effect hardening sprint
 

@@ -113,7 +113,7 @@ The linker resolves all imports before instantiation. If the module imports a ho
 
 The linker registers host functions before instantiation:
 1. IO host functions — registered for each IO operation the module imports (`vera.print`, `vera.read_line`, `vera.read_char`, `vera.read_file`, `vera.write_file`, `vera.args`, `vera.exit`, `vera.get_env`, `vera.sleep`, `vera.time`, `vera.stderr`).
-2. `vera.state_get_{T}` / `vera.state_put_{T}` — registered for each concrete `State<T>` type used by the program.
+2. `vera.state_get_{T}` / `vera.state_put_{T}` / `vera.state_push_{T}` / `vera.state_pop_{T}` — registered for each concrete `State<T>` type used by the program.
 
 ### 12.3.3 Entry Point Resolution
 
@@ -651,7 +651,7 @@ The runtime uses **dynamic import introspection** to work with any compiled Vera
 
 ![Dynamic import introspection: the browser runtime asks the compiled module which host functions it needs via WebAssembly.Module.imports, builds an import object with only those bindings, and instantiates — one runtime file for every program, with State bindings pattern-matched from import names.](../assets/diagrams/browser-bindings.svg)
 
-State\<T\> bindings are pattern-matched from import names: `state_get_Int` and `state_put_Int` are recognized as `State<Int>` operations and dynamically paired.
+State\<T\> bindings are pattern-matched from import names: `state_get_Int`, `state_put_Int`, `state_push_Int` and `state_pop_Int` are recognized as `State<Int>` operations and bound to one cell stack.
 
 ### 12.9.2 Public API
 

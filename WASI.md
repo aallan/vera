@@ -49,8 +49,8 @@ stage).
   the WASI stderr channel (`vera/runtime/wasi_host.py`); structured frames stay
   core-path-only (spec §13.6).  The stdout-capture wiring (check 3) landed as
   `WasiConfig.stdout_custom` → `ExecuteResult.stdout` in the same runner, which
-  closes its store before it returns or raises and waits until wasmtime has let
-  go of both output callbacks: wasmtime releases a stream the program wrote to
+  closes its store before it returns or raises and waits, for up to two seconds,
+  until wasmtime has let go of both output callbacks: wasmtime releases a stream the program wrote to
   from a tokio worker thread, and that thread calling into Python during
   interpreter shutdown is ended by `pthread_exit`, whose forced unwind cannot
   cross wasmtime's Rust frames — the process aborts (SIGABRT).  A trapping call

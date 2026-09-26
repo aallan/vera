@@ -3241,6 +3241,26 @@ class TestReleaseModeFor:
         monkeypatch.setenv("GIT_DIR", str(tmp_path / "elsewhere" / ".git"))
         assert _MOD.release_mode_for("main", repo)[0] is True
 
+    def test_a_git_that_hangs_fails_closed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A `git show` that never returns is bounded, and an expired one is
+        an unreadable base — `ReleaseModeError` — rather than a hung CI job
+        or a pre-commit hook that never finishes (PR #1606 review)."""
+        repo, _ = _repo_with_versions(tmp_path, "0.1.13", "0.2.0")
+        budgets: list[object] = []
+
+        def hang(cmd, **kwargs):
+            budgets.append(kwargs.get("timeout"))
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout") or 0)
+
+        monkeypatch.setattr(_MOD.subprocess, "run", hang)
+        with pytest.raises(_MOD.ReleaseModeError):
+            _MOD.release_mode_for("main", repo)
+        # Both candidates were tried, each under a finite budget.
+        assert len(budgets) == 2
+        assert all(isinstance(b, (int, float)) and b > 0 for b in budgets)
+
 
 class TestMainActsOnTheReleaseModeAnswer:
     """`main()` wires `--release-if-version-raised` to the checks: the

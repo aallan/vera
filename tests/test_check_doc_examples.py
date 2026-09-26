@@ -1508,6 +1508,49 @@ class TestEnumerationIgnoresAnInheritedRepository:
         assert _MOD.tracked_documents(repo) == ["guide.md"]
 
 
+class TestEnumerationIsBounded:
+    """A `git ls-files` that never returns is bounded, and an expired one is
+    reported as a coverage error rather than hanging the hook (PR #1606
+    review)."""
+
+    def test_the_listing_runs_under_a_finite_budget(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        repo = _repo_with(tmp_path / "repo", {"guide.md": _fence(_TWO)})
+        budgets: list[object] = []
+        real_run = _MOD.subprocess.run
+
+        def spy(cmd, **kwargs):
+            budgets.append(kwargs.get("timeout"))
+            return real_run(cmd, **kwargs)
+
+        monkeypatch.setattr(_MOD.subprocess, "run", spy)
+        assert _MOD.tracked_documents(repo) == ["guide.md"]
+        assert budgets and all(
+            isinstance(b, (int, float)) and b > 0 for b in budgets)
+
+    def test_an_expired_listing_is_a_coverage_error(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        def hang(root):
+            raise subprocess.TimeoutExpired(["git", "ls-files"], 30)
+
+        seen: dict[str, list[str]] = {}
+
+        def report(reports, collected, coverage, **kwargs):
+            seen["coverage"] = list(coverage)
+            return 1
+
+        monkeypatch.setattr(_MOD, "tracked_documents", hang)
+        monkeypatch.setattr(_MOD, "compiler_canary", lambda root: None)
+        monkeypatch.setattr(_MOD, "run_gate", lambda root, docs: [])
+        monkeypatch.setattr(_MOD, "collect", lambda reports: [])
+        monkeypatch.setattr(_MOD, "report", report)
+        assert _MOD.main([]) == 1
+        assert any("could not list the tracked documents" in c
+                   for c in seen["coverage"]), seen
+
+
 class TestInstrumentPieces:
     """Cells for the pieces a mutation could otherwise remove unseen (#1484
     review)."""

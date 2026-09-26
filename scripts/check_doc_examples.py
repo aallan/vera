@@ -1091,6 +1091,8 @@ def tracked_documents(root: Path) -> list[str]:
         capture_output=True,
         check=True,
         env=git_env(),
+        # This runs from pre-commit: a blocked git would hang the hook.
+        timeout=30,
     )
     names = listing.stdout.decode("utf-8").split("\0")
     return sorted(
@@ -1367,7 +1369,7 @@ def main(argv: list[str] | None = None) -> int:
             coverage += check_coverage(
                 ROOT, gated, NOT_GATED, tracked_documents(ROOT)
             )
-        except (OSError, subprocess.CalledProcessError) as exc:
+        except (OSError, subprocess.SubprocessError) as exc:
             coverage.append(
                 f"could not list the tracked documents with git ({exc}) — the "
                 f"coverage rule needs a git checkout"
