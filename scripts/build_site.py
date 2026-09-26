@@ -800,7 +800,7 @@ For other models, point them at [`SKILL.md`]({SITE}/SKILL.md) through the system
 
 The documents above are how machines *read* Vera. The [language server]({RAW}/LSP_SERVER.md) is how they *interrogate* it. `vera lsp` holds a warm, incremental Z3 session between edits, and four custom methods (`vera/speculativeEdit`, `vera/proposeEdit`, `vera/strengthenContract` and `vera/addEffect`) tell an agent whether an edit *keeps*, *breaks* or *strengthens* a program's proofs before it commits, then apply the edit only through the verification gate.
 
-```json
+```jsonc
 // vera/speculativeEdit: the proof delta for an in-memory edit
 {{
   "ok": true,

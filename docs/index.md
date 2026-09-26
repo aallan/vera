@@ -294,7 +294,7 @@ For other models, point them at [`SKILL.md`](https://veralang.dev/SKILL.md) thro
 
 The documents above are how machines *read* Vera. The [language server](https://raw.githubusercontent.com/aallan/vera/main/LSP_SERVER.md) is how they *interrogate* it. `vera lsp` holds a warm, incremental Z3 session between edits, and four custom methods (`vera/speculativeEdit`, `vera/proposeEdit`, `vera/strengthenContract` and `vera/addEffect`) tell an agent whether an edit *keeps*, *breaks* or *strengthens* a program's proofs before it commits, then apply the edit only through the verification gate.
 
-```json
+```jsonc
 // vera/speculativeEdit: the proof delta for an in-memory edit
 {
   "ok": true,
