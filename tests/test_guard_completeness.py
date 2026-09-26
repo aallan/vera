@@ -1353,10 +1353,11 @@ class TestConstructionPositionReachesNestedContainers:
     literal's target, or the enclosing `let`'s DECLARED type, which is a
     declaration rather than an inference and keeps its refinement.
 
-    What each shape does at runtime differs, and the cells say which: two
-    are caught by the read-side pattern-bind guard (#765) and two are not
-    guarded anywhere.  Neither had an obligation, which is the defect —
-    silence cannot be read in either direction.
+    Each shape is now guarded at its own store as well as obligated there,
+    and the run cells say which guard traps: the flat stores by #1426 and
+    #1440, the nested ones because a nested literal takes its type from the
+    position it stands in (R-1412 F3).  Before, none had an obligation,
+    which was the defect — silence cannot be read in either direction.
     """
 
     def test_a_nested_inner_element_is_obligated(
@@ -1370,18 +1371,21 @@ class TestConstructionPositionReachesNestedContainers:
         assert envelope["ok"] is False
         _assert_partition(envelope)
 
-    def test_and_the_nested_element_value_flows_out_unguarded(
+    def test_and_the_nested_element_is_caught_at_its_store(
         self, tmp_path: Path,
     ) -> None:
-        """The run differential: nothing catches this one at all.
+        """The run differential that names WHERE the check lives.
 
         Unlike the two tuple/`Option` shapes below, the inner element is
-        read back as a plain projection, so no pattern bind guards it and
-        `-4` is returned from a function whose element type forbids it.
+        read back as a plain projection, so no pattern bind guards it: when
+        this cell was written `-4` was returned from a function whose element
+        type forbids it.  #1426 guarded the flat element store, and the
+        nested literal now receives its element type from the position it
+        stands in (R-1412 F3), so its own store traps.
         """
         out = _run(tmp_path, _P1_NESTED_ARRAY, "--fn", "f", "--", "-4",
                    name="p1b.vera")
-        assert out.strip() == "-4", out
+        assert "Refinement violation in array element store" in out, out
 
     def test_a_refined_map_value_is_obligated(self, tmp_path: Path) -> None:
         """The insert's own record, which was absent entirely.
@@ -1455,9 +1459,12 @@ class TestConstructionPositionReachesNestedContainers:
         assert envelope["ok"] is False
         _assert_partition(envelope)
 
+        # The tuple inside the array literal is typed from the element
+        # position (R-1412 F3), so its own store traps before the `let`
+        # destructure that caught it when this cell was written.
         out = _run(tmp_path, _P1_ARRAY_OF_REFINED_TUPLES, "--fn", "f", "--",
                    "-4", name="p1j.vera")
-        assert "Refinement violation in let Tuple" in out, out
+        assert "Refinement violation in Tuple(…) construction" in out, out
 
     def test_one_obligation_per_component_not_one_per_route(
         self, tmp_path: Path,
