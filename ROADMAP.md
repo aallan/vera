@@ -12,13 +12,13 @@ Ordering derives from the design principles ([DESIGN.md](DESIGN.md)): verificati
 
 ## Where we are
 
-27,413 tests, 256 conformance programs, 43 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs (burndown material rather than stage work), plus the *limitations* the stages below retire.
+30,095 tests, 256 conformance programs, 43 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs (burndown material rather than stage work), plus the *limitations* the stages below retire.
 
 The next release is a feature release, v0.3.0: the `Decision` effect ([#1467](https://github.com/aallan/vera/issues/1467)), which waits on [#351](https://github.com/aallan/vera/issues/351), [#352](https://github.com/aallan/vera/issues/352), [#372](https://github.com/aallan/vera/issues/372) and [#373](https://github.com/aallan/vera/issues/373).
 
 ## The next burndown
 
-*Seventy-nine open bugs, driven to zero.*
+*Eighty-two open bugs, driven to zero.*
 
 A bug class outranks stage work, so the open `bug`-labelled set is the queue the fix releases work from, soundness defects first.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) carries each row's full account and stays the one place the detail lives; this table is the order of attack.
 
@@ -103,6 +103,9 @@ A bug class outranks stage work, so the open `bug`-labelled set is the queue the
 | [#1608](https://github.com/aallan/vera/issues/1608) | A `map_insert` value outside a `let` or return is guarded at the store but never obligated, so `vera verify` omits a check the module holds. |
 | [#1609](https://github.com/aallan/vera/issues/1609) | An integer `match` over a call returning `@Byte` is dropped at compile (**E602**): the scrutinee is typed `Bool`. |
 | [#1610](https://github.com/aallan/vera/issues/1610) | `vera/proposeEdit` applies an edit that introduces a `timeout` obligation, where it refuses an introduced `tier3`. |
+| [#1613](https://github.com/aallan/vera/issues/1613) | A generic constructor nested in a container literal is neither obligated nor guarded, so a negative `@Nat` payload is stored. |
+| [#1614](https://github.com/aallan/vera/issues/1614) | A piped `map_insert` in a typed `let` is guarded at the store but never obligated. |
+| [#1615](https://github.com/aallan/vera/issues/1615) | A pipe as an `if` or `match` arm's tail compiles to an invalid module: the `if` has no result type. |
 
 ## Stage 19 — The verification completeness sprint
 
