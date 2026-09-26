@@ -1,5 +1,5 @@
 <svg width="920" height="520" viewBox="0 0 920 520" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
-  <title id="title">Three-tier contract verification: each obligation goes to Z3 with a ten-second budget; unsat is verified, sat is a compile-time error with a counterexample, unknown or timeout defers to a Tier 3 runtime guard. Tier 2 (hints) is not yet implemented and also falls to Tier 3.</title>
+  <title id="title">Three-tier contract verification: each obligation goes to Z3 with a ten-second budget. Unsat is verified (Tier 1) and sat is a compile-time error with a counterexample; unknown or timeout goes on to Tier 2, where hints from assert axioms and lemmas extend the solver to quantifiers, calls and arrays, and what remains becomes a Tier 3 runtime guard.</title>
   <!-- Design system: see architecture.svg. Truthfulness: Tier 3 contracts are compiled
        as runtime guards; this diagram makes no claim about Tier 1 guard omission (#958). -->
   <defs>
@@ -12,7 +12,6 @@
       .micro { font-size: 10.5px; font-weight: 600; letter-spacing: 1.5px; fill: #a9a49b; }
       .sub { font-size: 11.5px; fill: #7a756d; }
       .card { fill: #ffffff; stroke: #e8e6e1; stroke-width: 1; }
-      .dash { fill: #ffffff; stroke: #cfccc5; stroke-width: 1; stroke-dasharray: 4 3; }
       .title { font-size: 13.5px; font-weight: 600; fill: #2d2b28; }
       .desc { font-size: 11px; fill: #7a756d; }
       .edge { fill: none; stroke: #a9a49b; stroke-width: 1.5; }
