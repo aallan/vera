@@ -391,11 +391,15 @@ class WasmContext(
         # so an entry whose instructions never reach the module drops out on
         # its own, and nothing has to be merged or rolled back.
         self._emitted_checks: CheckRecord = checks if checks is not None else {}
-        # R-1412 F3: the component type an enclosing construction hands to
-        # the argument it is translating, for a NESTED literal whose own
-        # span carries no recorded target.  Saved and restored around each
-        # argument, so a sibling never sees another's.
-        self._pending_component_type: object | None = None
+        # R-1412 F3: the component type an enclosing construction hands
+        # DOWN to a nested container literal standing in one of its
+        # component positions, for a literal whose own span carries no
+        # recorded target.  Keyed by the receiving node's id, holding the
+        # node so the id stays its own, and registered only for the length
+        # of that component's translation — so the type reaches the literal
+        # the position names and nothing else translated beneath it.  See
+        # `_handing_down` (operators.py).
+        self._handed_down_types: dict[int, tuple[ast.Expr, object]] = {}
         # The constructor arguments that widen a genuine `@Nat` into the
         # `@Int` component a binding reads, where the component's other
         # sources can be negative — the per-arm widening of #820 at the

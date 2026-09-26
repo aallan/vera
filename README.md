@@ -270,7 +270,7 @@ Every Vera example in `SKILL.md`, this README, the FAQ, `EXAMPLES.md`, the spec 
 
 ## Project status
 
-Vera is in **active development** at v0.2.0: 3,000+ commits, 212 releases, 26,605 tests, 95% Python code coverage, 256 conformance programs, 43 examples, and a 14-chapter specification. Known bugs and limitations are tracked in **[KNOWN_ISSUES.md](KNOWN_ISSUES.md)**. See **[HISTORY.md](HISTORY.md)** for how the compiler was built.
+Vera is in **active development** at v0.2.0: 3,000+ commits, 212 releases, 27,410 tests, 95% Python code coverage, 256 conformance programs, 43 examples, and a 14-chapter specification. Known bugs and limitations are tracked in **[KNOWN_ISSUES.md](KNOWN_ISSUES.md)**. See **[HISTORY.md](HISTORY.md)** for how the compiler was built.
 
 The reference compiler — parser, AST, type checker, contract verifier (Z3), WASM code generator, module system, browser runtime, and runtime contract insertion — is working. The language specification is in draft across [14 chapters](spec/).
 

@@ -386,6 +386,20 @@ class DataMixin:
         # Unit-skip in `_translate_let_destruct` and closes #902 — a
         # `Tuple<Unit, …>` (or any constructor with a `Unit` field) must
         # compile, not silently skip the function and dangle its call.
+        #
+        # The builtin `Tuple` carrier's target is resolved BEFORE the
+        # arguments, because each argument's component type is handed down
+        # from it (R-1412 F3): a nested `Tuple` whose own span has no
+        # recorded target takes the type its enclosing position hands it,
+        # and hands its own components on from THAT — so a chain of any
+        # depth is typed from its outermost recorded target, as the
+        # verifier's descent is.  The store loop below says why
+        # `expr.name == "Tuple"` is the whole test.
+        tuple_target = (
+            self._container_target_full(expr)
+            if expr.name == "Tuple"
+            else None
+        )
         arg_instrs_list: list[list[str]] = []
         arg_wasm_types: list[str] = []
         for i, arg in enumerate(expr.args):
@@ -401,14 +415,8 @@ class DataMixin:
             # R-1412 F3: hand this argument's own component type down, so a
             # nested literal — which the checker records no target for — can
             # guard its components from the enclosing store's knowledge.
-            saved_pending = self._pending_component_type
-            self._pending_component_type = self._adt_arg_type(
-                self._target_codegen_type_full(expr)
-                if expr.name == "Tuple" else None, i)
-            try:
+            with self._handing_down(arg, self._adt_arg_type(tuple_target, i)):
                 arg_instrs = self.translate_expr(arg, env)
-            finally:
-                self._pending_component_type = saved_pending
             if arg_instrs is None:
                 return None
             arg_wt = self._infer_expr_wasm_type(arg)
@@ -509,20 +517,16 @@ class DataMixin:
         # desync that trapped a legal @Nat.  With the name reserved there is
         # no second Tuple to tell apart, and the extra clause would be a
         # discrimination against a declaration the checker cannot admit.
-        tuple_target = (
-            self._target_codegen_type_full(expr)
-            if expr.name == "Tuple"
-            else None
-        )
+        # `tuple_target` is resolved above the argument loop, since each
+        # argument's component type is handed down from it.
+        #
         # R-1412 F3: a NESTED literal carries no recorded target of its own —
         # the checker records one for the outer construction and nothing for
         # the inner — so `Tuple(Tuple(@Int.0, 1), 2)` guarded the outer
         # components and left the inner ones unchecked, while the verifier's
-        # descent obligated them.  The enclosing store hands its component
-        # type down through this channel, which is the codegen twin of the
-        # threading the verifier does.
-        if tuple_target is None and expr.name == "Tuple":
-            tuple_target = self._pending_component_type
+        # descent obligated them.  `_container_target_full` falls back to the
+        # type the enclosing position handed down, which is the codegen twin
+        # of the threading the verifier does.
 
         # Store each field at its computed offset
         for i, (fo, wt) in enumerate(field_offsets):
@@ -2274,8 +2278,15 @@ class DataMixin:
         # decide the widening guard — the dual of the concrete @Int constructor
         # field.  Guard only when the target element is genuinely @Int, never a
         # @Nat / generic element (which must not be range-trapped).
+        #
+        # R-1412 F3: a literal NESTED in a container position has no recorded
+        # target of its own, so the one its position handed down is read
+        # instead — the same fallback a nested `Tuple` takes — and the
+        # element type is handed on to each element in turn.
         target_elem_is_int = self._adt_arg_is_int(
-            self._target_codegen_type_full(expr), 0)
+            self._container_target_full(expr), 0)
+        elem_component = self._adt_arg_type(
+            self._container_target_refined(expr), 0)
 
         instructions: list[str] = []
         # Allocate
@@ -2286,7 +2297,8 @@ class DataMixin:
 
         # Store each element
         for i, elem in enumerate(expr.elements):
-            elem_instrs = self.translate_expr(elem, env)
+            with self._handing_down(elem, elem_component):
+                elem_instrs = self.translate_expr(elem, env)
             if elem_instrs is None:
                 return None
             if target_elem_is_int and self._result_is_nat(elem):
@@ -2296,8 +2308,6 @@ class DataMixin:
             # above reads, with the refinement left ON — the literal is typed
             # by its element VALUES, so the element's own type says nothing
             # about the slot it is going into.
-            elem_component = self._adt_arg_type(
-                self._target_codegen_type_refined(expr), 0)
             elem_instrs = self._emit_construction_refine_guard(
                 elem_instrs, elem, "array element", "array element store",
                 env, component_ty=elem_component,

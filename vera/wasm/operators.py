@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from typing import ClassVar
 
 from vera import ast, narrowing, naming
@@ -2842,6 +2843,95 @@ class OperatorsMixin:
         if name == "Int":
             return "Int"
         return None
+
+    @contextmanager
+    def _handing_down(
+        self, expr: ast.Expr, component_ty: object | None,
+    ) -> Iterator[None]:
+        """Hand *component_ty* to the container literal *expr* stands for,
+        for the length of the block (R-1412 F3).
+
+        The checker records a target for the OUTERMOST literal of a nested
+        construction and none for the literals inside it, while the
+        verifier's descent (``_descend_construction_container``) threads the
+        component type down and obligates what it reaches.  This is the
+        codegen twin of that threading, over the same positions — the caller
+        is a `Tuple` argument, an array-literal element or a ``map_insert``
+        value / receiver — and through the same wrappers: an ``if`` or
+        ``match`` stands where its arms do, and a block where its tail does.
+        The type lands on the `Tuple`, array literal or ``map_insert`` it
+        reaches, which reads it through :py:meth:`_container_target_full` /
+        :py:meth:`_container_target_refined` when its own span has no
+        recorded target.
+
+        Keyed by node rather than held in one ambient variable: an ambient
+        value is visible to EVERYTHING translated beneath the component —
+        a call argument, a block statement, a branch condition — so an
+        unrelated `Tuple` there read the enclosing component's type as its
+        own.  Registered for this component's translation only, so a sibling
+        never sees another's.
+        """
+        keys: list[int] = []
+        if component_ty is not None:
+            self._register_hand_down(expr, component_ty, keys)
+        try:
+            yield
+        finally:
+            for key in keys:
+                self._handed_down_types.pop(key, None)
+
+    def _register_hand_down(
+        self, expr: ast.Expr, component_ty: object, keys: list[int],
+    ) -> None:
+        if isinstance(expr, ast.IfExpr):
+            for arm in (expr.then_branch, expr.else_branch):
+                if arm is not None:
+                    self._register_hand_down(arm, component_ty, keys)
+        elif isinstance(expr, ast.MatchExpr):
+            for match_arm in expr.arms:
+                self._register_hand_down(match_arm.body, component_ty, keys)
+        elif isinstance(expr, ast.Block):
+            if expr.expr is not None:
+                self._register_hand_down(expr.expr, component_ty, keys)
+        elif ((isinstance(expr, ast.ConstructorCall) and expr.name == "Tuple")
+                or isinstance(expr, ast.ArrayLit)
+                or (isinstance(expr, ast.FnCall)
+                    and expr.name == "map_insert")):
+            self._handed_down_types[id(expr)] = (expr, component_ty)
+            keys.append(id(expr))
+
+    def _handed_down_type(self, expr: ast.Expr) -> object | None:
+        entry = self._handed_down_types.get(id(expr))
+        if entry is None or entry[0] is not expr:
+            return None
+        return entry[1]
+
+    def _container_target_full(self, expr: ast.Expr) -> object | None:
+        """A container literal's target (R-1412 F3), with the refinement
+        unwrapped like :py:meth:`_target_codegen_type_full`.
+
+        The type its position handed down comes FIRST, the recorded one
+        second.  The verifier's descent types a nested literal from the
+        position alone and never consults the node's own record, and the
+        record can be wrong where the position is not: a ``map_insert``
+        value's recorded target is the ERASED base, generic unification
+        having resolved ``V`` against the ``map_new()`` receiver, so a
+        `Tuple` stored as a ``Map<String, Tuple<Nat, Int>>`` value is
+        recorded as a ``Tuple<Int, Int>``.  A literal no position reaches
+        has nothing handed down, and reads its record as before.
+        """
+        handed = self._handed_down_type(expr)
+        if handed is not None:
+            return getattr(handed, "base", handed)
+        return self._target_codegen_type_full(expr)
+
+    def _container_target_refined(self, expr: ast.Expr) -> object | None:
+        """:py:meth:`_container_target_full` with the refinement intact, like
+        :py:meth:`_target_codegen_type_refined`."""
+        handed = self._handed_down_type(expr)
+        if handed is not None:
+            return handed
+        return self._target_codegen_type_refined(expr)
 
     def _target_codegen_type_full(self, expr: ast.Expr) -> object | None:
         """The checker-recorded *target* type of *expr* (the ``expected`` it was

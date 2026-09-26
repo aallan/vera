@@ -636,27 +636,33 @@ class CallsContainersMixin:
             extra_params=params, results=["i32"],
         )
         ins: list[str] = []
+        # #1426: the §2.6.5 predicate on the VALUE going into the map.  The
+        # value argument's own recorded target is the ERASED base — generic
+        # unification resolves `V` against the `map_new()` receiver — so the
+        # refinement is read from the CALL's target instead, which carries
+        # `Map<K, {refined}>` whole.  Same asymmetry the verifier hit
+        # obligating this site, answered from the same place.  R-1412 F3: a
+        # `map_insert` NESTED in a container position has no recorded target
+        # of its own, so the one its position handed down stands in for it.
+        map_target = self._container_target_refined(call)
+        value_component = self._adt_arg_type(map_target, 1)
         # #706: pass the Map wrapper_ptr directly (bucket-as-truth — no
-        # handle to unwrap); the host returns a fresh wrapper_ptr.
-        arg0 = self.translate_expr(call.args[0], env)
+        # handle to unwrap); the host returns a fresh wrapper_ptr.  A chained
+        # insert builds the same map, so the receiver is handed the map's
+        # own type, as the verifier's descent obligates it (R-1412 F3).
+        with self._handing_down(call.args[0], map_target):
+            arg0 = self.translate_expr(call.args[0], env)
         if arg0 is None:
             return None
         ins.extend(arg0)
         # Eval remaining args.
         for pos, arg in enumerate(call.args[1:], start=1):
-            arg_instrs = self.translate_expr(arg, env)
+            with self._handing_down(
+                    arg, value_component if pos == 2 else None):
+                arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
                 return None
             if pos == 2:
-                # #1426: the §2.6.5 predicate on the VALUE going into the
-                # map.  The value argument's own recorded target is the
-                # ERASED base — generic unification resolves `V` against the
-                # `map_new()` receiver — so the refinement is read from the
-                # CALL's target instead, which carries `Map<K, {refined}>`
-                # whole.  Same asymmetry the verifier hit obligating this
-                # site, answered from the same place.
-                value_component = self._adt_arg_type(
-                    self._target_codegen_type_refined(call), 1)
                 arg_instrs = self._emit_construction_refine_guard(
                     arg_instrs, arg, "map value", "map value insert", env,
                     component_ty=value_component,
