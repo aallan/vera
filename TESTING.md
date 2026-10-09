@@ -21,7 +21,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 Written by `scripts/render_status.py` from the tree.  The tests are counted by a collection, `pytest --collect-only -o addopts= --matrix=full`, which includes the stress tests and every class-instrument cell, not by a run, so a run's passed, skipped and xfailed split is not recorded here.
 <!-- render_status:end status -->
 
-This block, the [test file table](#test-files) and the [skipped tests](#skipped-tests) are written by `scripts/render_status.py` from the tree, each between a pair of `render_status` markers.  The release PR runs it, and `python scripts/check_doc_counts.py --release` fails the release when a block is not what the script writes now.  Between releases the blocks may lag the tree, and a pull request leaves them alone; no other document states these counts.
+This block, the [test file table](#test-files) and the [skipped tests](#skipped-tests) are written by `scripts/render_status.py` from the tree, each between a pair of `render_status` markers.  The release PR runs it, and `python scripts/check_doc_counts.py --release` fails the release when a block is not what the script writes now.  Between releases the blocks may lag the tree, and a pull request leaves them alone.  The one other place these counts are stated is the landing page's status paragraph, until its renderer lands ([ROADMAP.md](ROADMAP.md), Stage 22).
 
 | Measure | Where it is |
 |---------|-------------|

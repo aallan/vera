@@ -82,7 +82,7 @@ python scripts/check_diagnostic_fields.py # Verify every diagnostic carries rati
 python scripts/check_explicit_encoding.py # Verify every text-mode open()/read_text()/write_text() passes explicit encoding='utf-8' (#645)
 python scripts/build_site.py          # Regenerate AI-readable site assets (llms.txt, etc.)
 python scripts/check_site_assets.py   # Verify site assets are up-to-date + docs/index.html ↔ docs/index.md state coherent facts (#1154)
-python scripts/render_status.py      # The release PR: write TESTING.md's generated status (the one place counts live) from the tree
+python scripts/render_status.py      # The release PR: write TESTING.md's generated status (where the counts live) from the tree
 python scripts/check_doc_counts.py --release # The release PR: TESTING.md's generated status is current (CI runs this mode on any change that raises [project].version, via --release-if-version-raised)
 python scripts/check_doc_counts.py --check-bug-issues # The release PR: KNOWN_ISSUES' Bugs table against the open `bug` issues (GitHub API)
 python scripts/check_corpus_differential.py --base-ref origin/main  # Compile the corpus at two revisions; report programs whose WAT moved (burndown instrument, not a hook)
