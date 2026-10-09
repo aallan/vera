@@ -42,10 +42,8 @@ this suite does not fix is skipped in the matrix and pinned by a cell of its
 own at the end of the file, asserting what the compiler does today.
 `_KNOWN_RED` is empty — #1466's pair-represented tuple component was its last
 entry and is a cell again.  Nothing here is `xfail`ed: no test in this suite
-is, and `scripts/check_doc_counts.py` gates TESTING.md's breakdown as
-`passed + stress-deselected + skipped == collected`, which has no term for
-one.  A pinning assertion has the property that matters — it fails the day the
-defect is fixed — without making every future PR write a fourth number.
+is.  A pinning assertion has the property that matters — it fails the day the
+defect is fixed.
 """
 from __future__ import annotations
 
@@ -601,12 +599,9 @@ def _skip_or_xfail(site: str, kind: str) -> None:
     should: the generator keeps finding it, and the day it is fixed that cell
     fails and someone has to come back here and delete both entries.
 
-    Pinned rather than `xfail`ed because no test in this suite uses `xfail`
-    and `scripts/check_doc_counts.py` gates TESTING.md's breakdown as
-    `passed + stress-deselected + skipped == collected`, which has no term
-    for an xfailed test.  A pinning assertion has the property that matters —
-    it fails when the defect is fixed — without making every future PR write
-    a fourth number.
+    Pinned rather than `xfail`ed because no test in this suite uses `xfail`.
+    A pinning assertion has the property that matters — it fails when the
+    defect is fixed.
     """
     unsupported = _UNSUPPORTED_SHAPES.get((site, kind))
     if unsupported is not None:

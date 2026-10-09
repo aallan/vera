@@ -13,9 +13,10 @@ resources — so it renders identically through GitHub's camo proxy.
   consumed by LLMs (`docs/llms-full.txt`, agents reading files in a terminal)
   — images are invisible to them, so the information must survive in text.
   When a diagram and its text version disagree, that is a bug; fix both.
-- **No live counts.** Test totals, module counts, and issue lists drift and
-  are policed by `scripts/check_doc_counts.py`, which cannot see inside an
-  SVG. The one deliberate exception is `history-growth.svg`, which charts the
+- **No live counts.** Test totals, module counts, and issue lists drift; the
+  one place they live is TESTING.md's generated status, which
+  `scripts/render_status.py` writes and nothing can write inside an SVG. The
+  one deliberate exception is `history-growth.svg`, which charts the
   *historical* release columns recorded in `HISTORY.md` §By the numbers and
   says so on its face.
 - **Truthfulness beats the source it replaced.** `architecture.svg` draws the

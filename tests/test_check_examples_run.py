@@ -9,16 +9,14 @@ The gate's design has three separable parts, and each is tested here:
   table key with no file on disk is an ERROR too, so a deleted example
   cannot leave a suppression behind.
 - **The documentation cross-check** (`check_testing_md`) — TESTING.md's
-  execution-model table must agree with the script's own classification,
-  the `check_doc_counts.py` model: the codebase is the oracle and the doc
-  must match it.
+  execution-model table must agree with the script's own classification:
+  the codebase is the oracle and the doc must match it.
 - **The runner** (`run_corpus`) — a seeded corpus proves the gate goes red
   on a program that traps at runtime and green on one that does not.
 
-Two conventions are inherited from ``tests/test_check_doc_counts.py`` and
-asserted throughout: a regex or glob that matches nothing must be an
-ERROR rather than a silent pass (otherwise a rewording switches the gate
-off), and each check is exercised in both directions — a passing case
+Two conventions are asserted throughout: a regex or glob that matches
+nothing must be an ERROR rather than a silent pass (otherwise a rewording
+switches the gate off), and each check is exercised in both directions — a passing case
 alongside the failing one it is supposed to catch, so a check that can
 only ever return ``[]`` cannot masquerade as green.
 """
@@ -1181,7 +1179,7 @@ def _table(rows: list[tuple[str, str]]) -> str:
 
 
 class TestTestingMdCrossCheck:
-    """docs must match the codebase — the `check_doc_counts.py` model."""
+    """docs must match the codebase."""
 
     def test_shipped_testing_md_matches_the_shipped_tables(self) -> None:
         text = (_ROOT / "TESTING.md").read_text(encoding="utf-8")

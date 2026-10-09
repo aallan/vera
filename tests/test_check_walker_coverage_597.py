@@ -50,9 +50,8 @@ class TestExtractExprSubclasses:
     def test_finds_canonical_expr_subclasses_from_live_ast(
         self, script_module: object,
     ) -> None:
-        """Live `vera/ast.py` has 29 Expr subclasses today (pinned
-        by `check_doc_counts.py`).  The script must find all of
-        them — if it returns 0, the audit returns false-positive
+        """Live `vera/ast.py` has 29 Expr subclasses today.  The
+        script must find all of them — if it returns 0, the audit returns false-positive
         green for every walker."""
         subclasses = script_module.extract_expr_subclasses()
         # Allow for additions over time; just pin the minimum.

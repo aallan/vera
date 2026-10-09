@@ -547,7 +547,7 @@ _RETIRED_GATES = (
 
 def _hook(config: str, hook_id: str) -> dict[str, str]:
     """The `entry:` and `files:` of one pre-commit hook, read as text (the
-    project avoids a YAML dependency for this, as check_doc_counts.py does)."""
+    project avoids a YAML dependency for this)."""
     m = re.search(
         rf"^ +- id: {re.escape(hook_id)}\n(?P<body>(?: {{8,}}\S.*\n)+)",
         config,
