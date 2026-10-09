@@ -1775,31 +1775,35 @@ def cmd_test(
         else:
             print(f"\nTesting: {path}\n")
         for f in result.functions:
+            # --distrust: the proved clauses no runtime check stands for, which
+            # no trial tested, whatever the trials that ran found.
+            gap = (
+                "; no runtime check for " + ", ".join(
+                    f"`{clause}`" for clause in f.unchecked)
+                if f.unchecked else ""
+            )
             if f.category == "tested":
                 if f.trials_failed > 0:
                     line = (
                         f"  {f.fn_name} {'.' * max(1, 40 - len(f.fn_name))} "
                         f"FAILED  "
                         f"({f.trials_passed}/{f.trials_run} passed, "
-                        f"{f.trials_failed} failed)"
+                        f"{f.trials_failed} failed{gap})"
                     )
                 else:
+                    # What held is the checked part; no trial tested the rest.
                     held = ", Tier 1 proof held" if f.proved else ""
-                    if f.unchecked:
-                        # What held is the checked part; no trial tested
-                        # the rest.
-                        held += "; no runtime check for " + ", ".join(
-                            f"`{clause}`" for clause in f.unchecked)
                     line = (
                         f"  {f.fn_name} {'.' * max(1, 40 - len(f.fn_name))} "
-                        f"TESTED  ({f.trials_run}/{f.trials_run} passed{held})"
+                        f"TESTED  ({f.trials_run}/{f.trials_run} passed"
+                        f"{held}{gap})"
                     )
             elif f.category == "refuted":
                 refuting = sum(1 for t in f.failures if t.status == "refuted")
                 line = (
                     f"  {f.fn_name} {'.' * max(1, 40 - len(f.fn_name))} "
                     f"REFUTED ({refuting}/{f.trials_run} trials contradict "
-                    f"the Tier 1 proof)"
+                    f"the Tier 1 proof{gap})"
                 )
             elif f.category == "verified":
                 line = (

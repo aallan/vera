@@ -1300,7 +1300,13 @@ class TestAProofIsRunWhereverACheckStandsForIt:
         assert "E702" not in _codes(result)
         rc = cmd_test(_write(tmp_path, SRC_UNCHECKED_ENSURES_BESIDE_A_PROOF),
                       trials=3, distrust=True)
-        assert rc == 1, capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert rc == 1, out
+        # The refutation does not hide the clause no trial tested.
+        assert re.search(
+            r'label \.+ REFUTED \(\d+/\d+ trials contradict the Tier 1 proof; '
+            r'no runtime check for `ensures\(@String\.result == "ok"\)`\)',
+            out), out
 
     def test_a_refined_element_proof_beside_an_unchecked_ensures_runs(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
@@ -1316,8 +1322,15 @@ class TestAProofIsRunWhereverACheckStandsForIt:
         assert f.unchecked == [
             "ensures(array_length(@Array<@Pos>.result) == 2)"]
         assert "E702" not in _codes(result)
-        assert cmd_test(_write(tmp_path, SRC_REFINED_ELEMENTS), trials=3,
-                        distrust=True) == 1, capsys.readouterr().out
+        rc = cmd_test(_write(tmp_path, SRC_REFINED_ELEMENTS), trials=3,
+                      distrust=True)
+        out = capsys.readouterr().out
+        assert rc == 1, out
+        # A failing line names the clause no trial tested too.
+        assert re.search(
+            r"positives \.+ FAILED  \(0/\d+ passed, \d+ failed; no runtime "
+            r"check for `ensures\(array_length\(@Array<@Pos>\.result\) == 2\)`\)",
+            out), out
 
     def test_a_component_refined_return_is_a_checked_clause(self) -> None:
         program = transform(parse(SRC_REFINED_COMPONENT, file=_FILE))

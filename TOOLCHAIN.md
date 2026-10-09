@@ -193,7 +193,8 @@ express has no check, and no trial can refute its proof: an `ensures` over a
 `String` or `Array` result is one.  A proved function is not run only when no
 check its run reaches can stand for something the verifier proved: a clause of
 its own, an operation in its body, the contract of a function it calls.
-Otherwise it is run, and its reason names the clauses no check stands for.
+Otherwise it is run, and its reason and its text line, whatever its trials
+found, name the clauses no check stands for.
 
 Each failing trial of a proved function is read against two records: the
 module's list of the checks it holds, and the verifier's list of what became
