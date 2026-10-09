@@ -58,7 +58,7 @@ syntax match veraHole '\%(\w\|?\)\@<!?\%(\w\|?\)\@!'
 syntax keyword veraPrimitiveType Bool Int Nat Float64 Byte String Unit Never
 syntax keyword veraCompositeType Array Option Map Set Tuple Result Decimal Json Future Fn Ordering
 syntax keyword veraAdtType MdBlock MdInline UrlParts HtmlNode Request Response
-" All ten effects in `vera effects --json`. The four abilities it also
+" Every effect in `vera effects --json`. The four abilities it also
 " lists (Eq, Hash, Ord, Show) are absent from every editor grammar; whether
 " they should highlight distinctly from ordinary types is tracked in #1295.
 syntax keyword veraEffectType IO State Exn Http HttpServer Async Diverge Inference Random DB
