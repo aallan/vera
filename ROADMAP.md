@@ -18,7 +18,7 @@ v0.3.0 is the sound base (Stage 29), reached through v0.2.1 to v0.2.8 (Stages 21
 
 ## The next burndown
 
-*Eighty-four open bugs, driven to zero.*
+*Eighty-six open bugs, driven to zero.*
 
 A bug class outranks stage work, so the open `bug`-labelled set is the queue the fix releases work from, soundness defects first.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) carries each row's full account and stays the one place the detail lives; this table is the order of attack.
 
@@ -110,6 +110,8 @@ Bugs in a mechanism cluster close in the stage that removes their mechanism and 
 | [#1615](https://github.com/aallan/vera/issues/1615) | A pipe as an `if` or `match` arm's tail compiles to an invalid module: the `if` has no result type. |
 | [#1635](https://github.com/aallan/vera/issues/1635) | `examples/factorial.vera` admits every `@Nat` but traps on overflow from 21, so a proved example cannot compute most of its domain. |
 | [#1640](https://github.com/aallan/vera/issues/1640) | `vera test` labels generated arguments in declaration order, so the first of two same-typed parameters is reported as `@T.0`. |
+| [#1643](https://github.com/aallan/vera/issues/1643) | `vera test` skips a function whose only contract is a refined return type as "trivial contracts only", so its refinement is never trialled. |
+| [#1644](https://github.com/aallan/vera/issues/1644) | A live-request `KeyboardInterrupt` test can complete with `exit_code=None` under `pytest -n 4`. |
 
 ## Stage 19 — The verification completeness sprint
 
