@@ -78,6 +78,7 @@ vera serve --port 8080 file.vera  # Serve on a specific port
 vera test file.vera               # Contract-driven testing via Z3 + WASM
 vera test --json file.vera        # Test with JSON output
 vera test --trials 50 file.vera   # Limit trials per function (default 100)
+vera test --distrust file.vera    # Also execute proved functions; a failed proved check refutes the proof (E703)
 vera test file.vera --fn f        # Test a single function
 vera parse file.vera              # Print the parse tree
 vera ast file.vera                # Print the typed AST
@@ -90,13 +91,13 @@ vera lsp                          # Serve LSP over stdio: live diagnostics, hove
                                   #   hole completion + agent proof-delta methods (LSP_SERVER.md)
 vera builtins [--json]            # List the built-in function registry (no file needed)
 vera effects [--json]             # List the effect and ability registry (no file needed)
-vera errors [--json]              # List the diagnostic-code registry: E001–E702 + W001–W004 (no file needed)
+vera errors [--json]              # List the diagnostic-code registry: E001–E703 + W001–W004 (no file needed)
 pytest tests/ -v                  # Run the test suite
 ```
 
 Errors are natural language instructions explaining what went wrong and how to fix it. Feed them back into your context to correct the code.
 
-`vera test` generates Z3 inputs for `Int`, `Nat`, `Bool`, `Byte`, `String`, and `Float64` parameters. The decision is made on each parameter's **resolved** type, not its spelling: a type alias or refinement that resolves to one of those six is generated for like any other, so a parameter spelled `@Count` under `type Count = Nat;` is not skipped for its parameter type, and an alias-spelled `requires` still constrains the inputs. (Trials are what a *Tier 3* contract gets; a signature the verifier proves reports `VERIFIED (Tier 1)` instead, and one with only trivial contracts is skipped as `trivial contracts only`.) A parameter resolving to an ADT or a function type is skipped with a message naming that resolved type — `type MaybeCount = Option<Nat>` skips with `cannot generate Option<Nat> inputs`. A generic function is skipped as `generic function` before its parameter types are considered at all, so a `forall<T>` signature never reports a per-parameter reason even when every parameter is generable. A generable signature is also skipped when a `requires` conjunct — or a refined parameter's predicate — is outside the SMT layer's decidable fragment, since Z3 could not constrain the generated inputs by it; the skip names the conjunct (`cannot generate inputs satisfying `` `string_length(@String.0) > 0` ``), because running trials the precondition never shaped would report the function's own entry-guard trap as a broken contract. `string_length` over a non-literal is the usual trigger — Vera counts UTF-8 bytes and Z3's string theory has no byte-length operator — so compare a `string_length` against a literal where you want the function trialled. Float64 uses Z3's mathematical reals (NaN, ±∞, and subnormals are not generated). Strings are capped at 50 characters.
+`vera test` generates Z3 inputs for `Int`, `Nat`, `Bool`, `Byte`, `String`, and `Float64` parameters. The decision is made on each parameter's **resolved** type, not its spelling: a type alias or refinement that resolves to one of those six is generated for like any other, so a parameter spelled `@Count` under `type Count = Nat;` is not skipped for its parameter type, and an alias-spelled `requires` still constrains the inputs. (Trials are what a *Tier 3* contract gets; a signature the verifier proves reports `VERIFIED (Tier 1)` instead, unless `vera test --distrust` runs it too, and one with only trivial contracts is skipped as `trivial contracts only`.) A parameter resolving to an ADT or a function type is skipped with a message naming that resolved type — `type MaybeCount = Option<Nat>` skips with `cannot generate Option<Nat> inputs`. A generic function is skipped as `generic function` before its parameter types are considered at all, so a `forall<T>` signature never reports a per-parameter reason even when every parameter is generable. A generable signature is also skipped when a `requires` conjunct — or a refined parameter's predicate — is outside the SMT layer's decidable fragment, since Z3 could not constrain the generated inputs by it; the skip names the conjunct (`cannot generate inputs satisfying `` `string_length(@String.0) > 0` ``), because running trials the precondition never shaped would report the function's own entry-guard trap as a broken contract. `string_length` over a non-literal is the usual trigger — Vera counts UTF-8 bytes and Z3's string theory has no byte-length operator — so compare a `string_length` against a literal where you want the function trialled. Float64 uses Z3's mathematical reals (NaN, ±∞, and subnormals are not generated). Strings are capped at 50 characters.
 
 ### Browser compilation
 
@@ -164,7 +165,7 @@ Every diagnostic has a stable code grouped by compiler phase — the `W` series 
 - **E300–E339** — Type check: control flow (if/match, patterns, effect handlers)
 - **E500–E541** — Verification (contract violations, undecidable fallbacks, primitive-operation safety incl. arithmetic overflow, premise satisfiability, and E541: a runtime-check claim `vera verify --reconcile` found no check for in the compiled module)
 - **E600–E623** — Codegen (unsupported features, name collisions, typed holes block compilation); **E699** is an internal compiler error
-- **E700–E702** — Testing (contract violations, input generation, execution errors)
+- **E700–E703** — Testing (contract violations, input generation, execution errors, a proof a test run refutes)
 
 In diagnostic messages, a `?` inside a printed type (`Array<?>`, `Map<String, ?>`) marks a component the checker could not infer. That is a rendering marker for an unknown type, not the typed-hole expression `?` (W001) you write in source.
 

@@ -1607,11 +1607,15 @@ class OperatorsMixin:
                 if vera_type == "String":
                     parts.append(p)
                 elif vera_type in self._INTERP_TO_STRING:
-                    # Wrap with the appropriate to_string call
+                    # Wrap with the appropriate to_string call, which stands
+                    # for the part: the verifier records a `@Float64` part's
+                    # rendering at the part, and so is its check (#1482).
                     fn_name = self._INTERP_TO_STRING[vera_type]
-                    parts.append(ast.FnCall(
+                    wrapper = ast.FnCall(
                         name=fn_name, args=(p,), span=expr.span,
-                    ))
+                    )
+                    self._register_rendering_site(wrapper, p)
+                    parts.append(wrapper)
                 else:
                     # #630 Tier 2 — record every inference failure and
                     # bail at the end.  Pre-#630 this branch silently

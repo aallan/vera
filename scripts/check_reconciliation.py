@@ -73,10 +73,6 @@ class Known:
 
 #: Every mismatch the corpus has today, by the issue whose class it is.
 #:
-#: * #1482 — `float_to_string` truncates its integer part with an
-#:   `i64.trunc_f64_s` the trap registry lists as a known defect, not a
-#:   check, while the verifier records that truncation as the runtime check
-#:   of a `float_to_int_domain` obligation at the call.
 #: * #1530 — a `decreases` whose termination guard code generation declines
 #:   (`_compile_decreases_entry`: the function declares `Exn`, or a measure
 #:   component it cannot translate or rank) is recorded `tier3` (E525).
@@ -96,9 +92,6 @@ class Known:
 #:   binder over a value that is already `@Nat`, a refinement guard on a
 #:   value already of the refined type.
 KNOWN: tuple[Known, ...] = (
-    # #1482
-    Known(1482, "examples/ephemeris.vera", "recorded_unguarded", "float_to_int_domain", "ephemeris.vera:477:256"),
-    Known(1482, "examples/maximum_syntax.vera", "recorded_unguarded", "float_to_int_domain", "maximum_syntax.vera:392:36"),
     # #1530
     Known(1530, "tests/conformance/ch02_adt_tuple_recursive.vera", "recorded_unguarded", "decreases", "ch02_adt_tuple_recursive.vera:15:3"),
     # #1557

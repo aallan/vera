@@ -114,6 +114,9 @@ FIXTURES: dict[str, tuple[str, int]] = {
     "wasm/calls_math.py:_translate_round": (
         "public fn f(@Float64 -> @Int)\n" + _HEAD
         + "{\n  round(@Float64.0)\n}\n", 4),
+    "wasm/calls_strings.py:_float_to_string_core": (
+        "public fn f(@Float64 -> @String)\n" + _HEAD
+        + "{\n  float_to_string(@Float64.0)\n}\n", 4),
     "codegen/contracts.py:_compile_preconditions": (
         "public fn f(@Int -> @Int)\n"
         "  requires(@Int.0 > 0) ensures(true) effects(pure)\n"

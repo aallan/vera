@@ -5,29 +5,41 @@ WASM, and validates ensures() contracts at runtime.  Functions already
 proved by the verifier (Tier 1) are reported as "verified"; functions
 with Tier 3 contracts are exercised with generated inputs.
 
-See spec/06-contracts.md, Section 6.8 "Summary of Verification Tiers".
+``distrust=True`` (``vera test --distrust``) exercises the proved functions
+too.  Code generation emits a contract's runtime check whatever its tier,
+wherever it can express one, so the module the trials run already carries
+the checks a proof says can never fail; a trial that fails one of them refutes the proof (``"refuted"``,
+E703).  See :class:`_TrapIndex` for how a trap is attributed.
+
+See spec/06-contracts.md, Section 6.8 "Summary of Verification Tiers", and
+spec/00-introduction.md, Section 0.5.6 "Contract-Driven Testing".
 """
 
 from __future__ import annotations
 
+import json
 import math
 import re
-from dataclasses import dataclass
+from collections.abc import Iterable
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import z3
 
 from vera import ast, naming
 from vera.errors import Diagnostic, SourceLocation
+from vera.obligations.cache import walk_nodes
 from vera.obligations.core import ProofObligation
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv
 from vera.slots import fn_slot_scope
 from vera.smt import SlotEnv, SmtContext
+from vera.trap_registry import TRAP_EMITTERS
 from vera.types import BOOL, BYTE, FLOAT64, INT, NAT, STRING, UNIT, ModuleArtifacts, PrimitiveType, Type, base_type, pretty_type
 
 if TYPE_CHECKING:
     from vera.codegen import CompileResult
     from vera.resolver import ResolvedModule
+    from vera.trap_registry import EmittedCheck
 
 
 # =====================================================================
@@ -40,9 +52,22 @@ class TrialResult:
 
     fn_name: str
     args: dict[str, int | float | str]  # {"@Int.0": 5, "@String.0": "hello"}
-    status: str  # "pass" | "fail" | "error"
+    # "pass" | "fail" | "error"; under --distrust a trial of a proved function
+    # can also be "refuted" (its trap contradicts a Tier-1 proof) or
+    # "unattributed" (its trap could not be pinned on an obligation).
+    status: str
     message: str  # violation message or empty
     trap_kind: str = ""  # the trap's kind (WasmTrapError.kind), or empty
+    # The trap's backtrace, innermost frame first (WasmTrapError.frames):
+    # each frame's WASM function, and whether it is a runtime or prelude
+    # function rather than the program's own.  Empty when it carried none.
+    trap_frames: list[tuple[str, bool]] = field(default_factory=list)
+    # --distrust only: what the trap stands for, in words (_TrapIndex).
+    attribution: str = ""
+    # --distrust only: the verifier's own records of the proved obligations
+    # this trial's trap contradicts.  Non-empty exactly when status is
+    # "refuted".
+    refutes: list[ProofObligation] = field(default_factory=list)
 
 
 @dataclass
@@ -50,22 +75,32 @@ class FunctionTestResult:
     """Test result for a single function."""
 
     fn_name: str
-    category: str  # "verified" | "tested" | "failed" | "skipped"
+    category: str  # "verified" | "tested" | "failed" | "skipped" | "refuted"
     reason: str
     trials_run: int
     trials_passed: int
     trials_failed: int
     failures: list[TrialResult]
+    # The verifier proved every contract of this function (Tier 1): it is
+    # "verified" by default, and under --distrust it is "tested", "refuted",
+    # or "verified" when no trial could be run.
+    proved: bool = False
+    # --distrust only: the proved contract clauses of a function trials ran
+    # against that no runtime check in the module stands for, as the source
+    # states them.  No trial can contradict these, so the reason names them.
+    unchecked: list[str] = field(default_factory=list)
 
 
 @dataclass
 class TestSummary:
     """Aggregate counts across all functions."""
 
-    verified: int = 0  # Tier 1 (proved)
-    tested: int = 0  # Tier 3 exercised
+    verified: int = 0  # Tier 1 (proved); under --distrust, proved but not run
+    tested: int = 0  # exercised: Tier 3, or (under --distrust) proved
     passed: int = 0  # tested + all trials OK
-    failed: int = 0  # verifier-refuted or tested + at least one trial failed
+    # verifier-refuted, or tested + at least one trial failed without
+    # refuting a proof
+    failed: int = 0
     skipped: int = 0  # can't generate inputs
     total_trials: int = 0
     total_passes: int = 0
@@ -78,6 +113,11 @@ class TestSummary:
     # structured data on the summary keeps ``vera.tester``'s public
     # API surface small and ``vera/cli.py`` purely presentational.
     unlisted_errors: int = 0
+    # --distrust only (always 0 otherwise): proved functions a trial
+    # refuted, and proved functions with at least one trial whose trap
+    # could not be attributed to an obligation.
+    refuted: int = 0
+    unattributed: int = 0
 
 
 @dataclass
@@ -169,6 +209,15 @@ _I64_BOUND = 2**53
 # Maximum Z3-generated string length (prevents pathologically long strings)
 _MAX_STRING_LEN = 50
 
+# Why a proved function's precondition gave the generator no input.  The
+# verifier has shown it satisfiable (#1451), so an `unsat` means the bounds
+# above exclude it; an `unknown` means the solver gave up within its budget.
+_OUT_OF_BOUNDS = (
+    "no input within the generator's bounds satisfies the precondition")
+_INCONCLUSIVE = (
+    "the solver's search for an input within the generator's bounds was "
+    "inconclusive")
+
 
 # =====================================================================
 # Public API
@@ -185,6 +234,7 @@ def test(
     expr_target_types: dict[tuple[int, int, int, int], Type] | None = None,
     module_artifacts: ModuleArtifacts | None = None,
     alias_env: AliasEnv = EMPTY_ALIAS_ENV,
+    distrust: bool = False,
 ) -> TestResult:
     """Test a type-checked Vera program by generating inputs from contracts.
 
@@ -192,6 +242,11 @@ def test(
     2. For Tier 3 functions, generate inputs via Z3 from requires() clauses.
     3. Compile to WASM and execute each trial.
     4. Report results.
+
+    ``distrust`` (``vera test --distrust``) runs step 2 and 3 for the Tier-1
+    functions as well, and reports one whose trial contradicts a proof as
+    ``"refuted"`` with an E703 error.  Without it the result is exactly the
+    default one: no proved function is executed.
 
     ``expr_semantic_types`` / ``expr_target_types`` are the checker's
     resolved- and target-type side-tables (``CheckerArtifacts``).  #986: they
@@ -220,6 +275,7 @@ def test(
         expr_target_types=expr_target_types,
         module_artifacts=module_artifacts,
         alias_env=alias_env,
+        distrust=distrust,
     )
     return engine.run()
 
@@ -245,6 +301,7 @@ class _TestEngine:
             dict[tuple[int, int, int, int], Type] | None) = None,
         module_artifacts: ModuleArtifacts | None = None,
         alias_env: AliasEnv = EMPTY_ALIAS_ENV,
+        distrust: bool = False,
     ) -> None:
         self.program = program
         self.source = source
@@ -263,6 +320,10 @@ class _TestEngine:
         # #1208: the checked program's naming environment, threaded into the
         # Z3 input generator so its slot names are the checker's.
         self.alias_env = alias_env
+        # `vera test --distrust`: exercise the proved functions too.
+        self.distrust = distrust
+        # The declarations a refuted record can name (`_declarations`).
+        self._decls: dict[tuple[str | None, str, str], ast.FnDecl] | None = None
 
     def run(self) -> TestResult:
         """Execute the full test pipeline."""
@@ -308,9 +369,22 @@ class _TestEngine:
         summary = TestSummary()
         results: list[FunctionTestResult] = []
         diagnostics: list[Diagnostic] = verifier_errors
+        # --distrust: what a trapped trial of a proved function is read
+        # against — the module's record of its checks, and the verifier's of
+        # its obligations.
+        traps = (
+            _TrapIndex(compile_result.emitted_checks, verify_result.obligations,
+                       compile_result.wat)
+            if self.distrust else None
+        )
+        distrusted = traps is not None
 
-        for fn_name, category, reason, decl in targets:
-            if category == "verified":
+        for fn_name, category, reason, decl, proved in targets:
+            # A proved function is reported and never run, unless the run
+            # distrusts its proofs: then it takes the Tier-3 path below, each
+            # branch of which reads `proved`.  A proved function the generator
+            # cannot serve is skipped in default mode, as before.
+            if category == "verified" and traps is None:
                 summary.verified += 1
                 results.append(FunctionTestResult(
                     fn_name=fn_name,
@@ -320,6 +394,7 @@ class _TestEngine:
                     trials_passed=0,
                     trials_failed=0,
                     failures=[],
+                    proved=True,
                 ))
                 continue
 
@@ -336,17 +411,58 @@ class _TestEngine:
                 ))
                 continue
 
+            if category == "verified":
+                # #1229's question, asked here because only now can the
+                # answer change an outcome: `_classify_functions` asks it of
+                # Tier-3 targets alone, since an unrun proof loses nothing to
+                # a constraint the generator cannot honour.  One it would not
+                # honour lets the inputs violate the precondition, and the
+                # entry check that then traps would read as a refuted proof.
+                blockers = _untranslatable_input_constraints(
+                    decl, _get_param_types(decl, self.alias_env),
+                    self.alias_env,
+                )
+                if blockers:
+                    category = _UNTRANSLATABLE_CATEGORY
+                    reason = _untranslatable_skip_reason(blockers)
+
             if category in ("skipped", _UNTRANSLATABLE_CATEGORY):
-                summary.skipped += 1
-                results.append(FunctionTestResult(
-                    fn_name=fn_name,
-                    category="skipped",
-                    reason=reason,
-                    trials_run=0,
-                    trials_passed=0,
-                    trials_failed=0,
-                    failures=[],
-                ))
+                _record_unrun(
+                    results, summary, fn_name, reason, proved, distrusted)
+                if proved and distrusted and category == "skipped":
+                    # A proved function skipped for its parameters is a proof
+                    # the run was asked to exercise and could not, and is
+                    # disclosed as the other unexercised proofs are.
+                    diagnostics.append(Diagnostic(
+                        description=(
+                            f"Cannot generate test inputs for '{fn_name}': "
+                            f"{_ungenerable_reason(decl, self.alias_env)}, "
+                            f"so its proof is not exercised."
+                        ),
+                        location=_fn_location(decl, self.file),
+                        source_line=_get_source_line(self.source, decl),
+                        rationale=(
+                            "Contract-driven testing generates each input "
+                            "with Z3 from its parameter's type, and encodes "
+                            "only `Int`, `Nat`, `Bool`, `Byte`, `String` and "
+                            "`Float64` values; a type variable names no type "
+                            "to generate.  So `vera test --distrust` has no "
+                            "input to run this proved function on, and its "
+                            "proof stands but is not exercised."
+                        ),
+                        fix=(
+                            "Exercise the proof through a public function "
+                            "whose parameters the generator encodes and which "
+                            "calls this one — its trials run this function's "
+                            "checks too — or with a hand-written test."
+                        ),
+                        spec_ref=(
+                            'Chapter 0, Section 0.5.6 '
+                            '"Contract-Driven Testing"'
+                        ),
+                        severity="warning",
+                        error_code="E701",
+                    ))
                 if category == _UNTRANSLATABLE_CATEGORY:
                     # #1229: disclose the blocker as a diagnostic too, the way
                     # an un-encodable parameter type does.  A consumer reading
@@ -387,59 +503,129 @@ class _TestEngine:
                     ))
                 continue
 
-            # category == "tier3" — generate inputs and execute
-            if compile_errors:  # pragma: no cover — compile errors already caught before tier3
-                summary.skipped += 1
-                results.append(FunctionTestResult(
-                    fn_name=fn_name,
-                    category="skipped",
-                    reason="compilation errors",
-                    trials_run=0,
-                    trials_passed=0,
-                    trials_failed=0,
-                    failures=[],
-                ))
-                continue
-
-            # Not exported.  `_get_targets` already filtered out private
-            # declarations, so the live case here is #1186: a PUBLIC
+            # category == "tier3", or a proved function under --distrust —
+            # generate inputs and execute.  First, whether there is anything
+            # to execute: not under compilation errors, and not a function
+            # with no export.  `_get_targets` already filtered out private
+            # declarations, so the live no-export case is #1186: a PUBLIC
             # function that codegen DROPPED — its own `[E602]`-class skip,
             # or the `[E620]` it earned by calling something skipped.
-            # Reporting that as "private" told the user to fix a
-            # visibility modifier that was already correct.
-            if fn_name not in compile_result.exports:
-                summary.skipped += 1
-                results.append(FunctionTestResult(
-                    fn_name=fn_name,
-                    category="skipped",
-                    reason=_not_exported_reason(
-                        fn_name, compile_result, self.file,
-                    ),
-                    trials_run=0,
-                    trials_passed=0,
-                    trials_failed=0,
-                    failures=[],
-                ))
+            # Reporting that as "private" told the user to fix a visibility
+            # modifier that was already correct.
+            unrunnable = (
+                "compilation errors" if compile_errors
+                else None if fn_name in compile_result.exports
+                else _not_exported_reason(fn_name, compile_result, self.file)
+            )
+            if unrunnable is not None:
+                _record_unrun(
+                    results, summary, fn_name, unrunnable, proved, distrusted)
+                if proved:
+                    # A proof --distrust was asked to exercise and could not
+                    # run is disclosed where a diagnostics-only consumer
+                    # looks, as #1229's skip is.
+                    diagnostics.append(Diagnostic(
+                        description=(
+                            f"Cannot run '{fn_name}' to test its proof: "
+                            f"{unrunnable}."
+                        ),
+                        location=_fn_location(decl, self.file),
+                        source_line=_get_source_line(self.source, decl),
+                        rationale=(
+                            "`vera test --distrust` executes the functions "
+                            "the verifier proved, and this one has no "
+                            "executable form in the compiled module, so its "
+                            "proof stands but is not exercised."
+                        ),
+                        fix=(
+                            "Run `vera compile` on the program and resolve "
+                            "the error it reports, or the code generation "
+                            "warning the reason names; the function then "
+                            "compiles and its proof is run."
+                        ),
+                        spec_ref=(
+                            'Chapter 0, Section 0.5.6 '
+                            '"Contract-Driven Testing"'
+                        ),
+                        severity="warning",
+                        error_code="E702",
+                    ))
                 continue
+
+            # A proof is exercised through the checks that stand for what the
+            # verifier proved.  When a run reaches none, no trial can
+            # contradict the proof, and one that passed would read as a proof
+            # that held, so it is not run.  When it reaches one, it runs: a
+            # proved operation in the body, or a callee's proved contract,
+            # can be refuted although no contract clause of this function has
+            # a check (PR #1634 review).  The clauses no check stands for are
+            # named either way.
+            unchecked: list[str] = []
+            if proved and traps is not None:
+                _, unchecked = traps.proof_clauses(decl, self.file)
+                if not traps.exercises(decl, self.file):
+                    missing = (
+                        _no_check_reason(unchecked) if unchecked
+                        else "no runtime check a run of it reaches stands "
+                        "for an obligation the verifier proved")
+                    _record_unrun(
+                        results, summary, fn_name, missing, proved, distrusted)
+                    diagnostics.append(Diagnostic(
+                        description=(
+                            f"Cannot test the proof of '{fn_name}': "
+                            f"{missing}."
+                        ),
+                        location=_fn_location(decl, self.file),
+                        source_line=_get_source_line(self.source, decl),
+                        rationale=(
+                            "`vera test --distrust` tests a proof by running "
+                            "the function against the runtime checks code "
+                            "generation emits for what the verifier proved: "
+                            "its contract clauses, the operations in its "
+                            "body, and those of the functions it calls.  A "
+                            "run of this function reaches none — code "
+                            "generation emits no check for a postcondition "
+                            "over a `String` or `Array` result, nor for a "
+                            "clause it cannot compile, and a `requires` is "
+                            "met by the generated arguments — so no trial can "
+                            "contradict the proof, and the function is not "
+                            "run: its proof stands but is not exercised."
+                        ),
+                        fix=(
+                            "Exercise the property through a caller whose "
+                            "own contract has a check — a function returning "
+                            "an `Int` computed from this one's result, with "
+                            "an `ensures` over that value — or with a "
+                            "hand-written test."
+                        ),
+                        spec_ref=(
+                            'Chapter 0, Section 0.5.6 '
+                            '"Contract-Driven Testing"'
+                        ),
+                        severity="warning",
+                        error_code="E702",
+                    ))
+                    continue
 
             # Generate inputs
             param_types = _get_param_types(decl, self.alias_env)
-            inputs = _generate_inputs(
-                decl, param_types, self.trials, self.alias_env)
+            inputs: list[list[int | float | str]] | None
+            search: z3.CheckSatResult | None = None
+            if proved and all(base_type(pt) == UNIT for pt in param_types):
+                # No parameter carries a value — there is none, or only
+                # `@Unit`, which the ABI erases — so there is exactly one
+                # input, and the generator, which models no `@Unit`, is not
+                # asked for it.
+                inputs = [[]]
+            else:
+                inputs, search = _generate_inputs_and_search(
+                    decl, param_types, self.trials, self.alias_env)
 
             if inputs is None:  # pragma: no cover — _classify_functions filters unsupported types
                 unsupported_names = _unsupported_type_names(param_types)
                 skip_reason = f"cannot generate {', '.join(unsupported_names)} inputs (see #169)"
-                summary.skipped += 1
-                results.append(FunctionTestResult(
-                    fn_name=fn_name,
-                    category="skipped",
-                    reason=skip_reason,
-                    trials_run=0,
-                    trials_passed=0,
-                    trials_failed=0,
-                    failures=[],
-                ))
+                _record_unrun(
+                    results, summary, fn_name, skip_reason, proved, distrusted)
                 diagnostics.append(Diagnostic(
                     description=(
                         f"Cannot generate test inputs for '{fn_name}': "
@@ -459,17 +645,46 @@ class _TestEngine:
                 continue
 
             if not inputs:
-                # Precondition is unsatisfiable
-                summary.skipped += 1
-                results.append(FunctionTestResult(
-                    fn_name=fn_name,
-                    category="skipped",
-                    reason="precondition is unsatisfiable (no valid inputs)",
-                    trials_run=0,
-                    trials_passed=0,
-                    trials_failed=0,
-                    failures=[],
-                ))
+                # Precondition is unsatisfiable — or, for a proved function,
+                # whose premises the verifier has shown satisfiable (#1451),
+                # satisfiable only outside the generator's bounds.
+                # An `unknown` is not an `unsat`: a solver that gave up has
+                # not shown the precondition admits nothing in range.
+                why = _OUT_OF_BOUNDS if search == z3.unsat else _INCONCLUSIVE
+                _record_unrun(
+                    results, summary, fn_name,
+                    why if proved else
+                    "precondition is unsatisfiable (no valid inputs)",
+                    proved, distrusted,
+                )
+                if proved:
+                    diagnostics.append(Diagnostic(
+                        description=(
+                            f"Cannot generate test inputs for '{fn_name}': "
+                            f"{why}, so its proof is not exercised."
+                        ),
+                        location=_fn_location(decl, self.file),
+                        source_line=_get_source_line(self.source, decl),
+                        rationale=(
+                            "Contract-driven testing asks Z3 for inputs that "
+                            "satisfy the precondition, drawing `@Int` and "
+                            "`@Nat` from [-2^53, 2^53] and strings of at most "
+                            f"{_MAX_STRING_LEN} characters.  It got none for "
+                            "this function, so `vera test --distrust` has "
+                            "nothing to run the proved function on."
+                        ),
+                        fix=(
+                            "Exercise this function with a hand-written test, "
+                            "or restate the precondition so it admits inputs "
+                            "the generator reaches."
+                        ),
+                        spec_ref=(
+                            'Chapter 0, Section 0.5.6 '
+                            '"Contract-Driven Testing"'
+                        ),
+                        severity="warning",
+                        error_code="E701",
+                    ))
                 continue
 
             # Run trials
@@ -477,58 +692,100 @@ class _TestEngine:
                 compile_result, fn_name, inputs, param_types, decl,
                 self.alias_env,
             )
+            if proved and traps is not None:
+                for trial in trial_results:
+                    if trial.status != "pass":
+                        traps.attribute(trial, decl)
 
             n_passed = sum(1 for t in trial_results if t.status == "pass")
-            n_failed = sum(
-                1 for t in trial_results if t.status in ("fail", "error")
-            )
-            failures = [
-                t for t in trial_results if t.status in ("fail", "error")
+            # A refutation leads the failures: it is the finding a distrust
+            # run is for, and the JSON and the text list only the first few.
+            refuting = [t for t in trial_results if t.status == "refuted"]
+            findings = [
+                t for t in trial_results if t.status not in ("pass", "refuted")
             ]
+            failures = refuting + findings
+            n_failed = len(failures)
 
-            summary.tested += 1
             summary.total_trials += len(trial_results)
             summary.total_passes += n_passed
             summary.total_failures += n_failed
-
-            if n_failed > 0:
-                summary.failed += 1
-                # Record diagnostic for each unique failure
-                for trial in failures[:3]:  # limit to first 3
-                    diagnostics.append(Diagnostic(
-                        description=(
-                            f"Contract violation in '{fn_name}': "
-                            f"{trial.message}"
-                        ),
-                        location=_fn_location(decl, self.file),
-                        source_line=_get_source_line(self.source, decl),
-                        rationale=(
-                            "Contract-driven testing ran the compiled "
-                            "function on Z3-generated inputs satisfying its "
-                            "`requires`; on a real result it either violated "
-                            "an `ensures` clause or trapped at runtime."
-                        ),
-                        fix=(
-                            "Correct the implementation so the postcondition "
-                            "holds, or adjust the contract (strengthen "
-                            "`requires` / weaken `ensures`) to match the "
-                            "intended behaviour."
-                        ),
-                        spec_ref='Chapter 6, "Contracts"',
-                        severity="error",
-                        error_code="E700",
-                    ))
+            if any(t.status == "unattributed" for t in findings):
+                summary.unattributed += 1
+            # A refuted function is counted there alone: `failed` keeps its
+            # meaning (a contract the verifier refuted, or a trial failure
+            # that refutes no proof).
+            if refuting:
+                summary.refuted += 1
             else:
-                summary.passed += 1
+                summary.tested += 1
+                if n_failed > 0:
+                    summary.failed += 1
+                else:
+                    summary.passed += 1
+
+            for trial in refuting[:3]:  # limit to first 3, as for E700
+                where, where_line = self._refuted_location(trial, decl)
+                # What the proof took on trust: an `assume` in the function
+                # that owns a refuted record, and whether these arguments
+                # violate it, where the tester can tell.
+                premise = _assumed_premise(
+                    trial, decl, self._declarations(), self.alias_env)
+                rationale, fix = _refutation_explanation(premise)
+                diagnostics.append(Diagnostic(
+                    description=_refutation_description(
+                        fn_name, trial, premise),
+                    location=where,
+                    source_line=where_line,
+                    rationale=rationale,
+                    fix=fix,
+                    spec_ref='Chapter 0, Section 0.5.6 "Contract-Driven Testing"',
+                    severity="error",
+                    error_code="E703",
+                ))
+
+            # Record diagnostic for each unique failure that refutes no proof.
+            # Its attribution (--distrust only) rides as a second line, so a
+            # trap the run could not pin on an obligation says so here too.
+            for trial in findings[:3]:  # limit to first 3
+                diagnostics.append(Diagnostic(
+                    description=(
+                        f"Contract violation in '{fn_name}': "
+                        f"{trial.message}"
+                        + (f"\n  {trial.attribution}"
+                           if trial.attribution else "")
+                    ),
+                    location=_fn_location(decl, self.file),
+                    source_line=_get_source_line(self.source, decl),
+                    rationale=(
+                        "Contract-driven testing ran the compiled "
+                        "function on Z3-generated inputs satisfying its "
+                        "`requires`; on a real result it either violated "
+                        "an `ensures` clause or trapped at runtime."
+                    ),
+                    fix=(
+                        "Correct the implementation so the postcondition "
+                        "holds, or adjust the contract (strengthen "
+                        "`requires` / weaken `ensures`) to match the "
+                        "intended behaviour."
+                    ),
+                    spec_ref='Chapter 6, "Contracts"',
+                    severity="error",
+                    error_code="E700",
+                ))
 
             results.append(FunctionTestResult(
                 fn_name=fn_name,
-                category="tested",
-                reason="Tier 3 contract (runtime check)",
+                category="refuted" if refuting else "tested",
+                reason=_trial_reason(
+                    proved, len(trial_results), len(refuting), findings,
+                    unchecked),
                 trials_run=len(trial_results),
                 trials_passed=n_passed,
                 trials_failed=n_failed,
                 failures=failures,
+                proved=proved,
+                unchecked=unchecked,
             ))
 
         # Count verifier errors whose target function isn't in the
@@ -553,12 +810,56 @@ class _TestEngine:
             diagnostics=diagnostics,
         )
 
+    def _declarations(
+        self,
+    ) -> dict[tuple[str | None, str, str], ast.FnDecl]:
+        """Every function declaration the obligation records can name, by
+        (file, owner, name) as a record names it: the program's own, their
+        `where` helpers, and every resolved module's.  A helper's record
+        carries its bare name and, as ``owner``, the top-level function whose
+        helper it is, since two functions' helpers may share a name; a
+        top-level function's owner is empty.  Built on first use, for a
+        refutation."""
+        if self._decls is None:
+            decls: dict[tuple[str | None, str, str], ast.FnDecl] = {}
+
+            def add(decl: ast.FnDecl, where: str | None, owner: str) -> None:
+                decls.setdefault((where, owner, decl.name), decl)
+                for helper in decl.where_fns or ():
+                    add(helper, where, owner or decl.name)
+
+            for tld in self.program.declarations:
+                if isinstance(tld.decl, ast.FnDecl):
+                    add(tld.decl, self.file, "")
+            for module in self.resolved_modules:
+                for tld in module.program.declarations:
+                    if isinstance(tld.decl, ast.FnDecl):
+                        add(tld.decl, str(module.file_path), "")
+            self._decls = decls
+        return self._decls
+
+    def _refuted_location(
+        self, trial: TrialResult, decl: ast.FnDecl,
+    ) -> tuple[SourceLocation, str]:
+        """Where an E703 points: the proved clause that failed when it lies
+        in the file under test, and the function's declaration otherwise."""
+        first = trial.refutes[0]
+        lines = self.source.splitlines()
+        if first.file == self.file and 1 <= first.line <= len(lines):
+            return (
+                SourceLocation(
+                    file=self.file, line=first.line, column=first.column),
+                lines[first.line - 1],
+            )
+        return _fn_location(decl, self.file), _get_source_line(self.source, decl)
+
     def _get_targets(
         self,
-        classification: dict[str, tuple[str, str, ast.FnDecl]],
-    ) -> list[tuple[str, str, str, ast.FnDecl]]:
-        """Return (name, category, reason, decl) for each target function."""
-        targets: list[tuple[str, str, str, ast.FnDecl]] = []
+        classification: dict[str, tuple[str, str, ast.FnDecl, bool]],
+    ) -> list[tuple[str, str, str, ast.FnDecl, bool]]:
+        """Return (name, category, reason, decl, proved) for each target
+        function."""
+        targets: list[tuple[str, str, str, ast.FnDecl, bool]] = []
 
         for tld in self.program.declarations:
             if not isinstance(tld.decl, ast.FnDecl):
@@ -574,11 +875,11 @@ class _TestEngine:
                 continue
 
             if decl.name in classification:
-                cat, reason, _ = classification[decl.name]
-                targets.append((decl.name, cat, reason, decl))
+                cat, reason, _, proved = classification[decl.name]
+                targets.append((decl.name, cat, reason, decl, proved))
             else:  # pragma: no cover — all public fns are classified
                 targets.append((
-                    decl.name, "skipped", "not classifiable", decl,
+                    decl.name, "skipped", "not classifiable", decl, False,
                 ))
 
         return targets
@@ -610,6 +911,709 @@ def _not_exported_reason(
 
 
 # =====================================================================
+# --distrust: what a trapped trial stands for
+# =====================================================================
+
+#: The trap kinds an obligation can stand for: those the emitter registry
+#: maps to at least one obligation kind (``TrapEmitter.obligations``).  A
+#: trap of any other kind — a host binding's error, an exhausted stack or
+#: heap, an exception leaving the entry point, an internal ``unreachable`` —
+#: checks no value an obligation describes, so it can neither refute a proof
+#: nor be a refutation the attribution missed.
+_OBLIGATED_TRAP_KINDS: frozenset[str] = frozenset(
+    row.kind for row in TRAP_EMITTERS.values() if row.obligations
+)
+
+# The two emitters of a function's prologue checks: its `requires` clauses,
+# and the guard on a refined parameter, spanned at the parameter's type.
+_PRECONDITION_EMITTER = "codegen/contracts.py:_compile_preconditions"
+_REFINEMENT_EMITTER = "codegen/contracts.py:_emit_refinement_check"
+
+
+class _TrapIndex:
+    """Reads a trapped trial of a proved function against the record.
+
+    A trap names its kind (``WasmTrapError.kind``) and, through its
+    backtrace, the WASM function it fired in.  The module's record of its
+    checks (``CompileResult.emitted_checks``) says which checks of that kind
+    that function holds, each at a source span and standing for a set of
+    obligation kinds; the verifier's stream says what became of the
+    obligation recorded at each span.  So the trap refutes a proof only when
+    EVERY check of its kind in that function stands for obligations the
+    stream reports ``verified``: whichever of them fired, a proof said it
+    could not.  When every one stands for an obligation that was NOT proved,
+    the trap is a Tier-3 guard doing its job — a program finding, reported
+    exactly as a Tier-3 function's failing trial is.  Anything in between —
+    a check with no obligation at its span, proved and unproved checks side
+    by side, a check whose span holds a proved and an unproved obligation of
+    its kind, a trap with no frame — cannot be pinned on either side, and is
+    ``unattributed``: counted and said, never folded into either.
+
+    The rule holds only while the record holds every site that can raise a
+    trap an obligation describes: a trap at a site it omitted would be judged
+    by the checks it does hold, and a correct proof would read as refuted.
+    So every signalled check is recorded where it is emitted, and every
+    natively trapping instruction a program reaches names the emitter that
+    records it (``vera.trap_registry``'s ``NATIVE_TRAP_SITES`` and
+    ``KNOWN_TRAP_DEFECTS``, held to that at import) — the
+    ``float_to_string`` truncation of #1482 among them.
+
+    Matched by kind, never by message (#1479).  A site message quotes the
+    program's text — an assertion's source, an index expression, a contract
+    clause — so matching on it would let the program decide what its own
+    trap was, which is how an index into the string "contract" once read as
+    a contract failure; and two checks can carry the same message.
+
+    The join is by exact span (file, line, column).  Where the two sides
+    locate one obligation at different nodes — a binder, a `decreases`
+    component checked at its clause, a refined return guarded at its type —
+    the check joins nothing, and its traps are unattributed until the join
+    reads that relation from the program (#1633).
+
+    One relation is read rather than joined: a prologue check (a `requires`
+    clause, a refined parameter's guard) answers the obligation of the CALL
+    that entered the function, not one of the function's own.  On the
+    trial's own call, the arguments are a Z3 model of exactly those
+    constraints, so the prologue checks of the function under test are set
+    aside: one could fail only where the model and the compiled check
+    disagree, which is still a disagreement between a proof and the program.
+    Reached by any other call, a precondition check answers that caller's
+    call-site obligation, which the stream records only when it was not
+    proved, and so joins nothing either.
+    """
+
+    def __init__(
+        self,
+        checks: list[EmittedCheck],
+        obligations: list[ProofObligation],
+        wat: str = "",
+    ) -> None:
+        # The module's text, read for its call graph (`reachable`): which
+        # functions a call of the function under test can run.
+        self._wat = wat
+        self._graph: dict[str, set[str]] | None = None
+        self._all_checks = checks
+        self._checks: dict[tuple[str, str], list[EmittedCheck]] = {}
+        for check in checks:
+            self._checks.setdefault((check.function, check.kind), []).append(
+                check)
+        self._records: dict[
+            tuple[str | None, int, int], list[ProofObligation]] = {}
+        for record in obligations:
+            self._records.setdefault(
+                (record.file, record.line, record.column), []).append(record)
+        # The other direction, for `proof_clauses`: each (span, obligation
+        # kind) some check the program holds stands for.
+        self._checked_spans: set[tuple[str | None, int, int, str]] = {
+            (check.file, check.line, check.column, kind)
+            for check in checks if not check.prelude
+            for kind in check.obligations
+        }
+
+    def attribute(self, trial: TrialResult, decl: ast.FnDecl) -> None:
+        """Set *trial*'s ``status``, ``attribution`` and ``refutes``.
+
+        *decl* is the function under test.  A trap that refutes nothing and
+        is not unattributed keeps the status ``_run_trials`` gave it.
+        """
+        kind = trial.trap_kind
+        if kind not in _OBLIGATED_TRAP_KINDS:
+            trial.attribution = (
+                f"no obligation describes a trap of kind {kind or 'unknown'}")
+            return
+        if not trial.trap_frames:
+            _unattributed(trial, f"{kind}, with no frame to say where it fired")
+            return
+        fired_in = trial.trap_frames[0][0]
+        boundary = f"{decl.name}$exn_boundary"
+        at_entry = fired_in == decl.name and all(
+            builtin or name == boundary
+            for name, builtin in trial.trap_frames[1:]
+        )
+        checks = self._checks.get((fired_in, kind), [])
+        if at_entry:
+            kept = [c for c in checks if not _is_prologue_check(c, decl)]
+            if checks and not kept:
+                # Only a prologue check of the kind is left to have fired.
+                _unattributed(trial, (
+                    f"{kind} at the entry of '{decl.name}', whose arguments "
+                    f"satisfy its precondition in the verifier's model and "
+                    f"fail the compiled check of it"
+                ))
+                return
+            checks = kept
+        if not checks:
+            _unattributed(trial, (
+                f"{kind} in '{fired_in}', where the module records no check "
+                f"of that kind"
+            ))
+            return
+
+        read = [(check, *self._read(check)) for check in checks]
+        if all(state == "proved" for _, state, _ in read):
+            trial.status = "refuted"
+            trial.refutes = _unique(r for _, _, rs in read for r in rs)
+            trial.attribution = "contradicts the Tier 1 proof of " + (
+                " and ".join(
+                    _describe_obligation(r, decl.name) for r in trial.refutes))
+            return
+        if all(state == "not proved" for _, state, _ in read):
+            guarded = _unique(r for _, _, rs in read for r in rs)
+            trial.attribution = (
+                "the runtime check of an obligation the verifier did not "
+                "prove: " + " and ".join(
+                    _describe_obligation(r, decl.name) for r in guarded))
+            return
+        spans = " or ".join(
+            (f"{check.line}:{check.column}" if check.line
+             else "an unlocated check") + f" ({state})"
+            for check, state, _ in read)
+        _unattributed(trial, f"{kind} at {spans} in '{fired_in}'")
+
+    def _read(
+        self, check: EmittedCheck,
+    ) -> tuple[str, list[ProofObligation]]:
+        """One check's standing: ``proved`` or ``not proved`` (with the
+        records), ``proved and not proved`` when its span holds both, or why
+        it joins nothing.
+
+        A span can hold several obligations of one kind — the verifier's
+        per-site ordinal keeps them apart at one node, as for each component
+        of a destructure — and the check is the runtime half of one of them,
+        which the record does not say.  When some are proved and some not,
+        the check is neither a proof's nor a guard's, and every record is
+        kept (PR #1634 review)."""
+        if check.emitter == _PRECONDITION_EMITTER:
+            return "a call's precondition", []
+        records = [] if check.prelude else [
+            r for r in self._records.get(
+                (check.file, check.line, check.column), [])
+            if r.kind in check.obligations
+        ]
+        if not records:
+            return "no obligation recorded", []
+        if all(r.status == "verified" for r in records):
+            return "proved", records
+        if all(r.status != "verified" for r in records):
+            return "not proved", records
+        return "proved and not proved", records
+
+    def proof_clauses(
+        self, decl: ast.FnDecl, file: str | None,
+    ) -> tuple[list[str], list[str]]:
+        """*decl*'s proved contract clauses, split into those a runtime check
+        in the module stands for and those none does, each as the source
+        states it.
+
+        The clauses are what a trial of the function can contradict: each
+        `ensures` that is not `true`, each `decreases`, each `assert` in the
+        body, and a refined return type.  A clause no check stands for — an
+        `ensures` over a `String` or `Array` result, which code generation
+        cannot express, or one it cannot compile — fails no trial, so a run
+        that passes says nothing about it.  The `requires` clauses are not
+        among them: the arguments are generated to satisfy them.
+
+        Joined by exact span, as a trap's check is, except the refined
+        return: the verifier records it at the body, and code generation
+        guards it at the return type, or at a component within it.
+        """
+        checked: list[str] = []
+        unchecked: list[str] = []
+
+        def proved(node: ast.Node, kind: str) -> list[ProofObligation]:
+            span = node.span
+            if span is None:
+                return []
+            records = [
+                r for r in self._records.get((file, span.line, span.column), [])
+                if r.kind == kind and r.fn_name == decl.name
+            ]
+            return records if records and all(
+                r.status == "verified" for r in records) else []
+
+        def stands_for(node: ast.Node, kind: str) -> bool:
+            span = node.span
+            return span is not None and (
+                file, span.line, span.column, kind) in self._checked_spans
+
+        clauses: list[tuple[ast.Node, str]] = [
+            (contract, "ensures") for contract in decl.contracts
+            if isinstance(contract, ast.Ensures)
+            and not (isinstance(contract.expr, ast.BoolLit)
+                     and contract.expr.value)
+        ]
+        clauses += [(contract, "decreases") for contract in decl.contracts
+                    if isinstance(contract, ast.Decreases)]
+        clauses += [(node, "assert") for node in walk_nodes(decl.body)
+                    if isinstance(node, ast.AssertExpr)]
+        for node, kind in clauses:
+            records = proved(node, kind)
+            if records:
+                (checked if stands_for(node, kind) else unchecked).append(
+                    _describe_obligation(records[0], decl.name))
+
+        # The refined return: recorded at the body for a refinement of the
+        # whole value, and at each component or element the function builds
+        # where it returns for a refined tuple component or array element.
+        # Code generation guards it at the return type, and a built component
+        # or element where it is built too.
+        ret = decl.return_type.span
+        parts = [node for node in _returned_parts(decl.body)
+                 if proved(node, "refine_bind")]
+        if ret is not None and parts:
+            guarded = any(
+                check.emitter == _REFINEMENT_EMITTER and not check.prelude
+                and (ret.line, ret.column) <= (check.line, check.column)
+                <= (ret.end_line, ret.end_column)
+                for check in self._checks.get(
+                    (decl.name, "contract_violation"), [])
+            ) or all(stands_for(node, "refine_bind") for node in parts)
+            (checked if guarded else unchecked).append(
+                "the refinement of its return type "
+                f"`{ast.format_type_expr(decl.return_type)}`")
+        return checked, unchecked
+
+    def exercises(self, decl: ast.FnDecl, file: str | None) -> bool:
+        """Whether a run of *decl* can test anything the verifier proved.
+
+        True when one of its own proved clauses has a check, or when its run
+        — its body, a closure it calls, a callee, transitively — reaches any
+        check that can stand for a proved obligation: one joined to an
+        obligation the stream reports ``verified``, one the exact-span join
+        places nowhere (its obligation may sit at another node, #1633), or a
+        callee's precondition check, which answers this function's call.
+        Left out are its own prologue checks, which the attribution sets
+        aside on the trial's own call because the arguments are generated to
+        satisfy them; a runtime function's own checks; and a guard joined to
+        an obligation the verifier did not prove.  A function for which this
+        is False can refute nothing, and is reported not exercised rather
+        than run.
+        """
+        if self.proof_clauses(decl, file)[0]:
+            return True
+        reach = self.reachable(decl.name)
+        for check in self._all_checks:
+            if check.function not in reach or (
+                    check.function == decl.name
+                    and _is_prologue_check(check, decl)):
+                continue
+            state, _ = self._read(check)
+            if state == "not proved" or (
+                    state == "no obligation recorded" and check.prelude):
+                continue
+            return True
+        return False
+
+    def reachable(self, start: str) -> set[str]:
+        """The WASM functions a call of *start* can run: *start*, and every
+        function it calls, directly or through the closure table, and so on
+        transitively.  Without the module's text, *start* alone."""
+        graph = self._call_graph()
+        seen = {start}
+        stack = [start]
+        while stack:
+            for callee in graph.get(stack.pop(), ()):
+                if callee not in seen:
+                    seen.add(callee)
+                    stack.append(callee)
+        return seen
+
+    def _call_graph(self) -> dict[str, set[str]]:
+        """Each function the module text defines, and the functions its body
+        can call: every ``call`` and ``return_call`` target, and, where it
+        holds a ``call_indirect``, every function in the closure table."""
+        if self._graph is None:
+            headers = list(_WAT_FUNC.finditer(self._wat))
+            table = {
+                name
+                for line in self._wat.splitlines()
+                if line.lstrip().startswith("(elem")
+                for name in _WAT_NAME.findall(line)
+            }
+            graph: dict[str, set[str]] = {}
+            for n, header in enumerate(headers):
+                end = (headers[n + 1].start() if n + 1 < len(headers)
+                       else len(self._wat))
+                body = self._wat[header.end():end]
+                callees = set(_WAT_CALL.findall(body))
+                if "call_indirect" in body:
+                    callees |= table
+                graph[header.group(1)] = callees
+            self._graph = graph
+        return self._graph
+
+
+#: A function definition in the module text, as code generation writes one.
+_WAT_FUNC = re.compile(r"^\s*\(func \$([^\s()]+)", re.MULTILINE)
+#: A direct call, and a tail call, to a function the module defines (an
+#: import's name matches too, and is in no body of the graph).
+_WAT_CALL = re.compile(r"\b(?:return_call|call) \$([^\s()]+)")
+_WAT_NAME = re.compile(r"\$([^\s()]+)")
+
+
+def _returned_parts(expr: ast.Expr) -> list[ast.Expr]:
+    """The nodes where a function's returned value is formed: *expr*, the
+    value of a block, each branch of an `if` and arm of a `match`, and each
+    component of a tuple or element of an array literal built there, where
+    the verifier records a refined return type's predicates."""
+    out: list[ast.Expr] = [expr]
+    if isinstance(expr, ast.Block):
+        out += _returned_parts(expr.expr)
+    elif isinstance(expr, ast.IfExpr):
+        out += _returned_parts(expr.then_branch)
+        out += _returned_parts(expr.else_branch)
+    elif isinstance(expr, ast.MatchExpr):
+        for arm in expr.arms:
+            out += _returned_parts(arm.body)
+    elif isinstance(expr, ast.ConstructorCall) and expr.name == "Tuple":
+        for arg in expr.args:
+            out += _returned_parts(arg)
+    elif isinstance(expr, ast.ArrayLit):
+        for element in expr.elements:
+            out += _returned_parts(element)
+    return out
+
+
+def _unattributed(trial: TrialResult, where: str) -> None:
+    trial.status = "unattributed"
+    trial.attribution = f"trap not attributable to an obligation: {where}"
+
+
+def _is_prologue_check(check: EmittedCheck, decl: ast.FnDecl) -> bool:
+    """Whether *check* is one of *decl*'s own entry checks: a `requires`
+    clause, or a refined parameter's guard (spanned within the type)."""
+    if check.emitter == _PRECONDITION_EMITTER:
+        return True
+    if check.emitter != _REFINEMENT_EMITTER:
+        return False
+    at = (check.line, check.column)
+    return any(
+        te.span is not None
+        and (te.span.line, te.span.column) <= at
+        <= (te.span.end_line, te.span.end_column)
+        for te in decl.params
+    )
+
+
+def _unique(records: Iterable[ProofObligation]) -> list[ProofObligation]:
+    """*records* without repeats, in order — by identity, since an
+    obligation record is mutable and so unhashable."""
+    seen: set[int] = set()
+    out: list[ProofObligation] = []
+    for record in records:
+        if id(record) not in seen:
+            seen.add(id(record))
+            out.append(record)
+    return out
+
+
+def _describe_obligation(record: ProofObligation, tested: str) -> str:
+    """One obligation, named as the source states it."""
+    owner = "" if record.fn_name == tested else f" of '{record.fn_name}'"
+    if record.kind in _CONTRACT_KINDS:
+        return f"{record.kind}({record.expr_text}){owner}"
+    return (
+        f"the {record.kind} obligation on `{record.expr_text}` "
+        f"(line {record.line}){owner}"
+    )
+
+
+def _render_args(args: dict[str, int | float | str]) -> str:
+    """A trial's arguments in the slot form `_run_trials` names them by."""
+    if not args:
+        return "no arguments"
+    return ", ".join(
+        f"{slot} = "
+        + (json.dumps(value, ensure_ascii=False)
+           if isinstance(value, str) else str(value))
+        for slot, value in args.items()
+    )
+
+
+@dataclass(frozen=True)
+class _AssumedPremise:
+    """The `assume` statements a refuted proof rests on (spec §6.2.6), and
+    what the tester knows of them on the trial's arguments."""
+
+    verdict: str
+    """``"violated"``: these arguments violate one of them, evaluated at the
+    head of the function under test.  ``"satisfied"``: they satisfy every
+    one, so none is the cause.  ``"trusted"``: not known — an `assume` in a
+    callee, after a binding, or inside a branch, or one whose predicate does
+    not translate."""
+
+    named: str
+    """The statements, as the description names them."""
+
+
+def _assumed_premise(
+    trial: TrialResult,
+    decl: ast.FnDecl,
+    declarations: dict[tuple[str | None, str, str], ast.FnDecl],
+    alias_env: AliasEnv,
+) -> _AssumedPremise | None:
+    """The `assume` statements in the declarations that own *trial*'s
+    refuted records, or None when they hold none.
+
+    The verifier takes an `assume` on trust (W003), so a false one lets it
+    prove what the program then violates — no defect of the verifier.  The
+    tester says these arguments violate one only where it evaluates it on
+    them: a statement at the head of the function under test, before any
+    binding, whose slots are therefore its parameters.
+    """
+    found: list[tuple[ast.FnDecl, ast.AssumeExpr]] = []
+    for record in trial.refutes:
+        owner = declarations.get((record.file, record.owner, record.fn_name))
+        if owner is None:
+            continue
+        for node in walk_nodes(owner.body):
+            if isinstance(node, ast.AssumeExpr) and not any(
+                    node is seen for _, seen in found):
+                found.append((owner, node))
+    if not found:
+        return None
+
+    def name(owner: ast.FnDecl, node: ast.AssumeExpr) -> str:
+        line = f" at line {node.span.line}" if node.span is not None else ""
+        where = "" if owner is decl else f", in '{owner.name}'"
+        return f"`assume({ast.format_expr(node.expr)})`{line}{where}"
+
+    held = [
+        _assume_on_arguments(decl, node, trial, alias_env)
+        if owner is decl else None
+        for owner, node in found
+    ]
+    violated = [entry for entry, ok in zip(found, held) if ok is False]
+    if violated:
+        return _AssumedPremise(
+            "violated", " and ".join(name(*entry) for entry in violated))
+    verdict = "satisfied" if all(ok is True for ok in held) else "trusted"
+    return _AssumedPremise(
+        verdict, " and ".join(name(*entry) for entry in found))
+
+
+def _assume_on_arguments(
+    decl: ast.FnDecl,
+    assume: ast.AssumeExpr,
+    trial: TrialResult,
+    alias_env: AliasEnv,
+) -> bool | None:
+    """Whether *assume* holds on *trial*'s arguments: True, False, or None
+    where it cannot be told.
+
+    Told only for a statement at the head of *decl*'s body, after no
+    binding, so that its slots are the parameters the arguments fill, and
+    only when its predicate translates.
+    """
+    for stmt in decl.body.statements:
+        if isinstance(stmt, ast.ExprStmt) and stmt.expr is assume:
+            break
+        if not isinstance(stmt, ast.ExprStmt):
+            return None
+    else:
+        return None
+    env = _declare_param_vars(
+        decl, _get_param_types(decl, alias_env), alias_env)
+    if env is None:
+        return None
+    predicate = env.smt.translate_expr(assume.expr, env.slot_env)
+    values = list(trial.args.values())
+    if not isinstance(predicate, z3.BoolRef) or len(values) != len(env.z3_vars):
+        return None
+    pairs: list[tuple[z3.ExprRef, z3.ExprRef]] = []
+    for var, bt, value in zip(env.z3_vars, env.var_types, values):
+        if bt == BOOL:
+            pairs.append((var, z3.BoolVal(bool(value))))
+        elif bt == STRING:
+            pairs.append((var, z3.StringVal(str(value))))
+        elif bt == FLOAT64:
+            pairs.append((var, z3.FPVal(float(value), var.sort())))
+        else:
+            pairs.append((var, z3.IntVal(int(value))))
+    answer = z3.simplify(z3.substitute(predicate, *pairs))
+    return True if z3.is_true(answer) else False if z3.is_false(answer) else None
+
+
+_REFUTATION_HEAD = (
+    "`vera test --distrust` runs the functions the verifier proved, compiled "
+    "with the runtime checks code generation emits whatever the tier.  The "
+    "check that failed stands for an obligation the verifier discharged at "
+    "Tier 1"
+)
+
+
+def _refutation_explanation(premise: _AssumedPremise | None) -> tuple[str, str]:
+    """E703's rationale and fix, by what is known of an `assume` the proof
+    rests on.  The verifier is blamed outright only where no `assume` is
+    known to be false."""
+    if premise is not None and premise.verdict == "violated":
+        return (
+            _REFUTATION_HEAD + ", from premises that include the `assume` "
+            "the description names, which the verifier takes on trust rather "
+            "than proving (W003, spec §6.2.6).  The trial's arguments satisfy "
+            "the function's `requires` and violate that `assume`, so the "
+            "proof was built on a premise that is false here, and this trial "
+            "cannot tell whether the verifier is also wrong.",
+            "Replace the `assume` with something the verifier proves or the "
+            "program checks: a `requires` the callers must establish, so "
+            "`vera verify` proves it at every call site, or an explicit "
+            "branch on the condition.  An `assume` is for a fact the verifier "
+            "cannot reach on its own; one these arguments violate is not a "
+            "fact.",
+        )
+    if premise is not None and premise.verdict == "trusted":
+        return (
+            _REFUTATION_HEAD + ", from premises that include the `assume` "
+            "the description names, which the verifier takes on trust rather "
+            "than proving (W003, spec §6.2.6).  If the values that reach the "
+            "`assume` violate it, the proof was built on a premise that is "
+            "false there, and the program is wrong; if they satisfy it, the "
+            "proof and the compiled program disagree, which is a soundness "
+            "defect in Vera.",
+            "Check the `assume` the description names against the values "
+            "that reach it.  If they violate it, replace it with a `requires` "
+            "the callers must establish, or an explicit branch on the "
+            "condition.  If they satisfy it, this is a soundness defect in "
+            "Vera: report it at https://github.com/aallan/vera/issues/new "
+            "with this program and the arguments above.",
+        )
+    return (
+        _REFUTATION_HEAD + ", and the trial's arguments satisfy the "
+        "function's `requires` in the verifier's own model, so the proof and "
+        "the compiled program disagree: unless an `assume` the proof rests "
+        "on is false, the verifier proved something about a program other "
+        "than the one that runs.",
+        "If a callee this proof relies on contains an `assume`, check that "
+        "first: an `assume` is taken on trust (W003), so a false one lets "
+        "the verifier prove a contract the program then violates.  Otherwise "
+        "this is a soundness defect in Vera, not in the program: report it "
+        "at https://github.com/aallan/vera/issues/new with this program and "
+        "the arguments above.  Until it is fixed, treat the obligation as "
+        "checked at run time rather than proved: the compiled program "
+        "carries the check, so it traps here instead of continuing past the "
+        "violation.",
+    )
+
+
+def _refutation_description(
+    fn_name: str, trial: TrialResult, premise: _AssumedPremise | None,
+) -> str:
+    """The E703 description: the proof, the arguments, the trap, and any
+    `assume` the proof rests on."""
+    one = len(trial.refutes) == 1
+    what = " and ".join(
+        _describe_obligation(r, fn_name) for r in trial.refutes)
+    trap = trial.message.splitlines()[0] if trial.message else trial.trap_kind
+    rests = ""
+    if premise is not None:
+        rests = {
+            "violated": (
+                f"; the proof rests on {premise.named}, which these "
+                f"arguments violate"),
+            "satisfied": (
+                f"; the proof also rests on {premise.named}, which these "
+                f"arguments satisfy"),
+            "trusted": (
+                f"; the proof rests on {premise.named}, which the verifier "
+                f"takes on trust (W003)"),
+        }[premise.verdict]
+    return (
+        f"Tier 1 proof refuted in '{fn_name}': {what} "
+        f"{'was proved' if one else 'were each proved'}, but the trial on "
+        f"{_render_args(trial.args)} failed {'it' if one else 'one of them'} "
+        f"at run time: {trap}{rests}"
+    )
+
+
+def _trials(n: int) -> str:
+    return f"{n} trial{'' if n == 1 else 's'}"
+
+
+def _no_check_reason(clauses: list[str]) -> str:
+    """Why *clauses*, proved, are not exercised: no check stands for them."""
+    return "code generation emits no runtime check for " + ", ".join(
+        f"`{clause}`" for clause in clauses)
+
+
+def _trial_reason(
+    proved: bool, run: int, refuted: int, findings: list[TrialResult],
+    unchecked: list[str],
+) -> str:
+    """The ``reason`` of a function trials ran against.  *unchecked* names
+    the proved clauses no check stands for, which no trial tested."""
+    if not proved:
+        return "Tier 3 contract (runtime check)"
+    gap = (
+        f"; {_no_check_reason(unchecked)}, so no trial tests "
+        f"{'it' if len(unchecked) == 1 else 'them'}"
+        if unchecked else ""
+    )
+    if refuted:
+        return f"Tier 1 proof contradicted by {refuted} of {_trials(run)}{gap}"
+    if not findings:
+        return f"Tier 1, the proof held under {_trials(run)}{gap}"
+    unattributed = sum(1 for t in findings if t.status == "unattributed")
+    return (
+        f"Tier 1, {len(findings)} of {_trials(run)} failed, none on a check "
+        f"shown to be proved"
+        + (f" ({unattributed} unattributed)" if unattributed else "")
+        + gap
+    )
+
+
+def _record_unrun(
+    results: list[FunctionTestResult],
+    summary: TestSummary,
+    fn_name: str,
+    reason: str,
+    proved: bool,
+    distrusted: bool,
+) -> None:
+    """Record a target no trial ran: a skip, or a proof left unexercised.
+
+    A proved function `--distrust` cannot run keeps its Tier-1 category — the
+    proof stands, untested — with the reason it was not run, rather than
+    being demoted to ``"skipped"``.  By default a proved function reaches
+    here only when the generator cannot serve it, and is skipped as before,
+    its ``proved`` flag still set.
+    """
+    if proved and distrusted:
+        summary.verified += 1
+        results.append(FunctionTestResult(
+            fn_name=fn_name,
+            category="verified",
+            reason=f"Tier 1, not exercised: {reason}",
+            trials_run=0,
+            trials_passed=0,
+            trials_failed=0,
+            failures=[],
+            proved=True,
+        ))
+        return
+    summary.skipped += 1
+    results.append(FunctionTestResult(
+        fn_name=fn_name,
+        category="skipped",
+        reason=reason,
+        trials_run=0,
+        trials_passed=0,
+        trials_failed=0,
+        failures=[],
+        proved=proved,
+    ))
+
+
+def _ungenerable_reason(decl: ast.FnDecl, alias_env: AliasEnv) -> str:
+    """Why the generator has no input for *decl*, a function skipped for its
+    parameters: it is generic, or a parameter's type is one it does not
+    encode."""
+    if decl.forall_vars:
+        return "it is generic"
+    names = _unsupported_type_names(_get_param_types(decl, alias_env))
+    return f"the generator encodes no {' or '.join(names)} value (see #169)"
+
+
+# =====================================================================
 # Function classification
 # =====================================================================
 
@@ -618,10 +1622,11 @@ def _classify_functions(
     verify_diagnostics: list[Diagnostic],
     obligations: list[ProofObligation],
     alias_env: AliasEnv = EMPTY_ALIAS_ENV,
-) -> dict[str, tuple[str, str, ast.FnDecl]]:
+) -> dict[str, tuple[str, str, ast.FnDecl, bool]]:
     """Classify each function as verified/tier3/skipped.
 
-    Returns {name: (category, reason, decl)}.
+    Returns {name: (category, reason, decl, proved)}: *proved* says the
+    verifier proved the function's contracts, whatever its category.
 
     *alias_env* is the checked program's naming environment, needed because
     the encodability question is asked of each parameter's RESOLVED type
@@ -748,9 +1753,11 @@ def _classify_functions(
         # traps on its own guard, and the trial loop scores that trap as a
         # falsified contract — a generator limitation reported as a broken
         # program, which spec §0.3 forbids.  Asked only here, where the answer
-        # can change an outcome: a Tier-1 function is never exercised, so an
-        # untranslatable clause on one costs nothing and demoting it to
-        # "skipped" would throw away a proof.
+        # can change an outcome: by default a Tier-1 function is never
+        # exercised, so an untranslatable clause on one costs nothing and
+        # demoting it to "skipped" would throw away a proof.  `--distrust`
+        # exercises it, so the engine asks there — and keeps the proof,
+        # reporting it "verified" and not exercised, rather than skipped.
         if decl.name in tier3_fns:
             blockers = _untranslatable_input_constraints(
                 decl, param_types, alias_env,
@@ -770,7 +1777,19 @@ def _classify_functions(
         # Has non-trivial contracts and all proved → verified
         result[decl.name] = ("verified", "Tier 1 (proved)", decl)
 
-    return result
+    # Whether the verifier proved a function's contracts is a fact of the
+    # stream, read for EVERY listed function, not only the ones the generator
+    # can serve (PR #1634 review): a generic function, or one with a
+    # parameter type the generator does not encode, is skipped above in
+    # either mode, and its proof read as no proof because of the skip.  The
+    # same three facts decide the "verified" category, which is this flag on
+    # a function whose inputs can be generated.
+    return {
+        name: (category, reason, decl,
+               name not in failed_fns and name not in tier3_fns
+               and _has_nontrivial_contracts(decl))
+        for name, (category, reason, decl) in result.items()
+    }
 
 
 def _failed_function_name(diag: Diagnostic) -> str | None:
@@ -1028,9 +2047,27 @@ def _generate_inputs(
     has come back empty, so every constraint below translates and the
     ``is not None`` guards are the belt to that braces (#1229).
     """
+    return _generate_inputs_and_search(
+        decl, param_types, count, alias_env)[0]
+
+
+def _generate_inputs_and_search(
+    decl: ast.FnDecl,
+    param_types: list[Type],
+    count: int,
+    alias_env: AliasEnv = EMPTY_ALIAS_ENV,
+) -> tuple[list[list[int | float | str]] | None, z3.CheckSatResult | None]:
+    """:func:`_generate_inputs`, with how the search ended beside the inputs.
+
+    The second element is the solver's answer to the last check of the
+    diversity loop, or None when it never ran.  With no input at all, that
+    answer says why: ``unsat`` means no input within the generator's bounds
+    satisfies the precondition, while ``unknown`` means the solver gave up,
+    and nothing is established either way.
+    """
     env = _declare_param_vars(decl, param_types, alias_env)
     if env is None:
-        return None
+        return None, None
     smt, scope, slot_env = env.smt, env.scope, env.slot_env
     z3_vars, var_types = env.z3_vars, env.var_types
 
@@ -1085,8 +2122,10 @@ def _generate_inputs(
     _seed_boundaries(smt, z3_vars, var_types, inputs, seen)
 
     # Diversity loop
+    search: z3.CheckSatResult | None = None
     while len(inputs) < count:
         result = smt.solver.check()
+        search = result
         if result != z3.sat:
             break  # unsat or unknown → stop
 
@@ -1104,7 +2143,7 @@ def _generate_inputs(
         ])
         smt.solver.add(block)
 
-    return inputs
+    return inputs, search
 
 
 def _seed_boundaries(
@@ -1262,9 +2301,11 @@ def _run_trials(
             # index into the string "contract" read as a contract failure.
             kind = getattr(e, "kind", "")
             status = "fail" if kind == "contract_violation" else "error"
+            frames = getattr(e, "frames", None) or []
             results.append(TrialResult(
                 fn_name=fn_name, args=arg_dict,
                 status=status, message=str(e), trap_kind=kind,
+                trap_frames=[(fr.func, fr.is_builtin) for fr in frames],
             ))
         except Exception as e:  # pragma: no cover — defensive: execute() wraps every trap  # noqa: BLE001
             results.append(TrialResult(

@@ -195,7 +195,8 @@ class CallsMixin:
             if call.name == "byte_to_string" and len(call.args) == 1:
                 return self._translate_byte_to_string(call.args[0], env)
             if call.name == "float_to_string" and len(call.args) == 1:
-                return self._translate_float_to_string(call.args[0], env)
+                return self._translate_float_to_string(
+                    call.args[0], env, at=self._rendering_site(call))
             if call.name == "string_strip" and len(call.args) == 1:
                 return self._translate_strip(call.args[0], env)
             # String search builtins
@@ -406,7 +407,7 @@ class CallsMixin:
                 )
             # Ability operations dispatched at WASM level (§9.8)
             if call.name == "show" and len(call.args) == 1:
-                return self._translate_show(call.args[0], env)
+                return self._translate_show(call.args[0], env, call)
             if call.name == "hash" and len(call.args) == 1:
                 return self._translate_hash(call.args[0], env)
             # Map builtins

@@ -160,18 +160,18 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `  <effect>.py` ×14 | 3,214 | | one `register_<effect>(linker, …)` per family: random, math, md, json, regex, html, map, set, decimal, http, async_http (#841 fused-async: worker-thread submit + blocking await + kind-4 cancel/evict decref), inference, state, db | |
 | `  wasi_host.py` | 401 | | Built-in `wasi-p2` runner via `add_wasip2` — `vera run --target wasi-p2` (#237, #853); releases its store before it returns or raises and waits for wasmtime to let go of the output callbacks (`_release_store`); reads a trap's kind from the innermost adapter frame's whole name and its message from after the adapter's stderr mark (`message_mark`, #1479) | |
 | `  server.py` | 235 | | `vera serve` HTTP driver for `handle(Request -> Response)` (#305) | |
-| `tester.py` | 1,285 | Test | Z3-guided input generation (parameter types resolved through `naming.py`; a TIER-3 target whose input constraints do not all translate is skipped naming the blocker rather than trialled, while a Tier-1-proved function is reported verified and never trialled at all), WASM execution, tier classification | `test()` |
+| `tester.py` | 2,356 | Test | Z3-guided input generation (parameter types resolved through `naming.py`; a TIER-3 target whose input constraints do not all translate is skipped naming the blocker rather than trialled, while a Tier-1-proved function is reported verified and never trialled — unless `--distrust` runs it, reading each failing trial's trap against the module's checks and the verifier's records as refuted (E703), a Tier-3 guard, or unattributed, and reporting a proof not exercised where no check its run reaches stands for anything it proved, or the generator cannot serve it), WASM execution, tier classification | `test()` |
 | `formatter.py` | 2,036 | Format | Canonical code formatter | `format_source()` |
-| `errors.py` | 1,083 | All | Diagnostic class, error hierarchy, error code registry | `Diagnostic`, `VeraError`, `ERROR_CODES` |
+| `errors.py` | 1,084 | All | Diagnostic class, error hierarchy, error code registry | `Diagnostic`, `VeraError`, `ERROR_CODES` |
 | `skip.py` | 242 | All | Codegen-internal control-flow exceptions behind structured skip diagnostics (#626) | `CodegenSkip`, `CodegenInvariantError` |
 | `introspect.py` | 127 | All | Payloads for `vera builtins` / `effects` / `errors --json` | `builtins_payload()`, `effects_payload()`, `errors_payload()` |
 | `envflags.py` | 35 | All | One truthiness rule for the `VERA_*` diagnostic flags catalogued in ENVIRONMENT.md; a leaf module (imports `os` only) so any layer can read a flag without a cycle | `flag_enabled()` |
-| `_since.py` | 376 | All | Best-effort `since` version attribution for built-ins, effects, abilities | |
+| `_since.py` | 406 | All | Best-effort `since` version attribution for built-ins, effects, abilities | |
 | `browser/` | 138 | Execute | Browser runtime for compiled WASM (package) | `emit_browser_bundle()` |
 | ` ├ emit.py` | 137 | | Browser bundle emission (wasm + runtime + html) | `emit_browser_bundle()` |
 | ` ├ runtime.mjs` | 4,209 | | Self-contained JS runtime: IO, State, Http, Inference, contracts, Markdown, Json, Html | |
 | ` └ harness.mjs` | 116 | | Node.js test harness for parity testing | |
-| `cli.py` | 2,224 | All | CLI commands | `main()` |
+| `cli.py` | 2,346 | All | CLI commands | `main()` |
 | `registration.py` | 158 | Type check | Shared function registration | `register_fn()` |
 
 Total: ~125,000 lines of Python + 344 lines of grammar + 4,325 lines of JavaScript.
@@ -763,7 +763,7 @@ The proof that the two sides agree is a differential, not a unit test: `tests/te
 
 ### 9. LLM-oriented diagnostics
 
-Every diagnostic includes a description (what went wrong), rationale (which language rule), fix (corrected code), spec reference, and a stable code — errors `E001`–`E702`, warnings `W001` (typed holes), `W002` (an eagerly evaluated `async` argument), `W003` (an unverified `assume`) and `W004` (a runtime check no obligation record accounts for, from `vera verify --reconcile`). The compiler's output is designed to be fed directly back to the model as corrective context. See spec Chapter 0, Section 0.5 "Diagnostics as Instructions" for the philosophy.
+Every diagnostic includes a description (what went wrong), rationale (which language rule), fix (corrected code), spec reference, and a stable code — errors `E001`–`E703`, warnings `W001` (typed holes), `W002` (an eagerly evaluated `async` argument), `W003` (an unverified `assume`) and `W004` (a runtime check no obligation record accounts for, from `vera verify --reconcile`). The compiler's output is designed to be fed directly back to the model as corrective context. See spec Chapter 0, Section 0.5 "Diagnostics as Instructions" for the philosophy.
 
 ### 10. Stable error code taxonomy
 
@@ -786,7 +786,7 @@ Every coded diagnostic has a unique code grouped by compiler phase (a few diagno
 | E6xx | Codegen | `codegen/` |
 | E7xx | Testing | `tester.py` |
 
-The `ERROR_CODES` dict in `errors.py` maps every code to a short description (189 entries — 185 `E` codes and 4 `W` warning codes). Codes are stable across versions — they can be used for programmatic filtering, suppression, and documentation lookups. Formatted output shows the code in brackets: `[E130] Error at line 5, column 3:`.
+The `ERROR_CODES` dict in `errors.py` maps every code to a short description (190 entries — 186 `E` codes and 4 `W` warning codes). Codes are stable across versions — they can be used for programmatic filtering, suppression, and documentation lookups. Formatted output shows the code in brackets: `[E130] Error at line 5, column 3:`.
 
 ## Test Suite
 

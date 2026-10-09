@@ -26,6 +26,8 @@ Usage:
     vera test      <file.vera>              Test contracts via Z3-guided inputs
     vera test      --json <file.vera>       Test with JSON output
     vera test      --trials 50 <file.vera>  Set trial count (default 100)
+    vera test      --distrust <file.vera>   Also run the functions the verifier
+                                            proved; a refuted proof is E703
     vera verify    --timeout-ms N <file.vera>  Per-query Z3 budget in ms
                                             (default 10000; also
                                             VERA_Z3_TIMEOUT_MS)
@@ -49,7 +51,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from lark import Tree
 from vera.codegen.api import WasmTrapError
@@ -62,6 +64,9 @@ from vera.errors import (
 from vera.introspect import builtins_payload, effects_payload, errors_payload
 from vera.parser import parse
 from vera.transform import transform
+
+if TYPE_CHECKING:
+    from vera.tester import FunctionTestResult, TrialResult
 
 
 def _is_int_str(s: str) -> bool:
@@ -1617,14 +1622,67 @@ def cmd_ast(path: str, as_json: bool = False) -> int:
         return 1
 
 
+def _test_function_json(
+    f: FunctionTestResult, distrust: bool,
+) -> dict[str, object]:
+    """One ``functions`` entry of ``vera test --json``.
+
+    The ``proved`` key, and each failure's ``attribution`` and ``refutes``,
+    are written only under ``--distrust``, so a default run's envelope is
+    byte-for-byte what it was before the mode existed.
+    """
+    entry: dict[str, object] = {"name": f.fn_name, "category": f.category}
+    if distrust:
+        entry["proved"] = f.proved
+    entry["reason"] = f.reason
+    entry["trials_run"] = f.trials_run
+    entry["trials_passed"] = f.trials_passed
+    entry["trials_failed"] = f.trials_failed
+    entry["failures"] = [_trial_json(t, distrust) for t in f.failures[:5]]
+    return entry
+
+
+def _trial_json(t: TrialResult, distrust: bool) -> dict[str, object]:
+    """One failing trial of a ``functions`` entry (see ``_test_function_json``)."""
+    out: dict[str, object] = {
+        "args": t.args,
+        "status": t.status,
+        "message": t.message,
+        "trap_kind": t.trap_kind or None,
+    }
+    if distrust:
+        out["attribution"] = t.attribution or None
+        out["refutes"] = [
+            {
+                "function": o.fn_name,
+                "kind": o.kind,
+                "expr": o.expr_text,
+                "file": o.file,
+                "line": o.line,
+                "column": o.column,
+            }
+            for o in t.refutes
+        ]
+    return out
+
+
 def cmd_test(
     path: str,
     *,
     as_json: bool = False,
     trials: int = 100,
     fn_name: str | None = None,
+    distrust: bool = False,
 ) -> int:
-    """Parse, type-check, and test a .vera file via contract-driven testing."""
+    """Parse, type-check, and test a .vera file via contract-driven testing.
+
+    *distrust* (``--distrust``) also runs the functions the verifier proved,
+    and reports one a trial contradicts as ``refuted`` with an E703 error.
+    The keys it adds to the JSON envelope (``distrust``, ``proved``,
+    ``attribution``, ``refutes``, and ``refuted`` and ``unattributed`` in
+    ``summary``) appear only under it, so a default run's output is
+    unchanged.
+    """
     try:
         # INSIDE the try, as in `cmd_verify` (#1361 review).
         from vera.checker import typecheck_with_artifacts
@@ -1677,71 +1735,81 @@ def cmd_test(
             expr_target_types=artifacts.expr_target_types,
             module_artifacts=artifacts.module_artifacts,
             alias_env=artifacts.alias_env,
+            distrust=distrust,
         )
 
         has_errors = any(d.severity == "error" for d in result.diagnostics)
+        s = result.summary
+        failing = s.failed > 0 or s.refuted > 0 or has_errors
 
         if as_json:
-            s = result.summary
-            result_dict = {
-                "ok": s.failed == 0 and not has_errors,
-                "file": path,
-                "functions": [
-                    {
-                        "name": f.fn_name,
-                        "category": f.category,
-                        "reason": f.reason,
-                        "trials_run": f.trials_run,
-                        "trials_passed": f.trials_passed,
-                        "trials_failed": f.trials_failed,
-                        "failures": [
-                            {
-                                "args": t.args,
-                                "status": t.status,
-                                "message": t.message,
-                                "trap_kind": t.trap_kind or None,
-                            }
-                            for t in f.failures[:5]
-                        ],
-                    }
-                    for f in result.functions
-                ],
-                "summary": {
-                    "verified": s.verified,
-                    "tested": s.tested,
-                    "passed": s.passed,
-                    "failed": s.failed,
-                    "skipped": s.skipped,
-                    "total_trials": s.total_trials,
-                    "total_passes": s.total_passes,
-                    "total_failures": s.total_failures,
-                    "unlisted_errors": s.unlisted_errors,
-                },
-                "diagnostics": [d.to_dict() for d in result.diagnostics],
+            envelope: dict[str, object] = {"ok": not failing, "file": path}
+            if distrust:
+                envelope["distrust"] = True
+            envelope["functions"] = [
+                _test_function_json(f, distrust) for f in result.functions
+            ]
+            summary_dict: dict[str, int] = {
+                "verified": s.verified,
+                "tested": s.tested,
+                "passed": s.passed,
+                "failed": s.failed,
+                "skipped": s.skipped,
+                "total_trials": s.total_trials,
+                "total_passes": s.total_passes,
+                "total_failures": s.total_failures,
+                "unlisted_errors": s.unlisted_errors,
             }
-            print(json.dumps(result_dict, indent=2))
-            return 1 if s.failed > 0 or has_errors else 0
+            if distrust:
+                summary_dict["refuted"] = s.refuted
+                summary_dict["unattributed"] = s.unattributed
+            envelope["summary"] = summary_dict
+            envelope["diagnostics"] = [
+                d.to_dict() for d in result.diagnostics]
+            print(json.dumps(envelope, indent=2))
+            return 1 if failing else 0
 
         # Human-readable output
-        print(f"\nTesting: {path}\n")
+        if distrust:
+            print(f"\nTesting: {path} (--distrust: proved functions run too)\n")
+        else:
+            print(f"\nTesting: {path}\n")
         for f in result.functions:
+            # --distrust: the proved clauses no runtime check stands for, which
+            # no trial tested, whatever the trials that ran found.
+            gap = (
+                "; no runtime check for " + ", ".join(
+                    f"`{clause}`" for clause in f.unchecked)
+                if f.unchecked else ""
+            )
             if f.category == "tested":
                 if f.trials_failed > 0:
                     line = (
                         f"  {f.fn_name} {'.' * max(1, 40 - len(f.fn_name))} "
                         f"FAILED  "
                         f"({f.trials_passed}/{f.trials_run} passed, "
-                        f"{f.trials_failed} failed)"
+                        f"{f.trials_failed} failed{gap})"
                     )
                 else:
+                    # What held is the checked part; no trial tested the rest.
+                    held = ", Tier 1 proof held" if f.proved else ""
                     line = (
                         f"  {f.fn_name} {'.' * max(1, 40 - len(f.fn_name))} "
-                        f"TESTED  ({f.trials_run}/{f.trials_run} passed)"
+                        f"TESTED  ({f.trials_run}/{f.trials_run} passed"
+                        f"{held}{gap})"
                     )
+            elif f.category == "refuted":
+                refuting = sum(1 for t in f.failures if t.status == "refuted")
+                line = (
+                    f"  {f.fn_name} {'.' * max(1, 40 - len(f.fn_name))} "
+                    f"REFUTED ({refuting}/{f.trials_run} trials contradict "
+                    f"the Tier 1 proof{gap})"
+                )
             elif f.category == "verified":
                 line = (
                     f"  {f.fn_name} {'.' * max(1, 40 - len(f.fn_name))} "
-                    f"VERIFIED (Tier 1)"
+                    + (f"VERIFIED ({f.reason})" if distrust
+                       else "VERIFIED (Tier 1)")
                 )
             elif f.category == "failed":
                 line = (
@@ -1762,6 +1830,8 @@ def cmd_test(
                         f"{k} = {v}" for k, v in trial.args.items()
                     )
                     print(f"    {args_str} -> {trial.message}")
+                    if trial.attribution:
+                        print(f"      {trial.attribution}")
 
         if result.diagnostics:
             print("\nDiagnostics:")
@@ -1771,7 +1841,6 @@ def cmd_test(
                 print(f"  {code}{first_line}")
 
         # Summary
-        s = result.summary
         static_failed = sum(1 for f in result.functions if f.category == "failed")
         tested_failed = sum(
             1 for f in result.functions
@@ -1779,6 +1848,8 @@ def cmd_test(
         )
         unlisted_errors = s.unlisted_errors
         parts = []
+        if s.refuted > 0:
+            parts.append(f"{s.refuted} refuted")
         if s.tested > 0:
             parts.append(
                 f"{s.tested} tested ({s.passed} passed"
@@ -1804,8 +1875,18 @@ def cmd_test(
                 f"{s.total_passes} passed, "
                 f"{s.total_failures} failed"
             )
+        if distrust:
+            exercised = sum(
+                1 for f in result.functions if f.proved and f.trials_run > 0)
+            unrun = sum(
+                1 for f in result.functions if f.proved and f.trials_run == 0)
+            print(
+                f"Proofs:  {exercised} exercised, {s.refuted} refuted, "
+                f"{s.unattributed} with an unattributed trap, "
+                f"{unrun} not exercised"
+            )
 
-        return 1 if s.failed > 0 or has_errors else 0
+        return 1 if failing else 0
 
     except FileNotFoundError:
         # The sibling handlers are inside the backstop's reach too (#1361
@@ -1906,7 +1987,7 @@ Commands:
     check [--json|--quiet|--explain-slots]       Parse and type-check a .vera file
     typecheck [--json|--quiet|--explain-slots]   Same as check (explicit alias)
     verify [--json|--quiet|--timeout-ms n|--reconcile]   Parse, type-check, and verify contracts
-    test [--json]        Test contracts via Z3-guided input generation
+    test [--json|--distrust]  Test contracts via Z3-guided input generation
     compile [--wat]      Compile a .vera file to WebAssembly
     compile --target browser  Emit browser bundle (wasm + JS + HTML)
     compile --target wasi-p2  Emit a WASI Preview 2 component (experimental)
@@ -1920,7 +2001,7 @@ Commands:
                          (needs the [lsp] extra: pip install -e ".[lsp]")
     builtins [--json]    List the built-in function registry
     effects [--json]     List the effect and ability registry
-    errors [--json]      List the diagnostic error-code registry (E001–E702)
+    errors [--json]      List the diagnostic error-code registry (E001–E703)
 
 Options:
     --json               Output machine-readable JSON diagnostics
@@ -1928,6 +2009,9 @@ Options:
     --wat                Print WAT text instead of writing .wasm binary
     --fn <name>          Function to execute or test
     --trials <n>         Number of test trials (default: 100, for vera test)
+    --distrust           Also run the functions the verifier proved, for vera
+                         test: a trial that fails a proved check refutes the
+                         proof (E703, category "refuted")
     --timeout-ms <n>     Per-query Z3 budget in ms, accepted by vera verify.
                          Precedence: this flag, then VERA_Z3_TIMEOUT_MS, then
                          the 10000 default -- so the variable is also verify's
@@ -2069,6 +2153,24 @@ def main() -> None:
             print(f"Error: {_tm_msg}", file=sys.stderr)
         sys.exit(1)
 
+    # `--distrust` is test-only, and refused elsewhere for the same reason:
+    # a command that cannot honour a flag must not ignore it.  Only the
+    # arguments before `--` are this command line's own; the rest belong to
+    # the program `vera run` calls.
+    _own_args = args[:args.index("--")] if "--" in args else args
+    if "--distrust" in _own_args and args[0] != "test":
+        _ds_msg = (
+            f"--distrust is only accepted by `vera test`, not "
+            f"`vera {args[0]}`."
+        )
+        if "--json" in _own_args:
+            print(json.dumps({"ok": False, "file": "",
+                              "diagnostics": [{"severity": "error",
+                                               "description": _ds_msg}]},
+                             indent=2))
+        else:
+            print(f"Error: {_ds_msg}", file=sys.stderr)
+        sys.exit(1)
     # `--reconcile` is verify-only for the same reason: a command that cannot
     # honour it must refuse it rather than ignore it.
     if "--reconcile" in args and args[0] != "verify":
@@ -2118,6 +2220,7 @@ def main() -> None:
     use_write = "--write" in args
     use_check_fmt = "--check" in args and command == "fmt"
     use_explain_slots = "--explain-slots" in args
+    use_distrust = command == "test" and "--distrust" in args
     use_reconcile = "--reconcile" in args
 
     # Parse --fn <name> option
@@ -2256,7 +2359,7 @@ def main() -> None:
 
     # Remove flags from remaining args to find the filepath
     skip_flags = {"--json", "--quiet", "--wat", "--write", "--check",
-                  "--explain-slots", "--reconcile"}
+                  "--explain-slots", "--distrust", "--reconcile"}
     skip_next = {"--fn", "-o", "--trials", "--target", "--port", "--host",
                  "--world", "--timeout-ms"}
     remaining: list[str] = []
@@ -2291,7 +2394,8 @@ def main() -> None:
                             timeout_ms=timeout_ms, reconcile=use_reconcile))
     elif command == "test":
         sys.exit(cmd_test(
-            filepath, as_json=use_json, trials=trials, fn_name=fn_name
+            filepath, as_json=use_json, trials=trials, fn_name=fn_name,
+            distrust=use_distrust,
         ))
     elif command == "compile":
         sys.exit(cmd_compile(

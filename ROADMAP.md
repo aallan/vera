@@ -18,7 +18,7 @@ v0.3.0 is the sound base (Stage 29), reached through v0.2.1 to v0.2.8 (Stages 21
 
 ## The next burndown
 
-*Eighty-four open bugs, driven to zero.*
+*Eighty-eight open bugs, driven to zero.*
 
 A bug class outranks stage work, so the open `bug`-labelled set is the queue the fix releases work from, soundness defects first.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) carries each row's full account and stays the one place the detail lives; this table is the order of attack.
 
@@ -103,6 +103,10 @@ Bugs in a mechanism cluster close in the stage that removes their mechanism and 
 | [#1609](https://github.com/aallan/vera/issues/1609) | An integer `match` over a call returning `@Byte` is dropped at compile (**E602**): the scrutinee is typed `Bool`. |
 | [#1610](https://github.com/aallan/vera/issues/1610) | `vera/proposeEdit` applies an edit that introduces a `timeout` obligation, where it refuses an introduced `tier3`. |
 | [#1613](https://github.com/aallan/vera/issues/1613) | A generic constructor nested in a container literal is neither obligated nor guarded, so a negative `@Nat` payload is stored. |
+| [#1635](https://github.com/aallan/vera/issues/1635) | `examples/factorial.vera` admits every `@Nat` but traps on overflow from 21, so a proved example cannot compute most of its domain. |
+| [#1640](https://github.com/aallan/vera/issues/1640) | `vera test` labels generated arguments in declaration order, so the first of two same-typed parameters is reported as `@T.0`. |
+| [#1643](https://github.com/aallan/vera/issues/1643) | `vera test` skips a function whose only contract is a refined return type as "trivial contracts only", so its refinement is never trialled. |
+| [#1644](https://github.com/aallan/vera/issues/1644) | A live-request `KeyboardInterrupt` test can complete with `exit_code=None` under `pytest -n 4`. |
 | [#1632](https://github.com/aallan/vera/issues/1632) | A diagnostic inside a multi-line string's interpolation is reported on the line the string opens. |
 | [#1636](https://github.com/aallan/vera/issues/1636) | A transform-stage diagnostic (`E009`, `E040`) names no file and quotes no source line. |
 | [#1637](https://github.com/aallan/vera/issues/1637) | The language server places every diagnostic one character after its column. |
@@ -160,7 +164,8 @@ Exit criterion: the reconciliation and the distrust tester run in CI, the confor
 | Change | What |
 |---|---|
 | Obligations reconciled with guards | `vera verify` compiles in process and joins its obligation records with the checks code generation emits, on file, span and kind.  A `tier3` record with no check is an error, a check with no record a warning, and a CI gate runs the join over the corpus and the examples. |
-| `vera test --distrust` | Runs proved functions with their runtime checks on, so the tester can see a false Tier 1: over the corpus with few trials in CI, and with many in the nightly lane. |
+| `vera test --distrust`, nightly | The nightly lane runs the distrust corpus test with many trials per function (`VERA_DISTRUST_TRIALS`); the pull-request run uses five. |
+| [#1633](https://github.com/aallan/vera/issues/1633) | `vera test --distrust` attributes a trap through the reconciliation join instead of by exact span, so a check whose obligation record sits at another node is attributed rather than unattributed. |
 | Golden outputs | Every run-level conformance entry records its expected stdout and exit code, and `test_conformance` asserts them. |
 | Desugar once | A module's call by its own path becomes the bare call, so no later phase meets it. |
 | CI and the hooks | Path filters, a 94% coverage floor, lint without the conformance and example runs the test job already makes, eager-GC as a pytest run, a CHANGELOG gate that reads the pull request's base, and a `doc-examples` hook that fires only for what it gates. |

@@ -15,12 +15,16 @@ marker declares as deciding its class; ``--matrix=full`` runs every cell and
 pull request must run are kept by three rules: a test that is not
 parametrised, every cell of a function named for a ``repro``, and every
 strict xfail.
+
+Also prints the session totals of ``test_distrust_corpus.py`` (proofs
+exercised, refuted, unattributed traps) when it ran.
 """
 
 from __future__ import annotations
 
 import os
 import subprocess
+from typing import Any
 
 import pytest
 
@@ -30,7 +34,7 @@ from tests.matrix_sample import (  # noqa: F401
     pytest_addoption,
     pytest_collection_modifyitems,
     pytest_configure_node,
-    pytest_terminal_summary,
+    pytest_terminal_summary as _matrix_terminal_summary,
     pytest_testnodedown,
 )
 
@@ -140,3 +144,44 @@ def _js_coverage_dir(tmp_path_factory: pytest.TempPathFactory):  # type: ignore[
             )
         except subprocess.TimeoutExpired:
             print("WARNING: JS coverage report timed out after 120s")
+
+
+def pytest_terminal_summary(
+    terminalreporter: Any, exitstatus: int, config: pytest.Config,
+) -> None:
+    """Report the matrix sample's lines (``tests/matrix_sample.py``), then
+    the totals ``test_distrust_corpus.py`` recorded, in one line.
+
+    One module can hold one hook of a name, so the sampler's is called
+    from here rather than imported under its own name.
+
+    Each corpus test records its program's counts with ``record_property``
+    under ``distrust_<count>`` names, and this sums each name over the
+    session.  The properties ride on the test reports, which is what reaches
+    the controller under ``pytest -n``: a module-level counter would be one
+    per worker.  Silent when the corpus test did not run.
+    """
+    _matrix_terminal_summary(terminalreporter, exitstatus, config)
+    totals: dict[str, int] = {}
+    programs = 0
+    for reports in terminalreporter.stats.values():
+        for report in reports:
+            if getattr(report, "when", None) != "call":
+                continue
+            counts = [
+                (name, value)
+                for name, value in getattr(report, "user_properties", ())
+                if name.startswith("distrust_")
+            ]
+            if not counts:
+                continue
+            programs += 1
+            for name, value in counts:
+                totals[name] = totals.get(name, 0) + int(value)
+    if programs:
+        terminalreporter.write_sep("-", "distrust corpus: " + ", ".join(
+            [f"{programs} programs"]
+            # In the order the test records them, which is the order it reads.
+            + [f"{total} {name.removeprefix('distrust_').replace('_', ' ')}"
+               for name, total in totals.items()]
+        ))

@@ -393,6 +393,13 @@ class WasmContext(
         # so an entry whose instructions never reach the module drops out on
         # its own, and nothing has to be merged or rolled back.
         self._emitted_checks: CheckRecord = checks if checks is not None else {}
+        # #1482: the source node a desugared rendering stands for — the
+        # `show(...)` call a `float_to_string` call or a structural render was
+        # built for, the interpolated part a `to_string`-family call wraps.
+        # The verifier locates a rendering's obligation there, so the check a
+        # rendering emits is spanned there too (`_rendering_site`).  Keyed by
+        # the desugared node's id, holding the node so the id stays its own.
+        self._rendering_sites: dict[int, tuple[ast.Node, ast.Node]] = {}
         # R-1412 F3: the component type an enclosing construction hands
         # DOWN to a nested container literal standing in one of its
         # component positions, for a literal whose own span carries no
@@ -1014,6 +1021,18 @@ class WasmContext(
         check_id = next(_CHECK_IDS)
         self._emitted_checks[check_id] = (emitter, at, path)
         return check_marker(check_id)
+
+    def _register_rendering_site(self, node: ast.Node, site: ast.Node) -> None:
+        """Record that *node*, a node code generation built to render a value,
+        stands for *site* in the source (#1482): a `show(...)` call, or an
+        interpolated part."""
+        self._rendering_sites[id(node)] = (node, site)
+
+    def _rendering_site(self, node: ast.Node) -> ast.Node:
+        """The source node *node* renders for (see
+        :meth:`_register_rendering_site`), or *node* itself when it is one."""
+        entry = self._rendering_sites.get(id(node))
+        return entry[1] if entry is not None and entry[0] is node else node
 
     # -----------------------------------------------------------------
     # #1212 — the @Byte write boundary's literal width
