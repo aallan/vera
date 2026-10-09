@@ -96,7 +96,7 @@ vera lsp                          # Serve LSP over stdio: live diagnostics, hove
                                   #   hole completion + agent proof-delta methods (LSP_SERVER.md)
 vera builtins [--json]            # List the built-in function registry (no file needed)
 vera effects [--json]             # List the effect and ability registry (no file needed)
-vera errors [--json]              # List the diagnostic-code registry: E001–E702 + W001–W003 (no file needed)
+vera errors [--json]              # List the diagnostic-code registry: E001–E702 + W001–W004 (no file needed)
 pytest tests/ -v                  # Run the test suite
 ```
 
@@ -2579,6 +2579,8 @@ vera verify file.vera             # Type-check + verify contracts via Z3
 vera verify --json file.vera      # Verify with JSON output (for parsing)
 vera verify --timeout-ms 60000 file.vera  # Per-query Z3 budget in ms (default
                                   #   10000; env VERA_Z3_TIMEOUT_MS)
+vera verify --reconcile file.vera # Also compile, and check each Tier 3 claim has
+                                  #   its check (E541) and each check a record (W004)
 vera compile file.vera                    # Compile to .wasm binary
 vera compile --wat file.vera              # Print WAT text (human-readable WASM)
 vera compile --target browser file.vera   # Compile + emit browser bundle
@@ -2595,7 +2597,7 @@ vera version                      # Print the installed version (also --version,
 vera lsp                          # Serve LSP over stdio (needs the [lsp] extra; see LSP_SERVER.md)
 vera builtins [--json]            # List the built-in function registry (no file needed)
 vera effects [--json]             # List the effect and ability registry (no file needed)
-vera errors [--json]              # List the diagnostic-code registry: E001–E702 + W001–W003 (no file needed)
+vera errors [--json]              # List the diagnostic-code registry: E001–E702 + W001–W004 (no file needed)
 ```
 
 See [TOOLCHAIN.md](https://github.com/aallan/vera/blob/main/TOOLCHAIN.md) for the CLI cookbook — driving the toolchain to write, verify, test, run, and debug Vera, including the `builtins`/`effects`/`errors` introspection commands.
@@ -2643,7 +2645,7 @@ For machine-parseable errors, use the `--json` flag:
 
 ### Error codes
 
-Diagnostics carry stable codes (errors `E001`–`E702`, warnings `W001`–`W003`); a few still carry none ([#1490](https://github.com/aallan/vera/issues/1490)). Common codes:
+Diagnostics carry stable codes (errors `E001`–`E702`, warnings `W001`–`W004`); a few still carry none ([#1490](https://github.com/aallan/vera/issues/1490)). Common codes:
 
 | Code | Meaning |
 |------|---------|
@@ -3551,7 +3553,7 @@ For agents, point your model at [SKILL.md](https://raw.githubusercontent.com/aal
 
 ## Error Code Reference
 
-Diagnostics carry stable codes: errors E001-E702 and warnings W001-W003. Codes are grouped by compiler phase:
+Diagnostics carry stable codes: errors E001-E702 and warnings W001-W004. Codes are grouped by compiler phase:
 
 | Range | Phase |
 |-------|-------|
@@ -3566,11 +3568,12 @@ Diagnostics carry stable codes: errors E001-E702 and warnings W001-W003. Codes a
 | E5xx | Verification |
 | E6xx | Code generation |
 | E7xx | Testing |
-| W001-W003 | Warnings |
+| W001-W004 | Warnings |
 
 - **W001**: Typed hole
 - **W003**: Unverified assumption (assume statement)
 - **W002**: Async argument evaluates eagerly
+- **W004**: Emitted runtime check not matched by an obligation record
 - **E001**: Missing contract block
 - **E002**: Missing effect clause
 - **E003**: Malformed slot reference
@@ -3726,6 +3729,7 @@ Diagnostics carry stable codes: errors E001-E702 and warnings W001-W003. Codes a
 - **E538**: Premise set unsatisfiable (no call can reach the body)
 - **E539**: Premise set contradictory beyond the author's premises
 - **E540**: Premise satisfiability not established (Tier 1 withheld)
+- **E541**: Runtime-check claim not matched by an emitted check
 - **E600**: Unsupported parameter type
 - **E601**: Unsupported return type
 - **E602**: Unsupported body expression type

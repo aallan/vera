@@ -90,7 +90,7 @@ vera lsp                          # Serve LSP over stdio: live diagnostics, hove
                                   #   hole completion + agent proof-delta methods (LSP_SERVER.md)
 vera builtins [--json]            # List the built-in function registry (no file needed)
 vera effects [--json]             # List the effect and ability registry (no file needed)
-vera errors [--json]              # List the diagnostic-code registry: E001–E702 + W001–W003 (no file needed)
+vera errors [--json]              # List the diagnostic-code registry: E001–E702 + W001–W004 (no file needed)
 pytest tests/ -v                  # Run the test suite
 ```
 

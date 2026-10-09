@@ -235,6 +235,9 @@ jobs:
       - name: Check every example runs trap-free or carries a skip property
         run: python scripts/check_examples_run.py
 
+      - name: Check every runtime-check claim against the checks the corpus compiles to (T2a)
+        run: python scripts/check_reconciliation.py
+
       - name: Check editor grammars and READMEs carry every built-in effect (#1156)
         run: python scripts/check_editor_grammars.py
 
