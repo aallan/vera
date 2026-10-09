@@ -854,7 +854,7 @@ class CallsStringsMixin:
         return instructions
 
     def _translate_float_to_string(
-        self, arg: ast.Expr, env: WasmSlotEnv,
+        self, arg: ast.Expr, env: WasmSlotEnv, at: ast.Node,
     ) -> list[str] | None:
         """Translate float_to_string(f) → String (i32_pair).
 
@@ -862,14 +862,26 @@ class CallsStringsMixin:
         Uses a 32-byte buffer.  Writes sign, integer digits, decimal
         point, then up to 6 fractional digits (trailing zeros trimmed,
         but at least one decimal digit kept so 42.0 stays "42.0").
+        *at* is the rendering's source node, which the truncation's check
+        is spanned at (see :meth:`_float_to_string_core`).
         """
         arg_instrs = self.translate_expr(arg, env)
         if arg_instrs is None:
             return None
-        return self._float_to_string_core(arg_instrs)
+        return self._float_to_string_core(arg_instrs, at)
 
-    def _float_to_string_core(self, arg_instrs: list[str]) -> list[str]:
-        """Float64 (f64) → decimal String from a value producer (#911)."""
+    def _float_to_string_core(
+        self, arg_instrs: list[str], at: ast.Node | None,
+    ) -> list[str]:
+        """Float64 (f64) → decimal String from a value producer (#911).
+
+        The integer part is taken with an ``i64.trunc_f64_s`` that traps by
+        itself on a finite magnitude of 2^63 or more (#1482), so that
+        instruction is a check, recorded at *at*: the source node of the
+        rendering, where the verifier records its ``float_to_int_domain``
+        obligation — the ``float_to_string(...)`` or ``show(...)`` call, or
+        the interpolated part.
+        """
         self.needs_alloc = True
 
         fval = self.alloc_local("f64")
@@ -984,9 +996,12 @@ class CallsStringsMixin:
         instructions.append(f"  local.set {pos}")
         instructions.append("end")
 
-        # Extract integer part: ival = i64.trunc_f64_s(fval)
+        # Extract integer part: ival = i64.trunc_f64_s(fval).  It traps at a
+        # magnitude of 2^63 or more (#1482), so it carries its record entry's
+        # marker (#1479), as a native division does.
         instructions.append(f"local.get {fval}")
-        instructions.append("i64.trunc_f64_s")
+        instructions.append("i64.trunc_f64_s" + self._record_check(
+            "wasm/calls_strings.py:_float_to_string_core", at))
         instructions.append(f"local.set {ival}")
 
         # Compute the fractional part NOW, before writing integer

@@ -481,6 +481,18 @@ TRAP_EMITTERS: dict[str, TrapEmitter] = _emitters(
         "wasm/calls_math.py:_translate_round", "float_conversion",
         ("float_to_int_domain",), "signal", "the conversion call",
     ),
+    # `float_to_string` takes the integer part it prints with an
+    # `i64.trunc_f64_s` that traps by itself on a finite magnitude of 2^63 or
+    # more (#1482, `KNOWN_TRAP_DEFECTS`).  The instruction is recorded as a
+    # check, so a trap there is read against the obligation the verifier
+    # records for the rendering, and never against the module's other checks
+    # of its kind.
+    TrapEmitter(
+        "wasm/calls_strings.py:_float_to_string_core", "float_conversion",
+        ("float_to_int_domain",), "native:i64.trunc_f64_s",
+        "the rendering: the `float_to_string(...)` or `show(...)` call, or "
+        "the interpolated part",
+    ),
     # --- contracts ------------------------------------------------------
     TrapEmitter(
         "codegen/contracts.py:_compile_preconditions", "contract_violation",
@@ -861,7 +873,10 @@ SAFE_NATIVE_SITES: tuple[NativeSite, ...] = (
 
 #: Natively trapping instructions a user program reaches that trap where
 #: the language says they must not.  Each names the issue that tracks it;
-#: an entry here is a known defect, not a design.
+#: an entry here is a known defect, not a design.  Each is still recorded as
+#: a check by its emitter, as a :data:`NATIVE_TRAP_SITES` entry is: a trap is
+#: read against the checks the module's record holds, so a site missing
+#: from it would be read as one of the others (`vera test --distrust`).
 KNOWN_TRAP_DEFECTS: tuple[NativeSite, ...] = (
     NativeSite(
         "wasm/calls_strings.py:_float_to_string_core", "i64.trunc_f64_s", 1,
@@ -869,6 +884,7 @@ KNOWN_TRAP_DEFECTS: tuple[NativeSite, ...] = (
         "more does not fit the i64 the digit loop runs over, so the total "
         "`float_to_string` traps, as float_conversion",
         kind="float_conversion",
+        emitter="wasm/calls_strings.py:_float_to_string_core",
     ),
 )
 
@@ -1095,7 +1111,10 @@ def _validate() -> None:
     for site in (*NATIVE_TRAP_SITES, *KNOWN_TRAP_DEFECTS):
         if site.kind not in TRAP_KINDS:
             raise ValueError(f"{site.site}: unknown trap kind {site.kind!r}")
-    for site in (*NATIVE_TRAP_SITES, *THROW_SITES):
+    # Every natively trapping site a program reaches is recorded by its
+    # emitter, so the per-module record holds every trap an obligation can
+    # describe — a known defect's included.
+    for site in (*NATIVE_TRAP_SITES, *KNOWN_TRAP_DEFECTS, *THROW_SITES):
         if site.emitter not in TRAP_EMITTERS:
             raise ValueError(f"{site.site}: unknown emitter {site.emitter!r}")
         if TRAP_EMITTERS[site.emitter].kind != site.kind:

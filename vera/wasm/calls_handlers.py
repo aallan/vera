@@ -88,7 +88,7 @@ class CallsHandlersMixin:
     }
 
     def _translate_show(
-        self, arg: ast.Expr, env: WasmSlotEnv,
+        self, arg: ast.Expr, env: WasmSlotEnv, call: ast.Expr,
     ) -> list[str] | None:
         """Translate show(x) to the appropriate to_string builtin.
 
@@ -96,6 +96,10 @@ class CallsHandlersMixin:
         - Int/Nat/Bool/Byte/Float64 → corresponding to_string call
         - String → identity (the string IS its own representation)
         - Unit → literal "unit"
+
+        *call* is the ``show(...)`` call itself: the source node each check
+        the rendering emits is spanned at (#1482), since the verifier
+        records a rendering's obligation there.
         """
         vera_type = self._infer_vera_type(arg)
         if vera_type is None:
@@ -143,6 +147,7 @@ class CallsHandlersMixin:
             desugared = ast.FnCall(
                 name=builtin, args=(arg,), span=arg.span,
             )
+            self._register_rendering_site(desugared, call)
             return self._translate_call(desugared, env)
 
         # Composite (#911): ADT / Tuple / Option / Result / Array.  Render
@@ -163,6 +168,9 @@ class CallsHandlersMixin:
         value_instrs = self.translate_expr(arg, env)
         if value_instrs is None:
             return None
+        # Every `@Float64` the structural render reaches is checked at the
+        # `show` call, where the verifier records the rendering (#1482).
+        self._register_rendering_site(arg, call)
         composite = self._show_value(param_type, value_instrs, arg)
         if composite is not None:
             return composite
@@ -912,7 +920,8 @@ class CallsHandlersMixin:
         if base == "Byte":
             return self._byte_to_string_core(value_instrs)
         if base == "Float64":
-            return self._float_to_string_core(value_instrs)
+            return self._float_to_string_core(
+                value_instrs, self._rendering_site(node))
         if base == "String":
             return value_instrs  # a String is its own representation
         if base == "Unit":

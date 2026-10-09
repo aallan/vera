@@ -22,8 +22,8 @@ What it can see, and what it cannot:
   class, not this one.
 - A trap is attributed by joining the check it fired at to an obligation
   record by exact span (`vera.tester._TrapIndex`).  Measured when this file
-  was introduced, over the 1,588 non-prelude checks the 219 programs compile:
-  1,325 join an obligation that way, 221 join none, and the 42 precondition
+  was introduced, over the 1,591 non-prelude checks the 219 programs compile:
+  1,328 join an obligation that way, 221 join none, and the 42 precondition
   checks are read rather than joined.  A trap at a check that joins nothing
   is `unattributed`, counted in the session line `tests/conftest.py` prints
   ("distrust corpus: ..."), and never asserted to be zero.  #1630's join in

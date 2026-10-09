@@ -832,6 +832,15 @@ class _TrapIndex:
     by side, a trap with no frame — cannot be pinned on either side, and is
     ``unattributed``: counted and said, never folded into either.
 
+    The rule holds only while the record holds every site that can raise a
+    trap an obligation describes: a trap at a site it omitted would be judged
+    by the checks it does hold, and a correct proof would read as refuted.
+    So every signalled check is recorded where it is emitted, and every
+    natively trapping instruction a program reaches names the emitter that
+    records it (``vera.trap_registry``'s ``NATIVE_TRAP_SITES`` and
+    ``KNOWN_TRAP_DEFECTS``, held to that at import) — the
+    ``float_to_string`` truncation of #1482 among them.
+
     Matched by kind, never by message (#1479).  A site message quotes the
     program's text — an assertion's source, an index expression, a contract
     clause — so matching on it would let the program decide what its own
@@ -893,15 +902,17 @@ class _TrapIndex:
         )
         checks = self._checks.get((fired_in, kind), [])
         if at_entry:
-            checks = [c for c in checks if not _is_prologue_check(c, decl)]
-            if not checks:
+            kept = [c for c in checks if not _is_prologue_check(c, decl)]
+            if checks and not kept:
+                # Only a prologue check of the kind is left to have fired.
                 _unattributed(trial, (
                     f"{kind} at the entry of '{decl.name}', whose arguments "
                     f"satisfy its precondition in the verifier's model and "
                     f"fail the compiled check of it"
                 ))
                 return
-        elif not checks:
+            checks = kept
+        if not checks:
             _unattributed(trial, (
                 f"{kind} in '{fired_in}', where the module records no check "
                 f"of that kind"

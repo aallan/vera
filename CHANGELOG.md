@@ -16,7 +16,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - The JSON envelope gains `distrust`, `summary.refuted` and `summary.unattributed`, plus each function's `proved` and each failure's `attribution` and `refutes`, only under the flag.  Default output is unchanged.
   - The repros of [#1587](https://github.com/aallan/vera/issues/1587) and [#1555](https://github.com/aallan/vera/issues/1555) are refuted.  [#1598](https://github.com/aallan/vera/issues/1598)'s `INT_MIN / -1` is unattributed, since that check has no obligation.
   - `tests/test_distrust_corpus.py` runs the mode over every example and every `run`-level conformance program in the ordinary test job, with `VERA_DISTRUST_TRIALS` trials per function (default 5).  173 proofs run and none is refuted.
-  - The exact-span join reaches 1,325 of the 1,588 non-prelude checks the corpus compiles.  Joining through the reconciliation's relations instead is [#1633](https://github.com/aallan/vera/issues/1633).
+  - A trap is judged only by the checks the module's record holds, so every site that can raise a trap of a kind an obligation describes must be in it.  `float_to_string`'s truncation, which traps on a finite magnitude of 2^63 or more ([#1482](https://github.com/aallan/vera/issues/1482)), is now a recorded check (`CompileResult.emitted_checks`), spanned where the verifier records the rendering's `float_to_int_domain` obligation: at the call, at a `show`, or at the interpolated part.  Unrecorded, a trap there was blamed on the function's other checks of its kind, and a correct proof beside it was refuted.
+  - The exact-span join reaches 1,328 of the 1,591 non-prelude checks the corpus compiles.  Joining through the reconciliation's relations instead is [#1633](https://github.com/aallan/vera/issues/1633).
 
 ### Changed
 

@@ -41,9 +41,10 @@ from vera.errors import ERROR_CODES
 from vera.introspect import errors_payload
 from vera.obligations.core import ProofObligation
 from vera.parser import parse
+from vera.codegen import compile as codegen_compile
 from vera.tester import FunctionTestResult, TestResult, TrialResult, _TrapIndex
 from vera.tester import test as run_test
-from vera.trap_registry import EmittedCheck
+from vera.trap_registry import KNOWN_TRAP_DEFECTS, TRAP_EMITTERS, EmittedCheck
 from vera.transform import transform
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -82,6 +83,20 @@ def _run(
         alias_env=artifacts.alias_env,
         **extra,
     )
+
+
+def _checks(source: str) -> list[EmittedCheck]:
+    """The module's record of its checks, compiled as `_run` compiles it."""
+    program = transform(parse(source, file=_FILE))
+    _, artifacts = typecheck_with_artifacts(program, source, file=_FILE)
+    result = codegen_compile(
+        program, source=source, file=_FILE,
+        expr_semantic_types=artifacts.expr_semantic_types,
+        expr_target_types=artifacts.expr_target_types,
+        module_artifacts=artifacts.module_artifacts,
+    )
+    assert result.ok, [d.description for d in result.diagnostics]
+    return result.emitted_checks
 
 
 def _fn(result: TestResult, name: str) -> FunctionTestResult:
@@ -803,6 +818,142 @@ class TestUnattributedTraps:
 
 
 # =====================================================================
+# A trap is judged only by checks the record holds
+# =====================================================================
+
+# The class: a trap of a kind some obligation describes, at a site the
+# module's record of its checks omits.  The attribution judges a trap by the
+# record's checks of its kind in the function it fired in, so a site missing
+# from the record is blamed on whichever checks are there, and a proved one
+# reads as refuted.  The registry enumerates the natively trapping
+# instructions a program reaches that are not checks the language means to
+# make (`KNOWN_TRAP_DEFECTS`); each must be recorded by an emitter of its own.
+#
+# The one entry today is #1482: `float_to_string` takes the integer part it
+# prints with an `i64.trunc_f64_s`, which traps on a finite magnitude of 2^63
+# or more.  The verifier records the rendering's `float_to_int_domain`
+# obligation (Tier 3 for a symbolic value) at the call, at a `show`, and at an
+# interpolated part, so the check is spanned there too.  Each rendering is
+# placed at line 6, column 17 of `_RENDER`, and its trials (all above 1e19,
+# by the precondition) trap.
+
+_RENDER = """\
+public fn render(@Float64 -> @Int)
+  requires(@Float64.0 > 10000000000000000000.0)
+  ensures(@Int.result == 1)
+  effects(pure)
+{{
+  let @String = {rendering};
+  {tail}
+}}
+"""
+
+#: Every way a program reaches the truncation: the rendering, and the
+#: expression the verifier's record of it quotes.
+_RENDERINGS: dict[str, tuple[str, str]] = {
+    "float_to_string": (
+        "float_to_string(@Float64.0)", "float_to_string(@Float64.0)"),
+    "show": ("show(@Float64.0)", "show(@Float64.0)"),
+    "show_of_a_composite": ("show(Some(@Float64.0))", "show(<expr>)"),
+    "interpolation": ('"x = \\(@Float64.0)"', "@Float64.0"),
+}
+
+#: A program per known trap defect that reaches its site beside a proved
+#: check of the same kind (`float_to_int(1.5)`, line 7), keyed by the
+#: registry's own site name: a defect entered without one fails
+#: `test_every_known_trap_defect_has_a_program`.
+_DEFECT_PROGRAMS: dict[str, str] = {
+    "wasm/calls_strings.py:_float_to_string_core": _RENDER.format(
+        rendering="float_to_string(@Float64.0)", tail="float_to_int(1.5)"),
+}
+
+
+def _site_id(site: object) -> str:
+    return str(getattr(site, "site", site))
+
+
+class TestTrapsAtSitesTheRecordOmitted:
+    """A trap at a known trap defect joins its own check, never another's."""
+
+    def test_every_known_trap_defect_has_a_program(self) -> None:
+        assert set(_DEFECT_PROGRAMS) == {s.site for s in KNOWN_TRAP_DEFECTS}
+
+    @pytest.mark.parametrize("site", KNOWN_TRAP_DEFECTS, ids=_site_id)
+    def test_a_known_trap_defect_is_recorded_by_its_own_emitter(
+        self, site: Any,
+    ) -> None:
+        """The registry names the emitter that records the site, its row
+        states the site's kind and an obligation, and compiling a program
+        that reaches the site lists that emitter's check."""
+        assert site.emitter is not None, (
+            f"{site.site}: a natively trapping site a program reaches must "
+            "name the emitter that records it")
+        row = TRAP_EMITTERS[site.emitter]
+        assert row.kind == site.kind
+        assert row.obligations, row
+        assert row.per_site
+        assert site.instruction in row.via.removeprefix("native:").split()
+        recorded = [c for c in _checks(_DEFECT_PROGRAMS[site.site])
+                    if c.emitter == site.emitter]
+        assert [c.function for c in recorded] == ["render"], recorded
+
+    @pytest.mark.parametrize("site", KNOWN_TRAP_DEFECTS, ids=_site_id)
+    def test_a_trap_at_a_known_defect_refutes_no_proof(self, site: Any) -> None:
+        """The reviewer's repro: the trap is the truncation, and the only
+        other check of its kind in the function is a proved one.  Judged by
+        that one alone, a correct proof read as refuted."""
+        result = _run(_DEFECT_PROGRAMS[site.site], distrust=True, trials=5)
+        f = _fn(result, "render")
+        assert f.category == "tested", (f.category, f.reason)
+        assert result.summary.refuted == 0
+        assert "E703" not in _codes(result)
+        assert f.trials_failed == f.trials_run == 5
+        for trial in f.failures:
+            assert (trial.status, trial.trap_kind, trial.refutes) == (
+                "unattributed", site.kind, [])
+            assert "6:17 (not proved)" in trial.attribution, trial.attribution
+            assert "7:3 (proved)" in trial.attribution, trial.attribution
+
+    @pytest.mark.parametrize("path", list(_RENDERINGS))
+    def test_each_rendering_joins_the_record_of_its_obligation(
+        self, path: str,
+    ) -> None:
+        """Alone, the truncation is the runtime check of the rendering's
+        Tier-3 obligation: a guard firing on an input the contract admits,
+        reported as a failing trial, at the site the verifier recorded."""
+        rendering, quoted = _RENDERINGS[path]
+        result = _run(_RENDER.format(rendering=rendering, tail="1"),
+                      distrust=True, trials=5)
+        f = _fn(result, "render")
+        assert f.category == "tested", (f.category, f.reason)
+        assert f.trials_failed == f.trials_run == 5
+        for trial in f.failures:
+            assert (trial.status, trial.trap_kind) == ("error", "float_conversion")
+            assert trial.attribution == (
+                "the runtime check of an obligation the verifier did not "
+                "prove: the float_to_int_domain obligation on "
+                f"`{quoted}` (line 6)"), trial.attribution
+        s = result.summary
+        assert (s.refuted, s.unattributed, s.failed) == (0, 0, 1)
+
+    @pytest.mark.parametrize("path", list(_RENDERINGS))
+    def test_each_rendering_beside_a_proved_check_is_unattributed(
+        self, path: str,
+    ) -> None:
+        rendering, _ = _RENDERINGS[path]
+        result = _run(
+            _RENDER.format(rendering=rendering, tail="float_to_int(1.5)"),
+            distrust=True, trials=5)
+        f = _fn(result, "render")
+        assert f.category == "tested", (f.category, f.reason)
+        assert result.summary.refuted == 0
+        for trial in f.failures:
+            assert trial.status == "unattributed"
+            assert "(not proved)" in trial.attribution
+            assert "7:3 (proved)" in trial.attribution
+
+
+# =====================================================================
 # The attribution rule, cell by cell
 # =====================================================================
 
@@ -968,6 +1119,36 @@ class TestAttributionEdges:
         assert (trial.status, trial.refutes) == ("error", [])
         assert trial.attribution == (
             f"no obligation describes a trap of kind {kind or 'unknown'}")
+
+    @pytest.mark.parametrize("position", ["entry", "nested"])
+    def test_no_check_of_the_kind_says_so_wherever_it_fired(
+        self, position: str,
+    ) -> None:
+        """Nothing of the trap's kind is recorded in the function: that is
+        the reason, at the trial's own call as on a nested one.  Before the
+        fix the entry case gave the precondition reason, which claims a
+        check the function does not hold."""
+        trial = _trap(_ENTRY if position == "entry" else _NESTED)
+        trial.status, trial.trap_kind = "error", "float_conversion"
+        _TrapIndex([], []).attribute(trial, _matrix_decl())
+        assert (trial.status, trial.refutes) == ("unattributed", [])
+        assert trial.attribution == (
+            "trap not attributable to an obligation: float_conversion in "
+            "'f', where the module records no check of that kind")
+
+    def test_the_precondition_reason_needs_a_prologue_check_set_aside(
+        self,
+    ) -> None:
+        """The precondition reason is given only when the entry filter
+        removed a candidate: here the function's own `requires` check."""
+        pre, records = _cell("precondition", 10)
+        trial = _trap(_ENTRY)
+        _TrapIndex([pre], records).attribute(trial, _matrix_decl())
+        assert trial.status == "unattributed"
+        assert trial.attribution == (
+            "trap not attributable to an obligation: contract_violation at "
+            "the entry of 'f', whose arguments satisfy its precondition in "
+            "the verifier's model and fail the compiled check of it")
 
     def test_a_proved_check_of_another_function_does_not_count(self) -> None:
         check, records = _cell("proved", 10)
