@@ -95,7 +95,7 @@ Where the verifier records one obligation for a whole value it cannot see
 into (an opaque argument of a tuple-typed parameter), the join can match
 that record with any of the value's component checks, and cannot tell a
 partial set of them from a whole one: that needs the set of guarded
-components, which only code generation's decomposition states.
+components, which only code generation's decomposition states (#1642).
 
 Scope
 -----
