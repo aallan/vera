@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **One lock update carries the six open dependency bumps**: `wasmtime` 49.0.0, `ruff` 0.16.10, `mypy` 2.4.0 and `virtualenv` 21.7.13 in `uv.lock`, and `vscode-languageclient` 10.1.2 and `brace-expansion` 5.0.12 in the VS Code extension, which moves to **0.2.3**.  The `brace-expansion` bump closes [GHSA-6j4f-fj2g-mc7p](https://github.com/advisories/GHSA-6j4f-fj2g-mc7p), a high-severity denial of service through uncontrolled recursion in `parseCommaParts`; it is a runtime dependency bundled into the shipped extension, so 0.2.2 carries the vulnerable version until 0.2.3 is published.  Each lock change is identical to the Dependabot PR it replaces (#1616, #1618, #1619, #1620, #1621, #1622), so every bump has already passed CI on its own; landing them as one change costs one CI run instead of six and no lockfile rebases.
+
 ## [0.2.0] - 2026-09-28
 
 ### Highlights
