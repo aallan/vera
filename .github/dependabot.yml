@@ -25,6 +25,13 @@ updates:
     groups:
       python:
         patterns: ["*"]
+    # z3-solver majors are held for the bake period #1126 records: the
+    # grouped update would otherwise bring 5.x in with the week's other
+    # bumps.  This rule comes out when the bake period ends, and #1126
+    # says how 5.x is then brought in and checked.
+    ignore:
+      - dependency-name: "z3-solver"
+        update-types: ["version-update:semver-major"]
 
   # VS Code extension dependencies (npm).
   # Without this entry the extension's tree was only ever updated when
