@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.3
+
+Security fix and a language-client bump.
+
+- `brace-expansion` 5.0.9 → 5.0.12, closing
+  [GHSA-6j4f-fj2g-mc7p](https://github.com/advisories/GHSA-6j4f-fj2g-mc7p),
+  a high-severity denial of service through uncontrolled recursion in
+  `parseCommaParts`. It is a runtime dependency (`vscode-languageclient`
+  → `minimatch` → `brace-expansion`) bundled into `dist/extension.js`,
+  so 0.2.2 ships the vulnerable version; upgrade to 0.2.3.
+- `vscode-languageclient` 10.1.1 → 10.1.2 (LSP protocol 3.18.4).
+
 ## 0.2.2
 
 Grammar fix and a language-client bump, released alongside Vera 0.2.0.
