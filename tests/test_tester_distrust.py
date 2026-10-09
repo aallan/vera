@@ -1404,6 +1404,10 @@ _EXERCISE_CELLS: dict[str, tuple[str, bool, bool]] = {
     "own_precondition": ("f", False, False),
     "own_refined_parameter_guard": ("f", False, False),
     "callee_precondition": ("g", False, True),
+    # A span holding a proved and an unproved obligation of the kind: the
+    # check may stand for the proved one, so a run can test it.
+    "mixed_in_f": ("f", False, True),
+    "mixed_in_callee": ("g", False, True),
     "prelude_precondition": ("g", True, True),
     "in_an_unreached_function": ("h", False, False),
 }
@@ -1434,6 +1438,7 @@ def test_what_lets_a_run_test_a_proof(cell: str) -> None:
     else:
         state = ("proved" if cell.startswith("proved")
                  else "not_proved" if cell.startswith("not_proved")
+                 else "mixed" if cell.startswith("mixed")
                  else "proved" if cell == "in_an_unreached_function"
                  else "unjoined")
         base, records = _cell(state, 10)
@@ -1448,10 +1453,9 @@ def test_what_lets_a_run_test_a_proof(cell: str) -> None:
 def test_the_exercise_matrix_covers_every_reading() -> None:
     """Every way `_TrapIndex._read` can read a check, in the function and in
     a callee, plus the prologue and a function the run never reaches."""
-    assert {"proved", "not_proved", "unjoined", "precondition"} <= {
-        part for cell in _EXERCISE_CELLS for part in (
-            "proved", "not_proved", "unjoined", "precondition")
-        if part in cell}
+    readings = ("proved", "not_proved", "unjoined", "precondition", "mixed")
+    assert set(readings) <= {
+        part for cell in _EXERCISE_CELLS for part in readings if part in cell}
     assert {where for where, _, _ in _EXERCISE_CELLS.values()} == {
         "f", "g", "h"}
 
@@ -1960,7 +1964,21 @@ def _cell(state: str, line: int) -> tuple[EmittedCheck, list[ProofObligation]]:
     real module: the function's own `requires`, whose `verified` is the
     verifier's bookkeeping for a clause it assumes, not a proof that any call
     satisfies it.  That record must never make the check read as proved.
+
+    A ``mixed`` check stands at a span the verifier recorded two obligations
+    of its kind at, one proved and one not — the per-site ordinal keeps
+    several apart at one node (each component of a destructure) — so which of
+    them the check is the runtime half of is not known.
     """
+    if state == "mixed":
+        check = EmittedCheck(_POST, "contract_violation", ("ensures",), "f",
+                             line, 3, line, 9, _M_FILE, False)
+        return check, [
+            ProofObligation(
+                fn_name="f", kind="ensures", expr_text=f"clause {line} #{n}",
+                status=status, line=line, column=3, file=_M_FILE)  # type: ignore[arg-type]
+            for n, status in enumerate(("verified", "tier3"))
+        ]
     if state == "precondition":
         return EmittedCheck(
             _PRE, "contract_violation", ("requires", "call_pre"),
@@ -1988,9 +2006,11 @@ def _trap(frames: list[tuple[str, bool]]) -> TrialResult:
 _ENTRY = [("f", False)]
 _NESTED = [("f", False), ("caller", False)]
 
-# Every composition of one or two candidate checks over the four ways a check
+# Every composition of one or two candidate checks over the five ways a check
 # can read, with the verdict at the trial's own call and on a nested call.
-# Written out rather than computed, so the table is the specification.
+# Written out rather than computed, so the table is the specification.  A
+# `mixed` check is never a refutation and never a plain guard: the proved
+# obligation at its span may be the one it checks, or the unproved one.
 _VERDICTS: dict[tuple[str, ...], tuple[str, str]] = {
     ("proved",): ("refuted", "refuted"),
     ("not_proved",): ("guard", "guard"),
@@ -2006,6 +2026,12 @@ _VERDICTS: dict[tuple[str, ...], tuple[str, str]] = {
     ("unjoined", "unjoined"): ("unattributed", "unattributed"),
     ("unjoined", "precondition"): ("unattributed", "unattributed"),
     ("precondition", "precondition"): ("unattributed", "unattributed"),
+    ("mixed",): ("unattributed", "unattributed"),
+    ("proved", "mixed"): ("unattributed", "unattributed"),
+    ("not_proved", "mixed"): ("unattributed", "unattributed"),
+    ("unjoined", "mixed"): ("unattributed", "unattributed"),
+    ("precondition", "mixed"): ("unattributed", "unattributed"),
+    ("mixed", "mixed"): ("unattributed", "unattributed"),
 }
 
 
@@ -2047,8 +2073,8 @@ def test_attribution_matrix(states: tuple[str, ...], position: str) -> None:
 
 
 def test_the_matrix_covers_every_composition() -> None:
-    """No composition of up to two of the four readings is missing."""
-    readings = ["proved", "not_proved", "unjoined", "precondition"]
+    """No composition of up to two of the five readings is missing."""
+    readings = ["proved", "not_proved", "unjoined", "precondition", "mixed"]
     compositions = {(a,) for a in readings} | {
         tuple(sorted((a, b), key=readings.index))
         for a in readings for b in readings}
@@ -2145,14 +2171,22 @@ class TestAttributionEdges:
         assert trial.status == "unattributed"
         assert "10:3 (no obligation recorded)" in trial.attribution
 
-    def test_one_unproved_clone_at_the_span_is_enough_to_withhold(self) -> None:
+    def test_one_unproved_record_at_the_span_withholds_and_attributes_nothing(
+        self,
+    ) -> None:
+        """Two records of the check's kind at its span, one proved and one
+        not: the refutation is withheld, and the trap is not read as the
+        unproved one's guard either, since the check may be the proved
+        one's runtime half."""
         check, (proved,) = _cell("proved", 10)
         clone = ProofObligation(fn_name="f", kind="ensures", expr_text="clause 10",
                                 status="timeout", line=10, column=3, file=_M_FILE)
         trial = _trap(_ENTRY)
         _TrapIndex([check], [proved, clone]).attribute(trial, _matrix_decl())
-        assert (trial.status, trial.refutes) == ("fail", [])
-        assert "did not prove" in trial.attribution
+        assert (trial.status, trial.refutes) == ("unattributed", [])
+        assert trial.attribution == (
+            "trap not attributable to an obligation: contract_violation at "
+            "10:3 (proved and not proved) in 'f'")
 
     def test_a_prelude_check_never_joins(self) -> None:
         check = EmittedCheck(_POST, "contract_violation", ("ensures",), "f",

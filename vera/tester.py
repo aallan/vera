@@ -945,7 +945,8 @@ class _TrapIndex:
     the trap is a Tier-3 guard doing its job — a program finding, reported
     exactly as a Tier-3 function's failing trial is.  Anything in between —
     a check with no obligation at its span, proved and unproved checks side
-    by side, a trap with no frame — cannot be pinned on either side, and is
+    by side, a check whose span holds a proved and an unproved obligation of
+    its kind, a trap with no frame — cannot be pinned on either side, and is
     ``unattributed``: counted and said, never folded into either.
 
     The rule holds only while the record holds every site that can raise a
@@ -1072,8 +1073,16 @@ class _TrapIndex:
     def _read(
         self, check: EmittedCheck,
     ) -> tuple[str, list[ProofObligation]]:
-        """One check's standing: ``proved`` (with the records), ``not
-        proved`` (with the unproved records), or why it joins nothing."""
+        """One check's standing: ``proved`` or ``not proved`` (with the
+        records), ``proved and not proved`` when its span holds both, or why
+        it joins nothing.
+
+        A span can hold several obligations of one kind — the verifier's
+        per-site ordinal keeps them apart at one node, as for each component
+        of a destructure — and the check is the runtime half of one of them,
+        which the record does not say.  When some are proved and some not,
+        the check is neither a proof's nor a guard's, and every record is
+        kept (PR #1634 review)."""
         if check.emitter == _PRECONDITION_EMITTER:
             return "a call's precondition", []
         records = [] if check.prelude else [
@@ -1085,7 +1094,9 @@ class _TrapIndex:
             return "no obligation recorded", []
         if all(r.status == "verified" for r in records):
             return "proved", records
-        return "not proved", [r for r in records if r.status != "verified"]
+        if all(r.status != "verified" for r in records):
+            return "not proved", records
+        return "proved and not proved", records
 
     def proof_clauses(
         self, decl: ast.FnDecl, file: str | None,

@@ -216,8 +216,9 @@ is unattributed.  The verdict is one of three:
   prove.  It fired on an input the contract admits, which is a finding about
   the program, reported as a failing trial exactly as for a Tier-3 function.
 - **Unattributed.** Neither holds: proved and unproved checks of that kind
-  side by side, a check with no obligation recorded at its span, or a trap
-  with no frame.  It is marked `unattributed` and counted
+  side by side, a check whose span holds both a proved and an unproved
+  obligation of its kind, a check with no obligation recorded at its span, or
+  a trap with no frame.  It is marked `unattributed` and counted
   (`summary.unattributed`, and the `Proofs:` line), rather than folded into
   either.
 
