@@ -82,6 +82,23 @@ from vera.runtime.traps import WasmTrapError
 from vera.skip import STATE_CLAUSE_INLINE_DEPTH_CAP
 from vera.verifier import VerifyResult, verify
 
+# A generated class instrument (tests/matrix_sample.py): a pull request runs a
+# sample of its parametrised cells, and all of them when it changes this file or
+# a module that decides its class, here what the checker accepts and code
+# generation must build: unresolved names, a module's own imports, a handler
+# clause's operations, nested generic calls and quantifier types.
+pytestmark = pytest.mark.matrix(
+    decides=[
+        "vera/checker/resolution.py",
+        "vera/checker/modules.py",
+        "vera/checker/control.py",
+        "vera/checker/expressions.py",
+        "vera/module_view.py",
+        "vera/codegen/modules.py",
+        "vera/monomorphize.py",
+    ],
+)
+
 _ROOT = Path(__file__).resolve().parent.parent
 _GRAMMAR = _ROOT / "vera" / "grammar.lark"
 

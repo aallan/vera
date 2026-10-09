@@ -14,6 +14,7 @@ Vera reads a small set of `VERA_*` environment variables.  This document is the 
 | [`VERA_INFERENCE_MODEL`](#explicit-provider--model-overrides) | Override the provider's default model | runtime | optional |
 | [`VERA_DB_URL`](#vera_db_url) | Database connection for the `DB` effect | runtime | optional (defaults to `sqlite::memory:`) |
 | [`VERA_JS_COVERAGE`](#vera_js_coverage) | Opt-in V8 coverage during browser-parity tests | dev / CI | optional |
+| [`VERA_MATRIX_CHANGED`](#vera_matrix_changed) | The files a change touches, one per line; a class-instrument matrix runs every cell, not its sample, when the list names its file or one of its deciding modules | dev / CI | optional |
 | [`VERA_Z3_TIMEOUT_MS`](#vera_z3_timeout_ms) | Per-query Z3 budget in milliseconds — raises or lowers the Tier 1 / Tier 3 boundary | verify / test / language server | optional (defaults to `10000`) |
 | [`VERA_EAGER_GC`](#vera_eager_gc) | Force `$gc_collect` on every allocation — debugging knob for GC-rooting bugs | compile-time (dev) | optional |
 | [`VERA_GC_CHECK_MARKS`](#vera_gc_check_marks) | Trap if a GC mark store targets an address that is not an object body — debugging knob for conservative-scan false positives | compile-time (dev) | optional |
@@ -70,6 +71,16 @@ VERA_JS_COVERAGE=1 pytest tests/test_browser.py -v
 ```
 
 CI sets this for the browser-parity job; local runs typically don't need it.  See [TESTING.md](TESTING.md) for the broader test layout.
+
+## `VERA_MATRIX_CHANGED`
+
+The files a change touches, as paths from the repository root, one per line.  By default the test suite runs a stratified sample of each class-instrument matrix (the test files marked `matrix`); a matrix runs every cell instead when this variable names its file or one of the modules its marker declares as deciding its class:
+
+```bash
+VERA_MATRIX_CHANGED=vera/narrowing.py pytest tests/
+```
+
+On a pull request CI sets it for the test matrix from the `plan` job's `git diff --name-only`: the files under `vera/` and the `tests/test_*.py` files the pull request changes since its merge base.  Without it every matrix runs its sample; `--matrix=full` runs every cell and `--matrix=sample` the sample whatever it says.  Phase: dev / CI (read when pytest collects the suite).  See [TESTING.md](TESTING.md) § Where an instrument runs.
 
 ## `VERA_Z3_TIMEOUT_MS`
 

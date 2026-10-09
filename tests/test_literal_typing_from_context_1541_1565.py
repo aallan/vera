@@ -49,6 +49,20 @@ from vera.codegen.api import WasmTrapError
 from vera.parser import parse_to_ast
 from vera.verifier import verify
 
+# A generated class instrument (tests/matrix_sample.py): a pull request runs a
+# sample of its parametrised cells, and all of them when it changes this file or
+# a module that decides its class, here the checker's typing of a literal from
+# its context, and the widening of a `Nat` an `Int` operation reads.
+pytestmark = pytest.mark.matrix(
+    decides=[
+        "vera/checker/resolution.py",
+        "vera/checker/expressions.py",
+        "vera/checker/calls.py",
+        "vera/types.py",
+        "vera/narrowing.py",
+    ],
+)
+
 _ID = """private forall<T> fn id(@T -> @T)
   requires(true)
   ensures(true)

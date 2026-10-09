@@ -22,21 +22,26 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Whether a push raised [project].version: the release-mode rule of
-  # scripts/check_doc_counts.py (#1536), asked of the commit before the
-  # push.  The test matrix reads the answer.  On a pull request or the
-  # nightly run its steps do not run, and the job finishes in seconds.
+  # What the test matrix reads.  On a push, whether it raised
+  # [project].version: the release-mode rule of scripts/check_doc_counts.py
+  # (#1536), asked of the commit before the push.  On a pull request, the
+  # files it changes that a class-instrument matrix can be decided by, so a
+  # matrix whose file or deciding module changed runs every cell
+  # (tests/matrix_sample.py).  On the nightly run its steps do not run, and
+  # the job finishes in seconds.
   plan:
     permissions:
       contents: read
     runs-on: ubuntu-latest
     outputs:
       release: ${{ steps.release.outputs.release }}
+      changed: ${{ steps.changed.outputs.changed }}
     steps:
       - uses: actions/checkout@v7
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
         with:
-          # The commit before the push, whose pyproject.toml is compared.
+          # The commit before the push, whose pyproject.toml is compared, or
+          # the merge base a pull request's changes are listed from.
           fetch-depth: 0
           persist-credentials: false
 
@@ -50,6 +55,24 @@ jobs:
         id: release
         if: github.event_name == 'push'
         run: python scripts/check_doc_counts.py --print-release-mode "${{ github.event.before }}" >> "$GITHUB_OUTPUT"
+
+      # The pull request's own changes, from its merge base (three dots),
+      # not what main has gained since it branched.  Only the paths a matrix
+      # can be decided by, the compiler and the test files, which keeps the
+      # list far below the 32,767 characters an environment variable can
+      # hold on Windows.  The delimiter is random, so no file name can end
+      # the value early.
+      - name: Which files does this pull request change?
+        id: changed
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          delimiter="changed_$(openssl rand -hex 16)"
+          echo "changed<<$delimiter" >> "$GITHUB_OUTPUT"
+          git diff --name-only "$BASE_SHA...$HEAD_SHA" -- vera/ 'tests/test_*.py' >> "$GITHUB_OUTPUT"
+          echo "$delimiter" >> "$GITHUB_OUTPUT"
 
   test:
     needs: plan
@@ -114,8 +137,15 @@ jobs:
 
       # Uninstrumented on every cell: the coverage job measures coverage.
       # -n auto runs tests in parallel across CPU cores via pytest-xdist.
+      # A pull request runs a weekly-seeded stratified sample of each
+      # class-instrument matrix (the files marked `matrix`,
+      # tests/matrix_sample.py), and every cell of one whose file or
+      # deciding module it changes, from the plan job's list; the release
+      # push and the nightly run run every cell.
       - name: Run tests
-        run: pytest -v -n auto
+        env:
+          VERA_MATRIX_CHANGED: ${{ needs.plan.outputs.changed }}
+        run: pytest -v -n auto ${{ github.event_name != 'pull_request' && '--matrix=full' || '' }}
 
   coverage:
     if: github.event_name == 'push'
@@ -142,7 +172,7 @@ jobs:
       - name: Run tests with coverage
         env:
           COVERAGE_CORE: sysmon
-        run: pytest -v -n auto --cov=vera --cov-report=term-missing --cov-report=xml --cov-fail-under=80
+        run: pytest -v -n auto --cov=vera --cov-report=term-missing --cov-report=xml --cov-fail-under=80 --matrix=full
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
