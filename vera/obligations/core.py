@@ -166,6 +166,16 @@ class ProofObligation:
     #: same name, so hashing it would split cache entries without
     #: distinguishing anything.
     owner: str = ""
+    #: Where the span ``line``/``column`` start ENDS: the node the record is
+    #: located at, so a consumer can find that node rather than every node
+    #: that starts at the same position.  The reconciliation join
+    #: (:mod:`vera.reconcile`) needs it: an expression and its first operand
+    #: start together, and only the end tells them apart.  Outside
+    #: `content_key`, like `owner`: the start and the file already identify
+    #: the obligation, so hashing the end would split nothing.  ``0`` for a
+    #: record built outside a verifier run.
+    end_line: int = 0
+    end_column: int = 0
 
     def content_key(self) -> str:
         """Stable identity digest for this obligation.

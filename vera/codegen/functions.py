@@ -979,6 +979,7 @@ class FunctionCompilationMixin:
                 and ctx._boundary_base(decl.return_type) == "Nat"
                 and self._refinement_guard_parts(decl.return_type) is None):
             nat_leaf_ids = ctx._collect_narrowing_return_leaves(decl.body)
+            self._record_unguarded_return_leaves(ctx)
         ctx._nat_return_leaf_ids = nat_leaf_ids
 
         # #820 FIX-1 — a @Nat arm of a heterogeneous @Int-join if/match is

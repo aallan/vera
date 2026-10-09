@@ -50,6 +50,8 @@ vera verify file.vera             # Type-check + verify contracts via Z3
 vera verify --json file.vera      # Verify with JSON output (for parsing)
 vera verify --timeout-ms 60000 file.vera  # Per-query Z3 budget in ms (default
                                   #   10000; env VERA_Z3_TIMEOUT_MS)
+vera verify --reconcile file.vera # Also compile, and check each Tier 3 claim has
+                                  #   its check (E541) and each check a record (W004)
 vera compile file.vera                    # Compile to .wasm binary
 vera compile --wat file.vera              # Print WAT text (human-readable WASM)
 vera compile --target browser file.vera   # Compile + emit browser bundle
@@ -66,7 +68,7 @@ vera version                      # Print the installed version (also --version,
 vera lsp                          # Serve LSP over stdio (needs the [lsp] extra; see LSP_SERVER.md)
 vera builtins [--json]            # List the built-in function registry (no file needed)
 vera effects [--json]             # List the effect and ability registry (no file needed)
-vera errors [--json]              # List the diagnostic-code registry: E001–E702 + W001–W003 (no file needed)
+vera errors [--json]              # List the diagnostic-code registry: E001–E702 + W001–W004 (no file needed)
 ```
 
 See [TOOLCHAIN.md](TOOLCHAIN.md) for the CLI cookbook — driving the toolchain to write, verify, test, run, and debug Vera, including the `builtins`/`effects`/`errors` introspection commands.
@@ -114,7 +116,7 @@ For machine-parseable errors, use the `--json` flag:
 
 ### Error codes
 
-Diagnostics carry stable codes (errors `E001`–`E702`, warnings `W001`–`W003`); a few still carry none ([#1490](https://github.com/aallan/vera/issues/1490)). Common codes:
+Diagnostics carry stable codes (errors `E001`–`E702`, warnings `W001`–`W004`); a few still carry none ([#1490](https://github.com/aallan/vera/issues/1490)). Common codes:
 
 | Code | Meaning |
 |------|---------|
