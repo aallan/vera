@@ -52,15 +52,6 @@ REPO = "https://github.com/aallan/vera"
 RAW = "https://raw.githubusercontent.com/aallan/vera/main"
 
 
-def _version() -> str:
-    """Read the current version from vera/__init__.py."""
-    init = (ROOT / "vera" / "__init__.py").read_text(encoding="utf-8")
-    m = re.search(r'__version__\s*=\s*"([^"]+)"', init)
-    if not m:
-        raise RuntimeError("Cannot find __version__ in vera/__init__.py")
-    return m.group(1)
-
-
 @cache
 def _count_examples() -> int:
     """Count .vera files in examples/."""
@@ -80,7 +71,7 @@ def _count_conformance() -> int:
 # ── llms.txt ────────────────────────────────────────────────────────
 
 
-def build_llms_txt(version: str) -> str:
+def build_llms_txt() -> str:
     """Build the curated llms.txt index."""
     n_examples = _count_examples()
     n_conformance = _count_conformance()
@@ -104,7 +95,8 @@ neither proved nor guarded is disclosed (#1607 is a contract that is not). \
 All side effects (IO, Http, HttpServer, State, Exceptions, Async, Inference, \
 DB, Random, Diverge) are tracked in the type system via algebraic effects.
 
-Current version: {version}. The reference compiler is written in Python. \
+The reference compiler is written in Python; its releases are listed on \
+[GitHub]({REPO}/releases) and [PyPI](https://pypi.org/project/veralang/). \
 Install the `veralang` distribution from PyPI, or use `pip install -e ".[dev]"` \
 from the repository — the recommended route for agents, since it includes the \
 examples, conformance programs and specification the language reference \
@@ -257,7 +249,7 @@ def _abs_links(text: str) -> str:
     return "".join(parts_inner)
 
 
-def build_llms_full_txt(version: str) -> str:
+def build_llms_full_txt() -> str:
     """Compile core language documentation into a single markdown file.
 
     Includes: language reference (SKILL.md), agent instructions (AGENTS.md), the language-server manual (LSP_SERVER.md),
@@ -287,9 +279,9 @@ def build_llms_full_txt(version: str) -> str:
     parts.append(
         "This file contains the core Vera language documentation — "
         "language reference, agent instructions, FAQ, error codes, and "
-        f"formal grammar — compiled into a single document. Version {version}. "
-        "For the full documentation index including the 14-chapter "
-        "specification and supplementary docs, see llms.txt."
+        "formal grammar — compiled into a single document. For the full "
+        "documentation index, including the specification and the "
+        "supplementary docs, see llms.txt."
     )
     parts.append("")
 
@@ -315,8 +307,8 @@ def build_llms_full_txt(version: str) -> str:
     # Error codes
     error_lines = [
         "## Error Code Reference\n",
-        "Diagnostics carry stable codes: errors E001-E703 and warnings "
-        "W001-W004. Codes are grouped by compiler phase:\n",
+        "Diagnostics carry stable codes, grouped by compiler phase; the list "
+        "after the table is the registry itself, read from vera/errors.py:\n",
         "| Range | Phase |",
         "|-------|-------|",
         "| E001-E009 | Parse errors |",
@@ -331,7 +323,7 @@ def build_llms_full_txt(version: str) -> str:
         "| E5xx | Verification |",
         "| E6xx | Code generation |",
         "| E7xx | Testing |",
-        "| W001-W004 | Warnings |",
+        "| W0xx | Warnings |",
         "",
     ]
     for line in (ROOT / "vera" / "errors.py").read_text(encoding="utf-8").splitlines():
@@ -513,7 +505,7 @@ def build_sitemap_xml() -> str:
 # ── index.md ────────────────────────────────────────────────────────
 
 
-def build_index_md(version: str) -> str:
+def build_index_md() -> str:
     """Build a Markdown companion of the landing page.
 
     Mirrors the structure and substance of docs/index.html so agents that
@@ -532,7 +524,7 @@ def build_index_md(version: str) -> str:
 
 From the Latin *veritas*, meaning truth. Verification is built into the language from the ground up.
 
-**Current version:** [{version}]({REPO}/releases/tag/v{version})  ·  [GitHub]({REPO})  ·  [SKILL.md]({SITE}/SKILL.md) (agent language reference)
+[Releases]({REPO}/releases)  ·  [GitHub]({REPO})  ·  [SKILL.md]({SITE}/SKILL.md) (agent language reference)
 
 ## Why?
 
@@ -861,13 +853,12 @@ def build_skill_md() -> str:
 
 
 def main() -> int:
-    version = _version()
     files = {
-        "llms.txt": build_llms_txt(version),
-        "llms-full.txt": build_llms_full_txt(version),
+        "llms.txt": build_llms_txt(),
+        "llms-full.txt": build_llms_full_txt(),
         "robots.txt": build_robots_txt(),
         "sitemap.xml": build_sitemap_xml(),
-        "index.md": build_index_md(version),
+        "index.md": build_index_md(),
         "SKILL.md": build_skill_md(),
         "implementation-status.md": build_impl_status(),
     }

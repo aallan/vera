@@ -263,21 +263,6 @@ def release_body(
     return (kept[:cut] if cut > 0 else kept.rstrip()) + notice
 
 
-def validate_version_sync(root: Path = ROOT) -> None:
-    """Run the repository's canonical cross-file version gate."""
-    result = subprocess.run(
-        [sys.executable, str(root / "scripts" / "check_version_sync.py")],
-        cwd=root,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        check=False,
-    )
-    if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip()
-        raise ReleaseError(f"version consistency check failed: {detail}")
-
-
 def tag_exists(version: str, root: Path = ROOT) -> bool:
     """Return whether the immutable release tag already exists locally."""
     parse_version(version)
@@ -318,9 +303,12 @@ def plan_release(
     ref_name: str | None = None,
     confirm_version: str | None = None,
     root: Path = ROOT,
-    validate_sync: Callable[[Path], None] = validate_version_sync,
 ) -> ReleasePlan:
-    """Validate an event and return the release workflow plan."""
+    """Validate an event and return the release workflow plan.
+
+    The version is read from `pyproject.toml`, the one place it is
+    written; a release also needs its `## [X.Y.Z]` CHANGELOG section.
+    """
     current = project_version(root)
 
     if mode == "push":
@@ -358,7 +346,6 @@ def plan_release(
     else:
         raise ReleaseError(f"unknown release mode {mode!r}")
 
-    validate_sync(root)
     notes_for_version(current, root)
     if target == "pypi" and tag_exists(current, root):
         raise ReleaseError(f"immutable tag v{current} already exists")

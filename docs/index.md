@@ -4,7 +4,7 @@
 
 From the Latin *veritas*, meaning truth. Verification is built into the language from the ground up.
 
-**Current version:** [0.2.0](https://github.com/aallan/vera/releases/tag/v0.2.0)  ·  [GitHub](https://github.com/aallan/vera)  ·  [SKILL.md](https://veralang.dev/SKILL.md) (agent language reference)
+[Releases](https://github.com/aallan/vera/releases)  ·  [GitHub](https://github.com/aallan/vera)  ·  [SKILL.md](https://veralang.dev/SKILL.md) (agent language reference)
 
 ## Why?
 

@@ -136,7 +136,6 @@ jobs:
 
       - name: Build and inspect distribution archives
         run: |
-          python scripts/check_version_sync.py
           python -m build
           python -m twine check dist/*
           python scripts/check_distribution.py dist
