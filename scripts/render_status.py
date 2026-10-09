@@ -402,8 +402,8 @@ def _status(tree: Tree) -> str:
         for job, n in sorted(tree.matrix_cells.items())
     )
     rows = [
-        ("Tests", f"{tree.collection.total:,} collected across"
-                  f" {len(tree.test_files):,} files, {lines:,} lines of test code"),
+        ("Tests", f"{tree.collection.total:,} collected from"
+                  f" {len(tree.test_files):,} test files, which hold {lines:,} lines"),
         ("Conformance programs", f"{len(tree.manifest):,} in"
                                  f" `tests/conformance/manifest.json`: {_levels(tree.manifest)};"
                                  f" {negatives:,} of them negative fixtures (`expected_error`)"),

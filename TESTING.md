@@ -7,7 +7,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 <!-- render_status:begin status -->
 | Metric | Value |
 |--------|-------|
-| **Tests** | 29,959 collected across 244 files, 253,191 lines of test code |
+| **Tests** | 30,441 collected from 245 test files, which hold 254,619 lines |
 | **Conformance programs** | 256 in `tests/conformance/manifest.json`: 0 at `parse`, 60 at `check`, 20 at `verify`, 176 at `run`; 48 of them negative fixtures (`expected_error`) |
 | **Example programs** | 43 in `examples/` |
 | **Corpus programs** | 306 `.vera` files under `examples/` and `tests/conformance/`, recursively |
@@ -16,7 +16,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 | **Spec chapters** | 14 in `spec/` |
 | **Pre-commit hooks** | 29 in `.pre-commit-config.yaml`: 27 at commit, 2 at push |
 | **CI jobs** | 12 in `.github/workflows/ci.yml`; the `test` job's matrix has 13 cells |
-| **Gate scripts** | 22 `scripts/check_*.py` |
+| **Gate scripts** | 23 `scripts/check_*.py` |
 
 Written by `scripts/render_status.py` from the tree.  The tests are counted by a collection, `pytest --collect-only -o addopts= --matrix=full`, which includes the stress tests and every class-instrument cell, not by a run, so a run's passed, skipped and xfailed split is not recorded here.
 <!-- render_status:end status -->
@@ -80,7 +80,7 @@ One row per test file: its tests as a full collection counts them (the stress te
 | `test_ambiguous_import_refusal_1304.py` | 40 | 1,216 | #1304: two imports supplying one bare name are refused, in every namespace. |
 | `test_array_map_slot_closure_1056.py` | 10 | 227 | Regression tests for #1056 — a fn-typed slot handed to ``array_map`` / ``array_mapi`` as the closure argument. |
 | `test_ast.py` | 138 | 1,145 | Tests for the Vera AST layer (vera.ast + vera.transform). |
-| `test_binder_position_generator.py` | 223 | 904 | The class instrument: every binder position, every refinement kind. |
+| `test_binder_position_generator.py` | 223 | 899 | The class instrument: every binder position, every refinement kind. |
 | `test_binder_positions.py` | 45 | 455 | The binder-position registry is held to the AST, and to the guard table. |
 | `test_boundary_guard_correctness_1466.py` | 991 | 2,316 | The class instrument: every guarded position, every WASM representation. |
 | `test_browser.py` | 426 | 5,325 | Parity tests: Python/wasmtime vs Node.js/JS-runtime. |
@@ -92,14 +92,14 @@ One row per test file: its tests as a full collection counts them (the stress te
 | `test_check_changelog_updated.py` | 68 | 712 | Tests for scripts/check_changelog_updated.py. |
 | `test_check_corpus_differential.py` | 57 | 971 | Tests for scripts/check_corpus_differential.py — the burndown instrument that compiles the corpus at two revisions and reports which programs moved. |
 | `test_check_doc_counts.py` | 50 | 591 | scripts/check_doc_counts.py, the documentation's release-time checks. |
-| `test_check_doc_examples.py` | 202 | 1,668 | Tests for scripts/check_doc_examples.py — the documentation example gate (#1481). |
+| `test_check_doc_examples.py` | 202 | 1,671 | Tests for scripts/check_doc_examples.py — the documentation example gate (#1481). |
 | `test_check_editor_grammars.py` | 20 | 249 | Tests for the editor-grammar drift gate (scripts/check_editor_grammars.py). |
 | `test_check_examples_readme.py` | 15 | 190 | Tests for scripts/check_examples_readme.py's Demonstrates-column gate. |
-| `test_check_examples_run.py` | 79 | 1,315 | Tests for scripts/check_examples_run.py — the harness gate that RUNS the examples. |
+| `test_check_examples_run.py` | 79 | 1,313 | Tests for scripts/check_examples_run.py — the harness gate that RUNS the examples. |
 | `test_check_explicit_encoding.py` | 54 | 254 | Unit tests for `scripts/check_explicit_encoding.py` (#645). |
 | `test_check_implies_compile.py` | 1,528 | 3,859 | A program `vera check` accepts is a program code generation builds. |
 | `test_check_limitations_sync.py` | 30 | 577 | Tests for scripts/check_limitations_sync.py section extraction. |
-| `test_check_walker_coverage_597.py` | 15 | 311 | Unit tests for `scripts/check_walker_coverage.py` (#597). |
+| `test_check_walker_coverage_597.py` | 15 | 310 | Unit tests for `scripts/check_walker_coverage.py` (#597). |
 | `test_checker_apply_fn.py` | 18 | 455 | Tests for the ``apply_fn`` checker special form (#854). |
 | `test_checker_builtins_collections.py` | 97 | 848 | Tests for the Vera type checker — builtins_collections (Map/Set/Decimal/Json/Html/Http/Inference builtin type-checking). |
 | `test_checker_builtins_strings.py` | 122 | 947 | Tests for the Vera type checker — builtins_strings (string/numeric/conversion/float/regex/markdown builtin type-checking). |
@@ -175,7 +175,7 @@ One row per test file: its tests as a full collection counts them (the stress te
 | `test_doc_annotations.py` | 95 | 1,067 | Tests for scripts/doc_annotations.py — inline fence markers (#538, #1481). |
 | `test_doc_builtin_shadowing.py` | 11 | 183 | Tests for scripts/check_doc_builtin_shadowing.py (#819). |
 | `test_dropped_entry_1183_1186.py` | 21 | 561 | #1183 + #1186 — a dropped entry function must never be silently replaced. |
-| `test_duplicate_names_1433.py` | 150 | 1,694 | #1433: a namespace holds one declaration of each name (spec §8.5.5). |
+| `test_duplicate_names_1433.py` | 150 | 1,692 | #1433: a namespace holds one declaration of each name (spec §8.5.5). |
 | `test_effect_op_determinism.py` | 9 | 504 | #1215: bare effect-op resolution is deterministic and source-ordered. |
 | `test_element_facts_statable_1430.py` | 75 | 1,988 | #1430 — the nested-refinement goal is STATABLE for carriers the structural walk cannot decompose. |
 | `test_emitted_checks_1479.py` | 47 | 589 | The per-module record of emitted runtime checks (#1479). |
@@ -251,6 +251,7 @@ One row per test file: its tests as a full collection counts them (the stress te
 | `test_prelude_diagnostics.py` | 8 | 271 | Tests for #851 — prelude combinator skip-warnings (E602/E604). |
 | `test_prelude_named_imports_1559.py` | 66 | 343 | #1559 — an imported data type named like a prelude type. |
 | `test_readme.py` | 2 | 79 | Tests for README.md code samples — the parse stage of every Vera block. |
+| `test_reconciliation.py` | 482 | 1,435 | The verifier's runtime-guard claims reconciled with the checks code generation emits (the audit's T2a): :mod:`vera.reconcile`, ``vera verify --reconcile`` and the corpus gate ``scripts/check_reconciliation.py``. |
 | `test_refinement_binder_convergence_1208.py` | 16 | 459 | Codegen's refinement guard and :mod:`vera.naming` share ONE derivation. |
 | `test_refinement_chain_convergence.py` | 63 | 398 | The two refinement-chain oracles answer the same question. |
 | `test_release.py` | 64 | 821 | Release-policy tests for ``scripts/release.py`` (#481). |
@@ -356,7 +357,7 @@ Most programs are at the `run` level: they compile and execute, producing correc
 A conformance program skips every stage past its declared level: a `check`-level program skips `verify` and `run`, and a `verify`-level one skips `run`.  The table below is generated at release by calling each stage method of `tests/test_conformance.py` on each manifest entry, so it is the suite's own decision rather than a restatement of that rule, and the message is the one pytest reports.  The suite's other skips are platform- or tool-gated and documented beside the tests that declare them.
 
 <!-- render_status:begin skipped-tests -->
-The suite skips 140 conformance-stage tests, each by the stage method's own decision; the message is pytest's.
+The suite skips 140 conformance-stage tests:
 
 | Test | Program | Declared level | Message | What the program is |
 |------|---------|----------------|---------|---------------------|

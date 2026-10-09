@@ -454,7 +454,7 @@ class TestRender:
     def test_the_status_block_states_every_count(self, tmp_path: Path) -> None:
         status = RS.render(_measure(_synthetic(tmp_path)))["status"]
         for fact in (
-            "| **Tests** | 1,234 collected across 3 files, 11 lines of test code |",
+            "| **Tests** | 1,234 collected from 3 test files, which hold 11 lines |",
             "7 in `tests/conformance/manifest.json`: 0 at `parse`, 1 at `check`,"
             " 2 at `verify`, 4 at `run`; 1 of them negative fixtures",
             "| **Example programs** | 5 in `examples/` |",
