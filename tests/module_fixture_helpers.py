@@ -54,6 +54,12 @@ different pipelines.
 program the CHECKER refuses: it shares the resolve-and-check front half
 (``_resolve_and_check``) and then compiles anyway, so a codegen rail that
 now sits behind an earlier refusal is still driven and still asserted.
+
+:func:`check_multi_module` and :func:`verify_multi_module` stop earlier
+and return more: every check diagnostic, warnings and locations included,
+and the verify result with its obligations — what a test comparing two
+programs phase by phase needs, through the same resolution and the same
+verify wiring (``_resolve``, ``_verify_resolved``) as the builders.
 """
 from __future__ import annotations
 
@@ -68,11 +74,12 @@ from vera.checker.core import CheckArtifacts
 from vera.codegen import compile as codegen_compile
 from vera.codegen import execute
 from vera.codegen.api import CompileResult
+from vera.errors import Diagnostic
 from vera.parser import parse_file, parse_to_ast
 from vera.resolver import ModuleResolver, ResolvedModule
 from vera.runtime.traps import WasmTrapError
 from vera.transform import transform
-from vera.verifier import verify
+from vera.verifier import VerifyResult, verify
 
 
 def resolved_module(path: tuple[str, ...], source: str) -> ResolvedModule:
@@ -177,13 +184,7 @@ def build_multi_module(
     assert not check_errors, (
         f"typecheck errors: {[d for _, d in check_errors]}"
     )
-    # With the checker's tables, each module's own included, as `vera verify`
-    # hands them over (#1509).
-    vres = verify(program, source, file=str(main_path),
-                  resolved_modules=resolved,
-                  expr_types=arts.expr_semantic_types,
-                  expr_target_types=arts.expr_target_types,
-                  module_artifacts=arts.module_artifacts)
+    vres = _verify_resolved(program, source, main_path, resolved, arts)
     verify_errors = [
         (d.error_code, d.description)
         for d in vres.diagnostics if d.severity == "error"
@@ -192,6 +193,60 @@ def build_multi_module(
         program, source, main_path, resolved, arts,
     )
     return verify_errors, result, cg_errors
+
+
+def check_multi_module(
+    tmp_path: Path, files: dict[str, str],
+    main_name: str = "main.vera",
+) -> list[Diagnostic]:
+    """Every diagnostic the checker gives *main_name*, its imports resolved
+    as ``vera check`` resolves them: warnings included, and errors returned
+    rather than raised, for a test about what the checker reports."""
+    program, source, main_path, resolved = _resolve(
+        tmp_path, files, main_name)
+    diags, _arts = typecheck_with_artifacts(
+        program, source, file=str(main_path), resolved_modules=resolved,
+        collect_module_artifacts=True,
+    )
+    return diags
+
+
+def verify_multi_module(
+    tmp_path: Path, files: dict[str, str],
+    main_name: str = "main.vera",
+) -> tuple[list[Diagnostic], VerifyResult]:
+    """Check and verify *main_name* as ``vera verify`` does: every check
+    diagnostic, and the verify result with its obligations, which
+    :func:`build_multi_module` reduces to the verifier's errors.  The
+    obligations include the imported modules' own, as ``vera verify``
+    reports them.
+
+    Check-clean is the premise, as for a single file: verification of an
+    ill-typed program describes nothing (``tests/verifier_helpers.py``)."""
+    program, source, main_path, resolved = _resolve(
+        tmp_path, files, main_name)
+    diags, arts = typecheck_with_artifacts(
+        program, source, file=str(main_path), resolved_modules=resolved,
+        collect_module_artifacts=True,
+    )
+    check_errors = [d for d in diags if d.severity == "error"]
+    assert not check_errors, (
+        f"typecheck errors: {[d.description for d in check_errors]}"
+    )
+    return diags, _verify_resolved(program, source, main_path, resolved, arts)
+
+
+def _verify_resolved(
+    program: ast.Program, source: str, main_path: Path,
+    resolved: list[ResolvedModule], arts: CheckArtifacts,
+) -> VerifyResult:
+    """Verify a resolved, checked program with the checker's tables, each
+    module's own included, as ``vera verify`` hands them over (#1509)."""
+    return verify(program, source, file=str(main_path),
+                  resolved_modules=resolved,
+                  expr_types=arts.expr_semantic_types,
+                  expr_target_types=arts.expr_target_types,
+                  module_artifacts=arts.module_artifacts)
 
 
 def build_multi_module_past_check(
@@ -241,6 +296,24 @@ def _resolve_and_check(
     difference).  Returns the pieces codegen needs plus the check errors as
     ``(error_code, description)`` pairs, and decides nothing about them.
     """
+    program, source, main_path, resolved = _resolve(
+        tmp_path, files, main_name)
+    diags, arts = typecheck_with_artifacts(
+        program, source, file=str(main_path), resolved_modules=resolved,
+        collect_module_artifacts=True,
+    )
+    check_errors = [
+        (d.error_code, d.description)
+        for d in diags if d.severity == "error"
+    ]
+    return program, source, main_path, resolved, arts, check_errors
+
+
+def _resolve(
+    tmp_path: Path, files: dict[str, str], main_name: str,
+) -> tuple[ast.Program, str, Path, list[ResolvedModule]]:
+    """Write *files* and resolve *main_name*'s imports, raising on a
+    resolution error (see below)."""
     tmp_path.mkdir(parents=True, exist_ok=True)
     for name, src in files.items():
         (tmp_path / name).write_text(src, encoding="utf-8")
@@ -257,21 +330,13 @@ def _resolve_and_check(
     # `lib.vera` written as `liib.vera`, the private-wildcard cell returns
     # 42007 and every stage reports zero errors.
     #
-    # Raised here for BOTH builders, unlike the type-check errors: no caller
-    # of either expects a resolution error, so one means the FIXTURE is
+    # Raised here for every builder, unlike the type-check errors: no caller
+    # of any expects a resolution error, so one means the FIXTURE is
     # broken, not the compiler — and returning it would let a cell pass with
     # nothing assembled.
     resolve_errors = [d.description for d in resolver.errors]
     assert not resolve_errors, f"module resolution errors: {resolve_errors}"
-    diags, arts = typecheck_with_artifacts(
-        program, source, file=str(main_path), resolved_modules=resolved,
-        collect_module_artifacts=True,
-    )
-    check_errors = [
-        (d.error_code, d.description)
-        for d in diags if d.severity == "error"
-    ]
-    return program, source, main_path, resolved, arts, check_errors
+    return program, source, main_path, resolved
 
 
 def _compile_resolved(

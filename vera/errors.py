@@ -911,6 +911,8 @@ ERROR_CODES: dict[str, str] = {
     "E030": "old() argument is not an effect reference",
     "E031": "new() argument is not an effect reference",
     "E032": "Contract clause after the effects clause",
+    # E04x — Expression forms (transform)
+    "E040": "Pipe's right operand is not a call",
     # E1xx — Type Checker: Core & Expressions
     "E120": "Data invariant not Bool",
     "E121": "Function body type mismatch",

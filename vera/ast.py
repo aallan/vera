@@ -51,10 +51,14 @@ class Node:
     span: Span | None = field(default=None, kw_only=True, repr=False, compare=False)
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialise to a JSON-compatible dict."""
+        """Serialise to a JSON-compatible dict.  A spelling field
+        (:func:`_spelling`) appears only where it is set."""
         result: dict[str, Any] = {"_type": type(self).__name__}
         for f in fields(self):
-            result[f.name] = _serialise(getattr(self, f.name))
+            val = getattr(self, f.name)
+            if f.metadata.get("spelling") and not val:
+                continue
+            result[f.name] = _serialise(val)
         return result
 
     def pretty(self, indent: int = 0) -> str:
@@ -62,11 +66,40 @@ class Node:
         prefix = "  " * indent
         lines = [f"{prefix}{type(self).__name__}"]
         for f in fields(self):
-            if f.name == "span":
+            if f.name == "span" or f.metadata.get("position"):
                 continue
             val = getattr(self, f.name)
+            if f.metadata.get("spelling") and not val:
+                continue
             lines.extend(_pretty_field(f.name, val, indent + 1))
         return "\n".join(lines)
+
+
+def _spelling() -> Any:
+    """A field that records how a node was WRITTEN, not what it means.
+
+    It takes no part in equality, hashing or ``repr``, so two spellings of
+    one construct are one node to every phase; the formatter reads it to
+    print the construct back as it was written.  ``to_dict`` and ``pretty``
+    show it only where it is set."""
+    return field(default=False, kw_only=True, repr=False, compare=False,
+                 metadata={"spelling": True})
+
+
+def _stage() -> Any:
+    """Where a piped call's STAGE is written: the call on the right of
+    ``|>``, from its callee to its closing parenthesis.
+
+    The call's own span is the pipe's, which owns the call for the AST, the
+    formatter and the obligation records; a diagnostic about the call
+    itself (its callee, its arguments' count, the constructor or module it
+    names) is placed at the stage instead, where the call is written, so in
+    a chain it names the stage at fault.  A spelling field and a position,
+    like ``span``: no part in equality, hashing or ``repr``; ``to_dict``
+    shows it where it is set, and ``pretty``, which shows no position, does
+    not."""
+    return field(default=None, kw_only=True, repr=False, compare=False,
+                 metadata={"spelling": True, "position": True})
 
 
 def _serialise(val: Any) -> Any:
@@ -129,7 +162,6 @@ class BinOp(str, Enum):
     AND = "&&"
     OR = "||"
     IMPLIES = "==>"
-    PIPE = "|>"
 
 
 class UnaryOp(str, Enum):
@@ -426,11 +458,21 @@ class ResultRef(Expr):
 
 # -- Calls --
 
+# A call written as a pipe, `a |> f(b)`, IS the call `f(a, b)` (spec
+# §4.11.2): the transform builds the call with the piped value as its first
+# argument and the pipe's span, and sets `piped` so the formatter prints the
+# pipe back, and `stage_span` where `f(b)` is written, for a diagnostic
+# about the call itself.  No phase after the transform sees a pipe.
+
 @dataclass(frozen=True)
 class FnCall(Expr):
     """Function call: name(args)."""
     name: str
     args: tuple[Expr, ...]
+    #: Written as ``args[0] |> name(args[1:])``.
+    piped: bool = _spelling()
+    #: Where ``name(args[1:])`` is written, when piped (:func:`_stage`).
+    stage_span: Span | None = _stage()
 
 
 @dataclass(frozen=True)
@@ -438,6 +480,10 @@ class ConstructorCall(Expr):
     """Constructor call with arguments: Some(42)."""
     name: str
     args: tuple[Expr, ...]
+    #: Written as ``args[0] |> name(args[1:])``.
+    piped: bool = _spelling()
+    #: Where ``name(args[1:])`` is written, when piped (:func:`_stage`).
+    stage_span: Span | None = _stage()
 
 
 @dataclass(frozen=True)
@@ -465,6 +511,10 @@ class QualifiedCall(Expr):
     qualifier: str
     name: str
     args: tuple[Expr, ...]
+    #: Written as ``args[0] |> qualifier.name(args[1:])``.
+    piped: bool = _spelling()
+    #: Where ``qualifier.name(args[1:])`` is written, when piped (:func:`_stage`).
+    stage_span: Span | None = _stage()
 
 
 @dataclass(frozen=True)
@@ -473,6 +523,10 @@ class ModuleCall(Expr):
     path: tuple[str, ...]
     name: str
     args: tuple[Expr, ...]
+    #: Written as ``args[0] |> path::name(args[1:])``.
+    piped: bool = _spelling()
+    #: Where ``path::name(args[1:])`` is written, when piped (:func:`_stage`).
+    stage_span: Span | None = _stage()
 
 
 # -- Lambda --
@@ -873,6 +927,17 @@ def format_expr(expr: Expr) -> str:
             args = ", ".join(format_type_expr(a) for a in expr.type_args)
             base = f"{base}<{args}>"
         return f"@{base}.result"
+    if (isinstance(expr, (FnCall, ConstructorCall, QualifiedCall, ModuleCall))
+            and expr.piped and expr.args):
+        # As written: the first argument, `|>`, and the call without it.
+        rest = ", ".join(format_expr(a) for a in expr.args[1:])
+        if isinstance(expr, QualifiedCall):
+            callee = f"{expr.qualifier}.{expr.name}"
+        elif isinstance(expr, ModuleCall):
+            callee = f"{'.'.join(expr.path)}::{expr.name}"
+        else:
+            callee = expr.name
+        return f"{format_expr(expr.args[0])} |> {callee}({rest})"
     if isinstance(expr, BinaryExpr):
         left = format_expr(expr.left)
         right = format_expr(expr.right)

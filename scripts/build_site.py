@@ -324,6 +324,7 @@ def build_llms_full_txt(version: str) -> str:
         "| E011-E013 | Import resolution |",
         "| E020-E023 | Parse: malformed comments (lexical) |",
         "| E030-E032 | Parse: contract clauses |",
+        "| E040 | Transform: pipe operand |",
         "| E1xx | Type check: core + expressions |",
         "| E2xx | Type check: calls |",
         "| E3xx | Type check: control flow |",

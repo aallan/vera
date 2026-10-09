@@ -28,7 +28,6 @@ from vera.monomorphize import (
     UninferredTypeArg,
     collect_nested_generic_decls,
     declared_return_clone_key,
-    pipe_desugared_call,
     uninferred_type_arg_fix,
 )
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv
@@ -1280,23 +1279,6 @@ class MonomorphizationMixin:
             self._collect_shadowed_qualified_calls(
                 node.body, path, decls_by_name, ctor_to_adt, instances,
                 merged, origin,
-            )
-            return
-
-        piped = (pipe_desugared_call(node)
-                 if isinstance(node, ast.Expr) else None)
-        if piped is not None:
-            # #1357: the piped spelling of a qualified-only generic call.  The
-            # raw right operand's `args` omit the piped value, so matching it
-            # here inferred the type arguments from an argument list missing
-            # its first element and registered the phantom `$Bool` clone
-            # instead of the one the call site needs — while the DIRECT
-            # spelling of the same call was discovered correctly.  Walk the
-            # desugared call, which carries the same children, in the same
-            # module's namespace (PR #1508 review).
-            self._collect_shadowed_qualified_calls(
-                piped, path, decls_by_name, ctor_to_adt, instances,
-                op_result_types, origin,
             )
             return
 

@@ -587,8 +587,8 @@ def _argument_site(
 ) -> tuple[ast.FnCall | ast.ModuleCall, int, tuple[Step, ...]] | None:
     """(the call, argument position, the path from the argument down to
     *node*) when *node* is an argument of a call or a value one stores or
-    joins, read through the pipe's desugaring (``a |> f(x)`` is
-    ``f(a, x)``, ``narrowing``'s and code generation's one reading of it)."""
+    joins (a pipe ``a |> f(x)`` is the call ``f(a, x)`` from the transform
+    on, so it needs no reading of its own here)."""
     steps: list[Step] = []
     cur: ast.Node = node
     while True:
@@ -596,14 +596,8 @@ def _argument_site(
         if isinstance(parent, (ast.FnCall, ast.ModuleCall)):
             for k, arg in enumerate(parent.args):
                 if arg is cur:
-                    piped = _pipe_of_call(index, parent)
-                    return parent, k + (1 if piped else 0), tuple(
-                        reversed(steps))
+                    return parent, k, tuple(reversed(steps))
             return None
-        if (isinstance(parent, ast.BinaryExpr)
-                and parent.op == ast.BinOp.PIPE and cur is parent.left
-                and isinstance(parent.right, (ast.FnCall, ast.ModuleCall))):
-            return parent.right, 0, tuple(reversed(steps))
         up = _store_step(index, cur)
         if up is None:
             return None
@@ -612,20 +606,11 @@ def _argument_site(
             steps.append(step)
 
 
-def _pipe_of_call(index: _Index, call: ast.Node) -> bool:
-    parent = index.parent.get(id(call))
-    return (isinstance(parent, ast.BinaryExpr)
-            and parent.op == ast.BinOp.PIPE and call is parent.right)
-
-
 def _call_node(node: ast.Node) -> ast.FnCall | ast.ModuleCall | None:
-    """The call a call site makes: the call itself, or the stage of a pipe
-    (whose desugared call keeps the pipe's span)."""
+    """The call a call site makes: the call itself (a pipe is that call
+    from the transform on, so there is no stage to look through)."""
     if isinstance(node, (ast.FnCall, ast.ModuleCall)):
         return node
-    if (isinstance(node, ast.BinaryExpr) and node.op == ast.BinOp.PIPE
-            and isinstance(node.right, (ast.FnCall, ast.ModuleCall))):
-        return node.right
     return None
 
 

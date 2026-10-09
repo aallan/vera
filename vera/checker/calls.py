@@ -7,8 +7,11 @@ orchestration.
 
 from __future__ import annotations
 
+import functools
 from collections import Counter
 from collections.abc import Callable
+import typing
+from typing import Any, cast
 
 from vera import ast, narrowing
 from vera.slots import bare_call_denotes_user_fn
@@ -163,6 +166,22 @@ def _names(name: str) -> Callable[[str], bool]:
         return ctor_name == name
     return matches
 
+_Check = typing.TypeVar("_Check", bound=Callable[..., Any])
+
+
+def _reported_at_the_stage(check: _Check) -> _Check:
+    """Check a call inside `_about_the_call`: what its check reports at the
+    call node is about the call itself, so a piped call's is placed at its
+    stage, where the call is written (`core._placement`), as `main` placed
+    it.  A diagnostic the call's context reports about its value comes
+    after the check returns, and stays at the pipe."""
+    @functools.wraps(check)
+    def checked(self: Any, expr: ast.Expr, *args: Any, **kwargs: Any) -> Any:
+        with self._about_the_call(expr):
+            return check(self, expr, *args, **kwargs)
+    return cast(_Check, checked)
+
+
 class CallsMixin:
     """Methods for checking function calls, constructors, and qualified calls."""
 
@@ -170,6 +189,7 @@ class CallsMixin:
     # Function calls
     # -----------------------------------------------------------------
 
+    @_reported_at_the_stage
     def _check_fn_call(self, expr: ast.FnCall, *,
                        expected: Type | None = None) -> Type | None:
         """Type-check a function call.
@@ -1527,6 +1547,7 @@ class CallsMixin:
             fix,
         )
 
+    @_reported_at_the_stage
     def _check_constructor_call(self, expr: ast.ConstructorCall, *,
                                 expected: Type | None = None) -> Type | None:
         """Type-check a constructor call: Ctor(args)."""
@@ -2122,6 +2143,7 @@ class CallsMixin:
     # Qualified / module calls
     # -----------------------------------------------------------------
 
+    @_reported_at_the_stage
     def _check_qualified_call(self, expr: ast.QualifiedCall) -> Type | None:
         """Type-check a qualified call: Effect.op(args)."""
         # Try as effect operation
@@ -2171,6 +2193,7 @@ class CallsMixin:
             self._synth_expr(arg)
         return UnknownType()
 
+    @_reported_at_the_stage
     def _check_module_call(self, expr: ast.ModuleCall, *,
                            expected: Type | None = None) -> Type | None:
         """Type-check a module-qualified call: path.to.fn(args).

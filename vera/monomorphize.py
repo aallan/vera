@@ -1945,44 +1945,6 @@ def checker_arg_type_info(
     return ty.name, tuple(_type_clone_name(a) for a in ty.type_args)
 
 
-def pipe_desugared_call(
-    expr: ast.Expr,
-) -> ast.FnCall | ast.ModuleCall | None:
-    """The call a ``|>`` pipe denotes, or ``None`` if *expr* is not one.
-
-    ``a |> f(x, y)`` means ``f(a, x, y)``: the piped value becomes the call's
-    FIRST argument.  Four places have to agree on that shape — the checker's
-    ``_check_pipe``, codegen's ``_translate_binary``, instantiation
-    discovery's pipe arm (#913) and the two type namers (#1365) — so it is
-    built here once rather than spelled four times.
-
-    The desugared call keeps the right operand's OWN node type.  A
-    ``ModuleCall`` right operand stays a ``ModuleCall`` (#1357): its ``path``
-    is what routes the call to the declaring module's ``mod$<path>$name``
-    clone, and rebuilding it as a bare-name ``FnCall`` discards that path, so
-    the call lands on a name the importer's flat namespace does not have.
-    That is precisely how a piped module generic lost its caller while the
-    direct spelling of the same call worked.
-
-    Returns ``None`` for a non-pipe, and for a pipe whose right operand is
-    neither call shape: the checker rejects that, so a consumer meeting one
-    has nothing to say about it either.
-    """
-    if not isinstance(expr, ast.BinaryExpr) or expr.op != ast.BinOp.PIPE:
-        return None
-    rhs = expr.right
-    if isinstance(rhs, ast.ModuleCall):
-        return ast.ModuleCall(
-            path=rhs.path, name=rhs.name,
-            args=(expr.left, *rhs.args), span=expr.span,
-        )
-    if isinstance(rhs, ast.FnCall):
-        return ast.FnCall(
-            name=rhs.name, args=(expr.left, *rhs.args), span=expr.span,
-        )
-    return None
-
-
 @dataclass(frozen=True)
 class UninferredTypeArg:
     """One generic call whose type argument could not be inferred (E622).
@@ -3071,35 +3033,6 @@ class Monomorphizer:
                 type_args, decl, generic_decls,
             ):
                 instances[node.name].add(type_args)
-        # #913: a generic invoked via the ``|>`` pipe — ``x |> g(…)`` — desugars
-        # to ``g(x, …)`` at BOTH the checker (`_check_pipe`) and codegen
-        # (`_translate_binary`) boundaries, prepending the piped LHS as the
-        # call's FIRST argument.  Discovery must reconstruct that same argument
-        # list, or the bare RHS ``FnCall``/``ModuleCall`` (whose own `args`
-        # omit the piped value) fails to bind the type variable that the piped
-        # value supplies — so no ``g$Type`` clone is emitted and codegen lowers
-        # the pipe to a call on a non-existent function (the enclosing fn is
-        # dropped at run).  The RHS itself is walked by the generic field
-        # recursion below, so an inner generic call reachable through the RHS
-        # is still discovered; this branch only adds the pipe-desugared
-        # instantiation.
-        piped = (pipe_desugared_call(node)
-                 if isinstance(node, ast.Expr) else None)
-        if piped is not None:
-            # #1357: walk the DESUGARED call rather than adding an
-            # instantiation beside the raw pipe.  The raw right operand is a
-            # call whose own `args` omit the piped value, so walking it as a
-            # call in its own right inferred a generic's type arguments from
-            # an argument list that is missing its first element — nothing
-            # bound the type variable, and the phantom default registered a
-            # `$Bool` clone that nothing calls, beside (or instead of) the one
-            # the call site needs.  The desugared node carries the same
-            # children, so nothing goes unwalked; it is simply seen as the
-            # call it denotes.
-            self._collect_calls(
-                piped, generic_decls, ctor_to_adt, instances,
-            )
-            return
         # #1207: a `handle[State<T>]` installs its op registry over its BODY
         # only.  The state-init expression and the clause bodies belong to the
         # ENCLOSING context — the checker checks clauses before the handled
@@ -3586,24 +3519,6 @@ class Monomorphizer:
                            ast.BinOp.GT, ast.BinOp.LE, ast.BinOp.GE,
                            ast.BinOp.AND, ast.BinOp.OR, ast.BinOp.IMPLIES):
                 return "Bool"
-            piped = pipe_desugared_call(expr)
-            if piped is not None:
-                # #1365: a PIPE's value is the RIGHT-hand call's RESULT, not
-                # the piped-in value.  Naming it from the left operand is
-                # right only where the stage preserves the type, and silently
-                # wrong the moment one does not: `@Int.0 |> to_b() |> gid()`
-                # instantiated `gid` at `Int` and called it with the `Bool`
-                # `to_b` produced, so the module failed WASM validation at
-                # load from check-green, verify-clean source.  Name the
-                # desugared call instead — the same `(lhs, *rhs.args)` shape
-                # the checker's `_check_pipe`, codegen's `_translate_binary`
-                # and discovery's own #913 instantiation arm all build — so a
-                # chain types stage by stage.  The twin
-                # (`InferenceMixin._infer_vera_type`) carries the identical
-                # arm: the two must land on the same name or the discovered
-                # clone dangles at the call the rewrite emits.
-                return self._infer_vera_type_name(
-                    piped, ctor_to_adt, generic_decls)
             return self._infer_vera_type_name(
                 expr.left, ctor_to_adt, generic_decls)
         if isinstance(expr, ast.UnaryExpr):
