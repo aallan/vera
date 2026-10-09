@@ -431,6 +431,31 @@ class TestConformanceSkips:
         with pytest.raises(RuntimeError, match="_vera"):
             RS.conformance_skips(root)
 
+    def test_a_stage_that_shells_out_or_fails_is_not_a_skip(
+        self, tmp_path: Path
+    ) -> None:
+        """A stage the suite gains later may do its work some other way: run
+        a process itself, or fail on a real assertion.  Neither is a skip,
+        and neither may run for real or stop the table being written."""
+        root = tmp_path / "repo"
+        marker = tmp_path / "ran"
+        extra = (
+            "\n    def test_distrust(self, entry):\n"
+            "        import sys\n"
+            "        if entry['id'] == 'q':\n"
+            "            pytest.skip('not here')\n"
+            f"        subprocess.run([sys.executable, '-c', \"open({str(marker)!r}, 'w')\"])\n"
+            "\n    def test_strict(self, entry):\n"
+            "        assert entry['id'] == 'nothing', 'a real failure'\n"
+        )
+        module = _CONFORMANCE_MODULE.replace("import pytest\n", "import subprocess\n\nimport pytest\n", 1)
+        _write(root / "tests" / "test_conformance.py", module + extra)
+        rows = RS.conformance_skips(root)
+        assert not marker.exists(), "the stage's process ran"
+        assert [row.test for row in rows] == [
+            "test_run[id-p_x]", "test_check[id-q]", "test_distrust[id-q]",
+        ]
+
     def test_every_real_row_really_skips(self) -> None:
         """Against the real suite: each row's stage, called with nothing
         replaced, skips with the message the row states."""

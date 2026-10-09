@@ -39,6 +39,7 @@ import subprocess
 import sys
 from collections.abc import Callable, Mapping
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, NamedTuple
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -231,12 +232,13 @@ def conformance_skips(root: Path) -> list[Skip]:
     """Every conformance-stage test that skips, asked of the tests.
 
     Each stage method of `TestConformance` is called on each manifest
-    entry with the module's three pieces of work (`_CONFORMANCE_WORK`)
-    replaced by a stop.  A stage that skips raises pytest's `Skipped`
-    before it reaches any of them; one that does not reaches one and
-    stops.  So the rows are the suite's own skip decision, not a second
-    statement of the level rule, and a change to that rule reaches the
-    table at the next release without an edit here.
+    entry with the module's three pieces of work (`_CONFORMANCE_WORK`),
+    and its `subprocess`, replaced by a stop.  A stage that skips raises
+    pytest's `Skipped` before it reaches any of them; one that does not
+    reaches one and stops, or fails on whatever else it does, which is
+    not a skip either.  So the rows are the suite's own skip decision,
+    not a second statement of the level rule, and a change to that rule
+    reaches the table at the next release without an edit here.
     """
     import pytest
 
@@ -248,6 +250,10 @@ def conformance_skips(root: Path) -> list[Skip]:
                 " render_status replaces to find the stages that skip"
             )
         setattr(module, name, _stop)
+    if hasattr(module, "subprocess"):
+        module.subprocess = SimpleNamespace(
+            run=_stop, Popen=_stop, call=_stop, check_call=_stop, check_output=_stop,
+        )
     cls = module.TestConformance
     ids: Callable[[Any], str] = next(
         mark.kwargs["ids"]
@@ -261,7 +267,7 @@ def conformance_skips(root: Path) -> list[Skip]:
         for index, stage in enumerate(stages):
             try:
                 getattr(cls(), stage)(entry)
-            except _Reached:
+            except (Exception, pytest.fail.Exception):  # noqa: BLE001 — a stage that stopped or failed ran: not a skip
                 continue
             except pytest.skip.Exception as exc:
                 test_id = ids(entry)
