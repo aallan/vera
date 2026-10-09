@@ -374,13 +374,14 @@ class _TestEngine:
             _TrapIndex(compile_result.emitted_checks, verify_result.obligations)
             if self.distrust else None
         )
+        distrusted = traps is not None
 
-        for fn_name, category, reason, decl in targets:
+        for fn_name, category, reason, decl, proved in targets:
             # A proved function is reported and never run, unless the run
             # distrusts its proofs: then it takes the Tier-3 path below, each
-            # branch of which reads `proved`.
-            proved = category == "verified"
-            if proved and traps is None:
+            # branch of which reads `proved`.  A proved function the generator
+            # cannot serve is skipped in default mode, as before.
+            if category == "verified" and traps is None:
                 summary.verified += 1
                 results.append(FunctionTestResult(
                     fn_name=fn_name,
@@ -407,7 +408,7 @@ class _TestEngine:
                 ))
                 continue
 
-            if proved:
+            if category == "verified":
                 # #1229's question, asked here because only now can the
                 # answer change an outcome: `_classify_functions` asks it of
                 # Tier-3 targets alone, since an unrun proof loses nothing to
@@ -423,7 +424,42 @@ class _TestEngine:
                     reason = _untranslatable_skip_reason(blockers)
 
             if category in ("skipped", _UNTRANSLATABLE_CATEGORY):
-                _record_unrun(results, summary, fn_name, reason, proved)
+                _record_unrun(
+                    results, summary, fn_name, reason, proved, distrusted)
+                if proved and distrusted and category == "skipped":
+                    # A proved function skipped for its parameters is a proof
+                    # the run was asked to exercise and could not, and is
+                    # disclosed as the other unexercised proofs are.
+                    diagnostics.append(Diagnostic(
+                        description=(
+                            f"Cannot generate test inputs for '{fn_name}': "
+                            f"{_ungenerable_reason(decl, self.alias_env)}, "
+                            f"so its proof is not exercised."
+                        ),
+                        location=_fn_location(decl, self.file),
+                        source_line=_get_source_line(self.source, decl),
+                        rationale=(
+                            "Contract-driven testing generates each input "
+                            "with Z3 from its parameter's type, and encodes "
+                            "only `Int`, `Nat`, `Bool`, `Byte`, `String` and "
+                            "`Float64` values; a type variable names no type "
+                            "to generate.  So `vera test --distrust` has no "
+                            "input to run this proved function on, and its "
+                            "proof stands but is not exercised."
+                        ),
+                        fix=(
+                            "Exercise the proof through a public function "
+                            "whose parameters the generator encodes and which "
+                            "calls this one — its trials run this function's "
+                            "checks too — or with a hand-written test."
+                        ),
+                        spec_ref=(
+                            'Chapter 0, Section 0.5.6 '
+                            '"Contract-Driven Testing"'
+                        ),
+                        severity="warning",
+                        error_code="E701",
+                    ))
                 if category == _UNTRANSLATABLE_CATEGORY:
                     # #1229: disclose the blocker as a diagnostic too, the way
                     # an un-encodable parameter type does.  A consumer reading
@@ -479,7 +515,8 @@ class _TestEngine:
                 else _not_exported_reason(fn_name, compile_result, self.file)
             )
             if unrunnable is not None:
-                _record_unrun(results, summary, fn_name, unrunnable, proved)
+                _record_unrun(
+                    results, summary, fn_name, unrunnable, proved, distrusted)
                 if proved:
                     # A proof --distrust was asked to exercise and could not
                     # run is disclosed where a diagnostics-only consumer
@@ -520,7 +557,8 @@ class _TestEngine:
                 checked, unchecked = traps.proof_clauses(decl, self.file)
                 if unchecked and not checked:
                     missing = _no_check_reason(unchecked)
-                    _record_unrun(results, summary, fn_name, missing, proved)
+                    _record_unrun(
+                        results, summary, fn_name, missing, proved, distrusted)
                     diagnostics.append(Diagnostic(
                         description=(
                             f"Cannot test the proof of '{fn_name}': "
@@ -571,7 +609,8 @@ class _TestEngine:
             if inputs is None:  # pragma: no cover — _classify_functions filters unsupported types
                 unsupported_names = _unsupported_type_names(param_types)
                 skip_reason = f"cannot generate {', '.join(unsupported_names)} inputs (see #169)"
-                _record_unrun(results, summary, fn_name, skip_reason, proved)
+                _record_unrun(
+                    results, summary, fn_name, skip_reason, proved, distrusted)
                 diagnostics.append(Diagnostic(
                     description=(
                         f"Cannot generate test inputs for '{fn_name}': "
@@ -601,7 +640,7 @@ class _TestEngine:
                     results, summary, fn_name,
                     why if proved else
                     "precondition is unsatisfiable (no valid inputs)",
-                    proved,
+                    proved, distrusted,
                 )
                 if proved:
                     diagnostics.append(Diagnostic(
@@ -789,10 +828,11 @@ class _TestEngine:
 
     def _get_targets(
         self,
-        classification: dict[str, tuple[str, str, ast.FnDecl]],
-    ) -> list[tuple[str, str, str, ast.FnDecl]]:
-        """Return (name, category, reason, decl) for each target function."""
-        targets: list[tuple[str, str, str, ast.FnDecl]] = []
+        classification: dict[str, tuple[str, str, ast.FnDecl, bool]],
+    ) -> list[tuple[str, str, str, ast.FnDecl, bool]]:
+        """Return (name, category, reason, decl, proved) for each target
+        function."""
+        targets: list[tuple[str, str, str, ast.FnDecl, bool]] = []
 
         for tld in self.program.declarations:
             if not isinstance(tld.decl, ast.FnDecl):
@@ -808,11 +848,11 @@ class _TestEngine:
                 continue
 
             if decl.name in classification:
-                cat, reason, _ = classification[decl.name]
-                targets.append((decl.name, cat, reason, decl))
+                cat, reason, _, proved = classification[decl.name]
+                targets.append((decl.name, cat, reason, decl, proved))
             else:  # pragma: no cover — all public fns are classified
                 targets.append((
-                    decl.name, "skipped", "not classifiable", decl,
+                    decl.name, "skipped", "not classifiable", decl, False,
                 ))
 
         return targets
@@ -1193,14 +1233,17 @@ def _record_unrun(
     fn_name: str,
     reason: str,
     proved: bool,
+    distrusted: bool,
 ) -> None:
     """Record a target no trial ran: a skip, or a proof left unexercised.
 
     A proved function `--distrust` cannot run keeps its Tier-1 category — the
     proof stands, untested — with the reason it was not run, rather than
-    being demoted to ``"skipped"``.
+    being demoted to ``"skipped"``.  By default a proved function reaches
+    here only when the generator cannot serve it, and is skipped as before,
+    its ``proved`` flag still set.
     """
-    if proved:
+    if proved and distrusted:
         summary.verified += 1
         results.append(FunctionTestResult(
             fn_name=fn_name,
@@ -1222,7 +1265,18 @@ def _record_unrun(
         trials_passed=0,
         trials_failed=0,
         failures=[],
+        proved=proved,
     ))
+
+
+def _ungenerable_reason(decl: ast.FnDecl, alias_env: AliasEnv) -> str:
+    """Why the generator has no input for *decl*, a function skipped for its
+    parameters: it is generic, or a parameter's type is one it does not
+    encode."""
+    if decl.forall_vars:
+        return "it is generic"
+    names = _unsupported_type_names(_get_param_types(decl, alias_env))
+    return f"the generator encodes no {' or '.join(names)} value (see #169)"
 
 
 # =====================================================================
@@ -1234,10 +1288,11 @@ def _classify_functions(
     verify_diagnostics: list[Diagnostic],
     obligations: list[ProofObligation],
     alias_env: AliasEnv = EMPTY_ALIAS_ENV,
-) -> dict[str, tuple[str, str, ast.FnDecl]]:
+) -> dict[str, tuple[str, str, ast.FnDecl, bool]]:
     """Classify each function as verified/tier3/skipped.
 
-    Returns {name: (category, reason, decl)}.
+    Returns {name: (category, reason, decl, proved)}: *proved* says the
+    verifier proved the function's contracts, whatever its category.
 
     *alias_env* is the checked program's naming environment, needed because
     the encodability question is asked of each parameter's RESOLVED type
@@ -1388,7 +1443,19 @@ def _classify_functions(
         # Has non-trivial contracts and all proved → verified
         result[decl.name] = ("verified", "Tier 1 (proved)", decl)
 
-    return result
+    # Whether the verifier proved a function's contracts is a fact of the
+    # stream, read for EVERY listed function, not only the ones the generator
+    # can serve (PR #1634 review): a generic function, or one with a
+    # parameter type the generator does not encode, is skipped above in
+    # either mode, and its proof read as no proof because of the skip.  The
+    # same three facts decide the "verified" category, which is this flag on
+    # a function whose inputs can be generated.
+    return {
+        name: (category, reason, decl,
+               name not in failed_fns and name not in tier3_fns
+               and _has_nontrivial_contracts(decl))
+        for name, (category, reason, decl) in result.items()
+    }
 
 
 def _failed_function_name(diag: Diagnostic) -> str | None:

@@ -12,9 +12,9 @@ fails its program's test with the diagnostic text.
 What it can see, and what it cannot:
 
 - A proved function with a parameter the generator cannot encode (an ADT, a
-  function, a type variable) is skipped by `vera test` in both modes, and a
-  proved function whose precondition the generator cannot honour (#1229) is
-  reported not exercised.  Neither is run.
+  function, a type variable) is skipped by default and reported not
+  exercised under `--distrust`, as is a proved function whose precondition
+  the generator cannot honour (#1229).  Neither is run.
 - Inputs are bounded to |x| <= 2^53 for `@Int` and `@Nat`, so a false proof
   that needs a `@Nat` above i64.MAX is out of reach.
 - A check code generation does not emit cannot trap, so a false Tier 3 or an
@@ -32,15 +32,15 @@ What it can see, and what it cannot:
   it lands (#1633).
 
 Each program also carries the default-mode differential: default `vera test`
-runs no trial against a function it reports proved, and every function it
-does NOT report proved has the same result under `--distrust`, so the mode
-changes only what it was asked to change.
+runs no trial against a function the verifier proved, and every function it
+did NOT prove has the same result under `--distrust`, so the mode changes
+only what it was asked to change.
 
 Known false Tier 1s are strict xfails in KNOWN_REFUTED, keyed by program and
 naming their issue, so a fix flips its entry loud.  The list is empty: at
 introduction no program refutes, at 5 trials or at 100 — 173 proofs run and
-hold, and the open soundness bugs that do refute (#1587, #1555) have no shape
-in the corpus.
+hold, 3 are not exercised, and the open soundness bugs that do refute (#1587,
+#1555) have no shape in the corpus.
 
 Trials per function come from VERA_DISTRUST_TRIALS (default 5).  The whole
 file adds about 20 worker-seconds to the suite.
@@ -148,7 +148,9 @@ def _distrust_program(
     """The per-program instrument: the differential, the counts, and no
     refutation.  Skips a program with nothing for `--distrust` to run."""
     default = _tested(path, distrust=False)
-    proved = [f for f in default.functions if f.category == "verified"]
+    # A proof the generator cannot serve is skipped by default, its `proved`
+    # flag still set, so the flag and not the category says what is proved.
+    proved = [f for f in default.functions if f.proved]
     assert all(f.trials_run == 0 and not f.failures for f in proved), (
         "default `vera test` ran a trial against a proof")
     if not proved:
@@ -163,7 +165,7 @@ def _distrust_program(
     by_name = {f.fn_name: f for f in distrust.functions}
     for f in default.functions:
         d = by_name[f.fn_name]
-        if f.category != "verified":
+        if not f.proved:
             assert _outcome(d) == _outcome(f), (
                 f"--distrust changed '{f.fn_name}', which it does not "
                 f"distrust:\n  default:  {_outcome(f)}\n  distrust: {_outcome(d)}")
@@ -174,11 +176,14 @@ def _distrust_program(
             assert d.trials_run == 0 and "not exercised" in d.reason, d.reason
 
     exercised = [d for d in distrust.functions if d.proved and d.trials_run]
+    unexercised = [
+        d for d in distrust.functions if d.proved and not d.trials_run]
     unattributed = [
         t for d in distrust.functions for t in d.failures
         if t.status == "unattributed"
     ]
     record("distrust_proofs_exercised", len(exercised))
+    record("distrust_proofs_not_exercised", len(unexercised))
     record("distrust_refuted", distrust.summary.refuted)
     record("distrust_unattributed_traps", len(unattributed))
     record("distrust_functions_with_unattributed_traps",

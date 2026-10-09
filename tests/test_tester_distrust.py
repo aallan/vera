@@ -1100,6 +1100,131 @@ class TestProofsNoCheckStandsFor:
         assert f.reason == "Tier 1, the proof held under 9 trials"
 
 
+# The reviewer's repro: `opt_pos` and `same` are proved, but the generator
+# encodes no `Option<Int>` and no type variable, so `vera test` skips both in
+# either mode.  (A generic is verified through its instantiations, hence the
+# private caller.)  The controls prove nothing, so leave nothing unexercised:
+# `const_one`, never instantiated, has its `ensures` recorded Tier 3, and
+# `safe_idx` has only trivial contracts.
+SRC_SKIPPED_PROOFS = """\
+public fn opt_pos(@Option<Int> -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  match @Option<Int>.0 {
+    Some(@Int) -> if @Int.0 >= 0 then { @Int.0 } else { 0 },
+    None -> 0
+  }
+}
+
+public forall<T> fn same(@T -> @T)
+  requires(true)
+  ensures(@T.result == @T.0)
+  effects(pure)
+{
+  @T.0
+}
+
+private fn use_same(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  same(@Int.0)
+}
+
+public forall<T> fn const_one(@T -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  1
+}
+
+public fn safe_idx(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Array<Int> = [1, 2, 3];
+  @Array<Int>.0[1]
+}
+"""
+
+
+class TestProofsTheGeneratorCannotServe:
+    """A proved function skipped for its parameters is a proof not exercised."""
+
+    @pytest.mark.parametrize("distrust", [False, True])
+    def test_proved_is_read_for_every_function(self, distrust: bool) -> None:
+        result = _run(SRC_SKIPPED_PROOFS, distrust=distrust)
+        assert {f.fn_name: f.proved for f in result.functions} == {
+            "opt_pos": True, "same": True, "const_one": False,
+            "safe_idx": False}
+
+    def test_default_mode_skips_them_as_before(self) -> None:
+        result = _run(SRC_SKIPPED_PROOFS, distrust=False)
+        assert [(f.fn_name, f.category, f.reason)
+                for f in result.functions] == [
+            ("opt_pos", "skipped",
+             "cannot generate Option<Int> inputs (see #169)"),
+            ("same", "skipped", "generic function"),
+            ("const_one", "skipped", "generic function"),
+            ("safe_idx", "skipped", "trivial contracts only"),
+        ]
+        assert result.diagnostics == []
+        assert (result.summary.skipped, result.summary.verified) == (4, 0)
+
+    def test_under_distrust_each_is_a_proof_not_exercised(self) -> None:
+        result = _run(SRC_SKIPPED_PROOFS, distrust=True)
+        assert [(f.fn_name, f.category, f.trials_run, f.reason)
+                for f in result.functions] == [
+            ("opt_pos", "verified", 0, "Tier 1, not exercised: cannot "
+             "generate Option<Int> inputs (see #169)"),
+            ("same", "verified", 0,
+             "Tier 1, not exercised: generic function"),
+            ("const_one", "skipped", 0, "generic function"),
+            ("safe_idx", "skipped", 0, "trivial contracts only"),
+        ]
+        assert [(d.error_code, d.severity, d.description)
+                for d in result.diagnostics] == [
+            ("E701", "warning",
+             "Cannot generate test inputs for 'opt_pos': the generator "
+             "encodes no Option<Int> value (see #169), so its proof is not "
+             "exercised."),
+            ("E701", "warning",
+             "Cannot generate test inputs for 'same': it is generic, "
+             "so its proof is not exercised."),
+        ]
+        s = result.summary
+        assert (s.verified, s.skipped, s.tested) == (2, 2, 0)
+
+    def test_both_outputs_count_them(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        path = _write(tmp_path, SRC_SKIPPED_PROOFS)
+        rc, payload = _cli_json(capsys, path, distrust=True)
+        assert rc == 0
+        assert {f["name"]: (f["category"], f["proved"])
+                for f in payload["functions"]} == {  # type: ignore[union-attr]
+            "opt_pos": ("verified", True),
+            "same": ("verified", True),
+            "const_one": ("skipped", False),
+            "safe_idx": ("skipped", False),
+        }
+        assert cmd_test(path, distrust=True) == 0
+        out = capsys.readouterr().out
+        assert ("Proofs:  0 exercised, 0 refuted, 0 with an unattributed "
+                "trap, 2 not exercised") in out
+
+    def test_the_default_json_carries_no_proved_key(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        _, payload = _cli_json(capsys, _write(tmp_path, SRC_SKIPPED_PROOFS))
+        assert all("proved" not in f for f in payload["functions"])  # type: ignore[union-attr]
+
+
 # Every kind of proved clause, each with and without the check that stands
 # for it.  Parsed only, for its spans: the records and checks are built here.
 _CLAUSES_SOURCE = """\

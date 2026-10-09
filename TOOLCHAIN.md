@@ -213,8 +213,9 @@ vera test --distrust --json file.vera
 
 A proved function `--distrust` cannot run stays `VERIFIED`, "not exercised",
 with the reason and a warning.  The warning is `E701` when the generator cannot
-serve it, for example a precondition that calls a user function or admits
-inputs only beyond the generator's range.  It is `E702` when the function has
+serve it, for example a parameter type it does not encode (an ADT, a generic's
+type variable), or a precondition that calls a user function or admits inputs
+only beyond the generator's range.  It is `E702` when the function has
 no executable form, for example one code generation dropped, or when no runtime
 check stands for any of its proved clauses.
 Without `--distrust` the output is exactly the default one.
