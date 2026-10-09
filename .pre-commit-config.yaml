@@ -6,14 +6,15 @@
 #
 # Placement.  This file holds the FAST gates — lint, types, the doc and
 # consistency gates, and the tests a commit stages — so a commit takes
-# minutes.  The slow gates run in CI (.github/workflows/ci.yml) on every pull
-# request and on every push to main, and there only: the full
-# pytest suite on the whole OS x Python matrix (`test`), the conformance suite,
-# the examples' check + verify and their runs, the E602/E604 compile sweep
-# (`lint`), and the conformance and example runs under VERA_EAGER_GC=1
-# (`eager-gc`).  CI also runs every gate below, so a commit that reaches it
-# without these hooks is still gated.  tests/test_gate_placement.py pins both
-# halves.
+# minutes.  The slow gates run in CI (.github/workflows/ci.yml), and there
+# only: the full pytest suite, which carries the conformance suite and the
+# examples' check + verify, on the whole OS x Python matrix (`test`) on every
+# pull request, and once, measuring coverage (`coverage`), on the push event
+# a merged pull request produces on main; the examples' runs and the E602/E604
+# compile sweep (`lint`); and the conformance and example runs under
+# VERA_EAGER_GC=1 (`eager-gc`).  CI also runs every gate below, so a commit
+# that reaches it without these hooks is still gated.
+# tests/test_gate_placement.py pins both halves.
 
 repos:
   # General hygiene
@@ -104,16 +105,21 @@ repos:
       # `vera check` and `vera verify`, and runs every `vera:run` invocation
       # it names, or carries a vera:skip marker (scripts/doc_annotations.py,
       # #538) naming the stage it fails.  It also runs the `vera run
-      # examples/...` invocations the documents name and holds every tracked
-      # document with Vera blocks to its DOC_GATES / NOT_GATED lists, so the
-      # trigger is any document, the compiler, the examples (and the stub
-      # modules the blocks import, examples/vera/), and the gate's modules.
+      # examples/...` invocations the documents name.  The trigger is what
+      # the gate reads: the documents in its DOC_GATES list, the compiler,
+      # the examples (and the stub modules the blocks import, examples/vera/)
+      # and the gate's modules; tests/test_gate_placement.py holds it to
+      # DOC_GATES.  Any other document, CHANGELOG.md or TESTING.md say, has
+      # no gated block to re-verify.  The rule that every tracked document
+      # with Vera blocks is in DOC_GATES or NOT_GATED still runs on every
+      # commit that fires this hook, and on every CI run, which is where a
+      # newly added document is classified.
       - id: doc-examples
         name: doc examples
         entry: .venv/bin/python scripts/check_doc_examples.py
         language: system
         pass_filenames: false
-        files: '(\.(md|html|txt)$|vera/.*\.py$|vera/grammar\.lark$|examples/.*\.vera$|scripts/(check_doc_examples|check_examples_run|doc_annotations)\.py$)'
+        files: '^((SKILL|README|FAQ|EXAMPLES|DE_BRUIJN|PYPI_README)\.md|spec/[^/]*\.md|docs/index\.(html|md)|vera/.*\.py|vera/grammar\.lark|examples/.*\.vera|scripts/(check_doc_examples|check_examples_run|doc_annotations)\.py)$'
 
       - id: diagnostic-examples
         name: diagnostic examples

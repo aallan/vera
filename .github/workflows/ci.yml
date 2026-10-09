@@ -5,17 +5,64 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # The whole test matrix once a day, on main as it stands.  The push event a
+  # merged pull request produces on main runs the matrix only for a release
+  # (see the test job), so this is what still runs every cell every day.
+  schedule:
+    - cron: "0 3 * * *"
 
 # Cancel superseded runs of the same PR (each push restarts the matrix).
 # Push runs are never cancelled: main keeps a completed check run per
 # commit, which bisection relies on, and that run is the one that
-# measures coverage (see the test job), so no pull request waits on it.
+# measures coverage (see the coverage job), so no pull request waits on it.
+# A run queued behind another in its group waits, so the nightly run has a
+# group of its own and never holds a merge's push run pending.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && 'nightly' || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Whether a push raised [project].version: the release-mode rule of
+  # scripts/check_doc_counts.py (#1536), asked of the commit before the
+  # push.  The test matrix reads the answer.  On a pull request or the
+  # nightly run its steps do not run, and the job finishes in seconds.
+  plan:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.release.outputs.release }}
+    steps:
+      - uses: actions/checkout@v7
+        if: github.event_name == 'push'
+        with:
+          # The commit before the push, whose pyproject.toml is compared.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        if: github.event_name == 'push'
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Did this push raise [project].version?
+        id: release
+        if: github.event_name == 'push'
+        run: python scripts/check_doc_counts.py --print-release-mode "${{ github.event.before }}" >> "$GITHUB_OUTPUT"
+
   test:
+    needs: plan
+    # Every cell on a pull request, on the nightly run, and on the push event
+    # a merged pull request produces on main when the merge raised
+    # [project].version (a release).  On the push event any other merge
+    # produces, the pull request's last run has already tested that tree on
+    # every cell (branch protection requires the branch to be up to date), so
+    # the matrix stands down and no push run holds macOS and Windows runners
+    # that the next pull request's cells queue behind; the coverage job runs
+    # the suite instead.  A job-level `if` cannot see the matrix, so the cell
+    # that measures coverage is that job rather than a cell kept here.
+    if: github.event_name != 'push' || needs.plan.outputs.release == 'true'
     permissions:
       contents: read
     strategy:
@@ -41,7 +88,8 @@ jobs:
             python-version: "3.12"
 
     # The ' + coverage' suffix is the name of a required status check; it
-    # stays until the branch-protection list is updated with the fast lane.
+    # stays until the branch-protection list is updated with the fast lane,
+    # although the coverage job now measures coverage and this cell does not.
     name: test (${{ matrix.os }}, ${{ matrix.python-version }})${{ matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest' && ' + coverage' || '' }}
     runs-on: ${{ matrix.os }}
     # No PYTHONUTF8 env: #645 made text I/O UTF-8 without the PEP-540 backstop
@@ -64,25 +112,39 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[dev]"
 
-      # Coverage is measured on push to main only.  The instrumented cell
-      # costs about 2.5x an uninstrumented one and set the wall time of
-      # every pull-request run, so a pull request runs the same suite
-      # uninstrumented on every cell, and main's push run measures
-      # coverage (with the sysmon core, Python 3.12+) and uploads it,
-      # which keeps Codecov tracking main.  -n auto runs tests in
-      # parallel across CPU cores via pytest-xdist.
+      # Uninstrumented on every cell: the coverage job measures coverage.
+      # -n auto runs tests in parallel across CPU cores via pytest-xdist.
       - name: Run tests
-        if: ${{ !(matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest' && github.event_name == 'push') }}
         run: pytest -v -n auto
 
+  coverage:
+    if: github.event_name == 'push'
+    # The push event every merged pull request produces on main measures
+    # coverage here, with the sysmon core (Python 3.12+), and uploads it,
+    # which keeps Codecov tracking main.  An instrumented run costs about
+    # 2.5x an uninstrumented one, so no pull request waits on it.
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
       - name: Run tests with coverage
-        if: matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest' && github.event_name == 'push'
         env:
           COVERAGE_CORE: sysmon
         run: pytest -v -n auto --cov=vera --cov-report=term-missing --cov-report=xml --cov-fail-under=80
 
       - name: Upload coverage to Codecov
-        if: matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest' && github.event_name == 'push'
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -138,12 +200,9 @@ jobs:
         if: github.event_name != 'pull_request' || !contains(github.event.pull_request.labels.*.name, 'skip-changelog')
         run: python scripts/check_changelog_updated.py
 
-      - name: Check conformance suite
-        run: python scripts/check_conformance.py
-
-      - name: Check all examples type-check and verify cleanly
-        run: python scripts/check_examples.py
-
+      # The conformance suite and the examples' check + verify are not
+      # repeated here: tests/test_conformance.py and the example round-trip
+      # tests run them inside the suite (the scripts stay for local use).
       - name: Check the corpus is in canonical form
         run: python scripts/check_corpus_canonical.py
 
@@ -192,11 +251,13 @@ jobs:
       - name: Check documentation counts are consistent
         # The headline test totals are checked against the live collection
         # on a change that raises [project].version (the release PR, whatever
-        # its base, and the push that merges it), and against one another
-        # only on every other change, since every fix PR moves them (#1536).
-        # A pull request is compared with its base branch, a push with the
-        # commit before it.  The rule is in scripts/check_doc_counts.py.
-        run: python scripts/check_doc_counts.py --release-if-version-raised "${{ github.event_name == 'pull_request' && github.base_ref || github.event.before }}"
+        # its base, and the push event its merge produces on main), and
+        # against one another only on every other change, since every fix PR
+        # moves them (#1536).  A pull request is compared with its base
+        # branch, a push with the commit before it, and the nightly run,
+        # which has no commit before it, with the commit it tests, which
+        # raises nothing.  The rule is in scripts/check_doc_counts.py.
+        run: python scripts/check_doc_counts.py --release-if-version-raised "${{ github.event_name == 'pull_request' && github.base_ref || github.event.before || github.sha }}"
 
       - name: Check limitation tables are in sync
         run: python scripts/check_limitations_sync.py
@@ -329,8 +390,9 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-latest
-    # Generate an SBOM on every push to main (i.e. each release merge).
-    # PRs get the artifact too, useful for reviewing dependency changes.
+    # Generate an SBOM on the push event every merged pull request produces
+    # on main.  PRs get the artifact too, useful for reviewing dependency
+    # changes.
     steps:
       - uses: actions/checkout@v7
         with:
@@ -360,10 +422,13 @@ jobs:
     # failure (ENVIRONMENT.md).  Both defects this lane would have caught
     # were found by hand; without the lane the class re-enters silently,
     # because the ordinary run is green on exactly the programs that fail
-    # here.  Its own job rather than a step on `test`: it re-runs the whole
-    # conformance corpus and every runnable example under a knob that makes
-    # them slower, and a failure here should name itself rather than arrive
-    # as a line inside the main suite's output.
+    # here.  Its own job rather than a step on `test`: it re-runs every
+    # run-level conformance program and every runnable example under a knob
+    # that makes them slower, and a failure here should name itself rather
+    # than arrive as a line inside the main suite's output.  The conformance
+    # programs go through the suite's own run stage (`test_run`); a
+    # collection changes what a program does only when it runs, so the
+    # parse, check and verify stages are not repeated here.
     permissions:
       contents: read
     runs-on: ubuntu-latest
@@ -380,8 +445,8 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[dev]"
 
-      - name: Conformance suite under eager GC
-        run: python scripts/check_conformance.py
+      - name: Conformance runs under eager GC
+        run: pytest tests/test_conformance.py -k run -n auto
         env:
           VERA_EAGER_GC: "1"
 
