@@ -131,7 +131,13 @@ Before changing code — **adding or removing** — write the test that proves y
 
 ## Fix the class, not the instance
 
-A bug fix closes the **class** the report belongs to — the set of inputs the same mechanism gets wrong — not the reported instance.  When review shows a fix covers the instance but not the class, the class fix goes in the same PR, bounded to the mechanism at fault.  Every fix PR names its class boundary in the body and ships a class instrument: an exhaustive matrix over the space the class spans, or a generator, never hand-picked cases alone.  One issue per class, with its instances as a checklist — a finding that is another instance of an open class extends that issue and its instrument instead of opening a new one.  The canonical statement is `CONTRIBUTING.md` § Bugs: the class, not the instance; the instrument shapes are in `TESTING.md` § Class Instruments.
+A bug fix closes the **class** the report belongs to — the set of inputs the same mechanism gets wrong — not the reported instance.  The canonical statement is `CONTRIBUTING.md` § Bugs: the class, not the instance; the instrument shapes, and where an instrument runs, are in `TESTING.md` § Class Instruments.
+
+- **One mechanism: fix the class in its PR.**  When one mechanism bounds the class, the fix closes it and a class instrument proves it; when review shows a fix covers the instance but not the class, the class fix goes in the same PR, bounded to the mechanism at fault.  Every fix PR names its class boundary in the body and ships the instrument: an exhaustive matrix over the space the class spans, or a generator, never hand-picked cases alone.
+- **An architectural boundary: no per-site fix.**  When the class boundary is architectural — two phases re-deriving the same fact — nothing fixes it per site, the reporting PR included; the issue carries the milestone of the release that removes the mechanism (`ROADMAP.md` schedules it), and closes there.
+- **Instruments are burndown tools.**  A class instrument's file carries a marker; it runs in full in the nightly lane and on PRs that touch the deciding module, and the PR gate runs a pinned, stratified sample of it.
+- **Three review rounds.**  A fourth needs a written answer to "which mechanism produces these members, and does this PR remove it?"; a class that keeps widening across rounds is at the wrong layer, and goes to its mechanism's release.
+- **File, don't fold.**  A bug found in review is filed, never folded into an in-flight PR, unless it is a regression or a defect in the PR's own code.  One issue per class, with its instances as a checklist — a finding that is another instance of an open class extends that issue and its instrument instead of opening a new one.
 
 ## What not to break
 

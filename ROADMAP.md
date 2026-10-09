@@ -12,15 +12,17 @@ Ordering derives from the design principles ([DESIGN.md](DESIGN.md)): verificati
 
 ## Where we are
 
-30,095 tests, 256 conformance programs, 43 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs (burndown material rather than stage work), plus the *limitations* the stages below retire.
+30,095 tests, 256 conformance programs, 43 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs, plus the *limitations* the stages below retire.
 
-The next release is a feature release, v0.3.0: the `Decision` effect ([#1467](https://github.com/aallan/vera/issues/1467)), which waits on [#351](https://github.com/aallan/vera/issues/351), [#352](https://github.com/aallan/vera/issues/352), [#372](https://github.com/aallan/vera/issues/372) and [#373](https://github.com/aallan/vera/issues/373).
+v0.3.0 is the sound base (Stage 29), reached through v0.2.1 to v0.2.8 (Stages 21 to 28).  The feature release follows it in Stage 30: the `Decision` effect ([#1467](https://github.com/aallan/vera/issues/1467)) and its blockers, [#351](https://github.com/aallan/vera/issues/351), [#352](https://github.com/aallan/vera/issues/352), [#372](https://github.com/aallan/vera/issues/372) and [#373](https://github.com/aallan/vera/issues/373).
 
 ## The next burndown
 
 *Eighty-two open bugs, driven to zero.*
 
 A bug class outranks stage work, so the open `bug`-labelled set is the queue the fix releases work from, soundness defects first.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) carries each row's full account and stays the one place the detail lives; this table is the order of attack.
+
+Bugs in a mechanism cluster close in the stage that removes their mechanism and carry that release's milestone; the rest are the [debt track](https://github.com/aallan/vera/milestone/10), burned down alongside the stages in small pull requests.
 
 | Issue | What |
 |---|---|
@@ -145,7 +147,145 @@ Exit criterion: each listed drift class has a generator or a gate, and a release
 | [#1611](https://github.com/aallan/vera/issues/1611) | Five test cells that can pass without exercising what they assert — each shown by a mutation or a direct run. |
 | [#1612](https://github.com/aallan/vera/issues/1612) | Stale comments and docstrings in tests and two compiler helpers, a test cache that never hits, and a mis-positioned constructor call. |
 
-## Stage 21 — The effect hardening sprint
+## Stage 21 — Instruments and truth (v0.2.1)
+
+*The pipeline checks its own claims.*
+
+Small changes, none to the language's semantics.  The pipeline checks what it reports, CI and the hooks stop doing work twice, and the docs state only what holds.  The stage closes the pipe bugs ([milestone v0.2.1](https://github.com/aallan/vera/milestone/1)), or moves what remains of one to the release that removes its mechanism.
+
+Exit criterion: the reconciliation and the distrust tester run in CI, the conformance manifest pins every run-level entry's output, and no gate compares copies of a count.
+
+| Change | What |
+|---|---|
+| Obligations reconciled with guards | `vera verify` compiles in process and joins its obligation records with the checks code generation emits, on file, span and kind.  A `tier3` record with no check is an error, a check with no record a warning, and a CI gate runs the join over the corpus and the examples. |
+| `vera test --distrust` | Runs proved functions with their runtime checks on, so the tester can see a false Tier 1: over the corpus with few trials in CI, and with many in the nightly lane. |
+| Golden outputs | Every run-level conformance entry records its expected stdout and exit code, and `test_conformance` asserts them. |
+| Desugar once | The pipe becomes a call at transform, and a module's call by its own path becomes the bare call, so no later phase meets either form. |
+| CI and the hooks | Path filters, a 94% coverage floor, lint without the conformance and example runs the test job already makes, eager-GC as a pytest run, a CHANGELOG gate that reads the pull request's base, and a `doc-examples` hook that fires only for what it gates. |
+| Counts out of the prose | Hand-written counts leave the docs.  `scripts/render_status.py` writes them into TESTING.md from the live tree, the version lives in `pyproject.toml` only, and the count gates shrink to one release-time freshness check. |
+| Instruments as burndown tools | A class instrument's file carries a marker.  The pull-request gate runs its reproducing, red-first and mutant-killing cells and a stratified sample of the rest; the nightly lane runs it in full, as does a pull request that touches the module deciding its class. |
+| Truth | TESTING.md stops claiming `hypothesis` is installed and drops its stale mutation figures; DESIGN.md and README.md say that the runtime backstop shares code generation with the program; the landing page and README.md stop quoting VeraBench's 100% until a re-run exists. |
+
+## Stage 22 — The fast lane and single sources (v0.2.2)
+
+*A fix merges in under an hour.*
+
+The pull-request gate becomes a fast lane with the full matrix after merge, and the lists the docs copy by hand render from their sources.
+
+Exit criterion: a pull request's CI finishes in 20 minutes or less, and every hand-copied list renders from its source.
+
+| Change | What |
+|---|---|
+| The fast lane | A pull request's required checks become lint, sharded Python 3.12 runs on Linux and Windows, eager-GC, browser parity, CodeQL and the supply-chain jobs.  The full platform matrix runs after merge, nightly and on a version-raising pull request; a failure files an issue, and the release waits for the post-merge run. |
+| Rendered lists | Each hand-copied list renders from its source and retires the gate that compared the copies: the effect lists from `vera effects --json`, the spec's grammar listing from `grammar.lark`, the limitation tables from one data file beside KNOWN_ISSUES.md, and `examples/README.md` from the examples' headers. |
+| CHANGELOG fragments | Each pull request adds its own file under `changelog.d/`, and the release assembles the section ([#1529](https://github.com/aallan/vera/issues/1529)), so fix pull requests share no line. |
+| The scorecard | `scripts/render_status.py` also measures the Stage 29 scorecard, so every release pull request re-measures it without hand work. |
+| One pipeline driver | `tests/pipeline.py` runs check, verify, compile and run in process and returns structured results.  The per-file drivers and the CLI subprocesses move to it, leaving `test_cli.py` and a few corpus programs as the CLI smoke test, and tests that read WAT text read instead a guard-and-trap manifest that code generation emits beside it. |
+
+## Stage 23 — `Nat` and the lowering boundary (v0.2.3)
+
+*`Nat` is the type the spec defines, and what checks compiles.*
+
+The `Nat` change is a language change, so the release carries an upgrade note that names what breaks and how to fix it.  The stage closes the `Nat`-width and literal-typing clusters and the constructs code generation cannot lower ([milestone v0.2.3](https://github.com/aallan/vera/milestone/3)).
+
+Exit criterion: the corpus differential names every program whose verdict or output moves, and the distrust tester is green.
+
+| Change | What |
+|---|---|
+| `Nat` as the non-negative i64 | `Nat` becomes the non-negative i64 that spec §2.2 defines.  Every integer literal is `Int`, narrowing into `@Nat` stays obligated and is Tier 1 for a literal, and the u64 range, `nat_to_int_coerce`, the sign-provenance classifiers and §4.2's typing-by-value rules go.  A program that held a `@Nat` above i64.MAX breaks, and a literal above it draws a diagnostic. |
+| `can_lower` | One module answers whether code generation can lower a construct, and the checker refuses what it cannot, in place of mirrored gates such as E339.  A handler for an effect other than `State` or `Exn` is refused at check, general handlers become feature work after v0.3.0, and DESIGN.md's effects paragraph is restated to match. |
+| Debt, first batch | Local-debt bugs from the verifier, checker, termination, runtime and tooling clusters, in small pull requests. |
+
+## Stage 24 — Hosts, the generator and the fold (v0.2.4)
+
+*One source where there were many.*
+
+The host bindings, the tree walks and the test inputs each get one source: a registry, a fold and a generator.
+
+Exit criterion: the fold leaves WAT byte-identical over the corpus, and the generator runs nightly.
+
+| Change | What |
+|---|---|
+| Host bindings from the registry | The built-in registry gains implementation metadata and generates the import declarations, the set of host imports used, the `api.py` registration table, the `runtime.mjs` dispatch skeleton and the WASI refusal list, so a host operation is added in one place. |
+| One fold | One `Expr` fold and one binder-aware scope walker; the hand-written dispatchers and scope implementations port to them one at a time, and the walker-coverage gate retires. |
+| A program generator | A type-directed generator feeds three nightly differentials: what checks compiles and loads with every public function exported; every obligation record has its guard and every guard its record; a Tier 1 proof meets no runtime violation on generated inputs. |
+| A mutation lane | Mutation testing scoped to a pull request's diff. |
+
+## Stage 25 — One resolver (v0.2.5)
+
+*Every name resolved once.*
+
+Stages 25 to 27 build the shared representation [#1525](https://github.com/aallan/vera/issues/1525) asks for, one fact at a time: names, then types, then obligations, each derived once and read by every later phase.
+
+A resolver pass owns names.  Every declaration gets a `DeclId`, every occurrence maps to one exactly once, and code generation's symbols derive from them in a namespace no generated name can reach.  The prelude becomes a real module with reserved names ([#1469](https://github.com/aallan/vera/issues/1469)), so a program cannot redeclare `Option`, `Result` or `Json`, and the upgrade note says so.  E608–E623 move to check time, and the verifier and code generation stop registering declarations of their own.  The stage closes the ownership and prelude cluster ([milestone v0.2.5](https://github.com/aallan/vera/milestone/5)).
+
+Exit criterion: `check` and `verify` verdicts are identical over the corpus except where the pull request names a change, and WAT differs only in symbol names.
+
+## Stage 26 — One typed program (v0.2.6)
+
+*Every type derived once.*
+
+Monomorphisation runs once, before verify and compile, and every node of every clone carries its type in a table keyed by node identity; literal typing is sound for the value and carries its sign.  The backend's own inference (the `_infer_*` functions), both clone namers, code generation's AST fallbacks for `Nat` and the verifier's `_resolve_type` go, and so does the roster of readers allowed into the checker's tables.  Clone names change, so WAT moves across the corpus.  The stage closes the re-derived-type cluster ([milestone v0.2.6](https://github.com/aallan/vera/milestone/6)).
+
+Exit criterion: the corpus differential names every mover, and the existing matrices and the generator's differentials are green.
+
+## Stage 27 — One obligation table (v0.2.7)
+
+*Every obligation listed once.*
+
+One pass lists every obligation site; the verifier discharges what it can and code generation guards the rest, so whether an obligation is `tier3` or `tier3_unguarded` is read from its record rather than predicted.  `_walk_for_nat_binding_obligations`, code generation's hand-down, the verifier's `guarded=` claims and the mirror predicates go.  Once coverage is complete, `tier3_unguarded` becomes an error, §6.4.2's taint rules go, and `test_nested_container_guards` moves wholly to the nightly lane.  The table wants node types, so this stage may ship inside Stage 26's release.  It closes the guard-agreement cluster ([milestone v0.2.7](https://github.com/aallan/vera/milestone/7)).
+
+Exit criterion: every obligation record and every emitted guard come from one table entry, by construction.
+
+## Stage 28 — Decomposition and the spec (v0.2.8)
+
+*Readable parts, and a spec that states the language.*
+
+The large classes split once Stages 25 to 27 have deleted what they duplicate, and the spec hands its implementation status to the documents that track it.  The stage closes what remains of the [debt track](https://github.com/aallan/vera/milestone/10).
+
+Exit criterion: no function is over 500 lines, and the spec carries no implementation status.
+
+| Change | What |
+|---|---|
+| Decomposition | `ContractVerifier`, `WasmContext` and `CodeGenerator` split along the seams Stages 25 to 27 create. |
+| The spec states the language | Implementation status moves out of the spec to KNOWN_ISSUES.md and the limitation data file. |
+| Fixes that clear | A gate applies each diagnostic's `Fix` template to its repro, and the diagnostic must no longer fire. |
+| Debt, second batch | Whatever remains of the debt track. |
+
+## Stage 29 — The sound base (v0.3.0)
+
+*Declared sound by measurement.*
+
+A release only.  Its pull request re-measures the scorecard below, and v0.3.0 ships when every target is met.  VeraBench re-runs on v0.3.0 with fresh generation, verify@1 beside pass@1 and adversarial inputs, and the landing page quotes that run.
+
+Exit criterion: every target in the scorecard is met.
+
+| Measure | Target |
+|---|---|
+| Open `soundness` bugs | 0 |
+| Open bugs | The debt track's residue only, each with an instrument |
+| Backend `_infer_*` functions | 0 |
+| Same-named `Nat`/`Int` helpers in `vera/verifier.py` and `vera/wasm/` | 0 |
+| Explicit `guarded=` claims by the verifier | 0 |
+| Obligation kinds with one record both sides read | All of them |
+| Modules that resolve a name or decide an owner | 1 |
+| Hand-rolled `isinstance` dispatchers over `Expr` | None: the fold |
+| Functions over 500 lines | 0 |
+| Host built-ins hand-mirrored across hosts | 0: generated |
+| Gate scripts that exist only to sync copies | 0 |
+| Hand-mirrored facts | 0 |
+| CI wall time per pull-request push | ≤ 20 minutes |
+| Runner-minutes per pull-request push | ≤ 100 |
+| Fix pull requests, median: CI runs; hours to merge | ≤ 2; ≤ 2 |
+| Suite in the pull-request gate: tests; worker-seconds | ≤ 15,000; ≤ 3,000 |
+| Subprocess share of suite time | ≤ 5% |
+| Conformance entries with golden output | All of them |
+| Program generator with differentials | Nightly |
+| `vera test` executes proved functions | Yes, in CI |
+| Statement / branch coverage | ≥ 96% / ≥ 92%, measured after merge |
+| Spec words; issue links in the spec | Fewer than v0.2.0's; 0 |
+
+## Stage 30 — The effect hardening sprint
 
 *Production controls for the headline effects.*
 
@@ -168,11 +308,11 @@ Exit criterion: the Http and Inference limitation rows are retired; an agent can
 | [#1289](https://github.com/aallan/vera/issues/1289) | Provider registry — a model name reaches the toolchain as data rather than a compiler-source edit to `_PROVIDERS`. |
 | [#380](https://github.com/aallan/vera/issues/380) | Example: handler mocking for Inference (unblocked by #372). |
 
-## Stage 22 — The verified tool server
+## Stage 31 — The verified tool server
 
 *The flagship: an MCP tool server whose tool schemas are compile-time guarantees.*
 
-The thesis demo.  The `<HttpServer>` effect, the WASI Preview 2 target, and its `wasi:http` serve backend shipped in the server-effects sprint (Stage 16); Stage 21 hardens the effects it consumes.  What remains is the `<McpServer>` effect itself, the safety rails a server on untrusted input needs, and the small stdlib surface real tools keep reaching for.
+The thesis demo.  The `<HttpServer>` effect, the WASI Preview 2 target, and its `wasi:http` serve backend shipped in the server-effects sprint (Stage 16); Stage 30 hardens the effects it consumes.  What remains is the `<McpServer>` effect itself, the safety rails a server on untrusted input needs, and the small stdlib surface real tools keep reaching for.
 
 Exit criterion: a working MCP tool server written in Vera, serving contract-verified tools to a real agent, with the demo documented end to end.
 
@@ -188,7 +328,7 @@ Exit criterion: a working MCP tool server written in Vera, serving contract-veri
 | [#529](https://github.com/aallan/vera/issues/529) | Use mcp-assert as the test harness for the Vera MCP server. |
 | [#329](https://github.com/aallan/vera/issues/329) | Explore Plumbing integration — Vera WASM modules as verified agent tool calls (the exploration item; this sprint is its trigger). |
 
-## Stage 23 — The agent experience sprint
+## Stage 32 — The agent experience sprint
 
 *The loop the model lives in.*
 
@@ -214,7 +354,7 @@ Exit criterion: the LSP limitation rows are retired, and a fresh VeraBench run (
 | [#225](https://github.com/aallan/vera/issues/225) | VeraBench: pass@k evaluation, more models, more tiers — the sprint's measurement. |
 | [#1139](https://github.com/aallan/vera/issues/1139) | Formatter internals: parse-time comment ownership and a single recursive renderer, making comment preservation and one-canonical-form structural properties rather than invariants spread across the emitters; retires the remaining relocation cases and the inline/multi-line dual paths. |
 
-## Stage 24 — The browser sprint
+## Stage 33 — The browser sprint
 
 *Demos that move.*
 
@@ -251,7 +391,7 @@ Beyond the staged sprints — grouped by arc, each pulled forward by its trigger
 
 Not stage-gated; advanced alongside whatever stage is active.
 
-- **VeraBench** ([vera-bench](https://github.com/aallan/vera-bench)) — the suite is its own thread; the compiler-side pass@k re-run is staged as Stage 23's measurement ([#225](https://github.com/aallan/vera/issues/225)).
+- **VeraBench** ([vera-bench](https://github.com/aallan/vera-bench)) — the suite is its own thread; the compiler-side pass@k re-run is staged as Stage 32's measurement ([#225](https://github.com/aallan/vera/issues/225)).
 - **CI, process, and tooling** — [#386](https://github.com/aallan/vera/issues/386) Hypothesis round-trip properties (bookmark), [#712](https://github.com/aallan/vera/issues/712) Codecov → Harness migration watch, [#753](https://github.com/aallan/vera/issues/753) pygls / Python 3.16 watch, [#1126](https://github.com/aallan/vera/issues/1126) z3-solver 5.0 bake period, then re-run the obligation differential, [#1103](https://github.com/aallan/vera/issues/1103) migrate GitHub Pages off legacy branch-deploy to a self-owned Actions workflow, [#1295](https://github.com/aallan/vera/issues/1295) decide whether the four abilities (`Eq`/`Hash`/`Ord`/`Show`) highlight distinctly from ordinary types in the editor grammars, [#1263](https://github.com/aallan/vera/issues/1263) detect `_PROVIDERS` model IDs that a vendor has stopped documenting — every provider test pins the ID to a literal, which catches a registry edit but not rot at the vendor, so the signal needs a network-allowed probe.
 
 ## Not doing now
