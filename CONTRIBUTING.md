@@ -54,19 +54,29 @@ When adding or modifying built-in functions (registered in `vera/environment.py`
 
 ## Bugs: the class, not the instance
 
-A bug report is one sighting of a fault.  What gets filed, and what gets fixed, is the **class** it belongs to: the set of inputs the same mechanism gets wrong.
+A bug report is one sighting of a fault.  What gets filed, and what gets fixed, is the **class** it belongs to: the set of inputs the same mechanism gets wrong.  Where that mechanism sits decides where the class is fixed.
 
 ### Fixing: close the class
 
-A bug fix closes the class the report belongs to, not the reported instance.  When review shows a fix covers the instance but not the class, the class fix goes into the **same** pull request, bounded to the mechanism at fault — repair where that mechanism decides, not each way the wrong decision surfaces, and do not widen past it.  A fix that closes only the instance is a review-blocking finding, and narrowing the claim to the instance while leaving the issue open is deferral rather than a fix.
+When one mechanism bounds the class, a bug fix closes the class the report belongs to, not the reported instance, and a class instrument proves it.  When review shows a fix covers the instance but not the class, the class fix goes into the **same** pull request, bounded to the mechanism at fault — repair where that mechanism decides, not each way the wrong decision surfaces, and do not widen past it.  A fix that closes only the instance is a review-blocking finding, and narrowing the claim to the instance while leaving the issue open is deferral rather than a fix.
+
+When the class boundary is **architectural** — two phases each re-derive the same fact, so a member sits wherever their derivations can disagree — nothing fixes it per site, the pull request that reports it included.  The issue carries the milestone of the release that removes the mechanism, which [ROADMAP.md](ROADMAP.md) schedules, and closes there.
 
 Every fix PR states its **class boundary** in the body — which inputs the fix now covers, and which neighbouring ones it deliberately does not, with the reason — and ships a **class instrument**: an exhaustive matrix over the space the class spans, or a generator that samples it.  Hand-picked cases alone are not a class instrument; they demonstrate the instance again.  [TESTING.md](TESTING.md) § Class Instruments has the two shapes and what keeps a cell from being vacuous.
 
+A class instrument is a **burndown tool**, not a permanent gate.  Its file carries a marker: the nightly lane runs it in full, and so does any pull request that touches the module where its class is decided; every other pull request runs a pinned, stratified sample of its cells.
+
 A change that moves *where* a decision is made rather than what it decides is proved by a **verdict-signature diff** — the whole gate's verdicts at both revisions, with no movers except the deliberate ones — not by a green suite, which cannot tell a preserved decision from a coincidentally equal one.
+
+### Reviewing: three rounds, then the mechanism
+
+A pull request's review is capped at three rounds.  A fourth needs a written answer, in the pull request, to "which mechanism produces these members, and does this PR remove it?"  A class that keeps widening from round to round is being fixed at the wrong layer, and goes to its mechanism's release instead of to another round.
 
 ### Filing: file the class, not the manifestation
 
 One issue per class of bug, with its known instances as a checklist in the body.  A finding that is another instance of an open class **extends that issue and its instrument** rather than opening a second one: two issues for one mechanism are fixed twice, or half-fixed once.  A new issue is for a different mechanism.
+
+**File, don't fold.**  A bug found while reviewing a pull request is filed as its own issue; it is not folded into that pull request and does not hold it up.  The exceptions are a regression against the pull request's base and a defect in the pull request's own code, which the pull request fixes.
 
 `KNOWN_ISSUES.md`'s Bugs table stays one row per open `bug` issue, so the table counts classes rather than sightings.
 

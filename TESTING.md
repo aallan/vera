@@ -1123,10 +1123,13 @@ The sweep form was flaky rather than wrong: it passed for a whole PR and then fa
 
 ## Class Instruments
 
-A bug fix closes a class rather than the reported instance (`CONTRIBUTING.md`
-§ Bugs: the class, not the instance), so the test that proves it ranges over
-that class.  Two shapes do that, and each is worth only as much as what makes
-its cells able to fail.
+A bug fix closes a class rather than the reported instance when one mechanism
+bounds that class (`CONTRIBUTING.md` § Bugs: the class, not the instance), so
+the test that proves it ranges over that class.  Two shapes do that, and each
+is worth only as much as what makes its cells able to fail.  A class whose
+boundary is architectural — two phases re-deriving the same fact — is not
+fixed per site at all: it carries the milestone of the release that removes
+the mechanism, and closes there.
 
 ### The exhaustive matrix
 
@@ -1165,6 +1168,26 @@ verdicts.  Name the deliberate movers in advance; everything else must be
 identical.  A green suite cannot do this job, because it says every case it
 happens to cover still passes, not that no case changed its answer.
 `scripts/check_corpus_differential.py` is this shape for emitted WAT.
+
+### Where an instrument runs
+
+A class instrument is a burndown tool: it proves the class closed at the fix,
+and it is not a cost every pull request pays on every platform.  Its file
+carries a marker.  The nightly lane runs the marked cells in full, and so does
+any pull request that touches the module where the class is decided; every
+other pull request runs a pinned, stratified sample — the cells that reproduce
+a report, were red before the fix or kill a documented mutant, and a sample of
+the rest drawn across the class's dimensions.
+
+### When the class keeps widening
+
+A fix whose review keeps finding new members of its class, each round's
+instrument reaching what the last one could not, sits at the wrong layer.
+Review is capped at three rounds; a fourth needs a written answer to "which
+mechanism produces these members, and does this PR remove it?", and a class
+that keeps widening goes to its mechanism's release.  A bug found in review is
+filed, not folded in, unless it is a regression or a defect in the pull
+request's own code.
 
 ## Adding Tests
 
