@@ -242,7 +242,7 @@ class TestRunStageRule:
     def test_a_malformed_run_entry_names_its_fault(
         self, keys: dict[str, object], named: str,
     ) -> None:
-        problems = golden.entry_problems(_entry(**keys))
+        problems = golden.entry_problems(_entry("run", **keys))
         assert problems, keys
         assert any(named in p for p in problems), problems
 
@@ -273,7 +273,7 @@ class TestRunComparison:
     PINNED = _entry(expected_stdout="42\n", expected_exit=0)
 
     @staticmethod
-    def _outcome(stdout: bytes, exit: int = 0, stderr: bytes = b"") -> Any:
+    def _outcome(stdout: bytes, exit: int | None = 0, stderr: bytes = b"") -> Any:
         return golden.RunOutcome(exit=exit, stdout=stdout, stderr=stderr)
 
     def test_the_declared_run_matches(self) -> None:
