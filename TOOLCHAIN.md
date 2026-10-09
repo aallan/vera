@@ -184,7 +184,10 @@ Each failing trial of a proved function is read against two records: the
 module's list of the checks it holds, and the verifier's list of what became
 of each obligation.  The trap names its kind and the function it fired in, not
 which of that function's checks fired, so the trial is judged by every check
-of that kind there:
+of that kind there.  On the trial's own call, the function's prologue checks
+(its `requires` clauses and refined-parameter guards) are left out, because the
+arguments were generated to satisfy them, and a trap with nothing else to blame
+is unattributed.  The verdict is one of three:
 
 - **Refuted.** Each stands for an obligation the verifier proved, so
   whichever fired, a proof said it could not.  The function is reported

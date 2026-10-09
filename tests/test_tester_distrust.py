@@ -27,10 +27,14 @@ import re
 import sys
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import pytest
+import z3
 
 from vera import ast
+from vera import tester as tester_module
+from vera.smt import SmtContext
 from vera.checker import typecheck_with_artifacts
 from vera.cli import USAGE, cmd_errors, cmd_test, main
 from vera.errors import ERROR_CODES
@@ -694,6 +698,40 @@ class TestUnexercisedProofs:
         assert (diag.error_code, diag.severity) == ("E702", "warning")
         assert diag.description == (
             "Cannot run 'add1' to test its proof: compilation errors.")
+
+    def test_an_inconclusive_search_is_not_reported_as_out_of_bounds(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A solver that gives up has shown nothing about the bounds.
+
+        Only the generator's context is replaced, so the verifier still proves
+        `add1` while every check the generator makes answers `unknown`.
+        """
+        class _GivesUp:
+            def __init__(self, solver: z3.Solver) -> None:
+                self._solver = solver
+
+            def check(self, *assumptions: object) -> z3.CheckSatResult:
+                return z3.unknown
+
+            def __getattr__(self, name: str) -> object:
+                return getattr(self._solver, name)
+
+        class _GivingUpContext(SmtContext):
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                super().__init__(*args, **kwargs)
+                self.solver = _GivesUp(self.solver)  # type: ignore[assignment]
+
+        monkeypatch.setattr(tester_module, "SmtContext", _GivingUpContext)
+        result = _run(SRC_ADD1, distrust=True)
+        f = _fn(result, "add1")
+        assert (f.category, f.proved, f.trials_run) == ("verified", True, 0)
+        assert f.reason == (
+            "Tier 1, not exercised: the solver's search for an input within "
+            "the generator's bounds was inconclusive")
+        (diag,) = result.diagnostics
+        assert diag.error_code == "E701"
+        assert "inconclusive" in diag.description
 
 
 # #1598's shape, built from literals so the generator reaches it: the

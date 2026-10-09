@@ -204,10 +204,14 @@ _I64_BOUND = 2**53
 # Maximum Z3-generated string length (prevents pathologically long strings)
 _MAX_STRING_LEN = 50
 
-# Why a proved function's precondition gave the generator no input: the
-# verifier has shown it satisfiable (#1451), so the bounds above exclude it.
+# Why a proved function's precondition gave the generator no input.  The
+# verifier has shown it satisfiable (#1451), so an `unsat` means the bounds
+# above exclude it; an `unknown` means the solver gave up within its budget.
 _OUT_OF_BOUNDS = (
     "no input within the generator's bounds satisfies the precondition")
+_INCONCLUSIVE = (
+    "the solver's search for an input within the generator's bounds was "
+    "inconclusive")
 
 
 # =====================================================================
@@ -506,6 +510,7 @@ class _TestEngine:
             # Generate inputs
             param_types = _get_param_types(decl, self.alias_env)
             inputs: list[list[int | float | str]] | None
+            search: z3.CheckSatResult | None = None
             if proved and all(base_type(pt) == UNIT for pt in param_types):
                 # No parameter carries a value — there is none, or only
                 # `@Unit`, which the ABI erases — so there is exactly one
@@ -513,7 +518,7 @@ class _TestEngine:
                 # asked for it.
                 inputs = [[]]
             else:
-                inputs = _generate_inputs(
+                inputs, search = _generate_inputs_and_search(
                     decl, param_types, self.trials, self.alias_env)
 
             if inputs is None:  # pragma: no cover — _classify_functions filters unsupported types
@@ -542,9 +547,12 @@ class _TestEngine:
                 # Precondition is unsatisfiable — or, for a proved function,
                 # whose premises the verifier has shown satisfiable (#1451),
                 # satisfiable only outside the generator's bounds.
+                # An `unknown` is not an `unsat`: a solver that gave up has
+                # not shown the precondition admits nothing in range.
+                why = _OUT_OF_BOUNDS if search == z3.unsat else _INCONCLUSIVE
                 _record_unrun(
                     results, summary, fn_name,
-                    _OUT_OF_BOUNDS if proved else
+                    why if proved else
                     "precondition is unsatisfiable (no valid inputs)",
                     proved,
                 )
@@ -552,18 +560,17 @@ class _TestEngine:
                     diagnostics.append(Diagnostic(
                         description=(
                             f"Cannot generate test inputs for '{fn_name}': "
-                            f"{_OUT_OF_BOUNDS}, so its proof is not "
-                            f"exercised."
+                            f"{why}, so its proof is not exercised."
                         ),
                         location=_fn_location(decl, self.file),
                         source_line=_get_source_line(self.source, decl),
                         rationale=(
-                            "Contract-driven testing draws `@Int` and `@Nat` "
-                            "inputs from [-2^53, 2^53] and strings of at most "
-                            f"{_MAX_STRING_LEN} characters.  This precondition "
-                            "admits inputs only outside that range, so "
-                            "`vera test --distrust` has none to run the "
-                            "proved function on."
+                            "Contract-driven testing asks Z3 for inputs that "
+                            "satisfy the precondition, drawing `@Int` and "
+                            "`@Nat` from [-2^53, 2^53] and strings of at most "
+                            f"{_MAX_STRING_LEN} characters.  It got none for "
+                            "this function, so `vera test --distrust` has "
+                            "nothing to run the proved function on."
                         ),
                         fix=(
                             "Exercise this function with a hand-written test, "
@@ -1490,9 +1497,27 @@ def _generate_inputs(
     has come back empty, so every constraint below translates and the
     ``is not None`` guards are the belt to that braces (#1229).
     """
+    return _generate_inputs_and_search(
+        decl, param_types, count, alias_env)[0]
+
+
+def _generate_inputs_and_search(
+    decl: ast.FnDecl,
+    param_types: list[Type],
+    count: int,
+    alias_env: AliasEnv = EMPTY_ALIAS_ENV,
+) -> tuple[list[list[int | float | str]] | None, z3.CheckSatResult | None]:
+    """:func:`_generate_inputs`, with how the search ended beside the inputs.
+
+    The second element is the solver's answer to the last check of the
+    diversity loop, or None when it never ran.  With no input at all, that
+    answer says why: ``unsat`` means no input within the generator's bounds
+    satisfies the precondition, while ``unknown`` means the solver gave up,
+    and nothing is established either way.
+    """
     env = _declare_param_vars(decl, param_types, alias_env)
     if env is None:
-        return None
+        return None, None
     smt, scope, slot_env = env.smt, env.scope, env.slot_env
     z3_vars, var_types = env.z3_vars, env.var_types
 
@@ -1547,8 +1572,10 @@ def _generate_inputs(
     _seed_boundaries(smt, z3_vars, var_types, inputs, seen)
 
     # Diversity loop
+    search: z3.CheckSatResult | None = None
     while len(inputs) < count:
         result = smt.solver.check()
+        search = result
         if result != z3.sat:
             break  # unsat or unknown → stop
 
@@ -1566,7 +1593,7 @@ def _generate_inputs(
         ])
         smt.solver.add(block)
 
-    return inputs
+    return inputs, search
 
 
 def _seed_boundaries(
