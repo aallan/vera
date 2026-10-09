@@ -204,6 +204,11 @@ _I64_BOUND = 2**53
 # Maximum Z3-generated string length (prevents pathologically long strings)
 _MAX_STRING_LEN = 50
 
+# Why a proved function's precondition gave the generator no input: the
+# verifier has shown it satisfiable (#1451), so the bounds above exclude it.
+_OUT_OF_BOUNDS = (
+    "no input within the generator's bounds satisfies the precondition")
+
 
 # =====================================================================
 # Public API
@@ -451,24 +456,51 @@ class _TestEngine:
                 continue
 
             # category == "tier3", or a proved function under --distrust —
-            # generate inputs and execute
-            if compile_errors:  # pragma: no cover — compile errors already caught before tier3
-                _record_unrun(
-                    results, summary, fn_name, "compilation errors", proved)
-                continue
-
-            # Not exported.  `_get_targets` already filtered out private
-            # declarations, so the live case here is #1186: a PUBLIC
+            # generate inputs and execute.  First, whether there is anything
+            # to execute: not under compilation errors, and not a function
+            # with no export.  `_get_targets` already filtered out private
+            # declarations, so the live no-export case is #1186: a PUBLIC
             # function that codegen DROPPED — its own `[E602]`-class skip,
             # or the `[E620]` it earned by calling something skipped.
-            # Reporting that as "private" told the user to fix a
-            # visibility modifier that was already correct.
-            if fn_name not in compile_result.exports:
-                _record_unrun(
-                    results, summary, fn_name,
-                    _not_exported_reason(fn_name, compile_result, self.file),
-                    proved,
-                )
+            # Reporting that as "private" told the user to fix a visibility
+            # modifier that was already correct.
+            unrunnable = (
+                "compilation errors" if compile_errors
+                else None if fn_name in compile_result.exports
+                else _not_exported_reason(fn_name, compile_result, self.file)
+            )
+            if unrunnable is not None:
+                _record_unrun(results, summary, fn_name, unrunnable, proved)
+                if proved:
+                    # A proof --distrust was asked to exercise and could not
+                    # run is disclosed where a diagnostics-only consumer
+                    # looks, as #1229's skip is.
+                    diagnostics.append(Diagnostic(
+                        description=(
+                            f"Cannot run '{fn_name}' to test its proof: "
+                            f"{unrunnable}."
+                        ),
+                        location=_fn_location(decl, self.file),
+                        source_line=_get_source_line(self.source, decl),
+                        rationale=(
+                            "`vera test --distrust` executes the functions "
+                            "the verifier proved, and this one has no "
+                            "executable form in the compiled module, so its "
+                            "proof stands but is not exercised."
+                        ),
+                        fix=(
+                            "Run `vera compile` on the program and resolve "
+                            "the error it reports, or the code generation "
+                            "warning the reason names; the function then "
+                            "compiles and its proof is run."
+                        ),
+                        spec_ref=(
+                            'Chapter 0, Section 0.5.6 '
+                            '"Contract-Driven Testing"'
+                        ),
+                        severity="warning",
+                        error_code="E702",
+                    ))
                 continue
 
             # Generate inputs
@@ -512,11 +544,39 @@ class _TestEngine:
                 # satisfiable only outside the generator's bounds.
                 _record_unrun(
                     results, summary, fn_name,
-                    "no input within the generator's bounds satisfies the "
-                    "precondition" if proved else
+                    _OUT_OF_BOUNDS if proved else
                     "precondition is unsatisfiable (no valid inputs)",
                     proved,
                 )
+                if proved:
+                    diagnostics.append(Diagnostic(
+                        description=(
+                            f"Cannot generate test inputs for '{fn_name}': "
+                            f"{_OUT_OF_BOUNDS}, so its proof is not "
+                            f"exercised."
+                        ),
+                        location=_fn_location(decl, self.file),
+                        source_line=_get_source_line(self.source, decl),
+                        rationale=(
+                            "Contract-driven testing draws `@Int` and `@Nat` "
+                            "inputs from [-2^53, 2^53] and strings of at most "
+                            f"{_MAX_STRING_LEN} characters.  This precondition "
+                            "admits inputs only outside that range, so "
+                            "`vera test --distrust` has none to run the "
+                            "proved function on."
+                        ),
+                        fix=(
+                            "Exercise this function with a hand-written test, "
+                            "or restate the precondition so it admits inputs "
+                            "the generator reaches."
+                        ),
+                        spec_ref=(
+                            'Chapter 0, Section 0.5.6 '
+                            '"Contract-Driven Testing"'
+                        ),
+                        severity="warning",
+                        error_code="E701",
+                    ))
                 continue
 
             # Run trials

@@ -4,8 +4,8 @@ The audit's invariant 4 — a proof the verifier reports at Tier 1 is never
 contradicted when the program runs — checked the one way a run can check it.
 Every example in `examples/`, and every conformance program the manifest
 declares at level `run`, is tested in process with `--distrust`: each public
-function the verifier proved is executed on Z3-generated inputs, against the
-runtime checks code generation compiles whatever the tier.  A trial that
+function the verifier proved, and the generator can serve, is executed on
+Z3-generated inputs against the runtime checks code generation emits for it.  A trial that
 fails a check standing for a proved obligation refutes the proof (E703), and
 fails its program's test with the diagnostic text.
 

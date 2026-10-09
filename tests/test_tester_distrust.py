@@ -632,6 +632,70 @@ class TestTrapsThatRefuteNothing:
         assert (diag.error_code, diag.severity) == ("E701", "warning")
 
 
+# A proof the run cannot exercise is disclosed where a diagnostics-only
+# consumer looks: E701 when the generator has no input for it (here the
+# precondition admits only values beyond its 2^53 bound), E702 when there is
+# nothing to run (here a typed hole elsewhere stops the program compiling,
+# E614, which `vera check` allows as W001).
+SRC_BEYOND_BOUNDS = """\
+public fn above_bound(@Int -> @Int)
+  requires(@Int.0 > 10000000000000000)
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  @Int.0
+}
+"""
+
+SRC_TYPED_HOLE = SRC_ADD1 + """
+private fn later(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  ?
+}
+"""
+
+
+class TestUnexercisedProofs:
+    """A proof `--distrust` cannot run stays verified, and says why."""
+
+    def test_a_precondition_beyond_the_generators_range_is_disclosed(
+        self,
+    ) -> None:
+        default = _run(SRC_BEYOND_BOUNDS, distrust=False)
+        assert (_fn(default, "above_bound").category, default.diagnostics) == (
+            "verified", [])
+
+        result = _run(SRC_BEYOND_BOUNDS, distrust=True)
+        f = _fn(result, "above_bound")
+        assert (f.category, f.proved, f.trials_run) == ("verified", True, 0)
+        assert f.reason == (
+            "Tier 1, not exercised: no input within the generator's bounds "
+            "satisfies the precondition")
+        (diag,) = result.diagnostics
+        assert (diag.error_code, diag.severity) == ("E701", "warning")
+        assert "'above_bound'" in diag.description
+        assert "not exercised" in diag.description
+
+    def test_a_proof_in_a_program_that_does_not_compile_is_disclosed(
+        self,
+    ) -> None:
+        default = _run(SRC_TYPED_HOLE, distrust=False)
+        assert (_fn(default, "add1").category, default.diagnostics) == (
+            "verified", [])
+
+        result = _run(SRC_TYPED_HOLE, distrust=True)
+        f = _fn(result, "add1")
+        assert (f.category, f.proved, f.trials_run, f.reason) == (
+            "verified", True, 0, "Tier 1, not exercised: compilation errors")
+        (diag,) = result.diagnostics
+        assert (diag.error_code, diag.severity) == ("E702", "warning")
+        assert diag.description == (
+            "Cannot run 'add1' to test its proof: compilation errors.")
+
+
 # #1598's shape, built from literals so the generator reaches it: the
 # boundary value -1 makes the quotient INT_MIN / -1, which traps `overflow` at
 # a check the verifier records no obligation for, beside a proved `overflow`

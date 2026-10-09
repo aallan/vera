@@ -178,30 +178,38 @@ only `diagnostics` still learns why nothing ran.
 `--distrust` runs those functions too: code generation emits a contract's
 runtime check whatever its tier, wherever it can express one, so the proved
 function's checks are in the module the trials execute.  A contract it cannot
-express has no check, and no trial can refute its proof.  Each failing trial of a proved function is read against two
-records: the module's list of the checks it holds, and the verifier's list of
-what became of each obligation.
+express has no check, and no trial can refute its proof.
 
-- **Refuted.** The check that failed stands for an obligation the verifier
-  proved.  The function is reported `REFUTED`, with an `E703` error naming the
-  obligation and the arguments, and the run exits 1.  That is a soundness bug
-  in Vera (unless an `assume` the proof rests on is false): report it with the
-  program and the arguments.
-- **A Tier-3 guard.** The check stands for an obligation the verifier did not
+Each failing trial of a proved function is read against two records: the
+module's list of the checks it holds, and the verifier's list of what became
+of each obligation.  The trap names its kind and the function it fired in, not
+which of that function's checks fired, so the trial is judged by every check
+of that kind there:
+
+- **Refuted.** Each stands for an obligation the verifier proved, so
+  whichever fired, a proof said it could not.  The function is reported
+  `REFUTED`, with an `E703` error naming the obligation and the arguments, and
+  the run exits 1.  That is a soundness bug in Vera (unless an `assume` the
+  proof rests on is false): report it with the program and the arguments.
+- **A Tier-3 guard.** Each stands for an obligation the verifier did not
   prove.  It fired on an input the contract admits, which is a finding about
   the program, reported as a failing trial exactly as for a Tier-3 function.
-- **Unattributed.** The trap cannot be pinned on either side, for example
-  because a check of its kind there has no obligation recorded at its span.
-  It is marked `unattributed` and counted (`summary.unattributed`, and the
-  `Proofs:` line), rather than folded into either.
+- **Unattributed.** Neither holds: proved and unproved checks of that kind
+  side by side, a check with no obligation recorded at its span, or a trap
+  with no frame.  It is marked `unattributed` and counted
+  (`summary.unattributed`, and the `Proofs:` line), rather than folded into
+  either.
 
 ```bash
 vera test --distrust --json file.vera
 # {"distrust": true, "summary": {..., "refuted": 1, "unattributed": 0}, ...}
 ```
 
-A proved function the generator cannot serve, such as one whose precondition
-calls a user function, stays `VERIFIED`, "not exercised", with the reason.
+A proved function `--distrust` cannot run stays `VERIFIED`, "not exercised",
+with the reason and a warning.  The warning is `E701` when the generator cannot
+serve it, for example a precondition that calls a user function or admits
+inputs only beyond the generator's range.  It is `E702` when the function has
+no executable form, for example one code generation dropped.
 Without `--distrust` the output is exactly the default one.
 
 ---
