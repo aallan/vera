@@ -688,6 +688,7 @@ class ClosureLiftingMixin:
                 and ret_refined_parts is None):
             ctx._nat_return_leaf_ids = ctx._collect_narrowing_return_leaves(
                 anon_fn.body)
+            self._record_unguarded_return_leaves(ctx)
         else:
             # Reset unconditionally, as `_compile_fn` does for the top-level
             # return: each closure gets a fresh WasmContext today, so this

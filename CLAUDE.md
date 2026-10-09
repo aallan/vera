@@ -31,6 +31,9 @@ vera verify --quiet file.vera     # Verify, suppress success output
 vera verify --timeout-ms 60000 file.vera  # Per-query Z3 budget in ms (default 10000;
                                   #   env VERA_Z3_TIMEOUT_MS; raise it to tell a
                                   #   needs-more-time Tier 3 from a never one, #1350)
+vera verify --reconcile file.vera # Also compile in process and check every Tier 3
+                                  #   claim against the checks the module holds
+                                  #   (E541 claim with no check, W004 check with no record)
 vera compile file.vera                    # Compile to .wasm binary
 vera compile --wat file.vera              # Print WAT text (human-readable WASM)
 vera compile --target browser file.vera   # Compile + emit browser bundle
@@ -54,7 +57,7 @@ vera lsp                          # Serve LSP over stdio (needs the [lsp] extra;
 vera version                      # Print the installed version (also --version, -V)
 vera builtins [--json]            # List the built-in function registry (no file needed)
 vera effects [--json]             # List the effect and ability registry (no file needed)
-vera errors [--json]              # List the diagnostic code registry E001–E702 + W001–W003 (no file needed)
+vera errors [--json]              # List the diagnostic code registry E001–E702 + W001–W004 (no file needed)
 
 pytest tests/ -v                  # Run the test suite (see TESTING.md)
 VERA_JS_COVERAGE=1 pytest tests/test_browser.py -v  # Browser tests with JS coverage
@@ -65,6 +68,7 @@ mypy vera/                        # Type-check the compiler itself
 python scripts/check_conformance.py    # Verify all 256 conformance programs (positives pass their level; negatives fail with their expected_error E-code)
 python scripts/check_examples.py      # Verify all 43 examples parse + check + verify
 python scripts/check_examples_run.py  # Run every runnable example trap-free under the native runtime; the rest carry a documented skip property, and an example that is neither is an error
+python scripts/check_reconciliation.py # Reconcile every corpus program's runtime-check claims (`tier3`) with the checks its compiled module holds (the audit's T2a); fails on a mismatch outside its KNOWN allowlist, keyed by open issue, or on a KNOWN entry the join no longer reports
 python scripts/check_corpus_canonical.py # Verify all 306 corpus programs are in canonical form (vera fmt)
 python scripts/check_examples_readme.py # Verify vera run commands in examples/README.md
 python scripts/check_doc_examples.py  # Verify every Vera block in the agent-facing docs (SKILL.md, README, FAQ, EXAMPLES.md, DE_BRUIJN.md, PYPI_README, spec/, docs/index.html + index.md) parses, passes vera check (no warning outside a named benign set) + vera verify, and prints what each vera:run marker says it prints — or carries a vera:skip marker naming the stage and codes it fails with; a block that exports a function names a vera:run invocation or a vera:no-run property; every `vera run examples/...` a doc names is run unless check_examples_run.py already runs it or skips that example by property; also fails when a tracked doc with Vera blocks is in neither DOC_GATES nor NOT_GATED (#1481)
@@ -185,10 +189,12 @@ So `total == tier1_verified + tier3_runtime`, and the array — which is the com
 
 `assumptions` sits beside those counts and is NOT part of that identity: it counts the `assume` statements this run took on trust (one W003 warning each, spec §6.2.6), which are not obligations and discharge to no tier. It is derived from the assembled diagnostics, so a consumer reproduces it by counting W003 rather than by reading any obligation's status. A non-zero value is the honest measure of how much of a "verified" result rests on something nobody proved.
 
+`vera verify --reconcile` also compiles the program in process and joins the `obligations` array with the checks the compiled module holds, adding a `reconciliation` object (its counts and each mismatch) to the envelope: a `tier3` or `timeout` obligation that no emitted check answers is an **E541** error, and an emitted check that no obligation accounts for is a **W004** warning.
+
 
 ### Error codes
 
-Diagnostics carry stable codes — `E001`–`E702` and `W001`–`W003`; a few still carry none ([#1490](https://github.com/aallan/vera/issues/1490)). The prefix is the **namespace**, not the severity: the `W` codes are all warnings, but a number of `E` codes are warning-severity too (`E504`, `E506`, `E531`, `E539`, `E540` are the ones the partition table above names). Codes are grouped by compiler phase:
+Diagnostics carry stable codes — `E001`–`E702` and `W001`–`W004`; a few still carry none ([#1490](https://github.com/aallan/vera/issues/1490)). The prefix is the **namespace**, not the severity: the `W` codes are all warnings, but a number of `E` codes are warning-severity too (`E504`, `E506`, `E531`, `E539`, `E540` are the ones the partition table above names). Codes are grouped by compiler phase:
 
 | Range | Phase |
 |-------|-------|
