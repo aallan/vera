@@ -486,7 +486,8 @@ _RULE_CASES = [
     ("tests/conformance/ch02_generic_over_param_adt.vera",
      "nat_to_int_coerce", 22),                                        # binder
     ("examples/http.vera", "call_pre", 32),        # clause: callee prologue
-    ("examples/factorial.vera", "decreases_bound", 5),  # clause: a component
+    ("examples/factorial.vera", "decreases_bound", 5),  # value: a measure
+    #                                     component, checked where it stands
     ("tests/conformance/ch05_decreases_guard.vera", "decreases", 8),  # clause
     ("tests/conformance/ch02_byte_refinement.vera", "refine_bind", 55),
     #                                                         parameter
