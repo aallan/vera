@@ -1737,6 +1737,11 @@ def cmd_test(
                     )
                 else:
                     held = ", Tier 1 proof held" if f.proved else ""
+                    if f.unchecked:
+                        # What held is the checked part; no trial tested
+                        # the rest.
+                        held += "; no runtime check for " + ", ".join(
+                            f"`{clause}`" for clause in f.unchecked)
                     line = (
                         f"  {f.fn_name} {'.' * max(1, 40 - len(f.fn_name))} "
                         f"TESTED  ({f.trials_run}/{f.trials_run} passed{held})"

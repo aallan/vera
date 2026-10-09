@@ -954,6 +954,297 @@ class TestTrapsAtSitesTheRecordOmitted:
 
 
 # =====================================================================
+# A proof no runtime check stands for is not exercised
+# =====================================================================
+
+# The class: a verified contract obligation of an exercised function —
+# an `ensures`, a `decreases`, an `assert`, a refined return — that no check
+# in the module stands for.  No trial can contradict it, so a run that passes
+# says nothing about it.  Code generation emits no `ensures` check for a
+# `String` or `Array` result, and none for a clause it cannot compile.
+
+# The reviewer's repro: proved (#1587's literal reads as -1), yet `vera run
+# --fn s -- 3` returns "pos", and nothing checks the `ensures`.
+SRC_STRING_RETURN = """\
+public fn s(@Int -> @String)
+  requires(true)
+  ensures(@String.result == "neg")
+  effects(pure)
+{
+  if 0 - 18446744073709551615 < 0 then { "neg" } else { "pos" }
+}
+"""
+
+# The `Array` case, and a caller whose proof rests on the unchecked clause:
+# `wrap`'s own `ensures` is checked, and its trials refute it.
+SRC_ARRAY_RETURN = """\
+public fn pair_or_one(@Int -> @Array<Int>)
+  requires(true)
+  ensures(array_length(@Array<Int>.result) == 2)
+  effects(pure)
+{
+  if 0 - 18446744073709551615 < 0 then { [1, 2] } else { [1] }
+}
+
+public fn wrap(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == 2)
+  effects(pure)
+{
+  array_length(pair_or_one(@Int.0))
+}
+"""
+
+# One proved clause is checked (the `assert`) and one is not (the `ensures`
+# over a `String` result): the function runs, and its reason names the gap.
+SRC_PARTLY_CHECKED = """\
+public fn tag(@Int -> @String)
+  requires(@Int.0 > 0)
+  ensures(@String.result == "pos")
+  effects(pure)
+{
+  assert(@Int.0 > 0);
+  "pos"
+}
+"""
+
+# A refined return is proved and checked, though the two records sit at
+# different nodes: the verifier's `refine_bind` at the body, the guard at the
+# return type.  Read by exact span alone it would join nothing.
+SRC_REFINED_RETURN = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+public fn succ_pos(@Int -> @Pos)
+  requires(@Int.0 >= 0 && @Int.0 < 1000)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0 + 1
+}
+"""
+
+
+class TestProofsNoCheckStandsFor:
+    """A proof is exercised only through the checks that stand for it."""
+
+    def test_a_proof_with_no_check_is_not_exercised(self) -> None:
+        result = _run(SRC_STRING_RETURN, distrust=True, trials=9)
+        f = _fn(result, "s")
+        assert (f.category, f.proved, f.trials_run) == ("verified", True, 0), (
+            f.category, f.reason)
+        assert f.reason == (
+            "Tier 1, not exercised: code generation emits no runtime check "
+            'for `ensures(@String.result == "neg")`')
+        (diag,) = result.diagnostics
+        assert (diag.error_code, diag.severity) == ("E702", "warning")
+        assert diag.description == (
+            "Cannot test the proof of 's': code generation emits no runtime "
+            'check for `ensures(@String.result == "neg")`.')
+        s = result.summary
+        assert (s.verified, s.tested, s.total_trials) == (1, 0, 0)
+
+    def test_default_mode_reports_it_as_before(self) -> None:
+        f = _fn(_run(SRC_STRING_RETURN, distrust=False), "s")
+        assert (f.category, f.reason, f.trials_run) == (
+            "verified", "Tier 1 (proved)", 0)
+
+    def test_the_text_never_says_it_held(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        path = _write(tmp_path, SRC_STRING_RETURN)
+        assert cmd_test(path, trials=9, distrust=True) == 0
+        out = capsys.readouterr().out
+        assert "proof held" not in out
+        assert re.search(
+            r"s \.+ VERIFIED \(Tier 1, not exercised: code generation emits "
+            r"no runtime check for", out), out
+        assert ("Proofs:  0 exercised, 0 refuted, 0 with an unattributed "
+                "trap, 1 not exercised") in out
+
+    def test_an_array_result_and_a_caller_resting_on_it(self) -> None:
+        result = _run(SRC_ARRAY_RETURN, distrust=True, trials=9)
+        p = _fn(result, "pair_or_one")
+        assert (p.category, p.trials_run) == ("verified", 0), p.reason
+        # The clause as the verifier's record renders it, as E703 names one.
+        assert p.reason.endswith(
+            "`ensures(array_length(@Array<@Int>.result) == 2)`"), p.reason
+        assert _fn(result, "wrap").category == "refuted"
+        assert sorted(_codes(result)) == ["E702", "E703", "E703", "E703"]
+
+    def test_a_partly_checked_proof_runs_and_names_the_gap(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        result = _run(SRC_PARTLY_CHECKED, distrust=True, trials=9)
+        f = _fn(result, "tag")
+        assert (f.category, f.trials_run, f.trials_failed) == ("tested", 9, 0)
+        assert f.unchecked == ['ensures(@String.result == "pos")']
+        assert f.reason == (
+            "Tier 1, the proof held under 9 trials; code generation emits no "
+            'runtime check for `ensures(@String.result == "pos")`, so no '
+            "trial tests it")
+        assert result.diagnostics == []
+
+        path = _write(tmp_path, SRC_PARTLY_CHECKED)
+        assert cmd_test(path, trials=9, distrust=True) == 0
+        out = capsys.readouterr().out
+        assert re.search(
+            r'tag \.+ TESTED  \(9/9 passed, Tier 1 proof held; no runtime '
+            r'check for `ensures\(@String\.result == "pos"\)`\)', out), out
+        assert "Proofs:  1 exercised" in out
+
+    def test_a_refined_return_is_a_checked_clause(self) -> None:
+        result = _run(SRC_REFINED_RETURN, distrust=True, trials=9)
+        f = _fn(result, "succ_pos")
+        assert (f.category, f.unchecked) == ("tested", []), f.reason
+        assert (f.trials_run, f.trials_failed) == (9, 0)
+        assert f.reason == "Tier 1, the proof held under 9 trials"
+
+
+# Every kind of proved clause, each with and without the check that stands
+# for it.  Parsed only, for its spans: the records and checks are built here.
+_CLAUSES_SOURCE = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+public fn f(@Nat -> @Pos)
+  requires(true)
+  ensures(@Pos.result > 0)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  assert(@Nat.0 >= 0);
+  1
+}
+"""
+
+
+def _clauses_decl() -> ast.FnDecl:
+    program = transform(parse(_CLAUSES_SOURCE, file=_M_FILE))
+    (decl,) = [t.decl for t in program.declarations
+               if isinstance(t.decl, ast.FnDecl)]
+    return decl
+
+
+def _span_of(node: ast.Node) -> tuple[int, int, int, int]:
+    assert node.span is not None
+    s = node.span
+    return s.line, s.column, s.end_line, s.end_column
+
+
+def _clause_parts(
+    decl: ast.FnDecl,
+) -> dict[str, tuple[ProofObligation, EmittedCheck]]:
+    """Each clause kind's proved record, and the check that stands for it."""
+    ensures, _trivial, decreases = (
+        c for c in decl.contracts if isinstance(c, (ast.Ensures, ast.Decreases)))
+    (assertion,) = [s.expr for s in decl.body.statements
+                    if isinstance(s, ast.ExprStmt)]
+    parts: dict[str, tuple[ProofObligation, EmittedCheck]] = {}
+    for name, node, record_node, kind, emitter, trap in (
+        ("ensures", ensures, ensures, "ensures", _POST, "contract_violation"),
+        ("decreases", decreases, decreases, "decreases",
+         "codegen/contracts.py:_compile_decreases_entry", "contract_violation"),
+        ("assert", assertion, assertion, "assert",
+         "wasm/operators.py:_translate_assert", "assertion_failed"),
+        ("refined_return", decl.return_type, decl.body, "refine_bind",
+         _REFINE, "contract_violation"),
+    ):
+        line, column, end_line, end_column = _span_of(node)
+        r_line, r_column, _, _ = _span_of(record_node)
+        record = ProofObligation(
+            fn_name="f", kind=kind, expr_text=f"{name} clause",  # type: ignore[arg-type]
+            status="verified", line=r_line, column=r_column, file=_M_FILE)
+        check = EmittedCheck(
+            emitter, trap, TRAP_EMITTERS[emitter].obligations, "f",
+            line, column, end_line, end_column, _M_FILE, False)
+        parts[name] = (record, check)
+    return parts
+
+
+_CLAUSE_KINDS = ["ensures", "decreases", "assert", "refined_return"]
+
+
+@pytest.mark.parametrize("checked", [
+    frozenset(k for n, k in enumerate(_CLAUSE_KINDS) if mask >> n & 1)
+    for mask in range(2 ** len(_CLAUSE_KINDS))
+], ids=lambda s: "+".join(sorted(s)) or "none")
+def test_each_proved_clause_joins_the_check_that_stands_for_it(
+    checked: frozenset[str],
+) -> None:
+    decl = _clauses_decl()
+    parts = _clause_parts(decl)
+    records = [record for record, _ in parts.values()]
+    checks = [check for name, (_, check) in parts.items() if name in checked]
+    have, lack = _TrapIndex(checks, records).proof_clauses(decl, _M_FILE)
+    named = {
+        "ensures": "ensures(ensures clause)",
+        "decreases": "decreases(decreases clause)",
+        "assert": "assert(assert clause)",
+        "refined_return": "the refinement of its return type `@Pos`",
+    }
+    assert sorted(have) == sorted(named[k] for k in checked)
+    assert sorted(lack) == sorted(
+        named[k] for k in _CLAUSE_KINDS if k not in checked)
+
+
+class TestProofClauseEdges:
+    """What is not a proved clause, and what does not stand for one."""
+
+    def test_a_trivial_ensures_is_no_clause(self) -> None:
+        """`ensures(true)` needs no check, and code generation emits none,
+        though the verifier records it verified."""
+        decl = _clauses_decl()
+        trivial = [c for c in decl.contracts if isinstance(c, ast.Ensures)][1]
+        line, column, _, _ = _span_of(trivial)
+        record = ProofObligation(
+            fn_name="f", kind="ensures", expr_text="true", status="verified",
+            line=line, column=column, file=_M_FILE)
+        assert _TrapIndex([], [record]).proof_clauses(decl, _M_FILE) == ([], [])
+
+    def test_a_clause_that_was_not_proved_is_not_a_proved_clause(self) -> None:
+        decl = _clauses_decl()
+        parts = _clause_parts(decl)
+        records = [r for r, _ in parts.values()]
+        for record in records:
+            record.status = "tier3"
+        assert _TrapIndex([], records).proof_clauses(decl, _M_FILE) == ([], [])
+
+    def test_a_check_of_another_obligation_kind_does_not_stand_for_it(
+        self,
+    ) -> None:
+        decl = _clauses_decl()
+        record, check = _clause_parts(decl)["ensures"]
+        stray = EmittedCheck(
+            "wasm/operators.py:_emit_overflow_guard", "overflow",
+            ("int_overflow",), "f", check.line, check.column, check.end_line,
+            check.end_column, _M_FILE, False)
+        have, lack = _TrapIndex([stray], [record]).proof_clauses(decl, _M_FILE)
+        assert (have, lack) == ([], ["ensures(ensures clause)"])
+
+    def test_a_prelude_check_does_not_stand_for_it(self) -> None:
+        decl = _clauses_decl()
+        record, check = _clause_parts(decl)["ensures"]
+        prelude = EmittedCheck(
+            check.emitter, check.kind, check.obligations, "f", check.line,
+            check.column, check.end_line, check.end_column, None, True)
+        have, lack = _TrapIndex([prelude], [record]).proof_clauses(decl, _M_FILE)
+        assert (have, lack) == ([], ["ensures(ensures clause)"])
+
+    def test_a_refinement_guard_outside_the_return_type_does_not_count(
+        self,
+    ) -> None:
+        decl = _clauses_decl()
+        record, _ = _clause_parts(decl)["refined_return"]
+        line, column, end_line, end_column = _span_of(decl.params[0])
+        guard = EmittedCheck(
+            _REFINE, "contract_violation", ("refine_bind",), "f", line,
+            column, end_line, end_column, _M_FILE, False)
+        have, lack = _TrapIndex([guard], [record]).proof_clauses(decl, _M_FILE)
+        assert (have, lack) == (
+            [], ["the refinement of its return type `@Pos`"])
+
+
+# =====================================================================
 # The attribution rule, cell by cell
 # =====================================================================
 

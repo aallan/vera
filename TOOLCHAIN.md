@@ -178,7 +178,10 @@ only `diagnostics` still learns why nothing ran.
 `--distrust` runs those functions too: code generation emits a contract's
 runtime check whatever its tier, wherever it can express one, so the proved
 function's checks are in the module the trials execute.  A contract it cannot
-express has no check, and no trial can refute its proof.
+express has no check, and no trial can refute its proof: an `ensures` over a
+`String` or `Array` result is one.  A proved function none of whose clauses has
+a check is not run, and one only some of whose clauses have one is run and
+names the others in its reason.
 
 Each failing trial of a proved function is read against two records: the
 module's list of the checks it holds, and the verifier's list of what became
@@ -212,7 +215,8 @@ A proved function `--distrust` cannot run stays `VERIFIED`, "not exercised",
 with the reason and a warning.  The warning is `E701` when the generator cannot
 serve it, for example a precondition that calls a user function or admits
 inputs only beyond the generator's range.  It is `E702` when the function has
-no executable form, for example one code generation dropped.
+no executable form, for example one code generation dropped, or when no runtime
+check stands for any of its proved clauses.
 Without `--distrust` the output is exactly the default one.
 
 ---

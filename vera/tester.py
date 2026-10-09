@@ -28,6 +28,7 @@ import z3
 
 from vera import ast, naming
 from vera.errors import Diagnostic, SourceLocation
+from vera.obligations.cache import walk_nodes
 from vera.obligations.core import ProofObligation
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv
 from vera.slots import fn_slot_scope
@@ -84,6 +85,10 @@ class FunctionTestResult:
     # "verified" by default, and under --distrust it is "tested", "refuted",
     # or "verified" when no trial could be run.
     proved: bool = False
+    # --distrust only: the proved contract clauses of a function trials ran
+    # against that no runtime check in the module stands for, as the source
+    # states them.  No trial can contradict these, so the reason names them.
+    unchecked: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -507,6 +512,48 @@ class _TestEngine:
                     ))
                 continue
 
+            # A proof is exercised through the checks that stand for its
+            # clauses.  With none, no trial can contradict it, and a run that
+            # passed would read as a proof that held.
+            unchecked: list[str] = []
+            if proved and traps is not None:
+                checked, unchecked = traps.proof_clauses(decl, self.file)
+                if unchecked and not checked:
+                    missing = _no_check_reason(unchecked)
+                    _record_unrun(results, summary, fn_name, missing, proved)
+                    diagnostics.append(Diagnostic(
+                        description=(
+                            f"Cannot test the proof of '{fn_name}': "
+                            f"{missing}."
+                        ),
+                        location=_fn_location(decl, self.file),
+                        source_line=_get_source_line(self.source, decl),
+                        rationale=(
+                            "`vera test --distrust` tests a proof by running "
+                            "the function against the runtime checks code "
+                            "generation emits for its clauses.  It emits none "
+                            "for these — none for a postcondition over a "
+                            "`String` or `Array` result, and none for a "
+                            "clause it cannot compile — so no trial can "
+                            "contradict them, and the function is not run: "
+                            "its proof stands but is not exercised."
+                        ),
+                        fix=(
+                            "Exercise the property through a caller whose "
+                            "own contract has a check — a function returning "
+                            "an `Int` computed from this one's result, with "
+                            "an `ensures` over that value — or with a "
+                            "hand-written test."
+                        ),
+                        spec_ref=(
+                            'Chapter 0, Section 0.5.6 '
+                            '"Contract-Driven Testing"'
+                        ),
+                        severity="warning",
+                        error_code="E702",
+                    ))
+                    continue
+
             # Generate inputs
             param_types = _get_param_types(decl, self.alias_env)
             inputs: list[list[int | float | str]] | None
@@ -693,12 +740,14 @@ class _TestEngine:
                 fn_name=fn_name,
                 category="refuted" if refuting else "tested",
                 reason=_trial_reason(
-                    proved, len(trial_results), len(refuting), findings),
+                    proved, len(trial_results), len(refuting), findings,
+                    unchecked),
                 trials_run=len(trial_results),
                 trials_passed=n_passed,
                 trials_failed=n_failed,
                 failures=failures,
                 proved=proved,
+                unchecked=unchecked,
             ))
 
         # Count verifier errors whose target function isn't in the
@@ -879,6 +928,13 @@ class _TrapIndex:
         for record in obligations:
             self._records.setdefault(
                 (record.file, record.line, record.column), []).append(record)
+        # The other direction, for `proof_clauses`: each (span, obligation
+        # kind) some check the program holds stands for.
+        self._checked_spans: set[tuple[str | None, int, int, str]] = {
+            (check.file, check.line, check.column, kind)
+            for check in checks if not check.prelude
+            for kind in check.obligations
+        }
 
     def attribute(self, trial: TrialResult, decl: ast.FnDecl) -> None:
         """Set *trial*'s ``status``, ``attribution`` and ``refutes``.
@@ -956,6 +1012,74 @@ class _TrapIndex:
             return "proved", records
         return "not proved", [r for r in records if r.status != "verified"]
 
+    def proof_clauses(
+        self, decl: ast.FnDecl, file: str | None,
+    ) -> tuple[list[str], list[str]]:
+        """*decl*'s proved contract clauses, split into those a runtime check
+        in the module stands for and those none does, each as the source
+        states it.
+
+        The clauses are what a trial of the function can contradict: each
+        `ensures` that is not `true`, each `decreases`, each `assert` in the
+        body, and a refined return type.  A clause no check stands for — an
+        `ensures` over a `String` or `Array` result, which code generation
+        cannot express, or one it cannot compile — fails no trial, so a run
+        that passes says nothing about it.  The `requires` clauses are not
+        among them: the arguments are generated to satisfy them.
+
+        Joined by exact span, as a trap's check is, except the refined
+        return: the verifier records it at the body, and code generation
+        guards it at the return type, or at a component within it.
+        """
+        checked: list[str] = []
+        unchecked: list[str] = []
+
+        def proved(node: ast.Node, kind: str) -> list[ProofObligation]:
+            span = node.span
+            if span is None:
+                return []
+            records = [
+                r for r in self._records.get((file, span.line, span.column), [])
+                if r.kind == kind and r.fn_name == decl.name
+            ]
+            return records if records and all(
+                r.status == "verified" for r in records) else []
+
+        def stands_for(node: ast.Node, kind: str) -> bool:
+            span = node.span
+            return span is not None and (
+                file, span.line, span.column, kind) in self._checked_spans
+
+        clauses: list[tuple[ast.Node, str]] = [
+            (contract, "ensures") for contract in decl.contracts
+            if isinstance(contract, ast.Ensures)
+            and not (isinstance(contract.expr, ast.BoolLit)
+                     and contract.expr.value)
+        ]
+        clauses += [(contract, "decreases") for contract in decl.contracts
+                    if isinstance(contract, ast.Decreases)]
+        clauses += [(node, "assert") for node in walk_nodes(decl.body)
+                    if isinstance(node, ast.AssertExpr)]
+        for node, kind in clauses:
+            records = proved(node, kind)
+            if records:
+                (checked if stands_for(node, kind) else unchecked).append(
+                    _describe_obligation(records[0], decl.name))
+
+        ret = decl.return_type.span
+        if ret is not None and proved(decl.body, "refine_bind"):
+            guarded = any(
+                check.emitter == _REFINEMENT_EMITTER and not check.prelude
+                and (ret.line, ret.column) <= (check.line, check.column)
+                <= (ret.end_line, ret.end_column)
+                for check in self._checks.get(
+                    (decl.name, "contract_violation"), [])
+            )
+            (checked if guarded else unchecked).append(
+                "the refinement of its return type "
+                f"`{ast.format_type_expr(decl.return_type)}`")
+        return checked, unchecked
+
 
 def _unattributed(trial: TrialResult, where: str) -> None:
     trial.status = "unattributed"
@@ -1031,21 +1155,35 @@ def _trials(n: int) -> str:
     return f"{n} trial{'' if n == 1 else 's'}"
 
 
+def _no_check_reason(clauses: list[str]) -> str:
+    """Why *clauses*, proved, are not exercised: no check stands for them."""
+    return "code generation emits no runtime check for " + ", ".join(
+        f"`{clause}`" for clause in clauses)
+
+
 def _trial_reason(
     proved: bool, run: int, refuted: int, findings: list[TrialResult],
+    unchecked: list[str],
 ) -> str:
-    """The ``reason`` of a function trials ran against."""
+    """The ``reason`` of a function trials ran against.  *unchecked* names
+    the proved clauses no check stands for, which no trial tested."""
     if not proved:
         return "Tier 3 contract (runtime check)"
+    gap = (
+        f"; {_no_check_reason(unchecked)}, so no trial tests "
+        f"{'it' if len(unchecked) == 1 else 'them'}"
+        if unchecked else ""
+    )
     if refuted:
-        return f"Tier 1 proof contradicted by {refuted} of {_trials(run)}"
+        return f"Tier 1 proof contradicted by {refuted} of {_trials(run)}{gap}"
     if not findings:
-        return f"Tier 1, the proof held under {_trials(run)}"
+        return f"Tier 1, the proof held under {_trials(run)}{gap}"
     unattributed = sum(1 for t in findings if t.status == "unattributed")
     return (
         f"Tier 1, {len(findings)} of {_trials(run)} failed, none on a check "
         f"shown to be proved"
         + (f" ({unattributed} unattributed)" if unattributed else "")
+        + gap
     )
 
 
