@@ -1025,10 +1025,12 @@ class TestTrapsAtSitesTheRecordOmitted:
 # proved.  Code generation emits no `ensures` check for a `String` or `Array`
 # result, and none for a clause it cannot compile, so no trial can contradict
 # such a clause, and a run that passes says nothing about it: the reason names
-# it.  A function is not run at all only when NO check its run reaches stands
-# for a proved obligation — its contract clauses, the operations in its body,
-# a callee's — since anything less would skip a run that can refute (the
-# round-2 class below).
+# it.  Where the generator can serve a function and the program compiles, the
+# function is not run at all only when NO check its run reaches stands for a
+# proved obligation — its contract clauses, the operations in its body, a
+# callee's — since anything less would skip a run that can refute (the
+# round-2 class below).  Its other reasons not to run, E701's and E702's, are
+# `TestUnexercisedProofs`'.
 
 # The reviewer's repro: proved (#1587's literal reads as -1), yet `vera run
 # --fn s -- 3` returns "pos", and nothing checks the `ensures`.
@@ -1281,7 +1283,8 @@ public fn keep(@Int -> @Int)
 
 
 class TestAProofIsRunWhereverACheckStandsForIt:
-    """Not exercised only when no check a run reaches stands for a proof."""
+    """Where it can be run at all, a proof is left unexercised only when no
+    check a run of it reaches stands for one."""
 
     def test_an_unchecked_ensures_beside_a_checked_false_proof_is_refuted(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
