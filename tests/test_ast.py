@@ -749,12 +749,14 @@ class TestExpressions:
         assert isinstance(expr, IndexExpr)
 
     def test_pipe_expr(self):
+        """`a |> f()` is the call `f(a)`, flagged as written piped."""
         expr = _body_expr("""
         private fn f(@Int -> @Int) requires(true) ensures(true) effects(pure)
         { @Int.0 |> inc() }
         """)
-        assert isinstance(expr, BinaryExpr)
-        assert expr.op == BinOp.PIPE
+        assert isinstance(expr, FnCall)
+        assert expr.name == "inc" and expr.piped
+        assert isinstance(expr.args[0], SlotRef)
 
     def test_anonymous_fn(self):
         prog = _ast("""

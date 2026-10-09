@@ -43,7 +43,6 @@ from vera.monomorphize import (
     module_qualified_generic_targets,
     namespace_ctor_owners,
     namespace_fn_names,
-    pipe_desugared_call,
     public_generic_names,
     qualify_nested_generic_decls,
     reroute_module_qualified_generic_calls,
@@ -1085,8 +1084,8 @@ class ContractVerifier:
         # describe: per function, cleared with the scope set below.
         self._tainted_sites: list[DisclosureSite] = []
         # #1407: functions whose own obligations are all fine but whose RESULT
-        # is a disclosed value — a forwarding wrapper, a `where` helper, the
-        # tail of a pipe.  They carry no failed obligation, so
+        # is a disclosed value — a forwarding wrapper, a `where` helper.  They
+        # carry no failed obligation, so
         # `disclosed_fn_names` cannot see them; they are recorded here as each
         # body is translated, and unioned in by `_disclosed_fn_names` so the
         # existing fixpoint carries the taint one hop further per pass.
@@ -1466,9 +1465,9 @@ class ContractVerifier:
         the target *type* (the discharge needs its predicate) rather than a
         bool.  A concretely-refined *formal* obligates without the side-table;
         a generic (``TypeVar``) formal instantiated to a ``RefinedType`` at
-        this call site — or a desugared pipe argument, where ``formal`` is
-        ``None`` — is recovered from the checker's recorded *instantiated
-        target* for *arg* (#747).  A concretely-typed non-refined formal is
+        this call site — or a bare effect operation's argument, where
+        ``formal`` is ``None`` — is recovered from the checker's recorded
+        *instantiated target* for *arg* (#747).  A concretely-typed non-refined formal is
         never second-guessed via the table, so concrete sites stay
         table-independent.
         """
@@ -3783,18 +3782,6 @@ class ContractVerifier:
                     **effect_op_result_names([node.effect]),
                 }
                 walk_seed(node.body, merged, origin)
-                return
-            piped = (pipe_desugared_call(node)
-                     if isinstance(node, ast.Expr) else None)
-            if piped is not None:
-                # #1357: mirrors codegen's
-                # `_collect_shadowed_qualified_calls` — walk the DESUGARED
-                # call, whose argument list carries the piped value, rather
-                # than the raw right operand whose own `args` omit it.  The
-                # two walks must move together or this discovery finds a
-                # different instantiation from the one codegen emits, which
-                # is a false Tier 1 in whichever direction it lands.
-                walk_seed(piped, op_result_types, origin)
                 return
             if (isinstance(node, ast.ModuleCall)
                     and tuple(node.path) in shadowed
@@ -8606,16 +8593,6 @@ class ContractVerifier:
                 )
             finally:
                 self._widened_operand_ids.difference_update(widened)
-            if expr.op == ast.BinOp.PIPE:
-                # `left |> f(a)` is the call `f(left, a)`: its precondition
-                # is obligated on that call, spelled by the one shared
-                # desugaring, which keeps the pipe's span (the site key,
-                # #727).  The partial `f(a)` the walk just visited has one
-                # argument too few and obligates nothing.
-                piped = pipe_desugared_call(expr)
-                if piped is not None:
-                    self._obligate_call_site(
-                        piped, smt, slot_env, assumptions)
             if self._is_guarded_nat_subtraction(expr):
                 # Both operands are @Nat-typed AND at least one
                 # has Nat-flowed origin (a slot ref, function
@@ -9324,76 +9301,6 @@ class ContractVerifier:
         #   NewExpr            → cannot occur (as OldExpr)
         #   HoleExpr           → cannot occur (check time rejects)
         """
-        if isinstance(expr, ast.BinaryExpr) and expr.op == ast.BinOp.PIPE:
-            # `left |> right(a, …)` desugars to `right(left, a, …)`: the left
-            # operand binds into the callee's first formal.  The FnCall branch
-            # below never sees this — the AST keeps the pipe as a BinaryExpr —
-            # so a piped @Int -> @Nat narrowing would be missed entirely, a
-            # false "verified" for `(0 - 5) |> takesNat()` even though codegen
-            # desugars and guards it (CR #756).  The checker recorded each
-            # effective arg's instantiated formal in the target side-table, so
-            # `_nat_binding_target(arg, None)` recovers the @Nat target; the
-            # site is codegen-guarded (the desugared call), hence guarded=True.
-            right = expr.right
-            if isinstance(right, (ast.FnCall, ast.ModuleCall)):
-                for arg in (expr.left, *right.args):
-                    # #746: a piped argument into a refined formal is recovered
-                    # the same way — `_refined_binding_target(arg, None)` reads
-                    # the desugared call's instantiated target from the
-                    # side-table, so `(0 - 5) |> takesPosInt()` is obligated
-                    # rather than silently accepted.
-                    refined_target = self._refined_binding_target(arg, None)
-                    if (refined_target is not None
-                            and self._narrows_into_refined(arg, refined_target)):
-                        self._check_refined_binding_obligation(
-                            decl, arg, refined_target, smt, slot_env,
-                            assumptions, site="call argument",
-                            guarded=True,
-                        )
-                    elif (self._nat_binding_target(arg, None)
-                            and self._narrows_into_nat(arg)):
-                        self._check_nat_binding_obligation(
-                            decl, arg, smt, slot_env, assumptions,
-                            site="call argument",
-                            # The desugared call is the same call, so it
-                            # inherits the same guard question (#1362).
-                            guarded=self._call_arg_nat_guarded(
-                                right.name, arg),
-                        )
-                    elif (self._int_widening_target(arg, None)
-                            and self._result_is_nat(arg)):
-                        # #813: a piped @Nat argument widening into an @Int
-                        # formal.  Codegen desugars the pipe to the FnCall and
-                        # guards it at the call-argument site, hence guarded.
-                        self._check_int_widening_obligation(
-                            decl, arg, smt, slot_env, list(assumptions),
-                            site="call argument",
-                        )
-                    # #1410, at the pipe spelling too: the desugared call is
-                    # the same call, so a formal whose type writes a
-                    # refinement on a COMPONENT obligates its piped argument
-                    # exactly as the direct spelling does.  Not an `elif`: a
-                    # refinement over a tuple carries both its own predicate
-                    # (claimed above) and its components' (claimed here), and
-                    # they are different facts about one value.
-                    self._check_nested_refinement_obligation(
-                        decl, arg,
-                        self._nested_refinement_formal(arg, None),
-                        smt, slot_env, assumptions, site="call argument",
-                        # The desugared call is the same call, so it inherits
-                        # the same guard question the `@Nat` arm asks above.
-                        callee=right.name,
-                    )
-                self._walk_for_nat_binding_obligations(
-                    decl, expr.left, smt, slot_env, assumptions,
-                )
-                for arg in right.args:
-                    self._walk_for_nat_binding_obligations(
-                        decl, arg, smt, slot_env, assumptions,
-                    )
-                return
-            # A non-call pipe RHS falls through to the generic walk below.
-
         if (isinstance(expr, ast.FnCall) and expr.name == "apply_fn"
                 and expr.args):
             # #820: `apply_fn(closure, a0, a1, …)` — a @Nat argument widening
@@ -12263,9 +12170,10 @@ class ContractVerifier:
         :py:meth:`_refined_binding_target`'s generic-formal resolution.
 
         A concretely-typed formal answers directly.  A ``TypeVar`` formal —
-        or none at all, which is the desugared-pipe case — is recovered from
-        the checker's recorded instantiated target for *arg*, the same
-        side-table (#747) every other binding-obligation target reads.
+        or none at all, which is a bare effect operation's argument — is
+        recovered from the checker's recorded instantiated target for *arg*,
+        the same side-table (#747) every other binding-obligation target
+        reads.
         """
         if formal is not None and not contains_typevar(formal):
             return formal

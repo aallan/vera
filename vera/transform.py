@@ -132,6 +132,63 @@ def _transform_error(
         rationale=rationale, fix=fix, spec_ref=spec_ref))
 
 
+#: The call forms a pipe can name: each has an argument list for the
+#: piped value to join.
+_PIPE_TARGETS = (FnCall, ConstructorCall, QualifiedCall, ModuleCall)
+
+#: What a right operand that is not a call is, for E040's description.
+_NOT_A_CALL: dict[type, str] = {
+    IntLit: "an integer literal",
+    FloatLit: "a float literal",
+    StringLit: "a string literal",
+    InterpolatedString: "a string literal",
+    BoolLit: "a Boolean literal",
+    UnitLit: "the unit value",
+    HoleExpr: "a typed hole",
+    SlotRef: "a slot reference",
+    ResultRef: "a result reference",
+    NullaryConstructor: "a constructor with no argument list",
+    BinaryExpr: "an operator expression",
+    UnaryExpr: "an operator expression",
+    IndexExpr: "an index expression",
+    ArrayLit: "an array literal",
+    AnonFn: "an anonymous function",
+    IfExpr: "an `if` expression",
+    MatchExpr: "a `match` expression",
+    Block: "a block",
+    HandleExpr: "a `handle` expression",
+}
+
+
+def _pipe_operand_error(right: Expr, meta: Any) -> TransformError:
+    """E040: the right operand of `|>` is not a call (spec §4.11.2)."""
+    if isinstance(right, _PIPE_TARGETS):
+        found = "a pipe"
+    else:
+        found = _NOT_A_CALL.get(type(right),
+                                "an expression that is not a call")
+    return _transform_error(
+        f"The right operand of '|>' must be a call; this one is {found}.",
+        right.span if right.span is not None else meta,
+        error_code="E040",
+        rationale=(
+            "'a |> f(b)' is the call 'f(a, b)': the pipe passes its left "
+            "operand as the first argument of the call on its right.  Only "
+            "a call written with its argument list — a function, a "
+            "built-in, a constructor, an effect operation or a "
+            "module-qualified function — has an argument list for the "
+            "piped value to join."),
+        fix=(
+            "Write the right operand as a call, as in '@Int.0 |> abs()', or "
+            "apply the function directly: 'abs(@Int.0)'.  Every other "
+            "operator binds tighter than '|>', so 'a |> f() + 1' pipes "
+            "into 'f() + 1'; write '(a |> f()) + 1' to add to the call's "
+            "result.  To chain calls, write the stages in order: "
+            "'a |> f() |> g()' is 'g(f(a))'."),
+        spec_ref='Chapter 4, Section 4.11.2 "Pipe Operator"',
+    )
+
+
 _E009_ESCAPE_RATIONALE = (
     "Vera strings accept a closed set of escape sequences so string "
     "literals are unambiguous; an unrecognised escape is more likely a "
@@ -379,6 +436,20 @@ def _remap_spans_inplace(
             _remap_spans_inplace(val, mapper, _seen)
 
 
+def _interp_source_point(line: int, col: int, base_line: int,
+                         base_col: int) -> tuple[int, int]:
+    """A position in the interpolation wrapper, in the original source.
+
+    The wrapper places the segment at line 3, col 3 (after `{ `), so a
+    position at (line=3, col=N) inside the wrapper is (base_line,
+    base_col + (N - 3)) in the source.  Multi-line segments (rare —
+    interpolation expressions are almost always single-line) get a per-line
+    offset fallback."""
+    if line == _INTERP_WRAPPER_LINE:
+        return base_line, base_col + (col - _INTERP_WRAPPER_COL)
+    return base_line + (line - _INTERP_WRAPPER_LINE), col
+
+
 def _parse_interp_expr(
     source: str,
     meta: Any = None,
@@ -414,7 +485,22 @@ def _parse_interp_expr(
             f"Invalid expression in string interpolation: "
             f"\\({source})", meta)
     # Transform the parse tree and extract the body expression
-    program = VeraTransformer().transform(tree)
+    try:
+        program = VeraTransformer().transform(tree)
+    except VisitError as exc:
+        # A user error the transform reports inside the segment (E040, a
+        # pipe whose right operand is not a call) is located in wrapper
+        # coordinates: move it to the segment's place in the source.
+        inner = _unwrap_visit_error(exc)
+        if (isinstance(inner, TransformError) and base_line is not None
+                and base_col is not None
+                and inner.diagnostic.location.line):
+            loc = inner.diagnostic.location
+            loc.line, loc.column = _interp_source_point(
+                loc.line, loc.column, base_line, base_col)
+        if inner is not None:
+            raise inner from None
+        raise
     fn_decl = program.declarations[0].decl
     body = fn_decl.body
     if body.statements:
@@ -423,26 +509,13 @@ def _parse_interp_expr(
             "Only expressions may appear inside '\\(...)'.", meta)
     expr = body.expr
     if base_line is not None and base_col is not None:
-        # Wrapper places the segment at line 3, col 3 (after `{ `).
-        # A span at (line=3, col=N) inside the wrapper maps to
-        # (base_line, base_col + (N - 3)) in the original source.
-        # Multi-line segments (rare — interpolation expressions are
-        # almost always single-line) get a per-line offset fallback.
+        line0, col0 = base_line, base_col
+
         def _remap(s: Span) -> Span:
-            line_off = s.line - _INTERP_WRAPPER_LINE
-            end_line_off = s.end_line - _INTERP_WRAPPER_LINE
-            new_line = base_line + line_off
-            new_end_line = base_line + end_line_off
-            new_col = (
-                base_col + (s.column - _INTERP_WRAPPER_COL)
-                if s.line == _INTERP_WRAPPER_LINE
-                else s.column
-            )
-            new_end_col = (
-                base_col + (s.end_column - _INTERP_WRAPPER_COL)
-                if s.end_line == _INTERP_WRAPPER_LINE
-                else s.end_column
-            )
+            new_line, new_col = _interp_source_point(
+                s.line, s.column, line0, col0)
+            new_end_line, new_end_col = _interp_source_point(
+                s.end_line, s.end_column, line0, col0)
             return Span(
                 line=new_line, column=new_col,
                 end_line=new_end_line, end_column=new_end_col,
@@ -974,8 +1047,16 @@ class VeraTransformer(Transformer):
 
     @v_args(meta=True)
     def pipe(self, meta, children):
-        return BinaryExpr(BinOp.PIPE, children[0], children[1],
-                          span=_span_from_meta(meta))
+        # `a |> f(b, c)` is the call `f(a, b, c)` (spec §4.11.2), built here
+        # once so that no later phase sees a pipe.  The call keeps its own
+        # node type, so a module call keeps the path that routes it, and
+        # takes the pipe's span, where its diagnostics belong; `piped` tells
+        # the formatter to print the pipe back.
+        left, right = children
+        if not isinstance(right, _PIPE_TARGETS) or right.piped:
+            raise _pipe_operand_error(right, meta)
+        return replace(right, args=(left, *right.args),
+                       span=_span_from_meta(meta), piped=True)
 
     # =================================================================
     # Expressions — Unary Operators

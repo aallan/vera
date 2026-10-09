@@ -275,19 +275,21 @@ Tuple(1, "hello", true)
 
 ### 4.11.2 Pipe Operator
 
-The pipe operator `|>` passes the left operand as the first argument to the function on the right:
+The pipe operator `|>` writes a call with its first argument in front: `a |> f(b, c)` is the call `f(a, b, c)`. The right operand is a call written with its argument list — a function, built-in or effect operation (`f(...)`, `E.op(...)`), a constructor (`C(...)`) or a module-qualified function (`m::f(...)`) — and the left operand becomes its first argument:
 
 ```
-@Int.0 |> abs |> add(@Int.1)
+@Int.0 |> abs() |> add(@Int.1)
 ```
 
-is equivalent to:
+is the call
 
 ```
 add(abs(@Int.0), @Int.1)
 ```
 
-Pipes are left-associative: `a |> f |> g` means `g(f(a))`.
+A pipe is that call in every respect: it is typed, verified, compiled and evaluated as the call written out, its arguments left to right with the piped value first. Pipes are left-associative, so `a |> f() |> g()` is `g(f(a))`, and `|>` binds more loosely than every other operator: `a |> f() + 1` pipes into `f() + 1`, which is not a call, while `(a |> f()) + 1` adds 1 to the call's result.
+
+A right operand that is not a call — a literal, a slot reference, an operator expression, a block, a constructor written without an argument list, or a pipe in parentheses — has no argument list for the piped value to join, and the program is rejected (**E040**).
 
 ## 4.12 Array Expressions
 

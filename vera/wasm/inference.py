@@ -11,7 +11,6 @@ from vera.monomorphize import (
     _BUILTIN_PARAMETERIZED_RETURNS,
     _BUILTIN_VERA_RETURN_TYPES,
     declared_return_clone_key,
-    pipe_desugared_call,
     resolve_fn_type_alias,
     substitute_type_vars,
 )
@@ -1090,17 +1089,6 @@ class InferenceMixin:
                            ast.BinOp.GT, ast.BinOp.LE, ast.BinOp.GE,
                            ast.BinOp.AND, ast.BinOp.OR, ast.BinOp.IMPLIES):
                 return "Bool"
-            piped = pipe_desugared_call(expr)
-            if piped is not None:
-                # #1365: a PIPE names its RIGHT-hand call's RESULT, not the
-                # piped-in value — see the discovery twin
-                # (`Monomorphizer._infer_vera_type_name`), which carries the
-                # identical arm over the identical shared desugar.  Reading
-                # the left operand made a type-CHANGING stage instantiate the
-                # generic at the pre-stage type, and since both consultors
-                # read it the same way they agreed confidently on the wrong
-                # clone: no diagnostic anywhere, and an invalid module.
-                return self._infer_vera_type(piped)
             return self._infer_vera_type(expr.left)
         if isinstance(expr, ast.UnaryExpr):
             if expr.op == ast.UnaryOp.NOT:

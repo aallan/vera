@@ -18,7 +18,7 @@ v0.3.0 is the sound base (Stage 29), reached through v0.2.1 to v0.2.8 (Stages 21
 
 ## The next burndown
 
-*Eighty-two open bugs, driven to zero.*
+*Seventy-seven open bugs, driven to zero.*
 
 A bug class outranks stage work, so the open `bug`-labelled set is the queue the fix releases work from, soundness defects first.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) carries each row's full account and stays the one place the detail lives; this table is the order of attack.
 
@@ -83,8 +83,7 @@ Bugs in a mechanism cluster close in the stage that removes their mechanism and 
 | [#1570](https://github.com/aallan/vera/issues/1570) | A call precondition in a match arm, a closure, a handler clause or an interpolation raises no obligation. |
 | [#1573](https://github.com/aallan/vera/issues/1573) | The `@Nat`-subtraction trap message drops a compound operand's parentheses. |
 | [#1575](https://github.com/aallan/vera/issues/1575) | A module generic reached only through another generic's instantiation drops `main` when it calls a private generic sibling. |
-| [#1578](https://github.com/aallan/vera/issues/1578) | A match on an `array_fold` call or a pipe passes check and verify, and code generation drops the function (**E602**). |
-| [#1580](https://github.com/aallan/vera/issues/1580) | A pipe whose callee returns `@Nat` is never a widening into `@Int`: u64.MAX comes back as -1. |
+| [#1578](https://github.com/aallan/vera/issues/1578) | A match on an `array_fold` call passes check and verify, and code generation drops the function (**E602**). |
 | [#1584](https://github.com/aallan/vera/issues/1584) | An array literal's elements after the first are never checked against its element type. |
 | [#1586](https://github.com/aallan/vera/issues/1586) | A later arm's `@Int` binder guards a `@Nat` that an earlier arm of the same constructor takes, so a valid program traps. |
 | [#1589](https://github.com/aallan/vera/issues/1589) | A `@Nat` above i64.MAX bound out of a tuple or constructor pattern into a `@Nat` binder traps as negative. |
@@ -94,20 +93,16 @@ Bugs in a mechanism cluster close in the stage that removes their mechanism and 
 | [#1595](https://github.com/aallan/vera/issues/1595) | An untranslatable call in a recursive call's argument leaves `decreases` and the precondition at Tier 3, even outside the measure. |
 | [#1596](https://github.com/aallan/vera/issues/1596) | `let @Nat = id(0 - 3) + 1` passes verify and is caught only by the runtime guard. |
 | [#1597](https://github.com/aallan/vera/issues/1597) | A handler for an effect other than `State` or `Exn` passes check and verify, and code generation drops its function (**E602**). |
-| [#1599](https://github.com/aallan/vera/issues/1599) | A pipe as a tuple or constructor component passes check and verify, and code generation drops the function (**E602**). |
 | [#1600](https://github.com/aallan/vera/issues/1600) | An entry file importing a module's `data Json` resolves `@Json` to the prelude's type, and a match on the module's constructors is refused (**E311**). |
 | [#1601](https://github.com/aallan/vera/issues/1601) | An `assume` over a `let` bound to a user function's result does not reach `ensures`, which is refused (**E500**). |
 | [#1602](https://github.com/aallan/vera/issues/1602) | The E506 explanation lists construction positions as unguarded, which they are not since #1426. |
 | [#1603](https://github.com/aallan/vera/issues/1603) | Codes E603, E604, E605 and E607 have registry titles that do not match their use, and E604/E605 duplicate E600/E601. |
-| [#1604](https://github.com/aallan/vera/issues/1604) | Indexing the result of a pipe passes check and verify, and code generation drops the function (**E602**). |
 | [#1605](https://github.com/aallan/vera/issues/1605) | A `Nat` collection context refuses a call returning only the non-negative elements of a collection built beside a negative literal (`array_slice([-3, 5], 1, 2)`); lifts with #1542. |
 | [#1607](https://github.com/aallan/vera/issues/1607) | A quantified `ensures` is counted as a Tier 3 runtime check (**E523**), but code generation emits no check. |
 | [#1608](https://github.com/aallan/vera/issues/1608) | A `map_insert` value outside a `let` or return is guarded at the store but never obligated, so `vera verify` omits a check the module holds. |
 | [#1609](https://github.com/aallan/vera/issues/1609) | An integer `match` over a call returning `@Byte` is dropped at compile (**E602**): the scrutinee is typed `Bool`. |
 | [#1610](https://github.com/aallan/vera/issues/1610) | `vera/proposeEdit` applies an edit that introduces a `timeout` obligation, where it refuses an introduced `tier3`. |
 | [#1613](https://github.com/aallan/vera/issues/1613) | A generic constructor nested in a container literal is neither obligated nor guarded, so a negative `@Nat` payload is stored. |
-| [#1614](https://github.com/aallan/vera/issues/1614) | A piped `map_insert` in a typed `let` is guarded at the store but never obligated. |
-| [#1615](https://github.com/aallan/vera/issues/1615) | A pipe as an `if` or `match` arm's tail compiles to an invalid module: the `if` has no result type. |
 
 ## Stage 19 — The verification completeness sprint
 
