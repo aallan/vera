@@ -165,7 +165,7 @@ A bug fix closes the **class** the report belongs to — the set of inputs the s
 
 **Add an example:** Create a `.vera` file in `examples/`. It must pass both `vera check` and `vera verify`. The validation script `scripts/check_examples.py` tests all examples automatically.
 
-**Add a conformance test:** Create a `.vera` file in `tests/conformance/` named `chNN_feature.vera`. Add a header comment with the spec chapter and features tested. Format it with `vera fmt --write`. Add a manifest entry in `manifest.json` with the appropriate level and feature tags. Run `python scripts/check_conformance.py` to validate. When implementing a new language feature, write the conformance test first.
+**Add a conformance test:** Create a `.vera` file in `tests/conformance/` named `chNN_feature.vera`. Add a header comment with the spec chapter and features tested. Format it with `vera fmt --write`. Add a manifest entry in `manifest.json` with the appropriate level and feature tags; a `run`-level entry also pins its run, with `expected_stdout` (exactly what `vera run` prints, as a JSON string with `\n` for each newline, checked against the program rather than copied unread) and `expected_exit`, or a `nondeterministic_stdout` reason in place of `expected_stdout` for output that differs from run to run (TESTING.md § Manifest). Run `python scripts/check_conformance.py` to validate. When implementing a new language feature, write the conformance test first.
 
 ## JSON diagnostics
 

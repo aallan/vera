@@ -6,6 +6,8 @@
     "title": "Integer literals",
     "level": "run",
     "spec_ref": "Section 1.1",
+    "expected_stdout": "42\n",
+    "expected_exit": 0,
     "features": [
       "int_literal",
       "negative_int"
@@ -18,6 +20,8 @@
     "title": "Float64 literals",
     "level": "run",
     "spec_ref": "Section 1.1",
+    "expected_stdout": "3.14\n",
+    "expected_exit": 0,
     "features": [
       "float64_literal"
     ]
@@ -29,6 +33,8 @@
     "title": "String escape sequences",
     "level": "run",
     "spec_ref": "Section 1.2",
+    "expected_stdout": "hello\nworldcol1\tcol2back\\slashsay \"hi\"A\n",
+    "expected_exit": 0,
     "features": [
       "string_escape",
       "newline",
@@ -44,6 +50,8 @@
     "title": "Boolean literals",
     "level": "run",
     "spec_ref": "Section 1.1",
+    "expected_stdout": "1\n",
+    "expected_exit": 0,
     "features": [
       "bool_literal"
     ]
@@ -55,6 +63,8 @@
     "title": "Byte type",
     "level": "run",
     "spec_ref": "Section 1.1",
+    "expected_stdout": "1\n",
+    "expected_exit": 0,
     "features": [
       "byte_type",
       "byte_coercion"
@@ -67,6 +77,8 @@
     "title": "Byte literal coercion at call arguments and let bindings",
     "level": "run",
     "spec_ref": "Section 1.1",
+    "expected_stdout": "1\n",
+    "expected_exit": 0,
     "features": [
       "byte_type",
       "byte_coercion"
@@ -79,6 +91,8 @@
     "title": "Byte literal width inside a value-position join (#1212)",
     "level": "run",
     "spec_ref": "Section 1.1",
+    "expected_stdout": "203\n",
+    "expected_exit": 0,
     "features": [
       "byte_type",
       "byte_coercion",
@@ -93,6 +107,8 @@
     "title": "Single-line comments",
     "level": "run",
     "spec_ref": "Section 1.4",
+    "expected_stdout": "42\n",
+    "expected_exit": 0,
     "features": [
       "comment"
     ]
@@ -104,6 +120,8 @@
     "title": "Built-in types",
     "level": "run",
     "spec_ref": "Section 2.1",
+    "expected_stdout": "types ok\n",
+    "expected_exit": 0,
     "features": [
       "int",
       "nat",
@@ -121,6 +139,8 @@
     "title": "Option and Result types",
     "level": "run",
     "spec_ref": "Section 2.3",
+    "expected_stdout": "42\n",
+    "expected_exit": 0,
     "features": [
       "option",
       "result",
@@ -135,6 +155,8 @@
     "title": "Basic algebraic data types",
     "level": "run",
     "spec_ref": "Section 2.3",
+    "expected_stdout": "2\n",
+    "expected_exit": 0,
     "features": [
       "adt",
       "constructor",
@@ -148,6 +170,8 @@
     "title": "Recursive ADTs",
     "level": "run",
     "spec_ref": "Section 2.3",
+    "expected_stdout": "3\n",
+    "expected_exit": 0,
     "features": [
       "adt",
       "recursive_adt",
@@ -161,6 +185,8 @@
     "title": "Mutually-recursive ADTs",
     "level": "run",
     "spec_ref": "Section 2.3",
+    "expected_stdout": "2\n",
+    "expected_exit": 0,
     "features": [
       "adt",
       "recursive_adt",
@@ -174,6 +200,8 @@
     "title": "Self-recursive ADT with a Tuple-mediated back-reference",
     "level": "run",
     "spec_ref": "Section 2.3",
+    "expected_stdout": "3\n",
+    "expected_exit": 0,
     "features": [
       "adt",
       "recursive_adt",
@@ -188,6 +216,8 @@
     "title": "Single-letter ADT names (no prelude type-param collision)",
     "level": "run",
     "spec_ref": "Section 2.2",
+    "expected_stdout": "42\n",
+    "expected_exit": 0,
     "features": [
       "adt",
       "constructor",
@@ -201,6 +231,8 @@
     "title": "Refinement types",
     "level": "run",
     "spec_ref": "Section 2.4",
+    "expected_stdout": "3\n",
+    "expected_exit": 0,
     "features": [
       "refinement_type",
       "type_alias"
@@ -213,6 +245,8 @@
     "title": "Refinement types over @Byte",
     "level": "run",
     "spec_ref": "Section 2.4",
+    "expected_stdout": "7\n",
+    "expected_exit": 0,
     "features": [
       "refinement_type",
       "type_alias",
@@ -226,6 +260,8 @@
     "title": "Generic polymorphism",
     "level": "run",
     "spec_ref": "Section 2.5",
+    "expected_stdout": "42\n",
+    "expected_exit": 0,
     "features": [
       "generics",
       "forall",
@@ -239,6 +275,8 @@
     "title": "Generic instantiated over a parameterized ADT",
     "level": "run",
     "spec_ref": "Section 2.5",
+    "expected_stdout": "42\n",
+    "expected_exit": 0,
     "features": [
       "generics",
       "forall",
@@ -284,6 +322,8 @@
     "title": "Tuple types",
     "level": "run",
     "spec_ref": "Section 2.3.1",
+    "expected_stdout": "3042108\n",
+    "expected_exit": 0,
     "features": [
       "tuple",
       "let_destruct",
@@ -298,6 +338,8 @@
     "title": "A zero-size Unit component in a by-value Tuple layout compiles and runs (#902)",
     "level": "run",
     "spec_ref": "Section 2.3.1",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "tuple",
       "unit",
@@ -312,6 +354,8 @@
     "title": "Type aliases over Array<T>",
     "level": "run",
     "spec_ref": "Section 2",
+    "expected_stdout": "5\n",
+    "expected_exit": 0,
     "features": [
       "type_alias",
       "array"
@@ -324,6 +368,8 @@
     "title": "Basic slot references",
     "level": "run",
     "spec_ref": "Section 3.1",
+    "expected_stdout": "30\n",
+    "expected_exit": 0,
     "features": [
       "slot_reference"
     ]
@@ -335,6 +381,8 @@
     "title": "De Bruijn slot indexing",
     "level": "run",
     "spec_ref": "Section 3.2",
+    "expected_stdout": "1\n",
+    "expected_exit": 0,
     "features": [
       "slot_indexing",
       "de_bruijn"
@@ -347,6 +395,8 @@
     "title": "Result slot in ensures",
     "level": "run",
     "spec_ref": "Section 3.3",
+    "expected_stdout": "10\n",
+    "expected_exit": 0,
     "features": [
       "slot_result",
       "ensures"
@@ -359,6 +409,8 @@
     "title": "De Bruijn slot indices under monomorphization collapse (#769)",
     "level": "run",
     "spec_ref": "Section 3.2",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "slot_indexing",
       "de_bruijn",
@@ -413,6 +465,8 @@
     "title": "Arithmetic operators",
     "level": "run",
     "spec_ref": "Section 4.1",
+    "expected_stdout": "15\n",
+    "expected_exit": 0,
     "features": [
       "add",
       "sub",
@@ -444,6 +498,8 @@
     "title": "@Nat subtraction underflow obligation (#520)",
     "level": "run",
     "spec_ref": "Section 4.4 / Section 11.2.1",
+    "expected_stdout": "7\n",
+    "expected_exit": 0,
     "features": [
       "nat_subtraction",
       "underflow_obligation",
@@ -459,6 +515,8 @@
     "title": "@Nat binding-site narrowing obligation (#552)",
     "level": "run",
     "spec_ref": "Section 4.7 / Section 11.2.1",
+    "expected_stdout": "5\n",
+    "expected_exit": 0,
     "features": [
       "nat_binding",
       "binding_narrowing",
@@ -474,6 +532,8 @@
     "title": "@Nat return-position narrowing obligation (#758)",
     "level": "run",
     "spec_ref": "Section 4.7 / Section 11.2.1",
+    "expected_stdout": "42\n",
+    "expected_exit": 0,
     "features": [
       "nat_binding",
       "return_narrowing",
@@ -508,6 +568,8 @@
     "title": "@Nat -> @Int widening coercion obligation (#813)",
     "level": "run",
     "spec_ref": "Section 2.2.1 / Section 11.2.1",
+    "expected_stdout": "5\n",
+    "expected_exit": 0,
     "features": [
       "nat_int_widening",
       "coercion_obligation",
@@ -522,6 +584,8 @@
     "title": "@Int / @Nat arithmetic overflow obligation (#798)",
     "level": "run",
     "spec_ref": "Section 6.4.3",
+    "expected_stdout": "30\n",
+    "expected_exit": 0,
     "features": [
       "int_overflow",
       "overflow_obligation",
@@ -537,6 +601,8 @@
     "title": "Comparison operators",
     "level": "run",
     "spec_ref": "Section 4.1",
+    "expected_stdout": "1\n",
+    "expected_exit": 0,
     "features": [
       "eq",
       "neq",
@@ -553,6 +619,8 @@
     "title": "Boolean operators",
     "level": "run",
     "spec_ref": "Section 4.1",
+    "expected_stdout": "1\n",
+    "expected_exit": 0,
     "features": [
       "and",
       "or",
@@ -566,6 +634,8 @@
     "title": "If/else expressions",
     "level": "run",
     "spec_ref": "Section 4.2",
+    "expected_stdout": "1\n",
+    "expected_exit": 0,
     "features": [
       "if_else",
       "nested_conditional"
@@ -578,6 +648,8 @@
     "title": "Let bindings",
     "level": "run",
     "spec_ref": "Section 4.3",
+    "expected_stdout": "10\n",
+    "expected_exit": 0,
     "features": [
       "let_binding",
       "shadowing"
@@ -590,6 +662,8 @@
     "title": "Basic match expressions",
     "level": "run",
     "spec_ref": "Section 4.4",
+    "expected_stdout": "2\n",
+    "expected_exit": 0,
     "features": [
       "match",
       "wildcard",
@@ -604,6 +678,8 @@
     "title": "Nested match patterns",
     "level": "run",
     "spec_ref": "Section 4.4",
+    "expected_stdout": "42\n",
+    "expected_exit": 0,
     "features": [
       "nested_pattern",
       "constructor_pattern",
@@ -617,6 +693,8 @@
     "title": "Pipe operator",
     "level": "run",
     "spec_ref": "Section 4.5",
+    "expected_stdout": "11\n",
+    "expected_exit": 0,
     "features": [
       "pipe_operator"
     ]
@@ -628,6 +706,8 @@
     "title": "Pipe operator with module-qualified calls",
     "level": "run",
     "spec_ref": "Section 4.5",
+    "expected_stdout": "5\n",
+    "expected_exit": 0,
     "features": [
       "pipe_operator",
       "module_calls"
@@ -640,6 +720,8 @@
     "title": "String built-in functions",
     "level": "run",
     "spec_ref": "Section 4.6",
+    "expected_stdout": "hello world\n",
+    "expected_exit": 0,
     "features": [
       "string_length",
       "string_concat",
@@ -655,6 +737,8 @@
     "title": "String interpolation",
     "level": "run",
     "spec_ref": "Section 4.6",
+    "expected_stdout": "value = 42\n",
+    "expected_exit": 0,
     "features": [
       "string_interpolation",
       "auto_to_string"
@@ -667,6 +751,8 @@
     "title": "Array operations",
     "level": "run",
     "spec_ref": "Section 4.7",
+    "expected_stdout": "1\n",
+    "expected_exit": 0,
     "features": [
       "array_literal",
       "array_length",
@@ -681,6 +767,8 @@
     "title": "Array construction builtins",
     "level": "run",
     "spec_ref": "Section 9.6",
+    "expected_stdout": "1\n",
+    "expected_exit": 0,
     "features": [
       "array_range",
       "array_concat",
@@ -709,6 +797,8 @@
     "title": "Function definition and calls",
     "level": "run",
     "spec_ref": "Section 5.1",
+    "expected_stdout": "30\n",
+    "expected_exit": 0,
     "features": [
       "function",
       "call",
@@ -722,6 +812,8 @@
     "title": "Self-recursion",
     "level": "run",
     "spec_ref": "Section 5.2",
+    "expected_stdout": "120\n",
+    "expected_exit": 0,
     "features": [
       "recursion",
       "decreases"
@@ -734,6 +826,8 @@
     "title": "Mutual recursion via where blocks",
     "level": "run",
     "spec_ref": "Section 5.3",
+    "expected_stdout": "1\n",
+    "expected_exit": 0,
     "features": [
       "mutual_recursion",
       "where_block"
@@ -746,6 +840,8 @@
     "title": "Closures and higher-order functions",
     "level": "run",
     "spec_ref": "Section 5.4",
+    "expected_stdout": "15\n",
+    "expected_exit": 0,
     "features": [
       "closure",
       "higher_order",
@@ -760,6 +856,8 @@
     "title": "Nested closures and the lifting worklist (#514)",
     "level": "run",
     "spec_ref": "Section 5.4",
+    "expected_stdout": "8\n",
+    "expected_exit": 0,
     "features": [
       "closure",
       "higher_order",
@@ -774,6 +872,8 @@
     "title": "@Int -> @Nat narrowing at a closure's return (#984)",
     "level": "run",
     "spec_ref": "Section 5.4 / Section 11.2.1",
+    "expected_stdout": "42\n",
+    "expected_exit": 0,
     "features": [
       "closure",
       "higher_order",
@@ -789,6 +889,8 @@
     "title": "apply_fn with Unit-arg closures (#586)",
     "level": "run",
     "spec_ref": "Section 5.4",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "closure",
       "unit_arg",
@@ -802,6 +904,8 @@
     "title": "Captured Array<T> indexed inside closure body (#588)",
     "level": "run",
     "spec_ref": "Section 5.4",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "closure",
       "closure_capture",
@@ -815,6 +919,8 @@
     "title": "Function visibility",
     "level": "run",
     "spec_ref": "Section 5.5",
+    "expected_stdout": "11\n",
+    "expected_exit": 0,
     "features": [
       "public",
       "private"
@@ -855,6 +961,8 @@
     "title": "Nested (transitive) fn-type alias as apply_fn closure argument (#867)",
     "level": "run",
     "spec_ref": "Section 5.4",
+    "expected_stdout": "3\n",
+    "expected_exit": 0,
     "features": [
       "type_alias",
       "nested_type_alias",
@@ -870,6 +978,8 @@
     "title": "Generic monomorphization via the |> pipe and @T closure substitution (#913)",
     "level": "run",
     "spec_ref": "Section 5.4",
+    "expected_stdout": "42\n",
+    "expected_exit": 0,
     "features": [
       "generics",
       "forall",
@@ -900,6 +1010,8 @@
     "title": "Nested where-blocks: a helper's own where-helpers are emitted by non-generic codegen (#978)",
     "level": "run",
     "spec_ref": "Section 5.6.2",
+    "expected_stdout": "70\n",
+    "expected_exit": 0,
     "features": [
       "where_block",
       "nested_where",
@@ -913,6 +1025,8 @@
     "title": "Runtime termination guard: lexicographic Ackermann and a structural ADT measure run clean (#1172)",
     "level": "run",
     "spec_ref": "Section 5.6.1",
+    "expected_stdout": "42\n",
+    "expected_exit": 0,
     "features": [
       "decreases",
       "termination",
@@ -1026,6 +1140,8 @@
     "title": "Preconditions",
     "level": "run",
     "spec_ref": "Section 6.1",
+    "expected_stdout": "5\n",
+    "expected_exit": 0,
     "features": [
       "requires",
       "precondition"
@@ -1038,6 +1154,8 @@
     "title": "Preconditions checked for statement-position calls",
     "level": "run",
     "spec_ref": "Section 6.1",
+    "expected_stdout": "7\n",
+    "expected_exit": 0,
     "features": [
       "requires",
       "precondition",
@@ -1051,6 +1169,8 @@
     "title": "Call-site preconditions over ADT-typed arguments",
     "level": "run",
     "spec_ref": "Section 6.1",
+    "expected_stdout": "1\n",
+    "expected_exit": 0,
     "features": [
       "requires",
       "precondition",
@@ -1064,6 +1184,8 @@
     "title": "Postconditions",
     "level": "run",
     "spec_ref": "Section 6.2",
+    "expected_stdout": "42\n",
+    "expected_exit": 0,
     "features": [
       "ensures",
       "postcondition",
@@ -1090,6 +1212,8 @@
     "title": "Decreases clauses",
     "level": "run",
     "spec_ref": "Section 6.3",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "decreases",
       "termination"
@@ -1102,6 +1226,8 @@
     "title": "Assert and assume",
     "level": "run",
     "spec_ref": "Section 6.4 / 6.4.1",
+    "expected_stdout": "30\n",
+    "expected_exit": 0,
     "features": [
       "assert",
       "assume",
@@ -1116,6 +1242,8 @@
     "title": "Quantifiers in contracts",
     "level": "run",
     "spec_ref": "Section 6.5",
+    "expected_stdout": "1\n",
+    "expected_exit": 0,
     "features": [
       "forall_quantifier",
       "exists_quantifier"
@@ -1128,6 +1256,8 @@
     "title": "Composite equality in a postcondition lowers to structural Eq at runtime (#912)",
     "level": "run",
     "spec_ref": "Section 6.5 / Section 9.8",
+    "expected_stdout": "5\n",
+    "expected_exit": 0,
     "features": [
       "ensures",
       "postcondition",
@@ -1159,6 +1289,8 @@
     "title": "Pure effect",
     "level": "run",
     "spec_ref": "Section 7.1",
+    "expected_stdout": "25\n",
+    "expected_exit": 0,
     "features": [
       "pure_effect"
     ]
@@ -1170,6 +1302,8 @@
     "title": "Diverge effect: unmeasured recursion compiles and runs",
     "level": "run",
     "spec_ref": "Section 7.7.3",
+    "expected_stdout": "27 reaches 1 in 111 steps\n",
+    "expected_exit": 0,
     "features": [
       "diverge_effect",
       "recursion",
@@ -1183,6 +1317,8 @@
     "title": "IO effect",
     "level": "run",
     "spec_ref": "Section 7.2",
+    "expected_stdout": "hello from conformance\n",
+    "expected_exit": 0,
     "features": [
       "io_effect",
       "print"
@@ -1195,6 +1331,8 @@
     "title": "IO.time and IO.stderr operations (#463)",
     "level": "run",
     "spec_ref": "Section 7.2",
+    "nondeterministic_stdout": "prints IO.time's reading of the wall clock, in milliseconds since the Unix epoch, which differs from one run to the next",
+    "expected_exit": 0,
     "features": [
       "io_effect",
       "io_time",
@@ -1246,6 +1384,8 @@
     "title": "State effect handler",
     "level": "run",
     "spec_ref": "Section 7.3",
+    "expected_stdout": "3\n",
+    "expected_exit": 0,
     "features": [
       "state_effect",
       "handler",
@@ -1260,6 +1400,8 @@
     "title": "State clause bodies execute \u2014 intrinsic-hybrid semantics (#976)",
     "level": "run",
     "spec_ref": "Section 7.5.2",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "effect_handler",
       "handler_state",
@@ -1274,6 +1416,8 @@
     "title": "Byte literal width at every State-cell write boundary (#1212)",
     "level": "run",
     "spec_ref": "Section 7.3",
+    "expected_stdout": "812\n",
+    "expected_exit": 0,
     "features": [
       "state_effect",
       "handler",
@@ -1290,6 +1434,8 @@
     "title": "State operation fixes a generic's type argument (#1207)",
     "level": "run",
     "spec_ref": "Section 7.3",
+    "expected_stdout": "18\n",
+    "expected_exit": 0,
     "features": [
       "state_effect",
       "handler",
@@ -1306,6 +1452,8 @@
     "title": "Exception effect handler",
     "level": "run",
     "spec_ref": "Section 7.4",
+    "expected_stdout": "4\n",
+    "expected_exit": 0,
     "features": [
       "exn_effect",
       "handler",
@@ -1319,6 +1467,8 @@
     "title": "Exn<String> effect handler \u2014 String payload",
     "level": "run",
     "spec_ref": "Section 7.4 Exn<E> handler \u2014 String payload",
+    "expected_stdout": "10\n",
+    "expected_exit": 0,
     "features": [
       "exn_handler",
       "string_exception"
@@ -1358,6 +1508,8 @@
     "title": "Nested effect handler composition",
     "level": "run",
     "spec_ref": "Section 7.4",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "nested_handlers",
       "handler_composition",
@@ -1372,6 +1524,8 @@
     "title": "A handler clause body's bare op belongs to the enclosing context",
     "level": "run",
     "spec_ref": "Section 7.5.2",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "nested_handlers",
       "handler_clause",
@@ -1386,6 +1540,8 @@
     "title": "A bare call names a declaration before an operation",
     "level": "run",
     "spec_ref": "Section 7.4",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "state_effect",
       "handler",
@@ -1402,6 +1558,8 @@
     "title": "new(State<T>) names its cell, like old(State<T>)",
     "level": "run",
     "spec_ref": "Section 7.3.3",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "state_effect",
       "new_state",
@@ -1417,6 +1575,8 @@
     "title": "A handler in a clause body, state-init, or 'with' update is as real as one in the body",
     "level": "run",
     "spec_ref": "Section 7.5",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "nested_handlers",
       "handler_clause",
@@ -1432,6 +1592,8 @@
     "title": "Bare effect-op resolution: innermost handler, then the declared row in source order",
     "level": "run",
     "spec_ref": "Section 7.4",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "effects",
       "effect_op",
@@ -1446,6 +1608,8 @@
     "title": "State effect handler over a composite type argument (#914)",
     "level": "run",
     "spec_ref": "Section 7.3",
+    "expected_stdout": "9\n",
+    "expected_exit": 0,
     "features": [
       "state_effect",
       "handler",
@@ -1461,6 +1625,8 @@
     "title": "Exception effect handler over a composite payload type (#914)",
     "level": "run",
     "spec_ref": "Section 7.4",
+    "expected_stdout": "9\n",
+    "expected_exit": 0,
     "features": [
       "exn_effect",
       "handler",
@@ -1475,6 +1641,8 @@
     "title": "old/new State snapshot over a composite type argument (#914)",
     "level": "run",
     "spec_ref": "Section 7.3",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "state_effect",
       "old",
@@ -1489,6 +1657,8 @@
     "title": "Effect ops as array-literal elements dispatch through clause-aware lowering",
     "level": "run",
     "spec_ref": "Section 7.3",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "state_effect",
       "handler",
@@ -1520,6 +1690,8 @@
     "title": "@Unit-returning user fn in non-tail block-statement position (#584)",
     "level": "run",
     "spec_ref": "Sections 4 and 7",
+    "expected_stdout": "aMb\nMc\nMd\n",
+    "expected_exit": 0,
     "features": [
       "unit_return",
       "block_statement",
@@ -1577,6 +1749,8 @@
     "title": "Scalar type alias as the State<T> cell type",
     "level": "run",
     "spec_ref": "Section 7.5",
+    "expected_stdout": "7\n",
+    "expected_exit": 0,
     "features": [
       "effect_handler",
       "handler_state",
@@ -1605,6 +1779,8 @@
     "title": "Module declaration",
     "level": "run",
     "spec_ref": "Section 8.2",
+    "expected_stdout": "42\n",
+    "expected_exit": 0,
     "features": [
       "module_decl"
     ]
@@ -1616,6 +1792,8 @@
     "title": "Wildcard import",
     "level": "run",
     "spec_ref": "Section 8.3.1",
+    "expected_stdout": "3\n",
+    "expected_exit": 0,
     "features": [
       "wildcard_import",
       "bare_call"
@@ -1628,6 +1806,8 @@
     "title": "Selective import",
     "level": "run",
     "spec_ref": "Section 8.3.2",
+    "expected_stdout": "7\n",
+    "expected_exit": 0,
     "features": [
       "selective_import",
       "bare_call"
@@ -1640,6 +1820,8 @@
     "title": "Public visibility is importable",
     "level": "run",
     "spec_ref": "Section 8.4",
+    "expected_stdout": "10\n",
+    "expected_exit": 0,
     "features": [
       "visibility_public",
       "selective_import"
@@ -1665,6 +1847,8 @@
     "title": "Local definition shadows import",
     "level": "run",
     "spec_ref": "Section 8.5.2",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "shadowing",
       "name_resolution"
@@ -1677,6 +1861,8 @@
     "title": "Module-qualified call syntax",
     "level": "run",
     "spec_ref": "Section 8.5.3",
+    "expected_stdout": "100\n",
+    "expected_exit": 0,
     "features": [
       "module_qualified_call"
     ]
@@ -1688,6 +1874,8 @@
     "title": "Module-qualified call as a constructor field argument",
     "level": "run",
     "spec_ref": "Section 8.5.3",
+    "expected_stdout": "18\n",
+    "expected_exit": 0,
     "features": [
       "module_qualified_call",
       "constructor",
@@ -1714,6 +1902,8 @@
     "title": "Cross-module generic monomorphization",
     "level": "run",
     "spec_ref": "Section 11.16",
+    "expected_stdout": "49\n",
+    "expected_exit": 0,
     "features": [
       "cross_module_generic",
       "monomorphization",
@@ -1741,6 +1931,8 @@
     "title": "Cross-module @Nat -> @Int widening guard emitted through the import door (#987)",
     "level": "run",
     "spec_ref": "Section 11.2.1",
+    "expected_stdout": "9223372036854775807\n",
+    "expected_exit": 0,
     "features": [
       "cross_module",
       "nat_int_widening",
@@ -1778,6 +1970,8 @@
     "title": "Transitive module import (main -> mid -> base)",
     "level": "run",
     "spec_ref": "Section 8.6.4",
+    "expected_stdout": "42\n",
+    "expected_exit": 0,
     "features": [
       "transitive_import",
       "cross_module",
@@ -1897,6 +2091,8 @@
     "title": "Map<K, V> collection operations",
     "level": "run",
     "spec_ref": "Section 9.4.3",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "map_new",
       "map_insert",
@@ -1915,6 +2111,8 @@
     "title": "Set<T> collection operations",
     "level": "run",
     "spec_ref": "Section 9.4.2",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "set_new",
       "set_add",
@@ -1931,6 +2129,8 @@
     "title": "Json ADT and json_* built-in functions",
     "level": "run",
     "spec_ref": "Section 9.7.1",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "Json",
       "JNull",
@@ -1956,6 +2156,8 @@
     "title": "json_parse's accepted domain (#1306, #1308)",
     "level": "run",
     "spec_ref": "Section 9.7.1",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "json_parse",
       "json_accept_domain",
@@ -1974,6 +2176,8 @@
     "title": "JSON typed accessors (#366)",
     "level": "run",
     "spec_ref": "Section 9.6.23",
+    "expected_stdout": "2\n",
+    "expected_exit": 0,
     "features": [
       "json_as_string",
       "json_as_number",
@@ -1995,6 +2199,8 @@
     "title": "HtmlNode ADT and html_* built-in functions",
     "level": "run",
     "spec_ref": "Section 9.7.4",
+    "expected_stdout": "5\n",
+    "expected_exit": 0,
     "features": [
       "HtmlNode",
       "HtmlElement",
@@ -2014,6 +2220,8 @@
     "title": "Host-walker GC rooting (#692)",
     "level": "run",
     "spec_ref": "Section 9.7.4",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "html_parse",
       "json_parse",
@@ -2028,6 +2236,8 @@
     "title": "Decimal type operations",
     "level": "run",
     "spec_ref": "Section 9.7.2",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "decimal",
       "decimal_from_int",
@@ -2052,6 +2262,8 @@
     "title": "Numeric built-in functions",
     "level": "run",
     "spec_ref": "Section 9.6.3",
+    "expected_stdout": "1\n",
+    "expected_exit": 0,
     "features": [
       "abs",
       "min",
@@ -2095,6 +2307,8 @@
     "title": "Array utility built-ins phase 1 (#466)",
     "level": "run",
     "spec_ref": "Section 9.6.21",
+    "expected_stdout": "3\n",
+    "expected_exit": 0,
     "features": [
       "array_mapi",
       "array_reverse",
@@ -2112,6 +2326,8 @@
     "title": "Direct index of a nested type-variable-element builtin (#1094)",
     "level": "run",
     "spec_ref": "Section 9.6.21",
+    "expected_stdout": "137\n",
+    "expected_exit": 0,
     "features": [
       "array_reverse",
       "array_sort_by",
@@ -2126,6 +2342,8 @@
     "title": "String utilities + character classification (#470, #471)",
     "level": "run",
     "spec_ref": "Section 9.6.22",
+    "expected_stdout": "1\n",
+    "expected_exit": 0,
     "features": [
       "string_chars",
       "string_lines",
@@ -2152,6 +2370,8 @@
     "title": "Numeric type conversion functions",
     "level": "run",
     "spec_ref": "Section 9.6.4",
+    "expected_stdout": "42\n",
+    "expected_exit": 0,
     "features": [
       "int_to_float",
       "float_to_int",
@@ -2168,6 +2388,8 @@
     "title": "String search and transformation functions",
     "level": "run",
     "spec_ref": "Section 9.6.6-9.6.7",
+    "expected_stdout": "1\n",
+    "expected_exit": 0,
     "features": [
       "string_contains",
       "string_starts_with",
@@ -2187,6 +2409,8 @@
     "title": "Float64 predicate and constant functions",
     "level": "run",
     "spec_ref": "Section 9.6.5",
+    "expected_stdout": "1\n",
+    "expected_exit": 0,
     "features": [
       "float_is_nan",
       "float_is_infinite",
@@ -2201,6 +2425,8 @@
     "title": "Parse completeness (parse_int, parse_bool, parse_float64 Result)",
     "level": "run",
     "spec_ref": "Section 4.6",
+    "expected_stdout": "42-7110131\n",
+    "expected_exit": 0,
     "features": [
       "parse_int",
       "parse_bool",
@@ -2215,6 +2441,8 @@
     "title": "String ordering is lexicographic",
     "level": "run",
     "spec_ref": "Section 4.5",
+    "expected_stdout": "123456\n",
+    "expected_exit": 0,
     "features": [
       "string_ordering",
       "compare",
@@ -2229,6 +2457,8 @@
     "title": "Base64 encoding and decoding",
     "level": "run",
     "spec_ref": "Section 9.6.5",
+    "expected_stdout": "083113\n",
+    "expected_exit": 0,
     "features": [
       "base64_encode",
       "base64_decode",
@@ -2242,6 +2472,8 @@
     "title": "URL percent-encoding and decoding",
     "level": "run",
     "spec_ref": "Section 9.6.5",
+    "expected_stdout": "0593113\n",
+    "expected_exit": 0,
     "features": [
       "url_encode",
       "url_decode",
@@ -2255,6 +2487,8 @@
     "title": "URL parsing and joining",
     "level": "run",
     "spec_ref": "Section 9.6.5",
+    "expected_stdout": "5511335\n",
+    "expected_exit": 0,
     "features": [
       "url_parse",
       "url_join",
@@ -2269,6 +2503,8 @@
     "title": "Option and Result combinators",
     "level": "run",
     "spec_ref": "Section 9.3.7",
+    "expected_stdout": "260\n",
+    "expected_exit": 0,
     "features": [
       "option_unwrap_or",
       "option_map",
@@ -2286,6 +2522,8 @@
     "title": "Type inference for bare None/Err constructors in combinator calls",
     "level": "run",
     "spec_ref": "Section 9.3.7",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "none_inference",
       "err_inference",
@@ -2300,6 +2538,8 @@
     "title": "Bare None under forall<T> resolves its type argument from the declared context (#971)",
     "level": "run",
     "spec_ref": "Section 9.3.1",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "generic_type_inference",
       "forall",
@@ -2316,6 +2556,8 @@
     "title": "Nested and comparison-operand bare None under forall<T> resolve their type argument from the declared context (#979, #981)",
     "level": "run",
     "spec_ref": "Section 9.3.1",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "generic_type_inference",
       "forall",
@@ -2331,6 +2573,8 @@
     "title": "Standard prelude types available without data declarations",
     "level": "run",
     "spec_ref": "Section 9.3.7",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "prelude",
       "option",
@@ -2347,6 +2591,8 @@
     "title": "Async effect with Future<T>",
     "level": "run",
     "spec_ref": "Section 9.5.4",
+    "expected_stdout": "42353050\n",
+    "expected_exit": 0,
     "features": [
       "async",
       "await",
@@ -2361,6 +2607,8 @@
     "title": "Map/Set with representation-transparent Future<T> entries",
     "level": "run",
     "spec_ref": "Section 9.5.4",
+    "expected_stdout": "119661\n",
+    "expected_exit": 0,
     "features": [
       "map",
       "set",
@@ -2377,6 +2625,8 @@
     "title": "Markdown standard library",
     "level": "run",
     "spec_ref": "Section 9.7.3",
+    "expected_stdout": "parse: okh1: okh3: okpy: okrs: ok# Hello2\n",
+    "expected_exit": 0,
     "features": [
       "md_parse",
       "md_render",
@@ -2392,6 +2642,8 @@
     "title": "Regular expression matching",
     "level": "run",
     "spec_ref": "Section 9.6.15",
+    "expected_stdout": "match_found: okmatch_none: okfind: 123find_none: okfind_all: 3replace: hello veraerr: ok\n",
+    "expected_exit": 0,
     "features": [
       "regex_match",
       "regex_find",
@@ -2406,6 +2658,8 @@
     "title": "Abilities: Eq, Ord, Hash, Show",
     "level": "run",
     "spec_ref": "Section 9.8",
+    "expected_stdout": "1\n",
+    "expected_exit": 0,
     "features": [
       "ability",
       "ability_constraint",
@@ -2427,6 +2681,8 @@
     "title": "User-defined show/hash in a constructor field or array element",
     "level": "run",
     "spec_ref": "Section 9.8",
+    "expected_stdout": "37\n",
+    "expected_exit": 0,
     "features": [
       "show_operation",
       "hash_operation",
@@ -2444,6 +2700,8 @@
     "title": "Structural show/hash for composite types (#911)",
     "level": "run",
     "spec_ref": "Section 9.8",
+    "expected_stdout": "1\n",
+    "expected_exit": 0,
     "features": [
       "show_operation",
       "hash_operation",
@@ -2463,6 +2721,8 @@
     "title": "Structural show/hash on recursive ADTs (#924)",
     "level": "run",
     "spec_ref": "Section 9.8",
+    "expected_stdout": "1\n",
+    "expected_exit": 0,
     "features": [
       "show_operation",
       "hash_operation",
@@ -2479,6 +2739,8 @@
     "title": "Structural Eq auto-derivation for ADTs (#773)",
     "level": "run",
     "spec_ref": "Section 9.8",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "ability_constraint",
       "forall_where",
@@ -2497,6 +2759,8 @@
     "title": "Generic called only from inside a closure body (#873)",
     "level": "run",
     "spec_ref": "Section 11.10.3",
+    "expected_stdout": "1\n",
+    "expected_exit": 0,
     "features": [
       "generic_function",
       "monomorphization",
@@ -2512,6 +2776,8 @@
     "title": "where-helpers inside a monomorphized generic (#904)",
     "level": "run",
     "spec_ref": "Section 11.10.3",
+    "expected_stdout": "12\n",
+    "expected_exit": 0,
     "features": [
       "generic_function",
       "monomorphization",
@@ -2526,6 +2792,8 @@
     "title": "A generic where-helper under a generic parent instantiates its own generic callee (#1223, #1271)",
     "level": "run",
     "spec_ref": "Section 11.10.3",
+    "expected_stdout": "3\n",
+    "expected_exit": 0,
     "features": [
       "generic_function",
       "monomorphization",
@@ -2541,6 +2809,8 @@
     "title": "A generic where-helper under a generic parent instantiates a PRELUDE generic callee (#1223, #1271)",
     "level": "run",
     "spec_ref": "Section 11.10.3",
+    "expected_stdout": "3\n",
+    "expected_exit": 0,
     "features": [
       "generic_function",
       "monomorphization",
@@ -2557,6 +2827,8 @@
     "title": "Two levels of generic where-helper nesting under a generic parent (#1223, #1271)",
     "level": "run",
     "spec_ref": "Section 11.10.3",
+    "expected_stdout": "3\n",
+    "expected_exit": 0,
     "features": [
       "generic_function",
       "monomorphization",
@@ -2572,6 +2844,8 @@
     "title": "Generic where-helper under a non-generic parent (#990)",
     "level": "run",
     "spec_ref": "Section 11.10.3",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "generic_function",
       "monomorphization",
@@ -2587,6 +2861,8 @@
     "title": "Eq auto-derivation on the constructor-inferred path (#772)",
     "level": "run",
     "spec_ref": "Section 9.8",
+    "expected_stdout": "2\n",
+    "expected_exit": 0,
     "features": [
       "ability_constraint",
       "forall_where",
@@ -2604,6 +2880,8 @@
     "title": "Eq auto-derivation over a sparse multi-type-parameter ADT on the constructor-inferred path (#898)",
     "level": "run",
     "spec_ref": "Section 9.8",
+    "expected_stdout": "2\n",
+    "expected_exit": 0,
     "features": [
       "ability_constraint",
       "forall_where",
@@ -2621,6 +2899,8 @@
     "title": "Eq auto-derivation over a nested-generic recursive ADT on the direct constructor-inferred path (#923)",
     "level": "run",
     "spec_ref": "Section 9.8",
+    "expected_stdout": "3\n",
+    "expected_exit": 0,
     "features": [
       "eq_operation",
       "adt_auto_derivation",
@@ -2637,6 +2917,8 @@
     "title": "Eq auto-derivation over a nested-generic recursive ADT through a constrained generic call (#932)",
     "level": "run",
     "spec_ref": "Section 9.8",
+    "expected_stdout": "2\n",
+    "expected_exit": 0,
     "features": [
       "eq_operation",
       "adt_auto_derivation",
@@ -2654,6 +2936,8 @@
     "title": "Decimal with generic functions (option_unwrap_or, match, decimal_compare)",
     "level": "run",
     "spec_ref": "Section 9.7.2",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "decimal",
       "generics",
@@ -2674,6 +2958,8 @@
     "title": "Generic instantiation inferred from a user-fn return in argument position (#878)",
     "level": "run",
     "spec_ref": "Section 9.7.2",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "decimal",
       "generics",
@@ -2691,6 +2977,8 @@
     "title": "Generic instantiation inferred from builtin returns in argument position (#769)",
     "level": "run",
     "spec_ref": "Section 9.1",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "generics",
       "forall",
@@ -2706,6 +2994,8 @@
     "title": "User forall var name colliding with a builtin internal generic var over a compound element type (#970)",
     "level": "run",
     "spec_ref": "Section 9.1",
+    "expected_stdout": "42\n",
+    "expected_exit": 0,
     "features": [
       "generics",
       "forall",
@@ -2763,6 +3053,8 @@
     "title": "DB effect (execute/query on SQLite, Option<String> cells, Result matching)",
     "level": "run",
     "spec_ref": "Section 9.5.7",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "db_effect",
       "db_execute",
@@ -2835,6 +3127,8 @@
     "title": "Host-store GC reachability (#695 / #705)",
     "level": "run",
     "spec_ref": "Section 9.4",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "map_new",
       "map_insert",
@@ -2926,6 +3220,8 @@
     "title": "Ability op beside an invisible same-named import",
     "level": "run",
     "spec_ref": "Section 9.8",
+    "expected_stdout": "7009\n",
+    "expected_exit": 0,
     "features": [
       "cross_module",
       "visibility",
@@ -2953,6 +3249,8 @@
     "title": "Generic where-family resolving a bare op name",
     "level": "run",
     "spec_ref": "Section 7.4",
+    "expected_stdout": "7\n",
+    "expected_exit": 0,
     "features": [
       "cross_module",
       "visibility",
@@ -2983,6 +3281,8 @@
     "title": "A refinement over a parameterised alias application substitutes its argument",
     "level": "run",
     "spec_ref": "Section 2.6.3",
+    "expected_stdout": "20\n",
+    "expected_exit": 0,
     "features": [
       "refinement_type",
       "type_alias",
@@ -2997,6 +3297,8 @@
     "title": "Generic instantiation carried by a later branch",
     "level": "run",
     "spec_ref": "Section 2.5",
+    "expected_stdout": "52\n",
+    "expected_exit": 0,
     "features": [
       "generics",
       "forall",
@@ -3028,6 +3330,8 @@
     "title": "Alias opacity is head-only: type arguments resolve",
     "level": "run",
     "spec_ref": "Section 3.8.1",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "slot_reference",
       "type_alias",
@@ -3041,6 +3345,8 @@
     "title": "A composite type alias as the State<T> cell type",
     "level": "run",
     "spec_ref": "Section 7.5",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "state_effect",
       "type_alias",
@@ -3055,6 +3361,8 @@
     "title": "Two spellings of one composite State cell share it",
     "level": "run",
     "spec_ref": "Section 7.5",
+    "expected_stdout": "7\n",
+    "expected_exit": 0,
     "features": [
       "state_effect",
       "type_alias",
@@ -3069,6 +3377,8 @@
     "title": "A function-type-carrying composite cell is named by its resolution",
     "level": "run",
     "spec_ref": "Section 7.5",
+    "expected_stdout": "5\n",
+    "expected_exit": 0,
     "features": [
       "state_effect",
       "type_alias",
@@ -3084,6 +3394,8 @@
     "title": "Two refinements of one base are two State cells",
     "level": "run",
     "spec_ref": "Section 7.5",
+    "expected_stdout": "111\n",
+    "expected_exit": 0,
     "features": [
       "state_effect",
       "type_alias",
@@ -3099,6 +3411,8 @@
     "title": "A scalar alias and its base name one State cell",
     "level": "run",
     "spec_ref": "Section 7.5",
+    "expected_stdout": "24\n",
+    "expected_exit": 0,
     "features": [
       "state_effect",
       "type_alias",
@@ -3112,6 +3426,8 @@
     "title": "Multi-hop and parameterised alias State cells",
     "level": "run",
     "spec_ref": "Section 7.5",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "state_effect",
       "type_alias",
@@ -3126,6 +3442,8 @@
     "title": "A twice-applied parameterised alias State cell",
     "level": "run",
     "spec_ref": "Section 7.5",
+    "expected_stdout": "7\n",
+    "expected_exit": 0,
     "features": [
       "state_effect",
       "generic_alias",
@@ -3140,6 +3458,8 @@
     "title": "Bool / Byte / Float64 alias State cells keep their width",
     "level": "run",
     "spec_ref": "Section 7.5",
+    "expected_stdout": "1\n",
+    "expected_exit": 0,
     "features": [
       "state_effect",
       "type_alias",
@@ -3155,6 +3475,8 @@
     "title": "An effect op's result type under an alias State cell",
     "level": "run",
     "spec_ref": "Section 7.5",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "state_effect",
       "type_alias",
@@ -3169,6 +3491,8 @@
     "title": "Alias spellings inside handler clause slots name one stack",
     "level": "run",
     "spec_ref": "Section 7.5.2",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "state_effect",
       "handler_clause",
@@ -3183,6 +3507,8 @@
     "title": "A scalar alias as the Exn<E> payload type",
     "level": "run",
     "spec_ref": "Section 7.6",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "exn_effect",
       "type_alias",
@@ -3196,6 +3522,8 @@
     "title": "A String alias as the Exn<E> payload type",
     "level": "run",
     "spec_ref": "Section 7.6",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "exn_effect",
       "type_alias",
@@ -3210,6 +3538,8 @@
     "title": "Parameterised alias payloads for Exn<E>",
     "level": "run",
     "spec_ref": "Section 7.6",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "exn_effect",
       "generic_alias",
@@ -3236,6 +3566,8 @@
     "title": "Bare effect op beside an invisible same-named import",
     "level": "run",
     "spec_ref": "Section 7.4",
+    "expected_stdout": "49009\n",
+    "expected_exit": 0,
     "features": [
       "cross_module",
       "visibility",
@@ -3265,6 +3597,8 @@
     "title": "An alias resolves in the namespace of the module that declared it",
     "level": "run",
     "spec_ref": "Section 8.4.1",
+    "expected_stdout": "16\n",
+    "expected_exit": 0,
     "features": [
       "cross_module",
       "type_alias",
@@ -3293,6 +3627,8 @@
     "title": "Same alias name, different body, per module",
     "level": "run",
     "spec_ref": "Section 8.4.1",
+    "expected_stdout": "1\n",
+    "expected_exit": 0,
     "features": [
       "cross_module",
       "type_alias",
@@ -3346,6 +3682,8 @@
     "title": "Two modules' same-named generics in one program",
     "level": "run",
     "spec_ref": "Section 11.16",
+    "expected_stdout": "666\n",
+    "expected_exit": 0,
     "features": [
       "cross_module_generic",
       "monomorphization",
@@ -3361,6 +3699,8 @@
     "title": "A type alias may reuse a prelude data type's name",
     "level": "run",
     "spec_ref": "Section 8.4.1",
+    "expected_stdout": "1\n",
+    "expected_exit": 0,
     "features": [
       "type_alias",
       "prelude_shadowing",
@@ -3375,6 +3715,8 @@
     "title": "A module may declare a data type named after a prelude one",
     "level": "run",
     "spec_ref": "Section 8.4.1",
+    "expected_stdout": "7\n",
+    "expected_exit": 0,
     "features": [
       "cross_module",
       "prelude_shadowing",
@@ -3459,6 +3801,8 @@
     "title": "Local declaration plus module-qualified calls disambiguate",
     "level": "run",
     "spec_ref": "Section 8.5.3",
+    "expected_stdout": "333\n",
+    "expected_exit": 0,
     "features": [
       "ambiguous_import",
       "module_qualified_call",
@@ -3525,6 +3869,8 @@
     "title": "Type alias shadowing a prelude ADT name",
     "level": "run",
     "spec_ref": "Section 8.4.1",
+    "expected_stdout": "42\n",
+    "expected_exit": 0,
     "features": [
       "type_alias",
       "prelude_adt_shadow",
@@ -3552,6 +3898,8 @@
     "title": "A user constructor does not displace a prelude constructor of the same name",
     "level": "run",
     "spec_ref": "Section 9.8",
+    "expected_stdout": "1\n",
+    "expected_exit": 0,
     "features": [
       "constructor_shadowing",
       "show",
@@ -3617,6 +3965,8 @@
     "title": "Match on a String / Array scrutinee",
     "level": "run",
     "spec_ref": "Section 4.9",
+    "expected_stdout": "10\n",
+    "expected_exit": 0,
     "features": [
       "match",
       "binding_pattern",
@@ -3660,6 +4010,8 @@
     "title": "The Exn<E> payload is a runtime-guarded write boundary (#1268)",
     "level": "run",
     "spec_ref": "Section 2.6.5",
+    "expected_stdout": "0\n",
+    "expected_exit": 0,
     "features": [
       "exn_effect",
       "refinement_type",

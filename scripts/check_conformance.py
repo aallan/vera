@@ -4,13 +4,21 @@
 Each entry in tests/conformance/manifest.json declares the deepest
 pipeline stage (parse, check, verify, run) the program must pass.
 This script validates every entry through that stage and reports
-pass/fail summary.
+pass/fail summary.  A run-level entry passes its run stage only when
+the run exits with its ``expected_exit`` and prints exactly its
+``expected_stdout`` (or carries a ``nondeterministic_stdout`` reason in
+place of the output); scripts/conformance_golden.py holds that rule, and
+tests/test_conformance.py shares it.
 """
 
 import json
 import subprocess
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from conformance_golden import entry_problems, run_mismatch, run_program
 
 CONFORMANCE_DIR = Path(__file__).parent.parent / "tests" / "conformance"
 MANIFEST_PATH = CONFORMANCE_DIR / "manifest.json"
@@ -45,6 +53,15 @@ def main() -> int:
         path = str(CONFORMANCE_DIR / entry["file"])
         level = entry["level"]
         level_n = _LEVEL_ORDER.get(level, 0)
+
+        # What a run-level entry declares about its run (expected_stdout and
+        # expected_exit, or a nondeterministic_stdout reason), and that no
+        # lower-level entry carries any of it.  A malformed entry has no
+        # declared run to compare, so it stops here.
+        problems = entry_problems(entry)
+        if problems:
+            failed.append((entry_id, "manifest", "\n".join(problems)))
+            continue
 
         # Negative test: the program must FAIL with a specific error code
         # (e.g. ch08_circular_import → E011).  `expected_error_stage` names
@@ -116,18 +133,22 @@ def main() -> int:
                 failed.append((entry_id, "verify", result.stdout + result.stderr))
                 continue
 
-        # Run
+        # Run: the exit status and the exact stdout the entry declares
         if level_n >= _LEVEL_ORDER["run"]:
-            result = _vera("run", path)
-            if result.returncode != 0:
-                failed.append((entry_id, "run", result.stdout + result.stderr))
+            mismatch = run_mismatch(entry, run_program(CONFORMANCE_DIR / entry["file"]))
+            if mismatch is not None:
+                failed.append((entry_id, "run", mismatch))
                 continue
 
     if failed:
         for entry_id, stage, output in failed:
             print(f"FAIL ({stage}): {entry_id}", file=sys.stderr)
-            # Print first 3 lines of output for context
-            for line in output.strip().splitlines()[:3]:
+            # A run mismatch or a manifest problem is shown whole: it is the
+            # expected and the actual output, or the keys at fault.  Any
+            # other stage's output is diagnostics, and its first 3 lines
+            # give the context.
+            lines = output.strip().splitlines()
+            for line in lines if stage in ("run", "manifest") else lines[:3]:
                 print(f"  {line}", file=sys.stderr)
         print(
             f"\n{len(failed)} failures across {len(manifest)} conformance programs.",
