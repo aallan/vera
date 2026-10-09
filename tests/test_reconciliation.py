@@ -1024,6 +1024,7 @@ public fn main(@Float64 -> @Int)
 {
   let @Int = refined_tuple(gid(Tuple(float_to_int(@Float64.0), 1)));
   let @Int = nested(Tuple(gid(Tuple(float_to_int(@Float64.0), 2)), 1));
+  let @Int = refined_tuple(Tuple(float_to_int(@Float64.0), 1));
   7
 }
 """
@@ -1046,6 +1047,23 @@ def test_the_checks_at_one_signature_type_are_one_site_each(
     result = _rejoin(run, checks=checks)
     assert [(m.line, m.column) for m in result.mismatches  # type: ignore[attr-defined]
             if m.kind == "recorded_unguarded"] == [(33, 28)]
+
+
+def test_a_component_check_answers_no_record_of_the_value_it_sits_in(
+    tmp_path: Path,
+) -> None:
+    """Built where the verifier can see it, `Tuple(a, 1)` has `PT`'s own
+    predicate recorded at the tuple and `Pos`'s at `a`: with the top-level
+    guard gone, the tuple's record is unguarded, not answered by the
+    component guard beside it, which checks a place inside it."""
+    run = _written(tmp_path, "signature_guards.vera", _SIGNATURE_GUARDS)
+    guards = [c for c in run.compile_result.emitted_checks  # type: ignore[union-attr]
+              if c.function == "refined_tuple"]
+    checks = [c for c in run.compile_result.emitted_checks  # type: ignore[union-attr]
+              if c is not guards[1]]
+    result = _rejoin(run, checks=checks)
+    assert [(m.line, m.column) for m in result.mismatches  # type: ignore[attr-defined]
+            if m.kind == "recorded_unguarded"] == [(33, 28), (35, 28)]
 
 
 def test_a_nested_component_check_names_its_path_below_the_signature(
