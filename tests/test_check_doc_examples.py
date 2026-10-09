@@ -561,6 +561,29 @@ def _hook(config: str, hook_id: str) -> dict[str, str]:
     return fields
 
 
+def _ci_job(ci: str, name: str) -> list[str]:
+    """One job's lines of ci.yml, read as text like `_hook`: from its key to
+    the next line indented two spaces or less."""
+    lines = ci.splitlines()
+    start = lines.index(f"  {name}:")
+    body: list[str] = []
+    for line in lines[start + 1:]:
+        if line and not line.startswith("   "):
+            break
+        body.append(line)
+    return body
+
+
+def _ci_step(job: list[str], run: str) -> list[str]:
+    """The lines of the step in `job` whose `run:` is exactly `run`."""
+    starts = [index for index, line in enumerate(job) if line.startswith("      - ")]
+    for first, after in zip(starts, [*starts[1:], len(job)], strict=True):
+        block = job[first:after]
+        if any(line.strip() == f"run: {run}" for line in block):
+            return block
+    raise AssertionError(f"no step runs {run}")
+
+
 class TestCoverage:
     def test_every_tracked_document_with_vera_blocks_is_gated_or_exempt(
         self,
@@ -626,28 +649,68 @@ class TestCoverage:
         assert docs == ["a.md"]
         assert len(errors) == 1 and "'gone/*.md'" in errors[0]
 
-    def test_precommit_runs_the_gate_over_every_document(self) -> None:
+    # What the gate reads: every gated document, the compiler, the examples
+    # (and the stub modules the blocks import) and the gate's own modules.
+    _FIRES = (
+        *_MOD.expand_gates(ROOT)[0],
+        "vera/checker/core.py",
+        "vera/grammar.lark",
+        "examples/hello_world.vera",
+        "examples/vera/math.vera",
+        "scripts/check_doc_examples.py",
+        "scripts/check_examples_run.py",
+        "scripts/doc_annotations.py",
+    )
+    # Documents the gate does not read: the exempt ones, two the coverage rule
+    # has never seen, and the two whose edits motivated the narrowing.
+    _SILENT = (
+        *sorted(_MOD.NOT_GATED),
+        "NEW_GUIDE.md",
+        "docs/new-page.html",
+        "TESTING.md",
+        "CONTRIBUTING.md",
+    )
+
+    @staticmethod
+    def _trigger() -> re.Pattern[str]:
         config = (ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8")
         hook = _hook(config, "doc-examples")
         assert hook["entry"] == ".venv/bin/python scripts/check_doc_examples.py"
-        trigger = re.compile(hook["files"])
-        gated, _errors = _MOD.expand_gates(ROOT)
-        for path in [
-            *gated,
-            *_MOD.NOT_GATED,
-            "NEW_GUIDE.md",
-            "docs/new-page.html",
-            "examples/vera/math.vera",
-            "scripts/doc_annotations.py",
-            "scripts/check_doc_examples.py",
-            "vera/checker/core.py",
-        ]:
-            assert trigger.search(path), path
+        return re.compile(hook["files"])
+
+    @pytest.mark.parametrize("path", _FIRES)
+    def test_precommit_runs_the_gate_on_what_it_reads(self, path: str) -> None:
+        """The hook fires on every input of the gate, so no gated block, and
+        no change to what checks them, reaches CI unchecked."""
+        assert self._trigger().search(path), path
+
+    @pytest.mark.parametrize("path", _SILENT)
+    def test_precommit_does_not_run_the_gate_on_a_document_it_does_not_read(
+        self, path: str
+    ) -> None:
+        """A commit that touches only a document the gate does not read,
+        such as CHANGELOG.md or TESTING.md, re-verifies no SKILL or spec
+        block."""
+        assert not self._trigger().search(path), path
 
     def test_ci_runs_the_gate_over_every_document(self) -> None:
+        """A commit that adds only a new document with Vera blocks no longer
+        fires the hook, so this run, over every document on every pull
+        request, push and nightly run, is the one certain to hold it to the
+        coverage rule (#1481): in DOC_GATES or in NOT_GATED."""
         ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         runs = re.findall(r"run: python scripts/check_doc_examples\.py(.*)", ci)
         assert runs == [""]
+        triggers = ci.split("\njobs:\n", 1)[0]
+        for event in ("push", "pull_request", "schedule"):
+            assert re.search(rf"^  {event}:", triggers, re.MULTILINE), event
+        job = _ci_job(ci, "lint")
+        assert [line for line in job if re.match(r"^    (if|continue-on-error):", line)] == []
+        step = _ci_step(job, "python scripts/check_doc_examples.py")
+        assert [
+            line for line in step
+            if re.match(r"^\s+(-\s+)?(if|continue-on-error):", line)
+        ] == []
 
     def test_no_retired_per_document_gate_remains(self) -> None:
         config = (ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8")
