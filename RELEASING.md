@@ -102,10 +102,12 @@ The release-prep PR must:
    alone, since every one of them moves them.  CI runs this mode on the
    change that raises `[project].version`, the same signal `release.yml`
    publishes on: a pull request whose version is higher than its base
-   branch's, and a push to `main` whose version is higher than the commit
-   before it (`check_doc_counts.py --release-if-version-raised`).  Every
-   other pull request and push runs the default mode, whichever branch it
-   targets.
+   branch's, and the push event its merge produces on `main`, whose version
+   is higher than the commit before it (`check_doc_counts.py
+   --release-if-version-raised`).  The same answer runs that push's whole
+   test matrix (ci.yml's `plan` job), which the push event of any other
+   merge skips.  Every other pull request and push runs the default mode,
+   whichever branch it targets.
 5. Reconcile `KNOWN_ISSUES.md`'s Bugs table with the tracker, by running
    `python scripts/check_doc_counts.py --check-bug-issues`.  The convention
    is one row per open `bug`-labelled issue, and the check needs the GitHub

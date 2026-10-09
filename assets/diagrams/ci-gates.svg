@@ -63,7 +63,7 @@
   <g>
     <rect class="card" x="36" y="376" width="848" height="76" rx="10"/>
     <rect x="36.5" y="376.5" width="4" height="75" rx="2" fill="#5a9e6f"/>
-    <text class="f t" x="56" y="400">pull request — CI (and every push to main and release/**)</text>
+    <text class="f t" x="56" y="400">pull request — CI (after the merge: coverage, and the whole matrix again for a release and nightly)</text>
     <text class="f d" x="56" y="418">The full test suite on the OS × Python matrix, conformance at each declared level, the examples (check, verify, run), eager-GC runs —</text>
     <text class="f d" x="56" y="434">and every hook above again. main is protected: merging needs the required contexts green.</text>
   </g>
