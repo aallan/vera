@@ -271,7 +271,7 @@ Contributors don't cut releases. A release-prep PR carries the version and notes
 
 1. **Bump the version** in `pyproject.toml`, the one place it is written, then regenerate `uv.lock` (`uv lock`) so its `veralang` entry matches; `uv lock --check` holds the two together.
 2. **Add the `## [X.Y.Z]` section** to `CHANGELOG.md` with its compare-link reference at the bottom, and add the version's one-sentence row to the current stage table in `HISTORY.md`.
-3. **Regenerate TESTING.md's status** (`python scripts/render_status.py`, checked by `python scripts/check_doc_counts.py --release`) and the site assets (`python scripts/build_site.py`) if AI-readable docs changed, and refresh `uv.lock` for any dependency changes.
+3. **Regenerate TESTING.md's status** with `python scripts/render_status.py`, which `python scripts/check_doc_counts.py --release` checks; regenerate the site assets (`python scripts/build_site.py`) if AI-readable docs changed, and refresh `uv.lock` for any dependency changes.
 
 Not every PR is a release: small changes can ride along and ship with the next version bump. If you're unsure whether your change merits one, leave the bump out and say so in the PR description — the maintainer will include it in the next release.
 
