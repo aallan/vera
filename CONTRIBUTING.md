@@ -111,7 +111,7 @@ The repository configures 31 hooks across two stages: 29 run at the commit stage
 
 ![The gate pipeline: the fast commit-stage hooks, the push-stage CHANGELOG and uv.lock gates, and CI running the full suite on the platform matrix, conformance and the examples, and every hook again, before anything lands on protected main.](assets/diagrams/ci-gates.svg)
 
-**What runs where.** The commit-stage hooks are the fast gates, so a commit takes minutes.  The full pytest suite, the conformance suite and the examples run in CI only, on every pull request and on every push to `main` and `release/**`; CI also re-runs every gate below, so a commit that skipped the hooks is still gated before it can merge.  A commit runs the test files it stages: under the test-first rule, the test that proves a change is in the commit that makes it.
+**What runs where.** The commit-stage hooks are the fast gates, so a commit takes minutes.  The full pytest suite, the conformance suite and the examples run in CI only, on every pull request and on every push to `main`; CI also re-runs every gate below, so a commit that skipped the hooks is still gated before it can merge.  A commit runs the test files it stages: under the test-first rule, the test that proves a change is in the commit that makes it.
 
 The **commit-stage** hooks — 29 total, of which 28 are gated to relevant `files:`/`types:` filters and one (`check-added-large-files`, a general `--maxkb=500` size check on the files a commit adds) applies unconditionally — include:
 
