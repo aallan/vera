@@ -1653,6 +1653,8 @@ class ContractVerifier:
             span_node if span_node is not None else node)
         line = loc.span.line if loc.span else 0
         column = loc.span.column if loc.span else 0
+        end_line = loc.span.end_line if loc.span else 0
+        end_column = loc.span.end_column if loc.span else 0
         self.obligations.append(ProofObligation(
             fn_name=fn_name,
             kind=kind,
@@ -1671,6 +1673,8 @@ class ContractVerifier:
             # conformance programs, which makes it a term no test could
             # distinguish rather than a safety net.
             owner=self._scope_owner if self._scope_is_helper else "",
+            end_line=end_line,
+            end_column=end_column,
         ))
         if kind == "call_pre":
             # #1480: which precondition this record is about, by identity —

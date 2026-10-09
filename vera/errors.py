@@ -887,6 +887,7 @@ ERROR_CODES: dict[str, str] = {
     "W001": "Typed hole",
     "W003": "Unverified assumption (assume statement)",
     "W002": "Async argument evaluates eagerly",
+    "W004": "Emitted runtime check not matched by an obligation record",
     # E0xx — Parse & Transform
     "E001": "Missing contract block",
     "E002": "Missing effect clause",
@@ -1052,6 +1053,7 @@ ERROR_CODES: dict[str, str] = {
     "E538": "Premise set unsatisfiable (no call can reach the body)",
     "E539": "Premise set contradictory beyond the author's premises",
     "E540": "Premise satisfiability not established (Tier 1 withheld)",
+    "E541": "Runtime-check claim not matched by an emitted check",
     # E6xx — Codegen
     "E600": "Unsupported parameter type",
     "E601": "Unsupported return type",

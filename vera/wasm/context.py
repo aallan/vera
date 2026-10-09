@@ -79,7 +79,9 @@ _CHECK_IDS = itertools.count(1)
 
 #: The per-module record while a module is compiled: entry id -> (the
 #: `TRAP_EMITTERS` key, the node the check's span comes from).
-CheckRecord = dict[int, tuple[str, ast.Node | None]]
+#: check id -> (emitter key, the node the check stands at, its path within
+#: that node's value: :attr:`vera.trap_registry.EmittedCheck.path`).
+CheckRecord = dict[int, tuple[str, ast.Node | None, tuple[str, ...]]]
 
 
 class WasmContext(
@@ -943,6 +945,7 @@ class WasmContext(
         *,
         at: ast.Node | None,
         message: str | None = None,
+        path: tuple[str, ...] = (),
     ) -> list[str]:
         """The single emission path of a named check's trap (#1479).
 
@@ -959,7 +962,9 @@ class WasmContext(
         an emitter cannot raise a kind its row does not state.  *message* is
         required exactly for a kind whose sites carry their own
         (``TrapKind.site_message``) and refused for one that reports its
-        canonical description.
+        canonical description.  *path* is where, inside the value *at*
+        stands for, the checked value sits (``EmittedCheck.path``): empty
+        for the value itself.
         """
         row = TRAP_EMITTERS.get(emitter)
         if row is None or not row.per_site or row.via not in (
@@ -982,15 +987,20 @@ class WasmContext(
         else:
             self._needs_trap = True
         return signal_instructions(
-            row.kind, ptr, length, marker=self._record_check(emitter, at))
+            row.kind, ptr, length,
+            marker=self._record_check(emitter, at, path))
 
-    def _record_check(self, emitter: str, at: ast.Node | None) -> str:
+    def _record_check(
+        self, emitter: str, at: ast.Node | None,
+        path: tuple[str, ...] = (),
+    ) -> str:
         """Enter one check in the per-module record (#1479); returns the
         marker the instruction that IS the check must carry.
 
         *emitter* is the :data:`vera.trap_registry.TRAP_EMITTERS` key of the
-        function emitting the check, and *at* the node its span is taken
-        from (``TrapEmitter.span`` says which node that is).  The entry
+        function emitting the check, *at* the node its span is taken from
+        (``TrapEmitter.span`` says which node that is), and *path* where
+        inside that node's value the checked value sits.  The entry
         counts once for every copy of the marker in the assembled module and
         not at all when no copy survives — a translation thrown away, a
         function dropped after it compiled, a rendering spliced twice — so
@@ -1002,7 +1012,7 @@ class WasmContext(
                 "vera.trap_registry.TRAP_EMITTERS", at,
             )
         check_id = next(_CHECK_IDS)
-        self._emitted_checks[check_id] = (emitter, at)
+        self._emitted_checks[check_id] = (emitter, at, path)
         return check_marker(check_id)
 
     # -----------------------------------------------------------------

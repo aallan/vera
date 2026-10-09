@@ -316,7 +316,7 @@ def build_llms_full_txt(version: str) -> str:
     error_lines = [
         "## Error Code Reference\n",
         "Diagnostics carry stable codes: errors E001-E702 and warnings "
-        "W001-W003. Codes are grouped by compiler phase:\n",
+        "W001-W004. Codes are grouped by compiler phase:\n",
         "| Range | Phase |",
         "|-------|-------|",
         "| E001-E009 | Parse errors |",
@@ -331,7 +331,7 @@ def build_llms_full_txt(version: str) -> str:
         "| E5xx | Verification |",
         "| E6xx | Code generation |",
         "| E7xx | Testing |",
-        "| W001-W003 | Warnings |",
+        "| W001-W004 | Warnings |",
         "",
     ]
     for line in (ROOT / "vera" / "errors.py").read_text(encoding="utf-8").splitlines():

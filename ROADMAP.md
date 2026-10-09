@@ -18,7 +18,7 @@ v0.3.0 is the sound base (Stage 29), reached through v0.2.1 to v0.2.8 (Stages 21
 
 ## The next burndown
 
-*Eighty-two open bugs, driven to zero.*
+*Eighty-four open bugs, driven to zero.*
 
 A bug class outranks stage work, so the open `bug`-labelled set is the queue the fix releases work from, soundness defects first.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) carries each row's full account and stays the one place the detail lives; this table is the order of attack.
 
@@ -108,6 +108,8 @@ Bugs in a mechanism cluster close in the stage that removes their mechanism and 
 | [#1637](https://github.com/aallan/vera/issues/1637) | The language server places every diagnostic one character after its column. |
 | [#1638](https://github.com/aallan/vera/issues/1638) | An imported module's `if` whose arms both call the module's generic compiles to a module that does not validate. |
 | [#1641](https://github.com/aallan/vera/issues/1641) | A verifier diagnostic at a pipe's stage (`E501`, `E532`) is placed where the chain begins. |
+| [#1628](https://github.com/aallan/vera/issues/1628) | A `@Nat` widened into a built-in's `@Int` argument is recorded `tier3` with no widening guard: `int_to_float(nat_to_int(@Nat.0))` returns -1.0 at 2^64 - 1. |
+| [#1629](https://github.com/aallan/vera/issues/1629) | The compiled module checks sites the verifier records no obligation for (a non-zero literal divisor, a binder or field whose value already satisfies it), so `vera verify` omits those checks. |
 
 ## Stage 19 — The verification completeness sprint
 
