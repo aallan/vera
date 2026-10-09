@@ -443,8 +443,7 @@ def _test_files(tree: Tree) -> str:
 
 def _skipped_tests(tree: Tree) -> str:
     out = [
-        f"The suite skips {len(tree.skips):,} conformance-stage tests, each"
-        " by the stage method's own decision; the message is pytest's.",
+        f"The suite skips {len(tree.skips):,} conformance-stage tests:",
         "",
         "| Test | Program | Declared level | Message | What the program is |",
         "|------|---------|----------------|---------|---------------------|",

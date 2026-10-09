@@ -30,7 +30,7 @@ Technical decisions, rationale, and prior art. For the design philosophy and FAQ
 | Refinement types | `{ @T \| predicate }` checked by Z3 | Encode value-level constraints in the type system; rejected statically or at runtime |
 | Type aliases | Opaque at a slot name's head; resolved inside type arguments, and in `State`/`Exn` cell identity wherever the resolved type has a mangle-safe family name ([`DE_BRUIJN.md`](DE_BRUIJN.md) §6.5) | An alias names a binding, so a library adding one must not split a caller's namespace; a type argument is a structural component, so one type must not become two namespaces |
 | Collections | `Array<T>`, `Map<K,V>`, `Set<T>` | Functional, immutable; no mutation, no loops; `array_map`/`filter`/`fold`/`slice` as built-ins |
-| Standard library | 164 built-in functions | Strings, arrays, maps, sets, decimals, math (log/trig/constants/utilities), JSON, HTML, Markdown, regex, base64, URL — no external deps |
+| Standard library | Built-in functions, as `vera builtins` lists them | Strings, arrays, maps, sets, decimals, math (log/trig/constants/utilities), JSON, HTML, Markdown, regex, base64, URL — no external deps |
 | Modules | `module`/`import` with explicit `public`/`private` visibility | Programs split across files; `vera check` resolves the module graph |
 | Recursion | Explicit termination measures (`decreases`), or the `Diverge` effect for a function that may not terminate; a recursive function with neither is refused (`E137`) | Termination is proved via Z3 where it can be and guarded at run time otherwise; non-termination is visible in the signature |
 | Evaluation | Strict (call-by-value) | Simpler for models to reason about; no lazy evaluation to track |
@@ -38,7 +38,7 @@ Technical decisions, rationale, and prior art. For the design philosophy and FAQ
 | Target | WebAssembly (native + browser + WASI P2 components) | Portable, sandboxed, no ambient capabilities; `vera run` uses wasmtime; `vera compile --target browser` emits a JS bundle; `--target wasi-p2` emits an experimental WASI Preview 2 component for stock wasip2 hosts (`--world server` for `wasmtime serve`) |
 | Compiler | Python reference implementation | Correctness over performance; clean separation of phases; see [vera/README.md](vera/README.md) |
 | Grammar | Machine-readable Lark EBNF (`grammar.lark`) | Formal grammar is shared between spec and implementation; no ambiguity |
-| Diagnostics | LLM-instruction format; `--json` for machine use; stable error codes E001–E703 and warning codes W001–W004 | Every diagnostic names the problem, explains why, and gives a concrete fix; codes are stable for tooling |
+| Diagnostics | LLM-instruction format; `--json` for machine use; stable error and warning codes, which `vera errors` lists | Every diagnostic names the problem, explains why, and gives a concrete fix; codes are stable for tooling |
 | Testing | Contract-driven via Z3 + WASM (`vera test`) | Z3 generates inputs that satisfy `requires`; compiled WASM executes; `ensures` is checked against real outputs |
 | Formatting | Canonical formatter (`vera fmt`) | One canonical form, enforced by pre-commit and CI; no style drift |
 | Representation | Text with rigid syntax | One canonical form, no parsing ambiguity, no equivalent alternatives |

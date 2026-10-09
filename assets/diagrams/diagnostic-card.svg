@@ -53,7 +53,7 @@
   <text class="f" x="692" y="186" font-size="10.5px" fill="#7a756d">spec_ref, or the build fails</text>
 
   <text class="f" x="692" y="224" font-size="11px" font-weight="600" fill="#2d2b28">stable codes</text>
-  <text class="f" x="692" y="242" font-size="10.5px" fill="#7a756d">E001–E702, grouped by phase;</text>
+  <text class="f" x="692" y="242" font-size="10.5px" fill="#7a756d">E and W codes, grouped by phase;</text>
   <text class="f" x="692" y="256" font-size="10.5px" fill="#7a756d"><tspan class="m" font-size="10px">vera errors --json</tspan> lists the</text>
   <text class="f" x="692" y="270" font-size="10.5px" fill="#7a756d">whole registry</text>
 

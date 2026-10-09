@@ -211,7 +211,7 @@ A function is compilable if:
 
 1. All parameter and return types map to WASM types (Section 11.2) — primitives, ADTs, or monomorphized generics
 2. The function body uses only supported expression types
-3. Effects are `pure` or built-in — all ten built-in effects (`IO`, `State<T>`, `Exn<E>`, `Http`, `Async`, `HttpServer`, `Inference`, `DB`, `Random`, `Diverge`) compile, with `T` and `E` compilable types; a user-declared effect drops the function with `E603`
+3. Effects are `pure` or built-in — every built-in effect (`IO`, `State<T>`, `Exn<E>`, `Http`, `Async`, `HttpServer`, `Inference`, `DB`, `Random`, `Diverge`) compiles, with `T` and `E` compilable types; a user-declared effect drops the function with `E603`
 4. Every `handle` expression handles `State<T>` or `Exn<E>`; a handler for any other effect drops the function with `E602` ([#1597](https://github.com/aallan/vera/issues/1597))
 
 Generic (`forall<T>`) functions are compiled via monomorphization: for each concrete call site, a specialized copy is produced with type variables replaced by concrete types. The concrete types are read from the call's arguments, and an argument that is itself a generic call — `result_unwrap_or(result_map(r, f), 0)`, `idg(m::justg(2))` — is named by the specialization it instantiates. Where an argument's type is taken from the checker instead, it is read from the checker's record of the file the call is written in: an imported module's body is read in that module's own record, never the importer's. The call site and the specialization are therefore named the same way wherever the call is written.

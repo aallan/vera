@@ -337,7 +337,7 @@ The import is only emitted when the program contains runtime contract assertions
 
 ### 12.4.4 Markdown Operations
 
-The Markdown standard library provides five host function bindings for parsing and querying Markdown documents. Each is imported only when the program uses the corresponding builtin function. All five functions are pure — they have no side effects and produce deterministic results.
+The Markdown standard library provides the host function bindings below for parsing and querying Markdown documents. Each is imported only when the program uses the corresponding builtin function. All of them are pure — they have no side effects and produce deterministic results.
 
 For the `MdInline` and `MdBlock` ADT definitions, see Section 9.3.5 and Section 9.3.6. For the function specifications, see Section 9.7.3.
 
