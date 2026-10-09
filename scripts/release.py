@@ -189,41 +189,33 @@ def _index_line(bullet: str) -> str:
     return f"- {lead} ({links[-1]})" if links else f"- {lead}"
 
 
-def condense_notes(
-    section: ChangelogSection,
-    *,
-    repo: str = REPOSITORY,
-    budget: int = RELEASE_BODY_BUDGET,
-    limit: int = GITHUB_RELEASE_BODY_LIMIT,
-) -> str:
-    """Rewrite a release section as the headline index plus a CHANGELOG link.
-
-    The shape is the one the v0.1.10 release was completed by hand with: the
-    section's ``###`` subsection headers, one condensed line per bullet, and a
-    link to the canonical section at the tag — the CHANGELOG being the release
-    notes of record either way.
-    """
+def changelog_link(section: ChangelogSection, *, repo: str = REPOSITORY) -> str:
+    """Return the closing line of a condensed body: the section at its tag."""
     anchor = changelog_anchor(section.version, section.date)
-    dated = f"[{section.version}]" + (f" - {section.date}" if section.date else "")
-    # Worded against the threshold that actually fired.  Condensing starts
-    # at the budget, not at the hard limit, so a section in the band
-    # between them was published saying it was "past GitHub's
-    # 125,000-character limit" while being comfortably under it — a
-    # falsehood shipped verbatim in the release body (#1330 review).
-    preamble = (
-        f"The full release notes for this version are {len(section.notes):,} "
-        f"characters, past the {budget:,}-character budget this project "
-        f"publishes verbatim — GitHub's own limit is {limit:,} characters — so "
-        "this body carries the headline index and the canonical notes live in the "
-        f"CHANGELOG at the tag: **[CHANGELOG.md § {dated}]"
-        f"(https://github.com/{repo}/blob/v{section.version}/CHANGELOG.md{anchor})**"
+    return (
+        "Full release notes: [CHANGELOG.md]"
+        f"(https://github.com/{repo}/blob/v{section.version}/CHANGELOG.md{anchor})"
     )
 
+
+def _closing(section: ChangelogSection, repo: str) -> str:
+    """The blank line and link line that end every condensed body."""
+    return "\n\n" + changelog_link(section, repo=repo) + "\n"
+
+
+def _index_lines(section: ChangelogSection) -> list[str]:
+    """Return a release section's headline index, one entry per line.
+
+    The shape is the one the v0.1.10 release was completed by hand with: the
+    section's ``###`` subsection headers, a blank line before each one after
+    the first, and one condensed line per bullet.
+    """
     lines: list[str] = []
     bullets = 0
     for line in section.notes.splitlines():
         if _SECTION_HEADING_RE.match(line):
-            lines.append("")
+            if lines:
+                lines.append("")
             lines.append(line)
         elif _BULLET_RE.match(line):
             lines.append(_index_line(line))
@@ -232,7 +224,18 @@ def condense_notes(
         raise ReleaseError(
             f"release section [{section.version}] condensed to no bullets"
         )
-    return preamble + "\n" + "\n".join(lines).rstrip() + "\n"
+    return lines
+
+
+def condense_notes(section: ChangelogSection, *, repo: str = REPOSITORY) -> str:
+    """Rewrite a release section as the headline index plus a CHANGELOG link.
+
+    The body opens with the index, so its first line is the section's first
+    heading, and it closes with a plain link to the canonical section in the
+    CHANGELOG at the tag, the CHANGELOG being the release notes of record
+    either way.
+    """
+    return "\n".join(_index_lines(section)) + _closing(section, repo)
 
 
 def release_body(
@@ -245,22 +248,31 @@ def release_body(
     """Return a release body that always fits GitHub's limit (#1288).
 
     Within budget the section is published verbatim.  Past it the section is
-    condensed, and in the pathological case where even the index overflows the
-    index is truncated — the step must never be the thing that fails after the
-    immutable archives are already on PyPI.
+    condensed.  In the pathological case where even the index overflows, the
+    index is cut after its last whole line that fits beside the closing link,
+    so the link always survives: the step must never be the thing that fails
+    after the immutable archives are already on PyPI.
     """
     if len(section.notes) <= budget:
         return section.notes
-    condensed = condense_notes(section, repo=repo, budget=budget, limit=limit)
+    condensed = condense_notes(section, repo=repo)
     if len(condensed) <= limit:
         return condensed
-    notice = (
-        f"\n\n_This index is truncated at {limit:,} characters; "
-        "the CHANGELOG link above carries every entry._\n"
-    )
-    kept = condensed[: limit - len(notice)]
-    cut = kept.rfind("\n")
-    return (kept[:cut] if cut > 0 else kept.rstrip()) + notice
+    closing = _closing(section, repo)
+    room = limit - len(closing)
+    kept: list[str] = []
+    used = 0
+    for line in _index_lines(section):
+        used += len(line) + (1 if kept else 0)
+        if used > room:
+            break
+        kept.append(line)
+    # A cut never ends on a heading, or on the blank line before one.
+    while kept and (not kept[-1] or _SECTION_HEADING_RE.match(kept[-1])):
+        kept.pop()
+    if not kept:
+        return changelog_link(section, repo=repo) + "\n"
+    return "\n".join(kept) + closing
 
 
 def tag_exists(version: str, root: Path = ROOT) -> bool:
