@@ -34,7 +34,7 @@ Two commitments from [DESIGN.md](DESIGN.md) shape every command:
 
 1. **Fail loud, with a fix.** A diagnostic *names* the problem, explains *why*,
    and gives a concrete instruction — never a bare status. Diagnostics carry
-   stable codes (errors `E001`–`E703`, warnings `W001`–`W003`) you can pin
+   stable codes (errors `E001`–`E703`, warnings `W001`–`W004`) you can pin
    tooling to; a few still carry none ([#1490](https://github.com/aallan/vera/issues/1490)).
 2. **Two audiences.** Every diagnostic-producing command has a `--json` mode.
    People read the default text; agents consume `--json` in a feedback loop. The
@@ -420,7 +420,7 @@ the tier summary → `vera test --json` on the Tier-3 remainder.
 Every diagnostic-producing command (`check`, `verify`, `compile`, `run`, `test`,
 `ast`) speaks `--json`; the introspection commands (`builtins`, `effects`,
 `errors`) speak it natively. Diagnostic codes are **stable** (errors
-`E001`–`E703`, warnings `W001`–`W003`), so an agent can branch on `error_code`
+`E001`–`E703`, warnings `W001`–`W004`), so an agent can branch on `error_code`
 rather than parsing prose. See the [JSON diagnostics](CLAUDE.md#json-diagnostics)
 section of CLAUDE.md for the diagnostic schema, and `vera errors --json` for the
 live catalogue.

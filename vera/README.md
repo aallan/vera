@@ -763,7 +763,7 @@ The proof that the two sides agree is a differential, not a unit test: `tests/te
 
 ### 9. LLM-oriented diagnostics
 
-Every diagnostic includes a description (what went wrong), rationale (which language rule), fix (corrected code), spec reference, and a stable code — errors `E001`–`E703`, warnings `W001` (typed holes), `W002` (an eagerly evaluated `async` argument) and `W003` (an unverified `assume`). The compiler's output is designed to be fed directly back to the model as corrective context. See spec Chapter 0, Section 0.5 "Diagnostics as Instructions" for the philosophy.
+Every diagnostic includes a description (what went wrong), rationale (which language rule), fix (corrected code), spec reference, and a stable code — errors `E001`–`E703`, warnings `W001` (typed holes), `W002` (an eagerly evaluated `async` argument), `W003` (an unverified `assume`) and `W004` (a runtime check no obligation record accounts for, from `vera verify --reconcile`). The compiler's output is designed to be fed directly back to the model as corrective context. See spec Chapter 0, Section 0.5 "Diagnostics as Instructions" for the philosophy.
 
 ### 10. Stable error code taxonomy
 

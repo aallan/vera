@@ -121,7 +121,7 @@ Traditional compilers produce diagnostics for humans: `expected token '{'`. Vera
   See: Chapter 5, Section 5.2 "Function Declaration Syntax"
 ```
 
-Diagnostics carry stable codes (errors `E001`–`E703`, warnings `W001`–`W003`) and are available as structured JSON via the `--json` flag.
+Diagnostics carry stable codes (errors `E001`–`E703`, warnings `W001`–`W004`) and are available as structured JSON via the `--json` flag.
 
 ## Getting started
 

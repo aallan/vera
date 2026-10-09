@@ -117,7 +117,7 @@ For machine-parseable errors, use the `--json` flag:
 
 ### Error codes
 
-Diagnostics carry stable codes (errors `E001`–`E703`, warnings `W001`–`W003`); a few still carry none ([#1490](https://github.com/aallan/vera/issues/1490)). Common codes:
+Diagnostics carry stable codes (errors `E001`–`E703`, warnings `W001`–`W004`); a few still carry none ([#1490](https://github.com/aallan/vera/issues/1490)). Common codes:
 
 | Code | Meaning |
 |------|---------|

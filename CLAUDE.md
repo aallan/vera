@@ -196,7 +196,7 @@ So `total == tier1_verified + tier3_runtime`, and the array — which is the com
 
 ### Error codes
 
-Diagnostics carry stable codes — `E001`–`E703` and `W001`–`W003`; a few still carry none ([#1490](https://github.com/aallan/vera/issues/1490)). The prefix is the **namespace**, not the severity: the `W` codes are all warnings, but a number of `E` codes are warning-severity too (`E504`, `E506`, `E531`, `E539`, `E540` are the ones the partition table above names). Codes are grouped by compiler phase:
+Diagnostics carry stable codes — `E001`–`E703` and `W001`–`W004`; a few still carry none ([#1490](https://github.com/aallan/vera/issues/1490)). The prefix is the **namespace**, not the severity: the `W` codes are all warnings, but a number of `E` codes are warning-severity too (`E504`, `E506`, `E531`, `E539`, `E540` are the ones the partition table above names). Codes are grouped by compiler phase:
 
 | Range | Phase |
 |-------|-------|
