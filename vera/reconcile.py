@@ -48,11 +48,12 @@ Location class     Emitters that locate a check there    Records the check answe
                    ``_compile_decreases_entry``,         recorded where each is written inside
                    ``_dec_self_tail_prefix``,            its ``decreases``; and, for a
                    ``_dec_bound_check_pairs``            ``requires``, the ``call_pre`` record
-                   (``at=contract``)                     at each call to its function quoting
-                                                         that precondition
+                   (``at=contract``)                     at each call reaching its function
+                                                         that quotes that precondition
 ``parameter``      ``codegen/functions.py`` and          a record at a store position of the
-                   ``codegen/closures.py`` boundary      matching argument of a call to the
-                   guards (``at=param_te``)              function, by its declared name
+                   ``codegen/closures.py`` boundary      matching argument of a call that
+                   guards (``at=param_te``)              reaches the function
+                                                         (``_reached_decl``)
 ``return``         ``codegen/contracts.py`` and          a record at a store position of the
                    ``codegen/closures.py`` return        function's body
                    guards (``at=...return_type``)
