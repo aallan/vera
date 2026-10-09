@@ -164,6 +164,7 @@ testpaths = ["tests"]
 # CI workflow.
 markers = [
     "stress: scale-dependent regression tests (#596); skipped by default, run via -m stress or nightly CI",
+    "matrix(decides): a generated class-instrument matrix, with the modules that decide its class; by default a run keeps a weekly-seeded stratified sample of its parametrised cells, and every cell when VERA_MATRIX_CHANGED names the file or one of those modules; --matrix=full runs every cell (tests/matrix_sample.py)",
 ]
 addopts = "-m 'not stress'"
 

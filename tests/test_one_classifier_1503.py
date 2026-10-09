@@ -67,6 +67,16 @@ from vera.types import (
 )
 from vera.verifier import verify
 
+# A generated class instrument (tests/matrix_sample.py): a pull request runs a
+# sample of its parametrised cells, and all of them when it changes this file or
+# a module that decides its class, here the one sign classifier every guard and
+# obligation reads.
+pytestmark = pytest.mark.matrix(
+    decides=[
+        "vera/narrowing.py",
+    ],
+)
+
 _U64_MAX = 18446744073709551615
 #: The largest `@Int`: a `@Nat` above it does not widen into one.
 _I64_MAX = (1 << 63) - 1

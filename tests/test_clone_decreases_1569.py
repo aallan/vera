@@ -46,6 +46,16 @@ from tests.module_fixture_helpers import (
 from vera import ast
 from vera.verifier import ContractVerifier, VerifyResult, verify
 
+# A generated class instrument (tests/matrix_sample.py): a pull request runs a
+# sample of its parametrised cells, and all of them when it changes this file or
+# a module that decides its class, here the verifier's lookup of a clone's cycle
+# through the declaration it was cloned from.
+pytestmark = pytest.mark.matrix(
+    decides=[
+        "vera/verifier.py",
+    ],
+)
+
 VISIBILITY = ("private", "public")
 FLAVOURS = ("generic", "plain")
 PLACEMENTS = ("direct", "importer", "transitive")

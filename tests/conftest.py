@@ -5,6 +5,16 @@ measures (``VERA_Z3_TIMEOUT_MS``) or which repository its git commands act on
 (``GIT_*``), and provides opt-in JavaScript coverage collection for the
 browser runtime.  Set ``VERA_JS_COVERAGE=1`` to enable V8 coverage during
 ``test_browser.py``.
+
+Also installs the ``matrix`` marker's sample (``tests/matrix_sample.py``):
+by default a file marked ``matrix`` runs a weekly-seeded stratified sample
+of its parametrised cells, and every cell when ``VERA_MATRIX_CHANGED`` (CI's
+list of the files a pull request changes) names the file or a module its
+marker declares as deciding its class; ``--matrix=full`` runs every cell and
+``--matrix=sample`` the sample, whatever the variable says.  The cells every
+pull request must run are kept by three rules: a test that is not
+parametrised, every cell of a function named for a ``repro``, and every
+strict xfail.
 """
 
 from __future__ import annotations
@@ -13,6 +23,16 @@ import os
 import subprocess
 
 import pytest
+
+# The hooks of the `matrix` marker's sample.  pytest reads hooks from this
+# module's namespace, so importing them is what installs them.
+from tests.matrix_sample import (  # noqa: F401
+    pytest_addoption,
+    pytest_collection_modifyitems,
+    pytest_configure_node,
+    pytest_terminal_summary,
+    pytest_testnodedown,
+)
 
 
 @pytest.fixture(scope="session", autouse=True)
