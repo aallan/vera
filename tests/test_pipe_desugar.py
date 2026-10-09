@@ -1217,6 +1217,23 @@ class TestADiagnosticAtItsStage:
             line, 8)
         assert errors[0].source_line == "    |> sub2();"
 
+    def test_two_stages_with_one_fault(self) -> None:
+        """Two stages that call `sub2` with one argument each draw two
+        E201s, each at its stage.  At the pipe's span the two shared a
+        position and a message, and the checker's collapse of exact
+        duplicates kept one."""
+        source = _with(_CALLEES, _fn("neg(@Int -> @Int)", "0 - @Int.0"),
+                       main=_fn("f(@Int -> @Int)",
+                                "let @Int = @Int.0\n    |> sub2()\n"
+                                "    |> neg()\n    |> sub2();\n  @Int.0",
+                                vis="public"))
+        errors = [d for d in _check(source) if d.severity == "error"]
+        lines = source.splitlines()
+        assert [(d.error_code, d.location.line, d.location.column)
+                for d in errors] == [
+            ("E201", lines.index("    |> sub2()") + 1, 8),
+            ("E201", lines.index("    |> sub2();") + 1, 8)]
+
     def test_every_call_level_code_has_a_cell(self) -> None:
         """Every code `vera/checker/calls.py` reports is a stage cell's,
         one reported at an argument, or one no pipe can draw; and every
