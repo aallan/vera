@@ -195,8 +195,11 @@ is unattributed.  The verdict is one of three:
 - **Refuted.** Each stands for an obligation the verifier proved, so
   whichever fired, a proof said it could not.  The function is reported
   `REFUTED`, with an `E703` error naming the obligation and the arguments, and
-  the run exits 1.  That is a soundness bug in Vera (unless an `assume` the
-  proof rests on is false): report it with the program and the arguments.
+  the run exits 1.  That is a soundness bug in Vera unless an `assume` the
+  proof rests on is false: the `E703` names any `assume` in the function the
+  proof belongs to, and says the arguments violate it where the tester can
+  evaluate it on them (an `assume` at the head of the function under test).
+  Otherwise, report it with the program and the arguments.
 - **A Tier-3 guard.** Each stands for an obligation the verifier did not
   prove.  It fired on an input the contract admits, which is a finding about
   the program, reported as a failing trial exactly as for a Tier-3 function.

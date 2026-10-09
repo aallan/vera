@@ -322,6 +322,8 @@ class _TestEngine:
         self.alias_env = alias_env
         # `vera test --distrust`: exercise the proved functions too.
         self.distrust = distrust
+        # The declarations a refuted record can name (`_declarations`).
+        self._decls: dict[tuple[str | None, str], ast.FnDecl] | None = None
 
     def run(self) -> TestResult:
         """Execute the full test pipeline."""
@@ -711,35 +713,19 @@ class _TestEngine:
 
             for trial in refuting[:3]:  # limit to first 3, as for E700
                 where, where_line = self._refuted_location(trial, decl)
+                # What the proof took on trust: an `assume` in the function
+                # that owns a refuted record, and whether these arguments
+                # violate it, where the tester can tell.
+                premise = _assumed_premise(
+                    trial, decl, self._declarations(), self.alias_env)
+                rationale, fix = _refutation_explanation(premise)
                 diagnostics.append(Diagnostic(
-                    description=_refutation_description(fn_name, trial),
+                    description=_refutation_description(
+                        fn_name, trial, premise),
                     location=where,
                     source_line=where_line,
-                    rationale=(
-                        "`vera test --distrust` runs the functions the "
-                        "verifier proved, compiled with the runtime checks "
-                        "code generation emits whatever the tier.  The check "
-                        "that failed stands for an obligation the verifier "
-                        "discharged at Tier 1, and the trial's arguments "
-                        "satisfy the function's `requires` in the verifier's "
-                        "own model, so the proof and the compiled program "
-                        "disagree: the verifier proved something about a "
-                        "program other than the one that runs."
-                    ),
-                    fix=(
-                        "If this function, or a callee its proof relies on, "
-                        "contains an `assume`, check that first: an `assume` "
-                        "is taken on trust (W003), so a false one lets the "
-                        "verifier prove a contract the program then violates. "
-                        "Otherwise this is a soundness defect in Vera, not in "
-                        "the program: report it at "
-                        "https://github.com/aallan/vera/issues/new with this "
-                        "program and the arguments above.  Until it is fixed, "
-                        "treat the obligation as checked at run time rather "
-                        "than proved: the compiled program carries the check, "
-                        "so it traps here instead of continuing past the "
-                        "violation."
-                    ),
+                    rationale=rationale,
+                    fix=fix,
                     spec_ref='Chapter 0, Section 0.5.6 "Contract-Driven Testing"',
                     severity="error",
                     error_code="E703",
@@ -810,6 +796,28 @@ class _TestEngine:
             summary=summary,
             diagnostics=diagnostics,
         )
+
+    def _declarations(self) -> dict[tuple[str | None, str], ast.FnDecl]:
+        """Every function declaration the obligation records can name, by
+        (file, name): the program's own, their `where` helpers, and every
+        resolved module's.  Built on first use, for a refutation."""
+        if self._decls is None:
+            decls: dict[tuple[str | None, str], ast.FnDecl] = {}
+
+            def add(decl: ast.FnDecl, where: str | None) -> None:
+                decls.setdefault((where, decl.name), decl)
+                for helper in decl.where_fns or ():
+                    add(helper, where)
+
+            for tld in self.program.declarations:
+                if isinstance(tld.decl, ast.FnDecl):
+                    add(tld.decl, self.file)
+            for module in self.resolved_modules:
+                for tld in module.program.declarations:
+                    if isinstance(tld.decl, ast.FnDecl):
+                        add(tld.decl, str(module.file_path))
+            self._decls = decls
+        return self._decls
 
     def _refuted_location(
         self, trial: TrialResult, decl: ast.FnDecl,
@@ -1177,17 +1185,198 @@ def _render_args(args: dict[str, int | float | str]) -> str:
     )
 
 
-def _refutation_description(fn_name: str, trial: TrialResult) -> str:
-    """The E703 description: the proof, the arguments, and the trap."""
+@dataclass(frozen=True)
+class _AssumedPremise:
+    """The `assume` statements a refuted proof rests on (spec §6.2.6), and
+    what the tester knows of them on the trial's arguments."""
+
+    verdict: str
+    """``"violated"``: these arguments violate one of them, evaluated at the
+    head of the function under test.  ``"satisfied"``: they satisfy every
+    one, so none is the cause.  ``"trusted"``: not known — an `assume` in a
+    callee, after a binding, or inside a branch, or one whose predicate does
+    not translate."""
+
+    named: str
+    """The statements, as the description names them."""
+
+
+def _assumed_premise(
+    trial: TrialResult,
+    decl: ast.FnDecl,
+    declarations: dict[tuple[str | None, str], ast.FnDecl],
+    alias_env: AliasEnv,
+) -> _AssumedPremise | None:
+    """The `assume` statements in the declarations that own *trial*'s
+    refuted records, or None when they hold none.
+
+    The verifier takes an `assume` on trust (W003), so a false one lets it
+    prove what the program then violates — no defect of the verifier.  The
+    tester says these arguments violate one only where it evaluates it on
+    them: a statement at the head of the function under test, before any
+    binding, whose slots are therefore its parameters.
+    """
+    found: list[tuple[ast.FnDecl, ast.AssumeExpr]] = []
+    for record in trial.refutes:
+        owner = declarations.get((record.file, record.fn_name))
+        if owner is None:
+            continue
+        for node in walk_nodes(owner.body):
+            if isinstance(node, ast.AssumeExpr) and not any(
+                    node is seen for _, seen in found):
+                found.append((owner, node))
+    if not found:
+        return None
+
+    def name(owner: ast.FnDecl, node: ast.AssumeExpr) -> str:
+        line = f" at line {node.span.line}" if node.span is not None else ""
+        where = "" if owner is decl else f", in '{owner.name}'"
+        return f"`assume({ast.format_expr(node.expr)})`{line}{where}"
+
+    held = [
+        _assume_on_arguments(decl, node, trial, alias_env)
+        if owner is decl else None
+        for owner, node in found
+    ]
+    violated = [entry for entry, ok in zip(found, held) if ok is False]
+    if violated:
+        return _AssumedPremise(
+            "violated", " and ".join(name(*entry) for entry in violated))
+    verdict = "satisfied" if all(ok is True for ok in held) else "trusted"
+    return _AssumedPremise(
+        verdict, " and ".join(name(*entry) for entry in found))
+
+
+def _assume_on_arguments(
+    decl: ast.FnDecl,
+    assume: ast.AssumeExpr,
+    trial: TrialResult,
+    alias_env: AliasEnv,
+) -> bool | None:
+    """Whether *assume* holds on *trial*'s arguments: True, False, or None
+    where it cannot be told.
+
+    Told only for a statement at the head of *decl*'s body, after no
+    binding, so that its slots are the parameters the arguments fill, and
+    only when its predicate translates.
+    """
+    for stmt in decl.body.statements:
+        if isinstance(stmt, ast.ExprStmt) and stmt.expr is assume:
+            break
+        if not isinstance(stmt, ast.ExprStmt):
+            return None
+    else:
+        return None
+    env = _declare_param_vars(
+        decl, _get_param_types(decl, alias_env), alias_env)
+    if env is None:
+        return None
+    predicate = env.smt.translate_expr(assume.expr, env.slot_env)
+    values = list(trial.args.values())
+    if not isinstance(predicate, z3.BoolRef) or len(values) != len(env.z3_vars):
+        return None
+    pairs: list[tuple[z3.ExprRef, z3.ExprRef]] = []
+    for var, bt, value in zip(env.z3_vars, env.var_types, values):
+        if bt == BOOL:
+            pairs.append((var, z3.BoolVal(bool(value))))
+        elif bt == STRING:
+            pairs.append((var, z3.StringVal(str(value))))
+        elif bt == FLOAT64:
+            pairs.append((var, z3.FPVal(float(value), var.sort())))
+        else:
+            pairs.append((var, z3.IntVal(int(value))))
+    answer = z3.simplify(z3.substitute(predicate, *pairs))
+    return True if z3.is_true(answer) else False if z3.is_false(answer) else None
+
+
+_REFUTATION_HEAD = (
+    "`vera test --distrust` runs the functions the verifier proved, compiled "
+    "with the runtime checks code generation emits whatever the tier.  The "
+    "check that failed stands for an obligation the verifier discharged at "
+    "Tier 1"
+)
+
+
+def _refutation_explanation(premise: _AssumedPremise | None) -> tuple[str, str]:
+    """E703's rationale and fix, by what is known of an `assume` the proof
+    rests on.  The verifier is blamed outright only where no `assume` is
+    known to be false."""
+    if premise is not None and premise.verdict == "violated":
+        return (
+            _REFUTATION_HEAD + ", from premises that include the `assume` "
+            "the description names, which the verifier takes on trust rather "
+            "than proving (W003, spec §6.2.6).  The trial's arguments satisfy "
+            "the function's `requires` and violate that `assume`, so the "
+            "proof was built on a premise that is false here: the program, "
+            "not the verifier, is wrong.",
+            "Replace the `assume` with something the verifier proves or the "
+            "program checks: a `requires` the callers must establish, so "
+            "`vera verify` proves it at every call site, or an explicit "
+            "branch on the condition.  An `assume` is for a fact the verifier "
+            "cannot reach on its own; one these arguments violate is not a "
+            "fact.",
+        )
+    if premise is not None and premise.verdict == "trusted":
+        return (
+            _REFUTATION_HEAD + ", from premises that include the `assume` "
+            "the description names, which the verifier takes on trust rather "
+            "than proving (W003, spec §6.2.6).  If the values that reach the "
+            "`assume` violate it, the proof was built on a premise that is "
+            "false there, and the program is wrong; if they satisfy it, the "
+            "proof and the compiled program disagree, which is a soundness "
+            "defect in Vera.",
+            "Check the `assume` the description names against the values "
+            "that reach it.  If they violate it, replace it with a `requires` "
+            "the callers must establish, or an explicit branch on the "
+            "condition.  If they satisfy it, this is a soundness defect in "
+            "Vera: report it at https://github.com/aallan/vera/issues/new "
+            "with this program and the arguments above.",
+        )
+    return (
+        _REFUTATION_HEAD + ", and the trial's arguments satisfy the "
+        "function's `requires` in the verifier's own model, so the proof and "
+        "the compiled program disagree: unless an `assume` the proof rests "
+        "on is false, the verifier proved something about a program other "
+        "than the one that runs.",
+        "If a callee this proof relies on contains an `assume`, check that "
+        "first: an `assume` is taken on trust (W003), so a false one lets "
+        "the verifier prove a contract the program then violates.  Otherwise "
+        "this is a soundness defect in Vera, not in the program: report it "
+        "at https://github.com/aallan/vera/issues/new with this program and "
+        "the arguments above.  Until it is fixed, treat the obligation as "
+        "checked at run time rather than proved: the compiled program "
+        "carries the check, so it traps here instead of continuing past the "
+        "violation.",
+    )
+
+
+def _refutation_description(
+    fn_name: str, trial: TrialResult, premise: _AssumedPremise | None,
+) -> str:
+    """The E703 description: the proof, the arguments, the trap, and any
+    `assume` the proof rests on."""
     one = len(trial.refutes) == 1
     what = " and ".join(
         _describe_obligation(r, fn_name) for r in trial.refutes)
     trap = trial.message.splitlines()[0] if trial.message else trial.trap_kind
+    rests = ""
+    if premise is not None:
+        rests = {
+            "violated": (
+                f"; the proof rests on {premise.named}, which these "
+                f"arguments violate"),
+            "satisfied": (
+                f"; the proof also rests on {premise.named}, which these "
+                f"arguments satisfy"),
+            "trusted": (
+                f"; the proof rests on {premise.named}, which the verifier "
+                f"takes on trust (W003)"),
+        }[premise.verdict]
     return (
         f"Tier 1 proof refuted in '{fn_name}': {what} "
         f"{'was proved' if one else 'were each proved'}, but the trial on "
         f"{_render_args(trial.args)} failed {'it' if one else 'one of them'} "
-        f"at run time: {trap}"
+        f"at run time: {trap}{rests}"
     )
 
 

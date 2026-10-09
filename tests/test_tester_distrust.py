@@ -1370,6 +1370,153 @@ class TestProofClauseEdges:
 
 
 # =====================================================================
+# A refutation whose proof rests on an `assume`
+# =====================================================================
+
+# The class: E703's text for a refuted proof whose premises include an
+# `assume`, which the verifier takes on trust (W003).  A false `assume` lets
+# it prove what the program then violates, which is no defect of the
+# verifier, so the text says which `assume` the proof rests on, says that
+# these arguments violate it only where the tester has evaluated it on them,
+# and blames the verifier only where the `assume` held.
+
+# The reviewer's repro.  `trusting` is proved from its own `assume`, which
+# the generator's `@Int.0 = 0` violates; `via_callee` is proved from
+# `helper`'s `ensures`, which rests on `helper`'s `assume`.
+SRC_ASSUME = """\
+public fn trusting(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  assume(@Int.0 > 0);
+  @Int.0
+}
+
+private fn helper(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  assume(@Int.0 > 0);
+  @Int.0
+}
+
+public fn via_callee(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  helper(@Int.0)
+}
+"""
+
+_SOUNDNESS = (
+    "the verifier proved something about a program other than the one that "
+    "runs")
+
+#: Where an `assume` sits relative to the refuted proof, and whether these
+#: arguments violate it: the comparison `f`'s `ensures(@Int.result _ 0)`
+#: makes (`<` where #1587's literal supplies the false proof), its body, and
+#: what E703's description ends with.
+_ASSUME_CELLS: dict[str, tuple[str, str, str]] = {
+    # At the head of the body, evaluated on the arguments: they violate it.
+    "head_violated": (
+        ">", "assume(@Int.0 > 0);\n  @Int.0",
+        "; the proof rests on `assume(@Int.0 > 0)` at line 6, which these "
+        "arguments violate"),
+    # At the head, and it holds: the false proof is the verifier's (#1587).
+    "head_satisfied": (
+        "<", "assume(@Int.0 == @Int.0);\n  0 - 18446744073709551615",
+        "; the proof also rests on `assume(@Int.0 == @Int.0)` at line 6, "
+        "which these arguments satisfy"),
+    # After a binding the slots it reads may not be the parameters, so it
+    # is not evaluated.
+    "after_a_binding": (
+        ">", "let @Int = @Int.0;\n  assume(@Int.0 > 0);\n  @Int.0",
+        "; the proof rests on `assume(@Int.0 > 0)` at line 7, which the "
+        "verifier takes on trust (W003)"),
+    # Inside a branch it is not a statement of the body.  It reaches the
+    # `assert` beside it, not the postcondition, so the `assert` is the
+    # proof it refutes.
+    "in_a_branch": (
+        ">=", "if @Int.0 >= 0 then {\n    assume(@Int.0 > 0);\n"
+        "    assert(@Int.0 > 0);\n    @Int.0\n  } else {\n    1\n  }",
+        "; the proof rests on `assume(@Int.0 > 0)` at line 7, which the "
+        "verifier takes on trust (W003)"),
+}
+
+
+def _assume_program(cell: str) -> str:
+    sign, body, _ = _ASSUME_CELLS[cell]
+    return (
+        "public fn f(@Int -> @Int)\n"
+        "  requires(true)\n"
+        f"  ensures(@Int.result {sign} 0)\n"
+        "  effects(pure)\n"
+        "{\n"
+        f"  {body}\n"
+        "}\n")
+
+
+def _refutations(result: TestResult) -> list[Any]:
+    return [d for d in result.diagnostics if d.error_code == "E703"]
+
+
+class TestRefutationsRestingOnAnAssume:
+    """E703 names the `assume` a refuted proof rests on, and blames the
+    verifier only where the `assume` held."""
+
+    @pytest.mark.parametrize("cell", list(_ASSUME_CELLS))
+    def test_each_position_of_the_assume(self, cell: str) -> None:
+        result = _run(_assume_program(cell), distrust=True, trials=9)
+        assert _fn(result, "f").category == "refuted"
+        refutations = _refutations(result)
+        assert refutations
+        suffix = _ASSUME_CELLS[cell][2]
+        for d in refutations:
+            assert d.description.endswith(suffix), d.description
+            assert (_SOUNDNESS in d.rationale) == (cell == "head_satisfied")
+
+    def test_the_reviewers_own_assume(self) -> None:
+        result = _run(SRC_ASSUME, distrust=True, fn_name="trusting")
+        refutations = _refutations(result)
+        assert len(refutations) == 3
+        for d in refutations:
+            assert d.description.endswith(
+                "; the proof rests on `assume(@Int.0 > 0)` at line 6, which "
+                "these arguments violate"), d.description
+            assert _SOUNDNESS not in d.rationale
+            assert "soundness defect" not in d.fix
+            assert "`requires`" in d.fix
+
+    def test_a_callees_assume_is_named_with_its_condition(self) -> None:
+        result = _run(SRC_ASSUME, distrust=True, fn_name="via_callee")
+        refutations = _refutations(result)
+        assert refutations
+        for d in refutations:
+            assert d.description.endswith(
+                "; the proof rests on `assume(@Int.0 > 0)` at line 15, in "
+                "'helper', which the verifier takes on trust (W003)"), (
+                d.description)
+            assert _SOUNDNESS not in d.rationale
+            # Not established either way, so both readings are stated.
+            assert "soundness defect" in d.fix
+            assert "`requires`" in d.fix
+
+    def test_without_an_assume_the_rationale_still_names_the_case(
+        self,
+    ) -> None:
+        (d,) = _run(SRC_1587, distrust=True).diagnostics
+        assert "assume(" not in d.description
+        assert "unless an `assume` the proof rests on is false" in d.rationale
+
+    def test_every_variant_passes_the_diagnostic_fields_gate(self) -> None:
+        gate = _diagnostic_fields_gate()
+        assert gate.check_paths([ROOT / "vera" / "tester.py"]) == []
+
+
+# =====================================================================
 # The attribution rule, cell by cell
 # =====================================================================
 
