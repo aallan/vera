@@ -334,8 +334,8 @@ _SPELLINGS: dict[str, str] = {
                             "    mk(@Float64.0)\n  } else {\n"
                             "    mk2(@Float64.0)\n  };\n"
                             "  match @Option<PosInt>.0 {\n" + _ARMS + "\n  }\n}\n",
-    # A pipe desugars to a call inside the SMT layer, but the AST node the
-    # syntactic test sees is a pipe.  Nothing in the fix names pipes.
+    # A pipe: the transform writes it as the call it stands for, flagged
+    # `piped`.  Nothing in the fix names pipes.
     "pipe": _F + "{\n  match @Float64.0 |> mk() {\n" + _ARMS + "\n  }\n}\n",
     # #1407, the issue's own shape.
     "wrap1": _WRAP + _F + "{\n  match wrap(@Float64.0) {\n" + _ARMS + "\n  }\n}\n",

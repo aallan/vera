@@ -39,11 +39,11 @@ Three changes make the two walkers stop being independent:
    checker resolves the alias to ``Int``) — a re-granulation of
    monomorphization, not this repair.
 
-2. **A pipe names its RESULT.**  Both namers, and every walk that discovers an
-   instantiation, go through one shared desugar (``pipe_desugared_call``) that
-   folds the piped value in as the call's first argument and KEEPS the right
-   operand's node type, so a ``ModuleCall`` stays one and its ``path`` still
-   routes to the declaring module's clone.
+2. **A pipe names its RESULT.**  The transform writes a pipe as the call it
+   stands for, the piped value folded in as the call's first argument and the
+   right operand's node type KEPT, so a ``ModuleCall`` stays one and its
+   ``path`` still routes to the declaring module's clone.  Neither namer, and
+   no walk that discovers an instantiation, sees a pipe.
 
 3. **The parameterised branch asks too.**  Matching ``@Array<T>`` against an
    argument needs the argument's own base and type arguments, and
@@ -1071,7 +1071,7 @@ def test_old_state_composite_compares_values_not_addresses() -> None:
 
 # An un-nameable argument PIPED into a shadowed module generic, inside the
 # module's own body.  It reaches the verifier's shadowed-qualified discovery
-# through the desugared-pipe arm, which calls `_infer_type_args_from_args`
+# as the module call it is, and `walk_seed` calls `_infer_type_args_from_args`
 # directly — outside any namespace scope until #1389's review round threaded
 # the origin through `walk_seed`.  Without it the record claims the ENTRY
 # program and the [E622] names `main.vera` while quoting `mlib.vera`'s line.

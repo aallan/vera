@@ -1152,12 +1152,12 @@ class TestObligationKinds:
         assert len(call_pres) == 1
 
     def test_pipe_call_violation_records_once(self) -> None:
-        """A violating call reached via pipe desugaring records once.
+        """A violating call written as a pipe records once.
 
-        Pipe translation constructs a fresh synthetic ``ast.FnCall``
-        on every pass, so object-identity dedup misses repeat visits —
-        the dedup keys on the (stable) call-site span instead (#729
-        round 2).
+        The dedup keys on the call-site span (#729 round 2), not object
+        identity: pipe translation once built a fresh synthetic
+        ``ast.FnCall`` on every pass.  The transform now writes the pipe
+        as one call node, carrying the pipe's span.
         """
         source = (
             "private fn need_pos(@Nat -> @Nat)\n"
