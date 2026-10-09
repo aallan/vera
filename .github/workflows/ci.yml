@@ -200,9 +200,14 @@ jobs:
         if: github.event_name != 'pull_request' || !contains(github.event.pull_request.labels.*.name, 'skip-changelog')
         run: python scripts/check_changelog_updated.py
 
-      # The conformance suite and the examples' check + verify are not
-      # repeated here: tests/test_conformance.py and the example round-trip
-      # tests run them inside the suite (the scripts stay for local use).
+      # The conformance suite is not repeated here: tests/test_conformance.py
+      # runs it inside the suite (the script stays for local use).  The
+      # examples' check + verify stays, as the one run of `vera check` and
+      # `vera verify` through the CLI over every example: the suite's example
+      # tests call the checker and verifier in-process.
+      - name: Check all examples type-check and verify cleanly
+        run: python scripts/check_examples.py
+
       - name: Check the corpus is in canonical form
         run: python scripts/check_corpus_canonical.py
 

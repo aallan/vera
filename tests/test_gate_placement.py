@@ -2,9 +2,9 @@
 
 The local pre-commit hook runs the fast gates — lint, types, the doc and
 consistency gates, and the test files a commit stages — and CI runs all of
-them plus the slow ones: the full pytest suite (the conformance suite and
-the examples' check and verify are part of it), the examples' runs, and the
-E602/E604 compile sweep.  Both halves are read from the configuration files
+them plus the slow ones: the full pytest suite (the conformance suite is
+part of it), the examples' check and verify through the CLI and their runs,
+and the E602/E604 compile sweep.  Both halves are read from the configuration files
 themselves:
 
 - ``.pre-commit-config.yaml``: the hook set is the pinned list, no hook runs
@@ -17,8 +17,8 @@ themselves:
   On the push event any other merge produces, the pull request's own run
   has already tested that tree on every cell (strict branch protection), so
   the matrix stands down and the coverage job runs the whole suite once,
-  instrumented.  The examples' runs and the sweep run on every event, every
-  gate the hook runs is run too, and the documentation counts run in
+  instrumented.  The examples' check, verify and runs and the sweep run on
+  every event, every gate the hook runs is run too, and the documentation counts run in
   release mode exactly when the version rises.
 
 Conditions in the workflow (``if:`` keys and ``${{ }}`` expressions) are
@@ -91,10 +91,9 @@ COMMIT_STAGE = (
 )
 PUSH_STAGE = ("check-changelog-updated", "uv-lock-check")
 
-# The sweeps too slow for a commit.  CI runs the last two in `lint`; the
-# first two are local tools whose work CI does through the suite
-# (tests/test_conformance.py and the example round-trip tests), so a hook
-# runs none of them.
+# The sweeps too slow for a commit.  CI runs the last three in `lint`; the
+# first is a local tool whose work CI does through the suite
+# (tests/test_conformance.py), so a hook runs none of them.
 SLOW_SWEEPS = (
     "scripts/check_conformance.py",
     "scripts/check_examples.py",
@@ -905,15 +904,17 @@ class TestCiRunsEveryGate:
 
     @pytest.mark.parametrize("event", sorted(EVENTS))
     def test_conformance_and_the_examples_run(self, event: str) -> None:
-        """The conformance programs and the examples' check and verify are
-        part of the whole suite (tests/test_conformance.py and the example
-        round-trip tests), which the tests above run on every event.  Their
-        runs and the compile sweep run here on every event, and the runs
-        again under VERA_EAGER_GC=1: the conformance programs through the
-        suite's own run stage, since a collection changes no other stage."""
+        """The conformance programs are part of the whole suite
+        (tests/test_conformance.py), which the tests above run on every
+        event.  The examples' check and verify through the CLI (the suite's
+        example tests call the checker and verifier in-process), their runs
+        and the compile sweep run here on every event, and the runs again
+        under VERA_EAGER_GC=1: the conformance programs through the suite's
+        own run stage, since a collection changes no other stage."""
         workflow = _workflow()
         context = EVENTS[event]
         for job, script, eager in [
+            ("lint", "scripts/check_examples.py", False),
             ("lint", "scripts/check_examples_run.py", False),
             ("lint", "scripts/check_e602_clean.py", False),
             ("eager-gc", "scripts/check_examples_run.py", True),
