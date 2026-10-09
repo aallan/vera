@@ -2,9 +2,9 @@
 
 Default `vera test` reports a function whose contracts the verifier proved as
 `verified` and never runs it, so it cannot see a false Tier 1 — a proof the
-compiled program contradicts.  Code generation compiles every contract check
-whatever its tier, so the module the tester runs already carries the checks
-for a proved function; `--distrust` runs the trials on those functions too.
+compiled program contradicts.  Code generation emits a contract's runtime
+check whatever its tier, wherever it can express one, so the module the
+tester runs already carries the checks for a proved function; `--distrust` runs the trials on those functions too.
 A trial that fails a check standing for an obligation the verifier PROVED is a
 refutation (category `refuted`, E703, exit 1).  A check standing for an
 obligation the verifier did not prove — a Tier-3 guard — firing on an input
@@ -839,7 +839,23 @@ class TestAttributionEdges:
         _TrapIndex([check], records).attribute(trial, _matrix_decl())
         assert (trial.status, trial.refutes) == ("error", [])
         assert trial.attribution == (
-            "a host_error trap, which no obligation describes")
+            "no obligation describes a trap of kind host_error")
+
+    @pytest.mark.parametrize("kind", [
+        "heap_exhausted", "uncaught_exception", "stack_exhausted",
+        "out_of_bounds", "unreachable", "host_error", "unknown", ""])
+    def test_every_kind_no_obligation_describes_is_left_alone(
+        self, kind: str,
+    ) -> None:
+        """The kinds no emitter maps to an obligation: neither a refutation
+        nor an attribution miss, whatever checks the function holds."""
+        check, records = _cell("proved", 10)
+        trial = _trap(_ENTRY)
+        trial.status, trial.trap_kind = "error", kind
+        _TrapIndex([check], records).attribute(trial, _matrix_decl())
+        assert (trial.status, trial.refutes) == ("error", [])
+        assert trial.attribution == (
+            f"no obligation describes a trap of kind {kind or 'unknown'}")
 
     def test_a_proved_check_of_another_function_does_not_count(self) -> None:
         check, records = _cell("proved", 10)

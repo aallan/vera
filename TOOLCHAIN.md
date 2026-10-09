@@ -175,9 +175,10 @@ only `diagnostics` still learns why nothing ran.
 
 **Distrust the proofs.** By default a function the verifier proved is reported
 `VERIFIED (Tier 1)` and never run, so a false proof is invisible to `test`.
-`--distrust` runs those functions too: code generation compiles every contract
-check whatever its tier, so the proved function's checks are in the module the
-trials execute.  Each failing trial of a proved function is read against two
+`--distrust` runs those functions too: code generation emits a contract's
+runtime check whatever its tier, wherever it can express one, so the proved
+function's checks are in the module the trials execute.  A contract it cannot
+express has no check, and no trial can refute its proof.  Each failing trial of a proved function is read against two
 records: the module's list of the checks it holds, and the verifier's list of
 what became of each obligation.
 

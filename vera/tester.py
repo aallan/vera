@@ -6,9 +6,9 @@ proved by the verifier (Tier 1) are reported as "verified"; functions
 with Tier 3 contracts are exercised with generated inputs.
 
 ``distrust=True`` (``vera test --distrust``) exercises the proved functions
-too.  Code generation compiles every contract check whatever its tier, so
-the module the trials run already carries the checks a proof says can never
-fail; a trial that fails one of them refutes the proof (``"refuted"``,
+too.  Code generation emits a contract's runtime check whatever its tier,
+wherever it can express one, so the module the trials run already carries
+the checks a proof says can never fail; a trial that fails one of them refutes the proof (``"refuted"``,
 E703).  See :class:`_TrapIndex` for how a trap is attributed.
 
 See spec/06-contracts.md, Section 6.8 "Summary of Verification Tiers", and
@@ -813,8 +813,7 @@ class _TrapIndex:
         kind = trial.trap_kind
         if kind not in _OBLIGATED_TRAP_KINDS:
             trial.attribution = (
-                f"a {kind or 'unclassified'} trap, which no obligation "
-                f"describes")
+                f"no obligation describes a trap of kind {kind or 'unknown'}")
             return
         if not trial.trap_frames:
             _unattributed(trial, f"{kind}, with no frame to say where it fired")

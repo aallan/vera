@@ -3420,7 +3420,7 @@ vera test --json examples/safe_divide.vera   # JSON output for agents
 vera test --distrust examples/safe_divide.vera  # run the proved functions too
 ```
 
-`--distrust` exists because a proof can be wrong.  Code generation compiles every contract check whatever its tier, so a proved function's checks are in the module the trials run.  A trial that fails a check standing for an obligation the verifier proved is a **refuted** proof: an `E703` error naming the obligation and the arguments, and a soundness bug to report.
+`--distrust` exists because a proof can be wrong.  Code generation emits a contract's runtime check whatever its tier, wherever it can express one, so a proved function's checks are in the module the trials run.  A trial that fails a check standing for an obligation the verifier proved is a **refuted** proof: an `E703` error naming the obligation and the arguments, and a soundness bug to report.
 
 This combines the best of property-based testing (generated inputs, no manual cases) with the best of formal verification (inputs derived from specifications, not random). The contracts serve double duty: they're both the specification the compiler proves and the test oracle that validates runtime behaviour.
 
