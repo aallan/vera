@@ -444,13 +444,23 @@ class TestDefaultModeUnchanged:
         out = re.sub(r"(?m)^(  E\d{3}): .*$", r"\1:", out)
         assert (rc, out) == (1, _PINNED_TEXT)
 
+    @pytest.mark.parametrize("subdir", ["plain", "back\\slash"])
     def test_json_output_is_pinned(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+        self, subdir: str, tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
-        path = _write(tmp_path, SRC_MIXED)
+        # The path is compared parsed, never as text: JSON escapes a
+        # backslash, so a Windows path is not a substring of the envelope.
+        # The `back\slash` cell holds that on every other platform too.
+        if "\\" in subdir and sys.platform == "win32":
+            pytest.skip("on Windows every path already holds a backslash")
+        (tmp_path / subdir).mkdir()
+        path = _write(tmp_path / subdir, SRC_MIXED)
         rc = cmd_test(path, as_json=True, trials=5)
-        raw = capsys.readouterr().out.replace(path, "<FILE>")
+        raw = capsys.readouterr().out
         payload = json.loads(raw)
+        assert payload["file"] == path
+        payload["file"] = "<FILE>"
         payload["diagnostics"] = [
             (d["severity"], d["error_code"], d["location"]["line"],
              d["location"]["column"])
