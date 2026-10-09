@@ -121,7 +121,7 @@ Traditional compilers produce diagnostics for humans: `expected token '{'`. Vera
   See: Chapter 5, Section 5.2 "Function Declaration Syntax"
 ```
 
-Diagnostics carry stable codes (errors `E001`–`E702`, warnings `W001`–`W003`) and are available as structured JSON via the `--json` flag.
+Diagnostics carry stable codes (errors `E001`–`E703`, warnings `W001`–`W003`) and are available as structured JSON via the `--json` flag.
 
 ## Getting started
 
@@ -224,7 +224,7 @@ vera lsp                                 # serve the Language Server Protocol ov
 vera version                             # print the installed version
 vera builtins --json                     # list the built-in function registry (no file needed)
 vera effects --json                      # list the effect and ability registry (no file needed)
-vera errors --json                       # list the diagnostic-code registry: E001–E702 + W001–W003 (no file needed)
+vera errors --json                       # list the diagnostic-code registry: E001–E703 + W001–W003 (no file needed)
 ```
 
 `vera compile --target browser` produces a self-contained bundle (wasm + JS runtime + HTML) that runs in any browser — no build step, no bundler. Mandatory parity tests ensure identical behaviour between the command-line and browser runtimes for the pure-language surface (arithmetic, ADTs, pattern matching, closures, contracts, effects-as-host-imports, etc.).  Two operations on that surface reach identity by emitting a canonical form the specification states rather than by the hosts happening to agree — `json_stringify` (spec §9.7.1) and `md_render` (§9.7.3) — so their tests assert the expected string as well as cross-host equality.  `md_parse` reaches it a third way: §9.7.3 states the grammar itself — the character classes it is written in, the order the block constructs claim a line, the width a list continuation loses — and both parsers read one shared table of its patterns, with a generated corpus parsed by both hosts on every PR and the resulting ADTs compared byte for byte.  Distinct from that: `Inference.complete`, `DB.query` and `DB.execute` return `Err` from every browser call by definition of the target, because the credential each needs would be readable from page source — reach them through a server-side endpoint called with `Http`, which does run in the browser.  The IO surface is the other documented exception: terminal Vera programs that rely on `IO.sleep` for animation pacing or ANSI escape codes for cursor control compile cleanly to `--target browser` but render the escapes as literal text and freeze the tab while sleeping — the browser target expects Vera to be the pure simulation core and JavaScript to drive timing and rendering ([SKILL.md §Browser compilation](SKILL.md#browser-compilation) has the recommended pattern).

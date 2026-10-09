@@ -1080,4 +1080,5 @@ ERROR_CODES: dict[str, str] = {
     "E700": "Contract violation during testing",
     "E701": "Cannot generate test inputs",
     "E702": "Test execution error",
+    "E703": "Tier 1 proof refuted by a test run",
 }

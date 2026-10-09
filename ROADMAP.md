@@ -158,7 +158,8 @@ Exit criterion: the reconciliation and the distrust tester run in CI, the confor
 | Change | What |
 |---|---|
 | Obligations reconciled with guards | `vera verify` compiles in process and joins its obligation records with the checks code generation emits, on file, span and kind.  A `tier3` record with no check is an error, a check with no record a warning, and a CI gate runs the join over the corpus and the examples. |
-| `vera test --distrust` | Runs proved functions with their runtime checks on, so the tester can see a false Tier 1: over the corpus with few trials in CI, and with many in the nightly lane. |
+| `vera test --distrust`, nightly | The nightly lane runs the distrust corpus test with many trials per function (`VERA_DISTRUST_TRIALS`); the pull-request run uses five. |
+| [#1633](https://github.com/aallan/vera/issues/1633) | `vera test --distrust` attributes a trap through the reconciliation join instead of by exact span, so a check whose obligation record sits at another node is attributed rather than unattributed. |
 | Golden outputs | Every run-level conformance entry records its expected stdout and exit code, and `test_conformance` asserts them. |
 | Desugar once | The pipe becomes a call at transform, and a module's call by its own path becomes the bare call, so no later phase meets either form. |
 | CI and the hooks | Path filters, a 94% coverage floor, lint without the conformance and example runs the test job already makes, eager-GC as a pytest run, a CHANGELOG gate that reads the pull request's base, and a `doc-examples` hook that fires only for what it gates. |

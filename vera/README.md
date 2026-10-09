@@ -159,7 +159,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `  <effect>.py` ×14 | 3,214 | | one `register_<effect>(linker, …)` per family: random, math, md, json, regex, html, map, set, decimal, http, async_http (#841 fused-async: worker-thread submit + blocking await + kind-4 cancel/evict decref), inference, state, db | |
 | `  wasi_host.py` | 401 | | Built-in `wasi-p2` runner via `add_wasip2` — `vera run --target wasi-p2` (#237, #853); releases its store before it returns or raises and waits for wasmtime to let go of the output callbacks (`_release_store`); reads a trap's kind from the innermost adapter frame's whole name and its message from after the adapter's stderr mark (`message_mark`, #1479) | |
 | `  server.py` | 235 | | `vera serve` HTTP driver for `handle(Request -> Response)` (#305) | |
-| `tester.py` | 1,285 | Test | Z3-guided input generation (parameter types resolved through `naming.py`; a TIER-3 target whose input constraints do not all translate is skipped naming the blocker rather than trialled, while a Tier-1-proved function is reported verified and never trialled at all), WASM execution, tier classification | `test()` |
+| `tester.py` | 1,720 | Test | Z3-guided input generation (parameter types resolved through `naming.py`; a TIER-3 target whose input constraints do not all translate is skipped naming the blocker rather than trialled, while a Tier-1-proved function is reported verified and never trialled — unless `--distrust` runs it, reading each failing trial's trap against the module's checks and the verifier's records as refuted (E703), a Tier-3 guard, or unattributed), WASM execution, tier classification | `test()` |
 | `formatter.py` | 2,036 | Format | Canonical code formatter | `format_source()` |
 | `errors.py` | 1,083 | All | Diagnostic class, error hierarchy, error code registry | `Diagnostic`, `VeraError`, `ERROR_CODES` |
 | `skip.py` | 242 | All | Codegen-internal control-flow exceptions behind structured skip diagnostics (#626) | `CodegenSkip`, `CodegenInvariantError` |
@@ -758,7 +758,7 @@ The proof that the two sides agree is a differential, not a unit test: `tests/te
 
 ### 9. LLM-oriented diagnostics
 
-Every diagnostic includes a description (what went wrong), rationale (which language rule), fix (corrected code), spec reference, and a stable code — errors `E001`–`E702`, warnings `W001` (typed holes), `W002` (an eagerly evaluated `async` argument) and `W003` (an unverified `assume`). The compiler's output is designed to be fed directly back to the model as corrective context. See spec Chapter 0, Section 0.5 "Diagnostics as Instructions" for the philosophy.
+Every diagnostic includes a description (what went wrong), rationale (which language rule), fix (corrected code), spec reference, and a stable code — errors `E001`–`E703`, warnings `W001` (typed holes), `W002` (an eagerly evaluated `async` argument) and `W003` (an unverified `assume`). The compiler's output is designed to be fed directly back to the model as corrective context. See spec Chapter 0, Section 0.5 "Diagnostics as Instructions" for the philosophy.
 
 ### 10. Stable error code taxonomy
 
@@ -780,7 +780,7 @@ Every coded diagnostic has a unique code grouped by compiler phase (a few diagno
 | E6xx | Codegen | `codegen/` |
 | E7xx | Testing | `tester.py` |
 
-The `ERROR_CODES` dict in `errors.py` maps every code to a short description (186 entries — 183 `E` codes and 3 `W` warning codes). Codes are stable across versions — they can be used for programmatic filtering, suppression, and documentation lookups. Formatted output shows the code in brackets: `[E130] Error at line 5, column 3:`.
+The `ERROR_CODES` dict in `errors.py` maps every code to a short description (187 entries — 184 `E` codes and 3 `W` warning codes). Codes are stable across versions — they can be used for programmatic filtering, suppression, and documentation lookups. Formatted output shows the code in brackets: `[E130] Error at line 5, column 3:`.
 
 ## Test Suite
 

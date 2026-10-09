@@ -59,6 +59,7 @@ vera serve file.vera              # Serve handle(Request -> Response) over HTTP 
 vera test file.vera               # Contract-driven testing via Z3 + WASM
 vera test --json file.vera        # Test with JSON output
 vera test --trials 50 file.vera   # Limit trials per function (default 100)
+vera test --distrust file.vera    # Also execute proved functions; a failed proved check refutes the proof (E703)
 vera fmt file.vera                # Format to canonical form (stdout)
 vera fmt --write file.vera        # Format in place
 vera fmt --check file.vera        # Check if already canonical
@@ -66,7 +67,7 @@ vera version                      # Print the installed version (also --version,
 vera lsp                          # Serve LSP over stdio (needs the [lsp] extra; see LSP_SERVER.md)
 vera builtins [--json]            # List the built-in function registry (no file needed)
 vera effects [--json]             # List the effect and ability registry (no file needed)
-vera errors [--json]              # List the diagnostic-code registry: E001–E702 + W001–W003 (no file needed)
+vera errors [--json]              # List the diagnostic-code registry: E001–E703 + W001–W003 (no file needed)
 ```
 
 See [TOOLCHAIN.md](TOOLCHAIN.md) for the CLI cookbook — driving the toolchain to write, verify, test, run, and debug Vera, including the `builtins`/`effects`/`errors` introspection commands.
@@ -114,7 +115,7 @@ For machine-parseable errors, use the `--json` flag:
 
 ### Error codes
 
-Diagnostics carry stable codes (errors `E001`–`E702`, warnings `W001`–`W003`); a few still carry none ([#1490](https://github.com/aallan/vera/issues/1490)). Common codes:
+Diagnostics carry stable codes (errors `E001`–`E703`, warnings `W001`–`W003`); a few still carry none ([#1490](https://github.com/aallan/vera/issues/1490)). Common codes:
 
 | Code | Meaning |
 |------|---------|

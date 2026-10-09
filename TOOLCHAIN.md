@@ -34,7 +34,7 @@ Two commitments from [DESIGN.md](DESIGN.md) shape every command:
 
 1. **Fail loud, with a fix.** A diagnostic *names* the problem, explains *why*,
    and gives a concrete instruction — never a bare status. Diagnostics carry
-   stable codes (errors `E001`–`E702`, warnings `W001`–`W003`) you can pin
+   stable codes (errors `E001`–`E703`, warnings `W001`–`W003`) you can pin
    tooling to; a few still carry none ([#1490](https://github.com/aallan/vera/issues/1490)).
 2. **Two audiences.** Every diagnostic-producing command has a `--json` mode.
    People read the default text; agents consume `--json` in a feedback loop. The
@@ -143,6 +143,7 @@ vera test file.vera            # contract-driven testing
 vera test --json file.vera     # machine-readable per-function results
 vera test --trials 50 file.vera   # cap trials per function (default 100)
 vera test --fn f file.vera     # only the function f
+vera test --distrust file.vera # also run the functions the verifier proved
 ```
 
 `test` is contract-driven, not example-driven: Z3 generates inputs that
@@ -171,6 +172,36 @@ with the blocking conjunct named rather than counted as a failure:
 ``cannot generate inputs satisfying `string_length(@String.0) > 0` (see #1229)``.
 The same reason is repeated in an `E701` warning, so a `--json` consumer reading
 only `diagnostics` still learns why nothing ran.
+
+**Distrust the proofs.** By default a function the verifier proved is reported
+`VERIFIED (Tier 1)` and never run, so a false proof is invisible to `test`.
+`--distrust` runs those functions too: code generation compiles every contract
+check whatever its tier, so the proved function's checks are in the module the
+trials execute.  Each failing trial of a proved function is read against two
+records: the module's list of the checks it holds, and the verifier's list of
+what became of each obligation.
+
+- **Refuted.** The check that failed stands for an obligation the verifier
+  proved.  The function is reported `REFUTED`, with an `E703` error naming the
+  obligation and the arguments, and the run exits 1.  That is a soundness bug
+  in Vera (unless an `assume` the proof rests on is false): report it with the
+  program and the arguments.
+- **A Tier-3 guard.** The check stands for an obligation the verifier did not
+  prove.  It fired on an input the contract admits, which is a finding about
+  the program, reported as a failing trial exactly as for a Tier-3 function.
+- **Unattributed.** The trap cannot be pinned on either side, for example
+  because a check of its kind there has no obligation recorded at its span.
+  It is marked `unattributed` and counted (`summary.unattributed`, and the
+  `Proofs:` line), rather than folded into either.
+
+```bash
+vera test --distrust --json file.vera
+# {"distrust": true, "summary": {..., "refuted": 1, "unattributed": 0}, ...}
+```
+
+A proved function the generator cannot serve, such as one whose precondition
+calls a user function, stays `VERIFIED`, "not exercised", with the reason.
+Without `--distrust` the output is exactly the default one.
 
 ---
 
@@ -357,7 +388,7 @@ the tier summary → `vera test --json` on the Tier-3 remainder.
 Every diagnostic-producing command (`check`, `verify`, `compile`, `run`, `test`,
 `ast`) speaks `--json`; the introspection commands (`builtins`, `effects`,
 `errors`) speak it natively. Diagnostic codes are **stable** (errors
-`E001`–`E702`, warnings `W001`–`W003`), so an agent can branch on `error_code`
+`E001`–`E703`, warnings `W001`–`W003`), so an agent can branch on `error_code`
 rather than parsing prose. See the [JSON diagnostics](CLAUDE.md#json-diagnostics)
 section of CLAUDE.md for the diagnostic schema, and `vera errors --json` for the
 live catalogue.

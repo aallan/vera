@@ -66,7 +66,7 @@ Every diagnostic — parse errors, type errors, contract violations, effect mism
 
 Every diagnostic MUST include:
 
-1. **Diagnostic code and location.** A stable diagnostic code (`E001`–`E702` for errors, `W001`–`W003` for warnings), file path, line number, and column, with the offending source line quoted and the error position indicated. The error code provides a machine-readable identifier, but every code is always accompanied by a full natural language explanation — the code alone is never the message.
+1. **Diagnostic code and location.** A stable diagnostic code (`E001`–`E703` for errors, `W001`–`W003` for warnings), file path, line number, and column, with the offending source line quoted and the error position indicated. The error code provides a machine-readable identifier, but every code is always accompanied by a full natural language explanation — the code alone is never the message.
 2. **Description.** A plain English explanation of the problem, written to tell the model what went wrong and how to fix it.
 3. **Rationale.** Why this is an error — which language rule was violated.
 4. **Fix.** A concrete code example showing the corrected form. This is not a hint; it is a template the model can apply directly.
@@ -133,6 +133,8 @@ The `vera fmt` command enforces Design Goal 3 (one canonical form) by normalisin
 ### 0.5.6 Contract-Driven Testing
 
 The `vera test` command uses contracts as test specifications. For each function, the Z3 solver generates inputs satisfying the `requires` clause. The function is compiled to WASM and executed against these inputs, and the outputs are checked against the `ensures` clause. This validates that contracts and implementations agree without writing any test cases manually.
+
+By default, a function whose contracts the verifier proves (Tier 1, Section 6.8) is reported as proved and is not executed. `vera test --distrust` executes it as well, because a proof is only as sound as the verifier that produced it. The compiled program carries a runtime check for every contract whatever its tier. A trial that fails a check standing for an obligation the verifier proved therefore contradicts the proof. The function is reported refuted, with an E703 error naming the obligation and the arguments. A failing check that stands for an obligation the verifier did not prove is a finding about the program, reported as any failing trial is. A failure that cannot be pinned on either is reported as unattributed rather than as either.
 
 ### 0.5.7 Formal Grammar
 

@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`vera test --distrust` runs the functions the verifier proved, so a false Tier 1 can be seen.**  By default `vera test` reports a proved function `verified` and never runs it, yet code generation compiles every contract check whatever its tier, so the module the trials run already carries the proved function's checks.  `--distrust` generates inputs for those functions too, with the same generator and the same skips.  A function with no parameter, or only `@Unit` ones, runs once.  Each failing trial is read against two records, the module's list of its checks (`CompileResult.emitted_checks`) and the verifier's obligation stream.  The join uses the trap's kind, the function it fired in and the check's exact span.
+  - A trap at a check standing only for proved obligations refutes the proof.  The function is `refuted`, and the new **E703** error names the obligation and the arguments.  The run exits 1.
+  - A trap at a check standing for an obligation that was not proved is a Tier-3 guard firing on an input the contract admits.  It is reported as a failing trial, exactly as for a Tier-3 function.
+  - A trap that cannot be pinned on either side is `unattributed`.  It is counted in `summary.unattributed` and on a new `Proofs:` line, rather than folded into either.
+  - A proved function the generator cannot serve stays `verified`, marked not exercised, with an `E701` warning.
+  - The JSON envelope gains `distrust`, `summary.refuted` and `summary.unattributed`, plus each function's `proved` and each failure's `attribution` and `refutes`, only under the flag.  Default output is unchanged.
+  - The repros of [#1587](https://github.com/aallan/vera/issues/1587) and [#1555](https://github.com/aallan/vera/issues/1555) are refuted.  [#1598](https://github.com/aallan/vera/issues/1598)'s `INT_MIN / -1` is unattributed, since that check has no obligation.
+  - `tests/test_distrust_corpus.py` runs the mode over every example and every `run`-level conformance program in the ordinary test job, with `VERA_DISTRUST_TRIALS` trials per function (default 5).  173 proofs run and none is refuted.
+  - The exact-span join reaches 1,325 of the 1,588 non-prelude checks the corpus compiles.  Joining through the reconciliation's relations instead is [#1633](https://github.com/aallan/vera/issues/1633).
+
 ### Changed
 
 - **One lock update carries the six open dependency bumps**: `wasmtime` 49.0.0, `ruff` 0.16.10, `mypy` 2.4.0 and `virtualenv` 21.7.13 in `uv.lock`, and `vscode-languageclient` 10.1.2 and `brace-expansion` 5.0.12 in the VS Code extension, which moves to **0.2.3**.  The `brace-expansion` bump closes [GHSA-6j4f-fj2g-mc7p](https://github.com/advisories/GHSA-6j4f-fj2g-mc7p), a high-severity denial of service through uncontrolled recursion in `parseCommaParts`; it is a runtime dependency bundled into the shipped extension, so 0.2.2 carries the vulnerable version until 0.2.3 is published.  Each lock change is identical to the Dependabot PR it replaces (#1616, #1618, #1619, #1620, #1621, #1622), so every bump has already passed CI on its own; landing them as one change costs one CI run instead of six and no lockfile rebases.

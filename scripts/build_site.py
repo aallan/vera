@@ -315,7 +315,7 @@ def build_llms_full_txt(version: str) -> str:
     # Error codes
     error_lines = [
         "## Error Code Reference\n",
-        "Diagnostics carry stable codes: errors E001-E702 and warnings "
+        "Diagnostics carry stable codes: errors E001-E703 and warnings "
         "W001-W003. Codes are grouped by compiler phase:\n",
         "| Range | Phase |",
         "|-------|-------|",

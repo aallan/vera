@@ -4,13 +4,16 @@ Scrubs the inherited environment variables that would change what the suite
 measures (``VERA_Z3_TIMEOUT_MS``) or which repository its git commands act on
 (``GIT_*``), and provides opt-in JavaScript coverage collection for the
 browser runtime.  Set ``VERA_JS_COVERAGE=1`` to enable V8 coverage during
-``test_browser.py``.
+``test_browser.py``.  Also prints the session totals of
+``test_distrust_corpus.py`` (proofs exercised, refuted, unattributed traps)
+when it ran.
 """
 
 from __future__ import annotations
 
 import os
 import subprocess
+from typing import Any
 
 import pytest
 
@@ -120,3 +123,37 @@ def _js_coverage_dir(tmp_path_factory: pytest.TempPathFactory):  # type: ignore[
             )
         except subprocess.TimeoutExpired:
             print("WARNING: JS coverage report timed out after 120s")
+
+
+def pytest_terminal_summary(terminalreporter: Any) -> None:
+    """Report the totals ``test_distrust_corpus.py`` recorded, in one line.
+
+    Each corpus test records its program's counts with ``record_property``
+    under ``distrust_<count>`` names, and this sums each name over the
+    session.  The properties ride on the test reports, which is what reaches
+    the controller under ``pytest -n``: a module-level counter would be one
+    per worker.  Silent when the corpus test did not run.
+    """
+    totals: dict[str, int] = {}
+    programs = 0
+    for reports in terminalreporter.stats.values():
+        for report in reports:
+            if getattr(report, "when", None) != "call":
+                continue
+            counts = [
+                (name, value)
+                for name, value in getattr(report, "user_properties", ())
+                if name.startswith("distrust_")
+            ]
+            if not counts:
+                continue
+            programs += 1
+            for name, value in counts:
+                totals[name] = totals.get(name, 0) + int(value)
+    if programs:
+        terminalreporter.write_sep("-", "distrust corpus: " + ", ".join(
+            [f"{programs} programs"]
+            # In the order the test records them, which is the order it reads.
+            + [f"{total} {name.removeprefix('distrust_').replace('_', ' ')}"
+               for name, total in totals.items()]
+        ))

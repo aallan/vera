@@ -44,6 +44,7 @@ vera serve --port 8080 file.vera  # Serve on a specific port (default 8000)
 vera test file.vera               # Contract-driven testing via Z3 + WASM
 vera test --json file.vera        # Test with JSON output
 vera test --trials 50 file.vera   # Limit trials per function (default 100)
+vera test --distrust file.vera    # Also execute proved functions; a failed proved check refutes the proof (E703)
 vera parse file.vera              # Print the parse tree
 vera ast file.vera                # Print the typed AST
 vera ast --json file.vera         # Print the AST as JSON
@@ -54,7 +55,7 @@ vera lsp                          # Serve LSP over stdio (needs the [lsp] extra;
 vera version                      # Print the installed version (also --version, -V)
 vera builtins [--json]            # List the built-in function registry (no file needed)
 vera effects [--json]             # List the effect and ability registry (no file needed)
-vera errors [--json]              # List the diagnostic code registry E001–E702 + W001–W003 (no file needed)
+vera errors [--json]              # List the diagnostic code registry E001–E703 + W001–W003 (no file needed)
 
 pytest tests/ -v                  # Run the test suite (see TESTING.md)
 VERA_JS_COVERAGE=1 pytest tests/test_browser.py -v  # Browser tests with JS coverage
@@ -188,7 +189,7 @@ So `total == tier1_verified + tier3_runtime`, and the array — which is the com
 
 ### Error codes
 
-Diagnostics carry stable codes — `E001`–`E702` and `W001`–`W003`; a few still carry none ([#1490](https://github.com/aallan/vera/issues/1490)). The prefix is the **namespace**, not the severity: the `W` codes are all warnings, but a number of `E` codes are warning-severity too (`E504`, `E506`, `E531`, `E539`, `E540` are the ones the partition table above names). Codes are grouped by compiler phase:
+Diagnostics carry stable codes — `E001`–`E703` and `W001`–`W003`; a few still carry none ([#1490](https://github.com/aallan/vera/issues/1490)). The prefix is the **namespace**, not the severity: the `W` codes are all warnings, but a number of `E` codes are warning-severity too (`E504`, `E506`, `E531`, `E539`, `E540` are the ones the partition table above names). Codes are grouped by compiler phase:
 
 | Range | Phase |
 |-------|-------|

@@ -38,7 +38,7 @@ Technical decisions, rationale, and prior art. For the design philosophy and FAQ
 | Target | WebAssembly (native + browser + WASI P2 components) | Portable, sandboxed, no ambient capabilities; `vera run` uses wasmtime; `vera compile --target browser` emits a JS bundle; `--target wasi-p2` emits an experimental WASI Preview 2 component for stock wasip2 hosts (`--world server` for `wasmtime serve`) |
 | Compiler | Python reference implementation | Correctness over performance; clean separation of phases; see [vera/README.md](vera/README.md) |
 | Grammar | Machine-readable Lark EBNF (`grammar.lark`) | Formal grammar is shared between spec and implementation; no ambiguity |
-| Diagnostics | LLM-instruction format; `--json` for machine use; stable error codes E001–E702 and warning codes W001–W003 | Every diagnostic names the problem, explains why, and gives a concrete fix; codes are stable for tooling |
+| Diagnostics | LLM-instruction format; `--json` for machine use; stable error codes E001–E703 and warning codes W001–W003 | Every diagnostic names the problem, explains why, and gives a concrete fix; codes are stable for tooling |
 | Testing | Contract-driven via Z3 + WASM (`vera test`) | Z3 generates inputs that satisfy `requires`; compiled WASM executes; `ensures` is checked against real outputs |
 | Formatting | Canonical formatter (`vera fmt`) | One canonical form, enforced by pre-commit and CI; no style drift |
 | Representation | Text with rigid syntax | One canonical form, no parsing ambiguity, no equivalent alternatives |

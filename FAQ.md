@@ -192,7 +192,7 @@ Mandatory parity tests enforce that on every PR. For the two operations that car
 
 The process works in three steps:
 
-1. **Input generation**: The compiler reads each function's `requires()` clause and uses Z3 to generate concrete values that satisfy the precondition. For example, if a function requires `@Int.1 != 0`, Z3 produces pairs of integers where the first is non-zero — `@Int.1` is the leftmost parameter, since De Bruijn indices count back from the most recent binding. It generates up to 100 trials per function by default (configurable with `--trials`). Whether a parameter can be generated for is decided on its *resolved* type, not its spelling, so an alias of a generatable type (`type Cnt = Int;`) is trialled rather than skipped, and an alias-spelled precondition still constrains the inputs. "Satisfy the precondition" is exact rather than best-effort, for the functions that reach trials at all: among the Tier-3 targets, if any conjunct — or any refined parameter's predicate — falls outside the SMT layer's decidable fragment, Z3 could not constrain the inputs by it, so the function is *skipped* with the blocking conjunct named instead of being exercised on inputs its own guard would reject. A function the verifier proved at Tier 1 is reported `VERIFIED` and never trialled, so the question does not arise for it.
+1. **Input generation**: The compiler reads each function's `requires()` clause and uses Z3 to generate concrete values that satisfy the precondition. For example, if a function requires `@Int.1 != 0`, Z3 produces pairs of integers where the first is non-zero — `@Int.1` is the leftmost parameter, since De Bruijn indices count back from the most recent binding. It generates up to 100 trials per function by default (configurable with `--trials`). Whether a parameter can be generated for is decided on its *resolved* type, not its spelling, so an alias of a generatable type (`type Cnt = Int;`) is trialled rather than skipped, and an alias-spelled precondition still constrains the inputs. "Satisfy the precondition" is exact rather than best-effort, for the functions that reach trials at all: among the Tier-3 targets, if any conjunct — or any refined parameter's predicate — falls outside the SMT layer's decidable fragment, Z3 could not constrain the inputs by it, so the function is *skipped* with the blocking conjunct named instead of being exercised on inputs its own guard would reject. A function the verifier proved at Tier 1 is reported `VERIFIED` and never trialled, so the question does not arise for it — unless `vera test --distrust` runs it too, and then a proved function whose precondition the generator cannot honour is reported `VERIFIED` and not exercised, never run on inputs its precondition does not admit.
 
 2. **Execution**: Each generated input is compiled to WASM and executed via wasmtime. The function runs with real values, not symbolic ones.
 
@@ -202,7 +202,10 @@ The process works in three steps:
 vera test examples/safe_divide.vera          # test all functions
 vera test --trials 50 examples/safe_divide.vera  # limit trials
 vera test --json examples/safe_divide.vera   # JSON output for agents
+vera test --distrust examples/safe_divide.vera  # run the proved functions too
 ```
+
+`--distrust` exists because a proof can be wrong.  Code generation compiles every contract check whatever its tier, so a proved function's checks are in the module the trials run.  A trial that fails a check standing for an obligation the verifier proved is a **refuted** proof: an `E703` error naming the obligation and the arguments, and a soundness bug to report.
 
 This combines the best of property-based testing (generated inputs, no manual cases) with the best of formal verification (inputs derived from specifications, not random). The contracts serve double duty: they're both the specification the compiler proves and the test oracle that validates runtime behaviour.
 
