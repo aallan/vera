@@ -1159,6 +1159,100 @@ def test_a_module_call_to_the_entry_modules_own_function_reaches_it(
                for r, _c in run.reconciliation.pairs)  # type: ignore[union-attr]
 
 
+_GENERIC_ARMS = """\
+public fn builtin_arm(@Bool, @Float64, @Option<Nat> -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if @Bool.0 then { float_to_int(@Float64.0) } else { option_unwrap_or(@Option<Nat>.0, 0) }
+}
+
+private forall<T> fn gid(@T -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @T.0
+}
+
+public fn user_arm(@Bool, @Float64, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if @Bool.0 then { float_to_int(@Float64.0) } else { gid(@Nat.0) }
+}
+"""
+
+
+def test_an_arm_code_generation_leaves_unguarded_needs_no_check(
+    tmp_path: Path,
+) -> None:
+    """A generic call instantiated at `@Nat` narrows nothing, so code
+    generation guards only the other arm; the join's record is answered by
+    that arm's guard (PR #1630 review, round 2: declared return types
+    cannot see the instantiation)."""
+    run = _written(tmp_path, "generic_arms.vera", _GENERIC_ARMS)
+    assert run.mismatches == [], run.mismatches
+    assert {r.line for r, _c in run.reconciliation.pairs  # type: ignore[union-attr]
+            if r.kind == "nat_bind"} == {6, 22}
+
+
+_MIXED_ARMS = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+private forall<T> fn gid(@T -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @T.0
+}
+
+private fn takes(@Tuple<Pos, Int> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  7
+}
+
+public fn argument(@Bool, @Float64, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  takes(if @Bool.0 then { Tuple(float_to_int(@Float64.0), 1) } else { gid(Tuple(@Int.0, 2)) })
+}
+
+public fn returned(@Bool, @Float64, @Int -> @Tuple<Pos, Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if @Bool.0 then { Tuple(float_to_int(@Float64.0), 1) } else { gid(Tuple(@Int.0, 2)) }
+}
+"""
+
+
+def test_a_join_with_one_opaque_arm_is_answered_by_the_component_check(
+    tmp_path: Path,
+) -> None:
+    """The verifier records the opaque arm's `Pos` component at the join,
+    and the signature's `Tuple.0` guard checks it, as an argument and as a
+    return; with that guard gone, the join's record is unguarded."""
+    run = _written(tmp_path, "mixed_arms.vera", _MIXED_ARMS)
+    assert run.mismatches == [], run.mismatches
+    guards = [c for c in run.compile_result.emitted_checks  # type: ignore[union-attr]
+              if c.path == ("Tuple.0",)]
+    assert {c.function for c in guards} == {"takes", "returned"}
+    result = _rejoin(run, checks=[
+        c for c in run.compile_result.emitted_checks  # type: ignore[union-attr]
+        if c not in guards])
+    assert _unguarded(result, "refine_bind") == {(24, 9), (32, 3)}
+
+
 def test_a_tier3_unguarded_record_does_not_account_for_a_check() -> None:
     """A record saying its site has no runtime check contradicts the check
     standing there."""

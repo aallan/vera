@@ -258,6 +258,10 @@ class CodeGenerator(
         # `CompileResult.emitted_checks` is read back from the assembled text,
         # whose instructions carry the entries' markers.
         self._emitted_checks: CheckRecord = {}
+        #: (file, span) of every leaf of a `@Nat` return the narrowing-leaf
+        #: descent decided needs no guard (`_record_unguarded_return_leaves`).
+        self._unguarded_return_leaves: list[
+            tuple[str | None, tuple[int, int, int, int]]] = []
         self._needs_memory: bool = False
         # (cell, wasm_type).  `CellNames` rather than a bare family
         # (#1238 review F2): the wasi target names the unsupported
@@ -977,6 +981,18 @@ class CodeGenerator(
         self._error_once_sites.add(key)
         self._error(
             node, description, rationale=rationale, error_code=error_code)
+
+    def _record_unguarded_return_leaves(self, ctx: WasmContext) -> None:
+        """Keep the leaves of a `@Nat` return the narrowing-leaf descent
+        left unguarded, by the file and span they are written at: the arms a
+        reconciliation must not demand a guard on, because this backend
+        decided they narrow nothing (a generic call instantiated at `@Nat`
+        among them, which no declaration states)."""
+        for leaf in ctx._return_leaves_left:
+            span = leaf.span
+            if span is not None:
+                self._unguarded_return_leaves.append((self.file, (
+                    span.line, span.column, span.end_line, span.end_column)))
 
     def _assemble_emitted_checks(self, wat: str) -> list[EmittedCheck]:
         """The per-module record, read back from the assembled module *wat*
@@ -3432,6 +3448,7 @@ class CodeGenerator(
             prelude_fn_names=set(self._prelude_fn_names),
             dropped_fns=dropped_fns,
             emitted_checks=emitted_checks,
+            unguarded_return_leaves=list(self._unguarded_return_leaves),
         )
 
     def _user_dropped_fns(

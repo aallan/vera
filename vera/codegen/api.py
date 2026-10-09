@@ -194,6 +194,12 @@ class CompileResult:
     # checks the module holds.  Empty for a compile that failed before
     # assembly.
     emitted_checks: list["EmittedCheck"] = field(default_factory=list)
+    #: (file, span) of each leaf of a `@Nat` return that code generation
+    #: decided needs no narrowing guard: the arms a reconciliation of a
+    #: guarded join must not demand a check on (`vera.reconcile`).
+    unguarded_return_leaves: list[
+        tuple[str | None, tuple[int, int, int, int]]] = field(
+            default_factory=list)
 
     @property
     def ok(self) -> bool:

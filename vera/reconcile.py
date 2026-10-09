@@ -82,9 +82,9 @@ never a sibling's (PR #1630 review).  Three things keep them apart:
   record at that place: where it is built, or the value the verifier could
   not see into and so records it at (:func:`_stands_for`).
 * **Arms.**  A record at a join is answered by its arms' checks only when
-  every arm has one, or cannot break the property: for ``nat_bind``, an arm
-  no narrowing reaches, read from the program alone
-  (:func:`_needs_no_check`).
+  every arm has one, or is a ``nat_bind`` arm code generation decided
+  narrows nothing (:func:`_left_unguarded`, its own record of that
+  decision).
 * **Matching.**  The records at one span (two widened fields of a scrutinee
   the verifier cannot see into are both recorded at it) are matched one to
   one with the sites the checks there stand for (:func:`_match_sites`), so
@@ -449,20 +449,23 @@ def _joins_above(index: _Index, node: ast.Node) -> Iterator[ast.Node]:
 
 
 def _hides(node: ast.Node, step: Step) -> bool:
-    """Whether *node*'s value hides the place *step* names: no value it can
-    be is built here with that place.  The verifier records a component of
-    a value it cannot see into at the value itself (a call, a slot), and
-    one it can see into where the component is built."""
+    """Whether *node*'s value can hide the place *step* names: some value it
+    can be is not built here with that place.  The verifier records a
+    component of a value it cannot see into at the value itself (a call, a
+    slot), and one it can see into where the component is built; a join
+    with one opaque arm has that arm's component recorded at the join (PR
+    #1630 review, round 2)."""
     if not isinstance(node, ast.Expr):
         return True
     ctor, _, k = step.rpartition(".")
     for leaf in narrowing.value_leaves(node):
         if step == "array element" and isinstance(leaf, ast.ArrayLit):
-            return False
+            continue
         if (isinstance(leaf, ast.ConstructorCall) and leaf.name == ctor
                 and k.isdigit() and int(k) < len(leaf.args)):
-            return False
-    return True
+            continue
+        return True
+    return False
 
 
 def _stands_for(
@@ -837,37 +840,15 @@ def _key_from_binder(
     return ("binder", check.emitter, id(located.node))
 
 
-def _needs_no_check(index: _Index, leaf: ast.Expr, kind: str) -> bool:
-    """Whether an arm of a join cannot break *kind*'s property, so the
-    join's record needs no check on it: for ``nat_bind``, a value no
-    narrowing reaches — a non-negative literal, a ``@Nat`` slot, a call of
-    a declared ``@Nat`` function, and arithmetic over those (a subtraction
-    with ``@Nat`` provenance is its own guarded site).  Read from the
-    program alone, so a form whose type only the checker knows needs its
-    check."""
-    if kind != "nat_bind":
-        return False
-
-    def declared(call: ast.Expr) -> str | None:
-        if not isinstance(call, (ast.FnCall, ast.ModuleCall)):
-            return None
-        decl = _reached_decl(index, call)
-        ret = decl.return_type if decl is not None else None
-        if isinstance(ret, ast.NamedType) and not ret.type_args:
-            return ret.name
-        return None
-
-    def provenance(expr: ast.Expr) -> bool:
-        if isinstance(expr, ast.SlotRef):
-            return expr.type_name == "Nat"
-        if isinstance(expr, (ast.FnCall, ast.ModuleCall)):
-            return declared(expr) == "Nat"
-        if isinstance(expr, ast.BinaryExpr):
-            return provenance(expr.left) or provenance(expr.right)
-        return False
-
-    return (narrowing.is_static_nat_typed(leaf, declared)
-            and not narrowing.has_underflow_leaf(leaf, provenance))
+def _left_unguarded(
+    compile_result: CompileResult,
+) -> set[tuple[str | None, Span4]]:
+    """(file, span) of every arm code generation decided needs no narrowing
+    guard (``CompileResult.unguarded_return_leaves``): the narrowing-leaf
+    descent's own decision, which reads a generic call's instantiation that
+    no declaration states (PR #1630 review, round 2)."""
+    return {(_file_key(file), span)
+            for file, span in compile_result.unguarded_return_leaves}
 
 
 # =====================================================================
@@ -1006,8 +987,10 @@ def join(
             continue
         unrecorded.append((check, standing))
 
-    # A record at a join is answered by its arms' checks when every arm that
-    # can break the property has one (`_arm_coverage`): one site, the join.
+    # A record at a join is answered by its arms' checks when every arm has
+    # one, or is an arm code generation decided narrows nothing
+    # (`_left_unguarded`): one site, the join.
+    left_unguarded = _left_unguarded(compile_result)
     unchecked_arm: dict[int, ast.Expr] = {}
     for record in records.all:
         leaves_covered = covered.get(id(record))
@@ -1016,7 +999,9 @@ def join(
             continue
         missing = [leaf for leaf in narrowing.value_leaves(rnode)
                    if id(leaf) not in leaves_covered
-                   and not _needs_no_check(index, leaf, record.kind)]
+                   and not (record.kind == "nat_bind"
+                            and (index.file_of.get(id(leaf)),
+                                 _node_span(leaf)) in left_unguarded)]
         if missing:
             unchecked_arm[id(record)] = missing[0]
             continue
@@ -1097,7 +1082,7 @@ def _arm_coverage(
     narrows (``_collect_narrowing_return_leaves``), where the verifier
     records the join once.  The check stands for its own arm only: the
     join's record is answered once every arm that can break the property
-    has a check (:func:`_needs_no_check`), so a missing arm guard is never
+    has a check (:func:`_left_unguarded`), so a missing arm guard is never
     covered by a sibling arm's."""
     if not isinstance(node, ast.Expr):
         return []

@@ -2623,6 +2623,10 @@ class OperatorsMixin:
         the verifier does.
         """
         leaves: set[int] = set()
+        #: The leaves this descent decided need no guard, for the record a
+        #: reconciliation reads (`CompileResult.unguarded_return_leaves`):
+        #: which arms of a guarded join were left unguarded on purpose.
+        self._return_leaves_left: list[ast.Expr] = []
         self._collect_narrowing_return_leaves_into(body, leaves)
         return leaves
 
@@ -2647,6 +2651,8 @@ class OperatorsMixin:
                 expr, self._declared_result_is_nat,
                 narrowing.NARROWING_EXEMPTION_READING):
             leaves.add(id(expr))
+        else:
+            self._return_leaves_left.append(expr)
 
     def _guard_nat_return_leaf(
         self, expr: ast.Expr, instrs: list[str],
