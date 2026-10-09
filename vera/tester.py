@@ -323,7 +323,7 @@ class _TestEngine:
         # `vera test --distrust`: exercise the proved functions too.
         self.distrust = distrust
         # The declarations a refuted record can name (`_declarations`).
-        self._decls: dict[tuple[str | None, str], ast.FnDecl] | None = None
+        self._decls: dict[tuple[str | None, str, str], ast.FnDecl] | None = None
 
     def run(self) -> TestResult:
         """Execute the full test pipeline."""
@@ -373,7 +373,8 @@ class _TestEngine:
         # against — the module's record of its checks, and the verifier's of
         # its obligations.
         traps = (
-            _TrapIndex(compile_result.emitted_checks, verify_result.obligations)
+            _TrapIndex(compile_result.emitted_checks, verify_result.obligations,
+                       compile_result.wat)
             if self.distrust else None
         )
         distrusted = traps is not None
@@ -551,14 +552,22 @@ class _TestEngine:
                     ))
                 continue
 
-            # A proof is exercised through the checks that stand for its
-            # clauses.  With none, no trial can contradict it, and a run that
-            # passed would read as a proof that held.
+            # A proof is exercised through the checks that stand for what the
+            # verifier proved.  When a run reaches none, no trial can
+            # contradict the proof, and one that passed would read as a proof
+            # that held, so it is not run.  When it reaches one, it runs: a
+            # proved operation in the body, or a callee's proved contract,
+            # can be refuted although no contract clause of this function has
+            # a check (PR #1634 review).  The clauses no check stands for are
+            # named either way.
             unchecked: list[str] = []
             if proved and traps is not None:
-                checked, unchecked = traps.proof_clauses(decl, self.file)
-                if unchecked and not checked:
-                    missing = _no_check_reason(unchecked)
+                _, unchecked = traps.proof_clauses(decl, self.file)
+                if not traps.exercises(decl, self.file):
+                    missing = (
+                        _no_check_reason(unchecked) if unchecked
+                        else "no runtime check a run of it reaches stands "
+                        "for an obligation the verifier proved")
                     _record_unrun(
                         results, summary, fn_name, missing, proved, distrusted)
                     diagnostics.append(Diagnostic(
@@ -571,12 +580,16 @@ class _TestEngine:
                         rationale=(
                             "`vera test --distrust` tests a proof by running "
                             "the function against the runtime checks code "
-                            "generation emits for its clauses.  It emits none "
-                            "for these — none for a postcondition over a "
-                            "`String` or `Array` result, and none for a "
-                            "clause it cannot compile — so no trial can "
-                            "contradict them, and the function is not run: "
-                            "its proof stands but is not exercised."
+                            "generation emits for what the verifier proved: "
+                            "its contract clauses, the operations in its "
+                            "body, and those of the functions it calls.  A "
+                            "run of this function reaches none — code "
+                            "generation emits no check for a postcondition "
+                            "over a `String` or `Array` result, nor for a "
+                            "clause it cannot compile, and a `requires` is "
+                            "met by the generated arguments — so no trial can "
+                            "contradict the proof, and the function is not "
+                            "run: its proof stands but is not exercised."
                         ),
                         fix=(
                             "Exercise the property through a caller whose "
@@ -797,25 +810,31 @@ class _TestEngine:
             diagnostics=diagnostics,
         )
 
-    def _declarations(self) -> dict[tuple[str | None, str], ast.FnDecl]:
+    def _declarations(
+        self,
+    ) -> dict[tuple[str | None, str, str], ast.FnDecl]:
         """Every function declaration the obligation records can name, by
-        (file, name): the program's own, their `where` helpers, and every
-        resolved module's.  Built on first use, for a refutation."""
+        (file, owner, name) as a record names it: the program's own, their
+        `where` helpers, and every resolved module's.  A helper's record
+        carries its bare name and, as ``owner``, the top-level function whose
+        helper it is, since two functions' helpers may share a name; a
+        top-level function's owner is empty.  Built on first use, for a
+        refutation."""
         if self._decls is None:
-            decls: dict[tuple[str | None, str], ast.FnDecl] = {}
+            decls: dict[tuple[str | None, str, str], ast.FnDecl] = {}
 
-            def add(decl: ast.FnDecl, where: str | None) -> None:
-                decls.setdefault((where, decl.name), decl)
+            def add(decl: ast.FnDecl, where: str | None, owner: str) -> None:
+                decls.setdefault((where, owner, decl.name), decl)
                 for helper in decl.where_fns or ():
-                    add(helper, where)
+                    add(helper, where, owner or decl.name)
 
             for tld in self.program.declarations:
                 if isinstance(tld.decl, ast.FnDecl):
-                    add(tld.decl, self.file)
+                    add(tld.decl, self.file, "")
             for module in self.resolved_modules:
                 for tld in module.program.declarations:
                     if isinstance(tld.decl, ast.FnDecl):
-                        add(tld.decl, str(module.file_path))
+                        add(tld.decl, str(module.file_path), "")
             self._decls = decls
         return self._decls
 
@@ -966,7 +985,13 @@ class _TrapIndex:
         self,
         checks: list[EmittedCheck],
         obligations: list[ProofObligation],
+        wat: str = "",
     ) -> None:
+        # The module's text, read for its call graph (`reachable`): which
+        # functions a call of the function under test can run.
+        self._wat = wat
+        self._graph: dict[str, set[str]] | None = None
+        self._all_checks = checks
         self._checks: dict[tuple[str, str], list[EmittedCheck]] = {}
         for check in checks:
             self._checks.setdefault((check.function, check.kind), []).append(
@@ -1039,7 +1064,9 @@ class _TrapIndex:
                     _describe_obligation(r, decl.name) for r in guarded))
             return
         spans = " or ".join(
-            f"{check.line}:{check.column} ({state})" for check, state, _ in read)
+            (f"{check.line}:{check.column}" if check.line
+             else "an unlocated check") + f" ({state})"
+            for check, state, _ in read)
         _unattributed(trial, f"{kind} at {spans} in '{fired_in}'")
 
     def _read(
@@ -1114,19 +1141,126 @@ class _TrapIndex:
                 (checked if stands_for(node, kind) else unchecked).append(
                     _describe_obligation(records[0], decl.name))
 
+        # The refined return: recorded at the body for a refinement of the
+        # whole value, and at each component or element the function builds
+        # where it returns for a refined tuple component or array element.
+        # Code generation guards it at the return type, and a built component
+        # or element where it is built too.
         ret = decl.return_type.span
-        if ret is not None and proved(decl.body, "refine_bind"):
+        parts = [node for node in _returned_parts(decl.body)
+                 if proved(node, "refine_bind")]
+        if ret is not None and parts:
             guarded = any(
                 check.emitter == _REFINEMENT_EMITTER and not check.prelude
                 and (ret.line, ret.column) <= (check.line, check.column)
                 <= (ret.end_line, ret.end_column)
                 for check in self._checks.get(
                     (decl.name, "contract_violation"), [])
-            )
+            ) or all(stands_for(node, "refine_bind") for node in parts)
             (checked if guarded else unchecked).append(
                 "the refinement of its return type "
                 f"`{ast.format_type_expr(decl.return_type)}`")
         return checked, unchecked
+
+    def exercises(self, decl: ast.FnDecl, file: str | None) -> bool:
+        """Whether a run of *decl* can test anything the verifier proved.
+
+        True when one of its own proved clauses has a check, or when its run
+        — its body, a closure it calls, a callee, transitively — reaches any
+        check that can stand for a proved obligation: one joined to an
+        obligation the stream reports ``verified``, one the exact-span join
+        places nowhere (its obligation may sit at another node, #1633), or a
+        callee's precondition check, which answers this function's call.
+        Left out are its own prologue checks, which the attribution sets
+        aside on the trial's own call because the arguments are generated to
+        satisfy them; a runtime function's own checks; and a guard joined to
+        an obligation the verifier did not prove.  A function for which this
+        is False can refute nothing, and is reported not exercised rather
+        than run.
+        """
+        if self.proof_clauses(decl, file)[0]:
+            return True
+        reach = self.reachable(decl.name)
+        for check in self._all_checks:
+            if check.function not in reach or (
+                    check.function == decl.name
+                    and _is_prologue_check(check, decl)):
+                continue
+            state, _ = self._read(check)
+            if state == "not proved" or (
+                    state == "no obligation recorded" and check.prelude):
+                continue
+            return True
+        return False
+
+    def reachable(self, start: str) -> set[str]:
+        """The WASM functions a call of *start* can run: *start*, and every
+        function it calls, directly or through the closure table, and so on
+        transitively.  Without the module's text, *start* alone."""
+        graph = self._call_graph()
+        seen = {start}
+        stack = [start]
+        while stack:
+            for callee in graph.get(stack.pop(), ()):
+                if callee not in seen:
+                    seen.add(callee)
+                    stack.append(callee)
+        return seen
+
+    def _call_graph(self) -> dict[str, set[str]]:
+        """Each function the module text defines, and the functions its body
+        can call: every ``call`` and ``return_call`` target, and, where it
+        holds a ``call_indirect``, every function in the closure table."""
+        if self._graph is None:
+            headers = list(_WAT_FUNC.finditer(self._wat))
+            table = {
+                name
+                for line in self._wat.splitlines()
+                if line.lstrip().startswith("(elem")
+                for name in _WAT_NAME.findall(line)
+            }
+            graph: dict[str, set[str]] = {}
+            for n, header in enumerate(headers):
+                end = (headers[n + 1].start() if n + 1 < len(headers)
+                       else len(self._wat))
+                body = self._wat[header.end():end]
+                callees = set(_WAT_CALL.findall(body))
+                if "call_indirect" in body:
+                    callees |= table
+                graph[header.group(1)] = callees
+            self._graph = graph
+        return self._graph
+
+
+#: A function definition in the module text, as code generation writes one.
+_WAT_FUNC = re.compile(r"^\s*\(func \$([^\s()]+)", re.MULTILINE)
+#: A direct call, and a tail call, to a function the module defines (an
+#: import's name matches too, and is in no body of the graph).
+_WAT_CALL = re.compile(r"\b(?:return_call|call) \$([^\s()]+)")
+_WAT_NAME = re.compile(r"\$([^\s()]+)")
+
+
+def _returned_parts(expr: ast.Expr) -> list[ast.Expr]:
+    """The nodes where a function's returned value is formed: *expr*, the
+    value of a block, each branch of an `if` and arm of a `match`, and each
+    component of a tuple or element of an array literal built there, where
+    the verifier records a refined return type's predicates."""
+    out: list[ast.Expr] = [expr]
+    if isinstance(expr, ast.Block):
+        out += _returned_parts(expr.expr)
+    elif isinstance(expr, ast.IfExpr):
+        out += _returned_parts(expr.then_branch)
+        out += _returned_parts(expr.else_branch)
+    elif isinstance(expr, ast.MatchExpr):
+        for arm in expr.arms:
+            out += _returned_parts(arm.body)
+    elif isinstance(expr, ast.ConstructorCall) and expr.name == "Tuple":
+        for arg in expr.args:
+            out += _returned_parts(arg)
+    elif isinstance(expr, ast.ArrayLit):
+        for element in expr.elements:
+            out += _returned_parts(element)
+    return out
 
 
 def _unattributed(trial: TrialResult, where: str) -> None:
@@ -1204,7 +1338,7 @@ class _AssumedPremise:
 def _assumed_premise(
     trial: TrialResult,
     decl: ast.FnDecl,
-    declarations: dict[tuple[str | None, str], ast.FnDecl],
+    declarations: dict[tuple[str | None, str, str], ast.FnDecl],
     alias_env: AliasEnv,
 ) -> _AssumedPremise | None:
     """The `assume` statements in the declarations that own *trial*'s
@@ -1218,7 +1352,7 @@ def _assumed_premise(
     """
     found: list[tuple[ast.FnDecl, ast.AssumeExpr]] = []
     for record in trial.refutes:
-        owner = declarations.get((record.file, record.fn_name))
+        owner = declarations.get((record.file, record.owner, record.fn_name))
         if owner is None:
             continue
         for node in walk_nodes(owner.body):
@@ -1307,8 +1441,8 @@ def _refutation_explanation(premise: _AssumedPremise | None) -> tuple[str, str]:
             "the description names, which the verifier takes on trust rather "
             "than proving (W003, spec §6.2.6).  The trial's arguments satisfy "
             "the function's `requires` and violate that `assume`, so the "
-            "proof was built on a premise that is false here: the program, "
-            "not the verifier, is wrong.",
+            "proof was built on a premise that is false here, and this trial "
+            "cannot tell whether the verifier is also wrong.",
             "Replace the `assume` with something the verifier proves or the "
             "program checks: a `requires` the callers must establish, so "
             "`vera verify` proves it at every call site, or an explicit "

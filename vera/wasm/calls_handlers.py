@@ -920,8 +920,13 @@ class CallsHandlersMixin:
         if base == "Byte":
             return self._byte_to_string_core(value_instrs)
         if base == "Float64":
+            # A generated helper (a recursive ADT's `$show_<type>`) is shared
+            # by every `show` of its type, so a check in it belongs to no one
+            # call and is spanned at none (#1482, PR #1634 review).
             return self._float_to_string_core(
-                value_instrs, self._rendering_site(node))
+                value_instrs,
+                None if self._derived_helper_depth
+                else self._rendering_site(node))
         if base == "String":
             return value_instrs  # a String is its own representation
         if base == "Unit":

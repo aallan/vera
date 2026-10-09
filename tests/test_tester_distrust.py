@@ -99,6 +99,29 @@ def _checks(source: str) -> list[EmittedCheck]:
     return result.emitted_checks
 
 
+def _index(source: str) -> _TrapIndex:
+    """The engine's `_TrapIndex` for *source*: its checks, its obligations and
+    its module text, built as `_run` builds them."""
+    from vera.verifier import verify
+
+    program = transform(parse(source, file=_FILE))
+    _, artifacts = typecheck_with_artifacts(program, source, file=_FILE)
+    verified = verify(
+        program, source=source, file=_FILE,
+        expr_types=artifacts.expr_semantic_types,
+        expr_target_types=artifacts.expr_target_types,
+        module_artifacts=artifacts.module_artifacts,
+    )
+    compiled = codegen_compile(
+        program, source=source, file=_FILE,
+        expr_semantic_types=artifacts.expr_semantic_types,
+        expr_target_types=artifacts.expr_target_types,
+        module_artifacts=artifacts.module_artifacts,
+    )
+    return _TrapIndex(
+        compiled.emitted_checks, verified.obligations, compiled.wat)
+
+
 def _fn(result: TestResult, name: str) -> FunctionTestResult:
     for f in result.functions:
         if f.fn_name == name:
@@ -872,8 +895,49 @@ def _site_id(site: object) -> str:
     return str(getattr(site, "site", site))
 
 
+# A recursive ADT's `show` helper is generated once and shared by every
+# `show` of that type, so its truncation belongs to no one call.  Spanned at
+# the call that produced it, a trap during another call's rendering named
+# that other call: `deep`'s trial was told of `elsewhere`'s `show` at line 20.
+SRC_SHARED_SHOW_HELPER = """\
+private data FList {
+  FNil,
+  FCons(Float64, FList)
+}
+
+public fn deep(@Float64 -> @Int)
+  requires(@Float64.0 > 10000000000000000000.0)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  let @String = show(FCons(1.5, FCons(@Float64.0, FNil)));
+  1
+}
+
+private fn elsewhere(@Float64 -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  show(FCons(1.5, FCons(@Float64.0, FNil)))
+}
+"""
+
+
 class TestTrapsAtSitesTheRecordOmitted:
     """A trap at a known trap defect joins its own check, never another's."""
+
+    def test_a_shared_show_helpers_trap_names_no_call(self) -> None:
+        result = _run(SRC_SHARED_SHOW_HELPER, distrust=True, trials=3)
+        f = _fn(result, "deep")
+        assert f.category == "tested", (f.category, f.reason)
+        assert f.trials_failed == f.trials_run > 0
+        for trial in f.failures:
+            assert trial.trap_frames[0][0].startswith("show_"), trial.trap_frames
+            assert trial.status == "unattributed", trial.attribution
+            assert "elsewhere" not in trial.attribution
+            assert "an unlocated check (no obligation recorded)" in (
+                trial.attribution)
 
     def test_every_known_trap_defect_has_a_program(self) -> None:
         assert set(_DEFECT_PROGRAMS) == {s.site for s in KNOWN_TRAP_DEFECTS}
@@ -957,11 +1021,14 @@ class TestTrapsAtSitesTheRecordOmitted:
 # A proof no runtime check stands for is not exercised
 # =====================================================================
 
-# The class: a verified contract obligation of an exercised function —
-# an `ensures`, a `decreases`, an `assert`, a refined return — that no check
-# in the module stands for.  No trial can contradict it, so a run that passes
-# says nothing about it.  Code generation emits no `ensures` check for a
-# `String` or `Array` result, and none for a clause it cannot compile.
+# A proof can be tested only through checks that stand for what the verifier
+# proved.  Code generation emits no `ensures` check for a `String` or `Array`
+# result, and none for a clause it cannot compile, so no trial can contradict
+# such a clause, and a run that passes says nothing about it: the reason names
+# it.  A function is not run at all only when NO check its run reaches stands
+# for a proved obligation — its contract clauses, the operations in its body,
+# a callee's — since anything less would skip a run that can refute (the
+# round-2 class below).
 
 # The reviewer's repro: proved (#1587's literal reads as -1), yet `vera run
 # --fn s -- 3` returns "pos", and nothing checks the `ensures`.
@@ -1098,6 +1165,295 @@ class TestProofsNoCheckStandsFor:
         assert (f.category, f.unchecked) == ("tested", []), f.reason
         assert (f.trials_run, f.trials_failed) == (9, 0)
         assert f.reason == "Tier 1, the proof held under 9 trials"
+
+
+# The class (round 2): a proved function a run of which reaches a check
+# standing for a proved obligation, though none of its contract clauses has
+# one.  Skipping it skips a run that can refute.
+
+# The reviewer's repro: the `ensures` over a `String` result has no check, but
+# the index at 7:14 is proved (#1587's literal reads it as 1) and checked, and
+# every run indexes 7.
+SRC_UNCHECKED_ENSURES_BESIDE_A_PROOF = """\
+public fn label(@Int -> @String)
+  requires(true)
+  ensures(@String.result == "ok")
+  effects(pure)
+{
+  let @Array<Int> = [10, 20, 30];
+  let @Int = @Array<Int>.0[if 0 - 18446744073709551615 < 0 then { 1 } else { 7 }];
+  "ok"
+}
+"""
+
+# The `Array` case: nothing checks the `ensures` over the result, but each
+# element's `Pos` is proved and guarded where the array is built, and the
+# second element is 0 at run time.
+SRC_REFINED_ELEMENTS = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+public fn positives(@Int -> @Array<Pos>)
+  requires(true)
+  ensures(array_length(@Array<Pos>.result) == 2)
+  effects(pure)
+{
+  [1, if 0 - 18446744073709551615 < 0 then { 1 } else { 0 }]
+}
+"""
+
+# A tuple component's refinement is recorded, and guarded, at the component
+# the function builds, not at the body; with #1587's literal the component is
+# 0 at run time.
+SRC_REFINED_COMPONENT = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+public fn pos_pair(@Int -> @Tuple<Pos, Int>)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{
+  Tuple(if 0 - 18446744073709551615 < 0 then { @Int.0 } else { 0 }, 3)
+}
+"""
+
+# A proof reached only through a callee: nothing of `s2`'s own has a check,
+# and its private `helper`'s false `ensures` (#1587's literal) is checked
+# inside `helper`, which every run of `s2` calls.
+SRC_CALLEE_PROOF = """\
+private fn helper(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result < 0)
+  effects(pure)
+{
+  0 - 18446744073709551615
+}
+
+public fn s2(@Int -> @String)
+  requires(true)
+  ensures(@String.result == "ok")
+  effects(pure)
+{
+  let @Int = helper(@Int.0);
+  "ok"
+}
+"""
+
+# The proved `nat_bind` is recorded at the value (`Tuple(@Int.0, 5)`) and
+# guarded at the binders, so the exact-span join places the guards nowhere
+# (#1633); they may stand for the proof, so the function is run.
+SRC_UNJOINED_GUARD = """\
+public fn destruct_narrow(@Int -> @Nat)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{
+  let Tuple<@Nat, @Nat> = Tuple(@Int.0, 5);
+  @Nat.0
+}
+"""
+
+# The only check a run reaches guards an obligation the verifier did not
+# prove (the index is Tier 3), and the `ensures` has none: nothing proved can
+# be tested.
+SRC_ONLY_A_TIER3_GUARD = """\
+public fn pick_label(@Int -> @String)
+  requires(true)
+  ensures(@String.result == "x")
+  effects(pure)
+{
+  let @Array<Int> = [1, 2, 3];
+  let @Int = @Array<Int>.0[@Int.0];
+  "x"
+}
+"""
+
+# Nothing the verifier proved has a check: the only check is the `requires`,
+# which the trial's arguments are generated to satisfy, so it is set aside.
+SRC_ONLY_A_REQUIRES = """\
+public fn keep(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+"""
+
+
+class TestAProofIsRunWhereverACheckStandsForIt:
+    """Not exercised only when no check a run reaches stands for a proof."""
+
+    def test_an_unchecked_ensures_beside_a_checked_false_proof_is_refuted(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        result = _run(SRC_UNCHECKED_ENSURES_BESIDE_A_PROOF, distrust=True,
+                      trials=3)
+        f = _fn(result, "label")
+        assert f.category == "refuted", (f.category, f.reason)
+        assert f.trials_failed == f.trials_run > 0
+        assert {(o.kind, o.line, o.column) for t in f.failures
+                for o in t.refutes} == {("index_bounds", 7, 14)}
+        assert f.unchecked == ['ensures(@String.result == "ok")']
+        assert f.reason.endswith(
+            '; code generation emits no runtime check for '
+            '`ensures(@String.result == "ok")`, so no trial tests it'), f.reason
+        assert "E702" not in _codes(result)
+        rc = cmd_test(_write(tmp_path, SRC_UNCHECKED_ENSURES_BESIDE_A_PROOF),
+                      trials=3, distrust=True)
+        assert rc == 1, capsys.readouterr().out
+
+    def test_a_refined_element_proof_beside_an_unchecked_ensures_runs(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Run, as at 441c9bd9: every trial fails.  The element's proved
+        guard and the return type's guard, which joins no record, are both
+        candidates, so each trap is unattributed rather than refuting."""
+        result = _run(SRC_REFINED_ELEMENTS, distrust=True, trials=3)
+        f = _fn(result, "positives")
+        assert f.category == "tested", (f.category, f.reason)
+        assert f.trials_failed == f.trials_run > 0
+        assert {t.status for t in f.failures} == {"unattributed"}
+        assert f.unchecked == [
+            "ensures(array_length(@Array<@Pos>.result) == 2)"]
+        assert "E702" not in _codes(result)
+        assert cmd_test(_write(tmp_path, SRC_REFINED_ELEMENTS), trials=3,
+                        distrust=True) == 1, capsys.readouterr().out
+
+    def test_a_component_refined_return_is_a_checked_clause(self) -> None:
+        program = transform(parse(SRC_REFINED_COMPONENT, file=_FILE))
+        (decl,) = [t.decl for t in program.declarations
+                   if isinstance(t.decl, ast.FnDecl)]
+        index = _index(SRC_REFINED_COMPONENT)
+        assert index.proof_clauses(decl, _FILE) == (
+            ["the refinement of its return type `@Tuple<@Pos, @Int>`"], [])
+        f = _fn(_run(SRC_REFINED_COMPONENT, distrust=True, trials=3),
+                "pos_pair")
+        assert f.category == "tested", (f.category, f.reason)
+        assert f.trials_failed == f.trials_run > 0
+        assert {t.status for t in f.failures} == {"unattributed"}
+
+    def test_a_proof_reached_through_a_callee_is_refuted(self) -> None:
+        result = _run(SRC_CALLEE_PROOF, distrust=True, trials=3)
+        f = _fn(result, "s2")
+        assert f.category == "refuted", (f.category, f.reason)
+        assert {(o.fn_name, o.kind) for t in f.failures
+                for o in t.refutes} == {("helper", "ensures")}
+        assert f.unchecked == ['ensures(@String.result == "ok")']
+
+    def test_a_function_whose_only_check_is_its_requires_is_not_exercised(
+        self,
+    ) -> None:
+        result = _run(SRC_ONLY_A_REQUIRES, distrust=True, trials=9)
+        f = _fn(result, "keep")
+        assert (f.category, f.proved, f.trials_run) == ("verified", True, 0), (
+            f.category, f.reason)
+        assert f.reason == (
+            "Tier 1, not exercised: no runtime check a run of it reaches "
+            "stands for an obligation the verifier proved")
+        (diag,) = result.diagnostics
+        assert (diag.error_code, diag.severity) == ("E702", "warning")
+
+    def test_a_guard_the_join_places_nowhere_still_runs(self) -> None:
+        f = _fn(_run(SRC_UNJOINED_GUARD, distrust=True, trials=5),
+                "destruct_narrow")
+        assert (f.category, f.trials_failed) == ("tested", 0), f.reason
+        assert f.trials_run > 0
+
+    def test_a_run_reaching_only_a_tier3_guard_is_not_exercised(self) -> None:
+        result = _run(SRC_ONLY_A_TIER3_GUARD, distrust=True, trials=5)
+        f = _fn(result, "pick_label")
+        assert (f.category, f.trials_run) == ("verified", 0), f.reason
+        assert f.reason == (
+            "Tier 1, not exercised: code generation emits no runtime check "
+            'for `ensures(@String.result == "x")`')
+        assert _codes(result) == ["E702"]
+
+    def test_the_closure_table_is_reached_through_call_indirect(self) -> None:
+        """A closure body runs through the table, not a named call."""
+        wat = (
+            "  (table 1 funcref)\n"
+            "  (elem (i32.const 0) func $anon_0)\n"
+            "  (func $f (param $p0 i64) (result i64)\n"
+            "    call_indirect (type $closure_sig_0)\n"
+            "  )\n"
+            "  (func $anon_0 (param $env i32) (result i64)\n"
+            "    call $helper\n"
+            "  )\n"
+            "  (func $helper (result i64)\n"
+            "    i64.const 1\n"
+            "  )\n"
+            "  (func $unrelated (result i64)\n"
+            "    i64.const 2\n"
+            "  )\n")
+        index = _TrapIndex([], [], wat)
+        assert index.reachable("f") == {"f", "anon_0", "helper"}
+        assert index.reachable("helper") == {"helper"}
+
+
+#: How one check a run of `f` reaches reads, whether it lets the run test a
+#: proof, and where it sits: in `f` itself or in `g`, which `f` calls.
+_EXERCISE_CELLS: dict[str, tuple[str, bool, bool]] = {
+    # name: (where, a prelude function's, exercises)
+    "proved_in_f": ("f", False, True),
+    "proved_in_callee": ("g", False, True),
+    "not_proved_in_f": ("f", False, False),
+    "not_proved_in_callee": ("g", False, False),
+    "unjoined_in_f": ("f", False, True),
+    "unjoined_in_callee": ("g", False, True),
+    "unjoined_in_a_prelude_function": ("g", True, False),
+    "own_precondition": ("f", False, False),
+    "own_refined_parameter_guard": ("f", False, False),
+    "callee_precondition": ("g", False, True),
+    "prelude_precondition": ("g", True, True),
+    "in_an_unreached_function": ("h", False, False),
+}
+
+_EXERCISE_WAT = (
+    "  (func $f (param $p0 i64) (result i64)\n    call $g\n  )\n"
+    "  (func $g (param $p0 i64) (result i64)\n    i64.const 1\n  )\n"
+    "  (func $h (result i64)\n    i64.const 2\n  )\n")
+
+
+@pytest.mark.parametrize("cell", list(_EXERCISE_CELLS))
+def test_what_lets_a_run_test_a_proof(cell: str) -> None:
+    where, prelude, expected = _EXERCISE_CELLS[cell]
+    decl = _matrix_decl()
+    records: list[ProofObligation] = []
+    if cell == "own_refined_parameter_guard":
+        param = decl.params[0].span
+        assert param is not None
+        check = EmittedCheck(_REFINE, "contract_violation", ("refine_bind",),
+                             "f", param.line, param.column, param.end_line,
+                             param.end_column, _M_FILE, False)
+    elif cell.endswith("precondition"):
+        check, records = _cell("precondition", 10)
+        check = EmittedCheck(check.emitter, check.kind, check.obligations,
+                             where, check.line, check.column, check.end_line,
+                             check.end_column, None if prelude else _M_FILE,
+                             prelude)
+    else:
+        state = ("proved" if cell.startswith("proved")
+                 else "not_proved" if cell.startswith("not_proved")
+                 else "proved" if cell == "in_an_unreached_function"
+                 else "unjoined")
+        base, records = _cell(state, 10)
+        check = EmittedCheck(base.emitter, base.kind, base.obligations, where,
+                             base.line, base.column, base.end_line,
+                             base.end_column, None if prelude else _M_FILE,
+                             prelude)
+    index = _TrapIndex([check], records, _EXERCISE_WAT)
+    assert index.exercises(decl, _M_FILE) is expected
+
+
+def test_the_exercise_matrix_covers_every_reading() -> None:
+    """Every way `_TrapIndex._read` can read a check, in the function and in
+    a callee, plus the prologue and a function the run never reaches."""
+    assert {"proved", "not_proved", "unjoined", "precondition"} <= {
+        part for cell in _EXERCISE_CELLS for part in (
+            "proved", "not_proved", "unjoined", "precondition")
+        if part in cell}
+    assert {where for where, _, _ in _EXERCISE_CELLS.values()} == {
+        "f", "g", "h"}
 
 
 # The reviewer's repro: `opt_pos` and `same` are proved, but the generator
@@ -1415,6 +1771,45 @@ _SOUNDNESS = (
     "the verifier proved something about a program other than the one that "
     "runs")
 
+# Two `where` helpers of one name: `f1`'s rests on an `assume`, `f2`'s
+# carries #1587's false proof and no `assume`.
+SRC_SAME_NAMED_HELPERS = """\
+public fn f1(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  h(@Int.0)
+}
+where {
+  fn h(@Int -> @Int)
+    requires(true)
+    ensures(@Int.result > 0)
+    effects(pure)
+  {
+    assume(@Int.0 > 0);
+    @Int.0
+  }
+}
+
+public fn f2(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result < 0)
+  effects(pure)
+{
+  h(@Int.0)
+}
+where {
+  fn h(@Int -> @Int)
+    requires(true)
+    ensures(@Int.result < 0)
+    effects(pure)
+  {
+    0 - 18446744073709551615
+  }
+}
+"""
+
 #: Where an `assume` sits relative to the refuted proof, and whether these
 #: arguments violate it: the comparison `f`'s `ensures(@Int.result _ 0)`
 #: makes (`<` where #1587's literal supplies the false proof), its body, and
@@ -1503,6 +1898,18 @@ class TestRefutationsRestingOnAnAssume:
             # Not established either way, so both readings are stated.
             assert "soundness defect" in d.fix
             assert "`requires`" in d.fix
+
+    def test_a_where_helper_is_found_under_its_own_owner(self) -> None:
+        """Two functions each have a helper `h`; only `f1`'s has an `assume`.
+        A refutation of `f2`'s `h` must not borrow it: a helper's record is
+        named by its bare name, and its owner says whose helper it is."""
+        result = _run(SRC_SAME_NAMED_HELPERS, distrust=True, fn_name="f2",
+                      trials=3)
+        refutations = _refutations(result)
+        assert refutations, [(f.fn_name, f.category) for f in result.functions]
+        for d in refutations:
+            assert "assume(" not in d.description, d.description
+            assert _SOUNDNESS in d.rationale
 
     def test_without_an_assume_the_rationale_still_names_the_case(
         self,
