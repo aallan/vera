@@ -36,6 +36,16 @@ from tests.module_fixture_helpers import (
     module_value,
 )
 
+# A generated class instrument (tests/matrix_sample.py): a pull request runs a
+# sample of its parametrised cells, and all of them when it changes this file or
+# a module that decides its class, here code generation's constructor
+# projection, per namespace.
+pytestmark = pytest.mark.matrix(
+    decides=[
+        "vera/codegen/core.py",
+    ],
+)
+
 _LIB = """\
 module s3lib;
 

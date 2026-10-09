@@ -83,6 +83,17 @@ from vera.runtime.traps import WasmTrapError
 from vera.transform import transform
 from vera.verifier import ContractVerifier, verify
 
+# A generated class instrument (tests/matrix_sample.py): a pull request runs a
+# sample of its parametrised cells, and all of them when it changes this file or
+# a module that decides its class, here the call graph's cycles and the
+# checker's termination rule over them.
+pytestmark = pytest.mark.matrix(
+    decides=[
+        "vera/callgraph.py",
+        "vera/checker/core.py",
+    ],
+)
+
 ROOT = Path(__file__).resolve().parent.parent
 
 

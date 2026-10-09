@@ -292,16 +292,6 @@ public fn g(@Float64 -> @Int)
   h(map_insert(map_new(), "k", float_to_int(@Float64.0)))
 }
 """,
-    "1614": """\
-public fn g(@Float64 -> @Int)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  let @Map<String, Nat> = map_new() |> map_insert("k", float_to_int(@Float64.0));
-  7
-}
-""",
     "1613": """\
 public fn g(@Float64 -> @Int)
   requires(true)
@@ -361,7 +351,6 @@ _REPRO_KNOWN: tuple[tuple[int, str, str, str, int, int], ...] = (
     (1530, "1530-measure", "recorded_unguarded", "decreases_bound", 25, 21),
     (1582, "1582", "recorded_unguarded", "nat_to_int_coerce", 6, 45),
     (1608, "1608", "guarded_unrecorded", "nat_bind", 14, 32),
-    (1614, "1614", "guarded_unrecorded", "nat_bind", 6, 56),
 )
 
 
@@ -439,11 +428,12 @@ def test_a_tier3_ensures_with_no_check_is_recorded_unguarded(
 
 
 def test_a_guard_with_no_record_is_guarded_unrecorded(repro_dir: Path) -> None:
-    """#1614: the piped `map_insert`'s value is guarded and never
-    obligated.  Written before the join existed, and seen failing then."""
-    run = _repro(repro_dir, "1614")
+    """#1608: the destructured `@Nat` is guarded at its binder and never
+    obligated.  The red-first case was a piped `map_insert` (#1614) until
+    #1631 made the pipe the call it stands for, which closed it."""
+    run = _repro(repro_dir, "1608")
     found = {(m.kind, m.obligation, m.line, m.column) for m in run.mismatches}
-    assert ("guarded_unrecorded", "nat_bind", 6, 56) in found, found
+    assert ("guarded_unrecorded", "nat_bind", 14, 32) in found, found
 
 
 # =====================================================================
@@ -1390,7 +1380,7 @@ def test_reconcile_reports_an_unanswered_claim_as_e541(
 def test_reconcile_reports_an_unrecorded_check_as_w004(
     capsys: pytest.CaptureFixture[str], repro_dir: Path,
 ) -> None:
-    rc, payload = _cli_json(capsys, repro_dir / "repro_1614.vera",
+    rc, payload = _cli_json(capsys, repro_dir / "repro_1608.vera",
                             reconcile=True)
     assert rc == 0 and payload["ok"] is True
     assert "W004" in {w["error_code"] for w in payload["warnings"]}  # type: ignore[index, union-attr]

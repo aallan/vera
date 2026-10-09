@@ -289,7 +289,7 @@ class ExpressionsMixin:
         if isinstance(expr, ast.ResultRef):
             return self._check_result_ref(expr)
         if isinstance(expr, ast.BinaryExpr):
-            return self._check_binary(expr, expected=expected)
+            return self._check_binary(expr)
         if isinstance(expr, ast.UnaryExpr):
             return self._check_unary(expr)
         if isinstance(expr, ast.IndexExpr):
@@ -558,15 +558,9 @@ class ExpressionsMixin:
     # Binary operators
     # -----------------------------------------------------------------
 
-    def _check_binary(self, expr: ast.BinaryExpr, *,
-                      expected: Type | None = None) -> Type | None:
-        """Type-check a binary operator expression.  Only a pipe reads
-        *expected*: it is a call, and a call's result is checked against
-        the type its context expects."""
-        # Pipe is special
-        if expr.op == ast.BinOp.PIPE:
-            return self._check_pipe(expr, expected=expected)
-
+    def _check_binary(self, expr: ast.BinaryExpr) -> Type | None:
+        """Type-check a binary operator expression.  (A pipe is not one: the
+        transform writes `a |> f(b)` as the call `f(a, b)`.)"""
         left_ty = self._synth_expr(expr.left)
         right_ty = self._synth_expr(expr.right)
         if left_ty is None or right_ty is None:
@@ -901,35 +895,6 @@ class ExpressionsMixin:
             error_code="E243",
         )
 
-    def _check_pipe(self, expr: ast.BinaryExpr, *,
-                    expected: Type | None = None) -> Type | None:
-        """Type-check pipe: left |> right (right must be a FnCall/ModuleCall).
-
-        The desugared call is checked against *expected* as the call
-        written out would be (PR #1583 review): `let @Nat = (0 - 3) |> id()`
-        instantiates `id` at `Nat`, as `let @Nat = id(0 - 3)` does."""
-        left_ty = self._synth_expr(expr.left)
-        if left_ty is None:
-            return None
-
-        # The right side should be a FnCall — prepend left as first arg
-        if isinstance(expr.right, ast.FnCall):
-            # Create a virtual call with left prepended
-            all_args = (expr.left,) + expr.right.args
-            return self._check_call_with_args(
-                expr.right.name, all_args, expr.right, expected=expected)
-        # Module-qualified pipe: left |> mod::fn(args) → mod::fn(left, args)
-        if isinstance(expr.right, ast.ModuleCall):
-            desugared = ast.ModuleCall(
-                path=expr.right.path,
-                name=expr.right.name,
-                args=(expr.left,) + expr.right.args,
-                span=expr.right.span,
-            )
-            return self._check_module_call(desugared, expected=expected)
-        # Fallback: just synth the right side
-        return self._synth_expr(expr.right)
-
     # -----------------------------------------------------------------
     # Unary operators
     # -----------------------------------------------------------------
@@ -1196,8 +1161,8 @@ class ExpressionsMixin:
 
         # #1541, PR #1583 review: a tuple destructure's bindings are the
         # type its source is expected at, as a `let`'s declared type is,
-        # whatever the source's form: a generic call, or one reached
-        # through `if`, `match` and block tails, a pipe or an index.  So
+        # whatever the source's form: a generic call (a pipe is one), or one
+        # reached through `if`, `match` and block tails or an index.  So
         # `let Tuple<@Nat, @Nat> = id(Tuple(1, 0 - 3))` is refused (E503)
         # as `let @Nat = id(0 - 3)` is, and so is the same call in an `if`
         # branch.
@@ -1218,8 +1183,8 @@ class ExpressionsMixin:
         literals fix an `Int` that *context* makes a `Nat`
         (:meth:`_call_literal_meets_nat`; #1541, PR #1583 review).
 
-        `if`, `match`, a block, a tuple, an array literal, a pipe and an
-        index each thread the expected type to the call, which then places
+        `if`, `match`, a block, a tuple, an array literal and an index each
+        thread the expected type to the call, which then places
         each literal at the type *context* gives it, where a negative one
         is a narrowing the verifier refutes (E503).  A literal the source
         builds directly is not re-checked: the destructure's or the
@@ -1244,9 +1209,9 @@ class ExpressionsMixin:
         where *context* holds a `Nat` (:func:`negative_literal_meets_nat`
         over the call's recorded soft result).  Read through a block's
         result, the branches of an `if` and the arms of a `match`, a
-        tuple's fields, an array literal's elements, a pipe, and the array
-        an index reads — one element of it, so that array level is no
-        collection of the value (*element_reads* counts such reads)."""
+        tuple's fields, an array literal's elements, and the array an index
+        reads — one element of it, so that array level is no collection of
+        the value (*element_reads* counts such reads)."""
         while isinstance(context, RefinedType):
             context = context.base
         if isinstance(expr, ast.Block):
@@ -1265,9 +1230,6 @@ class ExpressionsMixin:
             return self._call_literal_meets_nat(
                 expr.collection, AdtType("Array", (context,)),
                 element_reads=element_reads + 1)
-        if (isinstance(expr, ast.BinaryExpr) and expr.op == ast.BinOp.PIPE
-                and isinstance(expr.right, (ast.FnCall, ast.ModuleCall))):
-            expr = expr.right
         if (isinstance(expr, ast.ConstructorCall) and expr.name == "Tuple"
                 and isinstance(context, AdtType) and context.name == "Tuple"
                 and len(context.type_args) == len(expr.args)):

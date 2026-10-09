@@ -3445,3 +3445,25 @@ class TestCollectionTimeout:
         assert out == ""
         assert err.startswith("ERROR: pytest collection")
         assert err.count("\n") == 1, err
+
+
+class TestCollectionCountsEveryMatrixCell:
+    """The per-file counts are the files' whole size: `collect_tests` asks
+    pytest for every cell of a file marked `matrix`, not the pull-request
+    gate's sample of it (tests/matrix_sample.py), which a default
+    collection deselects."""
+
+    def test_the_collection_runs_with_the_full_matrix(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        commands: list[list[str]] = []
+
+        def run(cmd: Any, **kwargs: Any) -> Any:
+            commands.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0, "1 test collected\n", "")
+
+        monkeypatch.setattr(_MOD.subprocess, "run", run)
+        assert _MOD.collect_tests(tmp_path) == (1, {})
+        assert len(commands) == 1
+        assert "--matrix=full" in commands[0]
+        assert "--co" in commands[0]

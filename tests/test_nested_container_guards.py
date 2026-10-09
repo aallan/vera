@@ -53,6 +53,18 @@ from vera.verifier import verify
 
 from tests.codegen_helpers import wat_fn_body
 
+# A generated class instrument (tests/matrix_sample.py): a pull request runs a
+# sample of its parametrised cells, and all of them when it changes this file or
+# a module that decides its class, here code generation's hand-down of a
+# component type to a nested container literal.
+pytestmark = pytest.mark.matrix(
+    decides=[
+        "vera/wasm/operators.py",
+        "vera/wasm/data.py",
+        "vera/wasm/calls_containers.py",
+    ],
+)
+
 
 def _trap_kind(kind: int) -> re.Pattern[str]:
     """A `$vera.trap` call of one `vera.trap_registry.TRAP_KINDS` code."""

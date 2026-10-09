@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from typing import ClassVar
 
 from vera import ast, narrowing, naming
-from vera.monomorphize import pipe_desugared_call, resolve_type_alias
+from vera.monomorphize import resolve_type_alias
 from vera.types import TO_STRING_BUILTINS
 from vera.skip import AdtEqNotDerivableError, CodegenInvariantError
 from vera.wasm.helpers import WasmSlotEnv, field_layout, state_type_arg
@@ -65,25 +65,6 @@ class OperatorsMixin:
     ) -> list[str] | None:
         """Translate a binary operator to WAT, its widened `@Nat` operands
         arranged first (:py:meth:`_translate_binary` does the rest)."""
-        # Pipe: a |> f(x, y) → f(a, x, y), through the ONE shared desugar
-        # (`vera.monomorphize.pipe_desugared_call`) the checker, discovery and
-        # both type namers use.  #1357: the desugared call keeps the right
-        # operand's own node type, so `a |> m::g()` stays a `ModuleCall` and
-        # its `path` still routes to the declaring module's clone.  Rebuilding
-        # it as a bare-name `FnCall` discarded that path, and the call landed
-        # on a name the importer's flat namespace does not have — a
-        # check-green, verify-clean program whose caller was dropped at
-        # [E602] while the DIRECT spelling of the same call compiled.
-        if expr.op == ast.BinOp.PIPE:
-            desugared = pipe_desugared_call(expr)
-            if desugared is None:
-                raise CodegenInvariantError(  # pragma: no cover
-                    "pipe RHS is neither FnCall nor ModuleCall", expr)
-            # Through `translate_expr`, so each shape takes its OWN arm: a
-            # `ModuleCall` reaches the qualified-target resolver that consumes
-            # its `path`, exactly as the direct spelling of the same call does.
-            return self.translate_expr(desugared, env)
-
         # PR #1583 review, #1588: a `@Nat` value an `@Int` operation widens
         # — an operand, or an arm of a join operand that supplies one —
         # traps above `i64.MAX` as it is evaluated, at the sites the

@@ -77,8 +77,8 @@ def resolve_literal_string(expr: ast.Expr, env: TypeEnv,
     #                        operands; every other builtin/user call → None.
     #   SlotRef            → Handled: the binding's eager literal_str (or None).
     #   BinaryExpr         → None: arithmetic/comparison/logic operators don't
-    #                        yield String, and a `|>` pipe (also a BinaryExpr)
-    #                        is a runtime call result.
+    #                        yield String.  (A `|>` pipe is the FnCall it
+    #                        stands for, resolved by the FnCall arm.)
     #   UnaryExpr          → None: no String-producing unary operator exists.
     #   IndexExpr          → None: an indexed element is a runtime value.
     #   IntLit             → None: not a String.
@@ -183,7 +183,7 @@ def resolve_array_len(expr: ast.Expr, env: TypeEnv,
     #   Block              → None: conservative — a block result is not walked.
     #   HandleExpr         → None: a handled expression is a runtime result.
     #   BinaryExpr         → None: no operator yields an Array (a `|>` pipe is
-    #                        also a BinaryExpr, i.e. a runtime call result).
+    #                        the FnCall it stands for).
     #   UnaryExpr          → None: no Array-producing unary operator exists.
     #   ConstructorCall    → None: an ADT value, not a bare Array.
     #   NullaryConstructor → None: likewise.

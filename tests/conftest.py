@@ -4,9 +4,20 @@ Scrubs the inherited environment variables that would change what the suite
 measures (``VERA_Z3_TIMEOUT_MS``) or which repository its git commands act on
 (``GIT_*``), and provides opt-in JavaScript coverage collection for the
 browser runtime.  Set ``VERA_JS_COVERAGE=1`` to enable V8 coverage during
-``test_browser.py``.  Also prints the session totals of
-``test_distrust_corpus.py`` (proofs exercised, refuted, unattributed traps)
-when it ran.
+``test_browser.py``.
+
+Also installs the ``matrix`` marker's sample (``tests/matrix_sample.py``):
+by default a file marked ``matrix`` runs a weekly-seeded stratified sample
+of its parametrised cells, and every cell when ``VERA_MATRIX_CHANGED`` (CI's
+list of the files a pull request changes) names the file or a module its
+marker declares as deciding its class; ``--matrix=full`` runs every cell and
+``--matrix=sample`` the sample, whatever the variable says.  The cells every
+pull request must run are kept by three rules: a test that is not
+parametrised, every cell of a function named for a ``repro``, and every
+strict xfail.
+
+Also prints the session totals of ``test_distrust_corpus.py`` (proofs
+exercised, refuted, unattributed traps) when it ran.
 """
 
 from __future__ import annotations
@@ -16,6 +27,16 @@ import subprocess
 from typing import Any
 
 import pytest
+
+# The hooks of the `matrix` marker's sample.  pytest reads hooks from this
+# module's namespace, so importing them is what installs them.
+from tests.matrix_sample import (  # noqa: F401
+    pytest_addoption,
+    pytest_collection_modifyitems,
+    pytest_configure_node,
+    pytest_terminal_summary as _matrix_terminal_summary,
+    pytest_testnodedown,
+)
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -125,8 +146,14 @@ def _js_coverage_dir(tmp_path_factory: pytest.TempPathFactory):  # type: ignore[
             print("WARNING: JS coverage report timed out after 120s")
 
 
-def pytest_terminal_summary(terminalreporter: Any) -> None:
-    """Report the totals ``test_distrust_corpus.py`` recorded, in one line.
+def pytest_terminal_summary(
+    terminalreporter: Any, exitstatus: int, config: pytest.Config,
+) -> None:
+    """Report the matrix sample's lines (``tests/matrix_sample.py``), then
+    the totals ``test_distrust_corpus.py`` recorded, in one line.
+
+    One module can hold one hook of a name, so the sampler's is called
+    from here rather than imported under its own name.
 
     Each corpus test records its program's counts with ``record_property``
     under ``distrust_<count>`` names, and this sums each name over the
@@ -134,6 +161,7 @@ def pytest_terminal_summary(terminalreporter: Any) -> None:
     the controller under ``pytest -n``: a module-level counter would be one
     per worker.  Silent when the corpus test did not run.
     """
+    _matrix_terminal_summary(terminalreporter, exitstatus, config)
     totals: dict[str, int] = {}
     programs = 0
     for reports in terminalreporter.stats.values():

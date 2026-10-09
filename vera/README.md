@@ -74,7 +74,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `grammar.lark` | 344 | Parse | LALR(1) grammar definition | *(consumed by Lark)* |
 | `parser.py` | 220 | Parse | Lark frontend, error diagnosis | `parse()`, `parse_file()` |
 | `lexical.py` | 329 | Parse | Shared lexical scanning (comment spans, blanking) | `scan_comments()`, `blank_block_comments()` |
-| `transform.py` | 1,572 | Transform | Lark tree → AST transformer | `transform()` |
+| `transform.py` | 1,572 | Transform | Lark tree → AST transformer; a pipe is built as the call it stands for, and a non-call right operand is refused (E040) | `transform()` |
 | `ast.py` | 917 | Transform | Frozen dataclass AST nodes, source formatting | `Program`, `Node`, `Expr`, `format_expr` |
 | `types.py` | 1,124 | Type check | Semantic type representation | `Type`, `is_subtype()` |
 | `prelude.py` | 1,115 | Type check | Standard prelude — built-in ADT and combinator injection | `inject_prelude()`, `prelude_adt_names()`, `overridable_builtin_names()` |
@@ -258,6 +258,8 @@ Node
 ### Transformation
 
 `transform.py` is a Lark `Transformer` — its methods are named after grammar rules and called bottom-up. Each method receives already-transformed children and returns an AST node. Sentinel types (`_ForallVars`, `_Signature`, `_TypeParams`, `_WhereFns`, `_TupleDestruct`) aggregate intermediate results during transformation but are never exported in the final AST.
+
+**The pipe is a call by the time any phase sees it.** `a |> f(b)` is built here as the call it stands for, `f(a, b)` — a `FnCall`, `ConstructorCall`, `QualifiedCall` or `ModuleCall`, keeping the right operand's own node type — with the pipe's span and `piped=True`, a spelling-only field (`ast._spelling`) that takes no part in equality and that the formatter reads to print the pipe back. Beside it, `stage_span` (`ast._stage`) records where the call on the right of `|>` is written: the checker places a diagnostic about the call itself there (`TypeChecker._placement`, for what a call's own check reports and what a walk over the checked program reports about a call), so in a chain it names the stage at fault, while one about the call's value stays at the pipe. A right operand that is not a call is refused here (**E040**). There is no pipe operator in `BinOp`, so no walker over `BinaryExpr` can mistake a call for an operator.
 
 **Immutability:** All fields use tuples, not lists. All dataclasses are frozen. This means compiler phases never mutate the AST — they produce new data or collect diagnostics.
 
@@ -776,6 +778,7 @@ Every coded diagnostic has a unique code grouped by compiler phase (a few diagno
 | E020, E021, E023 | Parse: malformed comments (lexical) | `lexical.py` scan + `errors.py` factory |
 | E030, E031 | Parse: `old()`/`new()` applied to an expression | `errors.py` factory |
 | E032 | Parse: contract clause after the effects clause | `errors.py` factory |
+| E040 | Transform: a pipe whose right operand is not a call | `transform.py` |
 | E1xx | Type check: core + expressions | `checker/core.py`, `checker/expressions.py` |
 | E2xx | Type check: calls | `checker/calls.py` |
 | E3xx | Type check: control flow | `checker/control.py` |
@@ -783,7 +786,7 @@ Every coded diagnostic has a unique code grouped by compiler phase (a few diagno
 | E6xx | Codegen | `codegen/` |
 | E7xx | Testing | `tester.py` |
 
-The `ERROR_CODES` dict in `errors.py` maps every code to a short description (189 entries — 185 `E` codes and 4 `W` warning codes). Codes are stable across versions — they can be used for programmatic filtering, suppression, and documentation lookups. Formatted output shows the code in brackets: `[E130] Error at line 5, column 3:`.
+The `ERROR_CODES` dict in `errors.py` maps every code to a short description (190 entries — 186 `E` codes and 4 `W` warning codes). Codes are stable across versions — they can be used for programmatic filtering, suppression, and documentation lookups. Formatted output shows the code in brackets: `[E130] Error at line 5, column 3:`.
 
 ## Test Suite
 

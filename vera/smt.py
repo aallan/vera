@@ -445,8 +445,7 @@ def _adt_sort_key(
 
 
 def _same_call_site(a: ast.Node, b: ast.Node) -> bool:
-    """Whether two call nodes are one call site: by span, since a pipe is
-    re-desugared into a fresh node on every translation, and by identity for
+    """Whether two call nodes are one call site: by span, and by identity for
     a node with no span (#727's key, shared by every call-outcome list)."""
     if a.span is not None and b.span is not None:
         return a.span == b.span
@@ -1977,25 +1976,6 @@ class SmtContext:
         self, expr: ast.BinaryExpr, env: SlotEnv
     ) -> z3.ExprRef | None:
         """Translate binary operators."""
-        # Pipe: a |> f(x, y) → f(a, x, y)
-        if expr.op == ast.BinOp.PIPE:
-            if isinstance(expr.right, ast.FnCall):
-                desugared = ast.FnCall(
-                    name=expr.right.name,
-                    args=(expr.left,) + expr.right.args,
-                    span=expr.span,
-                )
-                return self._translate_call(desugared, env)
-            if isinstance(expr.right, ast.ModuleCall):
-                desugared_mc = ast.ModuleCall(
-                    path=expr.right.path,
-                    name=expr.right.name,
-                    args=(expr.left,) + expr.right.args,
-                    span=expr.span,
-                )
-                return self._translate_module_call(desugared_mc, env)
-            return None  # unsupported RHS  # pragma: no cover
-
         left = self.translate_expr(expr.left, env)
         right = self.translate_expr(expr.right, env)
         if left is None or right is None:
@@ -3191,11 +3171,9 @@ class SmtContext:
                 # translator.  Dedup keeps exactly one violation per
                 # (call site, precondition) regardless of how many
                 # passes visit it (#727).  The site is keyed by SPAN,
-                # not node identity: pipe translation desugars to a
-                # fresh synthetic FnCall on every pass, so the node
-                # object differs while the span (copied from the pipe
-                # expression) is stable.  Spanless nodes fall back to
-                # object identity rather than colliding on None.
+                # not node identity, as `_same_call_site` is.  Spanless
+                # nodes fall back to object identity rather than
+                # colliding on None.
                 already = any(
                     v.precondition is contract
                     and (

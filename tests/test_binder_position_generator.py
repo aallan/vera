@@ -60,6 +60,15 @@ import pytest
 import vera
 from vera import binders, carriers, narrowing
 
+# A generated class instrument (tests/matrix_sample.py): a pull request runs a
+# sample of its parametrised cells, and all of them when it changes this file or
+# a module that decides its class, here the registry of binder positions.
+pytestmark = pytest.mark.matrix(
+    decides=[
+        "vera/binders.py",
+    ],
+)
+
 _PKG_PARENT = str(Path(vera.__file__).resolve().parents[1])
 
 _NARROWING_KINDS = ("refine_bind", "nat_bind", "int_widen")

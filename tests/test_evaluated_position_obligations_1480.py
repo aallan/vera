@@ -31,6 +31,18 @@ from vera.parser import parse_to_ast
 from vera.runtime.traps import WasmTrapError
 from vera.verifier import verify
 
+# A generated class instrument (tests/matrix_sample.py): a pull request runs a
+# sample of its parametrised cells, and all of them when it changes this file or
+# a module that decides its class, here the verifier's obligation walks and the
+# built-in argument checks they obligate.
+pytestmark = pytest.mark.matrix(
+    decides=[
+        "vera/verifier.py",
+        "vera/smt.py",
+        "vera/builtin_domains.py",
+    ],
+)
+
 
 # =====================================================================
 # Helpers

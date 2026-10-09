@@ -1036,9 +1036,9 @@ private fn f(@Nat, @Nat -> @Nat)
     def test_pipe_call_arg_narrowing_obligated(self) -> None:
         """`(0 - 5) |> takesNat()` desugars to `takesNat(0 - 5)` — the piped
         left operand narrows @Int into a @Nat formal, so it must carry the
-        same `value >= 0` obligation as the direct call.  The walker keeps the
-        pipe as a `BinaryExpr`, so without explicit handling the narrowing was
-        missed entirely — a false 'verified' for a negative value (CR #756)."""
+        same `value >= 0` obligation as the direct call.  A walker that kept
+        the pipe as a `BinaryExpr` missed the narrowing — a false 'verified'
+        for a negative value (CR #756); the transform now writes the call."""
         _verify_err("""
 private fn takesNat(@Nat -> @Nat)
   requires(true)

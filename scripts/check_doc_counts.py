@@ -2412,7 +2412,9 @@ def collect_tests(root: Path) -> tuple[int, dict[str, int]] | str:
     pyproject.toml (#596 stress-marker registration) so the collection sees
     every test file including `test_stress.py`.  Without this override the
     per-file counter wouldn't see stress tests and would report them as a
-    missing row in TESTING.md.
+    missing row in TESTING.md.  `--matrix=full` does the same for the
+    class-instrument files marked `matrix`, whose cells a default collection
+    samples (tests/matrix_sample.py): the counts are each file's whole size.
 
     A collection that outlives `COLLECT_TIMEOUT_SECONDS` is a reason the tree
     could not be measured, like one that fails, so `main` reports it in one
@@ -2423,7 +2425,7 @@ def collect_tests(root: Path) -> tuple[int, dict[str, int]] | str:
         pytest_bin = Path("pytest")  # fall back to PATH
     try:
         result = subprocess.run(
-            [str(pytest_bin), "--co", "-q", "-o", "addopts="],
+            [str(pytest_bin), "--co", "-q", "-o", "addopts=", "--matrix=full"],
             capture_output=True,
             text=True,
             encoding="utf-8",

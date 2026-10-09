@@ -114,13 +114,13 @@ Comparison operators are non-associative: `a == b == c` is a syntax error. Chain
 | `-`    | Unary negation (prefix) | 9 | — |
 | `\|>`   | Pipe (function application) | 1 | Left |
 
-The pipe operator `|>` passes the left operand as the first argument to the right operand:
+The pipe operator `|>` passes the left operand as the first argument of the call on its right (§4.11.2):
 
 ```
-@Int.0 |> abs |> add(@Int.1)
+@Int.0 |> abs() |> add(@Int.1)
 ```
 
-is equivalent to:
+is the call:
 
 ```
 add(abs(@Int.0), @Int.1)

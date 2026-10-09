@@ -61,10 +61,11 @@ repos:
       # test that proves a change in the commit that makes it, so that is the
       # test a commit runs; the whole suite runs in CI.  Four workers rather
       # than `-n auto`, because several worktrees commit at once on one
-      # machine.
+      # machine.  --matrix=full: a commit that touches a class-instrument
+      # matrix runs every cell of it, not the pull-request gate's sample.
       - id: pytest-staged
         name: pytest (the test files this commit stages)
-        entry: .venv/bin/pytest -q -n 4
+        entry: .venv/bin/pytest -q -n 4 --matrix=full
         language: system
         files: '^tests/test_[^/]*\.py$'
         require_serial: true

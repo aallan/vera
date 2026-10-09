@@ -1166,54 +1166,57 @@ class ControlFlowMixin:
                 continue
             seen.add(id(node))
             name = getattr(node, "name", "get")
-            if why == "shadowed":
-                self._error(
-                    node,
-                    f"This '{name}' in a handler clause body cannot reach "
-                    f"its State<{cell.base}> cell: an enclosing "
-                    f"State<{cell.base}> handler shadows it.",
-                    rationale=(
-                        "An operation written in a handler clause body is "
-                        "the ENCLOSING context's (spec §7.5.2), so it reaches "
-                        "a State<" + cell.base + "> cell outside this "
-                        "handler.  Code generation lowers it where the "
-                        "clause is inlined, and its State intrinsics address "
-                        "only the innermost cell of one State type — here a "
-                        "State<" + cell.base + "> cell nested inside the "
-                        "one the operation means.  Outward cell addressing "
-                        "is not implemented yet (#1233)."
-                    ),
-                    fix=(
-                        "Nest handlers over different State types, move "
-                        "the operation into the handled body, or override "
-                        "this handler's own state with 'with @T = ...' on "
-                        "the clause instead of performing the operation."
-                    ),
-                    spec_ref='Chapter 7, Section 7.5.2 "Handler Semantics"',
-                    error_code="E339",
-                )
-            else:
-                self._error(
-                    node,
-                    f"This '{name}' re-enters enclosing handler clauses "
-                    f"more than {STATE_CLAUSE_INLINE_DEPTH_CAP} levels "
-                    f"deep.",
-                    rationale=(
-                        "A State operation in a clause body is the "
-                        "enclosing handler's (spec §7.5.2), so lowering it "
-                        "inlines that handler's clause, whose own "
-                        "operations inline the next one out.  The emitted "
-                        "code grows exponentially with that depth, and "
-                        "code generation stops at "
-                        f"{STATE_CLAUSE_INLINE_DEPTH_CAP} levels."
-                    ),
-                    fix=(
-                        "Reduce the handler nesting, or move the clause-body "
-                        "operations into the handled bodies."
-                    ),
-                    spec_ref='Chapter 7, Section 7.5.2 "Handler Semantics"',
-                    error_code="E339",
-                )
+            # About the call, after the checking: a piped operation's is
+            # placed at its stage (`_placement`).
+            with self._about_the_call(node):
+                if why == "shadowed":
+                    self._error(
+                        node,
+                        f"This '{name}' in a handler clause body cannot reach "
+                        f"its State<{cell.base}> cell: an enclosing "
+                        f"State<{cell.base}> handler shadows it.",
+                        rationale=(
+                            "An operation written in a handler clause body is "
+                            "the ENCLOSING context's (spec §7.5.2), so it reaches "
+                            "a State<" + cell.base + "> cell outside this "
+                            "handler.  Code generation lowers it where the "
+                            "clause is inlined, and its State intrinsics address "
+                            "only the innermost cell of one State type — here a "
+                            "State<" + cell.base + "> cell nested inside the "
+                            "one the operation means.  Outward cell addressing "
+                            "is not implemented yet (#1233)."
+                        ),
+                        fix=(
+                            "Nest handlers over different State types, move "
+                            "the operation into the handled body, or override "
+                            "this handler's own state with 'with @T = ...' on "
+                            "the clause instead of performing the operation."
+                        ),
+                        spec_ref='Chapter 7, Section 7.5.2 "Handler Semantics"',
+                        error_code="E339",
+                    )
+                else:
+                    self._error(
+                        node,
+                        f"This '{name}' re-enters enclosing handler clauses "
+                        f"more than {STATE_CLAUSE_INLINE_DEPTH_CAP} levels "
+                        f"deep.",
+                        rationale=(
+                            "A State operation in a clause body is the "
+                            "enclosing handler's (spec §7.5.2), so lowering it "
+                            "inlines that handler's clause, whose own "
+                            "operations inline the next one out.  The emitted "
+                            "code grows exponentially with that depth, and "
+                            "code generation stops at "
+                            f"{STATE_CLAUSE_INLINE_DEPTH_CAP} levels."
+                        ),
+                        fix=(
+                            "Reduce the handler nesting, or move the clause-body "
+                            "operations into the handled bodies."
+                        ),
+                        spec_ref='Chapter 7, Section 7.5.2 "Handler Semantics"',
+                        error_code="E339",
+                    )
 
     def _clause_cell(
         self, te: ast.TypeExpr,

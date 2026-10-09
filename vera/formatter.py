@@ -484,8 +484,11 @@ def _collect_interior_anchors(node: object, anchors: list[int]) -> None:
 # Operator precedence
 # =====================================================================
 
+#: A piped call (`a |> f(b)`, a call whose `piped` is set) prints as the
+#: loosest operator of all.
+_PIPE_PRECEDENCE = 1
+
 _PRECEDENCE: dict[BinOp, int] = {
-    BinOp.PIPE: 1,
     BinOp.IMPLIES: 2,
     BinOp.OR: 3,
     BinOp.AND: 4,
@@ -504,7 +507,7 @@ _PRECEDENCE: dict[BinOp, int] = {
 
 # Left-associative operators (right child needs parens at same prec)
 _LEFT_ASSOC: set[BinOp] = {
-    BinOp.PIPE, BinOp.OR, BinOp.AND,
+    BinOp.OR, BinOp.AND,
     BinOp.ADD, BinOp.SUB,
     BinOp.MUL, BinOp.DIV, BinOp.MOD,
 }
@@ -523,7 +526,8 @@ _NON_ASSOC: set[BinOp] = {
 # else — an operator expression, control flow, a lambda, a block —
 # must be re-wrapped: indexing is the tightest postfix level, so
 # `(x |> f())[0]` emitted without its parens reparses as
-# `x |> (f()[0])`, a different program.
+# `x |> (f()[0])`, a different program.  A piped call is a call node that
+# prints as an operator expression, so it is re-wrapped too (`_is_pipe`).
 _POSTFIX_SAFE = (
     IntLit, FloatLit, BoolLit, StringLit, InterpolatedString, UnitLit,
     ArrayLit, SlotRef, ResultRef, FnCall, ConstructorCall,
@@ -532,9 +536,23 @@ _POSTFIX_SAFE = (
 )
 
 
-def _needs_parens(child: Expr, parent_op: BinOp, side: str) -> bool:
+#: The call forms a pipe can name (spec §4.11.2).
+_CALL_FORMS = (FnCall, ConstructorCall, QualifiedCall, ModuleCall)
+
+
+def _is_pipe(expr: Expr) -> bool:
+    """Whether *expr* is a call written as a pipe, `args[0] |> f(...)`."""
+    return isinstance(expr, _CALL_FORMS) and expr.piped and bool(expr.args)
+
+
+def _needs_parens(child: Expr, parent_op: BinOp, side: str, *,
+                  pipes: bool = True) -> bool:
     """Whether *child* needs parentheses when it appears as *side*
-    ('left' or 'right') of *parent_op*."""
+    ('left' or 'right') of *parent_op*.  *pipes* says whether a piped call
+    prints as the pipe (see :meth:`Formatter._shows_pipe`)."""
+    if pipes and _is_pipe(child):
+        # Looser than every binary operator: `(a |> f()) + 1`.
+        return _PIPE_PRECEDENCE < _PRECEDENCE[parent_op]
     if not isinstance(child, BinaryExpr):
         return False
     parent_prec = _PRECEDENCE[parent_op]
@@ -577,9 +595,13 @@ class Formatter:
         # `vera.types.structural_type_key`, where the rendering NAMES a
         # State cell: two predicates rendering alike is two cells sharing
         # one host cell behind a check that typed them apart (#1218's
-        # failure mode, through the renderer that fixed it).  Set only by
-        # :func:`format_expr_canonical`; `format_source` never turns it on, so
-        # canonical output is untouched.
+        # failure mode, through the renderer that fixed it).  The converse
+        # holds for a piped call: the `piped` flag is spelling, outside node
+        # equality, so the checker holds the two spellings of a call to be
+        # one predicate, and structural mode prints the call either way
+        # (`_shows_pipe`).  Set only by :func:`format_expr_canonical`;
+        # `format_source` never turns it on, so canonical output is
+        # untouched.
         self._structural = structural
         # Source lines holding only whitespace, from
         # :func:`blank_source_lines`.  Defaulted so a caller that has an
@@ -1639,7 +1661,8 @@ class Formatter:
             return self._fmt_unary(expr)
         if isinstance(expr, IndexExpr):
             coll = self._fmt_expr(expr.collection)
-            if not isinstance(expr.collection, _POSTFIX_SAFE):
+            if (not isinstance(expr.collection, _POSTFIX_SAFE)
+                    or self._shows_pipe(expr.collection)):
                 # Parenthesization is dropped by the parser, so it must
                 # be re-derived here exactly as `_fmt_binary` does for
                 # operator children (see _POSTFIX_SAFE).
@@ -1648,6 +1671,8 @@ class Formatter:
             return f"{coll}[{idx}]"
 
         # Calls
+        if isinstance(expr, _CALL_FORMS) and self._shows_pipe(expr):
+            return self._fmt_pipe(expr)
         if isinstance(expr, FnCall):
             args = ", ".join(self._fmt_expr(a) for a in expr.args)
             return f"{expr.name}({args})"
@@ -1729,19 +1754,47 @@ class Formatter:
         left = self._fmt_expr(expr.left)
         right = self._fmt_expr(expr.right)
 
-        if _needs_parens(expr.left, expr.op, "left"):
+        pipes = not self._structural
+        if _needs_parens(expr.left, expr.op, "left", pipes=pipes):
             left = f"({left})"
-        if _needs_parens(expr.right, expr.op, "right"):
+        if _needs_parens(expr.right, expr.op, "right", pipes=pipes):
             right = f"({right})"
 
         return f"{left} {expr.op.value} {right}"
+
+    def _shows_pipe(self, expr: Expr) -> bool:
+        """Whether *expr* prints as a pipe: a piped call, outside STRUCTURAL
+        mode.  The spelling flag takes no part in node equality, so the two
+        spellings of one call are one predicate to the checker, and the
+        structural rendering, which names a State cell after its type
+        (:func:`vera.types.structural_type_key`), must not tell them apart
+        either: it prints the call."""
+        return not self._structural and _is_pipe(expr)
+
+    def _fmt_pipe(
+        self, expr: FnCall | ConstructorCall | QualifiedCall | ModuleCall,
+    ) -> str:
+        """A piped call: its first argument, `|>`, and the call written
+        without it.  The left operand never needs parentheses — every other
+        operator binds tighter, and a pipe on the left is the chain's own
+        left associativity — so it prints as it stands."""
+        left = self._fmt_expr(expr.args[0])
+        rest = ", ".join(self._fmt_expr(a) for a in expr.args[1:])
+        if isinstance(expr, QualifiedCall):
+            callee = f"{expr.qualifier}.{expr.name}"
+        elif isinstance(expr, ModuleCall):
+            callee = f"{'.'.join(expr.path)}::{expr.name}"
+        else:
+            callee = expr.name
+        return f"{left} |> {callee}({rest})"
 
     def _fmt_unary(self, expr: UnaryExpr) -> str:
         operand = self._fmt_expr(expr.operand)
 
         # Need parens if operand is binary or is a unary neg (avoid --)
         needs = False
-        if isinstance(expr.operand, BinaryExpr):
+        if (isinstance(expr.operand, BinaryExpr)
+                or self._shows_pipe(expr.operand)):
             needs = True
         elif (isinstance(expr.operand, UnaryExpr)
               and expr.op == UnaryOp.NEG
@@ -1977,9 +2030,12 @@ def format_expr_canonical(expr: Expr, *, structural: bool = False) -> str:
     except at the two sites where canonical form CHOOSES between AST
     shapes the checker holds apart — a match arm's redundant block wrapper
     and a handler clause's braces (see :meth:`Formatter._fmt_arm_body` and
-    :meth:`Formatter._fmt_handler_clause`).  Both spellings stay
-    re-parseable, so the left-inverse argument below holds in either mode;
-    only in structural mode does it also hold *between* those two shapes.
+    :meth:`Formatter._fmt_handler_clause`) — and at a piped call, which the
+    checker does NOT hold apart from the call written out, and which
+    structural mode therefore prints as that call
+    (:meth:`Formatter._shows_pipe`).  Both spellings stay re-parseable, so
+    the left-inverse argument below holds in either mode; only in
+    structural mode does it also hold *between* those two shapes.
     :func:`vera.types.structural_type_key` passes ``structural=True``,
     because there the rendering NAMES a State cell and two predicates
     rendering alike is two cells sharing one.  ``vera fmt`` does not, so

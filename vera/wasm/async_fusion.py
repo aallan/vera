@@ -46,8 +46,8 @@ def _expr_is_call_free(node: ast.Node) -> bool:
     Conservative purity-by-shape: literals, slot references, operators,
     and constructors qualify; any ``FnCall`` / ``QualifiedCall`` /
     ``AnonFn`` disqualifies (a lambda literal is inert, but rejecting it
-    costs only a missed fusion, never a false W002; pipes desugar to
-    ``FnCall`` before codegen, so they are covered transitively).
+    costs only a missed fusion, never a false W002; a pipe is the call it
+    stands for, written as one by the transform, so it is covered too).
     """
     if isinstance(node, (ast.FnCall, ast.QualifiedCall, ast.AnonFn)):
         return False
