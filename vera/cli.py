@@ -2054,6 +2054,21 @@ def main() -> None:
     # for `version`, `builtins`, `effects` and `errors`, none of which reads
     # it either.  The flag reaching a command that cannot honour it should
     # always be an error, whatever the command needs on its command line.
+    if "--timeout-ms" in args and args[0] != "verify":
+        _tm_msg = (
+            f"--timeout-ms is only accepted by `vera verify`, not "
+            f"`vera {args[0]}`. Set VERA_Z3_TIMEOUT_MS in the environment "
+            f"to reach `vera test` and the language server."
+        )
+        if "--json" in args:
+            print(json.dumps({"ok": False, "file": "",
+                              "diagnostics": [{"severity": "error",
+                                               "description": _tm_msg}]},
+                             indent=2))
+        else:
+            print(f"Error: {_tm_msg}", file=sys.stderr)
+        sys.exit(1)
+
     # `--reconcile` is verify-only for the same reason: a command that cannot
     # honour it must refuse it rather than ignore it.
     if "--reconcile" in args and args[0] != "verify":
@@ -2068,21 +2083,6 @@ def main() -> None:
                              indent=2))
         else:
             print(f"Error: {_rc_msg}", file=sys.stderr)
-        sys.exit(1)
-
-    if "--timeout-ms" in args and args[0] != "verify":
-        _tm_msg = (
-            f"--timeout-ms is only accepted by `vera verify`, not "
-            f"`vera {args[0]}`. Set VERA_Z3_TIMEOUT_MS in the environment "
-            f"to reach `vera test` and the language server."
-        )
-        if "--json" in args:
-            print(json.dumps({"ok": False, "file": "",
-                              "diagnostics": [{"severity": "error",
-                                               "description": _tm_msg}]},
-                             indent=2))
-        else:
-            print(f"Error: {_tm_msg}", file=sys.stderr)
         sys.exit(1)
 
     # Handle version before the length check — these need no file argument.

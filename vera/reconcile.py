@@ -101,11 +101,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, get_args
 
 from vera import ast, narrowing
-from vera.errors import Diagnostic, SourceLocation
+from vera.errors import Diagnostic, SourceLocation, VeraError
 from vera.obligations.core import ObligationKind, ProofObligation
 from vera.trap_registry import TRAP_EMITTERS, EmittedCheck
 
 if TYPE_CHECKING:
+    from vera.checker.core import CheckArtifacts
     from vera.codegen.api import CompileResult
     from vera.resolver import ResolvedModule
     from vera.verifier import VerifyResult
@@ -241,7 +242,7 @@ Span4 = tuple[int, int, int, int]
 class _Index:
     """Every spanned node of the programs the run covered, by file and span,
     with its parent, the function declaration it sits in, and the top-level
-    declaration it belongs to."""
+    declaration it belongs to; and, per file, its top-level functions."""
 
     def __init__(self) -> None:
         self.by_span: dict[tuple[str, Span4], list[ast.Node]] = {}
@@ -252,16 +253,48 @@ class _Index:
         #: The files of the entry program (every top-level declaration in
         #: them is one this run verified).
         self.entry_files: set[str] = set()
+        #: file -> name -> the top-level functions it declares by that name.
+        self.top_fns: dict[str, dict[str, list[ast.FnDecl]]] = {}
+        #: A resolved module's path (`lib`, `vera.math`) -> its file.
+        self.module_files: dict[tuple[str, ...], str] = {}
+        #: The files of the modules the entry program imports directly: the
+        #: ones whose public names a bare call there can reach (§8.6.4).
+        self.direct_files: set[str] = set()
+        self._keys: dict[str, str | None] = {}
+        self._closures: dict[tuple[int, bool], set[int]] = {}
+
+    def key(self, file: str | None) -> str | None:
+        """:func:`_file_key`, once per spelling."""
+        if not file:
+            return None
+        if file not in self._keys:
+            self._keys[file] = _file_key(file)
+        return self._keys[file]
+
+    def closure(self, node: ast.Node, *, stores: bool = False) -> set[int]:
+        """:func:`_flow_closure`, once per node."""
+        memo = (id(node), stores)
+        if memo not in self._closures:
+            self._closures[memo] = _flow_closure(node, stores=stores)
+        return self._closures[memo]
 
     def add(self, file: str | None, program: ast.Program, *,
-            entry: bool) -> None:
-        key = _file_key(file)
+            entry: bool, module_path: tuple[str, ...] | None = None,
+            direct: bool = False) -> None:
+        key = self.key(file)
         if key is None:
             return
         if entry:
             self.entry_files.add(key)
+        if module_path is not None:
+            self.module_files[module_path] = key
+        if direct:
+            self.direct_files.add(key)
+        by_name = self.top_fns.setdefault(key, {})
         for tld in program.declarations:
             decl = tld.decl
+            if isinstance(decl, ast.FnDecl):
+                by_name.setdefault(decl.name, []).append(decl)
             self._walk(key, decl, None, None, decl)
 
     def _walk(self, key: str, node: ast.Node, parent: ast.Node | None,
@@ -285,7 +318,7 @@ class _Index:
             self._walk(key, child, node, fn, top)
 
     def nodes_at(self, file: str | None, span: Span4) -> list[ast.Node]:
-        key = _file_key(file)
+        key = self.key(file)
         if key is None:
             return []
         return self.by_span.get((key, span), [])
@@ -419,10 +452,10 @@ def _enclosing_match(index: _Index, pattern: ast.Node) -> ast.MatchExpr | None:
 
 def _call_of_argument(
     index: _Index, node: ast.Node,
-) -> tuple[str, int] | None:
-    """(callee name, argument position) when *node* is an argument of a
-    call, or a value one stores or joins (a constructor's field, an array
-    element, an arm), read through the pipe's desugaring (``a |> f(x)`` is
+) -> tuple[ast.FnCall | ast.ModuleCall, int] | None:
+    """(the call, argument position) when *node* is an argument of a call,
+    or a value one stores or joins (a constructor's field, an array element,
+    an arm), read through the pipe's desugaring (``a |> f(x)`` is
     ``f(a, x)``, ``narrowing``'s and code generation's one reading of it)."""
     cur: ast.Node | None = node
     while cur is not None:
@@ -431,12 +464,12 @@ def _call_of_argument(
             for k, arg in enumerate(parent.args):
                 if arg is cur:
                     piped = _pipe_of_call(index, parent)
-                    return parent.name, k + (1 if piped else 0)
+                    return parent, k + (1 if piped else 0)
             return None
         if (isinstance(parent, ast.BinaryExpr)
                 and parent.op == ast.BinOp.PIPE and cur is parent.left
                 and isinstance(parent.right, (ast.FnCall, ast.ModuleCall))):
-            return parent.right.name, 0
+            return parent.right, 0
         cur = _store_parent(index, cur)
     return None
 
@@ -466,15 +499,54 @@ def _pipe_of_call(index: _Index, call: ast.Node) -> bool:
             and parent.op == ast.BinOp.PIPE and call is parent.right)
 
 
-def _callee_name(node: ast.Node) -> str | None:
-    """The name a call site calls: the call itself, or the stage of a pipe
+def _call_node(node: ast.Node) -> ast.FnCall | ast.ModuleCall | None:
+    """The call a call site makes: the call itself, or the stage of a pipe
     (whose desugared call keeps the pipe's span)."""
     if isinstance(node, (ast.FnCall, ast.ModuleCall)):
-        return node.name
+        return node
     if (isinstance(node, ast.BinaryExpr) and node.op == ast.BinOp.PIPE
             and isinstance(node.right, (ast.FnCall, ast.ModuleCall))):
-        return node.right.name
+        return node.right
     return None
+
+
+def _reached_decl(
+    index: _Index, call: ast.FnCall | ast.ModuleCall,
+) -> ast.FnDecl | None:
+    """The declaration *call* reaches, or None when it reaches none of the
+    program's (a built-in, a prelude function, an ambiguous name).
+
+    A module call reaches the function of that name in the module its path
+    names.  A bare call reaches, in order, a `where` helper of a function
+    on its enclosing chain (or that function itself, recursing), its own
+    file's top-level function, then the one top-level function of that name
+    among the modules the call can see — for the entry program its direct
+    imports (§8.6.4), for a module's body the other modules.  So two
+    declarations sharing a name — a local function and an imported one, two
+    functions' helpers — never stand for each other.
+    """
+    if isinstance(call, ast.ModuleCall):
+        key = index.module_files.get(tuple(call.path))
+        found = index.top_fns.get(key, {}).get(call.name, []) if key else []
+        return found[0] if len(found) == 1 else None
+    fn = index.fn_of.get(id(call))
+    while fn is not None:
+        for helper in fn.where_fns or ():
+            if helper.name == call.name:
+                return helper
+        if fn.name == call.name:
+            return fn
+        owner = index.parent.get(id(fn))
+        fn = owner if isinstance(owner, ast.FnDecl) else None
+    key = index.file_of.get(id(call))
+    local = index.top_fns.get(key, {}).get(call.name, []) if key else []
+    if local:
+        return local[0] if len(local) == 1 else None
+    visible = (index.direct_files if key in index.entry_files
+               else set(index.top_fns) - index.entry_files - {key})
+    found = [decl for other in sorted(visible)
+             for decl in index.top_fns.get(other, {}).get(call.name, [])]
+    return found[0] if len(found) == 1 else None
 
 
 # =====================================================================
@@ -517,8 +589,8 @@ def _answers(
     *record* (whose node is *rnode*)."""
     if record.kind not in check.obligations:
         return False
-    rfile = _file_key(record.file)
-    same_file = rfile is not None and rfile == _file_key(check.file)
+    rfile = index.key(record.file)
+    same_file = rfile is not None and rfile == index.key(check.file)
     if same_file and _span_of(record) == _span_of(check):
         return True
     if rnode is None:
@@ -529,11 +601,11 @@ def _answers(
     if where == "parameter":
         return _answers_from_parameter(index, located, rnode)
     if where == "return":
-        return _answers_from_return(located, rnode)
+        return _answers_from_return(index, located, rnode)
     if where == "binder":
-        return same_file and _answers_from_binder(located, rnode)
+        return same_file and _answers_from_binder(index, located, rnode)
     if where == "value":
-        return same_file and _answers_from_value(located, record, rnode)
+        return same_file and _answers_from_value(index, located, record, rnode)
     if where == "prelude":
         return _answers_from_prelude(check, rnode)
     return False  # pragma: no cover — every class is handled above
@@ -563,8 +635,9 @@ def _answers_from_clause(
     # located at the call and quotes the precondition it is about.
     if record.kind == "call_pre" and isinstance(clause, ast.Requires):
         fn = index.fn_of.get(id(clause))
-        callee = _callee_name(rnode)
-        return (fn is not None and callee == fn.name
+        call = _call_node(rnode)
+        return (fn is not None and call is not None
+                and _reached_decl(index, call) is fn
                 and record.expr_text == ast.format_expr(clause.expr))
     return False
 
@@ -574,17 +647,22 @@ def _answers_from_parameter(
 ) -> bool:
     # A refined parameter is checked once, in its function's prologue
     # (`codegen/functions.py` `at=param_te`), for every caller: the runtime
-    # half of the narrowing recorded at each call's argument.  Matched by
-    # the callee's declared name; a closure's parameter has no name to be
-    # called by, so it answers no call site.
+    # half of the narrowing recorded at each call's argument, for the calls
+    # that reach that function (`_reached_decl`); a closure's parameter has
+    # no declaration a call names, so it answers no call site.
     owner = located.owner
     if not isinstance(owner, ast.FnDecl):
         return False
-    call = _call_of_argument(index, rnode)
-    return call is not None and call == (owner.name, located.position)
+    found = _call_of_argument(index, rnode)
+    if found is None:
+        return False
+    call, position = found
+    return position == located.position and _reached_decl(index, call) is owner
 
 
-def _answers_from_return(located: _Located, rnode: ast.Node) -> bool:
+def _answers_from_return(
+    index: _Index, located: _Located, rnode: ast.Node,
+) -> bool:
     # A refined return is checked once, in the epilogue
     # (`codegen/contracts.py` `at=decl.return_type`), on the value the body
     # returns: the narrowing the verifier records at the body or at a value
@@ -592,10 +670,12 @@ def _answers_from_return(located: _Located, rnode: ast.Node) -> bool:
     owner = located.owner
     if not isinstance(owner, (ast.FnDecl, ast.AnonFn)):
         return False
-    return id(rnode) in _flow_closure(owner.body, stores=True)
+    return id(rnode) in index.closure(owner.body, stores=True)
 
 
-def _answers_from_binder(located: _Located, rnode: ast.Node) -> bool:
+def _answers_from_binder(
+    index: _Index, located: _Located, rnode: ast.Node,
+) -> bool:
     # A destructure or a pattern guards what it binds (`wasm/data.py`
     # `at=te` / `at=pattern` / `at=sub_pat`, and a refined statement's guard
     # at the statement, `_emit_bind_refine_guard(..., stmt, ...)`); the
@@ -604,21 +684,22 @@ def _answers_from_binder(located: _Located, rnode: ast.Node) -> bool:
     # binds, when the value is a construction it can see into.
     owner = located.owner
     if isinstance(owner, ast.LetStmt):
-        return id(rnode) in _flow_closure(owner.value, stores=True)
+        return id(rnode) in index.closure(owner.value, stores=True)
     if isinstance(owner, ast.LetDestruct):
         value: ast.Node = owner.value
         if (located.position >= 0
                 and isinstance(value, ast.ConstructorCall)
                 and len(value.args) == len(owner.type_bindings)):
             value = value.args[located.position]
-        return id(rnode) in _flow_closure(value, stores=True)
+        return id(rnode) in index.closure(value, stores=True)
     if isinstance(owner, ast.MatchExpr):
-        return id(rnode) in _flow_closure(owner.scrutinee, stores=True)
+        return id(rnode) in index.closure(owner.scrutinee, stores=True)
     return False
 
 
 def _answers_from_value(
-    located: _Located, record: ProofObligation, rnode: ast.Node,
+    index: _Index, located: _Located, record: ProofObligation,
+    rnode: ast.Node,
 ) -> bool:
     cnode = located.node
     assert cnode is not None  # noqa: S101 — a value is always located
@@ -626,13 +707,13 @@ def _answers_from_value(
     # leaves`, the per-arm widenings), or a whole body guarded where the
     # verifier records an arm: one value either way, through the joins
     # `narrowing.flow_arms` names.
-    if id(cnode) in _flow_closure(rnode) or id(rnode) in _flow_closure(cnode):
+    if id(cnode) in index.closure(rnode) or id(rnode) in index.closure(cnode):
         return True
     # A `@Nat` operand an `@Int` operation widens is guarded where it is
     # evaluated (`narrowing.widened_nat_operands`).
     if record.kind == "nat_to_int_coerce" and isinstance(rnode, ast.BinaryExpr):
-        return (id(cnode) in _flow_closure(rnode.left)
-                or id(cnode) in _flow_closure(rnode.right))
+        return (id(cnode) in index.closure(rnode.left)
+                or id(cnode) in index.closure(rnode.right))
     return False
 
 
@@ -641,7 +722,8 @@ def _answers_from_prelude(check: EmittedCheck, rnode: ast.Node) -> bool:
     # is answered by the check in its body (`float_to_string`'s truncation,
     # which the verifier obligates at the call, `_FLOAT_CONVERSIONS`).
     base = check.function.split("$", 1)[0]
-    return _callee_name(rnode) == base
+    call = _call_node(rnode)
+    return call is not None and call.name == base
 
 
 # =====================================================================
@@ -720,7 +802,8 @@ def join(
     index = _Index()
     index.add(file, program, entry=True)
     for module in resolved_modules:
-        index.add(str(module.file_path), module.program, entry=False)
+        index.add(str(module.file_path), module.program, entry=False,
+                  module_path=tuple(module.path), direct=module.direct)
 
     records = _Records(index, verify_result.obligations)
     checks = list(compile_result.emitted_checks)
@@ -735,6 +818,11 @@ def join(
             if top is not None:
                 records_by_top[id(top)] = records_by_top.get(id(top), 0) + 1
 
+    # A check answers only records of the kinds its emitter's row names.
+    by_kind: dict[str, list[ProofObligation]] = {}
+    for record in records.all:
+        by_kind.setdefault(record.kind, []).append(record)
+
     answered: dict[int, list[EmittedCheck]] = {}
     for check in checks:
         located = _locate(index, check)
@@ -744,7 +832,9 @@ def join(
                 "no node of the program stands at the check's span"))
             continue
         answering = [
-            record for record in records.all
+            record
+            for kind in check.obligations
+            for record in by_kind.get(kind, ())
             if _answers(index, located, check, record,
                         records.located(record))
         ]
@@ -983,17 +1073,17 @@ def compile_for_reconcile(
     source: str,
     file: str,
     resolved_modules: list[ResolvedModule],
-    artifacts: object,
+    artifacts: CheckArtifacts,
 ) -> CompileResult:
     """Compile *program* exactly as ``vera compile`` does, with the
-    checker's artifacts *artifacts* (a ``CheckArtifacts``)."""
+    checker's *artifacts*."""
     from vera.codegen import compile as codegen_compile
 
     return codegen_compile(
         program, source=source, file=file, resolved_modules=resolved_modules,
-        expr_semantic_types=getattr(artifacts, "expr_semantic_types", None),
-        expr_target_types=getattr(artifacts, "expr_target_types", None),
-        module_artifacts=getattr(artifacts, "module_artifacts", None),
+        expr_semantic_types=artifacts.expr_semantic_types,
+        expr_target_types=artifacts.expr_target_types,
+        module_artifacts=artifacts.module_artifacts,
     )
 
 
@@ -1011,7 +1101,13 @@ def reconcile_file(
     p = Path(path)
     run = ReconcileRun(path=p)
     source = p.read_text(encoding="utf-8")
-    program = transform(parse(source, file=str(p)))
+    try:
+        program = transform(parse(source, file=str(p)))
+    except VeraError as exc:
+        # A parse or transform refusal is the program's own: a stop before
+        # the join, as `vera verify` reports it, never an exception.
+        run.check_errors = [exc.diagnostic.description]
+        return run
     resolver = ModuleResolver(_root=p.parent)
     resolved = resolver.resolve_imports(program, p)
     run.program, run.resolved_modules = program, resolved

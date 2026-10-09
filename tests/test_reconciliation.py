@@ -599,6 +599,131 @@ def test_a_parameter_check_answers_a_component_of_the_argument(
     assert not any(m.function == "f" for m in run.mismatches), run.mismatches
 
 
+def test_a_program_that_does_not_parse_stops_before_the_join(
+    tmp_path: Path,
+) -> None:
+    """The pipeline is total: a parse error is the program's own refusal,
+    reported as a stop, never an exception out of the gate."""
+    path = tmp_path / "unparsable.vera"
+    path.write_text("public fn f(@Int -> @Int)\n  requires(\n", encoding="utf-8")
+    run = reconcile_file(path)
+    assert run.check_errors and run.reconciliation is None
+
+
+_SAME_NAMED_LIB = """\
+module lib;
+
+type Pos = { @Int | @Int.0 > 0 };
+
+public fn f(@Pos -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  7
+}
+"""
+
+_SAME_NAMED_MAIN = """\
+import lib(f);
+
+type Pos = { @Int | @Int.0 > 0 };
+
+private fn f(@Pos -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  8
+}
+
+public fn g(@Float64 -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  lib::f(float_to_int(@Float64.0))
+}
+
+public fn h(@Pos -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  f(@Pos.0)
+}
+"""
+
+_SAME_NAMED_HELPERS = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+public fn a(@Float64 -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  g(float_to_int(@Float64.0))
+}
+where {
+  fn g(@Pos -> @Int)
+    requires(true)
+    ensures(true)
+    effects(pure)
+  {
+    7
+  }
+}
+
+public fn b(@Pos -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  g(@Pos.0)
+}
+where {
+  fn g(@Pos -> @Int)
+    requires(true)
+    ensures(true)
+    effects(pure)
+  {
+    8
+  }
+}
+"""
+
+
+@pytest.mark.parametrize(("files", "entry", "callee"), [
+    pytest.param({"lib.vera": _SAME_NAMED_LIB, "main.vera": _SAME_NAMED_MAIN},
+                 "main.vera", "mod$lib$f", id="a module call beside a local f"),
+    pytest.param({"helpers.vera": _SAME_NAMED_HELPERS}, "helpers.vera",
+                 "a$where$g", id="two functions' helpers named g"),
+])
+def test_a_call_answers_only_the_declaration_it_reaches(
+    tmp_path: Path, files: dict[str, str], entry: str, callee: str,
+) -> None:
+    """A parameter's prologue check answers the calls that reach ITS
+    function, not every call to a function of the same name: with the
+    reached function's check gone, the argument's record must be
+    unguarded, whatever a same-named function elsewhere checks."""
+    for name, source in files.items():
+        (tmp_path / name).write_text(source, encoding="utf-8")
+    run = _run(tmp_path / entry)
+    assert run.reconciliation is not None
+    record = next(r for r in run.verify_result.obligations  # type: ignore[union-attr]
+                  if r.kind == "refine_bind" and r.status == "tier3")
+    reached = [c for c in run.compile_result.emitted_checks  # type: ignore[union-attr]
+               if c.function == callee and "refine_bind" in c.obligations]
+    assert reached, run.compile_result.emitted_checks  # type: ignore[union-attr]
+    checks = [c for c in run.compile_result.emitted_checks  # type: ignore[union-attr]
+              if c not in reached]
+    result = _rejoin(run, checks=checks)
+    assert any(m.kind == "recorded_unguarded" and m.obligation == "refine_bind"
+               and (m.line, m.column) == (record.line, record.column)
+               for m in result.mismatches), [
+        (r.kind, r.line, r.column, c.function) for r, c in result.pairs]
+
+
 def test_a_tier3_unguarded_record_does_not_account_for_a_check() -> None:
     """A record saying its site has no runtime check contradicts the check
     standing there."""
