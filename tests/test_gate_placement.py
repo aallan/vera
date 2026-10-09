@@ -13,7 +13,10 @@ themselves:
 - ``.github/workflows/ci.yml``: ``pull_request`` and ``push`` reach ``main``
   unfiltered, and a nightly ``schedule`` runs on it.  On a pull request, on
   the push event a merge that raises ``[project].version`` produces (a
-  release) and on the nightly run, every matrix cell runs the whole suite.
+  release) and on the nightly run, every matrix cell runs the whole suite:
+  on a pull request with each class-instrument matrix sampled, bar the ones
+  whose file or deciding module it changes, which the plan job lists
+  (tests/matrix_sample.py), and elsewhere with every cell.
   On the push event any other merge produces, the pull request's own run
   has already tested that tree on every cell (strict branch protection), so
   the matrix stands down and the coverage job runs the whole suite once,
@@ -452,7 +455,9 @@ def _invokes(steps: list[dict[str, Any]], *command: str) -> list[dict[str, Any]]
 # event a merged pull request produces on main (whether or not the merge
 # raised `[project].version`, which the plan job answers), and the nightly
 # schedule.  `needs.plan.outputs.release` is empty where the plan job's step
-# does not run: it reads the version on a push only.
+# does not run: it reads the version on a push only.  Its other answer,
+# `needs.plan.outputs.changed`, is the files a pull request changes that a
+# class-instrument matrix can be decided by, and empty on every other event.
 _WORKFLOW = {"github.workflow": "CI"}
 EVENTS = {
     "pull request into main": {
@@ -461,6 +466,7 @@ EVENTS = {
         "github.base_ref": "main",
         "github.ref": "refs/pull/1/merge",
         "needs.plan.outputs.release": "",
+        "needs.plan.outputs.changed": "vera/narrowing.py\ntests/test_one_classifier_1503.py",
     },
     "push of a merge into main": {
         **_WORKFLOW,
@@ -469,6 +475,7 @@ EVENTS = {
         "github.ref": "refs/heads/main",
         "github.event.before": "1" * 40,
         "needs.plan.outputs.release": "false",
+        "needs.plan.outputs.changed": "",
     },
     "push of a release merge into main": {
         **_WORKFLOW,
@@ -477,6 +484,7 @@ EVENTS = {
         "github.ref": "refs/heads/main",
         "github.event.before": "2" * 40,
         "needs.plan.outputs.release": "true",
+        "needs.plan.outputs.changed": "",
     },
     "nightly schedule": {
         **_WORKFLOW,
@@ -485,6 +493,7 @@ EVENTS = {
         "github.ref": "refs/heads/main",
         "github.sha": "3" * 40,
         "needs.plan.outputs.release": "",
+        "needs.plan.outputs.changed": "",
     },
 }
 
@@ -613,6 +622,10 @@ class TestThePreCommitHookIsFast:
         hook = next(h for h in _hooks() if h["id"] == "pytest-staged")
         assert hook.get("pass_filenames", True) is True
         assert hook.get("require_serial") is True
+        # A commit that touches a class-instrument matrix runs all of it, not
+        # the pull-request gate's sample (tests/matrix_sample.py).
+        assert _runs_pytest(hook["entry"]) is not None
+        assert "--matrix=full" in (_runs_pytest(hook["entry"]) or []), hook["entry"]
         for path in ("tests/test_parser.py", "tests/test_gate_placement.py"):
             assert re.search(hook["files"], path), path
         for path in (
@@ -714,7 +727,12 @@ def _matrix_cells(job: dict[str, Any]) -> list[dict[str, object]]:
 
 
 # The arguments that do not narrow what the suite runs.  Anything else on a
-# CI pytest command must be classified here, deliberately.
+# CI pytest command must be classified here, deliberately.  `--matrix=full`
+# runs every cell of the class-instrument matrices, so it narrows nothing;
+# `--matrix=sample` narrows them to their sample whatever changed, and is
+# left for the caller to refuse.  A command with no `--matrix` samples them
+# too, bar the files `VERA_MATRIX_CHANGED` puts in full, so where that
+# default is allowed is `_matrix_mode`'s question, not this one's.
 def _narrowing(args: list[str]) -> list[str]:
     out: list[str] = []
     skip_value = False
@@ -729,8 +747,18 @@ def _narrowing(args: list[str]) -> list[str]:
             continue
         if re.fullmatch(r"--cov(-report|-fail-under)?=\S+", arg):
             continue
+        if arg == "--matrix=full":
+            continue
         out.append(arg)
     return out
+
+
+def _matrix_mode(args: list[str]) -> str | None:
+    """How a pytest command runs the class-instrument matrices
+    (tests/matrix_sample.py): `full`, `sample`, or None for the default,
+    the sample bar the files the changed-file list puts in full."""
+    modes = [arg.split("=", 1)[1] for arg in args if arg.startswith("--matrix=")]
+    return modes[-1] if modes else None
 
 
 class TestCiRunsEveryGate:
@@ -806,6 +834,20 @@ class TestCiRunsEveryGate:
                 f"{cell}: `{step['run']}` narrows the suite with"
                 f" {_narrowing(args)}"
             )
+            # The class-instrument matrices (tests/matrix_sample.py): a pull
+            # request runs each one's sample, and every cell of one whose
+            # file or deciding module it changes, from the plan job's list;
+            # the release push and the nightly run run every cell.
+            pull_request = EVENTS[event]["github.event_name"] == "pull_request"
+            want = None if pull_request else "full"
+            assert _matrix_mode(args) == want, (
+                f"{cell}: `{step['run']}` runs the matrices"
+                f" {_matrix_mode(args) or 'by default'}, not {want or 'by default'}"
+            )
+            if pull_request:
+                assert (step.get("env") or {}).get("VERA_MATRIX_CHANGED") == (
+                    "${{ needs.plan.outputs.changed }}"
+                ), f"{cell}: the suite is not handed the plan job's list of changed files"
             # Instrumentation costs a cell about 2.5x; the coverage job pays
             # it, after the merge, so no cell of the matrix does (#1624).
             assert not any(arg.startswith("--cov") for arg in args), (
@@ -842,6 +884,10 @@ class TestCiRunsEveryGate:
         )
         assert "--cov=vera" in args, args
         assert any(arg.startswith("--cov-fail-under=") for arg in args), args
+        # Every cell of the class-instrument matrices: the push event of a
+        # merge that keeps the version runs no matrix cell, so this run is
+        # the one place their every cell runs before the nightly.
+        assert _matrix_mode(args) == "full", args
         assert step.get("env", {}).get("COVERAGE_CORE") == "sysmon"
         assert any(
             str(step.get("uses", "")).startswith("codecov/codecov-action@")
@@ -849,17 +895,18 @@ class TestCiRunsEveryGate:
         ), "the coverage job uploads nothing"
 
     def test_the_plan_reads_the_version_bump_on_a_push(self) -> None:
-        """The matrix waits for the plan job, whose one answer is whether a
-        push raised `[project].version`: the release-mode rule of
+        """The matrix waits for the plan job, whose first answer is whether
+        a push raised `[project].version`: the release-mode rule of
         check_doc_counts.py (#1536), asked of the commit before the push and
         written to the step's outputs.  On any other event the step does not
-        run and the matrix does not ask."""
+        run and the matrix does not ask.  Its second answer, the files a
+        pull request changes, is the test below."""
         workflow = _workflow()
         jobs = workflow["jobs"]
         assert "plan" in jobs, "no plan job"
         assert jobs["test"].get("needs") in ("plan", ["plan"])
         outputs = jobs["plan"].get("outputs") or {}
-        assert set(outputs) == {"release"}, outputs
+        assert set(outputs) == {"release", "changed"}, outputs
         m = re.fullmatch(
             r"\$\{\{\s*steps\.([\w-]+)\.outputs\.release\s*\}\}",
             str(outputs["release"]),
@@ -883,6 +930,54 @@ class TestCiRunsEveryGate:
             assert len(checkouts) == 1, event
             assert (checkouts[0].get("with") or {}).get("fetch-depth") == 0, (
                 "the commit before the push must be in the checkout"
+            )
+
+    def test_the_plan_lists_what_a_pull_request_changes(self) -> None:
+        """The plan job's second answer, for the class-instrument matrices
+        (tests/matrix_sample.py): on a pull request, the files it changes
+        that a matrix can be decided by, one per line, which the matrix hands
+        the suite as `VERA_MATRIX_CHANGED`.  The range is the pull request's
+        own, from its merge base to its head (three dots: what it changes,
+        not what `main` has gained since it branched), over a checkout that
+        holds both ends; the pathspec keeps the list to the compiler and the
+        test files; and the value is written between `changed<<` and a
+        random delimiter, so no file name can end it early.  On any other
+        event the step does not run and the list is empty."""
+        workflow = _workflow()
+        outputs = workflow["jobs"]["plan"].get("outputs") or {}
+        m = re.fullmatch(
+            r"\$\{\{\s*steps\.([\w-]+)\.outputs\.changed\s*\}\}", str(outputs.get("changed")),
+        )
+        assert m is not None, outputs
+        for event, context in EVENTS.items():
+            steps = _gating_steps(workflow, "plan", context)
+            answers = [step for step in steps if step.get("id") == m.group(1)]
+            if context["github.event_name"] != "pull_request":
+                assert answers == [], event
+                continue
+            assert len(answers) == 1, event
+            step = answers[0]
+            env = step.get("env") or {}
+            assert env.get("BASE_SHA") == "${{ github.event.pull_request.base.sha }}", env
+            assert env.get("HEAD_SHA") == "${{ github.event.pull_request.head.sha }}", env
+            lines = [line.strip() for line in step["run"].splitlines() if line.strip()]
+            assert len(lines) == 4, lines
+            assignment, opening, diff, closing = lines
+            name = re.fullmatch(r'(\w+)="changed_\$\(openssl rand -hex (\d+)\)"', assignment)
+            assert name is not None and int(name.group(2)) >= 16, assignment
+            assert _command(opening) == ["echo", f"changed<<${name.group(1)}", ">>", "$GITHUB_OUTPUT"], opening
+            assert _command(diff) == [
+                "git", "diff", "--name-only", "$BASE_SHA...$HEAD_SHA", "--", "vera/", "tests/test_*.py",
+                ">>", "$GITHUB_OUTPUT",
+            ], diff
+            assert _command(closing) == ["echo", f"${name.group(1)}", ">>", "$GITHUB_OUTPUT"], closing
+            checkouts = [
+                step for step in steps
+                if str(step.get("uses", "")).startswith("actions/checkout@")
+            ]
+            assert len(checkouts) == 1, event
+            assert (checkouts[0].get("with") or {}).get("fetch-depth") == 0, (
+                "the pull request's merge base must be in the checkout"
             )
 
     def test_the_nightly_run_never_holds_a_merge_pending(self) -> None:
@@ -1064,12 +1159,22 @@ def _sweep_run(run: str) -> str:
 _MATRIX_IF = "    if: github.event_name != 'push' || needs.plan.outputs.release == 'true'\n"
 _COVERAGE_IF = "  coverage:\n    if: github.event_name == 'push'\n"
 
+# The matrix's test step and the plan job's list, as ci.yml spells them.
+_MATRIX_FLAG = "${{ github.event_name != 'pull_request' && '--matrix=full' || '' }}"
+_CHANGED_ENV = "        env:\n          VERA_MATRIX_CHANGED: ${{ needs.plan.outputs.changed }}\n"
+_CHANGED_IF = "        id: changed\n        if: github.event_name == 'pull_request'\n"
+_CHANGED_DIFF = "git diff --name-only \"$BASE_SHA...$HEAD_SHA\" -- vera/ 'tests/test_*.py'"
+_COVERAGE_RUN = "--cov-fail-under=80 --matrix=full\n"
+
 _COUNTERPART = ("counterpart", "pull request into main")
 _SWEEPS = ("sweeps", "pull request into main")
 _WHOLE_SUITE = ("whole suite", None)
 _PR_MATRIX = ("matrix", "pull request into main")
 _NIGHTLY_MATRIX = ("matrix", "nightly schedule")
+_RELEASE_MATRIX = ("matrix", "push of a release merge into main")
 _CONDITIONAL = ("conditional", None)
+_COVERAGE = ("coverage", None)
+_PLAN = ("plan", None)
 
 EVASIONS = [
     ("walker coverage on push only", CI, _WALK, _walk_if("github.event_name == 'push'"), _COUNTERPART),
@@ -1099,7 +1204,8 @@ EVASIONS = [
     ("walker coverage behind a precedence trap", CI, _WALK,
      _walk_if("${{ !github.event_name == 'schedule' }}"), _COUNTERPART),
     ("staged-test hook as python -m pytest over tests/", PRECOMMIT,
-     "        entry: .venv/bin/pytest -q -n 4\n", "        entry: .venv/bin/python -m pytest tests/ -q\n",
+     "        entry: .venv/bin/pytest -q -n 4 --matrix=full\n",
+     "        entry: .venv/bin/python -m pytest tests/ -q --matrix=full\n",
      _WHOLE_SUITE),
     ("matrix gated on the plan alone, so a pull request runs no cell", CI, _MATRIX_IF,
      "    if: needs.plan.outputs.release == 'true'\n", _PR_MATRIX),
@@ -1108,6 +1214,20 @@ EVASIONS = [
      _NIGHTLY_MATRIX),
     ("coverage job on every event, so a pull request waits on it", CI, _COVERAGE_IF,
      "  coverage:\n", _CONDITIONAL),
+    ("pull request held to the matrices' sample, so a changed decider runs no more", CI, _MATRIX_FLAG,
+     "--matrix=${{ github.event_name == 'pull_request' && 'sample' || 'full' }}", _PR_MATRIX),
+    ("changed-file list never handed to the suite", CI, _CHANGED_ENV, "", _PR_MATRIX),
+    ("nightly run left to the default sample", CI, _MATRIX_FLAG,
+     "${{ github.event_name == 'push' && '--matrix=full' || '' }}", _NIGHTLY_MATRIX),
+    ("release push left to the default sample", CI, _MATRIX_FLAG,
+     "${{ github.event_name == 'schedule' && '--matrix=full' || '' }}", _RELEASE_MATRIX),
+    ("coverage job sampled", CI, _COVERAGE_RUN, "--cov-fail-under=80\n", _COVERAGE),
+    ("changed-file list made on a push only", CI, _CHANGED_IF,
+     "        id: changed\n        if: github.event_name == 'push'\n", _PLAN),
+    ("changed files diffed from main's tip, not the merge base", CI, _CHANGED_DIFF,
+     _CHANGED_DIFF.replace("...", "..", 1), _PLAN),
+    ("changed files listed without a pathspec", CI, _CHANGED_DIFF,
+     _CHANGED_DIFF.split(" -- ", 1)[0], _PLAN),
 ]
 
 
@@ -1138,5 +1258,9 @@ def test_each_known_evasion_is_caught(
             TestCiRunsEveryGate().test_every_matrix_cell_runs_the_whole_suite(str(event))
         elif kind == "conditional":
             TestCiRunsEveryGate().test_only_the_matrix_and_the_coverage_job_are_conditional()
+        elif kind == "coverage":
+            TestCiRunsEveryGate().test_the_push_of_a_merge_runs_the_whole_suite_once_with_coverage()
+        elif kind == "plan":
+            TestCiRunsEveryGate().test_the_plan_lists_what_a_pull_request_changes()
         else:
             TestThePreCommitHookIsFast().test_no_hook_runs_the_whole_suite()

@@ -67,6 +67,21 @@ from typing import Any, Callable, NamedTuple
 
 import pytest
 
+# A generated class instrument (tests/matrix_sample.py): a pull request runs a
+# sample of its parametrised cells, and all of them when it changes this file or
+# a module that decides its class, here each phase's reading of a module's call
+# by its own path.
+pytestmark = pytest.mark.matrix(
+    decides=[
+        "vera/resolver.py",
+        "vera/checker/calls.py",
+        "vera/checker/modules.py",
+        "vera/smt.py",
+        "vera/verifier.py",
+        "vera/callgraph.py",
+    ],
+)
+
 # ---------------------------------------------------------------------------
 # Program builders
 # ---------------------------------------------------------------------------

@@ -64,7 +64,7 @@ When the class boundary is **architectural** — two phases each re-derive the s
 
 Every fix PR states its **class boundary** in the body — which inputs the fix now covers, and which neighbouring ones it deliberately does not, with the reason — and ships a **class instrument**: an exhaustive matrix over the space the class spans, or a generator that samples it.  Hand-picked cases alone are not a class instrument; they demonstrate the instance again.  [TESTING.md](TESTING.md) § Class Instruments has the two shapes and what keeps a cell from being vacuous.
 
-A class instrument is a **burndown tool**, not a permanent gate.  Its file carries a marker: the nightly lane runs it in full, and so does any pull request that touches the module where its class is decided; every other pull request runs a pinned, stratified sample of its cells.
+A class instrument is a **burndown tool**, not a permanent gate.  Its file carries the `matrix` marker, naming the modules where its class is decided — the modules the fix changed to close it — as paths from the repository root: `pytestmark = pytest.mark.matrix(decides=["vera/narrowing.py"])`.  The nightly lane runs it in full, and so does any pull request that changes the file or one of those modules (CI hands the suite the pull request's changed files as `VERA_MATRIX_CHANGED`); every other pull request runs a stratified sample of its cells, pinned for a week.  Write the cells that reproduce the report, were red before the fix or kill a documented mutant as unparametrised tests, in a function named for a `repro`, or as strict `xfail`s, and every pull request runs them ([TESTING.md](TESTING.md) § Where an instrument runs).
 
 A change that moves *where* a decision is made rather than what it decides is proved by a **verdict-signature diff** — the whole gate's verdicts at both revisions, with no movers except the deliberate ones — not by a green suite, which cannot tell a preserved decision from a coincidentally equal one.
 
@@ -172,10 +172,11 @@ A second pre-push hook runs `uv lock --check` to confirm `uv.lock` is in sync wi
 ### Running Tests
 
 ```bash
-pytest                    # run all tests
+pytest                    # run the suite, each class-instrument matrix sampled
+pytest --matrix=full      # every cell of every class-instrument matrix too
 pytest tests/test_parser.py  # run specific test file
 pytest -v                 # verbose output
-pytest --cov=vera         # with coverage
+pytest --cov=vera --matrix=full  # with coverage
 VERA_JS_COVERAGE=1 pytest tests/test_browser.py -v  # JS coverage
 ```
 

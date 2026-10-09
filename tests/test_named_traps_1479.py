@@ -72,6 +72,19 @@ from vera.trap_registry import (
     unreachable_fix_paragraph,
 )
 
+# A generated class instrument (tests/matrix_sample.py): a pull request runs a
+# sample of its parametrised cells, and all of them when it changes this file or
+# a module that decides its class, here the trap registry and the hosts that
+# read its signal.
+pytestmark = pytest.mark.matrix(
+    decides=[
+        "vera/trap_registry.py",
+        "vera/runtime/traps.py",
+        "vera/runtime/wasi_host.py",
+        "vera/browser/runtime.mjs",
+    ],
+)
+
 ROOT = Path(__file__).resolve().parent.parent
 
 # ---------------------------------------------------------------------------

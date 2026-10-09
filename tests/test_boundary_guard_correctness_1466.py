@@ -103,6 +103,17 @@ import vera
 from tests import guard_emitter_scan
 from vera import binders, carriers, narrowing
 
+# A generated class instrument (tests/matrix_sample.py): a pull request runs a
+# sample of its parametrised cells, and all of them when it changes this file or
+# a module that decides its class, here a guard's value binding by
+# representation, and the guard emitter that uses it.
+pytestmark = pytest.mark.matrix(
+    decides=[
+        "vera/wasm/helpers.py",
+        "vera/codegen/contracts.py",
+    ],
+)
+
 _PKG_PARENT = str(Path(vera.__file__).resolve().parents[1])
 
 #: The obligation kind a refinement narrowing is recorded under.
