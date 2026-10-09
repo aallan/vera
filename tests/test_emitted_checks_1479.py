@@ -536,7 +536,7 @@ def test_a_marker_naming_no_entry_is_an_invariant_error() -> None:
 def test_a_marker_outside_every_function_is_an_invariant_error() -> None:
     generator = CodeGenerator(source="", file="x.vera")
     generator._emitted_checks[424243] = (
-        "wasm/operators.py:_translate_binary", None)
+        "wasm/operators.py:_translate_binary", None, ())
     with pytest.raises(CodegenInvariantError, match="outside every function"):
         generator._assemble_emitted_checks(
             "(module\n  (global $g i32 (i32.const 0)) (;vera-check:424243;)\n"

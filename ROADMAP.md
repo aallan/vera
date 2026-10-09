@@ -18,7 +18,7 @@ v0.3.0 is the sound base (Stage 29), reached through v0.2.1 to v0.2.8 (Stages 21
 
 ## The next burndown
 
-*Eighty-six open bugs, driven to zero.*
+*Eighty-eight open bugs, driven to zero.*
 
 A bug class outranks stage work, so the open `bug`-labelled set is the queue the fix releases work from, soundness defects first.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) carries each row's full account and stays the one place the detail lives; this table is the order of attack.
 
@@ -112,6 +112,8 @@ Bugs in a mechanism cluster close in the stage that removes their mechanism and 
 | [#1640](https://github.com/aallan/vera/issues/1640) | `vera test` labels generated arguments in declaration order, so the first of two same-typed parameters is reported as `@T.0`. |
 | [#1643](https://github.com/aallan/vera/issues/1643) | `vera test` skips a function whose only contract is a refined return type as "trivial contracts only", so its refinement is never trialled. |
 | [#1644](https://github.com/aallan/vera/issues/1644) | A live-request `KeyboardInterrupt` test can complete with `exit_code=None` under `pytest -n 4`. |
+| [#1628](https://github.com/aallan/vera/issues/1628) | A `@Nat` widened into a built-in's `@Int` argument is recorded `tier3` with no widening guard: `int_to_float(nat_to_int(@Nat.0))` returns -1.0 at 2^64 - 1. |
+| [#1629](https://github.com/aallan/vera/issues/1629) | The compiled module checks sites the verifier records no obligation for (a non-zero literal divisor, a binder or field whose value already satisfies it), so `vera verify` omits those checks. |
 
 ## Stage 19 — The verification completeness sprint
 

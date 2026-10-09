@@ -506,7 +506,8 @@ TRAP_EMITTERS: dict[str, TrapEmitter] = _emitters(
         "codegen/contracts.py:_emit_refinement_check", "contract_violation",
         ("refine_bind",), "contract",
         "the guarded binding's value, or the refined type expression at a "
-        "function boundary",
+        "function boundary (a tuple component's or an element's guard there "
+        "names its position in the check's path)",
     ),
     TrapEmitter(
         "codegen/contracts.py:_compile_decreases_entry", "contract_violation",
@@ -518,7 +519,8 @@ TRAP_EMITTERS: dict[str, TrapEmitter] = _emitters(
     ),
     TrapEmitter(
         "codegen/contracts.py:_dec_bound_check_pairs", "contract_violation",
-        ("decreases_bound",), "contract", "the `decreases(...)` clause",
+        ("decreases_bound",), "contract",
+        "the `decreases(...)` measure component it range-checks",
     ),
     # --- runtime functions: one per module, no source site --------------
     TrapEmitter(
@@ -1174,6 +1176,15 @@ class EmittedCheck:
     """Whether the check sits inside a prelude / built-in function the user
     did not write."""
 
+    path: tuple[str, ...] = ()
+    """Where, inside the value the span's node stands for, the checked
+    value sits: empty for that value itself, else one step per level, a
+    tuple component as ``"Tuple.<k>"`` and a container element as its
+    position's kind (``"array element"``, ``"map value"``, ...).  Set by a
+    signature's guards, whose checks all stand at the signature's type: the
+    top-level predicate, each component's and each element's are told apart
+    by their path."""
+
     def to_dict(self) -> dict[str, object]:
         """A JSON-compatible form (field names as keys)."""
         return {
@@ -1187,4 +1198,5 @@ class EmittedCheck:
             "end_column": self.end_column,
             "file": self.file,
             "prelude": self.prelude,
+            "path": list(self.path),
         }

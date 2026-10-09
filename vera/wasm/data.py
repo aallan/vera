@@ -101,10 +101,17 @@ class DataMixin:
         where: str,
         node: ast.Node,
         env: WasmSlotEnv,
+        *,
+        at: ast.Node | None = None,
     ) -> list[str]:
         """The §2.6.5 predicate guard for a value bound into a REFINED slot by
         a pattern (#765) — the refined twin of ``_emit_nat_bind_guard``, which
         already covers the ``@Nat`` case at these same three sites.
+
+        *at* is the node the per-module record locates the check at, when
+        that is not *node* (which a refusal is reported at): a destructure's
+        component is checked at its own type binding, where its sign guards
+        stand, rather than at the statement every component shares.
 
         ``@Nat`` is a refinement whose predicate codegen happens to know how
         to write by hand (``>= 0``), so the sign guard covered one member of
@@ -155,7 +162,8 @@ class DataMixin:
             )
         head = (f"Refinement violation in {where}\n"
                 f"  {ast.format_type_expr(te)} binding")
-        return emitter(te, value_local, head, env, node) or []
+        return emitter(te, value_local, head, env,
+                       node if at is None else at) or []
 
     def _emit_construction_refine_guard(
         self,
@@ -733,7 +741,7 @@ class DataMixin:
                 # over the pointer half (see the sub-pattern twin).
                 instrs.extend(self._emit_bind_refine_guard(
                     te, ptr_local, f"let {stmt.constructor}(…) destructure",
-                    stmt, new_env,
+                    stmt, new_env, at=te,
                 ))
                 new_env = new_env.push(type_name, ptr_local)
                 continue
@@ -780,7 +788,7 @@ class DataMixin:
             # slot with nothing between it and the rest of the block.
             instrs.extend(self._emit_bind_refine_guard(
                 te, local_idx, f"let {stmt.constructor}(…) destructure",
-                stmt, new_env,
+                stmt, new_env, at=te,
             ))
             # PR #707 review: same heap-pointer rooting
             # discipline as ``_extract_constructor_fields`` (line ~515)

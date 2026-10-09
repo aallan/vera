@@ -103,6 +103,7 @@ vera fmt --check file.vera     # exit non-zero if not already canonical (CI mode
 vera verify file.vera          # type-check + discharge contracts via Z3
 vera verify --json file.vera   # adds a "verification" tier summary
 vera verify --timeout-ms 60000 file.vera   # per-query Z3 budget, ms (default 10000)
+vera verify --reconcile file.vera          # also compile, and check each Tier 3 claim has its check
 ```
 
 Vera verifies in two implemented tiers, at every call site:
@@ -118,6 +119,16 @@ Vera verifies in two implemented tiers, at every call site:
   contract text.
 - **Unguarded sites.** The few obligations that have no runtime guard are
   reported as warnings (`E504`, `E506`, `E531`, `E537`) and counted in neither tier.
+
+**Checking the Tier 3 claims against the module.** A `tier3` status claims that
+the compiled module checks the property, and the verifier and code generation
+decide that separately. `vera verify --reconcile` compiles the program in
+process, as `vera compile` would, and joins the two records: a `tier3` or
+`timeout` obligation that no emitted check answers is an **E541** error, and an
+emitted check that no obligation accounts for is a **W004** warning. With
+`--json` the envelope gains a `reconciliation` object holding the counts and
+each mismatch. The mismatches the corpus shows today are listed, each under
+its open issue, in `scripts/check_reconciliation.py`.
 
 (Tier 2, Z3-*guided*, is specified in spec/06 but not yet implemented.)
 
