@@ -38,6 +38,10 @@ the release is cut.  CI passes ``--release-if-version-raised <base>``, which
 turns release mode on exactly when ``[project].version`` rose against the
 base: a pull request against its base branch, a push against the commit
 before it (#1536).  Every other count is checked in both modes.
+``--print-release-mode <base>`` prints that answer alone, as a
+``release=true`` or ``release=false`` line, and checks nothing: ci.yml's
+plan job reads it to decide whether the push event a merge produces on
+``main`` runs the whole test matrix.
 """
 
 import argparse
@@ -2271,6 +2275,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "branch and a push's previous commit (#1536)"
         ),
     )
+    parser.add_argument(
+        "--print-release-mode",
+        metavar="BASE",
+        help=(
+            "print `release=true` or `release=false`, the answer "
+            "--release-if-version-raised acts on for BASE, and exit without "
+            "checking any document; ci.yml's plan job reads the line as a "
+            "step output"
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -2385,6 +2399,12 @@ class Live(NamedTuple):
     dual_target: DualTargetSplit | None
 
 
+# The budget for the pytest collection `collect_tests` runs.  It takes about
+# ten seconds on an idle machine; several worktrees committing at once can
+# push it past this, which is then reported as a reason, not a traceback.
+COLLECT_TIMEOUT_SECONDS = 30
+
+
 def collect_tests(root: Path) -> tuple[int, dict[str, int]] | str:
     """The collected total and each file's count, or why collection failed.
 
@@ -2393,19 +2413,29 @@ def collect_tests(root: Path) -> tuple[int, dict[str, int]] | str:
     every test file including `test_stress.py`.  Without this override the
     per-file counter wouldn't see stress tests and would report them as a
     missing row in TESTING.md.
+
+    A collection that outlives `COLLECT_TIMEOUT_SECONDS` is a reason the tree
+    could not be measured, like one that fails, so `main` reports it in one
+    line and exits 1.
     """
     pytest_bin = root / ".venv/bin/pytest"
     if not pytest_bin.exists():
         pytest_bin = Path("pytest")  # fall back to PATH
-    result = subprocess.run(
-        [str(pytest_bin), "--co", "-q", "-o", "addopts="],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        cwd=str(root),
-        timeout=30,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            [str(pytest_bin), "--co", "-q", "-o", "addopts="],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=str(root),
+            timeout=COLLECT_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return (
+            f"pytest collection did not finish within {COLLECT_TIMEOUT_SECONDS} s,"
+            " which a loaded machine can cause; run the check again"
+        )
     if result.returncode != 0:
         return f"pytest collection failed:\n{result.stderr}"
 
@@ -3079,6 +3109,20 @@ def main() -> int:
     # with a different remedy (relocate the test file into the target
     # tree), not this one.
     sys.path.insert(0, str(root))
+
+    if args.print_release_mode is not None:
+        # The plan job's question: the answer alone, on stdout for
+        # $GITHUB_OUTPUT, the reason on stderr for the log, and no document
+        # measured.  A base that cannot be read fails the step rather than
+        # answering either way.
+        try:
+            raised, why = release_mode_for(args.print_release_mode, root)
+        except ReleaseModeError as exc:
+            print(f"ERROR: release mode: {exc}", file=sys.stderr)
+            return 1
+        print(f"Release mode {'on' if raised else 'off'}: {why}.", file=sys.stderr)
+        print(f"release={'true' if raised else 'false'}")
+        return 0
 
     if args.release_if_version_raised is not None:
         try:

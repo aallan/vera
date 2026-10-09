@@ -3337,3 +3337,111 @@ class TestMainActsOnTheReleaseModeAnswer:
         )
         assert code == 1
         assert seen == []
+
+
+class TestPrintReleaseMode:
+    """`--print-release-mode BASE` is ci.yml's plan job asking the question
+    `--release-if-version-raised` acts on, whether `[project].version` rose
+    against BASE, for the test matrix to read as a step output.  It prints
+    one `release=` line and measures no document; a base it cannot read
+    fails the step rather than answering either way.  `release_mode_for` is
+    stubbed, and `gather` raises, so the cells measure the wiring alone."""
+
+    def _run_main(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        answer: tuple[bool, str] | Exception,
+    ) -> tuple[int, str, str]:
+        asked: list[str] = []
+
+        def mode(base: str, root: Path) -> tuple[bool, str]:
+            asked.append(base)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        def gather(root: Path) -> Any:
+            raise AssertionError("the plan's question measures no document")
+
+        monkeypatch.setattr(_MOD, "release_mode_for", mode)
+        monkeypatch.setattr(_MOD, "gather", gather)
+        monkeypatch.setattr(
+            sys, "argv", ["check_doc_counts.py", "--print-release-mode", "b" * 40],
+        )
+        code = _MOD.main()
+        out, err = capsys.readouterr()
+        assert asked == ["b" * 40]
+        return code, out, err
+
+    def test_a_raised_version_prints_true(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        code, out, err = self._run_main(monkeypatch, capsys, (True, "0.2.0 -> 0.2.1"))
+        assert code == 0
+        assert out == "release=true\n"
+        assert "0.2.0 -> 0.2.1" in err
+
+    def test_an_unraised_version_prints_false(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        code, out, err = self._run_main(monkeypatch, capsys, (False, "0.2.1 -> 0.2.1"))
+        assert code == 0
+        assert out == "release=false\n"
+        assert "0.2.1 -> 0.2.1" in err
+
+    def test_an_unreadable_base_prints_no_answer_and_fails(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        code, out, err = self._run_main(
+            monkeypatch, capsys, _MOD.ReleaseModeError("cannot read pyproject.toml"),
+        )
+        assert code == 1
+        assert out == ""
+        assert "cannot read pyproject.toml" in err
+
+
+class TestCollectionTimeout:
+    """`collect_tests` bounds the pytest collection, and an expired budget
+    is a reason the tree could not be measured: one `ERROR:` line and exit
+    1, as for a collection that fails, rather than a `TimeoutExpired`
+    traceback out of a pre-commit hook on a loaded machine."""
+
+    @staticmethod
+    def _expire_collection(monkeypatch: pytest.MonkeyPatch) -> list[object]:
+        budgets: list[object] = []
+        real = subprocess.run
+
+        def run(cmd: Any, **kwargs: Any) -> Any:
+            if "--co" in cmd:
+                budgets.append(kwargs.get("timeout"))
+                raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout") or 0)
+            return real(cmd, **kwargs)
+
+        monkeypatch.setattr(_MOD.subprocess, "run", run)
+        return budgets
+
+    def test_an_expired_collection_is_a_one_line_reason(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        budgets = self._expire_collection(monkeypatch)
+        result = _MOD.collect_tests(tmp_path)
+        assert isinstance(result, str), result
+        assert "\n" not in result
+        assert "pytest collection" in result
+        assert len(budgets) == 1
+        assert isinstance(budgets[0], (int, float)) and budgets[0] > 0
+        assert f"{budgets[0]} s" in result
+
+    def test_main_reports_it_in_one_line_and_exits_one(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        self._expire_collection(monkeypatch)
+        monkeypatch.setattr(sys, "argv", ["check_doc_counts.py"])
+        assert _MOD.main() == 1
+        out, err = capsys.readouterr()
+        assert out == ""
+        assert err.startswith("ERROR: pytest collection")
+        assert err.count("\n") == 1, err
