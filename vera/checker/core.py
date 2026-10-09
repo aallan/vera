@@ -20,7 +20,8 @@ each handle a specific concern:
 
 from __future__ import annotations
 
-from collections.abc import Callable, Container
+from collections.abc import Callable, Container, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
@@ -405,6 +406,10 @@ class TypeChecker(
         # and message are indistinguishable to the reader — to a single
         # entry, preserving first-occurrence order (PR #938 review).
         self._seen_diag_keys: set[tuple[str, ...]] = set()
+        # The calls a diagnostic reported now is about, innermost last, by
+        # `id` (`_about_the_call`): one at a piped call is placed at its
+        # stage.
+        self._calls_reported_on: list[int] = []
         self.source = source
         self.file = file
         self._effect_ops_used: set[str] = set()
@@ -646,11 +651,13 @@ class TypeChecker(
                rationale: str = "", fix: str = "",
                spec_ref: str = "", severity: str = "error",
                error_code: str = "") -> None:
-        """Record a type error diagnostic."""
+        """Record a type error diagnostic, placed at *node*
+        (:meth:`_placement`)."""
+        span = self._placement(node)
         loc = SourceLocation(file=self.file)
-        if node.span:
-            loc.line = node.span.line
-            loc.column = node.span.column
+        if span:
+            loc.line = span.line
+            loc.column = span.column
         # Collapse an exact-duplicate (same code, file, position, severity,
         # and message) to a single entry — see `_seen_diag_keys`.
         key = (
@@ -663,7 +670,7 @@ class TypeChecker(
         self.errors.append(Diagnostic(
             description=description,
             location=loc,
-            source_line=self._source_line(node),
+            source_line=self._source_line(span),
             rationale=rationale,
             fix=fix,
             spec_ref=spec_ref,
@@ -728,15 +735,47 @@ class TypeChecker(
             self.errors.append(withdrawn)
             self._literal_range_verdict[id(node)] = (withdrawn, contextual)
 
-    def _source_line(self, node: ast.Node) -> str:
-        """Extract source line for a node."""
-        if not node.span or not self.source:
+    def _source_line(self, span: ast.Span | None) -> str:
+        """The source line a diagnostic placed at *span* quotes."""
+        if not span or not self.source:
             return ""
         lines = self.source.splitlines()
-        idx = node.span.line - 1
+        idx = span.line - 1
         if 0 <= idx < len(lines):
             return lines[idx]
         return ""
+
+    def _placement(self, node: ast.Node) -> ast.Span | None:
+        """Where a diagnostic reported at *node* is placed: its span, or,
+        for a piped call the report is about (:meth:`_about_the_call`), its
+        stage — the call written on the right of `|>` (`ast._stage`).
+
+        A piped call's span is the pipe's, so in `a |> f() |> g()` the call
+        `g` begins at `a`.  A diagnostic about the call itself, which its
+        own check reports, names the stage at fault and quotes the line it
+        is written on, as `main` placed it.  One its context reports about
+        the call's value — a `let` declared at another type, an argument of
+        the wrong type — is about the whole expression and stays where the
+        value begins, at the pipe."""
+        stage: ast.Span | None = getattr(node, "stage_span", None)
+        if stage is not None and id(node) in self._calls_reported_on:
+            return stage
+        return node.span
+
+    @contextmanager
+    def _about_the_call(self, node: ast.Node) -> Iterator[None]:
+        """What is reported at *node* inside this block is about the call
+        *node* itself (:meth:`_placement`).
+
+        The call checks run inside one (`calls._reported_at_the_stage`),
+        and so do the reports about a call made after the checking, by the
+        walks over the checked program (the call graph's contract cycles,
+        a handler clause's operations)."""
+        self._calls_reported_on.append(id(node))
+        try:
+            yield
+        finally:
+            self._calls_reported_on.pop()
 
     # -----------------------------------------------------------------
     # Pass 2: Checking
@@ -877,26 +916,29 @@ class TypeChecker(
             else:
                 how = (f"calls '{site.callee.name}', which leads back to "
                        f"'{site.caller.name}'")
-            self._error(
-                site.call,
-                f"A contract or refinement predicate of "
-                f"'{site.caller.name}' {how}.",
-                rationale=(
-                    "A contract is the specification its function is "
-                    "checked against, so it cannot be defined through that "
-                    "function: checking it would need the specification it "
-                    "is checking. The verifier has no finite meaning to give "
-                    "it, and a run that evaluates it recurses without end."
-                ),
-                fix=(
-                    f"State the property without calling back into "
-                    f"'{site.caller.name}': write it over the parameters and "
-                    f"the result directly, or call a separate specification "
-                    f"function that does not reach '{site.caller.name}'."
-                ),
-                spec_ref='Chapter 6, Section 6.3.1 "Allowed in All Contracts"',
-                error_code="E138",
-            )
+            # About the call, after the checking: a piped call's is placed
+            # at its stage (`_placement`).
+            with self._about_the_call(site.call):
+                self._error(
+                    site.call,
+                    f"A contract or refinement predicate of "
+                    f"'{site.caller.name}' {how}.",
+                    rationale=(
+                        "A contract is the specification its function is "
+                        "checked against, so it cannot be defined through that "
+                        "function: checking it would need the specification it "
+                        "is checking. The verifier has no finite meaning to give "
+                        "it, and a run that evaluates it recurses without end."
+                    ),
+                    fix=(
+                        f"State the property without calling back into "
+                        f"'{site.caller.name}': write it over the parameters and "
+                        f"the result directly, or call a separate specification "
+                        f"function that does not reach '{site.caller.name}'."
+                    ),
+                    spec_ref='Chapter 6, Section 6.3.1 "Allowed in All Contracts"',
+                    error_code="E138",
+                )
 
     def _check_decl(self, decl: ast.Decl) -> None:
         """Check a single declaration."""

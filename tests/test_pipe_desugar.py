@@ -45,17 +45,23 @@ call form a pipe can name, and every phase.  The instrument:
 * `TestEveryCallForm` — every call form the pipe can name (`fn_call`'s
   alternatives with an argument list) and every kind of callee, the same
   agreement in a tail position, a `let` and an `if` arm.  A cell with a
-  module compares the verifier's errors, not its obligations: the shared
-  multi-module builder reports errors only.
+  module compares the obligations too, the imported module's included.
 * `TestTheCorpusPipesEveryCall` — a generator: every call with an argument
   in the corpus, written as a pipe, transforms to the same AST and formats
   back to the pipe.
 * `TestARightOperandThatIsNoCall` — every other right operand is E040.
+* `TestADiagnosticAtItsStage` — a diagnostic about a piped call itself is
+  placed at its stage, the call written on the right of `|>`, as on `main`:
+  every code the checker reports at a call node (a coverage cell holds the
+  codes `vera/checker/calls.py` reports claimed), with the call alone, first,
+  last and in the middle of a chain, on lines of its own, on one line and in
+  a string interpolation.  One about an argument or the call's value is not.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import importlib.util
 import re
 import subprocess
 import sys
@@ -68,15 +74,18 @@ import wasmtime
 
 from tests.checker_helpers import _check
 from tests.codegen_helpers import exceptions_engine
-from tests.module_fixture_helpers import build_multi_module
+from tests.module_fixture_helpers import (
+    build_multi_module,
+    check_multi_module,
+    verify_multi_module,
+)
 from tests.test_check_implies_compile import (
     ast_expression_fields,
     grammar_expression_positions,
 )
-from tests.verifier_helpers import _verify
 from vera import ast
 from vera.codegen import CompileResult, execute
-from vera.errors import TransformError
+from vera.errors import Diagnostic, TransformError
 from vera.formatter import (
     Formatter,
     _attach_comments,
@@ -120,20 +129,15 @@ class Built(NamedTuple):
 
 def _build(tmp_path: Path, files: dict[str, str]) -> Built:
     """Check, verify (obligations included) and compile ``main.vera`` as
-    `vera run` does."""
-    source = files["main.vera"]
+    `vera run` does, its imports resolved: one path for a single file and
+    for a program with modules, whose obligations include each imported
+    module's own."""
     _verify_errors, result, _cg = build_multi_module(tmp_path, files)
-    if len(files) == 1:
-        check = [(d.error_code, d.severity) for d in _check(source)]
-        verified = _verify(source)
-        obligations = [(o.fn_name, o.kind, o.status, o.line, o.error_code)
-                       for o in verified.obligations]
-        verify = [(d.error_code, d.severity) for d in verified.diagnostics]
-    else:
-        # The multi-module builder raises on a check error, so a module
-        # cell's premise is the builder returning at all.
-        check, obligations = [], []
-        verify = [(code, "error") for code, _d in _verify_errors]
+    diagnostics, verified = verify_multi_module(tmp_path, files)
+    check = [(d.error_code, d.severity) for d in diagnostics]
+    obligations = [(o.fn_name, o.kind, o.status, o.line, o.error_code)
+                   for o in verified.obligations]
+    verify = [(d.error_code, d.severity) for d in verified.diagnostics]
     try:
         wasmtime.Module.validate(exceptions_engine(), result.wasm_bytes)
         valid = True
@@ -381,7 +385,8 @@ def _af(*fields: tuple[str, str]) -> frozenset[tuple[str, str]]:
 
 _MA = ("module ma;\n\n"
        + _fn("sub2(@Int, @Int -> @Int)", "@Int.1 - @Int.0", vis="public")
-       + "\n" + _fn("echo(@Int -> @Int)", "@Int.0", vis="public"))
+       + "\n" + _fn("echo(@Int -> @Int)", "@Int.0", vis="public")
+       + "\n" + _fn("mbig(@Nat -> @Nat)", "@Nat.0", vis="public"))
 
 POSITIONS: tuple[Position, ...] = (
     Position("function return", _g("block_contents"),
@@ -654,6 +659,8 @@ class Form(NamedTuple):
     value: int
     extra: str = ""
     module: str | None = None
+    #: What the program imports from the module.
+    imports: str = "sub2"
 
 
 _HANDLED = ("handle[State<Int>](@Int = 0) {\n    " + _STATE_INT
@@ -709,6 +716,12 @@ FORMS: tuple[Form, ...] = (
          _HANDLED.replace("{S}", "@Int.0 |> State.put()"), 10),
     Form("module call", "ma::sub2(@Int.0, 3)", "@Int.0 |> ma::sub2(3)", 7,
          module=_MA),
+    # A `@Nat` result read into an `@Int` parameter: the widening is
+    # obligated where the module call is, however it is written.
+    Form("a nat-valued module callee widened",
+         "ma::echo(ma::mbig(abs(@Int.0)))",
+         "ma::echo(abs(@Int.0) |> ma::mbig())", 10, module=_MA,
+         imports="echo, mbig"),
 )
 
 
@@ -721,7 +734,7 @@ def _form_files(form: Form, position: str, spelling: int) -> dict[str, str]:
     main = _fn("f(@Int -> @Int)", body, vis="public")
     if form.label == "where helper":
         main += _HELPER
-    head = "import ma(sub2);\n\n" if form.module else ""
+    head = f"import ma({form.imports});\n\n" if form.module else ""
     files = {"main.vera": head + "\n".join((_CALLEES, form.extra, main))}
     if form.module:
         files["ma.vera"] = form.module
@@ -732,9 +745,12 @@ class TestEveryCallForm:
     """Every call form a pipe can name, and every kind of callee."""
 
     def test_every_call_form_has_a_cell(self) -> None:
-        """The grammar's `fn_call` alternatives with an argument list are
-        the call forms; `nullary_constructor_expr` has none, and a pipe
-        into it is E040 (`TestARightOperandThatIsNoCall`)."""
+        """Each of the four call nodes a pipe can name is piped by some
+        form's cell.  The four are written here, not read off the grammar:
+        the grammar's `fn_call` alternatives are the position cell's to hold
+        (`grammar_expression_positions`), and `nullary_constructor_expr`, the
+        one without an argument list, is E040
+        (`TestARightOperandThatIsNoCall`)."""
         forms = {type(c).__name__ for f in FORMS
                  for c in _calls(parse_to_ast(_form_files(f, "tail", 1)[
                      "main.vera"])) if c.piped}
@@ -840,14 +856,20 @@ class TestTheTransform:
         assert isinstance(direct, ast.FnCall) and not direct.piped
 
     def test_the_call_carries_the_pipes_span(self) -> None:
-        """Diagnostics point at the pipe: the call's span is the whole
-        `a |> f(b)`, from the piped value to the closing parenthesis."""
+        """The call owns the whole `a |> f(b)`, from the piped value to the
+        closing parenthesis; its stage, `f(b)` as written on the right of
+        `|>`, has a span of its own, where a diagnostic about the call
+        itself is placed (`TestADiagnosticAtItsStage`)."""
         source = _fn("f(@Int -> @Int)", "@Int.0 |> sub2(3)", vis="public")
         call = _body(source)
         line = source.splitlines().index("  @Int.0 |> sub2(3)") + 1
         assert call.span is not None
         assert (call.span.line, call.span.column) == (line, 3)
         assert (call.span.end_line, call.span.end_column) == (line, 20)
+        assert isinstance(call, ast.FnCall) and call.stage_span is not None
+        assert (call.stage_span.line, call.stage_span.column) == (line, 13)
+        assert (call.stage_span.end_line,
+                call.stage_span.end_column) == (line, 20)
 
     def test_no_binary_operator_is_a_pipe(self) -> None:
         """The operator enum has no pipe, so no `BinaryExpr` is a call."""
@@ -855,12 +877,19 @@ class TestTheTransform:
 
     def test_the_spelling_is_shown_only_where_it_is_set(self) -> None:
         """`vera ast` and `vera ast --json` show `piped` on a piped call and
-        nowhere else, so every other node serialises as it always did."""
+        nowhere else, so every other node serialises as it always did.  The
+        stage's span is a position, shown by `--json` beside `span` and,
+        like `span`, not in the tree `vera ast` prints."""
         piped, direct = _piped_call("1 |> sub2(2)"), _piped_call("sub2(1, 2)")
         assert piped.to_dict()["piped"] is True
         assert "piped" not in direct.to_dict()
         assert "piped: True" in piped.pretty()
         assert "piped" not in direct.pretty()
+        assert set(piped.to_dict()["stage_span"]) == {
+            "line", "column", "end_line", "end_column"}
+        assert "stage_span" not in direct.to_dict()
+        assert "stage_span" not in piped.pretty()
+        assert piped == direct
 
     def test_a_message_quotes_the_pipe_as_written(self) -> None:
         """`ast.format_expr`, which runtime messages and obligation texts
@@ -870,14 +899,388 @@ class TestTheTransform:
                      "1 |> sub2(2) |> sub2(3)"):
             assert ast.format_expr(_piped_call(text)) == text
 
-    def test_a_diagnostic_on_a_piped_call_points_at_the_pipe(self) -> None:
-        source = _with(_CALLEES, main=_fn(
-            "f(@Int -> @Int)", "@Int.0 |> sub2()", vis="public"))
+# =====================================================================
+# Where a diagnostic about a piped call is placed
+# =====================================================================
+#
+# The call owns the pipe's whole span, for the AST, the formatter and the
+# obligation records, so in `a |> f() |> g()` the call `g` begins at `a`.
+# A diagnostic the checker reports about the call itself (its callee, its
+# argument count, the constructor, operation or module it names) is placed
+# at its stage, the call written on the right of `|>`, as on `main`: in a
+# chain it names the stage at fault, and the line it quotes is the one that
+# stage is written on.  A diagnostic about one of the call's arguments stays
+# at that argument, and one about the call's value, which its context
+# reports, where the value begins, at the pipe: `main` placed both there.
+
+#: What every stage cell's program declares.  `id` and `unit_id` pass a
+#: value on unchanged, so the stages around the call at fault draw nothing.
+_STAGE_DECLS = "\n".join((
+    _ID,
+    _fn("unit_id(@Unit -> @Unit)", "()"),
+    _fn("sub2(@Int, @Int -> @Int)", "@Int.1 - @Int.0"),
+    "private data Box {\n  MkBox(Int)\n}\n",
+    "private data Res<A, B> {\n  MkOk(A),\n  MkErr(B)\n}\n",
+    ("private forall<T> fn eq2(@T, @T -> @Bool)\n  requires(true)\n"
+     "  ensures(true)\n  effects(pure)\n{\n  true\n}\n"),
+    _fn("shout(@String -> @Unit)", "IO.print(@String.0)", eff="<IO>"),
+    _fn("host(@Int -> @Int)", "hlp(@Int.0)") + (
+        "where {\n  fn hlp(@Int -> @Int)\n    requires(true)\n"
+        "    ensures(true)\n    effects(pure)\n  {\n    @Int.0\n  }\n}\n"),
+))
+
+#: `ma` with a private function, for the calls that name a module.
+_MA_STAGE = _MA + "\n" + _fn("hidden(@Int -> @Int)", "@Int.0")
+
+#: The function a chain is written in; `{chain}` stands for it.
+_STAGE_MAIN = ("public fn f(@Int -> @Int)\n  requires(true)\n  ensures(true)\n"
+               "  effects({eff})\n{\n  {chain};\n  0\n}\n")
+
+#: A contract that calls back into its own function (E138).
+_CONTRACT_MAIN = ("public fn f(@Int -> @Int)\n  requires(({chain}) > 0)\n"
+                  "  ensures(true)\n  effects(pure)\n{\n  @Int.0\n}\n")
+
+#: A handler clause whose `put` an enclosing handler of the same `State`
+#: shadows (E339).
+_CLAUSE_MAIN = (
+    "public fn f(@Int -> @Int)\n  requires(true)\n  ensures(true)\n"
+    "  effects(pure)\n{\n"
+    "  handle[State<Int>](@Int = 100) {\n"
+    "    get(@Unit) -> { resume(@Int.0) },\n"
+    "    put(@Int) -> { resume(()) }\n"
+    "  } in {\n"
+    "    let @Int = handle[State<Int>](@Int = 5) {\n"
+    "      get(@Unit) -> { {chain}; resume(@Int.0) },\n"
+    "      put(@Int) -> { resume(()) }\n"
+    "    } in {\n      get(())\n    };\n"
+    "    @Int.0 * 1000 + get(())\n  }\n}\n")
+
+
+class Stage(NamedTuple):
+    """A call the checker reports a diagnostic about, at the call itself."""
+
+    code: str
+    #: The value piped into the call.
+    value: str
+    #: The call, as it is written after `|>`.
+    stage: str
+    #: The call written directly, `{v}` standing for the value.
+    direct: str
+    eff: str = "pure"
+    #: A stage that passes the value on, written before the call at fault;
+    #: None where none can (a SQL string would stop being a literal).
+    before: str | None = "id()"
+    #: One that passes the call's result on, written after it.
+    after: str = "id()"
+    #: What the program begins with: an import, or its own module line.
+    head: str = ""
+    #: The module file, for a call that names one.
+    module: str | None = None
+    #: The chain can be a string interpolation's segment.
+    interpolates: bool = False
+    main: str = _STAGE_MAIN
+
+
+#: Each code the checker reports at a call node, with a call that draws it.
+STAGES: tuple[Stage, ...] = (
+    Stage("E200", "@Int.0", "nope()", "nope({v})", interpolates=True),
+    Stage("E201", "@Int.0", "sub2()", "sub2({v})", interpolates=True),
+    Stage("E178", "@Int.0", "hlp()", "hlp({v})", interpolates=True),
+    Stage("E217", '"x"', "print()", "print({v})", eff="<IO>",
+          after="unit_id()"),
+    Stage("E205", 'MkOk("x")', "eq2(MkOk(5))", "eq2({v}, MkOk(5))"),
+    Stage("E206", "()", "id()", "id({v})", before="unit_id()",
+          after="unit_id()"),
+    Stage("E125", '"x"', "shout()", "shout({v})", after="unit_id()"),
+    Stage("E201", "fn(@Int -> @Int) effects(pure) { @Int.0 }",
+          "apply_fn(1, 2)", "apply_fn({v}, 1, 2)"),
+    Stage("E125", "fn(@String -> @Unit) effects(<IO>) { IO.print(@String.0) }",
+          'apply_fn("x")', 'apply_fn({v}, "x")', after="unit_id()"),
+    Stage("W002", "IO.read_line(())", "async()", "async({v})",
+          eff="<IO, Async>"),
+    Stage("E203", '"x"', 'IO.print("y")', 'IO.print({v}, "y")', eff="<IO>",
+          after="unit_id()"),
+    Stage("E220", "@Int.0", "Nope.op()", "Nope.op({v})"),
+    Stage("E208", '"SELECT * FROM u WHERE a = ? AND b = ?"',
+          'DB.query([Some("x")])', 'DB.query({v}, [Some("x")])', eff="<DB>",
+          before=None),
+    Stage("E209", '"SELECT * FROM u WHERE a = $1"', 'DB.query([Some("x")])',
+          'DB.query({v}, [Some("x")])', eff="<DB>", before=None),
+    Stage("E240", "@Int.0", "show(1)", "show({v}, 1)", interpolates=True),
+    Stage("E210", "@Int.0", "Nope()", "Nope({v})"),
+    Stage("E211", "@Int.0", "None()", "None({v})"),
+    Stage("E212", "@Int.0", "MkBox(1)", "MkBox({v}, 1)"),
+    Stage("E230", "@Int.0", "nomod::fn1()", "nomod::fn1({v})"),
+    Stage("E231", "@Int.0", "ma::echo()", "ma::echo({v})",
+          head="import ma(sub2);\n\n", module=_MA_STAGE),
+    Stage("E232", "@Int.0", "ma::hidden()", "ma::hidden({v})",
+          head="import ma;\n\n", module=_MA_STAGE),
+    Stage("E233", "@Int.0", "ma::nothere()", "ma::nothere({v})",
+          head="import ma;\n\n", module=_MA_STAGE),
+    Stage("E233", "@Int.0", "own::nothere()", "own::nothere({v})",
+          head="module own;\n\n"),
+    # Reported after the checking, from what a walk over the checked
+    # program finds: the call graph's sites, and a handler clause's
+    # operations.
+    Stage("E138", "@Int.0", "f()", "f({v})", main=_CONTRACT_MAIN),
+    Stage("E339", "42", "put()", "put({v})", after="unit_id()",
+          main=_CLAUSE_MAIN),
+)
+
+#: The codes `vera/checker/calls.py` reports at one of the call's arguments,
+#: which keeps its own position.
+_AT_AN_ARGUMENT = frozenset({"E202", "E204", "E207", "E213", "E241", "E242"})
+
+#: And the ones no pipe can draw.
+_NO_PIPE = {
+    "E214": "a constructor with no argument list is no call (E040)",
+    "E215": "a constructor with no argument list is no call (E040)",
+    "E216": "a piped tuple has a component, the piped value",
+}
+
+#: Where the call at fault stands in its chain: a stage before it, a stage
+#: after it.
+_SHAPES = (("alone", False, False), ("last", True, False),
+           ("first", False, True), ("middle", True, True))
+
+
+def _apply(stage: str, arg: str) -> str:
+    """*stage* written as the direct call, *arg* its first argument."""
+    open_ = stage.index("(")
+    rest = stage[open_ + 1:]
+    return stage[:open_ + 1] + arg + ("" if rest == ")" else ", ") + rest
+
+
+def _stage_source(cell: Stage, shape: tuple[str, bool, bool], layout: str,
+                  piped: bool) -> tuple[str, int]:
+    """The program, and the offset at which the call at fault is written:
+    its stage in the pipe, its callee in the direct spelling."""
+    _label, before, after = shape
+    mark = "\x00"
+    if piped:
+        sep = "\n    |> " if layout == "lines" else " |> "
+        stages = ([cell.before] if before and cell.before else []) + [
+            mark + cell.stage] + ([cell.after] if after else [])
+        chain = cell.value + "".join(sep + s for s in stages)
+    else:
+        value = (_apply(cell.before, cell.value) if before and cell.before
+                 else cell.value)
+        call = mark + cell.direct.replace("{v}", value)
+        chain = _apply(cell.after, call) if after else call
+    if layout == "interpolation":
+        chain = 'string_length("v=\\(' + chain + ')")'
+    main = cell.main.replace("{eff}", cell.eff).replace("{chain}", chain)
+    source = cell.head + "\n".join((_STAGE_DECLS, main))
+    return source.replace(mark, ""), source.index(mark)
+
+
+def _line_col(source: str, offset: int) -> tuple[int, int]:
+    """The 1-based line and column of *offset* in *source*."""
+    return (source.count("\n", 0, offset) + 1,
+            offset - source.rfind("\n", 0, offset))
+
+
+def _stage_diagnostics(tmp_path: Path, cell: Stage,
+                       source: str) -> list[Diagnostic]:
+    if cell.module is None:
+        return _check(source)
+    return check_multi_module(tmp_path, {"main.vera": source,
+                                         "ma.vera": cell.module})
+
+
+def _stage_cells() -> list[object]:
+    cells: list[object] = []
+    for cell in STAGES:
+        for shape in _SHAPES:
+            if shape[1] and cell.before is None:
+                continue
+            layouts = ["lines", "one line"] + (
+                ["interpolation"] if cell.interpolates else [])
+            cells.extend(pytest.param(
+                cell, shape, layout,
+                id=f"{cell.code} {cell.stage} {shape[0]} {layout}")
+                for layout in layouts)
+    return cells
+
+
+def _load_script(name: str) -> object:
+    """A module of `scripts/`, by file name."""
+    key = f"_pipe_desugar_{name}"
+    if key in sys.modules:
+        return sys.modules[key]
+    spec = importlib.util.spec_from_file_location(
+        key, ROOT / "scripts" / f"{name}.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    # Registered before it runs: a dataclass it defines looks its module
+    # up by name.
+    sys.modules[key] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _codes_reported_in(path: Path) -> set[str]:
+    """Every code a diagnostic site in *path* reports, read off the source
+    as `check_diagnostic_fields.py` reads it."""
+    import ast as pyast
+
+    fields = _load_script("check_diagnostic_fields")
+    source = path.read_text(encoding="utf-8")
+    tree = pyast.parse(source)
+    codes: set[str] = set()
+    for call in fields._diagnostic_call_sites(  # type: ignore[attr-defined]
+            source, path.relative_to(ROOT).as_posix(), tree):
+        for keyword in call.keywords:
+            if (keyword.arg == "error_code"
+                    and isinstance(keyword.value, pyast.Constant)):
+                codes.add(str(keyword.value.value))
+    return codes
+
+
+def _codes_reported_about_a_call() -> set[str]:
+    """Every code the checker reports inside `with self._about_the_call(…)`,
+    the reports about a call made after the checking."""
+    import ast as pyast
+
+    codes: set[str] = set()
+    for path in sorted((ROOT / "vera" / "checker").glob("*.py")):
+        tree = pyast.parse(path.read_text(encoding="utf-8"))
+        for node in pyast.walk(tree):
+            if not (isinstance(node, pyast.With) and any(
+                    isinstance(item.context_expr, pyast.Call)
+                    and isinstance(item.context_expr.func, pyast.Attribute)
+                    and item.context_expr.func.attr == "_about_the_call"
+                    for item in node.items)):
+                continue
+            for inner in pyast.walk(node):
+                if (isinstance(inner, pyast.Call)
+                        and isinstance(inner.func, pyast.Attribute)
+                        and inner.func.attr == "_error"):
+                    codes.update(
+                        str(kw.value.value) for kw in inner.keywords
+                        if kw.arg == "error_code"
+                        and isinstance(kw.value, pyast.Constant))
+    return codes
+
+
+def _piped_nest(depth: int) -> str:
+    """A `depth`-deep nest of handlers over distinct `State` types, each
+    clause performing two piped `put`s of the enclosing type
+    (`test_nested_handler_clause_ops._deep_nest`, piped)."""
+    decls = "\n".join(f"private data C{i} {{ K{i}(Int) }}"
+                      for i in range(1, depth + 1))
+    levels = []
+    for i in range(1, depth + 1):
+        body = "".join(f"K{i - 1}({i + 100 * j}) |> put(); "
+                       for j in range(2)) if i > 1 else ""
+        levels.append(f"handle[State<C{i}>](@C{i} = K{i}(1)) {{\n"
+                      f"  get(@Unit) -> {{ resume(@C{i}.0) }},\n"
+                      f"  put(@C{i}) -> {{ {body}resume(()) }}\n}} in {{")
+    inner = (f"put(K{depth}(7));\n"
+             f"match get(()) {{\n  K{depth}(@Int) -> {{ @Int.0 }}\n}}")
+    nest = "\n".join(levels) + "\n" + inner + "\n" + "}\n" * depth
+    return (f"{decls}\n\nprivate fn probe(@Unit -> @Int)\n  requires(true)\n"
+            f"  ensures(true)\n  effects(pure)\n{{\n{nest}}}\n")
+
+
+#: A diagnostic that is not about the call itself, piped: its code, the
+#: body with `\x00` where it is placed, and what it is about.
+_NOT_AT_THE_STAGE = (
+    ("E202", '\x00"s"\n    |> sub2(3);\n  0', "the piped value"),
+    ("E202", '@Int.0\n    |> sub2(\x00"s");\n  0', "an argument in the list"),
+    ("E202", "\x00@Int.0\n    |> gt(3)\n    |> sub2(1);\n  0",
+     "a pipe as the piped value"),
+    ("E213", '\x00"s"\n    |> MkBox();\n  0', "a constructor's field"),
+    ("E170", "let @Bool = \x00@Int.0\n    |> sub2(3);\n  true",
+     "a let's value"),
+    ("E300", "if \x00@Int.0\n    |> sub2(3) then { 1 } else { 2 }",
+     "an if condition"),
+)
+
+
+class TestADiagnosticAtItsStage:
+    """A diagnostic about a piped call itself is placed at its stage."""
+
+    def test_the_reported_chain(self) -> None:
+        """The review's chain, two of whose stages call `sub2`: the second
+        is given one argument, and its E201 is placed at that stage and
+        quotes its line, where `main` placed it."""
+        source = _with(_CALLEES, _fn("neg(@Int -> @Int)", "0 - @Int.0"),
+                       main=_fn("f(@Int -> @Int)",
+                                "let @Int = @Int.0\n    |> sub2(3)\n"
+                                "    |> neg()\n    |> sub2();\n  @Int.0",
+                                vis="public"))
         errors = [d for d in _check(source) if d.severity == "error"]
         assert [d.error_code for d in errors] == ["E201"]
-        line = source.splitlines().index("  @Int.0 |> sub2()") + 1
+        line = source.splitlines().index("    |> sub2();") + 1
         assert (errors[0].location.line, errors[0].location.column) == (
-            line, 3)
+            line, 8)
+        assert errors[0].source_line == "    |> sub2();"
+
+    def test_every_call_level_code_has_a_cell(self) -> None:
+        """Every code `vera/checker/calls.py` reports is a stage cell's,
+        one reported at an argument, or one no pipe can draw; and every
+        code reported about a call after the checking has a cell."""
+        calls = _codes_reported_in(ROOT / "vera" / "checker" / "calls.py")
+        claimed = {cell.code for cell in STAGES}
+        assert not calls - claimed - _AT_AN_ARGUMENT - set(_NO_PIPE), sorted(
+            calls - claimed - _AT_AN_ARGUMENT - set(_NO_PIPE))
+        assert _AT_AN_ARGUMENT | set(_NO_PIPE) <= calls
+        assert not claimed & (_AT_AN_ARGUMENT | set(_NO_PIPE))
+        later = _codes_reported_about_a_call()
+        assert later, "the scan found no report after the checking"
+        assert claimed - calls == later
+
+    @pytest.mark.parametrize("cell,shape,layout", _stage_cells())
+    def test_at_the_stage(self, cell: Stage, shape: tuple[str, bool, bool],
+                          layout: str, tmp_path: Path) -> None:
+        """The premise: the direct spelling draws the code once, at the
+        call's callee, and the pipe draws the same codes.  The assertion:
+        the pipe's is at its stage, quoting the line the stage is on."""
+        spellings = []
+        for name, piped in (("direct", False), ("piped", True)):
+            source, at = _stage_source(cell, shape, layout, piped)
+            spellings.append((source, at, _stage_diagnostics(
+                tmp_path / name, cell, source)))
+        direct_codes, piped_codes = (Counter(d.error_code for d in found)
+                                     for _source, _at, found in spellings)
+        assert piped_codes == direct_codes, spellings
+        for source, at, found in spellings:
+            matching = [d for d in found if d.error_code == cell.code]
+            assert len(matching) == 1, found
+            line, column = _line_col(source, at)
+            got = matching[0]
+            assert (got.location.line, got.location.column) == (
+                line, column), (got.location, got.source_line)
+            assert got.source_line == source.splitlines()[line - 1]
+
+    def test_a_clause_operation_past_the_depth_cap(self) -> None:
+        """E339's other refusal, a clause re-entered deeper than code
+        generation inlines: each refused `put` at its own stage."""
+        source = _piped_nest(9)
+        errors = [d for d in _check(source) if d.severity == "error"]
+        assert errors and {d.error_code for d in errors} == {"E339"}
+        for d in errors:
+            text = source.splitlines()[d.location.line - 1]
+            assert text[d.location.column - 4:].startswith("|> put()"), (
+                d.location, text)
+
+    @pytest.mark.parametrize("code,body,about", [
+        pytest.param(*cell, id=f"{cell[0]} {cell[2]}")
+        for cell in _NOT_AT_THE_STAGE])
+    def test_not_about_the_call(self, code: str, body: str,
+                                about: str) -> None:
+        """About an argument, at that argument; about the call's value,
+        where the value begins: the pipe."""
+        source = _with(_CALLEES, main=_fn(
+            "f(@Int -> @Int)" if code != "E170" else "f(@Int -> @Bool)",
+            body, vis="public"))
+        found = [d for d in _check(source.replace("\x00", ""))
+                 if d.error_code == code]
+        assert len(found) == 1, found
+        line, column = _line_col(source, source.index("\x00"))
+        assert (found[0].location.line, found[0].location.column) == (
+            line, column)
 
 
 class TestOneTypeForBothSpellings:

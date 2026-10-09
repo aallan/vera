@@ -397,13 +397,15 @@ def _remap_spans_inplace(
     node: Any, mapper: Any, _seen: set[int] | None = None,
 ) -> None:
     """Walk ``node`` and all descendants, replacing every ``Span`` field
-    in-place via ``mapper(span) -> Span``.
+    in-place via ``mapper(span) -> Span``: ``span``, and a piped call's
+    ``stage_span`` beside it.
 
     Uses ``object.__setattr__`` to bypass the frozen-dataclass guard;
     ``ast.Node.span`` is declared with ``compare=False`` precisely so
     late updates like this can correct synthetic-wrapper coordinates
-    without breaking equality semantics.  Walks ``list`` / ``tuple``
-    children and recurses into nested dataclass nodes.
+    without breaking equality semantics, and so is every other position.
+    Walks ``list`` / ``tuple`` children and recurses into nested dataclass
+    nodes.
 
     Used by ``_parse_interp_expr`` to remap spans from interpolation
     synthetic-wrapper coordinates back to original-source positions.
@@ -427,8 +429,8 @@ def _remap_spans_inplace(
     _seen.add(nid)
     for f in _dc_fields(node):
         val = getattr(node, f.name)
-        if f.name == "span" and isinstance(val, Span):
-            object.__setattr__(node, "span", mapper(val))
+        if isinstance(val, Span):
+            object.__setattr__(node, f.name, mapper(val))
         elif isinstance(val, (list, tuple)):
             for item in val:
                 _remap_spans_inplace(item, mapper, _seen)
@@ -1050,13 +1052,16 @@ class VeraTransformer(Transformer):
         # `a |> f(b, c)` is the call `f(a, b, c)` (spec §4.11.2), built here
         # once so that no later phase sees a pipe.  The call keeps its own
         # node type, so a module call keeps the path that routes it, and
-        # takes the pipe's span, where its diagnostics belong; `piped` tells
-        # the formatter to print the pipe back.
+        # takes the pipe's span, which owns the call; `piped` tells the
+        # formatter to print the pipe back, and `stage_span` keeps where
+        # `f(b, c)` is written, where a diagnostic about the call itself is
+        # placed (`ast._stage`).
         left, right = children
         if not isinstance(right, _PIPE_TARGETS) or right.piped:
             raise _pipe_operand_error(right, meta)
         return replace(right, args=(left, *right.args),
-                       span=_span_from_meta(meta), piped=True)
+                       span=_span_from_meta(meta), piped=True,
+                       stage_span=right.span)
 
     # =================================================================
     # Expressions — Unary Operators

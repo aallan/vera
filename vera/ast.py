@@ -66,7 +66,7 @@ class Node:
         prefix = "  " * indent
         lines = [f"{prefix}{type(self).__name__}"]
         for f in fields(self):
-            if f.name == "span":
+            if f.name == "span" or f.metadata.get("position"):
                 continue
             val = getattr(self, f.name)
             if f.metadata.get("spelling") and not val:
@@ -84,6 +84,22 @@ def _spelling() -> Any:
     show it only where it is set."""
     return field(default=False, kw_only=True, repr=False, compare=False,
                  metadata={"spelling": True})
+
+
+def _stage() -> Any:
+    """Where a piped call's STAGE is written: the call on the right of
+    ``|>``, from its callee to its closing parenthesis.
+
+    The call's own span is the pipe's, which owns the call for the AST, the
+    formatter and the obligation records; a diagnostic about the call
+    itself (its callee, its arguments' count, the constructor or module it
+    names) is placed at the stage instead, where the call is written, so in
+    a chain it names the stage at fault.  A spelling field and a position,
+    like ``span``: no part in equality, hashing or ``repr``; ``to_dict``
+    shows it where it is set, and ``pretty``, which shows no position, does
+    not."""
+    return field(default=None, kw_only=True, repr=False, compare=False,
+                 metadata={"spelling": True, "position": True})
 
 
 def _serialise(val: Any) -> Any:
@@ -445,7 +461,8 @@ class ResultRef(Expr):
 # A call written as a pipe, `a |> f(b)`, IS the call `f(a, b)` (spec
 # §4.11.2): the transform builds the call with the piped value as its first
 # argument and the pipe's span, and sets `piped` so the formatter prints the
-# pipe back.  No phase after the transform sees a pipe.
+# pipe back, and `stage_span` where `f(b)` is written, for a diagnostic
+# about the call itself.  No phase after the transform sees a pipe.
 
 @dataclass(frozen=True)
 class FnCall(Expr):
@@ -454,6 +471,8 @@ class FnCall(Expr):
     args: tuple[Expr, ...]
     #: Written as ``args[0] |> name(args[1:])``.
     piped: bool = _spelling()
+    #: Where ``name(args[1:])`` is written, when piped (:func:`_stage`).
+    stage_span: Span | None = _stage()
 
 
 @dataclass(frozen=True)
@@ -463,6 +482,8 @@ class ConstructorCall(Expr):
     args: tuple[Expr, ...]
     #: Written as ``args[0] |> name(args[1:])``.
     piped: bool = _spelling()
+    #: Where ``name(args[1:])`` is written, when piped (:func:`_stage`).
+    stage_span: Span | None = _stage()
 
 
 @dataclass(frozen=True)
@@ -492,6 +513,8 @@ class QualifiedCall(Expr):
     args: tuple[Expr, ...]
     #: Written as ``args[0] |> qualifier.name(args[1:])``.
     piped: bool = _spelling()
+    #: Where ``qualifier.name(args[1:])`` is written, when piped (:func:`_stage`).
+    stage_span: Span | None = _stage()
 
 
 @dataclass(frozen=True)
@@ -502,6 +525,8 @@ class ModuleCall(Expr):
     args: tuple[Expr, ...]
     #: Written as ``args[0] |> path::name(args[1:])``.
     piped: bool = _spelling()
+    #: Where ``path::name(args[1:])`` is written, when piped (:func:`_stage`).
+    stage_span: Span | None = _stage()
 
 
 # -- Lambda --

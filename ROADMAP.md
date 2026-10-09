@@ -18,7 +18,7 @@ v0.3.0 is the sound base (Stage 29), reached through v0.2.1 to v0.2.8 (Stages 21
 
 ## The next burndown
 
-*Seventy-eight open bugs, driven to zero.*
+*Eighty-two open bugs, driven to zero.*
 
 A bug class outranks stage work, so the open `bug`-labelled set is the queue the fix releases work from, soundness defects first.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) carries each row's full account and stays the one place the detail lives; this table is the order of attack.
 
@@ -104,6 +104,10 @@ Bugs in a mechanism cluster close in the stage that removes their mechanism and 
 | [#1610](https://github.com/aallan/vera/issues/1610) | `vera/proposeEdit` applies an edit that introduces a `timeout` obligation, where it refuses an introduced `tier3`. |
 | [#1613](https://github.com/aallan/vera/issues/1613) | A generic constructor nested in a container literal is neither obligated nor guarded, so a negative `@Nat` payload is stored. |
 | [#1632](https://github.com/aallan/vera/issues/1632) | A diagnostic inside a multi-line string's interpolation is reported on the line the string opens. |
+| [#1636](https://github.com/aallan/vera/issues/1636) | A transform-stage diagnostic (`E009`, `E040`) names no file and quotes no source line. |
+| [#1637](https://github.com/aallan/vera/issues/1637) | The language server places every diagnostic one character after its column. |
+| [#1638](https://github.com/aallan/vera/issues/1638) | An imported module's `if` whose arms both call the module's generic compiles to a module that does not validate. |
+| [#1641](https://github.com/aallan/vera/issues/1641) | A verifier diagnostic at a pipe's stage (`E501`, `E532`) is placed where the chain begins. |
 
 ## Stage 19 — The verification completeness sprint
 
