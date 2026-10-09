@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - **One lock update carries the six open dependency bumps**: `wasmtime` 49.0.0, `ruff` 0.16.10, `mypy` 2.4.0 and `virtualenv` 21.7.13 in `uv.lock`, and `vscode-languageclient` 10.1.2 and `brace-expansion` 5.0.12 in the VS Code extension, which moves to **0.2.3**.  The `brace-expansion` bump closes [GHSA-6j4f-fj2g-mc7p](https://github.com/advisories/GHSA-6j4f-fj2g-mc7p), a high-severity denial of service through uncontrolled recursion in `parseCommaParts`; it is a runtime dependency bundled into the shipped extension, so 0.2.2 carries the vulnerable version until 0.2.3 is published.  Each lock change is identical to the Dependabot PR it replaces (#1616, #1618, #1619, #1620, #1621, #1622), so every bump has already passed CI on its own; landing them as one change costs one CI run instead of six and no lockfile rebases.
+- **Coverage is measured on push to `main`, not on pull requests.**  The instrumented cell cost about 2.5× an uninstrumented one and set every pull request's wall time (72–79 minutes on the last six runs, against 20–32 for the other twelve cells), so a pull request now runs that cell uninstrumented; `main`'s push run measures coverage with the `sysmon` core and uploads it, which keeps Codecov tracking `main`.  `release/**` leaves the CI triggers, since fix PRs target `main` and releases are cut from short-lived `prep/` branches, and Dependabot groups each ecosystem's bumps into one weekly PR.
 
 ## [0.2.0] - 2026-09-28
 

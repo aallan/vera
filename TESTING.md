@@ -1357,12 +1357,12 @@ The validation hooks are smart about triggers -- each fires only when files matc
 
 ## CI Pipeline
 
-GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the following ten parallel jobs on every push and pull request to `main` and `release/**` (the test row is split into a baseline variant and a coverage-instrumented variant on the gating cell, sharing the same underlying job definition):
+GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the following ten parallel jobs on every push and pull request to `main` (the test row is split into a baseline variant and a coverage-instrumented variant that runs on push to `main` only, sharing the same underlying job definition):
 
 | Job | Matrix / Runner | What it checks |
 |-----|----------------|---------------|
 | **test** | Python 3.11, 3.12, 3.13 × ubuntu-latest, macos-15, macos-26, windows-latest, plus advisory ubuntu-24.04-arm × 3.12 (13 combos) | The full suite, `pytest -v -n auto`, passes on all combinations — the one place the whole suite runs; a commit runs only the test files it stages |
-| **test** (coverage) | Python 3.12 x Ubuntu only | `pytest --cov=vera --cov-fail-under=80` |
+| **test** (coverage) | Python 3.12 x Ubuntu, on push to `main` only | `pytest --cov=vera --cov-fail-under=80` with the `sysmon` core; a pull request runs that cell uninstrumented, so no pull request waits on the instrumented run |
 | **typecheck** | Python 3.12 x Ubuntu | `mypy vera/` clean in strict mode |
 | **lint** | Python 3.12 x Ubuntu | `check_changelog_updated.py`, `check_conformance.py`, `check_examples.py`, `check_corpus_canonical.py`, `check_examples_readme.py`, `check_version_sync.py`, `check_doc_examples.py`, `check_grammar_alignment.py`, `check_diagnostic_examples.py`, `check_doc_builtin_shadowing.py`, `check_e602_clean.py`, `check_examples_run.py`, `check_editor_grammars.py`, `check_diagnostic_fields.py`, `check_walker_coverage.py`, `check_explicit_encoding.py`, `check_site_assets.py`, `check_licenses.py`, `check_doc_counts.py` (with `--release` on pull requests into `main` and pushes to `main`), `check_limitations_sync.py`, `ruff check .`, `ruff check --select S vera/` (security rules), the pre-commit-hooks hygiene hooks over every file (`pre-commit run --all-files`; `check-added-large-files` stays at the commit, since it inspects what a commit adds), `uv lock --check` |
 | **security** | Ubuntu | [Gitleaks](https://github.com/gitleaks/gitleaks-action) secret scanning on full history |

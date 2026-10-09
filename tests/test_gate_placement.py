@@ -9,7 +9,7 @@ the configuration files themselves:
 - ``.pre-commit-config.yaml``: the hook set is the pinned list, and no hook
   runs the whole suite or one of the slow sweeps.
 - ``.github/workflows/ci.yml``: on both ``pull_request`` and ``push`` to
-  ``main`` and ``release/**``, every matrix cell runs the whole suite,
+  ``main`` only, every matrix cell runs the whole suite,
   conformance and the examples run, every gate the hook runs is run too,
   and the documentation counts run in release mode exactly on ``main``.
 
@@ -616,7 +616,7 @@ class TestThePreCommitHookIsFast:
 
 
 # ---------------------------------------------------------------------------
-# CI: everything, on both events, on main and release/**
+# CI: everything, on both events, on main
 # ---------------------------------------------------------------------------
 
 
@@ -663,12 +663,12 @@ class TestCiRunsEveryGate:
     no `continue-on-error`, no shell substituted for `bash -e`, and no run
     command that swallows its own failure."""
 
-    def test_both_events_reach_main_and_release_branches_unfiltered(self) -> None:
+    def test_both_events_reach_main_unfiltered(self) -> None:
         triggers = _triggers(_workflow())
         for event in ("push", "pull_request"):
             assert event in triggers, event
             spec = triggers[event] or {}
-            assert {"main", "release/**"} <= set(spec.get("branches", [])), event
+            assert set(spec.get("branches", [])) == {"main"}, event
             for narrowing in ("paths", "paths-ignore", "branches-ignore"):
                 assert narrowing not in spec, (
                     f"{event} carries `{narrowing}`, so some changes would"

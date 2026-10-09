@@ -2,13 +2,14 @@ name: CI
 
 on:
   push:
-    branches: [main, 'release/**']
+    branches: [main]
   pull_request:
-    branches: [main, 'release/**']
+    branches: [main]
 
 # Cancel superseded runs of the same PR (each push restarts the matrix).
-# Push runs are never cancelled: main and release/** keep a completed
-# check run per commit, which release tagging and bisection rely on.
+# Push runs are never cancelled: main keeps a completed check run per
+# commit, which bisection relies on, and that run is the one that
+# measures coverage (see the test job), so no pull request waits on it.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -39,6 +40,8 @@ jobs:
           - os: ubuntu-24.04-arm
             python-version: "3.12"
 
+    # The ' + coverage' suffix is the name of a required status check; it
+    # stays until the branch-protection list is updated with the fast lane.
     name: test (${{ matrix.os }}, ${{ matrix.python-version }})${{ matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest' && ' + coverage' || '' }}
     runs-on: ${{ matrix.os }}
     # No PYTHONUTF8 env: #645 made text I/O UTF-8 without the PEP-540 backstop
@@ -61,22 +64,25 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[dev]"
 
-      # Two mutually-exclusive run-test steps so the gating cell
-      # (3.12 / ubuntu) does coverage in the SAME pytest invocation
-      # rather than running the full suite twice.  -n auto runs tests
-      # in parallel across CPU cores via pytest-xdist; the coverage
-      # cell takes the longest because instrumentation adds overhead,
-      # so it sets the wall time and gets parallelised too.
+      # Coverage is measured on push to main only.  The instrumented cell
+      # costs about 2.5x an uninstrumented one and set the wall time of
+      # every pull-request run, so a pull request runs the same suite
+      # uninstrumented on every cell, and main's push run measures
+      # coverage (with the sysmon core, Python 3.12+) and uploads it,
+      # which keeps Codecov tracking main.  -n auto runs tests in
+      # parallel across CPU cores via pytest-xdist.
       - name: Run tests
-        if: ${{ !(matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest') }}
+        if: ${{ !(matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest' && github.event_name == 'push') }}
         run: pytest -v -n auto
 
       - name: Run tests with coverage
-        if: matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest'
+        if: matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest' && github.event_name == 'push'
+        env:
+          COVERAGE_CORE: sysmon
         run: pytest -v -n auto --cov=vera --cov-report=term-missing --cov-report=xml --cov-fail-under=80
 
       - name: Upload coverage to Codecov
-        if: matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest'
+        if: matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest' && github.event_name == 'push'
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}

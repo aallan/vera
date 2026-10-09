@@ -20,6 +20,11 @@ updates:
     labels:
       - "dependencies"
     open-pull-requests-limit: 5
+    # One PR per week for every Python bump, so the lockfile is rebased
+    # once rather than once per package under strict branch protection.
+    groups:
+      python:
+        patterns: ["*"]
 
   # VS Code extension dependencies (npm).
   # Without this entry the extension's tree was only ever updated when
@@ -38,6 +43,9 @@ updates:
     labels:
       - "dependencies"
     open-pull-requests-limit: 5
+    groups:
+      extension:
+        patterns: ["*"]
 
   # GitHub Actions versions
   - package-ecosystem: "github-actions"
@@ -50,3 +58,6 @@ updates:
     labels:
       - "ci"
     open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns: ["*"]

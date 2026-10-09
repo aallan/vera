@@ -7,7 +7,7 @@
 # Placement.  This file holds the FAST gates — lint, types, the doc and
 # consistency gates, and the tests a commit stages — so a commit takes
 # minutes.  The slow gates run in CI (.github/workflows/ci.yml) on every pull
-# request and on every push to main and release/**, and there only: the full
+# request and on every push to main, and there only: the full
 # pytest suite on the whole OS x Python matrix (`test`), the conformance suite,
 # the examples' check + verify and their runs, the E602/E604 compile sweep
 # (`lint`), and the conformance and example runs under VERA_EAGER_GC=1
