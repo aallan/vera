@@ -1124,6 +1124,41 @@ def test_an_arm_that_cannot_narrow_needs_no_check(tmp_path: Path) -> None:
     assert joins == {8, 16, 24}
 
 
+_SELF_QUALIFIED = """\
+module ma;
+
+type Pos = { @Int | @Int.0 > 0 };
+
+public fn f(@Pos -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  7
+}
+
+public fn g(@Float64 -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  ma::f(float_to_int(@Float64.0))
+}
+"""
+
+
+def test_a_module_call_to_the_entry_modules_own_function_reaches_it(
+    tmp_path: Path,
+) -> None:
+    """`ma::f(...)` written inside module `ma` reaches `ma`'s own `f`: its
+    argument's record is answered by `f`'s prologue check (PR #1630 review,
+    CodeRabbit), and nothing is left unpaired."""
+    run = _written(tmp_path, "ma.vera", _SELF_QUALIFIED)
+    assert run.mismatches == [], run.mismatches
+    assert any(r.kind == "refine_bind" and r.line == 18
+               for r, _c in run.reconciliation.pairs)  # type: ignore[union-attr]
+
+
 def test_a_tier3_unguarded_record_does_not_account_for_a_check() -> None:
     """A record saying its site has no runtime check contradicts the check
     standing there."""

@@ -944,7 +944,12 @@ def join(
     records and checks in them (see the module docstring).
     """
     index = _Index()
-    index.add(file, program, entry=True)
+    # The entry program's own module path, when it declares one: a module
+    # call written inside it (`ma::f(...)` in module `ma`) reaches its own
+    # function through that path (PR #1630 review, CodeRabbit).
+    index.add(file, program, entry=True,
+              module_path=(tuple(program.module.path)
+                           if program.module is not None else None))
     for module in resolved_modules:
         index.add(str(module.file_path), module.program, entry=False,
                   module_path=tuple(module.path), direct=module.direct)
