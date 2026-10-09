@@ -42,12 +42,18 @@ EXPECTED_EXIT = "expected_exit"
 NONDETERMINISTIC_STDOUT = "nondeterministic_stdout"
 RUN_STAGE_KEYS = (EXPECTED_STDOUT, EXPECTED_EXIT, NONDETERMINISTIC_STDOUT)
 
+# Per-run wall-clock budget.  A conformance program finishes in about a
+# second, under VERA_EAGER_GC=1 too; this only fires on a hang, which it
+# turns into a mismatch naming the program instead of a stalled job.
+RUN_TIMEOUT_SECONDS = 120
+
 
 class RunOutcome(NamedTuple):
-    """What one ``vera run`` did: its exit status, and its two streams as the
-    bytes the process wrote."""
+    """What one ``vera run`` did: its exit status, or None when it did not
+    exit within its budget and was stopped, and its two streams as the
+    bytes the process wrote (so far, for a stopped run)."""
 
-    exit: int
+    exit: int | None
     stdout: bytes
     stderr: bytes
 
@@ -135,23 +141,41 @@ def run_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
     return env
 
 
-def run_program(path: Path) -> RunOutcome:
+def run_program(path: Path, timeout: float = RUN_TIMEOUT_SECONDS) -> RunOutcome:
     """``vera run <path>``, run the way both harnesses judge it.
 
     stdin is an immediate end of file, so what the run reads does not depend
     on what started the harness; the environment is :func:`run_env`'s; and
     stdout is kept as the bytes the process wrote, because a text-mode
     capture translates a lone ``\r`` into a newline before any comparison
-    could see it.
+    could see it.  A run still going after *timeout* seconds is stopped,
+    and its outcome has no exit status: a sentinel number could equal a
+    declared ``expected_exit``, which ``None`` never does.
     """
-    proc = subprocess.run(
-        [sys.executable, "-m", "vera.cli", "run", str(path)],
-        capture_output=True,
-        stdin=subprocess.DEVNULL,
-        env=run_env(),
-        check=False,
-    )
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "run", str(path)],
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            env=run_env(),
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as stopped:
+        return RunOutcome(
+            exit=None,
+            stdout=_captured(stopped.stdout),
+            stderr=_captured(stopped.stderr),
+        )
     return RunOutcome(exit=proc.returncode, stdout=proc.stdout, stderr=proc.stderr)
+
+
+def _captured(stream: bytes | str | None) -> bytes:
+    # What a stopped run had written: None when it wrote nothing, and bytes
+    # otherwise, since the capture is not in text mode.
+    if stream is None:
+        return b""
+    return stream if isinstance(stream, bytes) else stream.encode("utf-8")
 
 
 def wire_bytes(text: str, linesep: str = os.linesep) -> bytes:
@@ -174,7 +198,12 @@ def run_mismatch(
     and the actual output in full; None when it does not.  *entry* is one
     :func:`entry_problems` finds nothing wrong with."""
     lines: list[str] = []
-    if outcome.exit != entry[EXPECTED_EXIT]:
+    if outcome.exit is None:
+        lines.append(
+            f"exit status: expected {entry[EXPECTED_EXIT]}, but the run did "
+            f"not exit within its budget and was stopped"
+        )
+    elif outcome.exit != entry[EXPECTED_EXIT]:
         lines.append(
             f"exit status: expected {entry[EXPECTED_EXIT]}, got {outcome.exit}"
         )

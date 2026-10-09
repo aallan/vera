@@ -319,6 +319,22 @@ class TestRunComparison:
         assert golden.run_mismatch(entry, self._outcome(b"a\r\nb\r\n"), linesep="\r\n") is not None
         assert golden.run_mismatch(entry, self._outcome(b"a\r\r\nb\r\n"), linesep="\n") is not None
 
+    def test_a_run_that_did_not_exit_is_a_mismatch_whatever_it_declares(self) -> None:
+        """A stopped run has no exit status, so no declared one can match it:
+        not a pinned entry's, and not an escaped one's either, whose exit
+        status is still compared.  A sentinel integer could collide with a
+        declared status; ``None`` cannot."""
+        escaped = _entry(nondeterministic_stdout="prints the wall clock", expected_exit=0)
+        for entry in (self.PINNED, escaped):
+            mismatch = golden.run_mismatch(entry, self._outcome(b"42\n", exit=None), linesep="\n")
+            assert mismatch is not None and "did not exit" in mismatch, mismatch
+
+    def test_a_run_past_its_budget_is_stopped_and_has_no_exit_status(self) -> None:
+        """A budget no ``vera run`` can meet: the process is stopped, and the
+        outcome says it did not exit rather than inventing a status."""
+        outcome = golden.run_program(CONFORMANCE_DIR / "ch01_int_literals.vera", timeout=0.01)
+        assert outcome.exit is None, outcome
+
     def test_an_unpinned_output_still_has_its_exit_status_compared(self) -> None:
         entry = _entry(nondeterministic_stdout="prints the wall clock", expected_exit=0)
         assert golden.run_mismatch(entry, self._outcome(b"1791580123501\n"), linesep="\n") is None
