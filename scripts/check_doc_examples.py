@@ -109,7 +109,6 @@ from typing import Any, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from check_doc_counts import git_env
 from check_examples_run import (
     NEUTRALISED_ENV,
     RUN_SPECS,
@@ -1075,15 +1074,32 @@ def expand_gates(
     return docs, errors
 
 
+# git reads the repository to operate on from the environment before it
+# reads `cwd`, so these have to be cleared for *root* to mean *root*.
+GIT_REPO_ENV_VARS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+)
+
+
+def git_env() -> dict[str, str]:
+    """The ambient environment with git's repository selectors removed."""
+    return {k: v for k, v in os.environ.items() if k not in GIT_REPO_ENV_VARS}
+
+
 def tracked_documents(root: Path) -> list[str]:
     """Every tracked file the coverage rule reads, as repo-relative POSIX
     paths.  Tracked rather than on disk, so a scratch file in a working
     tree is not asked to justify itself.
 
-    git runs in *root* with its repository selectors cleared
-    (``check_doc_counts.git_env``): under a hook, git exports ``GIT_DIR``
-    and ``GIT_INDEX_FILE`` for the repository being committed, and they
-    would otherwise decide which repository answers, whatever *root* is.
+    git runs in *root* with its repository selectors cleared (`git_env`):
+    under a hook, git exports ``GIT_DIR`` and ``GIT_INDEX_FILE`` for the
+    repository being committed, and they would otherwise decide which
+    repository answers, whatever *root* is.
     """
     listing = subprocess.run(
         ["git", "ls-files", "-z"],

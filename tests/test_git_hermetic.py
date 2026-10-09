@@ -27,7 +27,7 @@ GIT_SPAWNING_TESTS = (
     "tests/test_release.py",
     "tests/test_check_changelog_updated.py",
     "tests/test_check_corpus_differential.py::TestBaseCheckoutReuse",
-    "tests/test_check_doc_counts.py::TestReleaseTags",
+    "tests/test_check_doc_counts.py::TestReleaseModeFor",
     "tests/test_check_doc_examples.py::TestLiveEnumeration",
     "tests/test_check_doc_examples.py::TestEnumerationIgnoresAnInheritedRepository",
     "tests/test_check_doc_examples.py::TestCoverage",
