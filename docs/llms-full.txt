@@ -158,6 +158,7 @@ Every diagnostic has a stable code grouped by compiler phase — the `W` series 
 - **W001** — Typed hole (`?`) — expected type and available bindings reported (warning, not error)
 - **W002** — `async()` argument evaluates eagerly: its effects fall outside the commutative set (`Http`), so the future is computed sequentially at the `async()` site rather than concurrently (warning, not error)
 - **W003** — Unverified assumption: an `assume` statement is taken on trust, not proved (warning, not error)
+- **W004** — `vera verify --reconcile` found a runtime check in the compiled module that no verification record accounts for: the check still runs, and the summary omits it (warning, not error)
 - **E001–E009** — Parse errors (missing contracts, unexpected tokens, malformed slot references, bad string escapes)
 - **E011–E013** — Import errors (circular import, unresolvable import, a module that fails to parse)
 - **E020, E021, E023** — Malformed comments: unterminated `{-` (E020) or `/*` (E021), or a `/*` nested inside another (E023 — only `{- -}` nests). Each names the delimiter at fault and how to close it.
@@ -166,7 +167,7 @@ Every diagnostic has a stable code grouped by compiler phase — the `W` series 
 - **E120–E186** — Type check: core + expressions (type mismatches, slot resolution, operators, declarations, termination)
 - **E200–E243** — Type check: calls (unresolved functions, argument mismatches, module calls, ability operations)
 - **E300–E339** — Type check: control flow (if/match, patterns, effect handlers)
-- **E500–E540** — Verification (contract violations, undecidable fallbacks, primitive-operation safety incl. arithmetic overflow, premise satisfiability)
+- **E500–E541** — Verification (contract violations, undecidable fallbacks, primitive-operation safety incl. arithmetic overflow, premise satisfiability, and E541: a runtime-check claim `vera verify --reconcile` found no check for in the compiled module)
 - **E600–E623** — Codegen (unsupported features, name collisions, typed holes block compilation); **E699** is an internal compiler error
 - **E700–E702** — Testing (contract violations, input generation, execution errors)
 

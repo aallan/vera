@@ -1,8 +1,12 @@
 #!/usr/bin/env python
 """Reconcile every corpus program's runtime-check claims with the checks
-its compiled module holds (the audit's T2a), for the CI lint job.
+its compiled module holds (the audit's T2a), for local and burndown use.
 
     python scripts/check_reconciliation.py
+
+CI runs the same join through `tests/test_reconciliation.py`, one test per
+corpus program and one strict xfail per `KNOWN` entry, on every test cell,
+so this script is not a CI step of its own.
 
 Each program of the corpus (every `.vera` file under `examples/` and
 `tests/conformance/`, at any depth, as `check_corpus_canonical.py` reads it)
@@ -16,11 +20,13 @@ goes through check, verify, compile and the join of
 * a :data:`KNOWN` entry the join no longer reports: the issue it names is
   fixed, so the entry comes out (`tests/test_reconciliation.py` pins every
   entry as a strict xfail, which flips at the same moment);
+* a :data:`KNOWN` key two mismatches share, which the entry would absorb;
 * a program that stops before the join for a reason the manifest does not
   give it: a refusal at check is the negative fixtures' alone, a refusal at
-  compile is allowed only for a program declared at level ``check``, and a
-  library module that does not check on its own is named in
-  :data:`FRAGMENTS`.
+  compile is a negative fixture's or a program named in
+  :data:`COMPILE_STOPS`, and a library module that does not check on its own
+  is named in :data:`FRAGMENTS`.  A program named in either table that
+  reaches the join is a problem too.
 
 :data:`KNOWN` is keyed by issue number.  Each entry names the open issue
 whose class the mismatch belongs to, the mismatch kind, the obligation kind
@@ -210,6 +216,14 @@ FRAGMENTS: dict[str, str] = {
 }
 
 
+#: Corpus programs that type-check and verify but that code generation
+#: refuses, and why: the join has no module to read for them.
+COMPILE_STOPS: dict[str, str] = {
+    "tests/conformance/ch03_typed_holes.vera":
+        "a typed hole has no code to compile (E614)",
+}
+
+
 @dataclass(frozen=True)
 class Program:
     """One corpus program, and what the manifest says it must reach."""
@@ -218,9 +232,6 @@ class Program:
     rel: str
     negative: bool = False
     """A manifest negative fixture: refused before verification."""
-
-    check_level: bool = False
-    """Declared at level ``check``: not required to compile."""
 
 
 def corpus() -> list[Program]:
@@ -238,7 +249,6 @@ def corpus() -> list[Program]:
             out.append(Program(
                 path=path, rel=rel,
                 negative=bool(entry and entry.get("expected_error")),
-                check_level=bool(entry and entry.get("level") == "check"),
             ))
     return out
 
@@ -268,10 +278,32 @@ def stop_problem(program: Program, run: object) -> str | None:
     if program.rel in FRAGMENTS:
         return "listed in FRAGMENTS, but it type-checks on its own"
     if compile_errors:
-        if program.check_level:
+        if program.rel in COMPILE_STOPS:
             return None
         return f"refused at compile: {compile_errors[0][:120]}"
     return None
+
+
+def joined_problem(program: Program) -> str | None:
+    """Why a program that reached the join should not have, or None."""
+    if program.negative:
+        return "a negative fixture reached the join"
+    if program.rel in COMPILE_STOPS:
+        return "listed in COMPILE_STOPS, but it compiles"
+    if program.rel in FRAGMENTS:
+        return "listed in FRAGMENTS, but it type-checks on its own"
+    return None
+
+
+def shared_keys(program: Program, mismatches: list[object]) -> list[str]:
+    """Every key two or more of *mismatches* share: a :class:`Known` entry
+    names one mismatch, so a second at its key would be absorbed."""
+    counts: dict[tuple[str, str, str, str], int] = {}
+    for mismatch in mismatches:
+        key = mismatch_key(program, mismatch)
+        counts[key] = counts.get(key, 0) + 1
+    return [f"{key[3]}: {n} {key[1]} {key[2]} mismatches share one key"
+            for key, n in counts.items() if n > 1]
 
 
 def main() -> int:
@@ -297,6 +329,11 @@ def main() -> int:
                 problems.append(f"{program.rel}: {why}")
             continue
         reconciled += 1
+        why = joined_problem(program)
+        if why:
+            problems.append(f"{program.rel}: {why}")
+        problems.extend(f"{program.rel}: {line}"
+                        for line in shared_keys(program, run.mismatches))
         for mismatch in run.mismatches:
             key = mismatch_key(program, mismatch)
             seen.add(key)

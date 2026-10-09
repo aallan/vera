@@ -50,6 +50,10 @@ class _ComponentGuardSite:
     and one the pre-scan therefore need not register.
     """
 
+    #: The component's position among the tuple's type arguments — the
+    #: constructor argument it is built from, and the step its guard names
+    #: in the check's path (`EmittedCheck.path`).
+    index: int
     field_offset: int
     #: The component's WASM REPRESENTATION, as `_type_expr_to_wasm_type`
     #: reports it — not "the load to emit" (#1466).  A pair component is
@@ -223,9 +227,16 @@ class ContractsMixin:
         base_env: WasmSlotEnv,
         *,
         at: ast.Node | None,
+        path: tuple[str, ...] = (),
     ) -> list[str] | None:
         """Compile a refinement-predicate runtime guard over *value_local*
         (#746).
+
+        *at* is the node the per-module record locates the check at and
+        *path* where inside that node's value the checked value sits
+        (``EmittedCheck.path``): a signature's guards all stand at its type,
+        and the path tells the top-level predicate from a component's or an
+        element's.
 
         The predicate is closed over the binder ``@<base>.0``; translating it
         against *base_env* extended with that base bound to *value_local* reads
@@ -269,7 +280,7 @@ class ContractsMixin:
             return None
         trap = ctx._emit_trap(
             "codegen/contracts.py:_emit_refinement_check", at=at,
-            message=message)
+            message=message, path=path)
         return [*cond, "i32.eqz", "if", *(f"  {i}" for i in trap), "end"]
 
     def _emit_boundary_refinement_guard(
@@ -508,7 +519,8 @@ class ContractsMixin:
                 f"{ast.format_expr(site.predicate)} failed"
             )
             check = self._emit_refinement_check(
-                ctx, site.predicate, site.base_name, elem, msg, env, at=te)
+                ctx, site.predicate, site.base_name, elem, msg, env, at=te,
+                path=(site.kind,))
             if check is None:
                 return []
             prepared.append((site, idx, elem, check))
@@ -637,7 +649,7 @@ class ContractsMixin:
             return
 
         offset = 4  # after the tag (i32, 4 bytes) — as construction lays it out
-        for comp_te in (node.type_args or ()):  # _resolve_tuple_type: non-empty
+        for index, comp_te in enumerate(node.type_args or ()):  # non-empty
             wt = self._type_expr_to_wasm_type(comp_te)
             if wt is None or wt == "unsupported":
                 # @Unit component: zero-size, occupies no slot and is erased —
@@ -678,6 +690,7 @@ class ContractsMixin:
                     "Nat",
                 )
             yield _ComponentGuardSite(
+                index=index,
                 field_offset=field_offset,
                 # The component's representation, WHOLE.  This used to yield
                 # the ptr half of a pair on the belief that "a Vera string /
@@ -701,6 +714,8 @@ class ContractsMixin:
         env: WasmSlotEnv,
         role: str,
         _depth: int = 0,
+        _at: ast.TypeExpr | None = None,
+        _path: tuple[str, ...] = (),
     ) -> list[str]:
         """Per-component refinement / ``@Nat`` runtime guards for a boundary
         **tuple** value (#746, PR-review-found FFI gap).
@@ -741,9 +756,17 @@ class ContractsMixin:
         the operand stack) and the emitted predicate checks do not allocate, so
         the loaded components need no separate GC rooting.  Mirrors the offset
         algorithm in ``_translate_constructor_call`` exactly — the layout this
-        decomposes is the one construction built."""
+        decomposes is the one construction built.
+
+        Every guard is recorded at the SIGNATURE's type (*_at*, the
+        outermost *te*) with the component's path below it — ``Tuple.<k>``
+        per level, a nested tuple's components one level further down — so
+        the record tells each component's check from the top-level one and
+        from its siblings' (PR #1630 review)."""
+        at = te if _at is None else _at
         instrs: list[str] = []
         for site in self._tuple_component_guard_sites(te, _depth):
+            path = (*_path, f"Tuple.{site.index}")
             # Materialise the component's WHOLE representation into the
             # local(s) its slot binds — one for a scalar or a handle, two
             # consecutive i32s for a `(ptr, len)` pair (#1466).  The binding
@@ -767,13 +790,13 @@ class ContractsMixin:
                 )
                 guard = self._emit_refinement_check(
                     ctx, predicate, base_name, binding.slot_local, msg, env,
-                    at=te)
+                    at=at, path=path)
                 if guard is not None:
                     instrs.extend(guard)
             if site.nested is not None:
                 instrs.extend(self._emit_component_refinement_guards(
                     ctx, sig_text, site.nested, binding.slot_local, env, role,
-                    _depth + 1))
+                    _depth + 1, _at=at, _path=path))
         return instrs
 
     def _has_guardable_tuple_components(
@@ -1347,38 +1370,42 @@ class ContractsMixin:
         # By INDEX, never by AST membership: two components can be
         # structurally equal (`decreases(@Nat.0, @Nat.0)`) and an `in` test
         # would then pair a check with whichever local matched first.
-        locals_ = [
-            measured[k] for k in self._dec_nat_measure_indices(ctx, contract)
+        components = [
+            (measured[k], contract.exprs[k])
+            for k in self._dec_nat_measure_indices(ctx, contract)
             if k < len(measured)
         ]
-        return self._dec_bound_check_pairs(
-            locals_, name, indent, ctx=ctx, at=contract)
+        return self._dec_bound_check_pairs(components, name, indent, ctx=ctx)
 
     def _dec_bound_check_pairs(
         self,
-        locals_: list[int],
+        components: list[tuple[int, ast.Expr]],
         name: str,
         indent: str = "",
         *,
         ctx: WasmContext,
-        at: ast.Node | None,
     ) -> list[str]:
-        """The emission itself: one range check per component local.
+        """The emission itself: one range check per component, over the
+        local holding its value.
 
         Both entry points reduce to this — the chain path, which already has
         the components in locals, and :meth:`_dec_bound_checks_only`, which
         evaluates them itself when the chain guard is declined — so the check
-        and its message are one derivation rather than two.
+        and its message are one derivation rather than two.  Each check is
+        recorded at the component it range-checks, which is where the
+        verifier records that component's ``decreases_bound``: at the clause,
+        one component's record was answered by any component's check (PR
+        #1630 review).
         """
         checks: list[str] = []
-        for local in locals_:
+        for local, component in components:
             msg = (
                 f"decreases() measure in '{name}' is outside the i64 range "
                 f"the termination check compares in: a @Nat above i64.MAX "
                 f"reads as negative, so the metric cannot be compared"
             )
             trap = ctx._emit_trap(
-                "codegen/contracts.py:_dec_bound_check_pairs", at=at,
+                "codegen/contracts.py:_dec_bound_check_pairs", at=component,
                 message=msg)
             checks.extend([
                 f"{indent}local.get {local}",
@@ -1455,7 +1482,7 @@ class ContractsMixin:
         if not nat_indices:
             return []
         instrs: list[str] = []
-        locals_: list[int] = []
+        components: list[tuple[int, ast.Expr]] = []
         for k in nat_indices:
             value = ctx.translate_expr(contract.exprs[k], env)
             if value is None:
@@ -1463,9 +1490,8 @@ class ContractsMixin:
             local = ctx.alloc_local("i64")
             instrs.extend(value)
             instrs.append(f"local.set {local}")
-            locals_.append(local)
-        return instrs + self._dec_bound_check_pairs(
-            locals_, name, ctx=ctx, at=contract)
+            components.append((local, contract.exprs[k]))
+        return instrs + self._dec_bound_check_pairs(components, name, ctx=ctx)
 
     def _compile_decreases_entry(
         self,

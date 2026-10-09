@@ -104,13 +104,17 @@ def test_the_corpus_holds_every_manifest_program_and_example() -> None:
 
 @pytest.mark.parametrize("program", PROGRAMS, ids=lambda p: p.rel)
 def test_program_reconciles(program: object) -> None:
-    """No mismatch outside ``KNOWN``, and no stop before the join that the
-    manifest does not declare."""
+    """No mismatch outside ``KNOWN``, no two mismatches sharing one key, and
+    no stop before the join, or arrival at it, that the manifest and the
+    gate's tables do not declare."""
     run = _run(program.path)  # type: ignore[attr-defined]
     if run.reconciliation is None:
         assert GATE.stop_problem(program, run) is None, (
             GATE.stop_problem(program, run))
         return
+    assert GATE.joined_problem(program) is None, GATE.joined_problem(program)
+    assert not GATE.shared_keys(program, run.mismatches), (
+        GATE.shared_keys(program, run.mismatches))
     known = {entry.key() for entry in GATE.KNOWN}
     unexpected = sorted(_keys(program, run) - known)
     assert not unexpected, (
@@ -156,6 +160,46 @@ def test_known_names_each_mismatch_once_and_only_corpus_programs() -> None:
         assert re.fullmatch(r"[\w.]+\.vera:\d+:\d+", entry.site), entry.site
 
 
+class _Stopped:
+    """A run that stopped before the join, as `stop_problem` reads one."""
+
+    def __init__(self, check_errors: list[str], compile_errors: list[str]):
+        self.check_errors = check_errors
+        self.compile_errors = compile_errors
+
+
+def test_only_a_declared_program_may_stop_at_compile() -> None:
+    """A program the manifest declares at level `check` still compiles
+    today; one that stopped compiling would drop out of the join, so only a
+    program `COMPILE_STOPS` names may stop there."""
+    manifest = json.loads(
+        (ROOT / "tests" / "conformance" / "manifest.json")
+        .read_text(encoding="utf-8"))
+    at_check = {f"tests/conformance/{e['file']}" for e in manifest
+                if e.get("level") == "check" and not e.get("expected_error")}
+    assert set(GATE.COMPILE_STOPS) <= at_check
+    program = next(p for p in PROGRAMS
+                   if p.rel in at_check and p.rel not in GATE.COMPILE_STOPS)
+    refused = _Stopped([], ["E602: an unsupported construct"])
+    assert GATE.stop_problem(program, refused) is not None
+    declared = next(p for p in PROGRAMS if p.rel in GATE.COMPILE_STOPS)
+    assert GATE.stop_problem(declared, refused) is None
+    assert GATE.joined_problem(declared) is not None
+
+
+def test_two_mismatches_at_one_key_are_a_problem() -> None:
+    """A `KNOWN` entry names one mismatch: a second at its key — another
+    emitter's, another clone's — is reported, not absorbed."""
+    entry = GATE.KNOWN[0]
+    program = next(p for p in PROGRAMS if p.rel == entry.program)
+    run = _run(program.path)
+    mismatch = next(m for m in run.mismatches
+                    if GATE.mismatch_key(program, m) == entry.key())
+    assert GATE.shared_keys(program, [mismatch]) == []
+    second = replace(mismatch, function=mismatch.function + "$clone")
+    assert GATE.shared_keys(program, [mismatch, second])
+
+
 def _open_bug_issues() -> set[int]:
     """The issue numbers KNOWN_ISSUES.md's Bugs table lists — the open
     `bug` issues, one row each."""
@@ -178,9 +222,10 @@ def test_every_allowlisted_issue_is_an_open_bug() -> None:
 # =====================================================================
 
 #: The open issues whose mismatch no corpus program shows, each by the
-#: repro its issue gives.
-REPROS: dict[int, str] = {
-    1607: """\
+#: repro its issue gives, keyed by the issue's number (and a suffix where an
+#: issue holds more than one).
+REPROS: dict[str, str] = {
+    "1607": """\
 private fn pos(@Array<Int> -> @Array<Int>)
   requires(true)
   ensures(forall(@Nat, array_length(@Array<Int>.result), fn(@Nat -> @Bool) effects(pure) { @Array<Int>.result[@Nat.0] > 0 }))
@@ -198,7 +243,7 @@ public fn main(@Unit -> @Unit)
   IO.print(int_to_string(@Array<Int>.0[0]))
 }
 """,
-    1530: """\
+    "1530": """\
 public fn f(@Nat -> @Nat)
   requires(true)
   ensures(true)
@@ -220,7 +265,7 @@ public fn main(@Unit -> @Nat)
   }
 }
 """,
-    1582: """\
+    "1582": """\
 public fn f(@Nat, @Bool -> @Int)
   requires(true)
   ensures(true)
@@ -230,7 +275,7 @@ public fn f(@Nat, @Bool -> @Int)
   7
 }
 """,
-    1608: """\
+    "1608": """\
 private fn h(@Map<String, Nat> -> @Int)
   requires(true)
   ensures(true)
@@ -247,7 +292,7 @@ public fn g(@Float64 -> @Int)
   h(map_insert(map_new(), "k", float_to_int(@Float64.0)))
 }
 """,
-    1614: """\
+    "1614": """\
 public fn g(@Float64 -> @Int)
   requires(true)
   ensures(true)
@@ -257,7 +302,7 @@ public fn g(@Float64 -> @Int)
   7
 }
 """,
-    1613: """\
+    "1613": """\
 public fn g(@Float64 -> @Int)
   requires(true)
   ensures(true)
@@ -267,20 +312,56 @@ public fn g(@Float64 -> @Int)
   7
 }
 """,
+    # #1530, PR #1630 review: the chain guard is declined (the call-valued
+    # ADT component), and the declined path's range checks skip the
+    # call-valued `@Nat` component, so `sz(@Nat.0)` is claimed `tier3` and
+    # checked by nothing: `f(0, 2^63)` returns 0.
+    "1530-measure": """\
+private data Chain {
+  End,
+  Link(Int, Chain)
+}
+
+private fn mk(@Nat -> @Chain)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  End
+}
+
+private fn sz(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Nat.0
+}
+
+public fn f(@Nat, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.1, sz(@Nat.0), mk(@Nat.1))
+  effects(pure)
+{
+  if @Nat.1 == 0 then { 0 } else { f(@Nat.1 - 1, @Nat.0) }
+}
+""",
 }
 
 #: (issue, repro, mismatch kind, obligation kind, line, column): every
 #: mismatch each repro shows today.  Keyed by the issue whose class it is,
 #: which is not always the repro's own: #1530's repro also returns a
 #: `handle` the static `@Nat` rule cannot read (#1557).
-_REPRO_KNOWN: tuple[tuple[int, int, str, str, int, int], ...] = (
-    (1607, 1607, "recorded_unguarded", "ensures", 3, 3),
-    (1607, 1607, "recorded_unguarded", "index_bounds", 3, 92),
-    (1530, 1530, "recorded_unguarded", "decreases", 4, 3),
-    (1557, 1530, "guarded_unrecorded", "nat_bind", 15, 3),
-    (1582, 1582, "recorded_unguarded", "nat_to_int_coerce", 6, 45),
-    (1608, 1608, "guarded_unrecorded", "nat_bind", 14, 32),
-    (1614, 1614, "guarded_unrecorded", "nat_bind", 6, 56),
+_REPRO_KNOWN: tuple[tuple[int, str, str, str, int, int], ...] = (
+    (1607, "1607", "recorded_unguarded", "ensures", 3, 3),
+    (1607, "1607", "recorded_unguarded", "index_bounds", 3, 92),
+    (1530, "1530", "recorded_unguarded", "decreases", 4, 3),
+    (1557, "1530", "guarded_unrecorded", "nat_bind", 15, 3),
+    (1530, "1530-measure", "recorded_unguarded", "decreases_bound", 25, 21),
+    (1582, "1582", "recorded_unguarded", "nat_to_int_coerce", 6, 45),
+    (1608, "1608", "guarded_unrecorded", "nat_bind", 14, 32),
+    (1614, "1614", "guarded_unrecorded", "nat_bind", 6, 56),
 )
 
 
@@ -292,8 +373,8 @@ def repro_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return directory
 
 
-def _repro(repro_dir: Path, issue: int) -> ReconcileRun:
-    run = _run(repro_dir / f"repro_{issue}.vera")
+def _repro(repro_dir: Path, name: str) -> ReconcileRun:
+    run = _run(repro_dir / f"repro_{name}.vera")
     assert run.reconciliation is not None, (
         run.check_errors or run.compile_errors)
     return run
@@ -303,12 +384,12 @@ def _repro_keys(run: ReconcileRun) -> set[tuple[str, str, int, int]]:
     return {(m.kind, m.obligation, m.line, m.column) for m in run.mismatches}
 
 
-@pytest.mark.parametrize("issue", sorted(REPROS))
-def test_repro_reconciles(repro_dir: Path, issue: int) -> None:
+@pytest.mark.parametrize("name", sorted(REPROS))
+def test_repro_reconciles(repro_dir: Path, name: str) -> None:
     """Each repro shows exactly its allowlisted mismatches, and no other."""
-    run = _repro(repro_dir, issue)
+    run = _repro(repro_dir, name)
     allowed = {(k, o, line, col) for _, repro, k, o, line, col in _REPRO_KNOWN
-               if repro == issue}
+               if repro == name}
     assert _repro_keys(run) - allowed == set(), sorted(_repro_keys(run))
 
 
@@ -323,7 +404,7 @@ def test_repro_reconciles(repro_dir: Path, issue: int) -> None:
     for entry in _REPRO_KNOWN
 ])
 def test_repro_mismatch_is_fixed(
-    repro_dir: Path, entry: tuple[int, int, str, str, int, int],
+    repro_dir: Path, entry: tuple[int, str, str, str, int, int],
 ) -> None:
     _issue, repro, kind, obligation, line, column = entry
     run = _repro(repro_dir, repro)
@@ -337,7 +418,7 @@ def test_1613_payload_is_obligated_and_guarded(repro_dir: Path) -> None:
     """#1613's two sides are silent TOGETHER, so the join has nothing to
     disagree about; its pin is the pair the fix must produce — a `nat_bind`
     record on the payload's line answered by a check."""
-    run = _repro(repro_dir, 1613)
+    run = _repro(repro_dir, "1613")
     assert run.reconciliation is not None
     assert any(record.kind == "nat_bind" and record.line == 6
                for record, _ in run.reconciliation.pairs)
@@ -352,7 +433,7 @@ def test_a_tier3_ensures_with_no_check_is_recorded_unguarded(
 ) -> None:
     """#1607: a quantified `ensures` recorded `tier3` (E523) has no check in
     the module.  Written before the join existed, and seen failing then."""
-    run = _repro(repro_dir, 1607)
+    run = _repro(repro_dir, "1607")
     found = {(m.kind, m.obligation, m.line, m.column) for m in run.mismatches}
     assert ("recorded_unguarded", "ensures", 3, 3) in found, found
 
@@ -360,7 +441,7 @@ def test_a_tier3_ensures_with_no_check_is_recorded_unguarded(
 def test_a_guard_with_no_record_is_guarded_unrecorded(repro_dir: Path) -> None:
     """#1614: the piped `map_insert`'s value is guarded and never
     obligated.  Written before the join existed, and seen failing then."""
-    run = _repro(repro_dir, 1614)
+    run = _repro(repro_dir, "1614")
     found = {(m.kind, m.obligation, m.line, m.column) for m in run.mismatches}
     assert ("guarded_unrecorded", "nat_bind", 6, 56) in found, found
 
@@ -722,6 +803,306 @@ def test_a_call_answers_only_the_declaration_it_reaches(
                and (m.line, m.column) == (record.line, record.column)
                for m in result.mismatches), [
         (r.kind, r.line, r.column, c.function) for r, c in result.pairs]
+
+
+# =====================================================================
+# One check per obligation site (PR #1630 review)
+# =====================================================================
+#
+# Where one node holds several checks, each record is paired with the check
+# of its own site, never a sibling's: removing one of several checks at a
+# location leaves exactly that site's record unanswered.
+
+def _written(tmp_path: Path, name: str, source: str) -> ReconcileRun:
+    path = tmp_path / name
+    path.write_text(source, encoding="utf-8")
+    run = reconcile_file(path)
+    assert run.reconciliation is not None, (
+        run.check_errors or run.compile_errors)
+    return run
+
+
+def _unguarded(result: object, kind: str) -> set[tuple[int, int]]:
+    return {(m.line, m.column) for m in result.mismatches  # type: ignore[attr-defined]
+            if m.kind == "recorded_unguarded" and m.obligation == kind}
+
+
+def test_a_measure_component_without_its_own_range_check_is_unguarded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Code generation range-checking only the first `@Nat` component of
+    ackermann's measure leaves `@Nat.0` checked by nothing, at entry and at
+    both tail sites; its record must not borrow `@Nat.1`'s checks."""
+    from vera.codegen.contracts import ContractsMixin
+
+    first_only = ContractsMixin._dec_nat_measure_indices
+    monkeypatch.setattr(
+        ContractsMixin, "_dec_nat_measure_indices",
+        lambda self, ctx, contract: first_only(self, ctx, contract)[:1])
+    run = reconcile_file(
+        ROOT / "tests" / "conformance" / "ch05_decreases_guard.vera")
+    assert run.reconciliation is not None
+    assert _unguarded(run.reconciliation, "decreases_bound") == {(8, 21)}
+
+
+@pytest.mark.parametrize("gone", [(25, 58), (25, 74)])
+def test_a_record_at_a_join_needs_the_check_on_every_arm(
+    gone: tuple[int, int],
+) -> None:
+    """The closure's return narrows at the `if`, and code generation guards
+    each arm: with one arm's guard gone, the join's record is unguarded,
+    whatever the other arm checks."""
+    run, pairs = _pair(
+        "tests/conformance/ch05_closure_nat_return.vera", "nat_bind", 25)
+    record = pairs[0][0]
+    checks = [c for c in run.compile_result.emitted_checks  # type: ignore[union-attr]
+              if not ("nat_bind" in c.obligations
+                      and (c.line, c.column) == gone)]
+    result = _rejoin(run, checks=checks)
+    assert _unguarded(result, "nat_bind") == {(record.line, record.column)}
+
+
+_REFINED_FIELD_IN_A_REFINED_RETURN = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+private data Box {
+  MkBox(Pos)
+}
+
+type GoodBox = { @Box | true };
+
+public fn mk(@Float64 -> @GoodBox)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  MkBox(float_to_int(@Float64.0))
+}
+"""
+
+
+def test_a_return_type_check_answers_no_field_of_the_body(
+    tmp_path: Path,
+) -> None:
+    """The return guard checks `GoodBox`'s own predicate on the box; the
+    field's `Pos` is the construction's, checked where it is stored.  With
+    that check gone the field's record is unguarded, not answered by the
+    return type's check standing at the signature."""
+    run = _written(tmp_path, "refined_field.vera",
+                   _REFINED_FIELD_IN_A_REFINED_RETURN)
+    checks = [c for c in run.compile_result.emitted_checks  # type: ignore[union-attr]
+              if not ("refine_bind" in c.obligations
+                      and (c.line, c.column) == (14, 9))]
+    result = _rejoin(run, checks=checks)
+    assert _unguarded(result, "refine_bind") == {(14, 9)}
+
+
+_BINDERS = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+private data Pair<A, B> {
+  MkPair(A, B)
+}
+
+private forall<T> fn gid(@T -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @T.0
+}
+
+public fn visible(@Nat, @Nat -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match MkPair(@Nat.1, @Nat.0) {
+    MkPair(@Int, @Int) -> @Int.1 - @Int.0
+  }
+}
+
+public fn opaque(@Nat, @Nat -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match gid(MkPair(@Nat.1, @Nat.0)) {
+    MkPair(@Int, @Int) -> @Int.1 - @Int.0
+  }
+}
+
+public fn destructure(@Float64 -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let Tuple<@Pos, @Pos> = Tuple(float_to_int(@Float64.0), float_to_int(@Float64.0));
+  7
+}
+"""
+
+
+@pytest.mark.parametrize(("gone", "field"), [
+    ((21, 12), (20, 16)),
+    ((21, 18), (20, 24)),
+])
+def test_a_sub_pattern_check_answers_only_its_own_field(
+    tmp_path: Path, gone: tuple[int, int], field: tuple[int, int],
+) -> None:
+    """Each sub-pattern of `MkPair(@Int, @Int)` widens the field it binds,
+    and the verifier records each widening at that field of the scrutinee
+    it can see: with one sub-pattern's guard gone, its field's record is
+    unguarded, whatever the other sub-pattern checks."""
+    run = _written(tmp_path, "binders.vera", _BINDERS)
+    checks = [c for c in run.compile_result.emitted_checks  # type: ignore[union-attr]
+              if (c.line, c.column) != gone]
+    result = _rejoin(run, checks=checks)
+    assert _unguarded(result, "nat_to_int_coerce") == {field}
+
+
+def test_records_sharing_a_node_need_a_check_each(tmp_path: Path) -> None:
+    """Over a scrutinee the verifier cannot see into, it records the two
+    widenings at the scrutinee itself, two records at one node: one
+    sub-pattern guard answers one of them, never both."""
+    run = _written(tmp_path, "binders.vera", _BINDERS)
+    checks = [c for c in run.compile_result.emitted_checks  # type: ignore[union-attr]
+              if (c.line, c.column) != (31, 18)]
+    result = _rejoin(run, checks=checks)
+    assert [(m.line, m.column) for m in result.mismatches  # type: ignore[attr-defined]
+            if m.kind == "recorded_unguarded"] == [(30, 9)]
+
+
+def test_a_destructured_component_check_answers_only_its_component(
+    tmp_path: Path,
+) -> None:
+    """`let Tuple<@Pos, @Pos> = Tuple(a, b)` guards each component it binds:
+    with only the first component's guard left, the second component's
+    record is unguarded."""
+    run = _written(tmp_path, "binders.vera", _BINDERS)
+    refine = [c for c in run.compile_result.emitted_checks  # type: ignore[union-attr]
+              if c.function == "destructure" and "refine_bind" in c.obligations]
+    assert len(refine) == 2, refine
+    checks = [c for c in run.compile_result.emitted_checks  # type: ignore[union-attr]
+              if c is not refine[1]]
+    result = _rejoin(run, checks=checks)
+    assert _unguarded(result, "refine_bind") == {(40, 59)}
+
+
+_SIGNATURE_GUARDS = """\
+type Pos = { @Int | @Int.0 > 0 };
+type PT = { @Tuple<Pos, Int> | true };
+
+private forall<T> fn gid(@T -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @T.0
+}
+
+private fn refined_tuple(@PT -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  7
+}
+
+private fn nested(@Tuple<Tuple<Pos, Int>, Int> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  7
+}
+
+public fn main(@Float64 -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Int = refined_tuple(gid(Tuple(float_to_int(@Float64.0), 1)));
+  let @Int = nested(Tuple(gid(Tuple(float_to_int(@Float64.0), 2)), 1));
+  7
+}
+"""
+
+
+def test_the_checks_at_one_signature_type_are_one_site_each(
+    tmp_path: Path,
+) -> None:
+    """`PT`'s own predicate and its `Pos` component are both checked at the
+    parameter's type, and the verifier records both at the argument it
+    cannot see into.  The component's guard is emitted first: with it gone,
+    one of the two records is unguarded, not answered by the top-level
+    check beside it."""
+    run = _written(tmp_path, "signature_guards.vera", _SIGNATURE_GUARDS)
+    guards = [c for c in run.compile_result.emitted_checks  # type: ignore[union-attr]
+              if c.function == "refined_tuple"]
+    assert len(guards) == 2, guards
+    checks = [c for c in run.compile_result.emitted_checks  # type: ignore[union-attr]
+              if c is not guards[0]]
+    result = _rejoin(run, checks=checks)
+    assert [(m.line, m.column) for m in result.mismatches  # type: ignore[attr-defined]
+            if m.kind == "recorded_unguarded"] == [(33, 28)]
+
+
+def test_a_nested_component_check_names_its_path_below_the_signature(
+    tmp_path: Path,
+) -> None:
+    """A nested tuple component's guard stands at the parameter's type and
+    names its place below it, so it answers the record at the component
+    the argument hides; with it gone, that record is unguarded."""
+    run = _written(tmp_path, "signature_guards.vera", _SIGNATURE_GUARDS)
+    assert run.mismatches == [], run.mismatches
+    nested = [c for c in run.compile_result.emitted_checks  # type: ignore[union-attr]
+              if c.function == "nested"]
+    assert [c.path for c in nested] == [("Tuple.0", "Tuple.0")]
+    result = _rejoin(run, checks=[
+        c for c in run.compile_result.emitted_checks  # type: ignore[union-attr]
+        if c.function != "nested"])
+    assert _unguarded(result, "refine_bind") == {(34, 27)}
+
+
+_SAFE_ARMS = """\
+type IntToNat = fn(Int -> Nat) effects(pure);
+
+private fn literal_arm(@Unit -> @IntToNat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  fn(@Int -> @Nat) effects(pure) { if @Int.0 >= 0 then { @Int.0 } else { 0 } }
+}
+
+private fn nat_slot_arm(@Nat -> @IntToNat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  fn(@Int -> @Nat) effects(pure) { if @Int.0 >= 0 then { @Int.0 } else { @Nat.0 + 1 } }
+}
+
+private fn match_arm(@Unit -> @IntToNat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  fn(@Int -> @Nat) effects(pure) { match @Int.0 { 0 -> 7, _ -> @Int.0 } }
+}
+"""
+
+
+def test_an_arm_that_cannot_narrow_needs_no_check(tmp_path: Path) -> None:
+    """Code generation guards only the arms of a join that narrow: a
+    non-negative literal and arithmetic over `@Nat` slots are left alone.
+    The join's record is answered by the guard on the arm that narrows."""
+    run = _written(tmp_path, "safe_arms.vera", _SAFE_ARMS)
+    assert run.mismatches == [], run.mismatches
+    joins = {r.line for r, _c in run.reconciliation.pairs  # type: ignore[union-attr]
+             if r.kind == "nat_bind"}
+    assert joins == {8, 16, 24}
 
 
 def test_a_tier3_unguarded_record_does_not_account_for_a_check() -> None:

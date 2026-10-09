@@ -1009,7 +1009,7 @@ class CodeGenerator(
                         f"{marker.group(0).strip()!r}, which names no entry "
                         "of this module's record", None,
                     )
-                emitter, node = entry
+                emitter, node, path = entry
                 row = TRAP_EMITTERS[emitter]
                 span = node.span if node is not None else None
                 out.append(EmittedCheck(
@@ -1024,6 +1024,7 @@ class CodeGenerator(
                     file=(None if prelude
                           else source[0] if source is not None else self.file),
                     prelude=prelude,
+                    path=path,
                 ))
         stray = sum(1 for _ in find_check_markers(wat)) - len(out)
         if stray:

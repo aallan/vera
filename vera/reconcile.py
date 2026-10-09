@@ -33,47 +33,69 @@ emitter handed :meth:`~vera.wasm.context.WasmContext._emit_trap`, whose
 span the per-module record keeps, and the class of that node decides which
 record sites the check answers.  The verifier locates each record at the
 node its expression text comes from, or at the call a measure or a
-precondition is evaluated at (``ContractVerifier._evaluation_site``).  A
-value's *store positions* below are the value, the arms it joins
-(``narrowing.flow_arms``) and the fields and elements a construction there
-stores: the positions the verifier's construction descent obligates, never
-a call's argument or an operation's operand, which are sites of their own.
+precondition is evaluated at (``ContractVerifier._evaluation_site``).
 
 =================  ====================================  =====================================
 Location class     Emitters that locate a check there    Records the check answers
 =================  ====================================  =====================================
 ``clause``         ``codegen/contracts.py``:             a record of its kinds at the clause;
-                   ``_compile_preconditions``,           the ``@Nat`` components
-                   ``_compile_postconditions``,          ``_dec_bound_check_pairs`` checks,
-                   ``_compile_decreases_entry``,         recorded where each is written inside
-                   ``_dec_self_tail_prefix``,            its ``decreases``; and, for a
-                   ``_dec_bound_check_pairs``            ``requires``, the ``call_pre`` record
-                   (``at=contract``)                     at each call reaching its function
-                                                         that quotes that precondition
-``parameter``      ``codegen/functions.py`` and          a record at a store position of the
-                   ``codegen/closures.py`` boundary      matching argument of a call that
-                   guards (``at=param_te``)              reaches the function
+                   ``_compile_preconditions``,           and, for a ``requires``, the
+                   ``_compile_postconditions``,          ``call_pre`` record at each call
+                   ``_compile_decreases_entry``,         reaching its function that quotes
+                   ``_dec_self_tail_prefix``             that precondition
+                   (``at=contract``)
+``parameter``      ``codegen/functions.py`` and          a record at the place its path names
+                   ``codegen/closures.py`` boundary      inside the matching argument of a
+                   guards (``at=param_te``)              call that reaches the function
                                                          (``_reached_decl``)
-``return``         ``codegen/contracts.py`` and          a record at a store position of the
-                   ``codegen/closures.py`` return        function's body
+``return``         ``codegen/contracts.py`` and          a record at the place its path names
+                   ``codegen/closures.py`` return        inside the function's body
                    guards (``at=...return_type``)
-``binder``         ``wasm/data.py`` destructure and      a record at a store position of the
-                   pattern guards (``at=te``,            value the binder takes apart: the
-                   ``at=pattern``, ``at=sub_pat``);      component it binds when that value
-                   a refined ``let`` or destructure's    is a construction, else the whole
-                   guard (``at=stmt``)                   value or scrutinee
-``value``          every guard handed the value it       a record at the value, at a join the
-                   checks or the operation it performs   value is an arm of, or at an arm the
-                                                         value joins; for a widening, a record
-                                                         at the operation the value is an
-                                                         operand of
-``prelude``        a check inside a prelude or           a record at a call to that prelude
-                   built-in function's body              function
+``binder``         ``wasm/data.py`` destructure and      a record at the value the binder
+                   pattern guards (``at=te``,            takes apart, or at the field it
+                   ``at=pattern``, ``at=sub_pat``);      binds where that value is a
+                   a refined ``let``'s guard             construction the verifier sees into
+                   (``at=stmt``)                         (:func:`_binder_value`)
+``value``          every guard handed the value it       a record at the value; and, as one
+                   checks or the operation it performs   arm, a record at a join the value is
+                   (a measure component's range check    an arm of, once every arm that can
+                   included)                             break the property has its check
+``prelude``        a check inside a prelude or           none: the verifier records no
+                   built-in function's body              obligation such a check answers
 =================  ====================================  =====================================
 
 A record and a check with the same span always pair.  ``state_decl`` is
 excluded: its record is violated-or-absent, and no runtime check stands
 for it (:data:`EXCLUDED_KINDS`).
+
+One check per obligation site
+-----------------------------
+
+A location can hold several checks — a signature's top-level predicate and
+each of its components' and elements', a join's arms, a pattern's
+binders — and each record must be answered by the check of its own site,
+never a sibling's (PR #1630 review).  Three things keep them apart:
+
+* **Paths.**  A signature's guards all stand at its type, so each names
+  where inside the value it checks (``EmittedCheck.path``: ``Tuple.0`` for
+  a component, ``array element`` for an element), and answers only the
+  record at that place: where it is built, or the value the verifier could
+  not see into and so records it at (:func:`_stands_for`).
+* **Arms.**  A record at a join is answered by its arms' checks only when
+  every arm has one, or cannot break the property: for ``nat_bind``, an arm
+  no narrowing reaches, read from the program alone
+  (:func:`_needs_no_check`).
+* **Matching.**  The records at one span (two widened fields of a scrutinee
+  the verifier cannot see into are both recorded at it) are matched one to
+  one with the sites the checks there stand for (:func:`_match_sites`), so
+  one check never answers two records.  The copies of one check — in a
+  generic's clones, spliced twice — are one site.
+
+Where the verifier records one obligation for a whole value it cannot see
+into (an opaque argument of a tuple-typed parameter), the join can match
+that record with any of the value's component checks, and cannot tell a
+partial set of them from a whole one: that needs the set of guarded
+components, which only code generation's decomposition states.
 
 Scope
 -----
@@ -262,7 +284,7 @@ class _Index:
         #: ones whose public names a bare call there can reach (§8.6.4).
         self.direct_files: set[str] = set()
         self._keys: dict[str, str | None] = {}
-        self._closures: dict[tuple[int, bool], set[int]] = {}
+        self._closures: dict[int, set[int]] = {}
 
     def key(self, file: str | None) -> str | None:
         """:func:`_file_key`, once per spelling."""
@@ -272,12 +294,11 @@ class _Index:
             self._keys[file] = _file_key(file)
         return self._keys[file]
 
-    def closure(self, node: ast.Node, *, stores: bool = False) -> set[int]:
+    def closure(self, node: ast.Node) -> set[int]:
         """:func:`_flow_closure`, once per node."""
-        memo = (id(node), stores)
-        if memo not in self._closures:
-            self._closures[memo] = _flow_closure(node, stores=stores)
-        return self._closures[memo]
+        if id(node) not in self._closures:
+            self._closures[id(node)] = _flow_closure(node)
+        return self._closures[id(node)]
 
     def add(self, file: str | None, program: ast.Program, *,
             entry: bool, module_path: tuple[str, ...] | None = None,
@@ -341,16 +362,11 @@ def _node_span(node: ast.Node) -> Span4 | None:
     return (sp.line, sp.column, sp.end_line, sp.end_column)
 
 
-def _flow_closure(node: ast.Node, *, stores: bool = False) -> set[int]:
+def _flow_closure(node: ast.Node) -> set[int]:
     """*node* and every value it joins, read through the ``"flow"`` forms
-    both components descend (:func:`vera.narrowing.flow_arms`).
-
-    With *stores*, also every value a construction inside it stores — a
-    constructor's field, an array literal's element — the positions the
-    verifier's construction descent obligates a component at
-    (``_descend_construction_container``).  Never a call's argument or an
-    operation's operand: a narrowing written there is its own site, with its
-    own guard."""
+    both components descend (:func:`vera.narrowing.flow_arms`).  Never a
+    construction's field, a call's argument or an operation's operand: each
+    of those is a site of its own."""
     out: set[int] = set()
     todo = [node]
     while todo:
@@ -362,11 +378,106 @@ def _flow_closure(node: ast.Node, *, stores: bool = False) -> set[int]:
             arms = narrowing.flow_arms(cur)
             if arms:
                 todo.extend(arms)
-        if stores and isinstance(cur, ast.ConstructorCall):
-            todo.extend(cur.args)
-        if stores and isinstance(cur, ast.ArrayLit):
-            todo.extend(cur.elements)
     return out
+
+
+# =====================================================================
+# Store positions: where a value sits inside the value that holds it
+# =====================================================================
+#
+# A path is one step per level, read from the outer value down: a
+# constructor's field as ``"<Ctor>.<k>"`` (a tuple's component is
+# ``"Tuple.<k>"``), an array literal's element as ``"array element"``.  A
+# join's arm is no step: the arm IS the join's value when it is taken.
+# These are the steps a signature's guard names in ``EmittedCheck.path``.
+
+Step = str
+
+
+def _store_step(index: _Index, node: ast.Node) -> tuple[ast.Node, Step | None] | None:
+    """The value *node* is stored in (a constructor's field, an array
+    element) or joined into (an arm of a ``"flow"`` form), with the step
+    that names its place there (None for an arm), or None."""
+    parent = index.parent.get(id(node))
+    if isinstance(parent, ast.ConstructorCall):
+        for k, arg in enumerate(parent.args):
+            if arg is node:
+                return parent, f"{parent.name}.{k}"
+        return None
+    if isinstance(parent, ast.ArrayLit):
+        if any(e is node for e in parent.elements):
+            return parent, "array element"
+        return None
+    if isinstance(parent, (ast.MatchArm, ast.HandlerClause)):
+        if parent.body is not node:
+            return None
+        parent = index.parent.get(id(parent))
+    if isinstance(parent, ast.Expr):
+        arms = narrowing.flow_arms(parent)
+        if arms and any(a is node for a in arms):
+            return parent, None
+    return None
+
+
+def _path_below(
+    index: _Index, root: ast.Node, node: ast.Node,
+) -> tuple[Step, ...] | None:
+    """The path from *root* down to *node* through stores and joins, or
+    None when *node* is not a value *root* holds."""
+    steps: list[Step] = []
+    cur = node
+    while cur is not root:
+        up = _store_step(index, cur)
+        if up is None:
+            return None
+        cur, step = up
+        if step is not None:
+            steps.append(step)
+    return tuple(reversed(steps))
+
+
+def _joins_above(index: _Index, node: ast.Node) -> Iterator[ast.Node]:
+    """Every join *node*'s value is an arm of, innermost first: the
+    ``"flow"`` forms whose value *node* can be."""
+    cur = node
+    while True:
+        up = _store_step(index, cur)
+        if up is None or up[1] is not None:
+            return
+        cur = up[0]
+        yield cur
+
+
+def _hides(node: ast.Node, step: Step) -> bool:
+    """Whether *node*'s value hides the place *step* names: no value it can
+    be is built here with that place.  The verifier records a component of
+    a value it cannot see into at the value itself (a call, a slot), and
+    one it can see into where the component is built."""
+    if not isinstance(node, ast.Expr):
+        return True
+    ctor, _, k = step.rpartition(".")
+    for leaf in narrowing.value_leaves(node):
+        if step == "array element" and isinstance(leaf, ast.ArrayLit):
+            return False
+        if (isinstance(leaf, ast.ConstructorCall) and leaf.name == ctor
+                and k.isdigit() and int(k) < len(leaf.args)):
+            return False
+    return True
+
+
+def _stands_for(
+    check_path: tuple[Step, ...], record_path: tuple[Step, ...],
+    rnode: ast.Node,
+) -> bool:
+    """Whether a check of the value at *check_path* is the one a record at
+    *record_path* (whose node is *rnode*) needs: the same place, or a place
+    inside a value the record's node hides, which the verifier records as
+    that value."""
+    if record_path == check_path:
+        return True
+    depth = len(record_path)
+    return (depth < len(check_path) and check_path[:depth] == record_path
+            and _hides(rnode, check_path[depth]))
 
 
 # =====================================================================
@@ -388,14 +499,19 @@ class _Located:
     or the statement / match a binder takes apart."""
 
     position: int = -1
-    """The parameter's index, or the binder's component index."""
+    """The parameter's index, or the destructure binding's."""
+
+    steps: tuple[tuple[str, int], ...] = ()
+    """For a match binder, the constructor fields from the arm's pattern
+    down to the binder: ``MkPair(MkPair(@Int, _), _)``'s inner binder is
+    ``(("MkPair", 0), ("MkPair", 0))``; empty for the arm's own binder."""
 
 
 def _locate(index: _Index, check: EmittedCheck) -> _Located | None:
     """The location class of *check*, from the node its span names; None
-    when no node of the program stands there.  Several nodes can share one
-    span (a block and its only expression); they are read innermost
-    first, as a record's node is."""
+    when no node of the program stands there, or none of a class a rule
+    covers.  Several nodes can share one span (a block and its only
+    expression); they are read innermost first, as a record's node is."""
     if check.prelude:
         return _Located("prelude", None)
     nodes = list(reversed(index.nodes_at(check.file, _span_of(check))))
@@ -418,80 +534,79 @@ def _locate(index: _Index, check: EmittedCheck) -> _Located | None:
                     return _Located("binder", node, parent, k)
     for node in nodes:
         if isinstance(node, ast.Pattern):
-            match = _enclosing_match(index, node)
-            if match is not None:
-                return _Located("binder", node, match)
+            found = _pattern_steps(index, node)
+            if found is not None:
+                match, steps = found
+                return _Located("binder", node, match, steps=steps)
     for node in nodes:
         if isinstance(node, ast.Expr):
             return _Located("value", node)
     for node in nodes:
-        # A refined `let` or destructure is guarded at the statement itself
-        # (`wasm/context.py` / `wasm/data.py` `_emit_bind_refine_guard(...,
-        # stmt, ...)`, #765): it checks the value the statement binds.
+        # A refined `let` is guarded at the statement itself
+        # (`wasm/context.py` `_emit_bind_refine_guard(..., stmt, ...)`,
+        # #765): it checks the value the statement binds.
         if isinstance(node, (ast.LetStmt, ast.LetDestruct)):
             return _Located("binder", node, node)
     return None
 
 
-def _enclosing_match(index: _Index, pattern: ast.Node) -> ast.MatchExpr | None:
-    """The `match` whose arm pattern *pattern* is, or sits inside."""
-    cur: ast.Node | None = pattern
-    while cur is not None:
+def _pattern_steps(
+    index: _Index, pattern: ast.Node,
+) -> tuple[ast.MatchExpr, tuple[tuple[str, int], ...]] | None:
+    """The `match` whose arm pattern *pattern* is, or sits inside, with the
+    constructor fields from that arm's pattern down to *pattern*."""
+    steps: list[tuple[str, int]] = []
+    cur: ast.Node = pattern
+    while True:
         parent = index.parent.get(id(cur))
         if isinstance(parent, ast.MatchArm) and cur is parent.pattern:
             grand = index.parent.get(id(parent))
-            return grand if isinstance(grand, ast.MatchExpr) else None
-        if not isinstance(parent, ast.Pattern):
+            if not isinstance(grand, ast.MatchExpr):
+                return None
+            return grand, tuple(reversed(steps))
+        if not isinstance(parent, ast.ConstructorPattern):
+            return None
+        for k, sub in enumerate(parent.sub_patterns):
+            if sub is cur:
+                steps.append((parent.name, k))
+                break
+        else:  # pragma: no cover — a pattern's parent holds it
             return None
         cur = parent
-    return None  # pragma: no cover — the loop always returns
 
 
 # =====================================================================
 # Calls
 # =====================================================================
 
-def _call_of_argument(
+def _argument_site(
     index: _Index, node: ast.Node,
-) -> tuple[ast.FnCall | ast.ModuleCall, int] | None:
-    """(the call, argument position) when *node* is an argument of a call,
-    or a value one stores or joins (a constructor's field, an array element,
-    an arm), read through the pipe's desugaring (``a |> f(x)`` is
+) -> tuple[ast.FnCall | ast.ModuleCall, int, tuple[Step, ...]] | None:
+    """(the call, argument position, the path from the argument down to
+    *node*) when *node* is an argument of a call or a value one stores or
+    joins, read through the pipe's desugaring (``a |> f(x)`` is
     ``f(a, x)``, ``narrowing``'s and code generation's one reading of it)."""
-    cur: ast.Node | None = node
-    while cur is not None:
+    steps: list[Step] = []
+    cur: ast.Node = node
+    while True:
         parent = index.parent.get(id(cur))
         if isinstance(parent, (ast.FnCall, ast.ModuleCall)):
             for k, arg in enumerate(parent.args):
                 if arg is cur:
                     piped = _pipe_of_call(index, parent)
-                    return parent, k + (1 if piped else 0)
+                    return parent, k + (1 if piped else 0), tuple(
+                        reversed(steps))
             return None
         if (isinstance(parent, ast.BinaryExpr)
                 and parent.op == ast.BinOp.PIPE and cur is parent.left
                 and isinstance(parent.right, (ast.FnCall, ast.ModuleCall))):
-            return parent.right, 0
-        cur = _store_parent(index, cur)
-    return None
-
-
-def _store_parent(index: _Index, node: ast.Node) -> ast.Node | None:
-    """The value *node* is stored in (a constructor's field, an array
-    element) or joined into (an arm of a `flow` form), or None."""
-    parent = index.parent.get(id(node))
-    if isinstance(parent, ast.ConstructorCall):
-        return parent if any(a is node for a in parent.args) else None
-    if isinstance(parent, ast.ArrayLit):
-        return parent if any(e is node for e in parent.elements) else None
-    if isinstance(parent, (ast.MatchArm, ast.HandlerClause)):
-        if parent.body is not node:
+            return parent.right, 0, tuple(reversed(steps))
+        up = _store_step(index, cur)
+        if up is None:
             return None
-        parent = index.parent.get(id(parent))
-    if isinstance(parent, ast.Expr):
-        arms = narrowing.flow_arms(parent)
-        if arms and any(a is node for a in arms):
-            return parent
-    return None
+        cur, step = up
+        if step is not None:
+            steps.append(step)
 
 
 def _pipe_of_call(index: _Index, call: ast.Node) -> bool:
@@ -560,10 +675,14 @@ class _Records:
     def __init__(self, index: _Index, records: Iterable[ProofObligation]):
         self.all = list(records)
         self.node: dict[int, ast.Node] = {}
+        #: node id -> the records standing at it.
+        self.at_node: dict[int, list[ProofObligation]] = {}
         for record in self.all:
             nodes = index.nodes_at(record.file, _span_of(record))
             if nodes:
-                self.node[id(record)] = _record_node(record, nodes)
+                node = _record_node(record, nodes)
+                self.node[id(record)] = node
+                self.at_node.setdefault(id(node), []).append(record)
 
     def located(self, record: ProofObligation) -> ast.Node | None:
         return self.node.get(id(record))
@@ -582,149 +701,173 @@ def _record_node(record: ProofObligation, nodes: list[ast.Node]) -> ast.Node:
     return nodes[-1]
 
 
-def _answers(
+#: The obligation site a check stands for, as the join compares sites: two
+#: checks with one key are one site (the copies of a check in a generic's
+#: clones, a check spliced twice), two keys are two sites.
+SiteKey = tuple[object, ...]
+
+
+def _site_key(
     index: _Index, located: _Located, check: EmittedCheck,
     record: ProofObligation, rnode: ast.Node | None,
-) -> bool:
-    """Whether *check*, standing at *located*, is the runtime half of
-    *record* (whose node is *rnode*)."""
+) -> SiteKey | None:
+    """The obligation site *check* stands for when it is the runtime half
+    of *record* (whose node is *rnode*), or None when it is not."""
     if record.kind not in check.obligations:
-        return False
+        return None
     rfile = index.key(record.file)
     same_file = rfile is not None and rfile == index.key(check.file)
     if same_file and _span_of(record) == _span_of(check):
-        return True
+        return ("at", check.emitter, _span_of(check), check.path)
     if rnode is None:
-        return False
+        return None
     where = located.where
     if where == "clause":
-        return _answers_from_clause(index, located, record, rnode, same_file)
+        return _key_from_clause(index, located, check, record, rnode)
     if where == "parameter":
-        return _answers_from_parameter(index, located, rnode)
+        return _key_from_parameter(index, located, check, rnode)
     if where == "return":
-        return _answers_from_return(index, located, rnode)
-    if where == "binder":
-        return same_file and _answers_from_binder(index, located, rnode)
-    if where == "value":
-        return same_file and _answers_from_value(index, located, record, rnode)
-    if where == "prelude":
-        return _answers_from_prelude(check, rnode)
-    return False  # pragma: no cover — every class is handled above
+        return _key_from_return(index, located, check, rnode)
+    if where == "binder" and same_file:
+        return _key_from_binder(index, located, check, rnode)
+    # A value check answers the record at its own node (above) and, through
+    # its arm, the record at a join it is an arm of (`_arm_coverage`).  A
+    # prelude body's check answers no record: no prelude function's check
+    # is the runtime half of an obligation the verifier records at a call.
+    return None
 
 
-def _answers_from_clause(
-    index: _Index, located: _Located, record: ProofObligation,
-    rnode: ast.Node, same_file: bool,
-) -> bool:
+def _key_from_clause(
+    index: _Index, located: _Located, check: EmittedCheck,
+    record: ProofObligation, rnode: ast.Node,
+) -> SiteKey | None:
     clause = located.node
-    assert clause is not None  # noqa: S101 — a clause is always located
-    cspan = _node_span(clause)
-    rspan = _node_span(rnode)
-    # `_dec_bound_check_pairs` is handed the whole `decreases` clause for
-    # each `@Nat` component it range-checks (`_dec_measure_bound_check`,
-    # `_dec_bound_checks_only`: `at=contract`); the verifier records each
-    # component where it is written.  That emitter alone stands at a clause
-    # for records inside it: any other record inside a clause (a call's
-    # precondition written in a `requires`) is answered elsewhere.
-    if (record.kind == "decreases_bound" and isinstance(clause, ast.Decreases)
-            and same_file and cspan is not None and rspan is not None
-            and _within(rspan, cspan)):
-        return True
     # A `requires` is checked once, in its function's prologue
     # (`_compile_preconditions`), for every caller: the runtime half of each
     # `call_pre` recorded at a call to that function.  The record is
-    # located at the call and quotes the precondition it is about.
+    # located at the call and quotes the precondition it is about.  Every
+    # other record inside a clause (a call's precondition written in a
+    # `requires`, a measure component) is answered at its own site.
     if record.kind == "call_pre" and isinstance(clause, ast.Requires):
         fn = index.fn_of.get(id(clause))
         call = _call_node(rnode)
-        return (fn is not None and call is not None
+        if (fn is not None and call is not None
                 and _reached_decl(index, call) is fn
-                and record.expr_text == ast.format_expr(clause.expr))
-    return False
+                and record.expr_text == ast.format_expr(clause.expr)):
+            return ("clause", check.emitter, id(clause))
+    return None
 
 
-def _answers_from_parameter(
-    index: _Index, located: _Located, rnode: ast.Node,
-) -> bool:
+def _key_from_parameter(
+    index: _Index, located: _Located, check: EmittedCheck, rnode: ast.Node,
+) -> SiteKey | None:
     # A refined parameter is checked once, in its function's prologue
     # (`codegen/functions.py` `at=param_te`), for every caller: the runtime
     # half of the narrowing recorded at each call's argument, for the calls
-    # that reach that function (`_reached_decl`); a closure's parameter has
-    # no declaration a call names, so it answers no call site.
+    # that reach that function (`_reached_decl`), at the place inside the
+    # argument the guard's path names; a closure's parameter has no
+    # declaration a call names, so it answers no call site.
     owner = located.owner
     if not isinstance(owner, ast.FnDecl):
-        return False
-    found = _call_of_argument(index, rnode)
+        return None
+    found = _argument_site(index, rnode)
     if found is None:
-        return False
-    call, position = found
-    return position == located.position and _reached_decl(index, call) is owner
+        return None
+    call, position, path = found
+    if (position != located.position
+            or _reached_decl(index, call) is not owner
+            or not _stands_for(check.path, path, rnode)):
+        return None
+    return ("parameter", check.emitter, id(located.node), check.path)
 
 
-def _answers_from_return(
-    index: _Index, located: _Located, rnode: ast.Node,
-) -> bool:
+def _key_from_return(
+    index: _Index, located: _Located, check: EmittedCheck, rnode: ast.Node,
+) -> SiteKey | None:
     # A refined return is checked once, in the epilogue
     # (`codegen/contracts.py` `at=decl.return_type`), on the value the body
-    # returns: the narrowing the verifier records at the body or at a value
-    # the body joins.
+    # returns: the narrowing the verifier records at the place inside the
+    # body's value that the guard's path names.
     owner = located.owner
     if not isinstance(owner, (ast.FnDecl, ast.AnonFn)):
-        return False
-    return id(rnode) in index.closure(owner.body, stores=True)
+        return None
+    path = _path_below(index, owner.body, rnode)
+    if path is None or not _stands_for(check.path, path, rnode):
+        return None
+    return ("return", check.emitter, id(located.node), check.path)
 
 
-def _answers_from_binder(
-    index: _Index, located: _Located, rnode: ast.Node,
-) -> bool:
-    # A destructure or a pattern guards what it binds (`wasm/data.py`
-    # `at=te` / `at=pattern` / `at=sub_pat`, and a refined statement's guard
-    # at the statement, `_emit_bind_refine_guard(..., stmt, ...)`); the
-    # verifier records the narrowing at the value taken apart, or at the
-    # component a construction there stores — the component the binder
-    # binds, when the value is a construction it can see into.
+def _binder_value(located: _Located) -> ast.Node | None:
+    """The value a binder's record stands at: what the verifier records a
+    bind's narrowing at.  A `let` binds its value.  A destructure binding,
+    and a match binder one constructor below the arm's pattern, bind a
+    field: the verifier records it at that field when the value taken apart
+    is a construction it can see into, and otherwise at the value itself,
+    as it records every binder below that depth."""
     owner = located.owner
     if isinstance(owner, ast.LetStmt):
-        return id(rnode) in index.closure(owner.value, stores=True)
+        return owner.value
     if isinstance(owner, ast.LetDestruct):
         value: ast.Node = owner.value
         if (located.position >= 0
                 and isinstance(value, ast.ConstructorCall)
                 and len(value.args) == len(owner.type_bindings)):
-            value = value.args[located.position]
-        return id(rnode) in index.closure(value, stores=True)
+            return value.args[located.position]
+        return value
     if isinstance(owner, ast.MatchExpr):
-        return id(rnode) in index.closure(owner.scrutinee, stores=True)
-    return False
+        scrutinee = owner.scrutinee
+        if (len(located.steps) == 1
+                and isinstance(scrutinee, ast.ConstructorCall)
+                and scrutinee.name == located.steps[0][0]
+                and located.steps[0][1] < len(scrutinee.args)):
+            return scrutinee.args[located.steps[0][1]]
+        return scrutinee
+    return None
 
 
-def _answers_from_value(
-    index: _Index, located: _Located, record: ProofObligation,
-    rnode: ast.Node,
-) -> bool:
-    cnode = located.node
-    assert cnode is not None  # noqa: S101 — a value is always located
-    # A narrowing pushed to the arms of a join (`_collect_narrowing_return_
-    # leaves`, the per-arm widenings), or a whole body guarded where the
-    # verifier records an arm: one value either way, through the joins
-    # `narrowing.flow_arms` names.
-    if id(cnode) in index.closure(rnode) or id(rnode) in index.closure(cnode):
-        return True
-    # A `@Nat` operand an `@Int` operation widens is guarded where it is
-    # evaluated (`narrowing.widened_nat_operands`).
-    if record.kind == "nat_to_int_coerce" and isinstance(rnode, ast.BinaryExpr):
-        return (id(cnode) in index.closure(rnode.left)
-                or id(cnode) in index.closure(rnode.right))
-    return False
+def _key_from_binder(
+    index: _Index, located: _Located, check: EmittedCheck, rnode: ast.Node,
+) -> SiteKey | None:
+    # A destructure or a pattern guards what it binds (`wasm/data.py`
+    # `at=te` / `at=pattern` / `at=sub_pat`, and a refined `let`'s guard at
+    # the statement, `_emit_bind_refine_guard(..., stmt, ...)`).
+    value = _binder_value(located)
+    if value is None or id(rnode) not in index.closure(value):
+        return None
+    return ("binder", check.emitter, id(located.node))
 
 
-def _answers_from_prelude(check: EmittedCheck, rnode: ast.Node) -> bool:
-    # A built-in written in the prelude carries its own checks: a call to it
-    # is answered by the check in its body (`float_to_string`'s truncation,
-    # which the verifier obligates at the call, `_FLOAT_CONVERSIONS`).
-    base = check.function.split("$", 1)[0]
-    call = _call_node(rnode)
-    return call is not None and call.name == base
+def _needs_no_check(index: _Index, leaf: ast.Expr, kind: str) -> bool:
+    """Whether an arm of a join cannot break *kind*'s property, so the
+    join's record needs no check on it: for ``nat_bind``, a value no
+    narrowing reaches — a non-negative literal, a ``@Nat`` slot, a call of
+    a declared ``@Nat`` function, and arithmetic over those (a subtraction
+    with ``@Nat`` provenance is its own guarded site).  Read from the
+    program alone, so a form whose type only the checker knows needs its
+    check."""
+    if kind != "nat_bind":
+        return False
+
+    def declared(call: ast.Expr) -> str | None:
+        if not isinstance(call, (ast.FnCall, ast.ModuleCall)):
+            return None
+        decl = _reached_decl(index, call)
+        ret = decl.return_type if decl is not None else None
+        if isinstance(ret, ast.NamedType) and not ret.type_args:
+            return ret.name
+        return None
+
+    def provenance(expr: ast.Expr) -> bool:
+        if isinstance(expr, ast.SlotRef):
+            return expr.type_name == "Nat"
+        if isinstance(expr, (ast.FnCall, ast.ModuleCall)):
+            return declared(expr) == "Nat"
+        if isinstance(expr, ast.BinaryExpr):
+            return provenance(expr.left) or provenance(expr.right)
+        return False
+
+    return (narrowing.is_static_nat_typed(leaf, declared)
+            and not narrowing.has_underflow_leaf(leaf, provenance))
 
 
 # =====================================================================
@@ -824,35 +967,67 @@ def join(
     for record in records.all:
         by_kind.setdefault(record.kind, []).append(record)
 
-    answered: dict[int, list[EmittedCheck]] = {}
+    #: record id -> the obligation sites the checks offer it, each with the
+    #: checks standing for that site.
+    offers: dict[int, dict[SiteKey, list[EmittedCheck]]] = {}
+    #: record id at a join -> leaf id -> the arm checks covering that leaf.
+    covered: dict[int, dict[int, list[EmittedCheck]]] = {}
+    unrecorded: list[tuple[EmittedCheck, list[ProofObligation]]] = []
     for check in checks:
         located = _locate(index, check)
         if located is None:
             out.mismatches.append(_check_mismatch(
                 "no_mapping", check,
+                "a node of the program stands at the check's span, but no "
+                "rule pairs a check standing at a node of its class"
+                if index.nodes_at(check.file, _span_of(check)) else
                 "no node of the program stands at the check's span"))
             continue
-        answering = [
-            record
-            for kind in check.obligations
-            for record in by_kind.get(kind, ())
-            if _answers(index, located, check, record,
-                        records.located(record))
-        ]
-        for record in answering:
-            answered.setdefault(id(record), []).append(check)
+        standing: list[ProofObligation] = []
+        for kind in check.obligations:
+            for record in by_kind.get(kind, ()):
+                key = _site_key(index, located, check, record,
+                                records.located(record))
+                if key is not None:
+                    offers.setdefault(id(record), {}).setdefault(
+                        key, []).append(check)
+                    standing.append(record)
+        if located.where == "value" and located.node is not None:
+            standing.extend(_arm_coverage(index, records, located.node, check,
+                                          covered))
         if check.prelude or not _verified_here(
                 index, located.node, records_by_top):
             out.out_of_scope.append(check)
             continue
-        if any(record.status != DENIES_GUARD for record in answering):
+        unrecorded.append((check, standing))
+
+    # A record at a join is answered by its arms' checks when every arm that
+    # can break the property has one (`_arm_coverage`): one site, the join.
+    unchecked_arm: dict[int, ast.Expr] = {}
+    for record in records.all:
+        leaves_covered = covered.get(id(record))
+        rnode = records.located(record)
+        if not leaves_covered or not isinstance(rnode, ast.Expr):
+            continue
+        missing = [leaf for leaf in narrowing.value_leaves(rnode)
+                   if id(leaf) not in leaves_covered
+                   and not _needs_no_check(index, leaf, record.kind)]
+        if missing:
+            unchecked_arm[id(record)] = missing[0]
+            continue
+        offers.setdefault(id(record), {})[("arms", id(rnode))] = [
+            c for found in leaves_covered.values() for c in found]
+
+    for check, standing in unrecorded:
+        if any(record.status != DENIES_GUARD for record in standing):
             continue
         out.mismatches.append(_check_mismatch(
             "guarded_unrecorded", check,
             "the only record at the site says it has no runtime check "
-            "(tier3_unguarded)" if answering else
+            "(tier3_unguarded)" if standing else
             "this run recorded no obligation of that kind at the site"))
 
+    answered, shortfall = _match_sites(records.all, offers)
     for record in records.all:
         if record.status not in CLAIMS_GUARD or record.kind in EXCLUDED_KINDS:
             continue
@@ -872,15 +1047,122 @@ def join(
                 "no node of the program stands at the record's span"))
         elif not _has_code(index, regions, rnode):
             out.absent.append(record)
+        elif id(record) in unchecked_arm:
+            leaf = unchecked_arm[id(record)]
+            where = (f" at {leaf.span.line}:{leaf.span.column}"
+                     if leaf.span is not None else "")
+            out.mismatches.append(_record_mismatch(
+                "recorded_unguarded", record,
+                f"the module checks other arms of the join it is recorded "
+                f"at, and holds no check on the arm{where}"))
+        elif id(record) in shortfall:
+            held, standing_here = shortfall[id(record)]
+            out.mismatches.append(_record_mismatch(
+                "recorded_unguarded", record,
+                f"{standing_here} obligations of this kind stand at this "
+                f"site, and the module holds checks for {held} of them"))
         else:
             out.mismatches.append(_record_mismatch(
                 "recorded_unguarded", record,
                 "the compiled module holds no check that answers it"))
-    # One mismatch per site: a check spliced twice into one function (a
-    # handler clause inlined at each of its operation's calls) is two
-    # entries of the record of checks and one disagreement.
-    out.mismatches = sorted(dict.fromkeys(out.mismatches), key=_mismatch_order)
+    # One check-side mismatch per site: a check spliced twice into one
+    # function (a handler clause inlined at each of its operation's calls)
+    # is two entries of the record of checks and one disagreement.  A
+    # record-side mismatch is one per record, so two records at one site
+    # that are both unanswered stay two.
+    seen: set[Mismatch] = set()
+    kept: list[Mismatch] = []
+    for m in out.mismatches:
+        if not m.status and m in seen:
+            continue
+        seen.add(m)
+        kept.append(m)
+    out.mismatches = sorted(kept, key=_mismatch_order)
     return out
+
+
+def _arm_coverage(
+    index: _Index, records: _Records, node: ast.Node, check: EmittedCheck,
+    covered: dict[int, dict[int, list[EmittedCheck]]],
+) -> list[ProofObligation]:
+    """Credit a value check with the leaves of *node* at every join above
+    it whose record is of one of its kinds; return those records.
+
+    Code generation guards a narrowing pushed down a join at each arm that
+    narrows (``_collect_narrowing_return_leaves``), where the verifier
+    records the join once.  The check stands for its own arm only: the
+    join's record is answered once every arm that can break the property
+    has a check (:func:`_needs_no_check`), so a missing arm guard is never
+    covered by a sibling arm's."""
+    if not isinstance(node, ast.Expr):
+        return []
+    leaves = narrowing.value_leaves(node)
+    found: list[ProofObligation] = []
+    for join_node in _joins_above(index, node):
+        for record in records.at_node.get(id(join_node), ()):
+            if (record.kind not in check.obligations
+                    or index.key(record.file) != index.key(check.file)):
+                continue
+            arms = covered.setdefault(id(record), {})
+            for leaf in leaves:
+                arms.setdefault(id(leaf), []).append(check)
+            found.append(record)
+    return found
+
+
+def _match_sites(
+    all_records: list[ProofObligation],
+    offers: dict[int, dict[SiteKey, list[EmittedCheck]]],
+) -> tuple[dict[int, list[EmittedCheck]],
+           dict[int, tuple[int, int]]]:
+    """Match the records at each site with the obligation sites the checks
+    there stand for, one to one.
+
+    The records of one kind at one span are indistinguishable to the join
+    (an opaque scrutinee's two widened fields are recorded at the
+    scrutinee, twice), so each needs a site of its own: one check never
+    answers two of them, and a missing one cannot hide behind its sibling.
+    A record that claims no runtime check is matched first, so where the
+    sites fall short the shortfall lands on the claims, which is the
+    direction that reports it.  Returns each answered record's checks (all
+    that offer it a site), and for each record left over (held sites,
+    records at its site)."""
+    groups: dict[tuple[object, ...], list[ProofObligation]] = {}
+    for record in all_records:
+        groups.setdefault(
+            (record.file, record.kind, *_span_of(record)), []).append(record)
+    answered: dict[int, list[EmittedCheck]] = {}
+    shortfall: dict[int, tuple[int, int]] = {}
+    for group in groups.values():
+        ordered = sorted(group, key=lambda r: r.status in CLAIMS_GUARD)
+        owner: dict[SiteKey, ProofObligation] = {}
+
+        def assign(record: ProofObligation, seen: set[SiteKey]) -> bool:
+            for key in offers.get(id(record), {}):
+                if key in seen:
+                    continue
+                seen.add(key)
+                holder = owner.get(key)
+                if holder is None or assign(holder, seen):
+                    owner[key] = record
+                    return True
+            return False
+
+        for record in ordered:
+            assign(record, set())
+        # An answered record is paired with every check offering it a site:
+        # the one its site was matched to, and any surplus (a guard at entry
+        # and at each tail call, both checking one measure).
+        for record in {id(r): r for r in owner.values()}.values():
+            answered[id(record)] = [
+                check for found in offers[id(record)].values()
+                for check in found]
+        sites = len({key for record in group
+                     for key in offers.get(id(record), {})})
+        for record in group:
+            if id(record) not in answered and offers.get(id(record)):
+                shortfall[id(record)] = (sites, len(group))
+    return answered, shortfall
 
 
 def _check_mismatch(
@@ -965,6 +1247,14 @@ def mismatch_diagnostics(
                     "`--reconcile` compiled this program and found no emitted "
                     "check for this obligation, so the claim is not true of "
                     "the compiled module."
+                    if m.kind == "recorded_unguarded" else
+                    "`vera verify` counts a `tier3` or `timeout` obligation as "
+                    "runtime-guarded: code generation is meant to emit a check "
+                    "that traps when the property fails.  `--reconcile` "
+                    "compiled this program but could not relate this record "
+                    "to the program or to any emitter, so it cannot say "
+                    "whether the module checks it: the claim is unconfirmed, "
+                    "which the reconciliation reports rather than skips."
                 ),
                 fix=(
                     "This is a disagreement inside the compiler, not an error "
@@ -995,9 +1285,18 @@ def mismatch_diagnostics(
                 "Every runtime check in the compiled module is meant to be "
                 "the runtime half of an obligation `vera verify` recorded, so "
                 "that the verification summary accounts for each check the "
-                "program performs.  This one has no such record: the summary "
-                "omits it, and a value the verifier could have refused "
-                "statically is caught only at run time."
+                "program performs.  The module checks this site at run time "
+                "and no record of this run answers the check, so the summary "
+                "omits it.  The check still runs: it is a dead guard on a "
+                "value the checker already typed, a check at a site that "
+                "cannot fail, or a gap in the verifier's accounting."
+                if m.kind == "guarded_unrecorded" else
+                "Every runtime check in the compiled module is meant to be "
+                "the runtime half of an obligation `vera verify` recorded.  "
+                "`--reconcile` could not relate this check to a site of the "
+                "program it knows how to pair, so it cannot say which record "
+                "accounts for it; the check still runs, and the "
+                "reconciliation reports the gap rather than skips it."
             ),
             spec_ref='Chapter 6, Section 6.8.1 "Obligation Vocabulary"',
             severity="warning",
