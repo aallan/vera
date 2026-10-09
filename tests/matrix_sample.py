@@ -50,7 +50,8 @@ file and ``--matrix=sample`` samples every one, whatever the variable says;
 the coverage job, the release merge's push, the nightly run and the
 pre-commit hook's run of a staged test file pass ``--matrix=full``.  A test
 named on the command line below the file (``file.py::test_x``) always runs
-in full.
+in full, and the sample is drawn after ``-k`` and ``-m`` have selected, from
+what they kept.
 
 Cells left out are deselected, and the run's summary says how many: "N
 matrix cells sampled out".  They are never reported as skipped.  The summary
@@ -294,6 +295,10 @@ def pytest_configure_node(node: Any) -> None:
     node.workerinput[_SEED_KEY] = _seed(node.config)
 
 
+# Last, so the sample is drawn from what `-k` and `-m` kept: their
+# deselection runs in this hook too, and a conftest's implementation would
+# otherwise run before it, leaving a selection fewer cells than the floor.
+@pytest.hookimpl(trylast=True)
 def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:

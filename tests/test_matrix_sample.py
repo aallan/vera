@@ -408,6 +408,24 @@ class TestThePlugin:
         assert result.returncode == 0, result.stdout + result.stderr
         assert len(_collected(result)) == 300
 
+    def test_a_keyword_selection_is_sampled_after_it_selects(self, tmp_path: Path) -> None:
+        """`-k` and `-m` deselect in the same hook as the sample, and the
+        sample runs last, so it samples what they kept: a sampled function
+        keeps at least the floor of its selected cells, and the first and
+        the last of them.  Sampled first, the 200 cells' sample would lose
+        to `-k` every kept cell whose id has no `1`."""
+        result = _pytest(
+            tmp_path, "--collect-only", "-q", "--matrix-seed", "2026-W41", "-k", "test_pinned and 1",
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        kept = _collected(result)
+        selected = [n for n in range(200) if "1" in str(n)]
+        assert len(selected) == 119
+        assert all("::test_pinned[" in line for line in kept), kept
+        assert ms.FLOOR <= len(kept) < len(selected), len(kept)
+        assert kept[0].endswith("test_pinned[1]"), kept[0]
+        assert kept[-1].endswith("test_pinned[199]"), kept[-1]
+
     def test_the_week_moves_the_sample(self, tmp_path: Path) -> None:
         one = _collected(_pytest(tmp_path, "--collect-only", "-q", "--matrix-seed", "2026-W41"))
         again = _collected(_pytest(tmp_path, "--collect-only", "-q", "--matrix-seed", "2026-W41"))
