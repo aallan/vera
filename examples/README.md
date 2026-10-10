@@ -16,7 +16,7 @@ Examples without `main` export named functions — use `--fn` to call them:
 vera run examples/factorial.vera --fn factorial -- 10
 ```
 
-Examples that use only the IO and Random host families (e.g. `hello_world.vera`, `fizzbuzz.vera`) compile to a stock-runnable WASI Preview 2 component — `vera compile --target wasi-p2 examples/hello_world.vera` emits a `.wasm` any `wasmtime run` executes with no flags and no Vera bindings (experimental; #237).
+Examples that use only the IO and Random host families (e.g. `hello_world.vera`, `fizzbuzz.vera`) compile to a stock-runnable WASI Preview 2 component — `vera compile --target wasi-p2 examples/hello_world.vera` emits a `.wasm` any `wasmtime run` executes with no flags and no Vera bindings.
 
 ## Example Index
 

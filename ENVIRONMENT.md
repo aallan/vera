@@ -60,7 +60,7 @@ Chooses the database the `DB` effect connects to at runtime (`DB.query` / `DB.ex
   VERA_DB_URL=sqlite:///examples/sqlitedb.sqlite vera run examples/sqlitedb.vera
   ```
 
-Phase: runtime (the connection is opened once at startup, during DB host-function registration — only for programs that use a `DB` operation — and reused for the rest of the run). In v1 the effect is SQLite-only and single-connection; a value that isn't one of the in-memory spellings or a `sqlite://` URL is treated as a SQLite file path, and an unopenable URL surfaces as the operation's `Err` result rather than a crash. Further backends are [#1143](https://github.com/aallan/vera/issues/1143). The browser runtime returns `Err` for every `DB` operation regardless of this variable, and the `wasi-p2` target rejects `<DB>` programs at compile time.
+Phase: runtime (the connection is opened once at startup, during DB host-function registration — only for programs that use a `DB` operation — and reused for the rest of the run). The effect is SQLite-only and single-connection; a value that isn't one of the in-memory spellings or a `sqlite://` URL is treated as a SQLite file path, and an unopenable URL surfaces as the operation's `Err` result rather than a crash. The browser runtime returns `Err` for every `DB` operation regardless of this variable, and the `wasi-p2` target rejects `<DB>` programs at compile time.
 
 ## `VERA_JS_COVERAGE`
 
@@ -70,7 +70,7 @@ Set to any non-empty value to enable V8 coverage collection during the browser-p
 VERA_JS_COVERAGE=1 pytest tests/test_browser.py -v
 ```
 
-CI sets this for the browser-parity job; local runs typically don't need it.  See [TESTING.md](TESTING.md) for the broader test layout.
+CI sets this for the browser-parity job; a local run needs it only for a coverage report.  See [TESTING.md](TESTING.md) for the broader test layout.
 
 ## `VERA_MATRIX_CHANGED`
 
@@ -131,7 +131,7 @@ VERA_EAGER_GC=1 vera run program.vera
 
 Read by `vera/codegen/assembly.py::AssemblyMixin._emit_alloc`; affects the WAT that `vera compile` emits, not the runtime behaviour of an already-compiled module.
 
-**When to use it.**  The conservative mark-sweep collector marks only from the shadow stack (`$gc_sp`); WAT locals are not roots.  If a heap pointer is held only in a WAT local across an allocation, the allocation can trigger a GC that reclaims the still-needed object — the resulting use-after-free typically only manifests at scale, when heap pressure is high enough to fire `$gc_collect` at the wrong moment.  Eager-GC collapses this from "fires occasionally at scale" to "fires on the very next allocation," giving a sharp signal for diagnosis.
+**When to use it.**  The conservative mark-sweep collector marks only from the shadow stack (`$gc_sp`); WAT locals are not roots.  If a heap pointer is held only in a WAT local across an allocation, the allocation can trigger a GC that reclaims the still-needed object — the resulting use-after-free manifests only at scale, when heap pressure is high enough to fire `$gc_collect` at the wrong moment.  Eager-GC collapses this from "fires occasionally at scale" to "fires on the very next allocation," giving a sharp signal for diagnosis.
 
 This was the diagnostic that cracked [#593](https://github.com/aallan/vera/issues/593): the rebuilt minimum reproducer crashed at generation 0 under `VERA_EAGER_GC=1` rather than around generation 20 without it, and the much smaller stack trace pinpointed the missing return-value root in `_compile_lifted_closure`.
 
