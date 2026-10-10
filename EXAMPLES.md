@@ -298,7 +298,7 @@ private fn get_name(@String -> @Result<String, String>)
 
 ## HTTP — network I/O as an algebraic effect
 
-`Http.get` and `Http.post` are effect operations returning `Result<String, String>`. The `<Http>` effect is declared in the signature, making network access explicit and testable. Compose with `json_parse` for typed API responses.
+`Http.get` and `Http.post` are effect operations returning `Result<String, String>`. The `<Http>` effect is declared in the signature, making network access explicit. A `handle[Http]` passes `vera check` and `vera verify`, and code generation drops its function (`E602`), so the effect is declared and propagated but not mocked. Compose with `json_parse` for typed API responses.
 
 ```vera
 private fn fetch_title(@String -> @Result<String, String>)

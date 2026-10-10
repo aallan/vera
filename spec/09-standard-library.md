@@ -426,7 +426,7 @@ Network I/O is modelled as a built-in algebraic effect with two operations: `get
 | `get` | `String -> Result<String, String>` | Performs an HTTP GET request; `Ok(body)` on success, `Err(message)` on failure |
 | `post` | `String, String -> Result<String, String>` | Performs an HTTP POST request with the given body (sent as `application/json`); `Ok(body)` on success, `Err(message)` on failure |
 
-This fits naturally with Vera's algebraic effect system and makes network I/O explicit and testable.
+This fits naturally with Vera's algebraic effect system and makes network I/O explicit. A `handle[Http]` passes `vera check` and `vera verify`, and code generation drops its function (`E602`), so the effect is declared and propagated but not mocked.
 
 **Composition with JSON:**
 
@@ -2644,7 +2644,7 @@ Key design points:
 
 1. **No higher-kinded types.** No `Functor`, `Monad`, or `Applicative`. Abilities are first-order only: `Eq<T>`, not `Mappable<F>` where `F` is a type constructor. This preserves decidable type checking and prevents the abstraction hierarchy that makes code harder for LLMs to generate correctly.
 
-2. **Built-in abilities** are auto-derivable for ADTs composed of types that already support them: `Eq`, `Ord`, `Hash`, `Encode`, `Decode`, `Show`. If all fields of an ADT support `Eq`, the ADT supports `Eq` automatically. Four abilities are built-in: `Eq`, `Ord`, `Hash`, and `Show`; `Encode` and `Decode` are not implemented.
+2. **Built-in abilities** are auto-derivable for ADTs composed of types that already support them: `Eq`, `Hash`, `Encode`, `Decode`, `Show`; `Ord` is not (§9.8.1). If all fields of an ADT support `Eq`, the ADT supports `Eq` automatically. Four abilities are built-in: `Eq`, `Ord`, `Hash`, and `Show`; `Encode` and `Decode` are not implemented.
 
 3. **User-defined abilities** are permitted but restricted to first-order type parameters. This allows library authors to define domain-specific abilities without the complexity of higher-kinded polymorphism.
 
