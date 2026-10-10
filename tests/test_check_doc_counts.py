@@ -107,6 +107,41 @@ class TestTheFreshnessCheck:
         assert "render_status:begin status" in error
 
 
+class TestCollectionCountsEveryMatrixCell:
+    """The counts are the files' whole size: the collection the freshness
+    check measures the tree by asks pytest for every cell of a file marked
+    `matrix`, not the pull-request gate's sample of it
+    (tests/matrix_sample.py), which a default collection deselects.  A
+    status written from the sample would differ the next week, when the
+    sample is drawn again, with no change to the tree."""
+
+    def test_the_collection_runs_with_the_full_matrix(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        commands: list[list[str]] = []
+
+        def run(cmd: Any, **kwargs: Any) -> Any:
+            commands.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 1, "", "stopped at the collection")
+
+        (tmp_path / "TESTING.md").write_text(
+            "".join(
+                f"<!-- render_status:begin {name} -->\n"
+                f"<!-- render_status:end {name} -->\n"
+                for name in ("status", "test-files", "skipped-tests")
+            ),
+            encoding="utf-8",
+        )
+        # The freshness check loads render_status.py afresh, which binds
+        # `subprocess.run` as the collection's runner then: stub it first.
+        monkeypatch.setattr(subprocess, "run", run)
+        (error,) = _MOD.stale_status(tmp_path)
+        assert "stopped at the collection" in error
+        (command,) = commands
+        assert "--collect-only" in command
+        assert "--matrix=full" in command
+
+
 class TestMainActsOnTheReleaseModeAnswer:
     """`--release-if-version-raised` turns the freshness check on exactly
     when the version rose, and a base it cannot read fails the script."""
