@@ -159,13 +159,25 @@ def _section(bullets: str, *, version: str = "0.1.5") -> Any:
     )
 
 
+# The closing line of every condensed body built from `_section`'s default
+# version and date: the section in the CHANGELOG at its tag.
+_CHANGELOG_LINK = (
+    "Full release notes: [CHANGELOG.md]"
+    "(https://github.com/aallan/vera/blob/v0.1.5/CHANGELOG.md#015---2026-07-15)"
+)
+# Words a body would need to talk about its own size or shortening.
+_SIZE_WORDING = re.compile(r"budget|limit|characters|truncat|condens", re.IGNORECASE)
+
+
 class TestReleaseBody:
     """#1288 — the GitHub Release body must always fit the 125,000 limit.
 
     The v0.1.10 failure landed *after* PyPI had accepted the immutable
     archives and after the tag was cut, so the notes builder is required to
     be total: it either passes the section through or condenses it, and the
-    result never exceeds the limit.
+    result never exceeds the limit.  A condensed body is the headline index
+    and a closing link to the section in the CHANGELOG, and it says nothing
+    about its own size.
     """
 
     def test_a_section_within_budget_passes_through_unchanged(self) -> None:
@@ -187,54 +199,67 @@ class TestReleaseBody:
         assert "- Lead-in 0." in body
         assert "- Lead-in 49." in body
         assert filler not in body
-        assert (
-            "https://github.com/aallan/vera/blob/v0.1.5/CHANGELOG.md#015---2026-07-15"
-            in body
-        )
+        assert body.splitlines()[-1] == _CHANGELOG_LINK
 
-    def test_the_condensed_body_states_the_measured_length_and_the_limit(self) -> None:
-        section = _section(
-            "### Fixed\n\n" + "\n".join(f"- **Lead {n}.** {'y' * 4000}" for n in range(50))
-        )
-        body = release.release_body(section, repo="aallan/vera")
-        assert f"{len(section.notes):,} characters" in body
-        assert f"{release.RELEASE_BODY_BUDGET:,}-character budget" in body
-        assert f"{release.GITHUB_RELEASE_BODY_LIMIT:,} characters" in body
+    def test_the_condensed_body_leads_with_its_first_heading(self) -> None:
+        """The index is the first thing a reader of the release sees.
 
-    def test_a_section_between_the_budget_and_the_limit_says_so_truthfully(
-        self,
-    ) -> None:
-        """The band the old wording lied in.
-
-        Condensing starts at the budget, not at GitHub's limit, so a
-        section of 120,001-125,000 characters is condensed while being
-        under the limit.  The preamble used to say it was "past GitHub's
-        125,000-character release-body limit" — a falsehood published
-        verbatim in the release body (#1330 review).
+        Nothing about the body itself comes before it: the first line is
+        the section's first ``###`` heading, here the Highlights a release
+        section opens with, and the next line is that heading's first entry.
         """
         section = _section(
+            "### Highlights\n\n"
+            f"- **Headline.** {'h' * 4000}\n\n"
+            "### Fixed\n\n"
+            + "\n".join(f"- **Lead {n}.** {'y' * 4000}" for n in range(50))
+        )
+        body = release.release_body(section, repo="aallan/vera")
+        assert body != section.notes
+        assert body.splitlines()[:2] == ["### Highlights", "- Headline."]
+
+    def test_the_condensed_body_says_nothing_about_its_own_size(self) -> None:
+        """Size is the builder's concern, not the reader's.
+
+        Condensing starts at the budget, below GitHub's limit, so both bands
+        are pinned: a section past the budget and under the limit, and one
+        past the limit as well.  Both condense, and neither body states the
+        section's length, the budget, the limit, or that it was shortened.
+        """
+        band = _section(
             "### Fixed\n\n"
             + "\n".join(f"- **Lead {n}.** {'z' * 2400}" for n in range(50))
         )
-        size = len(section.notes)
-        assert release.RELEASE_BODY_BUDGET < size <= release.GITHUB_RELEASE_BODY_LIMIT
+        over = _section(
+            "### Fixed\n\n"
+            + "\n".join(f"- **Lead {n}.** {'z' * 4000}" for n in range(50))
+        )
+        assert (
+            release.RELEASE_BODY_BUDGET
+            < len(band.notes)
+            <= release.GITHUB_RELEASE_BODY_LIMIT
+        )
+        assert len(over.notes) > release.GITHUB_RELEASE_BODY_LIMIT
 
-        body = release.release_body(section, repo="aallan/vera")
-        assert body != section.notes, "the band must still condense"
-        # It is past the budget, and it is NOT past the limit.  The
-        # preamble must not claim otherwise.
-        assert f"past the {release.RELEASE_BODY_BUDGET:,}-character budget" in body
-        preamble = body.splitlines()[0]
-        assert "past GitHub" not in preamble
-        assert f"past the {release.GITHUB_RELEASE_BODY_LIMIT:,}" not in preamble
-        assert f"{size:,} characters" in preamble
+        for section in (band, over):
+            body = release.release_body(section, repo="aallan/vera")
+            assert body != section.notes, "both bands must condense"
+            assert _SIZE_WORDING.search(body) is None, body.splitlines()[0]
+            for figure in (
+                len(section.notes),
+                release.RELEASE_BODY_BUDGET,
+                release.GITHUB_RELEASE_BODY_LIMIT,
+            ):
+                assert f"{figure:,}" not in body
+                assert str(figure) not in body
 
     def test_the_index_reproduces_the_v0110_recovery_shape(self) -> None:
         """The lead-in carries the bullet's LAST issue/PR link, wrapped.
 
         Pinned because the v0.1.10 manual recovery attributed a bullet whose
         only reference sat mid-prose (``(PR [#1282](...) review)``), not
-        immediately after the bold run.
+        immediately after the bold run.  The index lines come before the
+        closing CHANGELOG link and the blank line that separates them.
         """
         section = _section(
             "### Changed\n\n"
@@ -243,10 +268,12 @@ class TestReleaseBody:
             "(PR [#1282](https://github.com/aallan/vera/pull/1282) review).\n"
             "- **Lead two.** No reference at all.\n"
         )
-        assert release.condense_notes(section, repo="aallan/vera").splitlines()[-3:] == [
+        assert release.condense_notes(section, repo="aallan/vera").splitlines() == [
             "### Changed",
             "- Lead one. ([#1282](https://github.com/aallan/vera/pull/1282))",
             "- Lead two.",
+            "",
+            _CHANGELOG_LINK,
         ]
 
     def test_a_bullet_without_a_bold_lead_in_still_reaches_the_index(self) -> None:
@@ -262,19 +289,76 @@ class TestReleaseBody:
         with pytest.raises(release.ReleaseError, match="no bullets"):
             release.condense_notes(section, repo="aallan/vera")
 
-    def test_an_index_that_still_overflows_is_truncated_and_says_so(self) -> None:
+    def test_an_index_that_still_overflows_is_cut_at_a_line_and_keeps_the_link(
+        self,
+    ) -> None:
+        """Even the index is past GitHub's limit: it is cut, the link stays.
+
+        The cut falls after the last whole index line that fits beside the
+        closing link.  Every line kept is a line of the full index, in order,
+        and the first line dropped would not have fitted.
+        """
         bullets = "### Fixed\n\n" + "\n".join(
             f"- **{'lead ' * 400}{index}.** detail" for index in range(400)
         )
         section = _section(bullets)
-        assert (
-            len(release.condense_notes(section, repo="aallan/vera"))
-            > release.GITHUB_RELEASE_BODY_LIMIT
-        )
+        full = release.condense_notes(section, repo="aallan/vera")
+        assert len(full) > release.GITHUB_RELEASE_BODY_LIMIT
 
         body = release.release_body(section, repo="aallan/vera")
         assert len(body) <= release.GITHUB_RELEASE_BODY_LIMIT
-        assert "truncated" in body
+        lines = body.splitlines()
+        assert lines[-2:] == ["", _CHANGELOG_LINK]
+        kept, full_lines = lines[:-2], full.splitlines()
+        assert kept == full_lines[: len(kept)]
+        assert kept[-1].startswith("- ")
+        dropped = full_lines[len(kept)]
+        assert len(body) + len(dropped) + 1 > release.GITHUB_RELEASE_BODY_LIMIT
+        assert _SIZE_WORDING.search(body) is None
+
+    def test_a_cut_at_the_limit_fills_it_exactly(self) -> None:
+        """The cut's arithmetic, at the boundary itself.
+
+        The long entries are sized so that they, the heading, the newline
+        before each entry and the closing link come to exactly the limit.
+        Every long entry is kept and every short one after them is dropped:
+        a newline left out of the sum, or the closing link left out of it,
+        would let a short entry in and take the body past the limit.
+        """
+        limit = release.GITHUB_RELEASE_BODY_LIMIT
+        room = limit - len("\n\n" + _CHANGELOG_LINK + "\n")
+        heading, count = "### Fixed", 60
+        # Each long entry's index line is "- " plus its lead-in, `width` long.
+        total = room - len(heading) - count
+        widths = [total // count] * count
+        widths[-1] += total - sum(widths)
+        long = [f"- **{'a' * (width - 2)}** detail" for width in widths]
+        short = [f"- **s{n}.** detail" for n in range(20)]
+        section = _section(heading + "\n\n" + "\n".join(long + short))
+        assert len(release.condense_notes(section, repo="aallan/vera")) > limit
+
+        body = release.release_body(section, repo="aallan/vera")
+        assert len(body) == limit
+        lines = body.splitlines()
+        assert lines[0] == heading
+        assert lines[1:-2] == [f"- {'a' * (width - 2)}" for width in widths]
+        assert lines[-2:] == ["", _CHANGELOG_LINK]
+
+    def test_a_heading_cut_from_its_entries_is_dropped_with_them(self) -> None:
+        """A cut never leaves a heading with nothing under it."""
+        section = _section(
+            "### Added\n\n- **Short.** Detail.\n\n"
+            f"### Fixed\n\n- **{'x' * 130_000}.** Detail."
+        )
+        body = release.release_body(section, repo="aallan/vera")
+        assert body.splitlines() == ["### Added", "- Short.", "", _CHANGELOG_LINK]
+
+    def test_an_index_with_no_whole_line_that_fits_is_the_link_alone(self) -> None:
+        """Total to the last case: when no index line fits, the link is the body."""
+        section = _section(f"### Fixed\n\n- **{'x' * 130_000}.** Detail.")
+        assert release.release_body(section, repo="aallan/vera") == (
+            _CHANGELOG_LINK + "\n"
+        )
 
     @pytest.mark.parametrize(
         ("version", "date", "expected"),
@@ -313,6 +397,13 @@ class TestReleaseBody:
             assert len(body) <= release.GITHUB_RELEASE_BODY_LIMIT, version
             if body != section.notes:
                 condensed.append(version)
+                anchor = release.changelog_anchor(version, section.date)
+                assert body.splitlines()[-1] == (
+                    "Full release notes: [CHANGELOG.md](https://github.com/"
+                    f"aallan/vera/blob/v{version}/CHANGELOG.md{anchor})"
+                ), version
+                assert body.splitlines()[0].startswith("### "), version
+                assert _SIZE_WORDING.search(body.splitlines()[0]) is None, version
         assert "0.1.10" in condensed
 
 
@@ -746,6 +837,8 @@ class TestCLI:
         assert len(written) <= release.GITHUB_RELEASE_BODY_LIMIT
         assert "- Lead 49." in written
         assert "z" * 4000 not in written
+        assert written.splitlines()[0] == "### Fixed"
+        assert written.splitlines()[-1] == _CHANGELOG_LINK
 
     def test_the_release_workflow_passes_the_repository_to_the_notes_step(self) -> None:
         """The fix is only real if ``release.yml`` consumes the fitted builder."""
