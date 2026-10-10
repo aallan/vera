@@ -121,11 +121,11 @@ Vera verifies in two implemented tiers, at every call site:
   reported as warnings (`E504`, `E506`, `E531`, `E537`) and counted in neither tier.
 
 **Checking the Tier 3 claims against the module.** A `tier3` status claims that
-the compiled module checks the property, and the verifier and code generation
-decide that separately. `vera verify --reconcile` compiles the program in
-process, as `vera compile` would, and joins the two records: a `tier3` or
-`timeout` obligation that no emitted check answers is an **E541** error, and an
-emitted check that no obligation accounts for is a **W004** warning. With
+the compiled module checks the property. `vera verify --reconcile` compiles the
+program in process, as `vera compile` would, and joins the verifier's records
+with the checks the module holds: a `tier3` or `timeout` obligation that no
+emitted check answers is an **E541** error, and an emitted check that no
+obligation accounts for is a **W004** warning. With
 `--json` the envelope gains a `reconciliation` object holding the counts and
 each mismatch. The mismatches the corpus shows today are listed, each under
 its open issue, in `scripts/check_reconciliation.py`.
@@ -185,7 +185,7 @@ The same reason is repeated in an `E701` warning, so a `--json` consumer reading
 only `diagnostics` still learns why nothing ran.
 
 **Distrust the proofs.** By default a function the verifier proved is reported
-`VERIFIED (Tier 1)` and never run, so a false proof is invisible to `test`.
+`VERIFIED (Tier 1)` and never run.
 `--distrust` runs those functions too: code generation emits a contract's
 runtime check whatever its tier, wherever it can express one, so the proved
 function's checks are in the module the trials execute.  A contract it cannot
@@ -209,11 +209,11 @@ is unattributed.  The verdict is one of three:
 - **Refuted.** Each stands for an obligation the verifier proved, so
   whichever fired, a proof said it could not.  The function is reported
   `REFUTED`, with an `E703` error naming the obligation and the arguments, and
-  the run exits 1.  That is a soundness bug in Vera unless an `assume` the
-  proof rests on is false: the `E703` names any `assume` in the function the
+  the run exits 1.  The `E703` also names any `assume` in the function the
   proof belongs to, and says the arguments violate it where the tester can
   evaluate it on them (an `assume` at the head of the function under test).
-  Otherwise, report it with the program and the arguments.
+  Its fix says to check an `assume` the proof rests on first, and otherwise
+  to report the refutation with the program and the arguments.
 - **A Tier-3 guard.** Each stands for an obligation the verifier did not
   prove.  It fired on an input the contract admits, which is a finding about
   the program, reported as a failing trial exactly as for a Tier-3 function.

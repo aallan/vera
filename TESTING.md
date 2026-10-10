@@ -1205,7 +1205,7 @@ program.  A proved function it cannot run is reported not exercised: when it was
 introduced, 173 proofs ran and 3 did not, two for parameters the generator does
 not encode (a generic in `ch02_generic_over_param_adt`, an `Array<UrlParts>` in
 `ch08_prelude_adt_name_alias`) and one for a precondition it cannot translate
-(#1229, `ch09_abilities`).  It sees a false proof only where a check exists and the generator
+(#1229, `ch09_abilities`).  It can refute a proof only where a check exists and the generator
 reaches the input (`@Int` and `@Nat` within 2^53); a missing check is the
 reconciliation's class.  A trap whose check joins no obligation record is
 counted as unattributed rather than asserted away (#1633).

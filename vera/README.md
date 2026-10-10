@@ -636,7 +636,7 @@ The code generator does **not** consult the verifier: `vera compile` emits the m
 
 Omitting statically-proven guards is the spec §11.8 aspiration tracked in [#958](https://github.com/aallan/vera/issues/958) — it must wait on the soundness guarantees noted there.
 
-Because the two decide separately, a `tier3` status is a prediction about the module.  `vera verify --reconcile` compiles the program in process and joins the two records (`reconcile.py`): a record claiming a runtime check that no emitted check answers is an E541 error, and an emitted check no record accounts for is a W004 warning.  `tests/test_reconciliation.py` runs the same join over the corpus in CI, and `scripts/check_reconciliation.py` locally, with the mismatches that stand today allowlisted by their open issues.
+`vera verify --reconcile` compiles the program in process and joins the verifier's records with the checks the module holds (`reconcile.py`): a record claiming a runtime check that no emitted check answers is an E541 error, and an emitted check no record accounts for is a W004 warning.  `tests/test_reconciliation.py` runs the same join over the corpus in CI, and `scripts/check_reconciliation.py` locally, with the mismatches that stand today allowlisted by their open issues.
 
 Preconditions are checked at function entry. Postconditions store the return value in a temporary local, check the condition, and trap or return.
 
