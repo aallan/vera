@@ -1191,7 +1191,8 @@ class TestTheGuardRail:
     The checker refuses a call that names nothing (E200, E230, E233), but a
     call it ACCEPTS can still name nothing code generation compiles: a user
     ability's operation (#1499).  Neither text may say a checked program
-    never gets there.
+    never gets there.  The rail's rationale cites the issue; the spec states
+    the case as a fact, and KNOWN_ISSUES.md tracks the issue.
     """
 
     def test_a_checked_call_reaches_the_rail_and_its_rationale_says_how(
@@ -1216,4 +1217,5 @@ class TestTheGuardRail:
         start = spec.index("### 8.9.3 Guard Rail")
         section = spec[start:spec.index("\n## ", start)]
         assert "never calls an undefined function" not in section
-        assert "ability" in section and "issues/1499" in section, section
+        assert "ability" in section, section
+        assert "code generation does not compile" in section, section
