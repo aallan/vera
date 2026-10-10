@@ -7,7 +7,8 @@
 # Placement.  This file holds the FAST gates — lint, types, the doc and
 # consistency gates, and the tests a commit stages — so a commit takes
 # minutes.  No hook checks a count: TESTING.md's generated status is
-# regenerated and checked by the release PR (scripts/render_status.py).  The slow gates run in CI (.github/workflows/ci.yml), and there
+# regenerated and checked by the release PR (scripts/render_status.py).
+# The slow gates run in CI (.github/workflows/ci.yml), and there
 # only: the full pytest suite, which carries the conformance suite, on the
 # whole OS x Python matrix (`test`) on every pull request, and once, measuring
 # coverage (`coverage`), on the push event a merged pull request produces on
