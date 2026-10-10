@@ -178,6 +178,11 @@ def collect(
     return parse_collection(result.stdout)
 
 
+def _cell(text: str) -> str:
+    """`text` safe in a Markdown table cell, where a `|` would end it."""
+    return text.replace("|", "\\|")
+
+
 def summary_of(source: str) -> str:
     """The first paragraph of a module's docstring, on one line and safe in
     a table cell; empty when the module has none."""
@@ -186,7 +191,7 @@ def summary_of(source: str) -> str:
     except SyntaxError:
         return ""
     paragraph = re.split(r"\n\s*\n", doc.strip(), maxsplit=1)[0]
-    return " ".join(paragraph.split()).replace("|", "\\|")
+    return _cell(" ".join(paragraph.split()))
 
 
 def registry_counts(root: Path) -> tuple[int, int]:
@@ -265,10 +270,10 @@ def conformance_skips(root: Path) -> list[Skip]:
     found: list[tuple[str, int, Skip]] = []
     for entry in module.MANIFEST:
         for index, stage in enumerate(stages):
+            # The skip first: it must not depend on which of pytest's
+            # outcome exceptions derive from `Exception`.
             try:
                 getattr(cls(), stage)(entry)
-            except (Exception, pytest.fail.Exception):  # noqa: BLE001 — a stage that stopped or failed ran: not a skip
-                continue
             except pytest.skip.Exception as exc:
                 test_id = ids(entry)
                 found.append((test_id, index, Skip(
@@ -278,6 +283,8 @@ def conformance_skips(root: Path) -> list[Skip]:
                     message=str(exc.msg),
                     about=_about(entry),
                 )))
+            except (Exception, pytest.fail.Exception):  # noqa: BLE001 — a stage that stopped or failed ran: not a skip
+                continue
     return [skip for _id, _index, skip in sorted(found, key=lambda f: f[:2])]
 
 
@@ -457,7 +464,7 @@ def _skipped_tests(tree: Tree) -> str:
     for skip in tree.skips:
         out.append(
             f"| `{skip.test}` | `{skip.program}` | `{skip.level}` |"
-            f" {skip.message} | {skip.about.replace('|', chr(92) + '|')} |"
+            f" {_cell(skip.message)} | {_cell(skip.about)} |"
         )
     return "\n".join([*out, ""])
 

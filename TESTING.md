@@ -7,7 +7,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 <!-- render_status:begin status -->
 | Metric | Value |
 |--------|-------|
-| **Tests** | 31,615 collected from 249 test files, which hold 259,779 lines |
+| **Tests** | 31,617 collected from 249 test files, which hold 259,812 lines |
 | **Conformance programs** | 256 in `tests/conformance/manifest.json`: 0 at `parse`, 60 at `check`, 20 at `verify`, 176 at `run`; 48 of them negative fixtures (`expected_error`) |
 | **Example programs** | 43 in `examples/` |
 | **Corpus programs** | 306 `.vera` files under `examples/` and `tests/conformance/`, recursively |
@@ -258,7 +258,7 @@ One row per test file: its tests as a full collection counts them (the stress te
 | `test_refinement_binder_convergence_1208.py` | 16 | 459 | Codegen's refinement guard and :mod:`vera.naming` share ONE derivation. |
 | `test_refinement_chain_convergence.py` | 63 | 398 | The two refinement-chain oracles answer the same question. |
 | `test_release.py` | 64 | 821 | Release-policy tests for ``scripts/release.py`` (#481). |
-| `test_render_status.py` | 39 | 625 | scripts/render_status.py, which writes TESTING.md's generated status. |
+| `test_render_status.py` | 41 | 658 | scripts/render_status.py, which writes TESTING.md's generated status. |
 | `test_reserved_container_names_1547.py` | 61 | 217 | #1547 — the built-in container names are reserved (E158). |
 | `test_resolver.py` | 20 | 602 | Tests for vera.resolver — module resolution. |
 | `test_runtime_traps.py` | 99 | 3,290 | Runtime trap categorisation + stdout-on-trap preservation. |

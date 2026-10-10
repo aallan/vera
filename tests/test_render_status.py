@@ -456,6 +456,30 @@ class TestConformanceSkips:
             "test_run[id-p_x]", "test_check[id-q]", "test_distrust[id-q]",
         ]
 
+    def test_a_skip_is_read_whatever_its_exception_derives_from(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """pytest's skip exception derives from `BaseException`, so the
+        handler for a stage that failed, `except Exception`, cannot catch
+        it today.  The skip is read first anyway: a pytest whose skip
+        exception derived from `Exception` would otherwise empty the
+        table without a word."""
+
+        class SkipFromException(Exception):
+            def __init__(self, msg: str) -> None:
+                super().__init__(msg)
+                self.msg = msg
+
+        monkeypatch.setattr(pytest.skip, "Exception", SkipFromException)
+        module = _CONFORMANCE_MODULE.replace(
+            'pytest.skip("suffix-x")', 'raise pytest.skip.Exception("suffix-x")'
+        ).replace('pytest.skip("odd")', 'raise pytest.skip.Exception("odd")')
+        root = tmp_path / "repo"
+        _write(root / "tests" / "test_conformance.py", module)
+        assert [(row.test, row.message) for row in RS.conformance_skips(root)] == [
+            ("test_run[id-p_x]", "suffix-x"), ("test_check[id-q]", "odd"),
+        ]
+
     def test_every_real_row_really_skips(self) -> None:
         """Against the real suite: each row's stage, called with nothing
         replaced, skips with the message the row states."""
@@ -506,6 +530,15 @@ class TestRender:
         skips = RS.render(_measure(_synthetic(tmp_path)))["skipped-tests"]
         assert skips.startswith("The suite skips 1 conformance-stage tests")
         assert "| `test_run[v1]` | `v1.vera` | `verify` | verify-only | V1 |" in skips
+
+    def test_a_pipe_in_a_skip_cannot_end_its_cell(self, tmp_path: Path) -> None:
+        """A skip's message and its program's title are free text, so a
+        `|` in either is escaped, as a docstring's is: the row keeps its
+        five cells."""
+        skips = [RS.Skip("test_run[v1]", "v1.vera", "verify", "a | b", "V | 1")]
+        tree = _measure(_synthetic(tmp_path), skips=lambda _root: list(skips))
+        row = RS.render(tree)["skipped-tests"].splitlines()[-1]
+        assert row == "| `test_run[v1]` | `v1.vera` | `verify` | a \\| b | V \\| 1 |"
 
 
 class TestSplice:
