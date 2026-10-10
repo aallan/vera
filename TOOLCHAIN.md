@@ -349,10 +349,12 @@ vera errors   --json     # every diagnostic + warning code, with its phase
 
 Each emits a uniform `{"schema": "...", "items": [...]}` envelope (the `schema`
 field is versioned for forward-compatibility), or an aligned text table without
-`--json`. Every item also carries a best-effort **`since`** — the version that
-first introduced it (built-in functions, effects, and abilities are
-git-attributed; diagnostic codes report `null`) — which is what makes "what
-shipped since version 0.0.X" answerable by diffing two dumps. Recipes:
+`--json`. Every item also carries a **`since`** — the version that first
+introduced it — which is what makes "what shipped since version 0.0.X"
+answerable by diffing two dumps. A diagnostic code's `since` is derived from
+the release tags and covers every code; a built-in function's, effect's or
+ability's is reconstructed from the git history, and a name it misses reports
+`null`. Recipes:
 
 ```bash
 # How many built-ins are there, really? (the answer the docs should quote)
@@ -361,7 +363,7 @@ vera builtins --json | jq '.items | length'
 # Does a built-in named `string_split` exist?
 vera builtins --json | jq '.items[] | select(.name == "string_split")'
 
-# When did `map_new` land? (the `since` field — best-effort; null for error codes)
+# When did `map_new` land? (the `since` field)
 vera builtins --json | jq -r '.items[] | select(.name == "map_new") | .since'   # -> 0.0.94
 
 # What operations does the IO effect expose?
