@@ -542,11 +542,15 @@ tests/conformance/
   "title": "Arithmetic operators",
   "level": "run",
   "spec_ref": "Section 4.1",
+  "expected_stdout": "15\n",
+  "expected_exit": 0,
   "features": ["add", "sub", "mul", "div", "mod", "unary_neg"]
 }
 ```
 
 The manifest is the machine-readable feature inventory — agents can query it to find which features exist and where they are tested.
+
+A run-level entry also declares what its run does, and the run stage holds the program to it: `expected_exit` is the exit status of `vera run <file>`, and `expected_stdout` is everything the run writes to stdout, exactly, as a JSON string (`"15\n"` above, because `vera run` prints a returned value and ends its output with a newline).  An exit status of 0 is not a pass on its own: a program that prints the wrong value, or nothing, exits 0 too, and so does a self-checking `main` that returns its failure code, which `vera run` prints rather than exits with.  A program whose output is not a function of its source carries `"nondeterministic_stdout": "<reason>"` in place of `expected_stdout`, as `ch07_io_time_stderr` does because it prints the wall clock; the reason is required, never a bare flag, and the exit status is still compared.  No entry carries both, and no entry below the run level carries any of the three, which `test_every_run_level_entry_declares_its_run` enforces.  `scripts/conformance_golden.py` holds the rule, and `tests/test_conformance.py` and `scripts/check_conformance.py` both use it, so the two cannot disagree.  The run reads an empty stdin and gets the inherited environment less the variables that change what a program does (`VERA_DB_URL` and the provider keys, the list `scripts/check_examples_run.py` keeps); `VERA_EAGER_GC` passes through, so the eager-GC lane holds every program to the same output.  Stdout is compared as bytes, each newline as the platform's line separator, which is what the CLI's text-mode stdout writes, and a run that does not exit within its budget (`RUN_TIMEOUT_SECONDS`) is stopped and fails, naming the program, rather than stalling the job.  A value is pinned from what the program prints today only once it has been checked against the program's source, since a wrong output pinned is a wrong output enforced.
 
 ### Running the conformance suite
 
@@ -566,7 +570,7 @@ The pytest runner (`test_conformance.py`) parametrizes over every manifest entry
 2. Include a header comment indicating the spec chapter and what the program tests
 3. Ensure the program has a `main` function (for `run`-level tests)
 4. Format it: `vera fmt --write tests/conformance/your_file.vera`
-5. Add an entry to `manifest.json` with the appropriate level and feature tags
+5. Add an entry to `manifest.json` with the appropriate level and feature tags; a `run`-level entry also gets `expected_stdout`, what `vera run` prints, checked against the program rather than copied unread, and `expected_exit`, or a `nondeterministic_stdout` reason in place of `expected_stdout` (see [Manifest](#manifest))
 6. Run `python scripts/check_conformance.py` to validate
 
 When implementing a new language feature, the conformance program should be written *first* — this is test-driven development against the spec.
