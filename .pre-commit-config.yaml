@@ -6,7 +6,9 @@
 #
 # Placement.  This file holds the FAST gates — lint, types, the doc and
 # consistency gates, and the tests a commit stages — so a commit takes
-# minutes.  The slow gates run in CI (.github/workflows/ci.yml), and there
+# minutes.  No hook checks a count: TESTING.md's generated status is
+# regenerated and checked by the release PR (scripts/render_status.py).
+# The slow gates run in CI (.github/workflows/ci.yml), and there
 # only: the full pytest suite, which carries the conformance suite, on the
 # whole OS x Python matrix (`test`) on every pull request, and once, measuring
 # coverage (`coverage`), on the push event a merged pull request produces on
@@ -168,13 +170,6 @@ repos:
         pass_filenames: false
         files: '(editors/.*|vera/environment\.py$|vera/introspect\.py$|scripts/check_editor_grammars\.py$)'
 
-      - id: doc-counts
-        name: doc counts
-        entry: .venv/bin/python scripts/check_doc_counts.py
-        language: system
-        pass_filenames: false
-        files: '(README\.md$|vera/README\.md$|TESTING\.md$|CONTRIBUTING\.md$|CLAUDE\.md$|AGENTS\.md$|FAQ\.md$|KNOWN_ISSUES\.md$|HISTORY\.md$|ROADMAP\.md$|docs/index\.html$|tests/test_.*\.py$|tests/conformance/manifest\.json$|examples/.*\.vera$|vera/codegen/api\.py$|scripts/check_doc_counts\.py$|\.pre-commit-config\.yaml$|\.github/workflows/ci\.yml$)'
-
       - id: walker-coverage
         name: walker coverage
         entry: .venv/bin/python scripts/check_walker_coverage.py
@@ -228,19 +223,12 @@ repos:
         pass_filenames: false
         files: 'pyproject\.toml$'
 
-      - id: version-sync
-        name: version sync
-        entry: .venv/bin/python scripts/check_version_sync.py
-        language: system
-        pass_filenames: false
-        files: '(pyproject\.toml$|uv\.lock$|vera/__init__\.py$|docs/index\.html$|README\.md$|scripts/check_version_sync\.py$)'
-
       - id: site-assets
         name: site assets
         entry: .venv/bin/python scripts/build_site.py
         language: system
         pass_filenames: false
-        files: '(SKILL\.md$|AGENTS\.md$|FAQ\.md$|LSP_SERVER\.md$|vera/__init__\.py$|vera/errors\.py$|vera/grammar\.lark$|docs/index\.html$|scripts/(build_site|doc_annotations)\.py$)'
+        files: '(SKILL\.md$|AGENTS\.md$|FAQ\.md$|LSP_SERVER\.md$|vera/errors\.py$|vera/grammar\.lark$|docs/index\.html$|scripts/(build_site|doc_annotations)\.py$)'
 
       # CI's freshness check, after the regeneration above.  It also compares
       # the facts docs/index.html and docs/index.md each state (#1154), which
@@ -251,7 +239,7 @@ repos:
         entry: .venv/bin/python scripts/check_site_assets.py
         language: system
         pass_filenames: false
-        files: '(SKILL\.md$|AGENTS\.md$|FAQ\.md$|LSP_SERVER\.md$|vera/__init__\.py$|vera/errors\.py$|vera/grammar\.lark$|docs/.*|scripts/(build_site|check_site_assets|doc_annotations)\.py$)'
+        files: '(SKILL\.md$|AGENTS\.md$|FAQ\.md$|LSP_SERVER\.md$|vera/errors\.py$|vera/grammar\.lark$|docs/.*|scripts/(build_site|check_site_assets|doc_annotations)\.py$)'
 
       - id: browser-parity
         name: browser parity

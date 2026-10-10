@@ -4,7 +4,7 @@
 
 Vera uses De Bruijn indexing for bindings: `@Int.0` is the most recent `Int` binding, `@Int.1` the one before. There are no variable names. Contracts are mandatory — every function must declare `requires(...)`, `ensures(...)`, and `effects(...)`, and every recursive function a `decreases(...)` measure or the `Diverge` effect. The Z3 SMT solver verifies contracts statically where possible; every contract is also compiled as a runtime check where code generation can express it, and most of what can be neither proved nor guarded is disclosed (#1607 is a contract that is not). All side effects (IO, Http, HttpServer, State, Exceptions, Async, Inference, DB, Random, Diverge) are tracked in the type system via algebraic effects.
 
-Current version: 0.2.0. The reference compiler is written in Python. Install the `veralang` distribution from PyPI, or use `pip install -e ".[dev]"` from the repository — the recommended route for agents, since it includes the examples, conformance programs and specification the language reference teaches from.
+The reference compiler is written in Python; its releases are listed on [GitHub](https://github.com/aallan/vera/releases) and [PyPI](https://pypi.org/project/veralang/). Install the `veralang` distribution from PyPI, or use `pip install -e ".[dev]"` from the repository — the recommended route for agents, since it includes the examples, conformance programs and specification the language reference teaches from.
 
 ## Homepage
 

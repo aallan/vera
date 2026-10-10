@@ -117,13 +117,13 @@ dependencies. CI enforces that `uv.lock` stays current.
 
 ### Pre-commit Hooks
 
-The repository configures 31 hooks across two stages: 29 run at the commit stage (after `pre-commit install`), and 2 (`check-changelog-updated` and `uv-lock-check`, described below) run at the push stage (after `pre-commit install --hook-type pre-push`). Most commit-stage hooks have per-hook `files:` / `types:` filters — the `python` type-check only runs when Python files are staged; `check_diagnostic_examples.py` only runs when a `.md`/`.txt` file or compiler source changes, etc. A plain-text commit touching only one markdown file triggers a small subset; a compiler-level commit triggers most of them.
+The hooks are defined in `.pre-commit-config.yaml`.  Most run at the commit stage (after `pre-commit install`); `check-changelog-updated` and `uv-lock-check`, described below, run at the push stage (after `pre-commit install --hook-type pre-push`). Most commit-stage hooks have per-hook `files:` / `types:` filters — the `python` type-check only runs when Python files are staged; `check_diagnostic_examples.py` only runs when a `.md`/`.txt` file or compiler source changes, etc. A plain-text commit touching only one markdown file triggers a small subset; a compiler-level commit triggers most of them.
 
 ![The gate pipeline: the fast commit-stage hooks, the push-stage CHANGELOG and uv.lock gates, and CI running the full suite on the platform matrix, conformance and the examples, and every hook again, before anything lands on protected main.](assets/diagrams/ci-gates.svg)
 
-**What runs where.** The commit-stage hooks are the fast gates, so a commit takes minutes.  The full pytest suite, the conformance suite and the examples run in CI only.  On every pull request the suite runs on all 13 cells of the OS × Python matrix.  On the push event a merged pull request produces on `main` it runs once, measuring coverage, because strict branch protection means the pull request's last run already tested that tree on every cell; the whole matrix runs again when the merge raises `[project].version` (a release), and every night.  CI also re-runs every gate below, so a commit that skipped the hooks is still gated before it can merge.  A commit runs the test files it stages: under the test-first rule, the test that proves a change is in the commit that makes it.
+**What runs where.** The commit-stage hooks are the fast gates, so a commit takes minutes.  The full pytest suite, the conformance suite and the examples run in CI only.  On every pull request the suite runs on every cell of the OS × Python matrix.  On the push event a merged pull request produces on `main` it runs once, measuring coverage, because strict branch protection means the pull request's last run already tested that tree on every cell; the whole matrix runs again when the merge raises `[project].version` (a release), and every night.  CI also re-runs every gate below, so a commit that skipped the hooks is still gated before it can merge.  A commit runs the test files it stages: under the test-first rule, the test that proves a change is in the commit that makes it.
 
-The **commit-stage** hooks — 29 total, of which 28 are gated to relevant `files:`/`types:` filters and one (`check-added-large-files`, a general `--maxkb=500` size check on the files a commit adds) applies unconditionally — include:
+The **commit-stage** hooks — each gated to relevant `files:`/`types:` filters, except `check-added-large-files`, a general `--maxkb=500` size check on the files a commit adds — include:
 
 - Trailing whitespace and file endings
 - YAML/TOML validity
@@ -134,8 +134,6 @@ The **commit-stage** hooks — 29 total, of which 28 are gated to relevant `file
 - The test files the commit stages, run in full, and a collection of the whole suite so an import broken in a test file nobody staged fails at once
 - All `.vera` programs in canonical form
 - Every Vera block in the agent-facing documents (SKILL.md, README, FAQ, EXAMPLES.md, DE_BRUIJN.md, PYPI_README, the spec, and the landing page) parses, checks and verifies, and prints what each `vera:run` marker expects, or carries a `vera:skip` marker naming the stage and codes it fails; a block that exports a function names an invocation or a `vera:no-run` property
-- Documentation counts match live codebase (the headline test totals against one another; see the doc-count gate below)
-- Version numbers in sync
 - Site assets (`docs/llms.txt`, `docs/llms-full.txt`, etc.) regenerated, up-to-date, and coherent with the landing page
 - Spec EBNF and Lark grammar agree on rule names
 - Editor grammars (vscode, TextMate, Vim) carry every built-in effect name
@@ -144,7 +142,7 @@ The **commit-stage** hooks — 29 total, of which 28 are gated to relevant `file
 
 CI runs, in addition: the full suite on every OS × Python cell, which holds the conformance programs at their declared level (positives pass; the negatives fail at the stage their `expected_error_stage` names, `check` by default or `compile` for a diagnostic the checker accepts and codegen refuses, with their `expected_error` E-code); the examples' `check` + `verify` through the CLI, and their runs; the `[E602]`/`[E604]` compile sweep; and the conformance programs' and examples' runs again under `VERA_EAGER_GC=1`, which forces a collection at every allocation so that a GC-rooting bug fails deterministically instead of by timing.
 
-If you modify documentation sources (SKILL.md, AGENTS.md, FAQ.md, LSP_SERVER.md, `vera/__init__.py`, `vera/errors.py`, `vera/grammar.lark`, or `docs/index.html`), the `site-assets` hook will regenerate `docs/` files via `scripts/build_site.py`. The CI also runs `scripts/check_site_assets.py` to verify freshness.
+If you modify documentation sources (SKILL.md, AGENTS.md, FAQ.md, LSP_SERVER.md, `vera/errors.py`, `vera/grammar.lark`, or `docs/index.html`), the `site-assets` hook will regenerate `docs/` files via `scripts/build_site.py`. The CI also runs `scripts/check_site_assets.py` to verify freshness.
 
 `docs/index.md` is a special case: it is not derived from `docs/index.html` but written out by `build_index_md()` in `scripts/build_site.py`, so an edit to the landing page's substance has to be made in both places. `check_site_assets.py` compares the load-bearing facts across the pair — benchmark version strings, problem and model counts, the results table, the editor names — and fails when they diverge or when one of them can no longer be located.
 
@@ -182,14 +180,7 @@ VERA_JS_COVERAGE=1 pytest tests/test_browser.py -v  # JS coverage
 
 PRs touching `vera/browser/runtime.mjs` have JavaScript coverage tracked by Codecov (via V8's built-in coverage). See [TESTING.md](TESTING.md) for the full testing reference -- coverage data, test helpers, and guidelines for adding tests.  See [ENVIRONMENT.md](ENVIRONMENT.md) for all `VERA_*` environment variables (provider keys, runtime knobs, and debug flags like `VERA_EAGER_GC` for hunting GC-rooting bugs and `VERA_DEBUG_HOST_ERRORS` for host-binding ones).
 
-**Doc-count gate**: a PR that adds tests updates the per-file rows in `TESTING.md` — the row of every test file it changes, and a new row for every test file it adds — and `scripts/check_doc_counts.py` fails it until it does.  It does NOT update the HEADLINE test totals: the suite total and test-file count in `TESTING.md`'s overview row (with its passed/skipped breakdown), `README.md`'s project-status line, `FAQ.md`, `ROADMAP.md`'s "Where we are" line and `vera/README.md`'s Test Suite paragraph.  Every fix PR moves those, so a PR that edits them conflicts with every other open PR; the release PR sets them, with `--release`, which checks them against the live collection (CI runs that mode on pull requests into `main`).  By default the script checks them against one another instead, so a partial edit of them still fails.  Run the script locally to see exactly which numbers need updating:
-
-```bash
-python scripts/check_doc_counts.py            # reports stale counts with file:field references
-python scripts/check_doc_counts.py --release  # the release PR: the headline totals too
-```
-
-The script is part of the pre-commit hooks, so a commit catches this before CI does.  The gate exists to keep `TESTING.md` honest about what the suite covers — a regression where a counted test was silently deleted would fail this check.
+**Counts**: no pull request edits a count.  `TESTING.md`'s status — the test totals, the per-file and skipped-tests tables, and the counts of conformance programs, examples, built-ins, hooks and the rest — is generated from the tree by `scripts/render_status.py`, which the release PR runs; `scripts/check_doc_counts.py --release` checks that it is current then, and nothing checks it in between.  A test file says what it covers in its module docstring, whose first paragraph is the description the generated table shows.  Every other document says "every" or links the source rather than stating a number; the landing page's status paragraph is the exception until its renderer lands ([ROADMAP.md](ROADMAP.md), Stage 22).
 
 ### Type Checking
 
@@ -206,8 +197,8 @@ python scripts/check_conformance.py      # verify all conformance programs
 python scripts/check_examples.py         # verify all .vera examples
 python scripts/check_doc_examples.py     # every doc's Vera blocks: parse, check, verify, run
 python scripts/check_doc_examples.py SKILL.md  # the same, for named documents only
-python scripts/check_version_sync.py     # verify version consistency
-python scripts/check_doc_counts.py       # verify documentation counts match codebase (add --release on the release PR)
+python scripts/render_status.py          # the release PR: write TESTING.md's generated status
+python scripts/check_doc_counts.py --release  # the release PR: check that it is current
 ```
 
 ## Coding Standards
@@ -278,9 +269,9 @@ If you are a maintainer setting up branch protection on a fork, configure these 
 
 Contributors don't cut releases. A release-prep PR carries the version and notes; after it merges, the approval-gated release workflow publishes the tested archives through PyPI Trusted Publishing and creates the matching tag and GitHub Release. The maintainer approves the production deployment. See [RELEASING.md](RELEASING.md) for the maintainer runbook. What your PR needs to contain:
 
-1. **Bump the version** in `pyproject.toml`, `vera/__init__.py`, `README.md` (the "active development at vX.Y.Z" line), and the version badge in `docs/index.html` (the version appears twice on the badge line — URL and visible text), then regenerate `uv.lock` so its `veralang` entry matches. `scripts/check_version_sync.py` gates all five.
+1. **Bump the version** in `pyproject.toml`, the one place it is written, then regenerate `uv.lock` (`uv lock`) so its `veralang` entry matches; `uv lock --check` holds the two together.
 2. **Add the `## [X.Y.Z]` section** to `CHANGELOG.md` with its compare-link reference at the bottom, and add the version's one-sentence row to the current stage table in `HISTORY.md`.
-3. **Regenerate the site assets** (`python scripts/build_site.py`) if AI-readable docs changed, and refresh `uv.lock` for any dependency changes.
+3. **Regenerate TESTING.md's status** with `python scripts/render_status.py`, which `python scripts/check_doc_counts.py --release` checks; regenerate the site assets (`python scripts/build_site.py`) if AI-readable docs changed, and refresh `uv.lock` for any dependency changes.
 
 Not every PR is a release: small changes can ride along and ship with the next version bump. If you're unsure whether your change merits one, leave the bump out and say so in the PR description — the maintainer will include it in the next release.
 

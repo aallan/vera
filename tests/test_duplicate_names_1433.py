@@ -480,10 +480,8 @@ class Cell:
     ``pinned`` marks a legal cell that holds a KNOWN defect at today's
     value, naming the issue and the correct value: the day the issue is
     fixed the value changes and the cell fails, and it is flipped to the
-    correct one.  A pin rather than an ``xfail`` because
-    ``check_doc_counts.py`` gates TESTING.md's breakdown as passed +
-    stress-deselected + skipped, with no term for an xfailed test — the
-    convention ``test_binder_position_generator.py`` states.
+    correct one.  A pin rather than an ``xfail``, the convention
+    ``test_binder_position_generator.py`` states.
     """
 
     id: str

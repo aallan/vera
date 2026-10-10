@@ -34,8 +34,8 @@ Two commitments from [DESIGN.md](DESIGN.md) shape every command:
 
 1. **Fail loud, with a fix.** A diagnostic *names* the problem, explains *why*,
    and gives a concrete instruction — never a bare status. Diagnostics carry
-   stable codes (errors `E001`–`E703`, warnings `W001`–`W004`) you can pin
-   tooling to; a few still carry none ([#1490](https://github.com/aallan/vera/issues/1490)).
+   stable codes, which `vera errors` lists, that you can pin tooling to; a few
+   still carry none ([#1490](https://github.com/aallan/vera/issues/1490)).
 2. **Two audiences.** Every diagnostic-producing command has a `--json` mode.
    People read the default text; agents consume `--json` in a feedback loop. The
    JSON is the machine contract; the prose is for humans. This is the single
@@ -339,8 +339,8 @@ surprisingly and `--explain-slots` wasn't enough.
 ## Recipe: ask the compiler about itself
 
 Three subcommands make the compiler the source of truth for its own surface, so
-a count like "164 built-in functions" is a CLI call rather than a hand-maintained
-number that drifts.
+a count such as how many built-in functions there are is a CLI call rather than
+a hand-maintained number that drifts.
 
 ```bash
 vera builtins --json     # every built-in function   {schema, items[...]}
@@ -422,9 +422,8 @@ the tier summary → `vera test --json` on the Tier-3 remainder.
 
 Every diagnostic-producing command (`check`, `verify`, `compile`, `run`, `test`,
 `ast`) speaks `--json`; the introspection commands (`builtins`, `effects`,
-`errors`) speak it natively. Diagnostic codes are **stable** (errors
-`E001`–`E703`, warnings `W001`–`W004`), so an agent can branch on `error_code`
-rather than parsing prose. See the [JSON diagnostics](CLAUDE.md#json-diagnostics)
+`errors`) speak it natively. Diagnostic codes are **stable** (`vera errors`
+lists them), so an agent can branch on `error_code` rather than parsing prose. See the [JSON diagnostics](CLAUDE.md#json-diagnostics)
 section of CLAUDE.md for the diagnostic schema, and `vera errors --json` for the
 live catalogue.
 

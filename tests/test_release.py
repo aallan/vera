@@ -352,7 +352,6 @@ class TestPlanning:
             "push",
             before_ref="before",
             root=root,
-            validate_sync=lambda _root: pytest.fail("must not validate a no-op"),
         )
         assert plan == release.ReleasePlan(False, "none", "0.1.5")
 
@@ -363,9 +362,39 @@ class TestPlanning:
         monkeypatch.setattr(release, "version_at_ref", lambda _ref, _root: "0.1.4")
         monkeypatch.setattr(release, "tag_exists", lambda _version, _root: False)
         plan = release.plan_release(
-            "push", before_ref="before", root=root, validate_sync=lambda _root: None
+            "push", before_ref="before", root=root
         )
         assert plan == release.ReleasePlan(True, "pypi", "0.1.5")
+
+    def test_a_bump_is_planned_from_pyproject_alone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The version is written once, in `pyproject.toml`.  A tree whose
+        package states some other version, and which has no script to
+        compare copies with, plans its release from `pyproject.toml`; the
+        CHANGELOG section is the one other thing a release needs."""
+        root = _root(tmp_path)
+        (root / "vera").mkdir()
+        (root / "vera" / "__init__.py").write_text(
+            '__version__ = "0.0.1"\n', encoding="utf-8"
+        )
+        monkeypatch.setattr(release, "version_at_ref", lambda _ref, _root: "0.1.4")
+        monkeypatch.setattr(release, "tag_exists", lambda _version, _root: False)
+        plan = release.plan_release("push", before_ref="before", root=root)
+        assert plan == release.ReleasePlan(True, "pypi", "0.1.5")
+
+    def test_a_bump_without_its_changelog_section_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root = _root(tmp_path)
+        (root / "CHANGELOG.md").write_text(
+            "# Changelog\n\n## [0.1.4] - 2026-06-01\n\n- Previous.\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(release, "version_at_ref", lambda _ref, _root: "0.1.4")
+        monkeypatch.setattr(release, "tag_exists", lambda _version, _root: False)
+        with pytest.raises(release.ReleaseError, match=r"no ## \[0\.1\.5\]"):
+            release.plan_release("push", before_ref="before", root=root)
 
     def test_decrease_is_rejected(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -374,7 +403,7 @@ class TestPlanning:
         monkeypatch.setattr(release, "version_at_ref", lambda _ref, _root: "0.1.5")
         with pytest.raises(release.ReleaseError, match="must increase"):
             release.plan_release(
-                "push", before_ref="before", root=root, validate_sync=lambda _root: None
+                "push", before_ref="before", root=root
             )
 
     def test_push_requires_before_ref(self, tmp_path: Path) -> None:
@@ -387,7 +416,6 @@ class TestPlanning:
                 "testpypi",
                 confirm_version="0.1.4",
                 root=_root(tmp_path),
-                validate_sync=lambda _root: None,
             )
 
     def test_testpypi_allows_an_existing_production_tag(
@@ -398,7 +426,6 @@ class TestPlanning:
             "testpypi",
             confirm_version="0.1.5",
             root=_root(tmp_path),
-            validate_sync=lambda _root: None,
         )
         assert plan.target == "testpypi"
 
@@ -409,7 +436,6 @@ class TestPlanning:
                 ref_name="refs/heads/release/0.1.5",
                 confirm_version="0.1.5",
                 root=_root(tmp_path),
-                validate_sync=lambda _root: None,
             )
 
     def test_production_recovery_rejects_later_package_changes(
@@ -427,7 +453,6 @@ class TestPlanning:
                 ref_name="refs/heads/main",
                 confirm_version="0.1.5",
                 root=_root(tmp_path),
-                validate_sync=lambda _root: None,
             )
 
     def test_production_recovery_without_changes_is_allowed(
@@ -443,7 +468,6 @@ class TestPlanning:
             ref_name="refs/heads/main",
             confirm_version="0.1.5",
             root=_root(tmp_path),
-            validate_sync=lambda _root: None,
         )
         assert plan.target == "pypi"
 
@@ -457,7 +481,6 @@ class TestPlanning:
                 "push",
                 before_ref="before",
                 root=_root(tmp_path),
-                validate_sync=lambda _root: None,
             )
 
 

@@ -2001,7 +2001,7 @@ Commands:
                          (needs the [lsp] extra: pip install -e ".[lsp]")
     builtins [--json]    List the built-in function registry
     effects [--json]     List the effect and ability registry
-    errors [--json]      List the diagnostic error-code registry (E001–E703)
+    errors [--json]      List the diagnostic code registry
 
 Options:
     --json               Output machine-readable JSON diagnostics

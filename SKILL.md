@@ -42,7 +42,7 @@ If you are working on the compiler itself, install development dependencies too:
 python -m pip install -e ".[dev]"
 ```
 
-> **Platform support**: Vera is tested in CI on macOS 15+ (Apple Silicon), Ubuntu 24.04 LTS (x86_64), and Windows Server 2025, against Python 3.11–3.13. macOS 14 (Sonoma) and earlier, and Ubuntu 22.04 LTS aarch64, are out of scope — install will fail at dependency resolution. See [README §Supported platforms](README.md#supported-platforms) for the full matrix, workarounds, and the data behind the baseline.
+> **Platform support**: [README §Supported platforms](README.md#supported-platforms) lists the platforms and Python versions CI tests on, the ones that are out of scope (where install fails at dependency resolution), the workarounds, and the data behind the baseline.
 >
 > **For agents running in a sandbox** (Claude.ai, Code Interpreter, container-based execution environments, etc.): the steps above work. Sandboxes typically have Python, `git`, `pip`, and outbound network access — that's all Vera needs. **Run the install commands and verify with `vera run examples/hello_world.vera` before concluding that Vera "isn't available." Don't assume the sandbox lacks the toolchain — try it.**
 >
@@ -91,7 +91,7 @@ vera lsp                          # Serve LSP over stdio: live diagnostics, hove
                                   #   hole completion + agent proof-delta methods (LSP_SERVER.md)
 vera builtins [--json]            # List the built-in function registry (no file needed)
 vera effects [--json]             # List the effect and ability registry (no file needed)
-vera errors [--json]              # List the diagnostic-code registry: E001–E703 + W001–W004 (no file needed)
+vera errors [--json]              # List the diagnostic-code registry (no file needed)
 pytest tests/ -v                  # Run the test suite
 ```
 
@@ -160,12 +160,12 @@ Every diagnostic has a stable code grouped by compiler phase — the `W` series 
 - **E030–E032** — Contract syntax: an `old()`/`new()` argument that is not an effect reference (E030, E031), or a contract clause written after `effects` (E032)
 - **E040** — A pipe whose right operand is not a call: `a |> b` needs `b` to be a call with an argument list, such as `a |> f()`
 - **E010** — Transform errors (internal)
-- **E120–E186** — Type check: core + expressions (type mismatches, slot resolution, operators, declarations, termination)
-- **E200–E243** — Type check: calls (unresolved functions, argument mismatches, module calls, ability operations)
-- **E300–E339** — Type check: control flow (if/match, patterns, effect handlers)
-- **E500–E541** — Verification (contract violations, undecidable fallbacks, primitive-operation safety incl. arithmetic overflow, premise satisfiability, and E541: a runtime-check claim `vera verify --reconcile` found no check for in the compiled module)
-- **E600–E623** — Codegen (unsupported features, name collisions, typed holes block compilation); **E699** is an internal compiler error
-- **E700–E703** — Testing (contract violations, input generation, execution errors, a proof a test run refutes)
+- **E1xx** — Type check: core + expressions (type mismatches, slot resolution, operators, declarations, termination)
+- **E2xx** — Type check: calls (unresolved functions, argument mismatches, module calls, ability operations)
+- **E3xx** — Type check: control flow (if/match, patterns, effect handlers)
+- **E5xx** — Verification (contract violations, undecidable fallbacks, primitive-operation safety incl. arithmetic overflow, premise satisfiability, and E541: a runtime-check claim `vera verify --reconcile` found no check for in the compiled module)
+- **E6xx** — Codegen (unsupported features, name collisions, typed holes block compilation); **E699** is an internal compiler error
+- **E7xx** — Testing (contract violations, input generation, execution errors, a proof a test run refutes)
 
 In diagnostic messages, a `?` inside a printed type (`Array<?>`, `Map<String, ?>`) marks a component the checker could not infer. That is a rendering marker for an unknown type, not the typed-hole expression `?` (W001) you write in source.
 
@@ -2543,7 +2543,7 @@ public fn main(@Unit -> @Unit)
 
 ## Conformance Suite
 
-The `tests/conformance/` directory contains 256 small programs — most self-contained, with the Chapter 8 module-system programs and a few cross-module Chapter 7 and 9 programs importing companion `_lib.vera` / `_mid.vera` modules — that validate every language feature against the spec — often one program per feature, though some features (slot references, match, contracts) span several. These are the best minimal working examples of Vera syntax and semantics.
+The `tests/conformance/` directory contains small programs — most self-contained, with the Chapter 8 module-system programs and a few cross-module Chapter 7 and 9 programs importing companion `_lib.vera` / `_mid.vera` modules — that validate every language feature against the spec — often one program per feature, though some features (slot references, match, contracts) span several. These are the best minimal working examples of Vera syntax and semantics.
 
 Each program is organized by spec chapter (`ch01_int_literals.vera`, `ch04_match_basic.vera`, `ch07_state_handler.vera`, etc.) and the `manifest.json` file maps features to programs. When you need to see how a specific construct works, check the conformance program before reading the spec.
 

@@ -11,9 +11,9 @@ The standard library comprises:
 - **Built-in effects**: `IO` for output, `State<T>` for mutable state, `Http` for network I/O (`get` and `post`), `Async` for concurrency, `Inference` for LLM calls, `HttpServer` for verified HTTP handling, and `DB` for SQL database access (see §9.5 for each).
 - **Built-in functions**: `array_length`, `array_append`, `array_range`, and `array_concat` for arrays, numeric operations (`abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`), type conversions (`int_to_float`, `float_to_int`, `nat_to_int`, `int_to_nat`, `byte_to_int`, `int_to_byte`), Float64 predicates (`float_is_nan`, `float_is_infinite`, `nan`, `infinity`), string search (`string_contains`, `string_starts_with`, `string_ends_with`, `string_index_of`), string transformation (`string_strip`, `string_upper`, `string_lower`, `string_replace`, `string_split`, `string_join`, `string_char_code`, `string_from_char_code`), regular expressions (`regex_match`, `regex_find`, `regex_find_all`, `regex_replace`), plus future functions for vector similarity.
 - **Decimal type**: `Decimal` for exact decimal arithmetic via host imports (see §9.7.2). Exact in both the Python runtime (`decimal.Decimal`) and the browser runtime (scaled-BigInt engine), which mirror each other operation-for-operation over finite decimal values.
-- **Json type**: `Json` ADT for structured data interchange — parse, query, and serialize JSON via 8 built-in functions (see §9.7.1).
+- **Json type**: `Json` ADT for structured data interchange — parse, query, and serialize JSON via the built-in functions §9.7.1 lists.
 - **Markdown type**: `MdBlock` and `MdInline` ADTs for agent-oriented document structure — parse, render, and query Markdown via pure host-import functions (see §9.7.3).
-- **Html type**: `HtmlNode` ADT for parsing and querying HTML documents — parse, serialize, query, and extract text via 5 built-in functions (see §9.7.4).
+- **Html type**: `HtmlNode` ADT for parsing and querying HTML documents — parse, serialize, query, and extract text via the built-in functions §9.7.4 lists.
 - **Built-in abilities**: `Eq`, `Ord`, `Hash`, `Show` — type constraints for generic programming. The `Ordering` ADT (`Less`, `Equal`, `Greater`) supports `Ord`'s `compare` operation.
 
 All built-in types participate fully in the type system: they can appear in contracts, be verified by the SMT solver, and be used with refinement types and pattern matching. Built-in effects follow the same algebraic effect semantics as user-defined effects (see Chapter 7).
@@ -2127,7 +2127,7 @@ json_get_int(obj, "nope")                  -- None (missing)
 json_get_int(obj, "name")                  -- None (wrong type)
 ```
 
-**Verification:** all eleven functions have Tier-1-verifiable signatures; their bodies fall to Tier 3 runtime verification because the SMT encoding does not yet model the `Json` ADT match expressions or `Map<String, Json>` operations.
+**Verification:** all of these functions have Tier-1-verifiable signatures; their bodies fall to Tier 3 runtime verification because the SMT encoding does not yet model the `Json` ADT match expressions or `Map<String, Json>` operations.
 
 ## 9.7 Built-in Types
 

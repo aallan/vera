@@ -3,6 +3,7 @@
 [![Vera — A language designed for machines to write](assets/vera-social-preview.jpg)](https://veralang.dev)
 
 [![CI](https://github.com/aallan/vera/actions/workflows/ci.yml/badge.svg)](https://github.com/aallan/vera/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/veralang)](https://pypi.org/project/veralang/)
 [![codecov](https://codecov.io/gh/aallan/vera/graph/badge.svg)](https://codecov.io/gh/aallan/vera)
 [![Mutation score](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/aallan/vera/main/mutation.json)](https://github.com/aallan/vera/issues/387)
 
@@ -121,7 +122,7 @@ Traditional compilers produce diagnostics for humans: `expected token '{'`. Vera
   See: Chapter 5, Section 5.2 "Function Declaration Syntax"
 ```
 
-Diagnostics carry stable codes (errors `E001`–`E703`, warnings `W001`–`W004`) and are available as structured JSON via the `--json` flag.
+Diagnostics carry stable codes, which `vera errors` lists, and are available as structured JSON via the `--json` flag.
 
 ## Getting started
 
@@ -224,7 +225,7 @@ vera lsp                                 # serve the Language Server Protocol ov
 vera version                             # print the installed version
 vera builtins --json                     # list the built-in function registry (no file needed)
 vera effects --json                      # list the effect and ability registry (no file needed)
-vera errors --json                       # list the diagnostic-code registry: E001–E703 + W001–W004 (no file needed)
+vera errors --json                       # list the diagnostic-code registry (no file needed)
 ```
 
 `vera compile --target browser` produces a self-contained bundle (wasm + JS runtime + HTML) that runs in any browser — no build step, no bundler. Mandatory parity tests ensure identical behaviour between the command-line and browser runtimes for the pure-language surface (arithmetic, ADTs, pattern matching, closures, contracts, effects-as-host-imports, etc.).  Two operations on that surface reach identity by emitting a canonical form the specification states rather than by the hosts happening to agree — `json_stringify` (spec §9.7.1) and `md_render` (§9.7.3) — so their tests assert the expected string as well as cross-host equality.  `md_parse` reaches it a third way: §9.7.3 states the grammar itself — the character classes it is written in, the order the block constructs claim a line, the width a list continuation loses — and both parsers read one shared table of its patterns, with a generated corpus parsed by both hosts on every PR and the resulting ADTs compared byte for byte.  Distinct from that: `Inference.complete`, `DB.query` and `DB.execute` return `Err` from every browser call by definition of the target, because the credential each needs would be readable from page source — reach them through a server-side endpoint called with `Http`, which does run in the browser.  The IO surface is the other documented exception: terminal Vera programs that rely on `IO.sleep` for animation pacing or ANSI escape codes for cursor control compile cleanly to `--target browser` but render the escapes as literal text and freeze the tab while sleeping — the browser target expects Vera to be the pure simulation core and JavaScript to drive timing and rendering ([SKILL.md §Browser compilation](SKILL.md#browser-compilation) has the recommended pattern).
@@ -270,11 +271,11 @@ Every Vera example in `SKILL.md`, this README, the FAQ, `EXAMPLES.md`, the spec 
 
 ## Project status
 
-Vera is in **active development** at v0.2.0: 3,000+ commits, 212 releases, 30,095 tests, 95% Python code coverage, 256 conformance programs, 43 examples, and a 14-chapter specification. Known bugs and limitations are tracked in **[KNOWN_ISSUES.md](KNOWN_ISSUES.md)**. See **[HISTORY.md](HISTORY.md)** for how the compiler was built.
+Vera is in **active development**, released to [PyPI](https://pypi.org/project/veralang/) as `veralang` with notes for each [release](https://github.com/aallan/vera/releases). **[TESTING.md](TESTING.md#overview)** counts the test suite, the conformance programs and the examples, and **[HISTORY.md](HISTORY.md)** tells how the compiler was built. Known bugs and limitations are tracked in **[KNOWN_ISSUES.md](KNOWN_ISSUES.md)**.
 
-The reference compiler — parser, AST, type checker, contract verifier (Z3), WASM code generator, module system, browser runtime, and runtime contract insertion — is working. The language specification is in draft across [14 chapters](spec/).
+The reference compiler — parser, AST, type checker, contract verifier (Z3), WASM code generator, module system, browser runtime, and runtime contract insertion — is working. The language specification is in draft, in [`spec/`](spec/).
 
-**Key features delivered:** [typed De Bruijn indices](DE_BRUIJN.md) (`@T.n`), mandatory contracts, termination checking (`decreases`, or `Diverge` for a function that may not terminate), algebraic effects (IO, Http, HttpServer, State, Exceptions, Async, Inference, DB, Random, Diverge; handlers compile for `State` and `Exn` only, [#1597](https://github.com/aallan/vera/issues/1597)), refinement types, constrained generics (Eq, Ord, Hash, Show), algebraic data types, pattern matching, modules, 164 built-in functions (strings, arrays, maps, sets, decimals, math, JSON, HTML, Markdown, regex, base64, URL), contract-driven testing, runtime traps that name their cause, canonical formatter, browser runtime, three-tier verification design (Z3 static and runtime fallback shipped; the Z3-guided tier is specified, not yet implemented), a [language server](LSP_SERVER.md) with warm incremental verification and agent-facing proof-delta methods, and contract-verified HTTP handlers served natively (`vera serve`) or as wasi:http components for stock `wasmtime serve` (`--target wasi-p2 --world server`).
+**Key features delivered:** [typed De Bruijn indices](DE_BRUIJN.md) (`@T.n`), mandatory contracts, termination checking (`decreases`, or `Diverge` for a function that may not terminate), algebraic effects (IO, Http, HttpServer, State, Exceptions, Async, Inference, DB, Random, Diverge; handlers compile for `State` and `Exn` only, [#1597](https://github.com/aallan/vera/issues/1597)), refinement types, constrained generics (Eq, Ord, Hash, Show), algebraic data types, pattern matching, modules, the built-in functions `vera builtins` lists (strings, arrays, maps, sets, decimals, math, JSON, HTML, Markdown, regex, base64, URL), contract-driven testing, runtime traps that name their cause, canonical formatter, browser runtime, three-tier verification design (Z3 static and runtime fallback shipped; the Z3-guided tier is specified, not yet implemented), a [language server](LSP_SERVER.md) with warm incremental verification and agent-facing proof-delta methods, and contract-verified HTTP handlers served natively (`vera serve`) or as wasi:http components for stock `wasmtime serve` (`--target wasi-p2 --world server`).
 
 **What's next:** the path from "working language" to "the language agents actually use" — see **[ROADMAP.md](ROADMAP.md)** for the four strategic milestones. The flagship goal is a verified MCP tool server where contracts guarantee tool schemas at compile time. **[VeraBench](https://github.com/aallan/vera-bench)** — a 60-problem benchmark across 5 difficulty tiers — covers 9 models across 3 providers (VeraBench v0.0.18, measured on Vera v0.1.8). The headline result: six of the nine write 100% correct Vera, a language none of them was trained on. Vera has the highest score, or level with it, for six of the nine models. The metric is **% solved** (pass@1): a refusal, a compile failure, a crash and a wrong answer all count alike as not solved. This is the first sweep in which all 60 problems are graded, so a single problem moves a score by 1.7 percentage points and most gaps are one or two problems wide — see the [full report](https://github.com/aallan/vera-bench) for details.
 
@@ -302,7 +303,7 @@ vera/
 ├── CONTRIBUTING.md                # Contributor guidelines
 ├── CHANGELOG.md                   # Version history
 ├── LICENSE                        # MIT licence
-├── spec/                          # Language specification (14 chapters)
+├── spec/                          # Language specification, a file per chapter
 ├── vera/                          # Reference compiler (Python)
 │   ├── grammar.lark               #   Lark LALR(1) grammar
 │   ├── parser.py                  #   Parser module
@@ -311,8 +312,8 @@ vera/
 │   ├── resolver.py                #   Module path resolution
 │   ├── checker/                   #   Type checker (mixin package)
 │   ├── verifier.py                #   Contract verifier (Z3)
-│   ├── codegen/                   #   Code generation (12 modules)
-│   ├── wasm/                      #   WASM translation (19 modules)
+│   ├── codegen/                   #   Code generation
+│   ├── wasm/                      #   WASM translation
 │   ├── browser/                   #   Browser runtime
 │   ├── formatter.py               #   Canonical code formatter
 │   ├── errors.py                  #   LLM-oriented diagnostics
@@ -321,7 +322,7 @@ vera/
 │   └── cli.py                     #   Command-line interface
 ├── docs/                          # GitHub Pages site (veralang.dev)
 ├── editors/                       # VS Code extension (LSP client + grammar), Vim package, TextMate bundle
-├── examples/                      # 43 example Vera programs
+├── examples/                      # Example Vera programs
 ├── tests/                         # Test suite (see TESTING.md)
 └── scripts/                       # CI and validation scripts
 ```

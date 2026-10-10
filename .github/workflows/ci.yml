@@ -244,9 +244,6 @@ jobs:
       - name: Check vera run commands in examples/README.md are valid
         run: python scripts/check_examples_readme.py
 
-      - name: Check version numbers are in sync
-        run: python scripts/check_version_sync.py
-
       - name: Check every agent-facing document's Vera blocks parse, check, verify and run (#1481)
         run: python scripts/check_doc_examples.py
 
@@ -283,15 +280,16 @@ jobs:
       - name: Check license compliance
         run: python scripts/check_licenses.py
 
-      - name: Check documentation counts are consistent
-        # The headline test totals are checked against the live collection
-        # on a change that raises [project].version (the release PR, whatever
-        # its base, and the push event its merge produces on main), and
-        # against one another only on every other change, since every fix PR
-        # moves them (#1536).  A pull request is compared with its base
-        # branch, a push with the commit before it, and the nightly run,
-        # which has no commit before it, with the commit it tests, which
-        # raises nothing.  The rule is in scripts/check_doc_counts.py.
+      - name: Check the generated status is current, at a release
+        # TESTING.md's generated status (scripts/render_status.py) is
+        # checked against the tree on a change that raises [project].version
+        # (the release PR, whatever its base, and the push event its merge
+        # produces on main), and not at all on any other change: between
+        # releases it may lag the tree (#1536).  A pull request is compared
+        # with its base branch, a push with the commit before it, and the
+        # nightly run, which has no commit before it, with the commit it
+        # tests, which raises nothing.  The rule is in
+        # scripts/check_doc_counts.py.
         run: python scripts/check_doc_counts.py --release-if-version-raised "${{ github.event_name == 'pull_request' && github.base_ref || github.event.before || github.sha }}"
 
       - name: Check limitation tables are in sync

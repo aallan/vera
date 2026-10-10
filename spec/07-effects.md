@@ -373,7 +373,7 @@ A built-in effect is one the compiler registers: every effect in this section, a
 
 ### 7.7.1 `IO`
 
-The `IO` effect is built-in and provides eleven operations for interacting with the outside world:
+The `IO` effect is built-in and provides these operations for interacting with the outside world:
 
 | Operation | Signature | Description |
 |-----------|-----------|-------------|

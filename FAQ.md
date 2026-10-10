@@ -240,7 +240,7 @@ None of this is Vera-specific, but it validates the design choices. The thesis i
 
 This is a real concern. LLMs are trained on trillions of tokens of Python, TypeScript, and JavaScript. A MojoBench study (NAACL 2025) found that even fine-tuned models achieved only 30–35% improvement over base models on Mojo code generation, illustrating the cold-start problem for new languages.
 
-Vera's approach has three parts. First, the agent-facing documentation (SKILL.md) is designed to be dropped into a model's context window, so the model works from the language specification rather than training data recall. Second, Vera's syntax is deliberately simple and regular (fewer constructs, each with one preferred surface spelling `vera fmt` produces deterministically), which reduces the surface area a model needs to learn. Third, the conformance test suite (256 programs covering every language feature) gives models concrete examples to learn from and conform to. Simon Willison's December 2025 JustHTML write-up illustrates the same point in practice: an LLM-assisted implementation, guided by the html5lib conformance suite, conformed to the HTML parsing spec by running against its tests, and a comprehensive test suite is a strong scaffold for a model implementing to a specification.
+Vera's approach has three parts. First, the agent-facing documentation (SKILL.md) is designed to be dropped into a model's context window, so the model works from the language specification rather than training data recall. Second, Vera's syntax is deliberately simple and regular (fewer constructs, each with one preferred surface spelling `vera fmt` produces deterministically), which reduces the surface area a model needs to learn. Third, the conformance test suite (a program for every language feature) gives models concrete examples to learn from and conform to. Simon Willison's December 2025 JustHTML write-up illustrates the same point in practice: an LLM-assisted implementation, guided by the html5lib conformance suite, conformed to the HTML parsing spec by running against its tests, and a comprehensive test suite is a strong scaffold for a model implementing to a specification.
 
 
 ## How does Vera compare to Dafny / Lean / Koka / F*?
@@ -282,10 +282,10 @@ This is a deliberate trade-off. Mandatory contracts add friction. But the fricti
 The reference compiler is under active development. The current release includes:
 
 - A seven-stage pipeline: parse, transform, resolve, typecheck, verify, compile, execute
-- A 14-chapter formal specification
-- 30,095 tests, including a 256-program conformance suite
-- 43 working example programs
-- 164 built-in functions covering strings, arrays, math, parsing, and data types
+- A formal specification, a chapter per part of the language ([`spec/`](spec/))
+- A test suite with a conformance program for every language feature, counted in [TESTING.md](TESTING.md#overview)
+- Working example programs ([`examples/`](examples/))
+- Built-in functions covering strings, arrays, math, parsing, and data types, as `vera builtins` lists them
 - Four built-in abilities (Eq, Ord, Hash, Show) with constrained generics and ADT auto-derivation
 - Full IO operations (print, read_line, read_char, read_file, write_file, args, exit, get_env, sleep, time, stderr)
 - Algebraic data types, pattern matching, closures, generics with monomorphisation

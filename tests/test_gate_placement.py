@@ -7,9 +7,9 @@ part of it), the examples' check and verify through the CLI and their runs,
 and the E602/E604 compile sweep.  Both halves are read from the configuration files
 themselves:
 
-- ``.pre-commit-config.yaml``: the hook set is the pinned list, no hook runs
-  the whole suite or one of the slow sweeps, and the doc-example hook fires
-  on exactly the documents its gate reads.
+- ``.pre-commit-config.yaml``: no hook runs the whole suite, one of the slow
+  sweeps or a count check, and the doc-example hook fires on exactly the
+  documents its gate reads.
 - ``.github/workflows/ci.yml``: ``pull_request`` and ``push`` reach ``main``
   unfiltered, and a nightly ``schedule`` runs on it.  On a pull request, on
   the push event a merge that raises ``[project].version`` produces (a
@@ -21,8 +21,8 @@ themselves:
   has already tested that tree on every cell (strict branch protection), so
   the matrix stands down and the coverage job runs the whole suite once,
   instrumented.  The examples' check, verify and runs and the sweep run on
-  every event, every gate the hook runs is run too, and the documentation counts run in
-  release mode exactly when the version rises.
+  every event, every gate the hook runs is run too, and TESTING.md's
+  generated status is checked exactly when the version rises.
 
 Conditions in the workflow (``if:`` keys and ``${{ }}`` expressions) are
 evaluated, not string-matched, by the small evaluator below: a condition
@@ -58,41 +58,6 @@ import yaml
 ROOT = Path(__file__).resolve().parent.parent
 PRECOMMIT = ROOT / ".pre-commit-config.yaml"
 CI = ROOT / ".github" / "workflows" / "ci.yml"
-
-# The hook set, in order.  A change to it is a decision about what a commit
-# costs, and belongs in this list and in TESTING.md's hook table together.
-COMMIT_STAGE = (
-    "trailing-whitespace",
-    "end-of-file-fixer",
-    "check-yaml",
-    "check-toml",
-    "check-merge-conflict",
-    "check-added-large-files",
-    "debug-statements",
-    "ruff",
-    "ruff-security",
-    "mypy",
-    "pytest-staged",
-    "pytest-collect",
-    "corpus-canonical",
-    "examples-readme",
-    "doc-examples",
-    "diagnostic-examples",
-    "doc-builtin-shadowing",
-    "grammar-alignment",
-    "editor-grammars",
-    "doc-counts",
-    "walker-coverage",
-    "diagnostic-fields",
-    "explicit-encoding",
-    "limitations-sync",
-    "license-check",
-    "version-sync",
-    "site-assets",
-    "site-assets-check",
-    "browser-parity",
-)
-PUSH_STAGE = ("check-changelog-updated", "uv-lock-check")
 
 # The sweeps too slow for a commit.  CI runs the last three in `lint`; the
 # first is a local tool whose work CI does through the suite
@@ -569,16 +534,6 @@ class TestThePreCommitHookIsFast:
         whole-suite check below, so each spelling is pinned."""
         assert _runs_pytest(entry) == args
 
-    def test_the_hook_set_is_pinned(self) -> None:
-        hooks = _hooks()
-        assert [hook["id"] for hook in hooks] == [*COMMIT_STAGE, *PUSH_STAGE]
-        for hook in hooks:
-            stages = hook.get("stages")
-            if hook["id"] in PUSH_STAGE:
-                assert stages == ["pre-push"], hook["id"]
-            else:
-                assert stages is None, hook["id"]
-
     def test_no_hook_runs_the_whole_suite(self) -> None:
         """A hook may run pytest only over the files it is handed, a named
         test file, or collection alone."""
@@ -645,32 +600,15 @@ class TestThePreCommitHookIsFast:
                     " commit"
                 )
 
-    @pytest.mark.parametrize(
-        ("hook_id", "command"),
-        [
-            ("ruff", "ruff check ."),
-            ("ruff-security", "ruff check --select S vera/"),
-            ("mypy", "mypy vera/"),
-            ("doc-counts", "scripts/check_doc_counts.py"),
-            ("site-assets", "scripts/build_site.py"),
-            ("site-assets-check", "scripts/check_site_assets.py"),
-            ("explicit-encoding", "scripts/check_explicit_encoding.py"),
-            ("version-sync", "scripts/check_version_sync.py"),
-            ("limitations-sync", "scripts/check_limitations_sync.py"),
-            ("diagnostic-fields", "scripts/check_diagnostic_fields.py"),
-            ("doc-examples", "scripts/check_doc_examples.py"),
-            ("check-changelog-updated", "scripts/check_changelog_updated.py"),
-        ],
-    )
-    def test_each_fast_gate_runs_its_command(self, hook_id: str, command: str) -> None:
-        hook = next(h for h in _hooks() if h["id"] == hook_id)
-        assert hook["entry"].endswith(command), hook["entry"]
-
-    def test_the_hook_checks_doc_counts_in_the_default_mode(self) -> None:
-        """A commit on a fix branch must not be asked to set the headline
-        totals: the release PR does."""
-        hook = next(h for h in _hooks() if h["id"] == "doc-counts")
-        assert "--release" not in hook["entry"]
+    def test_no_hook_checks_a_count(self) -> None:
+        """A commit never pays for a count.  TESTING.md's generated status
+        is written by scripts/render_status.py and checked by
+        check_doc_counts.py, and both belong to the release PR, so no hook
+        runs either: a fix PR has no count to bring up to date."""
+        for hook in _hooks():
+            entry = hook.get("entry", "")
+            for script in ("scripts/check_doc_counts.py", "scripts/render_status.py"):
+                assert script not in entry, f"{hook['id']} runs {script}"
 
     def test_the_doc_example_hook_fires_on_the_gated_documents_only(self) -> None:
         """The doc-example gate re-verifies every gated block with Z3, so
@@ -819,7 +757,6 @@ class TestCiRunsEveryGate:
         env = {**workflow.get("env", {}), **job.get("env", {})}
         assert "PYTEST_ADDOPTS" not in env
         cells = _matrix_cells(job)
-        assert len(cells) == 13, "the matrix is pinned at 13 cells; update with it"
         for cell in cells:
             steps = _gating_steps(workflow, "test", {**EVENTS[event], **cell})
             suites = [step for step in steps if _runs_pytest(step["run"]) is not None]

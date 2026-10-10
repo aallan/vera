@@ -26,9 +26,9 @@ An example in neither is an ERROR, so adding an example forces the author
 to decide which it is; a table key with no file on disk is an ERROR too,
 so a deleted example cannot leave a suppression behind to mask a later
 re-add.  The classification is then cross-checked against the table in
-TESTING.md (`check_testing_md`), on the `check_doc_counts.py` model: the
-codebase is the oracle and the documentation must match it, so the
-execution model stops living in maintainers' heads.
+TESTING.md (`check_testing_md`): the codebase is the oracle and the
+documentation must match it, so the execution model stops living in
+maintainers' heads.
 
 What this gate asserts is *runs green*, deliberately not *prints what it
 used to*.  Output pinning belongs in the dedicated tests that already do
@@ -360,8 +360,7 @@ def resource_registry_errors() -> list[str]:
     quietly empty the derivation — the same reason an empty corpus is an
     error in ``check_coverage``.
 
-    The `vera` import is lazy, as `check_doc_counts.check_homepage_facts`
-    does for the same registry: loading this module for its
+    The `vera` import is lazy: loading this module for its
     classification tables should not drag in the compiler.
     """
     from vera.introspect import builtin_effect_names, effects_payload

@@ -303,7 +303,7 @@ def test_llms_full_txt_strips_vera_skip_annotations():
     skill = (_SCRIPT.parent.parent / "SKILL.md").read_text(encoding="utf-8")
     assert "vera:skip-" in skill
     assert "<!-- vera:run " in skill
-    full = _mod.build_llms_full_txt("0.0.0")
+    full = _mod.build_llms_full_txt()
     assert "vera:skip" not in full
     assert "vera:run" not in full
 
@@ -468,20 +468,24 @@ def test_fact_coherence_md_tested_vera_version_bump_is_caught(tmp_path):
     assert "9.9.9" in joined
 
 
-def test_fact_coherence_version_badge_divergence_is_caught(tmp_path):
-    """The headline version badge vs the Markdown "Current version" line.
+def test_the_site_states_no_version_and_links_the_releases():
+    """The version is written in `pyproject.toml` alone.  The landing page,
+    its Markdown companion and llms.txt link the releases instead of
+    stating it, so a release changes none of them."""
+    import re
 
-    ``check_version_sync.py`` pins the HTML badge to pyproject.toml; nothing
-    pinned it to ``index.md``, which states the same version in its own shape.
-    """
-    html, md = _landing_pair(tmp_path)
-    _sub(md, r"\*\*Current version:\*\* \[\d+\.\d+\.\d+", "**Current version:** [9.9.9")
-    errors = _check.check_fact_coherence(html, md)
-    joined = _joined(errors)
-    assert errors, "a diverged version badge must fail the gate"
-    assert "version badge" in joined
-    assert str(html) in joined
-    assert str(md) in joined
+    html = (_SCRIPT.parent.parent / "docs" / "index.html").read_text(encoding="utf-8")
+    badge = re.search(r'<p class="version">(.*?)</p>', html, re.DOTALL)
+    assert badge is not None, "the landing page's version line moved"
+    assert not re.search(r"\d+\.\d+\.\d+", badge.group(1)), badge.group(1)
+    assert "pypi.org/project/veralang" in badge.group(1)
+    for name, text in (
+        ("llms.txt", _mod.build_llms_txt()),
+        ("index.md", _mod.build_index_md()),
+    ):
+        assert "Current version" not in text, name
+        assert "github.com/aallan/vera/releases)" in text, name
+    assert not re.search(r"Version \d+\.\d+\.\d+\.", _mod.build_llms_full_txt())
 
 
 def test_fact_coherence_md_problem_count_bump_is_caught(tmp_path):

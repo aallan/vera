@@ -88,26 +88,24 @@ fails before upload instead of silently skipping files.
 
 The release-prep PR must:
 
-1. Increase the version in every location gated by
-   `scripts/check_version_sync.py` and regenerate `uv.lock`.
+1. Increase `[project].version` in `pyproject.toml`, the one place the version
+   is written, and regenerate `uv.lock` (`uv lock`); `uv lock --check`, in the
+   push hook and in CI, holds the two together.
 2. Turn the accumulated `[Unreleased]` notes into a dated `## [X.Y.Z]`
    section with at least one bullet and update the CHANGELOG compare links.
 3. Add the release's one-line HISTORY entry and regenerate site assets.
-4. Set the headline test totals to the live collection: the suite total and
-   test-file count in `TESTING.md`'s overview row (with its passed /
-   stress-deselected / skipped breakdown), `README.md`'s project-status line,
-   `FAQ.md`'s by-the-numbers list, `ROADMAP.md`'s "Where we are" line and
-   `vera/README.md`'s Test Suite paragraph.  Confirm with
-   `python scripts/check_doc_counts.py --release`.  Fix PRs leave these
-   alone, since every one of them moves them.  CI runs this mode on the
-   change that raises `[project].version`, the same signal `release.yml`
-   publishes on: a pull request whose version is higher than its base
-   branch's, and the push event its merge produces on `main`, whose version
-   is higher than the commit before it (`check_doc_counts.py
-   --release-if-version-raised`).  The same answer runs that push's whole
-   test matrix (ci.yml's `plan` job), which the push event of any other
-   merge skips.  Every other pull request and push runs the default mode,
-   whichever branch it targets.
+4. Regenerate TESTING.md's status — the test totals, the per-file and
+   skipped-tests tables, and the tree's counts — with
+   `python scripts/render_status.py`, and commit it; confirm with
+   `python scripts/check_doc_counts.py --release`.  Fix PRs leave the status
+   alone, since every one of them moves it.  CI runs that check on the change
+   that raises `[project].version`, the same signal `release.yml` publishes on:
+   a pull request whose version is higher than its base branch's, and the push
+   event its merge produces on `main`, whose version is higher than the commit
+   before it (`check_doc_counts.py --release-if-version-raised`).  The same
+   answer runs that push's whole test matrix (ci.yml's `plan` job), which the
+   push event of any other merge skips.  Every other pull request and push
+   checks no count.
 5. Reconcile `KNOWN_ISSUES.md`'s Bugs table with the tracker, by running
    `python scripts/check_doc_counts.py --check-bug-issues`.  The convention
    is one row per open `bug`-labelled issue, and the check needs the GitHub

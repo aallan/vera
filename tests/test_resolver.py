@@ -429,7 +429,7 @@ private fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
 class TestResolverErrorCodes:
     """Module-resolution diagnostics must carry stable E-codes (#679).
 
-    Every Vera diagnostic carries an E001–E702 code (DESIGN.md), but the
+    Every Vera diagnostic carries a stable E-code (DESIGN.md), but the
     resolver's three error paths previously emitted ``error_code=""``.  The
     Chapter 8 conformance suite's negative test asserts the circular-import
     code (E011) specifically, so these codes are load-bearing, not cosmetic.

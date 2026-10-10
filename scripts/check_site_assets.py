@@ -48,7 +48,6 @@ from build_site import (  # noqa: E402
     build_robots_txt,
     build_sitemap_xml,
     build_skill_md,
-    _version,
     _without_lastmod,
 )
 
@@ -76,19 +75,19 @@ def sitemap_stale_reason(sitemap_path: Path, expected: str) -> str | None:
 # Every fact below is stated in *both* files.  The two are written in
 # deliberately different registers — the HTML is a designed page, the
 # Markdown is a plain companion — so only facts are compared, never
-# wording: version strings, counts, the benchmark table, the editor names.
+# wording: benchmark version strings, counts, the benchmark table, the
+# editor names.
 #
-# A pattern that matches *nothing* is an error in its own right, the same
-# rule `scripts/check_doc_counts.py` applies to the landing page's own
-# counts.  Silently skipping a fact whose sentence was reworded would
-# reinstate exactly the blind spot this check exists to close.
+# A pattern that matches *nothing* is an error in its own right.  Silently
+# skipping a fact whose sentence was reworded would reinstate exactly the
+# blind spot this check exists to close.
 
 
 class _Fact(NamedTuple):
     """A single fact, and how to find it in each file.
 
     ``md_pattern`` defaults to ``html_pattern``: most facts read the same
-    in both files, and the ones that do not (the version badge) say so.
+    in both files, and one that does not says so.
     Each pattern must have exactly one capturing group — the value.
     """
 
@@ -100,14 +99,6 @@ class _Fact(NamedTuple):
 _PROSE_FACTS: tuple[_Fact, ...] = (
     _Fact("VeraBench version", r"VeraBench v(\d+\.\d+\.\d+)"),
     _Fact("tested Vera version", r"\bVera v(\d+\.\d+\.\d+)\b"),
-    # The badge is the one fact written differently in each file.  This is
-    # not a second copy of `check_version_sync.py`'s gate: that one pins
-    # the HTML badge to pyproject.toml and never reads docs/index.md.
-    _Fact(
-        "landing-page version badge",
-        r'<span>v<a href="[^"]*/releases/tag/v\d+\.\d+\.\d+">(\d+\.\d+\.\d+)</a>',
-        r"\*\*Current version:\*\* \[(\d+\.\d+\.\d+)\]",
-    ),
     _Fact("benchmark problem count", r"\b(\d+)-problem benchmark\b"),
     _Fact("benchmark difficulty tiers", r"benchmark across (\d+) difficulty tiers"),
     _Fact("benchmark model count", r"\b(\w+) models, \w+ providers\b"),
@@ -374,13 +365,12 @@ def check_fact_coherence(html_path: Path, md_path: Path) -> list[str]:
 
 
 def main() -> int:
-    version = _version()
     expected = {
-        "llms.txt": build_llms_txt(version),
-        "llms-full.txt": build_llms_full_txt(version),
+        "llms.txt": build_llms_txt(),
+        "llms-full.txt": build_llms_full_txt(),
         "robots.txt": build_robots_txt(),
         # sitemap.xml contains today's date, so skip exact comparison
-        "index.md": build_index_md(version),
+        "index.md": build_index_md(),
         "SKILL.md": build_skill_md(),
         "implementation-status.md": build_impl_status(),
     }

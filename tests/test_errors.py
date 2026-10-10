@@ -388,7 +388,7 @@ def _extract_build_site_error_block() -> str:
     what docs/index.md actually receives rather than grepping the .py
     file's literal bytes)."""
     build_site = _load_build_site()
-    rendered = build_site.build_index_md(build_site._version())
+    rendered = build_site.build_index_md()
     # Anchor the block end on the closing code fence, not the spec_ref text.
     # Anchoring on the spec_ref value would make extraction fail opaquely if
     # build_site.py's spec_ref ever drifts, hiding the precise mismatch that
