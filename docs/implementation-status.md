@@ -12,7 +12,7 @@ Each entry keeps its chapter's wording, including the issue it cites. The specif
 
 ### 2.4.1 ADT Invariants
 
-**Status: Not yet implemented.** The `invariant(...)` clause on `data` declarations is specified here but is not currently working in the reference compiler — every documented form fails with `[E130] no <DataName> bindings in scope`, because the slot environment for the invariant predicate is not yet wired up.  Tracked in [#686](https://github.com/aallan/vera/issues/686).  Until the implementation lands, refinement types (Section 2.6) are the working alternative for expressing constraints on data values.
+**Status: Not implemented.** The `invariant(...)` clause on `data` declarations is specified here and does not work in the reference compiler — every documented form fails with `[E130] no <DataName> bindings in scope`, because the slot environment for the invariant predicate is not wired up.  Tracked in [#686](https://github.com/aallan/vera/issues/686).  Refinement types (Section 2.6) are the working alternative for expressing constraints on data values.
 
 ## [spec/06-contracts.md](https://raw.githubusercontent.com/aallan/vera/main/spec/06-contracts.md)
 
