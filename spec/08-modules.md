@@ -414,7 +414,7 @@ A constructor name no type in scope declares is an error: **E210** for a
 construction with arguments, **E214** for a nullary one, **E320** and **E322**
 for the same in a pattern. One case is a warning instead. When the constructor
 belongs to a `public` data type of a module this file reaches through its
-imports, but the file does not import the type — typically one that reaches it
+imports, but the file does not import the type — such as one that reaches it
 only through an imported function's signature, as in `paint(Green)` after
 `import ma(paint);` where `ma` imports `Colour` from `mb` — it compiles and is
 reported at warning severity, with the import that names it
@@ -440,8 +440,7 @@ one of those constructor names for instance, compiles both declarations of the
 name, and they contend unless their shapes match (**E621**, §11.16). Data types
 are identified by their bare name, so in that file a value of the imported type
 and a value of the prelude's share the name `Json`, and a `match` on either is
-held to the prelude's constructors, the ones the name denotes there
-([#1560](https://github.com/aallan/vera/issues/1560)). Importing a `private`
+held to the prelude's constructors, the ones the name denotes there. Importing a `private`
 type of such a name is **E150**, as for any other name.
 
 Constructors differ from functions in one respect, and it is a property of
@@ -675,7 +674,7 @@ Local declarations always take priority over imported declarations because of th
 The checker maintains per-module dictionaries of all declarations (both public and private) for two purposes:
 
 - **Module-qualified call lookup**: a `ModuleCall` through an imported module's path looks the function up in that module's public dictionary. One through the file's own path (§8.5.3) reads the file's own top-level functions instead, private ones included.
-- **Better error messages**: when a selective import names a private declaration, the checker can report "it is private" rather than "not found".
+- **Better error messages**: when a selective import names a private declaration, the checker reports "it is private" rather than "not found".
 
 ## 8.8 Cross-Module Verification
 
@@ -748,7 +747,7 @@ Imported functions are **not** exported from the WASM module. Only the importing
 
 ### 8.9.3 Guard Rail
 
-A call that resolves to no function is an error at type-check time — **E200** for a bare call, **E230** for a module-qualified call to a path that is neither a module this file imports nor the file's own (§8.5.3), **E233** for a function the named module does not declare. A bare call to a name two imports supply is refused at the import instead (**E155**, §8.5.2.2). A call the checker accepts can still have no function behind it: a bare call to an operation of a user-declared ability is one, which code generation does not yet compile ([#1499](https://github.com/aallan/vera/issues/1499)).
+A call that resolves to no function is an error at type-check time — **E200** for a bare call, **E230** for a module-qualified call to a path that is neither a module this file imports nor the file's own (§8.5.3), **E233** for a function the named module does not declare. A bare call to a name two imports supply is refused at the import instead (**E155**, §8.5.2.2). A call the checker accepts can still have no function behind it: a bare call to an operation of a user-declared ability is one, which code generation does not compile.
 
 The code generator keeps a guard rail for the same condition, which such a call reaches, and so does a program compiled without being checked first. After module registration populates the known-function set, the guard rail only flags truly unknown calls — imported functions are recognised as known.
 
@@ -872,7 +871,7 @@ $ vera run examples/modules.vera --fn clamp_to_range -- 10 1 5
 
 ## 8.11 Limitations
 
-The current module system has the following limitations, each tracked as a GitHub issue:
+The module system has the following limitations, each tracked as a GitHub issue:
 
 | Limitation | Issue | Notes |
 |-----------|-------|-------|

@@ -18,21 +18,21 @@ Each entry keeps its chapter's wording, including the issue it cites. The specif
 
 ### 6.2.3 Invariants (`invariant`)
 
-**Status: Not yet implemented.** The `invariant(...)` clause on `data` declarations is specified here but is not currently working in the reference compiler — every documented form fails with `[E130] no <DataName> bindings in scope`, because the slot environment for the invariant predicate is not yet wired up.  Tracked in [#686](https://github.com/aallan/vera/issues/686).  Until the implementation lands, refinement types (Chapter 2, Section 2.6) are the working alternative for expressing constraints on data values.
+**Status: Not implemented.** The `invariant(...)` clause on `data` declarations is specified here and does not work in the reference compiler — every documented form fails with `[E130] no <DataName> bindings in scope`, because the slot environment for the invariant predicate is not wired up.  Tracked in [#686](https://github.com/aallan/vera/issues/686).  Refinement types (Chapter 2, Section 2.6) are the working alternative for expressing constraints on data values.
 
 ### 6.3.2 Additionally Allowed in Contracts (Tier 2)
 
-**Status: Not yet implemented.** Tier 2 (Z3-guided) is specified here but not implemented in the reference compiler. Tracked in [#427](https://github.com/aallan/vera/issues/427). Contracts using these constructs currently fall to Tier 3 (runtime check).
+**Status: Not implemented.** Tier 2 (Z3-guided) is specified here but not implemented in the reference compiler. Tracked in [#427](https://github.com/aallan/vera/issues/427). Contracts using these constructs fall to Tier 3 (runtime check).
 
 ### 6.6 Lemma Functions
 
-**Status: Not yet implemented.** Lemma functions are part of Tier 2 verification ([#427](https://github.com/aallan/vera/issues/427)) and are not yet supported by the reference compiler.
+**Status: Not implemented.** Lemma functions are part of Tier 2 verification ([#427](https://github.com/aallan/vera/issues/427)) and are not supported by the reference compiler.
 
 ## [spec/07-effects.md](https://raw.githubusercontent.com/aallan/vera/main/spec/07-effects.md)
 
 ### 7.5 Effect Handlers
 
-**Status: Not yet implemented.** Code generation compiles handlers only for `State<T>` and `Exn<E>`. A handler for any other effect, a user-declared one included, passes `vera check` and `vera verify`, but the function containing it is dropped at compile time (E602). Tracked in [#1597](https://github.com/aallan/vera/issues/1597).
+**Status: Partially implemented.** Code generation compiles handlers only for `State<T>` and `Exn<E>`. A handler for any other effect, a user-declared one included, passes `vera check` and `vera verify`, but the function containing it is dropped at compile time (E602). Tracked in [#1597](https://github.com/aallan/vera/issues/1597).
 
 ## [spec/09-standard-library.md](https://raw.githubusercontent.com/aallan/vera/main/spec/09-standard-library.md)
 
