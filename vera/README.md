@@ -703,7 +703,7 @@ Every diagnostic includes eight fields designed for LLM consumption:
 
 </details>
 
-`Diagnostic.format()` produces the multi-section natural language output shown in the root README's "Errors are instructions" section. In this format the compiler's output goes directly back to the model that wrote the code.
+`Diagnostic.format()` produces the multi-section natural language output shown in the root README's "Errors are instructions" section. The CLI writes it to stderr, and an agent passes it back to the model that wrote the code as corrective context.
 
 **Parse error patterns:** `diagnose_lark_error()` in `parser.py` maps common Lark exception patterns to specific diagnostics. It checks expected token sets to distinguish "missing contract block" from "missing effects clause" from "malformed slot reference", producing targeted fix suggestions for each.
 
@@ -757,7 +757,7 @@ The proof that the two sides agree is a differential, not a unit test: `tests/te
 
 ### 9. LLM-oriented diagnostics
 
-Every diagnostic includes a description (what went wrong), rationale (which language rule), fix (corrected code), spec reference, and a stable code, an `E` code for an error and a `W` code for a warning; `vera errors` lists them. The compiler's output goes directly back to the model as corrective context. See spec Chapter 0, Section 0.5 "Diagnostics as Instructions" for the philosophy.
+Every diagnostic includes a description (what went wrong), rationale (which language rule), fix (corrected code), spec reference, and a stable code, an `E` code for an error and a `W` code for a warning; `vera errors` lists them. An agent passes the compiler's output back to the model as corrective context. See spec Chapter 0, Section 0.5 "Diagnostics as Instructions" for the philosophy.
 
 ### 10. Stable error code taxonomy
 
