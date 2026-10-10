@@ -176,8 +176,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 
 ## Parsing
 
-**Files:** `grammar.lark`, `parser.py` (sizes in the module map above)
-
+**Files:** `grammar.lark`, `parser.py`
 The grammar is a Lark LALR(1) grammar derived from the formal EBNF in spec Chapter 10. It uses:
 
 - **String literals** for keywords (`"fn"`, `"let"`, `"match"`, etc.)
@@ -191,8 +190,7 @@ The parser is **lazily constructed and cached** — `_get_parser()` builds the L
 
 ## AST
 
-**Files:** `ast.py`, `transform.py` (sizes in the module map above)
-
+**Files:** `ast.py`, `transform.py`
 ### Node hierarchy
 
 The AST is a shallow class hierarchy. Every node is a frozen dataclass carrying an optional source `Span`.
@@ -263,8 +261,7 @@ Node
 
 ## Type Checking
 
-**Files:** `checker/`, `naming.py`, `types.py`, `environment.py` (sizes in the module map above)
-
+**Files:** `checker/`, `naming.py`, `types.py`, `environment.py`
 This is the most architecturally complex stage.
 
 ### Three-pass architecture
@@ -452,8 +449,7 @@ Additionally, `resume` is bound as a temporary function inside handler clause bo
 
 ## Contract Verification
 
-**Files:** `verifier.py`, `smt.py` (sizes in the module map above)
-
+**Files:** `verifier.py`, `smt.py`
 ### Tiered model
 
 The spec defines three verification tiers. The compiler implements Tiers 1 and 3:
@@ -565,7 +561,7 @@ Error at line 3, column 3:
 
 ## Code Generation
 
-**Files:** `codegen/`, `wasm/` (split into domain mixins; sizes and the mixin split in the module map above)
+**Files:** `codegen/`, `wasm/` (split into domain mixins, which the module map above lists)
 
 ### Compilation pipeline
 
@@ -618,13 +614,13 @@ The WASM import interface is the portability contract: the compiled `.wasm` bina
 
 ### Browser runtime
 
-`browser/runtime.mjs` is a self-contained JavaScript runtime (~4,200 lines) that provides JavaScript implementations of all Vera host bindings. It works with any core Vera `.wasm` module — the default and browser targets share one import ABI, so no code generation is needed; the `--target wasi-p2` component is a different artifact format with its own host.
+`browser/runtime.mjs` is a self-contained JavaScript runtime that provides JavaScript implementations of all Vera host bindings. It works with any core Vera `.wasm` module — the default and browser targets share one import ABI, so no code generation is needed; the `--target wasi-p2` component is a different artifact format with its own host.
 
 **Dynamic import introspection:** Instead of generating per-program glue code, the runtime uses `WebAssembly.Module.imports(module)` at initialization to discover which host functions the module actually needs, then builds the import object dynamically. State\<T\> types are pattern-matched from `state_get_*`/`state_put_*` import names.
 
 **Browser adaptations:** IO operations have browser-appropriate implementations. `IO.print` captures output in a buffer (flushed via `getStdout()`). `IO.read_line` reads from a pre-queued input array or falls back to `prompt()`. File IO returns `Result.Err("File I/O not available in browser")`. `IO.exit` throws a `VeraExit` error. `Inference.complete` returns `Result.Err(...)` with an explanation — embedding API keys in client-side JavaScript exposes them in page source and network requests; the recommended pattern is a server-side proxy called via the `Http` effect.
 
-**Bundled Markdown parser:** The runtime includes a JavaScript Markdown parser (~400 lines, bundled inline) matching the Python §9.7.3 subset. Zero external dependencies.
+**Bundled Markdown parser:** The runtime includes a JavaScript Markdown parser (bundled inline) matching the Python §9.7.3 subset. Zero external dependencies.
 
 **GC reachability discipline (JS host side):** JS host functions that allocate multiple WASM heap blocks and hold intermediates in JS locals must root those intermediates on the shadow stack — otherwise EAGER_GC (and, under pressure, normal GC) reclaims them mid-walk. The runtime exports two helpers: `gcShadowPush(ptr)` writes a pointer to `$gc_sp` and advances it (throws if `$gc_sp` / `$gc_stack_limit` aren't exported, since that means the module was built without GC support but is calling allocators that can trigger GC), and `gcGuard(fn)` saves `$gc_sp` at entry and restores it on exit (success or exception). This is the browser parallel of the CLI-side `_ShadowGuard` context manager ([#692](https://github.com/aallan/vera/issues/692)). The walkers `writeJson` / `writeHtml` and the parsers `json_parse` / `html_parse` wrap their bodies in `gcGuard` and push intermediates (`arrPtr`, `wrapperPtr`, `jsonPtr`) as soon as each is allocated — see `runtime.mjs` for the canonical pattern. Without this, `Map<K, Json>` / `Set<Json>` and similar heap-pointer-keyed collections drop values under GC pressure (#708).
 
@@ -673,7 +669,7 @@ Memory is managed automatically. The allocator and garbage collector are impleme
 
 ## Error System
 
-**File:** `errors.py` (size in the module map above)
+**File:** `errors.py`
 
 ```
 VeraError (exception hierarchy)
