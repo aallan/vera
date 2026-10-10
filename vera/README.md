@@ -784,7 +784,7 @@ The `ERROR_CODES` dict in `errors.py` maps every code to a short description. Co
 
 ## Test Suite
 
-Testing spans a **pytest suite** of compiler-internals unit tests, a **conformance suite** (a program in `tests/conformance/` for every language feature, validated against the spec) and **example programs** (end-to-end demos); [TESTING.md](../TESTING.md#overview) counts them. The conformance suite is the definitive specification artifact; most programs target a single feature, though some (slot references, match, contracts) span several, and each serves as a minimal working example.
+Testing spans a **pytest suite** of compiler-internals unit tests, a **conformance suite** (programs in `tests/conformance/`, named by spec chapter and feature, validated against the spec) and **example programs** (end-to-end demos); [TESTING.md](../TESTING.md#overview) counts them. The conformance suite is the definitive specification artifact; most programs target a single feature, though some (slot references, match, contracts) span several, and each serves as a minimal working example.
 
 See **[TESTING.md](../TESTING.md)** for the comprehensive testing reference -- test file table, conformance suite details, compiler code coverage, language feature coverage, helper conventions, validation scripts, CI pipeline, and guidelines for adding tests.
 

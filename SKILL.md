@@ -11,7 +11,7 @@ Vera is a programming language designed for LLMs to write. It uses typed slot re
 
 Vera requires Python 3.11 or later. Node.js 22+ is optional (only needed for `vera compile --target browser` and browser parity tests).
 
-**Recommended — install from the GitHub source checkout.** The checkout is the full environment this file teaches from: alongside the compiler and the `vera` CLI it carries the bundled `examples/`, the conformance suite in `tests/conformance/` (minimal working programs for every language feature), and the specification in `spec/`:
+**Recommended — install from the GitHub source checkout.** The checkout is the full environment this file teaches from: alongside the compiler and the `vera` CLI it carries the bundled `examples/`, the conformance suite in `tests/conformance/` (minimal working programs, named by spec chapter and feature), and the specification in `spec/`:
 
 ```bash
 git clone https://github.com/aallan/vera.git && cd vera
@@ -2543,7 +2543,7 @@ public fn main(@Unit -> @Unit)
 
 ## Conformance Suite
 
-The `tests/conformance/` directory contains small programs — most self-contained, with the Chapter 8 module-system programs and a few cross-module Chapter 7 and 9 programs importing companion `_lib.vera` / `_mid.vera` modules — that validate every language feature against the spec — often one program per feature, though some features (slot references, match, contracts) span several. These are the best minimal working examples of Vera syntax and semantics.
+The `tests/conformance/` directory contains small programs — most self-contained, with the Chapter 8 module-system programs and a few cross-module Chapter 7 and 9 programs importing companion `_lib.vera` / `_mid.vera` modules — that validate the language against the spec, named by spec chapter and feature; some features (slot references, match, contracts) span several programs. These are the best minimal working examples of Vera syntax and semantics.
 
 Each program is organized by spec chapter (`ch01_int_literals.vera`, `ch04_match_basic.vera`, `ch07_state_handler.vera`, etc.) and the `manifest.json` file maps features to programs. When you need to see how a specific construct works, check the conformance program before reading the spec.
 

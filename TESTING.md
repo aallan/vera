@@ -325,7 +325,7 @@ One row per test file: its tests as a full collection counts them (the stress te
 
 ## Conformance Suite
 
-The conformance suite is a collection of small, focused programs in `tests/conformance/` that systematically validate every language feature against the spec. Most programs are self-contained; the module-focused Chapter 8 cases use `import` statements where needed, and `ch07_cross_module_contracts.vera` depends on `ch07_cross_module_contracts_lib.vera`. Each program tests one feature or a small group of related features.
+The conformance suite is a collection of small, focused programs in `tests/conformance/`, named by spec chapter and feature, that validate the language against the spec. Most programs are self-contained; the module-focused Chapter 8 cases use `import` statements where needed, and `ch07_cross_module_contracts.vera` depends on `ch07_cross_module_contracts_lib.vera`. Each program tests one feature or a small group of related features.
 
 Simon Willison [argues](https://simonwillison.net/tags/conformance-suites/) that conformance suites are a "huge unlock" for language projects — they transform development from trust-based to verification-based. The conformance suite serves as the definitive specification artifact that any implementation (or agent) can validate against.
 
@@ -338,7 +338,7 @@ Vera has three distinct test layers, each serving a different purpose:
 | Layer | Location | Purpose | What it tests |
 |-------|----------|---------|---------------|
 | **Unit tests** | `tests/test_*.py` | Test compiler internals | Error paths, edge cases, internal APIs |
-| **Conformance suite** | `tests/conformance/` | Spec-anchored feature validation | Every language feature, one program per feature |
+| **Conformance suite** | `tests/conformance/` | Spec-anchored feature validation | Programs named by spec chapter and feature (`chNN_feature.vera`) |
 | **Example programs** | `examples/` | Showcase programs and demos | End-to-end usage, documentation |
 
 Unit tests verify that the compiler works correctly. Conformance programs verify that the *language* works correctly. Examples demonstrate how to use the language. All three run in CI on every pull request, and again in the run the push event a merged pull request produces on `main`; a commit runs the test files it stages and the fast gates (see [Pre-commit Hooks](#pre-commit-hooks)).
