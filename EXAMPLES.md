@@ -167,7 +167,7 @@ public fn main(@Unit -> @Unit)
 
 > [`examples/async_futures.vera`](examples/async_futures.vera) — run with `vera run examples/async_futures.vera`
 
-The scalar `async(@Int.0)` above evaluates **eagerly**: `Future<T>` is just `T`'s representation with no runtime overhead, and `await` unwraps it in place. But async is not always eager. A direct whitelisted Http call under `async` — `async(Http.get(url))` or `async(Http.post(url, body))` with a call-free argument — runs **concurrently** in the native runtime: each request is issued on a host worker thread at the `async(...)` point, so firing several then awaiting them overlaps the round-trips. Every other shape stays eager, and the browser runtime is always eager (spec-conformant).
+The scalar `async(@Int.0)` above evaluates **eagerly**: `Future<T>` is just `T`'s representation with no runtime overhead, and `await` unwraps it in place. A direct whitelisted Http call under `async` — `async(Http.get(url))` or `async(Http.post(url, body))` with a call-free argument — runs **concurrently** in the native runtime: each request is issued on a host worker thread at the `async(...)` point, so firing several then awaiting them overlaps the round-trips. Every other shape stays eager, and the browser runtime is always eager (spec-conformant).
 
 ```vera
 private fn fetch_both(@String, @String -> @Bool)
@@ -189,7 +189,7 @@ private fn fetch_both(@String, @String -> @Bool)
 
 Vera has no `for` or `while` loops — iteration is always recursion. The `loop` function calls itself with `@Nat.0 + 1` until it reaches the bound. This is the standard Vera pattern for counted iteration.
 
-Notice the separation of concerns: `fizzbuzz` is `effects(pure)` — the verifier can reason about it with SMT. `loop` has `effects(<IO>)` because it prints. `main` calls `loop` and also has `effects(<IO>)`. The effect annotations propagate up the call chain but never contaminate the pure classifier.
+`fizzbuzz` is `effects(pure)` — the verifier can reason about it with SMT. `loop` has `effects(<IO>)` because it prints. `main` calls `loop` and also has `effects(<IO>)`. The effect annotations propagate up the call chain but never contaminate the pure classifier.
 
 The contract `requires(@Nat.0 <= @Nat.1)` on `loop` ensures the function is only called with valid bounds — and since the recursive call passes `@Nat.0 + 1` where `@Nat.0 < @Nat.1`, the precondition is maintained at every step.
 
@@ -242,7 +242,7 @@ public fn main(@Unit -> @Unit)
 
 ## Typed Markdown
 
-Vera has a built-in Markdown document type. `md_parse` produces a typed `MdBlock` tree; `md_has_heading` and `md_extract_code_blocks` query its structure. This is designed for agent workflows where an LLM produces structured output and the contract system validates its shape.
+Vera has a built-in Markdown document type. `md_parse` produces a typed `MdBlock` tree; `md_has_heading` and `md_extract_code_blocks` query its structure. This is for agent workflows where an LLM produces structured output and the contract system validates its shape.
 
 <!-- vera:run fn="main" stdout="Has titleCode blocks: 1" -->
 ```vera
@@ -361,7 +361,7 @@ private fn classify_sentiment(@String -> @Result<String, String>)
 
 ## SQL — injection is a compile-time error
 
-The `<DB>` effect runs SQL against a relational database (SQLite in v1, chosen by `VERA_DB_URL`; in-memory by default). The query string must be a **literal** — runtime values reach the database only through `?` placeholders and the params array. Rows come back as `Array<Array<Option<String>>>`: a SQL `NULL` is a `None` cell, distinct from an empty string, and reading a cell goes through `Option` — the `NULL` case must be matched or explicitly defaulted (`option_unwrap_or`) before the text can be used.
+The `<DB>` effect runs SQL against a relational database (SQLite, chosen by `VERA_DB_URL`; in-memory by default). The query string must be a **literal** — runtime values reach the database only through `?` placeholders and the params array. Rows come back as `Array<Array<Option<String>>>`: a SQL `NULL` is a `None` cell, distinct from an empty string, and reading a cell goes through `Option` — the `NULL` case must be matched or explicitly defaulted (`option_unwrap_or`) before the text can be used.
 
 <!-- vera:no-run category="fixture" reason="queries a users table the block does not create" -->
 ```vera
@@ -392,7 +392,7 @@ Building the query from the parameter instead — `DB.query(string_concat("SELEC
 
 ## Conway's Game of Life — putting it all together
 
-A real Vera program: 80×22 grid, three classic patterns interacting, recursive `run_loop` driven by `<IO>` for animation timing.  Three things worth noticing.
+A real Vera program: 80×22 grid, three classic patterns interacting, recursive `run_loop` driven by `<IO>` for animation timing.
 
 `next_cell` carries a *formal specification* of Conway's B3/S23 transition rule in its `ensures` clause — the verifier discharges it at Tier 1 by symbolic substitution of the body, so any future edit that breaks the rule fails verification before it can run.
 

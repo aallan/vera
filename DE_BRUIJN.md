@@ -431,7 +431,7 @@ private fn pick(@Option<Cnt>, @Option<Int> -> @Option<Int>)
     @Option<Int>.1  parameter 1 (first @Option<Int>)
 ```
 
-The body returns parameter 1. Note what the two parts of the report are doing: the signature line re-prints the type names you *wrote* (`@Cnt`, unresolved), and the table rows report what was *bound*. When they differ, the rows are the authority — they are the keys the checker's binding table actually uses.
+The body returns parameter 1. The signature line re-prints the type names you *wrote* (`@Cnt`, unresolved), and the table rows report what was *bound*. When they differ, the rows are the authority — they are the keys the checker's binding table actually uses.
 
 ### 6.4 `forall` variables shadow aliases
 
@@ -498,7 +498,7 @@ public fn main(@Unit -> @Int)
 
 `vera run` prints `7` — the value `bump` put through its own spelling, read back through the handler's. Two cells would leave the handler reading its own untouched `None` and printing `-1`.
 
-Note the contrast with the head rule inside that same handler. The clause binder is still `@MaybeInt`, because that is a *slot name* and slot names keep their head. The *cell* it reads is shared, because cell identity is not a naming question at all.
+The clause binder is still `@MaybeInt`, because that is a *slot name* and slot names keep their head. The *cell* it reads is shared, because cell identity is not a naming question at all.
 
 **The one exception, and it runs in the safe direction.** The resolved type names the cell wherever the type expression **has a resolution to name**. What it cannot name is a resolution that is a bare function type, or one that failed altogether (a removed alias, an alias applied at the wrong arity). The reference compiler falls back to the alias-opaque spelling there, and only there, so two spellings of one such type name two cells rather than sharing one — naming is total and runs first. Both shapes are refused downstream, at different gates: the unresolvable one at the compilability gate before any cell is declared, the bare function type only when the function reading it is dropped. The fallback can leave split a cell the resolution would have merged; it never merges two the checker keeps apart. [`spec/07-effects.md`](spec/07-effects.md) §7.5.1 states the rule.
 
