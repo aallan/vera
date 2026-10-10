@@ -2,7 +2,7 @@
 
 ## 6.1 Overview
 
-Contracts are the mechanism by which Vera ensures that code is checkable. Every function declares what it requires from its callers and what it guarantees to them. The compiler verifies these contracts statically where it can prove them, and compiles every contract it can express into a runtime check, whatever it proved.
+Contracts are the mechanism by which Vera ensures that code is checkable. Every function declares what it requires from its callers and what it guarantees to them. The compiler verifies these contracts statically where it can prove them, and compiles every non-trivial contract it can express into a runtime check, whatever it proved.
 
 Contracts serve as executable specifications. They are the source of truth about what a function does — the implementation must satisfy them.
 

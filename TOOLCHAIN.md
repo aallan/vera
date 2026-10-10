@@ -110,7 +110,7 @@ Vera verifies in two implemented tiers, at every call site:
 - **Tier 1 — Z3 static.** The compiler builds a verification condition and asks
   Z3. `unsat` means the contract holds *for all inputs*, apart from the open
   soundness bugs listed in [KNOWN_ISSUES.md](KNOWN_ISSUES.md). The
-  `requires`/`ensures` clauses are also compiled as runtime checks, so a proof
+  non-trivial `requires`/`ensures` clauses are also compiled as runtime checks, so a proof
   bug surfaces as a trap rather than a wrong answer; a clause code generation
   cannot express, such as a quantified `ensures`, has no check.
 - **Tier 3 — runtime fallback.** When Z3 returns `unknown` or times out, the

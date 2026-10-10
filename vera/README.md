@@ -757,7 +757,7 @@ The proof that the two sides agree is a differential, not a unit test: `tests/te
 
 ### 9. LLM-oriented diagnostics
 
-Every diagnostic includes a description (what went wrong), rationale (which language rule), fix (corrected code), spec reference, and a stable code, an `E` code for an error and a `W` code for a warning; `vera errors` lists them. An agent passes the compiler's output back to the model as corrective context. See spec Chapter 0, Section 0.5 "Diagnostics as Instructions" for the philosophy.
+Every diagnostic includes a description (what went wrong), rationale (which language rule), fix (corrected code) and spec reference; every coded diagnostic has a stable code, an `E` code for an error and a `W` code for a warning, and `vera errors` lists them. An agent passes the compiler's output back to the model as corrective context. See spec Chapter 0, Section 0.5 "Diagnostics as Instructions" for the philosophy.
 
 ### 10. Stable error code taxonomy
 
