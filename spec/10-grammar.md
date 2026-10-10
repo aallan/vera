@@ -2,7 +2,7 @@
 
 ## 10.1 Notation
 
-This chapter defines the complete grammar of Vera using Extended Backus-Naur Form (EBNF). The grammar is designed to be directly usable with the Lark parser generator in LALR(1) mode.
+This chapter defines the complete grammar of Vera using Extended Backus-Naur Form (EBNF). The grammar is LALR(1)-compatible, and the reference compiler generates its parser from `vera/grammar.lark`, which has the same rule names, with the Lark parser generator in LALR(1) mode.
 
 Conventions:
 - `UPPER_CASE`: terminal tokens (lexer rules)
@@ -471,7 +471,7 @@ The parser distinguishes these by context: after `UPPER_IDENT` in a type context
 
 ## 10.6 LALR(1) Compatibility Notes
 
-The grammar as specified is designed to be LALR(1)-compatible with the Lark parser generator. Key design choices that ensure this:
+The grammar as specified is LALR(1)-compatible with the Lark parser generator. Key design choices that ensure this:
 
 1. **No optional semicolons**: all statements end with `;`, removing the need for ASI.
 2. **Mandatory braces on all blocks**: no dangling-else ambiguity.

@@ -42,7 +42,7 @@ Each entry keeps its chapter's wording, including the issue it cites. The specif
 
 ### 9.6.19 similarity (Future)
 
-**Status: Not yet implemented.** Requires `Inference.embed` (returning `Array<Float64>`) which is deferred to a follow-up release. `Inference.complete` is implemented ([#61](https://github.com/aallan/vera/issues/61)); `embed` is tracked separately ([#371](https://github.com/aallan/vera/issues/371)).
+**Status: Not implemented.** Requires `Inference.embed` (returning `Array<Float64>`), which is not implemented. `Inference.complete` is implemented ([#61](https://github.com/aallan/vera/issues/61)); `embed` is tracked separately ([#371](https://github.com/aallan/vera/issues/371)).
 
 ### 9.8 Abilities
 
@@ -52,4 +52,4 @@ Each entry keeps its chapter's wording, including the issue it cites. The specif
 
 ### 13.1 Overview
 
-**Status: experimental.**  The target covers the **IO and Random host families** (Section 13.4).  It is not a blanket "WASI 0.2 compliant" mode: a program using any other host family (Http, Map, Set, Decimal, Json, Html, Md, Regex, Math, Inference, DB, State, Async) is rejected with a diagnostic naming the unsupported family — never silently compiled against the core target instead.
+**Status: Partially implemented.**  The target covers the **IO and Random host families** (Section 13.4).  It is not a blanket "WASI 0.2 compliant" mode: a program using any other host family (Http, Map, Set, Decimal, Json, Html, Md, Regex, Math, Inference, DB, State, Async) is rejected with a diagnostic naming the unsupported family — never silently compiled against the core target instead.

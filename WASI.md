@@ -1,8 +1,8 @@
 # WASI and the server-effects sprint
 
 Design record for the sprint that takes Vera from ad-hoc `vera.*` host imports to
-verified HTTP handling: concurrent `<Async>` (#841) → `<HttpServer>` (#305) → an
-experimental WASI Preview 2 target (#237) → a `wasi:http` serve backend → WASI 0.3
+verified HTTP handling: concurrent `<Async>` (#841) → `<HttpServer>` (#305) → a
+WASI Preview 2 target for the IO and Random host families (#237) → a `wasi:http` serve backend → WASI 0.3
 (#406, gated).  The stage designs live in the issues; this file records the
 **toolchain facts** every stage builds on, established by an executed spike
 (2026-07-02, wasmtime-py 45.0.0, wasmtime CLI 46.0.1, macOS; scripts under the
@@ -61,7 +61,7 @@ stage).
   study: the `$Libc` two-module realloc dodge is unnecessary (the Stage-C
   MAIN-owns-memory topology already sequences realloc before the lowers), and
   `[static]incoming-body.finish` is not required (plain `resource.drop` of the
-  incoming body is accepted).  The pure-Python `vera serve` driver (#305) remains
+  incoming body is accepted).  The pure-Python `vera serve` driver (#305) is
   independent.
 - Spike keeper-scripts → landed as `tests/test_wasi_target.py` with the #237
   target: component parse + live `add_wasip2` instantiation + execution

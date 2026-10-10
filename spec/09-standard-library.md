@@ -9,7 +9,7 @@ The standard library comprises:
 - **Built-in ADTs**: `Option<T>` and `Result<T, E>` for representing partiality and fallibility.
 - **Built-in collections**: `Array<T>` for fixed-size homogeneous sequences, `Set<T>` for unordered unique elements, and `Map<K, V>` for key-value mappings.
 - **Built-in effects**: `IO` for output, `State<T>` for mutable state, `Http` for network I/O (`get` and `post`), `Async` for concurrency, `Inference` for LLM calls, `HttpServer` for verified HTTP handling, and `DB` for SQL database access (see §9.5 for each).
-- **Built-in functions**: `array_length`, `array_append`, `array_range`, and `array_concat` for arrays, numeric operations (`abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`), type conversions (`int_to_float`, `float_to_int`, `nat_to_int`, `int_to_nat`, `byte_to_int`, `int_to_byte`), Float64 predicates (`float_is_nan`, `float_is_infinite`, `nan`, `infinity`), string search (`string_contains`, `string_starts_with`, `string_ends_with`, `string_index_of`), string transformation (`string_strip`, `string_upper`, `string_lower`, `string_replace`, `string_split`, `string_join`, `string_char_code`, `string_from_char_code`), regular expressions (`regex_match`, `regex_find`, `regex_find_all`, `regex_replace`), plus future functions for vector similarity.
+- **Built-in functions**: `array_length`, `array_append`, `array_range`, and `array_concat` for arrays, numeric operations (`abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`), type conversions (`int_to_float`, `float_to_int`, `nat_to_int`, `int_to_nat`, `byte_to_int`, `int_to_byte`), Float64 predicates (`float_is_nan`, `float_is_infinite`, `nan`, `infinity`), string search (`string_contains`, `string_starts_with`, `string_ends_with`, `string_index_of`), string transformation (`string_strip`, `string_upper`, `string_lower`, `string_replace`, `string_split`, `string_join`, `string_char_code`, `string_from_char_code`), regular expressions (`regex_match`, `regex_find`, `regex_find_all`, `regex_replace`), plus functions for vector similarity, which are specified but not implemented (§9.6.19).
 - **Decimal type**: `Decimal` for exact decimal arithmetic via host imports (see §9.7.2). Exact in both the Python runtime (`decimal.Decimal`) and the browser runtime (scaled-BigInt engine), which mirror each other operation-for-operation over finite decimal values.
 - **Json type**: `Json` ADT for structured data interchange — parse, query, and serialize JSON via the built-in functions §9.7.1 lists.
 - **Markdown type**: `MdBlock` and `MdInline` ADTs for agent-oriented document structure — parse, render, and query Markdown via pure host-import functions (see §9.7.3).
@@ -279,7 +279,7 @@ private fn set_demo(-> @Int)
 
 ### 9.4.3 Map\<K, V\>
 
-`Map<K, V>` is a key-value mapping. It requires the `Eq` and `Hash` abilities on `K` (see Section 9.8). Keys must be hashable primitive types: `Int`, `Nat`, `Bool`, `Float64`, `String`, or `Byte`. Values must be primitives (`Int`, `Nat`, `Bool`, `Byte`, `Float64`, `String`), ADT heap-pointer types (`Option<T>`, `Result<T, E>`), or other `Map` values. `Array<T>` values are not yet supported as Map values (tracked as a future enhancement).
+`Map<K, V>` is a key-value mapping. It requires the `Eq` and `Hash` abilities on `K` (see Section 9.8). Keys must be hashable primitive types: `Int`, `Nat`, `Bool`, `Float64`, `String`, or `Byte`. Values must be primitives (`Int`, `Nat`, `Bool`, `Byte`, `Float64`, `String`), ADT heap-pointer types (`Option<T>`, `Result<T, E>`), or other `Map` values. `Array<T>` values are not supported as Map values.
 
 Map is an opaque built-in type. A map lives on the WASM heap, as a wrapper pointing to the bucket that holds its entries; WASM code holds it as one `i32` pointer, and the operations are host imports that read the bucket and build a new one. All operations are pure — `map_insert` and `map_remove` return new maps (functional semantics).
 
@@ -454,16 +454,16 @@ This follows the same pattern as Markdown: `json_parse(Http.get(url))`, not a de
 - The Python runtime uses `urllib.request.urlopen` (stdlib, no external dependencies).
 - The browser runtime uses a synchronous `XMLHttpRequest`. Node.js has no `XMLHttpRequest`, so there both operations return `Err`.
 - `Http.post` sends the body with `Content-Type: application/json`.
-- Responses are returned as the full response body string. Status codes are not currently exposed — non-2xx responses produce `Err`.
+- Responses are returned as the full response body string. Status codes are not exposed — non-2xx responses produce `Err`.
 - HTTPS is supported. Certificate verification follows the platform default.
 
 **Known limitations:**
 
-- No custom headers ([#351](https://github.com/aallan/vera/issues/351)).
-- No HTTP status code access ([#352](https://github.com/aallan/vera/issues/352)).
-- No request timeout control ([#353](https://github.com/aallan/vera/issues/353)).
-- Browser runtime uses deprecated synchronous XMLHttpRequest ([#355](https://github.com/aallan/vera/issues/355)).
-- No PUT, PATCH, DELETE methods ([#356](https://github.com/aallan/vera/issues/356)).
+- No custom headers.
+- No HTTP status code access.
+- No request timeout control.
+- Browser runtime uses deprecated synchronous XMLHttpRequest.
+- No PUT, PATCH, DELETE methods.
 
 **Async composition:**
 
@@ -483,7 +483,7 @@ private fn fetch_both(@String, @String -> @Tuple<Result<String, String>, Result<
 }
 ```
 
-> **Note:** As of #841 the reference implementation executes this shape concurrently: `async(Http.get(url))` submits the request to a host worker thread at the `async(...)` point, and `await` blocks for the response. See §9.5.4 for exactly which shapes are concurrent.
+> **Note:** The reference implementation executes this shape concurrently: `async(Http.get(url))` submits the request to a host worker thread at the `async(...)` point, and `await` blocks for the response. See §9.5.4 for exactly which shapes are concurrent.
 
 ### 9.5.4 Async
 
@@ -522,7 +522,7 @@ Key design points:
 - **Concurrency (#841):** an implementation MAY evaluate `async(e)` concurrently when `e`'s effect row is commutative — value semantics are unchanged, and all other effects retain program order.  The reference implementation evaluates `async(Http.get(...))` and `async(Http.post(...))` (with call-free argument expressions) concurrently: the request is issued on a host worker thread at the `async(...)` point (so request *issuance* keeps program order), and `await` blocks for the response.  Every other shape evaluates eagerly (sequential execution); the checker warns (`W002`) when the argument's effect row is not within the commutative whitelist (`{Http, Async}`), documenting exactly where eager evaluation is semantically forced rather than merely unoptimized.
 - The concurrent lowering keys the `await` handle-check on the type `Future<Result<String, String>>`, covering slots, parameters, direct compositions, and calls (bare, imported, or module-qualified) whose declared return is that type — with type aliases resolved transitively, here as everywhere else ([#1109](https://github.com/aallan/vera/issues/1109)).  An **indirectly-called closure** (`await(apply_fn(closure, …))`) returning this future type is classified by the closure's *declared* return type — a fn-typed slot resolved through its `FnType` alias, following the alias chain **transitively** to the terminal `FnType` (`type Fetcher = Inner;` where `Inner` aliases the fn type, [#867](https://github.com/aallan/vera/issues/867)) and substituting each generic alias's type params (so `Producer<Future<Result<String, String>>>` classifies), or an inline closure literal — so the await lowers correctly ([#843](https://github.com/aallan/vera/issues/843)).  A closure whose declared return type is not statically resolvable falls back to the identity lowering, with a loud backstop: a closure *argument produced by a nested call* (`apply_fn(make_fn(), …)`) is rejected by the `apply_fn` translation with `[E616]` (the function is skipped), so no fused wrapper is silently read as the ADT.
 - The browser runtime evaluates all futures eagerly — spec-conformant under the MAY above: only the evaluation strategy differs, the underlying value is preserved whenever the two hosts' results are comparable, and any difference that remains comes from the `Http` outcome underneath rather than from `async` itself (documented in §12).
-- True multi-await suspension and custom scheduling strategies (thread pool, event loop) via `handle[Async]` handlers remain future work ([#406](https://github.com/aallan/vera/issues/406), [#270](https://github.com/aallan/vera/issues/270)).
+- True multi-await suspension and custom scheduling strategies (thread pool, event loop) via `handle[Async]` handlers are not supported.
 - This avoids coloured-function problems because algebraic effects already separate the description of an operation from its execution.
 
 ### 9.5.5 Inference
@@ -567,11 +567,11 @@ private fn classify(@String -> @Result<String, String>)
 
 **Accepted response shapes.** On the Anthropic branch the completion is every `content` block whose `type` is `"text"`, joined in order. On the OpenAI-compatible branch it is `message.content` when that is a string; when it is a list, the parts are taken by discriminator in PREFERENCE order — every `"text"` part joined in order if any yields text, and otherwise every `"output_text"` part. The two are never merged, and parts under the discriminator not selected are neither joined nor validated: a gateway mirroring one reply under both spellings must not have it returned twice. A block or part **of the selected type** that carries no `text` field, or whose `text` is not a string, is an error rather than a value to coerce. Blocks and parts of any other type — `thinking`, `tool_use`, `reasoning` — are skipped, not errors. If that leaves NO block or part of the selected type at all — a `content` of only `thinking` blocks, a parts list with neither `text` nor `output_text`, an empty list — the response is an `Err` naming the block or part types that were present and, when the provider sent one, its `stop_reason` or `finish_reason`. That is distinct from a selected block that IS present but empty, which is `Ok("")` unless the turn was refused or truncated. `message.refusal` is surfaced when the model declined — including when the content beside it is empty, where returning the empty completion would discard the reason. An empty or whitespace-only completion is an error whenever the provider itself explained it: on the Anthropic branch when `stop_reason` is `refusal` or `max_tokens`, and on the OpenAI-compatible branch when `message.refusal` is present or `finish_reason` is `length`. The reason is matched case-insensitively, so a gateway normalising it to `MAX_TOKENS` is treated the same as `max_tokens`, while the diagnostic carries the token exactly as received — `stop_reason=refusal`, `finish_reason=length` — so a caller can tell a declined request from a truncated one and can see what the provider actually sent. Under any other reason, or none at all, an empty completion remains `Ok("")`: a model may legitimately answer with nothing. A NON-empty reply is returned unchanged whatever the reason, truncated output still being the model's answer.
 
-**Limitations in this release:**
-- `complete` only — `embed` (returning `Array<Float64>`) is deferred ([#371](https://github.com/aallan/vera/issues/371))
+**Limitations:**
+- `complete` only — `embed` (returning `Array<Float64>`) is not supported
 - No streaming — full response only
 - No system prompt — single `complete(user_prompt)` call; structured prompting via `string_concat`
-- User-defined `handle[Inference]` handlers (for mocking, local models, replay) are planned for a future release ([#372](https://github.com/aallan/vera/issues/372))
+- User-defined `handle[Inference]` handlers (for mocking, local models, replay) are rejected
 
 ### 9.5.6 HttpServer
 
@@ -625,7 +625,7 @@ type error but a read at an address that was never a `Response`.
 
 - Routing is ordinary pattern matching on the request fields.
 - Per-request effects compose in the row: `effects(<HttpServer, State<Int>>)`.
-- Request handling is sequential in v1; concurrent handling is future work (#406).
+- Request handling is sequential.
 - Native-only: the serve driver is part of the reference (wasmtime) runtime; the browser runtime does not serve HTTP (documented divergence, §12).
 
 ### 9.5.7 DB
@@ -970,9 +970,9 @@ This expression evaluates to `1024.0`.
 
 ### 9.6.10 Logarithmic, Trigonometric, and Numeric Utility Functions
 
-Fifteen additional math functions cover common scientific computing needs: three logarithms, seven trigonometric functions, two constants, and three numeric utilities. All are pure and (where applicable) defer to IEEE 754 semantics — returning `NaN` for out-of-domain inputs (`log(-1.0)`, `asin(2.0)`) and `±Infinity` for overflow. The logarithms' zero pole is not a domain error: `log(0.0)`, `log2(0.0)`, and `log10(0.0)` (including `-0.0`) return `-Infinity`, matching IEEE 754 and JS `Math.log` in both runtimes (#790).
+Fifteen additional math functions cover common scientific computing needs: three logarithms, seven trigonometric functions, two constants, and three numeric utilities. All are pure, and the `Float64` functions defer to IEEE 754 semantics — returning `NaN` for out-of-domain inputs (`log(-1.0)`, `asin(2.0)`) and `±Infinity` for overflow. The logarithms' zero pole is not a domain error: `log(0.0)`, `log2(0.0)`, and `log10(0.0)` (including `-0.0`) return `-Infinity`, matching IEEE 754 and JS `Math.log` in both runtimes (#790).
 
-Most log and trig functions are uninterpreted in Z3's real-arithmetic fragment, so contracts that depend on their specific values fall to Tier 3 (runtime check). Call-site type checking and effect inference still apply.
+The log and trig functions are uninterpreted in Z3's real-arithmetic fragment, so contracts that depend on their specific values fall to Tier 3 (runtime check). Call-site type checking and effect inference still apply.
 
 | Function | Signature | Description |
 |---|---|---|
@@ -1704,7 +1704,7 @@ url_join(UrlParts("", "", "", "", ""))
 
 ### 9.6.19 similarity (Future)
 
-> **Status: Not yet implemented.** Requires `Inference.embed` (returning `Array<Float64>`) which is deferred to a follow-up release. `Inference.complete` is implemented ([#61](https://github.com/aallan/vera/issues/61)); `embed` is tracked separately ([#371](https://github.com/aallan/vera/issues/371)).
+> **Status: Not implemented.** Requires `Inference.embed` (returning `Array<Float64>`), which is not implemented. `Inference.complete` is implemented ([#61](https://github.com/aallan/vera/issues/61)); `embed` is tracked separately ([#371](https://github.com/aallan/vera/issues/371)).
 
 <!-- vera:skip-parse category="FRAGMENT" reason="similarity signature (no body)" -->
 ```
@@ -1716,7 +1716,7 @@ public fn similarity(@Array<Float64>, @Array<Float64> -> @Float64)
 
 Computes the cosine similarity between two vectors (embeddings). The arrays must have equal length (enforced by precondition). The result is in the range \[-1, 1\], where 1 indicates identical direction, 0 indicates orthogonality, and -1 indicates opposite direction.
 
-This function is pure — it performs no effects. It is intended for use with the `Inference.embed` operation to compare semantic similarity of text.
+This function is pure — it performs no effects. It pairs with the `Inference.embed` operation to compare semantic similarity of text.
 
 ### 9.6.20 Regular Expressions
 
@@ -1798,7 +1798,7 @@ let @Result<String, String> = regex_replace("hello world", "world", "vera");
 
 ### 9.6.21 Array Utilities
 
-Vera provides seven additional array combinators beyond `array_map` / `array_filter` / `array_fold`. All are implemented as iterative WASM loops with O(1) shadow-stack depth, mirroring the architecture established by [#480](https://github.com/aallan/vera/issues/480). None require ability dispatch on the polymorphic element type — `array_sort`, `array_contains`, and `array_index_of` (which would need to invoke `compare<T>` / `eq<T>` from inside the loop) are tracked separately and implemented in a future release.
+Vera provides seven additional array combinators beyond `array_map` / `array_filter` / `array_fold`. All are implemented as iterative WASM loops with O(1) shadow-stack depth, mirroring the architecture established by [#480](https://github.com/aallan/vera/issues/480). None require ability dispatch on the polymorphic element type — `array_sort`, `array_contains`, and `array_index_of` (which would need to invoke `compare<T>` / `eq<T>` from inside the loop) are not implemented.
 
 <!-- vera:skip-parse category="FRAGMENT" reason="array_mapi signature (no body)" -->
 ```vera
@@ -1881,7 +1881,7 @@ public forall<T> fn array_sort_by(@Array<T>, fn(T, T -> Ordering) effects(pure) 
   requires(true) ensures(true) effects(pure)
 ```
 
-`array_sort_by` returns a new array sorted using a caller-supplied comparator. The comparator receives two elements and returns an `@Ordering` value (`Less`, `Equal`, or `Greater`); the convention `cmp(a, b) == Less when a < b` produces ascending order. Implementation is insertion sort — stable, O(n²) worst-case, well-suited to the small-to-medium arrays Vera programs typically handle. A future release will add `array_sort<T> where Ord<T>` so the comparator can be inferred from the element type's `Ord` ability rather than supplied explicitly.
+`array_sort_by` returns a new array sorted using a caller-supplied comparator. The comparator receives two elements and returns an `@Ordering` value (`Less`, `Equal`, or `Greater`); the convention `cmp(a, b) == Less when a < b` produces ascending order. Implementation is insertion sort — stable, O(n²) worst-case, well-suited to the small-to-medium arrays Vera programs typically handle. `array_sort<T> where Ord<T>`, which would infer the comparator from the element type's `Ord` ability rather than take it explicitly, is not implemented.
 
 <!-- vera:skip-parse category="FRAGMENT" reason="a bare array_sort_by call with its result in a comment" -->
 ```vera
@@ -1900,13 +1900,13 @@ array_sort_by(
 
 The callback-based combinators — `array_mapi`, `array_find`, `array_any`, `array_all`, and `array_sort_by` — are Tier 3 because their semantics iterate a user-supplied closure whose effects, returns, and termination behaviour are not statically modelled in the verifier's encoding. This category cannot move to Tier 1 without a substantial extension to the SMT translation that reasons about higher-order functions.
 
-`array_reverse` and `array_flatten` are Tier 3 for a different and narrower reason: they have no closure callback at all and their behaviour is entirely structural (length-preserving / length-summing respectively). They could in principle support stronger Tier 1 contracts such as `ensures(array_length(@result) == array_length(@input))` for `array_reverse` or `ensures(array_length(@result) == sum_inner_lengths(@input))` for `array_flatten`. The underlying SMT encoding for those properties is not yet implemented; once it is, both functions become candidates for Tier 1 promotion without any change to their signatures.
+`array_reverse` and `array_flatten` are Tier 3 for a different and narrower reason: they have no closure callback at all and their behaviour is entirely structural (length-preserving / length-summing respectively). They could in principle support stronger Tier 1 contracts such as `ensures(array_length(@result) == array_length(@input))` for `array_reverse` or `ensures(array_length(@result) == sum_inner_lengths(@input))` for `array_flatten`. The underlying SMT encoding for those properties is not implemented; with it, both functions become candidates for Tier 1 promotion without any change to their signatures.
 
 ### 9.6.22 String Utilities and Character Classification
 
 Vera provides eight additional string utilities and eight character classification primitives. All sixteen are implemented as inline WAT — no host imports — so they execute identically under the Python (`wasmtime`) and browser (Node.js / web) runtimes. Tracked in [#470](https://github.com/aallan/vera/issues/470) (utilities) and [#471](https://github.com/aallan/vera/issues/471) (classifiers).
 
-All operations use **ASCII byte semantics**: classifiers test the first byte of the input string; case-conversion functions transform the first byte and pass remaining bytes through unchanged; structural splits work at the byte level. Unicode-aware variants are tracked separately and intentionally deferred.
+All operations use **ASCII byte semantics**: classifiers test the first byte of the input string; case-conversion functions transform the first byte and pass remaining bytes through unchanged; structural splits work at the byte level. Unicode-aware variants are not provided.
 
 #### String splits — bridges to the array combinators
 
@@ -2010,7 +2010,7 @@ char_to_lower("ALICE")  -- "aLICE"
 char_to_upper("")       -- ""
 ```
 
-For whole-string ASCII case conversion, see `string_upper` / `string_lower` in §9.6.14. Unicode-aware variants of all four operations are tracked alongside Unicode handling.
+For whole-string ASCII case conversion, see `string_upper` / `string_lower` in §9.6.14. Unicode-aware variants of all four operations are not provided.
 
 #### Character classifiers
 
@@ -2047,7 +2047,7 @@ is_alpha("9")   -- false
 is_whitespace("\t")  -- true
 ```
 
-**Verification:** all sixteen functions have Tier-1-verifiable signatures; their bodies fall to Tier 3 (runtime) verification because the SMT encoding does not yet model byte-level string operations. Their `requires(true)` / `ensures(true)` contracts are total, so Tier 3 reduces to runtime trap-freedom — every input is accepted.
+**Verification:** all sixteen functions have Tier-1-verifiable signatures; their bodies fall to Tier 3 (runtime) verification because the SMT encoding does not model byte-level string operations. Their `requires(true)` / `ensures(true)` contracts are total, so Tier 3 reduces to runtime trap-freedom — every input is accepted.
 
 ### 9.6.23 JSON Typed Accessors
 
@@ -2127,7 +2127,7 @@ json_get_int(obj, "nope")                  -- None (missing)
 json_get_int(obj, "name")                  -- None (wrong type)
 ```
 
-**Verification:** all of these functions have Tier-1-verifiable signatures; their bodies fall to Tier 3 runtime verification because the SMT encoding does not yet model the `Json` ADT match expressions or `Map<String, Json>` operations.
+**Verification:** all of these functions have Tier-1-verifiable signatures; their bodies fall to Tier 3 runtime verification because the SMT encoding does not model the `Json` ADT match expressions or `Map<String, Json>` operations.
 
 ## 9.7 Built-in Types
 
@@ -2644,7 +2644,7 @@ Key design points:
 
 1. **No higher-kinded types.** No `Functor`, `Monad`, or `Applicative`. Abilities are first-order only: `Eq<T>`, not `Mappable<F>` where `F` is a type constructor. This preserves decidable type checking and prevents the abstraction hierarchy that makes code harder for LLMs to generate correctly.
 
-2. **Built-in abilities** are auto-derivable for ADTs composed of types that already support them: `Eq`, `Ord`, `Hash`, `Encode`, `Decode`, `Show`. If all fields of an ADT support `Eq`, the ADT supports `Eq` automatically. Four abilities are currently built-in: `Eq`, `Ord`, `Hash`, and `Show`.
+2. **Built-in abilities** are auto-derivable for ADTs composed of types that already support them: `Eq`, `Ord`, `Hash`, `Encode`, `Decode`, `Show`. If all fields of an ADT support `Eq`, the ADT supports `Eq` automatically. Four abilities are built-in: `Eq`, `Ord`, `Hash`, and `Show`; `Encode` and `Decode` are not implemented.
 
 3. **User-defined abilities** are permitted but restricted to first-order type parameters. This allows library authors to define domain-specific abilities without the complexity of higher-kinded polymorphism.
 
@@ -2730,7 +2730,7 @@ For `Eq`, ADTs are automatically derivable when all constructor fields are Eq-sa
 
 Simple enums (ADTs with only nullary constructors) always satisfy `Eq` — equality reduces to tag comparison.
 
-ADTs with `String` fields derive `Eq` by content, and nested-ADT fields recurse into the nested ADT's own equality — including recursive and mutually-recursive types ([#773](https://github.com/aallan/vera/issues/773)). `Array`, `Map`, `Set`, host-handle, function, and tuple fields remain non-derivable. `==` / `!=` (and the `eq` ability operation) is the surface spelling of `Eq`, so a non-Eq-derivable operand — a function value, an `Array` / `Map` / `Set` / `Tuple`, or a composite carrying such a field — is rejected at check time with E243 ([#928](https://github.com/aallan/vera/issues/928)), mirroring the E242 rejection of `compare` / ordering on a non-orderable operand. An `Eq` constraint over a non-derivable type on the generic path is likewise rejected, with E613 at monomorphization.
+ADTs with `String` fields derive `Eq` by content, and nested-ADT fields recurse into the nested ADT's own equality — including recursive and mutually-recursive types ([#773](https://github.com/aallan/vera/issues/773)). `Array`, `Map`, `Set`, host-handle, function, and tuple fields are non-derivable. `==` / `!=` (and the `eq` ability operation) is the surface spelling of `Eq`, so a non-Eq-derivable operand — a function value, an `Array` / `Map` / `Set` / `Tuple`, or a composite carrying such a field — is rejected at check time with E243 ([#928](https://github.com/aallan/vera/issues/928)), mirroring the E242 rejection of `compare` / ordering on a non-orderable operand. An `Eq` constraint over a non-derivable type on the generic path is likewise rejected, with E613 at monomorphization.
 
 `Show` and `Hash` also derive **structurally** for composite types ([#911](https://github.com/aallan/vera/issues/911)) — user ADTs, `Tuple`, `Option`, `Result`, and `Array` — recursing into each field/element by its own `show`/`hash`.
 
