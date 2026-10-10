@@ -39,7 +39,7 @@ For contributions to the reference compiler:
 6. Commit your changes with a clear commit message.
 7. Push to your fork and open a pull request.
 
-**Note for first-time contributors**: GitHub gates CI on first-time PRs behind a manual maintainer approval (you'll see `action_required` next to the CI check rather than `pending`).  A maintainer will approve the workflow once the PR is reviewed; subsequent pushes to the same PR run CI automatically.  This is a GitHub security feature, not a project-specific gate.
+**First-time contributors**: GitHub gates CI on first-time PRs behind a manual maintainer approval (you'll see `action_required` next to the CI check rather than `pending`).  A maintainer will approve the workflow once the PR is reviewed; subsequent pushes to the same PR run CI automatically.  This is a GitHub security feature, not a project-specific gate.
 
 ### Built-in functions and types
 
@@ -180,7 +180,7 @@ VERA_JS_COVERAGE=1 pytest tests/test_browser.py -v  # JS coverage
 
 PRs touching `vera/browser/runtime.mjs` have JavaScript coverage tracked by Codecov (via V8's built-in coverage). See [TESTING.md](TESTING.md) for the full testing reference -- coverage data, test helpers, and guidelines for adding tests.  See [ENVIRONMENT.md](ENVIRONMENT.md) for all `VERA_*` environment variables (provider keys, runtime knobs, and debug flags like `VERA_EAGER_GC` for hunting GC-rooting bugs and `VERA_DEBUG_HOST_ERRORS` for host-binding ones).
 
-**Counts**: no pull request edits a count.  `TESTING.md`'s status — the test totals, the per-file and skipped-tests tables, and the counts of conformance programs, examples, built-ins, hooks and the rest — is generated from the tree by `scripts/render_status.py`, which the release PR runs; `scripts/check_doc_counts.py --release` checks that it is current then, and nothing checks it in between.  A test file says what it covers in its module docstring, whose first paragraph is the description the generated table shows.  Every other document says "every" or links the source rather than stating a number; the landing page's status paragraph is the exception until its renderer lands ([ROADMAP.md](ROADMAP.md), Stage 22).
+**Counts**: no pull request edits a count.  `TESTING.md`'s status — the test totals, the per-file and skipped-tests tables, and the counts of conformance programs, examples, built-ins, hooks and the rest — is generated from the tree by `scripts/render_status.py`, which the release PR runs; `scripts/check_doc_counts.py --release` checks that it is current then, and nothing checks it in between.  A test file says what it covers in its module docstring, whose first paragraph is the description the generated table shows.  Every other document says "every" or links the source rather than stating a number; the landing page's status paragraph is the exception, copied by hand ([ROADMAP.md](ROADMAP.md), Stage 22).
 
 ### Type Checking
 
@@ -237,7 +237,7 @@ python scripts/check_doc_counts.py --release  # the release PR: check that it is
 
 When proposing changes, consider whether they align with Vera's design goals:
 
-1. **Does this make code more checkable?** If it introduces ambiguity or makes verification harder, it's probably not right for Vera.
+1. **Does this make code more checkable?** If it introduces ambiguity or makes verification harder, it's not right for Vera.
 2. **Is there still one canonical form?** If a change introduces multiple ways to express the same thing, it violates a core principle.
 3. **Does this help models or humans?** Vera is designed for LLMs. Changes that improve human ergonomics at the cost of machine writability should be carefully evaluated.
 4. **Is it explicit?** Implicit behaviour is a non-goal. If something can be made explicit, it should be.
@@ -260,7 +260,7 @@ The `main` branch has the following protections enabled:
 - **Pull request required.** All changes to `main` must go through a pull request. No direct pushes.
 - **CI must pass.** The test, typecheck, and lint jobs must all pass before merging.
 - **No admin bypass.** `enforce_admins` is enabled — the protections apply to the maintainer too, so nothing lands without a passing PR.
-- **Review.** No approving-review count is currently required (CI is the gate); stale reviews are dismissed on new pushes, and every PR gets an automated CodeRabbit review.
+- **Review.** No approving-review count is required (CI is the gate); stale reviews are dismissed on new pushes, and every PR gets an automated CodeRabbit review.
 - **No force pushes.** History on `main` is immutable.
 
 If you are a maintainer setting up branch protection on a fork, configure these rules in **Settings > Branches > Branch protection rules** for the `main` branch.

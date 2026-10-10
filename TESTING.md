@@ -21,7 +21,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 Written by `scripts/render_status.py` from the tree.  The tests are counted by a collection, `pytest --collect-only -o addopts= --matrix=full`, which includes the stress tests and every class-instrument cell, not by a run, so a run's passed, skipped and xfailed split is not recorded here.
 <!-- render_status:end status -->
 
-This block, the [test file table](#test-files) and the [skipped tests](#skipped-tests) are written by `scripts/render_status.py` from the tree, each between a pair of `render_status` markers.  The release PR runs it, and `python scripts/check_doc_counts.py --release` fails the release when a block is not what the script writes now.  Between releases the blocks may lag the tree, and a pull request leaves them alone.  The one other place these counts are stated is the landing page's status paragraph, until its renderer lands ([ROADMAP.md](ROADMAP.md), Stage 22).
+This block, the [test file table](#test-files) and the [skipped tests](#skipped-tests) are written by `scripts/render_status.py` from the tree, each between a pair of `render_status` markers.  The release PR runs it, and `python scripts/check_doc_counts.py --release` fails the release when a block is not what the script writes now.  Between releases a pull request leaves the blocks alone, so they show the tree as of the last release.  The one other place these counts are stated is the landing page's status paragraph, which is copied by hand ([ROADMAP.md](ROADMAP.md), Stage 22).
 
 | Measure | Where it is |
 |---------|-------------|
@@ -325,7 +325,7 @@ One row per test file: its tests as a full collection counts them (the stress te
 
 ## Conformance Suite
 
-The conformance suite is a collection of small, focused programs in `tests/conformance/` that systematically validate every language feature against the spec. Most programs are self-contained; the module-focused Chapter 8 cases use `import` statements where needed, and `ch07_cross_module_contracts.vera` still depends on `ch07_cross_module_contracts_lib.vera`. Each program tests one feature or a small group of related features.
+The conformance suite is a collection of small, focused programs in `tests/conformance/` that systematically validate every language feature against the spec. Most programs are self-contained; the module-focused Chapter 8 cases use `import` statements where needed, and `ch07_cross_module_contracts.vera` depends on `ch07_cross_module_contracts_lib.vera`. Each program tests one feature or a small group of related features.
 
 Simon Willison [argues](https://simonwillison.net/tags/conformance-suites/) that conformance suites are a "huge unlock" for language projects — they transform development from trust-based to verification-based. The conformance suite serves as the definitive specification artifact that any implementation (or agent) can validate against.
 
@@ -573,7 +573,7 @@ The pytest runner (`test_conformance.py`) parametrizes over every manifest entry
 5. Add an entry to `manifest.json` with the appropriate level and feature tags; a `run`-level entry also gets `expected_stdout`, what `vera run` prints, checked against the program rather than copied unread, and `expected_exit`, or a `nondeterministic_stdout` reason in place of `expected_stdout` (see [Manifest](#manifest))
 6. Run `python scripts/check_conformance.py` to validate
 
-When implementing a new language feature, the conformance program should be written *first* — this is test-driven development against the spec.
+When implementing a new language feature, write the conformance program *first* — this is test-driven development against the spec.
 
 ## Compiler Code Coverage
 
@@ -628,7 +628,7 @@ drift ([#1350](https://github.com/aallan/vera/issues/1350)).
 | **Tier 3 (runtime)** | 122 obligations — checked at runtime |
 | **Total** | 533 obligations (77.1% static; the summary's `total` field equals `tier1_verified + tier3_runtime`, derived from the reified obligation stream) |
 
-The Tier 3 population is dominated by a few built-in-heavy examples (`life.vera` 29, `maximum_syntax.vera` 11, `collections.vera` 10, `array_utilities.vera` 9, `nested_closures.vera` 7, `string_utilities.vera` 6), with a long tail of one to five per example across twenty more.  The recurring reasons: postconditions over collection/string/HTML built-in pipelines outside the decidable fragment, `decreases` metrics the fragment cannot express, `old`/`new` state modelling (not yet implemented), and generic type parameters without a Z3 sort.
+The Tier 3 population is dominated by a few built-in-heavy examples (`life.vera` 29, `maximum_syntax.vera` 11, `collections.vera` 10, `array_utilities.vera` 9, `nested_closures.vera` 7, `string_utilities.vera` 6), with a long tail of one to five per example across twenty more.  The recurring reasons: postconditions over collection/string/HTML built-in pipelines outside the decidable fragment, `decreases` metrics the fragment cannot express, `old`/`new` state modelling (not implemented), and generic type parameters without a Z3 sort.
 
 The Tier 1 fragment covers: integer/boolean arithmetic, comparisons, if/else, let bindings, match expressions, ADT constructors, function calls (modular postcondition), `length`, and `decreases` clauses (self-recursive, mutual recursion via where-blocks, Nat and structural ADT measures).
 
@@ -903,7 +903,7 @@ Tests marked **[eager-GC]** also run under the `VERA_EAGER_GC=1` lane (see below
 
 Seven of the nine tests target GC-rooting bug classes (#570 / #515 / #549 / #573 / #593 / captured-frame State handlers).  Each of those runs under **two parameter modes**: default GC and `VERA_EAGER_GC=1`.  The `VERA_EAGER_GC` env var (read at compile time by `vera/codegen/assembly.py`) emits a `call $gc_collect` as the first instruction of the runtime's `$alloc` function, forcing a full GC pass on every allocation.
 
-This converts latent missing-shadow-root bugs from "fires occasionally at scale" to "fires on the very next allocation," so a regression that would normally require thousands of iterations to surface will fail on the first or second iteration under eager GC.  The eager lane embeds this diagnostic capability as ongoing regression coverage.
+This converts latent missing-shadow-root bugs from "fires occasionally at scale" to "fires on the very next allocation," so a regression that would require thousands of iterations to surface under default GC will fail on the first or second iteration under eager GC.  The eager lane embeds this diagnostic capability as ongoing regression coverage.
 
 The eager-GC lane is implemented via a `pytest.mark.parametrize("eager_gc", [False, True], ids=["default_gc", "eager_gc"])` decorator + a `monkeypatch` fixture that scopes the env var to the parametrised test instance.  The two non-parametrised tests — `test_array_fold_100k_iterations` (allocation-pressure target, not GC-rooting) and `test_10k_io_print_calls` (host-import target) — would inflate the suite under eager GC without strengthening detection of the relevant bug class.
 
@@ -947,9 +947,9 @@ A passing suite is necessary, not sufficient — a green test can pass *for the 
 
 The full mechanics — the tool decision (`mutmut`, the `[mutation]` extra, the `[tool.mutmut]` config), the **in-process-oracle caveat** (subprocess suites import the un-mutated package, so they can't kill mutants), resume-after-hard-kill, the Z3-flakiness guardrail, and the survivor-triage workflow — live in the runbook: **[`MUTATION.md`](MUTATION.md)**.
 
-**Baseline — soundness core.**  The first sweep covers `verifier.py`, `smt.py`, `checker/`, and `obligations/`: 10,620 mutants, **80.8% caught**, 2,038 survivors.  The committed score is `mutation-summary.csv` (per-module, diff-able) plus a README badge (`mutation.json`, regenerated by `scripts/mutation_report.py`); the full survivor inventory and per-module chart are attached to [#387](https://github.com/aallan/vera/issues/387).  Soundness-core triage and the whole-`vera/` sweep — deferred behind the [#421](https://github.com/aallan/vera/issues/421) `execute()` decomposition, which otherwise inflates a mutant file mutmut can't index — are tracked there.
+**Baseline — soundness core.**  The 2026-06-25 sweep of `verifier.py`, `smt.py`, `checker/` and `obligations/`, with the targeted re-runs after [#793](https://github.com/aallan/vera/pull/793), scores 10,620 mutants **83.3% caught**, 1,773 survivors.  The committed score is `mutation-summary.csv` (per-module, diff-able) plus a README badge (`mutation.json`, regenerated by `scripts/mutation_report.py`); the full survivor inventory and per-module chart are attached to [#387](https://github.com/aallan/vera/issues/387).  Soundness-core triage and the whole-`vera/` sweep — deferred behind the [#421](https://github.com/aallan/vera/issues/421) `execute()` decomposition, which otherwise inflates a mutant file mutmut can't index — are tracked there.
 
-Mutation testing runs **locally** for now (the measure-all sweep is multi-day; CI's 6 h job cap can't hold it).  A non-gating on-demand workflow and a diff-scoped PR gate are deferred to a focused follow-up PR — see `MUTATION.md` § CI.
+Mutation testing runs **locally** (the measure-all sweep is multi-day; CI's 6 h job cap can't hold it).  CI has neither a non-gating on-demand workflow nor a diff-scoped PR gate for it — see `MUTATION.md` § CI.
 
 ## Test Fixture Conventions
 
@@ -1238,7 +1238,7 @@ The sample keeps every test that is not parametrised, and every cell of a
 parametrised function of at most twenty cells or one named for a `repro`.  Of
 each larger function it keeps at least a tenth of the cells and never fewer
 than twenty: the first and the last; every strict `xfail`, which pins an
-instance still open; every cell whose id carries `repro`, `red`, `mutant` or
+open instance; every cell whose id carries `repro`, `red`, `mutant` or
 `named` as a whole word; one cell for each value of every dimension no larger
 than the sample; and one from each run of the collection order, which spreads
 it across the loops the generator nests.
@@ -1248,7 +1248,7 @@ report, were red before the fix or kill a documented mutant — are kept by
 three of those rules, so write each one as an unparametrised test, in a
 function named for a `repro`, or as a strict `xfail`.  The keep words are a
 fourth way in, but no cell id of a marked file uses `repro`, `red` or
-`mutant` as a word today (the one that carries `named` does so by accident),
+`mutant` as a word (the one that carries `named` does so by accident),
 and they match whole words only: as a substring, `red` would keep every
 `declared` and `required` cell.
 
@@ -1309,7 +1309,7 @@ The scripts in `scripts/` validate cross-cutting concerns beyond unit tests.  `b
 | `check_examples_run.py` | CI `lint`, and `eager-gc` under `VERA_EAGER_GC=1` | Every `examples/*.vera` either runs trap-free under the native runtime or carries a documented skip property.  Two signals, as in `check_examples.py`: the exit code, and an output signal — every spec names its entry point (so a privatised or renamed `main` exits 1 instead of silently running another export) and every example that declares a resource effect or calls a resource operation pins a success sentinel (so a vanished fixture fails rather than passing on a graceful arm), the set being derived from those declarations rather than named.  An unclassified example is an error, and TESTING.md's execution-coverage table must match the script's own classification |
 | `check_reconciliation.py` | local, and the burndown (CI runs `tests/test_reconciliation.py` instead) | Every corpus program's runtime-check claims against the checks its compiled module holds (the audit's T2a): each program goes through check, verify, compile and `vera.reconcile.join` in process, exactly as `vera verify --reconcile` runs them, and the gate fails on a mismatch its `KNOWN` allowlist does not name (a `tier3` record no emitted check answers, a check no record accounts for, a site the join cannot place), on a `KNOWN` entry the join no longer reports (its issue is fixed, so the entry comes out), and on a program stopping before the join where the manifest does not say it should.  Every `KNOWN` entry names its open issue, the mismatch kind, the obligation kind and the site |
 | `check_doc_builtin_shadowing.py` | hook, CI `lint` | No documentation example defines a function named after an opaque verifier-modelled built-in (would fail `vera check` with E151); the `spec/09` signature reference is exempt ([#819](https://github.com/aallan/vera/issues/819)) |
-| `check_grammar_alignment.py` | hook, CI `lint` | Every rule header in `spec/10-grammar.md`'s EBNF has a same-named rule in `vera/grammar.lark`, and the reverse ([#683](https://github.com/aallan/vera/issues/683)); every terminal is declared and referenced within its own file, every regex-bodied terminal carries the same pattern in both, and each shared production's right-hand side refers to the same rules and terminals ([#1290](https://github.com/aallan/vera/issues/1290)).  The *shape* of a right-hand side — alternation, grouping, repetition — is still not compared |
+| `check_grammar_alignment.py` | hook, CI `lint` | Every rule header in `spec/10-grammar.md`'s EBNF has a same-named rule in `vera/grammar.lark`, and the reverse ([#683](https://github.com/aallan/vera/issues/683)); every terminal is declared and referenced within its own file, every regex-bodied terminal carries the same pattern in both, and each shared production's right-hand side refers to the same rules and terminals ([#1290](https://github.com/aallan/vera/issues/1290)).  The *shape* of a right-hand side — alternation, grouping, repetition — is not compared |
 | `check_editor_grammars.py` | hook, CI `lint` | Every editor grammar under `editors/` (vscode, TextMate, Vim), and the two extension READMEs that repeat the list in prose, carries every built-in effect name from the live registry — read from the checked-out tree, not from whatever `vera` is importable.  Word-boundary presence: absence is conclusive, presence is optimistic — the observed failure is omission.  A completeness guard fails any grammar discovered under `editors/` that the checked list doesn't name ([#1156](https://github.com/aallan/vera/issues/1156)) |
 | `check_distribution.py` | CI `package-distribution`; `release.yml`'s build | The built wheel and sdist carry the project's own name and version, ship the files the installed package needs plus a packaged LICENSE, and exclude `tests/` and generated Python files |
 | `check_wheel_availability.py` | CI `wheel-preflight` | Every runtime dependency ships wheels for all supported platforms |
@@ -1350,7 +1350,7 @@ A block that is deliberately wrong or partial carries `<!-- vera:skip-<stage> ca
 |----------|---------|
 | FRAGMENT | not a complete program: an expression, a statement, a clause, a signature or a template |
 | INCOMPLETE | complete declarations that use a function, type or module the block does not define |
-| FUTURE | syntax or a feature the spec describes that the reference compiler does not implement yet |
+| FUTURE | syntax or a feature the spec describes that the reference compiler does not implement |
 | ILLUSTRATIVE | a construct shown in a form the toolchain does not accept as written: a deliberately loose contract, or a declaration shown the way the compiler injects it |
 | WRONG | a deliberate mistake the prose labels as one; the marked stage is where the toolchain rejects it |
 
@@ -1477,7 +1477,7 @@ GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the
 | **eager-gc** | Python 3.12 x Ubuntu | The conformance programs' runs (`pytest tests/test_conformance.py -k run -n auto`) and `check_examples_run.py` again under `VERA_EAGER_GC=1`, which collects at every allocation so a GC-rooting bug fails deterministically rather than by timing (see [ENVIRONMENT.md](ENVIRONMENT.md)) |
 | **browser-parity** | Python 3.12 + Node.js 22 x Ubuntu | `pytest tests/test_browser.py -v` — verifies JS runtime matches Python runtime; collects V8 coverage via `NODE_V8_COVERAGE` and uploads to Codecov |
 
-The coverage threshold of **80%** is enforced in CI, by the coverage job. Current coverage is **95% Python, 87% JavaScript** — matching the overview table above. The two are reported as two figures and never blended into one: they come from different collectors over different line populations (`pytest --cov` over the Python compiler, V8 over `vera/browser/`), so a combined percentage would need a line-weighted total that neither report produces. JavaScript coverage for `vera/browser/runtime.mjs` is collected separately using V8's built-in coverage and uploaded to Codecov with the `javascript` flag, independently of the Python `pytest --cov` report.
+The coverage threshold of **80%** is enforced in CI, by the coverage job. Coverage is **95% Python, 87% JavaScript** — matching the overview table above. The two are reported as two figures and never blended into one: they come from different collectors over different line populations (`pytest --cov` over the Python compiler, V8 over `vera/browser/`), so a combined percentage would need a line-weighted total that neither report produces. JavaScript coverage for `vera/browser/runtime.mjs` is collected separately using V8's built-in coverage and uploaded to Codecov with the `javascript` flag, independently of the Python `pytest --cov` report.
 
 Each job uses scoped permissions (`contents: read`; the security job additionally has `security-events: write`) and all checkout steps set `persist-credentials: false` to prevent the `GITHUB_TOKEN` from being baked into `.git/config`. Action refs are pinned to major-version tags (`actions/checkout@v7`), with two exceptions pinned to full commit SHAs: `pypa/gh-action-pypi-publish` (the Trusted Publishing step, which holds the `pypi` environment's credentials) and `codecov/codecov-action` (a third-party uploader that runs with the repository checkout). Each SHA carries the tag it corresponds to in a trailing comment.
 
@@ -1489,7 +1489,7 @@ Tracked improvements to the testing and CI infrastructure:
 |-------|-------------|
 | [#1295](https://github.com/aallan/vera/issues/1295) | Decide whether the four abilities (`Eq`/`Hash`/`Ord`/`Show`) highlight distinctly from ordinary types in the editor grammars |
 | [#1103](https://github.com/aallan/vera/issues/1103) | Migrate GitHub Pages off legacy branch-deploy to a self-owned Actions workflow |
-| [#712](https://github.com/aallan/vera/issues/712) | Watch: Codecov → Harness migration (action / token / endpoint / badge). The JavaScript side is also unasserted today — `codecov.yml` marks both JavaScript statuses `informational: true` with `target: auto` (a comparison against the base commit, not an absolute floor), and the `browser-parity` job uploads `lcov.info` without printing or asserting a percentage, so nothing holds `runtime.mjs` above a threshold the way `pytest --cov` holds the Python side |
+| [#712](https://github.com/aallan/vera/issues/712) | Watch: Codecov → Harness migration (action / token / endpoint / badge). The JavaScript side is also unasserted — `codecov.yml` marks both JavaScript statuses `informational: true` with `target: auto` (a comparison against the base commit, not an absolute floor), and the `browser-parity` job uploads `lcov.info` without printing or asserting a percentage, so nothing holds `runtime.mjs` above a threshold the way `pytest --cov` holds the Python side |
 | [#540](https://github.com/aallan/vera/issues/540) | Add lychee + markdownlint MD051 for cross-doc anchor validation |
 | [#402](https://github.com/aallan/vera/issues/402) | Investigate parser fuzzing with Atheris for crash detection |
 | [#386](https://github.com/aallan/vera/issues/386) | Add property-based testing for parser/formatter round-trip |
@@ -1498,7 +1498,7 @@ Tracked improvements to the testing and CI infrastructure:
 
 Testing infrastructure that could be added in the future:
 
-- **Property-based testing** -- `hypothesis` is installed as a dev dependency but not yet used. Could generate random programs to test parser robustness and formatter idempotency at scale.
+- **Property-based testing** -- the suite's generators are its own parametrised matrices, and it has no `hypothesis` dependency. Random programs would test parser robustness and formatter idempotency at scale.
 - **Formatter round-trip invariant** -- verify `parse(format(parse(src))) == parse(src)` for all valid programs, not just the examples.
 - **WASM inference.py coverage** -- `wasm/inference.py` at 80% has the most remaining gaps, mostly in deep type-dispatch branches for specific builtin function return types. These branches require very specific expression nesting patterns to reach.
 - **Performance benchmarks** -- no benchmark infrastructure exists. Could track compilation time and Z3 verification time across releases.

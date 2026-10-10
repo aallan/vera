@@ -1,4 +1,4 @@
-"""A constructor argument's instantiated field type is on the record.
+"""A constructor argument's instantiated field type is recorded as its target.
 
 The generic FUNCTION call has recorded each argument's instantiated formal as
 its target since #747, because the verifier's narrowing walk consults that

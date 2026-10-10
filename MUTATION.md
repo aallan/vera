@@ -4,7 +4,7 @@ Runbook for [#387](https://github.com/aallan/vera/issues/387) — deliberately b
 
 > A passing suite is necessary, not sufficient. The #680 audit found 8 green-for-the-wrong-reason tests in one 57-test battery; #734 had to mutation-validate its own harness. Mutation testing systematises that check.
 
-**Current baseline (soundness core):** 83.3% caught, 1,773 survivors. The committed score lives in `mutation-summary.csv` and the README badge; the **per-module chart and the full survivor inventory** are attached to the [baseline comment on #387](https://github.com/aallan/vera/issues/387#issuecomment-4779424892).
+**Baseline (soundness core):** 83.3% caught, 1,773 survivors. The committed score lives in `mutation-summary.csv` and the README badge; the **per-module chart and the full survivor inventory** are attached to the [baseline comment on #387](https://github.com/aallan/vera/issues/387#issuecomment-4779424892).
 
 ## Tool: mutmut (chosen over cosmic-ray)
 
@@ -86,7 +86,7 @@ The committed score: 10,620 core mutants, **83.3% caught** (7,081 killed + 1,766
 
 ## CI (follow-up)
 
-Mutation testing runs **locally** for now — the measure-all baseline is a multi-day job that CI's 6 h per-job cap cannot hold. Two CI pieces are deliberately deferred to a dedicated follow-up PR (workflow files warrant their own focused security review):
+Mutation testing runs **locally** — the measure-all baseline is a multi-day job that CI's 6 h per-job cap cannot hold. Two CI pieces are deliberately deferred to a dedicated follow-up PR (workflow files warrant their own focused security review):
 
 1. A **non-gating** on-demand sweep (`workflow_dispatch`) for running a bounded per-module sweep in CI when convenient.
 2. The **diff-scoped PR gate** — mutate only the changed lines of a diff, run in parallel with the existing matrix, block on a survivor. Cheap because it only touches what a PR changed. It will need a matching entry in the branch-protection required-checks list (which is decoupled from the workflow YAML and synced by hand).
