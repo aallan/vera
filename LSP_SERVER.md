@@ -431,9 +431,8 @@ tracked work.
 The server is a thin transport and feature layer over the reusable
 obligation core in `vera/obligations/` (reified `ProofObligation`
 records, the warm incremental `VerificationSession`). Architecture
-notes — and the per-module line counts, gated against the source tree
-so they cannot drift out of step with it — live in the
-[compiler README](vera/README.md) module map; the design history —
+notes live in the [compiler README](vera/README.md) module map; the
+design history —
 including why the obligation core was built before any wire format —
 is the comment trail on
 [#222](https://github.com/aallan/vera/issues/222).

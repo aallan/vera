@@ -1,6 +1,6 @@
 # Vera Examples
 
-43 example programs demonstrating Vera's features. All examples pass `vera check` and `vera verify`.
+The example programs demonstrating Vera's features. All examples pass `vera check` and `vera verify`.
 
 ## Running Examples
 
