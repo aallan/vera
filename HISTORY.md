@@ -1,6 +1,6 @@
 # History
 
-How the Vera compiler was built, from initial commit through the dual-threaded start of Stages 19 and 20, across 149 active development days.
+How the Vera compiler was built, from initial commit through the instruments of Stage 21, across 152 active development days.
 
 Vera was developed in an interleaved spiral — each phase added a complete compiler layer with tests, documentation, and working examples before moving to the next. The compiler was built by a single developer working with Claude Code, with CodeRabbit providing AI code review on pull requests from v0.0.80 onwards. The entire project — language design, specification, compiler, test suite, documentation, website — was built from scratch starting 22 February 2026.
 
@@ -28,7 +28,8 @@ Version rows follow one rule: one sentence, at most one issue link.  [CHANGELOG.
 | 16 | 2–3 Jul | The server-effects sprint | v0.0.192–v0.0.195 |
 | 17 | 4 Jul | The v0.1.0 bug burndown | v0.1.0 |
 | 18 | 8 Jul | The visual documentation pass | v0.1.1 |
-| 19 + 20 | 9 Jul onwards | Verification completeness + single source (dual-threaded) | v0.1.2– |
+| 19 + 20 | 9 Jul – 28 Sep | Verification completeness + single source (dual-threaded) | v0.1.2–v0.2.0 |
+| 21 | 9–10 Oct | Instruments and truth | v0.2.1 |
 
 ---
 
@@ -459,7 +460,7 @@ Three external PRs hardened the self-checking machinery, and their adversarial r
 
 
 
-## Stage 19 and Stage 20: The dual-threaded start (9 July onwards)
+## Stage 19 and Stage 20: The dual-threaded start (9 July – 28 September)
 
 *Two sprints at once.*
 
@@ -481,6 +482,16 @@ Stages 19 and 20 run dual-threaded: community PRs against the single-source spri
 | v0.1.13 | 21 Aug | **The inference response-shape fix** — `Inference.complete` selects text by block type, and every failure names its provider. |
 | v0.2.0 | 28 Sep | **The soundness release** — termination, obligations where the program evaluates, and runtime traps that name their cause ([#1480](https://github.com/aallan/vera/issues/1480)). |
 
+## Stage 21: Instruments and truth (9–10 October)
+
+*The pipeline checks its own claims.*
+
+The first of the releases toward v0.3.0's sound base gave the pipeline instruments: `vera verify --reconcile` joins the verifier's runtime-check claims with the checks the compiled module holds, `vera test --distrust` runs the functions the verifier proved, and the conformance manifest pins every run-level program's exit status and the stdout of 175 of the 176.  The pipe became the call it stands for at transform, closing six pipe bugs; CI took coverage off the pull request, re-ran the matrix after a merge only for a release, and sampled the class-instrument matrices on a pull request; six dependency bumps landed as one lock update; counts left the prose for a status generated into TESTING.md at release; the ROADMAP laid out the releases to v0.3.0; the class-fix rules were revised; and the documents dropped their hedges.
+
+| Version | Date | What shipped |
+|---------|------|-------------|
+| v0.2.1 | 10 Oct | **Instruments and truth** — the pipeline checks its own claims. |
+
 ---
 
 ## By the numbers
@@ -500,4 +511,4 @@ Ten releases, chosen for the capability each one unlocked rather than even spaci
 | Spec chapters | 7 | 10 | 12 | 13 | 13 | 13 | 13 | 14 | 14 | 14 |
 | Python coverage | — | — | 90% | 96% | 95% | 95% | 95% | 95% | 95% | 95% |
 
-Total: **3,000+ commits, 212 tagged releases, 149 active development days.**
+Total: **3,000+ commits, 213 tagged releases, 152 active development days.**
