@@ -18,7 +18,7 @@ The name comes from the Latin *veritas* (truth). In Vera, verification is a firs
 
 4. **Structural references over names.** Bindings are referenced by type and positional index (`@T.n`), not by arbitrary names. This eliminates naming consistency errors — one of the most common failure modes when models generate code across large contexts.
 
-5. **Contracts as the source of truth.** Every function declares what it requires and what it guarantees. The compiler verifies these contracts statically where possible (via SMT solver) and inserts runtime checks where it cannot. The contract is the specification; the implementation must satisfy it.
+5. **Contracts as the source of truth.** Every function declares what it requires and what it guarantees. The compiler verifies these contracts statically (via SMT solver) where the solver can decide them, and compiles every non-trivial contract it can express into a runtime check, whatever the solver decided. The contract is the specification; the implementation must satisfy it.
 
 6. **Constrained expressiveness.** The space of valid programs is deliberately small. Refinement types, mandatory contracts, and the effect system combine to reject large classes of incorrect programs at compile time. Fewer valid programs means fewer opportunities for the model to be wrong.
 
@@ -30,7 +30,7 @@ The name comes from the Latin *veritas* (truth). In Vera, verification is a firs
 
 3. **Backward compatibility.** Vera is a new language with no existing ecosystem. The specification may change freely between versions.
 
-4. **Maximum performance.** The reference compiler prioritises correctness and spec compliance over optimisation. Performance improvements are a future concern.
+4. **Maximum performance.** The reference compiler prioritises correctness and spec compliance over optimisation.
 
 5. **General-purpose systems programming.** Vera is not designed for writing operating systems, device drivers, or real-time software. It targets application-level logic where correctness matters more than bare-metal performance.
 
@@ -111,7 +111,7 @@ Diagnostics occur at every phase of compilation:
 | Type checking | Type mismatches, invalid refinement predicates, subtyping violations |
 | Effect checking | Undeclared effects, missing handlers, effect row mismatches |
 | Verification (Tier 1) | Contract violations with SMT counterexamples, explained in plain language |
-| Verification (Tier 2) | Suggestions for lemmas or hints that would help the solver (not yet implemented; [#427](https://github.com/aallan/vera/issues/427)) |
+| Verification (Tier 2) | Suggestions for lemmas or hints that would help the solver (not implemented) |
 | Verification (Tier 3) | Runtime check insertion points, with explanation of what could not be proven |
 | Reachability | Unreachable branches (when preconditions or types make a case impossible) |
 | Call-site analysis | Arguments that cannot be proven to satisfy a callee's preconditions |
@@ -124,7 +124,7 @@ Traditional compilers optimise diagnostics for human developers who understand t
 
 A diagnostic that says `expected token '{'` is a puzzle. A diagnostic that says "Function X is missing its contract block. Add requires(), ensures(), and effects() between the signature and the body, like this: [example]" is an instruction. Vera always produces instructions.
 
-All diagnostic commands support a `--json` flag that produces machine-readable structured output. Each JSON diagnostic includes: the error code, severity, source location (file, line, column), the source line, a rationale explaining the cause, a fix suggestion with example code, and a spec reference. This output is designed for automated feedback loops where an agent reads the diagnostics, corrects the code, and re-checks — without parsing human-oriented prose.
+All diagnostic commands support a `--json` flag that produces machine-readable structured output. Each JSON diagnostic includes: the error code, severity, source location (file, line, column), the source line, a rationale explaining the cause, a fix suggestion with example code, and a spec reference. This output serves automated feedback loops where an agent reads the diagnostics, corrects the code, and re-checks — without parsing human-oriented prose.
 
 ### 0.5.5 Canonical Formatting
 
@@ -134,7 +134,7 @@ The `vera fmt` command enforces Design Goal 3 (one canonical form) by normalisin
 
 The `vera test` command uses contracts as test specifications. For each function, the Z3 solver generates inputs satisfying the `requires` clause. The function is compiled to WASM and executed against these inputs, and the outputs are checked against the `ensures` clause. This validates that contracts and implementations agree without writing any test cases manually.
 
-By default, a function whose contracts the verifier proves (Tier 1, Section 6.8) is reported as proved and is not executed. `vera test --distrust` executes it as well. Code generation emits a contract's runtime check whatever its tier, wherever it can express one. A contract it cannot express has no check, and no trial can contradict its proof. A proved function is reported as not exercised, rather than run, for one of three reasons: the input generator has no input for it (a parameter type it does not encode, a precondition it cannot translate, or one that admits no input within its bounds); there is nothing to run (the program does not compile, or code generation dropped the function); or no check its run reaches can stand for an obligation the verifier proved (not a clause of its own, not an operation in its body, not the contract of a function it calls). Otherwise it is run, and it names the clauses no check stands for. A failing trial's trap tells the tester its kind and the function it fired in, not which of that function's checks fired, so the trial is judged by every check of that kind in that function. The one exception is the trial's own call. There the function's prologue checks (its `requires` clauses and the guards on its refined parameters) are set aside, because the arguments were generated to satisfy them. A trap that then leaves no check of its kind to judge by is reported as unattributed. When each stands for an obligation the verifier proved, the trial contradicts the proof. The function is reported refuted, with an E703 error naming the obligation and the arguments, and any `assume` (Section 6.2.6) the proof rests on; the error says the arguments violate that `assume` only where the tester has evaluated it on them. When each stands for an obligation the verifier did not prove, the failure is a finding about the program, reported as any failing trial is. When they are mixed, one stands for both a proved and an unproved obligation recorded at its site, or one stands for no recorded obligation, the failure is reported as unattributed rather than as either.
+By default, a function whose contracts the verifier proves (Tier 1, Section 6.8) is reported as proved and is not executed. `vera test --distrust` executes it as well. Code generation emits a non-trivial contract's runtime check whatever its tier. A contract it cannot express has no check, and no trial can contradict its proof. A proved function is reported as not exercised, rather than run, for one of three reasons: the input generator has no input for it (a parameter type it does not encode, a precondition it cannot translate, or one that admits no input within its bounds); there is nothing to run (the program does not compile, or code generation dropped the function); or no check its run reaches can stand for an obligation the verifier proved (not a clause of its own, not an operation in its body, not the contract of a function it calls). Otherwise it is run, and it names the clauses no check stands for. A failing trial's trap tells the tester its kind and the function it fired in, not which of that function's checks fired, so the trial is judged by every check of that kind in that function. The one exception is the trial's own call. There the function's prologue checks (its `requires` clauses and the guards on its refined parameters) are set aside, because the arguments were generated to satisfy them. A trap that then leaves no check of its kind to judge by is reported as unattributed. When each stands for an obligation the verifier proved, the trial contradicts the proof. The function is reported refuted, with an E703 error naming the obligation and the arguments, and any `assume` (Section 6.2.6) the proof rests on; the error says the arguments violate that `assume` only where the tester has evaluated it on them. When each stands for an obligation the verifier did not prove, the failure is a finding about the program, reported as any failing trial is. When they are mixed, one stands for both a proved and an unproved obligation recorded at its site, or one stands for no recorded obligation, the failure is reported as unattributed rather than as either.
 
 ### 0.5.7 Formal Grammar
 
@@ -149,7 +149,7 @@ The compiler emits structured JSON diagnostics via the `--json` flag, supported 
 - **Field semantics MUST NOT change** without a major version bump. The numeric value of `summary.failed` means the same thing in every minor release.
 - **The `ok` field is the canonical exit signal.** `ok == true` corresponds to exit code 0; `ok == false` corresponds to a non-zero exit. Downstream CI MUST gate on `ok` rather than parsing field-by-field.
 
-The current field sets are documented per-command in [`TESTING.md`](../TESTING.md#json-output-stability) and verified by the test suite — a regression that drops a documented field will fail at least one test. Reference implementations are responsible for keeping their JSON output aligned with the documented set; downstream tooling SHOULD read the documented fields and ignore unknown ones.
+The field sets are documented per-command in [`TESTING.md`](../TESTING.md#json-output-stability) and verified by the test suite — a regression that drops a documented field will fail at least one test. Reference implementations are responsible for keeping their JSON output aligned with the documented set; downstream tooling SHOULD read the documented fields and ignore unknown ones.
 
 This is the same machine-readable / human-readable duality as the diagnostic format itself: `--json` is for tools, the default text output is for humans, and both are first-class.
 
@@ -185,7 +185,7 @@ Throughout this specification:
 
 ## 0.8 Design Notes (Future Features)
 
-The following features are still planned for future versions. Each is specified in its target chapter with full design details; this section provides a brief index.
+The following features are planned for future versions. Each is specified in its target chapter with full design details; this section provides a brief index.
 
 For features that have already shipped, see [HISTORY.md](https://github.com/aallan/vera/blob/main/HISTORY.md). For the full forward-looking roadmap, see [ROADMAP.md](https://github.com/aallan/vera/blob/main/ROADMAP.md).
 

@@ -202,7 +202,7 @@ Exit criterion: every target in the scorecard is met.
 
 *Production controls for the headline effects.*
 
-Before the flagship builds on them, `Http` and `Inference` get the controls real agent workloads need: auth headers, status codes, timeouts and verbs on one side; cost gates, deterministic replays, mocking, and provider breadth on the other.  A second model tier joins the same surface: typed decisions carrying a confidence value ([#1467](https://github.com/aallan/vera/issues/1467)), which begin as a user-declared effect and are promoted to a built-in only once their calibration is measured.  The Http and Inference control rows are current KNOWN_ISSUES limitations; the provider and example rows are supporting work on the same effect surface.
+Before the flagship builds on them, `Http` and `Inference` get the controls real agent workloads need: auth headers, status codes, timeouts and verbs on one side; cost gates, deterministic replays, mocking, and provider breadth on the other.  A second model tier joins the same surface: typed decisions carrying a confidence value ([#1467](https://github.com/aallan/vera/issues/1467)), which begin as a user-declared effect and are promoted to a built-in only once their calibration is measured.  The Http and Inference control rows are KNOWN_ISSUES limitations; the provider and example rows are supporting work on the same effect surface.
 
 Exit criterion: the Http and Inference limitation rows are retired; an agent can call an authenticated API and mock the model call in tests.
 
@@ -251,14 +251,14 @@ Exit criterion: the LSP limitation rows are retired, and a fresh VeraBench run (
 
 | Issue | What |
 |---|---|
-| [#724](https://github.com/aallan/vera/issues/724) | LSP: buffer-aware module resolution (imports currently resolve from disk, not open buffers). |
+| [#724](https://github.com/aallan/vera/issues/724) | LSP: buffer-aware module resolution (imports resolve from disk, not open buffers). |
 | [#181](https://github.com/aallan/vera/issues/181) | Slot go-to-definition and mechanical slot-index rewriting beyond parameters (`let`/`match` bindings). |
 | [#558](https://github.com/aallan/vera/issues/558) | `--explain-slots-at <line>:<col>` — query the slot table at any position, not only where a diagnostic already fires. |
 | [#1292](https://github.com/aallan/vera/issues/1292) | LSP: `vera/addEffect` bounds handlers by resolved effect instance, so an alias-spelled `handle[State<MyAlias>]` prunes what `State<Int>` prunes. |
 | [#1471](https://github.com/aallan/vera/issues/1471) | **E538** names the premise that contributes the contradiction (an unsat core over the author's premises), not the first `assume`. |
 | [#523](https://github.com/aallan/vera/issues/523) | `vera context` — token-budgeted project export for agents. |
 | [#698](https://github.com/aallan/vera/issues/698) | `vera shape` — function-archetype histograms per module. |
-| [#224](https://github.com/aallan/vera/issues/224) | REPL — the shortest feedback path is currently `vera run` on a file. |
+| [#224](https://github.com/aallan/vera/issues/224) | REPL — the shortest feedback path is `vera run` on a file. |
 | [#562](https://github.com/aallan/vera/issues/562) | `vera test` advanced features — input shrinking, cross-function scenarios, coverage-guided generation. |
 | [#143](https://github.com/aallan/vera/issues/143) | Expand to 50+ examples. |
 | [#519](https://github.com/aallan/vera/issues/519) | SKILL.md documentation gap inventory. |
@@ -298,7 +298,7 @@ Beyond the staged sprints — grouped by arc, each pulled forward by its trigger
 
 **Standard library long tail** — [#367](https://github.com/aallan/vera/issues/367) Markdown extractors, [#368](https://github.com/aallan/vera/issues/368) HTML accessors, [#507](https://github.com/aallan/vera/issues/507) ability-dispatched array operations, [#509](https://github.com/aallan/vera/issues/509) Unicode-aware string built-ins phase 2, [#1143](https://github.com/aallan/vera/issues/1143) `<DB>` effect phases 2–3 — named columns (via Map), typed rows (via JSON), and further backends.
 
-**Compiler internals** — [#672](https://github.com/aallan/vera/issues/672) canonical WAT formatter, [#745](https://github.com/aallan/vera/issues/745) narrow the wrap-table / Phase 2c emission to `decimal_ops_used` only, [#739](https://github.com/aallan/vera/issues/739) typed `Protocol` interfaces for the mixin mypy carve-outs, [#1343](https://github.com/aallan/vera/issues/1343) decompose `vera/verifier.py` and `smt.py` around explicit obligation generators and translators — sequenced after the [#1344](https://github.com/aallan/vera/issues/1344) umbrella, whose typed registries the generators are meant to consume.
+**Compiler internals** — [#672](https://github.com/aallan/vera/issues/672) canonical WAT formatter, [#745](https://github.com/aallan/vera/issues/745) narrow the wrap-table / Phase 2c emission to `decimal_ops_used` only, [#739](https://github.com/aallan/vera/issues/739) typed `Protocol` interfaces for the mixin mypy carve-outs, [#1343](https://github.com/aallan/vera/issues/1343) decompose `vera/verifier.py` and `smt.py` around explicit obligation generators and translators — sequenced after the [#1344](https://github.com/aallan/vera/issues/1344) umbrella, whose typed registries the generators consume.
 
 ## Ongoing threads
 
@@ -312,13 +312,13 @@ Not stage-gated; advanced alongside whatever stage is active.
 Deliberate trade-offs, recorded so they aren't re-litigated by accident.
 
 - **No typed IR for WAT emission.**  The cost-benefit doesn't clear while string-based emission is held safe by the walker-completeness gate and the planned canonical WAT formatter ([#672](https://github.com/aallan/vera/issues/672)).
-- **No parser fuzzing yet** ([#402](https://github.com/aallan/vera/issues/402), bookmark).  Trigger: a parser crash from the wild, or spare CI budget.
-- **No full Tier 2 verification yet** ([#427](https://github.com/aallan/vera/issues/427)).  Its old blocker is gone — per-monomorphization verification shipped and provides the differential oracle — but the staged sprints above outrank it; it stays on the horizon by priority, not dependency.
+- **No parser fuzzing** ([#402](https://github.com/aallan/vera/issues/402), bookmark).  Trigger: a parser crash from the wild, or spare CI budget.
+- **No full Tier 2 verification** ([#427](https://github.com/aallan/vera/issues/427)).  Its old blocker is gone — per-monomorphization verification shipped and provides the differential oracle — but the staged sprints above outrank it; it stays on the horizon by priority, not dependency.
 
 ## Speculative
 
-Deferred decisions — features without a current driver, captured so the design analysis isn't re-derived if one shows up.  Promotes into a stage when a real trigger appears.
+Deferred decisions — features without a driver, captured so the design analysis isn't re-derived if one shows up.  Promotes into a stage when a real trigger appears.
 
 | Item | Issue | Trigger condition |
 |------|-------|-------------------|
-| Allow `@Byte` arithmetic with verified underflow + overflow guards | [#564](https://github.com/aallan/vera/issues/564) | A real Vera program (or proposed feature) requires byte arithmetic at the user-code level — e.g., a binary-format parser the stdlib doesn't cover; or VeraBench shows a measurable adoption tax from `byte_to_int` round-trips on byte-heavy benchmarks.  Today: the type checker excludes `Byte` from `NUMERIC_TYPES`, so `@Byte - @Byte` etc. produce E140; the round-trip via `byte_to_int` / `int_to_byte` is the canonical idiom. |
+| Allow `@Byte` arithmetic with verified underflow + overflow guards | [#564](https://github.com/aallan/vera/issues/564) | A real Vera program (or proposed feature) requires byte arithmetic at the user-code level — e.g., a binary-format parser the stdlib doesn't cover; or VeraBench shows a measurable adoption tax from `byte_to_int` round-trips on byte-heavy benchmarks.  The type checker excludes `Byte` from `NUMERIC_TYPES`, so `@Byte - @Byte` etc. produce E140; the round-trip via `byte_to_int` / `int_to_byte` is the canonical idiom. |

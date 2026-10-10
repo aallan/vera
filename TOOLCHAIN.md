@@ -35,19 +35,18 @@ Two commitments from [DESIGN.md](DESIGN.md) shape every command:
 1. **Fail loud, with a fix.** A diagnostic *names* the problem, explains *why*,
    and gives a concrete instruction — never a bare status. Diagnostics carry
    stable codes, which `vera errors` lists, that you can pin tooling to; a few
-   still carry none ([#1490](https://github.com/aallan/vera/issues/1490)).
+   diagnostics carry none.
 2. **Two audiences.** Every diagnostic-producing command has a `--json` mode.
    People read the default text; agents consume `--json` in a feedback loop. The
    JSON is the machine contract; the prose is for humans. This is the single
    most important thing to know about the toolchain: **if you are scripting Vera
-   from an agent, you almost always want `--json`.**
+   from an agent, use `--json`.**
 
 The thread running through all of it: *the compiler is the authority.* It tells
 you what's wrong (`check`/`verify`), what it can prove (`verify --json` tiers),
 what inputs break a contract (`test`), and what its own built-ins, effects, and
 error codes are (`builtins`/`effects`/`errors --json`).
-You should rarely have to guess or hand-maintain a fact the compiler already
-knows.
+Ask it rather than guess or hand-maintain a fact it already knows.
 
 ---
 
@@ -111,9 +110,9 @@ Vera verifies in two implemented tiers, at every call site:
 - **Tier 1 — Z3 static.** The compiler builds a verification condition and asks
   Z3. `unsat` means the contract holds *for all inputs*, apart from the open
   soundness bugs listed in [KNOWN_ISSUES.md](KNOWN_ISSUES.md). The
-  `requires`/`ensures` clauses are also compiled as runtime checks wherever
-  code generation can express them, so a proof bug surfaces as a trap rather
-  than a wrong answer.
+  non-trivial `requires`/`ensures` clauses are also compiled as runtime checks, so a proof
+  bug surfaces as a trap rather than a wrong answer; a clause code generation
+  cannot express, such as a quantified `ensures`, has no check.
 - **Tier 3 — runtime fallback.** When Z3 returns `unknown` or times out, the
   contract is compiled as a runtime check that traps on violation with the
   contract text.
@@ -127,10 +126,10 @@ with the checks the module holds: a `tier3` or `timeout` obligation that no
 emitted check answers is an **E541** error, and an emitted check that no
 obligation accounts for is a **W004** warning. With
 `--json` the envelope gains a `reconciliation` object holding the counts and
-each mismatch. The mismatches the corpus shows today are listed, each under
-its open issue, in `scripts/check_reconciliation.py`.
+each mismatch. The mismatches the corpus shows are listed, each under its
+open issue, in `scripts/check_reconciliation.py`.
 
-(Tier 2, Z3-*guided*, is specified in spec/06 but not yet implemented.)
+(Tier 2, Z3-*guided*, is specified in spec/06 but not implemented.)
 
 **Debugging "it verified but it still trapped at runtime."** That is Tier 3
 doing its job — the contract wasn't *statically* proved, so it became a runtime
@@ -160,7 +159,7 @@ vera test --distrust file.vera # also run the functions the verifier proved
 `test` is contract-driven, not example-driven: Z3 generates inputs that
 *satisfy each function's `requires`*, the compiled WASM runs them, and the real
 outputs are checked against `ensures`. It is the empirical counterpart to
-`verify` — where `verify` proves, `test` tries to falsify. Run it on the Tier-3
+`verify` — where `verify` proves, `test` looks for a falsifying input. Run it on the Tier-3
 functions `verify --json` flagged: those are the ones a proof didn't cover, so
 they're where a generated counterexample is most valuable.
 
@@ -276,7 +275,7 @@ the module has no entry point. A file of private helpers, or a cross-module
 generic library, still compiles successfully with no exports.
 
 ```bash
-vera compile --target wasi-p2 file.vera    # emit a WASI Preview 2 component (experimental)
+vera compile --target wasi-p2 file.vera    # emit a WASI Preview 2 component (IO and Random)
 vera run --target wasi-p2 file.vera        # execute it under the built-in wasip2 host
 wasmtime run file.wasm                     # ...or under stock wasmtime, no flags, no Vera bindings
 ```
@@ -350,10 +349,12 @@ vera errors   --json     # every diagnostic + warning code, with its phase
 
 Each emits a uniform `{"schema": "...", "items": [...]}` envelope (the `schema`
 field is versioned for forward-compatibility), or an aligned text table without
-`--json`. Every item also carries a best-effort **`since`** — the version that
-first introduced it (built-in functions, effects, and abilities are
-git-attributed; diagnostic codes report `null`) — which is what makes "what
-shipped since version 0.0.X" answerable by diffing two dumps. Recipes:
+`--json`. Every item also carries a **`since`** — the version that first
+introduced it — which is what makes "what shipped since version 0.0.X"
+answerable by diffing two dumps. A diagnostic code's `since` is derived from
+the release tags and covers every code; a built-in function's, effect's or
+ability's is reconstructed from the git history, and a name it misses reports
+`null`. Recipes:
 
 ```bash
 # How many built-ins are there, really? (the answer the docs should quote)
@@ -362,7 +363,7 @@ vera builtins --json | jq '.items | length'
 # Does a built-in named `string_split` exist?
 vera builtins --json | jq '.items[] | select(.name == "string_split")'
 
-# When did `map_new` land? (the `since` field — best-effort; null for error codes)
+# When did `map_new` land? (the `since` field)
 vera builtins --json | jq -r '.items[] | select(.name == "map_new") | .since'   # -> 0.0.94
 
 # What operations does the IO effect expose?

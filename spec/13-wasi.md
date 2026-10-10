@@ -14,14 +14,14 @@ vera compile --target wasi-p2 --wat program.vera  # print component text
 vera run --target wasi-p2 program.vera       # execute under the built-in wasip2 host
 ```
 
-**Status: experimental.**  The target covers the **IO and Random host
+**Status: Partially implemented.**  The target covers the **IO and Random host
 families** (Section 13.4).  It is not a blanket "WASI 0.2 compliant"
 mode: a program using any other host family (Http, Map, Set, Decimal,
 Json, Html, Md, Regex, Math, Inference, DB, State, Async) is rejected with
 a diagnostic naming the unsupported family — never silently compiled
 against the core target instead.
 
-The core `wasm` target (Chapters 11–12) remains the default and the
+The core `wasm` target (Chapters 11–12) is the default and the
 canonical compilation model; the browser runtime (Section 12.9) is
 unaffected.  The `wasi-p2` component embeds the **unchanged core
 module** — post-processed only at the WAT level as described below —
@@ -211,7 +211,7 @@ with a diagnostic: the wasi:http proxy world provides no stdin,
 filesystem, or environment (verified by negative probe — the imports
 do not link under stock `wasmtime serve`).
 
-**v1 limits** (each a diagnostic or documented cap, never silent):
+**Limits** (each a diagnostic or documented cap, never silent):
 request and response bodies are buffered, not streamed; request
 headers share the fixed arena (roughly 63 KiB combined); a response
 status outside 0–65535 or a forbidden header answers 500 rather than
@@ -224,7 +224,7 @@ native `vera serve` driver does not buffer this way.)
 `vera run` cannot execute a server-world artifact (wasmtime-py's
 built-in host has no wasi:http support); it fails with a message
 pointing at `wasmtime serve`.  The native `vera serve` driver
-(Section 9.5.6) remains the Python-side way to run the same handler.
+(Section 9.5.6) is the Python-side way to run the same handler.
 
 ## 13.8 Conformance
 

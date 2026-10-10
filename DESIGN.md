@@ -10,7 +10,7 @@ Technical decisions, rationale, and prior art. For the design philosophy and FAQ
 2. **Explicitness over convenience.** All state changes declared. All effects typed. All function contracts mandatory. No implicit behaviour.
 3. **One canonical form.** One preferred spelling per construct; for a given parse, formatting is deterministic and idempotent. No style choices.
 4. **Structural references over names.** Bindings referenced by type and positional index (`@T.n`), not arbitrary names. See [`DE_BRUIJN.md`](DE_BRUIJN.md).
-5. **Contracts as the source of truth.** Every function declares what it requires and guarantees. The compiler verifies statically where possible.
+5. **Contracts as the source of truth.** Every function declares what it requires and guarantees. The compiler verifies statically what the solver can decide, and checks the rest at run time.
 6. **Constrained expressiveness.** Fewer valid programs means fewer opportunities for the model to be wrong.
 
 ---
@@ -35,7 +35,7 @@ Technical decisions, rationale, and prior art. For the design philosophy and FAQ
 | Recursion | Explicit termination measures (`decreases`), or the `Diverge` effect for a function that may not terminate; a recursive function with neither is refused (`E137`) | Termination is proved via Z3 where it can be and guarded at run time otherwise; non-termination is visible in the signature |
 | Evaluation | Strict (call-by-value) | Simpler for models to reason about; no lazy evaluation to track |
 | Memory | Conservative mark-sweep GC in WASM | Implemented entirely in generated WASM (`$alloc`, `$gc_collect`, shadow stack); no host GC; models focus on logic |
-| Target | WebAssembly (native + browser + WASI P2 components) | Portable, sandboxed, no ambient capabilities; `vera run` uses wasmtime; `vera compile --target browser` emits a JS bundle; `--target wasi-p2` emits an experimental WASI Preview 2 component for stock wasip2 hosts (`--world server` for `wasmtime serve`) |
+| Target | WebAssembly (native + browser + WASI P2 components) | Portable, sandboxed, no ambient capabilities; `vera run` uses wasmtime; `vera compile --target browser` emits a JS bundle; `--target wasi-p2` emits a WASI Preview 2 component (the IO and Random surface) for stock wasip2 hosts (`--world server` for `wasmtime serve`) |
 | Compiler | Python reference implementation | Correctness over performance; clean separation of phases; see [vera/README.md](vera/README.md) |
 | Grammar | Machine-readable Lark EBNF (`grammar.lark`) | Formal grammar is shared between spec and implementation; no ambiguity |
 | Diagnostics | LLM-instruction format; `--json` for machine use; stable error and warning codes, which `vera errors` lists | Every diagnostic names the problem, explains why, and gives a concrete fix; codes are stable for tooling |

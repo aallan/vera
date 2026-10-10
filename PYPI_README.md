@@ -3,10 +3,10 @@
 Vera is a programming language designed for large language models to write. It
 has mandatory contracts, algebraic effects, typed slot references instead of
 variable names, and a compiler that emits WebAssembly. Contracts are verified
-statically with Z3 where possible, and the compiled program also checks its
-contracts at run time wherever code generation can express them. A contract it
-cannot express, such as a quantified `ensures`, is reported as a runtime check
-but is not compiled into one ([#1607](https://github.com/aallan/vera/issues/1607)).
+statically with Z3 where Z3 can decide them, and the compiled program also
+checks its contracts at run time. A contract code generation cannot express,
+such as a quantified `ensures`, is reported as a runtime check but is not
+compiled into one.
 Recursion must be shown to terminate (`decreases`) or declare that it may not
 (`Diverge`), every runtime trap names its cause, and SQL injection is a
 compile-time error.
@@ -46,7 +46,7 @@ ERAV citizen-science project on PyPI. The wheel ships the compiler and the
 specification live in the GitHub repository.
 
 **Upgrading to 0.2.0:** the checker and verifier are stricter than in 0.1.x, so
-a program 0.1.13 accepted may be refused — most often a recursive function with
+0.2.0 refuses some programs 0.1.13 accepted — most often a recursive function with
 neither `decreases` nor `Diverge` (`E137`), a `decreases` measure that is not
 proved to decrease (`E502`), or a name, type or effect the checker cannot
 resolve. The

@@ -37,7 +37,7 @@ vera verify --reconcile file.vera # Also compile in process and check every Tier
 vera compile file.vera                    # Compile to .wasm binary
 vera compile --wat file.vera              # Print WAT text (human-readable WASM)
 vera compile --target browser file.vera   # Compile + emit browser bundle
-vera compile --target wasi-p2 file.vera   # Emit a WASI Preview 2 component (experimental, IO+Random; #237)
+vera compile --target wasi-p2 file.vera   # Emit a WASI Preview 2 component (IO+Random; #237)
 vera run file.vera                # Compile and execute (calls main)
 vera run file.vera --fn f -- 42   # Call function f with argument 42
 vera run --target wasi-p2 file.vera  # Execute under the built-in WASI 0.2 host (spec/13-wasi.md)
@@ -100,7 +100,7 @@ See [`TOOLCHAIN.md`](TOOLCHAIN.md) for the CLI cookbook — driving the toolchai
 - `vera/` — Reference compiler: grammar, parser, AST, transformer, type checker, verifier, codegen, CLI
 - `examples/` — Example Vera programs (all must pass `vera check` and `vera verify`)
 - `tests/` — Test suite (unit tests + conformance suite)
-- `tests/conformance/` — Conformance programs validating every language feature against the spec
+- `tests/conformance/` — Conformance programs, named by spec chapter and feature, validating the language against the spec
 - `scripts/` — CI and validation scripts
 
 ## Writing Vera code
@@ -195,7 +195,7 @@ So `total == tier1_verified + tier3_runtime`, and the array — which is the com
 
 ### Error codes
 
-Diagnostics carry stable codes, which `vera errors` lists; a few still carry none ([#1490](https://github.com/aallan/vera/issues/1490)). The prefix is the **namespace**, not the severity: the `W` codes are all warnings, but a number of `E` codes are warning-severity too (`E504`, `E506`, `E531`, `E539`, `E540` are the ones the partition table above names). Codes are grouped by compiler phase:
+Diagnostics carry stable codes, which `vera errors` lists; a few diagnostics carry none. The prefix is the **namespace**, not the severity: the `W` codes are all warnings, but a number of `E` codes are warning-severity too (`E504`, `E506`, `E531`, `E539`, `E540` are the ones the partition table above names). Codes are grouped by compiler phase:
 
 | Range | Phase |
 |-------|-------|

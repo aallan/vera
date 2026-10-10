@@ -166,7 +166,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `skip.py` | All | Codegen-internal control-flow exceptions behind structured skip diagnostics (#626) | `CodegenSkip`, `CodegenInvariantError` |
 | `introspect.py` | All | Payloads for `vera builtins` / `effects` / `errors --json` | `builtins_payload()`, `effects_payload()`, `errors_payload()` |
 | `envflags.py` | All | One truthiness rule for the `VERA_*` diagnostic flags catalogued in ENVIRONMENT.md; a leaf module (imports `os` only) so any layer can read a flag without a cycle | `flag_enabled()` |
-| `_since.py` | All | Best-effort `since` version attribution for built-ins, effects, abilities | |
+| `_since.py` | All | `since` version attribution for built-ins, effects, abilities; an unattributed name reports `null` | |
 | `browser/` | Execute | Browser runtime for compiled WASM (package) | `emit_browser_bundle()` |
 | ` ├ emit.py` | | Browser bundle emission (wasm + runtime + html) | `emit_browser_bundle()` |
 | ` ├ runtime.mjs` | | Self-contained JS runtime: IO, State, Http, Inference, contracts, Markdown, Json, Html | |
@@ -457,7 +457,7 @@ The spec defines three verification tiers. The compiler implements Tiers 1 and 3
 | Tier | What | How | Status |
 |------|------|-----|--------|
 | **1** | Decidable fragment: QF_LIA + Booleans + comparisons + if/else + let + match + constructors + `array_length` + decreases | Z3 proves automatically | Implemented |
-| **2** | Extended: quantifiers, function call reasoning, array access | Z3 with hints/timeouts | Future |
+| **2** | Extended: quantifiers, function call reasoning, array access | Z3 with hints/timeouts | Not implemented |
 | **3** | Everything else | Runtime assertion fallback | Warning emitted |
 
 When a contract or function body contains constructs that can't be translated to Z3, the verifier **does not error** — it classifies the contract as Tier 3 and emits a warning. So an untranslatable construct never fails verification on its own; a program can still be refused for something verification must know first, such as a generic call's type argument (`E622`, see Design Pattern 4).
@@ -636,7 +636,7 @@ The code generator does **not** consult the verifier: `vera compile` emits the m
 
 Omitting statically-proven guards is the spec §11.8 aspiration tracked in [#958](https://github.com/aallan/vera/issues/958) — it must wait on the soundness guarantees noted there.
 
-`vera verify --reconcile` compiles the program in process and joins the verifier's records with the checks the module holds (`reconcile.py`): a record claiming a runtime check that no emitted check answers is an E541 error, and an emitted check no record accounts for is a W004 warning.  `tests/test_reconciliation.py` runs the same join over the corpus in CI, and `scripts/check_reconciliation.py` locally, with the mismatches that stand today allowlisted by their open issues.
+`vera verify --reconcile` compiles the program in process and joins the verifier's records with the checks the module holds (`reconcile.py`): a record claiming a runtime check that no emitted check answers is an E541 error, and an emitted check no record accounts for is a W004 warning.  `tests/test_reconciliation.py` runs the same join over the corpus in CI, and `scripts/check_reconciliation.py` locally, with the known mismatches allowlisted by their open issues.
 
 Preconditions are checked at function entry. Postconditions store the return value in a temporary local, check the condition, and trap or return.
 
@@ -703,7 +703,7 @@ Every diagnostic includes eight fields designed for LLM consumption:
 
 </details>
 
-`Diagnostic.format()` produces the multi-section natural language output shown in the root README's "Errors are instructions" section. The format is designed so the compiler's output can be fed directly back to the model that wrote the code.
+`Diagnostic.format()` produces the multi-section natural language output shown in the root README's "Errors are instructions" section. The CLI writes it to stderr, and an agent passes it back to the model that wrote the code as corrective context.
 
 **Parse error patterns:** `diagnose_lark_error()` in `parser.py` maps common Lark exception patterns to specific diagnostics. It checks expected token sets to distinguish "missing contract block" from "missing effects clause" from "malformed slot reference", producing targeted fix suggestions for each.
 
@@ -735,7 +735,7 @@ Methods in `transform.py` are named after grammar rules and receive already-tran
 
 ### 6. Effect row infrastructure
 
-The type system includes open effect rows (`row_var` field in `ConcreteEffectRow`) for row polymorphism (`forall<E> fn(...) effects(<E>)`). Effect checking enforces subeffecting (Spec Section 7.8): `effects(pure) <: effects(<IO>) <: effects(<IO, State<Int>>)`. A function can only be called from a context whose effect row contains all of the callee's effects (`is_effect_subtype` in `types.py`, call-site check in `checker/calls.py`, error code E125). Handlers discharge their declared effect by temporarily adding it to the context. Row variable unification for `forall<E>` polymorphism is permissive; full bidirectional type checking is not yet implemented.
+The type system includes open effect rows (`row_var` field in `ConcreteEffectRow`) for row polymorphism (`forall<E> fn(...) effects(<E>)`). Effect checking enforces subeffecting (Spec Section 7.8): `effects(pure) <: effects(<IO>) <: effects(<IO, State<Int>>)`. A function can only be called from a context whose effect row contains all of the callee's effects (`is_effect_subtype` in `types.py`, call-site check in `checker/calls.py`, error code E125). Handlers discharge their declared effect by temporarily adding it to the context. Row variable unification for `forall<E>` polymorphism is permissive; full bidirectional type checking is not implemented.
 
 ### 7. De Bruijn indices and monomorphization
 
@@ -757,11 +757,11 @@ The proof that the two sides agree is a differential, not a unit test: `tests/te
 
 ### 9. LLM-oriented diagnostics
 
-Every diagnostic includes a description (what went wrong), rationale (which language rule), fix (corrected code), spec reference, and a stable code, an `E` code for an error and a `W` code for a warning; `vera errors` lists them. The compiler's output is designed to be fed directly back to the model as corrective context. See spec Chapter 0, Section 0.5 "Diagnostics as Instructions" for the philosophy.
+Every diagnostic includes a description (what went wrong), rationale (which language rule), fix (corrected code) and spec reference; every coded diagnostic has a stable code, an `E` code for an error and a `W` code for a warning, and `vera errors` lists them. An agent passes the compiler's output back to the model as corrective context. See spec Chapter 0, Section 0.5 "Diagnostics as Instructions" for the philosophy.
 
 ### 10. Stable error code taxonomy
 
-Every coded diagnostic has a unique code grouped by compiler phase (a few diagnostics still carry none, [#1490](https://github.com/aallan/vera/issues/1490)):
+Every coded diagnostic has a unique code grouped by compiler phase (a few diagnostics carry none):
 
 | Range | Phase | Source |
 |-------|-------|--------|
@@ -784,26 +784,26 @@ The `ERROR_CODES` dict in `errors.py` maps every code to a short description. Co
 
 ## Test Suite
 
-Testing spans a **pytest suite** of compiler-internals unit tests, a **conformance suite** (a program in `tests/conformance/` for every language feature, validated against the spec) and **example programs** (end-to-end demos); [TESTING.md](../TESTING.md#overview) counts them. The conformance suite is the definitive specification artifact; most programs target a single feature, though some (slot references, match, contracts) span several, and each serves as a minimal working example.
+Testing spans a **pytest suite** of compiler-internals unit tests, a **conformance suite** (programs in `tests/conformance/`, named by spec chapter and feature, validated against the spec) and **example programs** (end-to-end demos); [TESTING.md](../TESTING.md#overview) counts them. The conformance suite is the definitive specification artifact; most programs target a single feature, though some (slot references, match, contracts) span several, and each serves as a minimal working example.
 
 See **[TESTING.md](../TESTING.md)** for the comprehensive testing reference -- test file table, conformance suite details, compiler code coverage, language feature coverage, helper conventions, validation scripts, CI pipeline, and guidelines for adding tests.
 
 ## Current Limitations
 
-Honest inventory of what the compiler cannot do, and where each limitation is addressed in the roadmap.
+Inventory of what the compiler cannot do, and where each limitation is addressed in the roadmap.
 
 | Limitation | Why | Planned |
 |-----------|-----|---------|
-| **No effect row variable unification** | Subeffecting implemented; `forall<E>` row variables permissive (full row-variable unification deferred) | [#294](https://github.com/aallan/vera/issues/294) |
+| **No effect row variable unification** | Subeffecting implemented; `forall<E>` row variables permissive (full row-variable unification not implemented) | [#294](https://github.com/aallan/vera/issues/294) |
 | **No incremental compilation** | Full file processed from scratch each time | [#56](https://github.com/aallan/vera/issues/56) |
 | **No REPL** | No interactive evaluation; all code must be written to files | [#224](https://github.com/aallan/vera/issues/224) |
 | **No date/time, crypto, CSV** | Standard library limited to core types, strings, and arrays | [#233](https://github.com/aallan/vera/issues/233), [#235](https://github.com/aallan/vera/issues/235), [#236](https://github.com/aallan/vera/issues/236) |
 | **Http: GET/POST only** | No custom headers, no PUT/DELETE/PATCH, no status codes, no timeouts, no streaming, no cookies | [#351](https://github.com/aallan/vera/issues/351), [#352](https://github.com/aallan/vera/issues/352), [#353](https://github.com/aallan/vera/issues/353), [#355](https://github.com/aallan/vera/issues/355), [#356](https://github.com/aallan/vera/issues/356) |
 | **Inference: complete only** | No `embed` (vector embeddings), no streaming, no system prompt; `embed` blocked on [#373](https://github.com/aallan/vera/issues/373) (float array host-alloc infrastructure) | [#371](https://github.com/aallan/vera/issues/371) |
-| **No float array host-alloc** | Host functions cannot return `Array<Float64>`; `_alloc_result_ok_float_array` helper not yet implemented | [#373](https://github.com/aallan/vera/issues/373) |
+| **No float array host-alloc** | Host functions cannot return `Array<Float64>`; `_alloc_result_ok_float_array` helper not implemented | [#373](https://github.com/aallan/vera/issues/373) |
 | **Inference: no token/temperature controls** | `max_tokens` hardcoded to 1024 for Anthropic; no temperature override | [#370](https://github.com/aallan/vera/issues/370) |
-| **Inference: no user handlers** | `handle[Inference]` blocks not supported; host-backed only in this release | [#372](https://github.com/aallan/vera/issues/372) |
-| **Partial WASI support** | The experimental `--target wasi-p2` routes IO/clocks/random through standard component interfaces and `--world server` serves `wasi:http`, but the surface is IO + Random only — Http and every other host family are rejected under wasi-p2, and the default `wasm` target still uses ad-hoc `vera.*` host imports | [#853](https://github.com/aallan/vera/issues/853) |
+| **Inference: no user handlers** | `handle[Inference]` blocks not supported; host-backed only | [#372](https://github.com/aallan/vera/issues/372) |
+| **Partial WASI support** | The `--target wasi-p2` routes IO/clocks/random through standard component interfaces and `--world server` serves `wasi:http`, but the surface is IO + Random only — Http and every other host family are rejected under wasi-p2, and the default `wasm` target uses ad-hoc `vera.*` host imports | [#853](https://github.com/aallan/vera/issues/853) |
 | **No resource limits** | No built-in fuel, memory, or timeout controls for untrusted code | [#239](https://github.com/aallan/vera/issues/239) |
 | **Browser target: `IO.sleep` freezes the tab** | Busy-waits the main thread instead of yielding to the event loop; the JSPI-based suspend/resume fix needs no language change | [#609](https://github.com/aallan/vera/issues/609) |
 | **Browser target: ANSI escapes render as literal text** | No escape-sequence interpretation in `runtime.mjs`; a minimal ANSI-subset interpreter closes it without a language change | [#610](https://github.com/aallan/vera/issues/610) |
@@ -829,7 +829,7 @@ Every walker function carries a `# WALKER_COVERAGE:` checklist comment listing e
 - **Handled** — explicit `isinstance` branch in the walker body.
 - **Intentionally ignored** — default fall-through is correct (e.g. literals in a sub-expression-recursing walker: literals have no sub-exprs).
 - **Cannot occur** — structurally impossible (e.g. `OldExpr` in a body-only walker; `HoleExpr` post-typecheck).
-- **MISSING** — open bug, branch should exist but does not yet.  Filed as a separate issue.
+- **MISSING** — open bug, branch should exist but does not.  Filed as a separate issue.
 
 `scripts/check_walker_coverage.py` parses each walker's `isinstance(expr, ast.X)` calls AND its `# WALKER_COVERAGE:` checklist text, then verifies the union covers every `Expr` subclass declared in `vera/ast.py`.  Wired into pre-commit, so a new `Expr` subclass added to `ast.py` forces every walker to either handle it or explicitly document its disposition.
 
@@ -882,8 +882,8 @@ To add a new WASM type mapping, update `wasm_type()` in `wasm/helpers.py` and th
 | Package | Version | Purpose |
 |---------|---------|---------|
 | `lark` | ≥1.3.1 | LALR(1) parser generator. Chosen for its Python-native implementation, deterministic parsing, and built-in Transformer pattern. |
-| `z3-solver` | ≥4.15.5 | SMT solver for contract verification. Industry-standard solver supporting QF_LIA and Boolean logic. Note: does not ship `py.typed` — mypy override configured in `pyproject.toml`. |
-| `wasmtime` | ≥46.0.1 | WebAssembly runtime. Used for WAT→WASM compilation and execution via `vera compile` / `vera run`. Note: does not ship complete type stubs — mypy override configured in `pyproject.toml`. |
+| `z3-solver` | ≥4.15.5 | SMT solver for contract verification. Industry-standard solver supporting QF_LIA and Boolean logic. Does not ship `py.typed` — mypy override configured in `pyproject.toml`. |
+| `wasmtime` | ≥46.0.1 | WebAssembly runtime. Used for WAT→WASM compilation and execution via `vera compile` / `vera run`. Does not ship complete type stubs — mypy override configured in `pyproject.toml`. |
 
 ### Development
 

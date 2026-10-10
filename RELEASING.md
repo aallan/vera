@@ -113,7 +113,7 @@ The release-prep PR must:
    rate limited per IP when neither is, so export one before running it —
    so it is opt-in rather than part of the pre-commit hook: mid-cycle
    the two legitimately disagree, since a bug filed against an open PR's
-   branch has an issue before it has a row.  At release time they should
+   branch has an issue before it has a row.  At release time they must
    agree — that is the point at which the file is the published list.
 6. Pass the ordinary protected-branch CI and review process.
 
