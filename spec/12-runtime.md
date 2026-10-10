@@ -333,7 +333,7 @@ Multiple independent state types can coexist — each has its own cell stack and
 
 The WASM code always follows a `call $vera.contract_fail` with `unreachable`, causing a WASM trap. The host runtime catches the trap and converts it to an informative error using the stored violation message.
 
-The import is only emitted when the program contains runtime contract assertions (Tier 3 contracts that the verifier could not prove statically). Programs where all contracts are verified at compile time do not import `contract_fail`.
+The import is emitted when the program contains a runtime contract check, and code generation emits one for every non-trivial contract it can express, whatever the verifier's tier (Section 11.8): a contract the verifier proved statically is checked at run time as well. A program with no such check does not import `contract_fail`.
 
 ### 12.4.4 Markdown Operations
 
@@ -446,7 +446,7 @@ The `Random` effect provides three host-backed operations for non-deterministic 
 
 **Returns:** `i32` — `0` or `1`, each with probability ≈ 0.5.
 
-**Behaviour:** Both runtimes derive the bit from a uniform draw (`random.random() < 0.5` and `Math.random() < 0.5` respectively). No determinism / seeding API is offered; a seeding API remains future work.
+**Behaviour:** Both runtimes derive the bit from a uniform draw (`random.random() < 0.5` and `Math.random() < 0.5` respectively). No determinism / seeding API is offered.
 
 ### 12.4.6 Named Traps
 
@@ -611,7 +611,7 @@ WASM traps are unrecoverable runtime errors. The following conditions cause trap
 |-----------|-----------------|--------|------|
 | Integer division by zero | `i64.div_s`, `i64.rem_s` | `/` or `%` on `Int` or `Nat` | `divide_by_zero` |
 | Integer overflow (in `i64.div_s`) | `i64.div_s` | `Int.min_value / -1` | `overflow` |
-| Float-to-integer truncation of NaN, an infinity or a value past its range | `i64.trunc_f64_s`, etc. | `float_to_string` of a finite value of magnitude 2^63 or more ([#1482](https://github.com/aallan/vera/issues/1482)); every other conversion is checked before it truncates (Chapter 11, Section 11.8.5) | `float_conversion` |
+| Float-to-integer truncation of NaN, an infinity or a value past its range | `i64.trunc_f64_s`, etc. | `float_to_string` of a finite value of magnitude 2^63 or more; every other conversion is checked before it truncates (Chapter 11, Section 11.8.5) | `float_conversion` |
 | A failed runtime check | `unreachable`, after a `vera.contract_fail` or `vera.trap` call | A contract, arithmetic overflow, a `@Nat` narrowing or widening, `@Nat` subtraction, an `assert`, an array or `string_char_code` index, a `Float64` to `Int` conversion, heap exhaustion, an exception leaving an entry point (Chapter 11, Section 11.8.5) | The kind the call names (Sections 12.4.3, 12.4.6) |
 | An exception leaving an export no boundary wraps | `throw` | A module not compiled from Vera; every Vera entry point declaring `Exn<T>` has a boundary | `uncaught_exception` |
 | A runtime-internal limit | `unreachable`, with no call before it | GC shadow-stack overflow, a collector limit, a WASI host I/O failure | `unreachable` |
@@ -622,7 +622,7 @@ When a trap occurs, the wasmtime engine raises a `WasmtimeError` or `Trap` excep
 
 ### 12.7.2 Runtime Contract Violations
 
-Contracts that the verifier could not prove statically (Tier 3) are compiled as runtime assertions. A failed runtime precondition or postcondition reports the contract through `vera.contract_fail` and executes `unreachable`, causing a WASM trap.
+Every non-trivial contract that code generation can express is compiled as a runtime assertion, whatever the verifier's tier (Section 11.8). A failed runtime precondition or postcondition reports the contract through `vera.contract_fail` and executes `unreachable`, causing a WASM trap.
 
 For the contract insertion strategy, see Chapter 11, Section 11.8.
 
@@ -685,7 +685,7 @@ The browser runtime provides browser-appropriate implementations of IO operation
 |-----------|-------------------|------------------------------|
 | `IO.print` | Appends to internal buffer, flushed via `getStdout()` | Writes to stdout capture buffer |
 | `IO.read_line` | Reads from pre-queued input array, falls back to `prompt()` | Reads from `stdin` parameter or process stdin |
-| `IO.read_char` | Returns `Result.Err`, pending JSPI suspend/resume ([#609](https://github.com/aallan/vera/issues/609)) | Unix TTY: `tty.setcbreak()` then `sys.stdin.read(1)`, terminal restored in a `finally`. cbreak, not raw, so `ISIG` stays on and Ctrl-C still raises `SIGINT` (exit 130) instead of arriving as a byte; Ctrl-D (`\x04`) reaches the read as a literal in cbreak and is mapped to `Err("EOF")`. Windows TTY: `msvcrt.getwch()`. Redirected or piped stdin (either platform): `sys.stdin.read(1)`, where a `\x04` in the stream is an ordinary character and only an empty read is `Err("EOF")` |
+| `IO.read_char` | Returns `Result.Err`, since reading a key needs JSPI suspend/resume and the browser runtime does not implement it | Unix TTY: `tty.setcbreak()` then `sys.stdin.read(1)`, terminal restored in a `finally`. cbreak, not raw, so `ISIG` stays on and Ctrl-C still raises `SIGINT` (exit 130) instead of arriving as a byte; Ctrl-D (`\x04`) reaches the read as a literal in cbreak and is mapped to `Err("EOF")`. Windows TTY: `msvcrt.getwch()`. Redirected or piped stdin (either platform): `sys.stdin.read(1)`, where a `\x04` in the stream is an ordinary character and only an empty read is `Err("EOF")` |
 | `IO.read_file` | Returns `Result.Err("File I/O not available in browser")` | Reads from filesystem |
 | `IO.write_file` | Returns `Result.Err("File I/O not available in browser")` | Writes to filesystem |
 | `IO.args` | Returns configurable array (default empty) | Returns CLI arguments |
@@ -703,7 +703,7 @@ The rows above fall into three kinds, and the distinction matters when reading a
 
 - **Adaptations.** `IO.print`, `IO.read_line`, `IO.args`, `IO.exit`, `IO.get_env`, `IO.sleep`, `IO.time` and `IO.stderr` do the same job against a different substrate. The operation succeeds; only the mechanism differs. `async(Http.get/post(...))` is an adaptation of evaluation order rather than of mechanism — the values are identical, as the paragraph below records.
 - **Deliberate boundaries.** `IO.read_file` / `IO.write_file` (no filesystem), `<HttpServer>` (no accept loop), and `Inference.complete` / `DB.query` / `DB.execute` (the credential would be readable from page source and network traffic) return `Err` on every call **by definition of the browser target**, not pending a fix. Reach a filesystem, a database or a model provider through a server-side endpoint and call it with `Http`, which does run in the browser.
-- **Not yet implemented.** `IO.read_char` is the only row of this kind: the browser `Err` is a stub awaiting JSPI suspend/resume ([#609](https://github.com/aallan/vera/issues/609)), so unlike a boundary it is expected to become an `Ok` one day.
+- **Not implemented.** `IO.read_char` is the only row of this kind: reading a key needs JSPI suspend/resume, which the browser runtime does not implement, so its `Err` is a stub, and unlike a boundary's it is not part of the browser target's definition.
 
 Across the surface the two runtimes actually share — State, contracts, JSON, Markdown and the rest of the non-IO operations — results are identical. The boundary rows are outside that claim by construction, having no browser counterpart to agree with, and an `Http` call's outcome is host-specific for a milder reason: the browser issues it through synchronous `XMLHttpRequest`, so a JavaScript host without one returns an explanatory `Err` where the reference runtime performs the request.
 
