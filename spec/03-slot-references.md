@@ -117,7 +117,7 @@ Bindings in scope within the body:
 - `@Int.0` = second parameter (nearer, introduced second in parameter list)
 - `@Int.1` = first parameter (farther, introduced first)
 
-**Note**: Function parameters are ordered such that the **last** parameter is `@T.0` and the **first** parameter is `@T.{n-1}`. This matches De Bruijn convention: the most recently bound variable has index 0.
+Function parameters are ordered such that the **last** parameter is `@T.0` and the **first** parameter is `@T.{n-1}`. This matches De Bruijn convention: the most recently bound variable has index 0.
 
 **Convention**: Parameters are bound left-to-right. The leftmost parameter is bound first (outermost). The rightmost parameter is bound last (innermost). Therefore, in a function `fn(@Int, @Int, @String -> ...)`:
 - The rightmost `@Int` (second parameter) is `@Int.0`
