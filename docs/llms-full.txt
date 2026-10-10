@@ -2540,7 +2540,7 @@ Read `SKILL.md` for the full language reference. It covers syntax, slot referenc
 
 ### Conformance programs as reference
 
-The conformance suite in `tests/conformance/` contains small, self-contained programs — often one per language feature — that serve as minimal working examples (most are fully self-contained; the cross-module programs of Chapters 7–9 import companion `_lib`/module fixtures). Each positive program must pass its declared verification level (see `manifest.json` for mappings: `parse`, `check`, `verify`, or `run`); the negative fixtures (the entries with `expected_error` in `tests/conformance/manifest.json`) instead must *fail* with the E-code in their `expected_error` field, at the stage their `expected_error_stage` names — `check` by default, or `compile` for a diagnostic the checker accepts and codegen refuses. When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec.
+The conformance suite in `tests/conformance/` contains small, self-contained programs — at least one for every language feature — that serve as minimal working examples (most are fully self-contained; the cross-module programs of Chapters 7–9 import companion `_lib`/module fixtures). Each positive program must pass its declared verification level (see `manifest.json` for mappings: `parse`, `check`, `verify`, or `run`); the negative fixtures (the entries with `expected_error` in `tests/conformance/manifest.json`) instead must *fail* with the E-code in their `expected_error` field, at the stage their `expected_error_stage` names — `check` by default, or `compile` for a diagnostic the checker accepts and codegen refuses. When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec.
 
 ### Workflow
 
@@ -2649,7 +2649,7 @@ For machine-parseable errors, use the `--json` flag:
 
 ### Error codes
 
-Diagnostics carry stable codes, which `vera errors` lists; a few still carry none ([#1490](https://github.com/aallan/vera/issues/1490)). Common codes:
+Diagnostics carry stable codes, which `vera errors` lists; a few diagnostics carry none. Common codes:
 
 | Code | Meaning |
 |------|---------|
@@ -3162,9 +3162,9 @@ equality. An alias spelling of the same instance
 (`handle[State<MyAlias>]` with `type MyAlias = Int`) does not bound it
 either, though the checker does discharge that one: there the
 comparison under-prunes, leaving a row the program does not need,
-which still type-checks. That is the documented behaviour until
-[#1292](https://github.com/aallan/vera/issues/1292) keys the bound on
-the resolved instance. Propagation stops at the file boundary, by
+which still type-checks.
+[#1292](https://github.com/aallan/vera/issues/1292) tracks keying the
+bound on the resolved instance. Propagation stops at the file boundary, by
 design: module-qualified calls are not followed.
 
 Rows are rewritten for top-level functions only. A call inside a
@@ -3199,7 +3199,7 @@ tracked work.
 | Limitation | Issue |
 |-----------|-------|
 | Single-file model: module imports resolve from disk, relative to the analysed document's own path, not from open editor buffers — so unsaved edits to an imported module are invisible until saved. A document that names no local path resolves no imports and is analysed alone: an `untitled:` buffer or other non-`file:` URI, and a `file://host/…` URI naming another machine (carried opaquely). | [#724](https://github.com/aallan/vera/issues/724) |
-| Slot go-to-definition covers parameters only — references binding through `let`/`match` have no definition site to jump to yet. | [#181](https://github.com/aallan/vera/issues/181) |
+| Slot go-to-definition covers parameters only — references binding through `let`/`match` have no definition site to jump to. | [#181](https://github.com/aallan/vera/issues/181) |
 | `vera/addEffect` propagation stops at the file boundary, by design: the closure runs over unqualified call names, so a module-qualified call is not followed and a caller in another file is never rewritten. | — |
 
 ## Under the hood

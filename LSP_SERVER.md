@@ -386,9 +386,9 @@ equality. An alias spelling of the same instance
 (`handle[State<MyAlias>]` with `type MyAlias = Int`) does not bound it
 either, though the checker does discharge that one: there the
 comparison under-prunes, leaving a row the program does not need,
-which still type-checks. That is the documented behaviour until
-[#1292](https://github.com/aallan/vera/issues/1292) keys the bound on
-the resolved instance. Propagation stops at the file boundary, by
+which still type-checks.
+[#1292](https://github.com/aallan/vera/issues/1292) tracks keying the
+bound on the resolved instance. Propagation stops at the file boundary, by
 design: module-qualified calls are not followed.
 
 Rows are rewritten for top-level functions only. A call inside a
@@ -423,7 +423,7 @@ tracked work.
 | Limitation | Issue |
 |-----------|-------|
 | Single-file model: module imports resolve from disk, relative to the analysed document's own path, not from open editor buffers — so unsaved edits to an imported module are invisible until saved. A document that names no local path resolves no imports and is analysed alone: an `untitled:` buffer or other non-`file:` URI, and a `file://host/…` URI naming another machine (carried opaquely). | [#724](https://github.com/aallan/vera/issues/724) |
-| Slot go-to-definition covers parameters only — references binding through `let`/`match` have no definition site to jump to yet. | [#181](https://github.com/aallan/vera/issues/181) |
+| Slot go-to-definition covers parameters only — references binding through `let`/`match` have no definition site to jump to. | [#181](https://github.com/aallan/vera/issues/181) |
 | `vera/addEffect` propagation stops at the file boundary, by design: the closure runs over unqualified call names, so a module-qualified call is not followed and a caller in another file is never rewritten. | — |
 
 ## Under the hood
