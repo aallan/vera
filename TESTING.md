@@ -7,7 +7,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 <!-- render_status:begin status -->
 | Metric | Value |
 |--------|-------|
-| **Tests** | 31,617 collected from 249 test files, which hold 259,812 lines |
+| **Tests** | 31,654 collected from 249 test files, which hold 260,103 lines |
 | **Conformance programs** | 256 in `tests/conformance/manifest.json`: 0 at `parse`, 60 at `check`, 20 at `verify`, 176 at `run`; 48 of them negative fixtures (`expected_error`) |
 | **Example programs** | 43 in `examples/` |
 | **Corpus programs** | 306 `.vera` files under `examples/` and `tests/conformance/`, recursively |
@@ -161,9 +161,9 @@ One row per test file: its tests as a full collection counts them (the stress te
 | `test_codegen_where_helper_mangling_991.py` | 13 | 553 | #991: duplicate ``where``-helper names crash WAT assembly on the non-generic path (``duplicate func identifier``) — and pre-#978 a colliding grandchild was silently dropped, binding its call to a same-named top-level function. |
 | `test_codegen_zero_size_fields_1043.py` | 22 | 463 | Tests for #1043 — registered constructor layouts erase zero-size fields. |
 | `test_composite_postcondition_eq_912.py` | 16 | 492 | Regression tests for #912 — a composite (ADT / Option / Tuple) equality in ``ensures`` position must lower its RUNTIME check to STRUCTURAL equality, so a postcondition ``vera verify`` proves at Tier 1 does not spuriously TRAP at run. |
-| `test_conformance.py` | 1,280 | 154 | Conformance test suite — spec-anchored feature validation. |
+| `test_conformance.py` | 1,314 | 350 | Conformance test suite — spec-anchored feature validation. |
 | `test_construction_guards_1426.py` | 44 | 1,571 | Construction-position refinement guards (#1426). |
-| `test_constructor_field_target.py` | 8 | 243 | A constructor argument's instantiated field type is on the record. |
+| `test_constructor_field_target.py` | 8 | 243 | A constructor argument's instantiated field type is recorded as its target. |
 | `test_contract_predicate_degradation_922.py` | 9 | 250 | Regression tests for #922 — a non-Eq composite ``==`` / ``hash`` / ``show`` in a CONTRACT-PREDICATE position must degrade to a clean diagnostic (E613 for a non-derivable ``==``, E602 for an unsupported ``hash`` / ``show``), NEVER escape as an uncaught Python traceback at compile. |
 | `test_cross_namespace_ctor_1436.py` | 440 | 2,458 | #1436 — a constructor name is resolved in the namespace that uses it. |
 | `test_data_namespace_contention_1312.py` | 26 | 980 | #1312 / #1317 — the data-collision rails, asked about LAYOUTS. |
@@ -257,7 +257,7 @@ One row per test file: its tests as a full collection counts them (the stress te
 | `test_reconciliation.py` | 478 | 1,425 | The verifier's runtime-guard claims reconciled with the checks code generation emits (the audit's T2a): :mod:`vera.reconcile`, ``vera verify --reconcile`` and the corpus gate ``scripts/check_reconciliation.py``. |
 | `test_refinement_binder_convergence_1208.py` | 16 | 459 | Codegen's refinement guard and :mod:`vera.naming` share ONE derivation. |
 | `test_refinement_chain_convergence.py` | 63 | 398 | The two refinement-chain oracles answer the same question. |
-| `test_release.py` | 64 | 821 | Release-policy tests for ``scripts/release.py`` (#481). |
+| `test_release.py` | 67 | 914 | Release-policy tests for ``scripts/release.py`` (#481). |
 | `test_render_status.py` | 41 | 658 | scripts/render_status.py, which writes TESTING.md's generated status. |
 | `test_reserved_container_names_1547.py` | 61 | 217 | #1547 — the built-in container names are reserved (E158). |
 | `test_resolver.py` | 20 | 602 | Tests for vera.resolver — module resolution. |
@@ -308,7 +308,7 @@ One row per test file: its tests as a full collection counts them (the stress te
 | `test_verifier_where_helper_scope_991.py` | 5 | 235 | #991 (verifier facet): the verifier resolved a bare call to a ``where``-helper through the flat, last-wins ``env.functions`` lookup, so in a diamond shape — two sibling helpers each carrying a nested helper of the SAME name but a DIFFERENT postcondition — it assumed the WRONG helper's ``ensures`` at the call site and reported a false E500 against a correct program. |
 | `test_version.py` | 5 | 80 | `vera.__version__` is the version `pyproject.toml` states, read once. |
 | `test_walker_defensive_branches_597.py` | 34 | 855 | Synthetic-AST tests for the defensive `isinstance` branches added by #597 to compiler walker functions. |
-| `test_warning_severity_1513.py` | 80 | 1,219 | #1513 — a check-stage warning is one whose program compiles and runs. |
+| `test_warning_severity_1513.py` | 80 | 1,221 | #1513 — a check-stage warning is one whose program compiles and runs. |
 | `test_wasi_target.py` | 279 | 2,210 | Tests for the WASI Preview 2 component emitter (#237). |
 | `test_wasm.py` | 29 | 502 | Unit tests for vera.wasm — WASM translation layer. |
 | `test_wasm_coverage.py` | 226 | 3,987 | Tests for vera.wasm — Coverage gap tests. |

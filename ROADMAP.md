@@ -14,7 +14,7 @@ Ordering derives from the design principles ([DESIGN.md](DESIGN.md)): verificati
 
 [TESTING.md](TESTING.md#overview) counts the tests, the conformance programs and the examples.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs, plus the *limitations* the stages below retire.
 
-v0.3.0 is the sound base (Stage 29), reached through v0.2.1 to v0.2.8 (Stages 21 to 28).  The feature release follows it in Stage 30: the `Decision` effect ([#1467](https://github.com/aallan/vera/issues/1467)) and its blockers, [#351](https://github.com/aallan/vera/issues/351), [#352](https://github.com/aallan/vera/issues/352), [#372](https://github.com/aallan/vera/issues/372) and [#373](https://github.com/aallan/vera/issues/373).
+v0.3.0 is the sound base (Stage 29), reached through v0.2.2 to v0.2.8 (Stages 22 to 28).  The feature release follows it in Stage 30: the `Decision` effect ([#1467](https://github.com/aallan/vera/issues/1467)) and its blockers, [#351](https://github.com/aallan/vera/issues/351), [#352](https://github.com/aallan/vera/issues/352), [#372](https://github.com/aallan/vera/issues/372) and [#373](https://github.com/aallan/vera/issues/373).
 
 ## The bug queue
 
@@ -60,30 +60,11 @@ Exit criterion: each listed drift class has a generator or a gate, and a release
 | [#1611](https://github.com/aallan/vera/issues/1611) | Five test cells that can pass without exercising what they assert — each shown by a mutation or a direct run. |
 | [#1612](https://github.com/aallan/vera/issues/1612) | Stale comments and docstrings in tests and two compiler helpers, a test cache that never hits, and a mis-positioned constructor call. |
 
-## Stage 21 — Instruments and truth (v0.2.1)
-
-*The pipeline checks its own claims.*
-
-Small changes, none to the language's semantics.  The pipeline checks what it reports, CI and the hooks stop doing work twice, and the docs state only what holds.  The stage closes the pipe bugs ([milestone v0.2.1](https://github.com/aallan/vera/milestone/1)), or moves what remains of one to the release that removes its mechanism.
-
-Exit criterion: the reconciliation and the distrust tester run in CI, the conformance manifest pins every run-level entry's output, and no gate compares copies of a count.
-
-| Change | What |
-|---|---|
-| Obligations reconciled with guards | `vera verify` compiles in process and joins its obligation records with the checks code generation emits, on file, span and kind.  A `tier3` record with no check is an error, a check with no record a warning, and a CI gate runs the join over the corpus and the examples. |
-| `vera test --distrust`, nightly | The nightly lane runs the distrust corpus test with many trials per function (`VERA_DISTRUST_TRIALS`); the pull-request run uses five. |
-| [#1633](https://github.com/aallan/vera/issues/1633) | `vera test --distrust` attributes a trap through the reconciliation join instead of by exact span, so a check whose obligation record sits at another node is attributed rather than unattributed. |
-| Golden outputs | Every run-level conformance entry records its expected stdout and exit code, and `test_conformance` asserts them. |
-| Desugar once | A module's call by its own path becomes the bare call, so no later phase meets it. |
-| CI and the hooks | Path filters, a 94% coverage floor, lint without the conformance and example runs the test job already makes, eager-GC as a pytest run, a CHANGELOG gate that reads the pull request's base, and a `doc-examples` hook that fires only for what it gates. |
-| Instruments as burndown tools | A class instrument's file carries a marker.  The pull-request gate runs its reproducing, red-first and mutant-killing cells and a stratified sample of the rest; the nightly lane runs it in full, as does a pull request that touches the module deciding its class. |
-| Truth | TESTING.md stops claiming `hypothesis` is installed and drops its stale mutation figures; DESIGN.md and README.md say that the runtime backstop shares code generation with the program; the landing page and README.md stop quoting VeraBench's 100% until a re-run exists. |
-
 ## Stage 22 — The fast lane and single sources (v0.2.2)
 
 *A fix merges in under an hour.*
 
-The pull-request gate becomes a fast lane with the full matrix after merge, and the lists the docs copy by hand render from their sources.
+The pull-request gate becomes a fast lane with the full matrix after merge, and the lists the docs copy by hand render from their sources.  Four rows carry over from v0.2.1: the distrust tester's nightly trials, its attribution through the reconciliation ([#1633](https://github.com/aallan/vera/issues/1633)), the desugar of a module's call by its own path, and three CI changes.
 
 Exit criterion: a pull request's CI finishes in 20 minutes or less, and every hand-copied list renders from its source.
 
@@ -94,6 +75,11 @@ Exit criterion: a pull request's CI finishes in 20 minutes or less, and every ha
 | CHANGELOG fragments | Each pull request adds its own file under `changelog.d/`, and the release assembles the section ([#1529](https://github.com/aallan/vera/issues/1529)), so fix pull requests share no line. |
 | The scorecard | `scripts/render_status.py` also measures the Stage 29 scorecard, so every release pull request re-measures it without hand work. |
 | One pipeline driver | `tests/pipeline.py` runs check, verify, compile and run in process and returns structured results.  The per-file drivers and the CLI subprocesses move to it, leaving `test_cli.py` and a few corpus programs as the CLI smoke test, and tests that read WAT text read instead a guard-and-trap manifest that code generation emits beside it. |
+| `vera test --distrust`, nightly | The nightly lane runs the distrust corpus test with many trials per function (`VERA_DISTRUST_TRIALS`); the pull-request run uses five. |
+| [#1633](https://github.com/aallan/vera/issues/1633) | `vera test --distrust` attributes a trap through the reconciliation join instead of by exact span, so a check whose obligation record sits at another node is attributed rather than unattributed. |
+| Desugar once | A module's call by its own path becomes the bare call, so no later phase meets it. |
+| CI | Path filters, a 94% coverage floor, and a CHANGELOG gate that reads the pull request's base. |
+| [#1645](https://github.com/aallan/vera/issues/1645) | Each run-level conformance program whose run reaches less than its header claims gets a `main` that reaches every feature the header names, and a check holds every function such a program defines reachable from the one `vera run` executes. |
 
 ## Stage 23 — `Nat` and the lowering boundary (v0.2.3)
 
