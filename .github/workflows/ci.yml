@@ -157,14 +157,16 @@ jobs:
       # (one OS red, others green) legible at a glance.
       fail-fast: false
       matrix:
-        # Explicit macOS pins (not `macos-latest`) so we don't silently
-        # migrate when GitHub flips the `-latest` alias.  See README §Supported
-        # platforms for the policy.  `macos-15` (Sequoia) is currently
+        # Explicit macOS and Linux pins (not `macos-latest` or
+        # `ubuntu-latest`) so we don't silently migrate when GitHub flips a
+        # `-latest` alias.  See README §Supported platforms for the policy.
+        # `ubuntu-24.04` is the LTS release README names for x86_64, as
+        # `ubuntu-24.04-arm` is for aarch64.  `macos-15` (Sequoia) is currently
         # `macos-latest` (May 2026) and the most common single non-current
         # version among real users (~24% of macOS install base per
         # https://telemetrydeck.com/survey/apple/macOS/versions/); `macos-26`
         # (Tahoe) is current and dominant (~75%).
-        os: [ubuntu-latest, macos-15, macos-26, windows-latest]
+        os: [ubuntu-24.04, macos-15, macos-26, windows-latest]
         python-version: ["3.11", "3.12", "3.13"]
         advisory: [false]
         include:
@@ -212,41 +214,55 @@ jobs:
   # whatever the plan and the matrix did, and passes when the plan succeeded
   # and the matrix either ran with every cell passing or was skipped because
   # the change keeps the version; a failed plan, a failed or cancelled cell,
-  # or a matrix skipped on a change that raises the version fails it.
+  # or a matrix skipped on a change that raises the version fails it.  Where
+  # the matrix ran it reads every cell's conclusion from the run's job
+  # listing, not from the matrix's result alone, which reads `success` once
+  # one of two failed cells is re-run on its own and passes (#1659); the
+  # cells that failed are its `failed` output, for matrix-issue.
   matrix-gate:
     name: matrix-gate
     needs: [plan, test]
     if: always()
     permissions:
+      actions: read
       contents: read
     runs-on: ubuntu-latest
+    outputs:
+      failed: ${{ steps.gate.outputs.failed }}
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - name: Did the full matrix run wherever the version rises, and pass?
+        id: gate
         env:
           PLAN_RESULT: ${{ needs.plan.result }}
           RELEASE: ${{ needs.plan.outputs.release }}
           TEST_RESULT: ${{ needs.test.result }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: python3 scripts/matrix_gate.py
 
   # A failed cell on a push or nightly run, where no pull request's checks
   # show it, files one issue per workflow and branch, or comments on the
   # open one: nightly-stress.yml's pattern, deduplicated on the issue's
-  # title, labelled bug and ci.
+  # title, labelled bug and ci.  The failed cells are the ones matrix-gate
+  # read from the run's job listing, so one cell re-run on its own does not
+  # hide another still failed; the matrix's result files too, where the gate
+  # could not read the listing.
   matrix-issue:
     name: matrix-issue
-    needs: test
-    if: always() && needs.test.result == 'failure' && (github.event_name == 'push' || github.event_name == 'schedule')
+    needs: [test, matrix-gate]
+    if: always() && (github.event_name == 'push' || github.event_name == 'schedule') && (needs.test.result == 'failure' || needs.matrix-gate.outputs.failed != '')
     permissions:
-      actions: read
       issues: write
     runs-on: ubuntu-latest
     steps:
       - name: File or update the tracking issue
         uses: actions/github-script@v9
+        env:
+          FAILED: ${{ needs.matrix-gate.outputs.failed }}
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -255,20 +271,18 @@ jobs:
             const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
             const when = context.eventName === "schedule" ? "the nightly run" : "the push run";
 
-            // The cells that failed, from this run's jobs.  The run's page
-            // lists them too, which the body points to if the list cannot be
-            // read.
+            // The cells that failed, as matrix-gate read them from this
+            // run's job listing (its `failed` output, a JSON list).  The
+            // run's page lists them too, which the body points to where the
+            // gate could not read the listing.
             let cells = [];
             try {
-              const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
-                owner, repo, run_id: context.runId, per_page: 100,
-              });
-              cells = jobs
-                .filter((job) => job.conclusion === "failure" && job.name.startsWith("test ("))
-                .map((job) => job.name)
-                .sort();
+              const named = JSON.parse(process.env.FAILED || "[]");
+              if (Array.isArray(named)) {
+                cells = named.filter((name) => typeof name === "string").sort();
+              }
             } catch (e) {
-              core.warning(`cannot list the run's jobs: ${e.message}`);
+              core.warning(`cannot read matrix-gate's failed cells: ${e.message}`);
             }
             const body = [
               `The full test matrix failed in ${when} of ${context.workflow} on \`${branch}\`, at \`${context.sha.slice(0, 7)}\` (commit ${context.sha}).`,

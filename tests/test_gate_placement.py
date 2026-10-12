@@ -444,8 +444,10 @@ def _invokes(steps: list[dict[str, Any]], *command: str) -> list[dict[str, Any]]
 # class-instrument matrix can be decided by, and empty on every other event.
 # `needs.test.result` is the full matrix's result as a run in which every
 # gate holds sees it: `success` where the matrix runs, `skipped` where it
-# stands down.
-_WORKFLOW = {"github.workflow": "CI"}
+# stands down.  `needs.matrix-gate.outputs.failed` is the cells matrix-gate
+# read as failed from the run's job listing, and in such a run there are
+# none.
+_WORKFLOW = {"github.workflow": "CI", "needs.matrix-gate.outputs.failed": ""}
 _PULL_REQUEST = {
     **_WORKFLOW,
     "github.event_name": "pull_request",

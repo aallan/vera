@@ -17,10 +17,13 @@ on:
         required: true
         type: string
 
-# A version is immutable. Never cancel or overlap release attempts.
+# A version is immutable. Never cancel or overlap release attempts, and keep
+# every one that waits: without `queue: max` a group holds one pending run,
+# which a newer arrival replaces.
 concurrency:
   group: vera-release
   cancel-in-progress: false
+  queue: max
 
 # Every job opts into only the permissions it needs. In particular, the job
 # that executes the build has no OIDC token, and OIDC jobs execute no project
