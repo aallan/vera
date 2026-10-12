@@ -2,7 +2,7 @@
 """Write TESTING.md's generated status from the tree.
 
 A count lives in one place, and that place is generated.  This script
-measures the tree and writes three blocks into TESTING.md, each between a
+measures the tree and writes four blocks into TESTING.md, each between a
 pair of `render_status` markers, and nowhere else:
 
 - ``status``: the headline test totals (the tests collected, the test files
@@ -12,7 +12,12 @@ pair of `render_status` markers, and nowhere else:
 - ``test-files``: one row per test file, with its collected tests, its lines
   and the first paragraph of its module docstring;
 - ``skipped-tests``: every conformance-stage test the suite skips, asked of
-  ``tests/test_conformance.py`` itself rather than restated.
+  ``tests/test_conformance.py`` itself rather than restated;
+- ``scorecard``: the measures ROADMAP.md's Stage 29 sets v0.3.0's targets
+  on, each beside the audit's value at v0.2.0 (``scripts/scorecard.py``).
+  The tree's rows are measured on every run; ``--github`` measures the rows
+  that need the GitHub API or Codecov's, and ``--junit PATH`` the two that
+  need the junit file of one sample-mode run of the suite.
 
 The test counts are a collection's, not a run's.  ``pytest --collect-only
 -o addopts= --matrix=full`` counts the stress tests and every cell of the
@@ -21,10 +26,12 @@ the pull-request gate's weekly sample, and the counts are the same on every
 machine that runs it.  A run's passed, skipped and xfailed split depends on
 the platform and costs the whole suite, so the block does not state one.
 
-The release PR runs this script and commits what it writes.
-``scripts/check_doc_counts.py --release`` fails when a block is not what the
-script would write now (`stale_blocks`); between releases nothing reads the
-blocks, so a fix PR never has a count to update.
+The release PR runs this script, with ``--github`` and ``--junit PATH``, and
+commits what it writes.  ``scripts/check_doc_counts.py --release`` fails when
+a block is not what the script would write now (`stale_blocks`), save that
+the scorecard's network and junit rows are not measured again: each must be
+present and state the window it was measured over.  Between releases
+nothing reads the blocks, so a fix PR never has a count to update.
 """
 
 from __future__ import annotations
@@ -37,14 +44,29 @@ import json
 import re
 import subprocess
 import sys
-from collections.abc import Callable, Mapping
+import tomllib
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from typing import Any, NamedTuple
 
 ROOT = Path(__file__).resolve().parent.parent
 DOCUMENT = "TESTING.md"
-BLOCKS = ("status", "test-files", "skipped-tests")
+BLOCKS = ("status", "test-files", "skipped-tests", "scorecard")
+
+
+def _load_scorecard() -> ModuleType:
+    path = Path(__file__).with_name("scorecard.py")
+    spec = importlib.util.spec_from_file_location("scorecard", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+#: The scorecard's measures, rows and freshness rule (scripts/scorecard.py).
+SC = _load_scorecard()
 
 # What the collection is asked for: every test, quietly.  `-o addopts=`
 # drops pyproject's `-m 'not stress'`, and `--matrix=full` keeps every cell
@@ -105,6 +127,8 @@ class Tree(NamedTuple):
     matrix_cells: dict[str, int]
     gate_scripts: int
     skips: list[Skip]
+    version: str
+    scorecard: dict[str, tuple[str, str]]
 
 
 # ---------------------------------------------------------------------------
@@ -151,10 +175,12 @@ def _pytest_command(root: Path) -> list[str]:
 
 
 def collect(
-    root: Path, *, run: Callable[..., Any] = subprocess.run
+    root: Path, *, run: Callable[..., Any] = subprocess.run,
+    args: Sequence[str] = COLLECT_ARGS,
 ) -> Collection | str:
-    """The collection of every test under `root`, or why it failed."""
-    command = [*_pytest_command(root), *COLLECT_ARGS]
+    """The collection of every test under `root`, or why it failed; `args`
+    asks for another collection, such as the pull-request gate's."""
+    command = [*_pytest_command(root), *args]
     try:
         result = run(
             command,
@@ -339,22 +365,52 @@ def _ci(ci_text: str) -> tuple[int, dict[str, int]]:
     return len(jobs), cells
 
 
+def gate_tests(root: Path) -> int | str:
+    """The tests the pull-request gate collects, or why the collection
+    failed: the scorecard's `gate_tests` row."""
+    collection = collect(root, args=SC.GATE_COLLECT_ARGS)
+    return collection if isinstance(collection, str) else collection.total
+
+
+def measure_scorecard(root: Path) -> dict[str, tuple[str, str]] | str:
+    """The scorecard's tree rows, or why the tree could not give them."""
+    values: dict[str, tuple[str, str]] | str = SC.tree_values(root, gate_tests=gate_tests)
+    return values
+
+
+def _version(root: Path) -> str | None:
+    try:
+        version = tomllib.loads(
+            (root / "pyproject.toml").read_text(encoding="utf-8")
+        )["project"]["version"]
+    except (OSError, tomllib.TOMLDecodeError, KeyError, TypeError):
+        return None
+    return str(version)
+
+
 def measure(
     root: Path,
     *,
     collect: Callable[[Path], Collection | str] = collect,
     registry: Callable[[Path], tuple[int, int]] = registry_counts,
     skips: Callable[[Path], list[Skip]] = conformance_skips,
+    scorecard: Callable[[Path], dict[str, tuple[str, str]] | str] = measure_scorecard,
 ) -> Tree | str:
     """Measure the tree under `root`, or say why it could not be measured.
 
-    The collection, the registries and the conformance skips are
-    parameters, so a test can measure a synthetic tree without a pytest
-    subprocess or a compiler.
+    The collection, the registries, the conformance skips and the
+    scorecard's tree rows are parameters, so a test can measure a synthetic
+    tree without a pytest subprocess or a compiler.
     """
     collection = collect(root)
     if isinstance(collection, str):
         return collection
+    version = _version(root)
+    if version is None:
+        return "pyproject.toml has no readable [project].version"
+    card = scorecard(root)
+    if isinstance(card, str):
+        return card
     tests = root / "tests"
     names = set(collection.per_file) | {p.name for p in tests.glob("test_*.py")}
     test_files: dict[str, tuple[int, str]] = {}
@@ -387,6 +443,8 @@ def measure(
         matrix_cells=matrix_cells,
         gate_scripts=len(list((root / "scripts").glob("check_*.py"))),
         skips=skips(root),
+        version=version,
+        scorecard=card,
     )
 
 
@@ -469,12 +527,18 @@ def _skipped_tests(tree: Tree) -> str:
     return "\n".join([*out, ""])
 
 
-def render(tree: Tree) -> dict[str, str]:
-    """Each block's text, as it belongs between its markers."""
+def render(
+    tree: Tree, measured: Mapping[str, tuple[str, str]] | None = None
+) -> dict[str, str]:
+    """Each block's text, as it belongs between its markers.  `measured`
+    holds the scorecard's network and junit rows a run measured
+    (`SC.github_values`, `SC.junit_values`); a row it lacks says it was not
+    measured."""
     return {
         "status": _status(tree),
         "test-files": _test_files(tree),
         "skipped-tests": _skipped_tests(tree),
+        "scorecard": SC.render(SC.rows(tree.scorecard, measured or {}), tree.version),
     }
 
 
@@ -542,6 +606,15 @@ def stale_blocks(
         return [f"{DOCUMENT}: the tree could not be measured: {tree}"]
     errors: list[str] = []
     for name, now in render(tree).items():
+        if name == "scorecard":
+            # The tree's rows are measured again; a network or junit row
+            # must state its window and is not (scripts/scorecard.py).
+            errors += [
+                f"{DOCUMENT}: {error}" for error in SC.stale(
+                    current[name], SC.rows(tree.scorecard, {}), tree.version,
+                )
+            ]
+            continue
         if current[name] == now:
             continue
         pairs = itertools.zip_longest(
@@ -557,11 +630,42 @@ def stale_blocks(
     return errors
 
 
+def _parse_args(argv: list[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--github", action="store_true",
+        help=(
+            "also measure the scorecard's rows that need the network: the open"
+            " bugs, the pull-request CI times and the fix pull requests from the"
+            " GitHub API (GH_TOKEN or GITHUB_TOKEN is sent when set), and the"
+            " post-merge statement coverage from Codecov"
+        ),
+    )
+    parser.add_argument(
+        "--junit", metavar="PATH", type=Path,
+        help=(
+            "also measure the scorecard's worker-seconds and subprocess share from"
+            " PATH, the junit file of one sample-mode run of the suite: `python -m"
+            " pytest -n auto -p tests.subprocess_census --junitxml=PATH`"
+        ),
+    )
+    return parser.parse_args(argv)
+
+
 def main(argv: list[str] | None = None) -> int:
-    argparse.ArgumentParser(description=__doc__).parse_args(argv)
+    args = _parse_args(argv)
     # `vera.introspect` and the conformance tests import `vera`: from this
     # checkout, whatever editable install the interpreter would find first.
     sys.path.insert(0, str(ROOT))
+    measured: dict[str, tuple[str, str]] = {}
+    try:
+        if args.junit is not None:
+            measured.update(SC.junit_values(args.junit))
+        if args.github:
+            measured.update(SC.github_values())
+    except SC.MeasureError as exc:
+        print(f"ERROR: the scorecard: {exc}", file=sys.stderr)
+        return 1
     tree = measure(ROOT)
     if isinstance(tree, str):
         print(f"ERROR: {tree}", file=sys.stderr)
@@ -569,7 +673,7 @@ def main(argv: list[str] | None = None) -> int:
     path = ROOT / DOCUMENT
     text = path.read_text(encoding="utf-8")
     try:
-        new = splice(text, render(tree))
+        new = splice(text, render(tree, measured))
     except ValueError as exc:
         print(f"ERROR: {DOCUMENT}: {exc}", file=sys.stderr)
         return 1

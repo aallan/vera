@@ -1,0 +1,4714 @@
+{
+ "https://api.github.com/repos/aallan/vera/actions/runs/37934923293/jobs?per_page=100&page=1": {
+  "jobs": [
+   {
+    "completed_at": "2026-10-09T13:12:13Z",
+    "started_at": "2026-10-09T13:11:42Z"
+   },
+   {
+    "completed_at": "2026-10-09T14:04:16Z",
+    "started_at": "2026-10-09T13:32:31Z"
+   },
+   {
+    "completed_at": "2026-10-09T13:12:42Z",
+    "started_at": "2026-10-09T13:11:42Z"
+   },
+   {
+    "completed_at": "2026-10-09T13:34:19Z",
+    "started_at": "2026-10-09T13:12:25Z"
+   },
+   {
+    "completed_at": "2026-10-09T13:55:10Z",
+    "started_at": "2026-10-09T13:33:40Z"
+   },
+   {
+    "completed_at": "2026-10-09T14:01:11Z",
+    "started_at": "2026-10-09T13:36:59Z"
+   },
+   {
+    "completed_at": "2026-10-09T13:12:00Z",
+    "started_at": "2026-10-09T13:11:43Z"
+   },
+   {
+    "completed_at": "2026-10-09T14:02:00Z",
+    "started_at": "2026-10-09T13:37:36Z"
+   },
+   {
+    "completed_at": "2026-10-09T13:17:17Z",
+    "started_at": "2026-10-09T13:11:46Z"
+   },
+   {
+    "completed_at": "2026-10-09T13:33:59Z",
+    "started_at": "2026-10-09T13:12:15Z"
+   },
+   {
+    "completed_at": "2026-10-09T14:13:34Z",
+    "started_at": "2026-10-09T13:56:51Z"
+   },
+   {
+    "completed_at": "2026-10-09T13:12:23Z",
+    "started_at": "2026-10-09T13:12:02Z"
+   },
+   {
+    "completed_at": "2026-10-09T13:27:28Z",
+    "started_at": "2026-10-09T13:11:55Z"
+   },
+   {
+    "completed_at": "2026-10-09T13:35:53Z",
+    "started_at": "2026-10-09T13:12:44Z"
+   },
+   {
+    "completed_at": "2026-10-09T13:13:09Z",
+    "started_at": "2026-10-09T13:12:58Z"
+   },
+   {
+    "completed_at": "2026-10-09T13:27:10Z",
+    "started_at": "2026-10-09T13:15:21Z"
+   },
+   {
+    "completed_at": "2026-10-09T13:13:35Z",
+    "started_at": "2026-10-09T13:13:10Z"
+   },
+   {
+    "completed_at": "2026-10-09T13:45:51Z",
+    "started_at": "2026-10-09T13:13:36Z"
+   },
+   {
+    "completed_at": "2026-10-09T14:20:24Z",
+    "started_at": "2026-10-09T13:55:18Z"
+   },
+   {
+    "completed_at": "2026-10-09T13:38:19Z",
+    "started_at": "2026-10-09T13:20:43Z"
+   },
+   {
+    "completed_at": "2026-10-09T13:35:57Z",
+    "started_at": "2026-10-09T13:17:19Z"
+   },
+   {
+    "completed_at": "2026-10-09T13:27:06Z",
+    "started_at": "2026-10-09T13:26:43Z"
+   }
+  ],
+  "total_count": 22
+ },
+ "https://api.github.com/repos/aallan/vera/actions/runs/37947122099/jobs?per_page=100&page=1": {
+  "jobs": [
+   {
+    "completed_at": "2026-10-09T14:52:08Z",
+    "started_at": "2026-10-09T14:51:40Z"
+   },
+   {
+    "completed_at": "2026-10-09T14:52:00Z",
+    "started_at": "2026-10-09T14:51:33Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:02:01Z",
+    "started_at": "2026-10-09T15:00:52Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:05:42Z",
+    "started_at": "2026-10-09T15:05:31Z"
+   },
+   {
+    "completed_at": "2026-10-09T14:55:27Z",
+    "started_at": "2026-10-09T14:55:24Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:05:30Z",
+    "started_at": "2026-10-09T15:01:43Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:07:11Z",
+    "started_at": "2026-10-09T15:05:54Z"
+   },
+   {
+    "completed_at": "2026-10-09T14:55:51Z",
+    "started_at": "2026-10-09T14:55:28Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:07:46Z",
+    "started_at": "2026-10-09T15:07:16Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:07:32Z",
+    "started_at": "2026-10-09T15:07:13Z"
+   },
+   {
+    "completed_at": "2026-10-09T14:51:27Z",
+    "started_at": "2026-10-09T14:51:27Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:31:43Z",
+    "started_at": "2026-10-09T15:06:18Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:38:24Z",
+    "started_at": "2026-10-09T15:05:21Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:31:54Z",
+    "started_at": "2026-10-09T15:07:16Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:30:54Z",
+    "started_at": "2026-10-09T15:07:47Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:58:11Z",
+    "started_at": "2026-10-09T15:31:52Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:35:55Z",
+    "started_at": "2026-10-09T15:07:34Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:37:06Z",
+    "started_at": "2026-10-09T15:15:28Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:36:38Z",
+    "started_at": "2026-10-09T15:05:25Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:36:02Z",
+    "started_at": "2026-10-09T15:09:05Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:35:25Z",
+    "started_at": "2026-10-09T15:07:45Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:58:34Z",
+    "started_at": "2026-10-09T15:32:59Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:34:35Z",
+    "started_at": "2026-10-09T15:05:44Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:21:04Z",
+    "started_at": "2026-10-09T15:05:07Z"
+   }
+  ],
+  "total_count": 24
+ },
+ "https://api.github.com/repos/aallan/vera/actions/runs/37949163415/jobs?per_page=100&page=1": {
+  "jobs": [
+   {
+    "completed_at": "2026-10-09T15:25:19Z",
+    "started_at": "2026-10-09T15:24:55Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:08:15Z",
+    "started_at": "2026-10-09T15:07:48Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:15:55Z",
+    "started_at": "2026-10-09T15:14:39Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:44:30Z",
+    "started_at": "2026-10-09T15:25:44Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:34:18Z",
+    "started_at": "2026-10-09T15:33:50Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:15:38Z",
+    "started_at": "2026-10-09T15:15:23Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:24:52Z",
+    "started_at": "2026-10-09T15:24:28Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:38:51Z",
+    "started_at": "2026-10-09T15:28:55Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:36:13Z",
+    "started_at": "2026-10-09T15:09:04Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:48:15Z",
+    "started_at": "2026-10-09T15:21:06Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:26:02Z",
+    "started_at": "2026-10-09T15:25:44Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:36:34Z",
+    "started_at": "2026-10-09T15:30:56Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:47:14Z",
+    "started_at": "2026-10-09T15:15:29Z"
+   },
+   {
+    "completed_at": "2026-10-09T16:03:23Z",
+    "started_at": "2026-10-09T15:37:12Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:37:46Z",
+    "started_at": "2026-10-09T15:15:10Z"
+   },
+   {
+    "completed_at": "2026-10-09T16:05:57Z",
+    "started_at": "2026-10-09T15:44:37Z"
+   },
+   {
+    "completed_at": "2026-10-09T16:02:27Z",
+    "started_at": "2026-10-09T15:31:56Z"
+   },
+   {
+    "completed_at": "2026-10-09T16:18:31Z",
+    "started_at": "2026-10-09T16:00:21Z"
+   },
+   {
+    "completed_at": "2026-10-09T16:27:08Z",
+    "started_at": "2026-10-09T15:58:43Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:39:26Z",
+    "started_at": "2026-10-09T15:15:31Z"
+   },
+   {
+    "completed_at": "2026-10-09T16:00:12Z",
+    "started_at": "2026-10-09T15:36:09Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:24:26Z",
+    "started_at": "2026-10-09T15:08:25Z"
+   }
+  ],
+  "total_count": 22
+ },
+ "https://api.github.com/repos/aallan/vera/actions/runs/37952632547/jobs?per_page=100&page=1": {
+  "jobs": [
+   {
+    "completed_at": "2026-10-09T15:46:48Z",
+    "started_at": "2026-10-09T15:34:20Z"
+   },
+   {
+    "completed_at": "2026-10-09T16:21:00Z",
+    "started_at": "2026-10-09T15:58:17Z"
+   },
+   {
+    "completed_at": "2026-10-09T16:28:25Z",
+    "started_at": "2026-10-09T16:03:33Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:35:07Z",
+    "started_at": "2026-10-09T15:34:37Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:36:09Z",
+    "started_at": "2026-10-09T15:35:57Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:35:29Z",
+    "started_at": "2026-10-09T15:35:09Z"
+   },
+   {
+    "completed_at": "2026-10-09T16:41:36Z",
+    "started_at": "2026-10-09T16:16:32Z"
+   },
+   {
+    "completed_at": "2026-10-09T16:01:17Z",
+    "started_at": "2026-10-09T15:36:14Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:57:46Z",
+    "started_at": "2026-10-09T15:35:27Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:58:22Z",
+    "started_at": "2026-10-09T15:37:00Z"
+   },
+   {
+    "completed_at": "2026-10-09T16:09:11Z",
+    "started_at": "2026-10-09T15:36:40Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:37:10Z",
+    "started_at": "2026-10-09T15:36:55Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:41:39Z",
+    "started_at": "2026-10-09T15:36:10Z"
+   },
+   {
+    "completed_at": "2026-10-09T16:44:17Z",
+    "started_at": "2026-10-09T16:21:06Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:36:53Z",
+    "started_at": "2026-10-09T15:35:20Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:36:58Z",
+    "started_at": "2026-10-09T15:36:36Z"
+   },
+   {
+    "completed_at": "2026-10-09T16:44:13Z",
+    "started_at": "2026-10-09T16:18:37Z"
+   },
+   {
+    "completed_at": "2026-10-09T16:51:15Z",
+    "started_at": "2026-10-09T16:27:15Z"
+   },
+   {
+    "completed_at": "2026-10-09T16:05:05Z",
+    "started_at": "2026-10-09T15:37:48Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:51:42Z",
+    "started_at": "2026-10-09T15:35:33Z"
+   },
+   {
+    "completed_at": "2026-10-09T15:38:44Z",
+    "started_at": "2026-10-09T15:38:26Z"
+   },
+   {
+    "completed_at": "2026-10-09T16:07:20Z",
+    "started_at": "2026-10-09T15:37:13Z"
+   }
+  ],
+  "total_count": 22
+ },
+ "https://api.github.com/repos/aallan/vera/actions/runs/37965548479/jobs?per_page=100&page=1": {
+  "jobs": [
+   {
+    "completed_at": "2026-10-09T17:20:34Z",
+    "started_at": "2026-10-09T17:20:23Z"
+   },
+   {
+    "completed_at": "2026-10-09T17:20:42Z",
+    "started_at": "2026-10-09T17:20:23Z"
+   },
+   {
+    "completed_at": "2026-10-09T17:20:46Z",
+    "started_at": "2026-10-09T17:20:23Z"
+   },
+   {
+    "completed_at": "2026-10-09T17:26:04Z",
+    "started_at": "2026-10-09T17:20:23Z"
+   },
+   {
+    "completed_at": "2026-10-09T17:21:54Z",
+    "started_at": "2026-10-09T17:20:23Z"
+   },
+   {
+    "completed_at": "2026-10-09T17:21:11Z",
+    "started_at": "2026-10-09T17:20:44Z"
+   },
+   {
+    "completed_at": "2026-10-09T17:20:52Z",
+    "started_at": "2026-10-09T17:20:48Z"
+   },
+   {
+    "completed_at": "2026-10-09T17:21:03Z",
+    "started_at": "2026-10-09T17:20:36Z"
+   },
+   {
+    "completed_at": "2026-10-09T17:22:21Z",
+    "started_at": "2026-10-09T17:20:54Z"
+   },
+   {
+    "completed_at": "2026-10-09T17:20:54Z",
+    "started_at": "2026-10-09T17:20:23Z"
+   },
+   {
+    "completed_at": "2026-10-09T17:20:21Z",
+    "started_at": "2026-10-09T17:20:21Z"
+   },
+   {
+    "completed_at": "2026-10-09T17:46:41Z",
+    "started_at": "2026-10-09T17:21:19Z"
+   },
+   {
+    "completed_at": "2026-10-09T17:48:57Z",
+    "started_at": "2026-10-09T17:21:30Z"
+   },
+   {
+    "completed_at": "2026-10-09T17:50:35Z",
+    "started_at": "2026-10-09T17:22:29Z"
+   },
+   {
+    "completed_at": "2026-10-09T17:41:57Z",
+    "started_at": "2026-10-09T17:22:27Z"
+   },
+   {
+    "completed_at": "2026-10-09T17:44:20Z",
+    "started_at": "2026-10-09T17:21:12Z"
+   },
+   {
+    "completed_at": "2026-10-09T17:52:24Z",
+    "started_at": "2026-10-09T17:20:56Z"
+   },
+   {
+    "completed_at": "2026-10-09T17:43:17Z",
+    "started_at": "2026-10-09T17:22:28Z"
+   },
+   {
+    "completed_at": "2026-10-09T17:43:29Z",
+    "started_at": "2026-10-09T17:21:56Z"
+   },
+   {
+    "completed_at": "2026-10-09T18:08:39Z",
+    "started_at": "2026-10-09T17:45:00Z"
+   },
+   {
+    "completed_at": "2026-10-09T17:48:12Z",
+    "started_at": "2026-10-09T17:22:24Z"
+   },
+   {
+    "completed_at": "2026-10-09T17:45:14Z",
+    "started_at": "2026-10-09T17:22:04Z"
+   },
+   {
+    "completed_at": "2026-10-09T17:38:09Z",
+    "started_at": "2026-10-09T17:21:15Z"
+   },
+   {
+    "completed_at": "2026-10-09T17:52:39Z",
+    "started_at": "2026-10-09T17:22:05Z"
+   }
+  ],
+  "total_count": 24
+ },
+ "https://api.github.com/repos/aallan/vera/actions/runs/37968377357/jobs?per_page=100&page=1": {
+  "jobs": [
+   {
+    "completed_at": "2026-10-09T17:46:02Z",
+    "started_at": "2026-10-09T17:45:37Z"
+   },
+   {
+    "completed_at": "2026-10-09T17:47:13Z",
+    "started_at": "2026-10-09T17:45:38Z"
+   },
+   {
+    "completed_at": "2026-10-09T17:51:47Z",
+    "started_at": "2026-10-09T17:45:38Z"
+   },
+   {
+    "completed_at": "2026-10-09T17:45:48Z",
+    "started_at": "2026-10-09T17:45:37Z"
+   },
+   {
+    "completed_at": "2026-10-09T17:45:55Z",
+    "started_at": "2026-10-09T17:45:38Z"
+   },
+   {
+    "completed_at": "2026-10-09T17:46:04Z",
+    "started_at": "2026-10-09T17:45:42Z"
+   },
+   {
+    "completed_at": "2026-10-09T17:45:59Z",
+    "started_at": "2026-10-09T17:45:38Z"
+   },
+   {
+    "completed_at": "2026-10-09T17:46:21Z",
+    "started_at": "2026-10-09T17:45:51Z"
+   },
+   {
+    "completed_at": "2026-10-09T17:46:06Z",
+    "started_at": "2026-10-09T17:45:57Z"
+   },
+   {
+    "completed_at": "2026-10-09T17:47:26Z",
+    "started_at": "2026-10-09T17:46:01Z"
+   },
+   {
+    "completed_at": "2026-10-09T17:45:35Z",
+    "started_at": "2026-10-09T17:45:36Z"
+   },
+   {
+    "completed_at": "2026-10-09T18:07:25Z",
+    "started_at": "2026-10-09T17:46:08Z"
+   },
+   {
+    "completed_at": "2026-10-09T18:11:51Z",
+    "started_at": "2026-10-09T17:48:19Z"
+   },
+   {
+    "completed_at": "2026-10-09T18:13:37Z",
+    "started_at": "2026-10-09T17:50:42Z"
+   },
+   {
+    "completed_at": "2026-10-09T18:17:34Z",
+    "started_at": "2026-10-09T17:46:08Z"
+   },
+   {
+    "completed_at": "2026-10-09T18:02:11Z",
+    "started_at": "2026-10-09T17:46:25Z"
+   },
+   {
+    "completed_at": "2026-10-09T18:59:01Z",
+    "started_at": "2026-10-09T18:34:57Z"
+   },
+   {
+    "completed_at": "2026-10-09T18:07:29Z",
+    "started_at": "2026-10-09T17:46:09Z"
+   },
+   {
+    "completed_at": "2026-10-09T18:34:49Z",
+    "started_at": "2026-10-09T18:11:59Z"
+   },
+   {
+    "completed_at": "2026-10-09T18:38:22Z",
+    "started_at": "2026-10-09T18:13:45Z"
+   },
+   {
+    "completed_at": "2026-10-09T18:36:22Z",
+    "started_at": "2026-10-09T18:12:07Z"
+   },
+   {
+    "completed_at": "2026-10-09T18:18:59Z",
+    "started_at": "2026-10-09T17:49:36Z"
+   },
+   {
+    "completed_at": "2026-10-09T18:14:03Z",
+    "started_at": "2026-10-09T17:47:28Z"
+   },
+   {
+    "completed_at": "2026-10-09T18:05:30Z",
+    "started_at": "2026-10-09T17:47:14Z"
+   }
+  ],
+  "total_count": 24
+ },
+ "https://api.github.com/repos/aallan/vera/actions/runs/37976839777/jobs?per_page=100&page=1": {
+  "jobs": [
+   {
+    "completed_at": "2026-10-09T19:07:15Z",
+    "started_at": "2026-10-09T19:00:51Z"
+   },
+   {
+    "completed_at": "2026-10-09T18:58:09Z",
+    "started_at": "2026-10-09T18:57:59Z"
+   },
+   {
+    "completed_at": "2026-10-09T18:58:46Z",
+    "started_at": "2026-10-09T18:58:17Z"
+   },
+   {
+    "completed_at": "2026-10-09T18:58:11Z",
+    "started_at": "2026-10-09T18:58:08Z"
+   },
+   {
+    "completed_at": "2026-10-09T18:59:12Z",
+    "started_at": "2026-10-09T18:58:49Z"
+   },
+   {
+    "completed_at": "2026-10-09T18:58:29Z",
+    "started_at": "2026-10-09T18:58:11Z"
+   },
+   {
+    "completed_at": "2026-10-09T18:59:54Z",
+    "started_at": "2026-10-09T18:58:29Z"
+   },
+   {
+    "completed_at": "2026-10-09T19:00:49Z",
+    "started_at": "2026-10-09T18:59:15Z"
+   },
+   {
+    "completed_at": "2026-10-09T18:59:48Z",
+    "started_at": "2026-10-09T18:59:23Z"
+   },
+   {
+    "completed_at": "2026-10-09T19:02:22Z",
+    "started_at": "2026-10-09T19:02:06Z"
+   },
+   {
+    "completed_at": "2026-10-09T18:57:07Z",
+    "started_at": "2026-10-09T18:57:08Z"
+   },
+   {
+    "completed_at": "2026-10-09T19:26:40Z",
+    "started_at": "2026-10-09T19:07:04Z"
+   },
+   {
+    "completed_at": "2026-10-09T19:20:54Z",
+    "started_at": "2026-10-09T19:02:24Z"
+   },
+   {
+    "completed_at": "2026-10-09T19:30:46Z",
+    "started_at": "2026-10-09T19:07:21Z"
+   },
+   {
+    "completed_at": "2026-10-09T19:50:45Z",
+    "started_at": "2026-10-09T19:26:46Z"
+   },
+   {
+    "completed_at": "2026-10-09T19:54:33Z",
+    "started_at": "2026-10-09T19:29:45Z"
+   },
+   {
+    "completed_at": "2026-10-09T19:22:44Z",
+    "started_at": "2026-10-09T19:07:22Z"
+   },
+   {
+    "completed_at": "2026-10-09T19:22:38Z",
+    "started_at": "2026-10-09T18:59:50Z"
+   },
+   {
+    "completed_at": "2026-10-09T19:16:11Z",
+    "started_at": "2026-10-09T18:59:50Z"
+   },
+   {
+    "completed_at": "2026-10-09T19:52:12Z",
+    "started_at": "2026-10-09T19:28:43Z"
+   },
+   {
+    "completed_at": "2026-10-09T19:30:26Z",
+    "started_at": "2026-10-09T18:59:03Z"
+   },
+   {
+    "completed_at": "2026-10-09T19:31:17Z",
+    "started_at": "2026-10-09T19:02:44Z"
+   },
+   {
+    "completed_at": "2026-10-09T19:31:10Z",
+    "started_at": "2026-10-09T19:02:43Z"
+   },
+   {
+    "completed_at": "2026-10-09T19:31:02Z",
+    "started_at": "2026-10-09T18:58:28Z"
+   }
+  ],
+  "total_count": 24
+ },
+ "https://api.github.com/repos/aallan/vera/actions/runs/37983730399/jobs?per_page=100&page=1": {
+  "jobs": [
+   {
+    "completed_at": "2026-10-09T20:02:26Z",
+    "started_at": "2026-10-09T19:58:48Z"
+   },
+   {
+    "completed_at": "2026-10-09T20:00:24Z",
+    "started_at": "2026-10-09T19:59:59Z"
+   },
+   {
+    "completed_at": "2026-10-09T20:01:06Z",
+    "started_at": "2026-10-09T20:00:44Z"
+   },
+   {
+    "completed_at": "2026-10-09T20:00:41Z",
+    "started_at": "2026-10-09T19:59:10Z"
+   },
+   {
+    "completed_at": "2026-10-09T20:00:43Z",
+    "started_at": "2026-10-09T20:00:26Z"
+   },
+   {
+    "completed_at": "2026-10-09T20:00:53Z",
+    "started_at": "2026-10-09T20:00:26Z"
+   },
+   {
+    "completed_at": "2026-10-09T20:00:24Z",
+    "started_at": "2026-10-09T20:00:14Z"
+   },
+   {
+    "completed_at": "2026-10-09T20:00:12Z",
+    "started_at": "2026-10-09T19:58:49Z"
+   },
+   {
+    "completed_at": "2026-10-09T20:00:59Z",
+    "started_at": "2026-10-09T20:00:43Z"
+   },
+   {
+    "completed_at": "2026-10-09T20:01:17Z",
+    "started_at": "2026-10-09T20:00:55Z"
+   },
+   {
+    "completed_at": "2026-10-09T19:58:43Z",
+    "started_at": "2026-10-09T19:58:44Z"
+   },
+   {
+    "completed_at": "2026-10-09T20:36:07Z",
+    "started_at": "2026-10-09T20:14:12Z"
+   },
+   {
+    "completed_at": "2026-10-09T20:32:47Z",
+    "started_at": "2026-10-09T20:01:01Z"
+   },
+   {
+    "completed_at": "2026-10-09T20:41:28Z",
+    "started_at": "2026-10-09T20:14:18Z"
+   },
+   {
+    "completed_at": "2026-10-09T20:23:25Z",
+    "started_at": "2026-10-09T20:01:51Z"
+   },
+   {
+    "completed_at": "2026-10-09T20:32:30Z",
+    "started_at": "2026-10-09T20:02:04Z"
+   },
+   {
+    "completed_at": "2026-10-09T20:37:22Z",
+    "started_at": "2026-10-09T20:13:41Z"
+   },
+   {
+    "completed_at": "2026-10-09T20:38:46Z",
+    "started_at": "2026-10-09T20:14:16Z"
+   },
+   {
+    "completed_at": "2026-10-09T20:59:33Z",
+    "started_at": "2026-10-09T20:36:24Z"
+   },
+   {
+    "completed_at": "2026-10-09T20:34:27Z",
+    "started_at": "2026-10-09T20:02:54Z"
+   },
+   {
+    "completed_at": "2026-10-09T20:33:17Z",
+    "started_at": "2026-10-09T20:01:08Z"
+   },
+   {
+    "completed_at": "2026-10-09T20:16:53Z",
+    "started_at": "2026-10-09T20:00:47Z"
+   },
+   {
+    "completed_at": "2026-10-09T20:38:03Z",
+    "started_at": "2026-10-09T20:14:35Z"
+   },
+   {
+    "completed_at": "2026-10-09T20:27:47Z",
+    "started_at": "2026-10-09T20:09:59Z"
+   }
+  ],
+  "total_count": 24
+ },
+ "https://api.github.com/repos/aallan/vera/actions/runs/37990902867/jobs?per_page=100&page=1": {
+  "jobs": [
+   {
+    "completed_at": "2026-10-09T21:03:45Z",
+    "started_at": "2026-10-09T21:03:20Z"
+   },
+   {
+    "completed_at": "2026-10-09T21:03:41Z",
+    "started_at": "2026-10-09T21:03:20Z"
+   },
+   {
+    "completed_at": "2026-10-09T21:09:02Z",
+    "started_at": "2026-10-09T21:03:20Z"
+   },
+   {
+    "completed_at": "2026-10-09T21:03:43Z",
+    "started_at": "2026-10-09T21:03:20Z"
+   },
+   {
+    "completed_at": "2026-10-09T21:03:32Z",
+    "started_at": "2026-10-09T21:03:20Z"
+   },
+   {
+    "completed_at": "2026-10-09T21:03:43Z",
+    "started_at": "2026-10-09T21:03:20Z"
+   },
+   {
+    "completed_at": "2026-10-09T21:03:40Z",
+    "started_at": "2026-10-09T21:03:20Z"
+   },
+   {
+    "completed_at": "2026-10-09T21:03:31Z",
+    "started_at": "2026-10-09T21:03:20Z"
+   },
+   {
+    "completed_at": "2026-10-09T21:04:26Z",
+    "started_at": "2026-10-09T21:03:20Z"
+   },
+   {
+    "completed_at": "2026-10-09T21:04:31Z",
+    "started_at": "2026-10-09T21:03:20Z"
+   },
+   {
+    "completed_at": "2026-10-09T21:03:18Z",
+    "started_at": "2026-10-09T21:03:18Z"
+   },
+   {
+    "completed_at": "2026-10-09T21:28:47Z",
+    "started_at": "2026-10-09T21:03:35Z"
+   },
+   {
+    "completed_at": "2026-10-09T21:22:48Z",
+    "started_at": "2026-10-09T21:03:35Z"
+   },
+   {
+    "completed_at": "2026-10-09T21:23:54Z",
+    "started_at": "2026-10-09T21:03:46Z"
+   },
+   {
+    "completed_at": "2026-10-09T21:28:38Z",
+    "started_at": "2026-10-09T21:03:34Z"
+   },
+   {
+    "completed_at": "2026-10-09T21:18:36Z",
+    "started_at": "2026-10-09T21:03:38Z"
+   },
+   {
+    "completed_at": "2026-10-09T21:30:41Z",
+    "started_at": "2026-10-09T21:03:35Z"
+   },
+   {
+    "completed_at": "2026-10-09T21:17:47Z",
+    "started_at": "2026-10-09T21:03:43Z"
+   },
+   {
+    "completed_at": "2026-10-09T21:26:54Z",
+    "started_at": "2026-10-09T21:03:45Z"
+   },
+   {
+    "completed_at": "2026-10-09T21:22:48Z",
+    "started_at": "2026-10-09T21:03:53Z"
+   },
+   {
+    "completed_at": "2026-10-09T21:20:58Z",
+    "started_at": "2026-10-09T21:03:52Z"
+   },
+   {
+    "completed_at": "2026-10-09T21:27:09Z",
+    "started_at": "2026-10-09T21:03:50Z"
+   },
+   {
+    "completed_at": "2026-10-09T21:31:29Z",
+    "started_at": "2026-10-09T21:03:43Z"
+   },
+   {
+    "completed_at": "2026-10-09T21:40:00Z",
+    "started_at": "2026-10-09T21:18:43Z"
+   }
+  ],
+  "total_count": 24
+ },
+ "https://api.github.com/repos/aallan/vera/actions/runs/37998902994/jobs?per_page=100&page=1": {
+  "jobs": [
+   {
+    "completed_at": "2026-10-09T22:24:12Z",
+    "started_at": "2026-10-09T22:24:02Z"
+   },
+   {
+    "completed_at": "2026-10-09T22:24:27Z",
+    "started_at": "2026-10-09T22:24:02Z"
+   },
+   {
+    "completed_at": "2026-10-09T22:24:31Z",
+    "started_at": "2026-10-09T22:24:02Z"
+   },
+   {
+    "completed_at": "2026-10-09T22:25:23Z",
+    "started_at": "2026-10-09T22:24:02Z"
+   },
+   {
+    "completed_at": "2026-10-09T22:25:28Z",
+    "started_at": "2026-10-09T22:24:02Z"
+   },
+   {
+    "completed_at": "2026-10-09T22:24:17Z",
+    "started_at": "2026-10-09T22:24:02Z"
+   },
+   {
+    "completed_at": "2026-10-09T22:24:28Z",
+    "started_at": "2026-10-09T22:24:02Z"
+   },
+   {
+    "completed_at": "2026-10-09T22:28:44Z",
+    "started_at": "2026-10-09T22:24:03Z"
+   },
+   {
+    "completed_at": "2026-10-09T22:24:17Z",
+    "started_at": "2026-10-09T22:24:02Z"
+   },
+   {
+    "completed_at": "2026-10-09T22:24:15Z",
+    "started_at": "2026-10-09T22:24:02Z"
+   },
+   {
+    "completed_at": "2026-10-09T22:24:00Z",
+    "started_at": "2026-10-09T22:24:00Z"
+   },
+   {
+    "completed_at": "2026-10-09T22:37:12Z",
+    "started_at": "2026-10-09T22:24:14Z"
+   },
+   {
+    "completed_at": "2026-10-09T22:42:48Z",
+    "started_at": "2026-10-09T22:24:25Z"
+   },
+   {
+    "completed_at": "2026-10-09T22:43:06Z",
+    "started_at": "2026-10-09T22:24:14Z"
+   },
+   {
+    "completed_at": "2026-10-09T22:38:18Z",
+    "started_at": "2026-10-09T22:24:19Z"
+   },
+   {
+    "completed_at": "2026-10-09T22:42:03Z",
+    "started_at": "2026-10-09T22:24:29Z"
+   },
+   {
+    "completed_at": "2026-10-09T22:36:27Z",
+    "started_at": "2026-10-09T22:24:16Z"
+   },
+   {
+    "completed_at": "2026-10-09T22:44:44Z",
+    "started_at": "2026-10-09T22:24:25Z"
+   },
+   {
+    "completed_at": "2026-10-09T22:45:21Z",
+    "started_at": "2026-10-09T22:24:14Z"
+   },
+   {
+    "completed_at": "2026-10-09T22:47:11Z",
+    "started_at": "2026-10-09T22:24:17Z"
+   },
+   {
+    "completed_at": "2026-10-09T22:44:59Z",
+    "started_at": "2026-10-09T22:24:14Z"
+   },
+   {
+    "completed_at": "2026-10-09T22:37:41Z",
+    "started_at": "2026-10-09T22:24:23Z"
+   },
+   {
+    "completed_at": "2026-10-09T22:48:14Z",
+    "started_at": "2026-10-09T22:24:15Z"
+   },
+   {
+    "completed_at": "2026-10-09T22:53:07Z",
+    "started_at": "2026-10-09T22:37:49Z"
+   }
+  ],
+  "total_count": 24
+ },
+ "https://api.github.com/repos/aallan/vera/actions/runs/38065228058/jobs?per_page=100&page=1": {
+  "jobs": [
+   {
+    "completed_at": "2026-10-10T15:51:03Z",
+    "started_at": "2026-10-10T15:50:50Z"
+   },
+   {
+    "completed_at": "2026-10-10T15:50:59Z",
+    "started_at": "2026-10-10T15:50:50Z"
+   },
+   {
+    "completed_at": "2026-10-10T15:51:08Z",
+    "started_at": "2026-10-10T15:50:50Z"
+   },
+   {
+    "completed_at": "2026-10-10T15:54:23Z",
+    "started_at": "2026-10-10T15:50:50Z"
+   },
+   {
+    "completed_at": "2026-10-10T15:51:14Z",
+    "started_at": "2026-10-10T15:50:50Z"
+   },
+   {
+    "completed_at": "2026-10-10T15:52:09Z",
+    "started_at": "2026-10-10T15:50:50Z"
+   },
+   {
+    "completed_at": "2026-10-10T15:52:07Z",
+    "started_at": "2026-10-10T15:50:50Z"
+   },
+   {
+    "completed_at": "2026-10-10T15:51:03Z",
+    "started_at": "2026-10-10T15:50:50Z"
+   },
+   {
+    "completed_at": "2026-10-10T15:51:20Z",
+    "started_at": "2026-10-10T15:50:51Z"
+   },
+   {
+    "completed_at": "2026-10-10T15:51:14Z",
+    "started_at": "2026-10-10T15:50:50Z"
+   },
+   {
+    "completed_at": "2026-10-10T15:50:48Z",
+    "started_at": "2026-10-10T15:50:49Z"
+   },
+   {
+    "completed_at": "2026-10-10T16:06:50Z",
+    "started_at": "2026-10-10T15:51:07Z"
+   },
+   {
+    "completed_at": "2026-10-10T16:03:55Z",
+    "started_at": "2026-10-10T15:51:02Z"
+   },
+   {
+    "completed_at": "2026-10-10T16:12:22Z",
+    "started_at": "2026-10-10T15:51:02Z"
+   },
+   {
+    "completed_at": "2026-10-10T16:09:27Z",
+    "started_at": "2026-10-10T15:51:08Z"
+   },
+   {
+    "completed_at": "2026-10-10T16:14:40Z",
+    "started_at": "2026-10-10T15:51:02Z"
+   },
+   {
+    "completed_at": "2026-10-10T16:03:33Z",
+    "started_at": "2026-10-10T15:51:08Z"
+   },
+   {
+    "completed_at": "2026-10-10T16:03:26Z",
+    "started_at": "2026-10-10T15:51:04Z"
+   },
+   {
+    "completed_at": "2026-10-10T16:04:28Z",
+    "started_at": "2026-10-10T15:51:02Z"
+   },
+   {
+    "completed_at": "2026-10-10T16:10:18Z",
+    "started_at": "2026-10-10T15:51:02Z"
+   },
+   {
+    "completed_at": "2026-10-10T16:09:47Z",
+    "started_at": "2026-10-10T15:51:13Z"
+   },
+   {
+    "completed_at": "2026-10-10T16:21:25Z",
+    "started_at": "2026-10-10T16:02:09Z"
+   },
+   {
+    "completed_at": "2026-10-10T16:02:01Z",
+    "started_at": "2026-10-10T15:51:08Z"
+   },
+   {
+    "completed_at": "2026-10-10T16:15:18Z",
+    "started_at": "2026-10-10T15:51:02Z"
+   }
+  ],
+  "total_count": 24
+ },
+ "https://api.github.com/repos/aallan/vera/actions/runs/38068250735/jobs?per_page=100&page=1": {
+  "jobs": [
+   {
+    "completed_at": "2026-10-10T16:35:23Z",
+    "started_at": "2026-10-10T16:35:01Z"
+   },
+   {
+    "completed_at": "2026-10-10T16:40:18Z",
+    "started_at": "2026-10-10T16:35:02Z"
+   },
+   {
+    "completed_at": "2026-10-10T16:35:24Z",
+    "started_at": "2026-10-10T16:35:02Z"
+   },
+   {
+    "completed_at": "2026-10-10T16:35:12Z",
+    "started_at": "2026-10-10T16:35:01Z"
+   },
+   {
+    "completed_at": "2026-10-10T16:35:17Z",
+    "started_at": "2026-10-10T16:35:02Z"
+   },
+   {
+    "completed_at": "2026-10-10T16:35:20Z",
+    "started_at": "2026-10-10T16:35:02Z"
+   },
+   {
+    "completed_at": "2026-10-10T16:36:20Z",
+    "started_at": "2026-10-10T16:35:01Z"
+   },
+   {
+    "completed_at": "2026-10-10T16:35:24Z",
+    "started_at": "2026-10-10T16:35:01Z"
+   },
+   {
+    "completed_at": "2026-10-10T16:35:24Z",
+    "started_at": "2026-10-10T16:35:02Z"
+   },
+   {
+    "completed_at": "2026-10-10T16:36:32Z",
+    "started_at": "2026-10-10T16:35:02Z"
+   },
+   {
+    "completed_at": "2026-10-10T16:34:59Z",
+    "started_at": "2026-10-10T16:35:00Z"
+   },
+   {
+    "completed_at": "2026-10-10T16:48:36Z",
+    "started_at": "2026-10-10T16:35:19Z"
+   },
+   {
+    "completed_at": "2026-10-10T16:59:58Z",
+    "started_at": "2026-10-10T16:35:14Z"
+   },
+   {
+    "completed_at": "2026-10-10T16:48:34Z",
+    "started_at": "2026-10-10T16:35:14Z"
+   },
+   {
+    "completed_at": "2026-10-10T16:55:28Z",
+    "started_at": "2026-10-10T16:35:14Z"
+   },
+   {
+    "completed_at": "2026-10-10T16:54:58Z",
+    "started_at": "2026-10-10T16:35:18Z"
+   },
+   {
+    "completed_at": "2026-10-10T16:59:57Z",
+    "started_at": "2026-10-10T16:35:23Z"
+   },
+   {
+    "completed_at": "2026-10-10T16:53:34Z",
+    "started_at": "2026-10-10T16:35:20Z"
+   },
+   {
+    "completed_at": "2026-10-10T17:08:57Z",
+    "started_at": "2026-10-10T16:48:44Z"
+   },
+   {
+    "completed_at": "2026-10-10T16:47:32Z",
+    "started_at": "2026-10-10T16:35:16Z"
+   },
+   {
+    "completed_at": "2026-10-10T16:52:51Z",
+    "started_at": "2026-10-10T16:35:21Z"
+   },
+   {
+    "completed_at": "2026-10-10T16:50:59Z",
+    "started_at": "2026-10-10T16:35:19Z"
+   },
+   {
+    "completed_at": "2026-10-10T16:51:53Z",
+    "started_at": "2026-10-10T16:35:19Z"
+   },
+   {
+    "completed_at": "2026-10-10T16:57:42Z",
+    "started_at": "2026-10-10T16:35:25Z"
+   }
+  ],
+  "total_count": 24
+ },
+ "https://api.github.com/repos/aallan/vera/actions/runs/38070986704/jobs?per_page=100&page=1": {
+  "jobs": [
+   {
+    "completed_at": "2026-10-10T17:16:26Z",
+    "started_at": "2026-10-10T17:15:26Z"
+   },
+   {
+    "completed_at": "2026-10-10T17:15:57Z",
+    "started_at": "2026-10-10T17:15:26Z"
+   },
+   {
+    "completed_at": "2026-10-10T17:15:39Z",
+    "started_at": "2026-10-10T17:15:26Z"
+   },
+   {
+    "completed_at": "2026-10-10T17:15:37Z",
+    "started_at": "2026-10-10T17:15:26Z"
+   },
+   {
+    "completed_at": "2026-10-10T17:16:48Z",
+    "started_at": "2026-10-10T17:15:26Z"
+   },
+   {
+    "completed_at": "2026-10-10T17:15:54Z",
+    "started_at": "2026-10-10T17:15:26Z"
+   },
+   {
+    "completed_at": "2026-10-10T17:15:43Z",
+    "started_at": "2026-10-10T17:15:26Z"
+   },
+   {
+    "completed_at": "2026-10-10T17:20:53Z",
+    "started_at": "2026-10-10T17:15:26Z"
+   },
+   {
+    "completed_at": "2026-10-10T17:15:36Z",
+    "started_at": "2026-10-10T17:15:26Z"
+   },
+   {
+    "completed_at": "2026-10-10T17:15:53Z",
+    "started_at": "2026-10-10T17:15:26Z"
+   },
+   {
+    "completed_at": "2026-10-10T17:15:24Z",
+    "started_at": "2026-10-10T17:15:24Z"
+   },
+   {
+    "completed_at": "2026-10-10T17:38:17Z",
+    "started_at": "2026-10-10T17:15:38Z"
+   },
+   {
+    "completed_at": "2026-10-10T17:30:11Z",
+    "started_at": "2026-10-10T17:15:43Z"
+   },
+   {
+    "completed_at": "2026-10-10T17:37:01Z",
+    "started_at": "2026-10-10T17:15:39Z"
+   },
+   {
+    "completed_at": "2026-10-10T17:41:46Z",
+    "started_at": "2026-10-10T17:15:38Z"
+   },
+   {
+    "completed_at": "2026-10-10T17:32:27Z",
+    "started_at": "2026-10-10T17:15:47Z"
+   },
+   {
+    "completed_at": "2026-10-10T17:30:55Z",
+    "started_at": "2026-10-10T17:15:39Z"
+   },
+   {
+    "completed_at": "2026-10-10T17:36:02Z",
+    "started_at": "2026-10-10T17:15:46Z"
+   },
+   {
+    "completed_at": "2026-10-10T17:39:29Z",
+    "started_at": "2026-10-10T17:15:39Z"
+   },
+   {
+    "completed_at": "2026-10-10T17:36:53Z",
+    "started_at": "2026-10-10T17:15:44Z"
+   },
+   {
+    "completed_at": "2026-10-10T17:44:54Z",
+    "started_at": "2026-10-10T17:28:51Z"
+   },
+   {
+    "completed_at": "2026-10-10T17:33:37Z",
+    "started_at": "2026-10-10T17:15:45Z"
+   },
+   {
+    "completed_at": "2026-10-10T17:28:45Z",
+    "started_at": "2026-10-10T17:15:43Z"
+   },
+   {
+    "completed_at": "2026-10-10T17:27:24Z",
+    "started_at": "2026-10-10T17:15:41Z"
+   }
+  ],
+  "total_count": 24
+ },
+ "https://api.github.com/repos/aallan/vera/actions/runs/38075167040/jobs?per_page=100&page=1": {
+  "jobs": [
+   {
+    "completed_at": "2026-10-10T18:21:06Z",
+    "started_at": "2026-10-10T18:17:40Z"
+   },
+   {
+    "completed_at": "2026-10-10T18:17:48Z",
+    "started_at": "2026-10-10T18:17:39Z"
+   },
+   {
+    "completed_at": "2026-10-10T18:19:05Z",
+    "started_at": "2026-10-10T18:17:40Z"
+   },
+   {
+    "completed_at": "2026-10-10T18:17:55Z",
+    "started_at": "2026-10-10T18:17:40Z"
+   },
+   {
+    "completed_at": "2026-10-10T18:18:05Z",
+    "started_at": "2026-10-10T18:17:40Z"
+   },
+   {
+    "completed_at": "2026-10-10T18:18:01Z",
+    "started_at": "2026-10-10T18:17:40Z"
+   },
+   {
+    "completed_at": "2026-10-10T18:18:02Z",
+    "started_at": "2026-10-10T18:17:40Z"
+   },
+   {
+    "completed_at": "2026-10-10T18:18:01Z",
+    "started_at": "2026-10-10T18:17:40Z"
+   },
+   {
+    "completed_at": "2026-10-10T18:19:13Z",
+    "started_at": "2026-10-10T18:17:40Z"
+   },
+   {
+    "completed_at": "2026-10-10T18:18:00Z",
+    "started_at": "2026-10-10T18:17:40Z"
+   },
+   {
+    "completed_at": "2026-10-10T18:17:38Z",
+    "started_at": "2026-10-10T18:17:38Z"
+   },
+   {
+    "completed_at": "2026-10-10T18:33:44Z",
+    "started_at": "2026-10-10T18:17:54Z"
+   },
+   {
+    "completed_at": "2026-10-10T18:42:26Z",
+    "started_at": "2026-10-10T18:17:50Z"
+   },
+   {
+    "completed_at": "2026-10-10T18:34:03Z",
+    "started_at": "2026-10-10T18:17:50Z"
+   },
+   {
+    "completed_at": "2026-10-10T18:41:14Z",
+    "started_at": "2026-10-10T18:17:50Z"
+   },
+   {
+    "completed_at": "2026-10-10T18:33:53Z",
+    "started_at": "2026-10-10T18:17:50Z"
+   },
+   {
+    "completed_at": "2026-10-10T18:50:42Z",
+    "started_at": "2026-10-10T18:32:32Z"
+   },
+   {
+    "completed_at": "2026-10-10T18:32:39Z",
+    "started_at": "2026-10-10T18:17:58Z"
+   },
+   {
+    "completed_at": "2026-10-10T18:32:26Z",
+    "started_at": "2026-10-10T18:18:05Z"
+   },
+   {
+    "completed_at": "2026-10-10T18:34:03Z",
+    "started_at": "2026-10-10T18:18:03Z"
+   },
+   {
+    "completed_at": "2026-10-10T18:36:25Z",
+    "started_at": "2026-10-10T18:17:50Z"
+   },
+   {
+    "completed_at": "2026-10-10T18:29:57Z",
+    "started_at": "2026-10-10T18:17:52Z"
+   },
+   {
+    "completed_at": "2026-10-10T18:37:52Z",
+    "started_at": "2026-10-10T18:18:07Z"
+   },
+   {
+    "completed_at": "2026-10-10T18:41:38Z",
+    "started_at": "2026-10-10T18:17:50Z"
+   }
+  ],
+  "total_count": 24
+ },
+ "https://api.github.com/repos/aallan/vera/actions/runs/38079564619/jobs?per_page=100&page=1": {
+  "jobs": [
+   {
+    "completed_at": "2026-10-10T19:23:05Z",
+    "started_at": "2026-10-10T19:22:49Z"
+   },
+   {
+    "completed_at": "2026-10-10T19:23:50Z",
+    "started_at": "2026-10-10T19:22:49Z"
+   },
+   {
+    "completed_at": "2026-10-10T19:23:15Z",
+    "started_at": "2026-10-10T19:22:50Z"
+   },
+   {
+    "completed_at": "2026-10-10T19:23:10Z",
+    "started_at": "2026-10-10T19:22:49Z"
+   },
+   {
+    "completed_at": "2026-10-10T19:23:00Z",
+    "started_at": "2026-10-10T19:22:49Z"
+   },
+   {
+    "completed_at": "2026-10-10T19:30:25Z",
+    "started_at": "2026-10-10T19:22:50Z"
+   },
+   {
+    "completed_at": "2026-10-10T19:22:59Z",
+    "started_at": "2026-10-10T19:22:49Z"
+   },
+   {
+    "completed_at": "2026-10-10T19:23:19Z",
+    "started_at": "2026-10-10T19:22:49Z"
+   },
+   {
+    "completed_at": "2026-10-10T19:23:07Z",
+    "started_at": "2026-10-10T19:22:49Z"
+   },
+   {
+    "completed_at": "2026-10-10T19:23:49Z",
+    "started_at": "2026-10-10T19:22:49Z"
+   },
+   {
+    "completed_at": "2026-10-10T19:22:47Z",
+    "started_at": "2026-10-10T19:22:48Z"
+   },
+   {
+    "completed_at": "2026-10-10T19:44:57Z",
+    "started_at": "2026-10-10T19:23:02Z"
+   },
+   {
+    "completed_at": "2026-10-10T19:41:28Z",
+    "started_at": "2026-10-10T19:23:06Z"
+   },
+   {
+    "completed_at": "2026-10-10T19:39:42Z",
+    "started_at": "2026-10-10T19:23:09Z"
+   },
+   {
+    "completed_at": "2026-10-10T19:36:34Z",
+    "started_at": "2026-10-10T19:23:07Z"
+   },
+   {
+    "completed_at": "2026-10-10T19:36:47Z",
+    "started_at": "2026-10-10T19:23:02Z"
+   },
+   {
+    "completed_at": "2026-10-10T19:41:38Z",
+    "started_at": "2026-10-10T19:23:08Z"
+   },
+   {
+    "completed_at": "2026-10-10T19:39:06Z",
+    "started_at": "2026-10-10T19:23:06Z"
+   },
+   {
+    "completed_at": "2026-10-10T19:48:09Z",
+    "started_at": "2026-10-10T19:23:02Z"
+   },
+   {
+    "completed_at": "2026-10-10T19:38:34Z",
+    "started_at": "2026-10-10T19:23:02Z"
+   },
+   {
+    "completed_at": "2026-10-10T19:50:44Z",
+    "started_at": "2026-10-10T19:36:40Z"
+   },
+   {
+    "completed_at": "2026-10-10T19:47:05Z",
+    "started_at": "2026-10-10T19:23:07Z"
+   },
+   {
+    "completed_at": "2026-10-10T19:34:40Z",
+    "started_at": "2026-10-10T19:23:04Z"
+   },
+   {
+    "completed_at": "2026-10-10T19:43:01Z",
+    "started_at": "2026-10-10T19:23:02Z"
+   }
+  ],
+  "total_count": 24
+ },
+ "https://api.github.com/repos/aallan/vera/actions/runs/38212999176/jobs?per_page=100&page=1": {
+  "jobs": [
+   {
+    "completed_at": "2026-10-12T06:32:53Z",
+    "started_at": "2026-10-12T06:32:41Z"
+   },
+   {
+    "completed_at": "2026-10-12T06:34:07Z",
+    "started_at": "2026-10-12T06:32:41Z"
+   },
+   {
+    "completed_at": "2026-10-12T06:32:58Z",
+    "started_at": "2026-10-12T06:32:41Z"
+   },
+   {
+    "completed_at": "2026-10-12T06:33:02Z",
+    "started_at": "2026-10-12T06:32:41Z"
+   },
+   {
+    "completed_at": "2026-10-12T06:37:01Z",
+    "started_at": "2026-10-12T06:32:41Z"
+   },
+   {
+    "completed_at": "2026-10-12T06:33:07Z",
+    "started_at": "2026-10-12T06:32:41Z"
+   },
+   {
+    "completed_at": "2026-10-12T06:32:52Z",
+    "started_at": "2026-10-12T06:32:41Z"
+   },
+   {
+    "completed_at": "2026-10-12T06:33:04Z",
+    "started_at": "2026-10-12T06:32:41Z"
+   },
+   {
+    "completed_at": "2026-10-12T06:34:17Z",
+    "started_at": "2026-10-12T06:32:41Z"
+   },
+   {
+    "completed_at": "2026-10-12T06:33:07Z",
+    "started_at": "2026-10-12T06:32:41Z"
+   },
+   {
+    "completed_at": "2026-10-12T06:32:39Z",
+    "started_at": "2026-10-12T06:32:40Z"
+   },
+   {
+    "completed_at": "2026-10-12T06:49:48Z",
+    "started_at": "2026-10-12T06:33:00Z"
+   },
+   {
+    "completed_at": "2026-10-12T06:44:58Z",
+    "started_at": "2026-10-12T06:32:57Z"
+   },
+   {
+    "completed_at": "2026-10-12T06:58:28Z",
+    "started_at": "2026-10-12T06:32:55Z"
+   },
+   {
+    "completed_at": "2026-10-12T06:47:46Z",
+    "started_at": "2026-10-12T06:32:55Z"
+   },
+   {
+    "completed_at": "2026-10-12T06:54:42Z",
+    "started_at": "2026-10-12T06:32:55Z"
+   },
+   {
+    "completed_at": "2026-10-12T06:46:11Z",
+    "started_at": "2026-10-12T06:32:59Z"
+   },
+   {
+    "completed_at": "2026-10-12T06:52:37Z",
+    "started_at": "2026-10-12T06:33:03Z"
+   },
+   {
+    "completed_at": "2026-10-12T07:06:55Z",
+    "started_at": "2026-10-12T06:46:39Z"
+   },
+   {
+    "completed_at": "2026-10-12T06:46:19Z",
+    "started_at": "2026-10-12T06:33:00Z"
+   },
+   {
+    "completed_at": "2026-10-12T06:49:47Z",
+    "started_at": "2026-10-12T06:32:56Z"
+   },
+   {
+    "completed_at": "2026-10-12T06:57:09Z",
+    "started_at": "2026-10-12T06:32:55Z"
+   },
+   {
+    "completed_at": "2026-10-12T06:58:52Z",
+    "started_at": "2026-10-12T06:32:55Z"
+   },
+   {
+    "completed_at": "2026-10-12T06:51:29Z",
+    "started_at": "2026-10-12T06:33:05Z"
+   }
+  ],
+  "total_count": 24
+ },
+ "https://api.github.com/repos/aallan/vera/actions/runs/38213914587/jobs?per_page=100&page=1": {
+  "jobs": [
+   {
+    "completed_at": "2026-10-12T06:43:57Z",
+    "started_at": "2026-10-12T06:43:45Z"
+   },
+   {
+    "completed_at": "2026-10-12T06:44:17Z",
+    "started_at": "2026-10-12T06:43:53Z"
+   },
+   {
+    "completed_at": "2026-10-12T06:44:16Z",
+    "started_at": "2026-10-12T06:43:48Z"
+   },
+   {
+    "completed_at": "2026-10-12T06:44:10Z",
+    "started_at": "2026-10-12T06:43:51Z"
+   },
+   {
+    "completed_at": "2026-10-12T06:44:20Z",
+    "started_at": "2026-10-12T06:44:10Z"
+   },
+   {
+    "completed_at": "2026-10-12T06:45:12Z",
+    "started_at": "2026-10-12T06:44:17Z"
+   },
+   {
+    "completed_at": "2026-10-12T06:44:45Z",
+    "started_at": "2026-10-12T06:44:19Z"
+   },
+   {
+    "completed_at": "2026-10-12T06:44:15Z",
+    "started_at": "2026-10-12T06:43:51Z"
+   },
+   {
+    "completed_at": "2026-10-12T06:44:31Z",
+    "started_at": "2026-10-12T06:44:12Z"
+   },
+   {
+    "completed_at": "2026-10-12T06:45:27Z",
+    "started_at": "2026-10-12T06:44:21Z"
+   },
+   {
+    "completed_at": "2026-10-12T06:43:17Z",
+    "started_at": "2026-10-12T06:43:17Z"
+   },
+   {
+    "completed_at": "2026-10-12T06:55:33Z",
+    "started_at": "2026-10-12T06:44:33Z"
+   },
+   {
+    "completed_at": "2026-10-12T06:52:50Z",
+    "started_at": "2026-10-12T06:45:14Z"
+   },
+   {
+    "completed_at": "2026-10-12T07:00:37Z",
+    "started_at": "2026-10-12T06:44:47Z"
+   },
+   {
+    "completed_at": "2026-10-12T06:54:33Z",
+    "started_at": "2026-10-12T06:46:13Z"
+   },
+   {
+    "completed_at": "2026-10-12T06:57:19Z",
+    "started_at": "2026-10-12T06:46:21Z"
+   },
+   {
+    "completed_at": "2026-10-12T06:47:52Z",
+    "started_at": "2026-10-12T06:47:47Z"
+   },
+   {
+    "completed_at": "2026-10-12T06:44:20Z",
+    "started_at": "2026-10-12T06:44:20Z"
+   },
+   {
+    "completed_at": "2026-10-12T06:44:20Z",
+    "started_at": "2026-10-12T06:44:20Z"
+   }
+  ],
+  "total_count": 19
+ },
+ "https://api.github.com/repos/aallan/vera/actions/runs/38217520949/jobs?per_page=100&page=1": {
+  "jobs": [
+   {
+    "completed_at": "2026-10-12T07:25:00Z",
+    "started_at": "2026-10-12T07:24:49Z"
+   },
+   {
+    "completed_at": "2026-10-12T07:25:30Z",
+    "started_at": "2026-10-12T07:25:02Z"
+   },
+   {
+    "completed_at": "2026-10-12T07:27:02Z",
+    "started_at": "2026-10-12T07:26:01Z"
+   },
+   {
+    "completed_at": "2026-10-12T07:27:02Z",
+    "started_at": "2026-10-12T07:26:30Z"
+   },
+   {
+    "completed_at": "2026-10-12T07:27:43Z",
+    "started_at": "2026-10-12T07:27:27Z"
+   },
+   {
+    "completed_at": "2026-10-12T07:27:26Z",
+    "started_at": "2026-10-12T07:27:04Z"
+   },
+   {
+    "completed_at": "2026-10-12T07:26:28Z",
+    "started_at": "2026-10-12T07:26:12Z"
+   },
+   {
+    "completed_at": "2026-10-12T07:26:10Z",
+    "started_at": "2026-10-12T07:24:55Z"
+   },
+   {
+    "completed_at": "2026-10-12T07:32:50Z",
+    "started_at": "2026-10-12T07:27:30Z"
+   },
+   {
+    "completed_at": "2026-10-12T07:27:28Z",
+    "started_at": "2026-10-12T07:27:04Z"
+   },
+   {
+    "completed_at": "2026-10-12T07:24:35Z",
+    "started_at": "2026-10-12T07:24:35Z"
+   },
+   {
+    "completed_at": "2026-10-12T08:02:39Z",
+    "started_at": "2026-10-12T07:41:09Z"
+   },
+   {
+    "completed_at": "2026-10-12T07:46:35Z",
+    "started_at": "2026-10-12T07:27:55Z"
+   },
+   {
+    "completed_at": "2026-10-12T07:44:31Z",
+    "started_at": "2026-10-12T07:25:25Z"
+   },
+   {
+    "completed_at": "2026-10-12T07:59:25Z",
+    "started_at": "2026-10-12T07:41:20Z"
+   },
+   {
+    "completed_at": "2026-10-12T07:49:58Z",
+    "started_at": "2026-10-12T07:28:21Z"
+   },
+   {
+    "completed_at": "2026-10-12T07:51:17Z",
+    "started_at": "2026-10-12T07:29:05Z"
+   },
+   {
+    "completed_at": "2026-10-12T07:52:01Z",
+    "started_at": "2026-10-12T07:27:44Z"
+   },
+   {
+    "completed_at": "2026-10-12T07:37:39Z",
+    "started_at": "2026-10-12T07:25:34Z"
+   },
+   {
+    "completed_at": "2026-10-12T07:59:10Z",
+    "started_at": "2026-10-12T07:41:24Z"
+   },
+   {
+    "completed_at": "2026-10-12T07:54:40Z",
+    "started_at": "2026-10-12T07:31:09Z"
+   },
+   {
+    "completed_at": "2026-10-12T07:57:20Z",
+    "started_at": "2026-10-12T07:32:52Z"
+   },
+   {
+    "completed_at": "2026-10-12T08:03:11Z",
+    "started_at": "2026-10-12T07:41:26Z"
+   },
+   {
+    "completed_at": "2026-10-12T08:09:45Z",
+    "started_at": "2026-10-12T07:50:06Z"
+   }
+  ],
+  "total_count": 24
+ },
+ "https://api.github.com/repos/aallan/vera/actions/runs/38219225477/jobs?per_page=100&page=1": {
+  "jobs": [
+   {
+    "completed_at": "2026-10-12T07:43:31Z",
+    "started_at": "2026-10-12T07:43:03Z"
+   },
+   {
+    "completed_at": "2026-10-12T07:43:03Z",
+    "started_at": "2026-10-12T07:42:50Z"
+   },
+   {
+    "completed_at": "2026-10-12T07:47:58Z",
+    "started_at": "2026-10-12T07:44:47Z"
+   },
+   {
+    "completed_at": "2026-10-12T07:44:45Z",
+    "started_at": "2026-10-12T07:44:26Z"
+   },
+   {
+    "completed_at": "2026-10-12T07:44:25Z",
+    "started_at": "2026-10-12T07:44:13Z"
+   },
+   {
+    "completed_at": "2026-10-12T07:44:12Z",
+    "started_at": "2026-10-12T07:43:51Z"
+   },
+   {
+    "completed_at": "2026-10-12T07:48:39Z",
+    "started_at": "2026-10-12T07:48:21Z"
+   },
+   {
+    "completed_at": "2026-10-12T07:49:05Z",
+    "started_at": "2026-10-12T07:47:59Z"
+   },
+   {
+    "completed_at": "2026-10-12T07:49:05Z",
+    "started_at": "2026-10-12T07:48:40Z"
+   },
+   {
+    "completed_at": "2026-10-12T07:48:19Z",
+    "started_at": "2026-10-12T07:47:20Z"
+   },
+   {
+    "completed_at": "2026-10-12T07:42:42Z",
+    "started_at": "2026-10-12T07:42:43Z"
+   },
+   {
+    "completed_at": "2026-10-12T07:58:04Z",
+    "started_at": "2026-10-12T07:46:37Z"
+   },
+   {
+    "completed_at": "2026-10-12T07:57:36Z",
+    "started_at": "2026-10-12T07:49:53Z"
+   },
+   {
+    "completed_at": "2026-10-12T07:58:42Z",
+    "started_at": "2026-10-12T07:49:06Z"
+   },
+   {
+    "completed_at": "2026-10-12T08:01:14Z",
+    "started_at": "2026-10-12T07:49:07Z"
+   },
+   {
+    "completed_at": "2026-10-12T07:57:37Z",
+    "started_at": "2026-10-12T07:49:56Z"
+   },
+   {
+    "completed_at": "2026-10-12T07:50:07Z",
+    "started_at": "2026-10-12T07:50:00Z"
+   },
+   {
+    "completed_at": "2026-10-12T07:43:03Z",
+    "started_at": "2026-10-12T07:43:04Z"
+   },
+   {
+    "completed_at": "2026-10-12T07:43:03Z",
+    "started_at": "2026-10-12T07:43:04Z"
+   }
+  ],
+  "total_count": 19
+ },
+ "https://api.github.com/repos/aallan/vera/actions/runs/38222201736/jobs?per_page=100&page=1": {
+  "jobs": [
+   {
+    "completed_at": "2026-10-12T08:13:22Z",
+    "started_at": "2026-10-12T08:12:52Z"
+   },
+   {
+    "completed_at": "2026-10-12T08:13:10Z",
+    "started_at": "2026-10-12T08:12:52Z"
+   },
+   {
+    "completed_at": "2026-10-12T08:14:32Z",
+    "started_at": "2026-10-12T08:12:53Z"
+   },
+   {
+    "completed_at": "2026-10-12T08:14:17Z",
+    "started_at": "2026-10-12T08:12:59Z"
+   },
+   {
+    "completed_at": "2026-10-12T08:18:08Z",
+    "started_at": "2026-10-12T08:12:52Z"
+   },
+   {
+    "completed_at": "2026-10-12T08:13:14Z",
+    "started_at": "2026-10-12T08:12:52Z"
+   },
+   {
+    "completed_at": "2026-10-12T08:13:33Z",
+    "started_at": "2026-10-12T08:13:09Z"
+   },
+   {
+    "completed_at": "2026-10-12T08:13:07Z",
+    "started_at": "2026-10-12T08:12:52Z"
+   },
+   {
+    "completed_at": "2026-10-12T08:13:13Z",
+    "started_at": "2026-10-12T08:12:53Z"
+   },
+   {
+    "completed_at": "2026-10-12T08:13:25Z",
+    "started_at": "2026-10-12T08:13:12Z"
+   },
+   {
+    "completed_at": "2026-10-12T08:12:50Z",
+    "started_at": "2026-10-12T08:12:50Z"
+   },
+   {
+    "completed_at": "2026-10-12T08:25:24Z",
+    "started_at": "2026-10-12T08:13:27Z"
+   },
+   {
+    "completed_at": "2026-10-12T08:23:10Z",
+    "started_at": "2026-10-12T08:13:28Z"
+   },
+   {
+    "completed_at": "2026-10-12T08:21:09Z",
+    "started_at": "2026-10-12T08:13:27Z"
+   },
+   {
+    "completed_at": "2026-10-12T08:27:45Z",
+    "started_at": "2026-10-12T08:13:28Z"
+   },
+   {
+    "completed_at": "2026-10-12T08:19:35Z",
+    "started_at": "2026-10-12T08:13:30Z"
+   },
+   {
+    "completed_at": "2026-10-12T08:13:39Z",
+    "started_at": "2026-10-12T08:13:34Z"
+   },
+   {
+    "completed_at": "2026-10-12T08:13:25Z",
+    "started_at": "2026-10-12T08:13:26Z"
+   },
+   {
+    "completed_at": "2026-10-12T08:13:26Z",
+    "started_at": "2026-10-12T08:13:26Z"
+   }
+  ],
+  "total_count": 19
+ },
+ "https://api.github.com/repos/aallan/vera/actions/workflows/ci.yml/runs?event=pull_request&branch=docs/rendered-lists&per_page=100&page=1": {
+  "total_count": 5,
+  "workflow_runs": [
+   {
+    "conclusion": "success",
+    "created_at": "2026-10-12T07:24:05Z",
+    "head_branch": "docs/rendered-lists",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38217520949,
+    "run_started_at": "2026-10-12T07:24:05Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-12T07:13:36Z",
+    "head_branch": "docs/rendered-lists",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38216559879,
+    "run_started_at": "2026-10-12T07:13:36Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-12T06:43:34Z",
+    "head_branch": "docs/rendered-lists",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38213938263,
+    "run_started_at": "2026-10-12T06:43:34Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-12T06:38:35Z",
+    "head_branch": "docs/rendered-lists",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38213524024,
+    "run_started_at": "2026-10-12T06:38:35Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-12T06:38:16Z",
+    "head_branch": "docs/rendered-lists",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38213499093,
+    "run_started_at": "2026-10-12T06:38:16Z"
+   }
+  ]
+ },
+ "https://api.github.com/repos/aallan/vera/actions/workflows/ci.yml/runs?event=pull_request&branch=tooling/changelog-fragments&per_page=100&page=1": {
+  "total_count": 3,
+  "workflow_runs": [
+   {
+    "conclusion": "success",
+    "created_at": "2026-10-12T06:32:12Z",
+    "head_branch": "tooling/changelog-fragments",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38212999176,
+    "run_started_at": "2026-10-12T06:32:12Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-12T06:23:15Z",
+    "head_branch": "tooling/changelog-fragments",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38212269695,
+    "run_started_at": "2026-10-12T06:23:15Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-12T06:18:43Z",
+    "head_branch": "tooling/changelog-fragments",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38211903711,
+    "run_started_at": "2026-10-12T06:18:43Z"
+   }
+  ]
+ },
+ "https://api.github.com/repos/aallan/vera/actions/workflows/ci.yml/runs?event=pull_request&status=completed&per_page=100&page=1": {
+  "total_count": 2500,
+  "workflow_runs": [
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-12T08:26:44Z",
+    "head_branch": "tests/pipeline-driver",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38223601817,
+    "run_started_at": "2026-10-12T08:26:44Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-12T08:13:08Z",
+    "head_branch": "tests/pipeline-driver",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38222231253,
+    "run_started_at": "2026-10-12T08:13:08Z"
+   },
+   {
+    "conclusion": "success",
+    "created_at": "2026-10-12T08:12:50Z",
+    "head_branch": "ci/fast-lane",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38222201736,
+    "run_started_at": "2026-10-12T08:12:50Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-12T07:51:04Z",
+    "head_branch": "tests/pipeline-driver",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38220063892,
+    "run_started_at": "2026-10-12T07:51:04Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-12T07:49:35Z",
+    "head_branch": "tests/pipeline-driver",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38219917181,
+    "run_started_at": "2026-10-12T07:49:35Z"
+   },
+   {
+    "conclusion": "success",
+    "created_at": "2026-10-12T07:42:12Z",
+    "head_branch": "ci/fast-lane",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38219225477,
+    "run_started_at": "2026-10-12T07:42:12Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-12T07:40:44Z",
+    "head_branch": "tests/pipeline-driver",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38219086975,
+    "run_started_at": "2026-10-12T07:40:44Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-12T07:30:52Z",
+    "head_branch": "ci/fast-lane",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38218165799,
+    "run_started_at": "2026-10-12T07:30:52Z"
+   },
+   {
+    "conclusion": "success",
+    "created_at": "2026-10-12T07:24:05Z",
+    "head_branch": "docs/rendered-lists",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38217520949,
+    "run_started_at": "2026-10-12T07:24:05Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-12T07:21:00Z",
+    "head_branch": "tests/pipeline-driver",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38217239392,
+    "run_started_at": "2026-10-12T07:21:00Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-12T07:18:35Z",
+    "head_branch": "tests/pipeline-driver",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38217015254,
+    "run_started_at": "2026-10-12T07:18:35Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-12T07:16:48Z",
+    "head_branch": "ci/fast-lane",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38216854276,
+    "run_started_at": "2026-10-12T07:16:48Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-12T07:15:17Z",
+    "head_branch": "ci/fast-lane",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38216714498,
+    "run_started_at": "2026-10-12T07:15:17Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-12T07:13:36Z",
+    "head_branch": "docs/rendered-lists",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38216559879,
+    "run_started_at": "2026-10-12T07:13:36Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-12T07:06:13Z",
+    "head_branch": "tests/pipeline-driver",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38215908115,
+    "run_started_at": "2026-10-12T07:06:13Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-12T07:02:47Z",
+    "head_branch": "ci/fast-lane",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38215604764,
+    "run_started_at": "2026-10-12T07:02:47Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-12T06:43:34Z",
+    "head_branch": "docs/rendered-lists",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38213938263,
+    "run_started_at": "2026-10-12T06:43:34Z"
+   },
+   {
+    "conclusion": "failure",
+    "created_at": "2026-10-12T06:43:16Z",
+    "head_branch": "ci/fast-lane",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38213914587,
+    "run_started_at": "2026-10-12T06:43:16Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-12T06:38:35Z",
+    "head_branch": "docs/rendered-lists",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38213524024,
+    "run_started_at": "2026-10-12T06:38:35Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-12T06:38:16Z",
+    "head_branch": "docs/rendered-lists",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38213499093,
+    "run_started_at": "2026-10-12T06:38:16Z"
+   },
+   {
+    "conclusion": "success",
+    "created_at": "2026-10-12T06:32:12Z",
+    "head_branch": "tooling/changelog-fragments",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38212999176,
+    "run_started_at": "2026-10-12T06:32:12Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-12T06:23:15Z",
+    "head_branch": "tooling/changelog-fragments",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38212269695,
+    "run_started_at": "2026-10-12T06:23:15Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-12T06:18:43Z",
+    "head_branch": "tooling/changelog-fragments",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38211903711,
+    "run_started_at": "2026-10-12T06:18:43Z"
+   },
+   {
+    "conclusion": "success",
+    "created_at": "2026-10-10T19:22:47Z",
+    "head_branch": "prep/v0.2.1",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38079564619,
+    "run_started_at": "2026-10-10T19:22:47Z"
+   },
+   {
+    "conclusion": "success",
+    "created_at": "2026-10-10T18:17:16Z",
+    "head_branch": "docs/state-not-hedge",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38075167040,
+    "run_started_at": "2026-10-10T18:17:16Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-10T18:14:24Z",
+    "head_branch": "docs/state-not-hedge",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38074973316,
+    "run_started_at": "2026-10-10T18:14:24Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-10T17:48:59Z",
+    "head_branch": "docs/state-not-hedge",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38073273525,
+    "run_started_at": "2026-10-10T17:48:59Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-10T17:38:02Z",
+    "head_branch": "docs/state-not-hedge",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38072530885,
+    "run_started_at": "2026-10-10T17:38:02Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-10T17:32:44Z",
+    "head_branch": "docs/state-not-hedge",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38072175860,
+    "run_started_at": "2026-10-10T17:32:44Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-10T17:17:06Z",
+    "head_branch": "docs/state-not-hedge",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38071101155,
+    "run_started_at": "2026-10-10T17:17:06Z"
+   },
+   {
+    "conclusion": "success",
+    "created_at": "2026-10-10T17:15:23Z",
+    "head_branch": "docs/truth",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38070986704,
+    "run_started_at": "2026-10-10T17:15:23Z"
+   },
+   {
+    "conclusion": "success",
+    "created_at": "2026-10-10T16:34:59Z",
+    "head_branch": "tests/golden-outputs",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38068250735,
+    "run_started_at": "2026-10-10T16:34:59Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-10T16:21:23Z",
+    "head_branch": "docs/truth",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38067325111,
+    "run_started_at": "2026-10-10T16:21:23Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-10T16:10:54Z",
+    "head_branch": "docs/truth",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38066609185,
+    "run_started_at": "2026-10-10T16:10:54Z"
+   },
+   {
+    "conclusion": "success",
+    "created_at": "2026-10-10T15:50:25Z",
+    "head_branch": "docs/counts-out",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38065228058,
+    "run_started_at": "2026-10-10T15:50:25Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-10T15:35:01Z",
+    "head_branch": "docs/counts-out",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 38064197559,
+    "run_started_at": "2026-10-10T15:35:01Z"
+   },
+   {
+    "conclusion": "success",
+    "created_at": "2026-10-09T22:22:59Z",
+    "head_branch": "test/distrust-mode",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37998902994,
+    "run_started_at": "2026-10-09T22:22:59Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-09T22:20:23Z",
+    "head_branch": "test/distrust-mode",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37998661928,
+    "run_started_at": "2026-10-09T22:20:23Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-09T22:17:26Z",
+    "head_branch": "test/distrust-mode",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37998388121,
+    "run_started_at": "2026-10-09T22:17:26Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-09T22:09:50Z",
+    "head_branch": "test/distrust-mode",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37997681434,
+    "run_started_at": "2026-10-09T22:09:50Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-09T22:07:11Z",
+    "head_branch": "tests/golden-outputs",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37997435312,
+    "run_started_at": "2026-10-09T22:07:11Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-09T22:04:51Z",
+    "head_branch": "docs/truth",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37997214403,
+    "run_started_at": "2026-10-09T22:04:51Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-09T21:49:01Z",
+    "head_branch": "tests/golden-outputs",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37995692960,
+    "run_started_at": "2026-10-09T21:49:01Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-09T21:48:33Z",
+    "head_branch": "docs/truth",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37995649555,
+    "run_started_at": "2026-10-09T21:48:33Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-09T21:45:09Z",
+    "head_branch": "test/distrust-mode",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37995315485,
+    "run_started_at": "2026-10-09T21:45:09Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-09T21:35:19Z",
+    "head_branch": "tests/golden-outputs",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37994348256,
+    "run_started_at": "2026-10-09T21:35:19Z"
+   },
+   {
+    "conclusion": "success",
+    "created_at": "2026-10-09T21:01:55Z",
+    "head_branch": "fix/desugar-pipe-once",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37990902867,
+    "run_started_at": "2026-10-09T21:01:55Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-09T20:35:17Z",
+    "head_branch": "fix/desugar-pipe-once",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37987986214,
+    "run_started_at": "2026-10-09T20:35:17Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-09T20:12:39Z",
+    "head_branch": "test/distrust-mode",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37985437895,
+    "run_started_at": "2026-10-09T20:12:39Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-09T20:02:01Z",
+    "head_branch": "fix/desugar-pipe-once",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37984243942,
+    "run_started_at": "2026-10-09T20:02:01Z"
+   },
+   {
+    "conclusion": "success",
+    "created_at": "2026-10-09T19:57:27Z",
+    "head_branch": "tests/matrix-marker",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37983730399,
+    "run_started_at": "2026-10-09T19:57:27Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-09T19:56:03Z",
+    "head_branch": "test/distrust-mode",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37983581835,
+    "run_started_at": "2026-10-09T19:56:03Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-09T19:04:08Z",
+    "head_branch": "tests/matrix-marker",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37977666964,
+    "run_started_at": "2026-10-09T19:04:08Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-09T19:03:22Z",
+    "head_branch": "test/distrust-mode",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37977576553,
+    "run_started_at": "2026-10-09T19:03:22Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-09T19:02:12Z",
+    "head_branch": "test/distrust-mode",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37977440905,
+    "run_started_at": "2026-10-09T19:02:12Z"
+   },
+   {
+    "conclusion": "success",
+    "created_at": "2026-10-09T18:57:06Z",
+    "head_branch": "verify/reconcile-guards",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37976839777,
+    "run_started_at": "2026-10-09T18:57:06Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-09T18:57:01Z",
+    "head_branch": "test/distrust-mode",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37976829931,
+    "run_started_at": "2026-10-09T18:57:01Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-09T18:53:12Z",
+    "head_branch": "verify/reconcile-guards",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37976382565,
+    "run_started_at": "2026-10-09T18:53:12Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-09T18:46:59Z",
+    "head_branch": "test/distrust-mode",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37975663847,
+    "run_started_at": "2026-10-09T18:46:59Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-09T18:41:08Z",
+    "head_branch": "test/distrust-mode",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37974991577,
+    "run_started_at": "2026-10-09T18:41:08Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-09T18:39:11Z",
+    "head_branch": "fix/desugar-pipe-once",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37974764627,
+    "run_started_at": "2026-10-09T18:39:11Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-09T18:34:01Z",
+    "head_branch": "fix/desugar-pipe-once",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37974173553,
+    "run_started_at": "2026-10-09T18:34:01Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-09T18:20:26Z",
+    "head_branch": "fix/desugar-pipe-once",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37972583398,
+    "run_started_at": "2026-10-09T18:20:26Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-09T18:07:03Z",
+    "head_branch": "verify/reconcile-guards",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37971037348,
+    "run_started_at": "2026-10-09T18:07:03Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-09T17:53:41Z",
+    "head_branch": "verify/reconcile-guards",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37969471456,
+    "run_started_at": "2026-10-09T17:53:41Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-09T17:48:28Z",
+    "head_branch": "verify/reconcile-guards",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37968862749,
+    "run_started_at": "2026-10-09T17:48:28Z"
+   },
+   {
+    "conclusion": "success",
+    "created_at": "2026-10-09T17:44:17Z",
+    "head_branch": "tests/matrix-marker",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37968377357,
+    "run_started_at": "2026-10-09T17:44:17Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-09T17:28:06Z",
+    "head_branch": "tests/matrix-marker",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37966472825,
+    "run_started_at": "2026-10-09T17:28:06Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-09T17:20:44Z",
+    "head_branch": "test/distrust-mode",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37965598075,
+    "run_started_at": "2026-10-09T17:20:44Z"
+   },
+   {
+    "conclusion": "success",
+    "created_at": "2026-10-09T17:20:20Z",
+    "head_branch": "fix/desugar-pipe-once",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37965548479,
+    "run_started_at": "2026-10-09T17:20:20Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-09T17:05:15Z",
+    "head_branch": "test/distrust-mode",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37963758153,
+    "run_started_at": "2026-10-09T17:05:15Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-09T16:48:14Z",
+    "head_branch": "test/distrust-mode",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37961732144,
+    "run_started_at": "2026-10-09T16:48:14Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-09T16:31:31Z",
+    "head_branch": "test/distrust-mode",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37959743121,
+    "run_started_at": "2026-10-09T16:31:31Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-09T16:15:02Z",
+    "head_branch": "test/distrust-mode",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37957732569,
+    "run_started_at": "2026-10-09T16:15:02Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-09T16:04:02Z",
+    "head_branch": "test/distrust-mode",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37956379369,
+    "run_started_at": "2026-10-09T16:04:02Z"
+   },
+   {
+    "conclusion": "success",
+    "created_at": "2026-10-09T15:33:33Z",
+    "head_branch": "verify/reconcile-guards",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37952632547,
+    "run_started_at": "2026-10-09T15:33:33Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-09T15:14:16Z",
+    "head_branch": "verify/reconcile-guards",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37950205548,
+    "run_started_at": "2026-10-09T15:14:16Z"
+   },
+   {
+    "conclusion": "success",
+    "created_at": "2026-10-09T15:06:02Z",
+    "head_branch": "fix/desugar-pipe-once",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37949163415,
+    "run_started_at": "2026-10-09T15:06:02Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-09T15:04:46Z",
+    "head_branch": "verify/reconcile-guards",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37948999670,
+    "run_started_at": "2026-10-09T15:04:46Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-09T14:51:51Z",
+    "head_branch": "fix/desugar-pipe-once",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37947359582,
+    "run_started_at": "2026-10-09T14:51:51Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-09T14:50:34Z",
+    "head_branch": "verify/reconcile-guards",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37947201690,
+    "run_started_at": "2026-10-09T14:50:34Z"
+   },
+   {
+    "conclusion": "success",
+    "created_at": "2026-10-09T14:49:57Z",
+    "head_branch": "ci/post-merge-lane",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37947122099,
+    "run_started_at": "2026-10-09T14:49:57Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-09T14:47:19Z",
+    "head_branch": "ci/post-merge-lane",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37946800169,
+    "run_started_at": "2026-10-09T14:47:19Z"
+   },
+   {
+    "conclusion": "cancelled",
+    "created_at": "2026-10-09T14:04:49Z",
+    "head_branch": "ci/post-merge-lane",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37941515454,
+    "run_started_at": "2026-10-09T14:04:49Z"
+   },
+   {
+    "conclusion": "success",
+    "created_at": "2026-10-09T13:10:05Z",
+    "head_branch": "docs/roadmap-v030-soundness",
+    "head_repository": {
+     "full_name": "aallan/vera"
+    },
+    "id": 37934923293,
+    "run_started_at": "2026-10-09T13:10:05Z"
+   }
+  ]
+ },
+ "https://api.github.com/repos/aallan/vera/issues?labels=bug&state=open&per_page=100&page=1": [
+  {
+   "number": 1655
+  },
+  {
+   "number": 1654
+  },
+  {
+   "number": 1644
+  },
+  {
+   "number": 1643
+  },
+  {
+   "number": 1641
+  },
+  {
+   "number": 1640
+  },
+  {
+   "number": 1638
+  },
+  {
+   "number": 1637
+  },
+  {
+   "number": 1636
+  },
+  {
+   "number": 1635
+  },
+  {
+   "number": 1632
+  },
+  {
+   "number": 1629
+  },
+  {
+   "number": 1628
+  },
+  {
+   "number": 1613
+  },
+  {
+   "number": 1610
+  },
+  {
+   "number": 1609
+  },
+  {
+   "number": 1608
+  },
+  {
+   "number": 1607
+  },
+  {
+   "number": 1605
+  },
+  {
+   "number": 1603
+  },
+  {
+   "number": 1602
+  },
+  {
+   "number": 1601
+  },
+  {
+   "number": 1600
+  },
+  {
+   "number": 1598
+  },
+  {
+   "number": 1597
+  },
+  {
+   "number": 1596
+  },
+  {
+   "number": 1595
+  },
+  {
+   "number": 1594
+  },
+  {
+   "number": 1593
+  },
+  {
+   "number": 1592
+  },
+  {
+   "number": 1591
+  },
+  {
+   "number": 1590
+  },
+  {
+   "number": 1589
+  },
+  {
+   "number": 1587
+  },
+  {
+   "number": 1586
+  },
+  {
+   "number": 1584
+  },
+  {
+   "number": 1582
+  },
+  {
+   "number": 1581
+  },
+  {
+   "number": 1578
+  },
+  {
+   "number": 1575
+  },
+  {
+   "number": 1573
+  },
+  {
+   "number": 1572
+  },
+  {
+   "number": 1571
+  },
+  {
+   "number": 1570
+  },
+  {
+   "number": 1567
+  },
+  {
+   "number": 1564
+  },
+  {
+   "number": 1563
+  },
+  {
+   "number": 1562
+  },
+  {
+   "number": 1560
+  },
+  {
+   "number": 1557
+  },
+  {
+   "number": 1556
+  },
+  {
+   "number": 1555
+  },
+  {
+   "number": 1553
+  },
+  {
+   "number": 1552
+  },
+  {
+   "number": 1551
+  },
+  {
+   "number": 1550
+  },
+  {
+   "number": 1549
+  },
+  {
+   "number": 1548
+  },
+  {
+   "number": 1546
+  },
+  {
+   "number": 1545
+  },
+  {
+   "number": 1543
+  },
+  {
+   "number": 1542
+  },
+  {
+   "number": 1540
+  },
+  {
+   "number": 1530
+  },
+  {
+   "number": 1526
+  },
+  {
+   "number": 1522
+  },
+  {
+   "number": 1519
+  },
+  {
+   "number": 1517
+  },
+  {
+   "number": 1516
+  },
+  {
+   "number": 1515
+  },
+  {
+   "number": 1514
+  },
+  {
+   "number": 1512
+  },
+  {
+   "number": 1510
+  },
+  {
+   "number": 1506
+  },
+  {
+   "number": 1505
+  },
+  {
+   "number": 1504
+  },
+  {
+   "number": 1502
+  },
+  {
+   "number": 1501
+  },
+  {
+   "number": 1500
+  },
+  {
+   "number": 1499
+  },
+  {
+   "number": 1498
+  },
+  {
+   "number": 1496
+  },
+  {
+   "number": 1495
+  },
+  {
+   "number": 1494
+  },
+  {
+   "number": 1490
+  },
+  {
+   "number": 1483
+  },
+  {
+   "number": 1482
+  },
+  {
+   "number": 1470
+  },
+  {
+   "number": 1468
+  }
+ ],
+ "https://api.github.com/repos/aallan/vera/issues?labels=bug,soundness&state=open&per_page=100&page=1": [
+  {
+   "number": 1628
+  },
+  {
+   "number": 1613
+  },
+  {
+   "number": 1607
+  },
+  {
+   "number": 1598
+  },
+  {
+   "number": 1592
+  },
+  {
+   "number": 1590
+  },
+  {
+   "number": 1587
+  },
+  {
+   "number": 1582
+  },
+  {
+   "number": 1581
+  },
+  {
+   "number": 1572
+  },
+  {
+   "number": 1571
+  },
+  {
+   "number": 1562
+  },
+  {
+   "number": 1560
+  },
+  {
+   "number": 1555
+  },
+  {
+   "number": 1551
+  },
+  {
+   "number": 1546
+  },
+  {
+   "number": 1530
+  },
+  {
+   "number": 1504
+  }
+ ],
+ "https://api.github.com/repos/aallan/vera/pulls?state=closed&base=main&sort=updated&direction=desc&per_page=100&page=1": [
+  {
+   "created_at": "2026-10-12T06:38:12Z",
+   "head": {
+    "ref": "docs/rendered-lists",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-10-12T08:11:00Z",
+   "number": 1653,
+   "updated_at": "2026-10-12T08:11:03Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-10-12T06:18:39Z",
+   "head": {
+    "ref": "tooling/changelog-fragments",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-10-12T07:09:00Z",
+   "number": 1652,
+   "updated_at": "2026-10-12T07:09:02Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-10-10T19:22:44Z",
+   "head": {
+    "ref": "prep/v0.2.1",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-10-11T05:12:57Z",
+   "number": 1651,
+   "updated_at": "2026-10-11T05:13:00Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-10-10T17:17:03Z",
+   "head": {
+    "ref": "docs/state-not-hedge",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-10-10T18:51:59Z",
+   "number": 1649,
+   "updated_at": "2026-10-10T18:52:02Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-10-09T21:48:30Z",
+   "head": {
+    "ref": "docs/truth",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-10-10T17:45:44Z",
+   "number": 1647,
+   "updated_at": "2026-10-10T17:45:47Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-10-09T21:35:16Z",
+   "head": {
+    "ref": "tests/golden-outputs",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-10-10T17:10:31Z",
+   "number": 1646,
+   "updated_at": "2026-10-10T17:10:34Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-10-10T15:34:57Z",
+   "head": {
+    "ref": "docs/counts-out",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-10-10T16:24:16Z",
+   "number": 1648,
+   "updated_at": "2026-10-10T16:24:18Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-10-09T16:03:58Z",
+   "head": {
+    "ref": "test/distrust-mode",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-10-09T22:55:25Z",
+   "number": 1634,
+   "updated_at": "2026-10-09T22:55:43Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-10-09T14:51:48Z",
+   "head": {
+    "ref": "fix/desugar-pipe-once",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-10-09T21:40:55Z",
+   "number": 1631,
+   "updated_at": "2026-10-09T21:40:57Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-10-09T17:28:03Z",
+   "head": {
+    "ref": "tests/matrix-marker",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-10-09T21:00:24Z",
+   "number": 1639,
+   "updated_at": "2026-10-09T21:00:26Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-10-09T14:50:29Z",
+   "head": {
+    "ref": "verify/reconcile-guards",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-10-09T19:56:55Z",
+   "number": 1630,
+   "updated_at": "2026-10-09T19:57:23Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-10-09T14:04:45Z",
+   "head": {
+    "ref": "ci/post-merge-lane",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-10-09T16:04:12Z",
+   "number": 1627,
+   "updated_at": "2026-10-09T16:04:14Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-08-24T04:15:14Z",
+   "head": {
+    "ref": "dependabot/uv/z3-solver-5.1.0.0",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": null,
+   "number": 1352,
+   "updated_at": "2026-10-09T14:50:41Z",
+   "user": {
+    "type": "Bot"
+   }
+  },
+  {
+   "created_at": "2026-09-23T21:54:17Z",
+   "head": {
+    "ref": "fix/1494-symbol-owners",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": null,
+   "number": 1507,
+   "updated_at": "2026-10-09T14:50:29Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-10-09T12:59:32Z",
+   "head": {
+    "ref": "docs/roadmap-v030-soundness",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-10-09T14:29:52Z",
+   "number": 1625,
+   "updated_at": "2026-10-09T14:29:54Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-10-09T11:52:32Z",
+   "head": {
+    "ref": "ci/coverage-post-merge",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-10-09T13:08:30Z",
+   "number": 1624,
+   "updated_at": "2026-10-09T13:08:33Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-10-08T00:48:12Z",
+   "head": {
+    "ref": "dependabot/uv/virtualenv-21.7.13",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": null,
+   "number": 1622,
+   "updated_at": "2026-10-09T11:48:38Z",
+   "user": {
+    "type": "Bot"
+   }
+  },
+  {
+   "created_at": "2026-10-06T13:46:12Z",
+   "head": {
+    "ref": "dependabot/npm_and_yarn/editors/vscode/brace-expansion-5.0.12",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": null,
+   "number": 1621,
+   "updated_at": "2026-10-09T11:48:35Z",
+   "user": {
+    "type": "Bot"
+   }
+  },
+  {
+   "created_at": "2026-10-05T04:23:55Z",
+   "head": {
+    "ref": "dependabot/npm_and_yarn/editors/vscode/vscode-languageclient-10.1.2",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": null,
+   "number": 1620,
+   "updated_at": "2026-10-09T11:48:34Z",
+   "user": {
+    "type": "Bot"
+   }
+  },
+  {
+   "created_at": "2026-10-05T04:15:58Z",
+   "head": {
+    "ref": "dependabot/uv/mypy-2.4.0",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": null,
+   "number": 1619,
+   "updated_at": "2026-10-09T11:48:32Z",
+   "user": {
+    "type": "Bot"
+   }
+  },
+  {
+   "created_at": "2026-10-05T04:15:53Z",
+   "head": {
+    "ref": "dependabot/uv/ruff-0.16.10",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": null,
+   "number": 1618,
+   "updated_at": "2026-10-09T11:48:26Z",
+   "user": {
+    "type": "Bot"
+   }
+  },
+  {
+   "created_at": "2026-09-28T04:13:25Z",
+   "head": {
+    "ref": "dependabot/uv/wasmtime-49.0.0",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": null,
+   "number": 1616,
+   "updated_at": "2026-10-09T11:48:25Z",
+   "user": {
+    "type": "Bot"
+   }
+  },
+  {
+   "created_at": "2026-10-09T10:23:59Z",
+   "head": {
+    "ref": "deps/batch-2026-10-09",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-10-09T11:47:24Z",
+   "number": 1623,
+   "updated_at": "2026-10-09T11:47:27Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-09-28T04:13:43Z",
+   "head": {
+    "ref": "dependabot/uv/ruff-0.16.9",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": null,
+   "number": 1617,
+   "updated_at": "2026-10-05T04:15:57Z",
+   "user": {
+    "type": "Bot"
+   }
+  },
+  {
+   "created_at": "2026-09-25T22:59:19Z",
+   "head": {
+    "ref": "release/v0.2.0-prep",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-09-26T12:23:01Z",
+   "number": 1606,
+   "updated_at": "2026-09-26T12:23:04Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-09-21T04:22:50Z",
+   "head": {
+    "ref": "dependabot/npm_and_yarn/editors/vscode/vscode-languageclient-10.1.1",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": null,
+   "number": 1477,
+   "updated_at": "2026-09-22T07:04:21Z",
+   "user": {
+    "type": "Bot"
+   }
+  },
+  {
+   "created_at": "2026-09-02T18:00:42Z",
+   "head": {
+    "ref": "fix/1357-piped-shadowed-generic-effect-op",
+    "repo": {
+     "full_name": "AmirF194/vera"
+    }
+   },
+   "merged_at": null,
+   "number": 1364,
+   "updated_at": "2026-09-18T12:13:19Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-09-02T14:10:58Z",
+   "head": {
+    "ref": "fix/1332-nat-bind-construction-soundness",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-09-02T17:30:11Z",
+   "number": 1361,
+   "updated_at": "2026-09-02T17:30:13Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-08-24T04:15:32Z",
+   "head": {
+    "ref": "dependabot/uv/wasmtime-48.0.0",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-09-02T12:12:22Z",
+   "number": 1354,
+   "updated_at": "2026-09-02T12:12:24Z",
+   "user": {
+    "type": "Bot"
+   }
+  },
+  {
+   "created_at": "2026-08-31T04:16:40Z",
+   "head": {
+    "ref": "dependabot/uv/ruff-0.16.5",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-09-02T11:52:03Z",
+   "number": 1359,
+   "updated_at": "2026-09-02T11:52:05Z",
+   "user": {
+    "type": "Bot"
+   }
+  },
+  {
+   "created_at": "2026-08-23T17:47:19Z",
+   "head": {
+    "ref": "fix/1310-shadowed-generic-effect-op-discovery",
+    "repo": {
+     "full_name": "AmirF194/vera"
+    }
+   },
+   "merged_at": "2026-09-02T10:51:37Z",
+   "number": 1340,
+   "updated_at": "2026-09-02T11:33:26Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-08-24T04:15:45Z",
+   "head": {
+    "ref": "dependabot/uv/ruff-0.16.4",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": null,
+   "number": 1355,
+   "updated_at": "2026-09-02T11:19:40Z",
+   "user": {
+    "type": "Bot"
+   }
+  },
+  {
+   "created_at": "2026-08-24T04:15:24Z",
+   "head": {
+    "ref": "dependabot/uv/mypy-2.3.1",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-09-02T11:19:29Z",
+   "number": 1353,
+   "updated_at": "2026-09-02T11:19:31Z",
+   "user": {
+    "type": "Bot"
+   }
+  },
+  {
+   "created_at": "2026-08-24T14:22:26Z",
+   "head": {
+    "ref": "feat/143-ephemeris-example",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-08-25T07:07:21Z",
+   "number": 1356,
+   "updated_at": "2026-08-25T07:07:24Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-08-23T22:58:30Z",
+   "head": {
+    "ref": "fix/1341-claims-vs-assurance",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-08-24T05:05:00Z",
+   "number": 1346,
+   "updated_at": "2026-08-24T05:05:02Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-07-20T04:18:29Z",
+   "head": {
+    "ref": "dependabot/uv/z3-solver-5.0.0.0",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": null,
+   "number": 1119,
+   "updated_at": "2026-08-24T04:15:18Z",
+   "user": {
+    "type": "Bot"
+   }
+  },
+  {
+   "created_at": "2026-08-21T14:51:38Z",
+   "head": {
+    "ref": "fix/1312-entry-module-adt-contention",
+    "repo": {
+     "full_name": "AmirF194/vera"
+    }
+   },
+   "merged_at": null,
+   "number": 1339,
+   "updated_at": "2026-08-23T14:21:34Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-08-21T11:04:07Z",
+   "head": {
+    "ref": "fix/1333-inference-text-blocks",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-08-21T20:27:34Z",
+   "number": 1338,
+   "updated_at": "2026-08-21T20:27:36Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-08-17T04:15:28Z",
+   "head": {
+    "ref": "dependabot/uv/pre-commit-4.6.2",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-08-21T11:39:28Z",
+   "number": 1335,
+   "updated_at": "2026-08-21T11:39:30Z",
+   "user": {
+    "type": "Bot"
+   }
+  },
+  {
+   "created_at": "2026-08-17T04:24:46Z",
+   "head": {
+    "ref": "dependabot/npm_and_yarn/editors/vscode/esbuild-0.28.2",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-08-21T11:18:43Z",
+   "number": 1336,
+   "updated_at": "2026-08-21T11:18:45Z",
+   "user": {
+    "type": "Bot"
+   }
+  },
+  {
+   "created_at": "2026-08-17T04:15:17Z",
+   "head": {
+    "ref": "dependabot/uv/ruff-0.16.3",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-08-21T10:58:23Z",
+   "number": 1334,
+   "updated_at": "2026-08-21T10:58:25Z",
+   "user": {
+    "type": "Bot"
+   }
+  },
+  {
+   "created_at": "2026-08-15T03:28:37Z",
+   "head": {
+    "ref": "release/v0.1.12",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-08-16T16:55:37Z",
+   "number": 1330,
+   "updated_at": "2026-08-16T16:55:40Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-08-13T17:29:47Z",
+   "head": {
+    "ref": "release-prep-v0.1.11",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-08-13T20:48:27Z",
+   "number": 1297,
+   "updated_at": "2026-08-13T20:48:29Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-08-11T17:01:55Z",
+   "head": {
+    "ref": "feat/issue-450-deepseek-provider",
+    "repo": {
+     "full_name": "chethanuk/vera"
+    }
+   },
+   "merged_at": "2026-08-13T16:37:21Z",
+   "number": 1278,
+   "updated_at": "2026-08-13T16:39:31Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-08-08T07:54:11Z",
+   "head": {
+    "ref": "feat/issue-425-xai-grok-provider",
+    "repo": {
+     "full_name": "chethanuk/vera"
+    }
+   },
+   "merged_at": "2026-08-13T15:34:07Z",
+   "number": 1261,
+   "updated_at": "2026-08-13T15:34:08Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-08-08T07:33:35Z",
+   "head": {
+    "ref": "ci/issue-1156-editor-grammar-gate",
+    "repo": {
+     "full_name": "chethanuk/vera"
+    }
+   },
+   "merged_at": "2026-08-13T14:24:21Z",
+   "number": 1257,
+   "updated_at": "2026-08-13T14:24:21Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-08-08T07:33:36Z",
+   "head": {
+    "ref": "test/issue-349-browser-runtime-coverage",
+    "repo": {
+     "full_name": "chethanuk/vera"
+    }
+   },
+   "merged_at": "2026-08-13T13:29:56Z",
+   "number": 1258,
+   "updated_at": "2026-08-13T13:29:56Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-08-08T07:41:06Z",
+   "head": {
+    "ref": "fix/issue-725-lsp-handler-aware-propagation",
+    "repo": {
+     "full_name": "chethanuk/vera"
+    }
+   },
+   "merged_at": "2026-08-13T12:43:43Z",
+   "number": 1259,
+   "updated_at": "2026-08-13T12:43:44Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-08-11T17:02:03Z",
+   "head": {
+    "ref": "docs/issue-683-grammar-alignment-gate",
+    "repo": {
+     "full_name": "chethanuk/vera"
+    }
+   },
+   "merged_at": "2026-08-13T10:11:11Z",
+   "number": 1279,
+   "updated_at": "2026-08-13T12:14:44Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-08-08T08:21:51Z",
+   "head": {
+    "ref": "feat/issue-558-e130-slot-table",
+    "repo": {
+     "full_name": "chethanuk/vera"
+    }
+   },
+   "merged_at": "2026-08-13T12:13:50Z",
+   "number": 1262,
+   "updated_at": "2026-08-13T12:13:50Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-08-12T17:11:51Z",
+   "head": {
+    "ref": "release/v0.1.10",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-08-12T21:40:54Z",
+   "number": 1283,
+   "updated_at": "2026-08-12T21:40:57Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-08-10T09:03:29Z",
+   "head": {
+    "ref": "dependabot/npm_and_yarn/editors/vscode/js-yaml-4.3.1",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-08-10T09:40:36Z",
+   "number": 1266,
+   "updated_at": "2026-08-10T09:40:37Z",
+   "user": {
+    "type": "Bot"
+   }
+  },
+  {
+   "created_at": "2026-08-10T09:07:53Z",
+   "head": {
+    "ref": "fix/limitation-citation-1222",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-08-10T09:23:22Z",
+   "number": 1267,
+   "updated_at": "2026-08-10T09:23:23Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-08-10T04:18:39Z",
+   "head": {
+    "ref": "dependabot/uv/mutmut-3.7.0",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-08-10T08:58:47Z",
+   "number": 1264,
+   "updated_at": "2026-08-10T08:58:49Z",
+   "user": {
+    "type": "Bot"
+   }
+  },
+  {
+   "created_at": "2026-08-06T01:31:10Z",
+   "head": {
+    "ref": "fix/779-985-fresh-scope-walkers",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-08-06T20:45:16Z",
+   "number": 1202,
+   "updated_at": "2026-08-06T20:45:19Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-08-05T13:25:50Z",
+   "head": {
+    "ref": "fix/764-destructure-block-translation",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-08-06T00:54:20Z",
+   "number": 1200,
+   "updated_at": "2026-08-06T00:54:22Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-08-04T01:00:35Z",
+   "head": {
+    "ref": "release/v0.1.9",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-08-05T09:55:47Z",
+   "number": 1195,
+   "updated_at": "2026-08-05T09:55:50Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-08-05T08:44:15Z",
+   "head": {
+    "ref": "dependabot/npm_and_yarn/editors/vscode/fast-uri-3.1.5",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-08-05T09:15:37Z",
+   "number": 1198,
+   "updated_at": "2026-08-05T09:15:39Z",
+   "user": {
+    "type": "Bot"
+   }
+  },
+  {
+   "created_at": "2026-08-04T13:34:59Z",
+   "head": {
+    "ref": "dependabot/npm_and_yarn/editors/vscode/undici-7.29.0",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-08-05T09:00:47Z",
+   "number": 1196,
+   "updated_at": "2026-08-05T09:00:48Z",
+   "user": {
+    "type": "Bot"
+   }
+  },
+  {
+   "created_at": "2026-08-05T00:42:54Z",
+   "head": {
+    "ref": "dependabot/npm_and_yarn/editors/vscode/brace-expansion-5.0.9",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-08-05T08:42:43Z",
+   "number": 1197,
+   "updated_at": "2026-08-05T08:42:45Z",
+   "user": {
+    "type": "Bot"
+   }
+  },
+  {
+   "created_at": "2026-08-04T00:40:08Z",
+   "head": {
+    "ref": "fix/1187-keyword-fn-names",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-08-04T00:49:03Z",
+   "number": 1194,
+   "updated_at": "2026-08-04T06:54:56Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-08-04T00:12:06Z",
+   "head": {
+    "ref": "fix/1189-imported-trap-source-maps",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-08-04T00:29:12Z",
+   "number": 1193,
+   "updated_at": "2026-08-04T00:30:10Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-08-03T21:22:57Z",
+   "head": {
+    "ref": "fix/1185-orphan-call-indirect",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-08-04T00:07:50Z",
+   "number": 1192,
+   "updated_at": "2026-08-04T00:07:52Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-08-03T19:10:40Z",
+   "head": {
+    "ref": "fix/1184-prelude-alias-precedence",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-08-03T21:10:03Z",
+   "number": 1191,
+   "updated_at": "2026-08-03T21:10:05Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-08-03T17:34:27Z",
+   "head": {
+    "ref": "fix/1183-1186-cli-cluster",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-08-03T18:52:17Z",
+   "number": 1190,
+   "updated_at": "2026-08-03T18:52:19Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-08-03T16:48:25Z",
+   "head": {
+    "ref": "fix/1181-reserved-fn-names",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-08-03T17:26:31Z",
+   "number": 1188,
+   "updated_at": "2026-08-03T17:26:32Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-08-03T11:29:16Z",
+   "head": {
+    "ref": "fix/1172-decreases-runtime-guard",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-08-03T16:09:32Z",
+   "number": 1179,
+   "updated_at": "2026-08-03T16:09:34Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-08-03T13:09:27Z",
+   "head": {
+    "ref": "fix/1149-builtin-effect-gate",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-08-03T15:36:01Z",
+   "number": 1182,
+   "updated_at": "2026-08-03T15:36:04Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-08-03T12:23:02Z",
+   "head": {
+    "ref": "fix/1173-old-outside-ensures",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-08-03T15:04:17Z",
+   "number": 1180,
+   "updated_at": "2026-08-03T15:04:19Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-08-03T11:17:06Z",
+   "head": {
+    "ref": "fix/1100-e602-caller-propagation",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-08-03T13:50:17Z",
+   "number": 1178,
+   "updated_at": "2026-08-03T14:56:48Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-08-03T09:52:40Z",
+   "head": {
+    "ref": "fix/1111-module-local-aliases",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-08-03T12:30:43Z",
+   "number": 1175,
+   "updated_at": "2026-08-03T14:56:47Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-08-03T04:15:00Z",
+   "head": {
+    "ref": "dependabot/uv/ruff-0.16.1",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-08-03T11:37:00Z",
+   "number": 1171,
+   "updated_at": "2026-08-03T11:37:01Z",
+   "user": {
+    "type": "Bot"
+   }
+  },
+  {
+   "created_at": "2026-08-03T04:14:05Z",
+   "head": {
+    "ref": "dependabot/github_actions/pypa/gh-action-pypi-publish-1.14.2",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-08-03T11:20:53Z",
+   "number": 1170,
+   "updated_at": "2026-08-03T11:20:56Z",
+   "user": {
+    "type": "Bot"
+   }
+  },
+  {
+   "created_at": "2026-08-03T09:36:19Z",
+   "head": {
+    "ref": "fix/1154-site-drift-gate",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-08-03T10:58:22Z",
+   "number": 1174,
+   "updated_at": "2026-08-03T10:58:23Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-07-28T02:34:19Z",
+   "head": {
+    "ref": "docs/verabench-v0-0-18",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-07-28T11:32:13Z",
+   "number": 1169,
+   "updated_at": "2026-07-28T11:32:15Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-07-27T16:52:18Z",
+   "head": {
+    "ref": "release/v0.1.8",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-07-27T17:52:21Z",
+   "number": 1168,
+   "updated_at": "2026-07-27T17:52:23Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-07-26T15:07:55Z",
+   "head": {
+    "ref": "chromy/2026-07-18-add-vim-support",
+    "repo": {
+     "full_name": "chromy/vera"
+    }
+   },
+   "merged_at": "2026-07-27T16:38:56Z",
+   "number": 1155,
+   "updated_at": "2026-07-27T16:38:56Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-07-27T13:06:06Z",
+   "head": {
+    "ref": "agent/document-vscode-marketplace-release",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-07-27T15:29:40Z",
+   "number": 1165,
+   "updated_at": "2026-07-27T15:29:42Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-07-27T14:36:22Z",
+   "head": {
+    "ref": "dependabot/npm_and_yarn/editors/vscode/brace-expansion-5.0.8",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": null,
+   "number": 1167,
+   "updated_at": "2026-07-27T14:49:19Z",
+   "user": {
+    "type": "Bot"
+   }
+  },
+  {
+   "created_at": "2026-07-27T04:15:34Z",
+   "head": {
+    "ref": "dependabot/uv/ruff-0.16.0",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-07-27T14:33:25Z",
+   "number": 1162,
+   "updated_at": "2026-07-27T14:33:27Z",
+   "user": {
+    "type": "Bot"
+   }
+  },
+  {
+   "created_at": "2026-07-27T09:32:00Z",
+   "head": {
+    "ref": "fix/1160-e208-let-chain",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-07-27T12:40:34Z",
+   "number": 1163,
+   "updated_at": "2026-07-27T12:40:36Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-07-26T22:02:50Z",
+   "head": {
+    "ref": "docs/sql-aside-rewrite",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-07-27T08:57:08Z",
+   "number": 1159,
+   "updated_at": "2026-07-27T08:57:10Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-07-26T17:27:53Z",
+   "head": {
+    "ref": "docs/post-v0.1.7-sweep",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-07-26T20:39:19Z",
+   "number": 1158,
+   "updated_at": "2026-07-26T20:39:21Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-07-25T11:49:33Z",
+   "head": {
+    "ref": "docs/verabench-v0-0-16",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-07-25T21:16:00Z",
+   "number": 1153,
+   "updated_at": "2026-07-25T21:16:02Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-07-24T00:01:25Z",
+   "head": {
+    "ref": "release/v0.1.7",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-07-24T00:12:55Z",
+   "number": 1151,
+   "updated_at": "2026-07-24T00:12:57Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-07-23T17:01:38Z",
+   "head": {
+    "ref": "feat/309-sql-provenance",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-07-23T23:33:05Z",
+   "number": 1147,
+   "updated_at": "2026-07-23T23:43:05Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-07-23T12:39:58Z",
+   "head": {
+    "ref": "feat/229-db-effect",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-07-23T16:23:56Z",
+   "number": 1144,
+   "updated_at": "2026-07-23T16:23:58Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-07-23T13:35:01Z",
+   "head": {
+    "ref": "fix/1145",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-07-23T13:45:07Z",
+   "number": 1146,
+   "updated_at": "2026-07-23T13:45:10Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-07-23T09:23:54Z",
+   "head": {
+    "ref": "fix/1121-rounding-tier3",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-07-23T10:58:17Z",
+   "number": 1140,
+   "updated_at": "2026-07-23T10:58:20Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-07-23T10:27:27Z",
+   "head": {
+    "ref": "fix/1141-skill-state-with-idiom",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-07-23T10:43:11Z",
+   "number": 1142,
+   "updated_at": "2026-07-23T10:43:14Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-07-22T13:46:31Z",
+   "head": {
+    "ref": "fix/contract-comment-placement",
+    "repo": {
+     "full_name": "Sanjays2402/vera"
+    }
+   },
+   "merged_at": null,
+   "number": 1137,
+   "updated_at": "2026-07-23T08:20:29Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-07-22T15:20:38Z",
+   "head": {
+    "ref": "fix/1136-1124-formatter-canonical",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-07-22T23:49:25Z",
+   "number": 1138,
+   "updated_at": "2026-07-22T23:49:27Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-07-21T15:27:49Z",
+   "head": {
+    "ref": "feat/vscode-languageclient-10",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-07-22T10:46:30Z",
+   "number": 1130,
+   "updated_at": "2026-07-22T16:06:25Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-07-21T20:31:39Z",
+   "head": {
+    "ref": "chromy/2026-07-19-add-maximum-syntax-example",
+    "repo": {
+     "full_name": "chromy/vera"
+    }
+   },
+   "merged_at": "2026-07-22T13:33:30Z",
+   "number": 1131,
+   "updated_at": "2026-07-22T13:35:03Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-07-22T10:48:09Z",
+   "head": {
+    "ref": "dependabot/uv/wasmtime-47.0.1",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-07-22T12:47:57Z",
+   "number": 1135,
+   "updated_at": "2026-07-22T12:47:59Z",
+   "user": {
+    "type": "Bot"
+   }
+  },
+  {
+   "created_at": "2026-07-22T10:47:44Z",
+   "head": {
+    "ref": "dependabot/github_actions/actions/setup-python-7",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-07-22T12:19:28Z",
+   "number": 1132,
+   "updated_at": "2026-07-22T12:19:31Z",
+   "user": {
+    "type": "Bot"
+   }
+  },
+  {
+   "created_at": "2026-07-22T10:47:59Z",
+   "head": {
+    "ref": "dependabot/uv/pre-commit-4.6.1",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-07-22T11:32:17Z",
+   "number": 1133,
+   "updated_at": "2026-07-22T11:32:18Z",
+   "user": {
+    "type": "Bot"
+   }
+  },
+  {
+   "created_at": "2026-07-22T10:48:04Z",
+   "head": {
+    "ref": "dependabot/npm_and_yarn/editors/vscode/fast-uri-3.1.4",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-07-22T11:19:45Z",
+   "number": 1134,
+   "updated_at": "2026-07-22T11:19:47Z",
+   "user": {
+    "type": "Bot"
+   }
+  },
+  {
+   "created_at": "2026-07-21T15:14:47Z",
+   "head": {
+    "ref": "fix/brace-expansion-ghsa-3jxr",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": "2026-07-21T15:33:46Z",
+   "number": 1129,
+   "updated_at": "2026-07-21T15:33:48Z",
+   "user": {
+    "type": "User"
+   }
+  },
+  {
+   "created_at": "2026-07-21T13:18:06Z",
+   "head": {
+    "ref": "dependabot/npm_and_yarn/editors/vscode/multi-a8826a37bc",
+    "repo": {
+     "full_name": "aallan/vera"
+    }
+   },
+   "merged_at": null,
+   "number": 1127,
+   "updated_at": "2026-07-21T15:32:04Z",
+   "user": {
+    "type": "Bot"
+   }
+  }
+ ],
+ "https://api.github.com/repos/aallan/vera/releases/latest": {
+  "published_at": "2026-10-11T05:16:57Z",
+  "tag_name": "v0.2.1"
+ }
+}

@@ -71,7 +71,6 @@ Exit criterion: a pull request's CI finishes in 20 minutes or less, and every ha
 |---|---|
 | The fast lane | A pull request's required checks become lint, sharded Python 3.12 runs on Linux and Windows, eager-GC, browser parity, CodeQL and the supply-chain jobs.  The full platform matrix runs after merge, nightly and on a version-raising pull request; a failure files an issue, and the release waits for the post-merge run. |
 | Rendered lists | The spec's grammar listing renders from `grammar.lark`, and `examples/README.md` from the examples' headers, each retiring the gate that compares its copies. |
-| The scorecard | `scripts/render_status.py` also measures the Stage 29 scorecard, so every release pull request re-measures it without hand work. |
 | One pipeline driver | `tests/pipeline.py` runs check, verify, compile and run in process and returns structured results.  The per-file drivers and the CLI subprocesses move to it, leaving `test_cli.py` and a few corpus programs as the CLI smoke test, and tests that read WAT text read instead a guard-and-trap manifest that code generation emits beside it. |
 | `vera test --distrust`, nightly | The nightly lane runs the distrust corpus test with many trials per function (`VERA_DISTRUST_TRIALS`); the pull-request run uses five. |
 | [#1633](https://github.com/aallan/vera/issues/1633) | `vera test --distrust` attributes a trap through the reconciliation join instead of by exact span, so a check whose obligation record sits at another node is attributed rather than unattributed. |
@@ -181,6 +180,8 @@ Exit criterion: every target in the scorecard is met.
 | `vera test` executes proved functions | Yes, in CI |
 | Statement / branch coverage | ≥ 96% / ≥ 92%, measured after merge |
 | Spec words; issue links in the spec | Fewer than v0.2.0's; 0 |
+
+[TESTING.md](TESTING.md#scorecard) holds the measured values: `scripts/render_status.py` writes each measure a command can take there, beside the audit's value at v0.2.0, in every release pull request.
 
 ## Stage 30 — The effect hardening sprint
 

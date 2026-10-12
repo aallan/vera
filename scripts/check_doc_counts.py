@@ -10,7 +10,9 @@ the generated status may lag the tree, so a fix PR or a commit has nothing
 to keep in step.  What is left is checked when a release is cut:
 
 - ``--release`` (the release PR): TESTING.md's generated blocks are what
-  ``render_status.py`` writes now, and every block ``render_lists.py``
+  ``render_status.py`` writes now, save the scorecard's network and junit
+  rows, which change between any two moments and must each state the window
+  they were measured over, and every block ``render_lists.py``
   renders (the effect names in the editor grammars and extension READMEs,
   the limitation tables) is what it writes now.  CI passes
   ``--release-if-version-raised
@@ -55,7 +57,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help=(
             "check that TESTING.md's generated status is what "
-            "scripts/render_status.py writes now, and every rendered list "
+            "scripts/render_status.py writes now (the scorecard's network and "
+            "junit rows by the window each states), and every rendered list "
             "what scripts/render_lists.py writes now (the release PR)"
         ),
     )
