@@ -42,6 +42,7 @@ from vera.runtime.traps import (
     _classify_host_error,
     _classify_trap,
 )
+from tests import pipeline
 
 if TYPE_CHECKING:
     from _pytest.capture import CaptureFixture
@@ -1696,10 +1697,7 @@ class TestSourceMapPopulation516:
 
     @staticmethod
     def _compile(source: str) -> object:
-        from vera.codegen import compile as compile_program
-        from vera.parser import parse_to_ast
-        program = parse_to_ast(source)
-        return compile_program(program, source=source)
+        return pipeline.compile(source, checked=False).result
 
     def test_top_level_fn_in_source_map(self) -> None:
         result = self._compile("""\
@@ -3067,16 +3065,9 @@ class TestHostErrorDebugKnob1302:
     _SRC = TestHostCallbackErrorSurface1302._SRC
 
     def _compile(self, tmp_path: Path) -> CompileResult:
-        from vera.codegen import compile as codegen_compile
-        from vera.parser import parse_file
-        from vera.transform import transform
-
         path = tmp_path / "knob.vera"
         path.write_text(self._SRC, encoding="utf-8")
-        source = path.read_text(encoding="utf-8")
-        result = codegen_compile(
-            transform(parse_file(str(path))), source=source, file=str(path),
-        )
+        result = pipeline.compile(path, checked=False).result
         assert result.ok
         return result
 
@@ -3190,17 +3181,9 @@ class TestHostCallbackBaseExceptionBoundary1302:
     _SRC = TestHostCallbackErrorSurface1302._SRC
 
     def _compile(self, tmp_path: Path) -> CompileResult:
-        from vera.codegen import compile as codegen_compile
-        from vera.parser import parse_file
-        from vera.transform import transform
-
         path = tmp_path / "baseexc.vera"
         path.write_text(self._SRC, encoding="utf-8")
-        result = codegen_compile(
-            transform(parse_file(str(path))),
-            source=self._SRC,
-            file=str(path),
-        )
+        result = pipeline.compile(path, checked=False).result
         assert result.ok
         return result
 

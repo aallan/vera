@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-from vera.parser import parse
-from vera.tester import test as run_test
 from vera.tester import TestResult, FunctionTestResult
-from vera.transform import transform
-from vera.checker import typecheck
+from tests import pipeline
 
 
 # =====================================================================
@@ -15,14 +12,14 @@ from vera.checker import typecheck
 
 
 def _test(source: str, trials: int = 10, fn_name: str | None = None) -> TestResult:
-    """Parse, type-check, and test a Vera source string."""
-    tree = parse(source, file="<test>")
-    program = transform(tree)
-    errors = typecheck(program, source=source, file="<test>")
+    """Parse, type-check, and test a Vera source string, as ``vera test``
+    does: the checker's tables go to the tester."""
+    tested = pipeline.contract_test(
+        source, file="<test>", trials=trials, fn=fn_name)
+    _ = tested.checked.program  # raises the parse or transform error, if any
+    errors = list(tested.checked.checker_diagnostics)
     assert not errors, f"Type errors: {errors[0].description}"
-    return run_test(
-        program, source=source, file="<test>", trials=trials, fn_name=fn_name,
-    )
+    return tested.result
 
 
 def _fn_result(result: TestResult, name: str) -> FunctionTestResult:
