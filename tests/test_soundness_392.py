@@ -20,19 +20,7 @@ and passes once the fix lands. Parent audit issue: #392.
 
 from __future__ import annotations
 
-from vera.parser import parse_to_ast
-from vera.checker import typecheck_with_artifacts
-from vera.verifier import VerifyResult, verify
-
-
-def _verify(source: str) -> VerifyResult:
-    ast = parse_to_ast(source)
-    _diags, arts = typecheck_with_artifacts(ast, source)
-    return verify(
-        ast, source,
-        expr_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-    )
+from tests.verifier_helpers import _verify
 
 
 def _verify_ok(source: str) -> None:

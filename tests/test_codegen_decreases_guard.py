@@ -32,47 +32,14 @@ import subprocess
 import sys
 from pathlib import Path
 
-from vera.codegen import CompileResult, compile, execute
 from vera.parser import parse_file
 from vera.transform import transform
+from tests.codegen_helpers import _compile, _compile_ok, _run
 
 
 # =====================================================================
 # Helpers
 # =====================================================================
-
-
-def _compile(source: str) -> CompileResult:
-    """Compile a Vera source string to WASM."""
-    import tempfile
-
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False, encoding="utf-8"
-    ) as f:
-        f.write(source)
-        f.flush()
-        path = f.name
-
-    try:
-        tree = parse_file(path)
-        prog = transform(tree)
-        return compile(prog, source=source, file=path)
-    finally:
-        Path(path).unlink(missing_ok=True)
-
-
-def _compile_ok(source: str) -> CompileResult:
-    result = _compile(source)
-    errors = [d for d in result.diagnostics if d.severity == "error"]
-    assert not errors, f"Unexpected errors: {[e.description for e in errors]}"
-    return result
-
-
-def _run(source: str, fn: str | None = None, args: list[int] | None = None) -> int:
-    result = _compile_ok(source)
-    exec_result = execute(result, fn_name=fn, args=args)
-    assert exec_result.value is not None, "Expected a return value"
-    return exec_result.value
 
 
 def _run_cli(tmp_path: Path, source: str, timeout: int = 30):

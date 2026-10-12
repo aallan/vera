@@ -51,15 +51,20 @@ them, so the two issues' cells can never be built against subtly
 different pipelines.
 
 :func:`build_multi_module_past_check` (#1304) is the same pipeline for a
-program the CHECKER refuses: it shares the resolve-and-check front half
-(``_resolve_and_check``) and then compiles anyway, so a codegen rail that
-now sits behind an earlier refusal is still driven and still asserted.
+program the CHECKER refuses: it compiles anyway, with the tables that check
+collected (``tests/pipeline.py``'s ``compile(..., past_check=True)``), so a
+codegen rail that now sits behind an earlier refusal is still driven and
+still asserted.
 
 :func:`check_multi_module` and :func:`verify_multi_module` stop earlier
 and return more: every check diagnostic, warnings and locations included,
 and the verify result with its obligations — what a test comparing two
 programs phase by phase needs, through the same resolution and the same
-verify wiring (``_resolve``, ``_verify_resolved``) as the builders.
+verify wiring as the builders.
+
+Every builder here drives ``tests/pipeline.py``: the entry is written with
+its modules and handed to the pipeline's stages by path, so its imports
+resolve from *tmp_path* exactly as ``vera run`` resolves them.
 """
 from __future__ import annotations
 
@@ -68,18 +73,13 @@ from pathlib import Path
 
 import wasmtime
 
+from tests import pipeline
 from vera import ast
-from vera.checker import typecheck_with_artifacts
 from vera.checker.core import CheckArtifacts
-from vera.codegen import compile as codegen_compile
-from vera.codegen import execute
 from vera.codegen.api import CompileResult
 from vera.errors import Diagnostic
-from vera.parser import parse_file, parse_to_ast
-from vera.resolver import ModuleResolver, ResolvedModule
-from vera.runtime.traps import WasmTrapError
-from vera.transform import transform
-from vera.verifier import VerifyResult, verify
+from vera.resolver import ResolvedModule
+from vera.verifier import VerifyResult
 
 
 def resolved_module(path: tuple[str, ...], source: str) -> ResolvedModule:
@@ -113,7 +113,7 @@ def resolved_module(path: tuple[str, ...], source: str) -> ResolvedModule:
         return ResolvedModule(
             path=path,
             file_path=Path(fp),
-            program=transform(parse_file(fp)),
+            program=pipeline.parse(Path(fp)).program,
             source=source,
         )
     finally:
@@ -135,7 +135,7 @@ def fake_resolved_module(
     return ResolvedModule(
         path=path,
         file_path=Path(f"/fake/{'/'.join(path)}.vera"),
-        program=parse_to_ast(source),
+        program=pipeline.parse(source).program,
         source=source,
     )
 
@@ -178,21 +178,47 @@ def build_multi_module(
     a codegen rail measured through one is measured against the same
     resolution and the same artifacts as through the other.
     """
-    program, source, main_path, resolved, arts, check_errors = (
-        _resolve_and_check(tmp_path, files, main_name)
-    )
+    entry = pipeline.write_tree(tmp_path, files, main_name)
+    verified = pipeline.verify(entry, root=tmp_path)
+    check_errors = _check_errors(verified.checked)
     assert not check_errors, (
         f"typecheck errors: {[d for _, d in check_errors]}"
     )
-    vres = _verify_resolved(program, source, main_path, resolved, arts)
     verify_errors = [
         (d.error_code, d.description)
-        for d in vres.diagnostics if d.severity == "error"
+        for d in verified.result.diagnostics if d.severity == "error"
     ]
-    result, cg_errors = _compile_resolved(
-        program, source, main_path, resolved, arts,
-    )
+    result, cg_errors = _compiled(pipeline.compile(entry, root=tmp_path))
     return verify_errors, result, cg_errors
+
+
+def compile_multi_module(
+    tmp_path: Path, files: dict[str, str],
+    main_name: str = "main.vera",
+) -> CompileResult:
+    """Resolve + check + compile *main_name* as ``vera compile`` does, and
+    return the module, its own diagnostics unasserted.  Resolution and
+    type-check errors raise, as for :func:`build_multi_module`."""
+    compiled = pipeline.compile(
+        pipeline.write_tree(tmp_path, files, main_name), root=tmp_path)
+    assert compiled.checked is not None
+    check_errors = _check_errors(compiled.checked)
+    assert not check_errors, (
+        f"typecheck errors: {[d for _, d in check_errors]}"
+    )
+    return compiled.result
+
+
+def compile_multi_module_ok(
+    tmp_path: Path, files: dict[str, str],
+    main_name: str = "main.vera",
+) -> CompileResult:
+    """:func:`compile_multi_module`, asserting code generation reports no
+    error."""
+    result = compile_multi_module(tmp_path, files, main_name)
+    errs = [d for d in result.diagnostics if d.severity == "error"]
+    assert not errs, f"codegen errors: {[d.description for d in errs]}"
+    return result
 
 
 def check_multi_module(
@@ -202,13 +228,12 @@ def check_multi_module(
     """Every diagnostic the checker gives *main_name*, its imports resolved
     as ``vera check`` resolves them: warnings included, and errors returned
     rather than raised, for a test about what the checker reports."""
-    program, source, main_path, resolved = _resolve(
-        tmp_path, files, main_name)
-    diags, _arts = typecheck_with_artifacts(
-        program, source, file=str(main_path), resolved_modules=resolved,
+    checked = pipeline.check(
+        pipeline.write_tree(tmp_path, files, main_name), root=tmp_path,
         collect_module_artifacts=True,
     )
-    return diags
+    _assert_resolved(checked)
+    return list(checked.checker_diagnostics)
 
 
 def verify_multi_module(
@@ -223,30 +248,15 @@ def verify_multi_module(
 
     Check-clean is the premise, as for a single file: verification of an
     ill-typed program describes nothing (``tests/verifier_helpers.py``)."""
-    program, source, main_path, resolved = _resolve(
-        tmp_path, files, main_name)
-    diags, arts = typecheck_with_artifacts(
-        program, source, file=str(main_path), resolved_modules=resolved,
-        collect_module_artifacts=True,
-    )
-    check_errors = [d for d in diags if d.severity == "error"]
+    verified = pipeline.verify(
+        pipeline.write_tree(tmp_path, files, main_name), root=tmp_path)
+    checked = verified.checked
+    _assert_resolved(checked)
+    check_errors = checked.errors
     assert not check_errors, (
         f"typecheck errors: {[d.description for d in check_errors]}"
     )
-    return diags, _verify_resolved(program, source, main_path, resolved, arts)
-
-
-def _verify_resolved(
-    program: ast.Program, source: str, main_path: Path,
-    resolved: list[ResolvedModule], arts: CheckArtifacts,
-) -> VerifyResult:
-    """Verify a resolved, checked program with the checker's tables, each
-    module's own included, as ``vera verify`` hands them over (#1509)."""
-    return verify(program, source, file=str(main_path),
-                  resolved_modules=resolved,
-                  expr_types=arts.expr_semantic_types,
-                  expr_target_types=arts.expr_target_types,
-                  module_artifacts=arts.module_artifacts)
+    return list(checked.checker_diagnostics), verified.result
 
 
 def build_multi_module_past_check(
@@ -272,15 +282,16 @@ def build_multi_module_past_check(
     Verification is skipped: the program is already rejected, so a verify
     verdict over it would describe a program the toolchain will not build.
     """
-    program, source, main_path, resolved, arts, check_errors = (
-        _resolve_and_check(tmp_path, files, main_name)
+    compiled = pipeline.compile(
+        pipeline.write_tree(tmp_path, files, main_name), root=tmp_path,
+        past_check=True,
     )
+    assert compiled.checked is not None
+    check_errors = _check_errors(compiled.checked)
     assert check_errors, (
         "expected the checker to refuse this program; it was accepted"
     )
-    result, cg_errors = _compile_resolved(
-        program, source, main_path, resolved, arts,
-    )
+    result, cg_errors = _compiled(compiled)
     return check_errors, result, cg_errors
 
 
@@ -292,64 +303,51 @@ def _resolve_and_check(
 ]:
     """Write *files*, resolve *main_name*'s imports, and type-check it.
 
-    The front half both public builders share (see their docstrings for the
-    difference).  Returns the pieces codegen needs plus the check errors as
+    Returns the pieces codegen needs plus the check errors as
     ``(error_code, description)`` pairs, and decides nothing about them.
     """
-    program, source, main_path, resolved = _resolve(
-        tmp_path, files, main_name)
-    diags, arts = typecheck_with_artifacts(
-        program, source, file=str(main_path), resolved_modules=resolved,
-        collect_module_artifacts=True,
+    entry = pipeline.write_tree(tmp_path, files, main_name)
+    checked = pipeline.check(entry, root=tmp_path, collect_module_artifacts=True)
+    check_errors = _check_errors(checked)
+    return (
+        checked.program, checked.source, entry, checked.resolved or [],
+        checked.artifacts, check_errors,
     )
-    check_errors = [
-        (d.error_code, d.description)
-        for d in diags if d.severity == "error"
-    ]
-    return program, source, main_path, resolved, arts, check_errors
 
 
-def _resolve(
-    tmp_path: Path, files: dict[str, str], main_name: str,
-) -> tuple[ast.Program, str, Path, list[ResolvedModule]]:
-    """Write *files* and resolve *main_name*'s imports, raising on a
-    resolution error (see below)."""
-    tmp_path.mkdir(parents=True, exist_ok=True)
-    for name, src in files.items():
-        (tmp_path / name).write_text(src, encoding="utf-8")
-    main_path = tmp_path / main_name
-    source = files[main_name]
-    program = parse_to_ast(source)
-    resolver = ModuleResolver(_root=tmp_path)
-    resolved = resolver.resolve_imports(program, main_path)
-    # Resolution failures are RECORDED, not raised: `resolve_imports` appends
-    # E011/E012 to `resolver.errors` and returns whatever it did resolve.  An
-    # unresolved module therefore drops out silently, and a cell whose
-    # expected answer is the effect operation — most of the matrix — still
-    # gets that answer and passes while measuring nothing.  Measured: with
-    # `lib.vera` written as `liib.vera`, the private-wildcard cell returns
-    # 42007 and every stage reports zero errors.
-    #
-    # Raised here for every builder, unlike the type-check errors: no caller
-    # of any expects a resolution error, so one means the FIXTURE is
-    # broken, not the compiler — and returning it would let a cell pass with
-    # nothing assembled.
-    resolve_errors = [d.description for d in resolver.errors]
+def _assert_resolved(checked: pipeline.Checked) -> None:
+    """Raise the parse error, or fail on a resolution error, for a fixture.
+
+    Resolution failures are RECORDED, not raised: `resolve_imports` appends
+    E011/E012 to `resolver.errors` and returns whatever it did resolve.  An
+    unresolved module therefore drops out silently, and a cell whose
+    expected answer is the effect operation — most of the matrix — still
+    gets that answer and passes while measuring nothing.  Measured: with
+    `lib.vera` written as `liib.vera`, the private-wildcard cell returns
+    42007 and every stage reports zero errors.
+
+    Asserted here for every builder, unlike the type-check errors: no caller
+    of any expects a resolution error, so one means the FIXTURE is
+    broken, not the compiler — and returning it would let a cell pass with
+    nothing assembled.
+    """
+    _ = checked.program  # raises the parse or transform error, if any
+    resolve_errors = [d.description for d in checked.resolution_diagnostics]
     assert not resolve_errors, f"module resolution errors: {resolve_errors}"
-    return program, source, main_path, resolved
 
 
-def _compile_resolved(
-    program: ast.Program, source: str, main_path: Path,
-    resolved: list[ResolvedModule], arts: CheckArtifacts,
+def _check_errors(checked: pipeline.Checked) -> list[tuple[str, str]]:
+    """The check's errors as ``(error_code, description)`` pairs, once the
+    fixture is known to have resolved."""
+    _assert_resolved(checked)
+    return [(d.error_code, d.description) for d in checked.errors]
+
+
+def _compiled(
+    compiled: pipeline.Compiled,
 ) -> tuple[CompileResult, list[tuple[str, str]]]:
-    """Compile a resolved program, returning it beside its codegen errors."""
-    result = codegen_compile(
-        program, source=source, file=str(main_path), resolved_modules=resolved,
-        expr_semantic_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-        module_artifacts=arts.module_artifacts,
-    )
+    """A compile's module beside its codegen errors."""
+    result = compiled.result
     cg_errors = [
         (d.error_code, d.description)
         for d in result.diagnostics if d.severity == "error"
@@ -370,6 +368,9 @@ def module_value(
     answer, which is the more dangerous half.
     """
     try:
-        return "ok", execute(result, fn_name=fn).value
-    except (WasmTrapError, wasmtime.WasmtimeError, wasmtime.Trap) as exc:
+        ran = pipeline.run(result, fn, capture_stderr=False)
+    except (wasmtime.WasmtimeError, wasmtime.Trap) as exc:
         return "trap", str(exc)
+    if ran.trap is not None:
+        return "trap", str(ran.trap)
+    return "ok", ran.value

@@ -47,49 +47,11 @@ from vera.codegen import execute
 from vera.parser import parse_to_ast
 from vera.resolver import ModuleResolver
 from vera.runtime.traps import WasmTrapError
+from tests.codegen_helpers import _compile_checked_ok as _compile_with_types, _run_checked as _run, _run_checked_trap as _assert_traps
 
 I64_MAX = 9223372036854775807
 I64_MIN = -9223372036854775808
 U64_MAX = 18446744073709551615
-
-
-def _compile_with_types(source: str):
-    """Compile via the same artifact-threaded path as ``cmd_run``.
-
-    The overflow guard's Int/Nat classifier consults the checker's resolved
-    type table (``expr_semantic_types``), so codegen must be handed it — a bare
-    ``transform -> compile`` (no typecheck) would leave the table empty and the
-    classifier blind, exactly the gap the verifier<->codegen differential pins.
-    """
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False, encoding="utf-8",
-    ) as f:
-        f.write(source)
-        path = f.name
-    try:
-        ast = parse_to_ast(source)
-        # Mirror cmd_run / cmd_compile exactly: resolve imports, then thread the
-        # resolved modules through BOTH typecheck and codegen so the overflow
-        # classifier sees the same cross-module context production does (CR #809).
-        # Single-file fixtures resolve to an empty list (a no-op), but a fixture
-        # that adds an import is then exercised through the real import path.
-        resolver = ModuleResolver(_root=Path(path).parent)
-        resolved = resolver.resolve_imports(ast, Path(path))
-        diags, arts = typecheck_with_artifacts(
-            ast, source, file=path, resolved_modules=resolved,
-        )
-        errors = [d for d in diags if d.severity == "error"]
-        assert not errors, f"typecheck errors: {[d.description for d in errors]}"
-        result = codegen_compile(
-            ast, source=source, file=path,
-            resolved_modules=resolved,
-            expr_semantic_types=arts.expr_semantic_types,
-        )
-        errs = [d for d in result.diagnostics if d.severity == "error"]
-        assert not errs, f"codegen errors: {[d.description for d in errs]}"
-        return result
-    finally:
-        Path(path).unlink(missing_ok=True)
 
 
 def _compile_multifile(files: dict[str, str], main: str):
@@ -131,22 +93,6 @@ def _compile_multifile(files: dict[str, str], main: str):
 
 
 _MASK64 = (1 << 64) - 1
-
-
-def _run(source: str, fn: str, args: list[int]) -> int:
-    result = _compile_with_types(source)
-    exec_result = execute(result, fn_name=fn, args=args)
-    assert exec_result.value is not None
-    return exec_result.value
-
-
-def _assert_traps(source: str, fn: str, args: list[int]) -> None:
-    """Assert running ``fn(args)`` traps at the WASM level (overflow guard)."""
-    result = _compile_with_types(source)
-    with pytest.raises(
-        (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
-    ):
-        execute(result, fn_name=fn, args=args)
 
 
 def _assert_no_trap(source: str, fn: str, args: list[int], expect: int) -> None:
