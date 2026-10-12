@@ -1,20 +1,24 @@
-"""Tests for scripts/check_limitations_sync.py section extraction.
+"""Tests for scripts/check_limitations_sync.py: the issues its state check queries, and its Bugs-section reader.
 
-Covers ``extract_section_issues``, added in the June 2026 rework when
-SKILL.md and LSP_SERVER.md joined the netted tiers: bounded at the next
-heading, table-rows-only, and ``None`` (not empty) for a missing heading
-so renamed sections fail loudly.
+The state check asks the tracker about every issue a record in
+limitations.json names, and every issue in the Issue column of the two
+hand-kept Bugs tables.  The section reader is bounded at the next heading,
+reads table rows only, and returns ``None`` (not empty) for a missing
+heading so a renamed section fails loudly.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import re
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 _SCRIPT = (
     Path(__file__).parent.parent / "scripts" / "check_limitations_sync.py"
@@ -225,13 +229,6 @@ class TestTablelessSectionIsBounded:
         text = self._FENCED_TABLE.replace("## Bugs", "## Known Limitations", 1)
         assert _MOD.extract_section_issues(text, "Known Limitations") == {800}
 
-    def test_the_done_and_open_extractor_ignores_fenced_rows_too(self) -> None:
-        text = self._FENCED_TABLE.replace(
-            "## Bugs", "## Current Limitations", 1
-        )
-        open_issues, done = _MOD.extract_done_and_open(text)
-        assert open_issues == {800} and done == set()
-
     _NESTED_FENCE = (
         "## Bugs\n\n"
         "How the empty form is written, quoting a fenced example:\n\n"
@@ -335,21 +332,6 @@ class TestTablelessSectionIsBounded:
         )
         assert _MOD.extract_section_issues(text, "Known Limitations") == {700}
 
-    def test_the_done_and_open_extractor_ignores_fenced_headings_too(
-        self,
-    ) -> None:
-        text = (
-            "## Current Limitations\n\n"
-            "```markdown\n## Something Else\n```\n\n"
-            "| Limitation | Issue |\n"
-            "|------------|-------|\n"
-            f"| A gap. | {_link(600)} |\n\n"
-            "## Something Else\n\n"
-            f"| Not this | {_link(601)} |\n"
-        )
-        open_issues, done = _MOD.extract_done_and_open(text)
-        assert open_issues == {600} and done == set()
-
     def test_the_shipped_bugs_section_reads_as_its_own_links(self) -> None:
         """The live file, against a reading taken independently from the
         section's own text: the bound must neither empty the real
@@ -398,6 +380,160 @@ class TestCheckStatesFailsLoud:
         assert "could not be determined" in out
 
 
+def _sources(root: Path) -> Path:
+    """A tree with the three sources the state check reads: a data file
+    whose cells cite issues of their own in prose, and two Bugs tables
+    whose rows do the same."""
+    data = {
+        "about": "A fixture.",
+        "tables": [
+            {
+                "table": "KNOWN_ISSUES.md#limitations",
+                "header": "| Limitation | Issue |",
+                "rule": "|---|---|",
+                "issue_column": 1,
+                "rows": ["10", "pair"],
+            },
+            {
+                "table": "SKILL.md#limitations",
+                "header": "| Limitation | Details | Issue |",
+                "rule": "|---|---|---|",
+                "issue_column": 2,
+                "rows": ["10"],
+            },
+        ],
+        "limitations": [
+            {
+                "id": "10",
+                "issues": [10],
+                "rows": {
+                    "KNOWN_ISSUES.md#limitations": [f"Ten, as {_link(99)} says."],
+                    "SKILL.md#limitations": ["Ten", "Briefly."],
+                },
+            },
+            {
+                "id": "pair",
+                "issues": [21, 22],
+                "rows": {"KNOWN_ISSUES.md#limitations": ["Two at once."]},
+            },
+        ],
+    }
+    (root / "limitations.json").write_text(json.dumps(data), encoding="utf-8")
+    (root / "KNOWN_ISSUES.md").write_text(
+        "# Known issues\n\n## Bugs\n\nA description.\n\n"
+        "| Bug | Issue |\n|-----|-------|\n"
+        f"| A defect, after {_link(98)}. | {_link(30)} |\n\n"
+        "## Limitations\n\nRendered from limitations.json.\n",
+        encoding="utf-8",
+    )
+    (root / "SKILL.md").write_text(
+        "## Known Limitations\n\nRendered.\n\n"
+        "## Known Bugs and Workarounds\n\nA description.\n\n"
+        "| Bug | Workaround | Issue |\n|-----|-----------|-------|\n"
+        f"| A bug. | Like {_link(97)}. | {_link(40)} |\n\n"
+        "## Reference\n\n"
+        f"| Not this | {_link(96)} |\n",
+        encoding="utf-8",
+    )
+    return root
+
+
+class TestTheIssuesItQueries:
+    """The limitation tables are rendered from limitations.json, so the
+    state check reads their issues from the records, which name them
+    apart from any prose; the two Bugs tables are hand-kept and read from
+    the Markdown, Issue column only (#1337)."""
+
+    def test_records_and_both_bug_tables_and_nothing_else(self, tmp_path: Path) -> None:
+        listed, errors = _MOD.issues_to_check(_sources(tmp_path))
+        assert errors == []
+        assert listed == {
+            10: ["KNOWN_ISSUES.md#limitations", "SKILL.md#limitations"],
+            21: ["KNOWN_ISSUES.md#limitations"],
+            22: ["KNOWN_ISSUES.md#limitations"],
+            30: ["KNOWN_ISSUES.md (Bugs)"],
+            40: ["SKILL.md (Known Bugs and Workarounds)"],
+        }
+
+    @pytest.mark.parametrize(
+        ("name", "old", "new", "reason"),
+        [
+            ("KNOWN_ISSUES.md", "## Bugs\n", "## Defects\n", "## Bugs"),
+            (
+                "SKILL.md",
+                "## Known Bugs and Workarounds\n",
+                "## Bugs\n",
+                "## Known Bugs and Workarounds",
+            ),
+            ("limitations.json", '"issues": [10]', '"issues": ["10"]', "limitations.json"),
+        ],
+    )
+    def test_a_source_it_cannot_read_is_an_error(
+        self, name: str, old: str, new: str, reason: str, tmp_path: Path
+    ) -> None:
+        """A renamed Bugs heading or an unreadable data file fails the
+        check, rather than shrinking what it asks the tracker about."""
+        root = _sources(tmp_path)
+        path = root / name
+        text = path.read_text(encoding="utf-8")
+        assert old in text
+        path.write_text(text.replace(old, new, 1), encoding="utf-8")
+        _listed, errors = _MOD.issues_to_check(root)
+        assert any(reason in e for e in errors), errors
+
+    def test_a_closed_issue_is_reported_where_it_is_listed(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        root = _sources(tmp_path)
+        states = {10: "CLOSED", 21: "OPEN", 22: "OPEN", 30: "CLOSED", 40: "OPEN"}
+        monkeypatch.setattr(
+            _MOD, "check_issue_states", lambda numbers: {n: states[n] for n in numbers}
+        )
+        assert _MOD.main(["--check-states"], root=root) == 1
+        err = capsys.readouterr().err
+        assert "#10 is CLOSED" in err
+        assert "KNOWN_ISSUES.md#limitations, SKILL.md#limitations" in err
+        assert "#30 is CLOSED" in err and "KNOWN_ISSUES.md (Bugs)" in err
+        assert "#21" not in err and "#40" not in err
+
+    def test_the_default_mode_fails_when_a_bugs_heading_is_gone(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The offline mode the commit hook and CI's lint job run: SKILL.md's
+        bug table driven to zero keeps its heading, and a heading deleted
+        with the table fails the commit, not only the weekly run."""
+        root = _sources(tmp_path)
+        skill = root / "SKILL.md"
+        text = skill.read_text(encoding="utf-8")
+        skill.write_text(text.replace("## Known Bugs and Workarounds\n", ""), encoding="utf-8")
+        assert _MOD.main([], root=root) == 1
+        assert "## Known Bugs and Workarounds" in capsys.readouterr().err
+
+    def test_the_default_mode_asks_the_tracker_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def ask(numbers: set[int]) -> dict[int, str]:
+            raise AssertionError("the tracker was asked")
+
+        monkeypatch.setattr(_MOD, "check_issue_states", ask)
+        assert _MOD.main([], root=_sources(tmp_path)) == 0
+
+    def test_the_shipped_sources_are_readable(self) -> None:
+        """The shipped data file and both Bugs headings read without an
+        error, and every issue a record names is one the check asks about,
+        listed under each table that carries it."""
+        root = _SCRIPT.parent.parent
+        listed, errors = _MOD.issues_to_check(root)
+        assert errors == []
+        data = json.loads((root / "limitations.json").read_text(encoding="utf-8"))
+        for record in data["limitations"]:
+            for number in record["issues"]:
+                assert set(record["rows"]) <= set(listed[number]), (number, record["id"])
+
+
 class TestIssueColumnScoping:
     """#1337 — the state scan reads a row's Issue column, not its prose.
 
@@ -406,9 +542,8 @@ class TestIssueColumnScoping:
     issues for context ("the general disease behind #1315", "fixed in
     #1305"), and reading those as live claims failed the nightly on
     eight such citations while every row's own Issue column was correct.
-    The presence checks keep the wide reading, so both widths are tested
-    here — a fix that narrowed BOTH would silently drop cross-reference
-    coverage from the default mode.
+    The readers keep the wide reading beside the narrow one, so both
+    widths are tested here.
     """
 
     OPEN_N = 9001
@@ -456,7 +591,7 @@ class TestIssueColumnScoping:
         assert self.CLOSED_N not in got
 
     def test_wide_form_still_sees_prose(self) -> None:
-        """(d) Default mode is unchanged — it still counts cross-references."""
+        """(d) The wide reading still counts cross-references."""
         got = _MOD.extract_limitation_table_issues(
             self._table(prose_cite=True), "## Bugs"
         )
@@ -551,27 +686,3 @@ class TestIssueColumnScoping:
             f"does not pin: {sorted(wide - narrow - prose_only)}.  Add it to "
             f"`prose_only` so a REAL example stays in the loop."
         )
-
-    def test_done_and_open_extractor_scopes_too(self) -> None:
-        """`extract_done_and_open` carries the same two widths (#1337).
-
-        `vera/README.md`'s Current Limitations table is the third source
-        the state scan reads, and it has its own extractor.  A fix that
-        threaded the flag through the other two and forgot this one would
-        leave the same prose-as-inventory defect live for that file, so
-        both widths are pinned here as well.
-        """
-        text = (
-            "## Current Limitations\n\n"
-            "| Limitation | Issue |\n"
-            "|------------|-------|\n"
-            f"| Superseded by {_link(self.CLOSED_N)}. | {_link(self.OPEN_N)} |\n"
-        )
-        narrow_open, narrow_done = _MOD.extract_done_and_open(
-            text, issue_column_only=True
-        )
-        wide_open, wide_done = _MOD.extract_done_and_open(text)
-        assert narrow_open == {self.OPEN_N}
-        assert self.CLOSED_N not in narrow_open
-        assert wide_open == {self.OPEN_N, self.CLOSED_N}
-        assert narrow_done == set() and wide_done == set()

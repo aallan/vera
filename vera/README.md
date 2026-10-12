@@ -792,6 +792,7 @@ See **[TESTING.md](../TESTING.md)** for the comprehensive testing reference -- t
 
 Inventory of what the compiler cannot do, and where each limitation is addressed in the roadmap.
 
+<!-- render_lists:begin limitations -->
 | Limitation | Why | Planned |
 |-----------|-----|---------|
 | **No effect row variable unification** | Subeffecting implemented; `forall<E>` row variables permissive (full row-variable unification not implemented) | [#294](https://github.com/aallan/vera/issues/294) |
@@ -807,6 +808,7 @@ Inventory of what the compiler cannot do, and where each limitation is addressed
 | **No resource limits** | No built-in fuel, memory, or timeout controls for untrusted code | [#239](https://github.com/aallan/vera/issues/239) |
 | **Browser target: `IO.sleep` freezes the tab** | Busy-waits the main thread instead of yielding to the event loop; the JSPI-based suspend/resume fix needs no language change | [#609](https://github.com/aallan/vera/issues/609) |
 | **Browser target: ANSI escapes render as literal text** | No escape-sequence interpretation in `runtime.mjs`; a minimal ANSI-subset interpreter closes it without a language change | [#610](https://github.com/aallan/vera/issues/610) |
+<!-- render_lists:end limitations -->
 
 ## Extending the Compiler
 

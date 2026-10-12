@@ -70,7 +70,7 @@ Exit criterion: a pull request's CI finishes in 20 minutes or less, and every ha
 | Change | What |
 |---|---|
 | The fast lane | A pull request's required checks become lint, sharded Python 3.12 runs on Linux and Windows, eager-GC, browser parity, CodeQL and the supply-chain jobs.  The full platform matrix runs after merge, nightly and on a version-raising pull request; a failure files an issue, and the release waits for the post-merge run. |
-| Rendered lists | Each hand-copied list renders from its source and retires the gate that compared the copies: the effect lists from `vera effects --json`, the spec's grammar listing from `grammar.lark`, the limitation tables from one data file beside KNOWN_ISSUES.md, `examples/README.md` from the examples' headers, and the landing page's status paragraph from `scripts/render_status.py`. |
+| Rendered lists | The spec's grammar listing renders from `grammar.lark`, and `examples/README.md` from the examples' headers, each retiring the gate that compares its copies. |
 | The scorecard | `scripts/render_status.py` also measures the Stage 29 scorecard, so every release pull request re-measures it without hand work. |
 | One pipeline driver | `tests/pipeline.py` runs check, verify, compile and run in process and returns structured results.  The per-file drivers and the CLI subprocesses move to it, leaving `test_cli.py` and a few corpus programs as the CLI smoke test, and tests that read WAT text read instead a guard-and-trap manifest that code generation emits beside it. |
 | `vera test --distrust`, nightly | The nightly lane runs the distrust corpus test with many trials per function (`VERA_DISTRUST_TRIALS`); the pull-request run uses five. |

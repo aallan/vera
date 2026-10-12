@@ -100,6 +100,7 @@ Defects in shipped compiler, runtime, or tooling behaviour — this table matche
 
 Things Vera cannot do, as distinct from defects in what it claims to do.
 
+<!-- render_lists:begin limitations -->
 | Limitation | Issue |
 |-----------|-------|
 | `vera verify --reconcile` cannot tell a partial set of component checks from a whole one where the verifier records one obligation for a whole value it cannot see into (an opaque argument of a tuple-typed parameter): any one of the value's component checks answers that record, because only code generation's decomposition states which components are guarded. | [#1642](https://github.com/aallan/vera/issues/1642) |
@@ -141,6 +142,7 @@ Things Vera cannot do, as distinct from defects in what it claims to do.
 | A refinement whose base is itself a refinement (<code>type Small = { @Pos &#124; @Pos.0 &lt; 10 }</code>) passes check and is proved at Tier 1, and code generation refuses any function whose signature names it with `E618`, because the boundary guard lowers one refinement level and would drop the inner predicate.  A program using the shape cannot run; spell the refinement flat over its primitive base (<code>{ @Int &#124; @Int.0 &gt; 0 &amp;&amp; @Int.0 &lt; 10 }</code>), which compiles and is guarded, until the guard composes the whole chain. | [#1450](https://github.com/aallan/vera/issues/1450) |
 | A module generic whose `decreases` measure is one of the module's data types is proved at Tier 1 in the module's own run and falls to `tier3` (`E525`) through an importer, where the clone's measure translates to an `Int` term.  It fails closed: the measure is still checked at run time. | [#1577](https://github.com/aallan/vera/issues/1577) |
 | A generic `where` helper on a recursion cycle with its generic parent leaves its own `decreases` at `tier3` (`E525`), though every call on the cycle decreases and the parent's is proved.  It fails closed: the measure is checked at run time. | [#1585](https://github.com/aallan/vera/issues/1585) |
+<!-- render_lists:end limitations -->
 
 ## Refactoring needed
 

@@ -180,6 +180,12 @@ _ANNOTATION_LINE_RE = re.compile(
     re.MULTILINE,
 )
 
+# scripts/render_lists.py's block markers, which are repo tooling too.
+_RENDER_LISTS_LINE_RE = re.compile(
+    r"^[ \t]*<!--\s*render_lists:(?:begin|end)\b[^\n]*-->[ \t]*\n",
+    re.MULTILINE,
+)
+
 
 class Fence(NamedTuple):
     """An opening code fence, as CommonMark reads one."""
@@ -903,6 +909,7 @@ def evaluate_block(
 
 
 def strip_annotations(text: str) -> str:
-    """Remove vera:skip, vera:run and vera:no-run marker lines (used by
-    build_site.py so the markers never leak into generated site assets)."""
-    return _ANNOTATION_LINE_RE.sub("", text)
+    """Remove vera:skip, vera:run and vera:no-run marker lines, and the
+    render_lists block markers (used by build_site.py so the markers never
+    leak into generated site assets)."""
+    return _RENDER_LISTS_LINE_RE.sub("", _ANNOTATION_LINE_RE.sub("", text))

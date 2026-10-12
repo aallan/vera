@@ -156,20 +156,6 @@ repos:
         pass_filenames: false
         files: '(vera/grammar\.lark$|spec/10-grammar\.md$|scripts/check_grammar_alignment\.py$)'
 
-      # #1156 — fails when an editor grammar under editors/, or one of the two
-      # extension READMEs that repeat the list in prose, omits a built-in
-      # effect name.  Both enumerate them by hand and drifted four effects
-      # behind the registry silently (an unknown capitalised name just falls
-      # through to the generic type rule), so nothing failed when adding an
-      # effect skipped them.  Triggered by the effect registry as well as
-      # the grammars, since a new effect is what puts them out of date.
-      - id: editor-grammars
-        name: editor grammars
-        entry: .venv/bin/python scripts/check_editor_grammars.py
-        language: system
-        pass_filenames: false
-        files: '(editors/.*|vera/environment\.py$|vera/introspect\.py$|scripts/check_editor_grammars\.py$)'
-
       - id: walker-coverage
         name: walker coverage
         entry: .venv/bin/python scripts/check_walker_coverage.py
@@ -209,12 +195,15 @@ repos:
         # broad (same reasoning as diagnostic-fields / walker-coverage).
         files: '((vera|scripts|tests)/.*\.py$)'
 
+      # Offline: limitations.json loads, and the two hand-kept Bugs
+      # headings survive (the weekly limitations-sync.yml run adds
+      # --check-states, which asks the tracker about every cited issue).
       - id: limitations-sync
         name: limitations sync
         entry: .venv/bin/python scripts/check_limitations_sync.py
         language: system
         pass_filenames: false
-        files: '(KNOWN_ISSUES\.md$|vera/README\.md$|SKILL\.md$|LSP_SERVER\.md$|spec/0[89]-.*\.md$|spec/1[12]-.*\.md$|scripts/check_limitations_sync\.py$)'
+        files: '(limitations\.json$|KNOWN_ISSUES\.md$|SKILL\.md$|scripts/check_limitations_sync\.py$|scripts/render_lists\.py$)'
 
       - id: license-check
         name: license check
