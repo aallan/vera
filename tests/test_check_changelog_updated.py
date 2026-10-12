@@ -4,6 +4,8 @@ Covers:
 - ``is_substantive`` classification of file paths (pure function)
 - ``_changelog_has_new_entry`` diff parsing (direct tests with stubbed
   subprocess calls)
+- ``_has_new_fragment`` name-status parsing for ``changelog.d/`` fragments
+  (direct tests with stubbed subprocess calls)
 - ``_has_skip_trailer`` commit-message parsing (direct tests with
   stubbed subprocess calls)
 - End-to-end behaviour against a temporary git repository that
@@ -97,6 +99,9 @@ class TestIsSubstantive:
         # Editors + assets
         "editors/vscode/package.json",
         "assets/vera-social-preview.jpg",
+        # CHANGELOG fragments and their README
+        "changelog.d/README.md",
+        "changelog.d/1529.added.md",
     ])
     def test_exempt_paths(self, path: str) -> None:
         """Known exempt paths are not substantive."""
@@ -378,6 +383,61 @@ class TestChangelogHasNewEntry:
 
 
 # ---------------------------------------------------------------------------
+# _has_new_fragment — a changelog.d/ fragment the branch adds (#1529)
+# ---------------------------------------------------------------------------
+
+
+class TestHasNewFragment:
+    """Only an added file under ``changelog.d/`` with a fragment's name counts."""
+
+    @pytest.mark.parametrize("status", [
+        "A\tchangelog.d/1529.added.md\n",
+        "A\tchangelog.d/+fast-lane.changed.md\n",
+        "M\tchangelog.d/1500.fixed.md\nA\tchangelog.d/1529.fixed.md\n",
+    ])
+    def test_an_added_fragment_counts(
+        self, monkeypatch: pytest.MonkeyPatch, status: str,
+    ) -> None:
+        monkeypatch.setattr(_mod, "_run", lambda cmd: status)
+        assert _mod._has_new_fragment("origin/main") is True
+
+    @pytest.mark.parametrize("status", [
+        "",
+        "M\tchangelog.d/1529.added.md\n",
+        "D\tchangelog.d/1529.added.md\n",
+        "R100\tchangelog.d/+lane.fixed.md\tchangelog.d/1529.fixed.md\n",
+        "A\tchangelog.d/README.md\n",
+        "A\tchangelog.d/1529.fix.md\n",
+        "A\tchangelog.d/notes.txt\n",
+        "A\tchangelog.d/sub/1529.added.md\n",
+        "A\tdocs/1529.added.md\n",
+        "A\t1529.added.md\n",
+    ])
+    def test_anything_else_does_not(
+        self, monkeypatch: pytest.MonkeyPatch, status: str,
+    ) -> None:
+        monkeypatch.setattr(_mod, "_run", lambda cmd: status)
+        assert _mod._has_new_fragment("origin/main") is False
+
+    def test_git_failure_returns_false(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(_mod, "_run", lambda cmd: None)
+        assert _mod._has_new_fragment("origin/main") is False
+
+    def test_it_reads_the_name_status_of_the_branch_against_its_base(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls: list[list[str]] = []
+        monkeypatch.setattr(_mod, "_run", lambda cmd: calls.append(cmd) or "")
+        _mod._has_new_fragment("origin/main")
+        assert calls == [[
+            "git", "diff", "--name-status", "origin/main", "HEAD",
+            "--", "changelog.d/",
+        ]]
+
+
+# ---------------------------------------------------------------------------
 # _has_skip_trailer — commit-message parsing
 # ---------------------------------------------------------------------------
 
@@ -510,6 +570,27 @@ def _run_script(repo: Path, **env_overrides: str) -> subprocess.CompletedProcess
     )
 
 
+def _add_fragment(repo: Path, name: str) -> None:
+    """Write ``changelog.d/<name>`` holding one bullet, and stage it."""
+    directory = repo / "changelog.d"
+    directory.mkdir(exist_ok=True)
+    (directory / name).write_text(f"- **The entry in {name}.**\n", encoding="utf-8")
+    _git(repo, "add", f"changelog.d/{name}")
+
+
+def _merge(repo: Path, branch: str) -> subprocess.CompletedProcess[str]:
+    """``git merge --no-edit <branch>`` into the checked-out branch."""
+    return subprocess.run(
+        ["git", "merge", "--no-edit", branch],
+        cwd=repo,
+        env=_hermetic_env(),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+
 class TestEndToEnd:
     """Run the script against temporary git repos."""
 
@@ -563,7 +644,7 @@ class TestEndToEnd:
         _git(repo, "commit", "-am", "Tweak cli")
         result = _run_script(repo)
         assert result.returncode == 1
-        assert "CHANGELOG.md" in result.stderr
+        assert "changelog.d/" in result.stderr
         assert "vera/cli.py" in result.stderr
 
     def test_passes_when_substantive_with_changelog(
@@ -583,6 +664,90 @@ class TestEndToEnd:
         _git(repo, "commit", "-am", "Tweak cli")
         result = _run_script(repo)
         assert result.returncode == 0, result.stderr
+
+    def test_passes_when_substantive_with_a_fragment(self, tmp_path: Path) -> None:
+        """Touching vera/ AND adding a changelog.d/ fragment → pass (#1529).
+
+        The branch fails the gate until the fragment's commit, so the
+        fragment is what satisfies it."""
+        repo = _setup_repo(tmp_path)
+        _git(repo, "checkout", "-b", "feature")
+        (repo / "vera" / "cli.py").write_text("# modified\n", encoding="utf-8")
+        _git(repo, "commit", "-am", "Tweak cli")
+        assert _run_script(repo).returncode == 1
+        _add_fragment(repo, "1529.fixed.md")
+        _git(repo, "commit", "-m", "Its CHANGELOG fragment")
+        result = _run_script(repo)
+        assert result.returncode == 0, result.stderr
+
+    def test_the_readme_under_changelog_d_is_not_a_fragment(
+        self, tmp_path: Path,
+    ) -> None:
+        """An added file under changelog.d/ counts only with a fragment's name."""
+        repo = _setup_repo(tmp_path)
+        _git(repo, "checkout", "-b", "feature")
+        (repo / "vera" / "cli.py").write_text("# modified\n", encoding="utf-8")
+        _add_fragment(repo, "README.md")
+        _git(repo, "commit", "-am", "Tweak cli")
+        result = _run_script(repo)
+        assert result.returncode == 1, result.stderr
+        assert "vera/cli.py" in result.stderr
+
+    def test_a_fragment_already_on_the_base_does_not_count(
+        self, tmp_path: Path,
+    ) -> None:
+        """Editing a fragment another pull request added is not an entry."""
+        repo = _setup_repo(tmp_path)
+        _add_fragment(repo, "1500.fixed.md")
+        _git(repo, "commit", "-m", "A merged pull request's fragment")
+        _git(repo, "checkout", "-b", "feature")
+        (repo / "vera" / "cli.py").write_text("# modified\n", encoding="utf-8")
+        (repo / "changelog.d" / "1500.fixed.md").write_text(
+            "- **Reworded.**\n", encoding="utf-8",
+        )
+        _git(repo, "commit", "-am", "Tweak cli")
+        result = _run_script(repo)
+        assert result.returncode == 1, result.stderr
+
+    def test_two_branches_that_each_add_a_fragment_merge_in_either_order(
+        self, tmp_path: Path,
+    ) -> None:
+        """#1529's acceptance: each branch passes the gate with its own
+        fragment, and the two merge in either order without a conflict.  The
+        same two entries written as ``[Unreleased]`` bullets conflict, which
+        is what the fixture is able to see."""
+        repo = _setup_repo(tmp_path)
+        for branch, name, source in (
+            ("first", "1600.fixed.md", "a.py"),
+            ("second", "+fast-lane.changed.md", "b.py"),
+        ):
+            _git(repo, "checkout", "-q", "-b", branch, "main")
+            (repo / "vera" / source).write_text("# changed\n", encoding="utf-8")
+            _git(repo, "add", f"vera/{source}")
+            _git(repo, "commit", "-m", f"Change {source}")
+            assert _run_script(repo).returncode == 1, branch
+            _add_fragment(repo, name)
+            _git(repo, "commit", "-m", f"The fragment for {source}")
+            assert _run_script(repo).returncode == 0, branch
+        for order in (("first", "second"), ("second", "first")):
+            _git(repo, "checkout", "-q", "-b", "-".join(order), "main")
+            for branch in order:
+                assert _merge(repo, branch).returncode == 0, order
+
+        for branch, bullet in (("third", "- **One.**\n"), ("fourth", "- **Two.**\n")):
+            _git(repo, "checkout", "-q", "-b", branch, "main")
+            changelog = repo / "CHANGELOG.md"
+            changelog.write_text(
+                changelog.read_text(encoding="utf-8").replace(
+                    "## [Unreleased]\n\n", f"## [Unreleased]\n\n{bullet}\n", 1,
+                ),
+                encoding="utf-8",
+            )
+            _git(repo, "commit", "-am", f"Bullet on {branch}")
+        _git(repo, "checkout", "-q", "-b", "third-fourth", "main")
+        assert _merge(repo, "third").returncode == 0
+        assert _merge(repo, "fourth").returncode != 0
+        _git(repo, "merge", "--abort")
 
     def test_bullet_far_below_unreleased_heading_still_counts(
         self, tmp_path: Path,
