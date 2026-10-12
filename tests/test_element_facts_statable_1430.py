@@ -27,19 +27,13 @@ honest verdict is a refutation, which no decline-as-default can imitate.
 
 from __future__ import annotations
 
-import json
 import os
-import subprocess
-import sys
 from collections import Counter
 from pathlib import Path
 
 import pytest
 
-import vera
-from tests import guard_emitter_scan
-
-_PKG_PARENT = str(Path(vera.__file__).resolve().parents[1])
+from tests import guard_emitter_scan, pipeline
 
 _HDR = "type PosInt = { @Int | @Int.0 > 0 };\n\n"
 _CONSUME = (
@@ -74,42 +68,23 @@ _PROGRAMS = {
 }
 
 
-def _cli(*args: str, timeout: int = 120,
-         env_overrides: dict[str, str] | None = None,
-         ) -> subprocess.CompletedProcess[str]:
-    """Run the CLI with a DERIVED environment, never the ambient one.
+def _cli(*args: str, eager_gc: bool = False) -> pipeline.CliResult:
+    """Run the CLI, in process, with a DERIVED environment, never the ambient
+    one.
 
-    `VERA_EAGER_GC` is popped from the copy before the overrides are applied,
-    so a cell that does not ask for eager GC does not silently get it from
-    whoever ran the suite — the two directions of every guarded cell would
-    otherwise be the same direction (CodeRabbit, PR #1447).
+    `VERA_EAGER_GC` is set for the length of the command when the cell asks
+    for eager GC and unset otherwise, so a cell that does not ask for it does
+    not silently get it from whoever ran the suite — the two directions of
+    every guarded cell would otherwise be the same direction (CodeRabbit, PR
+    #1447).
     """
-    env = dict(os.environ)
-    env.pop("VERA_EAGER_GC", None)
-    existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        f"{_PKG_PARENT}{os.pathsep}{existing}" if existing else _PKG_PARENT
-    )
-    env.update(env_overrides or {})
-    return subprocess.run(
-        [sys.executable, "-m", "vera.cli", *args],
-        capture_output=True, text=True, encoding="utf-8", check=False,
-        env=env, timeout=timeout,
-    )
+    return pipeline.cli(*args, env={"VERA_EAGER_GC": "1" if eager_gc else None})
 
 
 def _verify(tmp_path: Path, source: str, name: str) -> dict:
     p = tmp_path / f"{name}.vera"
     p.write_text(source, encoding="utf-8")
-    proc = _cli("verify", "--json", str(p))
-    # An empty or malformed envelope is a CLI failure wearing a cell's
-    # clothes; say so here rather than letting a KeyError further down read
-    # as the property being tested (CodeRabbit, PR #1447).
-    assert proc.stdout.strip(), (
-        f"`vera verify --json` produced no envelope (rc={proc.returncode}): "
-        f"{proc.stderr[-500:]}"
-    )
-    return json.loads(proc.stdout)
+    return pipeline.verify(p).envelope()
 
 
 def _refine_bind_statuses(envelope: dict) -> Counter:
@@ -960,14 +935,10 @@ def _element_loops(tmp_path: Path, source: str, name: str) -> dict[str, int]:
 
 
 def _run(tmp_path: Path, source: str, name: str,
-         eager_gc: bool = False) -> subprocess.CompletedProcess[str]:
+         eager_gc: bool = False) -> pipeline.CliResult:
     p = tmp_path / f"{name}.vera"
     p.write_text(source, encoding="utf-8")
-    # Passed through rather than set on `os.environ`: mutating the process
-    # environment leaks into every other cell running beside this one, and
-    # restoring it in a `finally` only narrows the window.
-    return _cli("run", str(p),
-                env_overrides={"VERA_EAGER_GC": "1"} if eager_gc else None)
+    return _cli("run", str(p), eager_gc=eager_gc)
 
 
 def test_a_guarded_closure_boundary_carries_the_loop_it_claims(

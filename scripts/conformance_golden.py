@@ -19,9 +19,12 @@ An entry below the run level carries none of the three: it has no run stage,
 so a value there would be compared with nothing.
 
 ``tests/test_conformance.py`` and ``scripts/check_conformance.py`` both check
-the manifest with :func:`entry_problems`, run a program with
-:func:`run_program` and judge the run with :func:`run_mismatch`, so the rule
-is written once and the two harnesses cannot drift apart.
+the manifest with :func:`entry_problems` and judge a run with
+:func:`run_mismatch`, so the rule is written once and the two harnesses cannot
+drift apart.  ``scripts/check_conformance.py`` runs each program as a process
+with :func:`run_program`; ``tests/test_conformance.py`` runs ``vera run`` in
+process, on the same stdin and environment, and compares the bytes it writes
+as a process's text-mode stdout writes them.
 """
 
 from __future__ import annotations
@@ -43,8 +46,10 @@ NONDETERMINISTIC_STDOUT = "nondeterministic_stdout"
 RUN_STAGE_KEYS = (EXPECTED_STDOUT, EXPECTED_EXIT, NONDETERMINISTIC_STDOUT)
 
 # Per-run wall-clock budget.  A conformance program finishes in about a
-# second, under VERA_EAGER_GC=1 too; this only fires on a hang, which it
-# turns into a mismatch naming the program instead of a stalled job.
+# second, under VERA_EAGER_GC=1 too; this only fires on a hang.
+# `run_program` turns one into a mismatch naming the program; the suite,
+# which runs `vera run` in process, ends the worker instead, and pytest-xdist
+# reports the test it was running.  Neither stalls the job.
 RUN_TIMEOUT_SECONDS = 120
 
 
@@ -142,7 +147,8 @@ def run_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
 
 
 def run_program(path: Path, timeout: float = RUN_TIMEOUT_SECONDS) -> RunOutcome:
-    """``vera run <path>``, run the way both harnesses judge it.
+    """``vera run <path>`` as a process, as ``scripts/check_conformance.py``
+    runs it.
 
     stdin is an immediate end of file, so what the run reads does not depend
     on what started the harness; the environment is :func:`run_env`'s; and

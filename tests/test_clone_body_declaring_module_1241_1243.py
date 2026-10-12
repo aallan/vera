@@ -34,22 +34,15 @@ produce.
 
 from __future__ import annotations
 
-import json
-import os
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
-import vera
+from tests import pipeline
 
-# The subprocess must run the SAME compiler this session imported.  A
-# checkout that is not the one the editable install points at — a linked
-# git worktree, say — otherwise has `python -m vera.cli` resolve the OTHER
-# tree, and the cases below would report on a compiler nobody edited.  A
-# no-op wherever the two coincide.
-_PKG_PARENT = str(Path(vera.__file__).resolve().parents[1])
+#: The bound each call below that this file makes to the pipeline had as a
+#: `vera` process; in process it is the call's budget (tests/pipeline.py).
+_BUDGET_S = 300
 
 
 def _write(tmp_path: Path, files: dict[str, str]) -> Path:
@@ -58,39 +51,15 @@ def _write(tmp_path: Path, files: dict[str, str]) -> Path:
     return tmp_path
 
 
-def _cli(*args: str) -> subprocess.CompletedProcess[str]:
-    env = dict(os.environ)
-    existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        f"{_PKG_PARENT}{os.pathsep}{existing}" if existing else _PKG_PARENT
-    )
-    # A finite timeout: a hung CLI must fail this test rather than wedge the
-    # suite.  Generous enough for a cold Z3 verify on a slow CI runner.
-    return subprocess.run(
-        [sys.executable, "-m", "vera.cli", *args],
-        capture_output=True, text=True, encoding="utf-8", check=False,
-        env=env, timeout=300,
-    )
-
-
 def _verify_codes(path: Path) -> list[str]:
-    """The error codes `vera verify --json` reports for *path*.
+    """The error codes `vera verify --json` reports for *path*, from the
+    verify stage's envelope.
 
-    A crash or a non-JSON stdout is surfaced as itself rather than as a
-    `JSONDecodeError` with no context: the whole point of these cases is
-    which diagnostics appear, and "the CLI died" must not read as "no
+    A crash is raised as itself: the whole point of these cases is which
+    diagnostics appear, and "the verifier died" must not read as "no
     diagnostics".
     """
-    proc = _cli("verify", "--json", str(path))
-    try:
-        payload = json.loads(proc.stdout)
-    except json.JSONDecodeError as exc:
-        msg = (
-            f"`vera verify --json` produced no JSON (exit {proc.returncode}): "
-            f"{exc}\n--- stdout ---\n{proc.stdout[-600:]}"
-            f"\n--- stderr ---\n{proc.stderr[-600:]}"
-        )
-        raise AssertionError(msg) from None
+    payload = pipeline.verify(path, budget_s=_BUDGET_S).envelope()
     return [d["error_code"] for d in payload["diagnostics"]]
 
 
@@ -105,7 +74,7 @@ def _run_value(path: Path, fn: str | None = None) -> str:
     args = ["run", str(path)]
     if fn is not None:
         args += ["--fn", fn]
-    proc = _cli(*args)
+    proc = pipeline.cli(*args, budget_s=_BUDGET_S)
     if proc.returncode != 0:
         return f"FAILED: {(proc.stdout + proc.stderr).strip()[-400:]}"
     lines = proc.stdout.strip().splitlines()
@@ -313,7 +282,7 @@ def test_type_discriminating_callee_compiles(tmp_path: Path) -> None:
     the failure is a trap on load rather than a wrong value.
     """
     _write(tmp_path, {"glib.vera": _GLIB_VALUE, "app.vera": _APP_TYPED})
-    check = _cli("check", "--quiet", str(tmp_path / "app.vera"))
+    check = pipeline.cli("check", "--quiet", str(tmp_path / "app.vera"), budget_s=_BUDGET_S)
     assert check.returncode == 0, check.stdout + check.stderr
     assert _verify_codes(tmp_path / "app.vera") == []
     assert _run_value(tmp_path / "app.vera") == "111"

@@ -33,21 +33,17 @@ touching the registry, so it was correct throughout and stays correct.
 """
 from __future__ import annotations
 
-import json
-import os
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
-import vera
 from tests import pipeline
 from tests.codegen_helpers import _run_refine_trap
 from tests.verifier_helpers import _verify
 
-_PKG_PARENT = str(Path(vera.__file__).resolve().parents[1])
-
+#: The bound each call below that this file makes to the pipeline had as a
+#: `vera` process; in process it is the call's budget (tests/pipeline.py).
+_BUDGET_S = 600
 
 # =====================================================================
 # The issue's own reproducers, verbatim
@@ -470,19 +466,6 @@ class TestTheCalleeIsResolvedWhereTheCallIsWritten:
 # The fourth callee position: a module-qualified call
 # =====================================================================
 
-def _cli(*args: str) -> subprocess.CompletedProcess[str]:
-    env = dict(os.environ)
-    existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        f"{_PKG_PARENT}{os.pathsep}{existing}" if existing else _PKG_PARENT
-    )
-    return subprocess.run(
-        [sys.executable, "-m", "vera.cli", *args],
-        capture_output=True, text=True, encoding="utf-8", check=False,
-        env=env, timeout=600,
-    )
-
-
 _LIB = """type Pos = { @Int | @Int.0 > 0 };
 
 public fn h(@Pos -> @Int)
@@ -527,8 +510,7 @@ class TestAModuleQualifiedCallIsObligatedToo:
         (tmp_path / "lib.vera").write_text(_LIB, encoding="utf-8")
         main = tmp_path / "main.vera"
         main.write_text(_IMPORTER, encoding="utf-8")
-        proc = _cli("verify", "--json", str(main))
-        envelope = json.loads(proc.stdout)
+        envelope = pipeline.verify(main, budget_s=_BUDGET_S).envelope()
         binds = sorted(
             (o["kind"], o["status"], o.get("error_code"))
             for o in envelope["obligations"]

@@ -42,31 +42,16 @@ regression rather than against an injected `False`.
 from __future__ import annotations
 
 import json
-import os
-import subprocess
-import sys
 from pathlib import Path
 from typing import NamedTuple
 
 import pytest
 
-import vera
 from tests import pipeline
 
-_PKG_PARENT = str(Path(vera.__file__).resolve().parents[1])
-
-
-def _cli(*args: str) -> subprocess.CompletedProcess[str]:
-    env = dict(os.environ)
-    existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        f"{_PKG_PARENT}{os.pathsep}{existing}" if existing else _PKG_PARENT
-    )
-    return subprocess.run(
-        [sys.executable, "-m", "vera.cli", *args],
-        capture_output=True, text=True, encoding="utf-8", check=False,
-        env=env, timeout=600,
-    )
+#: The bound each call below that this file makes to the pipeline had as a
+#: `vera` process; in process it is the call's budget (tests/pipeline.py).
+_BUDGET_S = 600
 
 
 def _write(tmp_path: Path, source: str, name: str = "p") -> Path:
@@ -77,15 +62,9 @@ def _write(tmp_path: Path, source: str, name: str = "p") -> Path:
 
 
 def _verify(path: Path) -> dict:
-    proc = _cli("verify", "--json", str(path))
-    try:
-        result = json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        raise AssertionError(
-            f"verify emitted no envelope for {path.name} "
-            f"(exit {proc.returncode})\n{proc.stdout[:400]}\n"
-            f"{proc.stderr[-800:]}"
-        ) from None
+    """What ``vera verify --json`` prints for *path*: the verify stage's
+    envelope."""
+    result = pipeline.verify(path, budget_s=_BUDGET_S).envelope()
     # A typo'd callee is an unresolved bare call: an E200 error, after which
     # verify reports no obligation, so a cell would read nothing about the
     # program it names (the trap #1403's file records, from when E200 was a
@@ -413,7 +392,10 @@ public fn caller(@Nat -> @Nat)
 
 
 def _verify_in_process(path: Path, timeout_ms: int | None = None) -> object:
-    return pipeline.verify(path, timeout_ms=timeout_ms, past_check=True).result
+    # The file's bound too: a cell here hands the solver 120 s a query.
+    return pipeline.verify(
+        path, timeout_ms=timeout_ms, past_check=True, budget_s=_BUDGET_S,
+    ).result
 
 
 def test_1451_the_two_arms_fixture_is_clean_while_the_guard_holds(
@@ -586,7 +568,7 @@ public fn main(@Unit -> @Int)
     assert all(o["status"] == "tier3_unguarded" for o in demoted), (
         _triples(result))
 
-    proc = _cli("run", str(path))
+    proc = pipeline.cli("run", str(path), budget_s=_BUDGET_S)
     assert proc.returncode != 0, (proc.stdout, proc.stderr)
     assert "recondition" in proc.stderr, proc.stderr[:600]
 
@@ -689,7 +671,7 @@ def test_1451_the_refusal_lands_at_the_definition(tmp_path: Path) -> None:
     without this cell the severity would be unpinned everywhere.
     """
     path = _write(tmp_path, _UNSAT_REQUIRES)
-    proc = _cli("verify", "--json", str(path))
+    proc = pipeline.cli("verify", "--json", str(path), budget_s=_BUDGET_S)
     result = json.loads(proc.stdout)
 
     assert proc.returncode == 1, (proc.returncode, proc.stdout[:400])
@@ -758,7 +740,7 @@ def test_1451_the_screening_budget_does_not_widen_a_smaller_one(
     widen a deliberately tiny budget for everything after it.
     """
     path = _write(tmp_path, _UNSAT_REQUIRES)
-    proc = _cli("verify", "--json", "--timeout-ms", "50", str(path))
+    proc = pipeline.cli("verify", "--json", "--timeout-ms", "50", str(path), budget_s=_BUDGET_S)
     result = json.loads(proc.stdout)
     assert result["verification"]["timeout_ms"] == 50, result["verification"]
     assert "E538" in _codes(result), _codes(result)
@@ -1729,7 +1711,7 @@ def test_1451_a_path_local_contradiction_certifies_nothing_a_run_reaches(
     # contradiction.  Without it the run below would pass over a program that
     # had no vacuous proof in it to be unreachable.
     assert ("nat_bind", "verified", None) in _triples(verdict), _triples(verdict)
-    proc = _cli("run", str(path), "--fn", "subject", "--", "7")
+    proc = pipeline.cli("run", str(path), "--fn", "subject", "--", "7", budget_s=_BUDGET_S)
     assert proc.returncode == 0, (proc.stdout, proc.stderr[-600:])
     # The OTHER branch's value, exactly — `in` would be satisfied by a trap
     # message that happened to contain a zero.
@@ -1949,7 +1931,7 @@ def test_1451_vera_test_does_not_call_a_demoted_function_tier_1(
     (#1457 review, Medium 2).  The class property is observable: no consumer
     may report a premise set with no model as a proof.
     """
-    proc = _cli("test", str(_write(tmp_path, _UNSAT_REQUIRES)))
+    proc = pipeline.cli("test", str(_write(tmp_path, _UNSAT_REQUIRES)), budget_s=_BUDGET_S)
     assert "Tier 1" not in proc.stdout, proc.stdout
     assert "VERIFIED" not in proc.stdout, proc.stdout
     assert "unsatisfiable" in proc.stdout, proc.stdout
@@ -2333,7 +2315,7 @@ def test_1451_the_refusal_is_budget_monotone(
     path = _write(tmp_path, source)
     seen: list[tuple[int, bool]] = []
     for budget in ladder:
-        proc = _cli("verify", "--json", "--timeout-ms", str(budget), str(path))
+        proc = pipeline.cli("verify", "--json", "--timeout-ms", str(budget), str(path), budget_s=_BUDGET_S)
         envelope = json.loads(proc.stdout)
         seen.append((budget, envelope["ok"] is False))
         assert (proc.returncode == 1) is (envelope["ok"] is False), (
@@ -2557,9 +2539,8 @@ public fn f(@List<Int>, @Array<Int> -> @Nat)
 
     vmod.ContractVerifier._enforce_premise_consistency = capture  # type: ignore[assignment]
     try:
-        # In process, because the capture above has to see the premise set the
-        # screen read; the CLI helper is a subprocess and a monkeypatch here
-        # would never reach it.
+        # Through the verifier itself, because the capture above has to see
+        # the premise set the screen read.
         result = _verify_in_process(_write(tmp_path, source))
     finally:
         vmod.ContractVerifier._enforce_premise_consistency = original  # type: ignore[assignment]

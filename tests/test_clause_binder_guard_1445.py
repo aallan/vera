@@ -32,34 +32,19 @@ That is the case a runtime guard exists for.
 
 from __future__ import annotations
 
-import json
-import os
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
-import vera
+from tests import pipeline
 from tests.codegen_helpers import wat_calls
 
-_PKG_PARENT = str(Path(vera.__file__).resolve().parents[1])
+#: The bound each call below that this file makes to the pipeline had as a
+#: `vera` process; in process it is the call's budget (tests/pipeline.py).
+_BUDGET_S = 300
 
 _NAT_TRAP = "Negative value bound into a @Nat slot"
 _REFINE_TRAP = "Refinement violation"
-
-
-def _cli(*args: str) -> subprocess.CompletedProcess[str]:
-    env = dict(os.environ)
-    existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        f"{_PKG_PARENT}{os.pathsep}{existing}" if existing else _PKG_PARENT
-    )
-    return subprocess.run(
-        [sys.executable, "-m", "vera.cli", *args],
-        capture_output=True, text=True, encoding="utf-8", check=False,
-        env=env, timeout=300,
-    )
 
 
 def _write(tmp_path: Path, source: str, name: str) -> Path:
@@ -69,14 +54,13 @@ def _write(tmp_path: Path, source: str, name: str) -> Path:
 
 
 def _run(tmp_path: Path, source: str, arg: str, name: str) -> str:
-    proc = _cli("run", str(_write(tmp_path, source, name)),
-                "--fn", "f", "--", arg)
+    proc = pipeline.cli("run", str(_write(tmp_path, source, name)),
+                        "--fn", "f", "--", arg, budget_s=_BUDGET_S)
     return proc.stdout + proc.stderr
 
 
 def _binds(tmp_path: Path, source: str, name: str) -> tuple[list, dict]:
-    proc = _cli("verify", "--json", str(_write(tmp_path, source, name)))
-    envelope = json.loads(proc.stdout)
+    envelope = pipeline.verify(_write(tmp_path, source, name), budget_s=_BUDGET_S).envelope()
     return ([(o["kind"], o["status"], o.get("error_code"))
              for o in envelope["obligations"]
              if o["kind"] in ("refine_bind", "nat_bind")], envelope)
@@ -272,8 +256,8 @@ def test_the_site_table_moves_both_halves_together(
     well if each side had its own hard-coded copy, which is the arrangement
     this table replaced.
 
-    Run in-process rather than through the CLI: the other cells here shell
-    out, and a monkeypatched frozenset cannot reach a subprocess.
+    Run in-process, as every cell here is: a monkeypatched frozenset reaches
+    the classification and the emitter only in the process that patched it.
     """
     from vera import narrowing
     from vera.checker import typecheck_with_artifacts

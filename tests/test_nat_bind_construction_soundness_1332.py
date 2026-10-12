@@ -46,23 +46,17 @@ to `solver.add` in general.
 
 from __future__ import annotations
 
-import json
-import os
 import re
-import subprocess
-import sys
 import textwrap
 from pathlib import Path
 
 import pytest
 
-import vera
+from tests import pipeline
 
-# The subprocess must run the SAME compiler this session imported: in a linked
-# git worktree `python -m vera.cli` would otherwise resolve the tree the
-# editable install points at, and every cell would report on a compiler nobody
-# edited.  A no-op wherever the two coincide.
-_PKG_PARENT = str(Path(vera.__file__).resolve().parents[1])
+#: The bound each call below that this file makes to the pipeline had as a
+#: `vera` process; in process it is the call's budget (tests/pipeline.py).
+_BUDGET_S = 300
 
 # The tuple's second component.  A distinctive value that coincides with no
 # default, no counterexample Z3 reaches for, and no Nat boundary — so a fact
@@ -111,35 +105,13 @@ def _return_position(requires: str) -> str:
         """)
 
 
-def _cli(*args: str) -> subprocess.CompletedProcess[str]:
-    env = dict(os.environ)
-    existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        f"{_PKG_PARENT}{os.pathsep}{existing}" if existing else _PKG_PARENT
-    )
-    return subprocess.run(
-        [sys.executable, "-m", "vera.cli", *args],
-        capture_output=True, text=True, encoding="utf-8", check=False,
-        env=env, timeout=300,
-    )
-
-
 def _verify(tmp_path: Path, source: str, name: str = "p.vera") -> dict:
-    """`vera verify --json` for *source*, as a dict.
-
-    A crash or non-JSON stdout is surfaced as itself rather than as a bare
-    `JSONDecodeError`: these cells exist to report what the verifier said.
-    """
+    """`vera verify --json` for *source*, as a dict: the verify stage's
+    envelope.  A crash is raised as itself: these cells exist to report what
+    the verifier said."""
     p = tmp_path / name
     p.write_text(source, encoding="utf-8")
-    proc = _cli("verify", "--json", str(p))
-    try:
-        return json.loads(proc.stdout)
-    except json.JSONDecodeError:  # pragma: no cover — diagnostic path
-        raise AssertionError(
-            f"verify emitted no JSON (exit {proc.returncode})\n"
-            f"stdout: {proc.stdout[:2000]}\nstderr: {proc.stderr[:2000]}"
-        ) from None
+    return pipeline.verify(p, budget_s=_BUDGET_S).envelope()
 
 
 def _nat_binds(result: dict) -> list[dict]:
@@ -163,10 +135,10 @@ def _sole_nat_bind(result: dict) -> dict:
 
 
 def _run(tmp_path: Path, source: str, arg: int,
-         fn: str = "f", name: str = "p.vera") -> subprocess.CompletedProcess[str]:
+         fn: str = "f", name: str = "p.vera") -> pipeline.CliResult:
     p = tmp_path / name
     p.write_text(source, encoding="utf-8")
-    return _cli("run", str(p), "--fn", fn, "--", str(arg))
+    return pipeline.cli("run", str(p), "--fn", fn, "--", str(arg), budget_s=_BUDGET_S)
 
 
 #: What a tripped `@Int` -> `@Nat` narrowing guard says.  Since #754 the guard
@@ -178,7 +150,7 @@ def _run(tmp_path: Path, source: str, arg: int,
 _NAT_GUARD_TRAP = "Negative value bound into a @Nat slot"
 
 
-def _traps(proc: subprocess.CompletedProcess[str]) -> bool:
+def _traps(proc: pipeline.CliResult) -> bool:
     """ANY failed run — for the cells asserting that none occurs.
 
     Deliberately broad on that side: a cell claiming a proved narrowing does
@@ -196,7 +168,7 @@ def _traps(proc: subprocess.CompletedProcess[str]) -> bool:
 
 
 def _traps_on_the_narrowing_guard(
-    proc: subprocess.CompletedProcess[str],
+    proc: pipeline.CliResult,
 ) -> bool:
     """The NARROWING guard specifically — for the cells expecting it.
 

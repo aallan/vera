@@ -57,30 +57,16 @@ without the taint check turns both green-to-red).
 
 from __future__ import annotations
 
-import json
-import os
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
-import vera
 
-_PKG_PARENT = str(Path(vera.__file__).resolve().parents[1])
+from tests import pipeline
 
-
-def _cli(*args: str) -> subprocess.CompletedProcess[str]:
-    env = dict(os.environ)
-    existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        f"{_PKG_PARENT}{os.pathsep}{existing}" if existing else _PKG_PARENT
-    )
-    return subprocess.run(
-        [sys.executable, "-m", "vera.cli", *args],
-        capture_output=True, text=True, encoding="utf-8", check=False,
-        env=env, timeout=600,
-    )
+#: The bound each call below that this file makes to the pipeline had as a
+#: `vera` process; in process it is the call's budget (tests/pipeline.py).
+_BUDGET_S = 600
 
 
 def _tree(tmp_path: Path, files: dict[str, str]) -> dict[str, Path]:
@@ -94,15 +80,9 @@ def _tree(tmp_path: Path, files: dict[str, str]) -> dict[str, Path]:
 
 
 def _verify(path: Path) -> dict:
-    proc = _cli("verify", "--json", str(path))
-    try:
-        result = json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        raise AssertionError(
-            f"verify emitted no envelope for {path.name} "
-            f"(exit {proc.returncode})\n{proc.stdout[:400]}\n"
-            f"{proc.stderr[-800:]}"
-        ) from None
+    """What ``vera verify --json`` prints for *path*: the verify stage's
+    envelope."""
+    result = pipeline.verify(path, budget_s=_BUDGET_S).envelope()
     # A bare call to a name that does not resolve is an E200 error, after
     # which verify reports no obligation — so a fixture with a typo in a
     # callee leaves every assertion below with nothing to measure.  One such
@@ -818,7 +798,7 @@ def test_1403_a_nested_tier1_rests_on_the_producers_own_obligation(
     path = _tree(tmp_path / "r", {"p": program})["p"]
     ok = _verify(path)
     assert ok["ok"] is True, ok["diagnostics"]
-    proc = _cli("run", str(path), "--fn", "main", "--", "4")
+    proc = pipeline.cli("run", str(path), "--fn", "main", "--", "4", budget_s=_BUDGET_S)
     assert proc.returncode == 0, (proc.stdout, proc.stderr)
     assert proc.stdout.strip().endswith("25"), proc.stdout
 
@@ -1954,7 +1934,7 @@ def test_1403_a_measure_is_not_proved_against_a_shadowed_outer(
     # The oracle, so the cell cannot pass for a compiler that has stopped
     # emitting the guard: the program is genuinely non-terminating, and the
     # guard says so on the first call rather than after a deep recursion.
-    run = _cli("run", str(path), "--fn", "countdown", "--", "5")
+    run = pipeline.cli("run", str(path), "--fn", "countdown", "--", "5", budget_s=_BUDGET_S)
     assert run.returncode != 0, run.stdout
     assert "failed to decrease" in run.stderr, run.stderr
 
@@ -1987,7 +1967,7 @@ def test_1403_an_untracked_arm_placeholder_is_not_a_counterexample(
     ]
     assert binds == [("tier3", "E506")], _triples(result)
 
-    run = _cli("run", str(path), "--fn", "probe")
+    run = pipeline.cli("run", str(path), "--fn", "probe", budget_s=_BUDGET_S)
     assert run.returncode == 0, run.stderr
     assert run.stdout.strip().endswith("9"), run.stdout
 
@@ -2311,7 +2291,7 @@ def test_1403_an_unstatable_refinement_still_runs_and_still_refuses(
     ret, post, body, fallback, _kind, _v = _UNSTATABLE_CASES["div"]
     path = _tree(tmp_path / "run", {"p": _UNSTATABLE.format(
         ret=ret, post=post, body=body, fallback=fallback)})["p"]
-    run = _cli("run", str(path), "--fn", "use_it", "--", "4")
+    run = pipeline.cli("run", str(path), "--fn", "use_it", "--", "4", budget_s=_BUDGET_S)
     assert run.returncode == 0, run.stderr
     assert run.stdout.strip().endswith("25"), run.stdout
 
@@ -2631,8 +2611,8 @@ def test_1403_the_statability_gate_decides_chains_only(tmp_path: Path) -> None:
         (o["status"], o.get("error_code")) for o in single["obligations"]
         if o["kind"] == "div_zero"
     ] == [("violated", "E526")], _triples(single)
-    run = _cli("run", str(_tree(tmp_path / "single", {
-        "p": _SINGLE_UNSTATABLE})["p"]), "--fn", "use_it", "--", "4")
+    run = pipeline.cli("run", str(_tree(tmp_path / "single", {
+        "p": _SINGLE_UNSTATABLE})["p"]), "--fn", "use_it", "--", "4", budget_s=_BUDGET_S)
     assert run.returncode == 0 and run.stdout.strip().endswith("25"), (
         f"#1470's program stopped running clean, so the refusal may no "
         f"longer be false: {run.stdout} {run.stderr}"

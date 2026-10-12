@@ -8,21 +8,31 @@ A run-level entry also declares what the run prints and how it exits
 ``nondeterministic_stdout``), and the run stage compares both; the rule lives
 in scripts/conformance_golden.py, which scripts/check_conformance.py shares.
 
+Every stage runs in process, through tests/pipeline.py: the check, the verify
+and the negatives read the stage's result, and the run stage reads what
+``vera run`` writes, as the bytes a process writes.  The programs
+``CLI_SMOKE`` names also run through ``python -m vera.cli`` as a process,
+which is held to the in-process CLI byte for byte.
+
 This module is part of the full test suite and runs in CI alongside the
 unit tests and example round-trip tests.
 """
 
 from __future__ import annotations
 
+import faulthandler
 import importlib.util
 import json
 import subprocess
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import pytest
 
+from tests import pipeline
+from vera.errors import Diagnostic
 from vera.formatter import format_source
 from vera.parser import parse_file
 
@@ -30,12 +40,13 @@ from vera.parser import parse_file
 # Load manifest
 # ---------------------------------------------------------------------------
 
+ROOT = Path(__file__).resolve().parent.parent
 CONFORMANCE_DIR = Path(__file__).parent / "conformance"
 MANIFEST: list[dict] = json.loads(
     (CONFORMANCE_DIR / "manifest.json").read_text(encoding="utf-8")
 )
 
-_GOLDEN = Path(__file__).resolve().parent.parent / "scripts" / "conformance_golden.py"
+_GOLDEN = ROOT / "scripts" / "conformance_golden.py"
 
 
 def _load_golden() -> Any:
@@ -49,23 +60,21 @@ def _load_golden() -> Any:
 
 golden = _load_golden()
 
+#: What the run environment removes (`conformance_golden.run_env`), as the
+#: changes `pipeline.cli` makes for the length of one command.
+_RUN_ENV: dict[str, str | None] = {name: None for name in golden.NEUTRALISED_ENV}
+
 _LEVEL_ORDER = {"parse": 0, "check": 1, "verify": 2, "run": 3}
+
+
+def _report(diagnostics: Sequence[Diagnostic]) -> str:
+    """The diagnostics as the CLI prints them."""
+    return "\n".join(d.format() for d in diagnostics)
 
 
 def _at_least(entry: dict, level: str) -> bool:
     """Return True if the entry's declared level is >= *level*."""
     return _LEVEL_ORDER.get(entry["level"], 0) >= _LEVEL_ORDER[level]
-
-
-def _vera(*args: str) -> subprocess.CompletedProcess[str]:
-    """Run a vera CLI command and return the completed process."""
-    return subprocess.run(
-        [sys.executable, "-m", "vera.cli", *args],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        check=False,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +105,7 @@ class TestConformance:
         started failing at check would otherwise still pass."""
         if not _at_least(entry, "check"):
             pytest.skip("parse-only")
-        path = str(CONFORMANCE_DIR / entry["file"])
+        path = CONFORMANCE_DIR / entry["file"]
         expected_error = entry.get("expected_error")
         if expected_error is not None:
             # A negative's positive obligation stops at check, so it is
@@ -113,44 +122,33 @@ class TestConformance:
                 f"'compile'; got {stage!r}"
             )
             if stage == "compile":
-                pre = _vera("check", path)
-                assert "OK:" in pre.stdout, (
+                pre = pipeline.check(path)
+                assert pre.ok, (
                     f"{entry['id']} is a compile-stage negative, so it must "
-                    f"type-check cleanly:\n{pre.stdout}\n{pre.stderr}"
+                    f"type-check cleanly:\n{_report(pre.errors)}"
                 )
-            result = _vera(stage, "--json", path)
-            try:
-                payload = json.loads(result.stdout)
-            except json.JSONDecodeError as exc:
-                # A stage died before emitting the envelope; without the
-                # streams this arrives as a bare decode error about an
-                # empty document (#1330 review).
-                raise AssertionError(
-                    f"{entry['file']}: {stage} --json produced no JSON envelope "
-                    f"({exc}).\nstdout:\n{result.stdout}\n"
-                    f"stderr:\n{result.stderr}"
-                ) from exc
+            refused = pipeline.check(path) if stage == "check" else pipeline.compile(path)
+            payload = refused.envelope()
             codes = [d.get("error_code")
                      for d in payload.get("diagnostics", [])]
             assert payload.get("ok") is False and expected_error in codes, (
                 f"Expected {entry['id']} to fail {stage} with "
                 f"{expected_error}; got ok={payload.get('ok')} "
-                f"codes={codes}\n{result.stdout}"
+                f"codes={codes}\n{json.dumps(payload, indent=2)}"
             )
             return
-        result = _vera("check", path)
-        assert "OK:" in result.stdout, (
-            f"Type-check failed for {entry['id']}:\n{result.stdout}\n{result.stderr}"
+        checked = pipeline.check(path)
+        assert checked.ok, (
+            f"Type-check failed for {entry['id']}:\n{_report(checked.errors)}"
         )
 
     def test_verify(self, entry: dict) -> None:
         """Programs at level verify/run must verify contracts cleanly."""
         if not _at_least(entry, "verify"):
             pytest.skip(f"{entry['level']}-only")
-        path = str(CONFORMANCE_DIR / entry["file"])
-        result = _vera("verify", path)
-        assert "OK:" in result.stdout, (
-            f"Verification failed for {entry['id']}:\n{result.stdout}\n{result.stderr}"
+        verified = pipeline.verify(CONFORMANCE_DIR / entry["file"])
+        assert verified.ok, (
+            f"Verification failed for {entry['id']}:\n{_report(verified.errors)}"
         )
 
     def test_run(self, entry: dict) -> None:
@@ -159,13 +157,17 @@ class TestConformance:
         ``expected_stdout`` (or, under a ``nondeterministic_stdout`` reason,
         exiting as declared with the output left unpinned).  An exit status
         of 0 alone is not a pass: a program that prints the wrong value, or
-        nothing, exits 0 too."""
+        nothing, exits 0 too.  ``vera run`` runs in process, and the bytes it
+        writes are compared as the bytes a process writes."""
         if not _at_least(entry, "run"):
             pytest.skip(f"{entry['level']}-only")
         problems = golden.entry_problems(entry)
         if problems:
             pytest.fail("\n".join(problems))
-        outcome = golden.run_program(CONFORMANCE_DIR / entry["file"])
+        ran = pipeline.cli("run", CONFORMANCE_DIR / entry["file"], env=_RUN_ENV,
+                           budget_s=golden.RUN_TIMEOUT_SECONDS)
+        outcome = golden.RunOutcome(
+            exit=ran.returncode, stdout=ran.stdout_bytes, stderr=ran.stderr_bytes)
         mismatch = golden.run_mismatch(entry, outcome)
         if mismatch is not None:
             pytest.fail(mismatch)
@@ -179,6 +181,289 @@ class TestConformance:
             f"Not in canonical format: {entry['id']}\n"
             f"Run: vera fmt --write {path}"
         )
+
+
+# ---------------------------------------------------------------------------
+# The stages run in process
+# ---------------------------------------------------------------------------
+
+#: One program of each shape a stage treats differently: a run whose imports
+#: resolve from disk, a verify-level program with a module of contracts, a
+#: negative the check refuses, and a negative code generation refuses behind a
+#: clean check.
+_STAGE_SHAPES = (
+    "ch08_transitive_module_import",
+    "ch07_cross_module_contracts",
+    "ch08_circular_import",
+    "ch08_module_prelude_adt_contention_rejected",
+)
+
+_ENTRIES = {entry["id"]: entry for entry in MANIFEST}
+
+
+def _stages() -> list[str]:
+    return [name for name, value in vars(TestConformance).items()
+            if name.startswith("test_") and callable(value)]
+
+
+def test_no_stage_starts_a_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every stage of every shape runs in process: a process the suite starts
+    costs more than the stage it runs, and coverage does not see inside it."""
+
+    def refuse(self: object, args: object, *rest: object, **kwargs: object) -> None:
+        raise AssertionError(f"a conformance stage started a process: {args!r}")
+
+    monkeypatch.setattr(subprocess.Popen, "__init__", refuse)
+    for name in _STAGE_SHAPES:
+        for stage in _stages():
+            try:
+                getattr(TestConformance(), stage)(_ENTRIES[name])
+            except pytest.skip.Exception:
+                continue
+
+
+def test_the_run_stage_runs_under_its_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """In process there is no child to stop, so the run's budget is a
+    watchdog that ends the worker, naming the test, rather than letting a
+    program that never stops stall the job: armed for the run, disarmed
+    after it."""
+    calls: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        faulthandler, "dump_traceback_later",
+        lambda timeout, **kwargs: calls.append(("arm", timeout, kwargs.get("exit"))),
+    )
+    monkeypatch.setattr(
+        faulthandler, "cancel_dump_traceback_later",
+        lambda: calls.append(("disarm",)),
+    )
+    TestConformance().test_run(_ENTRIES["ch01_int_literals"])
+    assert calls == [("arm", golden.RUN_TIMEOUT_SECONDS, True), ("disarm",)], calls
+
+
+# ---------------------------------------------------------------------------
+# The CLI smoke: a few corpus programs through `python -m vera.cli`
+# ---------------------------------------------------------------------------
+
+#: The CLI smoke: the corpus programs that still cross the CLI as a process,
+#: the commands each one is run through, and why it is here.  Every other test
+#: drives the pipeline in process, through `tests/pipeline.py`; these hold
+#: `python -m vera.cli`, started as a process, to the in-process CLI the
+#: stages read, byte for byte.  Between them they run every command that takes
+#: a program, and both of the exits the corpus has: success, and a refusal at
+#: the check and at code generation.  No corpus program traps, exits through
+#: `IO.exit`, fails to parse or reads its stdin; `CLI_EXIT_SHAPES` below holds
+#: those exits, and the rest the corpus lacks, to the process with programs of
+#: its own.
+CLI_SMOKE: dict[str, tuple[tuple[tuple[str, ...], ...], str]] = {
+    "tests/conformance/ch01_int_literals.vera": (
+        (("run",), ("parse",), ("ast", "--json"), ("fmt", "--check")),
+        "a returned value, which `vera run` prints itself; the parse tree, the "
+        "typed AST and the formatter's verdict on one program",
+    ),
+    "tests/conformance/ch01_string_escapes.vera": (
+        (("run",),),
+        "`IO.print` through the live tee, with a tab, a backslash, a quote and "
+        "a newline inside one write",
+    ),
+    "tests/conformance/ch07_unit_fn_nontail.vera": (
+        (("run", "--json"),),
+        "three lines of output packed into the run's JSON envelope, with no tee",
+    ),
+    "tests/conformance/ch04_arithmetic.vera": (
+        (("compile", "--wat"),),
+        "the module's text, which `vera compile --wat` prints",
+    ),
+    "tests/conformance/ch08_transitive_module_import.vera": (
+        (("check",), ("verify",), ("run",)),
+        "imports resolved from disk, two modules deep, at every stage",
+    ),
+    "tests/conformance/ch07_cross_module_contracts.vera": (
+        (("verify", "--json"), ("test",)),
+        "an imported module's contracts: the obligations of the JSON envelope, "
+        "and contract testing's report",
+    ),
+    "tests/conformance/ch04_primitive_obligations.vera": (
+        (("test", "--json"),),
+        "contract testing's JSON envelope over several proved functions",
+    ),
+    "tests/conformance/ch08_circular_import.vera": (
+        (("check",), ("check", "--json")),
+        "the check's refusal (E011), exit status 1, as text and as JSON",
+    ),
+    "tests/conformance/ch08_module_prelude_adt_contention_rejected.vera": (
+        (("check",), ("compile", "--json")),
+        "a clean check, then code generation's refusal (E621), exit status 1",
+    ),
+    "examples/hello_world.vera": (
+        (("run",),),
+        "an example, run as its README says",
+    ),
+}
+
+_SMOKE = [
+    (program, command)
+    for program, (commands, _why) in CLI_SMOKE.items()
+    for command in commands
+]
+
+
+def _vera(*args: str, stdin: str = "") -> subprocess.CompletedProcess[bytes]:
+    """``python -m vera.cli <args>`` as a process, from the repository root,
+    so the compiler it imports is this checkout's; in the run environment,
+    reading *stdin* through a pipe as a parent writes it in text mode
+    (`pipeline.stdin_bytes`), and with its output kept as the bytes it
+    wrote.  An empty *stdin* is a pipe with nothing in it, not the null
+    device, which Windows reports as a terminal."""
+    return subprocess.run(
+        [sys.executable, "-m", "vera.cli", *args],
+        capture_output=True, input=pipeline.stdin_bytes(stdin),
+        env=golden.run_env(), cwd=ROOT, timeout=golden.RUN_TIMEOUT_SECONDS,
+        check=False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("program", "command"), _SMOKE,
+    ids=[f"{Path(p).stem}:{'_'.join(c)}" for p, c in _SMOKE],
+)
+def test_the_cli_process_prints_what_the_stages_read(
+    program: str, command: tuple[str, ...],
+) -> None:
+    """The process and the in-process CLI agree: the exit status, and every
+    byte of both streams.  The stages read the in-process CLI, so this is what
+    makes their verdicts the verdicts of the command a user runs."""
+    path = str(ROOT / program)
+    process = _vera(*command, path)
+    mine = pipeline.cli(*command, path, env=_RUN_ENV)
+    assert (process.returncode, process.stdout, process.stderr) == (
+        mine.returncode, mine.stdout_bytes, mine.stderr_bytes)
+
+
+class _ExitShape(NamedTuple):
+    """A program with an exit the corpus has none of, and how it exits.
+
+    A tuple rather than a dataclass: scripts/render_status.py loads this
+    module outside `sys.modules`, where a dataclass cannot be built.
+    """
+
+    #: The program.
+    source: str
+    #: The commands it runs through.
+    commands: tuple[tuple[str, ...], ...]
+    #: The status every one of them exits with.
+    exit: int
+    #: Text every one of them writes, which only that exit writes.
+    shows: str
+    #: Why it is here.
+    why: str
+    #: What it reads on stdin.
+    stdin: str = ""
+
+
+_IO_MAIN = (
+    "public fn main(@Unit -> @Unit)\n"
+    "  requires(true)\n  ensures(true)\n  effects(<IO>)\n{\n")
+_READ_CHAR = _IO_MAIN + (
+    "  match IO.read_char(()) {\n"
+    "    Ok(@String) -> IO.print(@String.0),\n"
+    '    Err(@String) -> IO.print(string_concat("ERR:", @String.0))\n'
+    "  }\n}\n")
+
+#: The exits no corpus program has, each a program of its own, run through
+#: `python -m vera.cli` by the smoke's driver and held to the in-process CLI
+#: the same way: the exit status, and every byte of both streams.  Each cell
+#: also asserts the exit it is named for, so a program that stopped reaching
+#: it would fail here rather than smoke a different exit.
+CLI_EXIT_SHAPES: dict[str, _ExitShape] = {
+    "trap": _ExitShape(
+        _IO_MAIN + '  IO.print("before → x");\n  IO.stderr("note é");\n'
+        "  let @Int = 0;\n  let @Int = 10 / @Int.0;\n"
+        '  IO.print("after")\n}\n',
+        (("run",), ("run", "--json")), 1, "Integer division by zero",
+        "a trap after a non-ASCII write to each stream: the output before "
+        "it, the trap's message, its backtrace and its fix"),
+    "exit-7": _ExitShape(
+        _IO_MAIN + '  IO.print("bye");\n  IO.exit(7)\n}\n',
+        (("run",), ("run", "--json")), 7, "bye",
+        "`IO.exit(7)`: the status the program chose, in both modes"),
+    "unparsed": _ExitShape(
+        "public fn f(@Int -> @Int) {",
+        (("check",), ("check", "--json"), ("verify",), ("run",)), 1, "E001",
+        "a parse error, at each command that parses"),
+    "verify-refusal": _ExitShape(
+        "public fn f(@Int -> @Int)\n  requires(true)\n"
+        "  ensures(@Int.result > @Int.0)\n  effects(pure)\n{\n  @Int.0\n}\n",
+        (("verify",), ("verify", "--json")), 1, "E500",
+        "a postcondition the verifier refutes, with its counterexample"),
+    "zero-export": _ExitShape(
+        "private fn tally(-> @Int) requires(true) ensures(true) effects(pure) {\n"
+        '  let @Map<String, Array<Int>> = map_insert(map_new(), "a", [1, 2]);\n'
+        "  map_size(@Map<String, Array<Int>>.0)\n}\n\n"
+        "public fn main(-> @Int) requires(true) ensures(true) effects(pure) {\n"
+        "  tally()\n}\n",
+        (("run",), ("compile", "--json")), 1, "E602",
+        "a module whose every export code generation dropped: `vera run`'s "
+        "refusal of the dropped entry, and `vera compile`'s of the module"),
+    "read-char-empty": _ExitShape(
+        _READ_CHAR, (("run",),), 0, "ERR:EOF",
+        "`IO.read_char` on an empty stdin, which asks stdin for its "
+        "descriptor before it reads"),
+    "read-char-line": _ExitShape(
+        _READ_CHAR, (("run",),), 0, "ü",
+        "`IO.read_char` on a one-line stdin, whose first character is not "
+        "ASCII", stdin="ü-line\n"),
+    "non-ascii-streams": _ExitShape(
+        _IO_MAIN + '  IO.print("café → ✓");\n  IO.stderr("naïve — ✗")\n}\n',
+        (("run",),), 0, "naïve — ✗",
+        "a run that writes non-ASCII to stdout and to stderr, which reach "
+        "the pipe as UTF-8 on every platform"),
+    "internal-error": _ExitShape(
+        "public fn f(@Nat -> @Tuple<Int, Int>)\n  requires(true)\n"
+        "  ensures(true)\n  effects(pure)\n{\n"
+        "  let @Option<Tuple<Int, Int>> = Some(Tuple(@Nat.0, @Nat.0));\n"
+        "  match @Option<Tuple<Int, Int>>.0 {\n"
+        "    Some(@Tuple<Int, Int>) -> @Tuple<Int, Int>.0,\n"
+        "    None -> Tuple(1, 1)\n  }\n}\n",
+        (("verify",), ("verify", "--json")), 1, "E699",
+        "an internal compiler error (E699), which #1594's program reaches; "
+        "once #1594 is fixed this cell needs another program that does"),
+}
+
+_EXIT_CELLS = [
+    (shape, command)
+    for shape, spec in CLI_EXIT_SHAPES.items()
+    for command in spec.commands
+]
+
+
+@pytest.mark.parametrize(
+    ("shape", "command"), _EXIT_CELLS,
+    ids=[f"{s}:{'_'.join(c)}" for s, c in _EXIT_CELLS],
+)
+def test_the_cli_process_exits_as_the_in_process_cli_does(
+    shape: str, command: tuple[str, ...], tmp_path: Path,
+) -> None:
+    """The process and the in-process CLI agree on an exit the corpus does
+    not have: the exit status, and every byte of both streams."""
+    spec = CLI_EXIT_SHAPES[shape]
+    path = tmp_path / f"{shape}.vera"
+    path.write_text(spec.source, encoding="utf-8")
+    process = _vera(*command, str(path), stdin=spec.stdin)
+    mine = pipeline.cli(*command, path, stdin=spec.stdin, env=_RUN_ENV)
+    assert (process.returncode, process.stdout, process.stderr) == (
+        mine.returncode, mine.stdout_bytes, mine.stderr_bytes)
+    assert mine.returncode == spec.exit and spec.shows in (
+        mine.stdout + mine.stderr), (
+        f"{shape} no longer exits as named: {mine.returncode}\n"
+        f"{mine.stdout}{mine.stderr}")
+
+
+def test_every_smoke_program_is_in_the_corpus() -> None:
+    """A smoke program the corpus no longer holds would smoke nothing."""
+    corpus = {f"tests/conformance/{e['file']}" for e in MANIFEST}
+    for program in CLI_SMOKE:
+        assert program in corpus or program.startswith("examples/"), program
+        assert (ROOT / program).is_file(), program
 
 
 # ---------------------------------------------------------------------------

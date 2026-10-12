@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -66,7 +67,10 @@ from vera.parser import parse
 from vera.transform import transform
 
 if TYPE_CHECKING:
+    from vera.ast import Program
+    from vera.codegen.api import ExecuteResult
     from vera.tester import FunctionTestResult, TrialResult
+    from vera.verifier import VerifyResult
 
 
 def _is_int_str(s: str) -> bool:
@@ -112,6 +116,275 @@ def _load_and_parse(path: str) -> tuple[Path, str, Tree[object]]:
         p = raw_p
     tree = parse(source, file=path)
     return p, source, tree
+
+
+# ---------------------------------------------------------------------------
+# The --json envelopes
+# ---------------------------------------------------------------------------
+#
+# One function per envelope shape, which the command that prints the shape
+# calls.  tests/pipeline.py builds each stage's envelope with these same
+# functions, so a test that reads a stage's envelope reads what the command
+# prints for the same result, whatever the result holds.
+
+
+def diagnostics_envelope(
+    path: str | None,
+    errors: Sequence[Diagnostic],
+    warnings: Sequence[Diagnostic],
+) -> dict[str, object]:
+    """``vera check --json``'s envelope: *errors*, then *warnings*.
+
+    ``vera verify --json`` and ``vera compile --json`` print it too for a
+    program they refuse before they can report a result of their own: one
+    the parser or the check refuses, and, for ``compile``, one code
+    generation refuses.
+    """
+    return {
+        "ok": len(errors) == 0,
+        "file": path,
+        "diagnostics": [e.to_dict() for e in errors],
+        "warnings": [w.to_dict() for w in warnings],
+    }
+
+
+def verify_envelope(
+    path: str | None,
+    result: VerifyResult,
+    errors: Sequence[Diagnostic],
+    warnings: Sequence[Diagnostic],
+    *,
+    timeout_ms: int | None,
+    default_file: str | None,
+) -> dict[str, object]:
+    """``vera verify --json``'s envelope for a program the verifier ran on.
+
+    *errors* and *warnings* are every diagnostic of the run, the check's
+    first.  *timeout_ms* is the per-query budget as the caller gave it,
+    reported as the verifier resolved it, and *default_file* is the file an
+    obligation reified with none is reported against.
+    """
+    from vera.smt import resolve_timeout_ms
+
+    s = result.summary
+    return {
+        "ok": len(errors) == 0,
+        "file": path,
+        "diagnostics": [e.to_dict() for e in errors],
+        "warnings": [w.to_dict() for w in warnings],
+        "verification": {
+            "tier1_verified": s.tier1_verified,
+            "tier3_runtime": s.tier3_runtime,
+            "total": s.total,
+            # #1345: assumptions counted BESIDE the tiers.  Absent
+            # from this object, an `assume` was counted nowhere at
+            # all, so a consumer could not tell a proof from a
+            # promise.
+            "assumptions": s.assumptions,
+            # #1350: the budget these tiers were measured under.  A
+            # tier near the budget is host-sensitive, so a summary
+            # that does not say which budget produced it cannot be
+            # compared against another machine's.
+            "timeout_ms": resolve_timeout_ms(timeout_ms),
+        },
+        # #967: expose the reified obligation stream the summary is
+        # derived from, so a machine consumer can reproduce or refine
+        # the tier counts (location mirrors a diagnostic's shape).
+        "obligations": [
+            {
+                "kind": o.kind,
+                "status": o.status,
+                "description": o.expr_text,
+                "location": {
+                    "line": o.line,
+                    "column": o.column,
+                    # The obligation's OWN file, so a consumer can
+                    # join it to its diagnostic on (file, line,
+                    # column) (PR #974 review).  That join assumed
+                    # every obligation belonged to the entry program
+                    # and stamped `str(p)` on all of them, which was
+                    # true only while the verifier reported
+                    # everything against the entry buffer; once an
+                    # imported generic's clone reports against its
+                    # own module (#1220), a stamped entry path both
+                    # broke the join and named a line the entry file
+                    # does not have.  The verifier normalizes the
+                    # path it is handed (`verify(..., file=str(p))`),
+                    # so a main-file obligation still carries exactly
+                    # the `str(p)` diagnostics carry; the fallback
+                    # covers only an obligation reified with no file
+                    # at all, which a run given `path` does not
+                    # produce.
+                    **(
+                        {"file": o.file or default_file}
+                        if path else {}
+                    ),
+                },
+                **({"error_code": o.error_code} if o.error_code else {}),
+            }
+            for o in result.obligations
+        ],
+    }
+
+
+def compile_envelope(
+    path: str | None,
+    exports: list[str],
+    warnings: Sequence[Diagnostic],
+) -> dict[str, object]:
+    """``vera compile --json``'s envelope for a module it built."""
+    return {
+        "ok": True,
+        "file": path,
+        "exports": exports,
+        "diagnostics": [],
+        "warnings": [w.to_dict() for w in warnings],
+    }
+
+
+def compile_failure_envelope(
+    path: str | None,
+    msg: str,
+    warnings: Sequence[Diagnostic],
+    extra: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """``vera compile --json``'s envelope for a module it built and refuses
+    to hand over: one error, *msg*, then *warnings*.  *extra* goes between
+    ``file`` and ``diagnostics`` (the zero-export refusal adds
+    ``"exports": []``)."""
+    payload: dict[str, object] = {"ok": False, "file": path}
+    if extra:
+        payload.update(extra)
+    payload["diagnostics"] = [{
+        "severity": "error",
+        "description": msg,
+        "location": {"line": 0, "column": 0},
+    }]
+    payload["warnings"] = [w.to_dict() for w in warnings]
+    return payload
+
+
+def no_exports_message(program: Program, exports: list[str]) -> str | None:
+    """The refusal of a module that declares a public entry point and exports
+    nothing, or ``None`` when *program* and *exports* are not that (#1183).
+
+    Such a module is a failed compile: the artifact cannot be called at all,
+    and reporting "Compiled: out.wasm (0 functions exported)" over it is a
+    green light on an unusable output.  Gated on a public NON-GENERIC
+    declaration existing, because two shapes export nothing by design and
+    must stay successful: a file of private helpers, and a cross-module
+    generic library (a `forall` template has no monomorphic body to export —
+    its importers instantiate it).
+    """
+    from vera.ast import FnDecl
+
+    entry_candidates = [
+        tld.decl.name
+        for tld in program.declarations
+        if isinstance(tld.decl, FnDecl)
+        and tld.visibility == "public"
+        and not tld.decl.forall_vars
+    ]
+    if not (entry_candidates and not exports):
+        return None
+    declared = "".join(f"  - {n}\n" for n in entry_candidates)
+    return (
+        "No exported functions — the compiled module has no entry "
+        "points.\n"
+        f"\nDeclared public functions:\n{declared}"
+        "\nA public function whose body (or a callee's body) could "
+        "not be compiled is dropped from the module with a "
+        "diagnostic above; fix the reported construct to restore "
+        "the export."
+    )
+
+
+def run_refusal_envelope(
+    path: str | None, errors: Sequence[Diagnostic],
+) -> dict[str, object]:
+    """``vera run --json``'s envelope for a program it refuses before
+    running it: the parser's, the check's or code generation's *errors*."""
+    return {
+        "ok": False,
+        "file": path,
+        "diagnostics": [e.to_dict() for e in errors],
+    }
+
+
+def run_envelope(
+    path: str | None,
+    fn_name: str | None,
+    exports: list[str],
+    exec_result: ExecuteResult,
+    warnings: Sequence[Diagnostic],
+) -> dict[str, object]:
+    """``vera run --json``'s envelope for a call that returned: the function
+    called (*fn_name*, or the entry *exports* give), its value and output,
+    and code generation's *warnings*."""
+    result_dict: dict[str, object] = {
+        "ok": True,
+        "file": path,
+        "function": fn_name or (
+            "main" if "main" in exports
+            else exports[0] if exports else None
+        ),
+        "value": exec_result.value,
+        "stdout": exec_result.stdout,
+    }
+    if exec_result.stderr:
+        result_dict["stderr"] = exec_result.stderr
+    if exec_result.exit_code is not None:
+        result_dict["exit_code"] = exec_result.exit_code
+    # #1183: the machine-readable half of the "Compilation notes"
+    # block — a JSON consumer must be able to see that functions
+    # were dropped from the module it just ran.  Present only when
+    # non-empty, so an ordinary run's envelope is unchanged.
+    if warnings:
+        result_dict["warnings"] = [
+            w.to_dict() for w in warnings
+        ]
+    return result_dict
+
+
+def trap_envelope(path: str | None, exc: WasmTrapError) -> dict[str, object]:
+    """``vera run --json``'s envelope for a call that trapped, with the
+    output the program wrote before the trap."""
+    diag: dict[str, object] = {
+        "severity": "error",
+        "description": str(exc),
+        "trap_kind": exc.kind,
+        "location": {"line": 0, "column": 0},
+        # #516 Stage 2 — structured backtrace.  Always present
+        # (possibly an empty list) so JSON consumers can
+        # iterate `diag["frames"]` without `.get(..., [])`
+        # ceremony.  Same shape stability principle as the
+        # always-present `trap_kind` above; `frames` is
+        # structural, not optional content like `stdout`.
+        # Each frame is a `TrapFrame` dataclass (#516 Stage
+        # 2) — convert to dict at the JSON serialisation
+        # boundary so the wire format stays the same as
+        # before the dataclass refactor (CodeRabbit round 5).
+        "frames": [f.to_dict() for f in exc.frames],
+        # #516 Stage 3 (#547) — per-kind Fix paragraph.
+        # Always present for shape stability (same reasoning
+        # as `trap_kind` and `frames`); empty string for the
+        # kinds that don't admit a generic suggestion
+        # (`contract_violation` and `host_error`, whose
+        # descriptions already carry the remediation;
+        # `unknown`).  Mirrors the
+        # `fix` field on compile-time `Diagnostic` objects.
+        "fix": exc.fix,
+    }
+    envelope: dict[str, object] = {
+        "ok": False,
+        "file": path,
+        "diagnostics": [diag],
+    }
+    if exc.stdout:
+        envelope["stdout"] = exc.stdout
+    if exc.stderr:
+        envelope["stderr"] = exc.stderr
+    return envelope
 
 
 def cmd_parse(path: str) -> int:
@@ -220,12 +493,7 @@ def cmd_check(
                     slot_sections.append("\n".join(blocks))
 
         if as_json:
-            result: dict[str, object] = {
-                "ok": len(errors) == 0,
-                "file": path,
-                "diagnostics": [e.to_dict() for e in errors],
-                "warnings": [w.to_dict() for w in warnings],
-            }
+            result = diagnostics_envelope(path, errors, warnings)
             if explain_slots:
                 result["slot_environments"] = slot_json  # [] on error
             print(json.dumps(result, indent=2))
@@ -281,11 +549,7 @@ def cmd_check(
         # handler at all.
         try:
             if as_json:
-                err_result = {
-                    "ok": False, "file": path,
-                    "diagnostics": [exc.diagnostic.to_dict()],
-                    "warnings": [],
-                }
+                err_result = diagnostics_envelope(path, [exc.diagnostic], [])
                 if explain_slots:
                     err_result["slot_environments"] = []
                 print(json.dumps(err_result, indent=2))
@@ -319,7 +583,6 @@ def cmd_verify(path: str, as_json: bool = False, quiet: bool = False,
         # envelope exists to eliminate.
         from vera.checker import typecheck_with_artifacts
         from vera.resolver import ModuleResolver
-        from vera.smt import resolve_timeout_ms
         from vera.verifier import verify
 
         p, source, tree = _load_and_parse(path)
@@ -345,13 +608,9 @@ def cmd_verify(path: str, as_json: bool = False, quiet: bool = False,
 
         if type_errors:
             if as_json:
-                result_dict = {
-                    "ok": False,
-                    "file": path,
-                    "diagnostics": [e.to_dict() for e in type_errors],
-                    "warnings": [w.to_dict() for w in type_warnings],
-                }
-                print(json.dumps(result_dict, indent=2))
+                print(json.dumps(
+                    diagnostics_envelope(path, type_errors, type_warnings),
+                    indent=2))
                 return 1
             for e in type_errors:
                 print(e.format(), file=sys.stderr)
@@ -401,65 +660,10 @@ def cmd_verify(path: str, as_json: bool = False, quiet: bool = False,
             reconcile_report = report_dict(reconciled)
 
         if as_json:
-            s = result.summary
-            result_dict = {
-                "ok": len(errors) == 0,
-                "file": path,
-                "diagnostics": [e.to_dict() for e in errors],
-                "warnings": [w.to_dict() for w in all_warnings],
-                "verification": {
-                    "tier1_verified": s.tier1_verified,
-                    "tier3_runtime": s.tier3_runtime,
-                    "total": s.total,
-                    # #1345: assumptions counted BESIDE the tiers.  Absent
-                    # from this object, an `assume` was counted nowhere at
-                    # all, so a consumer could not tell a proof from a
-                    # promise.
-                    "assumptions": s.assumptions,
-                    # #1350: the budget these tiers were measured under.  A
-                    # tier near the budget is host-sensitive, so a summary
-                    # that does not say which budget produced it cannot be
-                    # compared against another machine's.
-                    "timeout_ms": resolve_timeout_ms(timeout_ms),
-                },
-                # #967: expose the reified obligation stream the summary is
-                # derived from, so a machine consumer can reproduce or refine
-                # the tier counts (location mirrors a diagnostic's shape).
-                "obligations": [
-                    {
-                        "kind": o.kind,
-                        "status": o.status,
-                        "description": o.expr_text,
-                        "location": {
-                            "line": o.line,
-                            "column": o.column,
-                            # The obligation's OWN file, so a consumer can
-                            # join it to its diagnostic on (file, line,
-                            # column) (PR #974 review).  That join assumed
-                            # every obligation belonged to the entry program
-                            # and stamped `str(p)` on all of them, which was
-                            # true only while the verifier reported
-                            # everything against the entry buffer; once an
-                            # imported generic's clone reports against its
-                            # own module (#1220), a stamped entry path both
-                            # broke the join and named a line the entry file
-                            # does not have.  The verifier normalizes the
-                            # path it is handed (`verify(..., file=str(p))`),
-                            # so a main-file obligation still carries exactly
-                            # the `str(p)` diagnostics carry; the fallback
-                            # covers only an obligation reified with no file
-                            # at all, which a run given `path` does not
-                            # produce.
-                            **(
-                                {"file": o.file or str(p)}
-                                if path else {}
-                            ),
-                        },
-                        **({"error_code": o.error_code} if o.error_code else {}),
-                    }
-                    for o in result.obligations
-                ],
-            }
+            result_dict = verify_envelope(
+                path, result, errors, all_warnings,
+                timeout_ms=timeout_ms, default_file=str(p),
+            )
             if reconcile:
                 # Present only when asked for, so the envelope of a plain
                 # `vera verify --json` is unchanged.
@@ -512,9 +716,9 @@ def cmd_verify(path: str, as_json: bool = False, quiet: bool = False,
     except VeraError as exc:
         try:
             if as_json:
-                print(json.dumps({"ok": False, "file": path,
-                                  "diagnostics": [exc.diagnostic.to_dict()],
-                                  "warnings": []}, indent=2))
+                print(json.dumps(
+                    diagnostics_envelope(path, [exc.diagnostic], []),
+                    indent=2))
                 return 1
             print(exc.diagnostic.format(), file=sys.stderr)
             return 1
@@ -644,16 +848,9 @@ def _report_compile_failure(
     caller adds ``"exports": []``).
     """
     if as_json:
-        payload: dict[str, object] = {"ok": False, "file": path}
-        if extra:
-            payload.update(extra)
-        payload["diagnostics"] = [{
-            "severity": "error",
-            "description": msg,
-            "location": {"line": 0, "column": 0},
-        }]
-        payload["warnings"] = [w.to_dict() for w in all_warnings]
-        print(json.dumps(payload, indent=2))
+        print(json.dumps(
+            compile_failure_envelope(path, msg, all_warnings, extra),
+            indent=2))
         return 1
     for w in all_warnings:
         print(f"warning: {w.format()}", file=sys.stderr)
@@ -671,7 +868,6 @@ def cmd_compile(
     world: str = "cli",
 ) -> int:
     """Parse, type-check, and compile a .vera file to WebAssembly."""
-    from vera.ast import FnDecl
     from vera.checker import typecheck_with_artifacts
     from vera.codegen import (
         compile as codegen_compile,
@@ -718,13 +914,9 @@ def cmd_compile(
 
         if type_errors:
             if as_json:
-                result_dict = {
-                    "ok": False,
-                    "file": path,
-                    "diagnostics": [e.to_dict() for e in type_errors],
-                    "warnings": [w.to_dict() for w in type_warnings],
-                }
-                print(json.dumps(result_dict, indent=2))
+                print(json.dumps(
+                    diagnostics_envelope(path, type_errors, type_warnings),
+                    indent=2))
                 return 1
             # Print warnings on the error path too (#1004 review): the text
             # branch must not silently drop type_warnings when a type error is
@@ -750,13 +942,9 @@ def cmd_compile(
 
         if errors:
             if as_json:
-                result_dict = {
-                    "ok": False,
-                    "file": path,
-                    "diagnostics": [e.to_dict() for e in errors],
-                    "warnings": [w.to_dict() for w in all_warnings],
-                }
-                print(json.dumps(result_dict, indent=2))
+                print(json.dumps(
+                    diagnostics_envelope(path, errors, all_warnings),
+                    indent=2))
                 return 1
             # Print accumulated warnings on the error path too (#1004): a
             # CodegenSkip drops a called function with an explanatory E602
@@ -771,37 +959,14 @@ def cmd_compile(
             return 1
 
         # #1183: a module that declares a public entry point and then
-        # exports nothing is a failed compile — the artifact cannot be
-        # called at all, and reporting "Compiled: out.wasm (0 functions
-        # exported)" over it is a green light on an unusable output.
-        #
-        # Gated on a public NON-GENERIC declaration existing, because two
-        # shapes export nothing by design and must stay successful: a file
-        # of private helpers, and a cross-module generic library (a
-        # `forall` template has no monomorphic body to export — its
-        # importers instantiate it).  The accumulated warnings — the
-        # [E602]/[E620] drops, when that is why the exports went away —
-        # travel with the failure.
-        entry_candidates = [
-            tld.decl.name
-            for tld in ast.declarations
-            if isinstance(tld.decl, FnDecl)
-            and tld.visibility == "public"
-            and not tld.decl.forall_vars
-        ]
-        if entry_candidates and not result.exports:
-            declared = "".join(f"  - {n}\n" for n in entry_candidates)
-            msg = (
-                "No exported functions — the compiled module has no entry "
-                "points.\n"
-                f"\nDeclared public functions:\n{declared}"
-                "\nA public function whose body (or a callee's body) could "
-                "not be compiled is dropped from the module with a "
-                "diagnostic above; fix the reported construct to restore "
-                "the export."
-            )
+        # exports nothing is a failed compile (`no_exports_message` says
+        # which modules export nothing by design).  The accumulated
+        # warnings — the [E602]/[E620] drops, when that is why the exports
+        # went away — travel with the failure.
+        no_exports = no_exports_message(ast, result.exports)
+        if no_exports is not None:
             return _report_compile_failure(
-                path, msg, all_warnings, as_json=as_json,
+                path, no_exports, all_warnings, as_json=as_json,
                 extra={"exports": []},
             )
 
@@ -845,14 +1010,9 @@ def cmd_compile(
                 )
 
         if as_json:
-            result_dict = {
-                "ok": True,
-                "file": path,
-                "exports": result.exports,
-                "diagnostics": [],
-                "warnings": [w.to_dict() for w in all_warnings],
-            }
-            print(json.dumps(result_dict, indent=2))
+            print(json.dumps(
+                compile_envelope(path, result.exports, all_warnings),
+                indent=2))
             return 0
 
         # Print warnings
@@ -914,9 +1074,8 @@ def cmd_compile(
         return 1
     except VeraError as exc:
         if as_json:
-            print(json.dumps({"ok": False, "file": path,
-                              "diagnostics": [exc.diagnostic.to_dict()],
-                              "warnings": []}, indent=2))
+            print(json.dumps(
+                diagnostics_envelope(path, [exc.diagnostic], []), indent=2))
             return 1
         print(exc.diagnostic.format(), file=sys.stderr)
         return 1
@@ -1087,12 +1246,8 @@ def cmd_run(
 
         if type_errors:
             if as_json:
-                result_dict = {
-                    "ok": False,
-                    "file": path,
-                    "diagnostics": [e.to_dict() for e in type_errors],
-                }
-                print(json.dumps(result_dict, indent=2))
+                print(json.dumps(
+                    run_refusal_envelope(path, type_errors), indent=2))
                 return 1
             for e in type_errors:
                 print(e.format(), file=sys.stderr)
@@ -1109,12 +1264,8 @@ def cmd_run(
         if not result.ok:  # pragma: no cover — codegen errors after typecheck pass
             errors = [d for d in result.diagnostics if d.severity == "error"]
             if as_json:
-                result_dict = {
-                    "ok": False,
-                    "file": path,
-                    "diagnostics": [e.to_dict() for e in errors],
-                }
-                print(json.dumps(result_dict, indent=2))
+                print(json.dumps(
+                    run_refusal_envelope(path, errors), indent=2))
                 return 1
             for e in errors:
                 print(e.format(), file=sys.stderr)
@@ -1346,29 +1497,10 @@ def cmd_run(
             )
 
         if as_json:
-            result_dict = {
-                "ok": True,
-                "file": path,
-                "function": fn_name or (
-                    "main" if "main" in result.exports
-                    else result.exports[0] if result.exports else None
-                ),
-                "value": exec_result.value,
-                "stdout": exec_result.stdout,
-            }
-            if exec_result.stderr:
-                result_dict["stderr"] = exec_result.stderr
-            if exec_result.exit_code is not None:
-                result_dict["exit_code"] = exec_result.exit_code
-            # #1183: the machine-readable half of the "Compilation notes"
-            # block — a JSON consumer must be able to see that functions
-            # were dropped from the module it just ran.  Present only when
-            # non-empty, so an ordinary run's envelope is unchanged.
-            if codegen_warnings:
-                result_dict["warnings"] = [
-                    w.to_dict() for w in codegen_warnings
-                ]
-            print(json.dumps(result_dict, indent=2))
+            print(json.dumps(
+                run_envelope(path, fn_name, result.exports, exec_result,
+                             codegen_warnings),
+                indent=2))
             return exec_result.exit_code if exec_result.exit_code else 0
 
         # Text mode (JSON returned above): IO.print writes have
@@ -1414,9 +1546,8 @@ def cmd_run(
         return 1
     except VeraError as exc:
         if as_json:
-            print(json.dumps({"ok": False, "file": path,
-                              "diagnostics": [exc.diagnostic.to_dict()]}
-                              , indent=2))
+            print(json.dumps(
+                run_refusal_envelope(path, [exc.diagnostic]), indent=2))
             return 1
         print(exc.diagnostic.format(), file=sys.stderr)
         return 1
@@ -1429,42 +1560,7 @@ def cmd_run(
             # JSON mode: pack stdout/stderr into the envelope. Writing
             # them to sys.stdout/sys.stderr would corrupt the JSON for
             # downstream consumers parsing our output.
-            diag: dict[str, object] = {
-                "severity": "error",
-                "description": str(exc),
-                "trap_kind": exc.kind,
-                "location": {"line": 0, "column": 0},
-                # #516 Stage 2 — structured backtrace.  Always present
-                # (possibly an empty list) so JSON consumers can
-                # iterate `diag["frames"]` without `.get(..., [])`
-                # ceremony.  Same shape stability principle as the
-                # always-present `trap_kind` above; `frames` is
-                # structural, not optional content like `stdout`.
-                # Each frame is a `TrapFrame` dataclass (#516 Stage
-                # 2) — convert to dict at the JSON serialisation
-                # boundary so the wire format stays the same as
-                # before the dataclass refactor (CodeRabbit round 5).
-                "frames": [f.to_dict() for f in exc.frames],
-                # #516 Stage 3 (#547) — per-kind Fix paragraph.
-                # Always present for shape stability (same reasoning
-                # as `trap_kind` and `frames`); empty string for the
-                # kinds that don't admit a generic suggestion
-                # (`contract_violation` and `host_error`, whose
-                # descriptions already carry the remediation;
-                # `unknown`).  Mirrors the
-                # `fix` field on compile-time `Diagnostic` objects.
-                "fix": exc.fix,
-            }
-            envelope: dict[str, object] = {
-                "ok": False,
-                "file": path,
-                "diagnostics": [diag],
-            }
-            if exc.stdout:
-                envelope["stdout"] = exc.stdout
-            if exc.stderr:
-                envelope["stderr"] = exc.stderr
-            print(json.dumps(envelope, indent=2))
+            print(json.dumps(trap_envelope(path, exc), indent=2))
             return 1
 
         # Text mode: surface the captured streams to the corresponding

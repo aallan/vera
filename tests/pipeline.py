@@ -32,10 +32,20 @@ the order the CLI reports them, the artefact the stage made (the typed
 program, the verification result with its obligations, the compiled module
 with its WAT and bytes, the execution's value and output or its trap), and
 ``envelope()``, the JSON object ``vera <stage> --json`` prints for the same
-input.  An artefact the stage did not make is not there to read: reading it
+input, which the stage builds with the functions the command builds it with
+(``vera.cli``'s ``diagnostics_envelope``, ``verify_envelope`` and the rest),
+so there is one serialisation of each to read.  An artefact the stage did
+not make is not there to read: reading it
 raises what stopped the stage, the parse or transform error itself, the
 trap itself, or :class:`StageFailed` naming the errors of a stage that
 refused the program.  A compiler crash is never a result: it propagates.
+
+Every stage, and ``cli``, runs under a budget, as a process runs under its
+caller's timeout: *budget_s* seconds, or :data:`DEFAULT_BUDGET_S` when the
+caller names none and no budget is in force already.  A call still running
+at the end of it ends the process, with every thread's traceback written to
+the stderr the process started with, and pytest-xdist names the test the
+worker was running (:func:`_budget`).
 
 ``compile`` also asserts the one invariant every compiled module must hold
 whatever it is for (#1185): a module that holds a ``call_indirect`` declares
@@ -68,25 +78,38 @@ itself.
 from __future__ import annotations
 
 import contextlib
+import faulthandler
 import io
 import json
 import os
 import re
 import sys
+import tempfile
+import time
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 from vera import ast
 from vera.checker import CheckArtifacts, typecheck_with_artifacts
+from vera.cli import (
+    compile_envelope,
+    compile_failure_envelope,
+    diagnostics_envelope,
+    no_exports_message,
+    run_envelope,
+    run_refusal_envelope,
+    trap_envelope,
+    verify_envelope,
+)
+from vera.cli import main as _cli_main
 from vera.codegen import CodeGenerator, CompileResult, ExecuteResult, execute
 from vera.codegen.api import HttpRequestData
 from vera.errors import Diagnostic, VeraError
 from vera.parser import parse as _parse_tree
 from vera.resolver import ModuleResolver, ResolvedModule
 from vera.runtime.traps import WasmTrapError
-from vera.smt import resolve_timeout_ms
 from vera.tester import TestResult
 from vera.tester import test as _test_program
 from vera.transform import transform
@@ -150,6 +173,115 @@ def _warnings(diagnostics: Sequence[Diagnostic]) -> tuple[Diagnostic, ...]:
 
 
 # =====================================================================
+# The budget
+# =====================================================================
+
+#: The budget of a stage call, or a :func:`cli` call, whose caller names
+#: none (*budget_s*): the run stage's own (``RUN_TIMEOUT_SECONDS`` in
+#: scripts/conformance_golden.py) is the same 120 s.
+DEFAULT_BUDGET_S = 120.0
+
+#: The shortest timer the watchdog arms: an enclosing budget that ran out
+#: while an inner one was in force ends the process at once.
+_MIN_ARM_S = 0.001
+
+
+def _stderr_fileno() -> int:
+    """The descriptor of the stream ``sys.stderr`` writes to, which is not
+    always 2: an execnet worker on Windows, which is what pytest-xdist
+    starts there, moves the stderr it started with to a descriptor of its
+    own, wraps that as ``sys.stderr``, and points descriptor 2 at the null
+    device.  Descriptor 2 when no stream has a descriptor."""
+    for stream in (sys.stderr, sys.__stderr__):
+        try:
+            fd = stream.fileno() if stream is not None else -1
+        except (AttributeError, OSError, ValueError):
+            continue
+        if fd >= 0:
+            return fd
+    return 2
+
+
+def _stderr_copy() -> int | None:
+    """A descriptor of its own on the stream ``sys.stderr`` writes to now
+    (:func:`_stderr_fileno`), or ``None`` when that is closed."""
+    try:
+        return os.dup(_stderr_fileno())
+    except OSError:
+        return None
+
+
+#: Where the watchdog writes the traceback of the call it ends: a descriptor
+#: of its own on the stderr this process started with, which a capture that
+#: later points descriptor 2 elsewhere does not swallow.  Taken here, which
+#: is right outside pytest.  Under pytest, collection imports this module
+#: with the capture in place, which a process the watchdog ends never
+#: reports, so tests/conftest.py takes it again at ``pytest_configure``,
+#: where the capture is suspended (:func:`watch_stderr`).
+_watchdog_fd: int | None = _stderr_copy()
+
+#: The deadlines of the budgets in force, the innermost last.
+_deadlines: list[float] = []
+
+
+def watch_stderr() -> None:
+    """Point the watchdog at a descriptor of its own on the stream
+    ``sys.stderr`` writes to now, in place of the one it had.  Called before
+    any budget is in force."""
+    global _watchdog_fd
+    fd = _stderr_copy()
+    if fd is None:
+        return
+    previous, _watchdog_fd = _watchdog_fd, fd
+    if previous is not None:
+        os.close(previous)
+
+
+def _arm(seconds: float) -> None:
+    faulthandler.dump_traceback_later(
+        seconds, exit=True,
+        file=_watchdog_fd if _watchdog_fd is not None
+        else sys.__stderr__ or sys.stderr)
+
+
+@contextlib.contextmanager
+def _budget(seconds: float | None) -> Iterator[None]:
+    """End this process if the block is still running after *seconds*.
+
+    In process there is no child to stop: a call that never returns would
+    hold its worker until the job's own timeout, and no test would be
+    named.  `faulthandler`'s timer runs on a thread of its own, so it fires
+    inside compiled WASM as well: it writes every thread's traceback to the
+    stderr this process started with (:data:`_watchdog_fd`) and exits, and
+    pytest-xdist reports the test the worker was running.  Without xdist
+    the run itself ends there, with that traceback.
+
+    The process has one timer, so budgets nest.  An inner *seconds* is
+    armed for the inner block, and when the block ends the enclosing budget
+    is armed again for what it has left.  ``None`` keeps the budget in
+    force, or arms :data:`DEFAULT_BUDGET_S` when there is none, so a stage's
+    call of the stages before it runs under its caller's budget rather than
+    a default of its own.  The timer is cancelled on every path out of the
+    outermost budget.
+    """
+    if seconds is None:
+        if _deadlines:
+            yield
+            return
+        seconds = DEFAULT_BUDGET_S
+    _deadlines.append(time.monotonic() + seconds)
+    try:
+        _arm(seconds)
+        yield
+    finally:
+        _deadlines.pop()
+        if _deadlines:
+            _arm(max(_deadlines[-1] - time.monotonic(), _MIN_ARM_S))
+        else:
+            faulthandler.cancel_dump_traceback_later()
+
+
+# =====================================================================
 # parse
 # =====================================================================
 
@@ -192,14 +324,17 @@ def _read(source: Source, file: str | None) -> tuple[str, str | None, Path | Non
     return path.read_text(encoding="utf-8"), file if file is not None else str(path), path
 
 
-def parse(source: Source, *, file: str | None = None) -> Parsed:
+def parse(
+    source: Source, *, file: str | None = None, budget_s: float | None = None,
+) -> Parsed:
     """Parse and transform *source*, as every command does first."""
-    text, label, path = _read(source, file)
-    try:
-        program = transform(_parse_tree(text, file=label))
-    except VeraError as exc:
-        return Parsed(text, label, path, exc, None)
-    return Parsed(text, label, path, None, program)
+    with _budget(budget_s):
+        text, label, path = _read(source, file)
+        try:
+            program = transform(_parse_tree(text, file=label))
+        except VeraError as exc:
+            return Parsed(text, label, path, exc, None)
+        return Parsed(text, label, path, None, program)
 
 
 # =====================================================================
@@ -266,12 +401,7 @@ class Checked:
 
     def envelope(self) -> dict[str, Any]:
         """What ``vera check --json`` prints for this program."""
-        return {
-            "ok": self.ok,
-            "file": self.file,
-            "diagnostics": [d.to_dict() for d in self.errors],
-            "warnings": [d.to_dict() for d in self.warnings],
-        }
+        return diagnostics_envelope(self.file, self.errors, self.warnings)
 
 
 def _resolve(
@@ -294,6 +424,7 @@ def check(
     root: Path | None = None,
     modules: Sequence[ResolvedModule] | None = None,
     collect_module_artifacts: bool = False,
+    budget_s: float | None = None,
 ) -> Checked:
     """Parse, resolve and type-check *source*, as ``vera check`` does.
 
@@ -301,20 +432,21 @@ def check(
     directory by default); *modules* replaces resolution with the modules
     given.
     """
-    parsed = parse(source, file=file)
-    if not parsed.ok:
-        return Checked(parsed, None, (), (), None)
-    program = parsed.program
-    resolved, resolver_diagnostics = _resolve(program, parsed, root, modules)
-    diagnostics, artifacts = typecheck_with_artifacts(
-        program, parsed.source, file=parsed.file,
-        resolved_modules=list(resolved) if resolved is not None else None,
-        collect_module_artifacts=collect_module_artifacts,
-    )
-    return Checked(
-        parsed, resolved, tuple(resolver_diagnostics), tuple(diagnostics),
-        artifacts,
-    )
+    with _budget(budget_s):
+        parsed = parse(source, file=file)
+        if not parsed.ok:
+            return Checked(parsed, None, (), (), None)
+        program = parsed.program
+        resolved, resolver_diagnostics = _resolve(program, parsed, root, modules)
+        diagnostics, artifacts = typecheck_with_artifacts(
+            program, parsed.source, file=parsed.file,
+            resolved_modules=list(resolved) if resolved is not None else None,
+            collect_module_artifacts=collect_module_artifacts,
+        )
+        return Checked(
+            parsed, resolved, tuple(resolver_diagnostics), tuple(diagnostics),
+            artifacts,
+        )
 
 
 # =====================================================================
@@ -371,46 +503,15 @@ class Verified:
         return list(self.result.obligations)
 
     def envelope(self) -> dict[str, Any]:
-        """What ``vera verify --json`` prints for this program."""
+        """What ``vera verify --json`` prints for this program: the check's
+        envelope when verification did not run, and the verifier's
+        otherwise, built by the functions the command builds them with."""
         if self._result is None:
-            if not self.checked.parsed.ok:
-                return self.checked.envelope()
-            return {
-                "ok": False,
-                "file": self.checked.file,
-                "diagnostics": [d.to_dict() for d in self.checked.errors],
-                "warnings": [d.to_dict() for d in self.checked.warnings],
-            }
-        result = self._result
-        label = self.checked.file
-        summary = result.summary
-        return {
-            "ok": not self.errors,
-            "file": label,
-            "diagnostics": [d.to_dict() for d in self.errors],
-            "warnings": [d.to_dict() for d in self.warnings],
-            "verification": {
-                "tier1_verified": summary.tier1_verified,
-                "tier3_runtime": summary.tier3_runtime,
-                "total": summary.total,
-                "assumptions": summary.assumptions,
-                "timeout_ms": resolve_timeout_ms(self.timeout_ms),
-            },
-            "obligations": [
-                {
-                    "kind": o.kind,
-                    "status": o.status,
-                    "description": o.expr_text,
-                    "location": {
-                        "line": o.line,
-                        "column": o.column,
-                        **({"file": o.file or label} if label else {}),
-                    },
-                    **({"error_code": o.error_code} if o.error_code else {}),
-                }
-                for o in result.obligations
-            ],
-        }
+            return self.checked.envelope()
+        return verify_envelope(
+            self.checked.file, self._result, self.errors, self.warnings,
+            timeout_ms=self.timeout_ms, default_file=self.checked.file,
+        )
 
 
 def verify(
@@ -421,6 +522,7 @@ def verify(
     modules: Sequence[ResolvedModule] | None = None,
     timeout_ms: int | None = None,
     past_check: bool = False,
+    budget_s: float | None = None,
 ) -> Verified:
     """Check *source*, then verify its contracts, as ``vera verify`` does.
 
@@ -429,22 +531,23 @@ def verify(
     ``past_check=True`` it runs on a program the check refuses too, with the
     tables that check collected.
     """
-    checked = check(
-        source, file=file, root=root, modules=modules,
-        collect_module_artifacts=True,
-    )
-    if not checked.parsed.ok or (not checked.ok and not past_check):
-        return Verified(checked, timeout_ms, None)
-    artifacts = checked.artifacts
-    result = _verify_program(
-        checked.program, checked.source, file=checked.file,
-        timeout_ms=timeout_ms,
-        resolved_modules=checked.resolved,
-        expr_types=artifacts.expr_semantic_types,
-        expr_target_types=artifacts.expr_target_types,
-        module_artifacts=artifacts.module_artifacts,
-    )
-    return Verified(checked, timeout_ms, result)
+    with _budget(budget_s):
+        checked = check(
+            source, file=file, root=root, modules=modules,
+            collect_module_artifacts=True,
+        )
+        if not checked.parsed.ok or (not checked.ok and not past_check):
+            return Verified(checked, timeout_ms, None)
+        artifacts = checked.artifacts
+        result = _verify_program(
+            checked.program, checked.source, file=checked.file,
+            timeout_ms=timeout_ms,
+            resolved_modules=checked.resolved,
+            expr_types=artifacts.expr_semantic_types,
+            expr_target_types=artifacts.expr_target_types,
+            module_artifacts=artifacts.module_artifacts,
+        )
+        return Verified(checked, timeout_ms, result)
 
 
 # =====================================================================
@@ -543,56 +646,24 @@ class Compiled:
         return self.result.exports
 
     def envelope(self) -> dict[str, Any]:
-        """What ``vera compile --json`` prints for this program."""
+        """What ``vera compile --json`` prints for this program, built by the
+        functions the command builds it with: the refusal of the stage that
+        refused it, the refusal of a module that exports nothing, or the
+        module's exports."""
         label = self.parsed.file
         if self._result is None:
             if self.checked is None or not self.parsed.ok:
-                return {
-                    "ok": False, "file": label,
-                    "diagnostics": [d.to_dict() for d in self.parsed.diagnostics],
-                    "warnings": [],
-                }
-            return {
-                "ok": False, "file": label,
-                "diagnostics": [d.to_dict() for d in self.checked.errors],
-                "warnings": [d.to_dict() for d in self.checked.warnings],
-            }
+                return diagnostics_envelope(label, self.parsed.diagnostics, ())
+            return self.checked.envelope()
         result = self._result
-        warnings = [d.to_dict() for d in self.warnings]
         if self.errors:
-            return {
-                "ok": False, "file": label,
-                "diagnostics": [d.to_dict() for d in _errors(result.diagnostics)],
-                "warnings": warnings,
-            }
-        entries = [
-            tld.decl.name for tld in self.parsed.program.declarations
-            if isinstance(tld.decl, ast.FnDecl)
-            and tld.visibility == "public" and not tld.decl.forall_vars
-        ]
-        if entries and not result.exports:
-            declared = "".join(f"  - {n}\n" for n in entries)
-            return {
-                "ok": False, "file": label, "exports": [],
-                "diagnostics": [{
-                    "severity": "error",
-                    "description": (
-                        "No exported functions — the compiled module has no "
-                        "entry points.\n"
-                        f"\nDeclared public functions:\n{declared}"
-                        "\nA public function whose body (or a callee's body) "
-                        "could not be compiled is dropped from the module "
-                        "with a diagnostic above; fix the reported construct "
-                        "to restore the export."
-                    ),
-                    "location": {"line": 0, "column": 0},
-                }],
-                "warnings": warnings,
-            }
-        return {
-            "ok": True, "file": label, "exports": result.exports,
-            "diagnostics": [], "warnings": warnings,
-        }
+            return diagnostics_envelope(
+                label, _errors(result.diagnostics), self.warnings)
+        no_exports = no_exports_message(self.parsed.program, result.exports)
+        if no_exports is not None:
+            return compile_failure_envelope(
+                label, no_exports, self.warnings, extra={"exports": []})
+        return compile_envelope(label, result.exports, self.warnings)
 
 
 def compile(
@@ -603,6 +674,7 @@ def compile(
     modules: Sequence[ResolvedModule] | None = None,
     checked: bool = True,
     past_check: bool = False,
+    budget_s: float | None = None,
 ) -> Compiled:
     """Check *source*, then compile it, as ``vera compile`` does.
 
@@ -614,35 +686,36 @@ def compile(
     parsed program alone (and *modules*, if given): no resolution, no check
     and no tables.
     """
-    front: Checked | None
-    if checked:
-        front = check(
-            source, file=file, root=root, modules=modules,
-            collect_module_artifacts=True,
-        )
-        parsed = front.parsed
-        if not parsed.ok or (not front.ok and not past_check):
-            return Compiled(parsed, front, None, None)
-        artifacts = front.artifacts
-        generator = CodeGenerator(
-            source=parsed.source, file=parsed.file,
-            resolved_modules=front.resolved,
-            expr_semantic_types=artifacts.expr_semantic_types,
-            expr_target_types=artifacts.expr_target_types,
-            module_artifacts=artifacts.module_artifacts,
-        )
-    else:
-        front = None
-        parsed = parse(source, file=file)
-        if not parsed.ok:
-            return Compiled(parsed, None, None, None)
-        generator = CodeGenerator(
-            source=parsed.source, file=parsed.file,
-            resolved_modules=list(modules) if modules is not None else None,
-        )
-    result = generator.compile_program(parsed.program)
-    assert_no_orphan_call_indirect(result.wat)
-    return Compiled(parsed, front, result, generator)
+    with _budget(budget_s):
+        front: Checked | None
+        if checked:
+            front = check(
+                source, file=file, root=root, modules=modules,
+                collect_module_artifacts=True,
+            )
+            parsed = front.parsed
+            if not parsed.ok or (not front.ok and not past_check):
+                return Compiled(parsed, front, None, None)
+            artifacts = front.artifacts
+            generator = CodeGenerator(
+                source=parsed.source, file=parsed.file,
+                resolved_modules=front.resolved,
+                expr_semantic_types=artifacts.expr_semantic_types,
+                expr_target_types=artifacts.expr_target_types,
+                module_artifacts=artifacts.module_artifacts,
+            )
+        else:
+            front = None
+            parsed = parse(source, file=file)
+            if not parsed.ok:
+                return Compiled(parsed, None, None, None)
+            generator = CodeGenerator(
+                source=parsed.source, file=parsed.file,
+                resolved_modules=list(modules) if modules is not None else None,
+            )
+        result = generator.compile_program(parsed.program)
+        assert_no_orphan_call_indirect(result.wat)
+        return Compiled(parsed, front, result, generator)
 
 
 # =====================================================================
@@ -730,51 +803,19 @@ class Ran:
     def envelope(self) -> dict[str, Any]:
         """What ``vera run --json`` prints for a program it runs.
 
-        The compile's refusal, the completed call, or the trap.  ``vera
-        run``'s refusals of an entry it will not call are the CLI's own, and
-        :func:`cli` reports them.
+        The compile's refusal, the completed call, or the trap, built by the
+        functions the command builds them with.  ``vera run``'s refusals of
+        an entry it will not call are the CLI's own, and :func:`cli` reports
+        them.
         """
         label = self.compiled.parsed.file if self.compiled is not None else None
         if self.module is None:
-            return {"ok": False, "file": label,
-                    "diagnostics": [d.to_dict() for d in self._refusal()]}
-        module = self.module
-        notes = [d.to_dict() for d in module.diagnostics
-                 if d.severity == "warning"]
+            return run_refusal_envelope(label, self._refusal())
         if self.trap is not None:
-            trap = self.trap
-            envelope: dict[str, Any] = {
-                "ok": False, "file": label,
-                "diagnostics": [{
-                    "severity": "error",
-                    "description": str(trap),
-                    "trap_kind": trap.kind,
-                    "location": {"line": 0, "column": 0},
-                    "frames": [f.to_dict() for f in trap.frames],
-                    "fix": trap.fix,
-                }],
-            }
-            if trap.stdout:
-                envelope["stdout"] = trap.stdout
-            if trap.stderr:
-                envelope["stderr"] = trap.stderr
-            return envelope
-        execution = self.execution
-        envelope = {
-            "ok": True, "file": label,
-            "function": self.fn or (
-                "main" if "main" in module.exports
-                else module.exports[0] if module.exports else None),
-            "value": execution.value,
-            "stdout": execution.stdout,
-        }
-        if execution.stderr:
-            envelope["stderr"] = execution.stderr
-        if execution.exit_code is not None:
-            envelope["exit_code"] = execution.exit_code
-        if notes:
-            envelope["warnings"] = notes
-        return envelope
+            return trap_envelope(label, self.trap)
+        module = self.module
+        notes = [d for d in module.diagnostics if d.severity == "warning"]
+        return run_envelope(label, self.fn, module.exports, self.execution, notes)
 
 
 def run(
@@ -794,38 +835,42 @@ def run(
     capture_stderr: bool = True,
     tee_stdout: bool = False,
     http_request: HttpRequestData | None = None,
+    budget_s: float | None = None,
 ) -> Ran:
     """Compile *target* (unless it is compiled already) and call *fn*.
 
     *target* is source text, a path, or a module :func:`compile` (or
-    ``vera.codegen.compile``) built.  The keyword arguments after *checked*
-    are :func:`vera.codegen.execute`'s own.  ``capture_stderr`` is on, as
-    ``vera run`` has it, so a program's ``IO.stderr`` is the result's
-    :attr:`Ran.stderr`; off, it reaches ``sys.stderr`` as it is written.
+    ``vera.codegen.compile``) built.  The keyword arguments after *checked*,
+    bar *budget_s*, are :func:`vera.codegen.execute`'s own.
+    ``capture_stderr`` is on, as ``vera run`` has it, so a program's
+    ``IO.stderr`` is the result's :attr:`Ran.stderr`; off, it reaches
+    ``sys.stderr`` as it is written.
     """
-    compiled: Compiled | None
-    if isinstance(target, Compiled):
-        compiled, module = target, target._result
-    elif isinstance(target, CompileResult):
-        compiled, module = None, target
-    else:
-        compiled = compile(target, file=file, root=root, modules=modules,
-                           checked=checked)
-        module = compiled._result
-    if compiled is not None and not compiled.ok:
-        return Ran(compiled, None, fn, None, None)
-    assert module is not None
-    try:
-        execution = execute(
-            module, fn_name=fn, args=list(args) if args is not None else None,
-            raw_args=raw_args, initial_state=initial_state, stdin=stdin,
-            cli_args=cli_args, env_vars=env_vars,
-            capture_stderr=capture_stderr, tee_stdout=tee_stdout,
-            http_request=http_request,
-        )
-    except WasmTrapError as trap:
-        return Ran(compiled, module, fn, None, trap)
-    return Ran(compiled, module, fn, execution, None)
+    with _budget(budget_s):
+        compiled: Compiled | None
+        if isinstance(target, Compiled):
+            compiled, module = target, target._result
+        elif isinstance(target, CompileResult):
+            compiled, module = None, target
+        else:
+            compiled = compile(target, file=file, root=root, modules=modules,
+                               checked=checked)
+            module = compiled._result
+        if compiled is not None and not compiled.ok:
+            return Ran(compiled, None, fn, None, None)
+        assert module is not None
+        try:
+            execution = execute(
+                module, fn_name=fn,
+                args=list(args) if args is not None else None,
+                raw_args=raw_args, initial_state=initial_state, stdin=stdin,
+                cli_args=cli_args, env_vars=env_vars,
+                capture_stderr=capture_stderr, tee_stdout=tee_stdout,
+                http_request=http_request,
+            )
+        except WasmTrapError as trap:
+            return Ran(compiled, module, fn, None, trap)
+        return Ran(compiled, module, fn, execution, None)
 
 
 # =====================================================================
@@ -879,6 +924,7 @@ def contract_test(
     trials: int = 100,
     fn: str | None = None,
     distrust: bool = False,
+    budget_s: float | None = None,
 ) -> Tested:
     """Check *source*, then test its contracts, as ``vera test`` does.
 
@@ -886,22 +932,23 @@ def contract_test(
     tables for the program and each module it imports.  *distrust* also runs
     the functions the verifier proved (``vera test --distrust``).
     """
-    checked = check(
-        source, file=file, root=root, modules=modules,
-        collect_module_artifacts=True,
-    )
-    if not checked.ok:
-        return Tested(checked, None)
-    artifacts = checked.artifacts
-    result = _test_program(
-        checked.program, source=checked.source, file=checked.file,
-        trials=trials, fn_name=fn, resolved_modules=checked.resolved,
-        expr_semantic_types=artifacts.expr_semantic_types,
-        expr_target_types=artifacts.expr_target_types,
-        module_artifacts=artifacts.module_artifacts,
-        alias_env=artifacts.alias_env, distrust=distrust,
-    )
-    return Tested(checked, result)
+    with _budget(budget_s):
+        checked = check(
+            source, file=file, root=root, modules=modules,
+            collect_module_artifacts=True,
+        )
+        if not checked.ok:
+            return Tested(checked, None)
+        artifacts = checked.artifacts
+        result = _test_program(
+            checked.program, source=checked.source, file=checked.file,
+            trials=trials, fn_name=fn, resolved_modules=checked.resolved,
+            expr_semantic_types=artifacts.expr_semantic_types,
+            expr_target_types=artifacts.expr_target_types,
+            module_artifacts=artifacts.module_artifacts,
+            alias_env=artifacts.alias_env, distrust=distrust,
+        )
+        return Tested(checked, result)
 
 
 # =====================================================================
@@ -914,17 +961,43 @@ class CliResult:
     """One ``vera`` command's exit status and output.
 
     The attribute names are ``subprocess.CompletedProcess``'s, so a test
-    that ran the CLI as a process reads this the same way.
+    that ran the CLI as a process reads this the same way: ``stdout`` and
+    ``stderr`` are the text the command wrote.  ``stdout_bytes`` and
+    ``stderr_bytes`` are the bytes a process's text-mode stream writes for
+    that text, which is what a pipe from ``vera`` carries: UTF-8, with each
+    newline the platform's line separator.
     """
 
     args: tuple[str, ...]
     returncode: int
     stdout: str
     stderr: str
+    stdout_bytes: bytes
+    stderr_bytes: bytes
 
     def json(self) -> Any:
         """The command's ``--json`` output, parsed."""
         return json.loads(self.stdout)
+
+
+def _stream() -> tuple[io.BytesIO, io.TextIOWrapper]:
+    """A stream that writes as a process's text-mode stdout writes, and the
+    bytes it writes them to: UTF-8, each newline the platform's line
+    separator.  CPython opens a standard stream on Windows with
+    ``newline=None``, which writes ``\\r\\n`` for each newline; on POSIX the
+    separator is the newline itself, so nothing changes."""
+    raw = io.BytesIO()
+    return raw, io.TextIOWrapper(
+        raw, encoding="utf-8", newline=None, write_through=True)
+
+
+def _text(written: bytes) -> str:
+    """The text a :func:`_stream` was handed, from the bytes it wrote.  Each
+    newline became the line separator and nothing else changed, so the
+    separator back to a newline is the text exactly, a carriage return the
+    command wrote included."""
+    text = written.decode("utf-8")
+    return text if os.linesep == "\n" else text.replace(os.linesep, "\n")
 
 
 @contextlib.contextmanager
@@ -945,6 +1018,49 @@ def _environment(changes: Mapping[str, str | None]) -> Iterator[None]:
                 os.environ[name] = value
 
 
+def stdin_bytes(text: str) -> bytes:
+    """The bytes a parent writing *text* to a child's stdin in text mode
+    puts through the pipe: UTF-8, each newline the platform's line
+    separator."""
+    return text.replace("\n", os.linesep).encode("utf-8")
+
+
+#: The newline mode CPython opens a standard stream with: universal newlines
+#: on Windows, so a ``\r\n`` reaches the program as ``\n``, and ``\n``
+#: elsewhere, which translates nothing.
+_STD_NEWLINE: str | None = None if os.name == "nt" else "\n"
+
+
+@contextlib.contextmanager
+def _stdin(text: str) -> Iterator[TextIO]:
+    """A stdin with a descriptor, as a process has, that holds *text*.
+
+    The runtime asks stdin for its descriptor before it reads a character,
+    to tell a terminal from a pipe, so a stream with none (an
+    ``io.StringIO``) answers ``IO.read_char`` differently from a process.
+    An empty *text* is a pipe whose writing end is closed, which reads as
+    end of input at once: the null device would do the same on POSIX, but on
+    Windows it is a character device, which ``os.isatty`` reports as a
+    terminal.  Otherwise *text* goes into a scratch file as
+    :func:`stdin_bytes` writes it, read back as CPython reads a standard
+    stream.  The stream is closed, and the file removed, on every path.
+    """
+    if not text:
+        read_end, write_end = os.pipe()
+        os.close(write_end)
+        with open(read_end, encoding="utf-8", newline=_STD_NEWLINE) as stream:
+            yield stream
+        return
+    handle, name = tempfile.mkstemp(prefix="vera-stdin-", suffix=".txt")
+    try:
+        with os.fdopen(handle, "wb") as raw:
+            raw.write(stdin_bytes(text))
+        with open(name, encoding="utf-8", newline=_STD_NEWLINE) as stream:
+            yield stream
+    finally:
+        os.unlink(name)
+
+
 def _exit_status(code: object) -> int:
     if code is None:
         return 0
@@ -958,32 +1074,44 @@ def cli(
     *args: str | os.PathLike[str],
     stdin: str = "",
     env: Mapping[str, str | None] | None = None,
+    budget_s: float | None = None,
 ) -> CliResult:
     """Run ``vera <args>`` through ``vera.cli.main``, in process.
 
     ``sys.argv``, ``sys.stdin``, ``sys.stdout`` and ``sys.stderr`` are the
     command's for the call and restored after it, and so is each variable
     *env* names (a value of ``None`` unsets it).  The command reads *stdin*,
-    which is empty unless given.  Its exit status is the code it exits with.
+    which is empty unless given, from a stream with a descriptor, as a
+    process reads a pipe (:func:`_stdin`).  It writes to streams that write
+    as a process's do (:func:`_stream`), so the result holds both the text
+    and the bytes.  Its exit status is the code it exits with.  An exception
+    ``main`` does not handle propagates, where a process would print its
+    traceback and exit 1.  It runs under *budget_s* (:func:`_budget`), as a
+    process runs under its caller's timeout.
     """
-    from vera.cli import main
-
     argv = ["vera", *(os.fspath(a) for a in args)]
-    out, err = io.StringIO(), io.StringIO()
+    out_bytes, out = _stream()
+    err_bytes, err = _stream()
     saved_argv, saved_stdin = sys.argv, sys.stdin
     status = 0
     with contextlib.ExitStack() as stack:
+        stack.enter_context(_budget(budget_s))
         stack.enter_context(_environment(env or {}))
         stack.enter_context(contextlib.redirect_stdout(out))
         stack.enter_context(contextlib.redirect_stderr(err))
-        sys.argv, sys.stdin = argv, io.StringIO(stdin)
+        command_stdin = stack.enter_context(_stdin(stdin))
+        sys.argv, sys.stdin = argv, command_stdin
         try:
-            main()
+            _cli_main()
         except SystemExit as exc:
             status = _exit_status(exc.code)
         finally:
             sys.argv, sys.stdin = saved_argv, saved_stdin
-    return CliResult(tuple(argv[1:]), status, out.getvalue(), err.getvalue())
+    out.flush()
+    err.flush()
+    stdout, stderr = out_bytes.getvalue(), err_bytes.getvalue()
+    return CliResult(
+        tuple(argv[1:]), status, _text(stdout), _text(stderr), stdout, stderr)
 
 
 # =====================================================================

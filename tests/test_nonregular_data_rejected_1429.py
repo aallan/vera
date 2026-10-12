@@ -50,6 +50,7 @@ from pathlib import Path
 import pytest
 
 import vera
+from tests import pipeline
 from vera.environment import ConstructorInfo
 
 _PKG_PARENT = str(Path(vera.__file__).resolve().parents[1])
@@ -60,6 +61,12 @@ _DEADLINE_S = 60
 
 
 def _cli(*args: str, timeout: int = _DEADLINE_S) -> subprocess.CompletedProcess[str]:
+    """``vera <args>`` as a process, stopped after *timeout* seconds.
+
+    For the cell whose assertion is the deadline: a check that never stops
+    is the failure #1429 fixed, and an in-process check cannot be stopped.
+    Every other cell runs the CLI in process (``pipeline.cli``).
+    """
     env = dict(os.environ)
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = (
@@ -72,10 +79,10 @@ def _cli(*args: str, timeout: int = _DEADLINE_S) -> subprocess.CompletedProcess[
     )
 
 
-def _check(tmp_path: Path, source: str, name: str = "p.vera") -> subprocess.CompletedProcess[str]:
+def _check(tmp_path: Path, source: str, name: str = "p.vera") -> pipeline.CliResult:
     p = tmp_path / name
     p.write_text(source, encoding="utf-8")
-    return _cli("check", str(p))
+    return pipeline.cli("check", str(p), budget_s=_DEADLINE_S)
 
 
 _MAIN = """
@@ -215,7 +222,7 @@ def test_regular_recursion_is_untouched(shape: str, tmp_path: Path) -> None:
     assert check.returncode == 0, check.stdout + check.stderr
 
     p = tmp_path / f"{shape}.vera"
-    envelope = json.loads(_cli("verify", "--json", str(p)).stdout)
+    envelope = pipeline.verify(p, budget_s=_DEADLINE_S).envelope()
     assert envelope["ok"] is True, envelope["diagnostics"]
     assert envelope["verification"]["tier1_verified"] > 0, envelope
 
@@ -590,17 +597,31 @@ def test_regularity_does_not_dominate_the_check(tmp_path: Path) -> None:
     linked chains of 300 / 600 / 1000 took 1.8 s / 12.5 s / 73 s against a
     0.5 s baseline — a ratio well past 100 — because the group was re-derived,
     from scratch, once per declaration (PR #1432 re-verification, item 5).
+
+    The check runs in process, so neither timing carries a process start-up.
+    Each side is the fastest of three runs, after one untimed run of each, so
+    neither a first call's imports nor a pause of the scheduler's lands on
+    one side alone.
     """
     import time
 
-    timings = {}
+    paths = {}
     for label, linked in (("linked", True), ("flat", False)):
         path = tmp_path / f"{label}.vera"
         path.write_text(_chain_source(1000, linked=linked), encoding="utf-8")
-        started = time.monotonic()
-        proc = _cli("check", "--quiet", str(path))
-        timings[label] = time.monotonic() - started
-        assert proc.returncode == 0, proc.stdout + proc.stderr
+        warm = pipeline.cli("check", "--quiet", str(path), budget_s=_DEADLINE_S)
+        assert warm.returncode == 0, warm.stdout + warm.stderr
+        paths[label] = path
+
+    timings = {}
+    for label, path in paths.items():
+        best = float("inf")
+        for _ in range(3):
+            started = time.monotonic()
+            proc = pipeline.cli("check", "--quiet", str(path), budget_s=_DEADLINE_S)
+            best = min(best, time.monotonic() - started)
+            assert proc.returncode == 0, proc.stdout + proc.stderr
+        timings[label] = best
 
     ratio = timings["linked"] / max(timings["flat"], 1e-6)
     assert ratio < 3.0, (

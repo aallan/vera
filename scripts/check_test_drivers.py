@@ -67,13 +67,35 @@ STAGE_METHODS = frozenset({
 
 SUBPROCESS_CALLS = frozenset({"run", "Popen", "check_output", "call", "check_call"})
 
-_PART_B = (
-    "runs the CLI as a process; the subprocess migration moves it in process "
-    "through pipeline.cli"
-)
 _CLI_SUITE = (
     "tests/test_cli.py, the CLI's own suite, drives the commands and the code "
     "beneath them itself"
+)
+_CLI_SMOKE = (
+    "the CLI smoke: runs the corpus programs CLI_SMOKE names, and a program for "
+    "each exit the corpus lacks (CLI_EXIT_SHAPES), through `python -m vera.cli` "
+    "as a process, and holds each command's exit status and output to the "
+    "in-process CLI's, byte for byte"
+)
+_HASH_SEED = (
+    "sweeps PYTHONHASHSEED, which an interpreter fixes when it starts, so each "
+    "seed needs a fresh interpreter"
+)
+_HOST_FAULT = (
+    "runs programs whose unrooted wrapper faults the host interpreter, and a "
+    "child process turns the fault into an exit status an assertion reads"
+)
+_DEADLINE = (
+    "the deadline is the assertion: the check must answer within it, and only "
+    "a child process can be stopped when it does not"
+)
+_ANOTHER_TREE = (
+    "runs the CLI of a scratch copy of the compiler, which only another "
+    "interpreter can import"
+)
+_NEVER_STOPS = (
+    "runs programs that never stop unless the guard under test stops them, "
+    "and their red is the child process's timeout"
 )
 _LARK_TREE = (
     "copies the doc gate's parse stage, the Lark parse alone (vera.parser.parse, "
@@ -107,50 +129,25 @@ _CHECKER_ITSELF = (
 #: ``Class.method``) to the reason.
 ALLOWED: Mapping[str, str] = {
     "tests/test_adt_eq_reject_928.py::_checker_env": _CHECKER_ITSELF,
-    "tests/test_ambiguous_import_refusal_1304.py::_run_check_json": _PART_B,
+    "tests/test_ambiguous_import_refusal_1304.py::_run_check_json": _HASH_SEED,
     "tests/test_ambiguous_import_refusal_1304.py::TestTheRefusedDataNamesBindToNothing._env": _CHECKER_ITSELF,
-    "tests/test_binder_position_generator.py::_cli": _PART_B,
-    "tests/test_boundary_guard_correctness_1466.py::_cli": _PART_B,
-    "tests/test_clause_binder_guard_1445.py::_cli": _PART_B,
     "tests/test_cli.py::TestTypedArgParsingDirect._compile": _CLI_SUITE,
-    "tests/test_clone_body_declaring_module_1241_1243.py::_cli": _PART_B,
-    "tests/test_codegen_decreases_guard.py::_run_cli": _PART_B,
-    "tests/test_codegen_root_lifetime_1371.py::_run_in_subprocess": _PART_B,
-    "tests/test_conformance.py::_vera": _PART_B,
-    "tests/test_construction_guards_1426.py::_cli": _PART_B,
-    "tests/test_disclosure_taint_follows_value_1406.py::_cli": _PART_B,
-    "tests/test_disclosure_taint_follows_value_1406.py::_cli_unpatched": _PART_B,
+    "tests/test_codegen_decreases_guard.py::_run_cli": _NEVER_STOPS,
+    "tests/test_codegen_root_lifetime_1371.py::_run_in_subprocess": _HOST_FAULT,
+    "tests/test_conformance.py::_vera": _CLI_SMOKE,
     "tests/test_doc_annotations.py::_try_parse": _LARK_TREE,
     "tests/test_duplicate_names_1433.py::_checker_after_a_check": _CHECKER_ITSELF,
-    "tests/test_effect_op_determinism.py::_run_seeded": _PART_B,
-    "tests/test_element_facts_statable_1430.py::_cli": _PART_B,
-    "tests/test_evaluated_position_obligations_1480.py::_cli_json": _PART_B,
-    "tests/test_field_layout_one_source_1466.py::_run": _PART_B,
-    "tests/test_guard_completeness.py::_cli": _PART_B,
+    "tests/test_effect_op_determinism.py::_run_seeded": _HASH_SEED,
+    "tests/test_field_layout_one_source_1466.py::_run": _ANOTHER_TREE,
     "tests/test_html.py::_try_parse": _LARK_TREE,
-    "tests/test_html.py::_run_cli": _PART_B,
-    "tests/test_import_visibility_entry_point_1244.py::_cli": _PART_B,
-    "tests/test_nat_bind_construction_soundness_1332.py::_cli": _PART_B,
-    "tests/test_nested_ctor_sort_1360.py::_cli": _PART_B,
-    "tests/test_nonregular_data_rejected_1429.py::_cli": _PART_B,
+    "tests/test_nonregular_data_rejected_1429.py::_cli": _DEADLINE,
     "tests/test_one_classifier_1503.py::_pipeline": _SUBSTITUTED_TABLE,
     "tests/test_overflow_fails_closed_1417.py::_compiled": _SUBSTITUTED_TABLE,
     "tests/test_readme.py::_try_parse": _LARK_TREE,
-    "tests/test_refinement_chain_convergence.py::_records_at_the_bind": _PART_B,
-    "tests/test_refinement_chain_convergence.py::_clause_binder_records": _PART_B,
     "tests/test_resolver.py::_resolve_ok": _RESOLVER_UNIT,
     "tests/test_resolver.py::_resolve_err": _RESOLVER_UNIT,
     "tests/test_resolver.py::TestResolverErrorCodes._errors": _RESOLVER_UNIT,
-    "tests/test_verifier_assert_subpattern_facts.py::_cli": _PART_B,
-    "tests/test_verifier_budget.py::TestCliFlag._run": _PART_B,
-    "tests/test_verifier_call_arg_payload_1410.py::_cli": _PART_B,
-    "tests/test_verifier_cross_module_disclosure.py::_cli": _PART_B,
     "tests/test_verifier_cross_module_disclosure.py::_verify_checked": _VERIFY_ALONE,
-    "tests/test_verifier_premise_consistency_1451.py::_cli": _PART_B,
-    "tests/test_verifier_refined_sort_derivation.py::_cli": _PART_B,
-    "tests/test_verifier_refinement_chain_1434.py::_cli": _PART_B,
-    "tests/test_verifier_truth_consult_status.py::_cli": _PART_B,
-    "tests/test_where_helper_call_boundary_1455.py::_cli": _PART_B,
     "tests/test_xmod_span_collision.py::_compile_main": _MODULE_TABLES_WITHHELD,
 }
 

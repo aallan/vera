@@ -47,6 +47,10 @@ from tests.module_fixture_helpers import (
 )
 from tests import pipeline
 
+#: The bound each call below that this file makes to the pipeline had as a
+#: `vera` process; in process it is the call's budget (tests/pipeline.py).
+_BUDGET_S = 300
+
 INT_ANSWER = 111
 LOCAL_ANSWER = 222
 OTHER_ANSWER = 5
@@ -202,6 +206,17 @@ def _check_json(main_path: Path, *, seed: str) -> dict:
         seed=seed,
     )
     return _parse_check_json(result, seed=seed)
+
+
+def _check(main_path: Path) -> dict:
+    """What ``vera check --json`` prints for *main_path*: the check stage's
+    envelope, in process.
+
+    For a cell that reads one verdict.  The verdict does not depend on the
+    hash seed, which the sweeps below hold by asking a fresh interpreter per
+    seed; a cell that reads one verdict needs none of them.
+    """
+    return pipeline.check(main_path, budget_s=_BUDGET_S).envelope()
 
 
 def _codes(payload: dict) -> list[str]:
@@ -372,7 +387,7 @@ class TestTheDataSideFlapShapes:
         self, tmp_path: Path, order: str,
     ) -> None:
         """Both codes, because both namespaces clash here."""
-        payload = _check_json(_write(tmp_path, _ADT_FILES[order]), seed="0")
+        payload = _check(_write(tmp_path, _ADT_FILES[order]))
         assert payload["ok"] is False
         # A SUBSET assertion, deliberately: an unbound `Shape`/`Sq` leaves the
         # body's slot references and match arms unresolved (E130/E313), and
@@ -417,7 +432,7 @@ class TestTheDataSideFlapShapes:
             "midc.vera": _ADT_MID,
             "main.vera": _ADT_MAIN,
         }
-        payload = _check_json(_write(tmp_path, files), seed="0")
+        payload = _check(_write(tmp_path, files))
         codes = set(_error_codes(payload))
         assert "E157" in codes and "E156" not in codes, payload
         ctor = next(d for d in payload["diagnostics"]
@@ -444,8 +459,7 @@ class TestTheDataSideFlapShapes:
             _ADT_B.replace("data Shape", "data Renamed").replace("Sq(", "Sqr(")
         )
         assert _answer(tmp_path, files) == 3
-        payload = _check_json(_write(tmp_path / "x", _ADT_FILES["ab"]),
-                              seed="0")
+        payload = _check(_write(tmp_path / "x", _ADT_FILES["ab"]))
         fix = next(d["fix"] for d in payload["diagnostics"]
                    if d["error_code"] == "E156")
         assert "Import at most one supplier" in fix
@@ -519,8 +533,7 @@ public fn helper(@Unit -> @Int)
                 "import libb;",
                 "import libb;\n\nprivate data Shape {\n  Sq(Int),\n  Dot\n}",
             )
-        assert _error_codes(_check_json(_write(tmp_path / "c", files),
-                                        seed="0")) == []
+        assert _error_codes(_check(_write(tmp_path / "c", files))) == []
         _, result, cg_errors = build_multi_module(tmp_path, files)
         assert cg_errors == [], cg_errors
         assert module_value(result) == ("ok", 3)
@@ -596,7 +609,7 @@ class TestTheDiagnosticNamesTheLastSupplyingImport:
     def test_reported_at_the_second_import_not_the_first(
         self, tmp_path: Path, files: dict[str, str], code: str, last: str,
     ) -> None:
-        payload = _check_json(_write(tmp_path, files), seed="0")
+        payload = _check(_write(tmp_path, files))
         diag = next(d for d in payload["diagnostics"]
                     if d["error_code"] == code)
         assert diag["source_line"].strip() == f"import {last};", diag
@@ -663,10 +676,7 @@ public fn main(@Unit -> @Int)
     def test_a_function_the_prelude_owns_is_not_reported(
         self, tmp_path: Path,
     ) -> None:
-        payload = _check_json(
-            _write(tmp_path, self._two_libs(self._PRELUDE_NAMED_LIB)),
-            seed="0",
-        )
+        payload = _check(_write(tmp_path, self._two_libs(self._PRELUDE_NAMED_LIB)))
         assert _error_codes(payload) == []
 
     def test_a_data_type_the_builtins_own_is_not_reported(
@@ -674,10 +684,7 @@ public fn main(@Unit -> @Int)
     ) -> None:
         """`Option` is the prelude's, so two modules exporting one do not
         make it ambiguous HERE — whatever the other rails make of them."""
-        payload = _check_json(
-            _write(tmp_path, self._two_libs(self._PRELUDE_NAMED_ADT)),
-            seed="0",
-        )
+        payload = _check(_write(tmp_path, self._two_libs(self._PRELUDE_NAMED_ADT)))
         assert _error_codes(payload) == []
 
     def test_the_prelude_argument_changes_the_ambiguity_half(self) -> None:
@@ -796,7 +803,7 @@ class TestTheDiagnosticIsRegisteredAtItsOwnPhase:
                   for i in errors_payload()["items"]}  # type: ignore[union-attr]
         main_path = _write(tmp_path, _FLAP_FILES["ab"])
         emitted = [d["error_code"]
-                   for d in _check_json(main_path, seed="0")["diagnostics"]]
+                   for d in _check(main_path)["diagnostics"]]
         assert emitted == ["E155"]
         assert phases[emitted[0]] == "typecheck"
 
@@ -817,7 +824,7 @@ class TestTheFlapShapes:
         codegen's rail was standing in for.
         """
         main_path = _write(tmp_path, _FLAP_FILES[order])
-        payload = _check_json(main_path, seed="0")
+        payload = _check(main_path)
         assert payload["ok"] is False
         e155 = [d for d in payload["diagnostics"]
                 if d["error_code"] == "E155"]
@@ -847,7 +854,7 @@ class TestTheFlapShapes:
             + json.dumps({s: json.loads(p) for s, p in prints.items()},
                          indent=2)
         )
-        assert "E155" in _codes(_check_json(main_path, seed=_SEEDS[0]))
+        assert "E155" in _codes(_check(main_path))
 
     def test_both_import_orders_give_the_same_diagnostic_codes(
         self, tmp_path: Path,
@@ -860,9 +867,7 @@ class TestTheFlapShapes:
         the import list as an ordered sequence at all.
         """
         codes = {
-            order: _codes(_check_json(
-                _write(tmp_path / order, files), seed="0",
-            ))
+            order: _codes(_check(_write(tmp_path / order, files)))
             for order, files in _FLAP_FILES.items()
         }
         assert codes["ab"] == codes["ba"] == ["E155"]
@@ -882,7 +887,7 @@ class TestTheFlapShapes:
         an E200 there would only restate the E155), under every seed.
         """
         main_path = _write(tmp_path, _FLAP_FILES["ab"])
-        payload = _check_json(main_path, seed="0")
+        payload = _check(main_path)
         assert _codes(payload) == ["E155"], payload
         (refusal,) = payload["diagnostics"]
         assert "gen" in refusal["description"]
@@ -930,7 +935,7 @@ public fn doorc(@Bool -> @Int)
             "libint.vera": _LIB_INT, "libbool.vera": _LIB_BOOL,
             "main.vera": self._NO_CALL_MAIN,
         })
-        payload = _check_json(main_path, seed="0")
+        payload = _check(main_path)
         assert _codes(payload) == ["E155"]
 
     def test_swapping_a_bare_call_for_a_qualified_one_does_not_clear_it(
@@ -949,7 +954,7 @@ public fn doorc(@Bool -> @Int)
             "libint.vera": _LIB_INT, "libbool.vera": _LIB_BOOL,
             "midc.vera": self._QUALIFIED_MID, "main.vera": _MAIN_VIA_MID,
         })
-        payload = _check_json(main_path, seed="0")
+        payload = _check(main_path)
         assert _codes(payload) == ["E155"]
 
 
@@ -1179,8 +1184,7 @@ public fn door_priv(@Unit -> @Int)
             "midc.vera": _ADT_MID.replace("import libb;", "import libpriv;"),
             "main.vera": _ADT_MAIN,
         }
-        assert _error_codes(_check_json(_write(tmp_path, files),
-                                        seed="0")) == []
+        assert _error_codes(_check(_write(tmp_path, files))) == []
 
     def test_an_out_of_filter_namesake_is_not_a_supplier(
         self, tmp_path: Path,
