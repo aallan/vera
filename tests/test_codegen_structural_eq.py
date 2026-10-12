@@ -19,39 +19,11 @@ E613 at compile time.
 
 from __future__ import annotations
 
-import tempfile
 
 import pytest
 
-from vera.codegen import CompileResult, compile, execute
-from vera.parser import parse_file
-from vera.transform import transform
-
-
-def _compile(source: str) -> CompileResult:
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False, encoding="utf-8"
-    ) as f:
-        f.write(source)
-        f.flush()
-        path = f.name
-    tree = parse_file(path)
-    ast = transform(tree)
-    return compile(ast, source=source, file=path)
-
-
-def _compile_ok(source: str) -> CompileResult:
-    result = _compile(source)
-    errors = [d for d in result.diagnostics if d.severity == "error"]
-    assert not errors, f"Unexpected errors: {errors}"
-    return result
-
-
-def _run(source: str, fn: str | None = None) -> int:
-    result = _compile_ok(source)
-    exec_result = execute(result, fn_name=fn)
-    assert exec_result.value is not None, "Expected a return value"
-    return exec_result.value
+from vera.codegen import execute
+from tests.codegen_helpers import _compile, _compile_ok, _run
 
 
 def _errors(source: str) -> list[str]:

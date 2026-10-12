@@ -32,11 +32,10 @@ import wasmtime
 
 from vera.checker import typecheck_with_artifacts
 from vera.codegen import compile as codegen_compile
-from vera.codegen import execute
-from vera.codegen.api import WasmTrapError
 from vera.parser import parse_to_ast
 from vera.resolver import ModuleResolver
 from vera.verifier import verify
+from tests import pipeline
 
 U64_MAX = 18446744073709551615
 INT63_MAX = 9223372036854775807  # 2^63 - 1, the largest value that stays @Nat==@Int
@@ -178,9 +177,10 @@ def _compile_main(tmp_path, files: dict[str, str], main_name: str):
 def _run(result, fn: str, arg: int) -> int | None:
     """Execute *fn* with one i64 arg; ``None`` if it traps."""
     try:
-        return execute(result, fn_name=fn, args=[arg]).value
+        ran = pipeline.run(result, fn, [arg], capture_stderr=False)
     except (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError):
         return None
+    return None if ran.trap is not None else ran.value
 
 
 def _trap_kind(result, fn: str, arg: int) -> str | None:
@@ -195,12 +195,10 @@ def _trap_kind(result, fn: str, arg: int) -> str | None:
     satisfied; the guard's own ``widen_guard`` signal (through ``vera.trap``
     since #1479) is what lets these cells name the guard they mean."""
     try:
-        execute(result, fn_name=fn, args=[arg])
-    except WasmTrapError as exc:
-        return exc.kind
+        ran = pipeline.run(result, fn, [arg], capture_stderr=False)
     except (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError):
         return "unknown"
-    return None
+    return ran.trap.kind if ran.trap is not None else None
 
 
 @pytest.mark.parametrize(

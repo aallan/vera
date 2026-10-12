@@ -30,19 +30,14 @@ from __future__ import annotations
 
 import pytest
 
-from vera.checker import typecheck_with_artifacts
-from vera.parser import parse_to_ast
-from vera.verifier import VerifyResult, verify
+from vera.verifier import VerifyResult
+from tests import pipeline
 
 
 def _verify(source: str) -> VerifyResult:
-    ast = parse_to_ast(source)
-    _diags, arts = typecheck_with_artifacts(ast, source)
-    return verify(
-        ast, source,
-        expr_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-    )
+    """Type-check and verify *source*, past a check refusal: the two
+    Tuple-mediated equality fixtures below do not type-check (E243, #1654)."""
+    return pipeline.verify(source, past_check=True).result
 
 
 def _ensures(result: VerifyResult) -> list:

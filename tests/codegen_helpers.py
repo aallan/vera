@@ -7,7 +7,10 @@ The established pattern:
     _run_io(source, fn, args) -> captured stdout string
     _run_trap(source, fn, args) -> assert WASM trap
 (plus _run_float / _run_refine_trap / _run_state / _compile_with_generator
-and the WAT/GC assertion helpers further down).
+and the WAT/GC assertion helpers further down).  The drivers compile through
+``tests/pipeline.py``'s unchecked ``compile`` (``checked=False``: the parsed
+program alone, no type check and none of the checker's tables, which is what
+these suites were written against) and run through its ``run``.
 """
 from __future__ import annotations
 
@@ -18,25 +21,21 @@ from pathlib import Path
 
 import pytest
 
+from tests import pipeline
+from tests.pipeline import CALL_INDIRECT_RE as _CALL_INDIRECT_RE
+from tests.pipeline import TABLE_DECL_RE as _TABLE_DECL_RE
 from vera.codegen import (
     CodeGenerator,
-    compile,
     CompileResult,
-    execute,
     ExecuteResult,
 )
 from vera.codegen.api import WasmTrapError
-from vera.parser import parse_file
-from vera.transform import transform
 
 
 # =====================================================================
 # Helpers
 # =====================================================================
 
-
-_CALL_INDIRECT_RE = re.compile(r"(?m)^\s*call_indirect\b")
-_TABLE_DECL_RE = re.compile(r"(?m)^\s*\(table\b")
 
 # Characters that may continue a WAT symbol name in emitted Vera output:
 # identifiers, the `$` of a mangled clone suffix, and the `.` of a host
@@ -157,41 +156,11 @@ def exceptions_engine() -> wasmtime.Engine:
     return wasmtime.Engine(config)
 
 
-def _assert_no_orphan_call_indirect(wat: str) -> None:
-    """#1185: every emitted ``call_indirect`` has a table to dispatch on.
-
-    A ``call_indirect`` names no symbol, so the #1100 caller-drop pass
-    (which scans the WAT for ``call $f``) cannot see it.  When an [E602]
-    skip swallowed a module's only closure the lift rolled back, module
-    assembly suppressed the ``(table)``/``(elem)`` sections, and any
-    surviving ``apply_fn`` / ``array_map`` carrier kept an indirect call
-    into a table that no longer existed — an uninstantiable module
-    emitted with no diagnostics, which raised a raw ``WasmtimeError:
-    unknown table 0`` the moment ANY export ran.
-
-    This is a *differential* over the two sides that must agree (the
-    instruction stream and the table section), not a unit assertion on
-    either — a green codegen suite hid the desync between them for the
-    whole #1100 cycle.  Asserted on every ``_compile`` here, and on the
-    local ``_compile`` in ``tests/test_codegen_closures.py``, so the
-    property holds across the codegen suite rather than only in the
-    #1185 fixtures.
-
-    Only this direction is universally true.  The converse — a table with
-    no indirect call — is inert (the module loads and runs; the table is
-    simply unreferenced) and happens legitimately whenever a lift
-    succeeds but the sole carrier is dropped for an unrelated reason, as
-    in the [E616] fixture in ``tests/test_codegen_interpolation.py``.
-    The #1185 fixtures pin the full biconditional via
-    ``_assert_call_indirect_iff_table``, where both sides are meaningful.
-    """
-    if _CALL_INDIRECT_RE.search(wat) and not _TABLE_DECL_RE.search(wat):
-        raise AssertionError(
-            "#1185: emitted WAT contains `call_indirect` but declares no "
-            "function table — the module cannot be instantiated, and the "
-            "user gets a raw `unknown table 0` from wasmtime instead of a "
-            "located diagnostic.  The carrier must be dropped instead."
-        )
+#: #1185: every emitted ``call_indirect`` has a table to dispatch on.  Asserted
+#: on every module ``tests/pipeline.py``'s ``compile`` builds, and so on every
+#: ``_compile`` here; ``pipeline.assert_no_orphan_call_indirect`` says why only
+#: this direction is universal.
+_assert_no_orphan_call_indirect = pipeline.assert_no_orphan_call_indirect
 
 
 def _assert_call_indirect_iff_table(wat: str) -> None:
@@ -206,27 +175,18 @@ def _assert_call_indirect_iff_table(wat: str) -> None:
     )
 
 
-def _compile(source: str) -> CompileResult:
-    """Compile a Vera source string to WASM."""
-    # Write to a temp source and parse.  delete=False + close-then-read
-    # is the Windows-safe pattern (an open NamedTemporaryFile can't be
-    # reopened there); the try/finally encloses everything from creation,
-    # so the temp file is unlinked even when the write itself raises.
-    import tempfile
+#: The file a fixture's source text is compiled as.  Code generation labels
+#: what it reports with it, as it labels a program compiled from a file.
+_SOURCE_FILE = "fixture.vera"
 
-    f = tempfile.NamedTemporaryFile(  # noqa: SIM115 — Windows fixture; closed + unlinked below
-        mode="w", suffix=".vera", delete=False, encoding="utf-8"
-    )
-    try:
-        with f:
-            f.write(source)
-        tree = parse_file(f.name)
-        ast = transform(tree)
-        result = compile(ast, source=source, file=f.name)
-        _assert_no_orphan_call_indirect(result.wat)
-        return result
-    finally:
-        Path(f.name).unlink(missing_ok=True)
+
+def _compile(source: str) -> CompileResult:
+    """Compile a Vera source string to WASM, unchecked, as ``fixture.vera``.
+
+    A parse or transform error is raised, and the #1185 invariant is
+    asserted on the module, by ``tests/pipeline.py``'s ``compile``.
+    """
+    return pipeline.compile(source, file=_SOURCE_FILE, checked=False).result
 
 
 def _compile_ok(source: str) -> CompileResult:
@@ -238,19 +198,17 @@ def _compile_ok(source: str) -> CompileResult:
 
 
 def _compile_example(name: str) -> CompileResult:
-    """Compile a .vera file from examples/ by name, mirroring the real
-    file-based pipeline (read_text, parse_file, transform, compile)."""
+    """Compile a .vera file from examples/ by name, unchecked, labelled with
+    its path, as the file-based pipeline labels it."""
     path = Path(__file__).parent.parent / "examples" / name
-    source = path.read_text(encoding="utf-8")
-    tree = parse_file(str(path))
-    program = transform(tree)
-    return compile(program, source=source, file=str(path))
+    return pipeline.compile(path, checked=False).result
 
 
 def _run(source: str, fn: str | None = None, args: list[int] | None = None) -> int:
     """Compile, execute, and return the integer result."""
     result = _compile_ok(source)
-    exec_result = execute(result, fn_name=fn, args=args)
+    exec_result = pipeline.run(
+        result, fn, args, capture_stderr=False).execution
     assert exec_result.value is not None, "Expected a return value"
     return exec_result.value
 
@@ -260,7 +218,8 @@ def _run_float(
 ) -> float:
     """Compile, execute, and return the float result."""
     result = _compile_ok(source)
-    exec_result = execute(result, fn_name=fn, args=args)
+    exec_result = pipeline.run(
+        result, fn, args, capture_stderr=False).execution
     assert exec_result.value is not None, "Expected a return value"
     assert isinstance(exec_result.value, float), (
         f"Expected float, got {type(exec_result.value).__name__}"
@@ -273,7 +232,8 @@ def _run_io(
 ) -> str:
     """Compile, execute, and return captured stdout."""
     result = _compile_ok(source)
-    exec_result = execute(result, fn_name=fn, args=args)
+    exec_result = pipeline.run(
+        result, fn, args, capture_stderr=False).execution
     return exec_result.stdout
 
 
@@ -287,7 +247,7 @@ def _run_trap(
     unrelated failures the old broad tuple would have accepted."""
     result = _compile_ok(source)
     with pytest.raises(WasmTrapError):
-        execute(result, fn_name=fn, args=args)
+        _ = pipeline.run(result, fn, args, capture_stderr=False).execution
 
 
 def _run_refine_trap(
@@ -301,7 +261,55 @@ def _run_refine_trap(
     program trapped for any reason."""
     result = _compile_ok(source)
     with pytest.raises(RuntimeError, match="Refinement violation"):
-        execute(result, fn_name=fn, args=args)
+        _ = pipeline.run(result, fn, args, capture_stderr=False).execution
+
+
+# =====================================================================
+# The checked pipeline
+# =====================================================================
+# The helpers above compile unchecked.  A test about a code-generation rule
+# that reads the checker's tables (the overflow and widening classifiers, the
+# target-type widths, monomorphization) compiles through these instead, which
+# check the program first and hand code generation the checker's tables, as
+# `vera compile` and `vera run` do.  Their programs must type-check.
+
+
+def _compile_checked(source: str) -> CompileResult:
+    """Check *source* (which must pass), then compile it with the checker's
+    tables, as ``fixture.vera``."""
+    compiled = pipeline.compile(source, file=_SOURCE_FILE)
+    assert compiled.checked is not None
+    _ = compiled.parsed.program  # raises the parse or transform error, if any
+    errors = compiled.checked.errors
+    assert not errors, f"typecheck errors: {[d.description for d in errors]}"
+    return compiled.result
+
+
+def _compile_checked_ok(source: str) -> CompileResult:
+    """:func:`_compile_checked`, asserting code generation reports no error."""
+    result = _compile_checked(source)
+    errs = [d for d in result.diagnostics if d.severity == "error"]
+    assert not errs, f"codegen errors: {[d.description for d in errs]}"
+    return result
+
+
+def _run_checked(
+    source: str, fn: str | None = None, args: list[int] | None = None,
+) -> int:
+    """Compile through the checked pipeline, execute, and return the result."""
+    result = _compile_checked_ok(source)
+    exec_result = pipeline.run(
+        result, fn, args, capture_stderr=False).execution
+    assert exec_result.value is not None, "Expected a return value"
+    return exec_result.value
+
+
+def _run_checked_trap(source: str, fn: str, args: list[int]) -> None:
+    """Compile through the checked pipeline, execute, and assert the call
+    fails at the WASM level (a trap, or any other runtime fault)."""
+    result = _compile_checked_ok(source)
+    with pytest.raises((wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)):
+        _ = pipeline.run(result, fn, args, capture_stderr=False).execution
 
 
 # =====================================================================
@@ -316,7 +324,9 @@ def _run_state(
 ) -> ExecuteResult:
     """Compile, execute, and return the full ExecuteResult."""
     result = _compile_ok(source)
-    return execute(result, fn_name=fn, args=args, initial_state=initial_state)
+    return pipeline.run(
+        result, fn, args, initial_state=initial_state, capture_stderr=False,
+    ).execution
 
 
 # =====================================================================
@@ -325,22 +335,12 @@ def _run_state(
 
 
 def _compile_with_generator(source: str) -> tuple[CompileResult, CodeGenerator]:
-    """Compile and return both result and CodeGenerator for metadata inspection."""
-    import tempfile
-
-    f = tempfile.NamedTemporaryFile(  # noqa: SIM115 — Windows fixture; closed + unlinked below
-        mode="w", suffix=".vera", delete=False, encoding="utf-8"
-    )
-    try:
-        with f:
-            f.write(source)
-        tree = parse_file(f.name)
-        program = transform(tree)
-        gen = CodeGenerator(source=source, file=f.name)
-        result = gen.compile_program(program)
-        return result, gen
-    finally:
-        Path(f.name).unlink(missing_ok=True)
+    """Compile, unchecked, and return both result and CodeGenerator for
+    metadata inspection."""
+    compiled = pipeline.compile(source, file=_SOURCE_FILE, checked=False)
+    result = compiled.result
+    assert compiled.generator is not None
+    return result, compiled.generator
 
 
 _INLINE_BUILTIN_NAMES = (
@@ -414,8 +414,10 @@ def _assert_chain_reclaims(
     A leak (transients never freed) grows ~O(N^2) → ~100x.  The bound
     sits well between the two.
     """
-    small = execute(_compile_ok(chain(small_n)))
-    large = execute(_compile_ok(chain(large_n)))
+    small = pipeline.run(
+        _compile_ok(chain(small_n)), capture_stderr=False).execution
+    large = pipeline.run(
+        _compile_ok(chain(large_n)), capture_stderr=False).execution
     assert small.value == small_val, (
         f"chain(n={small_n}) returned {small.value}, expected {small_val}"
     )

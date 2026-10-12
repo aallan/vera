@@ -48,60 +48,31 @@ matching Z3), so ``vera verify`` and ``vera run`` agree.  The
 
 from __future__ import annotations
 
-import tempfile
 
-from vera.checker import typecheck, typecheck_with_artifacts
-from vera.codegen import CompileResult, compile as codegen_compile, execute
-from vera.parser import parse_file, parse_to_ast
-from vera.transform import transform
-from vera.verifier import VerifyResult, verify
+from vera.checker import typecheck
+from vera.parser import parse_to_ast
+from tests.checker_helpers import _error_codes as _errors
+from tests.codegen_helpers import _compile, _run
+from tests import pipeline
+from vera.verifier import VerifyResult
 
 
 # ---------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------
 
-def _errors(source: str) -> list[str]:
-    prog = parse_to_ast(source)
-    diags = typecheck(prog, source=source)
-    return [d.error_code for d in diags if d.severity == "error"]
+
+def _verify(source: str) -> VerifyResult:
+    """Type-check and verify *source*, past a check refusal: the traceback
+    tests below verify programs the checker refuses (E242), to pin that the
+    verifier does not crash on one."""
+    return pipeline.verify(source, past_check=True).result
 
 
 def _error_descs(source: str) -> list[str]:
     prog = parse_to_ast(source)
     diags = typecheck(prog, source=source)
     return [d.description for d in diags if d.severity == "error"]
-
-
-def _compile(source: str) -> CompileResult:
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False, encoding="utf-8"
-    ) as f:
-        f.write(source)
-        f.flush()
-        path = f.name
-    tree = parse_file(path)
-    ast = transform(tree)
-    return codegen_compile(ast, source=source, file=path)
-
-
-def _run(source: str, fn: str | None = None) -> int:
-    result = _compile(source)
-    errors = [d for d in result.diagnostics if d.severity == "error"]
-    assert not errors, f"Unexpected compile errors: {errors}"
-    exec_result = execute(result, fn_name=fn)
-    assert exec_result.value is not None, "Expected a return value"
-    return exec_result.value
-
-
-def _verify(source: str) -> VerifyResult:
-    ast = parse_to_ast(source)
-    _diags, arts = typecheck_with_artifacts(ast, source)
-    return verify(
-        ast, source,
-        expr_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-    )
 
 
 # =====================================================================

@@ -36,7 +36,7 @@ from vera.codegen import compile as codegen_compile
 from vera.codegen import execute
 from vera.parser import parse_to_ast
 from vera.resolver import ModuleResolver
-from vera.verifier import verify
+from tests import pipeline
 
 U64_MAX = 18446744073709551615
 _MASK64 = (1 << 64) - 1
@@ -45,13 +45,7 @@ _KIND = "nat_to_int_coerce"
 
 def _verify_statuses(source: str) -> list[str]:
     """The status of every ``nat_to_int_coerce`` obligation the verifier emits."""
-    program = parse_to_ast(source)
-    _diags, arts = typecheck_with_artifacts(program, source)
-    result = verify(
-        program, source,
-        expr_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-    )
+    result = pipeline.verify(source).result
     return [o.status for o in result.obligations if o.kind == _KIND]
 
 

@@ -2,16 +2,16 @@
 
 Split out of ``tests/test_checker.py`` (#420) so the eight phase-focused
 ``test_checker_*.py`` files can share the ``_check*`` assertion helpers and the
-example-corpus constants.
+example-corpus constants.  The helpers drive the checker through
+``tests/pipeline.py``'s ``check``.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from vera.checker import typecheck
+from tests import pipeline
 from vera.errors import Diagnostic
-from vera.parser import parse_to_ast
 
 # =====================================================================
 # Helpers
@@ -43,9 +43,13 @@ CLEAN_EXAMPLES = [
 
 
 def _check(source: str) -> list[Diagnostic]:
-    """Parse and type-check, return diagnostics."""
-    prog = parse_to_ast(source)
-    return typecheck(prog, source=source)
+    """Parse and type-check, return diagnostics.
+
+    A parse or transform error is raised, not returned.
+    """
+    checked = pipeline.check(source)
+    _ = checked.program  # raises the parse or transform error, if any
+    return list(checked.diagnostics)
 
 
 def _errors(source: str) -> list[Diagnostic]:
@@ -56,6 +60,11 @@ def _errors(source: str) -> list[Diagnostic]:
 def _warnings(source: str) -> list[Diagnostic]:
     """Parse and type-check, return only warnings."""
     return [d for d in _check(source) if d.severity != "error"]
+
+
+def _error_codes(source: str) -> list[str]:
+    """Parse and type-check, return the error codes."""
+    return [d.error_code for d in _errors(source)]
 
 
 def _check_ok(source: str) -> None:

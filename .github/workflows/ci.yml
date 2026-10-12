@@ -434,6 +434,9 @@ jobs:
       - name: Check every walker covers every Expr subclass (#597)
         run: python scripts/check_walker_coverage.py
 
+      - name: Check every test drives the pipeline through tests/pipeline.py
+        run: python scripts/check_test_drivers.py
+
       - name: Check text-mode file I/O passes explicit encoding (#645)
         run: python scripts/check_explicit_encoding.py
 

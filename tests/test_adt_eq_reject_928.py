@@ -37,45 +37,19 @@ import tempfile
 
 import pytest
 
-from vera.checker import typecheck
 from vera.checker.core import TypeChecker
 from vera.checker.eq_ability import is_eq_derivable
-from vera.codegen import CompileResult, compile as codegen_compile, execute
 from vera.codegen.core import CodeGenerator
 from vera.parser import parse_file, parse_to_ast
 from vera.transform import transform
 from vera.types import PrimitiveType, Type, pretty_type
+from tests.checker_helpers import _error_codes as _errors
+from tests.codegen_helpers import _run
 
 
 # ---------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------
-
-def _errors(source: str) -> list[str]:
-    prog = parse_to_ast(source)
-    diags = typecheck(prog, source=source)
-    return [d.error_code for d in diags if d.severity == "error"]
-
-
-def _compile(source: str) -> CompileResult:
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False, encoding="utf-8"
-    ) as f:
-        f.write(source)
-        f.flush()
-        path = f.name
-    tree = parse_file(path)
-    ast = transform(tree)
-    return codegen_compile(ast, source=source, file=path)
-
-
-def _run(source: str, fn: str | None = None) -> int:
-    result = _compile(source)
-    errors = [d for d in result.diagnostics if d.severity == "error"]
-    assert not errors, f"Unexpected compile errors: {errors}"
-    exec_result = execute(result, fn_name=fn)
-    assert exec_result.value is not None, "Expected a return value"
-    return exec_result.value
 
 
 # =====================================================================

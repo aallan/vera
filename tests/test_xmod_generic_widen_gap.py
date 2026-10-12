@@ -34,11 +34,9 @@ from typing import ClassVar
 import wasmtime
 
 from vera.checker import typecheck_with_artifacts
-from vera.codegen import compile as codegen_compile
-from vera.codegen import execute
-from vera.codegen.api import WasmTrapError
 from vera.parser import parse_to_ast
-from vera.resolver import ModuleResolver
+from tests import pipeline
+from tests.module_fixture_helpers import compile_multi_module_ok as _compile_main
 
 U64_MAX = 18446744073709551615
 INT63_MAX = 9223372036854775807  # 2^63 - 1: the largest value that stays @Nat==@Int
@@ -136,40 +134,13 @@ def _lib_tier3_count(source: str) -> int:
     )
 
 
-def _compile_main(tmp_path, files: dict[str, str], main_name: str):
-    """Compile *main_name* exactly as ``vera run`` does — per-module target
-    tables threaded (#987)."""
-    tmp_path.mkdir(parents=True, exist_ok=True)
-    for name, src in files.items():
-        (tmp_path / name).write_text(src, encoding="utf-8")
-    main_path = tmp_path / main_name
-    source = files[main_name]
-    program = parse_to_ast(source)
-    resolver = ModuleResolver(_root=tmp_path)
-    resolved = resolver.resolve_imports(program, main_path)
-    diags, arts = typecheck_with_artifacts(
-        program, source, file=str(main_path), resolved_modules=resolved,
-        collect_module_artifacts=True,
-    )
-    errors = [d for d in diags if d.severity == "error"]
-    assert not errors, f"typecheck errors: {[d.description for d in errors]}"
-    result = codegen_compile(
-        program, source=source, file=str(main_path), resolved_modules=resolved,
-        expr_semantic_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-        module_artifacts=arts.module_artifacts,
-    )
-    errs = [d for d in result.diagnostics if d.severity == "error"]
-    assert not errs, f"codegen errors: {[d.description for d in errs]}"
-    return result
-
-
 def _run(result, fn: str, arg: int) -> int | None:
     """Execute *fn* with one i64 arg; ``None`` if it traps."""
     try:
-        return execute(result, fn_name=fn, args=[arg]).value
+        ran = pipeline.run(result, fn, [arg], capture_stderr=False)
     except (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError):
         return None
+    return None if ran.trap is not None else ran.value
 
 
 def _trap_kind(result, fn: str, arg: int) -> str | None:
@@ -183,12 +154,10 @@ def _trap_kind(result, fn: str, arg: int) -> str | None:
     ``unreachable``, so these cells could only say "an anonymous trap fired
     here"."""
     try:
-        execute(result, fn_name=fn, args=[arg])
-    except WasmTrapError as exc:
-        return exc.kind
+        ran = pipeline.run(result, fn, [arg], capture_stderr=False)
     except (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError):
         return "unknown"
-    return None
+    return ran.trap.kind if ran.trap is not None else None
 
 
 class TestImportedGenericWidenDifferential:

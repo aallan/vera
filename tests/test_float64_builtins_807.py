@@ -36,24 +36,14 @@ from pathlib import Path
 import pytest
 import z3
 
-from vera.parser import parse_to_ast, parse_file
+from vera.parser import parse_file
 from vera.transform import transform
-from vera.checker import typecheck_with_artifacts
 from vera.codegen import compile as compile_vera, execute
 from vera.codegen.api import WasmTrapError
 from vera.errors import Diagnostic
 from vera.smt import _FLOAT64_SORT, _wasm_fp_max, _wasm_fp_min
-from vera.verifier import VerifyResult, verify
-
-
-def _verify(source: str) -> VerifyResult:
-    ast = parse_to_ast(source)
-    _diags, arts = typecheck_with_artifacts(ast, source)
-    return verify(
-        ast, source,
-        expr_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-    )
+from vera.verifier import VerifyResult
+from tests.verifier_helpers import _verify
 
 
 def _ok(result: VerifyResult) -> bool:
