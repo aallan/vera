@@ -34,9 +34,10 @@ from __future__ import annotations
 import pytest
 
 from vera import ast
-from vera.codegen import CodeGenerator, execute
+from vera.codegen import CodeGenerator
 
 from tests.codegen_helpers import _compile, _compile_ok, _run, wat_fn_body
+from tests import pipeline
 
 
 # The control name: not a registered ADT, not a primitive, not a prelude
@@ -96,7 +97,7 @@ def _program(alias: str, target: str, lit: str, body: str, ret: str) -> str:
 def _run_value(source: str, fn: str = "main") -> object:
     """Execute and return the raw value (str for String returns, else scalar)."""
     result = _compile_ok(source)
-    return execute(result, fn_name=fn).value
+    return pipeline.run(result, fn, capture_stderr=False).execution.value
 
 
 class TestAliasOverAdtNameLoud:

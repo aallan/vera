@@ -40,6 +40,7 @@ from vera.verifier import ContractVerifier, VerifyResult, verify
 
 from tests.codegen_helpers import _compile_ok, _run
 from tests.module_fixture_helpers import resolved_module as _resolved
+from tests import pipeline
 
 
 # =====================================================================
@@ -1235,7 +1236,7 @@ public forall<T> fn f(@Box<T>, @Box<Int> -> @Int)
     def _decl_and_env(self) -> tuple[ast.FnDecl, object]:
         from tests.naming_helpers import alias_env_from_declarations
 
-        prog = parse_to_ast(self._SRC)
+        prog = pipeline.parse(self._SRC).program
         decl = next(
             tld.decl for tld in prog.declarations
             if isinstance(tld.decl, ast.FnDecl)
@@ -1959,7 +1960,7 @@ def _checker_env(source: str, modules: list[ResolvedModule]) -> naming.AliasEnv:
     checker = TypeChecker(
         source=source, file="main.vera", resolved_modules=modules,
     )
-    checker.check_program(parse_to_ast(source))
+    checker.check_program(pipeline.parse(source).program)
     return naming.alias_env_from_environment(checker.env)
 
 
@@ -1976,7 +1977,7 @@ def _codegen_env(
 
 
 def _params_of(source: str, fn_name: str) -> tuple[ast.TypeExpr, ...]:
-    prog = parse_to_ast(source)
+    prog = pipeline.parse(source).program
     fn = next(
         tld.decl for tld in prog.declarations
         if isinstance(tld.decl, ast.FnDecl) and tld.decl.name == fn_name

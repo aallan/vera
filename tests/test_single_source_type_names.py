@@ -86,6 +86,7 @@ from vera.codegen.core import CodeGenerator
 from vera.parser import parse_to_ast
 from vera.verifier import ContractVerifier
 from vera.verifier import verify as verify_program
+from tests import pipeline
 
 # ---------------------------------------------------------------------
 # Helpers — the production path, not the artefact-free one
@@ -127,7 +128,7 @@ def _run_checked(source: str, fn: str = "main", args: list | None = None):
         f"'{fn}' left the exports; notes: "
         + "; ".join(d.description for d in result.diagnostics)
     )
-    return execute(result, fn_name=fn, args=args).value
+    return pipeline.run(result, fn, args, capture_stderr=False).execution.value
 
 
 def _clone_names(wat: str, base: str) -> list[str]:

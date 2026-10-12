@@ -48,6 +48,7 @@ from vera.codegen import execute
 from vera.codegen.api import WasmTrapError
 from vera.parser import parse_to_ast
 from vera.verifier import verify
+from tests import pipeline
 
 # A generated class instrument (tests/matrix_sample.py): a pull request runs a
 # sample of its parametrised cells, and all of them when it changes this file or
@@ -1422,7 +1423,7 @@ def _run_many(source: str, fn: str,
     out: list[int | str] = []
     for args in args_list:
         try:
-            out.append(execute(result, fn_name=fn, args=args).value)
+            out.append(pipeline.run(result, fn, args, capture_stderr=False).execution.value)
         except WasmTrapError as exc:
             out.append(f"trap: {exc}")
     return out

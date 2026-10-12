@@ -31,6 +31,8 @@ from vera.parser import parse_to_ast
 from vera.runtime.traps import WasmTrapError
 from vera.verifier import verify
 
+from tests import pipeline
+
 # A generated class instrument (tests/matrix_sample.py): a pull request runs a
 # sample of its parametrised cells, and all of them when it changes this file or
 # a module that decides its class, here the verifier's obligation walks and the
@@ -471,7 +473,7 @@ def _substituted(pre: str) -> object:
     from vera.slots import substitute_parameters
 
     source = _SUBSTITUTION_SIGNATURE.format(pre=pre)
-    fn = parse_to_ast(source).declarations[0].decl
+    fn = pipeline.parse(source).program.declarations[0].decl
     assert isinstance(fn, A.FnDecl)
     requires = next(c for c in fn.contracts if isinstance(c, A.Requires))
     args = (A.IntLit(value=5, span=None), A.StringLit(value="x", span=None))

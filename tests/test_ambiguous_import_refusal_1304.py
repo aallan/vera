@@ -45,6 +45,7 @@ from tests.module_fixture_helpers import (
     build_multi_module_past_check,
     module_value,
 )
+from tests import pipeline
 
 INT_ANSWER = 111
 LOCAL_ANSWER = 222
@@ -540,7 +541,6 @@ class TestTheRefusedDataNamesBindToNothing:
     def _env(self, files: dict[str, str]) -> object:
         from tests.module_fixture_helpers import fake_resolved_module
         from vera.checker.core import TypeChecker
-        from vera.parser import parse_to_ast
 
         mods = [
             fake_resolved_module((name[: -len(".vera")],), src)
@@ -548,7 +548,7 @@ class TestTheRefusedDataNamesBindToNothing:
         ]
         checker = TypeChecker(source=files["main.vera"], file="main.vera",
                               resolved_modules=mods)
-        checker.check_program(parse_to_ast(files["main.vera"]))
+        checker.check_program(pipeline.parse(files["main.vera"]).program)
         return checker.env
 
     def test_neither_the_type_nor_its_constructor_is_registered(self) -> None:
@@ -717,11 +717,10 @@ class TestTheTwoViewsOfOneWalk:
 
     def _tables(self, files: dict[str, str]) -> object:
         from vera.monomorphize import namespace_fn_names
-        from vera.parser import parse_to_ast
 
-        entry = parse_to_ast(files["main.vera"])
+        entry = pipeline.parse(files["main.vera"]).program
         modules = [
-            ((name[: -len(".vera")],), parse_to_ast(src))
+            ((name[: -len(".vera")],), pipeline.parse(src).program)
             for name, src in files.items() if name != "main.vera"
         ]
         return namespace_fn_names(entry, modules)

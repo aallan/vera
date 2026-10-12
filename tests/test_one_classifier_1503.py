@@ -66,6 +66,7 @@ from vera.types import (
     PureEffectRow, RefinedType, Type, TypeVar,
 )
 from vera.verifier import verify
+from tests import pipeline
 
 # A generated class instrument (tests/matrix_sample.py): a pull request runs a
 # sample of its parametrised cells, and all of them when it changes this file or
@@ -1424,7 +1425,7 @@ def _compile_checked(source: str) -> object:
 
 def _run(compiled: object, args: list[int]) -> str:
     try:
-        return f"ran:{execute(compiled, fn_name='f', args=args).value}"
+        return f"ran:{pipeline.run(compiled, 'f', args, capture_stderr=False).execution.value}"
     except Exception as exc:  # noqa: BLE001 — the trap IS the observation
         return str(exc)
 

@@ -76,8 +76,9 @@ from vera.ast import (
 )
 from vera.ast import format_expr
 from vera.errors import TransformError, VeraError
-from vera.parser import parse, parse_to_ast
+from vera.parser import parse
 from vera.transform import transform
+from tests import pipeline
 
 EXAMPLES_DIR = Path(__file__).parent.parent / "examples"
 
@@ -88,7 +89,7 @@ EXAMPLES_DIR = Path(__file__).parent.parent / "examples"
 
 def _ast(source: str) -> Program:
     """Parse source and return AST."""
-    return parse_to_ast(source)
+    return pipeline.parse(source).program
 
 
 def _first_fn(source: str) -> FnDecl:

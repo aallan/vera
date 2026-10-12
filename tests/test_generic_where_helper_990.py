@@ -25,8 +25,8 @@ import wasmtime
 
 from vera.checker import typecheck_with_artifacts
 from vera.codegen import compile as codegen_compile
-from vera.codegen import execute
 from vera.parser import parse_to_ast
+from tests import pipeline
 
 # The issue's repro: non-generic parent, generic where-helper, one concrete
 # instantiation (T=Int) reached from the parent body.
@@ -114,7 +114,7 @@ def _compile(source: str):
 
 
 def _run_main(result) -> int:
-    return execute(result, fn_name="main").value
+    return pipeline.run(result, "main", capture_stderr=False).execution.value
 
 
 def _assert_compiles_and_runs(source: str, expected: int) -> None:

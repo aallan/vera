@@ -65,6 +65,7 @@ from vera.parser import parse_file, parse_to_ast
 from vera.resolver import ResolvedModule
 from vera.transform import transform
 from vera.codegen import CodeGenerator, compile as codegen_compile, execute
+from tests import pipeline
 
 _MAIN = """
 public fn main(@Unit -> @Int)
@@ -868,7 +869,7 @@ def _lib_module() -> ResolvedModule:
     return ResolvedModule(
         path=("lib",),
         file_path=Path("/fake/lib.vera"),
-        program=parse_to_ast(_MODULE_LIB),
+        program=pipeline.parse(_MODULE_LIB).program,
         source=_MODULE_LIB,
     )
 

@@ -52,9 +52,9 @@ import pytest
 from vera import ast
 from vera.checker.core import TypeChecker
 from vera.environment import TypeEnv
-from vera.parser import parse_to_ast
 from vera.prelude import inject_prelude, prelude_adt_names
 from vera.types import PRIMITIVES
+from tests import pipeline
 
 
 def _names() -> list[str]:
@@ -65,7 +65,7 @@ def _names() -> list[str]:
 
 def _always_injected() -> frozenset[str]:
     """The prelude data types every program compiles, whatever it names."""
-    program = parse_to_ast("")
+    program = pipeline.parse("").program
     inject_prelude(program)
     return frozenset(tld.decl.name for tld in program.declarations
                      if isinstance(tld.decl, ast.DataDecl))

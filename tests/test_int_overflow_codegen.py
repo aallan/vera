@@ -48,6 +48,7 @@ from vera.parser import parse_to_ast
 from vera.resolver import ModuleResolver
 from vera.runtime.traps import WasmTrapError
 from tests.codegen_helpers import _compile_checked_ok as _compile_with_types, _run_checked as _run, _run_checked_trap as _assert_traps
+from tests import pipeline
 
 I64_MAX = 9223372036854775807
 I64_MIN = -9223372036854775808
@@ -344,7 +345,7 @@ class TestNatSubUnderflow798:
 def _traps(result, fn: str, args: list[int]) -> bool:
     """Run a precompiled module; return True iff it trapped (any WASM fault)."""
     try:
-        execute(result, fn_name=fn, args=args)
+        pipeline.run(result, fn, args, capture_stderr=False).execution
         return False
     except (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError):
         return True
@@ -529,7 +530,7 @@ def _trap_kind(source: str, fn: str, args: list[int]) -> str:
     """Run ``fn(args)`` and return the `kind` of the WasmTrapError it raises."""
     result = _compile_with_types(source)
     with pytest.raises(WasmTrapError) as exc_info:
-        execute(result, fn_name=fn, args=args)
+        pipeline.run(result, fn, args, capture_stderr=False).execution
     return exc_info.value.kind
 
 

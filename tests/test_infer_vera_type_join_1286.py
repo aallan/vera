@@ -71,9 +71,9 @@ import pytest
 from tests.codegen_helpers import wat_calls, wat_fn_names
 from vera.checker import typecheck_with_artifacts
 from vera.codegen import compile as codegen_compile
-from vera.codegen import execute
 from vera.codegen.api import CompileResult
 from vera.parser import parse_to_ast
+from tests import pipeline
 
 
 # ---------------------------------------------------------------------
@@ -451,7 +451,7 @@ def _run(source: str) -> object:
         "check-green source lost `main` from the compiled exports; notes: "
         + "; ".join(d.description for d in result.diagnostics)
     )
-    return execute(result, fn_name="main").value
+    return pipeline.run(result, "main", capture_stderr=False).execution.value
 
 
 # ---------------------------------------------------------------------

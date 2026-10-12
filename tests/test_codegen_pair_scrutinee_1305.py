@@ -36,9 +36,9 @@ import re
 
 import pytest
 
-from vera.codegen import execute
 
 from tests.codegen_helpers import _compile, _compile_ok, _run, wat_fn_body
+from tests import pipeline
 
 
 _PAIR_LOCAL_RE = re.compile(r"\(local \$\w+ i32_pair\)")
@@ -46,7 +46,7 @@ _PAIR_LOCAL_RE = re.compile(r"\(local \$\w+ i32_pair\)")
 
 def _run_value(source: str, fn: str, args: list[object] | None = None) -> object:
     result = _compile_ok(source)
-    return execute(result, fn_name=fn, args=args).value
+    return pipeline.run(result, fn, args, capture_stderr=False).execution.value
 
 
 def _assert_assembles(source: str) -> str:

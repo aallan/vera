@@ -45,6 +45,7 @@ from tests.test_check_implies_compile import (
     pipeline,
     run_main,
 )
+from tests import pipeline as vera_pipeline
 
 _ROOT = Path(__file__).resolve().parent.parent
 _CONTRACT = "  requires(true)\n  ensures(true)\n  effects(pure)\n"
@@ -177,7 +178,7 @@ def signature_mismatches(entry: Path) -> list[str]:
     """
     importer = _generator(entry)
     source = entry.read_text(encoding="utf-8")
-    entry_names = set(_own_functions(parse_to_ast(source)))
+    entry_names = set(_own_functions(vera_pipeline.parse(source).program))
     mods = importer._resolved_modules
     declared: dict[str, int] = {}
     for mod in mods:

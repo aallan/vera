@@ -40,11 +40,12 @@ import pytest
 from vera.checker.core import TypeChecker
 from vera.checker.eq_ability import is_eq_derivable
 from vera.codegen.core import CodeGenerator
-from vera.parser import parse_file, parse_to_ast
+from vera.parser import parse_file
 from vera.transform import transform
 from vera.types import PrimitiveType, Type, pretty_type
 from tests.checker_helpers import _error_codes as _errors
 from tests.codegen_helpers import _run
+from tests import pipeline
 
 
 # ---------------------------------------------------------------------
@@ -341,7 +342,7 @@ def _codegen_gen() -> CodeGenerator:
 
 
 def _checker_env() -> TypeChecker:
-    prog = parse_to_ast(_DIFF_DECLS)
+    prog = pipeline.parse(_DIFF_DECLS).program
     tc = TypeChecker(source=_DIFF_DECLS)
     tc.check_program(prog)
     return tc

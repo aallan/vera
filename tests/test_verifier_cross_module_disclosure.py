@@ -33,6 +33,7 @@ from pathlib import Path
 import pytest
 
 import vera
+from tests import pipeline
 
 _PKG_PARENT = str(Path(vera.__file__).resolve().parents[1])
 
@@ -874,16 +875,14 @@ def test_1399_a_module_call_resolves_to_the_clone_key(tmp_path: Path) -> None:
 def _resolved(tmp_path: Path, name: str, source: str, *, direct: bool = True):
     """A hand-built `ResolvedModule`, as a caller passing `resolved_modules`
     to `verify()` directly would supply one."""
-    from vera.parser import parse
     from vera.resolver import ResolvedModule
-    from vera.transform import transform
 
     tmp_path.mkdir(parents=True, exist_ok=True)
     path = tmp_path / f"{name}.vera"
     path.write_text(source, encoding="utf-8")
     return ResolvedModule(
         path=(name,), file_path=path,
-        program=transform(parse(source, file=str(path))),
+        program=pipeline.parse(source, file=str(path)).program,
         source=source, direct=direct,
     )
 

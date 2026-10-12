@@ -11,13 +11,13 @@ from typing import ClassVar
 import pytest
 
 from vera import ast as ast_mod
-from vera.parser import parse_to_ast
 
 from tests.verifier_helpers import (
     _verify,
     _verify_err,
     _verify_ok,
 )
+from tests import pipeline
 
 
 class TestRefinedTypeParamSorts:
@@ -98,7 +98,7 @@ class TestRefinementPredicateTranslation:
     def _predicate_of(source: str):
         """Extract the first RefinementType's predicate AST from *source*."""
         import vera.ast as A
-        mod = parse_to_ast(source)
+        mod = pipeline.parse(source).program
         found: list = []
 
         def walk(node: object) -> None:

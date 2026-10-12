@@ -45,6 +45,7 @@ from vera.codegen import CompileResult, compile as codegen_compile, execute
 from vera.parser import parse_to_ast
 from vera.resolver import ModuleResolver
 from vera.trap_registry import signal_call_pattern
+from tests import pipeline
 
 _ROOT = Path(__file__).resolve().parent.parent
 
@@ -1440,7 +1441,7 @@ _STRUCTURE_PAIRS: tuple[tuple[str, str, str, str], ...] = (
 
 
 def _probe_predicate(text: str, prelude: str = ""):
-    program = parse_to_ast(f"{prelude}type Probe = {{ @Int | {text} }};\n")
+    program = pipeline.parse(f"{prelude}type Probe = {{ @Int | {text} }};\n").program
     for decl in program.declarations:
         inner = getattr(decl, "decl", decl)
         if getattr(inner, "name", None) == "Probe":

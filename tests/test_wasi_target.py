@@ -36,6 +36,7 @@ from wasmtime.component import Component, Linker
 from tests.codegen_helpers import _compile_ok
 from vera.codegen import CompileResult
 from vera.codegen.wasi import emit_wasi_component
+from tests import pipeline
 
 # Engine + wasip2 linker are stateless across instantiations; build
 # once at module scope to keep the suite fast.
@@ -1863,17 +1864,14 @@ def _host_response(
     """The #305 host path for the differential.  Header list -> dict
     with the driver's semantics (lower-cased keys, later value wins —
     exactly what ``dict(self.headers.items())`` does in server.py)."""
-    from vera.codegen.api import HttpRequestData, execute
+    from vera.codegen.api import HttpRequestData
 
     merged: dict[str, str] = {}
     for key, value in headers:
         merged[key.lower()] = value
-    er = execute(
-        result, fn_name="handle",
-        http_request=HttpRequestData(
+    er = pipeline.run(result, "handle", http_request=HttpRequestData(
             method=method, path=path, headers=merged, body=body,
-        ),
-    )
+        ), capture_stderr=False).execution
     resp = er.http_response
     assert resp is not None
     return resp

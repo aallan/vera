@@ -41,6 +41,7 @@ from vera.runtime.traps import WasmTrapError
 from vera.transform import transform
 from vera.types import NAT, AdtType, RefinedType
 from vera.verifier import ContractVerifier, VerifyResult, verify
+from tests import pipeline
 
 
 # =====================================================================
@@ -107,7 +108,7 @@ def _resolve_in_verifier(source: str, type_name: str) -> object:
     resolves the named alias through the verifier's own resolver — the layer
     under test, one step below any refinement or SMT machinery.
     """
-    program = parse_to_ast(source)
+    program = pipeline.parse(source).program
     verifier = ContractVerifier(source=source)
     verifier.register_program(program)
     return verifier.env.type_aliases[type_name].resolved_type

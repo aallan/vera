@@ -32,9 +32,9 @@ from pathlib import Path
 from vera.checker import typecheck_with_artifacts
 from vera.codegen import CompileResult
 from vera.codegen import compile as codegen_compile
-from vera.codegen import execute
 from vera.parser import parse_to_ast
 from vera.resolver import ModuleResolver
+from tests import pipeline
 
 
 def _compile_main(
@@ -70,7 +70,7 @@ def _compile_main(
 
 
 def _run(result: CompileResult, fn: str, arg: int) -> int:
-    return execute(result, fn_name=fn, args=[arg]).value
+    return pipeline.run(result, fn, [arg], capture_stderr=False).execution.value
 
 
 _LIB_LEAF = """\

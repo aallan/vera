@@ -25,7 +25,7 @@ from typing import Any
 
 import pytest
 
-from vera.codegen import compile as codegen_compile, execute
+from vera.codegen import compile as codegen_compile
 from vera.codegen.api import WasmTrapError
 from vera.checker import typecheck
 from vera.parser import parse_file
@@ -49,6 +49,7 @@ from vera.wasm.json_serde import (
     non_finite_parse_message,
     format_json_number,
 )
+from tests import pipeline
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -157,12 +158,7 @@ def _run_python(result: Any, fn_name: str | None = None,
                 args: list[int | float] | None = None,
                 cli_args: list[str] | None = None) -> Any:
     """Execute a compiled module in Python/wasmtime."""
-    return execute(
-        result,
-        fn_name=fn_name,
-        args=args,
-        cli_args=cli_args or [],
-    )
+    return pipeline.run(result, fn_name, args, cli_args=cli_args or [], capture_stderr=False).execution
 
 
 def _run_node(
@@ -257,7 +253,7 @@ def _both_failures(src: str, tmp_path: Path, name: str) -> tuple[str, str]:
     native_tee = io.StringIO()
     try:
         with contextlib.redirect_stdout(native_tee):
-            native_out = execute(result, tee_stdout=True)
+            native_out = pipeline.run(result, tee_stdout=True, capture_stderr=False).execution
     except Exception as exc:  # noqa: BLE001 — any failure is the signal
         native_msg = str(exc)
     else:

@@ -17,6 +17,7 @@ from vera.formatter import (
     format_source,
 )
 from vera.parser import parse_to_ast
+from tests import pipeline
 
 
 EXAMPLES_DIR = Path(__file__).parent.parent / "examples"
@@ -2696,7 +2697,7 @@ class TestCanonicalFormGaps:
     @staticmethod
     def _reparses_and_is_fixed_point(out: str) -> None:
         """Output must re-parse and be unchanged by a second pass."""
-        parse_to_ast(out)
+        pipeline.parse(out).program
         assert format_source(out) == out, (
             f"second pass differs.\nFirst:\n{out}\n"
             f"Second:\n{format_source(out)}"

@@ -23,6 +23,7 @@ from tests.verifier_helpers import (
     _verify_ok,
     _verify_warn,
 )
+from tests import pipeline
 
 
 # =====================================================================
@@ -1579,7 +1580,7 @@ private fn internal(@Int -> @Int)
         path: tuple[str, ...], source: str,
     ) -> ResolvedModule:
         """Build a ResolvedModule from source text."""
-        prog = parse_to_ast(source)
+        prog = pipeline.parse(source).program
         return ResolvedModule(
             path=path,
             file_path=Path(f"/fake/{'/'.join(path)}.vera"),

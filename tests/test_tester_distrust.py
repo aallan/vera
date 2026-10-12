@@ -46,6 +46,7 @@ from vera.tester import FunctionTestResult, TestResult, TrialResult, _TrapIndex
 from vera.tester import test as run_test
 from vera.trap_registry import KNOWN_TRAP_DEFECTS, TRAP_EMITTERS, EmittedCheck
 from vera.transform import transform
+from tests import pipeline
 
 ROOT = Path(__file__).resolve().parent.parent
 _FILE = "<distrust>"
@@ -1620,7 +1621,7 @@ public fn f(@Nat -> @Pos)
 
 
 def _clauses_decl() -> ast.FnDecl:
-    program = transform(parse(_CLAUSES_SOURCE, file=_M_FILE))
+    program = pipeline.parse(_CLAUSES_SOURCE, file=_M_FILE).program
     (decl,) = [t.decl for t in program.declarations
                if isinstance(t.decl, ast.FnDecl)]
     return decl
@@ -1967,7 +1968,7 @@ public fn f(@Pos -> @Int)
 
 
 def _matrix_decl() -> ast.FnDecl:
-    program = transform(parse(_M_DECL_SOURCE, file=_M_FILE))
+    program = pipeline.parse(_M_DECL_SOURCE, file=_M_FILE).program
     (decl,) = [t.decl for t in program.declarations
                if isinstance(t.decl, ast.FnDecl)]
     return decl

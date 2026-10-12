@@ -60,6 +60,7 @@ from vera.environment import TypeEnv
 from vera.types import AdtType, PrimitiveType
 
 from tests.codegen_helpers import _compile_ok, wat_fn_body
+from tests import pipeline
 
 
 # Data-section padding: an unused function holding one string literal, which
@@ -133,7 +134,7 @@ def _runs(source: str) -> bool:
     """
     compiled = _compile_ok(source)
     try:
-        execute(compiled, fn_name="main", args=[])
+        pipeline.run(compiled, "main", [], capture_stderr=False).execution
     except Exception:  # noqa: BLE001 - any trap counts as "did not run"
         return False
     return True

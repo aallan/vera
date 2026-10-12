@@ -82,6 +82,7 @@ from vera.resolver import ResolvedModule
 from vera.runtime.traps import WasmTrapError
 from vera.transform import transform
 from vera.verifier import ContractVerifier, verify
+from tests import pipeline
 
 # A generated class instrument (tests/matrix_sample.py): a pull request runs a
 # sample of its parametrised cells, and all of them when it changes this file or
@@ -1767,7 +1768,7 @@ def _violations(source: str) -> list[str] | None:
     from vera.errors import VeraError
 
     try:
-        program = parse_to_ast(source)
+        program = pipeline.parse(source).program
     except VeraError:
         return None
     graph = CallGraph(tld.decl for tld in program.declarations)

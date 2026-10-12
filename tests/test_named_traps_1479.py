@@ -71,6 +71,7 @@ from vera.trap_registry import (
     native_trap_conditions,
     unreachable_fix_paragraph,
 )
+from tests import pipeline
 
 # A generated class instrument (tests/matrix_sample.py): a pull request runs a
 # sample of its parametrised cells, and all of them when it changes this file or
@@ -1020,7 +1021,7 @@ def _wasmtime_kind(cell: NativeTrapCondition) -> str:
         wat=wat, wasm_bytes=bytes(wasmtime.wat2wasm(wat)), exports=["t"],
         diagnostics=[])
     with pytest.raises(WasmTrapError) as info:
-        execute(result, fn_name="t")
+        pipeline.run(result, "t", capture_stderr=False).execution
     return info.value.kind
 
 
@@ -1845,7 +1846,7 @@ _FLOOR = (
 
 def _outcome(source: str, fn: str, arg: int | float) -> object:
     try:
-        return execute(_compile(source), fn_name=fn, args=[arg]).value
+        return pipeline.run(_compile(source), fn, [arg], capture_stderr=False).execution.value
     except WasmTrapError as exc:
         return exc.kind
 

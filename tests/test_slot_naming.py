@@ -28,6 +28,7 @@ from vera.naming import (
 from vera.parser import parse_to_ast
 
 from tests.naming_helpers import alias_env_from_declarations
+from tests import pipeline
 
 # =====================================================================
 # Helpers
@@ -64,7 +65,7 @@ public {forall}fn probe({shape} -> @Int)
 
 
 def _parse(shape: str, prelude: str = ALIASES, forall: str = "") -> ast.Program:
-    return parse_to_ast(prelude + _FN.format(shape=shape, forall=forall))
+    return pipeline.parse(prelude + _FN.format(shape=shape, forall=forall)).program
 
 
 def _probe(
@@ -86,7 +87,7 @@ def _name(shape: str, prelude: str = ALIASES, forall: str = "") -> str:
 
 
 def _env(prelude: str = ALIASES) -> AliasEnv:
-    return alias_env_from_declarations(parse_to_ast(prelude).declarations)
+    return alias_env_from_declarations(pipeline.parse(prelude).program.declarations)
 
 
 # =====================================================================

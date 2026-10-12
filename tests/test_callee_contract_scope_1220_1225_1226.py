@@ -37,6 +37,7 @@ from vera.resolver import ResolvedModule
 from vera.runtime.traps import WasmTrapError
 from vera.transform import transform
 from vera.verifier import ContractVerifier, VerifyResult, verify
+from tests import pipeline
 
 
 # =====================================================================
@@ -66,7 +67,7 @@ def _resolved(
     try:
         return ResolvedModule(
             path=path, file_path=Path(fp),
-            program=transform(parse_file(fp)), source=source, direct=direct,
+            program=pipeline.parse(Path(fp)).program, source=source, direct=direct,
         )
     finally:
         os.unlink(fp)
@@ -1214,7 +1215,7 @@ public fn main(@Unit -> @Nat)
     def _predicate(
         self,
     ) -> tuple[ContractVerifier, ast.RefinementType]:
-        prog = parse_to_ast(self._CLOSURE_PREDICATE)
+        prog = pipeline.parse(self._CLOSURE_PREDICATE).program
         verifier = ContractVerifier(source=self._CLOSURE_PREDICATE)
         verifier.register_program(prog)
         body = verifier.env.type_aliases["Grown"].body
