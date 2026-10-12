@@ -36,6 +36,7 @@ import pytest
 from vera.codegen import compile, execute
 from vera.parser import parse_file
 from vera.transform import transform
+from tests import pipeline
 
 
 pytestmark = pytest.mark.stress
@@ -85,26 +86,13 @@ def _run(
             "scoped env-var lifetime"
         )
         monkeypatch.setenv("VERA_EAGER_GC", "1")
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False,
-        encoding="utf-8",
-    ) as f:
-        f.write(src)
-        f.flush()
-        path = f.name
-    try:
-        tree = parse_file(path)
-        program = transform(tree)
-        result = compile(program, source=src, file=path)
-        errors = [d for d in result.diagnostics if d.severity == "error"]
-        assert not errors, (
-            "Compilation failed:\n"
-            + "\n".join(e.description for e in errors)
-        )
-        exec_result = execute(result, fn_name=fn_name)
-        return exec_result.value
-    finally:
-        Path(path).unlink(missing_ok=True)
+    result = pipeline.compile(src, file="fixture.vera", checked=False).result
+    errors = [d for d in result.diagnostics if d.severity == "error"]
+    assert not errors, (
+        "Compilation failed:\n"
+        + "\n".join(e.description for e in errors)
+    )
+    return pipeline.run(result, fn_name, capture_stderr=False).value
 
 
 # =====================================================================

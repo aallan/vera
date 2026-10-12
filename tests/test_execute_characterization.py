@@ -50,9 +50,9 @@ from unittest.mock import patch
 
 import pytest
 
-from vera.codegen import CompileResult, compile as compile_program, execute
+from vera.codegen import CompileResult, execute
 from vera.codegen.api import ExecuteResult, WasmTrapError
-from vera.parser import parse_to_ast
+from tests import pipeline
 
 # =====================================================================
 # Helper
@@ -60,13 +60,9 @@ from vera.parser import parse_to_ast
 
 
 def _compile(source: str) -> CompileResult:
-    """Parse + compile a Vera source string, asserting no compile errors.
-
-    Mirrors the ``parse_to_ast`` → ``compile`` seam used by
-    ``tests/test_runtime_traps.py`` (no temp file, Windows-portable).
-    """
-    program = parse_to_ast(source)
-    result = compile_program(program, source=source)
+    """Parse + compile a Vera source string, unchecked, asserting no compile
+    errors (no temp file, Windows-portable)."""
+    result = pipeline.compile(source, checked=False).result
     assert result.ok, (
         f"compile failed: {[d.description for d in result.diagnostics]}"
     )

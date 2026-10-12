@@ -36,6 +36,7 @@ from vera.codegen.api import WasmTrapError
 from vera.obligations.cache import walk_nodes
 from vera.parser import parse_to_ast
 from vera.resolver import ModuleResolver
+from tests import pipeline
 
 U64_MAX = 18446744073709551615
 
@@ -64,7 +65,7 @@ _MAIN = (
 def _tuple_ctor_spans(source: str) -> set:
     return {
         ast.span_key(n)
-        for n in walk_nodes(parse_to_ast(source))
+        for n in walk_nodes(pipeline.parse(source).program)
         if isinstance(n, ast.ConstructorCall) and n.name == "Tuple"
     }
 

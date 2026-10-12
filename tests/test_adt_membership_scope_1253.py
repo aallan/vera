@@ -33,11 +33,11 @@ from pathlib import Path
 import pytest
 
 from vera import ast, naming
-from vera.checker.core import TypeChecker
 from vera.codegen.core import CodeGenerator
 from vera.parser import parse_file
 from vera.resolver import ModuleResolver
 from vera.transform import transform
+from tests import pipeline
 
 # `Float` is not a Vera primitive (the primitive is `Float64`), so an
 # unregistered `Float` renders `?` — which is exactly what makes this pair
@@ -106,11 +106,10 @@ def _slot_tables(
     tmp_path: Path, files: dict[str, str], module: str, fn: str,
 ) -> tuple[list[str], list[str]]:
     """(checker's slot names for *fn*, codegen's) inside *module*'s namespace."""
-    for name, text in files.items():
-        (tmp_path / name).write_text(text, encoding="utf-8")
-    main_path = tmp_path / "main.vera"
-    program = transform(parse_file(str(main_path)))
-    mods = ModuleResolver(tmp_path).resolve_imports(program, main_path)
+    main_path = pipeline.write_tree(tmp_path, files)
+    checked = pipeline.check(main_path, root=tmp_path)
+    program = checked.program
+    mods = checked.resolved
     mod = next(m for m in mods if m.path == (module,))
     params = _params(mod.program, fn)
 
@@ -124,18 +123,14 @@ def _slot_tables(
     # the claim unreproducible from the artifact.  This is the same
     # construction `_collect_module_artifacts` has used since #987.
     mod_direct = {imp.path for imp in mod.program.imports}
-    scoped = TypeChecker(
-        source=mod.source, file=str(mod.file_path),
-        resolved_modules=[
+    scoped = pipeline.check(
+        mod.source, file=str(mod.file_path),
+        modules=[
             replace(other, direct=other.path in mod_direct)
             for other in mods if other.path != mod.path
         ],
     )
-    scoped.check_program(mod.program)
-    checker = [
-        naming.slot_name(p, naming.alias_env_from_environment(scoped.env))
-        for p in params
-    ]
+    checker = [naming.slot_name(p, scoped.artifacts.alias_env) for p in params]
 
     # Codegen's view: the flat generator, inside the module's alias scope —
     # the scope every one of that module's bodies compiles under.

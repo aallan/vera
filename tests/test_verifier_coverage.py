@@ -12,6 +12,7 @@ from pathlib import Path
 from vera.parser import parse_to_ast
 from vera.checker import typecheck
 from vera.verifier import VerifyResult, verify
+from tests import pipeline
 
 
 # =====================================================================
@@ -20,13 +21,13 @@ from vera.verifier import VerifyResult, verify
 
 def _verify(source: str) -> VerifyResult:
     """Parse, type-check, and verify a source string."""
-    ast = parse_to_ast(source)
-    tc_diags = typecheck(ast, source)
-    tc_errors = [d for d in tc_diags if d.severity == "error"]
-    assert tc_errors == [], (
+    verified = pipeline.verify(source)
+    _ = verified.checked.program  # raises the parse or transform error, if any
+    tc_errors = verified.checked.errors
+    assert tc_errors == (), (
         f"Type-check errors before verification: {[e.description for e in tc_errors]}"
     )
-    return verify(ast, source)
+    return verified.result
 
 
 def _verify_ok(source: str) -> VerifyResult:

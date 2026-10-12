@@ -14,8 +14,9 @@ helper drives a stage when it calls, under whatever name its module imports
 it as:
 
 - a stage function of the compiler (``STAGE_FUNCTIONS``);
-- a stage method (``STAGE_METHODS``): ``CodeGenerator.compile_program``,
-  ``ContractVerifier.verify_program``, ``ModuleResolver.resolve_imports``;
+- a stage method (``STAGE_METHODS``): ``TypeChecker.check_program``,
+  ``CodeGenerator.compile_program``, ``ContractVerifier.verify_program``,
+  ``ModuleResolver.resolve_imports``;
 - ``vera.cli.main`` or a ``vera.cli.cmd_*`` command;
 - a subprocess (``subprocess.run``, ``Popen``, ``check_output``, ``call``,
   ``check_call``) whose command names ``vera``: a string in it, or in a value
@@ -60,7 +61,9 @@ STAGE_FUNCTIONS: Mapping[str, frozenset[str]] = {
 }
 
 #: Stage methods, matched by name on any receiver.
-STAGE_METHODS = frozenset({"compile_program", "verify_program", "resolve_imports"})
+STAGE_METHODS = frozenset({
+    "check_program", "compile_program", "verify_program", "resolve_imports",
+})
 
 SUBPROCESS_CALLS = frozenset({"run", "Popen", "check_output", "call", "check_call"})
 
@@ -68,258 +71,87 @@ _PART_B = (
     "runs the CLI as a process; the subprocess migration moves it in process "
     "through pipeline.cli"
 )
-_PART_A2 = "migrates to tests/pipeline.py in the second half of the driver migration"
-_OTHER_CHANGE = (
-    "in a file another change in this release holds (tests/test_cli.py, "
-    "tests/test_check_*.py); it migrates with the second half of the driver "
-    "migration"
+_CLI_SUITE = (
+    "tests/test_cli.py, the CLI's own suite, drives the commands and the code "
+    "beneath them itself"
+)
+_LARK_TREE = (
+    "copies the doc gate's parse stage, the Lark parse alone (vera.parser.parse, "
+    "no transform); pipeline.parse transforms too, so a block that parses but "
+    "does not transform would change verdict"
+)
+_SUBSTITUTED_TABLE = (
+    "hands the verifier or code generation a semantic-type table other than "
+    "the checker's, on purpose; no stage takes one"
+)
+_MODULE_TABLES_WITHHELD = (
+    "compiles without the imported modules' own tables on purpose "
+    "(thread_modules=False); every stage that compiles threads them"
+)
+_RESOLVER_UNIT = (
+    "a unit test of ModuleResolver itself, over programs that need not "
+    "type-check; the pipeline resolves only inside a check"
+)
+_VERIFY_ALONE = (
+    "verifies a program the test has checked already, so that a recursion "
+    "budget wraps the verification alone; every stage that verifies checks "
+    "first"
+)
+_CHECKER_ITSELF = (
+    "reads the TypeChecker itself after its check, or its TypeEnv; "
+    "pipeline.check hands back the checker's tables and naming environment, "
+    "not the checker"
 )
 
 #: The drivers that stay, ``"tests/<file>::<helper>"`` (a method as
 #: ``Class.method``) to the reason.
 ALLOWED: Mapping[str, str] = {
-    "tests/test_adt_eq_reject_928.py::_codegen_gen": _PART_A2,
-    "tests/test_adt_eq_reject_928.py::_checker_env": _PART_A2,
-    "tests/test_adt_membership_scope_1253.py::_slot_tables": _PART_A2,
-    "tests/test_adt_ord_reject_921.py::_error_descs": _PART_A2,
-    "tests/test_alias_application_refinement_base_1237.py::_verify": _PART_A2,
-    "tests/test_alias_application_refinement_base_1237.py::_run": _PART_A2,
-    "tests/test_alias_application_refinement_base_1237.py::_resolve_in_verifier": _PART_A2,
+    "tests/test_adt_eq_reject_928.py::_checker_env": _CHECKER_ITSELF,
     "tests/test_ambiguous_import_refusal_1304.py::_run_check_json": _PART_B,
-    "tests/test_ambiguous_import_refusal_1304.py::TestTheRefusedDataNamesBindToNothing._env": _PART_A2,
-    "tests/test_ambiguous_import_refusal_1304.py::TestTheTwoViewsOfOneWalk._tables": _PART_A2,
-    "tests/test_ast.py::_ast": _PART_A2,
+    "tests/test_ambiguous_import_refusal_1304.py::TestTheRefusedDataNamesBindToNothing._env": _CHECKER_ITSELF,
     "tests/test_binder_position_generator.py::_cli": _PART_B,
     "tests/test_boundary_guard_correctness_1466.py::_cli": _PART_B,
-    "tests/test_browser.py::_compile_vera": _PART_A2,
-    "tests/test_browser.py::_compile_state_default": _PART_A2,
-    "tests/test_browser.py::_compile_file": _PART_A2,
-    "tests/test_browser.py::_run_python": _PART_A2,
-    "tests/test_browser.py::_both_failures": _PART_A2,
-    "tests/test_callee_contract_scope_1220_1225_1226.py::_resolved": _PART_A2,
-    "tests/test_callee_contract_scope_1220_1225_1226.py::_verify_mod": _PART_A2,
-    "tests/test_callee_contract_scope_1220_1225_1226.py::_run_mod": _PART_A2,
-    "tests/test_callee_contract_scope_1220_1225_1226.py::TestClosureInAPredicateTakesTheBinderSlot._predicate": _PART_A2,
-    "tests/test_callee_contract_scope_1220_1225_1226.py::TestObligationsCarryTheirDeclaringFile._verified": _PART_A2,
-    "tests/test_check_implies_compile.py::build": _OTHER_CHANGE,
-    "tests/test_check_implies_compile.py::run_main": _OTHER_CHANGE,
-    "tests/test_check_implies_compile.py::prelude_generics": _OTHER_CHANGE,
-    "tests/test_check_implies_compile.py::_emitted_and_discovered": _OTHER_CHANGE,
-    "tests/test_check_implies_compile.py::_verify_file": _OTHER_CHANGE,
-    "tests/test_checker_apply_fn.py::_compile_and_run": _PART_A2,
-    "tests/test_checker_int_nat.py::_synth_type": _PART_A2,
-    "tests/test_checker_modules.py::TestReservedTypePrefix._codes": _PART_A2,
-    "tests/test_checker_modules.py::TestReservedTypePrefix._diag": _PART_A2,
     "tests/test_clause_binder_guard_1445.py::_cli": _PART_B,
-    "tests/test_cli.py::TestTypedArgParsingDirect._compile": _OTHER_CHANGE,
+    "tests/test_cli.py::TestTypedArgParsingDirect._compile": _CLI_SUITE,
     "tests/test_clone_body_declaring_module_1241_1243.py::_cli": _PART_B,
-    "tests/test_clone_decreases_1569.py::_verify": _PART_A2,
-    "tests/test_closure_boundary_widths_1255_1256_1269.py::_compile_xmod": _PART_A2,
-    "tests/test_codegen_alias_adt_name_width_1309.py::_run_value": _PART_A2,
     "tests/test_codegen_decreases_guard.py::_run_cli": _PART_B,
-    "tests/test_codegen_invariant_e699.py::_compile_source": _PART_A2,
-    "tests/test_codegen_match_shadow_scope_1322.py::_runs": _PART_A2,
-    "tests/test_codegen_modules.py::_parse_from_temp_file": _PART_A2,
-    "tests/test_codegen_modules.py::TestCrossModuleCodegen._compile_mod": _PART_A2,
-    "tests/test_codegen_modules.py::TestCrossModuleCodegen._run_mod": _PART_A2,
-    "tests/test_codegen_modules.py::TestCrossModuleFusedAwait841._run_await_of": _PART_A2,
-    "tests/test_codegen_modules.py::TestIndirectClosureFusedAwait843._assert_awaited_correctly": _PART_A2,
-    "tests/test_codegen_modules.py::TestTransitiveModuleImport890._compile_run_chain": _PART_A2,
-    "tests/test_codegen_monomorphize.py::_transform_program": _PART_A2,
-    "tests/test_codegen_nested_nullary_ctor_994.py::_check_compile_run": _PART_A2,
-    "tests/test_codegen_pair_scrutinee_1305.py::_run_value": _PART_A2,
     "tests/test_codegen_root_lifetime_1371.py::_run_in_subprocess": _PART_B,
-    "tests/test_codegen_root_lifetime_1371.py::_runs": _PART_A2,
-    "tests/test_codegen_typeparam_unit_wildcard_1060.py::_compile_with_module": _PART_A2,
-    "tests/test_codegen_where_helper_mangling_991.py::_compile": _PART_A2,
-    "tests/test_codegen_where_helper_mangling_991.py::_run": _PART_A2,
     "tests/test_conformance.py::_vera": _PART_B,
     "tests/test_construction_guards_1426.py::_cli": _PART_B,
-    "tests/test_cross_namespace_ctor_1436.py::_emitted_and_discovered": _PART_A2,
-    "tests/test_db_marshalling.py::_gc_caller": _PART_A2,
     "tests/test_disclosure_taint_follows_value_1406.py::_cli": _PART_B,
     "tests/test_disclosure_taint_follows_value_1406.py::_cli_unpatched": _PART_B,
-    "tests/test_distrust_corpus.py::_tested": _PART_A2,
-    "tests/test_doc_annotations.py::_try_parse": _PART_A2,
-    "tests/test_duplicate_names_1433.py::_checker_after_a_check": _PART_A2,
-    "tests/test_duplicate_names_1433.py::_check": _PART_A2,
+    "tests/test_doc_annotations.py::_try_parse": _LARK_TREE,
+    "tests/test_duplicate_names_1433.py::_checker_after_a_check": _CHECKER_ITSELF,
     "tests/test_effect_op_determinism.py::_run_seeded": _PART_B,
     "tests/test_element_facts_statable_1430.py::_cli": _PART_B,
-    "tests/test_emitted_checks_1479.py::_compile": _PART_A2,
-    "tests/test_evaluated_position_obligations_1480.py::_verify": _PART_A2,
-    "tests/test_evaluated_position_obligations_1480.py::_run": _PART_A2,
-    "tests/test_evaluated_position_obligations_1480.py::_substituted": _PART_A2,
     "tests/test_evaluated_position_obligations_1480.py::_cli_json": _PART_B,
-    "tests/test_evaluated_position_obligations_1480.py::_e529_rationale": _PART_A2,
-    "tests/test_examples_ephemeris.py::obligations": _PART_A2,
-    "tests/test_examples_ephemeris.py::_obligations_at_budget": _PART_A2,
-    "tests/test_execute_characterization.py::_compile": _PART_A2,
-    "tests/test_family_naming.py::_compile_path": _PART_A2,
-    "tests/test_family_naming.py::_probe_predicate": _PART_A2,
     "tests/test_field_layout_one_source_1466.py::_run": _PART_B,
-    "tests/test_float64_builtins_807.py::_run_float_expr": _PART_A2,
-    "tests/test_float64_builtins_807.py::_run_int_expr": _PART_A2,
-    "tests/test_formatter.py::TestCanonicalFormGaps._reparses_and_is_fixed_point": _PART_A2,
-    "tests/test_generic_under_generic_callees_1223.py::_registered_and_resolved": _PART_A2,
-    "tests/test_generic_where_helper_990.py::_compile": _PART_A2,
-    "tests/test_generic_where_helper_990.py::_run_main": _PART_A2,
     "tests/test_guard_completeness.py::_cli": _PART_B,
-    "tests/test_guard_completeness.py::_observe_in_process": _PART_A2,
-    "tests/test_handle_exn_divergent_result_1276.py::_compile": _PART_A2,
-    "tests/test_html.py::_try_parse": _PART_A2,
+    "tests/test_html.py::_try_parse": _LARK_TREE,
     "tests/test_html.py::_run_cli": _PART_B,
     "tests/test_import_visibility_entry_point_1244.py::_cli": _PART_B,
-    "tests/test_infer_vera_type_join_1286.py::_compile": _PART_A2,
-    "tests/test_infer_vera_type_join_1286.py::_run": _PART_A2,
-    "tests/test_inference_response_shapes_1333.py::_run_with_transport": _PART_A2,
-    "tests/test_int_overflow_codegen.py::_compile_multifile": _PART_A2,
-    "tests/test_int_overflow_codegen.py::_traps": _PART_A2,
-    "tests/test_int_overflow_codegen.py::_trap_kind": _PART_A2,
-    "tests/test_int_overflow_differential.py::_assert_in_lockstep": _PART_A2,
-    "tests/test_int_widening_differential.py::_run": _PART_A2,
-    "tests/test_lexical_fn_scope_1299.py::_top_decl": _PART_A2,
-    "tests/test_literal_typing_from_context_1541_1565.py::_codes": _PART_A2,
-    "tests/test_literal_typing_from_context_1541_1565.py::_run": _PART_A2,
-    "tests/test_literal_typing_from_context_1541_1565.py::_compile": _PART_A2,
-    "tests/test_literal_typing_from_context_1541_1565.py::_run_many": _PART_A2,
-    "tests/test_literal_typing_from_context_1541_1565.py::_widening_sites": _PART_A2,
-    "tests/test_module_environment_1493.py::_generator": _PART_A2,
-    "tests/test_module_environment_1493.py::signature_mismatches": _PART_A2,
-    "tests/test_module_environment_1493.py::_multi_module_corpus": _PART_A2,
-    "tests/test_module_environment_1493.py::_constructions": _PART_A2,
-    "tests/test_module_generic_collision_1281.py::TestQualifiedOnlyGenericsAreKeyedPerOwner._diamond_registries": _PART_A2,
-    "tests/test_module_generic_namespace_1274.py::_build": _PART_A2,
-    "tests/test_module_generic_namespace_1274.py::TestTransitiveVisibility._resolve": _PART_A2,
-    "tests/test_module_shadowed_generic_effect_op_1310.py::_discovered_sets": _PART_A2,
-    "tests/test_monomorphize_differential.py::_codegen_emitted": _PART_A2,
-    "tests/test_monomorphize_differential.py::_discovery_scopes": _PART_A2,
-    "tests/test_monomorphize_differential.py::_cross_module_sets": _PART_A2,
-    "tests/test_monomorphize_differential.py::_call_rewrite_desync": _PART_A2,
-    "tests/test_named_traps_1479.py::_compile": _PART_A2,
-    "tests/test_named_traps_1479.py::_wasmtime_kind": _PART_A2,
-    "tests/test_named_traps_1479.py::_outcome": _PART_A2,
-    "tests/test_naming_env_provenance_1208.py::_verify_mod": _PART_A2,
-    "tests/test_naming_env_provenance_1208.py::_compile_mod": _PART_A2,
-    "tests/test_naming_env_provenance_1208.py::TestVerifierScopeIsTheSlotTableScope._declared_slots": _PART_A2,
-    "tests/test_naming_env_provenance_1208.py::TestTesterSmtScope._decl_and_env": _PART_A2,
-    "tests/test_naming_env_provenance_1208.py::_codegen_alias_env": _PART_A2,
-    "tests/test_naming_env_provenance_1208.py::_checker_env": _PART_A2,
-    "tests/test_naming_env_provenance_1208.py::_codegen_env": _PART_A2,
-    "tests/test_naming_env_provenance_1208.py::_params_of": _PART_A2,
     "tests/test_nat_bind_construction_soundness_1332.py::_cli": _PART_B,
-    "tests/test_nat_narrowing_return_differential.py::_resolved_pipeline": _PART_A2,
-    "tests/test_nat_narrowing_return_differential.py::_return_nat_bind_statuses": _PART_A2,
-    "tests/test_nat_narrowing_return_differential.py::_statuses_and_wat": _PART_A2,
-    "tests/test_nat_narrowing_return_differential.py::_run": _PART_A2,
-    "tests/test_nat_narrowing_return_differential.py::_trap_kind": _PART_A2,
-    "tests/test_nat_narrowing_return_differential.py::_refine_bind_statuses": _PART_A2,
-    "tests/test_nat_narrowing_return_differential.py::_trap_message": _PART_A2,
-    "tests/test_nat_narrowing_return_differential.py::_obligation_kinds_statuses": _PART_A2,
-    "tests/test_nat_narrowing_return_differential.py::TestClauseClassCollisionBothDirections._compile_msgs": _PART_A2,
-    "tests/test_nested_container_guards.py::_measure": _PART_A2,
     "tests/test_nested_ctor_sort_1360.py::_cli": _PART_B,
-    "tests/test_nested_ctor_sort_1360.py::_envelope_for_raising_translator": _PART_A2,
     "tests/test_nonregular_data_rejected_1429.py::_cli": _PART_B,
-    "tests/test_obligations.py::_cold_verify": _PART_A2,
-    "tests/test_obligations.py::TestObligationKinds._verify_source": _PART_A2,
-    "tests/test_obligations.py::TestIncrementalInvalidation._cold": _PART_A2,
-    "tests/test_one_classifier_1503.py::_artifacts": _PART_A2,
-    "tests/test_one_classifier_1503.py::_observe": _PART_A2,
-    "tests/test_one_classifier_1503.py::TestEveryNatResultIsDeclared._assert_widens": _PART_A2,
-    "tests/test_one_classifier_1503.py::_verify_only": _PART_A2,
-    "tests/test_one_classifier_1503.py::_compile_checked": _PART_A2,
-    "tests/test_one_classifier_1503.py::_run": _PART_A2,
-    "tests/test_one_classifier_1503.py::_observe_modules": _PART_A2,
-    "tests/test_one_classifier_1503.py::_pipeline": _PART_A2,
-    "tests/test_overflow_fails_closed_1417.py::_compiled": _PART_A2,
-    "tests/test_parse_error_instructions_1348_1349.py::_diag": _PART_A2,
-    "tests/test_parser.py::TestVerifyFile._vera_verify_errors": _PART_A2,
-    "tests/test_per_owner_adt_identity_1317.py::_generator": _PART_A2,
-    "tests/test_phantom_generic_instances_1271.py::_compile_spied": _PART_A2,
-    "tests/test_pipe_desugar.py::_value": _PART_A2,
-    "tests/test_pipe_desugar.py::_body": _PART_A2,
-    "tests/test_prelude.py::_make_program": _PART_A2,
-    "tests/test_prelude_adt_namespace_1277.py::_compile": _PART_A2,
-    "tests/test_prelude_adt_namespace_1277.py::_checker_data_types": _PART_A2,
-    "tests/test_prelude_decl_stamp_1287.py::_compiled": _PART_A2,
-    "tests/test_prelude_named_imports_1559.py::_always_injected": _PART_A2,
-    "tests/test_readme.py::_try_parse": _PART_A2,
-    "tests/test_reconciliation.py::_cli_json": _PART_A2,
-    "tests/test_refinement_binder_convergence_1208.py::_compile_mod": _PART_A2,
-    "tests/test_refinement_binder_convergence_1208.py::_generator": _PART_A2,
-    "tests/test_refinement_chain_convergence.py::_both_oracles": _PART_A2,
+    "tests/test_one_classifier_1503.py::_pipeline": _SUBSTITUTED_TABLE,
+    "tests/test_overflow_fails_closed_1417.py::_compiled": _SUBSTITUTED_TABLE,
+    "tests/test_readme.py::_try_parse": _LARK_TREE,
     "tests/test_refinement_chain_convergence.py::_records_at_the_bind": _PART_B,
     "tests/test_refinement_chain_convergence.py::_clause_binder_records": _PART_B,
-    "tests/test_resolver.py::_resolve_ok": _PART_A2,
-    "tests/test_resolver.py::_resolve_err": _PART_A2,
-    "tests/test_resolver.py::TestResolverErrorCodes._errors": _PART_A2,
-    "tests/test_runtime_traps.py::TestSourceMapPopulation516._compile": _PART_A2,
-    "tests/test_runtime_traps.py::TestHostErrorDebugKnob1302._compile": _PART_A2,
-    "tests/test_runtime_traps.py::TestHostCallbackBaseExceptionBoundary1302._compile": _PART_A2,
-    "tests/test_self_qualified_calls_1558.py::_emitted_and_discovered": _PART_A2,
-    "tests/test_self_qualified_calls_1558.py::_wat": _PART_A2,
-    "tests/test_single_source_type_names.py::_check": _PART_A2,
-    "tests/test_single_source_type_names.py::_compile_checked": _PART_A2,
-    "tests/test_single_source_type_names.py::_run_checked": _PART_A2,
-    "tests/test_single_source_type_names.py::_discovery_differential": _PART_A2,
-    "tests/test_single_source_type_names.py::_discovery_differential_modules": _PART_A2,
-    "tests/test_slot_naming.py::_parse": _PART_A2,
-    "tests/test_slot_naming.py::_env": _PART_A2,
-    "tests/test_slot_naming_blast_radius.py::_compile_file": _PART_A2,
-    "tests/test_slot_naming_blast_radius.py::_run_files": _PART_A2,
-    "tests/test_slot_naming_differential.py::_sweep_source": _PART_A2,
-    "tests/test_state_exn_registration.py::_lib_module": _PART_A2,
-    "tests/test_stress.py::_run": _PART_A2,
-    "tests/test_string_length_soundness.py::_verify": _PART_A2,
-    "tests/test_termination_rule.py::_check": _PART_A2,
-    "tests/test_termination_rule.py::_compile": _PART_A2,
-    "tests/test_termination_rule.py::_decreases_status": _PART_A2,
-    "tests/test_termination_rule.py::_refine_verdict": _PART_A2,
-    "tests/test_termination_rule.py::_violations": _PART_A2,
-    "tests/test_tester.py::_test": _PART_A2,
-    "tests/test_tester_artifacts.py::_cmd_test_capturing_wat": _PART_A2,
-    "tests/test_tester_coverage.py::TestUntranslatableRequiresSkips._json": _PART_A2,
-    "tests/test_tester_distrust.py::_run": _PART_A2,
-    "tests/test_tester_distrust.py::_checks": _PART_A2,
-    "tests/test_tester_distrust.py::_index": _PART_A2,
-    "tests/test_tester_distrust.py::_cli_json": _PART_A2,
-    "tests/test_tester_distrust.py::_main": _PART_A2,
-    "tests/test_tester_distrust.py::_clauses_decl": _PART_A2,
-    "tests/test_tester_distrust.py::_matrix_decl": _PART_A2,
-    "tests/test_uninferred_type_arg_e622.py::_compile_checked": _PART_A2,
-    "tests/test_verifier_adt_decreases.py::TestWalkerBlindSpots1179._decreases_statuses": _PART_A2,
+    "tests/test_resolver.py::_resolve_ok": _RESOLVER_UNIT,
+    "tests/test_resolver.py::_resolve_err": _RESOLVER_UNIT,
+    "tests/test_resolver.py::TestResolverErrorCodes._errors": _RESOLVER_UNIT,
     "tests/test_verifier_assert_subpattern_facts.py::_cli": _PART_B,
     "tests/test_verifier_budget.py::TestCliFlag._run": _PART_B,
-    "tests/test_verifier_budget.py::TestBudgetReachesTheSolver._cold": _PART_A2,
     "tests/test_verifier_call_arg_payload_1410.py::_cli": _PART_B,
-    "tests/test_verifier_calls_modules.py::TestCrossModuleVerification._resolved": _PART_A2,
-    "tests/test_verifier_calls_modules.py::TestCrossModuleVerification._verify_mod": _PART_A2,
-    "tests/test_verifier_coverage.py::_verify": _PART_A2,
     "tests/test_verifier_cross_module_disclosure.py::_cli": _PART_B,
-    "tests/test_verifier_cross_module_disclosure.py::_resolved": _PART_A2,
-    "tests/test_verifier_cross_module_disclosure.py::_checked": _PART_A2,
-    "tests/test_verifier_cross_module_disclosure.py::_verify_checked": _PART_A2,
+    "tests/test_verifier_cross_module_disclosure.py::_verify_checked": _VERIFY_ALONE,
     "tests/test_verifier_premise_consistency_1451.py::_cli": _PART_B,
-    "tests/test_verifier_premise_consistency_1451.py::_verify_in_process": _PART_A2,
     "tests/test_verifier_refined_sort_derivation.py::_cli": _PART_B,
     "tests/test_verifier_refinement_chain_1434.py::_cli": _PART_B,
-    "tests/test_verifier_refinements.py::TestRefinementPredicateTranslation._predicate_of": _PART_A2,
     "tests/test_verifier_truth_consult_status.py::_cli": _PART_B,
-    "tests/test_verifier_truth_consult_status.py::_program_ast": _PART_A2,
-    "tests/test_verifier_where_helper_scope_991.py::_run": _PART_A2,
-    "tests/test_warning_severity_1513.py::_registry_codes": _PART_A2,
-    "tests/test_wasi_target.py::_compile_path": _PART_A2,
-    "tests/test_wasi_target.py::_host_response": _PART_A2,
     "tests/test_where_helper_call_boundary_1455.py::_cli": _PART_B,
-    "tests/test_where_helper_call_boundary_1455.py::_oracle_readings": _PART_A2,
-    "tests/test_xmod_artifact_collection.py::_resolve": _PART_A2,
-    "tests/test_xmod_generic_widen_gap.py::_lib_tier3_count": _PART_A2,
-    "tests/test_xmod_span_collision.py::_tuple_ctor_spans": _PART_A2,
-    "tests/test_xmod_span_collision.py::_compile_main": _PART_A2,
-    "tests/test_xmod_where_helper_import_991.py::_compile_main": _PART_A2,
-    "tests/test_xmod_where_helper_import_991.py::_run": _PART_A2,
-    "tests/test_xmod_widening_differential.py::_lib_tier3_count": _PART_A2,
-    "tests/test_xmod_widening_differential.py::_compile_main": _PART_A2,
+    "tests/test_xmod_span_collision.py::_compile_main": _MODULE_TABLES_WITHHELD,
 }
 
 

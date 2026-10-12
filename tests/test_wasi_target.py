@@ -36,6 +36,7 @@ from wasmtime.component import Component, Linker
 from tests.codegen_helpers import _compile_ok
 from vera.codegen import CompileResult
 from vera.codegen.wasi import emit_wasi_component
+from tests import pipeline
 
 # Engine + wasip2 linker are stateless across instantiations; build
 # once at module scope to keep the suite fast.
@@ -1079,25 +1080,12 @@ def _conformance_run_ids() -> list[str]:
 def _compile_path(path: Path) -> CompileResult:
     """Compile a conformance file through the full CLI pipeline
     (resolver included — some ch08 programs import modules)."""
-    from vera.checker import typecheck_with_artifacts
-    from vera.cli import _load_and_parse
-    from vera.codegen import compile as codegen_compile
-    from vera.resolver import ModuleResolver
-    from vera.transform import transform
-
-    p, source, tree = _load_and_parse(str(path))
-    ast = transform(tree)
-    resolver = ModuleResolver(_root=p.parent)
-    resolved = resolver.resolve_imports(ast, p)
-    diags, artifacts = typecheck_with_artifacts(
-        ast, source, file=str(p), resolved_modules=resolved,
-    )
-    errors = [d for d in resolver.errors + diags if d.severity == "error"]
+    compiled = pipeline.compile(path)
+    assert compiled.checked is not None
+    _ = compiled.checked.program  # raises the parse or transform error
+    errors = compiled.checked.errors
     assert not errors, f"{path.name} failed typecheck: {errors[0].description}"
-    result = codegen_compile(
-        ast, source=source, file=str(p), resolved_modules=resolved,
-        expr_semantic_types=artifacts.expr_semantic_types,
-    )
+    result = compiled.result
     assert result.ok, f"{path.name} failed codegen"
     return result
 
@@ -1863,17 +1851,14 @@ def _host_response(
     """The #305 host path for the differential.  Header list -> dict
     with the driver's semantics (lower-cased keys, later value wins —
     exactly what ``dict(self.headers.items())`` does in server.py)."""
-    from vera.codegen.api import HttpRequestData, execute
+    from vera.codegen.api import HttpRequestData
 
     merged: dict[str, str] = {}
     for key, value in headers:
         merged[key.lower()] = value
-    er = execute(
-        result, fn_name="handle",
-        http_request=HttpRequestData(
+    er = pipeline.run(result, "handle", http_request=HttpRequestData(
             method=method, path=path, headers=merged, body=body,
-        ),
-    )
+        ), capture_stderr=False).execution
     resp = er.http_response
     assert resp is not None
     return resp

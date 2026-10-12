@@ -43,11 +43,10 @@ from __future__ import annotations
 import pytest
 
 from vera.checker import typecheck_with_artifacts
-from vera.codegen import compile as codegen_compile
-from vera.codegen import execute
 from vera.codegen.api import WasmTrapError
 from vera.parser import parse_to_ast
 from vera.verifier import verify
+from tests import pipeline
 
 # A generated class instrument (tests/matrix_sample.py): a pull request runs a
 # sample of its parametrised cells, and all of them when it changes this file or
@@ -76,17 +75,12 @@ _ID = """private forall<T> fn id(@T -> @T)
 def _codes(source: str) -> list[str]:
     """Every error code `vera verify` reports: the checker's, then the
     verifier's (the verifier runs only on a check-clean program)."""
-    ast = parse_to_ast(source)
-    diags, arts = typecheck_with_artifacts(
-        ast, source, collect_module_artifacts=True)
-    errors = [d.error_code for d in diags if d.severity == "error"]
+    verified = pipeline.verify(source)
+    _ = verified.checked.program  # raises the parse or transform error, if any
+    errors = [d.error_code for d in verified.checked.errors]
     if errors:
         return errors
-    result = verify(ast, source,
-                    expr_types=arts.expr_semantic_types,
-                    expr_target_types=arts.expr_target_types,
-                    module_artifacts=arts.module_artifacts)
-    return [d.error_code for d in result.diagnostics
+    return [d.error_code for d in verified.result.diagnostics
             if d.severity == "error"]
 
 
@@ -96,20 +90,11 @@ def _run(source: str, fn: str, args: list[int]) -> int | str:
     Built the way `vera run` builds it: the checker's semantic and target
     tables go to code generation, which reads them to decide the guards —
     compiled without them, the release branch's traps do not reproduce."""
-    ast = parse_to_ast(source)
-    diags, arts = typecheck_with_artifacts(
-        ast, source, collect_module_artifacts=True)
-    assert not [d for d in diags if d.severity == "error"], diags
-    result = codegen_compile(
-        ast, source=source,
-        expr_semantic_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-        module_artifacts=arts.module_artifacts)
-    assert result.ok, result.diagnostics
-    try:
-        return execute(result, fn_name=fn, args=args).value
-    except WasmTrapError as exc:
-        return f"trap: {exc}"
+    result = _compile(source)
+    ran = pipeline.run(result, fn, args, capture_stderr=False)
+    if ran.trap is not None:
+        return f"trap: {ran.trap}"
+    return ran.value
 
 
 def _fn(body: str, ret: str = "Int", param: str = "Int") -> str:
@@ -1402,15 +1387,12 @@ _MIXED_CELLS = _mixed_cells()
 
 
 def _compile(source: str):  # type: ignore[no-untyped-def]
-    ast = parse_to_ast(source)
-    diags, arts = typecheck_with_artifacts(
-        ast, source, collect_module_artifacts=True)
+    compiled = pipeline.compile(source)
+    _ = compiled.parsed.program  # raises the parse or transform error, if any
+    assert compiled.checked is not None
+    diags = list(compiled.checked.checker_diagnostics)
     assert not [d for d in diags if d.severity == "error"], diags
-    result = codegen_compile(
-        ast, source=source,
-        expr_semantic_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-        module_artifacts=arts.module_artifacts)
+    result = compiled.result
     assert result.ok, result.diagnostics
     return result
 
@@ -1422,7 +1404,7 @@ def _run_many(source: str, fn: str,
     out: list[int | str] = []
     for args in args_list:
         try:
-            out.append(execute(result, fn_name=fn, args=args).value)
+            out.append(pipeline.run(result, fn, args, capture_stderr=False).execution.value)
         except WasmTrapError as exc:
             out.append(f"trap: {exc}")
     return out
@@ -1431,13 +1413,7 @@ def _run_many(source: str, fn: str,
 def _widening_sites(source: str) -> tuple[set, set]:
     """The `nat_to_int_coerce` obligations' sites and the widening guards'
     sites, as (line, column)."""
-    ast = parse_to_ast(source)
-    _diags, arts = typecheck_with_artifacts(
-        ast, source, collect_module_artifacts=True)
-    verified = verify(ast, source,
-                      expr_types=arts.expr_semantic_types,
-                      expr_target_types=arts.expr_target_types,
-                      module_artifacts=arts.module_artifacts)
+    verified = pipeline.verify(source, past_check=True).result
     claimed = {(o.line, o.column) for o in verified.obligations
                if o.kind == "nat_to_int_coerce"}
     guarded = {(c.line, c.column) for c in _compile(source).emitted_checks

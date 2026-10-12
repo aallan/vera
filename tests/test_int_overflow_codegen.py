@@ -41,13 +41,11 @@ from pathlib import Path
 import pytest
 import wasmtime
 
-from vera.checker import typecheck_with_artifacts
-from vera.codegen import compile as codegen_compile
 from vera.codegen import execute
-from vera.parser import parse_to_ast
-from vera.resolver import ModuleResolver
 from vera.runtime.traps import WasmTrapError
 from tests.codegen_helpers import _compile_checked_ok as _compile_with_types, _run_checked as _run, _run_checked_trap as _assert_traps
+from tests.module_fixture_helpers import compile_multi_module_ok
+from tests import pipeline
 
 I64_MAX = 9223372036854775807
 I64_MIN = -9223372036854775808
@@ -59,35 +57,16 @@ def _compile_multifile(files: dict[str, str], main: str):
     does, so the overflow guard is exercised inside an *imported* body (CR #809).
 
     ``files`` maps filename -> source; ``main`` is the entry filename.  The files
-    are written to one temp dir so ``ModuleResolver`` resolves the imports by
-    module name, then ``resolved_modules`` is threaded through both typecheck and
-    codegen — without it the import would not resolve and the imported function
-    would never be compiled (let alone guarded).
+    are written to one temp dir so the imports resolve by module name, then the
+    resolved modules are threaded through both typecheck and codegen — without
+    them the import would not resolve and the imported function would never be
+    compiled (let alone guarded).
     """
     import shutil
 
     d = tempfile.mkdtemp()
     try:
-        for name, src in files.items():
-            (Path(d) / name).write_text(src, encoding="utf-8")
-        main_path = str(Path(d) / main)
-        source = files[main]
-        ast = parse_to_ast(source)
-        resolver = ModuleResolver(_root=Path(main_path).parent)
-        resolved = resolver.resolve_imports(ast, Path(main_path))
-        diags, arts = typecheck_with_artifacts(
-            ast, source, file=main_path, resolved_modules=resolved,
-        )
-        errors = [x for x in diags if x.severity == "error"]
-        assert not errors, f"typecheck errors: {[x.description for x in errors]}"
-        result = codegen_compile(
-            ast, source=source, file=main_path,
-            resolved_modules=resolved,
-            expr_semantic_types=arts.expr_semantic_types,
-        )
-        errs = [x for x in result.diagnostics if x.severity == "error"]
-        assert not errs, f"codegen errors: {[x.description for x in errs]}"
-        return result
+        return compile_multi_module_ok(Path(d), files, main)
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
@@ -344,7 +323,7 @@ class TestNatSubUnderflow798:
 def _traps(result, fn: str, args: list[int]) -> bool:
     """Run a precompiled module; return True iff it trapped (any WASM fault)."""
     try:
-        execute(result, fn_name=fn, args=args)
+        pipeline.run(result, fn, args, capture_stderr=False).execution
         return False
     except (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError):
         return True
@@ -529,7 +508,7 @@ def _trap_kind(source: str, fn: str, args: list[int]) -> str:
     """Run ``fn(args)`` and return the `kind` of the WasmTrapError it raises."""
     result = _compile_with_types(source)
     with pytest.raises(WasmTrapError) as exc_info:
-        execute(result, fn_name=fn, args=args)
+        pipeline.run(result, fn, args, capture_stderr=False).execution
     return exc_info.value.kind
 
 

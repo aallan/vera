@@ -39,6 +39,7 @@ from typing import ClassVar
 
 import pytest
 
+from tests import pipeline
 from tests.codegen_helpers import wat_fn_names
 from tests.module_fixture_helpers import (
     build_multi_module,
@@ -411,35 +412,17 @@ public fn main(@Unit -> @Int)
         way either way — they are built from the declarations — so this is
         the fixture matching the product, not a changed measurement.
         """
-        from vera.checker import typecheck_with_artifacts
-        from vera.codegen.core import CodeGenerator
-        from vera.parser import parse_to_ast
-        from vera.resolver import ModuleResolver
-
-        tmp_path.mkdir(parents=True, exist_ok=True)
         files = {
             "base.vera": _BASE, "mid1.vera": _MID1,
             "mid2.vera": _MID2, "main.vera": _DIAMOND_MAIN,
         }
-        for name, src in files.items():
-            (tmp_path / name).write_text(src, encoding="utf-8")
-        main_path = tmp_path / "main.vera"
-        source = files["main.vera"]
-        program = parse_to_ast(source)
-        resolved = ModuleResolver(_root=tmp_path).resolve_imports(
-            program, main_path,
+        compiled = pipeline.compile(
+            pipeline.write_tree(tmp_path, files), root=tmp_path,
+            past_check=True,
         )
-        _diags, arts = typecheck_with_artifacts(
-            program, source, file=str(main_path), resolved_modules=resolved,
-            collect_module_artifacts=True,
-        )
-        gen = CodeGenerator(
-            source=source, file=str(main_path), resolved_modules=resolved,
-            expr_semantic_types=arts.expr_semantic_types,
-            expr_target_types=arts.expr_target_types,
-            module_artifacts=arts.module_artifacts,
-        )
-        gen.compile_program(program)
+        _ = compiled.parsed.program  # raises the parse or transform error
+        gen = compiled.generator
+        assert gen is not None
         return set(gen._fn_sigs), set(gen._fn_ret_type_exprs)
 
     def test_no_bare_signature_entry_for_a_qualified_only_generic(

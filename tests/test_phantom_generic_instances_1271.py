@@ -23,19 +23,14 @@ filter lands once and the #732 differential in
 
 from __future__ import annotations
 
-import os
-import tempfile
-
 import pytest
 
+from tests import pipeline
 from tests.test_generic_under_generic_callees_1223 import _CASES
 from vera.ast import FnDecl
 from vera.codegen import execute
 from vera.codegen.api import CompileResult
-from vera.codegen.core import CodeGenerator
 from vera.codegen.monomorphize import MonomorphizationMixin
-from vera.parser import parse_file
-from vera.transform import transform
 
 # A mutual-recursion shape: two sibling generic helpers under a generic parent,
 # each calling the other's family, so the phantom appears at BOTH helpers'
@@ -122,22 +117,11 @@ def _compile_spied(source: str) -> tuple[CompileResult, set[str]]:
         registered.update(d.name for d in out)
         return out
 
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False, encoding="utf-8",
-    ) as f:
-        f.write(source)
-        f.flush()
-        path = f.name
+    MonomorphizationMixin._monomorphize = _spy  # type: ignore[assignment,method-assign]
     try:
-        program = transform(parse_file(path))
-        gen = CodeGenerator(source=source, file=path)
-        MonomorphizationMixin._monomorphize = _spy  # type: ignore[assignment,method-assign]
-        try:
-            result = gen.compile_program(program)  # type: ignore[arg-type]
-        finally:
-            MonomorphizationMixin._monomorphize = orig  # type: ignore[assignment,method-assign]
+        result = pipeline.compile(source, file="fixture.vera", checked=False).result
     finally:
-        os.unlink(path)
+        MonomorphizationMixin._monomorphize = orig  # type: ignore[assignment,method-assign]
     return result, registered
 
 

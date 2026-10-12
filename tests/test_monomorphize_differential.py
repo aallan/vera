@@ -41,6 +41,7 @@ from vera.resolver import ModuleResolver
 from vera.transform import transform
 from vera.verifier import ContractVerifier
 
+from tests import pipeline
 from tests.module_fixture_helpers import resolved_module as _resolved_module
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -387,10 +388,16 @@ public fn main(@Unit -> @Int)
 def _codegen_emitted(
     program: object, source: str, path: str,
 ) -> set[tuple[str, tuple[str, ...]]]:
-    """The (generic name, concrete types) set codegen actually monomorphizes."""
-    gen = CodeGenerator(source=source, file=path)
-    gen.compile_program(program)  # type: ignore[arg-type]
-    return getattr(gen, "_emitted_instances", set())
+    """The (generic name, concrete types) set codegen actually monomorphizes.
+
+    *program* is *source* as the caller parsed it; the compile parses
+    *source* under the same label, which yields an equal program.
+    """
+    compiled = pipeline.compile(source, file=path, checked=False)
+    _ = compiled.result  # raises the parse or transform error
+    assert compiled.parsed.program == program, (
+        "the program handed in is not the one its source parses to")
+    return getattr(compiled.generator, "_emitted_instances", set())
 
 
 def _verifier_discovered(
@@ -452,10 +459,14 @@ def _discovery_scopes(
 
     Monomorphizer._collect_calls_in_node_scoped = recording  # type: ignore[method-assign]
     try:
-        gen = CodeGenerator(
-            source=source, file=path, resolved_modules=modules or [],
+        # Code generation compiles *source*'s own parse, under the same
+        # label, which equals *program*; the verifier registers *program*.
+        compiled = pipeline.compile(
+            source, file=path, modules=modules or [], checked=False,  # type: ignore[arg-type]
         )
-        gen.compile_program(program)  # type: ignore[arg-type]
+        _ = compiled.result  # raises the parse or transform error
+        assert compiled.parsed.program == program, (
+            "the program handed in is not the one its source parses to")
         codegen_scopes = dict(captured)
 
         captured.clear()
@@ -503,28 +514,20 @@ def _cross_module_sets(
     harness for the cross-module generic tests.  Reads the verifier's registered
     ``_instances`` (what per-monomorphization verification actually consumes), not
     a fresh recompute, so a registration-seam regression surfaces here."""
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False, encoding="utf-8",
-    ) as f:
-        f.write(main_src)
-        f.flush()
-        mp = f.name
-    try:
-        prog = transform(parse_file(mp))
-        gen = CodeGenerator(source=main_src, file=mp, resolved_modules=modules)
-        gen.compile_program(prog)  # type: ignore[arg-type]
-        codegen_set = getattr(gen, "_emitted_instances", set())
-        verifier = ContractVerifier(
-            source=main_src, file=mp, resolved_modules=modules,
-        )
-        verifier.register_program(prog)  # type: ignore[arg-type]
-        verifier_set = {
-            (n, ct)
-            for n, cts in verifier._instances.items()
-            for ct in cts
-        }
-    finally:
-        os.unlink(mp)
+    compiled = pipeline.compile(
+        main_src, file="fixture.vera", modules=modules, checked=False,  # type: ignore[arg-type]
+    )
+    _ = compiled.result  # raises the parse or transform error
+    codegen_set = getattr(compiled.generator, "_emitted_instances", set())
+    verifier = ContractVerifier(
+        source=main_src, file="fixture.vera", resolved_modules=modules,  # type: ignore[arg-type]
+    )
+    verifier.register_program(compiled.parsed.program)
+    verifier_set = {
+        (n, ct)
+        for n, cts in verifier._instances.items()
+        for ct in cts
+    }
     return codegen_set, verifier_set
 
 
@@ -823,26 +826,16 @@ def _call_rewrite_desync(source: str) -> tuple[set[str], list[str]]:
         captured.append(result)  # type: ignore[arg-type]
         return result
 
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False, encoding="utf-8",
-    ) as f:
-        f.write(source)
-        f.flush()
-        path = f.name
+    CallsMixin._resolve_generic_call = _spy  # type: ignore[assignment]
     try:
-        program = transform(parse_file(path))
-        gen = CodeGenerator(source=source, file=path)
-        CallsMixin._resolve_generic_call = _spy  # type: ignore[assignment]
-        try:
-            gen.compile_program(program)  # type: ignore[arg-type]
-        finally:
-            CallsMixin._resolve_generic_call = orig  # type: ignore[assignment]
-        emitted = {
-            _mangle(name, types)
-            for (name, types) in getattr(gen, "_emitted_instances", set())
-        }
+        compiled = pipeline.compile(source, file="fixture.vera", checked=False)
     finally:
-        os.unlink(path)
+        CallsMixin._resolve_generic_call = orig  # type: ignore[assignment]
+    _ = compiled.result  # raises the parse or transform error
+    emitted = {
+        _mangle(name, types)
+        for (name, types) in getattr(compiled.generator, "_emitted_instances", set())
+    }
     targets = {t for t in captured if t is not None}
     dangling = sorted(targets - emitted)
     return emitted, dangling

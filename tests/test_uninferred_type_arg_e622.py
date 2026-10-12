@@ -53,6 +53,7 @@ from pathlib import Path
 from tests.codegen_helpers import _compile, _run
 from tests.module_fixture_helpers import build_multi_module
 from tests.verifier_helpers import _verify
+from tests import pipeline
 
 # ---------------------------------------------------------------------
 # Sources
@@ -177,8 +178,6 @@ public fn main(@Unit -> @Int)
   parent(10)
 }
 """
-
-
 
 
 # The un-nameable argument written inside an IMPORTED module, so the [E622]
@@ -361,18 +360,12 @@ def _compile_checked(source: str) -> object:
     the fix NAMES a type use this path, which is the one every real
     invocation takes.
     """
-    from vera.checker import typecheck_with_artifacts
-    from vera.codegen import compile as codegen_compile
-    from vera.parser import parse_to_ast
-
-    program = parse_to_ast(source)
-    diags, arts = typecheck_with_artifacts(program, source)
+    compiled = pipeline.compile(source)
+    _ = compiled.parsed.program  # raises the parse or transform error, if any
+    assert compiled.checked is not None
+    diags = list(compiled.checked.checker_diagnostics)
     assert not [d for d in diags if d.severity == "error"], diags
-    return codegen_compile(
-        program, source=source,
-        expr_semantic_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-    )
+    return compiled.result
 
 
 def _walk(node: object) -> list[object]:

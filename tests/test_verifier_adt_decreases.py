@@ -17,6 +17,7 @@ from tests.verifier_helpers import (
     _verify_err,
     _verify_ok,
 )
+from tests import pipeline
 
 
 # =====================================================================
@@ -908,22 +909,7 @@ class TestWalkerBlindSpots1179:
 
     @staticmethod
     def _decreases_statuses(source: str):
-        import os
-        import tempfile
-        from vera.parser import parse_file
-        from vera.transform import transform
-        from vera.verifier import verify
-
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".vera", delete=False, encoding="utf-8"
-        ) as f:
-            f.write(source)
-            path = f.name
-        try:
-            prog = transform(parse_file(path))
-        finally:
-            os.unlink(path)
-        vr = verify(prog, source=source, file=path)
+        vr = pipeline.verify(source, file="fixture.vera", past_check=True).result
         return [ob.status for ob in vr.obligations if ob.kind == "decreases"]
 
     def test_handler_clause_recursive_call_not_verified(self) -> None:

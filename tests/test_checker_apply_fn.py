@@ -53,13 +53,10 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-import tempfile
-from pathlib import Path
 
-from vera.codegen import compile as vera_compile, execute
-from vera.parser import parse_file, parse_to_ast
-from vera.transform import transform
+from vera.parser import parse_to_ast
 
+from tests import pipeline
 from tests.checker_helpers import (
     EXAMPLES_DIR,
     _check_clean,
@@ -99,25 +96,14 @@ public fn main(@Unit -> @Int)
 def _compile_and_run(source: str, fn: str) -> int:
     """Compile a Vera source string to WASM and execute *fn*.
 
-    Mirrors the ``tests/test_wasm_coverage.py`` helper (Windows-safe:
-    ``delete=False`` + manual unlink)."""
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False, encoding="utf-8",
-    ) as f:
-        f.write(source)
-        f.flush()
-        path = f.name
-    try:
-        tree = parse_file(path)
-        prog = transform(tree)
-        result = vera_compile(prog, source=source, file=path)
-        assert result.wasm_bytes is not None, \
-            f"Compile failed: {result.errors}"
-        exec_result = execute(result, fn_name=fn, args=[])
-        assert exec_result.value is not None
-        return int(exec_result.value)
-    finally:
-        Path(path).unlink()
+    Compiled unchecked (no type check, none of the checker's tables), as
+    ``fixture.vera``."""
+    result = pipeline.compile(source, file="fixture.vera", checked=False).result
+    assert result.wasm_bytes is not None, \
+        f"Compile failed: {result.errors}"
+    exec_result = pipeline.run(result, fn, [], capture_stderr=False).execution
+    assert exec_result.value is not None
+    return int(exec_result.value)
 
 
 # =====================================================================

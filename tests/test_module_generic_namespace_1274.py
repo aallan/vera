@@ -36,8 +36,6 @@ from pathlib import Path
 import pytest
 
 from vera.ast import Program
-from vera.checker import typecheck_with_artifacts
-from vera.codegen import compile as codegen_compile
 from vera.codegen.api import CompileResult
 from vera.codegen.core import CodeGenerator
 from vera.monomorphize import (
@@ -47,7 +45,8 @@ from vera.monomorphize import (
 )
 from vera.parser import parse_to_ast
 from vera.resolver import ModuleResolver, ResolvedModule
-from vera.verifier import ContractVerifier, verify
+from vera.verifier import ContractVerifier
+from tests import pipeline
 from tests.module_fixture_helpers import module_value as _value
 
 # The library's private answer.  Chosen so it cannot coincide with the
@@ -133,31 +132,19 @@ def _build(
 
     Returns ``(verify_errors, compile_result_or_None, codegen_errors)``.
     """
-    tmp_path.mkdir(parents=True, exist_ok=True)
-    for name, src in files.items():
-        (tmp_path / name).write_text(src, encoding="utf-8")
-    main_path = tmp_path / main_name
-    source = files[main_name]
-    program = parse_to_ast(source)
-    resolver = ModuleResolver(_root=tmp_path)
-    resolved = resolver.resolve_imports(program, main_path)
-    diags, arts = typecheck_with_artifacts(
-        program, source, file=str(main_path), resolved_modules=resolved,
-        collect_module_artifacts=True,
-    )
-    check_errors = [d.description for d in diags if d.severity == "error"]
-    assert not check_errors, f"typecheck errors: {check_errors}"
-    vres = verify(program, source, file=str(main_path),
-                  resolved_modules=resolved)
-    verify_errors = [
-        d.description for d in vres.diagnostics if d.severity == "error"
+    entry = pipeline.write_tree(tmp_path, files, main_name)
+    verified = pipeline.verify(entry, root=tmp_path, past_check=True)
+    _ = verified.checked.program  # raises the parse or transform error
+    check_errors = [
+        d.description for d in verified.checked.checker_diagnostics
+        if d.severity == "error"
     ]
-    result = codegen_compile(
-        program, source=source, file=str(main_path), resolved_modules=resolved,
-        expr_semantic_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-        module_artifacts=arts.module_artifacts,
-    )
+    assert not check_errors, f"typecheck errors: {check_errors}"
+    verify_errors = [
+        d.description for d in verified.result.diagnostics
+        if d.severity == "error"
+    ]
+    result = pipeline.compile(entry, root=tmp_path, past_check=True).result
     cg_errors = [
         d.description for d in result.diagnostics if d.severity == "error"
     ]
@@ -537,16 +524,14 @@ public fn main(@Unit -> @Int)
 """
 
     def _resolve(self, tmp_path: Path):
-        tmp_path.mkdir(parents=True, exist_ok=True)
-        for name, src in (("deep.vera", self._DEEP), ("mid.vera", self._MID),
-                          ("main.vera", self._MAIN)):
-            (tmp_path / name).write_text(src, encoding="utf-8")
-        mainp = tmp_path / "main.vera"
-        program = parse_to_ast(self._MAIN)
-        resolved = ModuleResolver(_root=tmp_path).resolve_imports(
-            program, mainp,
+        checked = pipeline.check(
+            pipeline.write_tree(tmp_path, {
+                "deep.vera": self._DEEP, "mid.vera": self._MID,
+                "main.vera": self._MAIN,
+            }),
+            root=tmp_path,
         )
-        return program, resolved
+        return checked.program, checked.resolved
 
     def test_production_resolution_marks_deep_transitive(
         self, tmp_path: Path,

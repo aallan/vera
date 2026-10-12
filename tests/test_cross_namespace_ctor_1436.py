@@ -30,6 +30,7 @@ import pytest
 
 from vera.codegen.api import CompileResult
 
+from tests import pipeline
 from tests.module_fixture_helpers import (
     build_multi_module,
     build_multi_module_past_check,
@@ -1361,41 +1362,29 @@ def _emitted_and_discovered(
     ``_emitted_instances`` and the verifier's ``_instances`` — rather than
     recomputed, so a seam that stops threading the tables surfaces here.
     """
-    from vera.checker import typecheck_with_artifacts
-    from vera.codegen.core import CodeGenerator
-    from vera.parser import parse_to_ast
-    from vera.resolver import ModuleResolver
     from vera.verifier import ContractVerifier
 
-    tmp_path.mkdir(parents=True, exist_ok=True)
-    for name, src in files.items():
-        (tmp_path / name).write_text(src, encoding="utf-8")
-    main_path = tmp_path / "main.vera"
-    source = files["main.vera"]
-    program = parse_to_ast(source)
-    resolved = ModuleResolver(_root=tmp_path).resolve_imports(
-        program, main_path)
+    main_path = pipeline.write_tree(tmp_path, files)
     # The checker's side-tables, threaded into BOTH sides exactly as the CLI
     # threads them (PR #1454 review): `MonoContext.expr_types` is the table
     # both consultors fall back to when their own walk names nothing, so a
     # differential run without it compares a configuration production never
     # uses — and a desync that only appears with the tables present would
     # pass.
-    diags, arts = typecheck_with_artifacts(
-        program, source, file=str(main_path), resolved_modules=resolved,
-        collect_module_artifacts=True,
-    )
+    compiled = pipeline.compile(main_path, root=tmp_path)
+    checked = compiled.checked
+    assert checked is not None
+    program = checked.program  # raises the parse or transform error, if any
+    diags = list(checked.checker_diagnostics)
     assert not [d for d in diags if d.severity == "error"], diags
-    gen = CodeGenerator(
-        source=source, file=str(main_path), resolved_modules=resolved,
-        expr_semantic_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-        module_artifacts=arts.module_artifacts,
-    )
-    gen.compile_program(program)
+    _ = compiled.result  # raises what refused the program, if anything did
+    gen = compiled.generator
+    assert gen is not None
     emitted = set(getattr(gen, "_emitted_instances", set()))
+    arts = checked.artifacts
     verifier = ContractVerifier(
-        source=source, file=str(main_path), resolved_modules=resolved,
+        source=checked.source, file=checked.file,
+        resolved_modules=checked.resolved,
         expr_types=arts.expr_semantic_types,
         expr_target_types=arts.expr_target_types,
     )

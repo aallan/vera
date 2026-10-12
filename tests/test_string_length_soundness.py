@@ -23,19 +23,13 @@ pre-fix verifier, which proves the false contract at Tier 1 via ``z3.Length``.
 
 from __future__ import annotations
 
-from vera.checker import typecheck_with_artifacts
-from vera.parser import parse_to_ast
-from vera.verifier import VerifyResult, verify
+from vera.verifier import VerifyResult
+from tests import pipeline
 
 
 def _verify(source: str) -> VerifyResult:
-    ast_ = parse_to_ast(source)
-    _diags, arts = typecheck_with_artifacts(ast_, source)
-    return verify(
-        ast_, source,
-        expr_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-    )
+    # Verified past a check refusal, as this helper always has.
+    return pipeline.verify(source, past_check=True).result
 
 
 def _ok(result: VerifyResult) -> bool:

@@ -32,7 +32,7 @@ from pathlib import Path
 import pytest
 
 from vera import ast
-from vera.checker import typecheck, typecheck_with_artifacts
+from vera.checker import typecheck
 from vera.checker.core import TypeChecker
 from vera.codegen.core import CodeGenerator
 from vera.parser import parse_to_ast
@@ -45,6 +45,7 @@ from tests.test_check_implies_compile import (
     pipeline,
     run_main,
 )
+from tests import pipeline as vera_pipeline
 
 _ROOT = Path(__file__).resolve().parent.parent
 _CONTRACT = "  requires(true)\n  ensures(true)\n  effects(pure)\n"
@@ -143,21 +144,10 @@ def _generator(entry: Path) -> CodeGenerator:
     could not see a module's measurement of it (PR #1508 review).  What is
     compared is what the compile leaves registered.
     """
-    source = entry.read_text(encoding="utf-8")
-    program = parse_to_ast(source)
-    mods = ModuleResolver(_root=entry.parent).resolve_imports(program, entry)
-    _, arts = typecheck_with_artifacts(
-        program, source, file=str(entry), resolved_modules=mods,
-        collect_module_artifacts=True,
-    )
-    gen = CodeGenerator(
-        source=source, file=str(entry), resolved_modules=mods,
-        expr_semantic_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-        module_artifacts=arts.module_artifacts,
-    )
-    gen.compile_program(program)
-    return gen
+    compiled = vera_pipeline.compile(entry, past_check=True)
+    _ = compiled.parsed.program  # raises the parse or transform error
+    assert compiled.generator is not None
+    return compiled.generator
 
 
 def _own_functions(program: ast.Program) -> list[str]:
@@ -177,7 +167,7 @@ def signature_mismatches(entry: Path) -> list[str]:
     """
     importer = _generator(entry)
     source = entry.read_text(encoding="utf-8")
-    entry_names = set(_own_functions(parse_to_ast(source)))
+    entry_names = set(_own_functions(vera_pipeline.parse(source).program))
     mods = importer._resolved_modules
     declared: dict[str, int] = {}
     for mod in mods:
@@ -200,11 +190,9 @@ def signature_mismatches(entry: Path) -> list[str]:
 def _multi_module_corpus() -> list[Path]:
     found = []
     for path in corpus_programs():
-        program = parse_to_ast(path.read_text(encoding="utf-8"))
+        program = vera_pipeline.parse(path).program
         if program.imports:
-            resolver = ModuleResolver(_root=path.parent)
-            resolver.resolve_imports(program, path)
-            if not resolver.errors:
+            if not vera_pipeline.check(path).resolution_diagnostics:
                 found.append(path)
     return found
 
@@ -668,10 +656,9 @@ def _constructions(entry: Path, monkeypatch: pytest.MonkeyPatch) -> int:
         original(self, *args, **kwargs)
 
     monkeypatch.setattr(TypeChecker, "__init__", counting)
-    source = entry.read_text(encoding="utf-8")
-    program = parse_to_ast(source)
-    mods = ModuleResolver(_root=entry.parent).resolve_imports(program, entry)
-    diags = typecheck(program, source, file=str(entry), resolved_modules=mods)
+    checked = vera_pipeline.check(entry)
+    _ = checked.program  # raises the parse or transform error
+    diags = list(checked.checker_diagnostics)
     assert not [d for d in diags if d.severity == "error"], diags
     monkeypatch.undo()
     return counter["n"]

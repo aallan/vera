@@ -22,24 +22,22 @@ Four provenance failures, each with the adversarial probe that exhibited it:
 """
 from __future__ import annotations
 
-import os
 import re
-import tempfile
 
 import pytest
 
 from vera import ast, naming
 from vera.checker import typecheck
-from vera.codegen import compile, execute
+from vera.codegen import execute
 from vera.monomorphize import Monomorphizer
-from vera.parser import parse_file, parse_to_ast
+from vera.parser import parse_to_ast
 from vera.resolver import ResolvedModule
 from vera.runtime.traps import WasmTrapError
-from vera.transform import transform
 from vera.verifier import ContractVerifier, VerifyResult, verify
 
 from tests.codegen_helpers import _compile_ok, _run
 from tests.module_fixture_helpers import resolved_module as _resolved
+from tests import pipeline
 
 
 # =====================================================================
@@ -53,14 +51,14 @@ def _verify_mod(source: str, modules: list[ResolvedModule]) -> VerifyResult:
     Check-clean is the premise of every provenance test here: a fixture that
     fails to type-check would pass an ``errors == []`` assertion trivially.
     """
-    prog = parse_to_ast(source)
-    diags = typecheck(prog, source, resolved_modules=modules)
-    check_errors = [d for d in diags if d.severity == "error"]
+    verified = pipeline.verify(source, modules=modules)
+    _ = verified.checked.program  # raises the parse or transform error
+    check_errors = list(verified.checked.errors)
     assert not check_errors, (
         "fixture must type-check cleanly, got: "
         f"{[(d.error_code, d.description[:70]) for d in check_errors]}"
     )
-    return verify(prog, source, resolved_modules=modules)
+    return verified.result
 
 
 def _codes(result: VerifyResult) -> set[str]:
@@ -89,19 +87,9 @@ def _line_of(source: str, needle: str) -> int:
 
 
 def _compile_mod(source: str, modules: list[ResolvedModule]) -> object:
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False, encoding="utf-8",
-    ) as f:
-        f.write(source)
-        f.flush()
-        fp = f.name
-    try:
-        return compile(
-            transform(parse_file(fp)), source=source, file=fp,
-            resolved_modules=modules,
-        )
-    finally:
-        os.unlink(fp)
+    return pipeline.compile(
+        source, file="fixture.vera", modules=modules, checked=False,
+    ).result
 
 
 _LOCAL_GET_RE = re.compile(r"local\.get\s+(\d+)")
@@ -869,8 +857,7 @@ public forall<T> fn g(@Option<Int>, @Option<T> -> @Pos)
         ContractVerifier._count_slots = staticmethod(  # type: ignore[method-assign]
             patched)
         try:
-            program = parse_to_ast(source)
-            verify(program, source)
+            _ = pipeline.verify(source, past_check=True).result
         finally:
             ContractVerifier._count_slots = staticmethod(  # type: ignore[method-assign]
                 original)
@@ -1235,7 +1222,7 @@ public forall<T> fn f(@Box<T>, @Box<Int> -> @Int)
     def _decl_and_env(self) -> tuple[ast.FnDecl, object]:
         from tests.naming_helpers import alias_env_from_declarations
 
-        prog = parse_to_ast(self._SRC)
+        prog = pipeline.parse(self._SRC).program
         decl = next(
             tld.decl for tld in prog.declarations
             if isinstance(tld.decl, ast.FnDecl)
@@ -1714,11 +1701,10 @@ _PRELUDE_ALIAS_NAMES = (
 
 def _codegen_alias_env(source: str) -> naming.AliasEnv:
     """The naming env codegen renders the MAIN file under."""
-    from vera.codegen.core import CodeGenerator
-
-    gen = CodeGenerator(source=source, file="<prelude-alias>")
-    gen.compile_program(parse_to_ast(source))
-    return gen._alias_env
+    compiled = pipeline.compile(source, file="<prelude-alias>", checked=False)
+    _ = compiled.result  # raises the parse or transform error
+    assert compiled.generator is not None
+    return compiled.generator._alias_env
 
 
 class TestPreludeAliasesAreCodegenInternal:
@@ -1954,29 +1940,23 @@ public fn main(@Unit -> @Int)
 
 
 def _checker_env(source: str, modules: list[ResolvedModule]) -> naming.AliasEnv:
-    from vera.checker.core import TypeChecker
-
-    checker = TypeChecker(
-        source=source, file="main.vera", resolved_modules=modules,
-    )
-    checker.check_program(parse_to_ast(source))
-    return naming.alias_env_from_environment(checker.env)
+    checked = pipeline.check(source, file="main.vera", modules=modules)
+    return checked.artifacts.alias_env  # raises the parse or transform error
 
 
 def _codegen_env(
     source: str, modules: list[ResolvedModule],
 ) -> naming.AliasEnv:
-    from vera.codegen.core import CodeGenerator
-
-    gen = CodeGenerator(
-        source=source, file="main.vera", resolved_modules=modules,
+    compiled = pipeline.compile(
+        source, file="main.vera", modules=modules, checked=False,
     )
-    gen.compile_program(parse_to_ast(source))
-    return gen._alias_env
+    _ = compiled.result  # raises the parse or transform error
+    assert compiled.generator is not None
+    return compiled.generator._alias_env
 
 
 def _params_of(source: str, fn_name: str) -> tuple[ast.TypeExpr, ...]:
-    prog = parse_to_ast(source)
+    prog = pipeline.parse(source).program
     fn = next(
         tld.decl for tld in prog.declarations
         if isinstance(tld.decl, ast.FnDecl) and tld.decl.name == fn_name

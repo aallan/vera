@@ -39,12 +39,11 @@ from pathlib import Path
 
 import pytest
 
-from vera.checker import typecheck_with_artifacts
 from vera.codegen.compilability import MAX_CELL_FAMILY_SYMBOL
-from vera.codegen import CompileResult, compile as codegen_compile, execute
+from vera.codegen import CompileResult, execute
 from vera.parser import parse_to_ast
-from vera.resolver import ModuleResolver
 from vera.trap_registry import signal_call_pattern
+from tests import pipeline
 
 _ROOT = Path(__file__).resolve().parent.parent
 
@@ -67,22 +66,15 @@ def _compile_source(source: str, tmp_path: Path, name: str = "m") -> CompileResu
 
 def _compile_path(path: Path) -> CompileResult:
     """Parse + resolve + check + compile *path*, asserting a clean check."""
-    source = path.read_text(encoding="utf-8")
-    program = parse_to_ast(source)
-    resolver = ModuleResolver(_root=path.parent)
-    resolved = resolver.resolve_imports(program, path)
-    diags, arts = typecheck_with_artifacts(
-        program, source, file=str(path), resolved_modules=resolved,
-    )
-    errors = [d for d in diags if d.severity == "error"]
+    compiled = pipeline.compile(path)
+    assert compiled.checked is not None
+    _ = compiled.parsed.program  # raises the parse or transform error, if any
+    errors = compiled.checked.errors
     assert not errors, (
         f"{path.name} must type-check cleanly, got: "
         f"{[(d.error_code, d.description[:80]) for d in errors]}"
     )
-    return codegen_compile(
-        program, source=source, file=str(path), resolved_modules=resolved,
-        expr_semantic_types=arts.expr_semantic_types,
-    )
+    return compiled.result
 
 
 def _compile_ok(source: str, tmp_path: Path, name: str = "m") -> CompileResult:
@@ -1440,7 +1432,7 @@ _STRUCTURE_PAIRS: tuple[tuple[str, str, str, str], ...] = (
 
 
 def _probe_predicate(text: str, prelude: str = ""):
-    program = parse_to_ast(f"{prelude}type Probe = {{ @Int | {text} }};\n")
+    program = pipeline.parse(f"{prelude}type Probe = {{ @Int | {text} }};\n").program
     for decl in program.declarations:
         inner = getattr(decl, "decl", decl)
         if getattr(inner, "name", None) == "Probe":

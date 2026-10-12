@@ -42,6 +42,7 @@ from pathlib import Path
 import pytest
 
 import vera
+from tests import pipeline
 from tests.codegen_helpers import _run_refine_trap
 from tests.verifier_helpers import _verify
 
@@ -596,12 +597,6 @@ def _oracle_readings(source: str) -> tuple[object, ...]:
     from vera import ast as vast
     from vera import narrowing
     from vera import verifier as verifier_module
-    from vera.checker import typecheck_with_artifacts
-    from vera.parser import parse_to_ast
-
-    program = parse_to_ast(source)
-    diags, arts = typecheck_with_artifacts(program, source)
-    assert not [d for d in diags if d.severity == "error"], diags
 
     seen: dict[str, tuple[object, ...]] = {}
     original = verifier_module.ContractVerifier._walk_for_nat_binding_obligations
@@ -620,14 +615,14 @@ def _oracle_readings(source: str) -> tuple[object, ...]:
 
     verifier_module.ContractVerifier._walk_for_nat_binding_obligations = spy
     try:
-        verifier_module.verify(
-            program, source,
-            expr_types=arts.expr_semantic_types,
-            expr_target_types=arts.expr_target_types,
-        )
+        verified = pipeline.verify(source)
     finally:
         verifier_module.ContractVerifier._walk_for_nat_binding_obligations = (
             original)
+    _ = verified.checked.program  # raises the parse or transform error
+    diags = list(verified.checked.checker_diagnostics)
+    assert not [d for d in diags if d.severity == "error"], diags
+    _ = verified.result
     assert "r" in seen, "the walk never reached the `h(())` call"
     return seen["r"]
 

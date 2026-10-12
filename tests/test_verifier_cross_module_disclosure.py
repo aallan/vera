@@ -33,6 +33,7 @@ from pathlib import Path
 import pytest
 
 import vera
+from tests import pipeline
 
 _PKG_PARENT = str(Path(vera.__file__).resolve().parents[1])
 
@@ -874,16 +875,14 @@ def test_1399_a_module_call_resolves_to_the_clone_key(tmp_path: Path) -> None:
 def _resolved(tmp_path: Path, name: str, source: str, *, direct: bool = True):
     """A hand-built `ResolvedModule`, as a caller passing `resolved_modules`
     to `verify()` directly would supply one."""
-    from vera.parser import parse
     from vera.resolver import ResolvedModule
-    from vera.transform import transform
 
     tmp_path.mkdir(parents=True, exist_ok=True)
     path = tmp_path / f"{name}.vera"
     path.write_text(source, encoding="utf-8")
     return ResolvedModule(
         path=(name,), file_path=path,
-        program=transform(parse(source, file=str(path))),
+        program=pipeline.parse(source, file=str(path)).program,
         source=source, direct=direct,
     )
 
@@ -1216,22 +1215,13 @@ def _checked(entry: Path):
     40-module chain on `release/v0.2.0` and 124 on this branch — and folding
     it into a stack budget would measure the checker rather than the manifest.
     """
-    from vera.checker import typecheck_with_artifacts
-    from vera.parser import parse
-    from vera.resolver import ModuleResolver
-    from vera.transform import transform
-
-    source = entry.read_text(encoding="utf-8")
-    program = transform(parse(source, file=str(entry)))
-    resolver = ModuleResolver(_root=entry.parent)
-    resolved = resolver.resolve_imports(program, entry)
-    assert not resolver.errors, resolver.errors
-    diags, artifacts = typecheck_with_artifacts(
-        program, source, file=str(entry), resolved_modules=resolved,
-        collect_module_artifacts=True,
-    )
+    checked = pipeline.check(entry, collect_module_artifacts=True)
+    program = checked.program  # raises the parse or transform error
+    resolution_errors = list(checked.resolution_diagnostics)
+    assert not resolution_errors, resolution_errors
+    diags = list(checked.checker_diagnostics)
     assert not [d for d in diags if d.severity == "error"], diags
-    return source, program, resolved, artifacts
+    return checked.source, program, checked.resolved or [], checked.artifacts
 
 
 def _verify_checked(entry: Path, source, program, resolved, artifacts):

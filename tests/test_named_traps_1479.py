@@ -48,6 +48,7 @@ from pathlib import Path
 import pytest
 
 from tests.guard_emitter_scan import codegen_sources
+from tests import pipeline
 from vera.checker import typecheck_with_artifacts
 from vera.codegen import compile as codegen_compile
 from vera.codegen.api import CompileResult, execute
@@ -665,15 +666,12 @@ KIND_CASES: dict[str, tuple[str, tuple[str, ...]]] = {
 
 
 def _compile(source: str, file: str = "trap.vera") -> CompileResult:
-    program = parse_to_ast(source)
-    diags, arts = typecheck_with_artifacts(program, source, file=file)
-    errors = [d.description for d in diags if d.severity == "error"]
+    compiled = pipeline.compile(source, file=file)
+    _ = compiled.parsed.program  # raises the parse or transform error, if any
+    assert compiled.checked is not None
+    errors = [d.description for d in compiled.checked.errors]
     assert not errors, errors
-    result = codegen_compile(
-        program, source=source, file=file,
-        expr_semantic_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-    )
+    result = compiled.result
     assert result.ok, [d.description for d in result.diagnostics]
     return result
 
@@ -731,7 +729,6 @@ def test_vera_run_wasi_p2_names_the_trap(kind: str, tmp_path: Path) -> None:
     envelope = json.loads(proc.stdout)
     [diag] = envelope["diagnostics"]
     _assert_named(kind, diag["trap_kind"], diag["description"], diag["fix"])
-
 
 
 # --- A message longer than one write reaches the WASI host whole -----------
@@ -1020,7 +1017,7 @@ def _wasmtime_kind(cell: NativeTrapCondition) -> str:
         wat=wat, wasm_bytes=bytes(wasmtime.wat2wasm(wat)), exports=["t"],
         diagnostics=[])
     with pytest.raises(WasmTrapError) as info:
-        execute(result, fn_name="t")
+        pipeline.run(result, "t", capture_stderr=False).execution
     return info.value.kind
 
 
@@ -1845,7 +1842,7 @@ _FLOOR = (
 
 def _outcome(source: str, fn: str, arg: int | float) -> object:
     try:
-        return execute(_compile(source), fn_name=fn, args=[arg]).value
+        return pipeline.run(_compile(source), fn, [arg], capture_stderr=False).execution.value
     except WasmTrapError as exc:
         return exc.kind
 

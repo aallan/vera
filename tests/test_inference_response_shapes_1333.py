@@ -63,6 +63,7 @@ from vera.runtime.inference import (
 )
 
 from tests.codegen_helpers import _compile_ok
+from tests import pipeline
 
 
 # =====================================================================
@@ -219,10 +220,7 @@ def _run_with_transport(
         else MagicMock(return_value=_mock_response(body or ""))
     )
     with patch("urllib.request.urlopen", transport):
-        exec_result = execute(
-            result,
-            env_vars=env if env is not None else {"VERA_ANTHROPIC_API_KEY": "sk-ant-test"},
-        )
+        exec_result = pipeline.run(result, env_vars=env if env is not None else {"VERA_ANTHROPIC_API_KEY": "sk-ant-test"}, capture_stderr=False).execution
     return exec_result.value, exec_result.stdout
 
 

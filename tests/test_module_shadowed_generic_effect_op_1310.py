@@ -70,14 +70,9 @@ confirmed in a throwaway harness before writing this test).
 
 from __future__ import annotations
 
-import os
-import tempfile
-
-from vera.codegen.core import CodeGenerator
-from vera.parser import parse_file
-from vera.transform import transform
 from vera.verifier import ContractVerifier
 
+from tests import pipeline
 from tests.codegen_helpers import wat_fn_names
 from tests.module_fixture_helpers import (
     build_multi_module, module_value, resolved_module,
@@ -320,28 +315,20 @@ def _discovered_sets(
     path.
     """
     mod = resolved_module(module_path, module_src)
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False, encoding="utf-8",
-    ) as f:
-        f.write(main_src)
-        f.flush()
-        main_path = f.name
-    try:
-        program = transform(parse_file(main_path))
-        gen = CodeGenerator(
-            source=main_src, file=main_path, resolved_modules=[mod],
-        )
-        gen.compile_program(program)  # type: ignore[arg-type]
-        codegen_set = getattr(gen, "_emitted_instances", set())
-        verifier = ContractVerifier(
-            source=main_src, file=main_path, resolved_modules=[mod],
-        )
-        verifier.register_program(program)  # type: ignore[arg-type]
-        verifier_set = {
-            (n, ct) for n, cts in verifier._instances.items() for ct in cts
-        }
-    finally:
-        os.unlink(main_path)
+    compiled = pipeline.compile(
+        main_src, file="fixture.vera", modules=[mod], checked=False,
+    )
+    program = compiled.parsed.program  # raises the parse or transform error
+    gen = compiled.generator
+    assert gen is not None
+    codegen_set = getattr(gen, "_emitted_instances", set())
+    verifier = ContractVerifier(
+        source=main_src, file="fixture.vera", resolved_modules=[mod],
+    )
+    verifier.register_program(program)
+    verifier_set = {
+        (n, ct) for n, cts in verifier._instances.items() for ct in cts
+    }
     return codegen_set, verifier_set
 
 

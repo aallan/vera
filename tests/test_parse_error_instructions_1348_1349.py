@@ -28,6 +28,7 @@ import pytest
 
 from vera.errors import ERROR_CODES
 from vera.parser import parse_to_ast
+from tests import pipeline
 
 
 def _diag(source: str):
@@ -35,7 +36,7 @@ def _diag(source: str):
     from vera.errors import VeraError
 
     try:
-        parse_to_ast(source)
+        pipeline.parse(source).program
     except VeraError as exc:
         return exc.diagnostic
     raise AssertionError("expected a parse error, got a clean parse")

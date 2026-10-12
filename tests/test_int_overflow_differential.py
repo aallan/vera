@@ -24,6 +24,7 @@ from pathlib import Path
 
 import pytest
 
+from tests import pipeline
 from vera import ast
 from vera.checker import typecheck_with_artifacts
 from vera.parser import parse_to_ast
@@ -111,10 +112,11 @@ def _codegen_gated_type(ctx: WasmContext, site: ast.BinaryExpr):
 
 
 def _assert_in_lockstep(source: str) -> None:
-    program = parse_to_ast(source)
-    diags, arts = typecheck_with_artifacts(program, source)
-    errors = [d for d in diags if d.severity == "error"]
+    checked = pipeline.check(source)
+    program = checked.program  # raises the parse or transform error
+    errors = checked.errors
     assert not errors, f"typecheck errors: {[d.description for d in errors]}"
+    arts = checked.artifacts
 
     verifier = ContractVerifier(
         source=source,

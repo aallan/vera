@@ -44,6 +44,7 @@ from vera.trap_registry import (
     EmittedCheck,
     signal_call_pattern,
 )
+from tests import pipeline
 
 
 def _compile(source: str, file: str = "prog.vera") -> CompileResult:
@@ -51,15 +52,12 @@ def _compile(source: str, file: str = "prog.vera") -> CompileResult:
     does — the overflow classifier and the widening guards read the
     checker's side tables, so a bare transform-and-compile would measure a
     different backend."""
-    program = parse_to_ast(source)
-    diags, arts = typecheck_with_artifacts(program, source, file=file)
-    errors = [d.description for d in diags if d.severity == "error"]
+    compiled = pipeline.compile(source, file=file)
+    assert compiled.checked is not None
+    _ = compiled.parsed.program  # raises the parse or transform error, if any
+    errors = [d.description for d in compiled.checked.errors]
     assert not errors, f"fixture does not type-check: {errors}"
-    result = codegen_compile(
-        program, source=source, file=file,
-        expr_semantic_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-    )
+    result = compiled.result
     assert result.ok, [d.description for d in result.diagnostics]
     return result
 

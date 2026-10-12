@@ -22,8 +22,7 @@ the join returns the formal LUB (``Int``).
 """
 from __future__ import annotations
 
-from vera.checker.core import typecheck_with_artifacts
-from vera.parser import parse_to_ast
+from tests import pipeline
 
 
 def _synth_type(source: str, line: int, col: int, end_col: int) -> str:
@@ -34,8 +33,7 @@ def _synth_type(source: str, line: int, col: int, end_col: int) -> str:
     synthesised expression — the exact type the binop join produced, so a
     wrong join (``Nat``) cannot masquerade as a fallback/default.
     """
-    prog = parse_to_ast(source)
-    _diags, arts = typecheck_with_artifacts(prog, source=source)
+    arts = pipeline.check(source).artifacts
     key = (line, col, line, end_col)
     assert key in arts.expr_types, (
         f"no expr recorded at {key}; recorded spans: "

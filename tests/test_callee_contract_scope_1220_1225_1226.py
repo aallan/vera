@@ -31,12 +31,11 @@ import pytest
 
 from vera import ast
 from vera.checker import typecheck
-from vera.codegen import compile, execute
-from vera.parser import parse_file, parse_to_ast
+from vera.parser import parse_to_ast
 from vera.resolver import ResolvedModule
 from vera.runtime.traps import WasmTrapError
-from vera.transform import transform
 from vera.verifier import ContractVerifier, VerifyResult, verify
+from tests import pipeline
 
 
 # =====================================================================
@@ -66,7 +65,7 @@ def _resolved(
     try:
         return ResolvedModule(
             path=path, file_path=Path(fp),
-            program=transform(parse_file(fp)), source=source, direct=direct,
+            program=pipeline.parse(Path(fp)).program, source=source, direct=direct,
         )
     finally:
         os.unlink(fp)
@@ -84,15 +83,14 @@ def _verify_mod(source: str, modules: list[ResolvedModule]) -> VerifyResult:
     Check-clean is the premise of every test here: a fixture that fails to
     type-check would satisfy a "no errors" assertion trivially.
     """
-    prog = parse_to_ast(source)
-    diags = typecheck(prog, source, resolved_modules=modules, file=_ENTRY_FILE)
-    check_errors = [d for d in diags if d.severity == "error"]
+    verified = pipeline.verify(source, file=_ENTRY_FILE, modules=modules)
+    _ = verified.checked.program  # raises the parse or transform error, if any
+    check_errors = verified.checked.errors
     assert not check_errors, (
         "fixture must type-check cleanly, got: "
         f"{[(d.error_code, d.description[:70]) for d in check_errors]}"
     )
-    return verify(
-        prog, source, file=_ENTRY_FILE, resolved_modules=modules)
+    return verified.result
 
 
 def _codes(result: VerifyResult) -> set[str]:
@@ -116,24 +114,14 @@ def _run_mod(source: str, modules: list[ResolvedModule]) -> object:
 
     Raises :class:`WasmTrapError` when the program violates a contract at run
     time, which is exactly what a false Tier 1 has to be caught by.  Compiled
-    through a real temp file, the Windows-safe way ``_resolved`` is.
+    unchecked (no type check, none of the checker's tables), as
+    ``fixture.vera``.
     """
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False, encoding="utf-8",
-    ) as f:
-        f.write(source)
-        f.flush()
-        fp = f.name
-    try:
-        result = compile(
-            transform(parse_file(fp)), source=source, file=fp,
-            resolved_modules=modules,
-        )
-    finally:
-        os.unlink(fp)
+    result = pipeline.compile(
+        source, file="fixture.vera", modules=modules, checked=False).result
     errors = [d for d in result.diagnostics if d.severity == "error"]
     assert not errors, f"unexpected codegen errors: {errors}"
-    return execute(result, fn_name="main").value
+    return pipeline.run(result, "main", capture_stderr=False).value
 
 
 # =====================================================================
@@ -1214,7 +1202,7 @@ public fn main(@Unit -> @Nat)
     def _predicate(
         self,
     ) -> tuple[ContractVerifier, ast.RefinementType]:
-        prog = parse_to_ast(self._CLOSURE_PREDICATE)
+        prog = pipeline.parse(self._CLOSURE_PREDICATE).program
         verifier = ContractVerifier(source=self._CLOSURE_PREDICATE)
         verifier.register_program(prog)
         body = verifier.env.type_aliases["Grown"].body
@@ -1268,15 +1256,13 @@ class TestObligationsCarryTheirDeclaringFile:
     ) -> VerifyResult:
         if modules is None:
             modules = [_resolved(("hlib",), _HELPER_LIB)]
-        prog = parse_to_ast(_HELPER_MAIN)
-        # `file=` on BOTH legs, and from the constant `_verify_mod` uses, so
-        # the assertions below compare against a known value rather than
-        # against a literal that agrees with `_ENTRY_FILE` only by habit
-        # (PR #1283 review).
-        typecheck(
-            prog, _HELPER_MAIN, resolved_modules=modules, file=_ENTRY_FILE)
-        return verify(
-            prog, _HELPER_MAIN, file=_ENTRY_FILE, resolved_modules=modules)
+        # `file=` labels BOTH legs, the check and the verify, and comes from
+        # the constant `_verify_mod` uses, so the assertions below compare
+        # against a known value rather than against a literal that agrees
+        # with `_ENTRY_FILE` only by habit (PR #1283 review).
+        return pipeline.verify(
+            _HELPER_MAIN, file=_ENTRY_FILE, modules=modules,
+            past_check=True).result
 
     def test_a_module_located_obligation_joins_its_diagnostic(self) -> None:
         result = self._verified()

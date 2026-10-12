@@ -30,20 +30,16 @@ to Tier 3, so the modeled obligations land as `tier3`, not `verified`/
 from __future__ import annotations
 
 import math
-import tempfile
-from pathlib import Path
 
 import pytest
 import z3
 
-from vera.parser import parse_file
-from vera.transform import transform
-from vera.codegen import compile as compile_vera, execute
 from vera.codegen.api import WasmTrapError
 from vera.errors import Diagnostic
 from vera.smt import _FLOAT64_SORT, _wasm_fp_max, _wasm_fp_min
 from vera.verifier import VerifyResult
 from tests.verifier_helpers import _verify
+from tests import pipeline
 
 
 def _ok(result: VerifyResult) -> bool:
@@ -82,23 +78,12 @@ def _run_float_expr(body: str) -> float:
         "  requires(true) ensures(true) effects(pure)\n"
         f"{{ {body} }}\n"
     )
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False, encoding="utf-8"
-    ) as fh:
-        fh.write(src)
-        fh.flush()
-        path = fh.name
-    try:
-        result = compile_vera(transform(parse_file(path)), source=src, file=path)
-        errors = [d for d in result.diagnostics if d.severity == "error"]
-        assert not errors, f"compile errors: {[d.description for d in errors]}"
-        value = execute(result, fn_name="f").value
-        assert isinstance(value, float), f"expected float, got {value!r}"
-        return value
-    finally:
-        # delete=False (Windows can't reopen a held temp file via parse_file);
-        # unlink manually so parametrized runs don't leak .vera files.
-        Path(path).unlink(missing_ok=True)
+    result = pipeline.compile(src, file="fixture.vera", checked=False).result
+    errors = [d for d in result.diagnostics if d.severity == "error"]
+    assert not errors, f"compile errors: {[d.description for d in errors]}"
+    value = pipeline.run(result, "f", capture_stderr=False).value
+    assert isinstance(value, float), f"expected float, got {value!r}"
+    return value
 
 
 def _py_to_z3fp(x: float) -> z3.FPRef:
@@ -308,23 +293,12 @@ def _run_int_expr(body: str, sig: str = "@Unit -> @Int") -> int:
         "  requires(true) ensures(true) effects(pure)\n"
         f"{{ {body} }}\n"
     )
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False, encoding="utf-8"
-    ) as fh:
-        fh.write(src)
-        fh.flush()
-        path = fh.name
-    try:
-        result = compile_vera(transform(parse_file(path)), source=src, file=path)
-        errors = [d for d in result.diagnostics if d.severity == "error"]
-        assert not errors, f"compile errors: {[d.description for d in errors]}"
-        value = execute(result, fn_name="f").value
-        assert isinstance(value, int), f"expected int, got {value!r}"
-        return value
-    finally:
-        # delete=False (Windows can't reopen a held temp file via parse_file);
-        # unlink manually so parametrized runs don't leak .vera files.
-        Path(path).unlink(missing_ok=True)
+    result = pipeline.compile(src, file="fixture.vera", checked=False).result
+    errors = [d for d in result.diagnostics if d.severity == "error"]
+    assert not errors, f"compile errors: {[d.description for d in errors]}"
+    value = pipeline.run(result, "f", capture_stderr=False).value
+    assert isinstance(value, int), f"expected int, got {value!r}"
+    return value
 
 
 def _errs(result: VerifyResult, code: str) -> list[Diagnostic]:

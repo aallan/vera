@@ -57,9 +57,9 @@ from tests.module_fixture_helpers import build_multi_module, module_value
 from vera import ast
 from vera.codegen.core import CodeGenerator
 from vera.monomorphize import MonoContext, Monomorphizer, NamespaceFnNames
-from vera.parser import parse_to_ast
 from vera.wasm import StringPool
 from vera.wasm.context import WasmContext
+from tests import pipeline
 
 # Three values that cannot coincide.  CELL is what the checker's answer is
 # in every invisible-import cell; LIB is the invisible declaration's own
@@ -742,7 +742,7 @@ where {
 
 def _top_decl(source: str, name: str) -> ast.FnDecl:
     """The named top-level ``FnDecl`` of *source*."""
-    for tld in parse_to_ast(source).declarations:
+    for tld in pipeline.parse(source).program.declarations:
         decl = tld.decl
         if isinstance(decl, ast.FnDecl) and decl.name == name:
             return decl

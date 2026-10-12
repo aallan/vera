@@ -62,7 +62,6 @@ import importlib.util
 import json
 import re
 import sys
-import tempfile
 import typing
 from dataclasses import dataclass
 from pathlib import Path
@@ -70,18 +69,16 @@ from typing import Any
 
 import pytest
 
-from tests.codegen_helpers import _assert_no_orphan_call_indirect
 from tests.module_fixture_helpers import fake_resolved_module
 from vera import ast
 from vera.callgraph import CallGraph
-from vera.checker import typecheck
-from vera.codegen import CompileResult, compile, execute
+from vera.codegen import CompileResult, execute
 from vera.errors import Diagnostic
-from vera.parser import parse_file, parse_to_ast
+from vera.parser import parse_to_ast
 from vera.resolver import ResolvedModule
 from vera.runtime.traps import WasmTrapError
-from vera.transform import transform
-from vera.verifier import ContractVerifier, verify
+from vera.verifier import ContractVerifier
+from tests import pipeline
 
 # A generated class instrument (tests/matrix_sample.py): a pull request runs a
 # sample of its parametrised cells, and all of them when it changes this file or
@@ -104,29 +101,20 @@ def _modules(module_text: str | None) -> list[ResolvedModule]:
 
 def _check(source: str, module_text: str | None = None) -> list[Diagnostic]:
     """Parse and type-check *source*, with module ``m`` when given."""
-    return typecheck(parse_to_ast(source), source,
-                     resolved_modules=_modules(module_text))
+    checked = pipeline.check(source, modules=_modules(module_text))
+    _ = checked.program  # raises the parse or transform error, if any
+    return list(checked.checker_diagnostics)
 
 
 def _compile(source: str, module_text: str | None = None) -> CompileResult:
-    """Compile *source* through a real temp file, with module ``m``.
+    """Compile *source*, unchecked, as ``fixture.vera``, with module ``m``.
 
-    ``delete=False`` plus an unlink after the handle is closed: the
-    Windows-portable pattern (TESTING.md, Test Fixture Conventions).
+    The #1185 invariant is asserted on the module by ``tests/pipeline.py``.
     """
-    tmp = tempfile.NamedTemporaryFile(  # noqa: SIM115 — closed by the `with`
-        mode="w", suffix=".vera", delete=False, encoding="utf-8",
-    )
-    name = tmp.name
-    try:
-        with tmp:
-            tmp.write(source)
-        result = compile(transform(parse_file(name)), source=source,
-                         file=name, resolved_modules=_modules(module_text))
-        _assert_no_orphan_call_indirect(result.wat)
-        return result
-    finally:
-        Path(name).unlink(missing_ok=True)
+    return pipeline.compile(
+        source, file="fixture.vera", modules=_modules(module_text),
+        checked=False,
+    ).result
 
 
 # =====================================================================
@@ -522,8 +510,8 @@ public fn g(@Nat -> @Nat)
 
 def _decreases_status(source: str, module_text: str | None = None,
                       kind: str = "decreases") -> list[str]:
-    program = parse_to_ast(source)
-    result = verify(program, source, resolved_modules=_modules(module_text))
+    result = pipeline.verify(
+        source, modules=_modules(module_text), past_check=True).result
     return [o.status for o in result.obligations if o.kind == kind]
 
 
@@ -1297,7 +1285,7 @@ def _refine_program(family: str, held: str | None) -> str:
 
 def _refine_verdict(source: str) -> tuple[list[str], list[str]]:
     """The `refine_bind` statuses and the error codes of one program."""
-    result = verify(parse_to_ast(source), source)
+    result = pipeline.verify(source, past_check=True).result
     return ([o.status for o in result.obligations if o.kind == "refine_bind"],
             [d.error_code for d in result.diagnostics
              if d.severity == "error"])
@@ -1767,7 +1755,7 @@ def _violations(source: str) -> list[str] | None:
     from vera.errors import VeraError
 
     try:
-        program = parse_to_ast(source)
+        program = pipeline.parse(source).program
     except VeraError:
         return None
     graph = CallGraph(tld.decl for tld in program.declarations)

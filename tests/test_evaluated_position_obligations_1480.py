@@ -25,11 +25,11 @@ from dataclasses import dataclass, replace
 import pytest
 
 from vera.checker import typecheck_with_artifacts
-from vera.codegen import compile, execute
 from vera.obligations.core import ProofObligation
 from vera.parser import parse_to_ast
-from vera.runtime.traps import WasmTrapError
 from vera.verifier import verify
+
+from tests import pipeline
 
 # A generated class instrument (tests/matrix_sample.py): a pull request runs a
 # sample of its parametrised cells, and all of them when it changes this file or
@@ -60,18 +60,14 @@ class Verified:
 
 def _verify(source: str) -> Verified:
     """Parse, type-check (must be clean) and verify *source* in-process."""
-    program = parse_to_ast(source)
-    diags, arts = typecheck_with_artifacts(program, source)
-    check_errors = [d for d in diags if d.severity == "error"]
+    verified = pipeline.verify(source)
+    _ = verified.checked.program  # raises the parse or transform error, if any
+    check_errors = verified.checked.errors
     assert not check_errors, (
         "fixture must type-check cleanly, got: "
         f"{[(d.error_code, d.description[:80]) for d in check_errors]}"
     )
-    result = verify(
-        program, source,
-        expr_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-    )
+    result = verified.result
     errors = [
         (d.error_code, d.location.line, d.location.column)
         for d in result.diagnostics if d.severity == "error"
@@ -95,25 +91,19 @@ def _run(source: str, fn: str, args: list[int | float]) -> Ran:
     threaded into code generation, which decides from them where a
     `@Nat` subtraction or an overflow is guarded.  Without them a guard
     can be missing that the real artifact carries, and a cell would read
-    the absence as the record's error.
+    the absence as the record's error.  The check's own verdict is not
+    consulted (``past_check``), as it never was here.
     """
-    program = parse_to_ast(source)
-    _diags, arts = typecheck_with_artifacts(program, source)
-    compiled = compile(
-        program, source=source,
-        expr_semantic_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-    )
+    compiled = pipeline.compile(source, past_check=True).result
     errors = [d for d in compiled.diagnostics if d.severity == "error"]
     assert not errors, (
         f"fixture must compile, got: "
         f"{[(d.error_code, d.description[:80]) for d in errors]}"
     )
-    try:
-        out = execute(compiled, fn_name=fn, args=args)
-    except WasmTrapError as trap:
-        return Ran(None, trap.kind, str(trap))
-    return Ran(out.value)
+    ran = pipeline.run(compiled, fn, args, capture_stderr=False)
+    if ran.trap is not None:
+        return Ran(None, ran.trap.kind, str(ran.trap))
+    return Ran(ran.value)
 
 
 def _at(source: str, needle: str, occurrence: int = 0) -> tuple[int, int]:
@@ -471,7 +461,7 @@ def _substituted(pre: str) -> object:
     from vera.slots import substitute_parameters
 
     source = _SUBSTITUTION_SIGNATURE.format(pre=pre)
-    fn = parse_to_ast(source).declarations[0].decl
+    fn = pipeline.parse(source).program.declarations[0].decl
     assert isinstance(fn, A.FnDecl)
     requires = next(c for c in fn.contracts if isinstance(c, A.Requires))
     args = (A.IntLit(value=5, span=None), A.StringLit(value="x", span=None))
@@ -4371,13 +4361,7 @@ public fn main(@Unit -> @String)
   {call}
 }}
 """
-    program = parse_to_ast(source)
-    _diags, arts = typecheck_with_artifacts(program, source)
-    result = verify(
-        program, source,
-        expr_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-    )
+    result = pipeline.verify(source, past_check=True).result
     [diag] = [d for d in result.diagnostics if d.error_code == "E529"]
     return diag.rationale
 

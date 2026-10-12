@@ -29,16 +29,15 @@ import pytest
 from vera.verifier import _PREMISE_CHECK_TIMEOUT_MS
 import z3
 
-from vera.checker.core import typecheck
 from vera.obligations.session import VerificationSession
-from vera.parser import parse_to_ast
 from vera.smt import (
     DEFAULT_Z3_TIMEOUT_MS,
     Z3_TIMEOUT_ENV,
     Z3BudgetError,
     resolve_timeout_ms,
 )
-from vera.verifier import ContractVerifier, verify
+from vera.verifier import ContractVerifier
+from tests import pipeline
 
 ROOT = Path(__file__).parent.parent
 EXAMPLES = ROOT / "examples"
@@ -250,9 +249,7 @@ class TestBudgetReachesTheSolver:
     )
 
     def _cold(self, **kwargs) -> None:
-        prog = parse_to_ast(self.SOURCE)
-        typecheck(prog, self.SOURCE)
-        verify(prog, self.SOURCE, **kwargs)
+        pipeline.verify(self.SOURCE, past_check=True, **kwargs)
 
     def test_explicit_argument_reaches_the_solver_cold(self) -> None:
         seen = self._timeouts_set(lambda: self._cold(timeout_ms=33_000))

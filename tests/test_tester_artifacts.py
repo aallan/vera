@@ -25,7 +25,7 @@ import tempfile
 from pathlib import Path
 
 import vera.codegen as codegen_mod
-from vera.cli import cmd_test
+from tests import pipeline
 
 # The only runtime guard in this function is the @Nat -> @Int widening of the
 # first Tuple component into the `Tuple<Int, Int>` target slot — recovered ONLY
@@ -38,7 +38,7 @@ public fn tc(@Nat -> @Int)
 
 
 def _cmd_test_capturing_wat(source: str, monkeypatch) -> str:
-    """Run ``cmd_test`` on *source* and return the WAT the tester compiled."""
+    """Run ``vera test`` on *source* and return the WAT the tester compiled."""
     captured: dict[str, str] = {}
     real_compile = codegen_mod.compile
 
@@ -54,7 +54,7 @@ def _cmd_test_capturing_wat(source: str, monkeypatch) -> str:
         f.write(source)
         path = f.name
     try:
-        cmd_test(path, as_json=True, trials=1)
+        pipeline.cli("test", "--json", "--trials", "1", path)
     finally:
         Path(path).unlink(missing_ok=True)
     assert "wat" in captured, "the tester never compiled the program"

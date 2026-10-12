@@ -34,9 +34,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from tests import pipeline
 from vera.checker import typecheck_with_artifacts
-from vera.parser import parse_to_ast
-from vera.resolver import ModuleResolver
 
 # A library whose body widens @Nat -> @Int at an array-literal element (the
 # #820 per-component site recovered only from the target table).
@@ -55,14 +54,10 @@ public fn callit(@Nat -> @Int)
 
 
 def _resolve(tmp_path: Path, files: dict[str, str], main_name: str):
-    for name, src in files.items():
-        (tmp_path / name).write_text(src, encoding="utf-8")
-    main_path = tmp_path / main_name
-    source = files[main_name]
-    program = parse_to_ast(source)
-    resolver = ModuleResolver(_root=tmp_path)
-    resolved = resolver.resolve_imports(program, main_path)
-    return program, source, main_path, resolved
+    main_path = pipeline.write_tree(tmp_path, files, main_name)
+    checked = pipeline.check(main_path, root=tmp_path)
+    program = checked.program  # raises the parse or transform error
+    return program, checked.source, main_path, checked.resolved or []
 
 
 class TestOptInCollection:

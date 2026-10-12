@@ -34,12 +34,10 @@ from pathlib import Path
 
 import pytest
 
-from vera.codegen import compile as codegen_compile
 from vera.codegen import execute
 from vera.codegen.api import CompileResult
 from vera.parser import parse_to_ast
-from vera.resolver import ModuleResolver
-from vera.checker import typecheck_with_artifacts
+from tests import pipeline
 
 _ROOT = Path(__file__).resolve().parent.parent
 _CONFORMANCE = _ROOT / "tests" / "conformance"
@@ -105,22 +103,15 @@ _SENTINELS: tuple[str, ...] = (
 
 def _compile_file(path: Path) -> CompileResult:
     """Parse + resolve + check + compile *path* through the CLI's pipeline."""
-    source = path.read_text(encoding="utf-8")
-    program = parse_to_ast(source)
-    resolver = ModuleResolver(_root=path.parent)
-    resolved = resolver.resolve_imports(program, path)
-    diags, arts = typecheck_with_artifacts(
-        program, source, file=str(path), resolved_modules=resolved,
-    )
-    errors = [d for d in diags if d.severity == "error"]
+    compiled = pipeline.compile(path)
+    assert compiled.checked is not None
+    _ = compiled.parsed.program  # raises the parse or transform error, if any
+    errors = compiled.checked.errors
     assert not errors, (
         f"{path.name} must type-check cleanly, got: "
         f"{[(d.error_code, d.description[:70]) for d in errors]}"
     )
-    return codegen_compile(
-        program, source=source, file=str(path), resolved_modules=resolved,
-        expr_semantic_types=arts.expr_semantic_types,
-    )
+    return compiled.result
 
 
 @pytest.mark.parametrize(
@@ -262,35 +253,23 @@ public fn main(@Unit -> @Int)
 
 def _run_files(tmp_path: Path, files: dict[str, str]) -> int | None:
     """Write *files*, resolve + compile + run ``main.vera``'s ``main``."""
-    from vera.resolver import ModuleResolver
-
-    main_file = tmp_path / "main.vera"
-    for rel, content in files.items():
-        p = tmp_path / rel
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content, encoding="utf-8")
-    source = main_file.read_text(encoding="utf-8")
-    program = parse_to_ast(source)
-    resolver = ModuleResolver(_root=tmp_path)
-    resolved = resolver.resolve_imports(program, main_file)
-    assert not resolver.errors, [e.description for e in resolver.errors]
-    diags, arts = typecheck_with_artifacts(
-        program, source, file=str(main_file), resolved_modules=resolved,
-    )
+    compiled = pipeline.compile(pipeline.write_tree(tmp_path, files), root=tmp_path)
+    checked = compiled.checked
+    assert checked is not None
+    _ = checked.program  # raises the parse or transform error, if any
+    resolver_errors = checked.resolution_diagnostics
+    assert not resolver_errors, [e.description for e in resolver_errors]
+    diags = checked.checker_diagnostics
     assert not [d for d in diags if d.severity == "error"], [
         (d.error_code, d.description[:80]) for d in diags
         if d.severity == "error"
     ]
-    result = codegen_compile(
-        program, source=source, file=str(main_file),
-        resolved_modules=resolved,
-        expr_semantic_types=arts.expr_semantic_types,
-    )
+    result = compiled.result
     assert not [d for d in result.diagnostics if d.severity == "error"], [
         (d.error_code, d.description[:90]) for d in result.diagnostics
         if d.severity == "error"
     ]
-    return execute(result, fn_name="main").value
+    return pipeline.run(result, "main", capture_stderr=False).value
 
 
 def test_local_generic_merges_on_substitution(tmp_path: Path) -> None:

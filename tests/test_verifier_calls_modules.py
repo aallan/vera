@@ -14,7 +14,7 @@ from vera.parser import parse_to_ast
 from vera.checker import typecheck
 from vera.resolver import ResolvedModule
 from vera.runtime.traps import WasmTrapError
-from vera.verifier import VerifyResult, verify
+from vera.verifier import VerifyResult
 
 from tests.codegen_helpers import _compile_ok, _run
 from tests.verifier_helpers import (
@@ -23,6 +23,7 @@ from tests.verifier_helpers import (
     _verify_ok,
     _verify_warn,
 )
+from tests import pipeline
 
 
 # =====================================================================
@@ -1579,7 +1580,7 @@ private fn internal(@Int -> @Int)
         path: tuple[str, ...], source: str,
     ) -> ResolvedModule:
         """Build a ResolvedModule from source text."""
-        prog = parse_to_ast(source)
+        prog = pipeline.parse(source).program
         return ResolvedModule(
             path=path,
             file_path=Path(f"/fake/{'/'.join(path)}.vera"),
@@ -1593,9 +1594,8 @@ private fn internal(@Int -> @Int)
         modules: list[ResolvedModule],
     ) -> VerifyResult:
         """Parse, type-check, and verify with resolved modules."""
-        prog = parse_to_ast(source)
-        typecheck(prog, source, resolved_modules=modules)
-        return verify(prog, source, resolved_modules=modules)
+        return pipeline.verify(
+            source, modules=modules, past_check=True).result
 
     # -- Postcondition assumption -----------------------------------------
 

@@ -65,6 +65,7 @@ from vera.codegen import execute
 from vera.codegen.assembly import GC_STACK_SIZE
 
 from tests.codegen_helpers import _compile_ok
+from tests import pipeline
 
 
 # Roots the shadow stack holds: four bytes each.
@@ -82,7 +83,7 @@ _CEILING = _SHADOW_ROOTS + 104
 def _runs(source: str) -> bool:
     """Whether the program executes to completion (no shadow-stack trap)."""
     try:
-        execute(_compile_ok(source), fn_name="main", args=[])
+        pipeline.run(_compile_ok(source), "main", [], capture_stderr=False).execution
     except Exception:  # noqa: BLE001 - any trap counts as "did not run"
         return False
     return True

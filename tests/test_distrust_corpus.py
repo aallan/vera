@@ -56,12 +56,9 @@ from typing import Any
 
 import pytest
 
-from vera.checker import typecheck_with_artifacts
-from vera.parser import parse
-from vera.resolver import ModuleResolver
 from vera.tester import FunctionTestResult, TestResult
-from vera.tester import test as run_test
-from vera.transform import transform
+
+from tests import pipeline
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFORMANCE = ROOT / "tests" / "conformance"
@@ -110,25 +107,12 @@ def _params() -> list[Any]:
 
 def _tested(path: Path, *, distrust: bool) -> TestResult:
     """Test *path* in process, threaded exactly as `cmd_test` threads it."""
-    source = path.read_text(encoding="utf-8")
-    program = transform(parse(source, file=str(path)))
-    resolver = ModuleResolver(_root=path.parent)
-    resolved = resolver.resolve_imports(program, path)
-    diags, artifacts = typecheck_with_artifacts(
-        program, source, file=str(path), resolved_modules=resolved,
-        collect_module_artifacts=True,
-    )
-    errors = [d for d in resolver.errors + diags if d.severity == "error"]
+    tested = pipeline.contract_test(path, trials=TRIALS, distrust=distrust)
+    checked = tested.checked
+    _ = checked.program  # raises the parse or transform error, if any
+    errors = list(checked.errors)
     assert not errors, f"{path.name} must type-check:\n{errors[0].format()}"
-    return run_test(
-        program, source=source, file=str(path), trials=TRIALS,
-        resolved_modules=resolved,
-        expr_semantic_types=artifacts.expr_semantic_types,
-        expr_target_types=artifacts.expr_target_types,
-        module_artifacts=artifacts.module_artifacts,
-        alias_env=artifacts.alias_env,
-        distrust=distrust,
-    )
+    return tested.result
 
 
 def _outcome(f: FunctionTestResult) -> tuple[object, ...]:

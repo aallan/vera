@@ -40,6 +40,7 @@ import vera
 from vera import narrowing
 from vera.environment import TypeEnv
 from vera.trap_registry import signal_call_pattern
+from tests import pipeline
 
 _PKG_PARENT = str(Path(vera.__file__).resolve().parents[1])
 
@@ -72,10 +73,8 @@ def _verify(tmp_path: Path, source: str, name: str = "p.vera") -> dict:
 
 def _program_ast(source: str) -> object:
     """Parse + transform only — these cells drive the verifier directly."""
-    from vera.parser import parse
-    from vera.transform import transform
 
-    return transform(parse(source, file="f.vera"))
+    return pipeline.parse(source, file="f.vera").program
 
 
 def _wat(tmp_path: Path, source: str, name: str = "w.vera") -> str:

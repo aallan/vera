@@ -43,11 +43,9 @@ from pathlib import Path
 
 import pytest
 
-from vera.checker import typecheck_with_artifacts
-from vera.parser import parse_to_ast
-from vera.verifier import verify
 
 from tests.codegen_helpers import _compile, _run_io
+from tests import pipeline
 
 EXAMPLE = Path(__file__).parent.parent / "examples" / "ephemeris.vera"
 
@@ -75,43 +73,30 @@ def obligations(source: str) -> list:
     Verifying this example is a full Z3 pass over 450 lines with float theory in
     play, so it is module-scoped rather than repeated per test.
     """
-    ast = parse_to_ast(source)
-    diags, arts = typecheck_with_artifacts(ast, source)
+    verified = pipeline.verify(source)
+    _ = verified.checked.program  # raises the parse or transform error, if any
     # A type error makes every downstream obligation meaningless -- the stream
     # would still be produced, and the tier pins below would then be asserting
     # things about a program that does not compile.  Fail here instead, where
     # the message names the real cause.
-    errors = [d for d in diags if d.severity == "error"]
+    errors = verified.checked.errors
     assert not errors, (
         "ephemeris.vera failed to type-check, so its obligation stream is "
         f"meaningless: {[(d.error_code, d.description) for d in errors]}"
     )
-    result = verify(
-        ast,
-        source,
-        expr_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-    )
-    return list(result.obligations)
+    return list(verified.result.obligations)
 
 
 def _obligations_at_budget(source: str, timeout_ms: int) -> list:
     """The obligation stream re-derived under an explicit solver budget."""
-    ast = parse_to_ast(source)
-    diags, arts = typecheck_with_artifacts(ast, source)
-    errors = [d for d in diags if d.severity == "error"]
+    verified = pipeline.verify(source, timeout_ms=timeout_ms)
+    _ = verified.checked.program  # raises the parse or transform error, if any
+    errors = verified.checked.errors
     assert not errors, (
         "ephemeris.vera failed to type-check, so its obligation stream is "
         f"meaningless: {[(d.error_code, d.description) for d in errors]}"
     )
-    result = verify(
-        ast,
-        source,
-        expr_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-        timeout_ms=timeout_ms,
-    )
-    return list(result.obligations)
+    return list(verified.result.obligations)
 
 
 def _angular_separation_arcsec(

@@ -25,6 +25,7 @@ from vera.parser import parse_file
 from vera.skip import CodegenInvariantError
 from vera.transform import transform
 from vera.wasm import WasmContext
+from tests import pipeline
 
 _PROG = """\
 public fn f(-> @Int)
@@ -38,15 +39,7 @@ public fn f(-> @Int)
 
 
 def _compile_source(source: str):
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False, encoding="utf-8"
-    ) as f:
-        f.write(source)
-        path = f.name
-    try:
-        return compile(transform(parse_file(path)), source=source, file=path)
-    finally:
-        Path(path).unlink()
+    return pipeline.compile(source, file="fixture.vera", checked=False).result
 
 
 def test_codegen_invariant_error_surfaces_as_e699(monkeypatch) -> None:

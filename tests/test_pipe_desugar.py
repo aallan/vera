@@ -95,6 +95,7 @@ from vera.formatter import (
 )
 from vera.parser import parse_to_ast
 from vera.runtime.traps import WasmTrapError
+from tests import pipeline
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -156,7 +157,7 @@ def _value(built: Built, fn: str,
     if fn not in built.result.exports:
         return "dropped", [d.error_code for d in built.result.diagnostics]
     try:
-        return "ok", execute(built.result, fn_name=fn, args=args).value
+        return "ok", pipeline.run(built.result, fn, args, capture_stderr=False).execution.value
     except WasmTrapError as exc:
         return "trap", str(exc)
 
@@ -819,7 +820,7 @@ def _calls(node: object) -> list[ast.Expr]:
 
 
 def _body(source: str) -> ast.Expr:
-    program = parse_to_ast(source)
+    program = pipeline.parse(source).program
     decl = program.declarations[-1].decl
     assert isinstance(decl, ast.FnDecl)
     return decl.body.expr

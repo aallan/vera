@@ -16,20 +16,14 @@ here too, because "converge the derivations" must not quietly drop them.
 """
 from __future__ import annotations
 
-import os
-import tempfile
-
 import pytest
 
 from vera import ast, naming
-from vera.checker import typecheck
 from vera.codegen import CodeGenerator, CompileResult
-from vera.codegen import compile as codegen_compile
-from vera.parser import parse_file, parse_to_ast
 from vera.resolver import ResolvedModule
 from vera.codegen.api import WasmTrapError
-from vera.transform import transform
 
+from tests import pipeline
 from tests.codegen_helpers import _compile, _compile_ok, _run
 from tests.module_fixture_helpers import resolved_module as _resolved
 
@@ -43,28 +37,16 @@ def _compile_mod(
     reach the emission path under test, and an assertion about which codegen
     diagnostics came out would pass vacuously.
     """
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False, encoding="utf-8",
-    ) as f:
-        f.write(source)
-        f.flush()
-        fp = f.name
-    try:
-        program = transform(parse_file(fp))
-        check_errors = [
-            d for d in typecheck(
-                program, source=source, file=fp, resolved_modules=modules)
-            if d.severity == "error"
-        ]
-        assert not check_errors, (
-            "fixture must type-check cleanly, got: "
-            f"{[(d.error_code, d.description[:70]) for d in check_errors]}"
-        )
-        return codegen_compile(
-            program, source=source, file=fp, resolved_modules=modules,
-        )
-    finally:
-        os.unlink(fp)
+    checked = pipeline.check(source, file="fixture.vera", modules=modules)
+    _ = checked.program  # raises the parse or transform error
+    check_errors = list(checked.errors)
+    assert not check_errors, (
+        "fixture must type-check cleanly, got: "
+        f"{[(d.error_code, d.description[:70]) for d in check_errors]}"
+    )
+    return pipeline.compile(
+        source, file="fixture.vera", modules=modules, checked=False,
+    ).result
 
 
 _PRELUDE = """\
@@ -86,9 +68,10 @@ def _generator(source: str) -> CodeGenerator:
     derived from them, so the guard derivation is exercised against the same
     environment a real compile uses rather than a hand-built one.
     """
-    gen = CodeGenerator(source=source, file="<conv>")
-    gen.compile_program(parse_to_ast(source))
-    return gen
+    compiled = pipeline.compile(source, file="<conv>", checked=False)
+    _ = compiled.result  # raises the parse or transform error
+    assert compiled.generator is not None
+    return compiled.generator
 
 
 _SHAPES = ["Pos", "Pos2", "SmallCount", "Sized", "Small", "Count", "Plain"]

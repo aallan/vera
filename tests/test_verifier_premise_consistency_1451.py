@@ -51,6 +51,7 @@ from typing import NamedTuple
 import pytest
 
 import vera
+from tests import pipeline
 
 _PKG_PARENT = str(Path(vera.__file__).resolve().parents[1])
 
@@ -412,25 +413,7 @@ public fn caller(@Nat -> @Nat)
 
 
 def _verify_in_process(path: Path, timeout_ms: int | None = None) -> object:
-    from vera.checker import typecheck_with_artifacts
-    from vera.parser import parse
-    from vera.resolver import ModuleResolver
-    from vera.transform import transform
-    from vera.verifier import verify
-
-    text = path.read_text(encoding="utf-8")
-    program = transform(parse(text, file=str(path)))
-    resolved = ModuleResolver(_root=path.parent).resolve_imports(
-        program, path)
-    _diags, artifacts = typecheck_with_artifacts(
-        program, text, file=str(path), resolved_modules=resolved,
-    )
-    return verify(
-        program, text, file=str(path), resolved_modules=resolved,
-        expr_types=artifacts.expr_semantic_types,
-        expr_target_types=artifacts.expr_target_types,
-        timeout_ms=timeout_ms,
-    )
+    return pipeline.verify(path, timeout_ms=timeout_ms, past_check=True).result
 
 
 def test_1451_the_two_arms_fixture_is_clean_while_the_guard_holds(

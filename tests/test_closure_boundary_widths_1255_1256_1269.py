@@ -53,6 +53,7 @@ from pathlib import Path
 
 import pytest
 
+from tests import pipeline
 from tests.codegen_helpers import _compile_ok, _run
 from vera.codegen import (
     CompileResult,
@@ -892,21 +893,19 @@ public fn main(@Unit -> @Int)
 
 
 def _compile_xmod(tmp_path: Path) -> CompileResult:
-    """Resolve and compile the two-module program through the real resolver."""
-    (tmp_path / "xmodlib.vera").write_text(_XMOD_LIB, encoding="utf-8")
-    main_file = tmp_path / "main.vera"
-    main_file.write_text(_XMOD_MAIN, encoding="utf-8")
-    tree = parse_file(str(main_file))
-    prog = transform(tree)
-    resolver = ModuleResolver(_root=tmp_path)
-    resolved = resolver.resolve_imports(prog, main_file)
-    assert not resolver.errors, [e.description for e in resolver.errors]
-    result = _vera_compile(
-        prog,
-        source=main_file.read_text(encoding="utf-8"),
-        file=str(main_file),
-        resolved_modules=resolved,
-    )
+    """Resolve and compile the two-module program through the real resolver.
+
+    The imports resolve as ``vera check`` resolves them; the compile is
+    unchecked (none of the checker's tables), as ``_compile_ok``'s is.
+    """
+    main_file = pipeline.write_tree(
+        tmp_path, {"xmodlib.vera": _XMOD_LIB, "main.vera": _XMOD_MAIN})
+    checked = pipeline.check(main_file, root=tmp_path)
+    _ = checked.program  # raises the parse or transform error, if any
+    resolver_errors = checked.resolution_diagnostics
+    assert not resolver_errors, [e.description for e in resolver_errors]
+    result = pipeline.compile(
+        main_file, modules=checked.resolved, checked=False).result
     errors = [d for d in result.diagnostics if d.severity == "error"]
     assert not errors, [d.description for d in errors]
     return result

@@ -59,8 +59,8 @@ import pytest
 from vera import ast, naming
 from vera.checker.core import TypeChecker
 from vera.errors import VeraError
-from vera.parser import parse_to_ast
 from vera.types import canonical_type_name
+from tests import pipeline
 
 _ROOT = Path(__file__).resolve().parent.parent
 _CORPUS_DIRS = (
@@ -273,14 +273,13 @@ def _sweep_source(origin: str, source: str, sweep: Sweep) -> None:
     """
     sweep.files_seen.append(origin)
     try:
-        program = parse_to_ast(source)
+        _ = pipeline.parse(source).program
     except Exception:  # noqa: BLE001 — any parse failure, by design
         sweep.parse_skipped.append(origin)
         return
-    checker = TypeChecker(source=source, file=origin)
     with _record(origin, sweep):
         try:
-            checker.check_program(program)
+            pipeline.check(source, file=origin)
         except VeraError as exc:
             # A `VeraError` is the checker's own diagnostic-carrying family,
             # so a malformed program raising one is a program-level failure

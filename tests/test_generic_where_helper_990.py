@@ -23,10 +23,7 @@ import re
 
 import wasmtime
 
-from vera.checker import typecheck_with_artifacts
-from vera.codegen import compile as codegen_compile
-from vera.codegen import execute
-from vera.parser import parse_to_ast
+from tests import pipeline
 
 # The issue's repro: non-generic parent, generic where-helper, one concrete
 # instantiation (T=Int) reached from the parent body.
@@ -101,20 +98,16 @@ public fn main(@Unit -> @Int)
 
 
 def _compile(source: str):
-    program = parse_to_ast(source)
-    diags, arts = typecheck_with_artifacts(program, source)
-    errors = [d for d in diags if d.severity == "error"]
+    compiled = pipeline.compile(source)
+    _ = compiled.parsed.program  # raises the parse or transform error, if any
+    assert compiled.checked is not None
+    errors = compiled.checked.errors
     assert not errors, f"typecheck errors: {[d.description for d in errors]}"
-    result = codegen_compile(
-        program, source=source,
-        expr_semantic_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-    )
-    return result
+    return compiled.result
 
 
 def _run_main(result) -> int:
-    return execute(result, fn_name="main").value
+    return pipeline.run(result, "main", capture_stderr=False).execution.value
 
 
 def _assert_compiles_and_runs(source: str, expected: int) -> None:

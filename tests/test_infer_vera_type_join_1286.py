@@ -63,17 +63,12 @@ line here.
 
 from __future__ import annotations
 
-import os
-import tempfile
 
 import pytest
 
 from tests.codegen_helpers import wat_calls, wat_fn_names
-from vera.checker import typecheck_with_artifacts
-from vera.codegen import compile as codegen_compile
-from vera.codegen import execute
-from vera.codegen.api import CompileResult
-from vera.parser import parse_to_ast
+from tests.codegen_helpers import _compile_checked as _compile
+from tests import pipeline
 
 
 # ---------------------------------------------------------------------
@@ -395,50 +390,6 @@ _WITNESSES: list[tuple[str, str, str, object]] = [
 # ---------------------------------------------------------------------
 
 
-def _compile(source: str) -> CompileResult:
-    """Parse, typecheck, and compile — the `vera run` pipeline.
-
-    Monomorphization consumes the checker's artifacts, so the plain
-    parse-and-compile shortcut would not exercise the clone-naming path these
-    witnesses turn on.
-
-    Why not the shared `_check_ok` / `_verify_ok` (PR review): both return
-    `None` — they assert and discard — while every assertion here reads an
-    artefact of the compile (`result.exports`, `result.wat`, the executed
-    value), so they cannot serve without changing their return types across the
-    whole checker and verifier suite.  `codegen_helpers._compile` returns a
-    `CompileResult` but reaches it by `parse_file` + `transform` + `compile`
-    with no typecheck, so it supplies none of the artifacts monomorphization
-    reads — using it would quietly weaken the test rather than share code.  A
-    local full-pipeline `_compile` is the established shape for exactly this:
-    21 test files define one, `test_handle_exn_divergent_result_1276.py` (this
-    issue's direct sibling) and `test_composite_postcondition_eq_912.py` among
-    them.  The WAT assertions DO use the shared boundary-safe helpers, which is
-    the part of the suggestion that applies.
-    """
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False, encoding="utf-8",
-    ) as f:
-        f.write(source)
-        f.flush()
-        path = f.name
-    try:
-        program = parse_to_ast(source)
-        diags, arts = typecheck_with_artifacts(
-            program, source, file=path, collect_module_artifacts=True,
-        )
-        errors = [d.description for d in diags if d.severity == "error"]
-        assert not errors, f"typecheck errors: {errors}"
-        return codegen_compile(
-            program, source=source, file=path,
-            expr_semantic_types=arts.expr_semantic_types,
-            expr_target_types=arts.expr_target_types,
-            module_artifacts=arts.module_artifacts,
-        )
-    finally:
-        os.unlink(path)
-
-
 def _run(source: str) -> object:
     """Compile and execute `main`, asserting it survived codegen.
 
@@ -451,7 +402,7 @@ def _run(source: str) -> object:
         "check-green source lost `main` from the compiled exports; notes: "
         + "; ".join(d.description for d in result.diagnostics)
     )
-    return execute(result, fn_name="main").value
+    return pipeline.run(result, "main", capture_stderr=False).execution.value
 
 
 # ---------------------------------------------------------------------

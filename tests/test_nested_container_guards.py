@@ -45,12 +45,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from vera.checker import typecheck_with_artifacts
-from vera.codegen import compile as codegen_compile
-from vera.codegen import execute
-from vera.parser import parse_to_ast
-from vera.verifier import verify
-
+from tests import pipeline
 from tests.codegen_helpers import wat_fn_body
 
 # A generated class instrument (tests/matrix_sample.py): a pull request runs a
@@ -253,20 +248,13 @@ def _measure(
 ) -> tuple[list[str], int, str, str]:
     """(statuses of the leaf's obligation kind in `g`, that kind's guards in
     `g`'s WAT, the forbidden run, the allowed run)."""
-    program = parse_to_ast(source)
-    diags, arts = typecheck_with_artifacts(program, source)
-    errors = [d.description[:90] for d in diags if d.severity == "error"]
+    verified = pipeline.verify(source)
+    _ = verified.checked.program  # raises the parse or transform error
+    errors = [d.description[:90] for d in verified.checked.errors]
     assert not errors, errors
-    result = verify(program, source,
-                    expr_types=arts.expr_semantic_types,
-                    expr_target_types=arts.expr_target_types)
-    statuses = sorted(o.status for o in result.obligations
+    statuses = sorted(o.status for o in verified.result.obligations
                       if o.kind == leaf.obligation and o.fn_name == "g")
-    compiled = codegen_compile(
-        program, source=source, file="p.vera",
-        expr_semantic_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-    )
+    compiled = pipeline.compile(source, file="p.vera").result
     errors = [d.description[:90] for d in compiled.diagnostics
               if d.severity == "error"]
     assert not errors, errors
@@ -274,10 +262,12 @@ def _measure(
 
     def run(args: tuple[object, ...]) -> str:
         try:
-            value = execute(compiled, fn_name="g", args=list(args)).value
-            return f"ran:{value}"
+            ran = pipeline.run(compiled, "g", list(args), capture_stderr=False)
         except Exception as exc:  # noqa: BLE001 — the trap IS the observation
             return str(exc)
+        if ran.trap is not None:
+            return str(ran.trap)
+        return f"ran:{ran.value}"
 
     return statuses, guards, run(leaf.bad_args), run(_GOOD_ARGS)
 
