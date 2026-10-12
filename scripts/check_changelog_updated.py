@@ -1,10 +1,11 @@
 #!/usr/bin/env python
-"""Verify that substantive PRs update CHANGELOG.md.
+"""Verify that substantive PRs add a CHANGELOG entry.
 
 Runs at pre-push stage (locally) and in CI.  Compares the current
 branch against the base ref (default ``origin/main``); if any
-"substantive" files changed, requires ``CHANGELOG.md`` to also be
-in the diff with a new entry.
+"substantive" files changed, requires the branch to add a CHANGELOG
+fragment under ``changelog.d/`` (#1529; ``changelog.d/README.md``),
+or a new entry in ``CHANGELOG.md`` itself.
 
 File classification
 -------------------
@@ -17,7 +18,8 @@ Substantive (requires a CHANGELOG entry when changed):
 
 Exempt (changing only these never triggers the check):
 
-- ``tests/``, ``scripts/``, ``.github/``, ``docs/``, ``examples/``
+- ``tests/``, ``scripts/``, ``.github/``, ``docs/``, ``examples/``,
+  ``changelog.d/``
 - ``CHANGELOG.md``, ``HISTORY.md``, ``README.md``, ``ROADMAP.md``,
   ``KNOWN_ISSUES.md``, ``FAQ.md``, ``CONTRIBUTING.md``, ``TESTING.md``,
   ``AGENTS.md``, ``CLAUDE.md``, ``DE_BRUIJN.md``, ``EXAMPLES.md``,
@@ -54,8 +56,13 @@ Exit codes
 from __future__ import annotations
 
 import os
+from pathlib import Path
 import subprocess
 import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from check_changelog_fragments import FRAGMENT_NAME
 
 # Prefixes / exact paths whose changes require a CHANGELOG entry.
 # Anything not exempt is treated as substantive by default, but these
@@ -77,6 +84,7 @@ EXEMPT_PREFIXES: tuple[str, ...] = (
     "examples/",
     "editors/",
     "assets/",
+    "changelog.d/",
     # Root-level docs
     "CHANGELOG.md",
     "HISTORY.md",
@@ -272,6 +280,30 @@ def _changelog_has_new_entry(base: str) -> bool:
     return False
 
 
+def _has_new_fragment(base: str) -> bool:
+    """Return True if the branch adds a ``changelog.d/`` fragment.
+
+    Only an added file (``A`` in the name-status diff) whose name is a
+    fragment's counts: ``changelog.d/README.md`` is not one, and a fragment
+    already on the base belongs to the pull request that added it.
+    """
+    stdout = _run([
+        "git", "diff", "--name-status", base, "HEAD", "--", "changelog.d/",
+    ])
+    if not stdout:
+        return False
+    for line in stdout.splitlines():
+        status, _, path = line.partition("\t")
+        name = path.removeprefix("changelog.d/")
+        if (
+            status == "A"
+            and name != path
+            and FRAGMENT_NAME.fullmatch(name) is not None
+        ):
+            return True
+    return False
+
+
 def _has_skip_trailer(base: str) -> bool:
     """Return True if any commit on the branch has a ``Skip-changelog:`` trailer."""
     log = _run(["git", "log", f"{base}..HEAD", "--format=%B"])
@@ -304,7 +336,7 @@ def main() -> int:
     if not substantive:
         return 0
 
-    if _changelog_has_new_entry(base):
+    if _has_new_fragment(base) or _changelog_has_new_entry(base):
         return 0
 
     if _has_skip_trailer(base):
@@ -314,8 +346,8 @@ def main() -> int:
         return 0
 
     print(
-        "ERROR: Substantive changes detected but CHANGELOG.md "
-        "is missing a new entry.",
+        "ERROR: Substantive changes detected but the branch adds no "
+        "CHANGELOG entry.",
         file=sys.stderr,
     )
     print("", file=sys.stderr)
@@ -326,7 +358,7 @@ def main() -> int:
         print(f"  ... and {len(substantive) - 10} more", file=sys.stderr)
     print("", file=sys.stderr)
     print(
-        "Add a bullet under [Unreleased] in CHANGELOG.md, or include",
+        "Add a fragment under changelog.d/ (changelog.d/README.md), or include",
         file=sys.stderr,
     )
     print(
