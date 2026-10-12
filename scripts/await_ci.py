@@ -32,6 +32,12 @@ CAP_MINUTES = 100
 INTERVAL_SECONDS = 30
 
 
+def _say(line: str) -> None:
+    """Print a line now: stdout is not a terminal in Actions, so it would be
+    buffered, and a wait of many minutes would show nothing until its end."""
+    print(line, flush=True)
+
+
 class GhError(Exception):
     """`gh run list` failed or printed something that is not its JSON."""
 
@@ -117,7 +123,7 @@ def wait(
     interval_seconds: float = INTERVAL_SECONDS,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
-    out: Callable[[str], None] = print,
+    out: Callable[[str], None] = _say,
 ) -> int:
     """Poll until the decision is made; 0 for a pass, 1 for a failure.
     A state is printed when it changes, not on every poll."""
@@ -174,7 +180,7 @@ def main(
     sleep: Callable[[float], None] = time.sleep,
 ) -> int:
     args = parse_args(argv)
-    print(f"Waiting for the {args.workflow} {args.event} run on {args.commit}.")
+    _say(f"Waiting for the {args.workflow} {args.event} run on {args.commit}.")
     return wait(
         lambda: list_runs(args.commit, args.workflow, args.event),
         timeout_minutes=args.timeout_minutes, clock=clock, sleep=sleep,

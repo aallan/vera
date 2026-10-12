@@ -13,6 +13,7 @@ that every other job of the release needs.
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import sys
 from collections.abc import Callable, Iterator
@@ -192,6 +193,28 @@ class TestTheWait:
         )
         assert status == 0, lines
         assert any("HTTP 502" in line for line in lines), lines
+
+    def test_each_line_reaches_the_log_when_it_is_printed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Actions' stdout is not a terminal, so Python buffers it: a line
+        not flushed would show only when the wait ends, up to 100 minutes
+        later."""
+
+        class Recorder(io.StringIO):
+            def __init__(self) -> None:
+                super().__init__()
+                self.flushed: list[str] = []
+
+            def flush(self) -> None:
+                self.flushed.append(self.getvalue())
+                super().flush()
+
+        recorder = Recorder()
+        monkeypatch.setattr(sys, "stdout", recorder)
+        clock = _Clock()
+        assert ac.wait(_listing([], [_run(3, "completed", "success")]), clock=clock, sleep=clock.sleep) == 0
+        assert recorder.flushed, "nothing was flushed"
+        assert recorder.flushed[0] == "no CI run on the commit yet\n", recorder.flushed
+        assert recorder.flushed[-1].endswith("succeeded\n"), recorder.flushed
 
     def test_a_listing_that_keeps_failing_fails_at_the_timeout(self) -> None:
         clock = _Clock()
