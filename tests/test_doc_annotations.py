@@ -789,6 +789,40 @@ class TestStripAnnotations:
         text = "<!-- a normal comment -->\ncontent\n"
         assert strip_annotations(text) == text
 
+    def test_render_lists_marker_lines_removed(self) -> None:
+        """scripts/render_lists.py's block markers are repo tooling too: a
+        rendered table or list reaches the site assets as it would read
+        with no markers at all, the indented form inside a list included."""
+        table = "| Limitation | Issue |\n|---|---|\n| A gap. | — |\n"
+        text = (
+            "Prose.\n\n"
+            "<!-- render_lists:begin limitations -->\n"
+            + table
+            + "<!-- render_lists:end limitations -->\n\n"
+            "- An item.\n"
+            "  <!-- render_lists:begin effects -->\n"
+            "- **Effects** (`IO`).\n"
+            "  <!-- render_lists:end effects -->\n"
+            "- Another item.\n"
+        )
+        assert strip_annotations(text) == (
+            "Prose.\n\n" + table + "\n- An item.\n- **Effects** (`IO`).\n- Another item.\n"
+        )
+
+    def test_the_shipped_site_sources_strip_their_rendered_blocks_bare(self) -> None:
+        """SKILL.md and LSP_SERVER.md reach docs/ through build_site.py and
+        each holds a rendered table: stripped, each is exactly the document
+        with its marker lines taken out."""
+        root = _SCRIPT.parent.parent
+        for name in ("SKILL.md", "LSP_SERVER.md"):
+            text = (root / name).read_text(encoding="utf-8")
+            assert "render_lists:begin limitations" in text, name
+            bare = "".join(
+                line for line in text.splitlines(keepends=True)
+                if "render_lists:" not in line
+            )
+            assert strip_annotations(text) == strip_annotations(bare), name
+
 
 # =====================================================================
 # `vera:diagnostic` — rendered-diagnostic replay (#1291)
