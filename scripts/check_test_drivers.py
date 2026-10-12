@@ -530,37 +530,63 @@ def drivers_in(source: str, file: str) -> list[Driver]:
     return sorted(out, key=lambda d: d.line)
 
 
+def _calls_the_runner(call: ast.Call, name: str, owner: ast.ClassDef | None) -> bool:
+    """Whether *call* calls the runner *name* (``fn`` or ``Class.method``).
+
+    A function is called by its bare name.  A method is called through its
+    class (``Class.method(...)``) anywhere, or through ``self`` or ``cls``
+    inside that class's own body; a same-named method of another object is
+    a different method.
+    """
+    func = call.func
+    if "." not in name:
+        return isinstance(func, ast.Name) and func.id == name
+    cls, method = name.split(".", 1)
+    if not (isinstance(func, ast.Attribute) and func.attr == method):
+        return False
+    receiver = func.value
+    if isinstance(receiver, ast.Name) and receiver.id == cls:
+        return True
+    return (isinstance(receiver, ast.Name) and receiver.id in ("self", "cls")
+            and owner is not None and owner.name == cls)
+
+
 def _handed_vera(
     tree: ast.Module, name: str, module: Mapping[str, list[ast.AST]],
 ) -> bool:
-    """Whether a call to the helper *name* anywhere in *tree*, in a function,
-    a class body or the module itself, hands it a command naming ``vera``."""
-    bare = name.rsplit(".", 1)[-1]
-    scopes: dict[int, ast.AST] = {}
+    """Whether a call to the runner *name* anywhere in *tree*, in a function,
+    a class body or the module itself, hands it a command naming ``vera``.
 
-    def assign_scopes(node: ast.AST, scope: ast.AST | None) -> None:
+    A name in the call is followed through the assignments of the scope the
+    call is in: a function's, a class body's own (not its methods'), else the
+    module's.
+    """
+    calls: list[tuple[ast.Call, ast.AST | None, ast.ClassDef | None]] = []
+
+    def visit(node: ast.AST, scope: ast.AST | None, owner: ast.ClassDef | None) -> None:
         for child in ast.iter_child_nodes(node):
-            inner = (child if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
-                     else scope)
-            if isinstance(child, ast.Call) and scope is not None:
-                scopes[id(child)] = scope
-            assign_scopes(child, inner)
+            if isinstance(child, ast.Call):
+                calls.append((child, scope, owner))
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                visit(child, child, owner)
+            elif isinstance(child, ast.ClassDef):
+                visit(child, child, child)
+            else:
+                visit(child, scope, owner)
 
-    assign_scopes(tree, None)
+    visit(tree, None, None)
     locals_of: dict[int, dict[str, list[ast.AST]]] = {}
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
+    for call, scope, owner in calls:
+        if not _calls_the_runner(call, name, owner):
             continue
-        func = node.func
-        called = (func.id if isinstance(func, ast.Name)
-                  else func.attr if isinstance(func, ast.Attribute) else None)
-        if called != bare:
-            continue
-        scope = scopes.get(id(node))
         local: Mapping[str, list[ast.AST]] = {}
-        if scope is not None:
+        if isinstance(scope, ast.ClassDef):
+            local = locals_of.setdefault(id(scope), _assigned(
+                [stmt for stmt in scope.body
+                 if isinstance(stmt, (ast.Assign, ast.AnnAssign))]))
+        elif scope is not None:
             local = locals_of.setdefault(id(scope), _assigned([scope]))
-        if _command_names_vera(_call_arguments(node), local, module):
+        if _command_names_vera(_call_arguments(call), local, module):
             return True
     return False
 
