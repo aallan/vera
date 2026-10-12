@@ -37,22 +37,22 @@ The measures [ROADMAP.md](ROADMAP.md)'s Stage 29 holds v0.3.0 to, each beside th
 <!-- render_status:begin scorecard -->
 | Measure | v0.2.0, the audit (2026-10-06) | Now | Measured over |
 |---------|---------------------------|-----|---------------|
-| Open `soundness` bugs | 14 (≥17 by definition) | 18 | the tracker, 2026-10-12 09:08 UTC |
-| Open bugs | 82 | 89 | the tracker, 2026-10-12 09:08 UTC |
+| Open `soundness` bugs | 14 (≥17 by definition) | 18 | the tracker, 2026-10-12 09:24 UTC |
+| Open bugs | 82 | 89 | the tracker, 2026-10-12 09:24 UTC |
 | Backend `_infer_*` functions | 32 | 32 | the tree |
 | Same-named `Nat`/`Int` helpers in `vera/verifier.py` and `vera/wasm/` | 12 | 12 | the tree |
 | Explicit `guarded=` claims by the verifier | 38 | 38 | the tree |
 | Hand-rolled `isinstance` dispatchers over `Expr` | 191 | 201 | the tree |
 | Functions over 500 lines | 17 | 17 | the tree |
 | Host built-ins hand-mirrored across hosts | 53 × 2, plus WASI | 53 × 2, plus WASI's 10 map operations | the tree |
-| Gate scripts that exist only to sync copies | 8 of 23 | 6 of 23 | the tree |
-| CI wall time per pull-request push | 57 min | 36.4 min | 20 pull-request runs, 2026-10-09 to 2026-10-12 |
-| Runner-minutes per pull-request push | 375 | 264 | 20 pull-request runs, 2026-10-09 to 2026-10-12 |
-| Fix pull requests, median: CI runs | 6 | 4 | 2 pull requests merged since v0.2.1 (2026-10-11), to 2026-10-12 |
-| Fix pull requests, median: hours to merge | 11.0 | 1.2 | 2 pull requests merged since v0.2.1 (2026-10-11), to 2026-10-12 |
-| Suite in the pull-request gate: tests | 30,095 | 20,288 | the tree |
-| Suite in the pull-request gate: worker-seconds | 9,037 | not measured | not measured in this render: `--junit PATH` measures it |
-| Subprocess share of suite time | 52% | not measured | not measured in this render: `--junit PATH` measures it |
+| Gate scripts that exist only to sync copies | 8 of 23 | 6 of 24 | the tree |
+| CI wall time per pull-request push | 57 min | 34.3 min | 20 pull-request runs, 2026-10-09 to 2026-10-12 |
+| Runner-minutes per pull-request push | 375 | 256 | 20 pull-request runs, 2026-10-09 to 2026-10-12 |
+| Fix pull requests, median: CI runs | 6 | 5 | 3 pull requests merged since v0.2.1 (2026-10-11), to 2026-10-12 |
+| Fix pull requests, median: hours to merge | 11.0 | 1.5 | 3 pull requests merged since v0.2.1 (2026-10-11), to 2026-10-12 |
+| Suite in the pull-request gate: tests | 30,095 | 20,864 | the tree |
+| Suite in the pull-request gate: worker-seconds | 9,037 | 2,944 | a run of 20,288 tests, 2026-10-12 09:14 UTC |
+| Subprocess share of suite time | 52% | 70.1% | a run of 20,288 tests, 2026-10-12 09:14 UTC |
 | Conformance entries with golden output | 0 of 256 | 175 of 256; every run-level entry, one of them by exit status only | the tree |
 | Program generator with differentials | none | none | the tree |
 | `vera test` executes proved functions | no | yes, in CI | the tree |
