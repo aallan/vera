@@ -26,10 +26,10 @@ from __future__ import annotations
 
 import pytest
 
+from tests.pipeline import checks
 from vera.checker import typecheck_with_artifacts
 from vera.codegen import compile
 from vera.parser import parse_to_ast
-from vera.trap_registry import signal_call_pattern
 from vera.wasm.operators import OperatorsMixin
 
 _ADD = """\
@@ -83,8 +83,9 @@ def test_an_unnameable_width_is_guarded_as_int(
         OperatorsMixin, "_overflow_arith_codegen_type",
         lambda self, expr: None,
     )
-    wat = _wat()
-    assert signal_call_pattern("overflow").search(wat), (
+    result = _compiled()
+    wat = result.wat
+    assert checks(result, kind="overflow"), (
         "an arithmetic site whose width the classifier could not name "
         "emitted no overflow guard, so it wraps in silence while the "
         "obligation claims a runtime check:\n" + wat[:800]
@@ -183,7 +184,7 @@ def test_the_table_less_fallback_still_names_a_width(
 
     monkeypatch.setattr(
         OperatorsMixin, "_overflow_arith_codegen_type", _recording)
-    wat = _wat(semantic_types={})
+    result = _compiled(semantic_types={})
     assert seen, "the classifier was never consulted, so this measures nothing"
     assert None not in seen, (
         f"the table-less compile reached the fail-closed `None` path, so "
@@ -192,7 +193,7 @@ def test_the_table_less_fallback_still_names_a_width(
     assert set(seen) == {"Int"}, (
         f"the AST-only fallback named a width other than `Int`: {seen}"
     )
-    assert signal_call_pattern("overflow").search(wat)
+    assert checks(result, kind="overflow")
 
 
 def test_the_module_still_loads_and_exports_its_entry(

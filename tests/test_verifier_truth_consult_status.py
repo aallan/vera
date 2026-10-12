@@ -35,7 +35,6 @@ import pytest
 
 from vera import narrowing
 from vera.environment import TypeEnv
-from vera.trap_registry import signal_call_pattern
 from tests import pipeline
 
 #: The bound each call below that this file makes to the pipeline had as a
@@ -126,14 +125,14 @@ def test_1362_the_claim_and_the_module_agree(tmp_path: Path) -> None:
     counts that guard.  Asserting the old "no guard, `-7` flows through"
     here would now be asserting the defect.
     """
-    wat = _wat(tmp_path, _1362_REPRO)
-    assert wat.startswith("(module"), wat[:300]
-    assert signal_call_pattern("nat_guard").search(wat), (
-        "the module carries no sign guard, so the `tier3` record above "
-        f"claims a check that is not there:\n{wat}"
-    )
     p = tmp_path / "r.vera"
     p.write_text(_1362_REPRO, encoding="utf-8")
+    compiled = pipeline.compile(p, budget_s=_BUDGET_S)
+    assert compiled.ok, [d.description[:200] for d in compiled.errors]
+    assert compiled.checks(kind="nat_guard"), (
+        "the module carries no sign guard, so the `tier3` record above "
+        f"claims a check that is not there: {compiled.checks()}"
+    )
     run = pipeline.cli("run", str(p), "--fn", "f", "--", "-7", budget_s=_BUDGET_S)
     assert run.returncode != 0, (
         f"the binder admitted `-7`: {run.stdout!r} {run.stderr[-300:]!r}"

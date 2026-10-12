@@ -28,10 +28,13 @@ the actual runtime guard, site for site.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from tests import pipeline
 from tests.codegen_helpers import wat_calls, wat_fn_names
+from tests.pipeline import checks
 from vera.codegen.api import CompileResult
 
 from collections.abc import Iterator
@@ -113,7 +116,7 @@ def _return_nat_bind_statuses(source: str) -> list[str]:
     """The status of every ``nat_bind`` obligation the verifier emits.
 
     Threads ``file=`` + ``resolved_modules=`` through BOTH typecheck and verify,
-    exactly as the ``_run`` / ``_statuses_and_wat`` siblings do (the 48cbc1f
+    exactly as the ``_run`` / ``_statuses_and_module`` siblings do (the 48cbc1f
     fidelity principle) — a bare ``verify(program, source)`` skipped the
     side-tables the CLI supplies.  The corpus shapes below have exactly ONE @Nat
     narrowing site — the return slot — so every ``nat_bind`` obligation is the
@@ -121,14 +124,14 @@ def _return_nat_bind_statuses(source: str) -> list[str]:
     return [o.status for o in _verified(source).obligations if o.kind == _KIND]
 
 
-def _statuses_and_wat(source: str) -> tuple[list[str], str]:
+def _statuses_and_module(source: str) -> tuple[list[str], CompileResult]:
     """Verify AND compile the SAME program, as ``vera verify`` and ``vera
-    compile`` do, returning the ``nat_bind`` statuses and the compiled WAT — so
+    compile`` do, returning the ``nat_bind`` statuses and the compiled module — so
     a single call cross-checks the verifier's tier verdict against the codegen
     guard it promises (the tier3 quadrant of the differential: verify says
     ``tier3`` / promises a runtime guard, codegen must emit one)."""
     statuses = [o.status for o in _verified(source).obligations if o.kind == _KIND]
-    return statuses, _compiled(source).wat
+    return statuses, _compiled(source)
 
 
 def _run(source: str, fn: str, arg: int) -> int | None:
@@ -284,7 +287,8 @@ class TestNatReturnNarrowingDifferential758:
         can never mean "promised but never emitted" (the alias-blind gate's
         exact soundness gap: verify obligated ``tier3`` while codegen emitted
         nothing through the alias)."""
-        statuses, wat = _statuses_and_wat(source)
+        statuses, module = _statuses_and_module(source)
+        wat = module.wat
         assert statuses == ["tier3"], (
             f"{label}: expected a single tier3 return nat_bind, got {statuses}"
         )
@@ -535,8 +539,12 @@ class TestClosureNarrowingBoundary984:
         closure's WAT, plus behavior: 5 round-trips, 0 takes the clamping arm.
         (Pre-#1032 this pinned ZERO guards of any kind, on the then-false
         assumption that a boundary guard existed at the call/return site.)"""
-        statuses, wat = _statuses_and_wat(_CLOSURE_REFINED)
-        anon = wat[wat.index("(func $anon_"):]
+        statuses, module = _statuses_and_module(_CLOSURE_REFINED)
+        wat = module.wat
+        header = re.search(r"\(func \$(anon_[^\s()]*)", wat)
+        assert header is not None, wat[:400]
+        lifted = header.group(1)
+        anon = wat[header.start():]
         depth = 0
         for i, ch in enumerate(anon):
             if ch == "(":
@@ -557,9 +565,10 @@ class TestClosureNarrowingBoundary984:
         # ...and exactly ONE refinement guard: the #1032 return-value check.
         # 0 would be the pre-#1032 silent leak; 2+ would be double-guarding
         # (e.g. the #984 gate un-excluded, or the return guard emitted twice).
-        assert anon.count("call $vera.contract_fail") == 1, (
+        guards = checks(module, kind="contract_violation", function=lifted)
+        assert len(guards) == 1, (
             f"expected exactly one refinement return guard in the lifted "
-            f"body, found {anon.count('call $vera.contract_fail')}"
+            f"body, found {len(guards)}: {guards}"
         )
         assert _run(_CLOSURE_REFINED, "go", 5) == 5
         # 0 takes the else arm and returns the clamped 1 — the body never
@@ -747,7 +756,8 @@ class TestApplyFnArgNarrowingDifferential1017:
         guard in the applying function — so `guarded=True` can never mean
         "promised but never emitted" (the false-tier3 soundness hole this whole
         differential exists to catch)."""
-        statuses, wat = _statuses_and_wat(source)
+        statuses, module = _statuses_and_module(source)
+        wat = module.wat
         assert statuses == ["tier3"], (
             f"{label}: expected a single tier3 arg nat_bind, got {statuses}"
         )
@@ -1274,12 +1284,12 @@ class TestRefinedNonPlainBaseParity1036:
             f"the return boundary discloses unguarded: {statuses}"
         )
         with _resolved_pipeline(_NONPLAIN_NAMED_RET) as (prog, arts, res, path):
-            wat = codegen_compile(
+            module = codegen_compile(
                 prog, source=_NONPLAIN_NAMED_RET, file=path,
                 resolved_modules=res,
                 expr_semantic_types=arts.expr_semantic_types,
-            ).wat
-        assert "call $vera.contract_fail" in wat, (
+            )
+        assert checks(module, kind="contract_violation"), (
             "the classification claims a guard the emitted module lacks"
         )
 

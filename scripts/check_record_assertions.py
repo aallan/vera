@@ -77,8 +77,6 @@ _OTHER_COLUMNS = (
     "names the import, and asks the text nothing"
 )
 
-_MIGRATING = "moves to the record in the pull request that adds this gate"
-
 #: The gate's own tests, which the scan skips: every site in them is source
 #: text planted for the gate to find.
 SELF_TEST = "tests/test_check_record_assertions.py"
@@ -132,77 +130,6 @@ KEPT: Mapping[str, str] = {
     "test_builtin_helpers_tagged_as_builtin::contract_fail": _HOST_NAMES,
     "tests/test_runtime_traps.py::TestSourceMapPopulation516."
     "test_no_spurious_entries_for_builtins::contract_fail": _HOST_NAMES,
-    # MIGRATING: each file's sites leave as the file moves to the record.
-    'tests/test_boundary_guard_correctness_1466.py::test_1439_a_state_write_over_a_handle_base_carries_its_guard::contract_fail':
-        _MIGRATING,
-    'tests/test_boundary_guard_correctness_1466.py::test_a_state_write_claims_exactly_the_guard_it_emits::contract_fail':
-        _MIGRATING,
-    'tests/test_boundary_guard_correctness_1466.py::test_the_record_and_registration_agree_about_a_state_cell::contract_fail':
-        _MIGRATING,
-    'tests/test_clause_binder_guard_1445.py::test_the_site_table_moves_both_halves_together::contract_fail':
-        _MIGRATING,
-    'tests/test_construction_guards_1426.py::TestAStoreAfterADestructureIsStillRecorded.test_the_store_is_recorded_wherever_it_is_guarded::contract_fail':
-        _MIGRATING,
-    'tests/test_construction_guards_1426.py::test_the_guard_is_in_the_module_not_only_in_the_run::contract_fail':
-        _MIGRATING,
-    'tests/test_exn_throw_payload_1268.py::TestARefinementDoesNotDisableTheWideningGuard.test_both_guards_are_emitted::contract_fail':
-        _MIGRATING,
-    'tests/test_family_naming.py::test_refined_nat_cell_emits_the_same_write_guards_as_its_base::contract_fail':
-        _MIGRATING,
-    'tests/test_family_naming.py::test_refined_nat_cell_emits_the_same_write_guards_as_its_base::signal_call_pattern':
-        _MIGRATING,
-    'tests/test_guard_completeness.py::TestARefinedIntElementCountsItsWideningGuardToo.test_and_the_module_really_does_guard_it.traps::signal_call_pattern':
-        _MIGRATING,
-    'tests/test_guard_completeness.py::TestNonPlainTypeArgBasesAreGuarded1036.test_a_function_typed_argument_base_is_guarded_too::contract_fail':
-        _MIGRATING,
-    'tests/test_guard_completeness.py::TestTheNarrowingGuardNamesItself754.test_the_signal_declares_its_own_import::signal_call_pattern':
-        _MIGRATING,
-    'tests/test_guard_completeness.py::TestTupleComponentSitesAreGuarded1416.test_the_construction_narrowing_is_guarded_at_the_store::signal_call_pattern':
-        _MIGRATING,
-    'tests/test_hetero_widen_tailcall.py::TestFix1DeadGuardUnderTailCall.test_match_tailcall_arm_wat_plain_call_then_live_guard::signal_call_pattern':
-        _MIGRATING,
-    'tests/test_nat_narrowing_return_differential.py::TestClosureNarrowingBoundary984.test_refined_return_single_guard_no_double::contract_fail':
-        _MIGRATING,
-    'tests/test_nat_narrowing_return_differential.py::TestRefinedNonPlainBaseParity1036.test_the_return_position_carries_the_guard_too::contract_fail':
-        _MIGRATING,
-    'tests/test_nested_container_guards.py::_ALL_CELLS::_cells':
-        _MIGRATING,
-    'tests/test_nested_container_guards.py::_CELLS::_ALL_CELLS':
-        _MIGRATING,
-    'tests/test_nested_container_guards.py::_GAP_CELLS::_ALL_CELLS':
-        _MIGRATING,
-    'tests/test_nested_container_guards.py::_LEAVES::_trap_kind':
-        _MIGRATING,
-    'tests/test_nested_container_guards.py::_LEAVES::contract_fail':
-        _MIGRATING,
-    'tests/test_nested_container_guards.py::_cells::_LEAVES':
-        _MIGRATING,
-    'tests/test_nested_container_guards.py::_trap_kind::vera.trap':
-        _MIGRATING,
-    'tests/test_nested_container_guards.py::test_a_map_value_outside_a_let_is_guarded_but_not_yet_recorded::_GAP_CELLS':
-        _MIGRATING,
-    'tests/test_nested_container_guards.py::test_a_map_value_outside_a_let_is_guarded_but_not_yet_recorded::_LEAVES':
-        _MIGRATING,
-    'tests/test_nested_container_guards.py::test_every_recorded_guard_is_emitted_and_every_emitted_guard_recorded::_ALL_CELLS':
-        _MIGRATING,
-    'tests/test_nested_container_guards.py::test_every_recorded_guard_is_emitted_and_every_emitted_guard_recorded::_LEAVES':
-        _MIGRATING,
-    'tests/test_nested_container_guards.py::test_the_matrix_covers_every_position_and_depth::_ALL_CELLS':
-        _MIGRATING,
-    'tests/test_nested_container_guards.py::test_the_matrix_covers_every_position_and_depth::_CELLS':
-        _MIGRATING,
-    'tests/test_nested_container_guards.py::test_the_matrix_covers_every_position_and_depth::_LEAVES':
-        _MIGRATING,
-    'tests/test_overflow_fails_closed_1417.py::test_an_unnameable_width_is_guarded_as_int::signal_call_pattern':
-        _MIGRATING,
-    'tests/test_overflow_fails_closed_1417.py::test_the_table_less_fallback_still_names_a_width::signal_call_pattern':
-        _MIGRATING,
-    'tests/test_verifier_truth_consult_status.py::test_1362_the_claim_and_the_module_agree::signal_call_pattern':
-        _MIGRATING,
-    'tests/test_widen_trap_kind_1438.py::TestTheWideningGuardNamesItself.test_a_widening_inside_a_closure_body_still_links::signal_call_pattern':
-        _MIGRATING,
-    'tests/test_widen_trap_kind_1438.py::TestTheWideningGuardNamesItself.test_the_wasi_component_wires_the_shim_and_still_instantiates::signal_call_pattern':
-        _MIGRATING,
 }
 
 
