@@ -949,7 +949,7 @@ def _exit_status(code: object) -> int:
     if code is None:
         return 0
     if isinstance(code, int):
-        return code
+        return int(code)  # a bool too: `sys.exit(True)` exits with 1
     print(code, file=sys.stderr)
     return 1
 

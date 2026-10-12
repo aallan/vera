@@ -147,6 +147,19 @@ def test_cli_gives_back_what_it_borrows(monkeypatch: pytest.MonkeyPatch) -> None
     assert "VERA_W24_ABSENT" not in os.environ
 
 
+@pytest.mark.parametrize("code,status,printed", [
+    (None, 0, ""), (0, 0, ""), (3, 3, ""), (True, 1, ""), (False, 0, ""),
+    ("stopped", 1, "stopped\n"),
+])
+def test_an_exit_code_becomes_the_status_python_exits_with(
+    code: object, status: int, printed: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    got = pipeline._exit_status(code)
+    assert (got, type(got)) == (status, int)
+    assert capsys.readouterr().err == printed
+
+
 def test_cli_hands_the_command_its_stdin_and_environment(tmp_path: Path) -> None:
     program = tmp_path / "echo.vera"
     program.write_text(
