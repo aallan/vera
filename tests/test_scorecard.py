@@ -620,6 +620,13 @@ class TestAFailedRequest:
         with pytest.raises(SC.MeasureError, match="could not read"):
             SC.fetch_json("http://127.0.0.1:9/nothing")
 
+    def test_a_response_of_another_shape_is_a_measure_error(self) -> None:
+        """An answer without the fields the readers take, such as a listing
+        with no `workflow_runs`, is a reason the render states, not a
+        traceback."""
+        with pytest.raises(SC.MeasureError, match="not in the shape"):
+            SC.github_values(lambda _url: {}, lambda _url: {}, now=_RECORDED_AT)
+
 
 # ---------------------------------------------------------------------------
 # The junit file's rows
@@ -655,6 +662,13 @@ class TestTheJunitRows:
         broken.write_text("<testsuites><testsuite", encoding="utf-8")
         with pytest.raises(SC.MeasureError):
             SC.junit_values(broken)
+
+    def test_a_time_that_is_not_a_number_is_refused(self, tmp_path: Path) -> None:
+        text = (_FIXTURES / "junit.xml").read_text(encoding="utf-8")
+        odd = tmp_path / "odd.xml"
+        odd.write_text(text.replace('time="1.235"', 'time="soon"'), encoding="utf-8")
+        with pytest.raises(SC.MeasureError, match="not a junit file pytest wrote"):
+            SC.junit_values(odd)
 
 
 class TestTheCensus:

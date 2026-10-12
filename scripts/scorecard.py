@@ -888,8 +888,16 @@ def github_values(
 ) -> dict[str, tuple[str, str]]:
     """The network's rows: each one's value now and the window it was
     measured over, by key.  Raises `MeasureError` when a source cannot be
-    read."""
-    now = now or datetime.now(timezone.utc)
+    read, or answers in a shape these readers do not know."""
+    try:
+        return _github_values(get, codecov, now or datetime.now(timezone.utc))
+    except (KeyError, IndexError, TypeError, ValueError, AttributeError) as exc:
+        raise MeasureError(
+            f"a response is not in the shape scripts/scorecard.py reads: {exc!r}"
+        ) from exc
+
+
+def _github_values(get: Get, codecov: Get, now: datetime) -> dict[str, tuple[str, str]]:
     tracker = f"the tracker, {now:%Y-%m-%d %H:%M} UTC"
     values = {
         "soundness_bugs": (f"{open_issues(get, 'bug,soundness'):,}", tracker),
@@ -951,16 +959,19 @@ def read_junit(path: Path) -> JunitRun:
     if not stamps:
         raise MeasureError(f"{path} holds no junit testsuite with a timestamp")
     tests, seconds, spawning, census = 0, 0.0, 0.0, False
-    for case in document.iter("testcase"):
-        time = float(case.get("time") or 0)
-        tests += 1
-        seconds += time
-        for prop in case.iter("property"):
-            if prop.get("name") == CENSUS:
-                census = True
-                if int(prop.get("value") or 0) > 0:
-                    spawning += time
-    started = min(_time(str(stamp)) for stamp in stamps)
+    try:
+        for case in document.iter("testcase"):
+            time = float(case.get("time") or 0)
+            tests += 1
+            seconds += time
+            for prop in case.iter("property"):
+                if prop.get("name") == CENSUS:
+                    census = True
+                    if int(prop.get("value") or 0) > 0:
+                        spawning += time
+        started = min(_time(str(stamp)) for stamp in stamps)
+    except ValueError as exc:
+        raise MeasureError(f"{path} is not a junit file pytest wrote: {exc}") from exc
     return JunitRun(started, tests, seconds, spawning, census)
 
 
