@@ -117,8 +117,9 @@
 			"match": "\\b(MdBlock|MdInline|UrlParts|HtmlNode)\\b"
 		},
 		{
+			"comment": "render_lists:effects",
 			"name": "entity.name.type.effect.vera",
-			"match": "\\b(IO|State|Exn|HttpServer|Http|Async|Diverge|Inference|Random|DB)\\b"
+			"match": "\\b(Async|DB|Diverge|Exn|HttpServer|Http|IO|Inference|Random|State)\\b"
 		},
 		{
 			"match": "\\b([A-Z][A-Za-z0-9_]*)(\\.)([a-z_][a-z_0-9]*)\\b",

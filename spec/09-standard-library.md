@@ -2763,6 +2763,7 @@ Ability operations are compiled via two mechanisms:
 
 The standard library and built-in effects have the following limitations, each tracked as a GitHub issue:
 
+<!-- render_lists:begin limitations -->
 | Limitation | Issue |
 |-----------|-------|
 | No date or time handling beyond `IO.time` — no ISO 8601 parsing, formatting, or arithmetic | [#233](https://github.com/aallan/vera/issues/233) |
@@ -2777,3 +2778,4 @@ The standard library and built-in effects have the following limitations, each t
 | `Inference`: no `embed` operation (vector embeddings) | [#371](https://github.com/aallan/vera/issues/371) |
 | `Inference`: no user-defined handlers — `handle[Inference]` is rejected | [#372](https://github.com/aallan/vera/issues/372) |
 | Host imports cannot return `Array<Float64>` (`alloc_result_ok_float_array` infrastructure) | [#373](https://github.com/aallan/vera/issues/373) |
+<!-- render_lists:end limitations -->
