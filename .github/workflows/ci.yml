@@ -91,8 +91,10 @@ jobs:
   # (tests/shard.py), so the shards are the suite between them and no
   # durations file needs keeping.  Each shard runs the class-instrument
   # matrices' weekly sample, and every cell of one whose file or deciding
-  # module the pull request changes, from the plan job's list.  Every cell's
-  # name is a required check.
+  # module the pull request changes, from the plan job's list.  A shard's
+  # xdist workers steal queued tests from one another (--dist worksteal),
+  # so a worker left with two long tests does not hold the shard's end.
+  # Every cell's name is a required check.
   shard:
     name: test (${{ matrix.os }}, 3.12, shard ${{ matrix.shard }}/${{ matrix.shards }})
     needs: plan
