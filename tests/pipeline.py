@@ -51,6 +51,12 @@ worker was running (:func:`_budget`).
 whatever it is for (#1185): a module that holds a ``call_indirect`` declares
 a function table.
 
+``checks`` (and ``Compiled.checks``) reads the runtime checks a compiled
+module holds from its record, ``CompileResult.emitted_checks``, by trap kind,
+emitter, obligation, function, path or prelude: the one way a test asks
+whether a module holds a check.  The WAT text answers how a check is
+rendered.
+
 Three options name the configurations the CLI never runs, which some suites
 measure on purpose:
 
@@ -113,6 +119,7 @@ from vera.runtime.traps import WasmTrapError
 from vera.tester import TestResult
 from vera.tester import test as _test_program
 from vera.transform import transform
+from vera.trap_registry import TRAP_EMITTERS, EmittedCheck
 from vera.verifier import VerifyResult
 from vera.verifier import verify as _verify_program
 
@@ -133,6 +140,7 @@ __all__ = [
     "Verified",
     "assert_no_orphan_call_indirect",
     "check",
+    "checks",
     "cli",
     "compile",
     "contract_test",
@@ -588,6 +596,76 @@ def assert_no_orphan_call_indirect(wat: str) -> None:
         )
 
 
+#: Each function a module defines, as its ``(func $name`` header spells it.
+_FUNC_DEF_RE = re.compile(r"(?m)^\s*\(func \$([^\s()]+)")
+
+#: What a recorded check can carry: the kinds, emitters and obligation kinds
+#: of the emitters that record each check they emit (``TrapEmitter.per_site``).
+_RECORDING = [row for row in TRAP_EMITTERS.values() if row.per_site]
+_RECORDED: dict[str, frozenset[str]] = {
+    "kind": frozenset(row.kind for row in _RECORDING),
+    "emitter": frozenset(row.emitter for row in _RECORDING),
+    "obligation": frozenset(o for row in _RECORDING for o in row.obligations),
+}
+
+
+def checks(
+    result: CompileResult,
+    *,
+    kind: str | None = None,
+    emitter: str | None = None,
+    obligation: str | None = None,
+    function: str | None = None,
+    path: tuple[str, ...] | None = None,
+    prelude: bool | None = None,
+) -> tuple[EmittedCheck, ...]:
+    """The runtime checks *result* holds that match every filter given.
+
+    The record of the checks a compiled module holds is
+    ``CompileResult.emitted_checks``: each check's trap kind, its emitter
+    (a ``vera.trap_registry.TRAP_EMITTERS`` key), the obligation kinds it is
+    the runtime half of, the function it sits in and the path of the value it
+    checks.  A test asks the record whether a module, or one of its
+    functions, holds a check, which one and how many: a presence is a
+    non-empty answer, a count its length, an absence ``== ()``.  It asks the
+    WAT text only how a check is rendered: which instructions, which import,
+    which message, in which order.  The record is read back from the
+    assembled module, and ``tests/test_emitted_checks_1479.py``
+    (``test_the_record_matches_the_signals_in_the_module``,
+    ``_record_mismatches``) and, over the corpus, ``tests/test_named_traps_1479.py``
+    (``test_the_record_matches_every_signal_the_corpus_emits``) hold it to
+    the signals the text calls.  ``scripts/check_record_assertions.py``
+    fails a test that asks the text what the record answers.
+
+    Each filter is an equality, bar *obligation*, which keeps a check that
+    is the runtime half of that obligation kind.  *function* is the function
+    as the record spells it: a declaration's symbol, a monomorphised clone's
+    (``f$Int``), a lifted closure's (``anon_0``).  A *kind*, *emitter* or
+    *obligation* no recorded check can carry raises ``ValueError``, and a
+    *function* the module does not define raises ``AssertionError``, so a
+    misspelt filter cannot make an absence hold.
+    """
+    for name, value in (("kind", kind), ("emitter", emitter),
+                        ("obligation", obligation)):
+        if value is not None and value not in _RECORDED[name]:
+            raise ValueError(
+                f"no recorded check carries the {name} {value!r}; the "
+                f"emitters that record their checks carry "
+                f"{sorted(_RECORDED[name])}")
+    if function is not None and function not in _FUNC_DEF_RE.findall(result.wat):
+        raise AssertionError(
+            f"the module defines no `(func ${function} …)`, so no check sits "
+            f"in it and an absence asked of it would hold vacuously")
+    return tuple(
+        c for c in result.emitted_checks
+        if (kind is None or c.kind == kind)
+        and (emitter is None or c.emitter == emitter)
+        and (obligation is None or obligation in c.obligations)
+        and (function is None or c.function == function)
+        and (path is None or c.path == tuple(path))
+        and (prelude is None or c.prelude is prelude))
+
+
 @dataclass(frozen=True)
 class Compiled:
     """``check`` (or ``parse`` alone, unchecked), then code generation."""
@@ -644,6 +722,22 @@ class Compiled:
     @property
     def exports(self) -> list[str]:
         return self.result.exports
+
+    def checks(
+        self,
+        *,
+        kind: str | None = None,
+        emitter: str | None = None,
+        obligation: str | None = None,
+        function: str | None = None,
+        path: tuple[str, ...] | None = None,
+        prelude: bool | None = None,
+    ) -> tuple[EmittedCheck, ...]:
+        """:func:`checks` over this module's record; raises what stopped the
+        check, if it did, as :attr:`result` does."""
+        return checks(self.result, kind=kind, emitter=emitter,
+                      obligation=obligation, function=function, path=path,
+                      prelude=prelude)
 
     def envelope(self) -> dict[str, Any]:
         """What ``vera compile --json`` prints for this program, built by the

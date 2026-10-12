@@ -180,6 +180,13 @@ repos:
         pass_filenames: false
         files: '(tests/.*\.py$|scripts/check_test_drivers\.py$)'
 
+      - id: record-assertions
+        name: record assertions
+        entry: .venv/bin/python scripts/check_record_assertions.py
+        language: system
+        pass_filenames: false
+        files: '(tests/.*\.py$|scripts/check_record_assertions\.py$)'
+
       - id: diagnostic-fields
         name: diagnostic fields
         entry: .venv/bin/python scripts/check_diagnostic_fields.py

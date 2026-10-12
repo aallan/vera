@@ -20,10 +20,7 @@ from tests.codegen_helpers import (
     _run,
 )
 from tests.module_fixture_helpers import fake_resolved_module
-from vera.trap_registry import signal_call_pattern
-
-#: The nat_sub guard's own signal (#1479).
-_NAT_UNDERFLOW = signal_call_pattern("nat_underflow")
+from tests.pipeline import checks
 
 
 # =====================================================================
@@ -305,12 +302,16 @@ public fn main(@Unit -> @Nat)
         if body_end < 0:
             body_end = len(wat)
         body = wat[countdown_idx:body_end]
-        # The guard's own comparison and signal (#1479), not tokens another
-        # check in the body could supply.
-        assert "i64.lt_u" in body and _NAT_UNDERFLOW.search(body), (
-            f"Expected the @Nat.0 - 1 underflow guard "
-            f"(i64.lt_u + the nat_underflow signal) inside countdown body, "
-            f"got: {body!r}"
+        # The guard's own comparison, in the text, and its own check, in the
+        # module's record (#1479): not tokens another check in the body could
+        # supply.
+        assert "i64.lt_u" in body, (
+            f"Expected the @Nat.0 - 1 underflow guard's i64.lt_u inside "
+            f"countdown body, got: {body!r}"
+        )
+        assert checks(result, kind="nat_underflow", function="countdown"), (
+            f"Expected the @Nat.0 - 1 underflow guard's nat_underflow check "
+            f"in countdown, got: {body!r}"
         )
 
     def test_modulecall_provenance_emits_guard_and_traps(self) -> None:
@@ -362,9 +363,13 @@ public fn main(@Unit -> @Nat)
         if body_end < 0:
             body_end = len(wat)
         body = wat[fn_idx:body_end]
-        assert "i64.lt_u" in body and _NAT_UNDERFLOW.search(body), (
-            f"Expected the underflow guard for ModuleCall-provenance "
+        assert "i64.lt_u" in body, (
+            f"Expected the underflow guard's i64.lt_u for ModuleCall-provenance "
             f"@Nat - @Nat inside unsafe_modcall body, got: {body!r}"
+        )
+        assert checks(result, kind="nat_underflow", function="unsafe_modcall"), (
+            f"Expected the underflow guard's nat_underflow check for "
+            f"ModuleCall-provenance @Nat - @Nat in unsafe_modcall, got: {body!r}"
         )
 
         # Behavioural assertion: unsafe_modcall(0, 5) produces
@@ -442,9 +447,13 @@ public fn main(@Unit -> @Nat)
         if body_end < 0:
             body_end = len(wat)
         body = wat[fn_idx:body_end]
-        assert "i64.lt_u" in body and _NAT_UNDERFLOW.search(body), (
-            f"Expected the underflow guard for rhs-only-provenance "
+        assert "i64.lt_u" in body, (
+            f"Expected the underflow guard's i64.lt_u for rhs-only-provenance "
             f"`0 - @Nat.0` inside lit_minus_slot body, got:\n{body}"
+        )
+        assert checks(result, kind="nat_underflow", function="lit_minus_slot"), (
+            f"Expected the underflow guard's nat_underflow check for "
+            f"rhs-only-provenance `0 - @Nat.0` in lit_minus_slot, got:\n{body}"
         )
 
         # Behavioural assertion: lit_minus_slot(1) → 0 - 1 → trap.
@@ -1310,7 +1319,7 @@ public fn f(@Int -> @Pos)
         (the item-1c mutation)."""
         result = _compile_ok(self._ALIAS_TO_REFINEMENT)
         body = _fn_body(result.wat, "f")
-        assert "vera.contract_fail" in body, (
+        assert checks(result, kind="contract_violation", function="f"), (
             f"expected the refinement boundary guard:\n{body}"
         )
         assert "i64.lt_s" not in body, (
@@ -1437,8 +1446,9 @@ public fn f(@Int -> @Grown)
         the leaf collector returns empty, and the assertion held with the
         conjunct gone.  A control that cannot go red is not a control.
         """
-        body = _fn_body(_compile_ok(self._REFINED_OVER_APPLICATION).wat, "f")
-        assert "vera.contract_fail" in body, body
+        result = _compile_ok(self._REFINED_OVER_APPLICATION)
+        body = _fn_body(result.wat, "f")
+        assert checks(result, kind="contract_violation", function="f"), body
         assert "i64.lt_s" not in body, body
 
 
