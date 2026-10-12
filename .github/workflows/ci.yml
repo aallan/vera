@@ -127,7 +127,7 @@ jobs:
       - name: Run tests
         env:
           VERA_MATRIX_CHANGED: ${{ needs.plan.outputs.changed }}
-        run: pytest -v -n 4 --shard=${{ matrix.shard }}/${{ matrix.shards }}
+        run: pytest -v -n 4 --dist worksteal --shard=${{ matrix.shard }}/${{ matrix.shards }}
 
   # The full OS x Python matrix: on a pull request that raises
   # [project].version, on the push event its merge produces on main (a
