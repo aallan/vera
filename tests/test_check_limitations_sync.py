@@ -522,11 +522,16 @@ class TestTheIssuesItQueries:
         assert _MOD.main([], root=_sources(tmp_path)) == 0
 
     def test_the_shipped_sources_are_readable(self) -> None:
-        """Every issue the shipped tables cite is one the check reads: the
-        data file's and both Bugs tables', none of them unreadable."""
-        listed, errors = _MOD.issues_to_check(_SCRIPT.parent.parent)
+        """The shipped data file and both Bugs headings read without an
+        error, and every issue a record names is one the check asks about,
+        listed under each table that carries it."""
+        root = _SCRIPT.parent.parent
+        listed, errors = _MOD.issues_to_check(root)
         assert errors == []
-        assert 294 in listed and 1501 in listed and 1555 in listed
+        data = json.loads((root / "limitations.json").read_text(encoding="utf-8"))
+        for record in data["limitations"]:
+            for number in record["issues"]:
+                assert set(record["rows"]) <= set(listed[number]), (number, record["id"])
 
 
 class TestIssueColumnScoping:

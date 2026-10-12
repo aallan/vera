@@ -392,10 +392,13 @@ class TestEffects:
     @pytest.mark.parametrize("path", [VSCODE, TEXTMATE])
     def test_no_name_is_shadowed_in_a_shipped_grammar(self, path: str) -> None:
         """`Http` does not match inside `HttpServer`, `HttpServer` does not
-        swallow `Http`, and every effect the registry lists matches as
-        itself in the grammar that ships."""
+        swallow `Http`, and every name the shipped grammar lists matches as
+        itself.  The names are the grammar's own: whether they are the
+        registry's is the release's freshness check, not this one's."""
         pattern = _effect_regex(path, (ROOT / path).read_text(encoding="utf-8"))
-        names = RL.effect_names()
+        group = re.fullmatch(r"\\b\((.*)\)\\b", pattern)
+        assert group is not None, pattern
+        names = group.group(1).split("|")
         assert {"Http", "HttpServer"} <= set(names)
         _assert_unshadowed(pattern, names)
         assert re.findall(pattern, "HttpServer") == ["HttpServer"]
