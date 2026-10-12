@@ -32,7 +32,10 @@ the order the CLI reports them, the artefact the stage made (the typed
 program, the verification result with its obligations, the compiled module
 with its WAT and bytes, the execution's value and output or its trap), and
 ``envelope()``, the JSON object ``vera <stage> --json`` prints for the same
-input.  An artefact the stage did not make is not there to read: reading it
+input, which the stage builds with the functions the command builds it with
+(``vera.cli``'s ``diagnostics_envelope``, ``verify_envelope`` and the rest),
+so there is one serialisation of each to read.  An artefact the stage did
+not make is not there to read: reading it
 raises what stopped the stage, the parse or transform error itself, the
 trap itself, or :class:`StageFailed` naming the errors of a stage that
 refused the program.  A compiler crash is never a result: it propagates.
@@ -80,13 +83,22 @@ from typing import Any
 
 from vera import ast
 from vera.checker import CheckArtifacts, typecheck_with_artifacts
+from vera.cli import (
+    compile_envelope,
+    compile_failure_envelope,
+    diagnostics_envelope,
+    no_exports_message,
+    run_envelope,
+    run_refusal_envelope,
+    trap_envelope,
+    verify_envelope,
+)
 from vera.codegen import CodeGenerator, CompileResult, ExecuteResult, execute
 from vera.codegen.api import HttpRequestData
 from vera.errors import Diagnostic, VeraError
 from vera.parser import parse as _parse_tree
 from vera.resolver import ModuleResolver, ResolvedModule
 from vera.runtime.traps import WasmTrapError
-from vera.smt import resolve_timeout_ms
 from vera.tester import TestResult
 from vera.tester import test as _test_program
 from vera.transform import transform
@@ -266,12 +278,7 @@ class Checked:
 
     def envelope(self) -> dict[str, Any]:
         """What ``vera check --json`` prints for this program."""
-        return {
-            "ok": self.ok,
-            "file": self.file,
-            "diagnostics": [d.to_dict() for d in self.errors],
-            "warnings": [d.to_dict() for d in self.warnings],
-        }
+        return diagnostics_envelope(self.file, self.errors, self.warnings)
 
 
 def _resolve(
@@ -371,46 +378,15 @@ class Verified:
         return list(self.result.obligations)
 
     def envelope(self) -> dict[str, Any]:
-        """What ``vera verify --json`` prints for this program."""
+        """What ``vera verify --json`` prints for this program: the check's
+        envelope when verification did not run, and the verifier's
+        otherwise, built by the functions the command builds them with."""
         if self._result is None:
-            if not self.checked.parsed.ok:
-                return self.checked.envelope()
-            return {
-                "ok": False,
-                "file": self.checked.file,
-                "diagnostics": [d.to_dict() for d in self.checked.errors],
-                "warnings": [d.to_dict() for d in self.checked.warnings],
-            }
-        result = self._result
-        label = self.checked.file
-        summary = result.summary
-        return {
-            "ok": not self.errors,
-            "file": label,
-            "diagnostics": [d.to_dict() for d in self.errors],
-            "warnings": [d.to_dict() for d in self.warnings],
-            "verification": {
-                "tier1_verified": summary.tier1_verified,
-                "tier3_runtime": summary.tier3_runtime,
-                "total": summary.total,
-                "assumptions": summary.assumptions,
-                "timeout_ms": resolve_timeout_ms(self.timeout_ms),
-            },
-            "obligations": [
-                {
-                    "kind": o.kind,
-                    "status": o.status,
-                    "description": o.expr_text,
-                    "location": {
-                        "line": o.line,
-                        "column": o.column,
-                        **({"file": o.file or label} if label else {}),
-                    },
-                    **({"error_code": o.error_code} if o.error_code else {}),
-                }
-                for o in result.obligations
-            ],
-        }
+            return self.checked.envelope()
+        return verify_envelope(
+            self.checked.file, self._result, self.errors, self.warnings,
+            timeout_ms=self.timeout_ms, default_file=self.checked.file,
+        )
 
 
 def verify(
@@ -543,56 +519,24 @@ class Compiled:
         return self.result.exports
 
     def envelope(self) -> dict[str, Any]:
-        """What ``vera compile --json`` prints for this program."""
+        """What ``vera compile --json`` prints for this program, built by the
+        functions the command builds it with: the refusal of the stage that
+        refused it, the refusal of a module that exports nothing, or the
+        module's exports."""
         label = self.parsed.file
         if self._result is None:
             if self.checked is None or not self.parsed.ok:
-                return {
-                    "ok": False, "file": label,
-                    "diagnostics": [d.to_dict() for d in self.parsed.diagnostics],
-                    "warnings": [],
-                }
-            return {
-                "ok": False, "file": label,
-                "diagnostics": [d.to_dict() for d in self.checked.errors],
-                "warnings": [d.to_dict() for d in self.checked.warnings],
-            }
+                return diagnostics_envelope(label, self.parsed.diagnostics, ())
+            return self.checked.envelope()
         result = self._result
-        warnings = [d.to_dict() for d in self.warnings]
         if self.errors:
-            return {
-                "ok": False, "file": label,
-                "diagnostics": [d.to_dict() for d in _errors(result.diagnostics)],
-                "warnings": warnings,
-            }
-        entries = [
-            tld.decl.name for tld in self.parsed.program.declarations
-            if isinstance(tld.decl, ast.FnDecl)
-            and tld.visibility == "public" and not tld.decl.forall_vars
-        ]
-        if entries and not result.exports:
-            declared = "".join(f"  - {n}\n" for n in entries)
-            return {
-                "ok": False, "file": label, "exports": [],
-                "diagnostics": [{
-                    "severity": "error",
-                    "description": (
-                        "No exported functions — the compiled module has no "
-                        "entry points.\n"
-                        f"\nDeclared public functions:\n{declared}"
-                        "\nA public function whose body (or a callee's body) "
-                        "could not be compiled is dropped from the module "
-                        "with a diagnostic above; fix the reported construct "
-                        "to restore the export."
-                    ),
-                    "location": {"line": 0, "column": 0},
-                }],
-                "warnings": warnings,
-            }
-        return {
-            "ok": True, "file": label, "exports": result.exports,
-            "diagnostics": [], "warnings": warnings,
-        }
+            return diagnostics_envelope(
+                label, _errors(result.diagnostics), self.warnings)
+        no_exports = no_exports_message(self.parsed.program, result.exports)
+        if no_exports is not None:
+            return compile_failure_envelope(
+                label, no_exports, self.warnings, extra={"exports": []})
+        return compile_envelope(label, result.exports, self.warnings)
 
 
 def compile(
@@ -730,51 +674,19 @@ class Ran:
     def envelope(self) -> dict[str, Any]:
         """What ``vera run --json`` prints for a program it runs.
 
-        The compile's refusal, the completed call, or the trap.  ``vera
-        run``'s refusals of an entry it will not call are the CLI's own, and
-        :func:`cli` reports them.
+        The compile's refusal, the completed call, or the trap, built by the
+        functions the command builds them with.  ``vera run``'s refusals of
+        an entry it will not call are the CLI's own, and :func:`cli` reports
+        them.
         """
         label = self.compiled.parsed.file if self.compiled is not None else None
         if self.module is None:
-            return {"ok": False, "file": label,
-                    "diagnostics": [d.to_dict() for d in self._refusal()]}
-        module = self.module
-        notes = [d.to_dict() for d in module.diagnostics
-                 if d.severity == "warning"]
+            return run_refusal_envelope(label, self._refusal())
         if self.trap is not None:
-            trap = self.trap
-            envelope: dict[str, Any] = {
-                "ok": False, "file": label,
-                "diagnostics": [{
-                    "severity": "error",
-                    "description": str(trap),
-                    "trap_kind": trap.kind,
-                    "location": {"line": 0, "column": 0},
-                    "frames": [f.to_dict() for f in trap.frames],
-                    "fix": trap.fix,
-                }],
-            }
-            if trap.stdout:
-                envelope["stdout"] = trap.stdout
-            if trap.stderr:
-                envelope["stderr"] = trap.stderr
-            return envelope
-        execution = self.execution
-        envelope = {
-            "ok": True, "file": label,
-            "function": self.fn or (
-                "main" if "main" in module.exports
-                else module.exports[0] if module.exports else None),
-            "value": execution.value,
-            "stdout": execution.stdout,
-        }
-        if execution.stderr:
-            envelope["stderr"] = execution.stderr
-        if execution.exit_code is not None:
-            envelope["exit_code"] = execution.exit_code
-        if notes:
-            envelope["warnings"] = notes
-        return envelope
+            return trap_envelope(label, self.trap)
+        module = self.module
+        notes = [d for d in module.diagnostics if d.severity == "warning"]
+        return run_envelope(label, self.fn, module.exports, self.execution, notes)
 
 
 def run(

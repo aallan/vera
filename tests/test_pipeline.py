@@ -22,6 +22,8 @@ import json
 import os
 import subprocess
 import sys
+import typing
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 import pytest
@@ -29,7 +31,9 @@ import pytest
 from tests import pipeline
 from vera.codegen import compile as codegen_compile
 from vera.errors import ParseError
+from vera.obligations.core import ObligationStatus
 from vera.runtime.traps import WasmTrapError
+from vera.smt import SmtContext, SmtResult
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFORMANCE = ROOT / "tests" / "conformance"
@@ -163,6 +167,183 @@ def test_the_off_corpus_shapes_are_the_ones_named() -> None:
     dropped = pipeline.compile(_OFF_CORPUS["every-export-dropped"])
     assert dropped.ok and dropped.exports == []
     assert dropped.envelope()["ok"] is False
+
+
+# =====================================================================
+# Every obligation status reaches `vera verify --json` as itself
+# =====================================================================
+
+#: Every status an obligation can have, read from the type that declares
+#: them, so a status added there is a cell below before any program has it.
+_STATUSES: tuple[str, ...] = typing.get_args(ObligationStatus)
+
+_PURE = "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+_POS_INT = "type PosInt = { @Int | @Int.0 > 0 };\n\n"
+
+#: A disclosed callee: `mk`'s narrowing to `@Nat` is neither proved nor
+#: guarded, so its caller's precondition holds only from a disclosed fact.
+_DISCLOSED_CALLEE = (
+    "public fn mk(@Int -> @Option<Nat>)\n" + _PURE
+    + "{\n  int_to_nat(handle[Exn<Int>] {\n"
+    "    throw(@Nat) -> { nat_to_int(@Nat.0) }\n  } in {\n"
+    "    throw(@Int.0)\n  })\n}\n\n"
+    "public fn needs_nonneg(@Int -> @Int)\n"
+    "  requires(@Int.0 >= 0)\n  ensures(true)\n  effects(pure)\n"
+    "{\n  @Int.0\n}\n\n"
+    "public fn use_it(@Int -> @Int)\n" + _PURE
+    + "{\n  match mk(@Int.0) {\n"
+    "    Some(@Nat) -> needs_nonneg(nat_to_int(@Nat.0)),\n"
+    "    None -> 0\n  }\n}\n")
+
+#: For each status, and for each (status, code) pair a test that reads the
+#: verifier's obligations asserts on, a program whose verification records
+#: it.  The corpus records `verified`, `tier3` and an uncoded `violated` and
+#: nothing else, so without these `vera verify --json`'s rendering of the
+#: other statuses and codes would be held by no program at all.
+_STATUS_PROGRAMS: dict[tuple[str, str | None], str] = {
+    ("verified", None): (
+        "public fn f(@Int -> @Int)\n  requires(true)\n"
+        "  ensures(@Int.result == @Int.0)\n  effects(pure)\n{\n  @Int.0\n}\n"),
+    ("violated", "E501"): (
+        "private fn positive(@Int -> @Int)\n"
+        "  requires(@Int.0 > 0)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  @Int.0\n}\n\n"
+        "public fn f(@Int -> @Int)\n" + _PURE + "{\n  positive(0)\n}\n"),
+    ("violated", "E503"): (
+        "public fn f(@Int -> @Nat)\n" + _PURE
+        + "{\n  let @Nat = @Int.0;\n  @Nat.0\n}\n"),
+    ("violated", "E505"): (
+        _POS_INT + "public fn f(@Int -> @Int)\n" + _PURE
+        + "{\n  let @PosInt = @Int.0;\n  @PosInt.0\n}\n"),
+    ("violated", "E507"): (
+        "public fn f(@Int -> @Int)\n"
+        "  requires(@Int.0 > 0)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  assert(@Int.0 < 0);\n  @Int.0\n}\n"),
+    ("violated", "E526"): (
+        "public fn f(@Int -> @Int)\n" + _PURE + "{\n  10 / @Int.0\n}\n"),
+    ("violated", "E536"): (
+        "public fn halve(@Nat -> @Nat)\n"
+        "  requires(@Nat.0 > 9223372036854775807)\n  ensures(true)\n"
+        "  decreases(@Nat.0)\n  effects(pure)\n"
+        "{\n  if @Nat.0 == 0 then {\n    0\n  } else {\n"
+        "    halve(@Nat.0 / 2)\n  }\n}\n"),
+    ("tier3", None): (
+        "public fn f(@Float64 -> @Int)\n" + _PURE
+        + "{\n  float_to_int(@Float64.0)\n}\n"),
+    ("tier3", "E506"): (
+        _POS_INT + "public fn f(@Float64 -> @PosInt)\n" + _PURE
+        + "{\n  float_to_int(@Float64.0)\n}\n"),
+    ("tier3", "E522"): (
+        "public fn bump(@Unit -> @Unit)\n  requires(true)\n"
+        "  ensures(new(State<Int>) == old(State<Int>) + 1)\n"
+        "  effects(<State<Int>>)\n"
+        "{\n  let @Int = get(());\n  put(@Int.0 + 1);\n  ()\n}\n"),
+    ("tier3", "E525"): (
+        "private data Chain {\n  Tip,\n  Link(Tuple<Chain, Int>)\n}\n\n"
+        "public fn length(@Chain -> @Nat)\n  requires(true)\n"
+        "  ensures(true)\n  decreases(@Chain.0)\n  effects(pure)\n"
+        "{\n  match @Chain.0 {\n    Tip -> 0,\n"
+        "    Link(@Tuple<Chain, Int>) -> match @Tuple<Chain, Int>.0 {\n"
+        "      Tuple(@Chain, @Int) -> 1 + length(@Chain.0)\n    }\n"
+        "  }\n}\n"),
+    ("tier3", "E532"): _DISCLOSED_CALLEE,
+    ("tier3", "E534"): (
+        _POS_INT + "private fn mk(@Int -> @Option<PosInt>)\n" + _PURE
+        + "{\n  Some(@Int.0)\n}\n\n"
+        "public fn f(@Int -> @Int)\n" + _PURE
+        + "{\n  match mk(@Int.0) {\n    Some(@PosInt) -> 100 / @PosInt.0,\n"
+        "    None -> 1\n  }\n}\n"),
+    ("tier3", "E535"): (
+        "public fn f(@Int, @Array<Int> -> @Int)\n" + _PURE
+        + "{\n  assert(array_length(@Array<Int>.0) > @Int.0);\n  @Int.0\n}\n"),
+    ("tier3_unguarded", "E504"): _DISCLOSED_CALLEE,
+    ("tier3_unguarded", "E506"): (
+        "type PosInt = { @Int | @Int.0 > 0 };\n\n"
+        "type Tiny = { @PosInt | @PosInt.0 < 10 };\n\n"
+        "private fn mk(@Float64 -> @Option<PosInt>)\n" + _PURE
+        + "{\n  let @Option<Tiny> = Some(float_to_int(@Float64.0));\n"
+        "  @Option<Tiny>.0\n}\n\n"
+        "private fn consume(@Option<PosInt> -> @Int)\n"
+        "  requires(true)\n  ensures(@Int.result > 0)\n  effects(pure)\n"
+        "{\n  match @Option<PosInt>.0 {\n    Some(@PosInt) -> @PosInt.0,\n"
+        "    None -> 41\n  }\n}\n\n"
+        "public fn f(@Float64 -> @Int)\n"
+        "  requires(true)\n  ensures(@Int.result > 0)\n  effects(pure)\n"
+        "{\n  consume(mk(@Float64.0))\n}\n"),
+    ("tier3_unguarded", "E537"): (
+        "private fn risky(@Nat -> @Nat)\n  requires(true)\n  ensures(true)\n"
+        "  effects(<Exn<Int>>)\n"
+        "{\n  if @Nat.0 == 0 then { throw(1) } else { @Nat.0 }\n}\n\n"
+        "public fn walk(@Nat -> @Nat)\n  requires(true)\n  ensures(true)\n"
+        "  decreases(risky(@Nat.0))\n  effects(<Exn<Int>>)\n"
+        "{\n  if @Nat.0 == 0 then { 0 } else { walk(@Nat.0 / 2) }\n}\n"),
+    ("tier3_unguarded", "E538"): (
+        "public fn f(@Int -> @Int)\n  requires(@Int.0 > 5 && @Int.0 < 3)\n"
+        "  ensures(@Int.result > 0)\n  effects(pure)\n{\n  @Int.0\n}\n"),
+    ("timeout", "E524"): (
+        "public fn f(@Int -> @Int)\n  requires(true)\n"
+        "  ensures(@Int.result == @Int.0)\n  effects(pure)\n{\n  @Int.0\n}\n"),
+}
+
+#: The pairs whose program is verified under a solver that answers every
+#: query "unknown".  No budget makes Z3 run out of time on a given query
+#: reliably, on every host, so the verdict a timeout produces is given to the
+#: solver and everything downstream of it is the real verifier.
+_SOLVER_UNDECIDED = frozenset({("timeout", "E524")})
+
+
+def _pair_id(pair: tuple[str, str | None]) -> str:
+    return f"{pair[0]}-{pair[1] or 'uncoded'}"
+
+
+def _pairs(obligations: Iterable[Mapping[str, object]]) -> list[tuple[object, object]]:
+    return [(o["status"], o.get("error_code")) for o in obligations]
+
+
+def _undecided(self: SmtContext, goal: object, assumptions: object) -> SmtResult:
+    return SmtResult(status="unknown")
+
+
+@pytest.mark.parametrize("status", _STATUSES)
+def test_every_obligation_status_has_a_program(status: str) -> None:
+    """A status the verifier can record and no program here verifies to
+    would reach `vera verify --json` with nothing holding how it is
+    rendered."""
+    assert any(s == status for s, _code in _STATUS_PROGRAMS), (
+        f"no program in _STATUS_PROGRAMS verifies to `{status}`; add one, so "
+        f"the command's rendering of `{status}` is held")
+
+
+@pytest.mark.parametrize(
+    "pair", sorted(_STATUS_PROGRAMS, key=_pair_id), ids=_pair_id)
+def test_each_obligation_status_reaches_the_json_as_itself(
+    pair: tuple[str, str | None], tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The verifier records the pair, `vera verify --json` renders every
+    record's status and code as itself, and the stage's envelope is the
+    command's.  The record is the oracle, so the JSON is held to what was
+    verified rather than to another rendering of it."""
+    if pair in _SOLVER_UNDECIDED:
+        monkeypatch.setattr(SmtContext, "check_valid", _undecided)
+    path = tmp_path / f"{_pair_id(pair)}.vera"
+    path.write_text(_STATUS_PROGRAMS[pair], encoding="utf-8")
+    verified = pipeline.verify(path)
+    records = [(o.status, o.error_code or None) for o in verified.obligations]
+    assert pair in records, (
+        f"the program for {_pair_id(pair)} no longer verifies to it: {records}")
+    stage = verified.envelope()
+    command = pipeline.cli("verify", "--json", path).json()
+    assert _pairs(command["obligations"]) == records, (
+        "`vera verify --json` renders an obligation as other than the "
+        "verifier recorded it")
+    assert stage == command
+    sides = {"records": records, "stage": _pairs(stage["obligations"]),
+             "command": _pairs(command["obligations"])}
+    for status in ("tier3_unguarded", "timeout"):
+        present = {side: any(s == status for s, _code in got)
+                   for side, got in sides.items()}
+        assert len(set(present.values())) == 1, (status, present)
 
 
 @pytest.mark.parametrize("name,distrust", [
