@@ -30,30 +30,11 @@ false E526 — measured, and recorded in
 
 from __future__ import annotations
 
-import json
-import os
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
-import vera
-
-_PKG_PARENT = str(Path(vera.__file__).resolve().parents[1])
-
-
-def _cli(*args: str) -> subprocess.CompletedProcess[str]:
-    env = dict(os.environ)
-    existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        f"{_PKG_PARENT}{os.pathsep}{existing}" if existing else _PKG_PARENT
-    )
-    return subprocess.run(
-        [sys.executable, "-m", "vera.cli", *args],
-        capture_output=True, text=True, encoding="utf-8", check=False,
-        env=env, timeout=600,
-    )
+from tests import pipeline
 
 
 def _write(tmp_path: Path, source: str, name: str = "p.vera") -> Path:
@@ -64,15 +45,9 @@ def _write(tmp_path: Path, source: str, name: str = "p.vera") -> Path:
 
 
 def _verify(path: Path) -> dict:
-    proc = _cli("verify", "--json", str(path))
-    try:
-        result = json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        raise AssertionError(
-            f"verify emitted no envelope for {path.name} "
-            f"(exit {proc.returncode})\n{proc.stdout[:400]}\n"
-            f"{proc.stderr[-600:]}"
-        ) from None
+    """What ``vera verify --json`` prints for *path*: the verify stage's
+    envelope."""
+    result = pipeline.verify(path).envelope()
     internal = [
         d for d in result.get("diagnostics", [])
         if d.get("error_code") == "E699"
@@ -289,7 +264,7 @@ def test_1434_no_runtime_witness_is_reachable_for_that_tier_1(
     emits actually enforces the whole chain.
     """
     path = _write(tmp_path, _ENSURES_FROM_PARAMETER)
-    proc = _cli("run", str(path), "--fn", "main", "--", "5")
+    proc = pipeline.cli("run", str(path), "--fn", "main", "--", "5")
     assert proc.returncode != 0, (
         f"the program now compiles — verify the emitted boundary guard "
         f"enforces BOTH predicates:\n{proc.stdout[-400:]}"

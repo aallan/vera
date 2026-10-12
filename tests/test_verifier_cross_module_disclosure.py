@@ -24,31 +24,12 @@ split one should say.
 
 from __future__ import annotations
 
-import json
-import os
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
-import vera
 from tests import pipeline
-
-_PKG_PARENT = str(Path(vera.__file__).resolve().parents[1])
-
-
-def _cli(*args: str) -> subprocess.CompletedProcess[str]:
-    env = dict(os.environ)
-    existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        f"{_PKG_PARENT}{os.pathsep}{existing}" if existing else _PKG_PARENT
-    )
-    return subprocess.run(
-        [sys.executable, "-m", "vera.cli", *args],
-        capture_output=True, text=True, encoding="utf-8", check=False,
-        env=env, timeout=600,
-    )
 
 
 def _tree(tmp_path: Path, files: dict[str, str]) -> dict[str, Path]:
@@ -63,15 +44,9 @@ def _tree(tmp_path: Path, files: dict[str, str]) -> dict[str, Path]:
 
 
 def _verify(path: Path) -> dict:
-    proc = _cli("verify", "--json", str(path))
-    try:
-        return json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        raise AssertionError(
-            f"verify emitted no envelope for {path.name} "
-            f"(exit {proc.returncode})\n{proc.stdout[:400]}\n"
-            f"{proc.stderr[-800:]}"
-        ) from None
+    """What ``vera verify --json`` prints for *path*: the verify stage's
+    envelope."""
+    return pipeline.verify(path).envelope()
 
 
 def _triples(result: dict) -> list[tuple[str, str, str | None]]:

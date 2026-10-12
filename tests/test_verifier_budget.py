@@ -19,9 +19,6 @@ whether the process is cold or warm.
 from __future__ import annotations
 
 import json
-import os
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -100,16 +97,14 @@ class TestBudgetReachesTheVerifier:
 class TestCliFlag:
     """`vera verify --timeout-ms` — the measurement surface."""
 
-    def _run(self, args: list[str], env_extra: dict[str, str] | None = None):
-        env = os.environ.copy()
-        env["PYTHONIOENCODING"] = "utf-8"
-        env.pop(Z3_TIMEOUT_ENV, None)
-        env.update(env_extra or {})
-        return subprocess.run(
-            [sys.executable, "-m", "vera.cli", *args],
-            capture_output=True, text=True, encoding="utf-8",
-            cwd=str(ROOT), env=env, timeout=180, check=False,
-        )
+    def _run(
+        self, args: list[str], env_extra: dict[str, str] | None = None,
+    ) -> pipeline.CliResult:
+        """``vera <args>``, in process, with the budget variable unset
+        unless *env_extra* sets it, so the ambient environment decides
+        nothing."""
+        changes: dict[str, str | None] = {Z3_TIMEOUT_ENV: None, **(env_extra or {})}
+        return pipeline.cli(*args, env=changes)
 
     def test_json_reports_the_effective_budget(self) -> None:
         r = self._run(["verify", "--json", "--timeout-ms", "60000",
