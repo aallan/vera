@@ -535,8 +535,8 @@ def _calls_the_runner(call: ast.Call, name: str, owner: ast.ClassDef | None) -> 
 
     A function is called by its bare name.  A method is called through its
     class (``Class.method(...)``) anywhere, or through ``self`` or ``cls``
-    inside that class's own body; a same-named method of another object is
-    a different method.
+    inside the body of that class or of a class that names it as a base; a
+    same-named method of another object is a different method.
     """
     func = call.func
     if "." not in name:
@@ -548,7 +548,10 @@ def _calls_the_runner(call: ast.Call, name: str, owner: ast.ClassDef | None) -> 
     if isinstance(receiver, ast.Name) and receiver.id == cls:
         return True
     return (isinstance(receiver, ast.Name) and receiver.id in ("self", "cls")
-            and owner is not None and owner.name == cls)
+            and owner is not None
+            and (owner.name == cls
+                 or any(isinstance(b, ast.Name) and b.id == cls
+                        for b in owner.bases)))
 
 
 def _handed_vera(

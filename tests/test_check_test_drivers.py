@@ -191,6 +191,10 @@ class TestThing:
      "    obj._run_json([sys.executable, '-m', 'vera.cli', 'check'])\n", []),
     ("class TestOwn(TestThing):\n"
      "    def test_it(self):\n"
+     "        self._run([sys.executable, '-m', 'vera.cli', 'check'])\n",
+     ["TestThing._run"]),
+    ("class TestElse:\n"
+     "    def test_it(self):\n"
      "        self._run([sys.executable, '-m', 'vera.cli', 'check'])\n", []),
     ("class TestThing2(TestThing):\n"
      "    pass\n"
@@ -199,7 +203,7 @@ class TestThing:
      ["TestThing._run"]),
 ], ids=["class-body-name", "method-local-is-not-the-class-binding",
         "another-objects-method", "another-objects-attribute",
-        "a-subclass-self-call-is-not-resolved", "the-class-named-call"])
+        "a-subclass-self-call", "another-class-self-call", "the-class-named-call"])
 def test_a_handed_command_reaches_the_runner_it_names(
     gate: ModuleType, handing: str, expected: list[str],
 ) -> None:
