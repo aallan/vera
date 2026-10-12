@@ -48,7 +48,6 @@ tables is read at all, so a new guard reading one turns this file red.
 
 from __future__ import annotations
 
-import tempfile
 from dataclasses import dataclass, fields
 from pathlib import Path
 
@@ -57,7 +56,6 @@ import pytest
 from vera import ast, narrowing
 from vera.checker import typecheck_with_artifacts
 from vera.codegen import compile as codegen_compile
-from vera.codegen import execute
 from vera.parser import parse_to_ast
 from vera.resolver import ModuleResolver
 from vera.environment import TypeEnv
@@ -109,57 +107,28 @@ class Observed:
     """``(emitter, line, column)`` for every check the module carries."""
 
 
-def _artifacts(source: str, path: str) -> tuple[object, object]:
-    program = parse_to_ast(source)
-    diags, arts = typecheck_with_artifacts(program, source, file=path)
-    errors = [d for d in diags if d.severity == "error"]
+def _check_clean(checked: pipeline.Checked) -> None:
+    """Raise the parse error, or fail unless *checked* type-checked cleanly."""
+    _ = checked.program  # raises the parse or transform error
+    errors = checked.errors
     assert not errors, (
         "fixture must type-check: "
         f"{[(d.error_code, d.description[:80]) for d in errors]}"
     )
-    return program, arts
 
 
-def _observe(
-    source: str,
-    fn: str,
-    args: list[object],
-    *,
-    semantic_types: dict | None = None,
-) -> Observed:
-    """Check, verify, compile and run *source* through the checker's tables.
-
-    *semantic_types* replaces the checker's semantic table for BOTH the
-    verifier and code generation — the type-source differential's lever.
-    The target table is always the checker's own.
-    """
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False, encoding="utf-8",
-    ) as handle:
-        handle.write(source)
-        path = handle.name
-    try:
-        program, arts = _artifacts(source, path)
-        sem = (arts.expr_semantic_types if semantic_types is None
-               else semantic_types)
-        result = verify(
-            program, source, file=path,
-            expr_types=sem,
-            expr_target_types=arts.expr_target_types,
-        )
-        compiled = codegen_compile(
-            program, source=source, file=path,
-            expr_semantic_types=sem,
-            expr_target_types=arts.expr_target_types,
-        )
-    finally:
-        Path(path).unlink(missing_ok=True)
+def _observe(source: str, fn: str, args: list[object]) -> Observed:
+    """Check, verify, compile and run *source* through the checker's tables."""
+    verified = pipeline.verify(source, file="fixture.vera")
+    _check_clean(verified.checked)
+    result = verified.result
+    compiled = pipeline.compile(source, file="fixture.vera").result
     cg_errors = [d for d in compiled.diagnostics if d.severity == "error"]
     assert not cg_errors, (
         f"fixture must compile: {[d.description[:80] for d in cg_errors]}"
     )
     try:
-        run = f"ran:{execute(compiled, fn_name=fn, args=args).value}"
+        run = f"ran:{pipeline.run(compiled, fn, args, capture_stderr=False).execution.value}"
     except Exception as exc:  # noqa: BLE001 — the trap IS the observation
         run = str(exc)
     return Observed(
@@ -982,22 +951,10 @@ class TestEveryNatResultIsDeclared:
     def _assert_widens(self, body: str, effects: str = "effects(pure)"):
         program = ("public fn f(@Int -> @Int)\n  requires(true)\n"
                    f"  ensures(true)\n  {effects}\n{{\n  {body}\n}}\n")
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".vera", delete=False, encoding="utf-8",
-        ) as handle:
-            handle.write(program)
-            path = handle.name
-        try:
-            parsed, arts = _artifacts(program, path)
-            result = verify(parsed, program, file=path,
-                            expr_types=arts.expr_semantic_types,
-                            expr_target_types=arts.expr_target_types)
-            compiled = codegen_compile(
-                parsed, source=program, file=path,
-                expr_semantic_types=arts.expr_semantic_types,
-                expr_target_types=arts.expr_target_types)
-        finally:
-            Path(path).unlink(missing_ok=True)
+        verified = pipeline.verify(program, file="fixture.vera")
+        _check_clean(verified.checked)
+        result = verified.result
+        compiled = pipeline.compile(program, file="fixture.vera").result
         assert "nat_to_int_coerce" in {o.kind for o in result.obligations}, (
             body)
         assert "wasm/operators.py:_emit_int_widen_guard" in {
@@ -1149,19 +1106,10 @@ class TestARefinedComponentAssumesOnlyADeclaration:
 def _verify_only(source: str) -> tuple[tuple[str, str], ...]:
     """``(kind, status)`` of every obligation `vera verify` records for
     *source* — for shapes code generation does not compile."""
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False, encoding="utf-8",
-    ) as handle:
-        handle.write(source)
-        path = handle.name
-    try:
-        program, arts = _artifacts(source, path)
-        result = verify(program, source, file=path,
-                        expr_types=arts.expr_semantic_types,
-                        expr_target_types=arts.expr_target_types)
-    finally:
-        Path(path).unlink(missing_ok=True)
-    return tuple(sorted((o.kind, o.status) for o in result.obligations))
+    verified = pipeline.verify(source, file="fixture.vera")
+    _check_clean(verified.checked)
+    return tuple(sorted(
+        (o.kind, o.status) for o in verified.result.obligations))
 
 
 class TestAnIndexReadsTheArrayItIndexes:
@@ -1412,12 +1360,10 @@ def _sub_program(params: str, ret: str, body: str, *,
 def _compile_checked(source: str) -> object:
     """Check and compile *source* as `vera run` does, without verifying —
     for cells that ask only what the module computes."""
-    program, arts = _artifacts(source, "p.vera")
-    compiled = codegen_compile(
-        program, source=source, file="p.vera",
-        expr_semantic_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-    )
+    built = pipeline.compile(source, file="p.vera")
+    assert built.checked is not None
+    _check_clean(built.checked)
+    compiled = built.result
     errors = [d for d in compiled.diagnostics if d.severity == "error"]
     assert not errors, [d.description[:80] for d in errors]
     return compiled
@@ -2469,34 +2415,19 @@ def _observe_modules(
 ) -> Observed:
     """:func:`_observe` for an entry module ``main.vera`` beside *files*,
     resolved, checked, verified and compiled as `vera run` does."""
-    for name, text in files.items():
-        (tmp_path / name).write_text(text, encoding="utf-8")
-    path = tmp_path / "main.vera"
-    source = path.read_text(encoding="utf-8")
-    program = parse_to_ast(source)
-    resolver = ModuleResolver(_root=path.parent)
-    resolved = resolver.resolve_imports(program, path)
-    assert not resolver.errors, resolver.errors
-    diags, arts = typecheck_with_artifacts(
-        program, source, file=str(path), resolved_modules=resolved,
-        collect_module_artifacts=True,
-    )
-    errors = [d for d in diags if d.severity == "error"]
+    path = pipeline.write_tree(tmp_path, files)
+    verified = pipeline.verify(path)
+    checked = verified.checked
+    _ = checked.program  # raises the parse or transform error
+    resolution_errors = list(checked.resolution_diagnostics)
+    assert not resolution_errors, resolution_errors
+    errors = [d for d in checked.checker_diagnostics if d.severity == "error"]
     assert not errors, [(d.error_code, d.description[:80]) for d in errors]
-    result = verify(
-        program, source, file=str(path), resolved_modules=resolved,
-        expr_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-    )
-    compiled = codegen_compile(
-        program, source=source, file=str(path), resolved_modules=resolved,
-        expr_semantic_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-        module_artifacts=arts.module_artifacts,
-    )
+    result = verified.result
+    compiled = pipeline.compile(path).result
     assert not [d for d in compiled.diagnostics if d.severity == "error"]
     try:
-        run = f"ran:{execute(compiled, fn_name=fn, args=args).value}"
+        run = f"ran:{pipeline.run(compiled, fn, args, capture_stderr=False).execution.value}"
     except Exception as exc:  # noqa: BLE001 — the trap IS the observation
         run = str(exc)
     return Observed(

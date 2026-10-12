@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from tests import pipeline
 from vera.parser import (
     parse,
     parse_file,
@@ -1424,19 +1425,9 @@ class TestVerifyFile:
     @staticmethod
     def _vera_verify_errors(path: Path) -> list[str]:
         """The error codes `vera verify --json` stops with, run in process."""
-        import contextlib
-        import io
-        import json
-
-        from vera.cli import cmd_verify
-
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out), \
-                contextlib.redirect_stderr(io.StringIO()):
-            rc = cmd_verify(str(path), as_json=True)
-        assert rc == 1
-        return [d["error_code"]
-                for d in json.loads(out.getvalue())["diagnostics"]]
+        ran = pipeline.cli("verify", "--json", path)
+        assert ran.returncode == 1
+        return [d["error_code"] for d in ran.json()["diagnostics"]]
 
     @pytest.mark.parametrize("case", sorted(_VERIFY_REFUSED))
     def test_verify_file_stops_where_vera_verify_stops(

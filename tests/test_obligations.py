@@ -32,13 +32,12 @@ from pathlib import Path
 
 import pytest
 
-from vera.checker import typecheck, typecheck_with_artifacts
+from tests import pipeline
 from vera.errors import Diagnostic
 from vera.obligations import ProofObligation, VerificationSession
 from vera.parser import parse
-from vera.resolver import ModuleResolver
 from vera.transform import transform
-from vera.verifier import ContractVerifier, VerifyResult, summarize, verify
+from vera.verifier import ContractVerifier, VerifyResult, summarize
 
 REPO_ROOT = Path(__file__).parent.parent
 EXAMPLES_DIR = REPO_ROOT / "examples"
@@ -93,22 +92,11 @@ def _cold_verify(path: Path) -> tuple[VerifyResult, str]:
     semantic-type side-tables (expr_types / expr_target_types), without which
     target-type-dependent obligations demote to Tier-3 and the corpus tier
     counts measure a pipeline no user runs (PR #983 review)."""
-    source = path.read_text(encoding="utf-8")
-    program = transform(parse(source, file=str(path)))
-    resolver = ModuleResolver(_root=path.parent)
-    resolved = resolver.resolve_imports(program, path)
-    check_diags, artifacts = typecheck_with_artifacts(
-        program, source, file=str(path), resolved_modules=resolved,
-    )
-    diags = resolver.errors + check_diags
-    errors = [d for d in diags if d.severity == "error"]
+    verified = pipeline.verify(path)
+    _ = verified.checked.program  # raises the parse or transform error
+    errors = list(verified.checked.errors)
     assert not errors, f"{path.name}: corpus program failed typecheck: {errors}"
-    return (
-        verify(program, source, file=str(path), resolved_modules=resolved,
-               expr_types=artifacts.expr_semantic_types,
-               expr_target_types=artifacts.expr_target_types),
-        source,
-    )
+    return verified.result, verified.checked.source
 
 
 def _diag_fingerprint(diags: list[Diagnostic]) -> list[tuple[str, ...]]:
@@ -450,11 +438,11 @@ class TestObligationKinds:
     """Unit coverage of each obligation kind / status path."""
 
     def _verify_source(self, source: str) -> VerifyResult:
-        program = transform(parse(source))
-        diags = typecheck(program, source)
-        errors = [d for d in diags if d.severity == "error"]
+        verified = pipeline.verify(source)
+        _ = verified.checked.program  # raises the parse or transform error
+        errors = list(verified.checked.errors)
         assert not errors, errors
-        return verify(program, source)
+        return verified.result
 
     def test_kinds_enumerated_for_full_contract_function(self) -> None:
         source = (
@@ -1373,10 +1361,10 @@ class TestIncrementalInvalidation:
         the fingerprint below would report a mismatch that is entirely the
         harness's.
         """
-        program = transform(parse(source, file=file))
-        diags = typecheck(program, source, file=file)
-        assert not [d for d in diags if d.severity == "error"]
-        return verify(program, source, file=file)
+        verified = pipeline.verify(source, file=file)
+        _ = verified.checked.program  # raises the parse or transform error
+        assert not verified.checked.errors
+        return verified.result
 
     def _assert_matches_cold(
         self, source: str, warm: object, file: str | None = None,

@@ -4,16 +4,14 @@ from __future__ import annotations
 
 import re
 
+from tests import pipeline
 from vera import ast
 from vera.checker.registration import _RESERVED_TYPE_PREFIX_RE
-from vera.parser import parse
-from vera.transform import transform
 from vera.prelude import inject_prelude
 
 
 def _make_program(src: str) -> ast.Program:
-    tree = parse(src)
-    return transform(tree)
+    return pipeline.parse(src).program
 
 
 def _fn_names(prog: ast.Program) -> set[str]:

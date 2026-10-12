@@ -48,10 +48,8 @@ from pathlib import Path
 import pytest
 
 from vera.codegen.core import CodeGenerator
-from vera.parser import parse_file
-from vera.resolver import ModuleResolver
-from vera.transform import transform
 
+from tests import pipeline
 from tests.module_fixture_helpers import (
     build_multi_module,
     build_multi_module_past_check,
@@ -159,24 +157,20 @@ def _generator(tmp_path: Path, files: dict[str, str]) -> CodeGenerator:
     compile-clean fixture by construction, so either failure means the
     FIXTURE is broken rather than the compiler.
     """
-    tmp_path.mkdir(parents=True, exist_ok=True)
-    for name, text in files.items():
-        (tmp_path / name).write_text(text, encoding="utf-8")
-    main_path = tmp_path / "main.vera"
-    program = transform(parse_file(str(main_path)))
-    resolver = ModuleResolver(tmp_path)
-    mods = resolver.resolve_imports(program, main_path)
-    resolve_errors = [d.description for d in resolver.errors]
+    main_path = pipeline.write_tree(tmp_path, files)
+    checked = pipeline.check(main_path, root=tmp_path)
+    _ = checked.program  # raises the parse or transform error
+    resolve_errors = [d.description for d in checked.resolution_diagnostics]
     assert not resolve_errors, f"module resolution errors: {resolve_errors}"
+    mods = checked.resolved or []
     assert len(mods) == len(files) - 1, (
         f"expected {len(files) - 1} resolved modules, got "
         f"{[m.path for m in mods]}"
     )
-    gen = CodeGenerator(
-        source=main_path.read_text(encoding="utf-8"), file=str(main_path),
-    )
-    gen._resolved_modules = mods
-    result = gen.compile_program(program)
+    compiled = pipeline.compile(main_path, modules=mods, checked=False)
+    gen = compiled.generator
+    assert gen is not None
+    result = compiled.result
     cg_errors = [
         (d.error_code, d.description)
         for d in result.diagnostics if d.severity == "error"

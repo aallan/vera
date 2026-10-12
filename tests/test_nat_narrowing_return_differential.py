@@ -28,13 +28,11 @@ the actual runtime guard, site for site.
 
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
-
 import pytest
 
+from tests import pipeline
 from tests.codegen_helpers import wat_calls, wat_fn_names
-from vera.codegen.api import WasmTrapError
+from vera.codegen.api import CompileResult
 
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -42,10 +40,9 @@ from contextlib import contextmanager
 from vera.ast import Program
 from vera.checker import CheckArtifacts, typecheck_with_artifacts
 from vera.codegen import compile as codegen_compile
-from vera.codegen import execute
 from vera.parser import parse_to_ast
-from vera.resolver import ModuleResolver, ResolvedModule
-from vera.verifier import verify
+from vera.resolver import ResolvedModule
+from vera.verifier import VerifyResult
 
 _KIND = "nat_bind"
 
@@ -61,45 +58,55 @@ _NAT_GUARD_KIND = "nat_guard"
 U64_MAX = 18446744073709551615
 
 
+#: The file every fixture here is checked, verified and compiled as.  No
+#: fixture imports a module, so each is checked against none.
+_FIXTURE = "fixture.vera"
+
+
+def _assert_check_clean(checked: pipeline.Checked) -> None:
+    """Check-clean is part of every differential's premise ("a check-green
+    program must ..."): a fixture the checker rejects would silently exercise
+    nothing (a round-3 reviewer caught a test validating a check-rejected
+    program through exactly this gap)."""
+    _ = checked.program  # raises the parse or transform error
+    errors = list(checked.errors)
+    assert not errors, (
+        "differential fixture must type-check cleanly, got: "
+        f"{[(d.error_code, d.description[:70]) for d in errors]}"
+    )
+
+
 @contextmanager
 def _resolved_pipeline(
     source: str,
 ) -> Iterator[tuple[Program, CheckArtifacts, list[ResolvedModule], str]]:
     """Parse + resolve imports + typecheck *source* through the REAL CLI
-    pipeline — a temp file, ``ModuleResolver``, and ``file=`` +
-    ``resolved_modules=`` threaded into ``typecheck_with_artifacts`` — then
-    yield ``(program, artifacts, resolved, path)`` for the verify / compile
-    stages to reuse.
+    pipeline — ``tests/pipeline.py``'s ``check``, with ``file=`` and the
+    resolved modules threaded into the checker — then yield ``(program,
+    artifacts, resolved, path)`` for the verify / compile stages to reuse.
 
     The 48cbc1f fidelity principle: every side of this differential must
     measure the same pipeline the CLI drives, so a bare in-memory verify (no
     ``file`` / ``resolved_modules``) can never disagree with ``vera run`` for a
     reason the CLI would never hit."""
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False, encoding="utf-8",
-    ) as f:
-        f.write(source)
-        path = f.name
-    try:
-        program = parse_to_ast(source)
-        resolver = ModuleResolver(_root=Path(path).parent)
-        resolved = resolver.resolve_imports(program, Path(path))
-        diags, arts = typecheck_with_artifacts(
-            program, source, file=path, resolved_modules=resolved,
-        )
-        # Check-clean is part of every differential's premise ("a
-        # check-green program must ..."): a fixture the checker rejects
-        # would silently exercise nothing (a round-3 reviewer caught a
-        # test validating a check-rejected program through exactly this
-        # gap).
-        errors = [d for d in diags if d.severity == "error"]
-        assert not errors, (
-            "differential fixture must type-check cleanly, got: "
-            f"{[(d.error_code, d.description[:70]) for d in errors]}"
-        )
-        yield program, arts, resolved, path
-    finally:
-        Path(path).unlink(missing_ok=True)
+    checked = pipeline.check(source, file=_FIXTURE, modules=[])
+    _assert_check_clean(checked)
+    yield checked.program, checked.artifacts, checked.resolved or [], _FIXTURE
+
+
+def _verified(source: str) -> VerifyResult:
+    """*source* verified as ``vera verify`` verifies it, check-clean."""
+    verified = pipeline.verify(source, file=_FIXTURE, modules=[])
+    _assert_check_clean(verified.checked)
+    return verified.result
+
+
+def _compiled(source: str) -> CompileResult:
+    """*source* compiled as ``vera compile`` compiles it, check-clean."""
+    compiled = pipeline.compile(source, file=_FIXTURE, modules=[])
+    assert compiled.checked is not None
+    _assert_check_clean(compiled.checked)
+    return compiled.result
 
 
 def _return_nat_bind_statuses(source: str) -> list[str]:
@@ -111,47 +118,25 @@ def _return_nat_bind_statuses(source: str) -> list[str]:
     side-tables the CLI supplies.  The corpus shapes below have exactly ONE @Nat
     narrowing site — the return slot — so every ``nat_bind`` obligation is the
     return-position one under test (no body-internal narrowing to filter out)."""
-    with _resolved_pipeline(source) as (program, arts, resolved, path):
-        result = verify(
-            program, source, file=path, resolved_modules=resolved,
-            expr_types=arts.expr_semantic_types,
-            expr_target_types=arts.expr_target_types,
-        )
-        return [o.status for o in result.obligations if o.kind == _KIND]
+    return [o.status for o in _verified(source).obligations if o.kind == _KIND]
 
 
 def _statuses_and_wat(source: str) -> tuple[list[str], str]:
-    """Verify AND compile the SAME program in ONE pipeline run, returning the
-    ``nat_bind`` statuses and the compiled WAT — so a single call cross-checks
-    the verifier's tier verdict against the codegen guard it promises (the
-    tier3 quadrant of the differential: verify says ``tier3`` / promises a
-    runtime guard, codegen must emit one)."""
-    with _resolved_pipeline(source) as (program, arts, resolved, path):
-        result = verify(
-            program, source, file=path, resolved_modules=resolved,
-            expr_types=arts.expr_semantic_types,
-            expr_target_types=arts.expr_target_types,
-        )
-        statuses = [o.status for o in result.obligations if o.kind == _KIND]
-        comp = codegen_compile(
-            program, source=source, file=path, resolved_modules=resolved,
-            expr_semantic_types=arts.expr_semantic_types,
-        )
-        return statuses, comp.wat
+    """Verify AND compile the SAME program, as ``vera verify`` and ``vera
+    compile`` do, returning the ``nat_bind`` statuses and the compiled WAT — so
+    a single call cross-checks the verifier's tier verdict against the codegen
+    guard it promises (the tier3 quadrant of the differential: verify says
+    ``tier3`` / promises a runtime guard, codegen must emit one)."""
+    statuses = [o.status for o in _verified(source).obligations if o.kind == _KIND]
+    return statuses, _compiled(source).wat
 
 
 def _run(source: str, fn: str, arg: int) -> int | None:
     """Compile + execute *fn* with one i64 arg; ``None`` if it traps."""
-    with _resolved_pipeline(source) as (program, arts, resolved, path):
-        result = codegen_compile(
-            program, source=source, file=path, resolved_modules=resolved,
-            expr_semantic_types=arts.expr_semantic_types,
-        )
-        try:
-            exec_result = execute(result, fn_name=fn, args=[arg])
-        except WasmTrapError:
-            return None
-        return exec_result.value
+    ran = pipeline.run(_compiled(source), fn, [arg], capture_stderr=False)
+    if ran.trap is not None:
+        return None
+    return ran.value
 
 
 def _trap_kind(source: str, fn: str, arg: int | None) -> str | None:
@@ -164,16 +149,11 @@ def _trap_kind(source: str, fn: str, arg: int | None) -> str | None:
     the compiled function takes nothing and handing it one value is an arity
     error, which would surface as a failure to run rather than as a verdict
     about the guard."""
-    with _resolved_pipeline(source) as (program, arts, resolved, path):
-        result = codegen_compile(
-            program, source=source, file=path, resolved_modules=resolved,
-            expr_semantic_types=arts.expr_semantic_types,
-        )
-        try:
-            execute(result, fn_name=fn, args=[] if arg is None else [arg])
-        except WasmTrapError as exc:
-            return exc.kind
-        return None
+    ran = pipeline.run(
+        _compiled(source), fn, [] if arg is None else [arg],
+        capture_stderr=False,
+    )
+    return ran.trap.kind if ran.trap is not None else None
 
 
 # (label, source, fn, neg_input) — an @Int -> @Nat narrowing at the return
@@ -814,13 +794,10 @@ def _refine_bind_statuses(source: str) -> list[str]:
     whose formal is a refinement, so the only ``refine_bind`` site is the
     apply_fn argument under test (the closure body returns a constant, and a
     closure-param declaration raises no narrowing obligation of its own)."""
-    with _resolved_pipeline(source) as (program, arts, resolved, path):
-        result = verify(
-            program, source, file=path, resolved_modules=resolved,
-            expr_types=arts.expr_semantic_types,
-            expr_target_types=arts.expr_target_types,
-        )
-        return [o.status for o in result.obligations if o.kind == _REFINE_KIND]
+    return [
+        o.status for o in _verified(source).obligations
+        if o.kind == _REFINE_KIND
+    ]
 
 
 def _trap_message(source: str, fn: str, arg: int) -> str | None:
@@ -828,16 +805,8 @@ def _trap_message(source: str, fn: str, arg: int) -> str | None:
     so a refinement-guard trap can be pinned by its ``Refinement violation``
     message text, not merely "some trap" (#1024, the refined dual of
     :func:`_trap_kind`)."""
-    with _resolved_pipeline(source) as (program, arts, resolved, path):
-        result = codegen_compile(
-            program, source=source, file=path, resolved_modules=resolved,
-            expr_semantic_types=arts.expr_semantic_types,
-        )
-        try:
-            execute(result, fn_name=fn, args=[arg])
-        except WasmTrapError as exc:
-            return str(exc)
-        return None
+    ran = pipeline.run(_compiled(source), fn, [arg], capture_stderr=False)
+    return str(ran.trap) if ran.trap is not None else None
 
 
 # (label, source) — a provably-refinement-violating CONSTANT arg into a refined
@@ -1325,16 +1294,10 @@ def _obligation_kinds_statuses(source: str) -> set[tuple[str, str]]:
     intersection shapes where ONE value carries obligations of two kinds
     (a refinement over `@Int` receiving an intrinsically-`@Nat` value gets
     both the predicate obligation and the widen obligation)."""
-    with _resolved_pipeline(source) as (program, arts, resolved, path):
-        result = verify(
-            program, source, file=path, resolved_modules=resolved,
-            expr_types=arts.expr_semantic_types,
-            expr_target_types=arts.expr_target_types,
-        )
-        return {
-            (o.kind, o.status) for o in result.obligations
-            if o.kind in (_REFINE_KIND, "nat_to_int_coerce", "int_widen")
-        }
+    return {
+        (o.kind, o.status) for o in _verified(source).obligations
+        if o.kind in (_REFINE_KIND, "nat_to_int_coerce", "int_widen")
+    }
 
 
 _CAP_RET_INTERSECTION = """\
@@ -2852,12 +2815,7 @@ class TestClauseClassCollisionBothDirections:
     codegen keys, merging what the checker splits."""
 
     def _compile_msgs(self, src: str) -> list[str]:
-        with _resolved_pipeline(src) as (program, arts, resolved, path):
-            result = codegen_compile(
-                program, source=src, file=path, resolved_modules=resolved,
-                expr_semantic_types=arts.expr_semantic_types,
-            )
-            return [d.description for d in result.diagnostics]
+        return [d.description for d in _compiled(src).diagnostics]
 
     def test_parameterised_refined_alias_is_one_stack_with_the_literal(
         self,

@@ -43,13 +43,13 @@ from pathlib import Path
 
 import pytest
 
+from tests import pipeline
 from vera import ast, naming
 from vera.checker.core import TypeChecker
 from vera.codegen.core import CodeGenerator
 from vera.errors import ERROR_CODES
 from vera.parser import parse_file
 from vera.prelude import inject_prelude
-from vera.resolver import ModuleResolver
 from vera.transform import transform
 
 # `prelude_adt_names` is imported inside the one case that needs it, not
@@ -156,17 +156,15 @@ public fn main(@Unit -> @Int)
 
 def _compile(tmp_path: Path, files: dict[str, str]) -> CodeGenerator:
     """Write *files*, compile ``main.vera``, hand back the generator."""
-    tmp_path.mkdir(parents=True, exist_ok=True)
-    for name, text in files.items():
-        (tmp_path / name).write_text(text, encoding="utf-8")
-    main_path = tmp_path / "main.vera"
-    program = transform(parse_file(str(main_path)))
-    mods = ModuleResolver(tmp_path).resolve_imports(program, main_path)
-    gen = CodeGenerator(
-        source=main_path.read_text(encoding="utf-8"), file=str(main_path),
-    )
-    gen._resolved_modules = mods
-    gen._result = gen.compile_program(program)  # type: ignore[attr-defined]
+    main_path = pipeline.write_tree(tmp_path, files)
+    checked = pipeline.check(main_path, root=tmp_path)
+    _ = checked.program  # raises the parse or transform error
+    compiled = pipeline.compile(
+        main_path, modules=checked.resolved or [], checked=False)
+    result = compiled.result
+    gen = compiled.generator
+    assert gen is not None
+    gen._result = result  # type: ignore[attr-defined]
     return gen
 
 
@@ -180,9 +178,9 @@ def _checker_data_types(
     ITSELF, with `direct` re-derived against it, because §8.6.4
     visibility is the importer's property.
     """
-    main_path = tmp_path / "main.vera"
-    program = transform(parse_file(str(main_path)))
-    mods = ModuleResolver(tmp_path).resolve_imports(program, main_path)
+    checked = pipeline.check(tmp_path / "main.vera", root=tmp_path)
+    _ = checked.program  # raises the parse or transform error
+    mods = checked.resolved or []
     mod = next(m for m in mods if m.path == (module,))
     mod_direct = {imp.path for imp in mod.program.imports}
     scoped = TypeChecker(

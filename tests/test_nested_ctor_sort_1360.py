@@ -59,6 +59,7 @@ import pytest
 
 import vera
 import z3
+from tests import pipeline
 from vera.smt import SmtContext, _ctor_accepts
 
 # Run the SAME compiler this session imported: in a linked worktree a bare
@@ -207,14 +208,13 @@ def _envelope_for_raising_translator(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture,
     *, as_json: bool,
 ) -> tuple[int, str, str]:
-    """Run `cmd_verify` in-process with the SMT translator forced to raise.
+    """Run `vera verify` in-process with the SMT translator forced to raise.
 
     In-process rather than through the CLI subprocess because the point is to
     drive an ARBITRARY translator failure, not this one bug's: monkeypatching
     is what makes the guarantee independent of `#1360`'s particular exception.
     """
     from vera import smt as smt_mod
-    from vera.cli import cmd_verify
 
     def boom(self, expr, env):
         raise RuntimeError("synthetic translator failure")
@@ -223,10 +223,8 @@ def _envelope_for_raising_translator(
     p = tmp_path / "e.vera"
     p.write_text(
         _program("@Int", "@Int", "@Int.0"), encoding="utf-8")
-    capsys.readouterr()
-    rc = cmd_verify(str(p), as_json=as_json)
-    captured = capsys.readouterr()
-    return rc, captured.out, captured.err
+    ran = pipeline.cli("verify", *(["--json"] if as_json else []), p)
+    return ran.returncode, ran.stdout, ran.stderr
 
 
 def test_json_envelope_survives_an_internal_error(
