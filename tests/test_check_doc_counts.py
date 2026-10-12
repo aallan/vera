@@ -181,7 +181,7 @@ class TestCollectionCountsEveryMatrixCell:
             "".join(
                 f"<!-- render_status:begin {name} -->\n"
                 f"<!-- render_status:end {name} -->\n"
-                for name in ("status", "test-files", "skipped-tests")
+                for name in ("status", "test-files", "skipped-tests", "scorecard")
             ),
             encoding="utf-8",
         )
@@ -193,6 +193,59 @@ class TestCollectionCountsEveryMatrixCell:
         (command,) = commands
         assert "--collect-only" in command
         assert "--matrix=full" in command
+
+
+class TestTheScorecardSplit:
+    """The scorecard block's two sides at release: `stale_status` reaches
+    the real render_status.py and scorecard.py, which measure the tree's
+    rows again and compare them, and take the network's and the junit
+    file's rows as the document has them, while each states its window."""
+
+    @staticmethod
+    def _release_tree(tmp_path: Path) -> tuple[Path, Any, Any]:
+        spec = importlib.util.spec_from_file_location(
+            "render_status_for_split", _SCRIPT.with_name("render_status.py"))
+        assert spec is not None and spec.loader is not None
+        rs = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(rs)
+        card = {m.key: (f"{i + 11:,}", "the tree")
+                for i, m in enumerate(rs.SC.MEASURES) if m.source == rs.SC.TREE}
+        measured = {m.key: (f"{i + 5}", "measured, 2026-10-12 09:00 UTC")
+                    for i, m in enumerate(rs.SC.MEASURES) if m.source != rs.SC.TREE}
+        tree = rs.Tree(
+            collection=rs.Collection(3, {"test_a.py": 3}),
+            test_files={"test_a.py": (9, "A.")}, manifest=[], examples=1, corpus=2,
+            builtins=3, effects=4, chapters=5, hooks={"commit": 6}, ci_jobs=7,
+            matrix_cells={}, gate_scripts=8, skips=[], version="0.2.9", scorecard=card,
+        )
+        empty = "".join(f"{rs.begin_marker(n)}\n{rs.end_marker(n)}\n" for n in rs.BLOCKS)
+        (tmp_path / "TESTING.md").write_text(
+            rs.splice(empty, rs.render(tree, measured)), encoding="utf-8")
+        return tmp_path, rs, tree
+
+    def test_a_moved_tree_row_fails_the_release(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        root, rs, tree = self._release_tree(tmp_path)
+        moved = tree._replace(scorecard={**tree.scorecard, "long_functions": ("0", "the tree")})
+        monkeypatch.setattr(_MOD, "_render_status", lambda: types.SimpleNamespace(
+            stale_blocks=lambda r: rs.stale_blocks(r, measure=lambda _r: moved)))
+        (error,) = _MOD.stale_status(root)
+        assert "`scorecard` block" in error and "| Functions over 500 lines | 17 | 0 |" in error
+
+    def test_a_measured_row_is_not_measured_again(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        root, rs, tree = self._release_tree(tmp_path)
+        doc = root / "TESTING.md"
+        text = doc.read_text(encoding="utf-8")
+        moved = text.replace("| 5 | measured, 2026-10-12 09:00 UTC |",
+                             "| 6 | measured, 2026-10-13 11:00 UTC |")
+        assert moved != text
+        doc.write_text(moved, encoding="utf-8")
+        monkeypatch.setattr(_MOD, "_render_status", lambda: types.SimpleNamespace(
+            stale_blocks=lambda r: rs.stale_blocks(r, measure=lambda _r: tree)))
+        assert _MOD.stale_status(root) == []
 
 
 class TestMainActsOnTheReleaseModeAnswer:
