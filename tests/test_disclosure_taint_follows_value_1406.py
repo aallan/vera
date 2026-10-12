@@ -75,28 +75,22 @@ measure that it does not — none of them may leave `verified`.
 
 from __future__ import annotations
 
-import json
-import os
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
-import vera
-
-_PKG_PARENT = str(Path(vera.__file__).resolve().parents[1])
+from tests import pipeline
+from vera import narrowing
 
 
 @pytest.fixture(autouse=True)
 def _unguard_the_producer_site(monkeypatch: pytest.MonkeyPatch) -> None:
     """Remove the producer's construction site from the shared guard table.
 
-    The CLI-driven cells get this through `_DRIVER` in their subprocess; the
-    warm-session cells run the verifier IN this process and need the same
-    table, so it is patched here too.  One fixture, so the two halves of
-    every warm/cold agreement cell are compared under the same rules — which
-    is the whole point of those cells.
+    Every cell runs in this process, the CLI-driven cells and the
+    warm-session cells alike, so this one patch is the table they all read.
+    One fixture, so the two halves of every warm/cold agreement cell are
+    compared under the same rules — which is the whole point of those cells.
     """
     from vera import narrowing
 
@@ -127,72 +121,11 @@ def _unguard_the_producer_site(monkeypatch: pytest.MonkeyPatch) -> None:
 #: Tier 1 and the cell measured nothing.
 _PATCHED_SITES = frozenset({"constructor field", "tuple component"})
 
-#: Drives the ordinary CLI with that one site removed from
-#: `vera.narrowing.REFINED_BIND_GUARDED_SITES`.
-#:
-#: Both components read that table at call time — the verifier to classify
-#: and code generation to decide whether to emit — so removing the entry
-#: reinstates, exactly, a construction store that is obligated and unguarded.
-#: Nothing else about the pipeline changes: the fixtures, the spellings, the
-#: envelope and the run are the real ones.
-#:
-#: Run in a SUBPROCESS rather than in-process, deliberately.  The `vera run`
-#: legs execute compiled WASM with the guard absent, which is the condition
-#: under test; a fault there must not reach the host process.
-_DRIVER = (
-    "import sys\n"
-    "from vera import narrowing\n"
-    "narrowing.REFINED_BIND_GUARDED_SITES = (\n"
-    "    narrowing.REFINED_BIND_GUARDED_SITES - %r\n"
-    ")\n"
-    "from vera.cli import main\n"
-    "sys.argv = ['vera'] + sys.argv[1:]\n"
-    "raise SystemExit(main())\n"
-) % (set(_PATCHED_SITES),)
-
-
-def _cli(*args: str) -> subprocess.CompletedProcess[str]:
-    env = dict(os.environ)
-    existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        f"{_PKG_PARENT}{os.pathsep}{existing}" if existing else _PKG_PARENT
-    )
-    return subprocess.run(
-        [sys.executable, "-c", _DRIVER, *args],
-        capture_output=True, text=True, encoding="utf-8", check=False,
-        env=env, timeout=300,
-    )
-
-
-def _cli_unpatched(*args: str) -> subprocess.CompletedProcess[str]:
-    """The same CLI with the table AS SHIPPED — the control for the patch.
-
-    Used by the cell that shows the disclosure is the fixture's doing and
-    not something the release still produces on its own.
-    """
-    env = dict(os.environ)
-    existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        f"{_PKG_PARENT}{os.pathsep}{existing}" if existing else _PKG_PARENT
-    )
-    return subprocess.run(
-        [sys.executable, "-m", "vera.cli", *args],
-        capture_output=True, text=True, encoding="utf-8", check=False,
-        env=env, timeout=300,
-    )
-
 
 def _verify(tmp_path: Path, source: str, name: str = "p.vera") -> dict:
     p = tmp_path / name
     p.write_text(source, encoding="utf-8")
-    proc = _cli("verify", "--json", str(p))
-    try:
-        result = json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        raise AssertionError(
-            f"verify emitted no envelope (exit {proc.returncode})\n"
-            f"{proc.stdout[:400]}\n{proc.stderr[-600:]}"
-        ) from None
+    result = pipeline.verify(p).envelope()
     # A fixture that forgot to declare its producer calls nothing: an E200
     # error, after which verify reports no obligation at all, so a cell
     # would read a verdict about a program that was never verified.  (While
@@ -218,7 +151,7 @@ def _run(tmp_path: Path, source: str, arg: str = "-7.0",
     """
     p = tmp_path / name
     p.write_text(source, encoding="utf-8")
-    proc = _cli("run", str(p), "--fn", "f", "--", arg)
+    proc = pipeline.cli("run", str(p), "--fn", "f", "--", arg)
     return proc.stdout + proc.stderr
 
 
@@ -2249,14 +2182,16 @@ def test_1418_a_single_arm_rebuild_of_a_clean_value_still_proves(
     assert out.strip().split()[-1] == "7", out[-400:]
 
 
-def test_the_patch_is_what_produces_the_disclosure(tmp_path: Path) -> None:
+def test_the_patch_is_what_produces_the_disclosure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Restore the table entry and the cells go green BY GUARD, not by proof.
 
     Without this the file could not be read: every verdict above is taken
     under a patched table, and a reader has no way to tell a fixture that
     reinstates a real condition from one that invents a verdict.  So the same
-    source is run twice, through the same CLI, differing only in whether the
-    producer's construction site is in the shared table.
+    source is verified twice, through the same stage, differing only in
+    whether the producer's construction site is in the shared table.
 
     Patched, the producer discloses and the caller's postcondition is demoted
     to `tier3` with E534.  As SHIPPED, the store is guarded, the producer
@@ -2268,8 +2203,15 @@ def test_the_patch_is_what_produces_the_disclosure(tmp_path: Path) -> None:
     path = tmp_path / "control.vera"
     path.write_text(source, encoding="utf-8")
 
-    patched = json.loads(_cli("verify", "--json", str(path)).stdout)
-    shipped = json.loads(_cli_unpatched("verify", "--json", str(path)).stdout)
+    patched = pipeline.verify(path).envelope()
+    with monkeypatch.context() as shipped_table:
+        # The autouse fixture asserted the patched sites are in the shipped
+        # table, so putting them back is the table as shipped.
+        shipped_table.setattr(
+            narrowing, "REFINED_BIND_GUARDED_SITES",
+            narrowing.REFINED_BIND_GUARDED_SITES | _PATCHED_SITES,
+        )
+        shipped = pipeline.verify(path).envelope()
 
     def binds(result: dict) -> list[tuple[str, str | None]]:
         return [(o["status"], o.get("error_code"))

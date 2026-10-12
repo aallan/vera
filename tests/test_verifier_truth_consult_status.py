@@ -28,47 +28,23 @@ differential below keeps all three equal to what the compiler actually emits.
 from __future__ import annotations
 
 import json
-import os
-import subprocess
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
-import vera
 from vera import narrowing
 from vera.environment import TypeEnv
 from vera.trap_registry import signal_call_pattern
 from tests import pipeline
 
-_PKG_PARENT = str(Path(vera.__file__).resolve().parents[1])
-
-
-def _cli(*args: str) -> subprocess.CompletedProcess[str]:
-    env = dict(os.environ)
-    existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        f"{_PKG_PARENT}{os.pathsep}{existing}" if existing else _PKG_PARENT
-    )
-    return subprocess.run(
-        [sys.executable, "-m", "vera.cli", *args],
-        capture_output=True, text=True, encoding="utf-8", check=False,
-        env=env, timeout=300,
-    )
-
 
 def _verify(tmp_path: Path, source: str, name: str = "p.vera") -> dict:
+    """What ``vera verify --json`` prints for *source*: the verify stage's
+    envelope."""
     p = tmp_path / name
     p.write_text(source, encoding="utf-8")
-    proc = _cli("verify", "--json", str(p))
-    try:
-        return json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        raise AssertionError(
-            f"verify emitted no envelope (exit {proc.returncode})\n"
-            f"{proc.stdout[:400]}\n{proc.stderr[-600:]}"
-        ) from None
+    return pipeline.verify(p).envelope()
 
 
 def _program_ast(source: str) -> object:
@@ -80,7 +56,7 @@ def _program_ast(source: str) -> object:
 def _wat(tmp_path: Path, source: str, name: str = "w.vera") -> str:
     p = tmp_path / name
     p.write_text(source, encoding="utf-8")
-    proc = _cli("compile", "--wat", str(p))
+    proc = pipeline.cli("compile", "--wat", str(p))
     return proc.stdout
 
 
@@ -154,7 +130,7 @@ def test_1362_the_claim_and_the_module_agree(tmp_path: Path) -> None:
     )
     p = tmp_path / "r.vera"
     p.write_text(_1362_REPRO, encoding="utf-8")
-    run = _cli("run", str(p), "--fn", "f", "--", "-7")
+    run = pipeline.cli("run", str(p), "--fn", "f", "--", "-7")
     assert run.returncode != 0, (
         f"the binder admitted `-7`: {run.stdout!r} {run.stderr[-300:]!r}"
     )
@@ -304,7 +280,7 @@ def _traps_on_negative(tmp_path: Path, name: str) -> bool:
         f"{name} needs a non-scalar argument; the caller must skip it rather "
         f"than take a False from here, which would read as 'does not guard'"
     )
-    proc = _cli("run", str(p), "--fn", "f", "--", "-7")
+    proc = pipeline.cli("run", str(p), "--fn", "f", "--", "-7")
     out = proc.stdout + proc.stderr
     # A non-zero exit WITHOUT the trap word is not "ran and did not trap" — a
     # compile failure, a CLI usage error or a missing `--fn` target all look
@@ -442,7 +418,7 @@ public fn use_it(@Int -> @Int)
 def _test_json(tmp_path: Path, source: str, trials: int = 20) -> dict:
     p = tmp_path / "t.vera"
     p.write_text(source, encoding="utf-8")
-    proc = _cli("test", "--json", "--trials", str(trials), str(p))
+    proc = pipeline.cli("test", "--json", "--trials", str(trials), str(p))
     try:
         return json.loads(proc.stdout)
     except json.JSONDecodeError:
@@ -987,8 +963,7 @@ public fn f(@Int, @String -> @String)
     ):
         p = tmp_path / f"{label}.vera"
         p.write_text(source, encoding="utf-8")
-        proc = _cli("check", "--json", str(p))
-        result = json.loads(proc.stdout)
+        result = pipeline.check(p).envelope()
         assert result["ok"] is False, (
             f"{label}: a builtin can now be shadowed, so codegen's lexical "
             f"resolution and the name-keyed guard rule can disagree — "
@@ -1263,7 +1238,7 @@ def _shape_runs_guarded(tmp_path: Path, shape: _GuardShape, name: str) -> bool:
     args = ["run", str(p), "--fn", shape.fn]
     if shape.arg is not None:
         args += ["--", shape.arg]
-    proc = _cli(*args)
+    proc = pipeline.cli(*args)
     out = proc.stdout + proc.stderr
     if shape.trap_marker in out:
         return True

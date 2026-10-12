@@ -24,10 +24,6 @@ differently from the trap.
 
 from __future__ import annotations
 
-import json
-import os
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -35,26 +31,13 @@ import pytest
 import vera
 from vera import narrowing
 
-_PKG_PARENT = str(Path(vera.__file__).resolve().parents[1])
+from tests import pipeline
 
 #: The repo root, for the one cell that pins a conformance program.
 _PKG_PARENT_PATH = Path(vera.__file__).resolve().parents[1]
 
 #: What the §2.6.5 guard says when it fires.
 _REFINE_TRAP = "Refinement violation"
-
-
-def _cli(*args: str) -> subprocess.CompletedProcess[str]:
-    env = dict(os.environ)
-    existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        f"{_PKG_PARENT}{os.pathsep}{existing}" if existing else _PKG_PARENT
-    )
-    return subprocess.run(
-        [sys.executable, "-m", "vera.cli", *args],
-        capture_output=True, text=True, encoding="utf-8", check=False,
-        env=env, timeout=300,
-    )
 
 
 def _write(tmp_path: Path, source: str, name: str = "p.vera") -> Path:
@@ -64,38 +47,33 @@ def _write(tmp_path: Path, source: str, name: str = "p.vera") -> Path:
 
 
 def _run(tmp_path: Path, source: str, *args: str, name: str = "p.vera") -> str:
-    proc = _cli("run", str(_write(tmp_path, source, name)), *args)
+    proc = pipeline.cli("run", str(_write(tmp_path, source, name)), *args)
     return proc.stdout + proc.stderr
 
 
 def _wat(tmp_path: Path, source: str, name: str = "p.vera") -> str:
-    proc = _cli("compile", "--wat", str(_write(tmp_path, source, name)))
+    proc = pipeline.cli("compile", "--wat", str(_write(tmp_path, source, name)))
     assert proc.returncode == 0, proc.stderr[-500:]
     return proc.stdout
 
 
 def _obligations(tmp_path: Path, source: str,
                  name: str = "p.vera") -> tuple[list[dict], dict]:
-    proc = _cli("verify", "--json", str(_write(tmp_path, source, name)))
-    try:
-        envelope = json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        raise AssertionError(
-            f"verify emitted no envelope (exit {proc.returncode})\n"
-            f"{proc.stdout[:400]}\n{proc.stderr[-600:]}"
-        ) from None
+    """What ``vera verify --json`` prints for *source*, and its obligations:
+    the verify stage's envelope."""
+    envelope = pipeline.verify(_write(tmp_path, source, name)).envelope()
     return envelope["obligations"], envelope
 
 
 
 def _verify_in_process(source: str) -> list:
-    """Obligations from an IN-PROCESS verify, for the cells that patch a table.
+    """Obligations from the verifier itself, for the cells that patch a table.
 
-    The rest of this file drives the real CLI in a subprocess, which is what
-    makes its claims about the shipped toolchain honest.  A cell that
-    MUTATES a shared table cannot do that — the subprocess would import the
-    unpatched module — so these two run in-process and pay for it by
-    asserting only statuses the verifier itself derives.
+    The rest of this file reads what the shipped toolchain reports: the
+    verify stage's envelope, and what ``vera run`` and ``vera compile`` print.
+    The two cells that MUTATE a shared table read the verifier's own
+    obligations instead, and assert only statuses the verifier itself
+    derives.
     """
     from tests.verifier_helpers import _verify
     return list(_verify(source).obligations)
@@ -1355,8 +1333,8 @@ class TestAStoreAfterADestructureIsStillRecorded:
         assert _store_status(obs), (
             f"the store past a destructure carries no record at all: {obs}"
         )
-        wat = _cli("compile", "--wat",
-                   str(_write(tmp_path, source, f"parity_{label}w.vera")))
+        wat = pipeline.cli("compile", "--wat",
+                           str(_write(tmp_path, source, f"parity_{label}w.vera")))
         assert wat.returncode == 0, wat.stderr[-400:]
         body = wat.stdout.split("(func $mk")[1].split("(func ")[0]
         assert "call $vera.contract_fail" in body, (

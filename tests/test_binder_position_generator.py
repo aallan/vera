@@ -47,16 +47,13 @@ defect is fixed.
 """
 from __future__ import annotations
 
-import json
-import os
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
-import vera
 from vera import binders, carriers, narrowing
+
+from tests import pipeline
 
 # A generated class instrument (tests/matrix_sample.py): a pull request runs a
 # sample of its parametrised cells, and all of them when it changes this file or
@@ -67,22 +64,7 @@ pytestmark = pytest.mark.matrix(
     ],
 )
 
-_PKG_PARENT = str(Path(vera.__file__).resolve().parents[1])
-
 _NARROWING_KINDS = ("refine_bind", "nat_bind", "int_widen")
-
-
-def _cli(*args: str) -> subprocess.CompletedProcess[str]:
-    env = dict(os.environ)
-    existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        f"{_PKG_PARENT}{os.pathsep}{existing}" if existing else _PKG_PARENT
-    )
-    return subprocess.run(
-        [sys.executable, "-m", "vera.cli", *args],
-        capture_output=True, text=True, encoding="utf-8", check=False,
-        env=env, timeout=300,
-    )
 
 
 def _write(tmp_path: Path, source: str, name: str) -> Path:
@@ -624,7 +606,7 @@ def test_every_unsupported_shape_says_so_in_the_compilers_words(
     for (site, kind), message in sorted(_UNSUPPORTED_SHAPES.items()):
         pre, slot, bad, _good, base = _KINDS[kind]
         source = _TEMPLATES[site][0](pre, slot, bad, base)
-        ran = _cli("run", str(_write(tmp_path, source, "u.vera")))
+        ran = pipeline.cli("run", str(_write(tmp_path, source, "u.vera")))
         assert message in (ran.stdout + ran.stderr), (
             f"{site}/{kind} is excluded as unsupported, but the compiler no "
             f"longer says so:\n{(ran.stdout + ran.stderr)[-500:]}"
@@ -639,9 +621,8 @@ def _ids(cell: tuple[str, int, str]) -> str:
 def _read(tmp_path: Path, source: str, name: str) -> dict:
     """Verify and run *source*, as the obligation stream plus two verdicts."""
     path = _write(tmp_path, source, name)
-    verified = _cli("verify", "--json", str(path))
-    envelope = json.loads(verified.stdout)
-    ran = _cli("run", str(path))
+    envelope = pipeline.verify(path).envelope()
+    ran = pipeline.cli("run", str(path))
     return {
         "obligations": [
             (o["kind"], o["status"]) for o in envelope["obligations"]

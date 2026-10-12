@@ -198,9 +198,8 @@ def _records_at_the_bind(source: str, declared: str, position: str) -> bool:
     refined RETURN raises a record of its own and counting every
     `refine_bind` in the program would read that one as the bind's.
     """
-    import subprocess
-    import sys
     import tempfile
+    from pathlib import Path as _Path
 
     def program(body: str) -> str:
         return _PRELUDE + f"""
@@ -229,22 +228,10 @@ public fn f(@Unit -> @Int)
     }
 
     def count(text: str) -> int:
-        import json as _json
-        import os as _os
-        from pathlib import Path as _Path
         with tempfile.TemporaryDirectory() as tmp:
             path = _Path(tmp) / "p.vera"
             path.write_text(text, encoding="utf-8")
-            env = dict(_os.environ)
-            env["PYTHONPATH"] = str(
-                _Path(__import__("vera").__file__).resolve().parents[1])
-            proc = subprocess.run(
-                [sys.executable, "-m", "vera.cli", "verify", "--json",
-                 str(path)],
-                capture_output=True, text=True, encoding="utf-8", env=env,
-                check=False, timeout=600,
-            )
-        envelope = _json.loads(proc.stdout)
+            envelope = pipeline.verify(path).envelope()
         assert not [
             d for d in envelope["diagnostics"]
             if d.get("severity") == "error"
@@ -352,25 +339,13 @@ _SAME_SPELLING = _ALIAS_IN_THE_BASE.replace(
 def _clause_binder_records(source: str) -> list[tuple[str, str]]:
     """The clause binder's records — the ones on the clause BODY node, which
     has no renderable source text and renders `<expr>`."""
-    import json
-    import os
-    import subprocess
-    import sys
     import tempfile
     from pathlib import Path as _Path
 
     with tempfile.TemporaryDirectory() as tmp:
         path = _Path(tmp) / "p.vera"
         path.write_text(source, encoding="utf-8")
-        env = dict(os.environ)
-        env["PYTHONPATH"] = str(
-            _Path(__import__("vera").__file__).resolve().parents[1])
-        proc = subprocess.run(
-            [sys.executable, "-m", "vera.cli", "verify", "--json", str(path)],
-            capture_output=True, text=True, encoding="utf-8", env=env,
-            check=False, timeout=600,
-        )
-    envelope = json.loads(proc.stdout)
+        envelope = pipeline.verify(path).envelope()
     assert not [d for d in envelope["diagnostics"]
                 if d.get("severity") == "error"], envelope["diagnostics"]
     return sorted(
