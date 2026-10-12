@@ -289,6 +289,9 @@ jobs:
         # scripts/check_doc_counts.py.
         run: python scripts/check_doc_counts.py --release-if-version-raised "${{ github.event_name == 'pull_request' && github.base_ref || github.event.before || github.sha }}"
 
+      - name: Check limitations.json loads and the Bugs headings survive
+        run: python scripts/check_limitations_sync.py
+
       - name: Lint (ruff)
         run: ruff check .
 

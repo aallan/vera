@@ -12,15 +12,17 @@ The issues the tables cite are:
   2. the Issue column of KNOWN_ISSUES.md's ``## Bugs`` table and SKILL.md's
      ``## Known Bugs and Workarounds`` table, which are hand-kept.
 
-With ``--check-states`` the script asks the tracker about each one (``gh
-issue view``), and fails on an issue that is closed or whose state cannot
-be determined.  Without it, the script reads the sources and reports how
-many issues it would ask about, without the network.  A Bugs heading that
-is gone, or a data file that cannot be read, is an error in both modes.
+Without a flag the script reads the sources, without the network: it
+fails when ``limitations.json`` cannot be loaded or a Bugs heading is
+gone, so a table driven to zero keeps its heading.  The commit hook and
+CI's lint job run that mode.  With ``--check-states`` it also asks the
+tracker about each issue (``gh issue view``), and fails on an issue that
+is closed or whose state cannot be determined.
 
-``.github/workflows/limitations-sync.yml`` runs it weekly on a bare Python,
-so it imports nothing beyond the standard library and ``render_lists.py``,
-which reads the data file with the standard library alone.
+``.github/workflows/limitations-sync.yml`` runs ``--check-states`` weekly
+on a bare Python, so the script imports nothing beyond the standard
+library and ``render_lists.py``, which reads the data file with the
+standard library alone.
 """
 
 import argparse

@@ -195,6 +195,16 @@ repos:
         # broad (same reasoning as diagnostic-fields / walker-coverage).
         files: '((vera|scripts|tests)/.*\.py$)'
 
+      # Offline: limitations.json loads, and the two hand-kept Bugs
+      # headings survive (the weekly limitations-sync.yml run adds
+      # --check-states, which asks the tracker about every cited issue).
+      - id: limitations-sync
+        name: limitations sync
+        entry: .venv/bin/python scripts/check_limitations_sync.py
+        language: system
+        pass_filenames: false
+        files: '(limitations\.json$|KNOWN_ISSUES\.md$|SKILL\.md$|scripts/check_limitations_sync\.py$|scripts/render_lists\.py$)'
+
       - id: license-check
         name: license check
         entry: .venv/bin/python scripts/check_licenses.py

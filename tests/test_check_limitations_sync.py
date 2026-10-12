@@ -499,6 +499,19 @@ class TestTheIssuesItQueries:
         assert "#30 is CLOSED" in err and "KNOWN_ISSUES.md (Bugs)" in err
         assert "#21" not in err and "#40" not in err
 
+    def test_the_default_mode_fails_when_a_bugs_heading_is_gone(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The offline mode the commit hook and CI's lint job run: SKILL.md's
+        bug table driven to zero keeps its heading, and a heading deleted
+        with the table fails the commit, not only the weekly run."""
+        root = _sources(tmp_path)
+        skill = root / "SKILL.md"
+        text = skill.read_text(encoding="utf-8")
+        skill.write_text(text.replace("## Known Bugs and Workarounds\n", ""), encoding="utf-8")
+        assert _MOD.main([], root=root) == 1
+        assert "## Known Bugs and Workarounds" in capsys.readouterr().err
+
     def test_the_default_mode_asks_the_tracker_nothing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
