@@ -150,11 +150,20 @@ _RENAMED = {"test (ubuntu-latest, 3.12) + coverage": "test (ubuntu-latest, 3.12)
 RERUN_CELL = "test (ubuntu-latest, 3.13)"
 ADVISORY_CELL = "test (ubuntu-24.04-arm, 3.12)"
 
+#: The cells each recorded run's matrix ran, its `strategy.job-total`, the
+#: number the `test` job hands the gate as its `cells` output.
+CELLS = "13"
+
+
+def _raw(command: str) -> dict[str, Any]:
+    """A recorded listing exactly as `gh` printed it."""
+    listing: dict[str, Any] = json.loads(LISTINGS.read_text(encoding="utf-8"))[command]
+    return listing
+
 
 def _recorded(command: str) -> dict[str, Any]:
     """A recorded listing as `gh` printed it, its cells named as today."""
-    listing = json.loads(LISTINGS.read_text(encoding="utf-8"))[command]
-    return {"jobs": [{**job, "name": _RENAMED.get(job["name"], job["name"])} for job in listing["jobs"]]}
+    return {"jobs": [{**job, "name": _RENAMED.get(job["name"], job["name"])} for job in _raw(command)["jobs"]]}
 
 
 def _with(listing: dict[str, Any], conclusions: dict[str, str]) -> dict[str, Any]:
@@ -171,8 +180,8 @@ def _jobs(listing: dict[str, Any]) -> list[Any]:
     return list(mg.parse_jobs(json.dumps(listing)))
 
 
-def _judge(listing: dict[str, Any]) -> Any:
-    return mg.judge(_jobs(listing))
+def _judge(listing: dict[str, Any], size: int = int(CELLS)) -> Any:
+    return mg.judge(_jobs(listing), size)
 
 
 class TestTheListing:
@@ -249,6 +258,31 @@ class TestTheListing:
         assert not verdict.passed
         assert "no cell" in verdict.why, verdict.why
 
+    def test_a_listing_missing_a_cell_fails(self) -> None:
+        """The first attempt's listing without its one failed cell is every
+        listed cell green; it is a listing of 12 of the 13 cells the matrix
+        ran, and fails."""
+        listing = {"jobs": [job for job in _recorded(FAILED_CELL)["jobs"] if job["name"] != RERUN_CELL]}
+        verdict = _judge(listing)
+        assert not verdict.passed
+        assert "12 cells" in verdict.why and "runs 13" in verdict.why, verdict.why
+
+    def test_a_listing_with_a_cell_too_many_fails(self) -> None:
+        jobs = _recorded(NIGHTLY)["jobs"]
+        twice = next(job for job in jobs if job["name"] == "test (macos-15, 3.12)")
+        verdict = _judge({"jobs": [*jobs, twice]})
+        assert not verdict.passed
+        assert "14 cells" in verdict.why, verdict.why
+
+    def test_a_cell_under_a_name_the_gate_does_not_read_is_missing(self) -> None:
+        """The nightly recording as `gh` printed it, before #1656 dropped
+        the Linux 3.12 cell's ` + coverage` suffix: the gate reads 12 cells
+        where the matrix ran 13, and fails rather than pass a cell it never
+        read."""
+        verdict = _judge(_raw(NIGHTLY))
+        assert not verdict.passed
+        assert "12 cells" in verdict.why, verdict.why
+
     def test_the_skipped_matrix_is_not_a_green_one(self) -> None:
         """A skipped matrix is listed as one job under its unexpanded name;
         read where the matrix ran, it fails."""
@@ -256,14 +290,15 @@ class TestTheListing:
         assert [job.name for job in mg.blocking_cells(jobs)] == [
             "test (${{ matrix.os }}, ${{ matrix.python-version }})"
         ]
-        assert not mg.judge(jobs).passed
+        assert not mg.judge(jobs, int(CELLS)).passed
+        assert not mg.judge(jobs, 1).passed
 
 
 class TestTheVerdict:
     """`gate`: `decide`'s verdict, and where the matrix ran the listing's
-    too, over every combination of the three results and three listings."""
+    too, over every combination of the three results and four listings."""
 
-    LISTING_STATES = ("green", "red", "unreadable")
+    LISTING_STATES = ("green", "red", "short", "unreadable")
 
     @staticmethod
     def _listing(state: str) -> Callable[[], list[Any]]:
@@ -273,6 +308,8 @@ class TestTheVerdict:
             listing = _recorded(RERUN)
             if state == "red":
                 listing = _with(listing, {"test (windows-latest, 3.11)": "failure"})
+            if state == "short":
+                listing = {"jobs": [job for job in listing["jobs"] if job["name"] != "test (macos-26, 3.12)"]}
             return _jobs(listing)
 
         return read
@@ -282,7 +319,7 @@ class TestTheVerdict:
         list(itertools.product(RESULTS, RELEASES, RESULTS, LISTING_STATES)),
     )
     def test_every_combination(self, plan: str, release: str, matrix: str, listing: str) -> None:
-        verdict = mg.gate(plan, release, matrix, self._listing(listing))
+        verdict = mg.gate(plan, release, matrix, CELLS, self._listing(listing))
         passes = (plan, release, matrix) in PASSING and (matrix == "skipped" or listing == "green")
         assert verdict.passed is passes, verdict.why
         assert verdict.why.strip()
@@ -290,17 +327,18 @@ class TestTheVerdict:
     def test_a_single_cell_rerun_cannot_pass_the_gate(self) -> None:
         """The matrix's result reads `success` after the re-run of one of two
         failed cells; the listing does not."""
-        verdict = mg.gate("success", "true", "success", self._listing("red"))
+        verdict = mg.gate("success", "true", "success", CELLS, self._listing("red"))
         assert not verdict.passed
         assert verdict.failed == ("test (windows-latest, 3.11)",)
 
     @pytest.mark.parametrize(("plan", "release"), [("success", "false"), ("success", "true"),
                                                    ("success", ""), ("failure", "false")])
     def test_the_listing_is_not_read_where_the_matrix_was_skipped(self, plan: str, release: str) -> None:
+        """Nor is the matrix's size, which a skipped matrix does not state."""
         def unread() -> list[Any]:
             raise AssertionError("the listing was read")
 
-        verdict = mg.gate(plan, release, "skipped", unread)
+        verdict = mg.gate(plan, release, "skipped", "", unread)
         assert verdict.passed is mg.decide(plan, release, "skipped")[0]
 
     @pytest.mark.parametrize("matrix", ["success", "failure", "cancelled"])
@@ -308,15 +346,26 @@ class TestTheVerdict:
         def unread() -> list[Any]:
             raise AssertionError("the listing was read")
 
-        assert not mg.gate("failure", "true", matrix, unread).passed
+        assert not mg.gate("failure", "true", matrix, CELLS, unread).passed
 
     def test_an_unreadable_listing_fails_closed(self) -> None:
-        verdict = mg.gate("success", "true", "success", self._listing("unreadable"))
+        verdict = mg.gate("success", "true", "success", CELLS, self._listing("unreadable"))
         assert not verdict.passed
         assert "HTTP 502" in verdict.why
 
+    @pytest.mark.parametrize("size", ["", "0", "-1", "x", "13 ", "1.5", "013"])
+    def test_a_matrix_size_it_cannot_read_fails_closed(self, size: str) -> None:
+        """Where the matrix ran, a size that is not a number of cells fails a
+        green listing, and the cells a red one failed are still handed on."""
+        green = mg.gate("success", "true", "success", size, self._listing("green"))
+        assert not green.passed
+        assert repr(size) in green.why, green.why
+        red = mg.gate("success", "", "failure", size, self._listing("red"))
+        assert not red.passed
+        assert red.failed == ("test (windows-latest, 3.11)",)
+
     def test_a_failed_matrix_names_its_failed_cells(self) -> None:
-        verdict = mg.gate("success", "true", "failure", lambda: _jobs(_recorded(FAILED_CELL)))
+        verdict = mg.gate("success", "true", "failure", CELLS, lambda: _jobs(_recorded(FAILED_CELL)))
         assert not verdict.passed
         assert verdict.failed == (RERUN_CELL,)
 
@@ -326,7 +375,10 @@ class TestReadingGh:
         assert mg.gh_command("33709478610", "2") == [
             "gh", "run", "view", "33709478610", "--attempt", "2", "--json", "jobs",
         ]
-        assert mg.gh_command("38232649508", "") == ["gh", "run", "view", "38232649508", "--json", "jobs"]
+
+    @pytest.mark.parametrize("size", ["1", "13", "100"])
+    def test_it_reads_the_matrix_size(self, size: str) -> None:
+        assert mg.matrix_size(size) == int(size)
 
     def test_it_reads_gh_json(self) -> None:
         jobs = _jobs(_recorded(FAILED_CELL))
@@ -378,12 +430,12 @@ def _serve(
 
 def _environment(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, plan: str, release: str, matrix: str,
-    run_id: str | None = "33709478610", attempt: str | None = "2",
+    run_id: str | None = "33709478610", attempt: str | None = "2", cells: str | None = CELLS,
 ) -> Path:
     output = tmp_path / "github_output"
     output.write_text("", encoding="utf-8")
     for name, value in {
-        "PLAN_RESULT": plan, "RELEASE": release, "TEST_RESULT": matrix,
+        "PLAN_RESULT": plan, "RELEASE": release, "TEST_RESULT": matrix, "MATRIX_CELLS": cells,
         "GITHUB_RUN_ID": run_id, "GITHUB_RUN_ATTEMPT": attempt, "GITHUB_OUTPUT": str(output),
     }.items():
         if value is None:
@@ -418,15 +470,6 @@ class TestTheCommand:
         assert mg.main() == 0, capsys.readouterr().out
         assert output.read_text(encoding="utf-8") == ""
 
-    def test_without_an_attempt_it_lists_the_run(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-    ) -> None:
-        _environment(monkeypatch, tmp_path, "success", "", "success", run_id="38232649508", attempt=None)
-        asked: list[str] = []
-        _serve(monkeypatch, {NIGHTLY: _recorded(NIGHTLY)}, asked)
-        assert mg.main() == 0
-        assert asked == [NIGHTLY]
-
     def test_gh_failing_fails_the_gate(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path,
     ) -> None:
@@ -437,15 +480,39 @@ class TestTheCommand:
         assert out.startswith("::error::"), out
         assert "no recording for" in out
 
-    @pytest.mark.parametrize(("run_id", "attempt"), [(None, "1"), ("", "1"), ("12x", "1"), ("33709478610", "two")])
+    @pytest.mark.parametrize(
+        ("run_id", "attempt"),
+        [(None, "1"), ("", "1"), ("12x", "1"), ("²", "1"),
+         ("33709478610", None), ("33709478610", ""), ("33709478610", "two"), ("33709478610", "0")],
+    )
     def test_a_run_it_cannot_name_fails_closed(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, run_id: str | None, attempt: str,
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, run_id: str | None, attempt: str | None,
     ) -> None:
+        """Actions sets the run's id and attempt on every run, so a missing
+        or malformed one fails the gate before `gh` is asked anything."""
         _environment(monkeypatch, tmp_path, "success", "true", "success", run_id=run_id, attempt=attempt)
         asked: list[str] = []
         _serve(monkeypatch, {}, asked)
         assert mg.main() == 1
         assert asked == []
+
+    @pytest.mark.parametrize("cells", [None, "", "twelve"])
+    def test_a_matrix_size_it_cannot_read_fails_closed(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path,
+        cells: str | None,
+    ) -> None:
+        _environment(monkeypatch, tmp_path, "success", "true", "success", cells=cells)
+        _serve(monkeypatch, {RERUN: _recorded(RERUN)})
+        assert mg.main() == 1
+        assert capsys.readouterr().out.startswith("::error::")
+
+    def test_the_matrix_size_is_the_one_the_listing_is_held_to(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """A green listing of 13 cells fails a matrix that states 14."""
+        _environment(monkeypatch, tmp_path, "success", "true", "success", cells="14")
+        _serve(monkeypatch, {RERUN: _recorded(RERUN)})
+        assert mg.main() == 1
 
     def test_a_failed_matrix_hands_on_its_failed_cells(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
@@ -558,7 +625,16 @@ class TestTheWorkflow:
             "PLAN_RESULT": "${{ needs.plan.result }}",
             "RELEASE": "${{ needs.plan.outputs.release }}",
             "TEST_RESULT": "${{ needs.test.result }}",
+            "MATRIX_CELLS": "${{ needs.test.outputs.cells }}",
             "GH_TOKEN": "${{ github.token }}",
             "GH_REPO": "${{ github.repository }}",
         }
         assert job["outputs"] == {"failed": f"${{{{ steps.{steps[0]['id']}.outputs.failed }}}}"}
+
+    def test_the_matrix_states_its_size(self) -> None:
+        """Every cell sets the `test` job's `cells` output to the matrix's
+        size, `strategy.job-total`, so whichever cell sets it last, it is
+        the number of cells the gate holds the listing to: the 13 the
+        workflow's matrix runs."""
+        assert _ci_jobs()["test"]["outputs"] == {"cells": "${{ strategy.job-total }}"}
+        assert len(_cell_names("test")) == 13

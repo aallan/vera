@@ -148,6 +148,11 @@ jobs:
     # The advisory cell may fail without failing the job, so neither the
     # run, nor matrix-gate, nor matrix-issue turns on it.
     continue-on-error: ${{ matrix.advisory }}
+    # The number of cells the matrix runs, which every cell states alike:
+    # matrix-gate holds the run's job listing to it, so a cell missing from
+    # the listing fails the gate.
+    outputs:
+      cells: ${{ strategy.job-total }}
     permissions:
       contents: read
     strategy:
@@ -217,8 +222,9 @@ jobs:
   # or a matrix skipped on a change that raises the version fails it.  Where
   # the matrix ran it reads every cell's conclusion from the run's job
   # listing, not from the matrix's result alone, which reads `success` once
-  # one of two failed cells is re-run on its own and passes (#1659); the
-  # cells that failed are its `failed` output, for matrix-issue.
+  # one of two failed cells is re-run on its own and passes (#1659), and
+  # holds the listing to the matrix's size; the cells that failed are its
+  # `failed` output, for matrix-issue.
   matrix-gate:
     name: matrix-gate
     needs: [plan, test]
@@ -240,6 +246,7 @@ jobs:
           PLAN_RESULT: ${{ needs.plan.result }}
           RELEASE: ${{ needs.plan.outputs.release }}
           TEST_RESULT: ${{ needs.test.result }}
+          MATRIX_CELLS: ${{ needs.test.outputs.cells }}
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: python3 scripts/matrix_gate.py

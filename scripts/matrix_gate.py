@@ -28,12 +28,15 @@ of the run, so where one of two failed cells is re-run on its own and
 passes, the new attempt's result reads ``success`` while the other cell is
 still failed.  So wherever the matrix ran, the gate also lists the run's
 jobs, ``gh run view $GITHUB_RUN_ID --attempt $GITHUB_RUN_ATTEMPT --json
-jobs`` with the job's ``GH_TOKEN``, and passes only when every cell of the
-matrix in that listing, the advisory cell apart, concluded ``success``.  A
-re-run attempt lists every job of the run: the ones it ran again, and a copy
-of each other job with the conclusion it had (tests/fixtures/matrix_gate/
-holds the two attempts of a run whose second re-ran its one failed cell).  A
-listing the gate cannot read fails it.
+jobs`` with the job's ``GH_TOKEN``, and passes only when that listing holds
+as many cells as the matrix runs, ``MATRIX_CELLS`` (the ``test`` job's
+``cells`` output, ``strategy.job-total``), and every one of them, the
+advisory cell apart, concluded ``success``.  A re-run attempt lists every
+job of the run: the ones it ran again, and a copy of each other job with the
+conclusion it had (tests/fixtures/matrix_gate/ holds the two attempts of a
+run whose second re-ran its one failed cell).  A listing the gate cannot
+read, a run id, attempt or size it cannot read, and a listing that holds
+another number of cells each fail it.
 
 The blocking cells whose conclusion is ``failure`` go to the step's
 ``failed`` output, a JSON list written only when it is not empty, which
@@ -67,6 +70,10 @@ ADVISORY = frozenset({"test (ubuntu-24.04-arm, 3.12)"})
 
 #: How long ``gh run view`` has to answer, in seconds.
 TIMEOUT = 120
+
+#: A run's id, its attempt's number and the matrix's size, as Actions writes
+#: them: a positive decimal number.
+_NUMBER = re.compile(r"[1-9][0-9]*")
 
 
 class Job(NamedTuple):
@@ -115,12 +122,18 @@ def decide(plan: str, release: str, matrix: str) -> tuple[bool, str]:
 
 
 def gh_command(run_id: str, attempt: str) -> list[str]:
-    """The `gh` invocation that lists a run's jobs, in one attempt where
-    `attempt` names it."""
-    command = ["gh", "run", "view", run_id, "--json", "jobs"]
-    if attempt:
-        command[4:4] = ["--attempt", attempt]
-    return command
+    """The `gh` invocation that lists a run's jobs in one attempt."""
+    return ["gh", "run", "view", run_id, "--attempt", attempt, "--json", "jobs"]
+
+
+def matrix_size(text: str) -> int:
+    """The number of cells the matrix runs, as the `test` job's `cells`
+    output states it, or ListingError."""
+    if not _NUMBER.fullmatch(text):
+        raise ListingError(
+            f"the matrix's size {text!r}, the test job's `cells` output, is not a number of cells"
+        )
+    return int(text)
 
 
 def parse_jobs(text: str) -> list[Job]:
@@ -149,9 +162,9 @@ def parse_jobs(text: str) -> list[Job]:
 def gh_list_jobs(run_id: str, attempt: str) -> list[Job]:
     """The jobs of the run `run_id`, in its attempt `attempt`, as `gh` lists
     them, or ListingError."""
-    if not run_id.isdigit():
+    if not _NUMBER.fullmatch(run_id):
         raise ListingError(f"GITHUB_RUN_ID {run_id!r} is not a run's id")
-    if attempt and not attempt.isdigit():
+    if not _NUMBER.fullmatch(attempt):
         raise ListingError(f"GITHUB_RUN_ATTEMPT {attempt!r} is not an attempt's number")
     command = gh_command(run_id, attempt)
     try:
@@ -166,35 +179,59 @@ def gh_list_jobs(run_id: str, attempt: str) -> list[Job]:
     return parse_jobs(result.stdout)
 
 
+def cells_of(jobs: Sequence[Job]) -> list[Job]:
+    """The cells of the full matrix in a listing, the advisory ones too."""
+    return [job for job in jobs if CELL.fullmatch(job.name)]
+
+
 def blocking_cells(jobs: Sequence[Job]) -> list[Job]:
     """The cells of the full matrix in a listing, the advisory ones apart."""
-    return [job for job in jobs if CELL.fullmatch(job.name) and job.name not in ADVISORY]
+    return [job for job in cells_of(jobs) if job.name not in ADVISORY]
 
 
-def judge(jobs: Sequence[Job]) -> Verdict:
-    """Whether every blocking cell in a listing concluded `success`."""
-    cells = blocking_cells(jobs)
-    failed = tuple(sorted(job.name for job in cells if job.conclusion == "failure"))
+def failed_cells(jobs: Sequence[Job]) -> tuple[str, ...]:
+    """The blocking cells in a listing whose conclusion is `failure`."""
+    return tuple(sorted(job.name for job in blocking_cells(jobs) if job.conclusion == "failure"))
+
+
+def judge(jobs: Sequence[Job], size: int) -> Verdict:
+    """Whether a listing holds the `size` cells the matrix runs, and every
+    blocking one of them concluded `success`."""
+    cells = cells_of(jobs)
+    blocking = blocking_cells(jobs)
+    failed = failed_cells(jobs)
     if not cells:
-        return Verdict(False, "the run's job listing has no cell of the full test matrix", failed)
+        return Verdict(False, (
+            f"the run's job listing has no cell of the full test matrix, which runs {size}"
+        ), failed)
+    if len(cells) != size:
+        return Verdict(False, (
+            f"the run's job listing has {len(cells)} cells of the full test matrix, and"
+            f" the matrix runs {size}"
+        ), failed)
     short = sorted(
         f"{job.name} {job.conclusion or f'{job.status}, with no conclusion'}"
-        for job in cells if job.conclusion != "success"
+        for job in blocking if job.conclusion != "success"
     )
     if short:
         return Verdict(False, (
             "the run's job listing has cells of the full test matrix that did not"
             f" pass in this attempt: {', '.join(short)}"
         ), failed)
+    if not blocking:
+        return Verdict(False, "the run's job listing has no blocking cell of the full test matrix", failed)
     return Verdict(True, (
         "the full test matrix ran and every blocking cell passed in this attempt"
-        f" of the run: {len(cells)} cells, the advisory cell apart"
+        f" of the run: {len(blocking)} cells, the advisory cell apart"
     ), failed)
 
 
-def gate(plan: str, release: str, matrix: str, listing: Callable[[], Sequence[Job]]) -> Verdict:
+def gate(
+    plan: str, release: str, matrix: str, size: str, listing: Callable[[], Sequence[Job]],
+) -> Verdict:
     """`decide`'s verdict and, wherever the matrix ran, the listing's too:
-    the gate passes only when both do.  `listing` is called only there."""
+    the gate passes only when both do.  `size` is the matrix's size as the
+    `test` job states it, and it and `listing` are read only there."""
     passed, why = decide(plan, release, matrix)
     if plan != "success" or matrix not in _RAN:
         return Verdict(passed, why, ())
@@ -207,7 +244,13 @@ def gate(plan: str, release: str, matrix: str, listing: Callable[[], Sequence[Jo
                 f" full test matrix passed is not known: {exc}"
             )
         return Verdict(False, why, ())
-    listed = judge(jobs)
+    try:
+        listed = judge(jobs, matrix_size(size))
+    except ListingError as exc:
+        listed = Verdict(False, (
+            f"whether the run's job listing holds every cell of the full test matrix"
+            f" is not known: {exc}"
+        ), failed_cells(jobs))
     if not passed:
         return Verdict(False, why, listed.failed)
     return listed
@@ -220,6 +263,7 @@ def main(list_jobs: Callable[[str, str], Sequence[Job]] | None = None) -> int:
         env.get("PLAN_RESULT", "<unset>"),
         env.get("RELEASE", "<unset>"),
         env.get("TEST_RESULT", "<unset>"),
+        env.get("MATRIX_CELLS", ""),
         lambda: read(env.get("GITHUB_RUN_ID", ""), env.get("GITHUB_RUN_ATTEMPT", "")),
     )
     output = env.get("GITHUB_OUTPUT")
