@@ -146,6 +146,23 @@ def test_a_runner_handed_a_vera_command_is_a_driver(gate: ModuleType) -> None:
     """)) == ["_run_json"]
 
 
+@pytest.mark.parametrize("handed_at", ["module", "class"])
+def test_a_runner_handed_a_vera_command_outside_a_function_is_a_driver(
+    gate: ModuleType, handed_at: str,
+) -> None:
+    call = '_run_json([sys.executable, "-m", "vera.cli", "version"])'
+    where = (f"VERSION = {call}" if handed_at == "module"
+             else f"class TestIt:\n    VERSION = {call}")
+    assert list(_drivers(gate, textwrap.dedent("""
+        import subprocess
+        import sys
+
+        def _run_json(argv):
+            return subprocess.run(argv, capture_output=True, check=False)
+
+    """) + where + "\n")) == ["_run_json"]
+
+
 # =====================================================================
 # What the gate leaves alone
 # =====================================================================

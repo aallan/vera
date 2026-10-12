@@ -533,22 +533,35 @@ def drivers_in(source: str, file: str) -> list[Driver]:
 def _handed_vera(
     tree: ast.Module, name: str, module: Mapping[str, list[ast.AST]],
 ) -> bool:
-    """Whether a call to the helper *name* anywhere in *tree* hands it a
-    command naming ``vera``."""
+    """Whether a call to the helper *name* anywhere in *tree*, in a function,
+    a class body or the module itself, hands it a command naming ``vera``."""
     bare = name.rsplit(".", 1)[-1]
-    for scope in ast.walk(tree):
-        if not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+    scopes: dict[int, ast.AST] = {}
+
+    def assign_scopes(node: ast.AST, scope: ast.AST | None) -> None:
+        for child in ast.iter_child_nodes(node):
+            inner = (child if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+                     else scope)
+            if isinstance(child, ast.Call) and scope is not None:
+                scopes[id(child)] = scope
+            assign_scopes(child, inner)
+
+    assign_scopes(tree, None)
+    locals_of: dict[int, dict[str, list[ast.AST]]] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
             continue
-        local = _assigned([scope])
-        for node in ast.walk(scope):
-            if not isinstance(node, ast.Call):
-                continue
-            func = node.func
-            called = (func.id if isinstance(func, ast.Name)
-                      else func.attr if isinstance(func, ast.Attribute) else None)
-            if called == bare and _command_names_vera(
-                    _call_arguments(node), local, module):
-                return True
+        func = node.func
+        called = (func.id if isinstance(func, ast.Name)
+                  else func.attr if isinstance(func, ast.Attribute) else None)
+        if called != bare:
+            continue
+        scope = scopes.get(id(node))
+        local: Mapping[str, list[ast.AST]] = {}
+        if scope is not None:
+            local = locals_of.setdefault(id(scope), _assigned([scope]))
+        if _command_names_vera(_call_arguments(node), local, module):
+            return True
     return False
 
 
