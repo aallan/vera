@@ -39,6 +39,7 @@ from pathlib import Path
 import pytest
 
 import vera
+from tests import pipeline
 from vera.trap_registry import signal_call_pattern
 
 _PKG_PARENT = str(Path(vera.__file__).resolve().parents[1])
@@ -976,36 +977,20 @@ def _observe_in_process(source: str, fn: str, args: list[object]) -> str:
     read as already-neutered.  Measured: the #757 store-only probe RAN
     under the bare path and traps under this one.
     """
-    import tempfile
-
-    from vera.checker import typecheck_with_artifacts
-    from vera.codegen import compile as codegen_compile
-    from vera.codegen import execute
-    from vera.parser import parse_to_ast
-
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False, encoding="utf-8",
-    ) as handle:
-        handle.write(source)
-        path = handle.name
+    probe = pipeline.compile(source, file="fixture.vera")
+    _ = probe.parsed.program  # raises the parse or transform error
+    assert probe.checked is not None
+    errors = list(probe.checked.errors)
+    assert not errors, f"the probe does not type-check: {errors}"
+    compiled = probe.result
+    cg_errors = [d for d in compiled.diagnostics if d.severity == "error"]
+    assert not cg_errors, f"the probe does not compile: {cg_errors}"
     try:
-        program = parse_to_ast(source)
-        diags, arts = typecheck_with_artifacts(program, source, file=path)
-        errors = [d for d in diags if d.severity == "error"]
-        assert not errors, f"the probe does not type-check: {errors}"
-        compiled = codegen_compile(
-            program, source=source, file=path,
-            expr_semantic_types=arts.expr_semantic_types,
-            expr_target_types=arts.expr_target_types,
-        )
-        cg_errors = [d for d in compiled.diagnostics if d.severity == "error"]
-        assert not cg_errors, f"the probe does not compile: {cg_errors}"
-    finally:
-        Path(path).unlink(missing_ok=True)
-    try:
-        execute(compiled, fn_name=fn, args=args)
+        ran = pipeline.run(compiled, fn, args, capture_stderr=False)
     except Exception as exc:  # noqa: BLE001 — the trap IS the observation
         return str(exc)
+    if ran.trap is not None:
+        return str(ran.trap)
     return "ran"
 
 

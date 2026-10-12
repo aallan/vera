@@ -34,17 +34,12 @@ to land together.
 
 from __future__ import annotations
 
-import os
-import tempfile
-
 import pytest
 
+from tests import pipeline
 from tests.checker_helpers import _check_ok
 from tests.codegen_helpers import _compile, _run
 from tests.verifier_helpers import _verify_ok
-from vera.codegen.core import CodeGenerator
-from vera.parser import parse_file
-from vera.transform import transform
 
 # `pick` returns its SECOND parameter (`@W.0` is the most recent binding),
 # and the helper hands it `(@U.1, @U.0)` — its first and second parameters
@@ -239,24 +234,13 @@ def _registered_and_resolved(source: str) -> tuple[set[str], set[str]]:
             resolved.add(target)
         return target
 
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False, encoding="utf-8",
-    ) as f:
-        f.write(source)
-        f.flush()
-        path = f.name
+    MonomorphizationMixin._monomorphize = _mono_spy  # type: ignore[assignment,method-assign]
+    CallsMixin._resolve_generic_call = _resolve_spy  # type: ignore[assignment]
     try:
-        program = transform(parse_file(path))
-        gen = CodeGenerator(source=source, file=path)
-        MonomorphizationMixin._monomorphize = _mono_spy  # type: ignore[assignment,method-assign]
-        CallsMixin._resolve_generic_call = _resolve_spy  # type: ignore[assignment]
-        try:
-            gen.compile_program(program)  # type: ignore[arg-type]
-        finally:
-            MonomorphizationMixin._monomorphize = orig_mono  # type: ignore[assignment,method-assign]
-            CallsMixin._resolve_generic_call = orig_resolve  # type: ignore[assignment]
+        _ = pipeline.compile(source, file="fixture.vera", checked=False).result
     finally:
-        os.unlink(path)
+        MonomorphizationMixin._monomorphize = orig_mono  # type: ignore[assignment,method-assign]
+        CallsMixin._resolve_generic_call = orig_resolve  # type: ignore[assignment]
     return registered, resolved
 
 

@@ -65,22 +65,19 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-import wasmtime
 from lark import Tree
 from lark.grammar import NonTerminal
 from lark.load_grammar import GrammarBuilder
 
+from tests import pipeline as vera_pipeline
+from tests.module_fixture_helpers import module_value
 from vera import ast
-from vera.checker import typecheck_with_artifacts
-from vera.codegen import compile as codegen_compile
-from vera.codegen import execute
 from vera.codegen.api import CompileResult
 from vera.errors import Diagnostic
 from vera.parser import parse_to_ast
 from vera.resolver import ModuleResolver
-from vera.runtime.traps import WasmTrapError
 from vera.skip import STATE_CLAUSE_INLINE_DEPTH_CAP
-from vera.verifier import VerifyResult, verify
+from vera.verifier import VerifyResult
 
 # A generated class instrument (tests/matrix_sample.py): a pull request runs a
 # sample of its parametrised cells, and all of them when it changes this file or
@@ -154,27 +151,19 @@ def build(
 
     *past_check* compiles a refused program too, so a refusal at check can
     be compared with what code generation would have done (the #1233
-    differential): the check errors are still reported.
+    differential): the check errors are still reported.  *source* is the
+    text *main_path* holds, which is what is compiled.
     """
-    program = parse_to_ast(source)
-    resolver = ModuleResolver(_root=root)
-    resolved = resolver.resolve_imports(program, main_path)
-    diags, arts = typecheck_with_artifacts(
-        program, source, file=str(main_path), resolved_modules=resolved,
-        collect_module_artifacts=True,
-    )
-    errors = list(resolver.errors) + [
-        d for d in diags if d.severity == "error"
-    ]
+    compiled = vera_pipeline.compile(
+        main_path, root=root, past_check=past_check)
+    program = compiled.parsed.program  # raises the parse or transform error
+    assert compiled.parsed.source == source, (
+        f"{main_path} does not hold the source handed in")
+    assert compiled.checked is not None
+    errors = list(compiled.checked.errors)
     if errors and not past_check:
         return Outcome(errors, None, [], [])
-    result = codegen_compile(
-        program, source=source, file=str(main_path),
-        resolved_modules=resolved,
-        expr_semantic_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-        module_artifacts=arts.module_artifacts,
-    )
+    result = compiled.result
     drops = [
         d for d in result.diagnostics
         if (d.error_code or "").startswith("E6") or d.severity == "error"
@@ -203,10 +192,7 @@ def pipeline(
 def run_main(outcome: Outcome) -> tuple[str, object]:
     """``("ok", value)`` or ``("trap", message)`` for ``main``."""
     assert outcome.result is not None
-    try:
-        return "ok", execute(outcome.result, fn_name="main").value
-    except (WasmTrapError, wasmtime.WasmtimeError, wasmtime.Trap) as exc:
-        return "trap", str(exc)
+    return module_value(outcome.result, "main")
 
 
 def locate(source: str, marker: str, occurrence: int = 0) -> tuple[int, int]:
@@ -2046,8 +2032,8 @@ def prelude_generics() -> dict[str, ast.FnDecl]:
     """The prelude's generic functions, as the prelude declares them."""
     from vera.prelude import inject_prelude
 
-    program = parse_to_ast(
-        "public fn main(@Unit -> @Int)\n" + _NC + "{\n  1\n}\n")
+    program = vera_pipeline.parse(
+        "public fn main(@Unit -> @Int)\n" + _NC + "{\n  1\n}\n").program
     inject_prelude(program)
     return {
         tld.decl.name: tld.decl for tld in program.declarations
@@ -2291,35 +2277,25 @@ def _emitted_and_discovered(
     Both built with the checker's tables threaded exactly as the CLI threads
     them — the entry file's, and each module's own.
     """
-    from vera.codegen.core import CodeGenerator
     from vera.verifier import ContractVerifier
 
-    tmp_path.mkdir(parents=True, exist_ok=True)
-    for name, text in files.items():
-        (tmp_path / name).write_text(text, encoding="utf-8")
-    main_path = tmp_path / "main.vera"
-    source = files["main.vera"]
-    program = parse_to_ast(source)
-    resolved = ModuleResolver(_root=tmp_path).resolve_imports(
-        program, main_path)
-    _diags, arts = typecheck_with_artifacts(
-        program, source, file=str(main_path), resolved_modules=resolved,
-        collect_module_artifacts=True,
+    compiled = vera_pipeline.compile(
+        vera_pipeline.write_tree(tmp_path, files), root=tmp_path,
+        past_check=True,
     )
-    gen = CodeGenerator(
-        source=source, file=str(main_path), resolved_modules=resolved,
-        expr_semantic_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-        module_artifacts=arts.module_artifacts,
-    )
-    gen.compile_program(parse_to_ast(source))
+    _ = compiled.parsed.program  # raises the parse or transform error
+    gen = compiled.generator
+    checked = compiled.checked
+    assert gen is not None and checked is not None
+    arts = checked.artifacts
     verifier = ContractVerifier(
-        source=source, file=str(main_path), resolved_modules=resolved,
+        source=checked.source, file=checked.file,
+        resolved_modules=checked.resolved,
         expr_types=arts.expr_semantic_types,
         expr_target_types=arts.expr_target_types,
         module_artifacts=arts.module_artifacts,
     )
-    verifier.register_program(parse_to_ast(source))
+    verifier.register_program(vera_pipeline.parse(checked.source).program)
     discovered = {
         (name, types)
         for name, all_types in verifier._instances.items()
@@ -3780,12 +3756,11 @@ def _e137s(diags: list[Diagnostic]) -> set[tuple[str, str]]:
 
 def _verify_file(path: Path, root: Path) -> VerifyResult:
     """Resolve and verify *path* as a program of its own."""
-    source = path.read_text(encoding="utf-8")
-    program = parse_to_ast(source)
-    resolver = ModuleResolver(_root=root)
-    resolved = resolver.resolve_imports(program, path)
-    assert not resolver.errors, resolver.errors
-    return verify(program, source, file=str(path), resolved_modules=resolved)
+    verified = vera_pipeline.verify(path, root=root, past_check=True)
+    _ = verified.checked.program  # raises the parse or transform error
+    resolution_errors = list(verified.checked.resolution_diagnostics)
+    assert not resolution_errors, resolution_errors
+    return verified.result
 
 
 class TestTheTerminationRuleReadsTheModulesOwnCalls:
