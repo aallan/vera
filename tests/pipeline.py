@@ -251,8 +251,8 @@ def _budget(seconds: float | None) -> Iterator[None]:
             return
         seconds = DEFAULT_BUDGET_S
     _deadlines.append(time.monotonic() + seconds)
-    _arm(seconds)
     try:
+        _arm(seconds)
         yield
     finally:
         _deadlines.pop()

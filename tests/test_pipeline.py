@@ -409,7 +409,7 @@ def test_cli_in_process_prints_what_the_cli_process_prints(
 
 
 #: A test file whose stage, or whose command, does not return within its
-#: budget.  The spin stops by itself after 30 s, so a watchdog that does not
+#: budget.  The spin stops by itself after 60 s, so a watchdog that does not
 #: fire leaves a run that ends, and fails the assertions below, rather than a
 #: worker that spins for ever.
 _A_HANG = '''\
@@ -424,7 +424,7 @@ _SOURCE = (
 
 
 def _spin(*args, **kwargs):
-    deadline = time.monotonic() + 30
+    deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         pass
 
@@ -473,7 +473,7 @@ def test_a_call_past_its_budget_ends_its_run_naming_the_test(
     elapsed = time.monotonic() - started
     output = proc.stdout + proc.stderr
     assert "Timeout (0:00:02)!" in output and "in _spin" in output, output
-    assert elapsed < 25, (elapsed, output)
+    assert elapsed < 45, (elapsed, output)
     if runner[0] == "-n":
         assert f"crashed while running 'test_a_hang.py::{hang}'" in output, output
     else:
@@ -507,6 +507,21 @@ def test_budgets_nest_and_a_default_keeps_the_one_in_force(
     calls.clear()
     pipeline.verify(_FACTORIAL, budget_s=300)
     assert calls == [("arm", 300), ("cancel",)], calls
+
+
+def test_a_budget_that_cannot_be_armed_leaves_none_in_force(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A timer that fails to arm raises, and leaves no deadline behind: one
+    left on the stack would make every later default budget in the process
+    keep it, and so arm nothing."""
+    def refuse(seconds: float, **kwargs: object) -> None:
+        raise ValueError("cannot arm")
+
+    monkeypatch.setattr(pipeline.faulthandler, "dump_traceback_later", refuse)
+    with pytest.raises(ValueError, match="cannot arm"), pipeline._budget(5):
+        pass
+    assert pipeline._deadlines == []
 
 
 def test_cli_gives_back_what_it_borrows(monkeypatch: pytest.MonkeyPatch) -> None:

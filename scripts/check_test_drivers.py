@@ -72,9 +72,10 @@ _CLI_SUITE = (
     "beneath them itself"
 )
 _CLI_SMOKE = (
-    "the CLI smoke: runs the corpus programs CLI_SMOKE names through `python -m "
-    "vera.cli` as a process, and holds each command's exit status and output "
-    "to the in-process CLI's, byte for byte"
+    "the CLI smoke: runs the corpus programs CLI_SMOKE names, and a program for "
+    "each exit the corpus lacks (CLI_EXIT_SHAPES), through `python -m vera.cli` "
+    "as a process, and holds each command's exit status and output to the "
+    "in-process CLI's, byte for byte"
 )
 _HASH_SEED = (
     "sweeps PYTHONHASHSEED, which an interpreter fixes when it starts, so each "
