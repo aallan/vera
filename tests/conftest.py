@@ -59,13 +59,15 @@ def pytest_configure(config: pytest.Config) -> None:
     traceback first (``pipeline._budget``).  It has to write them to a
     descriptor of its own: during a test, descriptor 2 is pytest's capture
     file, which a process that ends there never reports, and collection
-    imports tests/pipeline.py with it already in place.  The capture is
-    suspended here, in every pytest-xdist worker too, so descriptor 2 is
-    the terminal or the CI log.
+    imports tests/pipeline.py with the capture already in place.  The
+    capture is suspended here, in every pytest-xdist worker too, so
+    ``sys.stderr`` writes to the terminal or the CI log; its descriptor,
+    which in a Windows worker is not descriptor 2, is the one the watchdog
+    takes.
     """
     from tests import pipeline
 
-    pipeline.watch_stderr(os.dup(2))
+    pipeline.watch_stderr()
 
 
 @pytest.fixture(scope="session", autouse=True)

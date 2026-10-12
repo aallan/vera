@@ -444,28 +444,50 @@ def test_a_command_past_its_budget(monkeypatch, tmp_path):
 '''
 
 
+#: A plugin that lays a process's streams out as an execnet worker on Windows
+#: does, which is what pytest-xdist starts there: the stderr the process
+#: started with moves to a descriptor of its own, wrapped as `sys.stderr`, and
+#: descriptor 2 goes to the null device.  Loaded before pytest captures
+#: anything, as the worker's bootstrap runs before pytest does.
+_WINDOWS_WORKER = '''\
+import os
+import sys
+
+sys.stderr = os.fdopen(os.dup(2), "w", 1)
+_null = os.open(os.devnull, os.O_WRONLY)
+os.dup2(_null, 2)
+os.close(_null)
+'''
+
+
 @pytest.mark.parametrize(("hang", "runner"), [
     ("test_a_stage_past_its_budget", ("-n", "1")),
     ("test_a_command_past_its_budget", ("-n", "1")),
     ("test_a_stage_past_its_budget", ("-p", "no:xdist")),
-], ids=["stage-xdist", "command-xdist", "stage-plain"])
+    ("test_a_stage_past_its_budget", ("-p", "no:xdist", "-p", "_windows_worker")),
+], ids=["stage-xdist", "command-xdist", "stage-plain", "stage-windows-worker"])
 def test_a_call_past_its_budget_ends_its_run_naming_the_test(
-    hang: str, runner: tuple[str, str], tmp_path: Path,
+    hang: str, runner: tuple[str, ...], tmp_path: Path,
 ) -> None:
     """A stage call, or a command, that does not return within its budget
     ends the process that runs it, after writing every thread's traceback to
     the stderr the run started with; under pytest-xdist the report names the
     test the worker was running.  The repository's conftest is loaded, as
     every run of the suite loads it, because it is what hands the watchdog
-    that stderr."""
+    that stderr, on every platform: the last cell lays the streams out as a
+    pytest-xdist worker on Windows has them, where descriptor 2 is the null
+    device."""
     test_file = tmp_path / "test_a_hang.py"
     test_file.write_text(_A_HANG, encoding="utf-8")
+    (tmp_path / "_windows_worker.py").write_text(_WINDOWS_WORKER, encoding="utf-8")
     env = {name: value for name, value in os.environ.items()
            if not name.startswith(("GIT_", "PYTEST_", "COV_CORE_"))}
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(tmp_path), *filter(None, [env.get("PYTHONPATH")])])
     started = time.monotonic()
     proc = subprocess.run(
         [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
-         "-p", "tests.conftest", *runner, "--rootdir", str(tmp_path),
+         *runner, "-p", "tests.conftest", "--rootdir", str(tmp_path),
          f"{test_file}::{hang}"],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
         cwd=ROOT, env=env, timeout=120, check=False,

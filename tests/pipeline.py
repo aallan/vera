@@ -186,11 +186,27 @@ DEFAULT_BUDGET_S = 120.0
 _MIN_ARM_S = 0.001
 
 
+def _stderr_fileno() -> int:
+    """The descriptor of the stream ``sys.stderr`` writes to, which is not
+    always 2: an execnet worker on Windows, which is what pytest-xdist
+    starts there, moves the stderr it started with to a descriptor of its
+    own, wraps that as ``sys.stderr``, and points descriptor 2 at the null
+    device.  Descriptor 2 when no stream has a descriptor."""
+    for stream in (sys.stderr, sys.__stderr__):
+        try:
+            fd = stream.fileno() if stream is not None else -1
+        except (AttributeError, OSError, ValueError):
+            continue
+        if fd >= 0:
+            return fd
+    return 2
+
+
 def _stderr_copy() -> int | None:
-    """A descriptor of its own on the file descriptor 2 names now, or
-    ``None`` when descriptor 2 is closed."""
+    """A descriptor of its own on the stream ``sys.stderr`` writes to now
+    (:func:`_stderr_fileno`), or ``None`` when that is closed."""
     try:
-        return os.dup(2)
+        return os.dup(_stderr_fileno())
     except OSError:
         return None
 
@@ -199,22 +215,25 @@ def _stderr_copy() -> int | None:
 #: of its own on the stderr this process started with, which a capture that
 #: later points descriptor 2 elsewhere does not swallow.  Taken here, which
 #: is right outside pytest.  Under pytest, collection imports this module
-#: with descriptor 2 on the capture's file, which a process the watchdog
-#: ends never reports, so tests/conftest.py hands over the descriptor it
-#: takes at ``pytest_configure``, where the capture is suspended
-#: (:func:`watch_stderr`).
+#: with the capture in place, which a process the watchdog ends never
+#: reports, so tests/conftest.py takes it again at ``pytest_configure``,
+#: where the capture is suspended (:func:`watch_stderr`).
 _watchdog_fd: int | None = _stderr_copy()
 
 #: The deadlines of the budgets in force, the innermost last.
 _deadlines: list[float] = []
 
 
-def watch_stderr(fd: int) -> None:
-    """Write the watchdog's tracebacks to descriptor *fd*, which this module
-    then owns.  Called before any budget is in force."""
+def watch_stderr() -> None:
+    """Point the watchdog at a descriptor of its own on the stream
+    ``sys.stderr`` writes to now, in place of the one it had.  Called before
+    any budget is in force."""
     global _watchdog_fd
+    fd = _stderr_copy()
+    if fd is None:
+        return
     previous, _watchdog_fd = _watchdog_fd, fd
-    if previous is not None and previous != fd:
+    if previous is not None:
         os.close(previous)
 
 
