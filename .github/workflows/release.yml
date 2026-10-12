@@ -28,8 +28,54 @@ concurrency:
 permissions: {}
 
 jobs:
+  # The full test matrix runs after the merge, not on the pull request, so a
+  # release waits for CI's run on the commit it releases (ci.yml, the push
+  # event the merge produces) and goes on only once that run succeeded
+  # (scripts/await_ci.py, at most 100 minutes).  Every other job needs this
+  # one.  It waits wherever the release publishes to PyPI: a push that
+  # raises [project].version, by the answer `prepare` itself computes, and a
+  # production recovery.  A push that releases nothing and a TestPyPI
+  # staging run do not wait, so a merge that is not a release holds the
+  # release group for seconds.
+  ci:
+    name: Wait for CI on this commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 110
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Does this push release?
+        id: release
+        if: github.event_name == 'push'
+        env:
+          BEFORE_REF: ${{ github.event.before }}
+        run: >-
+          python scripts/release.py prepare
+          --mode push
+          --before-ref "$BEFORE_REF"
+          --github-output "$GITHUB_OUTPUT"
+
+      - name: Wait for CI's run on this commit to succeed
+        if: steps.release.outputs.publish == 'true' || (github.event_name == 'workflow_dispatch' && inputs.target == 'production-recovery')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: python scripts/await_ci.py --commit "$GITHUB_SHA" --workflow ci.yml --event push
+
   prepare:
     name: Plan and validate release
+    needs: ci
     runs-on: ubuntu-latest
     permissions:
       contents: read

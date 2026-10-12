@@ -1,28 +1,24 @@
-"""Where each gate runs: the fast ones at commit time, every one in CI.
+"""Every gate the local hook runs also runs in CI.
 
 The local pre-commit hook runs the fast gates — lint, types, the doc and
-consistency gates, and the test files a commit stages — and CI runs all of
-them plus the slow ones: the full pytest suite (the conformance suite is
-part of it), the examples' check and verify through the CLI and their runs,
-and the E602/E604 compile sweep.  Both halves are read from the configuration files
-themselves:
+consistency gates, and the test files a commit stages — and CI runs every
+one of them again, so a commit that reaches CI without the hook (a
+``git rebase --continue``, which runs no hooks, or a contributor who never
+installed them) is still gated.  Both halves are read from the
+configuration files themselves:
 
 - ``.pre-commit-config.yaml``: no hook runs the whole suite, one of the slow
   sweeps or a count check, and the doc-example hook fires on exactly the
   documents its gate reads.
-- ``.github/workflows/ci.yml``: ``pull_request`` and ``push`` reach ``main``
-  unfiltered, and a nightly ``schedule`` runs on it.  On a pull request, on
-  the push event a merge that raises ``[project].version`` produces (a
-  release) and on the nightly run, every matrix cell runs the whole suite:
-  on a pull request with each class-instrument matrix sampled, bar the ones
-  whose file or deciding module it changes, which the plan job lists
-  (tests/matrix_sample.py), and elsewhere with every cell.
-  On the push event any other merge produces, the pull request's own run
-  has already tested that tree on every cell (strict branch protection), so
-  the matrix stands down and the coverage job runs the whole suite once,
-  instrumented.  The examples' check, verify and runs and the sweep run on
-  every event, every gate the hook runs is run too, and TESTING.md's
-  generated status is checked exactly when the version rises.
+- ``.github/workflows/ci.yml``: on each event CI runs on (a pull request, a
+  pull request that raises ``[project].version``, the push event a merge
+  produces on ``main``, a release merge's, and the nightly run), every
+  hook's command is a step that runs and can fail the run.  A hook that
+  runs pytest over the staged files or the collection is matched by a run
+  of the whole suite: one pytest step that nothing narrows, or the cells of
+  one sharded job running every shard of one count between them
+  (tests/shard.py).  Which job runs a gate, and on which events it runs
+  anything else, is the workflow's to say.
 
 Conditions in the workflow (``if:`` keys and ``${{ }}`` expressions) are
 evaluated, not string-matched, by the small evaluator below: a condition
@@ -34,8 +30,7 @@ on a context name the modelled events do not define is unreadable, not
 null), and ``continue-on-error``, a shell other than the default ``bash -e``,
 or a run command that swallows its own failure (``|| true``, ``set +e``) is
 an error outright.  A gate is a command the step invokes on a line with no
-shell control operator, not text it mentions.  The known evasions are pinned
-at the end of the file.
+shell control operator, not text it mentions.
 """
 
 from __future__ import annotations
@@ -44,7 +39,6 @@ import importlib.util
 import itertools
 import re
 import shlex
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +48,8 @@ import pytest
 # configuration with it, so the files are read here the way pre-commit and
 # Actions read them rather than by pattern.
 import yaml
+
+from tests import shard
 
 ROOT = Path(__file__).resolve().parent.parent
 PRECOMMIT = ROOT / ".pre-commit-config.yaml"
@@ -105,10 +101,6 @@ def _doc_example_gate() -> Any:
     spec.loader.exec_module(module)
     return module
 
-
-def _triggers(workflow: dict[Any, Any]) -> dict[str, Any]:
-    # YAML 1.1 reads the bare key `on` as the boolean True.
-    return dict(workflow.get("on", workflow.get(True)) or {})
 
 
 def _command(line: str) -> list[str]:
@@ -316,6 +308,29 @@ UNREADABLE_CONDITIONS = {
     ),
 }
 
+# Matrix cells allowed to fail without failing the run, each with the reason,
+# keyed by job and the cell's `matrix.os`.  Such a cell gates nothing; a
+# `continue-on-error` that can be true anywhere else is an error.
+ADVISORY_CELLS = {
+    ("test", "ubuntu-24.04-arm"): (
+        "the Linux aarch64 cell is advisory (README § Supported platforms):"
+        " the job's `continue-on-error` is its `advisory` matrix value, so a"
+        " failure there fails neither the run nor matrix-gate"
+    ),
+}
+
+
+def _advisory(job_name: str, job: dict[str, Any], context: dict[str, object]) -> bool:
+    """Whether `context` is a cell `ADVISORY_CELLS` names, whose job's
+    `continue-on-error` is true there."""
+    if (job_name, context.get("matrix.os")) not in ADVISORY_CELLS:
+        return False
+    value = job.get("continue-on-error")
+    try:
+        return value is True or (isinstance(value, str) and _truthy(evaluate(value, context)))
+    except SyntaxError:
+        return False
+
 
 def _runs(item: dict[str, Any], context: dict[str, object], where: str) -> bool:
     """Whether a job or step runs in `context`, failing closed.
@@ -365,12 +380,15 @@ def _gating_steps(
     """The steps of one job that run in `context` and can fail the run.
 
     The job's own `if` and `continue-on-error` count, and so do the
-    workflow's `defaults`; a job that does not run gates nothing.  A run
+    workflow's `defaults`; a job that does not run gates nothing, and
+    neither does a cell `ADVISORY_CELLS` names.  A run
     command that swallows its own failure (`|| true`, `set +e`, …) fails the
     test outright: its step is not a gate however the job is configured."""
     _can_fail(workflow, context, "the workflow")
     job = workflow["jobs"][job_name]
     if not _runs(job, context, f"job {job_name}"):
+        return []
+    if _advisory(job_name, job, context):
         return []
     _can_fail(job, context, f"job {job_name}")
     steps: list[dict[str, Any]] = []
@@ -416,22 +434,35 @@ def _invokes(steps: list[dict[str, Any]], *command: str) -> list[dict[str, Any]]
     return found
 
 
-# The events every gate has to hold on: a pull request into main, the push
-# event a merged pull request produces on main (whether or not the merge
-# raised `[project].version`, which the plan job answers), and the nightly
-# schedule.  `needs.plan.outputs.release` is empty where the plan job's step
-# does not run: it reads the version on a push only.  Its other answer,
-# `needs.plan.outputs.changed`, is the files a pull request changes that a
+# The events every gate has to hold on: a pull request into main, one that
+# raises `[project].version`, the push event a merged pull request produces
+# on main (whether or not the merge raised the version), and the nightly
+# schedule.  `needs.plan.outputs.release` is the plan job's answer to "does
+# this change raise the version?", `true` or `false` on a pull request and a
+# push and empty on the nightly run, where its step does not run.
+# `needs.plan.outputs.changed` is the files a pull request changes that a
 # class-instrument matrix can be decided by, and empty on every other event.
+# `needs.test.result` is the full matrix's result as a run in which every
+# gate holds sees it: `success` where the matrix runs, `skipped` where it
+# stands down.
 _WORKFLOW = {"github.workflow": "CI"}
+_PULL_REQUEST = {
+    **_WORKFLOW,
+    "github.event_name": "pull_request",
+    "github.base_ref": "main",
+    "github.ref": "refs/pull/1/merge",
+    "needs.plan.outputs.changed": "vera/narrowing.py\ntests/test_one_classifier_1503.py",
+}
 EVENTS = {
     "pull request into main": {
-        **_WORKFLOW,
-        "github.event_name": "pull_request",
-        "github.base_ref": "main",
-        "github.ref": "refs/pull/1/merge",
-        "needs.plan.outputs.release": "",
-        "needs.plan.outputs.changed": "vera/narrowing.py\ntests/test_one_classifier_1503.py",
+        **_PULL_REQUEST,
+        "needs.plan.outputs.release": "false",
+        "needs.test.result": "skipped",
+    },
+    "pull request that raises the version": {
+        **_PULL_REQUEST,
+        "needs.plan.outputs.release": "true",
+        "needs.test.result": "success",
     },
     "push of a merge into main": {
         **_WORKFLOW,
@@ -441,6 +472,7 @@ EVENTS = {
         "github.event.before": "1" * 40,
         "needs.plan.outputs.release": "false",
         "needs.plan.outputs.changed": "",
+        "needs.test.result": "skipped",
     },
     "push of a release merge into main": {
         **_WORKFLOW,
@@ -450,6 +482,7 @@ EVENTS = {
         "github.event.before": "2" * 40,
         "needs.plan.outputs.release": "true",
         "needs.plan.outputs.changed": "",
+        "needs.test.result": "success",
     },
     "nightly schedule": {
         **_WORKFLOW,
@@ -459,16 +492,9 @@ EVENTS = {
         "github.sha": "3" * 40,
         "needs.plan.outputs.release": "",
         "needs.plan.outputs.changed": "",
+        "needs.test.result": "success",
     },
 }
-
-# Where the whole matrix runs, and where the coverage job runs instead of it.
-FULL_MATRIX = (
-    "pull request into main",
-    "push of a release merge into main",
-    "nightly schedule",
-)
-COVERAGE = ("push of a merge into main", "push of a release merge into main")
 
 
 class TestTheEvaluator:
@@ -645,32 +671,40 @@ class TestThePreCommitHookIsFast:
 
 
 # ---------------------------------------------------------------------------
-# CI: everything, on every event, on main
+# CI: every gate the hook runs, on every event
 # ---------------------------------------------------------------------------
 
 
 def _matrix_cells(job: dict[str, Any]) -> list[dict[str, object]]:
+    """The cells a job's `strategy.matrix` runs, by GitHub's rules: the
+    product of the axes, with each `include` entry added to every cell whose
+    axis values it matches, or run as a cell of its own when it matches
+    none (an `include`-only matrix is its entries)."""
     matrix = job["strategy"]["matrix"]
-    axes = {k: v for k, v in matrix.items() if k not in ("include", "exclude")}
-    cells = [
-        {f"matrix.{k}": v for k, v in zip(axes, values, strict=True)}
-        for values in itertools.product(*axes.values())
-    ]
     assert "exclude" not in matrix, "the cell arithmetic here ignores exclude"
-    cells += [
-        {f"matrix.{k}": v for k, v in extra.items()}
-        for extra in matrix.get("include", [])
-    ]
-    return cells
+    axes = {k: v for k, v in matrix.items() if k not in ("include", "exclude")}
+    base = [
+        dict(zip(axes, values, strict=True))
+        for values in itertools.product(*axes.values())
+    ] if axes else []
+    cells = [dict(cell) for cell in base]
+    for extra in matrix.get("include", []):
+        fits = [
+            index for index, cell in enumerate(base)
+            if all(cell[k] == v for k, v in extra.items() if k in axes)
+        ]
+        for index in fits:
+            cells[index].update(extra)
+        if not fits:
+            cells.append(dict(extra))
+    return [{f"matrix.{k}": v for k, v in cell.items()} for cell in cells]
 
 
-# The arguments that do not narrow what the suite runs.  Anything else on a
-# CI pytest command must be classified here, deliberately.  `--matrix=full`
-# runs every cell of the class-instrument matrices, so it narrows nothing;
-# `--matrix=sample` narrows them to their sample whatever changed, and is
-# left for the caller to refuse.  A command with no `--matrix` samples them
-# too, bar the files `VERA_MATRIX_CHANGED` puts in full, so where that
-# default is allowed is `_matrix_mode`'s question, not this one's.
+# The arguments that do not narrow what the suite runs: output, workers and
+# their scheduling, coverage, and the class-instrument matrices' mode, whose
+# sample a pull request runs by design (tests/matrix_sample.py).  `--shard`
+# narrows a run to one part, which `_runs_the_whole_suite` reassembles.
+# Anything else on a pytest command narrows it.
 def _narrowing(args: list[str]) -> list[str]:
     out: list[str] = []
     skip_value = False
@@ -680,287 +714,88 @@ def _narrowing(args: list[str]) -> list[str]:
             continue
         if arg in ("-v", "-vv", "-q"):
             continue
-        if arg == "-n":
+        if arg in ("-n", "--dist", "--shard"):
             skip_value = True
             continue
-        if re.fullmatch(r"--cov(-report|-fail-under)?=\S+", arg):
-            continue
-        if arg == "--matrix=full":
+        if re.fullmatch(r"--(cov(-report|-fail-under)?|matrix|dist|shard)=\S+", arg):
             continue
         out.append(arg)
     return out
 
 
-def _matrix_mode(args: list[str]) -> str | None:
-    """How a pytest command runs the class-instrument matrices
-    (tests/matrix_sample.py): `full`, `sample`, or None for the default,
-    the sample bar the files the changed-file list puts in full."""
-    modes = [arg.split("=", 1)[1] for arg in args if arg.startswith("--matrix=")]
-    return modes[-1] if modes else None
+def _shard_of_run(args: list[str]) -> tuple[int, int] | None:
+    """The `K/N` a pytest command's `--shard` names, or None for a run of the
+    whole collection."""
+    for index, arg in enumerate(args):
+        if arg.startswith("--shard="):
+            return shard.parse_shard(arg.split("=", 1)[1])
+        if arg == "--shard" and index + 1 < len(args):
+            return shard.parse_shard(args[index + 1])
+    return None
+
+
+def _runs_the_whole_suite(workflow: dict[Any, Any], context: dict[str, object]) -> bool:
+    """Whether CI runs the whole suite in `context`: a gating pytest step
+    with nothing narrowing it, or the cells of one job whose gating pytest
+    steps run every shard `1/N` to `N/N` of one count `N` between them."""
+    for name, job in workflow["jobs"].items():
+        cells = _matrix_cells(job) if "strategy" in job else [{}]
+        shards: dict[int, set[int]] = {}
+        for cell in cells:
+            for step in _gating_steps(workflow, name, {**context, **cell}):
+                for line in step["run"].splitlines():
+                    args = _runs_pytest(line)
+                    if args is None or _narrowing(args):
+                        continue
+                    _no_control_operator(line, "pytest")
+                    part = _shard_of_run(args)
+                    if part is None:
+                        return True
+                    shards.setdefault(part[1], set()).add(part[0])
+        if any(found == set(range(1, count + 1)) for count, found in shards.items()):
+            return True
+    return False
 
 
 class TestCiRunsEveryGate:
-    """Each gate runs on each of the modelled events and can fail the run.
+    """Each gate the hook runs runs in CI on each of the modelled events,
+    and can fail the run.
 
     A step counts only where `_gating_steps` says it runs and can fail: its
     job's and its own conditions evaluated for the event (and matrix cell),
     no `continue-on-error`, no shell substituted for `bash -e`, and no run
     command that swallows its own failure."""
 
-    def test_both_events_reach_main_unfiltered(self) -> None:
-        triggers = _triggers(_workflow())
-        for event in ("push", "pull_request"):
-            assert event in triggers, event
-            spec = triggers[event] or {}
-            assert set(spec.get("branches", [])) == {"main"}, event
-            for narrowing in ("paths", "paths-ignore", "branches-ignore"):
-                assert narrowing not in spec, (
-                    f"{event} carries `{narrowing}`, so some changes would"
-                    " reach main without CI"
-                )
+    @pytest.mark.parametrize(
+        ("args", "narrows"),
+        [
+            (["-v", "-n", "auto"], []),
+            (["-v", "-n", "4", "--dist", "worksteal", "--shard=2/3"], []),
+            (["-n", "auto", "--cov=vera", "--cov-fail-under=80", "--matrix=full"], []),
+            (["--dist=worksteal", "--shard", "1/2", "--matrix=sample"], []),
+            (["tests/test_browser.py", "-v"], ["tests/test_browser.py"]),
+            (["-k", "run"], ["-k", "run"]),
+            (["-x", "-q"], ["-x"]),
+        ],
+    )
+    def test_what_narrows_a_run(self, args: list[str], narrows: list[str]) -> None:
+        assert _narrowing(args) == narrows
 
-    def test_the_nightly_run_is_scheduled_once_a_day(self) -> None:
-        """The full matrix runs every day whatever merged: a merge that
-        keeps the version stands it down (below), so the schedule is what
-        still runs every cell on main as it stands."""
-        schedule = _triggers(_workflow()).get("schedule") or []
-        assert len(schedule) == 1, schedule
-        minute, hour, *calendar = str(schedule[0]["cron"]).split()
-        assert minute.isdigit() and hour.isdigit(), schedule
-        assert calendar == ["*", "*", "*"], f"not daily: {schedule}"
+    def test_a_shard_set_is_the_whole_suite_only_when_complete(self) -> None:
+        """Three shards of three run the suite; two of them, or shards of
+        two different counts, do not."""
+        def job(cells: list[dict[str, object]]) -> dict[Any, Any]:
+            return {"jobs": {"shard": {
+                "strategy": {"matrix": {"include": cells}},
+                "steps": [{"run": "pytest -n 4 --shard=${{ matrix.shard }}/${{ matrix.shards }}"}],
+            }}}
 
-    def test_only_the_matrix_and_the_coverage_job_are_conditional(self) -> None:
-        """Every job runs on every event, bar two, and those two are pinned
-        to their events: the matrix stands down on the push event a merge
-        that keeps the version produces, and the coverage job runs on the
-        push event every merge produces, and only there, so no pull request
-        waits on an instrumented run."""
-        jobs = _workflow()["jobs"]
-        for name in ("plan", "test", "coverage", "lint", "eager-gc", "typecheck", "browser-parity"):
-            assert name in jobs, name
-        for name, job in jobs.items():
-            runs_on = {
-                event for event, context in EVENTS.items()
-                if _runs(job, context, f"job {name}")
-            }
-            if name == "test":
-                assert runs_on == set(FULL_MATRIX), sorted(runs_on)
-            elif name == "coverage":
-                assert runs_on == set(COVERAGE), sorted(runs_on)
-            else:
-                assert "if" not in job, f"job {name} has an `if`"
-
-    @pytest.mark.parametrize("event", FULL_MATRIX)
-    def test_every_matrix_cell_runs_the_whole_suite(self, event: str) -> None:
-        workflow = _workflow()
-        job = workflow["jobs"]["test"]
-        env = {**workflow.get("env", {}), **job.get("env", {})}
-        assert "PYTEST_ADDOPTS" not in env
-        cells = _matrix_cells(job)
-        for cell in cells:
-            steps = _gating_steps(workflow, "test", {**EVENTS[event], **cell})
-            suites = [step for step in steps if _runs_pytest(step["run"]) is not None]
-            assert len(suites) == 1, (
-                f"{cell}: {len(suites)} gating pytest steps, not exactly one"
-            )
-            step = suites[0]
-            assert "PYTEST_ADDOPTS" not in step.get("env", {})
-            args = _runs_pytest(step["run"])
-            assert args is not None
-            assert _narrowing(args) == [], (
-                f"{cell}: `{step['run']}` narrows the suite with"
-                f" {_narrowing(args)}"
-            )
-            # The class-instrument matrices (tests/matrix_sample.py): a pull
-            # request runs each one's sample, and every cell of one whose
-            # file or deciding module it changes, from the plan job's list;
-            # the release push and the nightly run run every cell.
-            pull_request = EVENTS[event]["github.event_name"] == "pull_request"
-            want = None if pull_request else "full"
-            assert _matrix_mode(args) == want, (
-                f"{cell}: `{step['run']}` runs the matrices"
-                f" {_matrix_mode(args) or 'by default'}, not {want or 'by default'}"
-            )
-            if pull_request:
-                assert (step.get("env") or {}).get("VERA_MATRIX_CHANGED") == (
-                    "${{ needs.plan.outputs.changed }}"
-                ), f"{cell}: the suite is not handed the plan job's list of changed files"
-            # Instrumentation costs a cell about 2.5x; the coverage job pays
-            # it, after the merge, so no cell of the matrix does (#1624).
-            assert not any(arg.startswith("--cov") for arg in args), (
-                f"{cell}: `{step['run']}` measures coverage in the matrix"
-            )
-
-    def test_the_push_of_a_merge_runs_the_whole_suite_once_with_coverage(self) -> None:
-        """Under strict branch protection a pull request's last run tested
-        the tree its merge produces, on every cell, so the push event that
-        merge produces runs no cell of the matrix.  It runs the whole suite
-        once, in the coverage job: instrumented with the sysmon core on
-        ubuntu-latest and Python 3.12, which is what keeps Codecov tracking
-        main."""
-        workflow = _workflow()
-        context = EVENTS["push of a merge into main"]
-        for cell in _matrix_cells(workflow["jobs"]["test"]):
-            assert _gating_steps(workflow, "test", {**context, **cell}) == [], cell
-        job = workflow["jobs"]["coverage"]
-        assert "strategy" not in job
-        assert job["runs-on"] == "ubuntu-latest"
-        steps = _gating_steps(workflow, "coverage", context)
-        pythons = [
-            str(step["with"]["python-version"]) for step in steps
-            if str(step.get("uses", "")).startswith("actions/setup-python@")
-        ]
-        assert pythons == ["3.12"], pythons
-        suites = [step for step in steps if _runs_pytest(step["run"]) is not None]
-        assert len(suites) == 1, f"{len(suites)} gating pytest steps, not exactly one"
-        step = suites[0]
-        args = _runs_pytest(step["run"])
-        assert args is not None
-        assert _narrowing(args) == [], (
-            f"`{step['run']}` narrows the suite with {_narrowing(args)}"
-        )
-        assert "--cov=vera" in args, args
-        assert any(arg.startswith("--cov-fail-under=") for arg in args), args
-        # Every cell of the class-instrument matrices: the push event of a
-        # merge that keeps the version runs no matrix cell, so this run is
-        # the one place their every cell runs before the nightly.
-        assert _matrix_mode(args) == "full", args
-        assert step.get("env", {}).get("COVERAGE_CORE") == "sysmon"
-        assert any(
-            str(step.get("uses", "")).startswith("codecov/codecov-action@")
-            for step in steps
-        ), "the coverage job uploads nothing"
-
-    def test_the_plan_reads_the_version_bump_on_a_push(self) -> None:
-        """The matrix waits for the plan job, whose first answer is whether
-        a push raised `[project].version`: the release-mode rule of
-        check_doc_counts.py (#1536), asked of the commit before the push and
-        written to the step's outputs.  On any other event the step does not
-        run and the matrix does not ask.  Its second answer, the files a
-        pull request changes, is the test below."""
-        workflow = _workflow()
-        jobs = workflow["jobs"]
-        assert "plan" in jobs, "no plan job"
-        assert jobs["test"].get("needs") in ("plan", ["plan"])
-        outputs = jobs["plan"].get("outputs") or {}
-        assert set(outputs) == {"release", "changed"}, outputs
-        m = re.fullmatch(
-            r"\$\{\{\s*steps\.([\w-]+)\.outputs\.release\s*\}\}",
-            str(outputs["release"]),
-        )
-        assert m is not None, outputs["release"]
-        for event, context in EVENTS.items():
-            steps = _gating_steps(workflow, "plan", context)
-            answers = [step for step in steps if step.get("id") == m.group(1)]
-            if context["github.event_name"] != "push":
-                assert answers == [], event
-                continue
-            assert len(answers) == 1, event
-            assert _command(answers[0]["run"].strip()) == [
-                "python", "scripts/check_doc_counts.py", "--print-release-mode",
-                str(context["github.event.before"]), ">>", "$GITHUB_OUTPUT",
-            ], answers[0]["run"]
-            checkouts = [
-                step for step in steps
-                if str(step.get("uses", "")).startswith("actions/checkout@")
-            ]
-            assert len(checkouts) == 1, event
-            assert (checkouts[0].get("with") or {}).get("fetch-depth") == 0, (
-                "the commit before the push must be in the checkout"
-            )
-
-    def test_the_plan_lists_what_a_pull_request_changes(self) -> None:
-        """The plan job's second answer, for the class-instrument matrices
-        (tests/matrix_sample.py): on a pull request, the files it changes
-        that a matrix can be decided by, one per line, which the matrix hands
-        the suite as `VERA_MATRIX_CHANGED`.  The range is the pull request's
-        own, from its merge base to its head (three dots: what it changes,
-        not what `main` has gained since it branched), over a checkout that
-        holds both ends; the pathspec keeps the list to the compiler and the
-        test files; and the value is written between `changed<<` and a
-        random delimiter, so no file name can end it early.  On any other
-        event the step does not run and the list is empty."""
-        workflow = _workflow()
-        outputs = workflow["jobs"]["plan"].get("outputs") or {}
-        m = re.fullmatch(
-            r"\$\{\{\s*steps\.([\w-]+)\.outputs\.changed\s*\}\}", str(outputs.get("changed")),
-        )
-        assert m is not None, outputs
-        for event, context in EVENTS.items():
-            steps = _gating_steps(workflow, "plan", context)
-            answers = [step for step in steps if step.get("id") == m.group(1)]
-            if context["github.event_name"] != "pull_request":
-                assert answers == [], event
-                continue
-            assert len(answers) == 1, event
-            step = answers[0]
-            env = step.get("env") or {}
-            assert env.get("BASE_SHA") == "${{ github.event.pull_request.base.sha }}", env
-            assert env.get("HEAD_SHA") == "${{ github.event.pull_request.head.sha }}", env
-            lines = [line.strip() for line in step["run"].splitlines() if line.strip()]
-            assert len(lines) == 4, lines
-            assignment, opening, diff, closing = lines
-            name = re.fullmatch(r'(\w+)="changed_\$\(openssl rand -hex (\d+)\)"', assignment)
-            assert name is not None and int(name.group(2)) >= 16, assignment
-            assert _command(opening) == ["echo", f"changed<<${name.group(1)}", ">>", "$GITHUB_OUTPUT"], opening
-            assert _command(diff) == [
-                "git", "diff", "--name-only", "$BASE_SHA...$HEAD_SHA", "--", "vera/", "tests/test_*.py",
-                ">>", "$GITHUB_OUTPUT",
-            ], diff
-            assert _command(closing) == ["echo", f"${name.group(1)}", ">>", "$GITHUB_OUTPUT"], closing
-            checkouts = [
-                step for step in steps
-                if str(step.get("uses", "")).startswith("actions/checkout@")
-            ]
-            assert len(checkouts) == 1, event
-            assert (checkouts[0].get("with") or {}).get("fetch-depth") == 0, (
-                "the pull request's merge base must be in the checkout"
-            )
-
-    def test_the_nightly_run_never_holds_a_merge_pending(self) -> None:
-        """A run queued in a busy concurrency group waits, and a newer one
-        replaces it (GitHub's concurrency rules), so the nightly run has a
-        group of its own.  Pull request runs cancel their predecessors; no
-        other run is cancelled."""
-        concurrency = _workflow()["concurrency"]
-        groups = {
-            event: render(str(concurrency["group"]), context)
-            for event, context in EVENTS.items()
-        }
-        merges = {groups[event] for event in COVERAGE}
-        assert len(merges) == 1, groups
-        assert groups["nightly schedule"] not in merges, groups
-        for event, context in EVENTS.items():
-            cancels = _truthy(evaluate(str(concurrency["cancel-in-progress"]), context))
-            assert cancels == (context["github.event_name"] == "pull_request"), event
-
-    @pytest.mark.parametrize("event", sorted(EVENTS))
-    def test_conformance_and_the_examples_run(self, event: str) -> None:
-        """The conformance programs are part of the whole suite
-        (tests/test_conformance.py), which the tests above run on every
-        event.  The examples' check and verify through the CLI (the suite's
-        example tests call the checker and verifier in-process), their runs
-        and the compile sweep run here on every event, and the runs again
-        under VERA_EAGER_GC=1: the conformance programs through the suite's
-        own run stage, since a collection changes no other stage."""
-        workflow = _workflow()
-        context = EVENTS[event]
-        for job, script, eager in [
-            ("lint", "scripts/check_examples.py", False),
-            ("lint", "scripts/check_examples_run.py", False),
-            ("lint", "scripts/check_e602_clean.py", False),
-            ("eager-gc", "scripts/check_examples_run.py", True),
-        ]:
-            steps = _invokes(_gating_steps(workflow, job, context), "python", script)
-            assert len(steps) == 1, f"{job} runs {script} {len(steps)} times"
-            if eager:
-                assert str(steps[0].get("env", {}).get("VERA_EAGER_GC")) == "1"
-        runs = _invokes(
-            _gating_steps(workflow, "eager-gc", context),
-            "pytest", "tests/test_conformance.py", "-k", "run",
-        )
-        assert len(runs) == 1, f"eager-gc runs the conformance runs {len(runs)} times"
-        assert str(runs[0].get("env", {}).get("VERA_EAGER_GC")) == "1"
+        context = EVENTS["pull request into main"]
+        whole = [{"shard": k, "shards": 3} for k in (1, 2, 3)]
+        assert _runs_the_whole_suite(job(whole), context)
+        assert not _runs_the_whole_suite(job(whole[:2]), context)
+        assert not _runs_the_whole_suite(job([*whole[:2], {"shard": 3, "shards": 4}]), context)
+        assert not _runs_the_whole_suite(job([{"shard": 1, "shards": 3}] * 3), context)
 
     @pytest.mark.parametrize("event", sorted(EVENTS))
     def test_every_gate_the_hook_runs_also_runs_in_ci(self, event: str) -> None:
@@ -993,14 +828,14 @@ class TestCiRunsEveryGate:
             entry = hook["entry"]
             args = _runs_pytest(entry)
             if args is not None:
-                # The staged-files run and the collection are covered by the
-                # whole suite (test_every_matrix_cell_runs_the_whole_suite);
-                # a named test file must be run by name.
-                for arg in args:
-                    if arg.startswith("tests/") and not any(
-                        arg in (_runs_pytest(step["run"]) or []) for step in steps
-                    ):
+                # A named test file must be run by name; the staged files and
+                # the collection, by a run of the whole suite.
+                files = [arg for arg in args if arg.startswith("tests/")]
+                for arg in files:
+                    if not any(arg in (_runs_pytest(step["run"]) or []) for step in steps):
                         missing.append(f"{hook['id']} ({arg})")
+                if not files and not _runs_the_whole_suite(workflow, context):
+                    missing.append(f"{hook['id']} (the whole suite)")
                 continue
             script = re.search(r"scripts/\w+\.py", entry)
             if script is not None:
@@ -1025,6 +860,18 @@ class TestCiRunsEveryGate:
             assert hook_id in ids
             assert hook_id not in runs
 
+    def test_the_advisory_cells_are_real(self) -> None:
+        """Every advisory cell is a cell of its job's matrix where the job's
+        `continue-on-error` is true, so the table cannot outlive its reason."""
+        workflow = _workflow()
+        for job_name, os_name in ADVISORY_CELLS:
+            job = workflow["jobs"][job_name]
+            cells = [cell for cell in _matrix_cells(job) if cell.get("matrix.os") == os_name]
+            assert cells, (job_name, os_name)
+            for cell in cells:
+                for event, context in EVENTS.items():
+                    assert _advisory(job_name, job, {**context, **cell}), (job_name, os_name, event)
+
     def test_the_unreadable_conditions_are_real(self) -> None:
         """Every allowlisted condition names a step that exists and whose
         condition the evaluator really cannot read, so the table cannot
@@ -1038,166 +885,3 @@ class TestCiRunsEveryGate:
             assert name in steps, name
             with pytest.raises(SyntaxError):
                 evaluate(str(steps[name]["if"]), EVENTS["push of a merge into main"])
-
-    @pytest.mark.parametrize(
-        ("event", "base"),
-        [
-            ("pull request into main", "main"),
-            ("push of a merge into main", "1" * 40),
-            ("push of a release merge into main", "2" * 40),
-            ("nightly schedule", "3" * 40),
-        ],
-    )
-    def test_doc_counts_keys_release_mode_on_the_version_bump(
-        self, event: str, base: str
-    ) -> None:
-        """Release mode is chosen by the script from the version bump
-        (#1536), never by the event: a pull request hands it its base
-        branch, a push the commit before it, and the nightly run, which has
-        no commit before it, the commit it tests, which raises nothing.  A
-        base branch alone named the release PR only while fix PRs targeted
-        a release branch."""
-        steps = _invokes(
-            _gating_steps(_workflow(), "lint", EVENTS[event]),
-            "python", "scripts/check_doc_counts.py",
-        )
-        assert len(steps) == 1
-        argv = _command(steps[0]["run"])
-        assert argv[2:] == ["--release-if-version-raised", base]
-
-
-# ---------------------------------------------------------------------------
-# The known evasions, pinned.  Each is an edit to one configuration file that
-# stops a gate running or stops it failing the run while leaving its text in
-# place; each must turn the named check red.  The edits are applied to copies
-# in memory, never to the files on disk.
-# ---------------------------------------------------------------------------
-
-_SWEEP = (
-    "      - name: Check no unexpected [E602]/[E604] silent skips (Layer 1 of #626)\n"
-    "        run: python scripts/check_e602_clean.py\n"
-)
-_WALK = (
-    "      - name: Check every walker covers every Expr subclass (#597)\n"
-    "        run: python scripts/check_walker_coverage.py\n"
-)
-_STAGED = "        files: '^tests/test_[^/]*\\.py$'\n        require_serial: true\n"
-
-
-def _walk_if(condition: str) -> str:
-    return _WALK.replace("        run:", f"        if: {condition}\n        run:", 1)
-
-
-def _sweep_run(run: str) -> str:
-    return _SWEEP.replace("python scripts/check_e602_clean.py", run, 1)
-
-
-# The matrix's condition and the coverage job's, as ci.yml spells them.
-_MATRIX_IF = "    if: github.event_name != 'push' || needs.plan.outputs.release == 'true'\n"
-_COVERAGE_IF = "  coverage:\n    if: github.event_name == 'push'\n"
-
-# The matrix's test step and the plan job's list, as ci.yml spells them.
-_MATRIX_FLAG = "${{ github.event_name != 'pull_request' && '--matrix=full' || '' }}"
-_CHANGED_ENV = "        env:\n          VERA_MATRIX_CHANGED: ${{ needs.plan.outputs.changed }}\n"
-_CHANGED_IF = "        id: changed\n        if: github.event_name == 'pull_request'\n"
-_CHANGED_DIFF = "git diff --name-only \"$BASE_SHA...$HEAD_SHA\" -- vera/ 'tests/test_*.py'"
-_COVERAGE_RUN = "--cov-fail-under=80 --matrix=full\n"
-
-_COUNTERPART = ("counterpart", "pull request into main")
-_SWEEPS = ("sweeps", "pull request into main")
-_WHOLE_SUITE = ("whole suite", None)
-_PR_MATRIX = ("matrix", "pull request into main")
-_NIGHTLY_MATRIX = ("matrix", "nightly schedule")
-_RELEASE_MATRIX = ("matrix", "push of a release merge into main")
-_CONDITIONAL = ("conditional", None)
-_COVERAGE = ("coverage", None)
-_PLAN = ("plan", None)
-
-EVASIONS = [
-    ("walker coverage on push only", CI, _WALK, _walk_if("github.event_name == 'push'"), _COUNTERPART),
-    ("sweep step continue-on-error", CI, _SWEEP,
-     _SWEEP.replace("        run:", "        continue-on-error: true\n        run:", 1), _SWEEPS),
-    ("staged-test hook always_run", PRECOMMIT, _STAGED, _STAGED + "        always_run: true\n", _WHOLE_SUITE),
-    ("eager-gc job continue-on-error", CI, "  eager-gc:\n", "  eager-gc:\n    continue-on-error: true\n", _SWEEPS),
-    ("sweep piped to tee", CI, _SWEEP, _sweep_run("python scripts/check_e602_clean.py | tee sweep.log"), _SWEEPS),
-    ("sweep backgrounded", CI, _SWEEP, _sweep_run("python scripts/check_e602_clean.py &"), _SWEEPS),
-    ("sweep in an and-list, not last", CI, _SWEEP,
-     "      - name: Check no unexpected [E602]/[E604] silent skips (Layer 1 of #626)\n"
-     "        run: |\n"
-     "          python scripts/check_e602_clean.py && echo sweep ok\n"
-     "          echo done\n", _SWEEPS),
-    ("sweep in an and-list on one line", CI, _SWEEP,
-     _sweep_run("python scripts/check_e602_clean.py && echo sweep ok; echo done"), _SWEEPS),
-    ("walker coverage piped to tee", CI, _WALK,
-     _WALK.replace("check_walker_coverage.py", "check_walker_coverage.py | tee walker.log", 1), _COUNTERPART),
-    ("walker coverage behind an unmodelled head_ref", CI, _WALK, _walk_if("github.head_ref != ''"), _COUNTERPART),
-    ("sweep skipped for an unmodelled actor", CI, _SWEEP,
-     _SWEEP.replace("        run:", "        if: github.actor != 'dependabot[bot]'\n        run:", 1), _SWEEPS),
-    ("sweep may fail for an unmodelled actor", CI, _SWEEP,
-     _SWEEP.replace(
-         "        run:",
-         "        continue-on-error: ${{ github.actor == 'dependabot[bot]' }}\n        run:", 1,
-     ), _SWEEPS),
-    ("walker coverage behind a precedence trap", CI, _WALK,
-     _walk_if("${{ !github.event_name == 'schedule' }}"), _COUNTERPART),
-    ("staged-test hook as python -m pytest over tests/", PRECOMMIT,
-     "        entry: .venv/bin/pytest -q -n 4 --matrix=full\n",
-     "        entry: .venv/bin/python -m pytest tests/ -q --matrix=full\n",
-     _WHOLE_SUITE),
-    ("matrix gated on the plan alone, so a pull request runs no cell", CI, _MATRIX_IF,
-     "    if: needs.plan.outputs.release == 'true'\n", _PR_MATRIX),
-    ("matrix on pull requests and releases only, so the nightly runs no cell", CI, _MATRIX_IF,
-     "    if: github.event_name == 'pull_request' || needs.plan.outputs.release == 'true'\n",
-     _NIGHTLY_MATRIX),
-    ("coverage job on every event, so a pull request waits on it", CI, _COVERAGE_IF,
-     "  coverage:\n", _CONDITIONAL),
-    ("pull request held to the matrices' sample, so a changed decider runs no more", CI, _MATRIX_FLAG,
-     "--matrix=${{ github.event_name == 'pull_request' && 'sample' || 'full' }}", _PR_MATRIX),
-    ("changed-file list never handed to the suite", CI, _CHANGED_ENV, "", _PR_MATRIX),
-    ("nightly run left to the default sample", CI, _MATRIX_FLAG,
-     "${{ github.event_name == 'push' && '--matrix=full' || '' }}", _NIGHTLY_MATRIX),
-    ("release push left to the default sample", CI, _MATRIX_FLAG,
-     "${{ github.event_name == 'schedule' && '--matrix=full' || '' }}", _RELEASE_MATRIX),
-    ("coverage job sampled", CI, _COVERAGE_RUN, "--cov-fail-under=80\n", _COVERAGE),
-    ("changed-file list made on a push only", CI, _CHANGED_IF,
-     "        id: changed\n        if: github.event_name == 'push'\n", _PLAN),
-    ("changed files diffed from main's tip, not the merge base", CI, _CHANGED_DIFF,
-     _CHANGED_DIFF.replace("...", "..", 1), _PLAN),
-    ("changed files listed without a pathspec", CI, _CHANGED_DIFF,
-     _CHANGED_DIFF.split(" -- ", 1)[0], _PLAN),
-]
-
-
-@pytest.mark.parametrize(
-    ("path", "old", "new", "check"),
-    [pytest.param(path, old, new, check, id=name) for name, path, old, new, check in EVASIONS],
-)
-def test_each_known_evasion_is_caught(
-    monkeypatch: pytest.MonkeyPatch, path: Path, old: str, new: str, check: tuple[str, str | None]
-) -> None:
-    text = path.read_text(encoding="utf-8")
-    assert text.count(old) == 1, f"the evasion's anchor moved in {path.name}"
-    edited = yaml.safe_load(text.replace(old, new, 1))
-    module = sys.modules[__name__]
-    if path == CI:
-        monkeypatch.setattr(module, "_workflow", lambda: dict(edited))
-    else:
-        monkeypatch.setattr(module, "_hooks", lambda: [
-            {**hook, "repo": repo["repo"]} for repo in edited["repos"] for hook in repo["hooks"]
-        ])
-    kind, event = check
-    with pytest.raises((AssertionError, pytest.fail.Exception)):
-        if kind == "counterpart":
-            TestCiRunsEveryGate().test_every_gate_the_hook_runs_also_runs_in_ci(str(event))
-        elif kind == "sweeps":
-            TestCiRunsEveryGate().test_conformance_and_the_examples_run(str(event))
-        elif kind == "matrix":
-            TestCiRunsEveryGate().test_every_matrix_cell_runs_the_whole_suite(str(event))
-        elif kind == "conditional":
-            TestCiRunsEveryGate().test_only_the_matrix_and_the_coverage_job_are_conditional()
-        elif kind == "coverage":
-            TestCiRunsEveryGate().test_the_push_of_a_merge_runs_the_whole_suite_once_with_coverage()
-        elif kind == "plan":
-            TestCiRunsEveryGate().test_the_plan_lists_what_a_pull_request_changes()
-        else:
-            TestThePreCommitHookIsFast().test_no_hook_runs_the_whole_suite()

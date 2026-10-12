@@ -5,13 +5,14 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  # The whole test matrix once a day, on main as it stands.  The push event a
-  # merged pull request produces on main runs the matrix only for a release
-  # (see the test job), so this is what still runs every cell every day.
+  # The full test matrix once a day, on main as it stands.  A pull request
+  # runs it only when it raises [project].version, and so does the push
+  # event its merge produces on main (see the test job), so this is what
+  # still runs every cell every day.
   schedule:
     - cron: "0 3 * * *"
 
-# Cancel superseded runs of the same PR (each push restarts the matrix).
+# Cancel superseded runs of the same PR (each push restarts the run).
 # Push runs are never cancelled: main keeps a completed check run per
 # commit, which bisection relies on, and that run is the one that
 # measures coverage (see the coverage job), so no pull request waits on it.
@@ -21,15 +22,20 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && 'nightly' || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Every job's name is spelled out, since the names are what branch
+# protection requires.
 jobs:
-  # What the test matrix reads.  On a push, whether it raised
-  # [project].version: the release-mode rule of scripts/check_doc_counts.py
-  # (#1536), asked of the commit before the push.  On a pull request, the
+  # What the other jobs read.  On a pull request and on a push, whether the
+  # change raises [project].version: the release-mode rule of
+  # scripts/check_doc_counts.py (#1536), asked of a pull request's head
+  # against its base and of a push against the commit before it, which
+  # decides whether the full test matrix runs.  On a pull request, also the
   # files it changes that a class-instrument matrix can be decided by, so a
   # matrix whose file or deciding module changed runs every cell
   # (tests/matrix_sample.py).  On the nightly run its steps do not run, and
   # the job finishes in seconds.
   plan:
+    name: plan
     permissions:
       contents: read
     runs-on: ubuntu-latest
@@ -40,21 +46,26 @@ jobs:
       - uses: actions/checkout@v7
         if: github.event_name == 'push' || github.event_name == 'pull_request'
         with:
-          # The commit before the push, whose pyproject.toml is compared, or
-          # the merge base a pull request's changes are listed from.
+          # A pull request's head, whose pyproject.toml is compared with its
+          # base's, or the pushed commit; with the whole history, which holds
+          # the commit before a push and a pull request's base and the merge
+          # base its changes are listed from.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Set up Python
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
         uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
-      - name: Did this push raise [project].version?
+      - name: Does this change raise [project].version?
         id: release
-        if: github.event_name == 'push'
-        run: python scripts/check_doc_counts.py --print-release-mode "${{ github.event.before }}" >> "$GITHUB_OUTPUT"
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: python scripts/check_doc_counts.py --print-release-mode "$BASE" >> "$GITHUB_OUTPUT"
 
       # The pull request's own changes, from its merge base (three dots),
       # not what main has gained since it branched.  Only the paths a matrix
@@ -74,18 +85,66 @@ jobs:
           git diff --name-only "$BASE_SHA...$HEAD_SHA" -- vera/ 'tests/test_*.py' >> "$GITHUB_OUTPUT"
           echo "$delimiter" >> "$GITHUB_OUTPUT"
 
-  test:
+  # The pull request's suite: Python 3.12 on Linux in three shards and on
+  # Windows in two.  A test belongs to the shard its node id hashes to
+  # (tests/shard.py), so the shards are the suite between them and no
+  # durations file needs keeping.  Each shard runs the class-instrument
+  # matrices' weekly sample, and every cell of one whose file or deciding
+  # module the pull request changes, from the plan job's list.  Every cell's
+  # name is a required check.
+  shard:
+    name: test (${{ matrix.os }}, 3.12, shard ${{ matrix.shard }}/${{ matrix.shards }})
     needs: plan
-    # Every cell on a pull request, on the nightly run, and on the push event
-    # a merged pull request produces on main when the merge raised
-    # [project].version (a release).  On the push event any other merge
-    # produces, the pull request's last run has already tested that tree on
-    # every cell (branch protection requires the branch to be up to date), so
-    # the matrix stands down and no push run holds macOS and Windows runners
-    # that the next pull request's cells queue behind; the coverage job runs
-    # the suite instead.  A job-level `if` cannot see the matrix, so the cell
-    # that measures coverage is that job rather than a cell kept here.
-    if: github.event_name != 'push' || needs.plan.outputs.release == 'true'
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+    strategy:
+      # One failed shard does not cancel the others, so a run shows every
+      # failure at once.
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, shard: 1, shards: 3 }
+          - { os: ubuntu-latest, shard: 2, shards: 3 }
+          - { os: ubuntu-latest, shard: 3, shards: 3 }
+          - { os: windows-latest, shard: 1, shards: 2 }
+          - { os: windows-latest, shard: 2, shards: 2 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Run tests
+        env:
+          VERA_MATRIX_CHANGED: ${{ needs.plan.outputs.changed }}
+        run: pytest -v -n 4 --shard=${{ matrix.shard }}/${{ matrix.shards }}
+
+  # The full OS x Python matrix: on a pull request that raises
+  # [project].version, on the push event its merge produces on main (a
+  # release), and nightly.  Every other pull request runs the suite in the
+  # shard job above, on Linux and Windows under Python 3.12, and the push
+  # event any other merge produces runs it once, in the coverage job, so no
+  # ordinary run holds the macOS runners that the next pull request's
+  # checks would queue behind.  Its cells are not required checks:
+  # matrix-gate is, and passes only when the matrix ran and passed wherever
+  # the version rises.  A cell that fails on a push or nightly run files an
+  # issue (matrix-issue).
+  test:
+    name: test (${{ matrix.os }}, ${{ matrix.python-version }})
+    needs: plan
+    if: github.event_name == 'schedule' || needs.plan.outputs.release == 'true'
+    # The advisory cell may fail without failing the job, so neither the
+    # run, nor matrix-gate, nor matrix-issue turns on it.
+    continue-on-error: ${{ matrix.advisory }}
     permissions:
       contents: read
     strategy:
@@ -104,16 +163,15 @@ jobs:
         # (Tahoe) is current and dominant (~75%).
         os: [ubuntu-latest, macos-15, macos-26, windows-latest]
         python-version: ["3.11", "3.12", "3.13"]
+        advisory: [false]
         include:
           # #702: real end-to-end Linux aarch64 coverage — platform
           # coverage, not python-version coverage, so one job only.
+          # Advisory (README § Supported platforms).
           - os: ubuntu-24.04-arm
             python-version: "3.12"
+            advisory: true
 
-    # The ' + coverage' suffix is the name of a required status check; it
-    # stays until the branch-protection list is updated with the fast lane,
-    # although the coverage job now measures coverage and this cell does not.
-    name: test (${{ matrix.os }}, ${{ matrix.python-version }})${{ matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest' && ' + coverage' || '' }}
     runs-on: ${{ matrix.os }}
     # No PYTHONUTF8 env: #645 made text I/O UTF-8 without the PEP-540 backstop
     # (#641).  Every text-mode open()/read_text()/write_text() and every
@@ -147,7 +205,107 @@ jobs:
           VERA_MATRIX_CHANGED: ${{ needs.plan.outputs.changed }}
         run: pytest -v -n auto ${{ github.event_name != 'pull_request' && '--matrix=full' || '' }}
 
+  # The required check for the full matrix (scripts/matrix_gate.py).  It runs
+  # whatever the plan and the matrix did, and passes when the plan succeeded
+  # and the matrix either ran with every cell passing or was skipped because
+  # the change keeps the version; a failed plan, a failed or cancelled cell,
+  # or a matrix skipped on a change that raises the version fails it.
+  matrix-gate:
+    name: matrix-gate
+    needs: [plan, test]
+    if: always()
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Did the full matrix run wherever the version rises, and pass?
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          RELEASE: ${{ needs.plan.outputs.release }}
+          TEST_RESULT: ${{ needs.test.result }}
+        run: python3 scripts/matrix_gate.py
+
+  # A failed cell on a push or nightly run, where no pull request's checks
+  # show it, files one issue per workflow and branch, or comments on the
+  # open one: nightly-stress.yml's pattern, deduplicated on the issue's
+  # title, labelled bug and ci.
+  matrix-issue:
+    name: matrix-issue
+    needs: test
+    if: always() && needs.test.result == 'failure' && (github.event_name == 'push' || github.event_name == 'schedule')
+    permissions:
+      actions: read
+      issues: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: File or update the tracking issue
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const branch = context.ref.replace(/^refs\/heads\//, "");
+            const title = `${context.workflow}: full test matrix failing on ${branch}`;
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            const when = context.eventName === "schedule" ? "the nightly run" : "the push run";
+
+            // The cells that failed, from this run's jobs.  The run's page
+            // lists them too, which the body points to if the list cannot be
+            // read.
+            let cells = [];
+            try {
+              const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+                owner, repo, run_id: context.runId, per_page: 100,
+              });
+              cells = jobs
+                .filter((job) => job.conclusion === "failure" && job.name.startsWith("test ("))
+                .map((job) => job.name)
+                .sort();
+            } catch (e) {
+              core.warning(`cannot list the run's jobs: ${e.message}`);
+            }
+            const body = [
+              `The full test matrix failed in ${when} of ${context.workflow} on \`${branch}\`, at \`${context.sha.slice(0, 7)}\` (commit ${context.sha}).`,
+              "",
+              cells.length
+                ? `Failed cells: ${cells.map((name) => `\`${name}\``).join(", ")}.`
+                : "The run's page lists the failed cells.",
+              "",
+              `**Run**: ${runUrl}`,
+            ].join("\n");
+
+            for (const name of ["bug", "ci"]) {
+              try {
+                await github.rest.issues.getLabel({ owner, repo, name });
+              } catch (e) {
+                if (e.status !== 404) throw e;
+                await github.rest.issues.createLabel({ owner, repo, name, color: "d73a4a" });
+                core.info(`Created label '${name}'`);
+              }
+            }
+
+            // The open issue with this title, whatever labels it carries
+            // now.  The listing returns pull requests too, and none of them
+            // is the issue.
+            const open = await github.paginate(github.rest.issues.listForRepo, {
+              owner, repo, state: "open", per_page: 100,
+            });
+            const existing = open.find((item) => !item.pull_request && item.title === title);
+            if (existing) {
+              await github.rest.issues.createComment({ owner, repo, issue_number: existing.number, body });
+              core.info(`Commented on the tracking issue #${existing.number}`);
+            } else {
+              const { data: created } = await github.rest.issues.create({
+                owner, repo, title, body, labels: ["bug", "ci"],
+              });
+              core.info(`Filed the tracking issue #${created.number}`);
+            }
+
   coverage:
+    name: coverage
     if: github.event_name == 'push'
     # The push event every merged pull request produces on main measures
     # coverage here, with the sysmon core (Python 3.12+), and uploads it,
@@ -183,6 +341,7 @@ jobs:
           fail_ci_if_error: false
 
   typecheck:
+    name: typecheck
     permissions:
       contents: read
     runs-on: ubuntu-latest
@@ -203,6 +362,7 @@ jobs:
         run: mypy vera/
 
   lint:
+    name: lint
     permissions:
       contents: read
     runs-on: ubuntu-latest
@@ -317,6 +477,7 @@ jobs:
           uv lock --check
 
   security:
+    name: security
     permissions:
       contents: read
       security-events: write
@@ -333,6 +494,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   dependency-audit:
+    name: dependency-audit
     permissions:
       contents: read
     runs-on: ubuntu-latest
@@ -354,6 +516,7 @@ jobs:
         run: pip-audit --skip-editable
 
   wheel-preflight:
+    name: wheel-preflight
     # Structural backstop for #691-class regressions: if an upstream dep
     # bumps its platform-tag baseline (e.g. z3-solver going from
     # macosx_13_0_arm64 to macosx_15_0_arm64 between 4.15.4 and 4.15.5),
@@ -378,6 +541,7 @@ jobs:
         run: python scripts/check_wheel_availability.py
 
   package-distribution:
+    name: package-distribution
     # Build the exact artifacts that will eventually be uploaded under
     # the `veralang` distribution name (#737).  This stays separate from
     # release automation (#481): PR CI validates artifacts but publishes
@@ -420,6 +584,7 @@ jobs:
           esac
 
   sbom:
+    name: sbom
     permissions:
       contents: read
     runs-on: ubuntu-latest
@@ -450,6 +615,7 @@ jobs:
           retention-days: 90
 
   eager-gc:
+    name: eager-gc
     # #1379/#1382: `VERA_EAGER_GC=1` forces a collection at every `$alloc`,
     # which turns a rooting bug from a timing accident into a deterministic
     # failure (ENVIRONMENT.md).  Both defects this lane would have caught
@@ -489,6 +655,7 @@ jobs:
           VERA_EAGER_GC: "1"
 
   browser-parity:
+    name: browser-parity
     permissions:
       contents: read
     runs-on: ubuntu-latest
