@@ -324,6 +324,16 @@ def _release_jobs() -> dict[str, Any]:
     return dict(yaml.safe_load(RELEASE.read_text(encoding="utf-8"))["jobs"])
 
 
+def test_every_release_run_waits_its_turn() -> None:
+    """Release runs share one group and none is cancelled, so no two
+    overlap.  A group without a queue holds one pending run, which a newer
+    arrival replaces, so a release that waits behind another while a third
+    push arrives would be dropped; `queue: max` keeps every pending run, in
+    order."""
+    concurrency = yaml.safe_load(RELEASE.read_text(encoding="utf-8"))["concurrency"]
+    assert concurrency == {"group": "vera-release", "cancel-in-progress": False, "queue": "max"}
+
+
 def _needs(job: dict[str, Any]) -> list[str]:
     needs = job.get("needs") or []
     return [needs] if isinstance(needs, str) else list(needs)

@@ -131,8 +131,9 @@ After merge, `release.yml` detects the version increase on `main`. It then:
 1. waits for CI's run on the merge commit, which runs the full test matrix, and
    goes on only once that run has succeeded, failing after 100 minutes without
    it. A second version-raising merge inside that window queues behind the
-   first, and a third push to `main` can replace the queued run; the
-   **production-recovery** dispatch publishes a version lost that way;
+   first. On a version-raising pull request, re-run failed matrix jobs as a
+   set, never one leg: `matrix-gate` reads each cell's latest run from the
+   run's job listing, so it stays red while any blocking cell is still failed;
 2. validates the version, CHANGELOG section, and absence of the version/tag;
 3. builds, inspects, installs, and smoke-tests exactly one universal wheel and
    one source distribution in a job without OIDC permission;
