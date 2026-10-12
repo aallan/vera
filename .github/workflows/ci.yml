@@ -13,13 +13,14 @@ on:
     - cron: "0 3 * * *"
 
 # Cancel superseded runs of the same PR (each push restarts the run).
-# Push runs are never cancelled: main keeps a completed check run per
-# commit, which bisection relies on, and that run is the one that
-# measures coverage (see the coverage job), so no pull request waits on it.
-# A run queued behind another in its group waits, so the nightly run has a
-# group of its own and never holds a merge's push run pending.
+# A push run has a group of its own, its commit: a group holds one pending
+# run, which a newer arrival replaces, so a push run that shared main's
+# group could be dropped before it ran.  Each commit on main keeps a
+# completed run, which bisection relies on, and which release.yml waits for
+# before it publishes; that run measures coverage (see the coverage job), so
+# no pull request waits on it.  The nightly run has a group of its own too.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && 'nightly' || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && 'nightly' || github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Every job's name is spelled out, since the names are what branch

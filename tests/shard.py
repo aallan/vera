@@ -87,8 +87,10 @@ def pytest_collection_modifyitems(
     if chosen is None:
         return result
     k, n = chosen
-    kept = [item for item in items if shard_of(item.nodeid, n) == k]
-    dropped = [item for item in items if shard_of(item.nodeid, n) != k]
+    kept: list[pytest.Item] = []
+    dropped: list[pytest.Item] = []
+    for item in items:
+        (kept if shard_of(item.nodeid, n) == k else dropped).append(item)
     counts = (len(kept), len(items))
     if dropped:
         items[:] = kept

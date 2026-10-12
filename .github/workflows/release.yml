@@ -32,9 +32,9 @@ jobs:
   # release waits for CI's run on the commit it releases (ci.yml, the push
   # event the merge produces) and goes on only once that run succeeded
   # (scripts/await_ci.py, at most 100 minutes).  Every other job needs this
-  # one.  It waits wherever the release publishes to PyPI: a push that
-  # raises [project].version, by the answer `prepare` itself computes, and a
-  # production recovery.  A push that releases nothing and a TestPyPI
+  # one.  It plans a push and a production recovery with prepare's own
+  # steps, and waits where they will publish to PyPI; a run they refuse
+  # fails here at once.  A push that releases nothing and a TestPyPI
   # staging run do not wait, so a merge that is not a release holds the
   # release group for seconds.
   ci:
@@ -55,8 +55,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Does this push release?
-        id: release
+      - name: Does this push publish to PyPI?
+        id: push
         if: github.event_name == 'push'
         env:
           BEFORE_REF: ${{ github.event.before }}
@@ -66,8 +66,21 @@ jobs:
           --before-ref "$BEFORE_REF"
           --github-output "$GITHUB_OUTPUT"
 
+      - name: Does this recovery publish to PyPI?
+        id: recovery
+        if: github.event_name == 'workflow_dispatch' && inputs.target == 'production-recovery'
+        env:
+          CONFIRM_VERSION: ${{ inputs.confirm_version }}
+          REF_NAME: ${{ github.ref }}
+        run: >-
+          python scripts/release.py prepare
+          --mode production-recovery
+          --ref-name "$REF_NAME"
+          --confirm-version "$CONFIRM_VERSION"
+          --github-output "$GITHUB_OUTPUT"
+
       - name: Wait for CI's run on this commit to succeed
-        if: steps.release.outputs.publish == 'true' || (github.event_name == 'workflow_dispatch' && inputs.target == 'production-recovery')
+        if: steps.push.outputs.publish == 'true' || steps.recovery.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}

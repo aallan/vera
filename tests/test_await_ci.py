@@ -248,6 +248,51 @@ class TestTheCommand:
 
 
 # ---------------------------------------------------------------------------
+# The run it waits for
+# ---------------------------------------------------------------------------
+
+
+def _concurrency(context: dict[str, object]) -> tuple[object, object]:
+    """CI's concurrency group and cancel-in-progress for one run."""
+    from tests.test_gate_placement import evaluate, render
+
+    ci = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
+    concurrency = ci["concurrency"]
+    return (
+        render(str(concurrency["group"]), context),
+        evaluate(str(concurrency["cancel-in-progress"]), context),
+    )
+
+
+def _push(sha: str) -> dict[str, object]:
+    return {
+        "github.workflow": "CI", "github.event_name": "push",
+        "github.ref": "refs/heads/main", "github.sha": sha,
+    }
+
+
+def test_every_push_run_to_main_runs() -> None:
+    """The release waits for CI's push run on its commit, so that run must
+    not be dropped.  A concurrency group holds one pending run and a newer
+    arrival replaces it, so a push run has a group of its own, its commit:
+    two pushes never share one, and a push run is never cancelled.  A pull
+    request's runs share its group, so a new push cancels the old run, and
+    the nightly run has a group of its own."""
+    first, second = _concurrency(_push("1" * 40)), _concurrency(_push("2" * 40))
+    assert first[0] != second[0], (first, second)
+    assert first[1] is False and second[1] is False
+    pull_request = {
+        "github.workflow": "CI", "github.event_name": "pull_request",
+        "github.ref": "refs/pull/7/merge", "github.sha": "3" * 40,
+    }
+    again = {**pull_request, "github.sha": "4" * 40}
+    assert _concurrency(pull_request)[0] == _concurrency(again)[0]
+    assert _concurrency(pull_request)[1] is True
+    nightly = {**_push("1" * 40), "github.event_name": "schedule"}
+    assert _concurrency(nightly)[0] not in (first[0], _concurrency(pull_request)[0])
+
+
+# ---------------------------------------------------------------------------
 # The release workflow
 # ---------------------------------------------------------------------------
 
@@ -290,33 +335,41 @@ class TestTheReleaseWorkflow:
             if name != first:
                 assert first in ancestors(name), name
 
+    def test_it_asks_prepare_its_own_questions(self) -> None:
+        """The waiting job plans a push and a production recovery with the
+        very steps `prepare` runs, the same command under the same
+        condition and environment, so it waits exactly where `prepare`
+        will publish to PyPI, and a run `prepare` refuses fails at once
+        rather than after a wait for a CI run that never comes."""
+        jobs = _release_jobs()
+        waiting = {step.get("id"): step for step in jobs[_waiting_job(jobs)]["steps"] if step.get("id")}
+        planning = {step.get("id"): step for step in jobs["prepare"]["steps"] if step.get("id")}
+        for name in ("push", "recovery"):
+            assert name in waiting and name in planning, name
+            for key in ("if", "env", "run"):
+                assert waiting[name].get(key) == planning[name].get(key), (name, key)
+
     @pytest.mark.parametrize(
         ("context", "waits"),
         [
-            ({"github.event_name": "push", "steps.release.outputs.publish": "true"}, True),
-            ({"github.event_name": "push", "steps.release.outputs.publish": "false"}, False),
-            ({"github.event_name": "workflow_dispatch", "inputs.target": "production-recovery",
-              "steps.release.outputs.publish": ""}, True),
-            ({"github.event_name": "workflow_dispatch", "inputs.target": "testpypi",
-              "steps.release.outputs.publish": ""}, False),
+            ({"github.event_name": "push", "steps.push.outputs.publish": "true"}, True),
+            ({"github.event_name": "push", "steps.push.outputs.publish": "false"}, False),
+            ({"github.event_name": "workflow_dispatch", "steps.recovery.outputs.publish": "true"}, True),
+            ({"github.event_name": "workflow_dispatch"}, False),
         ],
     )
     def test_it_waits_wherever_the_release_publishes_to_pypi(
         self, context: dict[str, str], waits: bool,
     ) -> None:
         """A push that raises the version and a production recovery publish
-        to PyPI, so they wait; a push that releases nothing and a TestPyPI
-        staging run do not.  The push's answer is `release.py prepare`'s own,
-        the step `prepare` itself runs."""
+        to PyPI, so they wait; a push that releases nothing does not, and
+        neither does a TestPyPI staging run, where neither planning step
+        runs."""
         from tests.test_gate_placement import evaluate
 
         jobs = _release_jobs()
         job = jobs[_waiting_job(jobs)]
-        context = {"inputs.target": "", **context}
-        steps = {step.get("id"): step for step in job["steps"] if step.get("id")}
-        detect = steps["release"]
-        assert "scripts/release.py prepare" in " ".join(str(detect["run"]).split())
-        assert "--mode push" in " ".join(str(detect["run"]).split())
+        context = {"steps.push.outputs.publish": "", "steps.recovery.outputs.publish": "", **context}
         wait = next(step for step in job["steps"] if "scripts/await_ci.py" in str(step.get("run", "")))
         assert bool(evaluate(str(wait["if"]), context)) is waits
         assert '--commit "$GITHUB_SHA"' in str(wait["run"])
