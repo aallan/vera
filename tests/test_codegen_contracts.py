@@ -15,6 +15,7 @@ from vera.codegen import (
 
 from tests.verifier_helpers import _verify
 from tests.codegen_helpers import _compile, _compile_ok, _run, _run_trap
+from tests.pipeline import checks
 
 
 # =====================================================================
@@ -230,7 +231,8 @@ class TestContractFailMessages:
     """Verify that contract violations produce informative error messages."""
 
     def test_precondition_wat_has_contract_fail(self) -> None:
-        """WAT should call contract_fail before unreachable for requires."""
+        """A `requires` compiles to a contract check, which traps through an
+        `unreachable`."""
         source = """\
 public fn positive(@Int -> @Int)
   requires(@Int.0 > 0)
@@ -239,11 +241,11 @@ public fn positive(@Int -> @Int)
 { @Int.0 }
 """
         result = _compile_ok(source)
-        assert "call $vera.contract_fail" in result.wat
+        assert checks(result, kind="contract_violation")
         assert "unreachable" in result.wat
 
     def test_postcondition_wat_has_contract_fail(self) -> None:
-        """WAT should call contract_fail before unreachable for ensures."""
+        """An `ensures` compiles to a contract check."""
         source = """\
 public fn negate(@Int -> @Int)
   requires(true)
@@ -252,17 +254,17 @@ public fn negate(@Int -> @Int)
 { -@Int.0 }
 """
         result = _compile_ok(source)
-        assert "call $vera.contract_fail" in result.wat
+        assert checks(result, kind="contract_violation")
 
     def test_trivial_contract_no_contract_fail(self) -> None:
-        """Trivial contracts should not generate contract_fail calls."""
+        """Trivial contracts compile to no contract check."""
         source = """\
 public fn f(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 }
 """
         result = _compile_ok(source)
-        assert "contract_fail" not in result.wat
+        assert checks(result, kind="contract_violation") == ()
 
     def test_precondition_violation_message(self) -> None:
         """Precondition violation should produce an informative error."""
@@ -510,8 +512,8 @@ def test_tier1_proved_contract_still_emits_its_guard_958() -> None:
     keeps its runtime guard in the compiled output.
 
     ``ensures(@Int.result == @Int.0)`` over ``{ @Int.0 }`` is trivially proved
-    by Z3 (Tier 1, zero Tier-3), yet the compiled WAT still contains the
-    ``contract_fail`` postcondition guard.  This pins the always-emit backstop
+    by Z3 (Tier 1, zero Tier-3), yet the compiled module still holds the
+    postcondition's contract check.  This pins the always-emit backstop
     (spec §11.8) that keeps a *false* Tier 1 a loud runtime trap rather than a
     silent wrong answer; were §11.8's omission optimisation ever implemented,
     this differential would fail loudly.
@@ -524,11 +526,7 @@ def test_tier1_proved_contract_still_emits_its_guard_958() -> None:
     summary = _verify(src).summary
     assert summary.tier1_verified >= 1
     assert summary.tier3_runtime == 0
-    # ... yet code generation still emits the guard CALL.  Assert the exact
-    # `call $vera.contract_fail` instruction — a direct check that the guard is
-    # invoked, rather than a substring match on the `contract_fail` symbol.
-    wat = _compile(src).wat
-    assert any(
-        line.strip() == "call $vera.contract_fail"
-        for line in wat.splitlines()
-    )
+    # ... yet code generation still emits the guard.  The module's record
+    # lists each check by the marker its signal's call carries, so the
+    # check is in it exactly when the call is in the module.
+    assert checks(_compile(src), kind="contract_violation")

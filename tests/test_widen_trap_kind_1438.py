@@ -27,9 +27,9 @@ from __future__ import annotations
 
 
 from tests.codegen_helpers import _compile_ok
+from tests.pipeline import checks
 from vera.codegen.api import execute
 from vera.runtime.traps import WasmTrapError
-from vera.trap_registry import signal_call_pattern
 
 #: `u64.MAX`'s bit pattern — what a `@Nat` above `i64.MAX` IS at the
 #: boundary the guard watches, and what reinterprets to `-1` without it.
@@ -126,7 +126,7 @@ class TestTheWideningGuardNamesItself:
         links and runs, not that the guard fires.
         """
         result = _compile_ok(_WIDEN_IN_CLOSURE)
-        assert signal_call_pattern("widen_guard").search(result.wat), (
+        assert checks(result, kind="widen_guard"), (
             "no widening guard inside the closure, so the seam this cell "
             "pins is not exercised"
         )
@@ -157,8 +157,8 @@ class TestTheWideningGuardNamesItself:
         from tests.test_wasi_target import _run_component
 
         result = _compile_ok(_WIDEN_MAIN)
-        assert signal_call_pattern("widen_guard").search(result.wat), (
-            "the widening guard emitted no signal, so this cell would "
+        assert checks(result, kind="widen_guard"), (
+            "the module holds no widening guard, so this cell would "
             "instantiate a component with nothing to wire"
         )
         value, _, _ = _run_component(result)

@@ -339,13 +339,11 @@ def _ok_arg() -> z3.ExprRef:
 # 5. The envelope holds on every route into and out of the command
 # ---------------------------------------------------------------------------
 
-def _run_cmd(cmd, path: Path, **kw) -> tuple[int, str, str]:
-    import io
-    import contextlib
-    out, err = io.StringIO(), io.StringIO()
-    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-        rc = cmd(str(path), **kw)
-    return rc, out.getvalue(), err.getvalue()
+def _run_cmd(command: str, path: Path, *, as_json: bool) -> tuple[int, str, str]:
+    """`vera <command> [--json] <path>` in process: its exit status, stdout
+    and stderr."""
+    ran = pipeline.cli(command, *(["--json"] if as_json else []), path)
+    return ran.returncode, ran.stdout, ran.stderr
 
 
 def test_a_failing_import_is_enveloped(tmp_path: Path,
@@ -359,7 +357,6 @@ def test_a_failing_import_is_enveloped(tmp_path: Path,
     whose `z3` install is broken.  Red before the imports moved inside.
     """
     import builtins
-    from vera.cli import cmd_verify
 
     real_import = builtins.__import__
 
@@ -371,7 +368,7 @@ def test_a_failing_import_is_enveloped(tmp_path: Path,
     monkeypatch.setattr(builtins, "__import__", hostile)
     src = tmp_path / "i.vera"
     src.write_text(_program("@Int", "@Int", "@Int.0"), encoding="utf-8")
-    rc, out, _ = _run_cmd(cmd_verify, src, as_json=True)
+    rc, out, _ = _run_cmd("verify", src, as_json=True)
 
     assert rc == 1
     assert out.strip(), "stdout was EMPTY — the import bypassed the envelope"
@@ -391,7 +388,6 @@ def test_a_failing_sibling_handler_is_enveloped(
     reach.  Driven by a diagnostic whose `to_dict` raises — the helper builds
     its OWN diagnostic, so it is unaffected and can still report.
     """
-    from vera.cli import cmd_verify
     from vera.errors import VeraError
 
     class _BadDiagnostic:
@@ -410,7 +406,7 @@ def test_a_failing_sibling_handler_is_enveloped(
     monkeypatch.setattr("vera.cli._load_and_parse", boom)
     src = tmp_path / "h.vera"
     src.write_text("x", encoding="utf-8")
-    rc, out, _ = _run_cmd(cmd_verify, src, as_json=True)
+    rc, out, _ = _run_cmd("verify", src, as_json=True)
 
     assert rc == 1
     assert out.strip(), "stdout was EMPTY — the handler's own raise escaped"
@@ -441,7 +437,6 @@ def test_every_json_command_envelopes_an_internal_error(
     one commit.  The import and handler routes are covered by their own cells
     below, which inject where the gaps actually were.
     """
-    import vera.cli as cli_mod
 
     def boom(_path):
         raise RuntimeError("synthetic internal failure")
@@ -449,7 +444,7 @@ def test_every_json_command_envelopes_an_internal_error(
     monkeypatch.setattr("vera.cli._load_and_parse", boom)
     src = tmp_path / "e.vera"
     src.write_text(_program("@Int", "@Int", "@Int.0"), encoding="utf-8")
-    rc, out, _ = _run_cmd(getattr(cli_mod, cmd_name), src, as_json=True)
+    rc, out, _ = _run_cmd(cmd_name.removeprefix("cmd_"), src, as_json=True)
 
     assert rc == 1
     assert out.strip(), f"{cmd_name}: stdout was EMPTY"
@@ -481,7 +476,6 @@ def test_the_envelope_carries_the_full_diagnostic_contract(
     `spec_ref` and the location's `file` absent — the envelope would have been
     the one diagnostic in the compiler that the field contract did not reach.
     """
-    from vera.cli import cmd_verify
 
     def boom(_path):
         raise RuntimeError("synthetic")
@@ -489,7 +483,7 @@ def test_the_envelope_carries_the_full_diagnostic_contract(
     monkeypatch.setattr("vera.cli._load_and_parse", boom)
     src = tmp_path / "f.vera"
     src.write_text("x", encoding="utf-8")
-    _rc, out, _ = _run_cmd(cmd_verify, src, as_json=True)
+    _rc, out, _ = _run_cmd("verify", src, as_json=True)
     diag = json.loads(out)["diagnostics"][0]
 
     missing = [f for f in _CONTRACT_FIELDS if not diag.get(f)]
@@ -509,7 +503,6 @@ def test_the_text_path_formats_like_any_other_diagnostic(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """And without `--json` the user gets a formatted diagnostic, not a trace."""
-    from vera.cli import cmd_verify
 
     def boom(_path):
         raise RuntimeError("synthetic")
@@ -517,7 +510,7 @@ def test_the_text_path_formats_like_any_other_diagnostic(
     monkeypatch.setattr("vera.cli._load_and_parse", boom)
     src = tmp_path / "g.vera"
     src.write_text("x", encoding="utf-8")
-    rc, _out, err = _run_cmd(cmd_verify, src, as_json=False)
+    rc, _out, err = _run_cmd("verify", src, as_json=False)
     assert rc == 1
     assert "E699" in err
     assert "Traceback (most recent call last)" not in err
@@ -540,8 +533,6 @@ def test_every_command_envelopes_a_failing_import(
     """
     import builtins
 
-    import vera.cli as cli_mod
-
     real_import = builtins.__import__
 
     def hostile(name, *a, **k):
@@ -552,7 +543,7 @@ def test_every_command_envelopes_a_failing_import(
     monkeypatch.setattr(builtins, "__import__", hostile)
     src = tmp_path / "imp.vera"
     src.write_text(_program("@Int", "@Int", "@Int.0"), encoding="utf-8")
-    rc, out, _ = _run_cmd(getattr(cli_mod, cmd_name), src, as_json=True)
+    rc, out, _ = _run_cmd(cmd_name.removeprefix("cmd_"), src, as_json=True)
 
     assert rc == 1
     assert out.strip(), f"{cmd_name}: stdout was EMPTY — the import bypassed it"
@@ -571,7 +562,6 @@ def test_the_last_resort_fallback_engages(
     Driven by breaking `Diagnostic.to_dict` for every diagnostic — including
     the one the helper builds — which is the only way to reach it.
     """
-    from vera.cli import cmd_verify
     from vera.errors import Diagnostic
 
     def boom(_path):
@@ -584,7 +574,7 @@ def test_the_last_resort_fallback_engages(
     monkeypatch.setattr(Diagnostic, "to_dict", bad_to_dict)
     src = tmp_path / "lr.vera"
     src.write_text("x", encoding="utf-8")
-    rc, out, _ = _run_cmd(cmd_verify, src, as_json=True)
+    rc, out, _ = _run_cmd("verify", src, as_json=True)
 
     assert rc == 1
     assert out.strip(), "stdout was EMPTY — the fallback did not engage"
@@ -597,7 +587,6 @@ def test_the_last_resort_fallback_engages_on_the_text_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Its text sibling: a broken `.format()` still yields a message."""
-    from vera.cli import cmd_verify
     from vera.errors import Diagnostic
 
     def boom(_path):
@@ -610,7 +599,7 @@ def test_the_last_resort_fallback_engages_on_the_text_path(
     monkeypatch.setattr(Diagnostic, "format", bad_format)
     src = tmp_path / "lt.vera"
     src.write_text("x", encoding="utf-8")
-    rc, _out, err = _run_cmd(cmd_verify, src, as_json=False)
+    rc, _out, err = _run_cmd("verify", src, as_json=False)
 
     assert rc == 1
     assert "E699" in err
@@ -633,7 +622,6 @@ def test_every_command_envelopes_a_failing_sibling_handler(
     after `verify`'s were wrapped, and a cell driving `_load_and_parse` sees
     none of it because that is inside the protected region for all three.
     """
-    import vera.cli as cli_mod
     from vera.errors import VeraError
 
     class _BadDiagnostic:
@@ -652,7 +640,7 @@ def test_every_command_envelopes_a_failing_sibling_handler(
     monkeypatch.setattr("vera.cli._load_and_parse", boom)
     src = tmp_path / "sib.vera"
     src.write_text("x", encoding="utf-8")
-    rc, out, _ = _run_cmd(getattr(cli_mod, cmd_name), src, as_json=True)
+    rc, out, _ = _run_cmd(cmd_name.removeprefix("cmd_"), src, as_json=True)
 
     assert rc == 1
     assert out.strip(), f"{cmd_name}: stdout was EMPTY — the handler's raise escaped"

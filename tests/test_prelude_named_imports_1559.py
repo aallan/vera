@@ -41,11 +41,9 @@ The instrument:
 
 from __future__ import annotations
 
-import contextlib
-import io
 import json
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import pytest
 
@@ -158,20 +156,14 @@ def _write(root: Path, name: str, imports: str, placement: str) -> Path:
 
 def _cli(command: str, path: Path) -> dict[str, Any]:
     """Run `vera <command> --json <path>` in process and parse its output."""
-    from vera import cli
-
-    fns: dict[str, Callable[..., int]] = {
-        "check": cli.cmd_check, "run": cli.cmd_run}
-    out, err = io.StringIO(), io.StringIO()
-    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-        rc = fns[command](str(path), as_json=True)
+    ran = pipeline.cli(command, "--json", path)
     try:
-        payload: dict[str, Any] = json.loads(out.getvalue())
+        payload: dict[str, Any] = ran.json()
     except json.JSONDecodeError:  # pragma: no cover - a failure report
         raise AssertionError(
             f"vera {command} --json printed no JSON: "
-            f"{out.getvalue()!r} {err.getvalue()!r}") from None
-    payload["_rc"] = rc
+            f"{ran.stdout!r} {ran.stderr!r}") from None
+    payload["_rc"] = ran.returncode
     return payload
 
 

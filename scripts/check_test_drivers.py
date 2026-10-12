@@ -26,6 +26,15 @@ it as:
   ``/`` names nothing by its parts.  A helper that runs a command it is
   handed drives a stage when a call to it in the same module hands it one.
 
+A stage function or a CLI entry point counts however the call reaches it:
+by its name, or through a value (#1662).  The call's target is followed
+through the names it is assigned, the ``for`` loops that bind it, the
+containers it is read out of (a dict's values, a list's, tuple's or set's
+elements), the operands of a conditional or an ``or``, a parameter's default,
+and ``getattr`` on a module that holds stage entry points.  A helper that
+calls a value it is handed drives a stage when a call to it in the same
+module hands it one.
+
 ``ALLOWED`` names each driver that stays, by file and helper, with the
 reason.  An entry that names no driver, because its helper is gone or drives
 no stage, is an error, so the list only shrinks.
@@ -40,7 +49,7 @@ from __future__ import annotations
 import ast
 import sys
 from collections.abc import Iterable, Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -124,6 +133,11 @@ _CHECKER_ITSELF = (
     "pipeline.check hands back the checker's tables and naming environment, "
     "not the checker"
 )
+_SPY = (
+    "spies on the compile `vera test` runs: it replaces vera.codegen.compile "
+    "with a wrapper that calls the real one and keeps the WAT, so the compile "
+    "it calls is the tester's own, measured where the tester makes it"
+)
 
 #: The drivers that stay, ``"tests/<file>::<helper>"`` (a method as
 #: ``Class.method``) to the reason.
@@ -147,6 +161,7 @@ ALLOWED: Mapping[str, str] = {
     "tests/test_resolver.py::_resolve_ok": _RESOLVER_UNIT,
     "tests/test_resolver.py::_resolve_err": _RESOLVER_UNIT,
     "tests/test_resolver.py::TestResolverErrorCodes._errors": _RESOLVER_UNIT,
+    "tests/test_tester_artifacts.py::_cmd_test_capturing_wat": _SPY,
     "tests/test_verifier_cross_module_disclosure.py::_verify_checked": _VERIFY_ALONE,
     "tests/test_xmod_span_collision.py::_compile_main": _MODULE_TABLES_WITHHELD,
 }
@@ -184,7 +199,7 @@ def _import_targets(nodes: Iterable[ast.AST]) -> dict[str, str]:
     return names
 
 
-def _dotted(expr: ast.expr, names: Mapping[str, str]) -> str | None:
+def _dotted(expr: ast.AST, names: Mapping[str, str]) -> str | None:
     """The imported path *expr* names, or ``None`` for anything else."""
     if isinstance(expr, ast.Name):
         return names.get(expr.id)
@@ -267,17 +282,184 @@ def _parameters(helper: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
     return names
 
 
+def _defaults(
+    helper: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> dict[str, list[ast.AST]]:
+    """Each parameter of *helper* that has a default, to that default."""
+    a = helper.args
+    positional = [*a.posonlyargs, *a.args]
+    out: dict[str, list[ast.AST]] = {}
+    for arg, default in zip(positional[len(positional) - len(a.defaults):],
+                            a.defaults):
+        out[arg.arg] = [default]
+    for arg, kw_default in zip(a.kwonlyargs, a.kw_defaults):
+        if kw_default is not None:
+            out[arg.arg] = [kw_default]
+    return out
+
+
+def _iterated(scope: Iterable[ast.AST]) -> dict[str, list[ast.AST]]:
+    """Each name a ``for`` loop or a comprehension binds in *scope*, to the
+    iterables it is bound out of."""
+    out: dict[str, list[ast.AST]] = {}
+    for node in scope:
+        for sub in ast.walk(node):
+            if (isinstance(sub, (ast.For, ast.AsyncFor, ast.comprehension))
+                    and isinstance(sub.target, ast.Name)):
+                out.setdefault(sub.target.id, []).append(sub.iter)
+    return out
+
+
+def _entry_point(target: str | None) -> str | None:
+    """The stage entry point the imported path *target* names: a stage
+    function (its name), ``vera.cli.main`` or a ``vera.cli.cmd_*`` command;
+    ``None`` for anything else."""
+    if target is None:
+        return None
+    owner, _, name = target.rpartition(".")
+    if name in STAGE_FUNCTIONS.get(owner, ()):
+        return name
+    if owner == "vera.cli" and (name == "main" or name.startswith("cmd_")):
+        return f"vera.cli.{name}"
+    return None
+
+
+#: The methods that read a container's values: a lookup, or the values.
+_CONTAINER_READS = frozenset({"get", "pop", "setdefault", "values"})
+
+
+@dataclass(frozen=True)
+class _Scope:
+    """What a name means where a value is read: the paths its imports bind,
+    the values assigned to it, the iterables a loop binds it out of, and,
+    for the helper's own scope, its parameters and their defaults."""
+
+    names: Mapping[str, str]
+    local: Mapping[str, list[ast.AST]]
+    iterated: Mapping[str, list[ast.AST]]
+    module: Mapping[str, list[ast.AST]]
+    params: frozenset[str] = frozenset()
+    defaults: Mapping[str, list[ast.AST]] = field(default_factory=dict)
+
+
+def _values(
+    expr: ast.AST, scope: _Scope, seen: set[object],
+) -> Iterator[ast.AST | None]:
+    """Each expression *expr* can evaluate to, followed through the names
+    it is bound to, the containers it is read out of and the operands it
+    chooses between; ``None`` stands for a value a caller hands the helper."""
+    if ("node", id(expr)) in seen:
+        return
+    seen.add(("node", id(expr)))
+    if isinstance(expr, ast.Name):
+        yield from _name_values(expr.id, scope, seen)
+    elif isinstance(expr, ast.Subscript):
+        yield from _elements(expr.value, scope, seen)
+    elif (isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute)
+          and expr.func.attr in _CONTAINER_READS):
+        yield from _elements(expr.func.value, scope, seen)
+    elif isinstance(expr, ast.IfExp):
+        yield from _values(expr.body, scope, seen)
+        yield from _values(expr.orelse, scope, seen)
+    elif isinstance(expr, ast.BoolOp):
+        for operand in expr.values:
+            yield from _values(operand, scope, seen)
+    elif isinstance(expr, ast.NamedExpr):
+        yield from _values(expr.value, scope, seen)
+    else:
+        yield expr
+
+
+def _name_values(
+    name: str, scope: _Scope, seen: set[object],
+) -> Iterator[ast.AST | None]:
+    if ("name", name) in seen:
+        return
+    seen.add(("name", name))
+    local = scope.local.get(name, [])
+    iterated = scope.iterated.get(name, [])
+    if local or iterated or name in scope.params:
+        for value in local:
+            yield from _values(value, scope, seen)
+        for iterable in iterated:
+            yield from _elements(iterable, scope, seen)
+        if name in scope.params:
+            yield None
+            for default in scope.defaults.get(name, []):
+                yield from _values(default, scope, seen)
+        return
+    module = scope.module.get(name, [])
+    for value in module:
+        yield from _values(value, scope, seen)
+    if not module:
+        yield ast.Name(id=name, ctx=ast.Load())
+
+
+def _elements(
+    expr: ast.AST, scope: _Scope, seen: set[object],
+) -> Iterator[ast.AST | None]:
+    """The values held by each container *expr* can evaluate to."""
+    for container in _values(expr, scope, seen):
+        if container is None:
+            yield None
+        elif isinstance(container, ast.Dict):
+            for value in container.values:
+                yield from _values(value, scope, seen)
+        elif isinstance(container, (ast.List, ast.Tuple, ast.Set)):
+            for element in container.elts:
+                if isinstance(element, ast.Starred):
+                    yield from _elements(element.value, scope, seen)
+                else:
+                    yield from _values(element, scope, seen)
+
+
+def _getattr_entry(value: ast.AST, names: Mapping[str, str]) -> str | None:
+    """The entry point ``getattr(<module>, <name>)`` reads, for a module that
+    holds stage entry points: the one it names, or ``getattr(<module>)``
+    when the name is computed."""
+    if not (isinstance(value, ast.Call) and isinstance(value.func, ast.Name)
+            and value.func.id == "getattr" and len(value.args) >= 2):
+        return None
+    owner = _dotted(value.args[0], names)
+    if owner != "vera.cli" and owner not in STAGE_FUNCTIONS:
+        return None
+    attribute = value.args[1]
+    if isinstance(attribute, ast.Constant) and isinstance(attribute.value, str):
+        return _entry_point(f"{owner}.{attribute.value}")
+    return f"getattr({owner})"
+
+
+def _reached(expr: ast.AST, scope: _Scope) -> tuple[set[str], bool]:
+    """The stage entry points *expr* can evaluate to, and whether it can be
+    a value a caller hands the helper."""
+    found: set[str] = set()
+    handed = False
+    for value in _values(expr, scope, set()):
+        if value is None:
+            handed = True
+            continue
+        entry = (_entry_point(_dotted(value, scope.names))
+                 or _getattr_entry(value, scope.names))
+        if entry is not None:
+            found.add(entry)
+    return found, handed
+
+
 def _stage_calls(
     helper: ast.FunctionDef | ast.AsyncFunctionDef, outer: Iterable[ast.AST],
     module: Mapping[str, list[ast.AST]],
-) -> tuple[list[str], list[str]]:
-    """The stage entry points *helper* calls, by name, and the subprocess
-    calls whose command reaches it through its parameters."""
+) -> tuple[list[str], list[str], bool]:
+    """The stage entry points *helper* calls, by name or through a value;
+    the subprocess calls whose command reaches it through its parameters;
+    and whether it calls a value a caller hands it."""
     names = _import_targets([*outer, helper])
     local = _assigned([helper])
     params = _parameters(helper)
+    scope = _Scope(names, local, _iterated([helper]), module,
+                   frozenset(params), _defaults(helper))
     found: list[str] = []
     handed: list[str] = []
+    calls_a_handed_value = False
     for node in ast.walk(helper):
         if not isinstance(node, ast.Call):
             continue
@@ -286,20 +468,23 @@ def _stage_calls(
             found.append(func.attr)
             continue
         target = _dotted(func, names)
-        if target is None:
+        entry = _entry_point(target)
+        if entry is not None:
+            found.append(entry)
             continue
-        owner, _, name = target.rpartition(".")
-        if name in STAGE_FUNCTIONS.get(owner, ()):
-            found.append(name)
-        elif owner == "vera.cli" and (name == "main" or name.startswith("cmd_")):
-            found.append(f"vera.cli.{name}")
-        elif owner == "subprocess" and name in SUBPROCESS_CALLS:
-            arguments = _call_arguments(node)
-            if _command_names_vera(arguments, local, module):
-                found.append(f"subprocess.{name} vera")
-            elif _reaches(arguments, params, local):
-                handed.append(f"subprocess.{name} vera")
-    return sorted(set(found)), sorted(set(handed))
+        if target is not None:
+            owner, _, name = target.rpartition(".")
+            if owner == "subprocess" and name in SUBPROCESS_CALLS:
+                arguments = _call_arguments(node)
+                if _command_names_vera(arguments, local, module):
+                    found.append(f"subprocess.{name} vera")
+                elif _reaches(arguments, params, local):
+                    handed.append(f"subprocess.{name} vera")
+            continue
+        reached, from_a_caller = _reached(func, scope)
+        found.extend(reached)
+        calls_a_handed_value = calls_a_handed_value or from_a_caller
+    return sorted(set(found)), sorted(set(handed)), calls_a_handed_value
 
 
 def _reaches(
@@ -346,16 +531,22 @@ def drivers_in(source: str, file: str) -> list[Driver]:
     module = _assigned([n for n in tree.body
                         if isinstance(n, (ast.Assign, ast.AnnAssign))])
     out: list[Driver] = []
-    runners: dict[str, tuple[ast.FunctionDef | ast.AsyncFunctionDef, list[str]]] = {}
+    runners: dict[str, tuple[
+        ast.FunctionDef | ast.AsyncFunctionDef, list[str], bool]] = {}
     for name, helper, outer in _helpers(tree):
-        calls, handed = _stage_calls(helper, outer, module)
+        calls, handed, calls_a_handed_value = _stage_calls(helper, outer, module)
         if calls:
             out.append(Driver(file, name, helper.lineno, tuple(calls)))
-        elif handed:
-            runners[name] = (helper, handed)
-    for name, (helper, handed) in runners.items():
-        if _handed_vera(tree, name, module):
-            out.append(Driver(file, name, helper.lineno, tuple(handed)))
+        elif handed or calls_a_handed_value:
+            runners[name] = (helper, handed, calls_a_handed_value)
+    for name, (helper, handed, calls_a_handed_value) in runners.items():
+        reached: set[str] = set()
+        if handed and _handed_vera(tree, name, module):
+            reached.update(handed)
+        if calls_a_handed_value:
+            reached |= _handed_entry_points(tree, name, module)
+        if reached:
+            out.append(Driver(file, name, helper.lineno, tuple(sorted(reached))))
     return sorted(out, key=lambda d: d.line)
 
 
@@ -476,6 +667,35 @@ def _handed_vera(
     call is in: a function's, a class body's own (not its methods'), else the
     module's.
     """
+    return any(
+        _command_names_vera(_call_arguments(call), local, module)
+        for call, _scope, local in _runner_calls(tree, name, module))
+
+
+def _handed_entry_points(
+    tree: ast.Module, name: str, module: Mapping[str, list[ast.AST]],
+) -> set[str]:
+    """The stage entry points the calls to the helper *name* in *tree* hand
+    it: each argument, followed through the scope the call is in as a
+    helper's own values are (its imports, its assignments and its loops)."""
+    top = [n for n in tree.body if isinstance(n, (ast.Import, ast.ImportFrom))]
+    out: set[str] = set()
+    for call, scope_node, local in _runner_calls(tree, name, module):
+        within = [scope_node] if scope_node is not None else []
+        scope = _Scope(_import_targets([*top, *within]), local,
+                       _iterated(within), module)
+        for argument in _call_arguments(call):
+            out |= _reached(argument, scope)[0]
+    return out
+
+
+def _runner_calls(
+    tree: ast.Module, name: str, module: Mapping[str, list[ast.AST]],
+) -> Iterator[tuple[ast.Call, ast.AST | None, Mapping[str, list[ast.AST]]]]:
+    """Each call to the runner *name* anywhere in *tree*, in a function, a
+    class body or the module itself, with the scope it is in and that
+    scope's assignments: a function's, a class body's own (not its
+    methods'), else none, so a name falls back to the module's."""
     calls: list[tuple[ast.Call, ast.AST | None, ast.ClassDef | None]] = []
 
     def visit(node: ast.AST, scope: ast.AST | None, owner: ast.ClassDef | None) -> None:
@@ -500,11 +720,8 @@ def _handed_vera(
                  if isinstance(stmt, (ast.Assign, ast.AnnAssign))]))
         elif scope is not None:
             local = locals_of.setdefault(id(scope), _assigned([scope]))
-        if not _calls_the_runner(call, name, owner, local, module, classes):
-            continue
-        if _command_names_vera(_call_arguments(call), local, module):
-            return True
-    return False
+        if _calls_the_runner(call, name, owner, local, module, classes):
+            yield call, scope, local
 
 
 def scan(root: Path = ROOT) -> list[Driver]:

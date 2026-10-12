@@ -35,7 +35,6 @@ from pathlib import Path
 import pytest
 
 from tests import pipeline
-from vera.trap_registry import signal_call_pattern
 
 #: The bound each call below that this file makes to the pipeline had as a
 #: `vera` process; in process it is the call's budget (tests/pipeline.py).
@@ -46,6 +45,13 @@ def _write(tmp_path: Path, source: str, name: str = "p.vera") -> Path:
     p = tmp_path / name
     p.write_text(source, encoding="utf-8")
     return p
+
+
+def _compiled(tmp_path: Path, source: str, name: str) -> pipeline.Compiled:
+    """*source*, written to a file, compiled as ``vera compile`` compiles it."""
+    compiled = pipeline.compile(_write(tmp_path, source, name), budget_s=_BUDGET_S)
+    assert compiled.ok, [d.description[:200] for d in compiled.errors]
+    return compiled
 
 
 def _run(tmp_path: Path, source: str, *args: str, name: str = "p.vera") -> str:
@@ -540,11 +546,8 @@ class TestNonPlainTypeArgBasesAreGuarded1036:
         closures has no literal form the backend compiles yet, so there is no
         way to hand this boundary an empty one.
         """
-        proc = pipeline.cli(
-            "compile", "--wat",
-            str(_write(tmp_path, _1036_FN_ARG_BASE, "fnarg.vera")), budget_s=_BUDGET_S)
-        assert proc.returncode == 0, proc.stderr[-500:]
-        assert "call $vera.contract_fail" in proc.stdout, (
+        compiled = _compiled(tmp_path, _1036_FN_ARG_BASE, "fnarg.vera")
+        assert compiled.checks(kind="contract_violation"), (
             "no boundary guard for a refined base whose type argument is a "
             "function type"
         )
@@ -771,14 +774,12 @@ public fn main(@Unit -> @Int)
     fn(@Int -> @Int) effects(pure) { let @Nat = @Int.0; nat_to_int(@Nat.0) }))
 }
 """
-        proc = pipeline.cli("compile", "--wat",
-                            str(_write(tmp_path, source, "sig754.vera")), budget_s=_BUDGET_S)
-        assert proc.returncode == 0, proc.stderr[-600:]
-        assert 'import "vera" "trap"' in proc.stdout, (
+        compiled = _compiled(tmp_path, source, "sig754.vera")
+        assert 'import "vera" "trap"' in compiled.wat, (
             "the guard inside the lifted closure calls the signal, but the "
             "module does not declare the import"
         )
-        assert signal_call_pattern("nat_guard").search(proc.stdout)
+        assert compiled.checks(kind="nat_guard")
 
 
 # ===========================================================================
@@ -1492,10 +1493,8 @@ class TestTupleComponentSitesAreGuarded1416:
         "the store is guarded" from "the read is". The store's own guard is
         what the obligation claims, so the store is what is measured.
         """
-        proc = pipeline.cli("compile", "--wat",
-                            str(_write(tmp_path, _1416_CONSTRUCT, "c1416.vera")), budget_s=_BUDGET_S)
-        assert proc.returncode == 0, proc.stderr[-500:]
-        assert signal_call_pattern("nat_guard").search(proc.stdout), (
+        compiled = _compiled(tmp_path, _1416_CONSTRUCT, "c1416.vera")
+        assert compiled.checks(kind="nat_guard"), (
             "the `@Int` component stored into a `Tuple<Nat, Int>` carries no "
             "narrowing guard, while its `@Int` neighbour's widening twin at "
             "the same site does"
@@ -2251,18 +2250,12 @@ class TestARefinedIntElementCountsItsWideningGuardToo:
         guard signals itself the two can be counted apart by name.
         """
         def traps(source: str, name: str) -> int:
-            proc = pipeline.cli("compile", "--wat",
-                                str(_write(tmp_path, source, name)), budget_s=_BUDGET_S)
-            assert proc.returncode == 0, proc.stderr[-400:]
-            body, _, rest = proc.stdout.partition("(func $f ")
-            assert rest, "no `f` in the emitted module"
-            # The WIDENING signal specifically (#1438), not every trap: the
+            # The WIDENING checks specifically (#1438), not every trap: the
             # predicate guard #1426 adds shares the `unreachable`, so a
             # shared-token count cannot see a missing widening guard
-            # (CR PR-review).  Since #1479 every kind shares one import, so
-            # the kind's own code is what tells them apart.
-            return len(signal_call_pattern("widen_guard").findall(
-                rest.split("\n  )")[0]))
+            # (CR PR-review).  The module's record tells them apart by kind.
+            compiled = _compiled(tmp_path, source, name)
+            return len(compiled.checks(kind="widen_guard", function="f"))
 
         plain = traps(_CR_PLAIN_INT_ELEMENT, "cr4b.vera")
         refined = traps(_CR_REFINED_INT_ELEMENT, "cr4c.vera")

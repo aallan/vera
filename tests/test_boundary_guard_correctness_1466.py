@@ -1879,8 +1879,8 @@ def test_a_state_write_claims_exactly_the_guard_it_emits(
     source = _sources(cell)[0]
     envelope = _envelope(_write(tmp_path, source, "s.vera"))
     statuses = _statuses(envelope)
-    wat = pipeline.cli("compile", "--wat", _write(tmp_path, source, "s.vera"), budget_s=_BUDGET_S)
-    emitted = "contract_fail" in wat.stdout
+    compiled = pipeline.compile(_write(tmp_path, source, "s.vera"), budget_s=_BUDGET_S)
+    emitted = compiled.ok and bool(compiled.checks(kind="contract_violation"))
     assert statuses, "the write raises no narrowing obligation at all"
     if "tier3" in statuses:
         assert emitted, (
@@ -2121,7 +2121,7 @@ def test_the_record_and_registration_agree_about_a_state_cell(
             f"the write as unguarded: {sorted(statuses)}"
         )
         if "tier3" in statuses:
-            assert "contract_fail" in wat, (
+            assert pipeline.compile(path).checks(kind="contract_violation"), (
                 f"`State<{cell_type}>`: the record claims a runtime check "
                 f"and the module carries none"
             )
@@ -2249,9 +2249,10 @@ def test_1439_a_state_write_over_a_handle_base_carries_its_guard(
     m = _measure(cell, tmp_path)
     assert not m["errors"], m["errors"]
     assert "tier3" in m["statuses"], sorted(m["statuses"])
-    wat = pipeline.cli("compile", "--wat", _write(
-        tmp_path, _sources(cell)[1], "state.vera"), budget_s=_BUDGET_S)
-    assert "contract_fail" in wat.stdout, (
+    compiled = pipeline.compile(_write(tmp_path, _sources(cell)[1], "state.vera"),
+                                budget_s=_BUDGET_S)
+    assert compiled.ok, [d.description[:200] for d in compiled.errors]
+    assert compiled.checks(kind="contract_violation"), (
         "the record claims a runtime check and the module carries none"
     )
     assert m["bad_refused_at_run"], m["bad_output"]

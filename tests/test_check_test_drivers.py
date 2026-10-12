@@ -258,6 +258,135 @@ def test_a_method_runner_handed_a_command_by_its_own_class_is_a_driver(
             "TestThing._run"]
 
 
+# A command or stage function the helper reaches through a value rather than
+# by its name (#1662): a dict's value, a list's or tuple's element, a
+# parameter's default, or an argument a call in the module hands it.
+
+@pytest.mark.parametrize("source,expected", [
+    ("""
+        def _cli(command, path):
+            from vera import cli
+            fns = {"check": cli.cmd_check, "run": cli.cmd_run}
+            return fns[command](str(path), as_json=True)
+     """, ("vera.cli.cmd_check", "vera.cli.cmd_run")),
+    ("""
+        def _cli(command, path):
+            from vera import cli
+            fns = {"check": cli.cmd_check, "compile": cli.cmd_compile}
+            fn = fns[command]
+            return fn(str(path), as_json=True)
+     """, ("vera.cli.cmd_check", "vera.cli.cmd_compile")),
+    ("""
+        from vera.cli import cmd_check, cmd_verify
+
+        COMMANDS = {"check": cmd_check, "verify": cmd_verify}
+
+        def _cli(command, path):
+            return COMMANDS.get(command)(path)
+     """, ("vera.cli.cmd_check", "vera.cli.cmd_verify")),
+    ("""
+        from vera.verifier import verify
+
+        def _stage(name, source):
+            stages = {"verify": verify}
+            return stages[name](source)
+     """, ("verify",)),
+    ("""
+        from vera.cli import cmd_check, cmd_verify
+
+        def _first(path):
+            commands = [cmd_check, cmd_verify]
+            return commands[0](path)
+     """, ("vera.cli.cmd_check", "vera.cli.cmd_verify")),
+    ("""
+        import vera.cli as cli
+
+        def _each(path):
+            for command in (cli.cmd_check, cli.cmd_verify):
+                command(path)
+     """, ("vera.cli.cmd_check", "vera.cli.cmd_verify")),
+    ("""
+        from vera.cli import cmd_check
+
+        def _run(path, command=cmd_check):
+            return command(path)
+     """, ("vera.cli.cmd_check",)),
+    ("""
+        def _run(path, *, command=None):
+            from vera import cli
+            return (command or cli.cmd_run)(path)
+     """, ("vera.cli.cmd_run",)),
+], ids=["dict-value", "dict-value-through-a-name", "dict-get-at-module-level",
+        "a-stage-function-in-a-dict", "list-element", "tuple-element-iterated",
+        "default-argument", "the-fallback-of-an-or"])
+def test_a_command_reached_through_a_value_is_a_driver(
+    gate: ModuleType, source: str, expected: tuple[str, ...],
+) -> None:
+    found = _drivers(gate, source)
+    assert len(found) == 1, found
+    assert next(iter(found.values())) == expected
+
+
+@pytest.mark.parametrize("handing,expected", [
+    ("def test_it(p):\n"
+     "    from vera.cli import cmd_verify\n"
+     "    _run_cmd(cmd_verify, p, as_json=True)\n",
+     ("vera.cli.cmd_verify",)),
+    ("from vera import cli\n\n"
+     "def test_it(p):\n"
+     "    _run_cmd(cli.cmd_check, p)\n",
+     ("vera.cli.cmd_check",)),
+    ("def test_it(p, name):\n"
+     "    import vera.cli as cli_mod\n"
+     "    _run_cmd(getattr(cli_mod, name), p)\n",
+     ("getattr(vera.cli)",)),
+    ("def test_it(p):\n"
+     "    import vera.cli as cli_mod\n"
+     "    _run_cmd(getattr(cli_mod, 'cmd_test'), p)\n",
+     ("vera.cli.cmd_test",)),
+    ("def test_it(p):\n"
+     "    from vera.cli import cmd_run\n"
+     "    _run_cmd(cmd=cmd_run, path=p)\n",
+     ("vera.cli.cmd_run",)),
+], ids=["an-imported-command", "a-module-attribute", "a-getattr-on-the-cli",
+        "a-getattr-naming-the-command", "a-keyword-argument"])
+def test_a_helper_handed_a_command_to_call_is_a_driver(
+    gate: ModuleType, handing: str, expected: tuple[str, ...],
+) -> None:
+    source = (
+        "def _run_cmd(cmd, path, **kw):\n"
+        "    return cmd(str(path), **kw)\n\n" + handing)
+    assert _drivers(gate, source) == {"_run_cmd": expected}
+
+
+def test_a_value_that_reaches_no_command_is_left_alone(gate: ModuleType) -> None:
+    assert _drivers(gate, """
+        import operator
+
+        from tests import pipeline
+
+        def _dispatch(kind, value):
+            table = {"len": len, "neg": operator.neg}
+            return table[kind](value)
+
+        def _pick(path, runner=pipeline.compile):
+            return runner(path)
+
+        def _apply(fn, value):
+            return fn(value)
+
+        def _never_handed(fn, value):
+            return fn(value)
+
+        def _lookup(obj, name):
+            return getattr(obj, name)()
+
+        def test_it(p):
+            _apply(len, p)
+            _apply(pipeline.verify, p)
+    """) == {}
+
+
 # =====================================================================
 # What the gate leaves alone
 # =====================================================================

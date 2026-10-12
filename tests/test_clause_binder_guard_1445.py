@@ -37,7 +37,7 @@ from pathlib import Path
 import pytest
 
 from tests import pipeline
-from tests.codegen_helpers import wat_calls
+from tests.pipeline import checks
 
 #: The bound each call below that this file makes to the pipeline had as a
 #: `vera` process; in process it is the call's budget (tests/pipeline.py).
@@ -261,11 +261,12 @@ def test_the_site_table_moves_both_halves_together(
     """
     from vera import narrowing
     from vera.checker import typecheck_with_artifacts
+    from vera.codegen import CompileResult
     from vera.codegen import compile as codegen_compile
     from vera.parser import parse_to_ast
     from vera.verifier import verify
 
-    def status_and_wat() -> tuple[list[str], str]:
+    def statuses_and_module() -> tuple[list[str], CompileResult]:
         program = parse_to_ast(_EXN_REFINED)
         diags, arts = typecheck_with_artifacts(program, _EXN_REFINED)
         assert not [d for d in diags if d.severity == "error"], diags
@@ -276,27 +277,27 @@ def test_the_site_table_moves_both_halves_together(
         )
         statuses = [o.status for o in result.obligations
                     if o.kind == "refine_bind"]
-        wat = codegen_compile(
+        module = codegen_compile(
             program, source=_EXN_REFINED,
             expr_semantic_types=arts.expr_semantic_types,
             expr_target_types=arts.expr_target_types,
-        ).wat
-        return statuses, wat
+        )
+        return statuses, module
 
-    on_statuses, on_wat = status_and_wat()
+    on_statuses, on_module = statuses_and_module()
     assert "tier3" in on_statuses, on_statuses
-    assert wat_calls(on_wat, "vera.contract_fail")
+    assert checks(on_module, kind="contract_violation")
 
     monkeypatch.setattr(
         narrowing, "REFINED_BIND_GUARDED_SITES",
         narrowing.REFINED_BIND_GUARDED_SITES - {"handler clause binder"},
     )
-    off_statuses, off_wat = status_and_wat()
+    off_statuses, off_module = statuses_and_module()
     assert "tier3_unguarded" in off_statuses, (
         f"the classification still claims a guard after the site left the "
         f"table, so it is not reading the table: {off_statuses}"
     )
-    assert not wat_calls(off_wat, "vera.contract_fail"), (
+    assert checks(off_module, kind="contract_violation") == (), (
         "the emitter still plants the guard after the site left the table, "
         "so it is not reading the table either"
     )

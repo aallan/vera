@@ -38,10 +38,10 @@ import pytest
 
 from vera.checker import typecheck_with_artifacts
 from vera.codegen.api import WasmTrapError
-from vera.trap_registry import signal_call_pattern
 from vera.parser import parse_to_ast
 from tests import pipeline
 from tests.codegen_helpers import _compile_checked_ok as _compile_with_types, _run_checked as _run
+from tests.pipeline import checks
 
 I64_MAX = 9223372036854775807
 TWO_63 = 9223372036854775808
@@ -143,20 +143,20 @@ class TestFix1DeadGuardUnderTailCall:
         # After the fix the @Nat arm's call must be a PLAIN `call $helper`
         # (not `return_call`) followed by the live widen guard, so the sign
         # check runs.  This is the structural proof the guard is reachable.
-        wat = _compile_with_types(_FIX1_MATCH).wat
+        result = _compile_with_types(_FIX1_MATCH)
+        wat = result.wat
         assert "call $helper" in wat
         assert "return_call $helper" not in wat, (
             "the @Nat widen-guarded arm's call must be reverted to a plain "
             "call so the appended guard is reached"
         )
         # ...and the live guard (sign check + trap) follows it.  Since #1438 the
-        # widen guard's trap signals `widen_guard` (through `vera.trap`, #1479)
-        # then executes `unreachable`, so pin the signal: a bare `unreachable`
-        # appears elsewhere in every module (GC shadow-stack overflow), and
-        # asserting only that word would keep this cell green with no widen
-        # guard emitted at all.
+        # widen guard names its own kind, so pin the check itself, from the
+        # module's record: a bare `unreachable` appears elsewhere in every
+        # module (GC shadow-stack overflow), and asserting only that word
+        # would keep this cell green with no widen guard emitted at all.
         assert "i64.lt_s" in wat
-        assert signal_call_pattern("widen_guard").search(wat)
+        assert checks(result, kind="widen_guard")
 
     def test_tco_recursive_int_arm_return_call_survives(self) -> None:
         # The GENUINE @Int recursive arm is NOT widen-guarded, so its

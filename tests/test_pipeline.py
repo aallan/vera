@@ -24,8 +24,9 @@ import subprocess
 import sys
 import time
 import typing
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -35,6 +36,7 @@ from vera.errors import ParseError
 from vera.obligations.core import ObligationStatus
 from vera.runtime.traps import WasmTrapError
 from vera.smt import SmtContext, SmtResult
+from vera.trap_registry import EmittedCheck
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFORMANCE = ROOT / "tests" / "conformance"
@@ -806,3 +808,133 @@ def test_stderr_is_captured_as_vera_run_captures_it(
     assert capsys.readouterr().err == ""
     assert pipeline.run(source, capture_stderr=False).stderr == ""
     assert capsys.readouterr().err == "note"
+
+
+# =====================================================================
+# The checks a module holds
+# =====================================================================
+
+#: A module whose record holds five trap kinds from eight emitters, at two
+#: paths, in five functions (a lifted closure and two clones of one generic
+#: among them) and none in a sixth, so each filter keeps a strict part of the
+#: record that is not empty.
+_CHECKED_MODULE = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+private forall<T> fn pick(@T, @Int -> @T)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Int = 10 / @Int.0;
+  @T.0
+}
+
+public fn f(@Tuple<Pos, Int>, @Int -> @Nat)
+  requires(@Int.0 != 3) ensures(true) effects(pure)
+{
+  let @Nat = @Int.0;
+  @Nat.0
+}
+
+public fn g(@Nat, @Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Bool = pick(true, @Int.0);
+  let @Array<Int> = array_map([1, 2], fn(@Int -> @Int) effects(pure) { @Int.0 + 1 });
+  @Nat.0 + pick(@Int.0, 1)
+}
+
+public fn h(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  @Int.0
+}
+"""
+
+
+@pytest.mark.parametrize(("filters", "keep"), [
+    ({"kind": "overflow"}, lambda c: c.kind == "overflow"),
+    ({"kind": "contract_violation"}, lambda c: c.kind == "contract_violation"),
+    ({"emitter": "wasm/operators.py:_translate_binary"},
+     lambda c: c.emitter == "wasm/operators.py:_translate_binary"),
+    ({"obligation": "call_pre"}, lambda c: "call_pre" in c.obligations),
+    ({"obligation": "int_overflow"}, lambda c: "int_overflow" in c.obligations),
+    ({"function": "pick$Int"}, lambda c: c.function == "pick$Int"),
+    ({"function": "anon_0"}, lambda c: c.function == "anon_0"),
+    ({"path": ("Tuple.0",)}, lambda c: c.path == ("Tuple.0",)),
+    ({"path": ()}, lambda c: c.path == ()),
+    ({"kind": "overflow", "function": "g"},
+     lambda c: c.kind == "overflow" and c.function == "g"),
+    ({"kind": "contract_violation", "obligation": "refine_bind",
+      "path": ("Tuple.0",)},
+     lambda c: c.obligations == ("refine_bind",) and c.path == ("Tuple.0",)),
+], ids=["kind", "the-contract-kind", "emitter", "an-obligation-of-two",
+        "obligation", "a-clone", "a-closure", "path", "the-empty-path",
+        "kind-and-function", "three-at-once"])
+def test_each_filter_keeps_the_checks_it_names(
+    filters: dict[str, Any], keep: Callable[[EmittedCheck], bool],
+) -> None:
+    result = pipeline.compile(_CHECKED_MODULE).result
+    found = pipeline.checks(result, **filters)
+    assert found == tuple(c for c in result.emitted_checks if keep(c))
+    assert 0 < len(found) < len(result.emitted_checks), found
+
+
+def test_no_filter_is_the_whole_record() -> None:
+    result = pipeline.compile(_CHECKED_MODULE).result
+    assert pipeline.checks(result) == tuple(result.emitted_checks)
+    assert len(result.emitted_checks) == 10
+
+
+def test_a_function_with_no_check_holds_none() -> None:
+    result = pipeline.compile(_CHECKED_MODULE).result
+    assert pipeline.checks(result, function="h") == ()
+
+
+def test_the_prelude_filter_tells_the_prelude_from_the_program() -> None:
+    """A program calling `json_array_length` carries three checks of the
+    prelude functions it injects beside its own one."""
+    result = pipeline.compile(
+        "public fn f(@Int -> @Int)\n"
+        "  requires(true) ensures(true) effects(pure)\n"
+        "{\n  let @Nat = @Int.0;\n  json_array_length(JArray([JNull]))\n}\n",
+    ).result
+    ours = pipeline.checks(result, prelude=False)
+    assert [(c.function, c.kind) for c in ours] == [("f", "nat_guard")]
+    theirs = pipeline.checks(result, prelude=True)
+    assert len(theirs) == 3 and all(c.prelude for c in theirs), theirs
+
+
+@pytest.mark.parametrize("filters", [
+    {"kind": "nat_undreflow"},
+    {"kind": "heap_exhausted"},
+    {"kind": "unreachable"},
+    {"emitter": "wasm/operators.py:_emit_nat_sub"},
+    {"emitter": "codegen/assembly.py:heap_trap"},
+    {"obligation": "nat_sbu"},
+], ids=["a-misspelt-kind", "a-kind-no-site-records", "a-kind-no-check-raises",
+        "a-misspelt-emitter", "an-emitter-no-site-records",
+        "a-misspelt-obligation"])
+def test_a_filter_no_recorded_check_can_carry_is_refused(
+    filters: dict[str, str],
+) -> None:
+    """An absence asked with a misspelt filter, or of a check the record never
+    holds, would hold whatever the module does."""
+    result = pipeline.compile(_CHECKED_MODULE).result
+    with pytest.raises(ValueError, match="no recorded check"):
+        pipeline.checks(result, **filters)
+
+
+@pytest.mark.parametrize("function", ["pick", "nowhere"])
+def test_a_function_the_module_does_not_define_is_refused(function: str) -> None:
+    """`pick` is a generic, so the module defines only its clones."""
+    result = pipeline.compile(_CHECKED_MODULE).result
+    with pytest.raises(AssertionError, match=f"\\${function}"):
+        pipeline.checks(result, function=function)
+
+
+def test_the_compile_stage_reads_its_own_record() -> None:
+    compiled = pipeline.compile(_CHECKED_MODULE)
+    assert compiled.checks(kind="overflow", function="g") == pipeline.checks(
+        compiled.result, kind="overflow", function="g")
+    with pytest.raises(pipeline.StageFailed):
+        pipeline.compile(_UNCHECKED).checks()

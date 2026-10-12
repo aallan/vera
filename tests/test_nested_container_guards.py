@@ -39,14 +39,12 @@ cannot stand in for a missing store guard.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 
 import pytest
 
 from tests import pipeline
-from tests.codegen_helpers import wat_fn_body
 
 # A generated class instrument (tests/matrix_sample.py): a pull request runs a
 # sample of its parametrised cells, and all of them when it changes this file or
@@ -61,13 +59,6 @@ pytestmark = pytest.mark.matrix(
 )
 
 
-def _trap_kind(kind: int) -> re.Pattern[str]:
-    """A `$vera.trap` call of one `vera.trap_registry.TRAP_KINDS` code."""
-    return re.compile(
-        rf"i32\.const {kind}\s+i32\.const -?\d+\s+i32\.const -?\d+\s+"
-        rf"call \$vera\.trap")
-
-
 @dataclass(frozen=True)
 class _Leaf:
     """One kind of store obligation, and how its guard shows."""
@@ -75,7 +66,7 @@ class _Leaf:
     slot: str             #: the component type the leaf is stored at
     value: str            #: the stored expression
     obligation: str       #: the obligation kind the store records
-    guard: re.Pattern[str]  #: that guard, in the WAT
+    kind: str             #: that guard's trap kind, in the module's record
     bad_args: tuple[object, ...]  #: an input the slot forbids
     trap: str             #: what the guard says when it fires
 
@@ -84,16 +75,15 @@ class _Leaf:
 _GOOD_ARGS = (5.0, 5)
 
 _LEAVES = {
-    # `nat_guard` is trap kind 2.
     "nat": _Leaf("Nat", "float_to_int(@Float64.0)", "nat_bind",
-                 _trap_kind(2), (-5.0, 5),
+                 "nat_guard", (-5.0, 5),
                  "Negative value bound into a @Nat slot"),
-    # A §2.6.5 predicate fails through `$vera.contract_fail`.
+    # A §2.6.5 predicate fails as a contract violation.
     "refined": _Leaf("PosInt", "float_to_int(@Float64.0)", "refine_bind",
-                     re.compile(r"call \$vera\.contract_fail"), (-5.0, 5),
+                     "contract_violation", (-5.0, 5),
                      "Refinement violation"),
-    # `nat_widen` is trap kind 3; 2^64 - 1 is a `@Nat` above i64.MAX.
-    "widen": _Leaf("Int", "@Nat.0", "nat_to_int_coerce", _trap_kind(3),
+    # 2^64 - 1 is a `@Nat` above i64.MAX.
+    "widen": _Leaf("Int", "@Nat.0", "nat_to_int_coerce", "widen_guard",
                    (5.0, 2**64 - 1), "widened into an @Int slot"),
 }
 
@@ -247,7 +237,7 @@ def _measure(
     source: str, leaf: _Leaf,
 ) -> tuple[list[str], int, str, str]:
     """(statuses of the leaf's obligation kind in `g`, that kind's guards in
-    `g`'s WAT, the forbidden run, the allowed run)."""
+    `g`, from the module's record, the forbidden run, the allowed run)."""
     verified = pipeline.verify(source)
     _ = verified.checked.program  # raises the parse or transform error
     errors = [d.description[:90] for d in verified.checked.errors]
@@ -258,7 +248,7 @@ def _measure(
     errors = [d.description[:90] for d in compiled.diagnostics
               if d.severity == "error"]
     assert not errors, errors
-    guards = len(leaf.guard.findall(wat_fn_body(compiled.wat, "g")))
+    guards = len(pipeline.checks(compiled, kind=leaf.kind, function="g"))
 
     def run(args: tuple[object, ...]) -> str:
         try:

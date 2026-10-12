@@ -55,10 +55,12 @@ def _run(tmp_path: Path, source: str, *args: str, name: str = "p.vera") -> str:
     return proc.stdout + proc.stderr
 
 
-def _wat(tmp_path: Path, source: str, name: str = "p.vera") -> str:
-    proc = pipeline.cli("compile", "--wat", str(_write(tmp_path, source, name)), budget_s=_BUDGET_S)
-    assert proc.returncode == 0, proc.stderr[-500:]
-    return proc.stdout
+def _compiled(tmp_path: Path, source: str,
+              name: str = "p.vera") -> pipeline.Compiled:
+    """*source*, written to a file, compiled as ``vera compile`` compiles it."""
+    compiled = pipeline.compile(_write(tmp_path, source, name), budget_s=_BUDGET_S)
+    assert compiled.ok, [d.description[:200] for d in compiled.errors]
+    return compiled
 
 
 def _obligations(tmp_path: Path, source: str,
@@ -175,19 +177,17 @@ def test_the_guard_is_in_the_module_not_only_in_the_run(
     `unreachable` from some other check would satisfy the run assertion
     above while leaving this site unguarded.
     """
-    wat = _wat(tmp_path, _CONSTRUCTION_SHAPES[site],
-               name=f"{site.replace(' ', '_')}_wat.vera")
-    # Sliced to `f`'s own body, not searched module-wide: every shape also
-    # emits the `let`'s declared-type boundary records, and the `Map` one
-    # carries #1410's nested-refinement obligation, so a `contract_fail`
-    # planted anywhere would satisfy a whole-module search — which is the
-    # same attribution failure the docstring says this cell exists to avoid
+    compiled = _compiled(tmp_path, _CONSTRUCTION_SHAPES[site],
+                         name=f"{site.replace(' ', '_')}_wat.vera")
+    # Scoped to `f`, not counted module-wide: every shape also emits the
+    # `let`'s declared-type boundary records, and the `Map` one carries
+    # #1410's nested-refinement obligation, so a contract check planted
+    # anywhere would satisfy a whole-module count — which is the same
+    # attribution failure the docstring says this cell exists to avoid
     # (CR PR-review).
-    _head, _sep, rest = wat.partition("(func $f ")
-    assert rest, f"no `f` in the emitted module:\n{wat[:400]}"
-    body = rest.split("\n  )")[0]
-    assert "call $vera.contract_fail" in body, (
-        f"no §2.6.5 guard is emitted in `f` for a refined {site}:\n{body}"
+    assert compiled.checks(kind="contract_violation", function="f"), (
+        f"no §2.6.5 guard is emitted in `f` for a refined {site}: "
+        f"{compiled.checks()}"
     )
 
 
@@ -1337,13 +1337,10 @@ class TestAStoreAfterADestructureIsStillRecorded:
         assert _store_status(obs), (
             f"the store past a destructure carries no record at all: {obs}"
         )
-        wat = pipeline.cli("compile", "--wat",
-                           str(_write(tmp_path, source, f"parity_{label}w.vera")), budget_s=_BUDGET_S)
-        assert wat.returncode == 0, wat.stderr[-400:]
-        body = wat.stdout.split("(func $mk")[1].split("(func ")[0]
-        assert "call $vera.contract_fail" in body, (
+        compiled = _compiled(tmp_path, source, name=f"parity_{label}w.vera")
+        assert compiled.checks(kind="contract_violation", function="mk"), (
             f"the verifier recorded a store the module does not guard — "
-            f"the parity this PR exists to hold:\n{body[:400]}"
+            f"the parity this PR exists to hold: {compiled.checks()}"
         )
 
 

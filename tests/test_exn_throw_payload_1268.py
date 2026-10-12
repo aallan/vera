@@ -47,6 +47,7 @@ from tests.codegen_helpers import (
     _run_trap,
     wat_fn_body,
 )
+from tests.pipeline import checks
 from tests.verifier_helpers import _verify, _verify_err
 
 
@@ -822,8 +823,9 @@ public fn main(@Nat -> @Int)
     def test_both_guards_are_emitted(self) -> None:
         """...and codegen emits both, so neither obligation is a promise
         the module does not keep."""
-        body = wat_fn_body(_compile_ok(self._REFINED).wat, "boom")
-        assert "contract_fail" in body, body
+        result = _compile_ok(self._REFINED)
+        body = wat_fn_body(result.wat, "boom")
+        assert checks(result, kind="contract_violation", function="boom"), body
         assert re.search(
             r"i64\.const 0\s+i64\.lt_s\s+if\s+"
             + signal_call_pattern("widen_guard").pattern,
