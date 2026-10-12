@@ -729,13 +729,22 @@ def _time(text: str) -> datetime:
     return datetime.fromisoformat(text.replace("Z", "+00:00"))
 
 
+def _listing(payload: Any, what: str) -> list[Mapping[str, Any]]:
+    """`payload` as the list of objects a GitHub listing is.  An error body
+    is an object, and an object read as a listing yields its keys, which a
+    reader can count without failing: it is refused here instead."""
+    if isinstance(payload, list) and all(isinstance(item, Mapping) for item in payload):
+        return payload
+    raise MeasureError(f"the listing of {what} is not a list of objects: {payload!r:.160}")
+
+
 def open_issues(get: Get, labels: str) -> int:
     """The open issues carrying every label in `labels` (comma-separated)."""
     count = 0
     for page in range(1, _PAGES + 1):
-        items = get(_github(
+        items = _listing(get(_github(
             "issues", ("labels", labels), ("state", "open"), ("per_page", 100), ("page", page),
-        ))
+        )), f"the open issues labelled {labels}")
         count += sum(1 for item in items if "pull_request" not in item)
         if len(items) < 100:
             return count
@@ -832,10 +841,10 @@ def fix_prs(get: Get, since: datetime) -> list[FixPr]:
     from opening to merge."""
     merged: list[Mapping[str, Any]] = []
     for page in range(1, _PAGES + 1):
-        items = get(_github(
+        items = _listing(get(_github(
             "pulls", ("state", "closed"), ("base", "main"), ("sort", "updated"),
             ("direction", "desc"), ("per_page", 100), ("page", page),
-        ))
+        )), "the closed pull requests")
         for pr in items:
             if pr.get("merged_at") is None or _time(pr["merged_at"]) < since:
                 continue

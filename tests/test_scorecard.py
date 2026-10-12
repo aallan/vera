@@ -533,6 +533,21 @@ class TestTheIssueCount:
         }
         assert SC.open_issues(store.__getitem__, "bug") == 100
 
+    @pytest.mark.parametrize("payload", [
+        {"message": "API rate limit exceeded", "documentation_url": "https://docs.github.com"},
+        ["not an issue"],
+    ], ids=["an error object", "a list of another thing"])
+    def test_a_listing_that_is_not_a_list_of_issues_is_refused(self, payload: Any) -> None:
+        """An error body is an object, and iterating an object yields its
+        keys, strings that `"pull_request" not in` tests as substrings: the
+        count would be a wrong number with a valid window."""
+        with pytest.raises(SC.MeasureError, match="not a list of objects"):
+            SC.open_issues(lambda _url: payload, "bug")
+
+    def test_a_pull_request_listing_that_is_not_a_list_is_refused(self) -> None:
+        with pytest.raises(SC.MeasureError, match="not a list of objects"):
+            SC.fix_prs(lambda _url: {"message": "Not Found"}, datetime(2026, 10, 1, tzinfo=timezone.utc))
+
 
 class TestTheFixPullRequests:
     """Synthetic responses for what the recording holds no instance of: a
@@ -624,8 +639,11 @@ class TestAFailedRequest:
         """An answer without the fields the readers take, such as a listing
         with no `workflow_runs`, is a reason the render states, not a
         traceback."""
+        def get(url: str) -> Any:
+            return [] if "/issues?" in url else {}
+
         with pytest.raises(SC.MeasureError, match="not in the shape"):
-            SC.github_values(lambda _url: {}, lambda _url: {}, now=_RECORDED_AT)
+            SC.github_values(get, lambda _url: {}, now=_RECORDED_AT)
 
 
 # ---------------------------------------------------------------------------
