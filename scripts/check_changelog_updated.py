@@ -21,9 +21,9 @@ Exempt (changing only these never triggers the check):
 - ``tests/``, ``scripts/``, ``.github/``, ``docs/``, ``examples/``,
   ``changelog.d/``
 - ``CHANGELOG.md``, ``HISTORY.md``, ``README.md``, ``ROADMAP.md``,
-  ``KNOWN_ISSUES.md``, ``FAQ.md``, ``CONTRIBUTING.md``, ``TESTING.md``,
-  ``AGENTS.md``, ``CLAUDE.md``, ``DE_BRUIJN.md``, ``EXAMPLES.md``,
-  ``LICENSE``
+  ``KNOWN_ISSUES.md``, ``limitations.json``, ``FAQ.md``, ``CONTRIBUTING.md``,
+  ``TESTING.md``, ``AGENTS.md``, ``CLAUDE.md``, ``DE_BRUIJN.md``,
+  ``EXAMPLES.md``, ``LICENSE``
 - ``pyproject.toml``, ``uv.lock``
 - ``.pre-commit-config.yaml``, ``.coderabbit.yaml``, ``.gitignore``
 
@@ -91,6 +91,7 @@ EXEMPT_PREFIXES: tuple[str, ...] = (
     "README.md",
     "ROADMAP.md",
     "KNOWN_ISSUES.md",
+    "limitations.json",
     "FAQ.md",
     "CONTRIBUTING.md",
     "TESTING.md",
