@@ -80,7 +80,7 @@ The files a change touches, as paths from the repository root, one per line.  By
 VERA_MATRIX_CHANGED=vera/narrowing.py pytest tests/
 ```
 
-On a pull request CI sets it for the test matrix from the `plan` job's `git diff --name-only`: the files under `vera/` and the `tests/test_*.py` files the pull request changes since its merge base.  Without it every matrix runs its sample; `--matrix=full` runs every cell and `--matrix=sample` the sample whatever it says.  Phase: dev / CI (read when pytest collects the suite).  See [TESTING.md](TESTING.md) § Where an instrument runs.
+On a pull request CI sets it for the shards and the test matrix from the `plan` job's `git diff --name-only`: the files under `vera/` and the `tests/test_*.py` files the pull request changes since its merge base.  Without it every matrix runs its sample; `--matrix=full` runs every cell and `--matrix=sample` the sample whatever it says.  Phase: dev / CI (read when pytest collects the suite).  See [TESTING.md](TESTING.md) § Where an instrument runs.
 
 ## `VERA_Z3_TIMEOUT_MS`
 
