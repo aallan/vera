@@ -7,8 +7,9 @@ program, ``check``, ``verify`` and ``compile`` give exactly the envelope
 ``run`` gives the envelope ``vera run --json`` prints.  Programs shaped as no
 corpus program is (a trap of each kind after output, an exit status set
 through ``IO.exit``, a missing ``main``, every export dropped, an ill-typed and
-an unparsed program) are held to every command the same way, with the status
-``vera run`` exits with in both modes.  The CLI side runs in process through
+an unparsed program) are held to every command the same way, bar ``run`` for
+the program whose every export is dropped, with the status ``vera run`` exits
+with in both modes.  The CLI side runs in process through
 ``pipeline.cli``, which is itself held to the CLI run as a process.  The
 rest pins the driver's own rules: what a stage takes, what reading an
 artefact a stage did not make raises, the unchecked compile, and what ``cli``
