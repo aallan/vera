@@ -16,11 +16,10 @@ from __future__ import annotations
 
 import importlib.util
 import re
-import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
+from tests import pipeline
 from vera.parser import parse
 
 ROOT = Path(__file__).parent.parent
@@ -91,12 +90,12 @@ def _try_parse(content: str) -> str | None:
         return str(exc).split("\n")[0][:200]
 
 
-def _run_cli(content: str, command: str, timeout: int) -> str | None:
+def _run_cli(content: str, command: str) -> str | None:
     # `delete=False` + manual unlink: on Windows you can't open a file
     # twice while one handle is still held, so the `with`-block's open
-    # handle blocks the subprocess from reading it.  Closing the handle
-    # before the subprocess runs (and unlinking after) is portable; on
-    # Unix `delete=True` worked because Unix allows concurrent handles.
+    # handle would block the CLI from reading it.  Closing the handle
+    # before the CLI runs (and unlinking after) is portable; on Unix
+    # `delete=True` worked because Unix allows concurrent handles.
     f = tempfile.NamedTemporaryFile(  # noqa: SIM115 — Windows fixture; closed + unlinked below
         mode="w",
         suffix=".vera",
@@ -106,15 +105,7 @@ def _run_cli(content: str, command: str, timeout: int) -> str | None:
     try:
         f.write(content)
         f.close()
-        result = subprocess.run(
-            [sys.executable, "-m", "vera.cli", command, f.name],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            cwd=str(ROOT),
-            timeout=timeout,
-            check=False,
-        )
+        result = pipeline.cli(command, f.name)
         if "OK:" in result.stdout:
             return None
         err = result.stderr.strip() or result.stdout.strip()
@@ -140,7 +131,7 @@ class TestHtmlCodeSamples:
         ]
         assert len(blocks) > 0, "No Vera blocks found in docs/index.html"
         _assert_stage(
-            blocks, "check", lambda c: _run_cli(c, "check", 30), "type-check"
+            blocks, "check", lambda c: _run_cli(c, "check"), "type-check"
         )
 
     def test_all_vera_blocks_verify(self) -> None:
@@ -152,7 +143,7 @@ class TestHtmlCodeSamples:
         ]
         assert len(blocks) > 0, "No Vera blocks found in docs/index.html"
         _assert_stage(
-            blocks, "verify", lambda c: _run_cli(c, "verify", 60), "verification"
+            blocks, "verify", lambda c: _run_cli(c, "verify"), "verification"
         )
 
     def test_vera_block_count(self) -> None:

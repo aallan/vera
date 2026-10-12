@@ -22,18 +22,11 @@ disagreement" and must fail here on the standalone leg's own assertion.
 from __future__ import annotations
 
 import json
-import os
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
-import vera
-
-# The subprocess must run the compiler this session imported — see the
-# same note in tests/test_clone_body_declaring_module_1241_1243.py.
-_PKG_PARENT = str(Path(vera.__file__).resolve().parents[1])
+from tests import pipeline
 
 _DEEP = """
 public fn cap(@Int -> @Int)
@@ -107,25 +100,10 @@ public fn bad(@Int -> @Int)
 """
 
 
-def _cli(*args: str) -> subprocess.CompletedProcess[str]:
-    env = dict(os.environ)
-    existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        f"{_PKG_PARENT}{os.pathsep}{existing}" if existing else _PKG_PARENT
-    )
-    # A finite timeout: the cycle cases below exist because an unbounded
-    # recursion is a real possibility here, and a hung CLI must fail this
-    # test rather than wedge the suite.
-    return subprocess.run(
-        [sys.executable, "-m", "vera.cli", *args],
-        capture_output=True, text=True, encoding="utf-8", check=False,
-        env=env, timeout=300,
-    )
-
-
 def _codes(path: Path) -> list[tuple[str, str, int]]:
-    """(error code, basename of the file blamed, line) for every diagnostic."""
-    payload = json.loads(_cli("check", "--json", str(path)).stdout)
+    """(error code, basename of the file blamed, line) for every diagnostic
+    the check stage's envelope reports."""
+    payload = pipeline.check(path).envelope()
     return sorted(
         (d["error_code"], Path(d["location"]["file"]).name, d["location"]["line"])
         for d in payload["diagnostics"] + payload["warnings"]
@@ -264,6 +242,6 @@ public fn ping(@Int -> @Int)
 """,
         "main.vera": _MAIN,
     })
-    proc = _cli("check", "--json", str(tmp_path / entry))
+    proc = pipeline.cli("check", "--json", str(tmp_path / entry))
     assert proc.returncode in (0, 1), proc.stderr
     json.loads(proc.stdout)

@@ -2599,20 +2599,6 @@ public fn in_closure(@Int -> @Int)
 """
 
 
-def _cli_json(*args: str) -> tuple[dict, str]:
-    import json
-    import os
-    import subprocess
-    import sys
-
-    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-    proc = subprocess.run(
-        [sys.executable, "-m", "vera.cli", *args], capture_output=True,
-        text=True, encoding="utf-8", check=False, env=env, timeout=600)
-    out = json.loads(proc.stdout) if args[0] == "verify" else {}
-    return out, proc.stdout + proc.stderr
-
-
 @pytest.mark.parametrize(("fn", "occurrence", "status"), [
     ("nested", 0, "violated/E501"),
     ("in_closure", 1, "tier3/E532"),
@@ -2622,7 +2608,7 @@ def test_a_module_call_is_obligated(tmp_path, fn: str, occurrence: int,
     (tmp_path / "lib.vera").write_text(_LIB, encoding="utf-8")
     main = tmp_path / "main.vera"
     main.write_text(_MODULE_CALLER, encoding="utf-8")
-    out, _raw = _cli_json("verify", "--json", str(main))
+    out = pipeline.verify(main).envelope()
     line, col = _at(_MODULE_CALLER, "lib::need_pos(@Int.0)", occurrence)
     got = sorted(
         f"{o['status']}/{o['error_code']}" if o.get("error_code")
@@ -2631,7 +2617,8 @@ def test_a_module_call_is_obligated(tmp_path, fn: str, occurrence: int,
         if o["kind"] == "call_pre"
         and (o["location"]["line"], o["location"]["column"]) == (line, col))
     assert got == [status], out["obligations"]
-    _out, ran = _cli_json("run", str(main), "--fn", fn, "--", "-3")
+    proc = pipeline.cli("run", str(main), "--fn", fn, "--", "-3")
+    ran = proc.stdout + proc.stderr
     assert "need_pos" in ran, ran
 
 

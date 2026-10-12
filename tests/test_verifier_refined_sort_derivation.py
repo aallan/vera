@@ -43,30 +43,11 @@ that answered "no obligations" would be hiding them.
 
 from __future__ import annotations
 
-import json
-import os
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
-import vera
-
-_PKG_PARENT = str(Path(vera.__file__).resolve().parents[1])
-
-
-def _cli(*args: str) -> subprocess.CompletedProcess[str]:
-    env = dict(os.environ)
-    existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        f"{_PKG_PARENT}{os.pathsep}{existing}" if existing else _PKG_PARENT
-    )
-    return subprocess.run(
-        [sys.executable, "-m", "vera.cli", *args],
-        capture_output=True, text=True, encoding="utf-8", check=False,
-        env=env, timeout=600,
-    )
+from tests import pipeline
 
 
 def _tree(tmp_path: Path, files: dict[str, str]) -> dict[str, Path]:
@@ -80,22 +61,16 @@ def _tree(tmp_path: Path, files: dict[str, str]) -> dict[str, Path]:
 
 
 def _verify(path: Path) -> dict:
-    """`vera verify --json`, refusing an internal error as an answer.
+    """`vera verify --json` for *path*, the verify stage's envelope, refusing
+    an internal error as an answer.
 
-    E699 is the envelope the compiler emits when it crashed.  A cell that only
-    asserted the obligations it wanted would pass vacuously on a crash — there
-    are no obligations to contradict it — so the gate is here, once, for every
-    cell in the file.
+    E699 is the envelope the CLI emits when the compiler crashed, and in
+    process the crash raises instead.  A cell that only asserted the
+    obligations it wanted would pass vacuously on a crash — there are no
+    obligations to contradict it — so the gate is here, once, for every cell
+    in the file.
     """
-    proc = _cli("verify", "--json", str(path))
-    try:
-        result = json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        raise AssertionError(
-            f"verify emitted no envelope for {path.name} "
-            f"(exit {proc.returncode})\n{proc.stdout[:400]}\n"
-            f"{proc.stderr[-800:]}"
-        ) from None
+    result = pipeline.verify(path).envelope()
     internal = [
         d for d in result.get("diagnostics", [])
         if d.get("error_code") == "E699"
@@ -108,7 +83,7 @@ def _verify(path: Path) -> dict:
 
 
 def _checks(path: Path) -> bool:
-    return _cli("check", "--quiet", str(path)).returncode == 0
+    return pipeline.cli("check", "--quiet", str(path)).returncode == 0
 
 
 def _kinds(result: dict) -> list[tuple[str, str, str | None]]:
