@@ -920,6 +920,42 @@ class TestAssemble:
             "README.md"
         ]
 
+    def test_a_fragment_that_cannot_be_deleted_is_named_beside_the_written_section(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """CHANGELOG.md is written before any fragment is deleted, so a
+        deletion that fails leaves the section in place and a re-run refused:
+        the error says the section is written and names every fragment still
+        on disk, and every other fragment is deleted.  The refused fragment
+        is the first one deleted, so the ones after it show the rest go too."""
+        root = _tree(
+            tmp_path,
+            {
+                "1529.added.md": _ADDED,
+                "1610.fixed.md": _FIXED_ISSUE,
+                "+lane.fixed.md": _FIXED_SLUG,
+            },
+        )
+        unlink = Path.unlink
+
+        def refuse(self: Path, missing_ok: bool = False) -> None:
+            if self.name == "+lane.fixed.md":
+                raise PermissionError(13, "Permission denied", str(self))
+            unlink(self, missing_ok=missing_ok)
+
+        monkeypatch.setattr(Path, "unlink", refuse)
+        with pytest.raises(release.ReleaseError) as caught:
+            release.assemble_release("0.2.2", "2026-10-13", root)
+        message = str(caught.value)
+        assert "CHANGELOG.md" in message and "## [0.2.2]" in message
+        assert "changelog.d/+lane.fixed.md" in message
+        assert "1529.added.md" not in message and "1610.fixed.md" not in message
+        assert "## [0.2.2] - 2026-10-13" in _assembled(root)
+        assert sorted(path.name for path in (root / "changelog.d").iterdir()) == [
+            "+lane.fixed.md",
+            "README.md",
+        ]
+
     def test_highlights_under_unreleased_open_the_section(self, tmp_path: Path) -> None:
         """A `### Highlights` already written under `[Unreleased]` stays the
         section's first subsection, above the assembled ones."""

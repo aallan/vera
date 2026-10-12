@@ -407,7 +407,9 @@ def assemble_release(version: str, date: str, root: Path = ROOT) -> list[Path]:
 
     Every fragment is read and checked, and the new text built, before
     anything is written, and the fragments are deleted only once CHANGELOG.md
-    is.  Returns the paths of the fragments consumed.
+    is.  A fragment that cannot be deleted is named in the error, beside the
+    section already written, and every other one is deleted.  Returns the
+    paths of the fragments consumed.
     """
     fragments, problems = read_fragments(root / "changelog.d")
     if problems:
@@ -417,8 +419,17 @@ def assemble_release(version: str, date: str, root: Path = ROOT) -> list[Path]:
         path.read_text(encoding="utf-8"), fragments, version, date
     )
     path.write_text(text, encoding="utf-8", newline="\n")
+    remaining: list[str] = []
     for fragment in fragments:
-        fragment.path.unlink()
+        try:
+            fragment.path.unlink()
+        except OSError as exc:
+            remaining.append(f"changelog.d/{fragment.path.name} ({exc.strerror or exc})")
+    if remaining:
+        raise ReleaseError(
+            f"CHANGELOG.md has its ## [{version}] section, but these fragments it "
+            f"consumed are still on disk; delete them: {', '.join(remaining)}"
+        )
     return [fragment.path for fragment in fragments]
 
 
