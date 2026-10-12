@@ -33,6 +33,10 @@ from vera import narrowing
 
 from tests import pipeline
 
+#: The bound each call below that this file makes to the pipeline had as a
+#: `vera` process; in process it is the call's budget (tests/pipeline.py).
+_BUDGET_S = 300
+
 #: The repo root, for the one cell that pins a conformance program.
 _PKG_PARENT_PATH = Path(vera.__file__).resolve().parents[1]
 
@@ -47,12 +51,12 @@ def _write(tmp_path: Path, source: str, name: str = "p.vera") -> Path:
 
 
 def _run(tmp_path: Path, source: str, *args: str, name: str = "p.vera") -> str:
-    proc = pipeline.cli("run", str(_write(tmp_path, source, name)), *args)
+    proc = pipeline.cli("run", str(_write(tmp_path, source, name)), *args, budget_s=_BUDGET_S)
     return proc.stdout + proc.stderr
 
 
 def _wat(tmp_path: Path, source: str, name: str = "p.vera") -> str:
-    proc = pipeline.cli("compile", "--wat", str(_write(tmp_path, source, name)))
+    proc = pipeline.cli("compile", "--wat", str(_write(tmp_path, source, name)), budget_s=_BUDGET_S)
     assert proc.returncode == 0, proc.stderr[-500:]
     return proc.stdout
 
@@ -61,7 +65,7 @@ def _obligations(tmp_path: Path, source: str,
                  name: str = "p.vera") -> tuple[list[dict], dict]:
     """What ``vera verify --json`` prints for *source*, and its obligations:
     the verify stage's envelope."""
-    envelope = pipeline.verify(_write(tmp_path, source, name)).envelope()
+    envelope = pipeline.verify(_write(tmp_path, source, name), budget_s=_BUDGET_S).envelope()
     return envelope["obligations"], envelope
 
 
@@ -1334,7 +1338,7 @@ class TestAStoreAfterADestructureIsStillRecorded:
             f"the store past a destructure carries no record at all: {obs}"
         )
         wat = pipeline.cli("compile", "--wat",
-                           str(_write(tmp_path, source, f"parity_{label}w.vera")))
+                           str(_write(tmp_path, source, f"parity_{label}w.vera")), budget_s=_BUDGET_S)
         assert wat.returncode == 0, wat.stderr[-400:]
         body = wat.stdout.split("(func $mk")[1].split("(func ")[0]
         assert "call $vera.contract_fail" in body, (

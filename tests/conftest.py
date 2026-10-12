@@ -20,6 +20,10 @@ Also loads the shard plugin (``tests/shard.py``): ``--shard=K/N`` runs the
 K-th of N parts of the collection, taken after every other selection, as
 the pull-request lane's shard jobs run the suite.
 
+Also hands ``tests/pipeline.py``'s budget watchdog a descriptor on the
+stderr the run started with, so the traceback of a stage call that runs
+past its budget reaches the terminal or the CI log.
+
 Also prints the session totals of ``test_distrust_corpus.py`` (proofs
 exercised, refuted, unattributed traps) when it ran.
 """
@@ -46,6 +50,22 @@ from tests.matrix_sample import (  # noqa: F401
 # module already holds the matrix sample's `pytest_collection_modifyitems`,
 # and the shard's runs after it, as a wrapper.
 pytest_plugins = ("tests.shard",)
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Hand tests/pipeline.py's watchdog the stderr this run started with.
+
+    A stage call past its budget ends the process and writes every thread's
+    traceback first (``pipeline._budget``).  It has to write them to a
+    descriptor of its own: during a test, descriptor 2 is pytest's capture
+    file, which a process that ends there never reports, and collection
+    imports tests/pipeline.py with it already in place.  The capture is
+    suspended here, in every pytest-xdist worker too, so descriptor 2 is
+    the terminal or the CI log.
+    """
+    from tests import pipeline
+
+    pipeline.watch_stderr(os.dup(2))
 
 
 @pytest.fixture(scope="session", autouse=True)

@@ -28,6 +28,10 @@ import pytest
 
 from tests import pipeline
 
+#: The bound each call below that this file makes to the pipeline had as a
+#: `vera` process; in process it is the call's budget (tests/pipeline.py).
+_BUDGET_S = 300
+
 _DEEP = """
 public fn cap(@Int -> @Int)
   requires(true)
@@ -103,7 +107,7 @@ public fn bad(@Int -> @Int)
 def _codes(path: Path) -> list[tuple[str, str, int]]:
     """(error code, basename of the file blamed, line) for every diagnostic
     the check stage's envelope reports."""
-    payload = pipeline.check(path).envelope()
+    payload = pipeline.check(path, budget_s=_BUDGET_S).envelope()
     return sorted(
         (d["error_code"], Path(d["location"]["file"]).name, d["location"]["line"])
         for d in payload["diagnostics"] + payload["warnings"]
@@ -242,6 +246,6 @@ public fn ping(@Int -> @Int)
 """,
         "main.vera": _MAIN,
     })
-    proc = pipeline.cli("check", "--json", str(tmp_path / entry))
+    proc = pipeline.cli("check", "--json", str(tmp_path / entry), budget_s=_BUDGET_S)
     assert proc.returncode in (0, 1), proc.stderr
     json.loads(proc.stdout)

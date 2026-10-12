@@ -40,6 +40,10 @@ import pytest
 
 from tests import pipeline
 
+#: The bound each call below that this file makes to the pipeline had as a
+#: `vera` process; in process it is the call's budget (tests/pipeline.py).
+_BUDGET_S = 300
+
 
 def _write(tmp_path: Path, files: dict[str, str]) -> Path:
     for name, text in files.items():
@@ -55,7 +59,7 @@ def _verify_codes(path: Path) -> list[str]:
     diagnostics appear, and "the verifier died" must not read as "no
     diagnostics".
     """
-    payload = pipeline.verify(path).envelope()
+    payload = pipeline.verify(path, budget_s=_BUDGET_S).envelope()
     return [d["error_code"] for d in payload["diagnostics"]]
 
 
@@ -70,7 +74,7 @@ def _run_value(path: Path, fn: str | None = None) -> str:
     args = ["run", str(path)]
     if fn is not None:
         args += ["--fn", fn]
-    proc = pipeline.cli(*args)
+    proc = pipeline.cli(*args, budget_s=_BUDGET_S)
     if proc.returncode != 0:
         return f"FAILED: {(proc.stdout + proc.stderr).strip()[-400:]}"
     lines = proc.stdout.strip().splitlines()
@@ -278,7 +282,7 @@ def test_type_discriminating_callee_compiles(tmp_path: Path) -> None:
     the failure is a trap on load rather than a wrong value.
     """
     _write(tmp_path, {"glib.vera": _GLIB_VALUE, "app.vera": _APP_TYPED})
-    check = pipeline.cli("check", "--quiet", str(tmp_path / "app.vera"))
+    check = pipeline.cli("check", "--quiet", str(tmp_path / "app.vera"), budget_s=_BUDGET_S)
     assert check.returncode == 0, check.stdout + check.stderr
     assert _verify_codes(tmp_path / "app.vera") == []
     assert _run_value(tmp_path / "app.vera") == "111"

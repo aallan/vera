@@ -36,6 +36,10 @@ from vera.smt import (
 from vera.verifier import ContractVerifier
 from tests import pipeline
 
+#: The bound each call below that this file makes to the pipeline had as a
+#: `vera` process; in process it is the call's budget (tests/pipeline.py).
+_BUDGET_S = 180
+
 ROOT = Path(__file__).parent.parent
 EXAMPLES = ROOT / "examples"
 
@@ -104,7 +108,7 @@ class TestCliFlag:
         unless *env_extra* sets it, so the ambient environment decides
         nothing."""
         changes: dict[str, str | None] = {Z3_TIMEOUT_ENV: None, **(env_extra or {})}
-        return pipeline.cli(*args, env=changes)
+        return pipeline.cli(*args, env=changes, budget_s=_BUDGET_S)
 
     def test_json_reports_the_effective_budget(self) -> None:
         r = self._run(["verify", "--json", "--timeout-ms", "60000",

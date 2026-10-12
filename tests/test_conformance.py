@@ -20,15 +20,14 @@ unit tests and example round-trip tests.
 
 from __future__ import annotations
 
-import contextlib
 import faulthandler
 import importlib.util
 import json
 import subprocess
 import sys
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import pytest
 
@@ -71,24 +70,6 @@ _LEVEL_ORDER = {"parse": 0, "check": 1, "verify": 2, "run": 3}
 def _report(diagnostics: Sequence[Diagnostic]) -> str:
     """The diagnostics as the CLI prints them."""
     return "\n".join(d.format() for d in diagnostics)
-
-
-@contextlib.contextmanager
-def _budget(seconds: float) -> Iterator[None]:
-    """End this process if the block is still running after *seconds*.
-
-    An in-process run has no child to stop, and a program that never stops
-    would hold its worker until the job's own timeout.  `faulthandler`'s
-    timer runs on a thread of its own, so it fires inside compiled WASM as
-    well: it writes every thread's traceback to the process's own stderr and
-    exits, and pytest-xdist reports the test the worker was running.
-    """
-    faulthandler.dump_traceback_later(
-        seconds, exit=True, file=sys.__stderr__ or sys.stderr)
-    try:
-        yield
-    finally:
-        faulthandler.cancel_dump_traceback_later()
 
 
 def _at_least(entry: dict, level: str) -> bool:
@@ -183,8 +164,8 @@ class TestConformance:
         problems = golden.entry_problems(entry)
         if problems:
             pytest.fail("\n".join(problems))
-        with _budget(golden.RUN_TIMEOUT_SECONDS):
-            ran = pipeline.cli("run", CONFORMANCE_DIR / entry["file"], env=_RUN_ENV)
+        ran = pipeline.cli("run", CONFORMANCE_DIR / entry["file"], env=_RUN_ENV,
+                           budget_s=golden.RUN_TIMEOUT_SECONDS)
         outcome = golden.RunOutcome(
             exit=ran.returncode, stdout=ran.stdout_bytes, stderr=ran.stderr_bytes)
         mismatch = golden.run_mismatch(entry, outcome)
@@ -270,8 +251,9 @@ def test_the_run_stage_runs_under_its_budget(monkeypatch: pytest.MonkeyPatch) ->
 #: stages read, byte for byte.  Between them they run every command that takes
 #: a program, and both of the exits the corpus has: success, and a refusal at
 #: the check and at code generation.  No corpus program traps, exits through
-#: `IO.exit` or fails to parse; `tests/test_cli.py` and `tests/test_pipeline.py`
-#: hold those exits to the process with programs of their own.
+#: `IO.exit`, fails to parse or reads its stdin; `CLI_EXIT_SHAPES` below holds
+#: those exits, and the rest the corpus lacks, to the process with programs of
+#: its own.
 CLI_SMOKE: dict[str, tuple[tuple[tuple[str, ...], ...], str]] = {
     "tests/conformance/ch01_int_literals.vera": (
         (("run",), ("parse",), ("ast", "--json"), ("fmt", "--check")),
@@ -325,14 +307,18 @@ _SMOKE = [
 ]
 
 
-def _vera(*args: str) -> subprocess.CompletedProcess[bytes]:
+def _vera(*args: str, stdin: str = "") -> subprocess.CompletedProcess[bytes]:
     """``python -m vera.cli <args>`` as a process, from the repository root,
-    so the compiler it imports is this checkout's; on an empty stdin and the
-    run environment, with its output kept as the bytes it wrote."""
+    so the compiler it imports is this checkout's; in the run environment,
+    reading *stdin* through a pipe as a parent writes it in text mode
+    (`pipeline.stdin_bytes`), and with its output kept as the bytes it
+    wrote.  An empty *stdin* is a pipe with nothing in it, not the null
+    device, which Windows reports as a terminal."""
     return subprocess.run(
         [sys.executable, "-m", "vera.cli", *args],
-        capture_output=True, stdin=subprocess.DEVNULL, env=golden.run_env(),
-        cwd=ROOT, timeout=golden.RUN_TIMEOUT_SECONDS, check=False,
+        capture_output=True, input=pipeline.stdin_bytes(stdin),
+        env=golden.run_env(), cwd=ROOT, timeout=golden.RUN_TIMEOUT_SECONDS,
+        check=False,
     )
 
 
@@ -351,6 +337,125 @@ def test_the_cli_process_prints_what_the_stages_read(
     mine = pipeline.cli(*command, path, env=_RUN_ENV)
     assert (process.returncode, process.stdout, process.stderr) == (
         mine.returncode, mine.stdout_bytes, mine.stderr_bytes)
+
+
+class _ExitShape(NamedTuple):
+    """A program with an exit the corpus has none of, and how it exits.
+
+    A tuple rather than a dataclass: scripts/render_status.py loads this
+    module outside `sys.modules`, where a dataclass cannot be built.
+    """
+
+    #: The program.
+    source: str
+    #: The commands it runs through.
+    commands: tuple[tuple[str, ...], ...]
+    #: The status every one of them exits with.
+    exit: int
+    #: Text every one of them writes, which only that exit writes.
+    shows: str
+    #: Why it is here.
+    why: str
+    #: What it reads on stdin.
+    stdin: str = ""
+
+
+_IO_MAIN = (
+    "public fn main(@Unit -> @Unit)\n"
+    "  requires(true)\n  ensures(true)\n  effects(<IO>)\n{\n")
+_READ_CHAR = _IO_MAIN + (
+    "  match IO.read_char(()) {\n"
+    "    Ok(@String) -> IO.print(@String.0),\n"
+    '    Err(@String) -> IO.print(string_concat("ERR:", @String.0))\n'
+    "  }\n}\n")
+
+#: The exits no corpus program has, each a program of its own, run through
+#: `python -m vera.cli` by the smoke's driver and held to the in-process CLI
+#: the same way: the exit status, and every byte of both streams.  Each cell
+#: also asserts the exit it is named for, so a program that stopped reaching
+#: it would fail here rather than smoke a different exit.
+CLI_EXIT_SHAPES: dict[str, _ExitShape] = {
+    "trap": _ExitShape(
+        _IO_MAIN + '  IO.print("before → x");\n  IO.stderr("note é");\n'
+        "  let @Int = 0;\n  let @Int = 10 / @Int.0;\n"
+        '  IO.print("after")\n}\n',
+        (("run",), ("run", "--json")), 1, "Integer division by zero",
+        "a trap after a non-ASCII write to each stream: the output before "
+        "it, the trap's message, its backtrace and its fix"),
+    "exit-7": _ExitShape(
+        _IO_MAIN + '  IO.print("bye");\n  IO.exit(7)\n}\n',
+        (("run",), ("run", "--json")), 7, "bye",
+        "`IO.exit(7)`: the status the program chose, in both modes"),
+    "unparsed": _ExitShape(
+        "public fn f(@Int -> @Int) {",
+        (("check",), ("check", "--json"), ("verify",), ("run",)), 1, "E001",
+        "a parse error, at each command that parses"),
+    "verify-refusal": _ExitShape(
+        "public fn f(@Int -> @Int)\n  requires(true)\n"
+        "  ensures(@Int.result > @Int.0)\n  effects(pure)\n{\n  @Int.0\n}\n",
+        (("verify",), ("verify", "--json")), 1, "E500",
+        "a postcondition the verifier refutes, with its counterexample"),
+    "zero-export": _ExitShape(
+        "private fn tally(-> @Int) requires(true) ensures(true) effects(pure) {\n"
+        '  let @Map<String, Array<Int>> = map_insert(map_new(), "a", [1, 2]);\n'
+        "  map_size(@Map<String, Array<Int>>.0)\n}\n\n"
+        "public fn main(-> @Int) requires(true) ensures(true) effects(pure) {\n"
+        "  tally()\n}\n",
+        (("run",), ("compile", "--json")), 1, "E602",
+        "a module whose every export code generation dropped: `vera run`'s "
+        "refusal of the dropped entry, and `vera compile`'s of the module"),
+    "read-char-empty": _ExitShape(
+        _READ_CHAR, (("run",),), 0, "ERR:EOF",
+        "`IO.read_char` on an empty stdin, which asks stdin for its "
+        "descriptor before it reads"),
+    "read-char-line": _ExitShape(
+        _READ_CHAR, (("run",),), 0, "ü",
+        "`IO.read_char` on a one-line stdin, whose first character is not "
+        "ASCII", stdin="ü-line\n"),
+    "non-ascii-streams": _ExitShape(
+        _IO_MAIN + '  IO.print("café → ✓");\n  IO.stderr("naïve — ✗")\n}\n',
+        (("run",),), 0, "naïve — ✗",
+        "a run that writes non-ASCII to stdout and to stderr, which reach "
+        "the pipe as UTF-8 on every platform"),
+    "internal-error": _ExitShape(
+        "public fn f(@Nat -> @Tuple<Int, Int>)\n  requires(true)\n"
+        "  ensures(true)\n  effects(pure)\n{\n"
+        "  let @Option<Tuple<Int, Int>> = Some(Tuple(@Nat.0, @Nat.0));\n"
+        "  match @Option<Tuple<Int, Int>>.0 {\n"
+        "    Some(@Tuple<Int, Int>) -> @Tuple<Int, Int>.0,\n"
+        "    None -> Tuple(1, 1)\n  }\n}\n",
+        (("verify",), ("verify", "--json")), 1, "E699",
+        "an internal compiler error (E699), which #1594's program reaches; "
+        "once #1594 is fixed this cell needs another program that does"),
+}
+
+_EXIT_CELLS = [
+    (shape, command)
+    for shape, spec in CLI_EXIT_SHAPES.items()
+    for command in spec.commands
+]
+
+
+@pytest.mark.parametrize(
+    ("shape", "command"), _EXIT_CELLS,
+    ids=[f"{s}:{'_'.join(c)}" for s, c in _EXIT_CELLS],
+)
+def test_the_cli_process_exits_as_the_in_process_cli_does(
+    shape: str, command: tuple[str, ...], tmp_path: Path,
+) -> None:
+    """The process and the in-process CLI agree on an exit the corpus does
+    not have: the exit status, and every byte of both streams."""
+    spec = CLI_EXIT_SHAPES[shape]
+    path = tmp_path / f"{shape}.vera"
+    path.write_text(spec.source, encoding="utf-8")
+    process = _vera(*command, str(path), stdin=spec.stdin)
+    mine = pipeline.cli(*command, path, stdin=spec.stdin, env=_RUN_ENV)
+    assert (process.returncode, process.stdout, process.stderr) == (
+        mine.returncode, mine.stdout_bytes, mine.stderr_bytes)
+    assert mine.returncode == spec.exit and spec.shows in (
+        mine.stdout + mine.stderr), (
+        f"{shape} no longer exits as named: {mine.returncode}\n"
+        f"{mine.stdout}{mine.stderr}")
 
 
 def test_every_smoke_program_is_in_the_corpus() -> None:

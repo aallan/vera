@@ -39,6 +39,10 @@ import pytest
 from tests import pipeline
 from tests.codegen_helpers import wat_calls
 
+#: The bound each call below that this file makes to the pipeline had as a
+#: `vera` process; in process it is the call's budget (tests/pipeline.py).
+_BUDGET_S = 300
+
 _NAT_TRAP = "Negative value bound into a @Nat slot"
 _REFINE_TRAP = "Refinement violation"
 
@@ -51,12 +55,12 @@ def _write(tmp_path: Path, source: str, name: str) -> Path:
 
 def _run(tmp_path: Path, source: str, arg: str, name: str) -> str:
     proc = pipeline.cli("run", str(_write(tmp_path, source, name)),
-                        "--fn", "f", "--", arg)
+                        "--fn", "f", "--", arg, budget_s=_BUDGET_S)
     return proc.stdout + proc.stderr
 
 
 def _binds(tmp_path: Path, source: str, name: str) -> tuple[list, dict]:
-    envelope = pipeline.verify(_write(tmp_path, source, name)).envelope()
+    envelope = pipeline.verify(_write(tmp_path, source, name), budget_s=_BUDGET_S).envelope()
     return ([(o["kind"], o["status"], o.get("error_code"))
              for o in envelope["obligations"]
              if o["kind"] in ("refine_bind", "nat_bind")], envelope)

@@ -54,6 +54,10 @@ import pytest
 
 from tests import pipeline
 
+#: The bound each call below that this file makes to the pipeline had as a
+#: `vera` process; in process it is the call's budget (tests/pipeline.py).
+_BUDGET_S = 300
+
 # The tuple's second component.  A distinctive value that coincides with no
 # default, no counterexample Z3 reaches for, and no Nat boundary — so a fact
 # read off the WRONG component cannot look like the right answer.
@@ -107,7 +111,7 @@ def _verify(tmp_path: Path, source: str, name: str = "p.vera") -> dict:
     the verifier said."""
     p = tmp_path / name
     p.write_text(source, encoding="utf-8")
-    return pipeline.verify(p).envelope()
+    return pipeline.verify(p, budget_s=_BUDGET_S).envelope()
 
 
 def _nat_binds(result: dict) -> list[dict]:
@@ -134,7 +138,7 @@ def _run(tmp_path: Path, source: str, arg: int,
          fn: str = "f", name: str = "p.vera") -> pipeline.CliResult:
     p = tmp_path / name
     p.write_text(source, encoding="utf-8")
-    return pipeline.cli("run", str(p), "--fn", fn, "--", str(arg))
+    return pipeline.cli("run", str(p), "--fn", fn, "--", str(arg), budget_s=_BUDGET_S)
 
 
 #: What a tripped `@Int` -> `@Nat` narrowing guard says.  Since #754 the guard

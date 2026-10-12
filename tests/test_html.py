@@ -90,7 +90,7 @@ def _try_parse(content: str) -> str | None:
         return str(exc).split("\n")[0][:200]
 
 
-def _run_cli(content: str, command: str) -> str | None:
+def _run_cli(content: str, command: str, budget_s: float) -> str | None:
     # `delete=False` + manual unlink: on Windows you can't open a file
     # twice while one handle is still held, so the `with`-block's open
     # handle would block the CLI from reading it.  Closing the handle
@@ -105,7 +105,7 @@ def _run_cli(content: str, command: str) -> str | None:
     try:
         f.write(content)
         f.close()
-        result = pipeline.cli(command, f.name)
+        result = pipeline.cli(command, f.name, budget_s=budget_s)
         if "OK:" in result.stdout:
             return None
         err = result.stderr.strip() or result.stdout.strip()
@@ -131,7 +131,7 @@ class TestHtmlCodeSamples:
         ]
         assert len(blocks) > 0, "No Vera blocks found in docs/index.html"
         _assert_stage(
-            blocks, "check", lambda c: _run_cli(c, "check"), "type-check"
+            blocks, "check", lambda c: _run_cli(c, "check", 30), "type-check"
         )
 
     def test_all_vera_blocks_verify(self) -> None:
@@ -143,7 +143,7 @@ class TestHtmlCodeSamples:
         ]
         assert len(blocks) > 0, "No Vera blocks found in docs/index.html"
         _assert_stage(
-            blocks, "verify", lambda c: _run_cli(c, "verify"), "verification"
+            blocks, "verify", lambda c: _run_cli(c, "verify", 60), "verification"
         )
 
     def test_vera_block_count(self) -> None:

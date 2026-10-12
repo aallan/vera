@@ -47,6 +47,10 @@ from tests.module_fixture_helpers import (
 )
 from tests import pipeline
 
+#: The bound each call below that this file makes to the pipeline had as a
+#: `vera` process; in process it is the call's budget (tests/pipeline.py).
+_BUDGET_S = 300
+
 INT_ANSWER = 111
 LOCAL_ANSWER = 222
 OTHER_ANSWER = 5
@@ -212,7 +216,7 @@ def _check(main_path: Path) -> dict:
     hash seed, which the sweeps below hold by asking a fresh interpreter per
     seed; a cell that reads one verdict needs none of them.
     """
-    return pipeline.check(main_path).envelope()
+    return pipeline.check(main_path, budget_s=_BUDGET_S).envelope()
 
 
 def _codes(payload: dict) -> list[str]:

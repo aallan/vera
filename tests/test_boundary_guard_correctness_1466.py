@@ -99,6 +99,10 @@ import vera
 from tests import guard_emitter_scan, pipeline
 from vera import binders, carriers, narrowing
 
+#: The bound each call below that this file makes to the pipeline had as a
+#: `vera` process; in process it is the call's budget (tests/pipeline.py).
+_BUDGET_S = 300
+
 # A generated class instrument (tests/matrix_sample.py): a pull request runs a
 # sample of its parametrised cells, and all of them when it changes this file or
 # a module that decides its class, here a guard's value binding by
@@ -1542,7 +1546,7 @@ def _write(tmp_path: Path, source: str, name: str) -> Path:
 def _envelope(path: Path) -> dict:
     """What ``vera verify --json`` prints for *path*: the verify stage's
     envelope, in process."""
-    return pipeline.verify(path).envelope()
+    return pipeline.verify(path, budget_s=_BUDGET_S).envelope()
 
 
 def _statuses(envelope: dict) -> set[str]:
@@ -1585,10 +1589,10 @@ def _measure(cell: tuple[str, int, str], tmp_path: Path) -> dict:
 
     good_path = _write(tmp_path, good_src, "good.vera")
     good_env = _envelope(good_path)
-    good_run = pipeline.cli("run", good_path)
+    good_run = pipeline.cli("run", good_path, budget_s=_BUDGET_S)
 
     bad_path = _write(tmp_path, bad_src, "bad.vera")
-    bad_run = pipeline.cli("run", bad_path)
+    bad_run = pipeline.cli("run", bad_path, budget_s=_BUDGET_S)
     bad_errors: list[str] = []
     if bad_run.returncode == 0:
         # Only then does the STATIC answer matter: a value the artifact has
@@ -1819,7 +1823,7 @@ def test_every_unsupported_shape_says_so_in_the_compilers_words(
     """
     for cell, message in sorted(_UNSUPPORTED_SHAPES.items()):
         good_src, _bad = _sources(cell)
-        ran = pipeline.cli("run", _write(tmp_path, good_src, "u.vera"))
+        ran = pipeline.cli("run", _write(tmp_path, good_src, "u.vera"), budget_s=_BUDGET_S)
         assert message in (ran.stdout + ran.stderr), (
             f"{_ids(cell)} is excluded as unsupported, but the compiler no "
             f"longer says so:\n{(ran.stdout + ran.stderr)[-500:]}"
@@ -1875,7 +1879,7 @@ def test_a_state_write_claims_exactly_the_guard_it_emits(
     source = _sources(cell)[0]
     envelope = _envelope(_write(tmp_path, source, "s.vera"))
     statuses = _statuses(envelope)
-    wat = pipeline.cli("compile", "--wat", _write(tmp_path, source, "s.vera"))
+    wat = pipeline.cli("compile", "--wat", _write(tmp_path, source, "s.vera"), budget_s=_BUDGET_S)
     emitted = "contract_fail" in wat.stdout
     assert statuses, "the write raises no narrowing obligation at all"
     if "tier3" in statuses:
@@ -1957,13 +1961,13 @@ def test_a_composite_refined_base_binds_at_a_tuple_boundary(
         f"{route_name}/{base_name}: the satisfying program is refused "
         f"statically ({_errors(envelope)}):\n{good_src}"
     )
-    ran = pipeline.cli("run", _write(tmp_path, good_src, "c.vera"))
+    ran = pipeline.cli("run", _write(tmp_path, good_src, "c.vera"), budget_s=_BUDGET_S)
     assert ran.returncode == 0, (
         f"{route_name}/{base_name}: the guard refuses a value its own "
         f"refinement admits:\n{(ran.stdout + ran.stderr)[-500:]}"
     )
     bad_path = _write(tmp_path, bad_src, "cbad.vera")
-    bad_run = pipeline.cli("run", bad_path)
+    bad_run = pipeline.cli("run", bad_path, budget_s=_BUDGET_S)
     refused = bad_run.returncode != 0 or _errors(
         _envelope(bad_path))
     assert refused, (
@@ -2008,7 +2012,7 @@ def test_a_pair_state_cell_is_refused_and_says_so(
         f"the record claims a runtime check for a write inside a function "
         f"code generation drops: {sorted(statuses)}"
     )
-    ran = pipeline.cli("run", path)
+    ran = pipeline.cli("run", path, budget_s=_BUDGET_S)
     assert "uses State with unsupported type" in (ran.stdout + ran.stderr), (
         f"the compiler no longer names the refusal:\n"
         f"{(ran.stdout + ran.stderr)[-400:]}"
@@ -2095,10 +2099,10 @@ def test_the_record_and_registration_agree_about_a_state_cell(
     envelope = _envelope(path)
     assert not _errors(envelope), _errors(envelope)
     statuses = _statuses(envelope)
-    ran = pipeline.cli("run", path)
+    ran = pipeline.cli("run", path, budget_s=_BUDGET_S)
     registered = "uses State with unsupported type" not in (
         ran.stdout + ran.stderr)
-    wat = pipeline.cli("compile", "--wat", path).stdout
+    wat = pipeline.cli("compile", "--wat", path, budget_s=_BUDGET_S).stdout
 
     assert registered == expected, (
         f"`State<{cell_type}>` registration changed: the backend "
@@ -2176,7 +2180,7 @@ def test_the_byte_literal_tally_is_what_the_routes_measure(
             routes += 1
             source = route.build(literal.instance("good"))  # type: ignore[operator]
             checked = pipeline.cli(
-                "check", _write(tmp_path, source, "byte.vera"))
+                "check", _write(tmp_path, source, "byte.vera"), budget_s=_BUDGET_S)
             if checked.returncode == 0:
                 continue
             found = _re.search(
@@ -2246,7 +2250,7 @@ def test_1439_a_state_write_over_a_handle_base_carries_its_guard(
     assert not m["errors"], m["errors"]
     assert "tier3" in m["statuses"], sorted(m["statuses"])
     wat = pipeline.cli("compile", "--wat", _write(
-        tmp_path, _sources(cell)[1], "state.vera"))
+        tmp_path, _sources(cell)[1], "state.vera"), budget_s=_BUDGET_S)
     assert "contract_fail" in wat.stdout, (
         "the record claims a runtime check and the module carries none"
     )
@@ -2284,8 +2288,8 @@ def test_1594_a_nat_built_tuple_sub_pattern_crashes_verify(
 }
 """
     path = _write(tmp_path, source, "sub.vera")
-    assert pipeline.cli("check", "--quiet", path).returncode == 0
-    verified = pipeline.cli("verify", path)
+    assert pipeline.cli("check", "--quiet", path, budget_s=_BUDGET_S).returncode == 0
+    verified = pipeline.cli("verify", path, budget_s=_BUDGET_S)
     assert verified.returncode != 0, (
         "#1594 appears to be FIXED — verification no longer crashes.  Remove "
         "this cell"

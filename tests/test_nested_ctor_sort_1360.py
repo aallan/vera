@@ -58,6 +58,10 @@ import z3
 from tests import pipeline
 from vera.smt import SmtContext, _ctor_accepts
 
+#: The bound each call below that this file makes to the pipeline had as a
+#: `vera` process; in process it is the call's budget (tests/pipeline.py).
+_BUDGET_S = 300
+
 # The tuple's second component.  A positive literal, which is the detail that
 # makes the declared side spell `Nat` where the SMT side spells `Int` — the
 # disagreement under test.  Distinctive so a value read off the wrong component
@@ -74,7 +78,7 @@ def _verify_json(tmp_path: Path, source: str, name: str = "p.vera") -> dict:
     """
     p = tmp_path / name
     p.write_text(source, encoding="utf-8")
-    proc = pipeline.cli("verify", "--json", str(p))
+    proc = pipeline.cli("verify", "--json", str(p), budget_s=_BUDGET_S)
     try:
         return json.loads(proc.stdout)
     except json.JSONDecodeError:
@@ -132,7 +136,7 @@ def test_the_crashing_shape_still_compiles_and_runs(tmp_path: Path) -> None:
     """`compile`/`run` were always fine here; the fix must not disturb them."""
     p = tmp_path / "r.vera"
     p.write_text(_REPRO, encoding="utf-8")
-    proc = pipeline.cli("run", str(p), "--fn", "f", "--", "3")
+    proc = pipeline.cli("run", str(p), "--fn", "f", "--", "3", budget_s=_BUDGET_S)
     assert proc.returncode == 0, f"{proc.stdout}\n{proc.stderr}"
     assert proc.stdout.strip() == "0"
 

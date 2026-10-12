@@ -36,6 +36,10 @@ import pytest
 
 from tests import pipeline
 
+#: The bound each call below that this file makes to the pipeline had as a
+#: `vera` process; in process it is the call's budget (tests/pipeline.py).
+_BUDGET_S = 600
+
 
 def _write(tmp_path: Path, source: str, name: str = "p.vera") -> Path:
     tmp_path.mkdir(parents=True, exist_ok=True)
@@ -47,7 +51,7 @@ def _write(tmp_path: Path, source: str, name: str = "p.vera") -> Path:
 def _verify(path: Path) -> dict:
     """What ``vera verify --json`` prints for *path*: the verify stage's
     envelope."""
-    result = pipeline.verify(path).envelope()
+    result = pipeline.verify(path, budget_s=_BUDGET_S).envelope()
     internal = [
         d for d in result.get("diagnostics", [])
         if d.get("error_code") == "E699"
@@ -264,7 +268,7 @@ def test_1434_no_runtime_witness_is_reachable_for_that_tier_1(
     emits actually enforces the whole chain.
     """
     path = _write(tmp_path, _ENSURES_FROM_PARAMETER)
-    proc = pipeline.cli("run", str(path), "--fn", "main", "--", "5")
+    proc = pipeline.cli("run", str(path), "--fn", "main", "--", "5", budget_s=_BUDGET_S)
     assert proc.returncode != 0, (
         f"the program now compiles — verify the emitted boundary guard "
         f"enforces BOTH predicates:\n{proc.stdout[-400:]}"

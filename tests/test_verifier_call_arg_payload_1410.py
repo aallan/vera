@@ -44,20 +44,24 @@ import pytest
 from tests import pipeline
 from tests.verifier_helpers import _verify as _verify_source
 
+#: The bound each call below that this file makes to the pipeline had as a
+#: `vera` process; in process it is the call's budget (tests/pipeline.py).
+_BUDGET_S = 300
+
 
 def _verify_json(tmp_path: Path, source: str, name: str = "p.vera") -> dict:
     """The `verify --json` envelope, for the accounting-identity cells: the
     verify stage's."""
     p = tmp_path / name
     p.write_text(source, encoding="utf-8")
-    return pipeline.verify(p).envelope()
+    return pipeline.verify(p, budget_s=_BUDGET_S).envelope()
 
 
 def _run(tmp_path: Path, source: str, arg: str,
          name: str = "p.vera") -> pipeline.CliResult:
     p = tmp_path / name
     p.write_text(source, encoding="utf-8")
-    return pipeline.cli("run", str(p), "--fn", "f", "--", arg)
+    return pipeline.cli("run", str(p), "--fn", "f", "--", arg, budget_s=_BUDGET_S)
 
 
 def _refine_binds(source: str, fn: str) -> list:
@@ -472,7 +476,7 @@ def test_1410_verify_still_exits_zero_with_a_warning(tmp_path: Path) -> None:
     the program is disclosed rather than rejected."""
     p = tmp_path / "e.vera"
     p.write_text(_1410_REPRO, encoding="utf-8")
-    proc = pipeline.cli("verify", str(p))
+    proc = pipeline.cli("verify", str(p), budget_s=_BUDGET_S)
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
 
@@ -1048,7 +1052,7 @@ def test_imported_callee_argument_carries_the_obligation(
     main.write_text(_XMOD_MAIN, encoding="utf-8")
 
     call_line = 1 + _XMOD_MAIN.splitlines().index("  consume(mk(@Float64.0))")
-    env = pipeline.verify(main).envelope()
+    env = pipeline.verify(main, budget_s=_BUDGET_S).envelope()
     at_call = [
         o for o in env["obligations"]
         if o["kind"] == "refine_bind" and o["location"]["line"] == call_line
@@ -1059,7 +1063,7 @@ def test_imported_callee_argument_carries_the_obligation(
     ]
     assert all(o["status"] != "verified" for o in at_call), at_call
 
-    run = pipeline.cli("run", str(main), "--fn", "f", "--", "-7.0")
+    run = pipeline.cli("run", str(main), "--fn", "f", "--", "-7.0", budget_s=_BUDGET_S)
     assert run.returncode != 0
     _assert_refuses_the_payload(run)
 
@@ -1136,13 +1140,13 @@ def test_imported_disclosed_producer_demotes_through_the_manifest(
     main = tmp_path / "main.vera"
     main.write_text(_XMOD_DISCLOSED_MAIN, encoding="utf-8")
 
-    env = pipeline.verify(main).envelope()
+    env = pipeline.verify(main, budget_s=_BUDGET_S).envelope()
     binds = [o for o in env["obligations"] if o["kind"] == "refine_bind"]
     assert [(o["status"], o["error_code"]) for o in binds] == [
         ("tier3_unguarded", "E506")
     ], binds
 
-    run = pipeline.cli("run", str(main), "--fn", "f", "--", "-7.0")
+    run = pipeline.cli("run", str(main), "--fn", "f", "--", "-7.0", budget_s=_BUDGET_S)
     assert run.returncode != 0
     _assert_refuses_the_payload(run)
 

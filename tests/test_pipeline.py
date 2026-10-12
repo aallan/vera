@@ -22,6 +22,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import typing
 from collections.abc import Iterable, Mapping
 from pathlib import Path
@@ -405,6 +406,107 @@ def test_cli_in_process_prints_what_the_cli_process_prints(
     mine = pipeline.cli(*argv)
     assert (mine.returncode, mine.stdout, mine.stderr) == (
         process.returncode, process.stdout, process.stderr)
+
+
+#: A test file whose stage, or whose command, does not return within its
+#: budget.  The spin stops by itself after 30 s, so a watchdog that does not
+#: fire leaves a run that ends, and fails the assertions below, rather than a
+#: worker that spins for ever.
+_A_HANG = '''\
+import time
+
+import vera.cli
+from tests import pipeline
+
+_SOURCE = (
+    "public fn f(@Int -> @Int)\\n  requires(true)\\n  ensures(true)\\n"
+    "  effects(pure)\\n{\\n  @Int.0\\n}\\n")
+
+
+def _spin(*args, **kwargs):
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        pass
+
+
+def test_a_stage_past_its_budget(monkeypatch):
+    monkeypatch.setattr(pipeline, "DEFAULT_BUDGET_S", 2.0, raising=False)
+    monkeypatch.setattr(pipeline, "_verify_program", _spin)
+    pipeline.verify(_SOURCE)
+
+
+def test_a_command_past_its_budget(monkeypatch, tmp_path):
+    monkeypatch.setattr(pipeline, "DEFAULT_BUDGET_S", 2.0, raising=False)
+    monkeypatch.setattr(vera.cli, "cmd_check", _spin)
+    path = tmp_path / "f.vera"
+    path.write_text(_SOURCE, encoding="utf-8")
+    pipeline.cli("check", path)
+'''
+
+
+@pytest.mark.parametrize(("hang", "runner"), [
+    ("test_a_stage_past_its_budget", ("-n", "1")),
+    ("test_a_command_past_its_budget", ("-n", "1")),
+    ("test_a_stage_past_its_budget", ("-p", "no:xdist")),
+], ids=["stage-xdist", "command-xdist", "stage-plain"])
+def test_a_call_past_its_budget_ends_its_run_naming_the_test(
+    hang: str, runner: tuple[str, str], tmp_path: Path,
+) -> None:
+    """A stage call, or a command, that does not return within its budget
+    ends the process that runs it, after writing every thread's traceback to
+    the stderr the run started with; under pytest-xdist the report names the
+    test the worker was running.  The repository's conftest is loaded, as
+    every run of the suite loads it, because it is what hands the watchdog
+    that stderr."""
+    test_file = tmp_path / "test_a_hang.py"
+    test_file.write_text(_A_HANG, encoding="utf-8")
+    env = {name: value for name, value in os.environ.items()
+           if not name.startswith(("GIT_", "PYTEST_", "COV_CORE_"))}
+    started = time.monotonic()
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+         "-p", "tests.conftest", *runner, "--rootdir", str(tmp_path),
+         f"{test_file}::{hang}"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        cwd=ROOT, env=env, timeout=120, check=False,
+    )
+    elapsed = time.monotonic() - started
+    output = proc.stdout + proc.stderr
+    assert "Timeout (0:00:02)!" in output and "in _spin" in output, output
+    assert elapsed < 25, (elapsed, output)
+    if runner[0] == "-n":
+        assert f"crashed while running 'test_a_hang.py::{hang}'" in output, output
+    else:
+        assert proc.returncode == 1, output
+
+
+def test_budgets_nest_and_a_default_keeps_the_one_in_force(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An inner budget is armed for its block and the enclosing one armed
+    again for what it has left; a default inside a budget arms nothing, so a
+    stage's call of the stages before it keeps its caller's budget; the
+    outermost cancels the timer on every path out."""
+    calls: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        pipeline.faulthandler, "dump_traceback_later",
+        lambda seconds, **kwargs: calls.append(("arm", round(seconds))))
+    monkeypatch.setattr(
+        pipeline.faulthandler, "cancel_dump_traceback_later",
+        lambda: calls.append(("cancel",)))
+    with pipeline._budget(600):
+        with pipeline._budget(None):
+            pass
+        with pipeline._budget(5):
+            pass
+    assert calls == [("arm", 600), ("arm", 5), ("arm", 600), ("cancel",)], calls
+    calls.clear()
+    with pytest.raises(ZeroDivisionError), pipeline._budget(None):
+        _ = 1 / 0
+    assert calls == [("arm", pipeline.DEFAULT_BUDGET_S), ("cancel",)], calls
+    calls.clear()
+    pipeline.verify(_FACTORIAL, budget_s=300)
+    assert calls == [("arm", 300), ("cancel",)], calls
 
 
 def test_cli_gives_back_what_it_borrows(monkeypatch: pytest.MonkeyPatch) -> None:

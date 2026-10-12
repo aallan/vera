@@ -30,6 +30,10 @@ from vera.naming import (
 from vera.types import pretty_type
 from vera.verifier import ContractVerifier
 
+#: The bound each call below that this file makes to the pipeline had as a
+#: `vera` process; in process it is the call's budget (tests/pipeline.py).
+_BUDGET_S = 600
+
 
 _PRELUDE = """type Pos = { @Int | @Int.0 > 0 };
 type Neg = { @Int | @Int.0 < 0 };
@@ -231,7 +235,7 @@ public fn f(@Unit -> @Int)
         with tempfile.TemporaryDirectory() as tmp:
             path = _Path(tmp) / "p.vera"
             path.write_text(text, encoding="utf-8")
-            envelope = pipeline.verify(path).envelope()
+            envelope = pipeline.verify(path, budget_s=_BUDGET_S).envelope()
         assert not [
             d for d in envelope["diagnostics"]
             if d.get("severity") == "error"
@@ -345,7 +349,7 @@ def _clause_binder_records(source: str) -> list[tuple[str, str]]:
     with tempfile.TemporaryDirectory() as tmp:
         path = _Path(tmp) / "p.vera"
         path.write_text(source, encoding="utf-8")
-        envelope = pipeline.verify(path).envelope()
+        envelope = pipeline.verify(path, budget_s=_BUDGET_S).envelope()
     assert not [d for d in envelope["diagnostics"]
                 if d.get("severity") == "error"], envelope["diagnostics"]
     return sorted(

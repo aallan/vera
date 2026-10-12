@@ -2608,7 +2608,7 @@ def test_a_module_call_is_obligated(tmp_path, fn: str, occurrence: int,
     (tmp_path / "lib.vera").write_text(_LIB, encoding="utf-8")
     main = tmp_path / "main.vera"
     main.write_text(_MODULE_CALLER, encoding="utf-8")
-    out = pipeline.verify(main).envelope()
+    out = pipeline.verify(main, budget_s=_BUDGET_S).envelope()
     line, col = _at(_MODULE_CALLER, "lib::need_pos(@Int.0)", occurrence)
     got = sorted(
         f"{o['status']}/{o['error_code']}" if o.get("error_code")
@@ -2617,7 +2617,7 @@ def test_a_module_call_is_obligated(tmp_path, fn: str, occurrence: int,
         if o["kind"] == "call_pre"
         and (o["location"]["line"], o["location"]["column"]) == (line, col))
     assert got == [status], out["obligations"]
-    proc = pipeline.cli("run", str(main), "--fn", fn, "--", "-3")
+    proc = pipeline.cli("run", str(main), "--fn", fn, "--", "-3", budget_s=_BUDGET_S)
     ran = proc.stdout + proc.stderr
     assert "need_pos" in ran, ran
 
@@ -3449,6 +3449,10 @@ import ast as _pyast  # noqa: E402
 from tests import guard_emitter_scan  # noqa: E402
 from vera import binders  # noqa: E402
 from vera.builtin_domains import BUILTIN_DOMAINS  # noqa: E402
+
+#: The bound each call below that this file makes to the pipeline had as a
+#: `vera` process; in process it is the call's budget (tests/pipeline.py).
+_BUDGET_S = 600
 
 #: Every place code generation hands a SOURCE expression to the translator —
 #: an evaluation root — and the matrix position it is.  Everything the

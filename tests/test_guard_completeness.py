@@ -37,6 +37,10 @@ import pytest
 from tests import pipeline
 from vera.trap_registry import signal_call_pattern
 
+#: The bound each call below that this file makes to the pipeline had as a
+#: `vera` process; in process it is the call's budget (tests/pipeline.py).
+_BUDGET_S = 300
+
 
 def _write(tmp_path: Path, source: str, name: str = "p.vera") -> Path:
     p = tmp_path / name
@@ -50,7 +54,7 @@ def _run(tmp_path: Path, source: str, *args: str, name: str = "p.vera") -> str:
     Both streams, because the two outcomes a cell distinguishes live on
     different ones: a value on stdout, a trap message on stderr.
     """
-    proc = pipeline.cli("run", str(_write(tmp_path, source, name)), *args)
+    proc = pipeline.cli("run", str(_write(tmp_path, source, name)), *args, budget_s=_BUDGET_S)
     return proc.stdout + proc.stderr
 
 
@@ -58,7 +62,7 @@ def _obligations(tmp_path: Path, source: str,
                  name: str = "p.vera") -> tuple[list[dict], dict]:
     """What ``vera verify --json`` prints for *source*, and its obligations:
     the verify stage's envelope."""
-    envelope = pipeline.verify(_write(tmp_path, source, name)).envelope()
+    envelope = pipeline.verify(_write(tmp_path, source, name), budget_s=_BUDGET_S).envelope()
     return envelope["obligations"], envelope
 
 
@@ -538,7 +542,7 @@ class TestNonPlainTypeArgBasesAreGuarded1036:
         """
         proc = pipeline.cli(
             "compile", "--wat",
-            str(_write(tmp_path, _1036_FN_ARG_BASE, "fnarg.vera")))
+            str(_write(tmp_path, _1036_FN_ARG_BASE, "fnarg.vera")), budget_s=_BUDGET_S)
         assert proc.returncode == 0, proc.stderr[-500:]
         assert "call $vera.contract_fail" in proc.stdout, (
             "no boundary guard for a refined base whose type argument is a "
@@ -665,7 +669,7 @@ class TestEffectOperationArgumentsAreGuarded754:
         _assert_partition(envelope)
 
         proc = pipeline.cli("compile", "--wat",
-                            str(_write(tmp_path, _754_USER_EFFECT, "user754c.vera")))
+                            str(_write(tmp_path, _754_USER_EFFECT, "user754c.vera")), budget_s=_BUDGET_S)
         assert "E603" in (proc.stdout + proc.stderr), (
             "the fixture compiles after all, so the disclosure is about a "
             "run that CAN happen and the reasoning above no longer applies"
@@ -700,7 +704,7 @@ class TestEffectOperationArgumentsAreGuarded754:
                 )
                 proc = pipeline.cli(
                     "check",
-                    str(_write(tmp_path, src, f"bare_{eff_name}_{op_name}.vera")))
+                    str(_write(tmp_path, src, f"bare_{eff_name}_{op_name}.vera")), budget_s=_BUDGET_S)
                 out = proc.stdout + proc.stderr
                 # E217 is emitted BEFORE the op-call check, so a non-routable
                 # op that loses it typically fails on ARITY (E204) instead —
@@ -768,7 +772,7 @@ public fn main(@Unit -> @Int)
 }
 """
         proc = pipeline.cli("compile", "--wat",
-                            str(_write(tmp_path, source, "sig754.vera")))
+                            str(_write(tmp_path, source, "sig754.vera")), budget_s=_BUDGET_S)
         assert proc.returncode == 0, proc.stderr[-600:]
         assert 'import "vera" "trap"' in proc.stdout, (
             "the guard inside the lifted closure calls the signal, but the "
@@ -1127,7 +1131,7 @@ class TestTheRangeCheckSurvivesADeclinedChainGuard1222:
         # cell is about the range check surviving alone rather than about a
         # chain guard that happens to cover it.
         proc = pipeline.cli("compile", "--wat",
-                            str(_write(tmp_path, source, f"{label}_c.vera")))
+                            str(_write(tmp_path, source, f"{label}_c.vera")), budget_s=_BUDGET_S)
         assert proc.returncode == 0, proc.stderr[-500:]
         assert "dec_prev" not in proc.stdout, (
             f"{label}: the chain guard IS emitted here, so this cell no "
@@ -1489,7 +1493,7 @@ class TestTupleComponentSitesAreGuarded1416:
         what the obligation claims, so the store is what is measured.
         """
         proc = pipeline.cli("compile", "--wat",
-                            str(_write(tmp_path, _1416_CONSTRUCT, "c1416.vera")))
+                            str(_write(tmp_path, _1416_CONSTRUCT, "c1416.vera")), budget_s=_BUDGET_S)
         assert proc.returncode == 0, proc.stderr[-500:]
         assert signal_call_pattern("nat_guard").search(proc.stdout), (
             "the `@Int` component stored into a `Tuple<Nat, Int>` carries no "
@@ -1586,7 +1590,7 @@ class TestTheRangeCheckDoesNotRunTheMeasureAgain1222:
         the shapes that has no chain guard to fall back on.
         """
         proc = pipeline.cli("compile", "--wat",
-                            str(_write(tmp_path, _1222_EXN, "eff1222c.vera")))
+                            str(_write(tmp_path, _1222_EXN, "eff1222c.vera")), budget_s=_BUDGET_S)
         assert proc.returncode == 0, proc.stderr[-400:]
         assert "i64 range" in proc.stdout, (
             "a PURE measure on the same declined-chain path lost its range "
@@ -1669,7 +1673,7 @@ class TestTheBoundFlagIsPerComponent1222:
         _assert_partition(envelope)
 
         proc = pipeline.cli("compile", "--wat",
-                            str(_write(tmp_path, _1222_MIXED_PURITY, "mix1222c.vera")))
+                            str(_write(tmp_path, _1222_MIXED_PURITY, "mix1222c.vera")), budget_s=_BUDGET_S)
         assert proc.returncode == 0, proc.stderr[-400:]
         assert proc.stdout.count("i64 range") == 1, (
             f"expected exactly one range check to pair with the one guarded "
@@ -1697,7 +1701,7 @@ class TestTheBoundFlagIsPerComponent1222:
 
         proc = pipeline.cli("compile", "--wat",
                             str(_write(tmp_path, _1222_RANKABLE_ADT_SIBLING,
-                                       "rank1222c.vera")))
+                                       "rank1222c.vera")), budget_s=_BUDGET_S)
         assert proc.returncode == 0, proc.stderr[-400:]
         # BOTH halves: "i64 range" is the standalone measure-range
         # check, which a declined chain would also emit, so on its own
@@ -1720,7 +1724,7 @@ class TestTheBoundFlagIsPerComponent1222:
         diagnostic that was never emitted.
         """
         proc = pipeline.cli("verify", str(_write(
-            tmp_path, _1222_MIXED_PURITY, "why1222.vera")))
+            tmp_path, _1222_MIXED_PURITY, "why1222.vera")), budget_s=_BUDGET_S)
         out = proc.stdout + proc.stderr
         assert "termination CHAIN guard is declined" in out, out
         assert "dropped with an E603" not in out, (
@@ -2154,7 +2158,7 @@ class TestCallResultClosureOperandIsPinnedNotClaimed:
         """
         proc = pipeline.cli("compile", "--wat",
                             str(_write(tmp_path, _A2_CALL_RESULT_OPERAND,
-                                       "a2b.vera")))
+                                       "a2b.vera")), budget_s=_BUDGET_S)
         assert proc.returncode == 0, proc.stderr
         assert '(export "f"' not in proc.stdout, (
             "codegen now emits `f` for a call-result closure operand, so the "
@@ -2248,7 +2252,7 @@ class TestARefinedIntElementCountsItsWideningGuardToo:
         """
         def traps(source: str, name: str) -> int:
             proc = pipeline.cli("compile", "--wat",
-                                str(_write(tmp_path, source, name)))
+                                str(_write(tmp_path, source, name)), budget_s=_BUDGET_S)
             assert proc.returncode == 0, proc.stderr[-400:]
             body, _, rest = proc.stdout.partition("(func $f ")
             assert rest, "no `f` in the emitted module"
@@ -2317,7 +2321,7 @@ class TestTheUnguardedRationaleNamesTheCauseThatApplies:
 
     def test_the_rationale_offers_both_causes(self, tmp_path: Path) -> None:
         envelope = pipeline.verify(_write(
-            tmp_path, _Q1_REFINED_OVER_REFINED_LET, "q1a.vera")).envelope()
+            tmp_path, _Q1_REFINED_OVER_REFINED_LET, "q1a.vera"), budget_s=_BUDGET_S).envelope()
         e506 = [w for w in envelope["warnings"]
                 if w.get("error_code") == "E506"]
         assert len(e506) == 1, envelope["warnings"]
@@ -2337,7 +2341,7 @@ class TestTheUnguardedRationaleNamesTheCauseThatApplies:
         internal-site clause beside them.
         """
         envelope = pipeline.verify(_write(
-            tmp_path, _Q1_REFINED_OVER_REFINED_LET, "q1b.vera")).envelope()
+            tmp_path, _Q1_REFINED_OVER_REFINED_LET, "q1b.vera"), budget_s=_BUDGET_S).envelope()
         rationale = next(w["rationale"] for w in envelope["warnings"]
                          if w.get("error_code") == "E506")
         assert "internal narrowing site" not in rationale, (

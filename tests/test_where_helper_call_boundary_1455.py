@@ -41,6 +41,10 @@ from tests import pipeline
 from tests.codegen_helpers import _run_refine_trap
 from tests.verifier_helpers import _verify
 
+#: The bound each call below that this file makes to the pipeline had as a
+#: `vera` process; in process it is the call's budget (tests/pipeline.py).
+_BUDGET_S = 600
+
 # =====================================================================
 # The issue's own reproducers, verbatim
 # =====================================================================
@@ -506,7 +510,7 @@ class TestAModuleQualifiedCallIsObligatedToo:
         (tmp_path / "lib.vera").write_text(_LIB, encoding="utf-8")
         main = tmp_path / "main.vera"
         main.write_text(_IMPORTER, encoding="utf-8")
-        envelope = pipeline.verify(main).envelope()
+        envelope = pipeline.verify(main, budget_s=_BUDGET_S).envelope()
         binds = sorted(
             (o["kind"], o["status"], o.get("error_code"))
             for o in envelope["obligations"]

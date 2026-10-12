@@ -55,6 +55,10 @@ from vera import binders, carriers, narrowing
 
 from tests import pipeline
 
+#: The bound each call below that this file makes to the pipeline had as a
+#: `vera` process; in process it is the call's budget (tests/pipeline.py).
+_BUDGET_S = 300
+
 # A generated class instrument (tests/matrix_sample.py): a pull request runs a
 # sample of its parametrised cells, and all of them when it changes this file or
 # a module that decides its class, here the registry of binder positions.
@@ -606,7 +610,7 @@ def test_every_unsupported_shape_says_so_in_the_compilers_words(
     for (site, kind), message in sorted(_UNSUPPORTED_SHAPES.items()):
         pre, slot, bad, _good, base = _KINDS[kind]
         source = _TEMPLATES[site][0](pre, slot, bad, base)
-        ran = pipeline.cli("run", str(_write(tmp_path, source, "u.vera")))
+        ran = pipeline.cli("run", str(_write(tmp_path, source, "u.vera")), budget_s=_BUDGET_S)
         assert message in (ran.stdout + ran.stderr), (
             f"{site}/{kind} is excluded as unsupported, but the compiler no "
             f"longer says so:\n{(ran.stdout + ran.stderr)[-500:]}"
@@ -621,8 +625,8 @@ def _ids(cell: tuple[str, int, str]) -> str:
 def _read(tmp_path: Path, source: str, name: str) -> dict:
     """Verify and run *source*, as the obligation stream plus two verdicts."""
     path = _write(tmp_path, source, name)
-    envelope = pipeline.verify(path).envelope()
-    ran = pipeline.cli("run", str(path))
+    envelope = pipeline.verify(path, budget_s=_BUDGET_S).envelope()
+    ran = pipeline.cli("run", str(path), budget_s=_BUDGET_S)
     return {
         "obligations": [
             (o["kind"], o["status"]) for o in envelope["obligations"]

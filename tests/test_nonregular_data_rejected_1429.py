@@ -82,7 +82,7 @@ def _cli(*args: str, timeout: int = _DEADLINE_S) -> subprocess.CompletedProcess[
 def _check(tmp_path: Path, source: str, name: str = "p.vera") -> pipeline.CliResult:
     p = tmp_path / name
     p.write_text(source, encoding="utf-8")
-    return pipeline.cli("check", str(p))
+    return pipeline.cli("check", str(p), budget_s=_DEADLINE_S)
 
 
 _MAIN = """
@@ -222,7 +222,7 @@ def test_regular_recursion_is_untouched(shape: str, tmp_path: Path) -> None:
     assert check.returncode == 0, check.stdout + check.stderr
 
     p = tmp_path / f"{shape}.vera"
-    envelope = pipeline.verify(p).envelope()
+    envelope = pipeline.verify(p, budget_s=_DEADLINE_S).envelope()
     assert envelope["ok"] is True, envelope["diagnostics"]
     assert envelope["verification"]["tier1_verified"] > 0, envelope
 
@@ -609,7 +609,7 @@ def test_regularity_does_not_dominate_the_check(tmp_path: Path) -> None:
     for label, linked in (("linked", True), ("flat", False)):
         path = tmp_path / f"{label}.vera"
         path.write_text(_chain_source(1000, linked=linked), encoding="utf-8")
-        warm = pipeline.cli("check", "--quiet", str(path))
+        warm = pipeline.cli("check", "--quiet", str(path), budget_s=_DEADLINE_S)
         assert warm.returncode == 0, warm.stdout + warm.stderr
         paths[label] = path
 
@@ -618,7 +618,7 @@ def test_regularity_does_not_dominate_the_check(tmp_path: Path) -> None:
         best = float("inf")
         for _ in range(3):
             started = time.monotonic()
-            proc = pipeline.cli("check", "--quiet", str(path))
+            proc = pipeline.cli("check", "--quiet", str(path), budget_s=_DEADLINE_S)
             best = min(best, time.monotonic() - started)
             assert proc.returncode == 0, proc.stdout + proc.stderr
         timings[label] = best

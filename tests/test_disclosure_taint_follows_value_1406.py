@@ -82,6 +82,10 @@ import pytest
 from tests import pipeline
 from vera import narrowing
 
+#: The bound each call below that this file makes to the pipeline had as a
+#: `vera` process; in process it is the call's budget (tests/pipeline.py).
+_BUDGET_S = 300
+
 
 @pytest.fixture(autouse=True)
 def _unguard_the_producer_site(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -125,7 +129,7 @@ _PATCHED_SITES = frozenset({"constructor field", "tuple component"})
 def _verify(tmp_path: Path, source: str, name: str = "p.vera") -> dict:
     p = tmp_path / name
     p.write_text(source, encoding="utf-8")
-    result = pipeline.verify(p).envelope()
+    result = pipeline.verify(p, budget_s=_BUDGET_S).envelope()
     # A fixture that forgot to declare its producer calls nothing: an E200
     # error, after which verify reports no obligation at all, so a cell
     # would read a verdict about a program that was never verified.  (While
@@ -151,7 +155,7 @@ def _run(tmp_path: Path, source: str, arg: str = "-7.0",
     """
     p = tmp_path / name
     p.write_text(source, encoding="utf-8")
-    proc = pipeline.cli("run", str(p), "--fn", "f", "--", arg)
+    proc = pipeline.cli("run", str(p), "--fn", "f", "--", arg, budget_s=_BUDGET_S)
     return proc.stdout + proc.stderr
 
 
@@ -2203,7 +2207,7 @@ def test_the_patch_is_what_produces_the_disclosure(
     path = tmp_path / "control.vera"
     path.write_text(source, encoding="utf-8")
 
-    patched = pipeline.verify(path).envelope()
+    patched = pipeline.verify(path, budget_s=_BUDGET_S).envelope()
     with monkeypatch.context() as shipped_table:
         # The autouse fixture asserted the patched sites are in the shipped
         # table, so putting them back is the table as shipped.
@@ -2211,7 +2215,7 @@ def test_the_patch_is_what_produces_the_disclosure(
             narrowing, "REFINED_BIND_GUARDED_SITES",
             narrowing.REFINED_BIND_GUARDED_SITES | _PATCHED_SITES,
         )
-        shipped = pipeline.verify(path).envelope()
+        shipped = pipeline.verify(path, budget_s=_BUDGET_S).envelope()
 
     def binds(result: dict) -> list[tuple[str, str | None]]:
         return [(o["status"], o.get("error_code"))

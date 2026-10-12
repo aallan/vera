@@ -31,6 +31,10 @@ import pytest
 
 from tests import pipeline
 
+#: The bound each call below that this file makes to the pipeline had as a
+#: `vera` process; in process it is the call's budget (tests/pipeline.py).
+_BUDGET_S = 600
+
 
 def _tree(tmp_path: Path, files: dict[str, str]) -> dict[str, Path]:
     """Write a module tree and return name -> path."""
@@ -46,7 +50,7 @@ def _tree(tmp_path: Path, files: dict[str, str]) -> dict[str, Path]:
 def _verify(path: Path) -> dict:
     """What ``vera verify --json`` prints for *path*: the verify stage's
     envelope."""
-    return pipeline.verify(path).envelope()
+    return pipeline.verify(path, budget_s=_BUDGET_S).envelope()
 
 
 def _triples(result: dict) -> list[tuple[str, str, str | None]]:

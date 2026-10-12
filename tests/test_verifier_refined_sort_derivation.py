@@ -49,6 +49,10 @@ import pytest
 
 from tests import pipeline
 
+#: The bound each call below that this file makes to the pipeline had as a
+#: `vera` process; in process it is the call's budget (tests/pipeline.py).
+_BUDGET_S = 600
+
 
 def _tree(tmp_path: Path, files: dict[str, str]) -> dict[str, Path]:
     tmp_path.mkdir(parents=True, exist_ok=True)
@@ -70,7 +74,7 @@ def _verify(path: Path) -> dict:
     obligations to contradict it — so the gate is here, once, for every cell
     in the file.
     """
-    result = pipeline.verify(path).envelope()
+    result = pipeline.verify(path, budget_s=_BUDGET_S).envelope()
     internal = [
         d for d in result.get("diagnostics", [])
         if d.get("error_code") == "E699"
@@ -83,7 +87,7 @@ def _verify(path: Path) -> dict:
 
 
 def _checks(path: Path) -> bool:
-    return pipeline.cli("check", "--quiet", str(path)).returncode == 0
+    return pipeline.cli("check", "--quiet", str(path), budget_s=_BUDGET_S).returncode == 0
 
 
 def _kinds(result: dict) -> list[tuple[str, str, str | None]]:

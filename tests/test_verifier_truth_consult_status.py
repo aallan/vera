@@ -38,13 +38,17 @@ from vera.environment import TypeEnv
 from vera.trap_registry import signal_call_pattern
 from tests import pipeline
 
+#: The bound each call below that this file makes to the pipeline had as a
+#: `vera` process; in process it is the call's budget (tests/pipeline.py).
+_BUDGET_S = 300
+
 
 def _verify(tmp_path: Path, source: str, name: str = "p.vera") -> dict:
     """What ``vera verify --json`` prints for *source*: the verify stage's
     envelope."""
     p = tmp_path / name
     p.write_text(source, encoding="utf-8")
-    return pipeline.verify(p).envelope()
+    return pipeline.verify(p, budget_s=_BUDGET_S).envelope()
 
 
 def _program_ast(source: str) -> object:
@@ -56,7 +60,7 @@ def _program_ast(source: str) -> object:
 def _wat(tmp_path: Path, source: str, name: str = "w.vera") -> str:
     p = tmp_path / name
     p.write_text(source, encoding="utf-8")
-    proc = pipeline.cli("compile", "--wat", str(p))
+    proc = pipeline.cli("compile", "--wat", str(p), budget_s=_BUDGET_S)
     return proc.stdout
 
 
@@ -130,7 +134,7 @@ def test_1362_the_claim_and_the_module_agree(tmp_path: Path) -> None:
     )
     p = tmp_path / "r.vera"
     p.write_text(_1362_REPRO, encoding="utf-8")
-    run = pipeline.cli("run", str(p), "--fn", "f", "--", "-7")
+    run = pipeline.cli("run", str(p), "--fn", "f", "--", "-7", budget_s=_BUDGET_S)
     assert run.returncode != 0, (
         f"the binder admitted `-7`: {run.stdout!r} {run.stderr[-300:]!r}"
     )
@@ -280,7 +284,7 @@ def _traps_on_negative(tmp_path: Path, name: str) -> bool:
         f"{name} needs a non-scalar argument; the caller must skip it rather "
         f"than take a False from here, which would read as 'does not guard'"
     )
-    proc = pipeline.cli("run", str(p), "--fn", "f", "--", "-7")
+    proc = pipeline.cli("run", str(p), "--fn", "f", "--", "-7", budget_s=_BUDGET_S)
     out = proc.stdout + proc.stderr
     # A non-zero exit WITHOUT the trap word is not "ran and did not trap" — a
     # compile failure, a CLI usage error or a missing `--fn` target all look
@@ -418,7 +422,7 @@ public fn use_it(@Int -> @Int)
 def _test_json(tmp_path: Path, source: str, trials: int = 20) -> dict:
     p = tmp_path / "t.vera"
     p.write_text(source, encoding="utf-8")
-    proc = pipeline.cli("test", "--json", "--trials", str(trials), str(p))
+    proc = pipeline.cli("test", "--json", "--trials", str(trials), str(p), budget_s=_BUDGET_S)
     try:
         return json.loads(proc.stdout)
     except json.JSONDecodeError:
@@ -963,7 +967,7 @@ public fn f(@Int, @String -> @String)
     ):
         p = tmp_path / f"{label}.vera"
         p.write_text(source, encoding="utf-8")
-        result = pipeline.check(p).envelope()
+        result = pipeline.check(p, budget_s=_BUDGET_S).envelope()
         assert result["ok"] is False, (
             f"{label}: a builtin can now be shadowed, so codegen's lexical "
             f"resolution and the name-keyed guard rule can disagree — "
@@ -1238,7 +1242,7 @@ def _shape_runs_guarded(tmp_path: Path, shape: _GuardShape, name: str) -> bool:
     args = ["run", str(p), "--fn", shape.fn]
     if shape.arg is not None:
         args += ["--", shape.arg]
-    proc = pipeline.cli(*args)
+    proc = pipeline.cli(*args, budget_s=_BUDGET_S)
     out = proc.stdout + proc.stderr
     if shape.trap_marker in out:
         return True
