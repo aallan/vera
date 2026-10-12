@@ -91,8 +91,13 @@ The release-prep PR must:
 1. Increase `[project].version` in `pyproject.toml`, the one place the version
    is written, and regenerate `uv.lock` (`uv lock`); `uv lock --check`, in the
    push hook and in CI, holds the two together.
-2. Turn the accumulated `[Unreleased]` notes into a dated `## [X.Y.Z]`
-   section with at least one bullet and update the CHANGELOG compare links.
+2. Assemble the dated `## [X.Y.Z]` section with
+   `python scripts/release.py assemble --version X.Y.Z --date YYYY-MM-DD`.
+   It writes the section from the `changelog.d/` fragments and any bullets
+   still under `[Unreleased]`, updates the CHANGELOG compare links, and
+   deletes the fragments it consumed; a malformed fragment stops it before
+   anything is written.  Then write the section's `### Highlights` above its
+   first subsection.
 3. Add the release's one-line HISTORY entry and regenerate site assets.
 4. Regenerate TESTING.md's status — the test totals, the per-file and
    skipped-tests tables, and the tree's counts — with

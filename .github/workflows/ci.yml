@@ -391,6 +391,9 @@ jobs:
         if: github.event_name != 'pull_request' || !contains(github.event.pull_request.labels.*.name, 'skip-changelog')
         run: python scripts/check_changelog_updated.py
 
+      - name: Check every changelog.d/ fragment is well formed (#1529)
+        run: python scripts/check_changelog_fragments.py
+
       # The conformance suite is not repeated here: tests/test_conformance.py
       # runs it inside the suite (the script stays for local use).  The
       # examples' check + verify stays, as the one run of `vera check` and

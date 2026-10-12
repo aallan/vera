@@ -54,7 +54,6 @@ Exit criterion: each listed drift class has a generator or a gate, and a release
 | [#540](https://github.com/aallan/vera/issues/540) | lychee + markdownlint MD051 cross-doc anchor validation. |
 | [#1525](https://github.com/aallan/vera/issues/1525) | **Derive each fact once** — a resolved program representation shared by the checker, the verifier and code generation, so no two of them re-derive a fact and disagree. |
 | [#1396](https://github.com/aallan/vera/issues/1396) | Spec question: whether a repeated contract clause (two identical `requires`) is refused, warned about or accepted — decide it and state it in the spec. |
-| [#1529](https://github.com/aallan/vera/issues/1529) | Each fix PR carries its own CHANGELOG fragment, assembled at release, so fix PRs share no lines. |
 | [#1531](https://github.com/aallan/vera/issues/1531) | Close two more ways a CI gate line can exit 0 unseen by the gate-placement test. |
 | [#1532](https://github.com/aallan/vera/issues/1532) | Pin the nested refused-constructor search in the #1433 duplicate-name tests. |
 | [#1611](https://github.com/aallan/vera/issues/1611) | Five test cells that can pass without exercising what they assert — each shown by a mutation or a direct run. |
@@ -72,7 +71,6 @@ Exit criterion: a pull request's CI finishes in 20 minutes or less, and every ha
 |---|---|
 | The fast lane | A pull request's required checks become lint, sharded Python 3.12 runs on Linux and Windows, eager-GC, browser parity, CodeQL and the supply-chain jobs.  The full platform matrix runs after merge, nightly and on a version-raising pull request; a failure files an issue, and the release waits for the post-merge run. |
 | Rendered lists | Each hand-copied list renders from its source and retires the gate that compared the copies: the effect lists from `vera effects --json`, the spec's grammar listing from `grammar.lark`, the limitation tables from one data file beside KNOWN_ISSUES.md, `examples/README.md` from the examples' headers, and the landing page's status paragraph from `scripts/render_status.py`. |
-| CHANGELOG fragments | Each pull request adds its own file under `changelog.d/`, and the release assembles the section ([#1529](https://github.com/aallan/vera/issues/1529)), so fix pull requests share no line. |
 | The scorecard | `scripts/render_status.py` also measures the Stage 29 scorecard, so every release pull request re-measures it without hand work. |
 | One pipeline driver | `tests/pipeline.py` runs check, verify, compile and run in process and returns structured results.  The per-file drivers and the CLI subprocesses move to it, leaving `test_cli.py` and a few corpus programs as the CLI smoke test, and tests that read WAT text read instead a guard-and-trap manifest that code generation emits beside it. |
 | `vera test --distrust`, nightly | The nightly lane runs the distrust corpus test with many trials per function (`VERA_DISTRUST_TRIALS`); the pull-request run uses five. |
