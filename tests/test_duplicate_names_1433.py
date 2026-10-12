@@ -63,6 +63,7 @@ from vera.parser import parse_to_ast
 from vera.resolver import ModuleResolver
 from vera.skip import CodegenInvariantError
 from vera.verifier import verify
+from tests import pipeline
 from tests.module_fixture_helpers import build_multi_module, module_value
 
 # ---------------------------------------------------------------------------
@@ -346,12 +347,10 @@ def _checker_after_a_check(tmp_path: Path) -> TypeChecker:
     path — modules, both import forms, helpers, an alias, an effect, an
     ability, a handler — so its tables hold what they hold in use."""
     main_path = _write(tmp_path, _WIRING_FIXTURE)
-    source = _WIRING_FIXTURE["main.vera"]
-    program = parse_to_ast(source)
-    resolved = ModuleResolver(_root=tmp_path).resolve_imports(
-        program, main_path)
-    checker = TypeChecker(source=source, file=str(main_path),
-                          resolved_modules=resolved)
+    checked = pipeline.check(main_path, root=tmp_path)
+    program = checked.program  # raises the parse or transform error, if any
+    checker = TypeChecker(source=checked.source, file=str(main_path),
+                          resolved_modules=checked.resolved)
     checker.check_program(program)
     assert not checker.errors, [e.description for e in checker.errors]
     return checker
@@ -1235,14 +1234,11 @@ def _write(tmp_path: Path, files: dict[str, str]) -> Path:
 def _check(tmp_path: Path, files: dict[str, str]) -> list[Diagnostic]:
     """Resolve and type-check ``main.vera`` exactly as ``vera check`` does."""
     main_path = _write(tmp_path, files)
-    source = files["main.vera"]
-    program = parse_to_ast(source)
-    resolver = ModuleResolver(_root=tmp_path)
-    resolved = resolver.resolve_imports(program, main_path)
-    assert not resolver.errors, [d.description for d in resolver.errors]
-    return [d for d in typecheck(program, source, file=str(main_path),
-                                 resolved_modules=resolved)
-            if d.severity == "error"]
+    checked = pipeline.check(main_path, root=tmp_path)
+    _ = checked.program  # raises the parse or transform error, if any
+    resolver_errors = checked.resolution_diagnostics
+    assert not resolver_errors, [d.description for d in resolver_errors]
+    return [d for d in checked.checker_diagnostics if d.severity == "error"]
 
 
 def _lines_of(pattern: str, source: str) -> list[int]:

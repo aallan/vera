@@ -14,6 +14,7 @@ from vera.errors import Diagnostic, ParseError
 from vera.parser import parse_to_ast
 from vera.resolver import ResolvedModule
 
+from tests import pipeline
 from tests.checker_helpers import (
     _check_err,
     _check_ok,
@@ -1045,12 +1046,16 @@ class TestReservedTypePrefix:
     """
 
     def _codes(self, source: str) -> list[str | None]:
-        diags = typecheck(parse_to_ast(source), source=source)
+        checked = pipeline.check(source)
+        _ = checked.program  # raises the parse or transform error, if any
+        diags = checked.checker_diagnostics
         return [d.error_code for d in diags]
 
     def _diag(self, source: str) -> Diagnostic:
         """The single E154 *source* produces (asserting there is one)."""
-        diags = typecheck(parse_to_ast(source), source=source)
+        checked = pipeline.check(source)
+        _ = checked.program  # raises the parse or transform error, if any
+        diags = checked.checker_diagnostics
         e154 = [d for d in diags if d.error_code == "E154"]
         assert len(e154) == 1, [(d.error_code, d.description) for d in diags]
         return e154[0]

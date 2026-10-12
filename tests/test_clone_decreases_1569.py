@@ -38,13 +38,14 @@ from pathlib import Path
 
 import pytest
 
+from tests import pipeline
 from tests.module_fixture_helpers import (
-    _resolve_and_check,
+    _check_errors,
     build_multi_module,
     module_value,
 )
 from vera import ast
-from vera.verifier import ContractVerifier, VerifyResult, verify
+from vera.verifier import ContractVerifier, VerifyResult
 
 # A generated class instrument (tests/matrix_sample.py): a pull request runs a
 # sample of its parametrised cells, and all of them when it changes this file or
@@ -182,14 +183,11 @@ def _verify(tmp_path: Path, files: dict[str, str],
             entry: str) -> VerifyResult:
     """Write *files*, and resolve, check and verify *entry* as `vera verify`
     does, with the checker's tables for each module."""
-    program, source, main_path, resolved, arts, errors = (
-        _resolve_and_check(tmp_path, files, entry))
+    verified = pipeline.verify(
+        pipeline.write_tree(tmp_path, files, entry), root=tmp_path)
+    errors = _check_errors(verified.checked)
     assert errors == [], errors
-    result = verify(program, source, file=str(main_path),
-                    resolved_modules=resolved,
-                    expr_types=arts.expr_semantic_types,
-                    expr_target_types=arts.expr_target_types,
-                    module_artifacts=arts.module_artifacts)
+    result = verified.result
     assert [d for d in result.diagnostics if d.severity == "error"] == []
     return result
 

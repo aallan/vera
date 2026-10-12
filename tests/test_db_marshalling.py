@@ -33,8 +33,6 @@ import pytest
 import wasmtime
 
 from tests.codegen_helpers import instantiate_with_trap_signal
-from vera.codegen import compile as codegen_compile
-from vera.parser import parse_to_ast
 from vera.runtime.heap import (
     InstanceCaller,
     _alloc_array_of_options_of_string,
@@ -44,6 +42,7 @@ from vera.runtime.heap import (
     _read_wasm_array_of_options_of_string,
     _write_i32,
 )
+from tests import pipeline
 
 # A pure, allocation-performing program: it exports ``$alloc`` and the GC
 # globals (``$gc_sp`` / ``$gc_stack_limit``) and imports only the trap signal
@@ -61,7 +60,7 @@ def _gc_caller() -> InstanceCaller:
     ``InstanceCaller``.  Read ``VERA_EAGER_GC`` at COMPILE time (it is baked
     into ``$alloc`` by ``AssemblyMixin._emit_alloc``), so a caller wanting the
     eager-GC stress must ``monkeypatch.setenv`` *before* calling this."""
-    res = codegen_compile(parse_to_ast(_HARNESS_SRC), source=_HARNESS_SRC)
+    res = pipeline.compile(_HARNESS_SRC, checked=False).result
     assert res.ok, res.diagnostics
     engine = wasmtime.Engine()
     store = wasmtime.Store(engine)

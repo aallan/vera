@@ -33,15 +33,11 @@ type-checks, compiles, and RUNS to the correct structural-equality result.
 
 from __future__ import annotations
 
-import tempfile
-
 import pytest
 
 from vera.checker.core import TypeChecker
 from vera.checker.eq_ability import is_eq_derivable
 from vera.codegen.core import CodeGenerator
-from vera.parser import parse_file
-from vera.transform import transform
 from vera.types import PrimitiveType, Type, pretty_type
 from tests.checker_helpers import _error_codes as _errors
 from tests.codegen_helpers import _run
@@ -328,17 +324,10 @@ _DIFF_PRIMITIVES: tuple[str, ...] = (
 
 
 def _codegen_gen() -> CodeGenerator:
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False, encoding="utf-8"
-    ) as f:
-        f.write(_DIFF_DECLS)
-        f.flush()
-        path = f.name
-    tree = parse_file(path)
-    ast = transform(tree)
-    gen = CodeGenerator(source=_DIFF_DECLS, file=path)
-    gen.compile_program(ast)  # type: ignore[arg-type]
-    return gen
+    compiled = pipeline.compile(_DIFF_DECLS, file="fixture.vera", checked=False)
+    _ = compiled.result  # raises the parse or transform error, if any
+    assert compiled.generator is not None
+    return compiled.generator
 
 
 def _checker_env() -> TypeChecker:

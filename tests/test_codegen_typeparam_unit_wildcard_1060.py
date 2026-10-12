@@ -60,6 +60,8 @@ from tests.codegen_helpers import (
     _compile,
     _run,
 )
+from tests.module_fixture_helpers import resolved_module
+from tests import pipeline
 
 
 def _warnings(source: str) -> list[str]:
@@ -691,38 +693,10 @@ def _compile_with_module(
     main_source: str, module_path: tuple[str, ...], module_source: str,
 ):
     """Compile *main_source* with one resolved module (Windows-safe temps)."""
-    import tempfile
-    from pathlib import Path as _P
-
-    from vera.codegen import compile as _mod_compile
-    from vera.parser import parse_file as _parse_file
-    from vera.resolver import ResolvedModule
-    from vera.transform import transform as _transform
-
-    mod_f = tempfile.NamedTemporaryFile(  # noqa: SIM115 — Windows fixture; closed + unlinked below
-        mode="w", suffix=".vera", delete=False, encoding="utf-8")
-    main_f = tempfile.NamedTemporaryFile(  # noqa: SIM115 — Windows fixture; closed + unlinked below
-        mode="w", suffix=".vera", delete=False, encoding="utf-8")
-    try:
-        with mod_f:
-            mod_f.write(module_source)
-        with main_f:
-            main_f.write(main_source)
-        mod_prog = _transform(_parse_file(mod_f.name))
-        resolved = ResolvedModule(
-            path=module_path,
-            file_path=_P(mod_f.name),
-            program=mod_prog,
-            source=module_source,
-        )
-        main_prog = _transform(_parse_file(main_f.name))
-        return _mod_compile(
-            main_prog, source=main_source, file=main_f.name,
-            resolved_modules=[resolved],
-        )
-    finally:
-        _P(mod_f.name).unlink(missing_ok=True)
-        _P(main_f.name).unlink(missing_ok=True)
+    resolved = resolved_module(module_path, module_source)
+    return pipeline.compile(
+        main_source, file="fixture.vera", modules=[resolved], checked=False,
+    ).result
 
 
 _BOXLIB_MODULE = """\

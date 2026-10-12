@@ -22,10 +22,8 @@ RUN to its sentinel — the whole pipeline, not just ``check``.
 """
 from __future__ import annotations
 
-from vera.checker import typecheck_with_artifacts
-from vera.codegen import CompileResult, compile as codegen_compile, execute
-from vera.parser import parse_to_ast
-from vera.verifier import verify
+from tests import pipeline
+from vera.codegen import CompileResult
 
 
 def _check_compile_run(source: str) -> int:
@@ -35,28 +33,21 @@ def _check_compile_run(source: str) -> int:
     exactly as ``cmd_verify`` / ``cmd_compile`` do, so this exercises the same
     lowering the CLI hit.
     """
-    ast = parse_to_ast(source)
-    check_diags, arts = typecheck_with_artifacts(ast, source)
-    assert not [d for d in check_diags if d.severity == "error"], (
-        f"check errors: {[d.description for d in check_diags if d.severity == 'error']}"
+    verified = pipeline.verify(source)
+    _ = verified.checked.program  # raises the parse or transform error, if any
+    check_errors = verified.checked.errors
+    assert not check_errors, (
+        f"check errors: {[d.description for d in check_errors]}"
     )
-    vr = verify(
-        ast, source,
-        expr_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-    )
+    vr = verified.result
     assert not [d for d in vr.diagnostics if d.severity == "error"], (
         f"verify errors: {[d.description for d in vr.diagnostics if d.severity == 'error']}"
     )
-    result: CompileResult = codegen_compile(
-        ast, source=source,
-        expr_semantic_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-    )
+    result: CompileResult = pipeline.compile(source).result
     assert not [d for d in result.diagnostics if d.severity == "error"], (
         f"compile errors: {[d.description for d in result.diagnostics if d.severity == 'error']}"
     )
-    exec_result = execute(result, fn_name=None, args=None)
+    exec_result = pipeline.run(result, capture_stderr=False).execution
     assert exec_result.value is not None
     return exec_result.value
 

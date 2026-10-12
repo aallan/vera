@@ -28,19 +28,11 @@ a verdict is.
 """
 from __future__ import annotations
 
-import os
-import tempfile
-
 import pytest
 
-from vera.checker import typecheck_with_artifacts
-from vera.codegen import compile as codegen_compile
-from vera.codegen import execute
-from vera.parser import parse_file, parse_to_ast
 from vera.runtime.traps import WasmTrapError
-from vera.transform import transform
 from vera.types import NAT, AdtType, RefinedType
-from vera.verifier import ContractVerifier, VerifyResult, verify
+from vera.verifier import ContractVerifier, VerifyResult
 from tests import pipeline
 
 
@@ -54,18 +46,14 @@ def _verify(source: str) -> VerifyResult:
     Check-clean is this file's premise: the whole point is that the CHECKER
     accepts these programs (it substitutes) and the verifier did not.
     """
-    program = parse_to_ast(source)
-    diags, arts = typecheck_with_artifacts(program, source)
-    check_errors = [d for d in diags if d.severity == "error"]
+    verified = pipeline.verify(source)
+    _ = verified.checked.program  # raises the parse or transform error, if any
+    check_errors = verified.checked.errors
     assert not check_errors, (
         "fixture must type-check cleanly, got: "
         f"{[(d.error_code, d.description[:70]) for d in check_errors]}"
     )
-    return verify(
-        program, source,
-        expr_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-    )
+    return verified.result
 
 
 def _codes(result: VerifyResult) -> set[str]:
@@ -81,24 +69,13 @@ def _warn_codes(result: VerifyResult) -> set[str]:
 def _run(source: str) -> object:
     """Compile *source* and call ``main`` — the runtime oracle.
 
-    ``delete=False`` + explicit unlink is the Windows-safe temp-file pattern
-    (an open ``NamedTemporaryFile`` cannot be reopened there).
+    Compiled unchecked (no type check, none of the checker's tables), as
+    ``fixture.vera``.
     """
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False, encoding="utf-8",
-    ) as f:
-        f.write(source)
-        f.flush()
-        fp = f.name
-    try:
-        result = codegen_compile(
-            transform(parse_file(fp)), source=source, file=fp,
-        )
-    finally:
-        os.unlink(fp)
+    result = pipeline.compile(source, file="fixture.vera", checked=False).result
     errors = [d for d in result.diagnostics if d.severity == "error"]
     assert not errors, f"unexpected codegen errors: {errors}"
-    return execute(result, fn_name="main").value
+    return pipeline.run(result, "main", capture_stderr=False).value
 
 
 def _resolve_in_verifier(source: str, type_name: str) -> object:

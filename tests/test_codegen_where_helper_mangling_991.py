@@ -27,7 +27,6 @@ import wasmtime
 
 from tests.verifier_helpers import _verify
 from vera.checker import typecheck_with_artifacts
-from vera.codegen import compile as codegen_compile
 from vera.parser import parse_to_ast
 from tests import pipeline
 
@@ -364,15 +363,13 @@ public fn compute(@Int -> @Int)
 
 
 def _compile(source: str):
-    program = parse_to_ast(source)
-    diags, arts = typecheck_with_artifacts(program, source)
+    compiled = pipeline.compile(source)
+    assert compiled.checked is not None
+    _ = compiled.parsed.program  # raises the parse or transform error, if any
+    diags = compiled.checked.checker_diagnostics
     errors = [d for d in diags if d.severity == "error"]
     assert not errors, f"typecheck errors: {[d.description for d in errors]}"
-    return codegen_compile(
-        program, source=source,
-        expr_semantic_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-    )
+    return compiled.result
 
 
 def _run(source: str, fn: str, args: list[int]) -> int:

@@ -49,8 +49,6 @@ matching Z3), so ``vera verify`` and ``vera run`` agree.  The
 from __future__ import annotations
 
 
-from vera.checker import typecheck
-from vera.parser import parse_to_ast
 from tests.checker_helpers import _error_codes as _errors
 from tests.codegen_helpers import _compile, _run
 from tests import pipeline
@@ -70,8 +68,9 @@ def _verify(source: str) -> VerifyResult:
 
 
 def _error_descs(source: str) -> list[str]:
-    prog = parse_to_ast(source)
-    diags = typecheck(prog, source=source)
+    checked = pipeline.check(source)
+    _ = checked.program  # raises the parse or transform error, if any
+    diags = checked.checker_diagnostics
     return [d.description for d in diags if d.severity == "error"]
 
 

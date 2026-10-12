@@ -38,6 +38,7 @@ from vera.codegen.core import CodeGenerator
 from vera.parser import parse_file
 from vera.resolver import ModuleResolver
 from vera.transform import transform
+from tests import pipeline
 
 # `Float` is not a Vera primitive (the primitive is `Float64`), so an
 # unregistered `Float` renders `?` — which is exactly what makes this pair
@@ -106,11 +107,10 @@ def _slot_tables(
     tmp_path: Path, files: dict[str, str], module: str, fn: str,
 ) -> tuple[list[str], list[str]]:
     """(checker's slot names for *fn*, codegen's) inside *module*'s namespace."""
-    for name, text in files.items():
-        (tmp_path / name).write_text(text, encoding="utf-8")
-    main_path = tmp_path / "main.vera"
-    program = transform(parse_file(str(main_path)))
-    mods = ModuleResolver(tmp_path).resolve_imports(program, main_path)
+    main_path = pipeline.write_tree(tmp_path, files)
+    checked = pipeline.check(main_path, root=tmp_path)
+    program = checked.program
+    mods = checked.resolved
     mod = next(m for m in mods if m.path == (module,))
     params = _params(mod.program, fn)
 

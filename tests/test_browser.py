@@ -27,9 +27,7 @@ import pytest
 
 from vera.codegen import compile as codegen_compile
 from vera.codegen.api import WasmTrapError
-from vera.checker import typecheck
 from vera.parser import parse_file
-from vera.resolver import ModuleResolver
 from vera.transform import transform
 from vera.markdown import parse_markdown
 from vera.markdown_grammar import js_grammar_block
@@ -93,19 +91,15 @@ def _compile_vera(source: str, tmp_path: Path) -> tuple[Path, list[str]]:
     vera_file = tmp_path / "test.vera"
     vera_file.write_text(source, encoding="utf-8")
 
-    tree = parse_file(str(vera_file))
-    ast = transform(tree)
-    resolver = ModuleResolver(_root=tmp_path)
-    resolved = resolver.resolve_imports(ast, vera_file)
-    diags = resolver.errors + typecheck(
-        ast, source, file=str(vera_file), resolved_modules=resolved,
-    )
-    errors = [d for d in diags if d.severity == "error"]
+    checked = pipeline.check(vera_file, root=tmp_path)
+    _ = checked.program  # raises the parse or transform error, if any
+    errors = checked.errors
     assert not errors, f"Type errors: {[e.description for e in errors]}"
 
-    result = codegen_compile(
-        ast, source=source, file=str(vera_file), resolved_modules=resolved,
-    )
+    # Code generation is handed the resolved modules but none of the
+    # checker's tables, as this helper has always compiled.
+    result = pipeline.compile(
+        vera_file, modules=checked.resolved, checked=False).result
     assert result.ok, f"Compile errors: {result.diagnostics}"
 
     wasm_path = tmp_path / "test.wasm"
@@ -120,11 +114,7 @@ def _compile_state_default(source: str, tmp_path: Path) -> tuple[Path, Any]:
     full codegen ``result`` so :func:`_run_python` can execute it — used by the
     #920 State-default parity tests.
     """
-    vera_file = tmp_path / "state_default.vera"
-    vera_file.write_text(source, encoding="utf-8")
-    tree = parse_file(str(vera_file))
-    ast = transform(tree)
-    result = codegen_compile(ast, source=source, file=str(vera_file))
+    result = pipeline.compile(source, file="fixture.vera", checked=False).result
     assert result.ok, f"Compile errors: {result.diagnostics}"
     wasm_path = tmp_path / "state_default.wasm"
     wasm_path.write_bytes(result.wasm_bytes)
@@ -133,20 +123,14 @@ def _compile_state_default(source: str, tmp_path: Path) -> tuple[Path, Any]:
 
 def _compile_file(path: Path, tmp_path: Path) -> tuple[Path, Any]:
     """Compile a .vera file, returning (wasm_path, codegen result)."""
-    source = path.read_text(encoding="utf-8")
-    tree = parse_file(str(path))
-    ast = transform(tree)
-    resolver = ModuleResolver(_root=path.parent)
-    resolved = resolver.resolve_imports(ast, path)
-    diags = resolver.errors + typecheck(
-        ast, source, file=str(path), resolved_modules=resolved,
-    )
-    errors = [d for d in diags if d.severity == "error"]
+    checked = pipeline.check(path)
+    _ = checked.program  # raises the parse or transform error, if any
+    errors = checked.errors
     assert not errors, f"Type errors in {path.name}: {[e.description for e in errors]}"
 
-    result = codegen_compile(
-        ast, source=source, file=str(path), resolved_modules=resolved,
-    )
+    # Code generation is handed the resolved modules but none of the
+    # checker's tables, as this helper has always compiled.
+    result = pipeline.compile(path, modules=checked.resolved, checked=False).result
     assert result.ok, f"Compile errors in {path.name}: {result.diagnostics}"
 
     wasm_path = tmp_path / "test.wasm"

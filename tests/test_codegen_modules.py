@@ -156,10 +156,9 @@ private fn internal(@Int -> @Int)
         cls, source: str, modules: list,
     ) -> CompileResult:
         """Compile with resolved modules."""
-        prog, path = _parse_from_temp_file(source)
-        return compile(
-            prog, source=source, file=path, resolved_modules=modules,
-        )
+        return pipeline.compile(
+            source, file="fixture.vera", modules=modules, checked=False,
+        ).result
 
     @classmethod
     def _run_mod(
@@ -2077,8 +2076,6 @@ class TestTransitiveModuleImport890:
     ) -> int:
         """Write ``files`` (rel path -> source), resolve ``main.vera`` with the
         real resolver, compile, execute, and return the integer result."""
-        from vera.resolver import ModuleResolver
-
         main_file: Path | None = None
         for rel, content in files.items():
             p = tmp_path / rel
@@ -2088,24 +2085,21 @@ class TestTransitiveModuleImport890:
                 main_file = p
         assert main_file is not None, "files must include 'main.vera'"
 
-        resolver = ModuleResolver(_root=tmp_path)
-        tree = parse_file(str(main_file))
-        prog = transform(tree)
-        resolved = resolver.resolve_imports(prog, main_file)
-        assert not resolver.errors, (
-            f"resolution errors: {[e.description for e in resolver.errors]}"
+        checked = pipeline.check(main_file, root=tmp_path)
+        _ = checked.program  # raises the parse or transform error, if any
+        resolution_errors = checked.resolution_diagnostics
+        assert not resolution_errors, (
+            f"resolution errors: {[e.description for e in resolution_errors]}"
         )
-        result = compile(
-            prog,
-            source=main_file.read_text(encoding="utf-8"),
-            file=str(main_file),
-            resolved_modules=resolved,
-        )
+        result = pipeline.compile(
+            main_file, modules=checked.resolved, checked=False,
+        ).result
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert not errors, (
             f"compile errors: {[e.description for e in errors]}"
         )
-        exec_result = execute(result, fn_name=fn, args=args)
+        exec_result = pipeline.run(
+            result, fn, args, capture_stderr=False).execution
         assert exec_result.value is not None, "Expected a return value"
         return exec_result.value
 

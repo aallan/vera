@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import re
-from pathlib import Path
 
 import pytest
 
@@ -13,6 +12,7 @@ from vera.codegen import (
 )
 from vera.parser import parse_file
 from vera.transform import transform
+from tests import pipeline
 from tests.codegen_helpers import _compile, _compile_ok, _run, _run_io
 
 
@@ -3778,19 +3778,7 @@ class TestGenericClosureTypeVarSubstitution:
 
 def _transform_program(source: str):
     """Parse + transform a source string to a Program (no check/codegen)."""
-    import tempfile
-
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False, encoding="utf-8"
-    ) as f:
-        f.write(source)
-        f.flush()
-        path = f.name
-    try:
-        tree = parse_file(path)
-        return transform(tree)
-    finally:
-        Path(path).unlink(missing_ok=True)
+    return pipeline.parse(source, file="fixture.vera").program
 
 
 def _mono_fn(source: str, fn_name: str, concrete: tuple[str, ...]):
