@@ -52,6 +52,15 @@ When adding or modifying built-in functions (registered in `vera/environment.py`
 - **Add codegen/runtime tests** in the matching `tests/test_codegen_*.py` feature file — for built-ins, e.g. `test_codegen_string_builtins.py` or `test_codegen_numeric.py` (shared helpers come from `tests/codegen_helpers.py`) — cover normal cases, edge cases (empty inputs, zero values), and composition with other built-ins.
 - **Update the example** if an existing example demonstrates the feature, or add a new one in `examples/`.
 
+### Effects and limitations
+
+The built-in effect names and the limitation tables each have one source, and `scripts/render_lists.py` renders them into every file that shows them, between `render_lists` markers.  A rendered block is never edited by hand: edit the source, then run `python scripts/render_lists.py --write`.
+
+- **A built-in effect** is added to the registry in `vera/environment.py`, which `vera effects --json` publishes.  The renderer writes it into the editor grammars under `editors/` and the two extension READMEs.
+- **A limitation** is a record in `limitations.json`, beside KNOWN_ISSUES.md: the issues it cites, and the cells each table that carries it shows, the Issue column apart.  Each table names its records in its `rows`, in the order it shows them.  The renderer writes KNOWN_ISSUES.md's Limitations table and the tables in vera/README.md, the spec, SKILL.md and LSP_SERVER.md.  When its issue is closed, the record and its id in each table's `rows` go.  The Bugs tables in KNOWN_ISSUES.md and SKILL.md are kept by hand.
+
+The release PR's `python scripts/check_doc_counts.py --release` fails when a block is not what the renderer writes.
+
 ## Bugs: the class, not the instance
 
 A bug report is one sighting of a fault.  What gets filed, and what gets fixed, is the **class** it belongs to: the set of inputs the same mechanism gets wrong.  Where that mechanism sits decides where the class is fixed.
@@ -136,7 +145,6 @@ The **commit-stage** hooks — each gated to relevant `files:`/`types:` filters,
 - Every Vera block in the agent-facing documents (SKILL.md, README, FAQ, EXAMPLES.md, DE_BRUIJN.md, PYPI_README, the spec, and the landing page) parses, checks and verifies, and prints what each `vera:run` marker expects, or carries a `vera:skip` marker naming the stage and codes it fails; a block that exports a function names an invocation or a `vera:no-run` property
 - Site assets (`docs/llms.txt`, `docs/llms-full.txt`, etc.) regenerated, up-to-date, and coherent with the landing page
 - Spec EBNF and Lark grammar agree on rule names
-- Editor grammars (vscode, TextMate, Vim) carry every built-in effect name
 - License compliance (all dependencies MIT-compatible)
 - Browser parity (JS runtime matches Python runtime), when the host-binding surface changes
 

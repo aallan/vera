@@ -1,0 +1,677 @@
+{
+  "about": "The rows of the limitation tables. Each record is one limitation: the issues it cites, and the cells each table that carries it shows, the Issue column apart. Each table lists its records in the order it shows them. Edit this file, then run `python scripts/render_lists.py --write`, which writes every table between its render_lists markers.",
+  "tables": [
+    {
+      "table": "KNOWN_ISSUES.md#limitations",
+      "header": "| Limitation | Issue |",
+      "rule": "|-----------|-------|",
+      "issue_column": 1,
+      "rows": [
+        "1642",
+        "1233",
+        "1177",
+        "427",
+        "686",
+        "439",
+        "770",
+        "909",
+        "440",
+        "1249",
+        "294",
+        "56",
+        "127",
+        "130",
+        "224",
+        "724",
+        "753",
+        "181",
+        "233",
+        "235",
+        "236",
+        "853",
+        "239",
+        "351",
+        "352",
+        "353",
+        "355",
+        "356",
+        "370",
+        "371",
+        "372",
+        "373",
+        "1143",
+        "603",
+        "609",
+        "610",
+        "1450",
+        "1577",
+        "1585"
+      ]
+    },
+    {
+      "table": "vera/README.md#limitations",
+      "header": "| Limitation | Why | Planned |",
+      "rule": "|-----------|-----|---------|",
+      "issue_column": 2,
+      "rows": [
+        "294",
+        "56",
+        "224",
+        "date-time-crypto-csv",
+        "http-surface",
+        "371",
+        "373",
+        "370",
+        "372",
+        "853",
+        "239",
+        "609",
+        "610"
+      ]
+    },
+    {
+      "table": "spec/08-modules.md#limitations",
+      "header": "| Limitation | Issue | Notes |",
+      "rule": "|-----------|-------|-------|",
+      "issue_column": 1,
+      "rows": [
+        "127",
+        "130"
+      ]
+    },
+    {
+      "table": "spec/09-standard-library.md#limitations",
+      "header": "| Limitation | Issue |",
+      "rule": "|-----------|-------|",
+      "issue_column": 1,
+      "rows": [
+        "233",
+        "235",
+        "236",
+        "351",
+        "352",
+        "353",
+        "355",
+        "356",
+        "370",
+        "371",
+        "372",
+        "373"
+      ]
+    },
+    {
+      "table": "spec/12-runtime.md#limitations",
+      "header": "| Limitation | Issue |",
+      "rule": "|-----------|-------|",
+      "issue_column": 1,
+      "rows": [
+        "609",
+        "610"
+      ]
+    },
+    {
+      "table": "SKILL.md#limitations",
+      "header": "| Limitation | Details | Issue |",
+      "rule": "|-----------|---------|-------|",
+      "issue_column": 2,
+      "rows": [
+        "294",
+        "empty-collection-type-context",
+        "370",
+        "372",
+        "db-handlers",
+        "1143",
+        "same-family-state-nesting",
+        "609",
+        "610"
+      ]
+    },
+    {
+      "table": "LSP_SERVER.md#limitations",
+      "header": "| Limitation | Issue |",
+      "rule": "|-----------|-------|",
+      "issue_column": 1,
+      "rows": [
+        "724",
+        "181",
+        "add-effect-file-boundary"
+      ]
+    }
+  ],
+  "limitations": [
+    {
+      "id": "1642",
+      "issues": [1642],
+      "rows": {
+        "KNOWN_ISSUES.md#limitations": [
+          "`vera verify --reconcile` cannot tell a partial set of component checks from a whole one where the verifier records one obligation for a whole value it cannot see into (an opaque argument of a tuple-typed parameter): any one of the value's component checks answers that record, because only code generation's decomposition states which components are guarded."
+        ]
+      }
+    },
+    {
+      "id": "1233",
+      "issues": [1233],
+      "rows": {
+        "KNOWN_ISSUES.md#limitations": [
+          "Nested handlers over the SAME `State<T>` cannot honour spec §7.5.2's enclosing-context rule for a clause-body bare `get`/`put`. The clause TRANSFORM half routes outward correctly, but the host cell intrinsics (`state_get_T` / `state_put_T`) address only the innermost pushed cell of a family, so the operation would read or write the INNER cell where the rule names an outer one — including at a distance, as in an `Int`/`Nat`/`Int`/`Nat` nest whose third level routes to the second. The shape is refused at check time (`E339`) where the operation is written, rather than lowered to hybrid semantics — except in a generic whose inner cell is `State<T>`, which becomes the same family only at an instantiation, so the program passes check and code generation drops that instantiation (`E602`, [#1522](https://github.com/aallan/vera/issues/1522)); the fix is depth-indexed host access (`state_get_at`/`state_put_at` or push-time cell handles) across the native, browser and WASI hosts, plus the verifier's obligation keying for depth-addressed cells. Different-family nesting is unaffected. Outward clause re-entry is separately capped at 8 levels (`STATE_CLAUSE_INLINE_DEPTH_CAP`), because each re-entry re-expands another clause body and the emitted code is exponential in the nesting depth; a deeper chain is refused at check time too (`E339`)."
+        ]
+      }
+    },
+    {
+      "id": "1177",
+      "issues": [1177],
+      "rows": {
+        "KNOWN_ISSUES.md#limitations": [
+          "An ADT `decreases` measure is runtime-ranked only when its type's reachable field structure is fully concrete: a parameterized measure (`List<Int>`), or a concrete type whose recursion rides through a parameterized field, gets no runtime guard (never a wrong one — the registered generic layout does not describe concrete construction), staying statically checked and Tier-3-disclosed. Per-instantiation `$dec_size_<T>` helpers (the `$eq_<type>` pattern) close it."
+        ]
+      }
+    },
+    {
+      "id": "427",
+      "issues": [427],
+      "rows": {
+        "KNOWN_ISSUES.md#limitations": [
+          "Tier 2 verification (Z3 guided by `assert`/lemma hints) is specified in §6.3.2 but not implemented, so contracts that need hints fall to Tier 3 runtime checks. Per-monomorphization verification (#732) has since landed; full Tier 2 (hint-guided) stays on the Milestone 4 horizon."
+        ]
+      }
+    },
+    {
+      "id": "686",
+      "issues": [686],
+      "rows": {
+        "KNOWN_ISSUES.md#limitations": [
+          "`data invariant(...)` clauses (spec §2.6, §6.2.3) are not implemented — every documented form fails with E130 because the slot environment for the invariant predicate isn't wired up. Refinement types (`{ @T \\| predicate }`, §2.6) are the working alternative."
+        ]
+      }
+    },
+    {
+      "id": "439",
+      "issues": [439],
+      "rows": {
+        "KNOWN_ISSUES.md#limitations": [
+          "Contracts that depend on a `handle[...]` expression's value fall to Tier 3 — the verifier does not model the `handle[...]` expression's value or handler-clause state, so an `ensures` over a handle result is runtime-checked rather than statically proved. (Primitive-op and binding obligations *inside* the handle body walk at enclosing-scope precision and can prove Tier-1; a clause body's slot-dependent obligations are fresh-scope Tier-3, while a manifest violation there — `5 / 0` — stays a loud compile error.)"
+        ]
+      }
+    },
+    {
+      "id": "770",
+      "issues": [770],
+      "rows": {
+        "KNOWN_ISSUES.md#limitations": [
+          "`IO.read_line` / `IO.read_char` block indefinitely — there is no non-blocking or timed stdin read, so a program cannot wait on a key press and a clock at once (input concurrency)."
+        ]
+      }
+    },
+    {
+      "id": "909",
+      "issues": [909],
+      "rows": {
+        "KNOWN_ISSUES.md#limitations": [
+          "A value's postcondition / refinement is not propagated **through an ADT field**: storing a provably-constrained value (e.g. a `mag(@Int -> @Int) ensures(@Int.result >= 0)` result) into a `data` constructor field and recovering it with `match` forgets the constraint, so a postcondition whose truth depends on it cannot be discharged at Tier 1 — it degrades to a Tier-3 runtime check (or, on some shapes, is reported as an unprovable obligation). Conservative incompleteness, not unsoundness: the false variant is still correctly rejected and the contract is enforced at runtime; identical for same-file and cross-module callees. Same reporting/completeness family as the (since-closed) #764 and #779."
+        ]
+      }
+    },
+    {
+      "id": "440",
+      "issues": [440],
+      "rows": {
+        "KNOWN_ISSUES.md#limitations": [
+          "`vera test` cannot generate inputs for functions with ADT parameters, so those functions are skipped with a warning. Constructor synthesis with recursive field generation is the planned fix (Milestone 1)."
+        ]
+      }
+    },
+    {
+      "id": "1249",
+      "issues": [1249],
+      "rows": {
+        "KNOWN_ISSUES.md#limitations": [
+          "`vera test`'s input generator builds its `SmtContext` without the function lookup, ADT registry, or recorded-type hook the verifier has, so a `requires` that calls a user function — or any built-in without an explicit translation branch — is untranslatable there and the target is skipped, though the verifier translates the same contract fine. Every such skip is disclosed by name; threading the function lookup and callee-scope machinery through recovers the coverage."
+        ]
+      }
+    },
+    {
+      "id": "294",
+      "issues": [294],
+      "rows": {
+        "KNOWN_ISSUES.md#limitations": [
+          "Effect row variables cannot be unified, so higher-order functions polymorphic over their effect rows are not expressible. Full effect polymorphism is Milestone 4 work."
+        ],
+        "vera/README.md#limitations": [
+          "**No effect row variable unification**",
+          "Subeffecting implemented; `forall<E>` row variables permissive (full row-variable unification not implemented)"
+        ],
+        "SKILL.md#limitations": [
+          "Effect row variable unification",
+          "Effect rows containing type variables (e.g. `<E>` in a generic function) are not unified with concrete effect rows at call sites. Functions that abstract over effects require explicit row declarations."
+        ]
+      }
+    },
+    {
+      "id": "56",
+      "issues": [56],
+      "rows": {
+        "KNOWN_ISSUES.md#limitations": [
+          "Every `vera` invocation re-parses and re-checks the whole module graph from scratch. Incremental compilation is Milestone 4 work; the LSP server's warm `VerificationSession` already covers the editor loop."
+        ],
+        "vera/README.md#limitations": [
+          "**No incremental compilation**",
+          "Full file processed from scratch each time"
+        ]
+      }
+    },
+    {
+      "id": "127",
+      "issues": [127],
+      "rows": {
+        "KNOWN_ISSUES.md#limitations": [
+          "A module cannot re-export an imported symbol, so deep module trees force consumers to import from the defining file. Milestone 4 work."
+        ],
+        "spec/08-modules.md#limitations": [
+          "No re-exports",
+          "A module cannot re-export declarations imported from other modules"
+        ]
+      }
+    },
+    {
+      "id": "130",
+      "issues": [130],
+      "rows": {
+        "KNOWN_ISSUES.md#limitations": [
+          "There is no package system or registry — all code shares one module tree resolved from the filesystem. Milestone 4 work; the issue carries the design discussion."
+        ],
+        "spec/08-modules.md#limitations": [
+          "No package system",
+          "Module resolution is file-system-only; no package manager or registry"
+        ]
+      }
+    },
+    {
+      "id": "224",
+      "issues": [224],
+      "rows": {
+        "KNOWN_ISSUES.md#limitations": [
+          "There is no interactive read-eval-print loop; the shortest feedback path is `vera run` on a file. Milestone 3 developer-experience work."
+        ],
+        "vera/README.md#limitations": [
+          "**No REPL**",
+          "No interactive evaluation; all code must be written to files"
+        ]
+      }
+    },
+    {
+      "id": "724",
+      "issues": [724],
+      "rows": {
+        "KNOWN_ISSUES.md#limitations": [
+          "The language server resolves module imports from disk rather than open editor buffers, so unsaved changes in imported files aren't seen. Buffer-aware resolution is roadmap Tier 3."
+        ],
+        "LSP_SERVER.md#limitations": [
+          "Single-file model: module imports resolve from disk, relative to the analysed document's own path, not from open editor buffers — so unsaved edits to an imported module are invisible until saved. A document that names no local path resolves no imports and is analysed alone: an `untitled:` buffer or other non-`file:` URI, and a `file://host/…` URI naming another machine (carried opaquely)."
+        ]
+      }
+    },
+    {
+      "id": "753",
+      "issues": [753],
+      "rows": {
+        "KNOWN_ISSUES.md#limitations": [
+          "`vera lsp` will not run on Python 3.16+: its `pygls` dependency calls `asyncio.iscoroutinefunction`, removed in 3.16. Out of Vera's hands until pygls migrates to `inspect.iscoroutinefunction`; tracked so the `[lsp]` extra's support window is explicit (the rest of the toolchain is unaffected)."
+        ]
+      }
+    },
+    {
+      "id": "181",
+      "issues": [181],
+      "rows": {
+        "KNOWN_ISSUES.md#limitations": [
+          "LSP slot go-to-definition covers parameters only — `let` and `match` bindings aren't navigable, and there is no mechanical slot-index rewriting on signature change. Roadmap Tier 3."
+        ],
+        "LSP_SERVER.md#limitations": [
+          "Slot go-to-definition covers parameters only — references binding through `let`/`match` have no definition site to jump to."
+        ]
+      }
+    },
+    {
+      "id": "233",
+      "issues": [233],
+      "rows": {
+        "KNOWN_ISSUES.md#limitations": [
+          "There is no date or time handling beyond `IO.time` — no ISO 8601 parsing, formatting, or arithmetic. Milestone 2 server-adjacent work."
+        ],
+        "spec/09-standard-library.md#limitations": [
+          "No date or time handling beyond `IO.time` — no ISO 8601 parsing, formatting, or arithmetic"
+        ]
+      }
+    },
+    {
+      "id": "235",
+      "issues": [235],
+      "rows": {
+        "KNOWN_ISSUES.md#limitations": [
+          "There are no cryptographic primitives — no hashing, no HMAC. Milestone 2 work, needed for API-authentication patterns like webhook signatures."
+        ],
+        "spec/09-standard-library.md#limitations": [
+          "No cryptographic primitives (hashing, HMAC)"
+        ]
+      }
+    },
+    {
+      "id": "236",
+      "issues": [236],
+      "rows": {
+        "KNOWN_ISSUES.md#limitations": [
+          "There is no CSV parsing or generation. Milestone 2 server-adjacent work; JSON is the workaround interchange format."
+        ],
+        "spec/09-standard-library.md#limitations": [
+          "No CSV parsing or generation"
+        ]
+      }
+    },
+    {
+      "id": "853",
+      "issues": [853],
+      "rows": {
+        "KNOWN_ISSUES.md#limitations": [
+          "The `--target wasi-p2` (v0.0.194) routes IO, clocks, and random through standard component interfaces and `--world server` (v0.0.195) serves `wasi:http`, but the surface is IO + Random only — Http and every other host family are rejected under wasi-p2 with a diagnostic, and the default `wasm` target uses ad-hoc `vera.*` host imports. Extending the wasi-p2 target to `wasi:http` outbound, streaming filesystem, and sockets is Milestone 2 server-effect work."
+        ],
+        "vera/README.md#limitations": [
+          "**Partial WASI support**",
+          "The `--target wasi-p2` routes IO/clocks/random through standard component interfaces and `--world server` serves `wasi:http`, but the surface is IO + Random only — Http and every other host family are rejected under wasi-p2, and the default `wasm` target uses ad-hoc `vera.*` host imports"
+        ]
+      }
+    },
+    {
+      "id": "239",
+      "issues": [239],
+      "rows": {
+        "KNOWN_ISSUES.md#limitations": [
+          "WASM execution has no configurable fuel, memory, or timeout limits, so pathological computation runs unbounded. Milestone 2 work, essential for server workloads on untrusted input."
+        ],
+        "vera/README.md#limitations": [
+          "**No resource limits**",
+          "No built-in fuel, memory, or timeout controls for untrusted code"
+        ]
+      }
+    },
+    {
+      "id": "351",
+      "issues": [351],
+      "rows": {
+        "KNOWN_ISSUES.md#limitations": [
+          "`Http.get`/`Http.post` send fixed headers — callers cannot add custom ones such as `Authorization`. Milestone 2 Http-hardening work."
+        ],
+        "spec/09-standard-library.md#limitations": [
+          "`Http`: fixed request headers — no custom header support"
+        ]
+      }
+    },
+    {
+      "id": "352",
+      "issues": [352],
+      "rows": {
+        "KNOWN_ISSUES.md#limitations": [
+          "Http responses surface only the body — status codes are not accessible, so callers cannot distinguish a 404 from a 500. Milestone 2 Http-hardening work."
+        ],
+        "spec/09-standard-library.md#limitations": [
+          "`Http`: response status codes are not accessible"
+        ]
+      }
+    },
+    {
+      "id": "353",
+      "issues": [353],
+      "rows": {
+        "KNOWN_ISSUES.md#limitations": [
+          "Http requests have no per-request timeout control. Milestone 2 Http-hardening work; a hung server hangs the program."
+        ],
+        "spec/09-standard-library.md#limitations": [
+          "`Http`: no per-request timeout control"
+        ]
+      }
+    },
+    {
+      "id": "355",
+      "issues": [355],
+      "rows": {
+        "KNOWN_ISSUES.md#limitations": [
+          "The browser runtime implements Http via deprecated synchronous XMLHttpRequest, which browsers throttle. Milestone 2 Http-hardening work, blocked (see the issue's relationships)."
+        ],
+        "spec/09-standard-library.md#limitations": [
+          "`Http`: browser runtime uses deprecated synchronous XMLHttpRequest"
+        ]
+      }
+    },
+    {
+      "id": "356",
+      "issues": [356],
+      "rows": {
+        "KNOWN_ISSUES.md#limitations": [
+          "Http supports GET and POST only — no PUT, PATCH, or DELETE. Milestone 2 Http-hardening work."
+        ],
+        "spec/09-standard-library.md#limitations": [
+          "`Http`: GET and POST only — no PUT, PATCH, or DELETE"
+        ]
+      }
+    },
+    {
+      "id": "370",
+      "issues": [370],
+      "rows": {
+        "KNOWN_ISSUES.md#limitations": [
+          "`Inference.complete` hardcodes `max_tokens` and `temperature`. Configurability is Milestone 2's first Inference-hardening item — agent workloads need both for cost gates and deterministic replays."
+        ],
+        "vera/README.md#limitations": [
+          "**Inference: no token/temperature controls**",
+          "`max_tokens` hardcoded to 1024 for Anthropic; no temperature override"
+        ],
+        "spec/09-standard-library.md#limitations": [
+          "`Inference.complete`: `max_tokens` and `temperature` are not configurable"
+        ],
+        "SKILL.md#limitations": [
+          "`Inference.complete` has no `max_tokens` or temperature controls",
+          "The host implementation uses provider defaults. Custom parameters (max tokens, temperature, top-p, system prompt) are not supported at the Vera level."
+        ]
+      }
+    },
+    {
+      "id": "371",
+      "issues": [371],
+      "rows": {
+        "KNOWN_ISSUES.md#limitations": [
+          "`Inference.embed` (vector embeddings) is not implemented. Blocked on the float-array host-alloc infrastructure (#373)."
+        ],
+        "vera/README.md#limitations": [
+          "**Inference: complete only**",
+          "No `embed` (vector embeddings), no streaming, no system prompt; `embed` blocked on [#373](https://github.com/aallan/vera/issues/373) (float array host-alloc infrastructure)"
+        ],
+        "spec/09-standard-library.md#limitations": [
+          "`Inference`: no `embed` operation (vector embeddings)"
+        ]
+      }
+    },
+    {
+      "id": "372",
+      "issues": [372],
+      "rows": {
+        "KNOWN_ISSUES.md#limitations": [
+          "The Inference effect cannot be handled in user code — `handle[Inference]` is rejected. Full handler support enables mocking, caching, and routing strategies (Milestone 2)."
+        ],
+        "vera/README.md#limitations": [
+          "**Inference: no user handlers**",
+          "`handle[Inference]` blocks not supported; host-backed only"
+        ],
+        "spec/09-standard-library.md#limitations": [
+          "`Inference`: no user-defined handlers — `handle[Inference]` is rejected"
+        ],
+        "SKILL.md#limitations": [
+          "`Inference` effect has no user-defined handlers",
+          "`Inference` is always host-backed (dispatches to a real API). User-defined handlers for mocking, local models, or replay are not supported."
+        ]
+      }
+    },
+    {
+      "id": "373",
+      "issues": [373],
+      "rows": {
+        "KNOWN_ISSUES.md#limitations": [
+          "Host imports cannot return `Array<Float64>` — the `alloc_result_ok_float_array` infrastructure doesn't exist. Required by `Inference.embed` (#371)."
+        ],
+        "vera/README.md#limitations": [
+          "**No float array host-alloc**",
+          "Host functions cannot return `Array<Float64>`; `_alloc_result_ok_float_array` helper not implemented"
+        ],
+        "spec/09-standard-library.md#limitations": [
+          "Host imports cannot return `Array<Float64>` (`alloc_result_ok_float_array` infrastructure)"
+        ]
+      }
+    },
+    {
+      "id": "1143",
+      "issues": [1143],
+      "rows": {
+        "KNOWN_ISSUES.md#limitations": [
+          "The `<DB>` effect is Phase 1: SQLite-only, a single connection per run, and positional stringly-typed rows (`Array<Array<Option<String>>>`). Named columns, typed cells, additional backends, and transactions are later phases. (`handle[DB]` is separately blocked on host-effect handlers, #372.)"
+        ],
+        "SKILL.md#limitations": [
+          "`DB` effect is SQLite-only with positional string rows",
+          "`DB` supports SQLite only, a single connection per run, and stringly-typed positional rows (`Array<Array<Option<String>>>`). Named columns, typed cells, other backends, and transactions are not supported."
+        ]
+      }
+    },
+    {
+      "id": "603",
+      "issues": [603],
+      "rows": {
+        "KNOWN_ISSUES.md#limitations": [
+          "`runtime.mjs` doesn't export its string-marshalling helpers, so JavaScript cannot pass `String` arguments into Vera functions in the browser. This forces browser programs into the compute-upfront/drain-stdout pattern; exporting the helpers is roadmap Tier 3."
+        ]
+      }
+    },
+    {
+      "id": "609",
+      "issues": [609],
+      "rows": {
+        "KNOWN_ISSUES.md#limitations": [
+          "`IO.sleep` busy-waits the browser's main thread, freezing the tab for the sleep duration — animations and paced simulations don't run meaningfully under `--target browser`. The JSPI-based suspend/resume fix is roadmap Tier 3, demoted below correctness work."
+        ],
+        "vera/README.md#limitations": [
+          "**Browser target: `IO.sleep` freezes the tab**",
+          "Busy-waits the main thread instead of yielding to the event loop; the JSPI-based suspend/resume fix needs no language change"
+        ],
+        "spec/12-runtime.md#limitations": [
+          "Browser runtime: `IO.sleep` busy-waits on the main thread (freezing the tab for the sleep duration), because the current implementation uses `performance.now()` polling rather than yielding to the event loop.  Documented in §12.9.3.  Fix path: implement against the WebAssembly JavaScript Promise Integration (JSPI) proposal so the WASM call suspends on a `setTimeout` continuation; Asyncify is the fallback for browsers without JSPI."
+        ],
+        "SKILL.md#limitations": [
+          "Browser target: `IO.sleep` freezes the tab",
+          "`IO.sleep` busy-waits the browser's main thread, so animations and paced simulations don't run meaningfully under `--target browser`. Write browser-target programs as a pure simulation core with a JS driver, or stick to terminal output."
+        ]
+      }
+    },
+    {
+      "id": "610",
+      "issues": [610],
+      "rows": {
+        "KNOWN_ISSUES.md#limitations": [
+          "ANSI escape sequences render as literal control characters in the browser DOM, so terminal-style programs display garbage under `--target browser`. A minimal ANSI-subset interpreter in `runtime.mjs` is roadmap Tier 3."
+        ],
+        "vera/README.md#limitations": [
+          "**Browser target: ANSI escapes render as literal text**",
+          "No escape-sequence interpretation in `runtime.mjs`; a minimal ANSI-subset interpreter closes it without a language change"
+        ],
+        "spec/12-runtime.md#limitations": [
+          "Browser runtime: ANSI escape sequences are not interpreted — `IO.print(\"\\u{1B}[2J\\u{1B}[H\")` appears as literal control bytes in the DOM rather than clearing the screen and homing the cursor.  Fix path: a small ANSI-subset interpreter (~200 lines of JS) maintaining a virtual screen buffer, applied against a target `<pre>` element."
+        ],
+        "SKILL.md#limitations": [
+          "Browser target: ANSI escapes render as literal text",
+          "ANSI escape sequences (cursor control, screen clear) appear as literal control characters in the DOM rather than being interpreted. Terminal-style rendering needs an ANSI-subset interpreter in `runtime.mjs`; no language change is required."
+        ]
+      }
+    },
+    {
+      "id": "1450",
+      "issues": [1450],
+      "rows": {
+        "KNOWN_ISSUES.md#limitations": [
+          "A refinement whose base is itself a refinement (<code>type Small = { @Pos &#124; @Pos.0 &lt; 10 }</code>) passes check and is proved at Tier 1, and code generation refuses any function whose signature names it with `E618`, because the boundary guard lowers one refinement level and would drop the inner predicate.  A program using the shape cannot run; spell the refinement flat over its primitive base (<code>{ @Int &#124; @Int.0 &gt; 0 &amp;&amp; @Int.0 &lt; 10 }</code>), which compiles and is guarded, until the guard composes the whole chain."
+        ]
+      }
+    },
+    {
+      "id": "1577",
+      "issues": [1577],
+      "rows": {
+        "KNOWN_ISSUES.md#limitations": [
+          "A module generic whose `decreases` measure is one of the module's data types is proved at Tier 1 in the module's own run and falls to `tier3` (`E525`) through an importer, where the clone's measure translates to an `Int` term.  It fails closed: the measure is still checked at run time."
+        ]
+      }
+    },
+    {
+      "id": "1585",
+      "issues": [1585],
+      "rows": {
+        "KNOWN_ISSUES.md#limitations": [
+          "A generic `where` helper on a recursion cycle with its generic parent leaves its own `decreases` at `tier3` (`E525`), though every call on the cycle decreases and the parent's is proved.  It fails closed: the measure is checked at run time."
+        ]
+      }
+    },
+    {
+      "id": "date-time-crypto-csv",
+      "issues": [233, 235, 236],
+      "rows": {
+        "vera/README.md#limitations": [
+          "**No date/time, crypto, CSV**",
+          "Standard library limited to core types, strings, and arrays"
+        ]
+      }
+    },
+    {
+      "id": "http-surface",
+      "issues": [351, 352, 353, 355, 356],
+      "rows": {
+        "vera/README.md#limitations": [
+          "**Http: GET/POST only**",
+          "No custom headers, no PUT/DELETE/PATCH, no status codes, no timeouts, no streaming, no cookies"
+        ]
+      }
+    },
+    {
+      "id": "empty-collection-type-context",
+      "issues": [],
+      "rows": {
+        "SKILL.md#limitations": [
+          "`map_new()` / `set_new()` require type context",
+          "The empty-collection constructors `map_new()` and `set_new()` cannot infer their key/value types without a surrounding type annotation. Assign the result to a typed `let` binding: `let @Map<String, Int> = map_new();`"
+        ]
+      }
+    },
+    {
+      "id": "db-handlers",
+      "issues": [372],
+      "rows": {
+        "SKILL.md#limitations": [
+          "`DB` effect has no user-defined handlers",
+          "`DB` is always host-backed; `handle[DB]` for mocking or replay is not supported (shared with the other host effects). Test against `sqlite::memory:` for a hermetic real database."
+        ]
+      }
+    },
+    {
+      "id": "same-family-state-nesting",
+      "issues": [1233, 1522],
+      "rows": {
+        "SKILL.md#limitations": [
+          "Nested handlers over the SAME cell type, with an operation in a clause body",
+          "A bare `get`/`put` in a clause body is the ENCLOSING context's operation (spec §7.5.2), but the host state intrinsics address only the innermost cell of a family — so when the enclosing handler (or the function's declared row) is the *same* `State<T>`, the outer cell cannot be reached. That shape is refused at check time (`E339`), where the operation is written, rather than silently writing the wrong cell — except inside a generic whose inner cell is `State<T>`, which matches the outer family only once `T` is instantiated: that program passes check and code generation drops the instantiation (`E602`, [#1522](https://github.com/aallan/vera/issues/1522)). Nest handlers over *different* cell types, or refine the inner cell with `with @T = expr`, which is the clause's own state override. Handler nesting is also capped at 8 levels of outward clause re-entry (the expansion is exponential in the nesting depth); past it the operation is refused at check time (`E339`)."
+        ]
+      }
+    },
+    {
+      "id": "add-effect-file-boundary",
+      "issues": [],
+      "rows": {
+        "LSP_SERVER.md#limitations": [
+          "`vera/addEffect` propagation stops at the file boundary, by design: the closure runs over unqualified call names, so a module-qualified call is not followed and a caller in another file is never rewritten."
+        ]
+      }
+    }
+  ]
+}

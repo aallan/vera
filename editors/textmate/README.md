@@ -18,13 +18,15 @@ Then restart TextMate or select **Bundles → Bundle Editor → Reload Bundles**
 
 ## What gets highlighted
 
-The grammar covers the full Vera language. Its effect names are gated against the compiler's own effect registry by `scripts/check_editor_grammars.py`, so a new built-in effect cannot ship without the grammar and the list below learning about it.
+The grammar covers the full Vera language. Its effect names, and the list below, are written from the compiler's own effect registry by `scripts/render_lists.py`, so a release cannot ship either one behind the registry.
 
 **Slot references** are the most distinctive feature of Vera syntax, and the bundle treats them as first-class citizens. Full references like `@Int.0`, `@Array<String>.1`, and `@Nat.result` are scoped as `variable.other.slot`, while bare bindings in match arms (e.g. `Some(@Int)`) are scoped as `variable.other.slot-binding`. Both are visually distinct from all other tokens.
 
 **Contract blocks** — `requires`, `ensures`, `effects`, `decreases`, and `invariant` — are scoped separately from control flow keywords (`keyword.contract` vs `keyword.control`), so they can be themed independently.
 
-**Effects** — built-in effects (`IO`, `State`, `Exn`, `Http`, `HttpServer`, `Async`, `Diverge`, `Inference`, `Random`, `DB`) are recognised as `entity.name.type.effect`. Qualified operation calls like `IO.print` and `Exn.throw` are decomposed into effect name, accessor, and operation name.
+<!-- render_lists:begin effects -->
+**Effects** — built-in effects (`Async`, `DB`, `Diverge`, `Exn`, `Http`, `HttpServer`, `IO`, `Inference`, `Random`, `State`) are recognised as `entity.name.type.effect`. Qualified operation calls like `IO.print` and `Exn.throw` are decomposed into effect name, accessor, and operation name.
+<!-- render_lists:end effects -->
 
 **Other language features:**
 
