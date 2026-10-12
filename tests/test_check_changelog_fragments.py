@@ -91,7 +91,6 @@ class TestNames:
             "+-lane.changed.md",
             "1529-fix.added.md",
             "notes.md",
-            ".gitkeep",
         ],
     )
     def test_any_other_name_is_a_problem_naming_the_file(
@@ -114,6 +113,18 @@ class TestNames:
             _directory(tmp_path, {"README.md": "# Not bullets\n\nProse.\n"})
         )
         assert (found, problems) == ([], [])
+
+    @pytest.mark.parametrize("name", [".DS_Store", ".gitkeep", ".1529.added.md"])
+    def test_a_dotfile_is_neither_a_fragment_nor_a_problem(
+        self, tmp_path: Path, name: str
+    ) -> None:
+        """Finder writes `.DS_Store` into any folder it opens; a dotfile is
+        never a fragment, so it fails neither the gate nor the assembly."""
+        found, problems = fragments.read_fragments(
+            _directory(tmp_path, {name: "\x00 not text", "1529.added.md": _BULLET})
+        )
+        assert problems == []
+        assert [f.path.name for f in found] == ["1529.added.md"]
 
     def test_a_directory_is_a_problem(self, tmp_path: Path) -> None:
         directory = _directory(tmp_path, {})

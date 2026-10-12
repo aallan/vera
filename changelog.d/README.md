@@ -1,6 +1,6 @@
 # CHANGELOG fragments
 
-A pull request records its CHANGELOG entry here, in a file of its own, and not as a bullet under `[Unreleased]` in `CHANGELOG.md`. No two pull requests edit the same line, so they merge in either order. This README is not a fragment, and every tool ignores it.
+A pull request records its CHANGELOG entry here, in a file of its own, and not as a bullet under `[Unreleased]` in `CHANGELOG.md`. No two pull requests edit the same line, so they merge in either order. This README is not a fragment, and neither is a dotfile such as Finder's `.DS_Store`: every tool ignores both.
 
 ## File name
 

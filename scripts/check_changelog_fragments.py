@@ -6,7 +6,8 @@ A fragment is one pull request's CHANGELOG entry, in a file of its own
 This module is the one definition of a fragment: ``scripts/release.py``
 assembles fragments with it and ``scripts/check_changelog_updated.py``
 recognises one by its name.  ``changelog.d/README.md`` states the convention
-and is not a fragment.
+and is not a fragment, and neither is a dotfile such as Finder's
+``.DS_Store``: every tool ignores both.
 
 Name: ``<issue>.<section>.md`` for a pull request that closes an issue, or
 ``+<slug>.<section>.md``, the slug being the last path component of the
@@ -90,15 +91,16 @@ def _content_problem(text: str) -> str | None:
 def read_fragments(directory: Path = DIRECTORY) -> tuple[list[Fragment], list[str]]:
     """Every fragment in ``directory``, and one problem per malformed entry.
 
-    Each problem names its file as ``changelog.d/<name>``.  A directory that
-    does not exist holds no fragments.
+    The README and dotfiles are skipped.  Each problem names its file as
+    ``changelog.d/<name>``.  A directory that does not exist holds no
+    fragments.
     """
     found: list[Fragment] = []
     problems: list[str] = []
     if not directory.is_dir():
         return found, problems
     for path in sorted(directory.iterdir()):
-        if path.name == README:
+        if path.name == README or path.name.startswith("."):
             continue
         shown = f"{directory.name}/{path.name}"
         match = FRAGMENT_NAME.fullmatch(path.name)
