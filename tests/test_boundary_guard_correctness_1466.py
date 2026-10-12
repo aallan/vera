@@ -91,16 +91,12 @@ guard.
 """
 from __future__ import annotations
 
-import json
-import os
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
 import vera
-from tests import guard_emitter_scan
+from tests import guard_emitter_scan, pipeline
 from vera import binders, carriers, narrowing
 
 # A generated class instrument (tests/matrix_sample.py): a pull request runs a
@@ -114,43 +110,22 @@ pytestmark = pytest.mark.matrix(
     ],
 )
 
-_PKG_PARENT = str(Path(vera.__file__).resolve().parents[1])
-
 #: The obligation kind a refinement narrowing is recorded under.
 _NARROWING_KINDS = ("refine_bind",)
-
-
-def _cli(*args: str) -> subprocess.CompletedProcess[str]:
-    env = dict(os.environ)
-    existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        f"{_PKG_PARENT}{os.pathsep}{existing}" if existing else _PKG_PARENT
-    )
-    return subprocess.run(
-        [sys.executable, "-m", "vera.cli", *args],
-        capture_output=True, text=True, encoding="utf-8", check=False,
-        env=env, cwd=_PKG_PARENT, timeout=300,
-    )
 
 
 def test_the_cli_under_test_is_this_checkout() -> None:
     """The premise under every measurement below.
 
-    ``python -m`` puts the working directory AHEAD of ``PYTHONPATH``, so a
-    subprocess launched from another checkout measures that checkout's
-    compiler while reporting about this one.  No cell would notice, which is
-    why the canary is a test of its own.
+    The cells drive the pipeline in process, so they measure whichever
+    compiler ``import vera`` loaded: an installed copy ahead of this checkout
+    on the path would be measured while every cell reports about this one.
+    No cell would notice, which is why the canary is a test of its own.
     """
-    env = dict(os.environ)
-    env["PYTHONPATH"] = _PKG_PARENT
-    got = subprocess.run(
-        [sys.executable, "-c", "import vera; print(vera.__file__)"],
-        capture_output=True, text=True, encoding="utf-8", check=True,
-        env=env, cwd=_PKG_PARENT, timeout=300,
-    ).stdout.strip()
-    assert got == str(Path(vera.__file__).resolve()), (
-        f"the CLI subprocess imports {got}, not the checkout under test "
-        f"({Path(vera.__file__).resolve()})"
+    here = Path(__file__).resolve().parents[1]
+    loaded = Path(vera.__file__).resolve()
+    assert loaded.parents[1] == here, (
+        f"`import vera` loads {loaded}, not the checkout under test ({here})"
     )
 
 
@@ -1564,17 +1539,10 @@ def _write(tmp_path: Path, source: str, name: str) -> Path:
     return p
 
 
-def _envelope(proc: subprocess.CompletedProcess[str]) -> dict:
-    try:
-        parsed = json.loads(proc.stdout)
-    except json.JSONDecodeError:  # pragma: no cover — a crash, not a verdict
-        pytest.fail(
-            f"`vera verify --json` produced no envelope:\n"
-            f"{proc.stdout[-800:]}\n{proc.stderr[-800:]}"
-        )
-    if not isinstance(parsed, dict):  # pragma: no cover — defensive
-        pytest.fail(f"`vera verify --json` produced {type(parsed)}")
-    return parsed
+def _envelope(path: Path) -> dict:
+    """What ``vera verify --json`` prints for *path*: the verify stage's
+    envelope, in process."""
+    return pipeline.verify(path).envelope()
 
 
 def _statuses(envelope: dict) -> set[str]:
@@ -1605,8 +1573,10 @@ def _measure(cell: tuple[str, int, str], tmp_path: Path) -> dict:
     """Verify and run both twins of one cell, once per session.
 
     Cached because three readings ask about one measurement, and the
-    measurement is CLI invocations — of which the last is skipped whenever
-    the artifact already refused the violating value.
+    measurement is four commands — of which the last is skipped whenever
+    the artifact already refused the violating value.  The verifications are
+    the verify stage's envelopes; the runs are ``vera run`` in process, whose
+    exit status and output the readings read.
     """
     cached = _CACHE.get(cell)
     if cached is not None:
@@ -1614,17 +1584,17 @@ def _measure(cell: tuple[str, int, str], tmp_path: Path) -> dict:
     good_src, bad_src = _sources(cell)
 
     good_path = _write(tmp_path, good_src, "good.vera")
-    good_env = _envelope(_cli("verify", "--json", str(good_path)))
-    good_run = _cli("run", str(good_path))
+    good_env = _envelope(good_path)
+    good_run = pipeline.cli("run", good_path)
 
     bad_path = _write(tmp_path, bad_src, "bad.vera")
-    bad_run = _cli("run", str(bad_path))
+    bad_run = pipeline.cli("run", bad_path)
     bad_errors: list[str] = []
     if bad_run.returncode == 0:
         # Only then does the STATIC answer matter: a value the artifact has
         # already refused needs no second question, and asking it anyway
         # would half again the matrix's wall time.
-        bad_errors = _errors(_envelope(_cli("verify", "--json", str(bad_path))))
+        bad_errors = _errors(_envelope(bad_path))
 
     out = dict(
         good_source=good_src,
@@ -1831,8 +1801,7 @@ def test_every_modular_refusal_is_still_refused(tmp_path: Path) -> None:
     """
     for cell in sorted(_MODULAR_REFUSALS):
         good_src, _bad = _sources(cell)
-        envelope = _envelope(_cli(
-            "verify", "--json", str(_write(tmp_path, good_src, "m.vera"))))
+        envelope = _envelope(_write(tmp_path, good_src, "m.vera"))
         assert "E505" in _errors(envelope), (
             f"{_ids(cell)} is excluded as refuted at verification, and "
             f"verification now says {_errors(envelope)}"
@@ -1850,7 +1819,7 @@ def test_every_unsupported_shape_says_so_in_the_compilers_words(
     """
     for cell, message in sorted(_UNSUPPORTED_SHAPES.items()):
         good_src, _bad = _sources(cell)
-        ran = _cli("run", str(_write(tmp_path, good_src, "u.vera")))
+        ran = pipeline.cli("run", _write(tmp_path, good_src, "u.vera"))
         assert message in (ran.stdout + ran.stderr), (
             f"{_ids(cell)} is excluded as unsupported, but the compiler no "
             f"longer says so:\n{(ran.stdout + ran.stderr)[-500:]}"
@@ -1904,10 +1873,9 @@ def test_a_state_write_claims_exactly_the_guard_it_emits(
     # the literal route is refused by the CHECKER for the handle bases
     # (E331), which leaves no obligation to compare anything against.
     source = _sources(cell)[0]
-    envelope = _envelope(_cli(
-        "verify", "--json", str(_write(tmp_path, source, "s.vera"))))
+    envelope = _envelope(_write(tmp_path, source, "s.vera"))
     statuses = _statuses(envelope)
-    wat = _cli("compile", "--wat", str(_write(tmp_path, source, "s.vera")))
+    wat = pipeline.cli("compile", "--wat", _write(tmp_path, source, "s.vera"))
     emitted = "contract_fail" in wat.stdout
     assert statuses, "the write raises no narrowing obligation at all"
     if "tier3" in statuses:
@@ -1984,21 +1952,20 @@ def test_a_composite_refined_base_binds_at_a_tuple_boundary(
     good_src = build(_Instance(decls, good, "Int", "1"))   # type: ignore[operator]
     bad_src = build(_Instance(decls, bad, "Int", "1"))     # type: ignore[operator]
 
-    envelope = _envelope(_cli(
-        "verify", "--json", str(_write(tmp_path, good_src, "c.vera"))))
+    envelope = _envelope(_write(tmp_path, good_src, "c.vera"))
     assert not _errors(envelope), (
         f"{route_name}/{base_name}: the satisfying program is refused "
         f"statically ({_errors(envelope)}):\n{good_src}"
     )
-    ran = _cli("run", str(_write(tmp_path, good_src, "c.vera")))
+    ran = pipeline.cli("run", _write(tmp_path, good_src, "c.vera"))
     assert ran.returncode == 0, (
         f"{route_name}/{base_name}: the guard refuses a value its own "
         f"refinement admits:\n{(ran.stdout + ran.stderr)[-500:]}"
     )
     bad_path = _write(tmp_path, bad_src, "cbad.vera")
-    bad_run = _cli("run", str(bad_path))
+    bad_run = pipeline.cli("run", bad_path)
     refused = bad_run.returncode != 0 or _errors(
-        _envelope(_cli("verify", "--json", str(bad_path))))
+        _envelope(bad_path))
     assert refused, (
         f"{route_name}/{base_name}: the violating value is refused by "
         f"nothing:\n{(bad_run.stdout + bad_run.stderr)[-500:]}"
@@ -2028,7 +1995,7 @@ def test_a_pair_state_cell_is_refused_and_says_so(
     cell = ("State write boundary", route, repr_name)
     good_src, _bad = _sources(cell)
     path = _write(tmp_path, good_src, "pair-cell.vera")
-    envelope = _envelope(_cli("verify", "--json", str(path)))
+    envelope = _envelope(path)
     assert not _errors(envelope), (
         f"the program is refused at verification: {_errors(envelope)}"
     )
@@ -2041,7 +2008,7 @@ def test_a_pair_state_cell_is_refused_and_says_so(
         f"the record claims a runtime check for a write inside a function "
         f"code generation drops: {sorted(statuses)}"
     )
-    ran = _cli("run", str(path))
+    ran = pipeline.cli("run", path)
     assert "uses State with unsupported type" in (ran.stdout + ran.stderr), (
         f"the compiler no longer names the refusal:\n"
         f"{(ran.stdout + ran.stderr)[-400:]}"
@@ -2125,13 +2092,13 @@ def test_the_record_and_registration_agree_about_a_state_cell(
         "  } in {\n    1\n  }\n}\n"
     )
     path = _write(tmp_path, source, "cell.vera")
-    envelope = _envelope(_cli("verify", "--json", str(path)))
+    envelope = _envelope(path)
     assert not _errors(envelope), _errors(envelope)
     statuses = _statuses(envelope)
-    ran = _cli("run", str(path))
+    ran = pipeline.cli("run", path)
     registered = "uses State with unsupported type" not in (
         ran.stdout + ran.stderr)
-    wat = _cli("compile", "--wat", str(path)).stdout
+    wat = pipeline.cli("compile", "--wat", path).stdout
 
     assert registered == expected, (
         f"`State<{cell_type}>` registration changed: the backend "
@@ -2208,8 +2175,8 @@ def test_the_byte_literal_tally_is_what_the_routes_measure(
         for route in entries:
             routes += 1
             source = route.build(literal.instance("good"))  # type: ignore[operator]
-            checked = _cli(
-                "check", str(_write(tmp_path, source, "byte.vera")))
+            checked = pipeline.cli(
+                "check", _write(tmp_path, source, "byte.vera"))
             if checked.returncode == 0:
                 continue
             found = _re.search(
@@ -2278,8 +2245,8 @@ def test_1439_a_state_write_over_a_handle_base_carries_its_guard(
     m = _measure(cell, tmp_path)
     assert not m["errors"], m["errors"]
     assert "tier3" in m["statuses"], sorted(m["statuses"])
-    wat = _cli("compile", "--wat", str(_write(
-        tmp_path, _sources(cell)[1], "state.vera")))
+    wat = pipeline.cli("compile", "--wat", _write(
+        tmp_path, _sources(cell)[1], "state.vera"))
     assert "contract_fail" in wat.stdout, (
         "the record claims a runtime check and the module carries none"
     )
@@ -2317,8 +2284,8 @@ def test_1594_a_nat_built_tuple_sub_pattern_crashes_verify(
 }
 """
     path = _write(tmp_path, source, "sub.vera")
-    assert _cli("check", "--quiet", str(path)).returncode == 0
-    verified = _cli("verify", str(path))
+    assert pipeline.cli("check", "--quiet", path).returncode == 0
+    verified = pipeline.cli("verify", path)
     assert verified.returncode != 0, (
         "#1594 appears to be FIXED — verification no longer crashes.  Remove "
         "this cell"

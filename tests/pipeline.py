@@ -914,17 +914,43 @@ class CliResult:
     """One ``vera`` command's exit status and output.
 
     The attribute names are ``subprocess.CompletedProcess``'s, so a test
-    that ran the CLI as a process reads this the same way.
+    that ran the CLI as a process reads this the same way: ``stdout`` and
+    ``stderr`` are the text the command wrote.  ``stdout_bytes`` and
+    ``stderr_bytes`` are the bytes a process's text-mode stream writes for
+    that text, which is what a pipe from ``vera`` carries: UTF-8, with each
+    newline the platform's line separator.
     """
 
     args: tuple[str, ...]
     returncode: int
     stdout: str
     stderr: str
+    stdout_bytes: bytes
+    stderr_bytes: bytes
 
     def json(self) -> Any:
         """The command's ``--json`` output, parsed."""
         return json.loads(self.stdout)
+
+
+def _stream() -> tuple[io.BytesIO, io.TextIOWrapper]:
+    """A stream that writes as a process's text-mode stdout writes, and the
+    bytes it writes them to: UTF-8, each newline the platform's line
+    separator.  CPython opens a standard stream on Windows with
+    ``newline=None``, which writes ``\\r\\n`` for each newline; on POSIX the
+    separator is the newline itself, so nothing changes."""
+    raw = io.BytesIO()
+    return raw, io.TextIOWrapper(
+        raw, encoding="utf-8", newline=None, write_through=True)
+
+
+def _text(written: bytes) -> str:
+    """The text a :func:`_stream` was handed, from the bytes it wrote.  Each
+    newline became the line separator and nothing else changed, so the
+    separator back to a newline is the text exactly, a carriage return the
+    command wrote included."""
+    text = written.decode("utf-8")
+    return text if os.linesep == "\n" else text.replace(os.linesep, "\n")
 
 
 @contextlib.contextmanager
@@ -964,12 +990,15 @@ def cli(
     ``sys.argv``, ``sys.stdin``, ``sys.stdout`` and ``sys.stderr`` are the
     command's for the call and restored after it, and so is each variable
     *env* names (a value of ``None`` unsets it).  The command reads *stdin*,
-    which is empty unless given.  Its exit status is the code it exits with.
+    which is empty unless given.  It writes to streams that write as a
+    process's do (:func:`_stream`), so the result holds both the text and the
+    bytes.  Its exit status is the code it exits with.
     """
     from vera.cli import main
 
     argv = ["vera", *(os.fspath(a) for a in args)]
-    out, err = io.StringIO(), io.StringIO()
+    out_bytes, out = _stream()
+    err_bytes, err = _stream()
     saved_argv, saved_stdin = sys.argv, sys.stdin
     status = 0
     with contextlib.ExitStack() as stack:
@@ -983,7 +1012,11 @@ def cli(
             status = _exit_status(exc.code)
         finally:
             sys.argv, sys.stdin = saved_argv, saved_stdin
-    return CliResult(tuple(argv[1:]), status, out.getvalue(), err.getvalue())
+    out.flush()
+    err.flush()
+    stdout, stderr = out_bytes.getvalue(), err_bytes.getvalue()
+    return CliResult(
+        tuple(argv[1:]), status, _text(stdout), _text(stderr), stdout, stderr)
 
 
 # =====================================================================

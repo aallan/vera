@@ -78,10 +78,12 @@ COLLECT_ARGS = ("--collect-only", "-q", "-o", "addopts=", "--matrix=full")
 # budget is generous; an expired one is a reason, not a traceback.
 COLLECT_TIMEOUT_SECONDS = 300
 
-# The stage methods of the conformance tests replace these three module
-# names with a stop, so a stage that does not skip stops at the first piece
+# The conformance tests' stage methods do their work through these module
+# names: `tests/pipeline.py`, which runs every stage in process, and the
+# parser and the formatter, which two stages call themselves.  Each is
+# replaced by a stop, so a stage that does not skip stops at the first piece
 # of work it reaches (`conformance_skips`).
-_CONFORMANCE_WORK = ("_vera", "parse_file", "format_source")
+_CONFORMANCE_WORK = ("pipeline", "parse_file", "format_source")
 
 _LEVEL_ORDER = ("parse", "check", "verify", "run")
 
@@ -249,6 +251,21 @@ def _stop(*_args: object, **_kwargs: object) -> None:
     raise _Reached
 
 
+class _Stop:
+    """A stop where a piece of work was: calling it, or any function it has,
+    raises `_Reached`, so it stands in for a function and for a module of
+    them alike."""
+
+    def __call__(self, *_args: object, **_kwargs: object) -> None:
+        raise _Reached
+
+    def __getattr__(self, _name: str) -> _Stop:
+        return self
+
+
+_STOP = _Stop()
+
+
 def _about(entry: dict[str, Any]) -> str:
     title = str(entry.get("title", ""))
     code = entry.get("expected_error")
@@ -280,7 +297,7 @@ def conformance_skips(root: Path) -> list[Skip]:
                 f"tests/test_conformance.py no longer defines `{name}`, which"
                 " render_status replaces to find the stages that skip"
             )
-        setattr(module, name, _stop)
+        setattr(module, name, _STOP)
     if hasattr(module, "subprocess"):
         module.subprocess = SimpleNamespace(
             run=_stop, Popen=_stop, call=_stop, check_call=_stop, check_output=_stop,

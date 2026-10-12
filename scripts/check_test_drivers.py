@@ -75,6 +75,11 @@ _CLI_SUITE = (
     "tests/test_cli.py, the CLI's own suite, drives the commands and the code "
     "beneath them itself"
 )
+_CLI_SMOKE = (
+    "the CLI smoke: runs the corpus programs CLI_SMOKE names through `python -m "
+    "vera.cli` as a process, and holds each command's exit status and output "
+    "to the in-process CLI's, byte for byte"
+)
 _LARK_TREE = (
     "copies the doc gate's parse stage, the Lark parse alone (vera.parser.parse, "
     "no transform); pipeline.parse transforms too, so a block that parses but "
@@ -110,13 +115,12 @@ ALLOWED: Mapping[str, str] = {
     "tests/test_ambiguous_import_refusal_1304.py::_run_check_json": _PART_B,
     "tests/test_ambiguous_import_refusal_1304.py::TestTheRefusedDataNamesBindToNothing._env": _CHECKER_ITSELF,
     "tests/test_binder_position_generator.py::_cli": _PART_B,
-    "tests/test_boundary_guard_correctness_1466.py::_cli": _PART_B,
     "tests/test_clause_binder_guard_1445.py::_cli": _PART_B,
     "tests/test_cli.py::TestTypedArgParsingDirect._compile": _CLI_SUITE,
     "tests/test_clone_body_declaring_module_1241_1243.py::_cli": _PART_B,
     "tests/test_codegen_decreases_guard.py::_run_cli": _PART_B,
     "tests/test_codegen_root_lifetime_1371.py::_run_in_subprocess": _PART_B,
-    "tests/test_conformance.py::_vera": _PART_B,
+    "tests/test_conformance.py::_vera": _CLI_SMOKE,
     "tests/test_construction_guards_1426.py::_cli": _PART_B,
     "tests/test_disclosure_taint_follows_value_1406.py::_cli": _PART_B,
     "tests/test_disclosure_taint_follows_value_1406.py::_cli_unpatched": _PART_B,

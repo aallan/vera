@@ -274,6 +274,32 @@ def test_cli_hands_the_command_its_stdin_and_environment(tmp_path: Path) -> None
     assert (ran.returncode, ran.stdout) == (0, "hello!\n"), ran.stderr
 
 
+def test_cli_writes_the_bytes_the_cli_process_writes(tmp_path: Path) -> None:
+    """On bytes, as a pipe carries them: a text-mode capture of the process
+    would read the carriage return as a newline, so a comparison of decoded
+    text cannot tell the two apart.  Each newline is the platform's line
+    separator in both, and the text a command wrote is still its own."""
+    program = tmp_path / "bytes.vera"
+    program.write_text(
+        "public fn main(@Unit -> @Unit)\n"
+        "  requires(true)\n  ensures(true)\n  effects(<IO>)\n"
+        "{\n"
+        '  IO.print("a\\rb\\n→\\tc");\n'
+        '  IO.stderr("note\\n")\n'
+        "}\n",
+        encoding="utf-8",
+    )
+    process = subprocess.run(
+        [sys.executable, "-m", "vera.cli", "run", str(program)],
+        capture_output=True, check=False, cwd=ROOT,
+        stdin=subprocess.DEVNULL, timeout=300,
+    )
+    mine = pipeline.cli("run", program)
+    assert (mine.returncode, mine.stdout_bytes, mine.stderr_bytes) == (
+        process.returncode, process.stdout, process.stderr)
+    assert (mine.stdout, mine.stderr) == ("a\rb\n→\tc\n", "note\n")
+
+
 # =====================================================================
 # What a stage takes
 # =====================================================================

@@ -437,8 +437,15 @@ MANIFEST = [
 ]
 
 
-def _vera(*args):
-    raise AssertionError("the real CLI ran")
+class _Pipeline:
+    def cli(self, *args):
+        raise AssertionError("the real CLI ran")
+
+    def check(self, path):
+        raise AssertionError("the real check ran")
+
+
+pipeline = _Pipeline()
 
 
 def parse_file(path):
@@ -458,12 +465,12 @@ class TestConformance:
         # Not the level rule: a `run`-level entry skips here by its name.
         if entry["id"].endswith("_x"):
             pytest.skip("suffix-x")
-        _vera("run", entry["file"])
+        pipeline.cli("run", entry["file"])
 
     def test_check(self, entry):
         if entry["level"] == "check":
             pytest.skip("odd")
-        _vera("check", entry["file"])
+        pipeline.check(entry["file"])
 '''
 
 
@@ -488,8 +495,8 @@ class TestConformanceSkips:
     ) -> None:
         root = tmp_path / "repo"
         _write(root / "tests" / "test_conformance.py",
-               _CONFORMANCE_MODULE.replace("def _vera(", "def _run_cli("))
-        with pytest.raises(RuntimeError, match="_vera"):
+               _CONFORMANCE_MODULE.replace("pipeline = _Pipeline()", "driver = _Pipeline()"))
+        with pytest.raises(RuntimeError, match="pipeline"):
             RS.conformance_skips(root)
 
     def test_a_stage_that_shells_out_or_fails_is_not_a_skip(
@@ -540,6 +547,24 @@ class TestConformanceSkips:
         assert [(row.test, row.message) for row in RS.conformance_skips(root)] == [
             ("test_run[id-p_x]", "suffix-x"), ("test_check[id-q]", "odd"),
         ]
+
+    def test_the_real_rows_are_read_without_starting_a_process(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Against the real suite: a stage that does not skip stops at its
+        first piece of work, so reading the table runs no program.  A run
+        stage that reached a real `vera run` would start one process per
+        run-level entry, and the release PR would wait on all of them."""
+        started: list[object] = []
+
+        def refuse(self: object, args: object, *rest: object, **kwargs: object) -> None:
+            started.append(args)
+            raise OSError("render_status started a process")
+
+        monkeypatch.setattr(subprocess.Popen, "__init__", refuse)
+        rows = RS.conformance_skips(ROOT)
+        assert rows
+        assert started == [], f"{len(started)} processes, the first {started[0]!r}"
 
     def test_every_real_row_really_skips(self) -> None:
         """Against the real suite: each row's stage, called with nothing

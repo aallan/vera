@@ -168,6 +168,14 @@ markers = [
 ]
 addopts = "-m 'not stress'"
 
+[tool.coverage.run]
+# A test's child Python processes are measured too, so the CLI smoke
+# (CLI_SMOKE in tests/test_conformance.py) and every other test that starts
+# `python -m vera.cli` count toward the total: coverage.py (7.10+) starts
+# itself in each child, which writes a data file of its own that the run
+# combines.
+patch = ["subprocess"]
+
 [tool.mutmut]
 # Mutation testing (#387).  See MUTATION.md for the full runbook.
 # Mutate the whole compiler by default; scope a single sweep to one
