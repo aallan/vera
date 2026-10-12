@@ -28,16 +28,15 @@ import os
 import tempfile
 
 import pytest
-import wasmtime
 
 from vera import ast
 from vera.checker import typecheck_with_artifacts
 from vera.codegen import compile as codegen_compile
-from vera.codegen import execute
-from vera.codegen.api import CompileResult, WasmTrapError
+from vera.codegen.api import CompileResult
 from vera.parser import parse_to_ast
 from vera.wasm import WasmContext
 from vera.wasm.helpers import StringPool
+from tests.module_fixture_helpers import module_value as _run
 
 
 # The issue's repro: an Int-payload inner handler whose clause rethrows at the
@@ -279,15 +278,6 @@ def _compile(source: str) -> CompileResult:
     ]
     assert not cg_errors, f"codegen errors: {cg_errors}"
     return result
-
-
-def _run(
-    result: CompileResult, fn: str = "main",
-) -> tuple[str, object]:
-    try:
-        return "ok", execute(result, fn_name=fn).value
-    except (WasmTrapError, wasmtime.WasmtimeError, wasmtime.Trap) as exc:
-        return "trap", str(exc)
 
 
 @pytest.mark.parametrize(

@@ -23,6 +23,7 @@ from vera.transform import transform
 from vera.monomorphize import resolve_fn_type_alias
 
 from tests.module_fixture_helpers import resolved_module
+from tests.codegen_helpers import _compile, _compile_ok, _run
 
 
 # =====================================================================
@@ -63,59 +64,6 @@ def _parse_from_temp_file(source: str) -> tuple[ast.Program, str]:
         return transform(parse_file(path)), path
     finally:
         Path(path).unlink(missing_ok=True)
-
-
-def _compile(source: str) -> CompileResult:
-    """Compile a Vera source string to WASM."""
-    prog, path = _parse_from_temp_file(source)
-    return compile(prog, source=source, file=path)
-
-
-def _compile_ok(source: str) -> CompileResult:
-    """Compile and assert no errors."""
-    result = _compile(source)
-    errors = [d for d in result.diagnostics if d.severity == "error"]
-    assert not errors, f"Unexpected errors: {errors}"
-    return result
-
-
-def _run(source: str, fn: str | None = None, args: list[int] | None = None) -> int:
-    """Compile, execute, and return the integer result."""
-    result = _compile_ok(source)
-    exec_result = execute(result, fn_name=fn, args=args)
-    assert exec_result.value is not None, "Expected a return value"
-    return exec_result.value
-
-
-def _run_float(
-    source: str, fn: str | None = None, args: list[int | float] | None = None
-) -> float:
-    """Compile, execute, and return the float result."""
-    result = _compile_ok(source)
-    exec_result = execute(result, fn_name=fn, args=args)
-    assert exec_result.value is not None, "Expected a return value"
-    assert isinstance(exec_result.value, float), (
-        f"Expected float, got {type(exec_result.value).__name__}"
-    )
-    return exec_result.value
-
-
-def _run_io(
-    source: str, fn: str | None = None, args: list[int] | None = None
-) -> str:
-    """Compile, execute, and return captured stdout."""
-    result = _compile_ok(source)
-    exec_result = execute(result, fn_name=fn, args=args)
-    return exec_result.stdout
-
-
-def _run_trap(
-    source: str, fn: str | None = None, args: list[int] | None = None
-) -> None:
-    """Compile, execute, and assert a WASM trap."""
-    result = _compile_ok(source)
-    with pytest.raises((wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)):
-        execute(result, fn_name=fn, args=args)
 
 
 # =====================================================================
@@ -3297,7 +3245,6 @@ public fn main(@Unit -> @Int)
 }
 """, mods, fn="main")
         assert val == 42
-
 
 
     def test_mono_clone_registry_entry_canonical(self) -> None:

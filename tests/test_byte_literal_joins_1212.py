@@ -64,6 +64,7 @@ import pytest
 
 from tests.checker_helpers import _check_ok
 from tests.codegen_helpers import _run
+from tests.codegen_helpers import _run_checked
 
 # =====================================================================
 # The write boundaries this suite proves (see the module docstring
@@ -701,51 +702,6 @@ public fn main(-> @Int)
   f(true)
 }
 """
-
-
-def _run_checked(source: str, fn: str | None = None) -> int:
-    """Compile through the REAL pipeline (checker tables threaded) and run.
-
-    The #1092 constructor-field width keys on the checker-recorded TARGET
-    type (`_target_codegen_type_full`, the #820 side-table), so this arm is
-    only observable when those artifacts are threaded — exactly as the CLI
-    threads them.  Mirrors the helper of the same name in
-    `tests/test_codegen_alias_of_adt_eq_show_1085.py`, which pins the
-    top-level-literal half of the same boundary.
-    """
-    import tempfile
-    from pathlib import Path
-
-    from vera.checker import typecheck_with_artifacts
-    from vera.codegen import compile as codegen_compile, execute
-    from vera.parser import parse_file
-    from vera.transform import transform
-
-    f = tempfile.NamedTemporaryFile(  # noqa: SIM115 — Windows fixture; closed + unlinked below
-        mode="w", suffix=".vera", delete=False, encoding="utf-8"
-    )
-    try:
-        with f:
-            f.write(source)
-        tree = parse_file(f.name)
-        program = transform(tree)
-        diags, arts = typecheck_with_artifacts(
-            program, source=source, file=f.name,
-        )
-        errors = [d for d in diags if d.severity == "error"]
-        assert not errors, f"check errors: {errors}"
-        result = codegen_compile(
-            program, source=source, file=f.name,
-            expr_semantic_types=arts.expr_semantic_types,
-            expr_target_types=arts.expr_target_types,
-        )
-        cerrors = [d for d in result.diagnostics if d.severity == "error"]
-        assert not cerrors, f"compile errors: {cerrors}"
-        exec_result = execute(result, fn_name=fn)
-        assert exec_result.value is not None, "Expected a return value"
-        return exec_result.value
-    finally:
-        Path(f.name).unlink(missing_ok=True)
 
 
 def test_a_byte_field_literal_inside_a_join_is_stored_at_i32() -> None:

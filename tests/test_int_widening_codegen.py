@@ -30,65 +30,13 @@ Constants:
 
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
 
-import pytest
-import wasmtime
 
-from vera.checker import typecheck_with_artifacts
-from vera.codegen import compile as codegen_compile
-from vera.codegen import execute
-from vera.parser import parse_to_ast
-from vera.resolver import ModuleResolver
+from tests.codegen_helpers import _run_checked as _run, _run_checked_trap as _assert_traps
 
 I64_MAX = 9223372036854775807
 U64_MAX = 18446744073709551615
 _MASK64 = (1 << 64) - 1
-
-
-def _compile_with_types(source: str):
-    """Compile via the artifact-threaded path (mirrors cmd_run); the widening
-    classifier consults the checker's resolved-type table, so codegen must be
-    handed it."""
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False, encoding="utf-8",
-    ) as f:
-        f.write(source)
-        path = f.name
-    try:
-        ast = parse_to_ast(source)
-        resolver = ModuleResolver(_root=Path(path).parent)
-        resolved = resolver.resolve_imports(ast, Path(path))
-        diags, arts = typecheck_with_artifacts(
-            ast, source, file=path, resolved_modules=resolved,
-        )
-        errors = [d for d in diags if d.severity == "error"]
-        assert not errors, f"typecheck errors: {[d.description for d in errors]}"
-        result = codegen_compile(
-            ast, source=source, file=path,
-            resolved_modules=resolved,
-            expr_semantic_types=arts.expr_semantic_types,
-            expr_target_types=arts.expr_target_types,
-        )
-        errs = [d for d in result.diagnostics if d.severity == "error"]
-        assert not errs, f"codegen errors: {[d.description for d in errs]}"
-        return result
-    finally:
-        Path(path).unlink(missing_ok=True)
-
-
-def _run(source: str, fn: str, args: list[int]) -> int:
-    result = _compile_with_types(source)
-    exec_result = execute(result, fn_name=fn, args=args)
-    assert exec_result.value is not None
-    return exec_result.value
-
-
-def _assert_traps(source: str, fn: str, args: list[int]) -> None:
-    result = _compile_with_types(source)
-    with pytest.raises((wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)):
-        execute(result, fn_name=fn, args=args)
 
 
 def _assert_no_trap(source: str, fn: str, args: list[int], expect: int) -> None:

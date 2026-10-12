@@ -41,6 +41,7 @@ from tests.codegen_helpers import (
     _compile,
     _run,
 )
+from tests.codegen_helpers import _run_checked
 
 
 def _warnings(source: str) -> list[str]:
@@ -940,49 +941,6 @@ def test_eq_refinement_over_whole_adt_distinct() -> None:
 # transform -> compile keeps the documented #798/#820 degraded-path
 # caveat).
 # =====================================================================
-
-def _run_checked(source: str, fn: str | None = None) -> int:
-    """Compile through the REAL pipeline (checker tables threaded) and run.
-
-    parse -> transform -> typecheck_with_artifacts -> compile with
-    ``expr_semantic_types`` / ``expr_target_types`` -> execute.  Asserts the
-    check and the compile are both error-free.  Sources need explicit
-    visibility modifiers (the checker enforces them; the bare `_compile`
-    helper's transform->compile path does not).
-    """
-    import tempfile
-    from pathlib import Path
-
-    from vera.checker import typecheck_with_artifacts
-    from vera.codegen import compile as codegen_compile, execute
-    from vera.parser import parse_file
-    from vera.transform import transform
-
-    f = tempfile.NamedTemporaryFile(  # noqa: SIM115 — Windows fixture; closed + unlinked below
-        mode="w", suffix=".vera", delete=False, encoding="utf-8"
-    )
-    try:
-        with f:
-            f.write(source)
-        tree = parse_file(f.name)
-        program = transform(tree)
-        diags, arts = typecheck_with_artifacts(
-            program, source=source, file=f.name,
-        )
-        errors = [d for d in diags if d.severity == "error"]
-        assert not errors, f"check errors: {errors}"
-        result = codegen_compile(
-            program, source=source, file=f.name,
-            expr_semantic_types=arts.expr_semantic_types,
-            expr_target_types=arts.expr_target_types,
-        )
-        cerrors = [d for d in result.diagnostics if d.severity == "error"]
-        assert not cerrors, f"compile errors: {cerrors}"
-        exec_result = execute(result, fn_name=fn)
-        assert exec_result.value is not None, "Expected a return value"
-        return exec_result.value
-    finally:
-        Path(f.name).unlink(missing_ok=True)
 
 
 _BYTE_LIT_EQ_DISTINCT = """\

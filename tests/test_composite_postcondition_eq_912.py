@@ -41,51 +41,18 @@ must make true composite postconditions pass, never false ones.
 from __future__ import annotations
 
 import re
-import tempfile
 
 import pytest
 
-from vera.checker import typecheck_with_artifacts
-from vera.codegen import CompileResult, compile as codegen_compile, execute
+from vera.codegen import execute
 from vera.codegen.api import WasmTrapError
-from vera.parser import parse_file, parse_to_ast
-from vera.transform import transform
-from vera.verifier import VerifyResult, verify
+from tests.codegen_helpers import _compile, _run
+from tests.verifier_helpers import _verify
 
 
 # ---------------------------------------------------------------------
 # Helpers (mirror tests/test_eq_contract_874.py)
 # ---------------------------------------------------------------------
-
-def _compile(source: str) -> CompileResult:
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False, encoding="utf-8"
-    ) as f:
-        f.write(source)
-        f.flush()
-        path = f.name
-    tree = parse_file(path)
-    ast = transform(tree)
-    return codegen_compile(ast, source=source, file=path)
-
-
-def _run(source: str, fn: str | None = None) -> int:
-    result = _compile(source)
-    errors = [d for d in result.diagnostics if d.severity == "error"]
-    assert not errors, f"Unexpected compile errors: {errors}"
-    exec_result = execute(result, fn_name=fn)
-    assert exec_result.value is not None, "Expected a return value"
-    return exec_result.value
-
-
-def _verify(source: str) -> VerifyResult:
-    ast = parse_to_ast(source)
-    _diags, arts = typecheck_with_artifacts(ast, source)
-    return verify(
-        ast, source,
-        expr_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-    )
 
 
 def _error_codes(source: str) -> list[str]:

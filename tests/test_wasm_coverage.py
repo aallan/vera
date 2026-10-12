@@ -11,14 +11,9 @@ See issue #156.
 
 from __future__ import annotations
 
-import tempfile
 
-import pytest
-import wasmtime
 
-from vera.codegen import CompileResult, compile, execute
-from vera.parser import parse_file
-from vera.transform import transform
+from vera.codegen import CompileResult, execute
 from vera.types import (
     BOOL,
     BYTE,
@@ -38,6 +33,7 @@ from vera.wasm.helpers import (
     wasm_type,
     wasm_type_or_none,
 )
+from tests.codegen_helpers import _compile, _run, _run_float, _run_io, _run_trap
 
 
 def _elem_ctx(adt_names: set[str] | None = None) -> WasmContext:
@@ -57,54 +53,13 @@ def _elem_ctx(adt_names: set[str] | None = None) -> WasmContext:
 # Helpers
 # =====================================================================
 
-def _compile(source: str) -> CompileResult:
-    """Compile a Vera source string to WASM."""
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False, encoding="utf-8",
-    ) as f:
-        f.write(source)
-        f.flush()
-        path = f.name
-    tree = parse_file(path)
-    ast = transform(tree)
-    return compile(ast, source=source, file=path)
-
 
 def _compile_ok(source: str) -> CompileResult:
+    # Asserts nothing (every result has bytes), and two inference tests below
+    # pass on a refused compile through it (#1655).
     result = _compile(source)
     assert result.wasm_bytes is not None, f"Compile failed: {result.errors}"
     return result
-
-
-def _run(source: str, fn: str | None = None,
-         args: list[int] | None = None) -> int:
-    result = _compile_ok(source)
-    exec_result = execute(result, fn_name=fn, args=args or [])
-    assert exec_result.value is not None
-    return int(exec_result.value)
-
-
-def _run_float(source: str, fn: str | None = None,
-               args: list[int | float] | None = None) -> float:
-    result = _compile_ok(source)
-    exec_result = execute(result, fn_name=fn, args=args)
-    assert exec_result.value is not None
-    assert isinstance(exec_result.value, float)
-    return exec_result.value
-
-
-def _run_io(source: str, fn: str | None = None,
-            args: list[int] | None = None) -> str:
-    result = _compile_ok(source)
-    exec_result = execute(result, fn_name=fn, args=args)
-    return exec_result.stdout
-
-
-def _run_trap(source: str, fn: str | None = None,
-              args: list[int] | None = None) -> None:
-    result = _compile_ok(source)
-    with pytest.raises((wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)):
-        execute(result, fn_name=fn, args=args)
 
 
 # =====================================================================
