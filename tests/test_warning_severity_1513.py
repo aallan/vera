@@ -56,6 +56,8 @@ from typing import Any, Callable, NamedTuple, cast
 
 import pytest
 
+from tests import pipeline
+
 ROOT = Path(__file__).parent.parent
 
 # The eight codes #1513 names.
@@ -446,13 +448,9 @@ def _load_script(name: str) -> Any:
 
 def _registry_codes() -> set[str]:
     """Every code `vera errors --json` prints."""
-    from vera.cli import cmd_errors
-
-    out = io.StringIO()
-    with contextlib.redirect_stdout(out):
-        rc = cmd_errors(as_json=True)
-    assert rc == 0
-    return {item["code"] for item in json.loads(out.getvalue())["items"]}
+    ran = pipeline.cli("errors", "--json")
+    assert ran.returncode == 0
+    return {item["code"] for item in ran.json()["items"]}
 
 
 def _check_stage_warning_codes() -> set[str]:

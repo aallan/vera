@@ -68,11 +68,31 @@ _PART_B = (
     "runs the CLI as a process; the subprocess migration moves it in process "
     "through pipeline.cli"
 )
-_PART_A2 = "migrates to tests/pipeline.py in the second half of the driver migration"
-_OTHER_CHANGE = (
-    "in a file another change in this release holds (tests/test_cli.py, "
-    "tests/test_check_*.py); it migrates with the second half of the driver "
-    "migration"
+_CLI_SUITE = (
+    "tests/test_cli.py, the CLI's own suite, drives the commands and the code "
+    "beneath them itself"
+)
+_LARK_TREE = (
+    "copies the doc gate's parse stage, the Lark parse alone (vera.parser.parse, "
+    "no transform); pipeline.parse transforms too, so a block that parses but "
+    "does not transform would change verdict"
+)
+_SUBSTITUTED_TABLE = (
+    "hands the verifier or code generation a semantic-type table other than "
+    "the checker's, on purpose; no stage takes one"
+)
+_MODULE_TABLES_WITHHELD = (
+    "compiles without the imported modules' own tables on purpose "
+    "(thread_modules=False); every stage that compiles threads them"
+)
+_RESOLVER_UNIT = (
+    "a unit test of ModuleResolver itself, over programs that need not "
+    "type-check; the pipeline resolves only inside a check"
+)
+_VERIFY_ALONE = (
+    "verifies a program the test has checked already, so that a recursion "
+    "budget wraps the verification alone; every stage that verifies checks "
+    "first"
 )
 
 #: The drivers that stay, ``"tests/<file>::<helper>"`` (a method as
@@ -82,7 +102,7 @@ ALLOWED: Mapping[str, str] = {
     "tests/test_binder_position_generator.py::_cli": _PART_B,
     "tests/test_boundary_guard_correctness_1466.py::_cli": _PART_B,
     "tests/test_clause_binder_guard_1445.py::_cli": _PART_B,
-    "tests/test_cli.py::TestTypedArgParsingDirect._compile": _OTHER_CHANGE,
+    "tests/test_cli.py::TestTypedArgParsingDirect._compile": _CLI_SUITE,
     "tests/test_clone_body_declaring_module_1241_1243.py::_cli": _PART_B,
     "tests/test_codegen_decreases_guard.py::_run_cli": _PART_B,
     "tests/test_codegen_root_lifetime_1371.py::_run_in_subprocess": _PART_B,
@@ -90,42 +110,37 @@ ALLOWED: Mapping[str, str] = {
     "tests/test_construction_guards_1426.py::_cli": _PART_B,
     "tests/test_disclosure_taint_follows_value_1406.py::_cli": _PART_B,
     "tests/test_disclosure_taint_follows_value_1406.py::_cli_unpatched": _PART_B,
-    "tests/test_doc_annotations.py::_try_parse": _PART_A2,
+    "tests/test_doc_annotations.py::_try_parse": _LARK_TREE,
     "tests/test_effect_op_determinism.py::_run_seeded": _PART_B,
     "tests/test_element_facts_statable_1430.py::_cli": _PART_B,
     "tests/test_evaluated_position_obligations_1480.py::_cli_json": _PART_B,
     "tests/test_field_layout_one_source_1466.py::_run": _PART_B,
     "tests/test_guard_completeness.py::_cli": _PART_B,
-    "tests/test_html.py::_try_parse": _PART_A2,
+    "tests/test_html.py::_try_parse": _LARK_TREE,
     "tests/test_html.py::_run_cli": _PART_B,
     "tests/test_import_visibility_entry_point_1244.py::_cli": _PART_B,
     "tests/test_nat_bind_construction_soundness_1332.py::_cli": _PART_B,
     "tests/test_nested_ctor_sort_1360.py::_cli": _PART_B,
     "tests/test_nonregular_data_rejected_1429.py::_cli": _PART_B,
-    "tests/test_one_classifier_1503.py::_pipeline": _PART_A2,
-    "tests/test_overflow_fails_closed_1417.py::_compiled": _PART_A2,
-    "tests/test_readme.py::_try_parse": _PART_A2,
+    "tests/test_one_classifier_1503.py::_pipeline": _SUBSTITUTED_TABLE,
+    "tests/test_overflow_fails_closed_1417.py::_compiled": _SUBSTITUTED_TABLE,
+    "tests/test_readme.py::_try_parse": _LARK_TREE,
     "tests/test_refinement_chain_convergence.py::_records_at_the_bind": _PART_B,
     "tests/test_refinement_chain_convergence.py::_clause_binder_records": _PART_B,
-    "tests/test_resolver.py::_resolve_ok": _PART_A2,
-    "tests/test_resolver.py::_resolve_err": _PART_A2,
-    "tests/test_resolver.py::TestResolverErrorCodes._errors": _PART_A2,
+    "tests/test_resolver.py::_resolve_ok": _RESOLVER_UNIT,
+    "tests/test_resolver.py::_resolve_err": _RESOLVER_UNIT,
+    "tests/test_resolver.py::TestResolverErrorCodes._errors": _RESOLVER_UNIT,
     "tests/test_verifier_assert_subpattern_facts.py::_cli": _PART_B,
     "tests/test_verifier_budget.py::TestCliFlag._run": _PART_B,
     "tests/test_verifier_call_arg_payload_1410.py::_cli": _PART_B,
     "tests/test_verifier_cross_module_disclosure.py::_cli": _PART_B,
-    "tests/test_verifier_cross_module_disclosure.py::_verify_checked": _PART_A2,
+    "tests/test_verifier_cross_module_disclosure.py::_verify_checked": _VERIFY_ALONE,
     "tests/test_verifier_premise_consistency_1451.py::_cli": _PART_B,
-    "tests/test_verifier_premise_consistency_1451.py::_verify_in_process": _PART_A2,
     "tests/test_verifier_refined_sort_derivation.py::_cli": _PART_B,
     "tests/test_verifier_refinement_chain_1434.py::_cli": _PART_B,
     "tests/test_verifier_truth_consult_status.py::_cli": _PART_B,
-    "tests/test_warning_severity_1513.py::_registry_codes": _PART_A2,
-    "tests/test_wasi_target.py::_compile_path": _PART_A2,
     "tests/test_where_helper_call_boundary_1455.py::_cli": _PART_B,
-    "tests/test_where_helper_call_boundary_1455.py::_oracle_readings": _PART_A2,
-    "tests/test_xmod_artifact_collection.py::_resolve": _PART_A2,
-    "tests/test_xmod_span_collision.py::_compile_main": _PART_A2,
+    "tests/test_xmod_span_collision.py::_compile_main": _MODULE_TABLES_WITHHELD,
 }
 
 
