@@ -458,7 +458,7 @@
       "issues": [370],
       "rows": {
         "KNOWN_ISSUES.md#limitations": [
-          "`Inference.complete` hardcodes `max_tokens` and `temperature`. Configurability is Milestone 2's first Inference-hardening item — agent workloads need both for cost gates and deterministic replays."
+          "`Inference.complete` takes no `max_tokens` or `temperature`: Anthropic requests send a `max_tokens` of 1024, OpenAI-style requests send neither, and no request sends `temperature`, so the provider's default applies. Configurability is Milestone 2's first Inference-hardening item — agent workloads need both for cost gates and deterministic replays."
         ],
         "vera/README.md#limitations": [
           "**Inference: no token/temperature controls**",
@@ -469,7 +469,7 @@
         ],
         "SKILL.md#limitations": [
           "`Inference.complete` has no `max_tokens` or temperature controls",
-          "The host implementation uses provider defaults. Custom parameters (max tokens, temperature, top-p, system prompt) are not supported at the Vera level."
+          "The host sends a `max_tokens` of 1024 to Anthropic and nothing else; OpenAI-style requests take the provider's defaults, and `temperature`, top-p and a system prompt cannot be set from Vera."
         ]
       }
     },

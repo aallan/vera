@@ -244,14 +244,32 @@ class TestHostMirrored:
 
 class TestSyncGates:
     def test_the_audits_mirror_gates_that_still_exist(self, tmp_path: Path) -> None:
-        """Three of the audit's eight are left, among five gate scripts: a
-        gate the audit classified otherwise, and a script that is not a
-        gate, are not counted."""
+        """Two of the audit's eight are left, among five gate scripts: an
+        alignment gate, a gate the audit classified otherwise, and a script
+        that is not a gate, are not counted."""
         for name in ("check_doc_counts", "check_site_assets",
                      "check_examples_readme", "check_licenses", "check_e602_clean"):
             _write(tmp_path / "scripts" / f"{name}.py")
         _write(tmp_path / "scripts" / "render_status.py")
-        assert SC.sync_gates(tmp_path) == (3, 5)
+        assert SC.sync_gates(tmp_path) == (2, 5)
+
+    def test_the_two_alignment_gates_are_reclassified(self, tmp_path: Path) -> None:
+        """`check_grammar_alignment` and `check_examples_readme` hold a
+        hand-written document to its source, and were reclassified as
+        alignment gates on 2026-10-12: the audit's eight are the six counted
+        and those two, the audit's own value stays 8 of 23, and the row's
+        note says what moved and when."""
+        assert SC.ALIGNMENT_GATES == ("check_grammar_alignment", "check_examples_readme")
+        assert not set(SC.ALIGNMENT_GATES) & set(SC.MIRROR_GATES)
+        assert len(SC.MIRROR_GATES) + len(SC.ALIGNMENT_GATES) == 8
+        for name in SC.ALIGNMENT_GATES:
+            _write(tmp_path / "scripts" / f"{name}.py")
+        assert SC.sync_gates(tmp_path) == (0, 2)
+        (row,) = [m for m in SC.MEASURES if m.key == "sync_gates"]
+        assert row.audit == "8 of 23"
+        assert "reclassified as alignment gates on 2026-10-12" in row.counts
+        for name in SC.ALIGNMENT_GATES:
+            assert f"`{name}`" in row.counts
 
 
 class TestGoldenOutputs:
@@ -425,7 +443,10 @@ class TestAgainstTheAuditsTree:
         assert SC.expr_dispatchers(root) == 191
         assert SC.long_functions(root) == 17
         assert SC.host_mirrored(root)[0] == 53
-        assert SC.sync_gates(root) == (8, 23)
+        # The one row whose columns count different sets, as its note says:
+        # the audit's eight, less the two reclassified since as alignment
+        # gates.
+        assert SC.sync_gates(root) == (8 - len(SC.ALIGNMENT_GATES), 23)
         assert SC.golden_outputs(root) == SC.Golden(0, 256, 176, 0, 0)
         assert SC.program_generator(root) == "none"
         assert SC.distrust_in_ci(root) == "no"

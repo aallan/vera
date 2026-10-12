@@ -85,14 +85,18 @@ GATE_COLLECT_ARGS = (
     "--collect-only", "-q", "--matrix=sample", f"--matrix-seed={GATE_SEED}",
 )
 
-#: The audit's eight gate scripts that exist only to keep hand-copied facts
-#: in step (its appendix A2): its classification, held as data.  A script
-#: counts while it exists.
+#: The audit's gate scripts that exist only to keep hand-copied facts in step
+#: (its appendix A2): its classification, held as data.  A script counts
+#: while it exists.  The audit named eight, these six and `ALIGNMENT_GATES`.
 MIRROR_GATES = (
     "check_doc_counts", "check_version_sync", "check_limitations_sync",
-    "check_editor_grammars", "check_site_assets", "check_grammar_alignment",
-    "check_examples_readme", "check_diagnostic_examples",
+    "check_editor_grammars", "check_site_assets", "check_diagnostic_examples",
 )
+
+#: Two of the audit's eight, reclassified as alignment gates on 2026-10-12:
+#: spec chapter 10 and examples/README.md stay hand-written, and each gate
+#: holds its document to its source, so neither counts as a copy kept in step.
+ALIGNMENT_GATES = ("check_grammar_alignment", "check_examples_readme")
 
 #: A function this long or shorter is not long.
 LONG = 500
@@ -147,8 +151,11 @@ MEASURES: tuple[Measure, ...] = (
             " and the map operations `vera/codegen/wasi.py` writes again for the"
             " WASI server world (`_MAP_OPS`)"),
     Measure("sync_gates", "Gate scripts that exist only to sync copies", "8 of 23", TREE,
-            "the audit's eight such scripts (" + ", ".join(f"`{g}`" for g in MIRROR_GATES)
-            + ") that still exist, of the `scripts/check_*.py`"),
+            "the scripts of the audit's eight still classed as such ("
+            + ", ".join(f"`{g}`" for g in MIRROR_GATES)
+            + ") that exist, of the `scripts/check_*.py`; the other two, "
+            + " and ".join(f"`{g}`" for g in ALIGNMENT_GATES)
+            + ", were reclassified as alignment gates on 2026-10-12"),
     Measure("ci_wall", "CI wall time per pull-request push", "57 min", GITHUB,
             f"the median, over the last {RUNS} pull-request runs of `ci.yml` that"
             " reached a verdict, of the time from a run's start to its last job's end"),
