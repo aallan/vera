@@ -67,6 +67,8 @@ from typing import Any, Callable, NamedTuple
 
 import pytest
 
+from tests import pipeline
+
 # A generated class instrument (tests/matrix_sample.py): a pull request runs a
 # sample of its parametrised cells, and all of them when it changes this file or
 # a module that decides its class, here each phase's reading of a module's call
@@ -563,35 +565,24 @@ def _emitted_and_discovered(
     """``(codegen emitted, verifier discovered)`` instantiations for the
     program at *root* — the two sides of the #732 differential, read from
     the records each side consumes."""
-    from vera.checker import typecheck_with_artifacts
-    from vera.codegen.core import CodeGenerator
-    from vera.parser import parse_to_ast
-    from vera.resolver import ModuleResolver
     from vera.verifier import ContractVerifier
 
-    main_path = root / "main.vera"
-    source = main_path.read_text(encoding="utf-8")
-    program = parse_to_ast(source)
-    resolved = ModuleResolver(_root=root).resolve_imports(program, main_path)
-    diags, arts = typecheck_with_artifacts(
-        program, source, file=str(main_path), resolved_modules=resolved,
-        collect_module_artifacts=True,
-    )
+    compiled = pipeline.compile(root / "main.vera", root=root)
+    checked = compiled.checked
+    assert checked is not None
+    _ = checked.program  # raises the parse or transform error
+    diags = list(checked.checker_diagnostics)
     assert not [d for d in diags if d.severity == "error"], diags
-    gen = CodeGenerator(
-        source=source, file=str(main_path), resolved_modules=resolved,
-        expr_semantic_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-        module_artifacts=arts.module_artifacts,
-    )
-    gen.compile_program(program)
-    emitted = set(getattr(gen, "_emitted_instances", set()))
+    _ = compiled.result
+    emitted = set(getattr(compiled.generator, "_emitted_instances", set()))
+    arts = checked.artifacts
     verifier = ContractVerifier(
-        source=source, file=str(main_path), resolved_modules=resolved,
+        source=checked.source, file=checked.file,
+        resolved_modules=checked.resolved,
         expr_types=arts.expr_semantic_types,
         expr_target_types=arts.expr_target_types,
     )
-    verifier.register_program(program)
+    verifier.register_program(compiled.parsed.program)
     discovered = {(name, ct) for name, cts in verifier._instances.items()
                   for ct in cts}
     return emitted, discovered
@@ -1470,13 +1461,9 @@ _DEEP = 1_000_000
 
 def _wat(path: Path) -> str:
     """`vera compile --wat <path>`, in process."""
-    from vera import cli
-
-    out, err = io.StringIO(), io.StringIO()
-    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-        rc = cli.cmd_compile(str(path), wat=True)
-    assert rc == 0, err.getvalue()
-    return out.getvalue()
+    ran = pipeline.cli("compile", "--wat", path)
+    assert ran.returncode == 0, ran.stderr
+    return ran.stdout
 
 
 def _wat_fn(wat: str, name: str) -> str:

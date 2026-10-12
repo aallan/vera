@@ -72,18 +72,13 @@ distinguish a resolved instantiation from a guessed one.
 from __future__ import annotations
 
 import re
-import tempfile
 from pathlib import Path
 
 import pytest
 
 from tests.module_fixture_helpers import build_multi_module, module_value
-from vera.checker import typecheck_with_artifacts
-from vera.codegen import compile as codegen_compile
 from vera.codegen import execute
 from vera.codegen.api import CompileResult
-from vera.codegen.core import CodeGenerator
-from vera.parser import parse_to_ast
 from vera.verifier import ContractVerifier
 from vera.verifier import verify as verify_program
 from tests import pipeline
@@ -93,25 +88,24 @@ from tests import pipeline
 # ---------------------------------------------------------------------
 
 
-def _check(source: str):
-    program = parse_to_ast(source)
-    diags, arts = typecheck_with_artifacts(
-        program, source, collect_module_artifacts=True,
-    )
-    errors = [d for d in diags if d.severity == "error"]
+def _assert_typechecks(checked: pipeline.Checked) -> None:
+    _ = checked.program  # raises the parse or transform error
+    errors = checked.errors
     assert not errors, f"fixture must type-check: {[d.description for d in errors]}"
-    return program, arts
+
+
+def _check(source: str):
+    checked = pipeline.check(source, collect_module_artifacts=True)
+    _assert_typechecks(checked)
+    return checked.program, checked.artifacts
 
 
 def _compile_checked(source: str) -> CompileResult:
     """Compile with the checker's artefacts threaded, as `vera compile` does."""
-    program, arts = _check(source)
-    return codegen_compile(
-        program, source=source,
-        expr_semantic_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-        module_artifacts=arts.module_artifacts,
-    )
+    compiled = pipeline.compile(source)
+    assert compiled.checked is not None
+    _assert_typechecks(compiled.checked)
+    return compiled.result
 
 
 def _errors(result) -> list[tuple[str, str]]:
@@ -153,31 +147,21 @@ def _discovery_differential(
     fallback under test is reached through those tables — running either side
     without them measures the pre-change walker instead.
     """
-    program, arts = _check(source)
-    f = tempfile.NamedTemporaryFile(  # noqa: SIM115 — Windows fixture
-        mode="w", suffix=".vera", delete=False, encoding="utf-8",
+    compiled = pipeline.compile(source, file="fixture.vera")
+    assert compiled.checked is not None
+    _assert_typechecks(compiled.checked)
+    _ = compiled.result
+    codegen_set = set(getattr(compiled.generator, "_emitted_instances", set()))
+    arts = compiled.checked.artifacts
+    verifier = ContractVerifier(
+        source=source, file="fixture.vera",
+        expr_types=arts.expr_semantic_types,
+        expr_target_types=arts.expr_target_types,
     )
-    try:
-        with f:
-            f.write(source)
-        gen = CodeGenerator(
-            source=source, file=f.name,
-            expr_semantic_types=arts.expr_semantic_types,
-            expr_target_types=arts.expr_target_types,
-        )
-        gen.compile_program(program)
-        codegen_set = set(getattr(gen, "_emitted_instances", set()))
-        verifier = ContractVerifier(
-            source=source, file=f.name,
-            expr_types=arts.expr_semantic_types,
-            expr_target_types=arts.expr_target_types,
-        )
-        verifier.register_program(program)
-        verifier_set = {
-            (n, ct) for n, cts in verifier._instances.items() for ct in cts
-        }
-    finally:
-        Path(f.name).unlink(missing_ok=True)
+    verifier.register_program(compiled.parsed.program)
+    verifier_set = {
+        (n, ct) for n, cts in verifier._instances.items() for ct in cts
+    }
     return codegen_set, verifier_set
 
 
@@ -864,26 +848,24 @@ def _discovery_differential_modules(
     either of those is invisible to it.  Measured: reverting the verifier's
     shadowed-walk pipe arm alone leaves every single-file cell green.
     """
-    from tests.module_fixture_helpers import _resolve_and_check
+    from tests.module_fixture_helpers import _check_errors
 
-    program, source, main_path, resolved, arts, check_errors = (
-        _resolve_and_check(tmp_path, files, main_name)
-    )
+    compiled = pipeline.compile(
+        pipeline.write_tree(tmp_path, files, main_name), root=tmp_path)
+    checked = compiled.checked
+    assert checked is not None
+    check_errors = _check_errors(checked)
     assert not check_errors, check_errors
-    gen = CodeGenerator(
-        source=source, file=str(main_path), resolved_modules=resolved,
-        expr_semantic_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-        module_artifacts=arts.module_artifacts,
-    )
-    gen.compile_program(program)
-    codegen_set = set(getattr(gen, "_emitted_instances", set()))
+    _ = compiled.result
+    codegen_set = set(getattr(compiled.generator, "_emitted_instances", set()))
+    arts = checked.artifacts
     verifier = ContractVerifier(
-        source=source, file=str(main_path), resolved_modules=resolved,
+        source=checked.source, file=checked.file,
+        resolved_modules=checked.resolved,
         expr_types=arts.expr_semantic_types,
         expr_target_types=arts.expr_target_types,
     )
-    verifier.register_program(program)
+    verifier.register_program(compiled.parsed.program)
     verifier_set = {
         (n, ct) for n, cts in verifier._instances.items() for ct in cts
     }

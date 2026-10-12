@@ -35,6 +35,7 @@ from types import ModuleType
 
 import pytest
 
+from tests import pipeline
 from tests.verifier_helpers import ALL_EXAMPLES, EXAMPLES_DIR
 from vera.cli import cmd_verify
 from vera.obligations.core import ProofObligation
@@ -1355,8 +1356,10 @@ def test_each_mismatch_kind_has_its_diagnostic() -> None:
 
 def _cli_json(capsys: pytest.CaptureFixture[str], path: Path,
               **kwargs: object) -> tuple[int, dict[str, object]]:
-    rc = cmd_verify(str(path), as_json=True, **kwargs)  # type: ignore[arg-type]
-    return rc, json.loads(capsys.readouterr().out)
+    flags = {"reconcile": "--reconcile", "quiet": "--quiet"}
+    ran = pipeline.cli(
+        "verify", "--json", *(flags[k] for k, v in kwargs.items() if v), path)
+    return ran.returncode, ran.json()
 
 
 def test_plain_verify_json_carries_no_reconciliation(

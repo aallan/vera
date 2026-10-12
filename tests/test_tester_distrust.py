@@ -35,15 +35,12 @@ import z3
 from vera import ast
 from vera import tester as tester_module
 from vera.smt import SmtContext
-from vera.checker import typecheck_with_artifacts
-from vera.cli import USAGE, cmd_errors, cmd_test, main
+from vera.cli import USAGE, cmd_errors, cmd_test
 from vera.errors import ERROR_CODES
 from vera.introspect import errors_payload
 from vera.obligations.core import ProofObligation
 from vera.parser import parse
-from vera.codegen import compile as codegen_compile
 from vera.tester import FunctionTestResult, TestResult, TrialResult, _TrapIndex
-from vera.tester import test as run_test
 from vera.trap_registry import KNOWN_TRAP_DEFECTS, TRAP_EMITTERS, EmittedCheck
 from vera.transform import transform
 from tests import pipeline
@@ -67,35 +64,19 @@ def _run(
     """Check *source* and test it in process, as `cmd_test` does.
 
     The artifact tables are threaded exactly as the CLI threads them, so the
-    module the trials execute is the one `vera test` would build.  `distrust`
-    reaches the engine only when set, so the default-mode tests below run the
-    same call at any revision.
+    module the trials execute is the one `vera test` would build.
     """
-    program = transform(parse(source, file=_FILE))
-    diags, artifacts = typecheck_with_artifacts(program, source, file=_FILE)
-    errors = [d for d in diags if d.severity == "error"]
+    tested = pipeline.contract_test(
+        source, file=_FILE, trials=trials, fn=fn_name, distrust=distrust)
+    _ = tested.checked.program  # raises the parse or transform error
+    errors = tested.checked.errors
     assert not errors, errors[0].format()
-    extra: dict[str, bool] = {"distrust": True} if distrust else {}
-    return run_test(
-        program, source=source, file=_FILE, trials=trials, fn_name=fn_name,
-        expr_semantic_types=artifacts.expr_semantic_types,
-        expr_target_types=artifacts.expr_target_types,
-        module_artifacts=artifacts.module_artifacts,
-        alias_env=artifacts.alias_env,
-        **extra,
-    )
+    return tested.result
 
 
 def _checks(source: str) -> list[EmittedCheck]:
     """The module's record of its checks, compiled as `_run` compiles it."""
-    program = transform(parse(source, file=_FILE))
-    _, artifacts = typecheck_with_artifacts(program, source, file=_FILE)
-    result = codegen_compile(
-        program, source=source, file=_FILE,
-        expr_semantic_types=artifacts.expr_semantic_types,
-        expr_target_types=artifacts.expr_target_types,
-        module_artifacts=artifacts.module_artifacts,
-    )
+    result = pipeline.compile(source, file=_FILE, past_check=True).result
     assert result.ok, [d.description for d in result.diagnostics]
     return result.emitted_checks
 
@@ -103,22 +84,8 @@ def _checks(source: str) -> list[EmittedCheck]:
 def _index(source: str) -> _TrapIndex:
     """The engine's `_TrapIndex` for *source*: its checks, its obligations and
     its module text, built as `_run` builds them."""
-    from vera.verifier import verify
-
-    program = transform(parse(source, file=_FILE))
-    _, artifacts = typecheck_with_artifacts(program, source, file=_FILE)
-    verified = verify(
-        program, source=source, file=_FILE,
-        expr_types=artifacts.expr_semantic_types,
-        expr_target_types=artifacts.expr_target_types,
-        module_artifacts=artifacts.module_artifacts,
-    )
-    compiled = codegen_compile(
-        program, source=source, file=_FILE,
-        expr_semantic_types=artifacts.expr_semantic_types,
-        expr_target_types=artifacts.expr_target_types,
-        module_artifacts=artifacts.module_artifacts,
-    )
+    verified = pipeline.verify(source, file=_FILE, past_check=True).result
+    compiled = pipeline.compile(source, file=_FILE, past_check=True).result
     return _TrapIndex(
         compiled.emitted_checks, verified.obligations, compiled.wat)
 
@@ -143,17 +110,24 @@ def _write(tmp_path: Path, source: str, name: str = "prog.vera") -> str:
 def _cli_json(
     capsys: pytest.CaptureFixture[str], path: str, **kwargs: object,
 ) -> tuple[int, dict[str, object]]:
-    rc = cmd_test(path, as_json=True, **kwargs)  # type: ignore[arg-type]
-    return rc, json.loads(capsys.readouterr().out)
+    flags: list[str] = []
+    for key, value in kwargs.items():
+        if key == "distrust":
+            flags += ["--distrust"] if value else []
+        else:
+            flags += [{"trials": "--trials", "fn_name": "--fn"}[key], str(value)]
+    ran = pipeline.cli("test", "--json", *flags, path)
+    return ran.returncode, ran.json()
 
 
 def _main(
     monkeypatch: pytest.MonkeyPatch, *argv: str,
 ) -> int:
-    monkeypatch.setattr(sys, "argv", ["vera", *argv])
-    with pytest.raises(SystemExit) as exc:
-        main()
-    return int(exc.value.code or 0)
+    """``vera <argv>`` in process; its output reaches the test's capture."""
+    ran = pipeline.cli(*argv)
+    sys.stdout.write(ran.stdout)
+    sys.stderr.write(ran.stderr)
+    return ran.returncode
 
 
 # =====================================================================

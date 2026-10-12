@@ -20,14 +20,13 @@ from __future__ import annotations
 
 import pytest
 
+from tests import pipeline
 from vera import ast, narrowing
-from vera.checker import typecheck_with_artifacts
 from vera.naming import (
     alias_env_from_environment,
     refined_type_chain,
     refined_type_expr_chain,
 )
-from vera.parser import parse_to_ast
 from vera.types import pretty_type
 from vera.verifier import ContractVerifier
 
@@ -84,8 +83,9 @@ public fn f(@{source} -> @Int)
 def _both_oracles(source: str, declared: str) -> tuple[bool, bool]:
     """The rule's answer under each oracle, for one (source, declared) pair."""
     text = _program(source, declared)
-    program = parse_to_ast(text)
-    diags, _arts = typecheck_with_artifacts(program, text)
+    checked = pipeline.check(text)
+    program = checked.program  # raises the parse or transform error
+    diags = list(checked.checker_diagnostics)
     assert not [d for d in diags if d.severity == "error"], diags
 
     decls = [

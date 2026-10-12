@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from tests import pipeline
 from vera.cli import cmd_test
 
 
@@ -1252,8 +1253,7 @@ public fn shout(@String -> @String)
         source: str,
     ) -> dict:
         path = _write_vera(tmp_path, source)
-        cmd_test(path, as_json=True, trials=20)
-        return json.loads(capsys.readouterr().out)
+        return pipeline.cli("test", "--json", "--trials", "20", path).json()
 
     def test_the_reported_repro_no_longer_fails(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str],

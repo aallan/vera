@@ -39,10 +39,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from tests import pipeline
 from vera.codegen.core import _BUILTIN_DECL_INDEX, CodeGenerator
-from vera.parser import parse_file
-from vera.resolver import ModuleResolver
-from vera.transform import transform
 
 _MLIB = """
 public fn tag(@Unit -> @Int)
@@ -98,17 +96,15 @@ def _compiled(tmp_path: Path, main_src: str) -> CodeGenerator:
     `type Option = Int` is legal under §8.4.1 today, and the whole point
     of the fixture is that it stays that way.
     """
-    tmp_path.mkdir(parents=True, exist_ok=True)
-    (tmp_path / "mlib.vera").write_text(_MLIB, encoding="utf-8")
-    main_path = tmp_path / "main.vera"
-    main_path.write_text(main_src, encoding="utf-8")
-    program = transform(parse_file(str(main_path)))
-    mods = ModuleResolver(tmp_path).resolve_imports(program, main_path)
-    gen = CodeGenerator(
-        source=main_path.read_text(encoding="utf-8"), file=str(main_path),
-    )
-    gen._resolved_modules = mods
-    result = gen.compile_program(program)
+    main_path = pipeline.write_tree(
+        tmp_path, {"mlib.vera": _MLIB, "main.vera": main_src})
+    checked = pipeline.check(main_path, root=tmp_path)
+    _ = checked.program  # raises the parse or transform error
+    compiled = pipeline.compile(
+        main_path, modules=checked.resolved or [], checked=False)
+    result = compiled.result
+    gen = compiled.generator
+    assert gen is not None
     errors = [d for d in result.diagnostics if d.severity == "error"]
     assert errors == [], [
         (d.error_code, d.description) for d in errors]
