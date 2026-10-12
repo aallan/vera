@@ -171,11 +171,11 @@ source install that only adds editor/agent support to the base toolchain, use
 
 #### Supported platforms
 
-Tested in CI on every commit:
+CI tests every pull request on Ubuntu x86_64 and Windows against Python 3.12, and every release, the pull request that raises the version, and main every night on:
 
 - **macOS 15 (Sequoia) and macOS 26 (Tahoe)** on Apple Silicon, against Python 3.11, 3.12, 3.13
 - **Ubuntu 24.04 LTS** on x86_64, against Python 3.11, 3.12, 3.13
-- **Ubuntu 24.04 LTS** on aarch64, against Python 3.12 (advisory job — runs on every commit, does not gate merges)
+- **Ubuntu 24.04 LTS** on aarch64, against Python 3.12 (advisory job — does not gate merges)
 - **Windows Server 2025** on x86_64, against Python 3.11, 3.12, 3.13
 
 Not tested in CI; every dependency publishes wheels for them:

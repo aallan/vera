@@ -16,6 +16,10 @@ pull request must run are kept by three rules: a test that is not
 parametrised, every cell of a function named for a ``repro``, and every
 strict xfail.
 
+Also loads the shard plugin (``tests/shard.py``): ``--shard=K/N`` runs the
+K-th of N parts of the collection, taken after every other selection, as
+the pull-request lane's shard jobs run the suite.
+
 Also prints the session totals of ``test_distrust_corpus.py`` (proofs
 exercised, refuted, unattributed traps) when it ran.
 """
@@ -37,6 +41,11 @@ from tests.matrix_sample import (  # noqa: F401
     pytest_terminal_summary as _matrix_terminal_summary,
     pytest_testnodedown,
 )
+
+# `--shard=K/N`.  A plugin of its own rather than hooks imported here: this
+# module already holds the matrix sample's `pytest_collection_modifyitems`,
+# and the shard's runs after it, as a wrapper.
+pytest_plugins = ("tests.shard",)
 
 
 @pytest.fixture(scope="session", autouse=True)

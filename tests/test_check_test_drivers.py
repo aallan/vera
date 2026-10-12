@@ -146,6 +146,101 @@ def test_a_runner_handed_a_vera_command_is_a_driver(gate: ModuleType) -> None:
     """)) == ["_run_json"]
 
 
+@pytest.mark.parametrize("handed_at", ["module", "class"])
+def test_a_runner_handed_a_vera_command_outside_a_function_is_a_driver(
+    gate: ModuleType, handed_at: str,
+) -> None:
+    call = '_run_json([sys.executable, "-m", "vera.cli", "version"])'
+    where = (f"VERSION = {call}" if handed_at == "module"
+             else f"class TestIt:\n    VERSION = {call}")
+    assert list(_drivers(gate, textwrap.dedent("""
+        import subprocess
+        import sys
+
+        def _run_json(argv):
+            return subprocess.run(argv, capture_output=True, check=False)
+
+    """) + where + "\n")) == ["_run_json"]
+
+
+_RUNNERS = """
+import subprocess
+import sys
+
+def _run_json(argv):
+    return subprocess.run(argv, capture_output=True, check=False)
+
+class TestThing:
+    def _run(self, argv):
+        return subprocess.run(argv, check=False)
+"""
+
+
+_VERA_ARGV = "[sys.executable, '-m', 'vera.cli', 'check']"
+# Another class with a method named like the runner, so a receiver reaches
+# the runner only by being placed, never by the name alone.
+_OTHER = "class Other:\n    def _run(self, argv):\n        return argv\n"
+
+
+@pytest.mark.parametrize("handing,expected", [
+    ("class TestIt:\n"
+     "    ARGV = [sys.executable, '-m', 'vera.cli', 'version']\n"
+     "    VERSION = _run_json(ARGV)\n", ["_run_json"]),
+    ("class TestIt:\n"
+     "    def _argv(self):\n"
+     "        ARGV = [sys.executable, '-m', 'vera.cli']\n"
+     "        return ARGV\n"
+     "    VERSION = _run_json(ARGV)\n", []),
+    (f"def test_other(runner):\n    runner._run({_VERA_ARGV})\n",
+     ["TestThing._run"]),
+    (_OTHER + f"def test_other(obj):\n    obj._run({_VERA_ARGV})\n", []),
+    (f"def test_other(obj):\n    obj._run_json({_VERA_ARGV})\n", []),
+    (_OTHER + f"def test_it():\n    TestThing()._run({_VERA_ARGV})\n",
+     ["TestThing._run"]),
+    (_OTHER + f"def test_it():\n    thing = TestThing()\n    thing._run({_VERA_ARGV})\n",
+     ["TestThing._run"]),
+    (_OTHER + "class TestOwn(TestThing):\n"
+     f"    def test_it(self):\n        self._run({_VERA_ARGV})\n",
+     ["TestThing._run"]),
+    (_OTHER + "class TestOwn(TestThing):\n"
+     f"    def test_it(self):\n        super()._run({_VERA_ARGV})\n",
+     ["TestThing._run"]),
+    (_OTHER + "class TestMid(TestThing):\n"
+     "    pass\n"
+     "class TestLeaf(TestMid):\n"
+     f"    def test_it(self):\n        self._run({_VERA_ARGV})\n",
+     ["TestThing._run"]),
+    ("class TestSub(TestThing):\n"
+     "    def _run(self, argv):\n"
+     "        return argv\n"
+     f"    def test_it(self):\n        self._run({_VERA_ARGV})\n", []),
+    ("class TestElse:\n"
+     f"    def test_it(self):\n        self._run({_VERA_ARGV})\n", []),
+    (_OTHER + f"def test_named(p):\n    TestThing._run(None, {_VERA_ARGV})\n",
+     ["TestThing._run"]),
+], ids=["class-body-name", "method-local-is-not-the-class-binding",
+        "a-fixtures-object", "another-classes-same-named-method",
+        "another-objects-attribute", "an-instance", "an-instance-in-a-name",
+        "a-subclass-self-call", "a-super-call", "a-grandchild-self-call",
+        "an-override-is-another-method", "another-class-self-call",
+        "the-class-named-call"])
+def test_a_handed_command_reaches_the_runner_it_names(
+    gate: ModuleType, handing: str, expected: list[str],
+) -> None:
+    assert list(_drivers(gate, _RUNNERS + handing)) == expected
+
+
+def test_a_method_runner_handed_a_command_by_its_own_class_is_a_driver(
+    gate: ModuleType,
+) -> None:
+    assert list(_drivers(gate, _RUNNERS.replace(
+        "        return subprocess.run(argv, check=False)\n",
+        "        return subprocess.run(argv, check=False)\n\n"
+        "    def test_it(self):\n"
+        "        self._run([sys.executable, '-m', 'vera.cli', 'check'])\n"))) == [
+            "TestThing._run"]
+
+
 # =====================================================================
 # What the gate leaves alone
 # =====================================================================

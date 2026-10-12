@@ -52,6 +52,15 @@ When adding or modifying built-in functions (registered in `vera/environment.py`
 - **Add codegen/runtime tests** in the matching `tests/test_codegen_*.py` feature file — for built-ins, e.g. `test_codegen_string_builtins.py` or `test_codegen_numeric.py` (shared helpers come from `tests/codegen_helpers.py`) — cover normal cases, edge cases (empty inputs, zero values), and composition with other built-ins.
 - **Update the example** if an existing example demonstrates the feature, or add a new one in `examples/`.
 
+### Effects and limitations
+
+The built-in effect names and the limitation tables each have one source, and `scripts/render_lists.py` renders them into every file that shows them, between `render_lists` markers.  A rendered block is never edited by hand: edit the source, then run `python scripts/render_lists.py --write`.
+
+- **A built-in effect** is added to the registry in `vera/environment.py`, which `vera effects --json` publishes.  The renderer writes it into the editor grammars under `editors/` and the two extension READMEs.
+- **A limitation** is a record in `limitations.json`, beside KNOWN_ISSUES.md: the issues it cites, and the cells each table that carries it shows, the Issue column apart.  Each table names its records in its `rows`, in the order it shows them.  The renderer writes KNOWN_ISSUES.md's Limitations table and the tables in vera/README.md, the spec, SKILL.md and LSP_SERVER.md.  When its issue is closed, the record and its id in each table's `rows` go.  The Bugs tables in KNOWN_ISSUES.md and SKILL.md are kept by hand.
+
+The release PR's `python scripts/check_doc_counts.py --release` fails when a block is not what the renderer writes.
+
 ## Bugs: the class, not the instance
 
 A bug report is one sighting of a fault.  What gets filed, and what gets fixed, is the **class** it belongs to: the set of inputs the same mechanism gets wrong.  Where that mechanism sits decides where the class is fixed.
@@ -119,9 +128,9 @@ dependencies. CI enforces that `uv.lock` stays current.
 
 The hooks are defined in `.pre-commit-config.yaml`.  Most run at the commit stage (after `pre-commit install`); `check-changelog-updated` and `uv-lock-check`, described below, run at the push stage (after `pre-commit install --hook-type pre-push`). Most commit-stage hooks have per-hook `files:` / `types:` filters — the `python` type-check only runs when Python files are staged; `check_diagnostic_examples.py` only runs when a `.md`/`.txt` file or compiler source changes, etc. A plain-text commit touching only one markdown file triggers a small subset; a compiler-level commit triggers most of them.
 
-![The gate pipeline: the fast commit-stage hooks, the push-stage CHANGELOG and uv.lock gates, and CI running the full suite on the platform matrix, conformance and the examples, and every hook again, before anything lands on protected main.](assets/diagrams/ci-gates.svg)
+![The gate pipeline: the fast commit-stage hooks, the push-stage CHANGELOG and uv.lock gates, and CI running the full suite in Linux and Windows shards (on the whole platform matrix for a release and nightly), conformance and the examples, and every hook again, before anything lands on protected main.](assets/diagrams/ci-gates.svg)
 
-**What runs where.** The commit-stage hooks are the fast gates, so a commit takes minutes.  The full pytest suite, the conformance suite and the examples run in CI only.  On every pull request the suite runs on every cell of the OS × Python matrix.  On the push event a merged pull request produces on `main` it runs once, measuring coverage, because strict branch protection means the pull request's last run already tested that tree on every cell; the whole matrix runs again when the merge raises `[project].version` (a release), and every night.  CI also re-runs every gate below, so a commit that skipped the hooks is still gated before it can merge.  A commit runs the test files it stages: under the test-first rule, the test that proves a change is in the commit that makes it.
+**What runs where.** The commit-stage hooks are the fast gates, so a commit takes minutes.  The full pytest suite, the conformance suite and the examples run in CI only.  On every pull request the suite runs under Python 3.12, in shards on Linux and Windows.  The whole OS × Python matrix runs on a pull request that raises `[project].version`, on the push event its merge produces on `main` (a release) and every night, and a failed cell on that push or a nightly run, bar the advisory aarch64 cell, files an issue.  On the push event any other merge produces the suite runs once, measuring coverage, because strict branch protection means the pull request's last run already tested that tree.  CI also re-runs every gate below, so a commit that skipped the hooks is still gated before it can merge.  A commit runs the test files it stages: under the test-first rule, the test that proves a change is in the commit that makes it.
 
 The **commit-stage** hooks — each gated to relevant `files:`/`types:` filters, except `check-added-large-files`, a general `--maxkb=500` size check on the files a commit adds — include:
 
@@ -136,11 +145,10 @@ The **commit-stage** hooks — each gated to relevant `files:`/`types:` filters,
 - Every Vera block in the agent-facing documents (SKILL.md, README, FAQ, EXAMPLES.md, DE_BRUIJN.md, PYPI_README, the spec, and the landing page) parses, checks and verifies, and prints what each `vera:run` marker expects, or carries a `vera:skip` marker naming the stage and codes it fails; a block that exports a function names an invocation or a `vera:no-run` property
 - Site assets (`docs/llms.txt`, `docs/llms-full.txt`, etc.) regenerated, up-to-date, and coherent with the landing page
 - Spec EBNF and Lark grammar agree on rule names
-- Editor grammars (vscode, TextMate, Vim) carry every built-in effect name
 - License compliance (all dependencies MIT-compatible)
 - Browser parity (JS runtime matches Python runtime), when the host-binding surface changes
 
-CI runs, in addition: the full suite on every OS × Python cell, which holds the conformance programs at their declared level (positives pass; the negatives fail at the stage their `expected_error_stage` names, `check` by default or `compile` for a diagnostic the checker accepts and codegen refuses, with their `expected_error` E-code); the examples' `check` + `verify` through the CLI, and their runs; the `[E602]`/`[E604]` compile sweep; and the conformance programs' and examples' runs again under `VERA_EAGER_GC=1`, which forces a collection at every allocation so that a GC-rooting bug fails deterministically instead of by timing.
+CI runs, in addition: the full suite, in the Linux and Windows shards and on every OS × Python cell where the whole matrix runs, which holds the conformance programs at their declared level (positives pass; the negatives fail at the stage their `expected_error_stage` names, `check` by default or `compile` for a diagnostic the checker accepts and codegen refuses, with their `expected_error` E-code); the examples' `check` + `verify` through the CLI, and their runs; the `[E602]`/`[E604]` compile sweep; and the conformance programs' and examples' runs again under `VERA_EAGER_GC=1`, which forces a collection at every allocation so that a GC-rooting bug fails deterministically instead of by timing.
 
 If you modify documentation sources (SKILL.md, AGENTS.md, FAQ.md, LSP_SERVER.md, `vera/errors.py`, `vera/grammar.lark`, or `docs/index.html`), the `site-assets` hook will regenerate `docs/` files via `scripts/build_site.py`. The CI also runs `scripts/check_site_assets.py` to verify freshness.
 
@@ -150,7 +158,7 @@ If you modify documentation sources (SKILL.md, AGENTS.md, FAQ.md, LSP_SERVER.md,
 
 A separate `pre-push` hook runs once before each `git push` (not per-commit — which would be too noisy on feature branches). It verifies that any PR touching a non-exempt top-level path adds a CHANGELOG fragment under `changelog.d/`, whose name and content [`changelog.d/README.md`](changelog.d/README.md) states; a new bullet under `[Unreleased]` in `CHANGELOG.md` also counts. The same check also runs in CI, so pushes without the local hook installed are still caught before merge.
 
-**Classification.** The check is exempt-list based: changes confined to `tests/`, `scripts/`, `.github/`, `docs/`, `examples/`, `editors/`, `assets/`, `changelog.d/`; to any of the root-level doc files (`README.md`, `HISTORY.md`, `ROADMAP.md`, `KNOWN_ISSUES.md`, `FAQ.md`, `CONTRIBUTING.md`, `TESTING.md`, `AGENTS.md`, `CLAUDE.md`, `DE_BRUIJN.md`, `EXAMPLES.md`, `CHANGELOG.md`, `LICENSE`); or to `pyproject.toml`, `uv.lock`, `.pre-commit-config.yaml`, `.coderabbit.yaml`, `.gitignore` skip the requirement. Everything else — `vera/**`, `spec/**`, `SKILL.md`, and any new top-level directory you haven't explicitly added to the exempt list in `scripts/check_changelog_updated.py` — is treated as substantive and needs an entry. The conservative default means contributors get a clear failure rather than a silent bypass when adding a new top-level folder (e.g. `stdlib/` or `runtime/`).
+**Classification.** The check is exempt-list based: changes confined to `tests/`, `scripts/`, `.github/`, `docs/`, `examples/`, `editors/`, `assets/`, `changelog.d/`; to any of the root-level doc files (`README.md`, `HISTORY.md`, `ROADMAP.md`, `KNOWN_ISSUES.md`, `limitations.json`, `FAQ.md`, `CONTRIBUTING.md`, `TESTING.md`, `AGENTS.md`, `CLAUDE.md`, `DE_BRUIJN.md`, `EXAMPLES.md`, `CHANGELOG.md`, `LICENSE`); or to `pyproject.toml`, `uv.lock`, `.pre-commit-config.yaml`, `.coderabbit.yaml`, `.gitignore` skip the requirement. Everything else — `vera/**`, `spec/**`, `SKILL.md`, and any new top-level directory you haven't explicitly added to the exempt list in `scripts/check_changelog_updated.py` — is treated as substantive and needs an entry. The conservative default means contributors get a clear failure rather than a silent bypass when adding a new top-level folder (e.g. `stdlib/` or `runtime/`).
 
 **To enable locally:** `pre-commit install --hook-type pre-push` (part of the install instructions above).
 
@@ -271,7 +279,7 @@ Contributors don't cut releases. A release-prep PR carries the version and notes
 
 1. **Bump the version** in `pyproject.toml`, the one place it is written, then regenerate `uv.lock` (`uv lock`) so its `veralang` entry matches; `uv lock --check` holds the two together.
 2. **Assemble the `## [X.Y.Z]` section** with `python scripts/release.py assemble --version X.Y.Z --date YYYY-MM-DD`, which writes it to `CHANGELOG.md` from the `changelog.d/` fragments with its compare-link reference at the bottom and deletes the fragments; write its `### Highlights`, and add the version's one-sentence row to the current stage table in `HISTORY.md`.
-3. **Regenerate TESTING.md's status** with `python scripts/render_status.py`, which `python scripts/check_doc_counts.py --release` checks; regenerate the site assets (`python scripts/build_site.py`) if AI-readable docs changed, and refresh `uv.lock` for any dependency changes.
+3. **Regenerate TESTING.md's status** with `python scripts/render_status.py --github --junit PATH`, which measures the scorecard too (RELEASING.md has the run that writes `PATH`) and which `python scripts/check_doc_counts.py --release` checks; regenerate the site assets (`python scripts/build_site.py`) if AI-readable docs changed, and refresh `uv.lock` for any dependency changes.
 
 Not every PR is a release: small changes can ride along and ship with the next version bump. If you're unsure whether your change merits one, leave the bump out and say so in the PR description — the maintainer will include it in the next release.
 

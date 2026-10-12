@@ -2564,6 +2564,7 @@ Key conformance programs by feature:
 
 These are known limitations in the reference implementation. Most are tracked as open issues; those without an issue link are noted as such.
 
+<!-- render_lists:begin limitations -->
 | Limitation | Details | Issue |
 |-----------|---------|-------|
 | Effect row variable unification | Effect rows containing type variables (e.g. `<E>` in a generic function) are not unified with concrete effect rows at call sites. Functions that abstract over effects require explicit row declarations. | [#294](https://github.com/aallan/vera/issues/294) |
@@ -2575,6 +2576,7 @@ These are known limitations in the reference implementation. Most are tracked as
 | Nested handlers over the SAME cell type, with an operation in a clause body | A bare `get`/`put` in a clause body is the ENCLOSING context's operation (spec §7.5.2), but the host state intrinsics address only the innermost cell of a family — so when the enclosing handler (or the function's declared row) is the *same* `State<T>`, the outer cell cannot be reached. That shape is refused at check time (`E339`), where the operation is written, rather than silently writing the wrong cell — except inside a generic whose inner cell is `State<T>`, which matches the outer family only once `T` is instantiated: that program passes check and code generation drops the instantiation (`E602`, [#1522](https://github.com/aallan/vera/issues/1522)). Nest handlers over *different* cell types, or refine the inner cell with `with @T = expr`, which is the clause's own state override. Handler nesting is also capped at 8 levels of outward clause re-entry (the expansion is exponential in the nesting depth); past it the operation is refused at check time (`E339`). | [#1233](https://github.com/aallan/vera/issues/1233), [#1522](https://github.com/aallan/vera/issues/1522) |
 | Browser target: `IO.sleep` freezes the tab | `IO.sleep` busy-waits the browser's main thread, so animations and paced simulations don't run meaningfully under `--target browser`. Write browser-target programs as a pure simulation core with a JS driver, or stick to terminal output. | [#609](https://github.com/aallan/vera/issues/609) |
 | Browser target: ANSI escapes render as literal text | ANSI escape sequences (cursor control, screen clear) appear as literal control characters in the DOM rather than being interpreted. Terminal-style rendering needs an ANSI-subset interpreter in `runtime.mjs`; no language change is required. | [#610](https://github.com/aallan/vera/issues/610) |
+<!-- render_lists:end limitations -->
 
 ## Known Bugs and Workarounds
 

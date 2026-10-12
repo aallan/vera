@@ -102,7 +102,11 @@ The release-prep PR must:
 4. Regenerate TESTING.md's status — the test totals, the per-file and
    skipped-tests tables, and the tree's counts — with
    `python scripts/render_status.py`, and commit it; confirm with
-   `python scripts/check_doc_counts.py --release`.  Fix PRs leave the status
+   `python scripts/check_doc_counts.py --release`.  The same run measures the
+   scorecard when it is given `--github`, with `GH_TOKEN` exported, and
+   `--junit PATH`, the junit file of one sample-mode run of the suite,
+   `python -m pytest -n auto -p tests.subprocess_census --junitxml=PATH`.
+   Fix PRs leave the status
    alone, since every one of them moves it.  CI runs that check on the change
    that raises `[project].version`, the same signal `release.yml` publishes on:
    a pull request whose version is higher than its base branch's, and the push
@@ -124,16 +128,21 @@ The release-prep PR must:
 
 After merge, `release.yml` detects the version increase on `main`. It then:
 
-1. validates the version, CHANGELOG section, and absence of the version/tag;
-2. builds, inspects, installs, and smoke-tests exactly one universal wheel and
+1. waits for CI's run on the merge commit, which runs the full test matrix, and
+   goes on only once that run has succeeded, failing after 100 minutes without
+   it. A second version-raising merge inside that window queues behind the
+   first, and a third push to `main` can replace the queued run; the
+   **production-recovery** dispatch publishes a version lost that way;
+2. validates the version, CHANGELOG section, and absence of the version/tag;
+3. builds, inspects, installs, and smoke-tests exactly one universal wheel and
    one source distribution in a job without OIDC permission;
-3. stores those archives, release notes, and `SHA256SUMS` as one GitHub Actions
+4. stores those archives, release notes, and `SHA256SUMS` as one GitHub Actions
    artifact;
-4. waits for approval on the `pypi` environment;
-5. publishes only the downloaded archives through Trusted Publishing, with
+5. waits for approval on the `pypi` environment;
+6. publishes only the downloaded archives through Trusted Publishing, with
    digital attestations enabled;
-6. verifies PyPI exposes exactly those filenames and SHA-256 hashes; and
-7. creates `vX.Y.Z` and the GitHub Release at the merge SHA, attaching the same
+7. verifies PyPI exposes exactly those filenames and SHA-256 hashes; and
+8. creates `vX.Y.Z` and the GitHub Release at the merge SHA, attaching the same
    archives and checksum manifest.
 
 Approve the `pypi` deployment only after checking that the workflow SHA is the

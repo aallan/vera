@@ -10,7 +10,12 @@ the generated status may lag the tree, so a fix PR or a commit has nothing
 to keep in step.  What is left is checked when a release is cut:
 
 - ``--release`` (the release PR): TESTING.md's generated blocks are what
-  ``render_status.py`` writes now.  CI passes ``--release-if-version-raised
+  ``render_status.py`` writes now, save the scorecard's network and junit
+  rows, which change between any two moments and must each state the window
+  they were measured over, and every block ``render_lists.py``
+  renders (the effect names in the editor grammars and extension READMEs,
+  the limitation tables) is what it writes now.  CI passes
+  ``--release-if-version-raised
   <base>``, which turns release mode on exactly when ``[project].version``
   rose against the base: a pull request against its base branch, a push
   against the commit before it (#1536).  In the default mode the script
@@ -52,7 +57,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help=(
             "check that TESTING.md's generated status is what "
-            "scripts/render_status.py writes now (the release PR)"
+            "scripts/render_status.py writes now (the scorecard's network and "
+            "junit rows by the window each states), and every rendered list "
+            "what scripts/render_lists.py writes now (the release PR)"
         ),
     )
     parser.add_argument(
@@ -186,6 +193,24 @@ def stale_status(root: Path) -> list[str]:
     """Why TESTING.md's generated status is not what render_status.py
     writes now, one line per stale block; ``[]`` when it is current."""
     errors: list[str] = _render_status().stale_blocks(root)
+    return errors
+
+
+def _render_lists() -> ModuleType:
+    path = Path(__file__).with_name("render_lists.py")
+    spec = importlib.util.spec_from_file_location("render_lists", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def stale_lists(root: Path) -> list[str]:
+    """Why a block render_lists.py renders is not what it writes now, one
+    line per stale block or per reason a block cannot be rendered; ``[]``
+    when every one is current."""
+    errors: list[str] = _render_lists().stale_blocks(root)
     return errors
 
 
@@ -430,6 +455,7 @@ def main() -> int:
     errors: list[str] = []
     if args.release:
         errors += stale_status(root)
+        errors += stale_lists(root)
     if args.check_bug_issues:
         errors += check_bug_issues(root)
 
@@ -440,7 +466,7 @@ def main() -> int:
         return 1
     checked = [
         name for name, on in (
-            ("TESTING.md's generated status is current", args.release),
+            ("TESTING.md's generated status and every rendered list are current", args.release),
             ("KNOWN_ISSUES.md's Bugs table matches the tracker", args.check_bug_issues),
         ) if on
     ]
@@ -449,8 +475,8 @@ def main() -> int:
     else:
         print(
             "Nothing to check outside a release: the release PR regenerates"
-            " TESTING.md's status (scripts/render_status.py) and checks it"
-            " with --release."
+            " TESTING.md's status (scripts/render_status.py) and checks it,"
+            " and the rendered lists (scripts/render_lists.py), with --release."
         )
     return 0
 

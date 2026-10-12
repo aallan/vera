@@ -77,19 +77,20 @@ python scripts/check_doc_examples.py  # Verify every Vera block in the agent-fac
 python scripts/check_doc_examples.py SKILL.md  # The same gate, for the named documents only
 python scripts/check_diagnostic_examples.py # Verify every vera:diagnostic-annotated ```text fence matches the live diagnostic it shows (#1291)
 python scripts/check_doc_builtin_shadowing.py # Verify no doc example redefines a built-in (E151; #819)
-python scripts/check_editor_grammars.py # Verify every editor grammar under editors/, and the two extension READMEs that repeat the list in prose, carry every built-in effect name from the live registry (#1156)
 python scripts/check_diagnostic_fields.py # Verify every diagnostic carries rationale + spec_ref (+ fix for errors; warnings exempt) or a # diag-fields-exempt reason — waives missing/unresolvable fields only, never a factually wrong spec_ref/error_code (#682)
 python scripts/check_explicit_encoding.py # Verify every text-mode open()/read_text()/write_text() passes explicit encoding='utf-8' (#645)
 python scripts/build_site.py          # Regenerate AI-readable site assets (llms.txt, etc.)
 python scripts/check_site_assets.py   # Verify site assets are up-to-date + docs/index.html ↔ docs/index.md state coherent facts (#1154)
 python scripts/render_status.py      # The release PR: write TESTING.md's generated status (where the counts live) from the tree
-python scripts/check_doc_counts.py --release # The release PR: TESTING.md's generated status is current (CI runs this mode on any change that raises [project].version, via --release-if-version-raised)
+python scripts/check_doc_counts.py --release # The release PR: TESTING.md's generated status and every render_lists block are current (CI runs this mode on any change that raises [project].version, via --release-if-version-raised)
+python scripts/render_lists.py --write  # Write the lists that have one source between their render_lists markers: the effect names from the registry into the editor grammars and extension READMEs, the limitation tables from limitations.json
+python scripts/render_lists.py --check  # Name each render_lists block that is not what --write writes (the release check above runs it)
 python scripts/check_doc_counts.py --check-bug-issues # The release PR: KNOWN_ISSUES' Bugs table against the open `bug` issues (GitHub API)
 python scripts/check_corpus_differential.py --base-ref origin/main  # Compile the corpus at two revisions; report programs whose WAT moved (burndown instrument, not a hook)
 python scripts/check_licenses.py      # Verify all package licenses are MIT-compatible
 python scripts/check_wheel_availability.py # Verify every runtime dep has wheels for all supported platforms (README §Supported platforms)
-python scripts/check_limitations_sync.py              # Verify limitation tables are in sync
-python scripts/check_limitations_sync.py --check-states # Also verify issues are still open via GitHub API
+python scripts/check_limitations_sync.py              # Verify limitations.json loads and the KNOWN_ISSUES.md and SKILL.md Bugs headings survive (offline)
+python scripts/check_limitations_sync.py --check-states # Also verify every issue they cite is still open via GitHub API (limitations-sync.yml runs it weekly)
 ```
 
 See [`TOOLCHAIN.md`](TOOLCHAIN.md) for the CLI cookbook — driving the toolchain to write, verify, test, run, and debug Vera, including the `builtins`/`effects`/`errors` introspection commands.
@@ -146,7 +147,7 @@ A bug fix closes the **class** the report belongs to — the set of inputs the s
 
 ## What not to break
 
-- The pre-commit hook runs the fast gates on every commit — ruff, mypy, the doc and consistency gates, and the test files the commit stages; CI runs the full pytest suite, which carries the conformance suite and example validation, on every cell of the matrix on every pull request (each class-instrument matrix sampled, bar the ones whose file or deciding module the PR changes), plus every gate the hook runs; the push event a merged pull request produces on `main` runs the suite once more, measuring coverage with every matrix cell, and the whole matrix again only when the merge raises `[project].version` and every night (TESTING.md §Pre-commit Hooks)
+- The pre-commit hook runs the fast gates on every commit — ruff, mypy, the doc and consistency gates, and the test files the commit stages. A pull request runs lint, typecheck, the full pytest suite (which carries the conformance suite and example validation) in Python 3.12 shards on Linux and Windows with each class-instrument matrix sampled bar the ones whose file or deciding module the PR changes, eager-GC, browser parity, and the security and supply-chain jobs, plus every gate the hook runs. The full OS × Python matrix runs on a pull request that raises `[project].version`, on the push event its merge produces on `main`, and every night, and a failed cell on that push or a nightly run, bar the advisory aarch64 cell, files an issue; the push event any other merge produces runs the suite once, measuring coverage with every matrix cell (TESTING.md §Pre-commit Hooks)
 - Every conformance program in `tests/conformance/` must hold at its declared level — positive entries pass, and the negative fixtures (the entries with `expected_error` in `tests/conformance/manifest.json`) must *fail* with their `expected_error` E-code, at the stage `expected_error_stage` names — `check` by default, or `compile` for a diagnostic the checker accepts and codegen refuses, which also asserts the program type-checks cleanly first
 - Every example in `examples/` must pass `vera check` and `vera verify`
 - Every Vera block in the agent-facing docs must pass `scripts/check_doc_examples.py`: it parses, checks, verifies and prints what each `vera:run` marker says, or carries a `vera:skip-<stage>` marker with a category, the codes it fails with, and a reason (`scripts/doc_annotations.py`); a block that exports a function names a `vera:run` invocation or a `vera:no-run` property

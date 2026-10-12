@@ -405,25 +405,151 @@ def drivers_in(source: str, file: str) -> list[Driver]:
     return sorted(out, key=lambda d: d.line)
 
 
+class _Classes:
+    """The module's top-level classes: the bases each names and the methods
+    each defines, to place the method an attribute call reaches."""
+
+    def __init__(self, tree: ast.Module) -> None:
+        self.bases: dict[str, tuple[str, ...]] = {}
+        self.methods: dict[str, frozenset[str]] = {}
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef):
+                self.bases[node.name] = tuple(
+                    b.id for b in node.bases if isinstance(b, ast.Name))
+                self.methods[node.name] = frozenset(
+                    m.name for m in node.body
+                    if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)))
+
+    def reached(self, start: str, method: str) -> str | None:
+        """The class whose *method* a lookup from *start* reaches, searching
+        its module-local bases depth first, left to right."""
+        seen: set[str] = set()
+
+        def walk(name: str) -> str | None:
+            if name in seen:
+                return None
+            seen.add(name)
+            if method in self.methods.get(name, ()):
+                return name
+            for base in self.bases.get(name, ()):
+                found = walk(base)
+                if found is not None:
+                    return found
+            return None
+
+        return walk(start)
+
+    def definers(self, method: str) -> set[str]:
+        return {name for name, methods in self.methods.items() if method in methods}
+
+
+#: A receiver whose class the module does not show.
+_UNPLACED = "<unplaced>"
+
+
+def _receiver_class(
+    receiver: ast.expr, method: str, owner: ast.ClassDef | None,
+    local: Mapping[str, list[ast.AST]], module: Mapping[str, list[ast.AST]],
+    classes: _Classes,
+) -> str | None:
+    """The class whose *method* ``receiver.method`` reaches; ``None`` when the
+    receiver is placed and reaches none; ``_UNPLACED`` when the module does
+    not show what the receiver is (a parameter, a fixture's value, an
+    attribute)."""
+    def made_by(value: ast.AST) -> str | None:
+        if (isinstance(value, ast.Call) and isinstance(value.func, ast.Name)
+                and value.func.id in classes.bases):
+            return value.func.id
+        return None
+
+    if isinstance(receiver, ast.Name):
+        if receiver.id in classes.bases:
+            return classes.reached(receiver.id, method)
+        if receiver.id in ("self", "cls") and owner is not None:
+            return classes.reached(owner.name, method)
+        makers = {made_by(v) for v in local.get(receiver.id, module.get(receiver.id, []))}
+        makers.discard(None)
+        if len(makers) == 1:
+            return classes.reached(makers.pop() or "", method)
+        return _UNPLACED
+    if isinstance(receiver, ast.Call):
+        if (isinstance(receiver.func, ast.Name) and receiver.func.id == "super"
+                and owner is not None):
+            for base in classes.bases.get(owner.name, ()):
+                found = classes.reached(base, method)
+                if found is not None:
+                    return found
+            return None
+        maker = made_by(receiver)
+        if maker is not None:
+            return classes.reached(maker, method)
+    return _UNPLACED
+
+
+def _calls_the_runner(
+    call: ast.Call, name: str, owner: ast.ClassDef | None,
+    local: Mapping[str, list[ast.AST]], module: Mapping[str, list[ast.AST]],
+    classes: _Classes,
+) -> bool:
+    """Whether *call* calls the runner *name* (``fn`` or ``Class.method``).
+
+    A function is called by its bare name.  A method is called through any
+    receiver whose lookup reaches it: its class or a subclass, ``self`` or
+    ``cls`` in one, ``super()`` below one, or an instance one builds.  A
+    receiver the module does not place, such as a fixture's value, reaches it
+    when no other class in the module defines a method of that name; a
+    same-named method of another class is a different method.
+    """
+    func = call.func
+    if "." not in name:
+        return isinstance(func, ast.Name) and func.id == name
+    cls, method = name.split(".", 1)
+    if not (isinstance(func, ast.Attribute) and func.attr == method):
+        return False
+    reached = _receiver_class(func.value, method, owner, local, module, classes)
+    if reached == _UNPLACED:
+        return classes.definers(method) == {cls}
+    return reached == cls
+
+
 def _handed_vera(
     tree: ast.Module, name: str, module: Mapping[str, list[ast.AST]],
 ) -> bool:
-    """Whether a call to the helper *name* anywhere in *tree* hands it a
-    command naming ``vera``."""
-    bare = name.rsplit(".", 1)[-1]
-    for scope in ast.walk(tree):
-        if not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+    """Whether a call to the runner *name* anywhere in *tree*, in a function,
+    a class body or the module itself, hands it a command naming ``vera``.
+
+    A name in the call is followed through the assignments of the scope the
+    call is in: a function's, a class body's own (not its methods'), else the
+    module's.
+    """
+    calls: list[tuple[ast.Call, ast.AST | None, ast.ClassDef | None]] = []
+
+    def visit(node: ast.AST, scope: ast.AST | None, owner: ast.ClassDef | None) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.Call):
+                calls.append((child, scope, owner))
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                visit(child, child, owner)
+            elif isinstance(child, ast.ClassDef):
+                visit(child, child, child)
+            else:
+                visit(child, scope, owner)
+
+    visit(tree, None, None)
+    classes = _Classes(tree)
+    locals_of: dict[int, dict[str, list[ast.AST]]] = {}
+    for call, scope, owner in calls:
+        local: Mapping[str, list[ast.AST]] = {}
+        if isinstance(scope, ast.ClassDef):
+            local = locals_of.setdefault(id(scope), _assigned(
+                [stmt for stmt in scope.body
+                 if isinstance(stmt, (ast.Assign, ast.AnnAssign))]))
+        elif scope is not None:
+            local = locals_of.setdefault(id(scope), _assigned([scope]))
+        if not _calls_the_runner(call, name, owner, local, module, classes):
             continue
-        local = _assigned([scope])
-        for node in ast.walk(scope):
-            if not isinstance(node, ast.Call):
-                continue
-            func = node.func
-            called = (func.id if isinstance(func, ast.Name)
-                      else func.attr if isinstance(func, ast.Attribute) else None)
-            if called == bare and _command_names_vera(
-                    _call_arguments(node), local, module):
-                return True
+        if _command_names_vera(_call_arguments(call), local, module):
+            return True
     return False
 
 

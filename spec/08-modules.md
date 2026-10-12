@@ -873,7 +873,9 @@ $ vera run examples/modules.vera --fn clamp_to_range -- 10 1 5
 
 The module system has the following limitations, each tracked as a GitHub issue:
 
+<!-- render_lists:begin limitations -->
 | Limitation | Issue | Notes |
 |-----------|-------|-------|
 | No re-exports | [#127](https://github.com/aallan/vera/issues/127) | A module cannot re-export declarations imported from other modules |
 | No package system | [#130](https://github.com/aallan/vera/issues/130) | Module resolution is file-system-only; no package manager or registry |
+<!-- render_lists:end limitations -->

@@ -61,7 +61,9 @@ syntax keyword veraAdtType MdBlock MdInline UrlParts HtmlNode Request Response
 " Every effect in `vera effects --json`. The four abilities it also
 " lists (Eq, Hash, Ord, Show) are absent from every editor grammar; whether
 " they should highlight distinctly from ordinary types is tracked in #1295.
-syntax keyword veraEffectType IO State Exn Http HttpServer Async Diverge Inference Random DB
+" render_lists:begin effects
+syntax keyword veraEffectType Async DB Diverge Exn Http HttpServer IO Inference Random State
+" render_lists:end effects
 
 " Fallback: any bare capitalized identifier is at minimum a type reference.
 " This covers type variables like the T in "data List<T>" and user type names

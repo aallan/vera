@@ -1,13 +1,14 @@
 """scripts/render_status.py, which writes TESTING.md's generated status.
 
 A count lives in one place, and that place is generated: the script
-measures the tree and writes three blocks between markers in TESTING.md,
+measures the tree and writes four blocks between markers in TESTING.md,
 and `check_doc_counts.py --release` asks whether they are what it would
 write now (`stale_blocks`).  Each measurement is checked on a synthetic
 tree whose counts cannot coincide with one another, the collection against
 a real pytest, the conformance skips against a test module whose skip rule
 is not the level rule, and the splice and the freshness check in both
-directions.
+directions, the scorecard's split between the rows the tree gives and the
+rows measured once included (its measurers are tests/test_scorecard.py's).
 """
 
 from __future__ import annotations
@@ -109,6 +110,9 @@ _DOC = """\
 {status}
 Prose outside the blocks stays as written.
 
+## Scorecard
+
+{scorecard}
 ## Test Files
 
 {files}
@@ -126,7 +130,7 @@ def _block(name: str, body: str = "") -> str:
 def _empty_doc() -> str:
     return _DOC.format(
         status=_block("status"), files=_block("test-files"),
-        skips=_block("skipped-tests"),
+        skips=_block("skipped-tests"), scorecard=_block("scorecard"),
     )
 
 
@@ -161,6 +165,7 @@ def _synthetic(tmp_path: Path) -> Path:
         _write(root / "scripts" / name)
     _write(root / ".pre-commit-config.yaml", _PRECOMMIT)
     _write(root / ".github" / "workflows" / "ci.yml", _CI)
+    _write(root / "pyproject.toml", '[project]\nname = "x"\nversion = "0.4.7"\n')
     _write(root / "TESTING.md", _empty_doc())
     return root
 
@@ -171,6 +176,17 @@ _COLLECTION = RS.Collection(
 _SKIPS = [
     RS.Skip("test_run[v1]", "v1.vera", "verify", "verify-only", "V1"),
 ]
+#: The scorecard's tree rows, each value distinct.
+_CARD = {
+    measure.key: (f"{index + 301:,}", "the tree")
+    for index, measure in enumerate(RS.SC.MEASURES) if measure.source == RS.SC.TREE
+}
+#: The scorecard's network and junit rows, as a run with `--github` and
+#: `--junit` measures them.
+_MEASURED = {
+    measure.key: (f"{index + 71}", "a window, 2026-10-12 09:00 UTC")
+    for index, measure in enumerate(RS.SC.MEASURES) if measure.source != RS.SC.TREE
+}
 
 
 def _measure(root: Path, **overrides: Any) -> Any:
@@ -178,6 +194,7 @@ def _measure(root: Path, **overrides: Any) -> Any:
         "collect": lambda _root: _COLLECTION,
         "registry": lambda _root: (171, 9),
         "skips": lambda _root: list(_SKIPS),
+        "scorecard": lambda _root: dict(_CARD),
     }
     kwargs.update(overrides)
     tree = RS.measure(root, **kwargs)
@@ -337,6 +354,47 @@ class TestMeasure:
         assert tree.matrix_cells == {"test": 7}
         assert tree.gate_scripts == 7      # scripts/check_*.py only
         assert tree.skips == _SKIPS
+        assert tree.version == "0.4.7"
+        assert tree.scorecard == _CARD
+
+    def test_a_tree_without_a_version_is_the_reason(self, tmp_path: Path) -> None:
+        root = _synthetic(tmp_path)
+        (root / "pyproject.toml").write_text("[project]\nname = 'x'\n", encoding="utf-8")
+        reason = RS.measure(
+            root, collect=lambda _root: _COLLECTION, registry=lambda _root: (0, 0),
+            skips=lambda _root: [], scorecard=lambda _root: dict(_CARD),
+        )
+        assert reason == "pyproject.toml has no readable [project].version"
+
+    def test_a_scorecard_it_cannot_measure_is_the_reason(self, tmp_path: Path) -> None:
+        reason = RS.measure(
+            _synthetic(tmp_path), collect=lambda _root: _COLLECTION,
+            registry=lambda _root: (0, 0), skips=lambda _root: [],
+            scorecard=lambda _root: "the scorecard could not be measured: moved",
+        )
+        assert reason == "the scorecard could not be measured: moved"
+
+    def test_the_gate_collection_is_the_sample_with_a_fixed_seed(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The scorecard's count of the pull-request gate's suite: a
+        collection that keeps pyproject's deselection of the stress tests
+        (no `-o addopts=`) and samples each matrix with a seed of its own,
+        so the count is the tree's and not the week's."""
+        seen: list[list[str]] = []
+
+        def run(command: list[str], **kwargs: Any) -> Any:
+            seen.append(command)
+            return subprocess.CompletedProcess(
+                command, 0, "tests/test_a.py::t\n\n1/9 tests collected (8 deselected)\n", "",
+            )
+
+        monkeypatch.setattr(subprocess, "run", run)
+        rs = _load()
+        assert rs.gate_tests(tmp_path) == 1
+        (command,) = seen
+        assert "--matrix=sample" in command and "--matrix-seed=scorecard" in command
+        assert "addopts=" not in command and "--matrix=full" not in command
 
     def test_a_failed_collection_is_the_reason(self, tmp_path: Path) -> None:
         reason = RS.measure(
@@ -352,8 +410,11 @@ class TestMeasure:
         sys_path = list(sys.path)
         try:
             sys.path.insert(0, str(ROOT))
-            tree = RS.measure(ROOT, collect=lambda _root: RS.Collection(
-                1, {"test_render_status.py": 1}))
+            tree = RS.measure(
+                ROOT,
+                collect=lambda _root: RS.Collection(1, {"test_render_status.py": 1}),
+                scorecard=lambda root: RS.SC.tree_values(root, gate_tests=lambda _r: 1),
+            )
         finally:
             sys.path[:] = sys_path
         assert not isinstance(tree, str), tree
@@ -544,11 +605,12 @@ class TestRender:
 class TestSplice:
     def test_only_the_blocks_change_and_a_second_splice_is_a_no_op(self) -> None:
         text = _empty_doc()
-        blocks = {"status": "S\n", "test-files": "F\n", "skipped-tests": "K\n"}
+        blocks = {"status": "S\n", "test-files": "F\n", "skipped-tests": "K\n",
+                  "scorecard": "C\n"}
         once = RS.splice(text, blocks)
         assert RS.blocks_in(once) == blocks
         assert RS.splice(once, blocks) == once
-        outside = [line for line in once.splitlines() if line not in ("S", "F", "K")]
+        outside = [line for line in once.splitlines() if line not in ("S", "F", "K", "C")]
         assert outside == text.splitlines()
 
     @pytest.mark.parametrize(
@@ -577,11 +639,15 @@ class TestSplice:
 class TestStaleBlocks:
     @staticmethod
     def _current(tmp_path: Path) -> tuple[Path, Any]:
+        """The document a release PR commits: every block rendered, the
+        scorecard's network and junit rows measured."""
         root = _synthetic(tmp_path)
         tree = _measure(root)
         doc = root / "TESTING.md"
-        doc.write_text(RS.splice(doc.read_text(encoding="utf-8"), RS.render(tree)),
-                       encoding="utf-8")
+        doc.write_text(
+            RS.splice(doc.read_text(encoding="utf-8"), RS.render(tree, _MEASURED)),
+            encoding="utf-8",
+        )
         return root, tree
 
     def test_a_current_document_is_fresh(self, tmp_path: Path) -> None:
@@ -624,6 +690,40 @@ class TestStaleBlocks:
         (error,) = RS.stale_blocks(root, measure=lambda _root: tree)
         assert RS.end_marker("skipped-tests") in error
 
+    def test_the_scorecards_tree_rows_are_measured_again(self, tmp_path: Path) -> None:
+        root, tree = self._current(tmp_path)
+        moved = tree._replace(scorecard={**_CARD, "spec_words": ("88,000", "the tree")})
+        (error,) = RS.stale_blocks(root, measure=lambda _root: moved)
+        assert error.startswith("TESTING.md: ")
+        assert "`scorecard` block" in error and "| Spec words | 86,558 | 88,000 |" in error
+
+    def test_the_scorecards_measured_rows_are_not(self, tmp_path: Path) -> None:
+        """A render now could not reproduce a network or junit row, and the
+        check does not try: a row with another value and another window
+        than the release PR's is fresh while it states one."""
+        root, tree = self._current(tmp_path)
+        doc = root / "TESTING.md"
+        text = doc.read_text(encoding="utf-8")
+        moved = text.replace("| 71 | a window, 2026-10-12 09:00 UTC |",
+                             "| 15 | a window, 2026-10-14 10:30 UTC |")
+        assert moved != text
+        doc.write_text(moved, encoding="utf-8")
+        assert RS.stale_blocks(root, measure=lambda _root: tree) == []
+
+    def test_a_scorecard_row_left_unmeasured_is_stale(self, tmp_path: Path) -> None:
+        """The release PR's render without `--junit`: its two rows say they
+        were not measured, and the release fails on each."""
+        root = _synthetic(tmp_path)
+        tree = _measure(root)
+        doc = root / "TESTING.md"
+        network = {k: v for k, v in _MEASURED.items()
+                   if k not in ("gate_worker_seconds", "subprocess_share")}
+        doc.write_text(RS.splice(doc.read_text(encoding="utf-8"), RS.render(tree, network)),
+                       encoding="utf-8")
+        errors = RS.stale_blocks(root, measure=lambda _root: tree)
+        assert len(errors) == 2, errors
+        assert all("`--junit PATH`" in error for error in errors)
+
 
 class TestMain:
     def test_it_writes_the_blocks_once(
@@ -643,6 +743,47 @@ class TestMain:
         assert RS.main([]) == 0
         assert (root / "TESTING.md").read_text(encoding="utf-8") == written
         assert "current" in capsys.readouterr().out
+
+    def test_the_flags_measure_the_scorecards_other_rows(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        root = _synthetic(tmp_path)
+        tree = _measure(root)
+        junit = tmp_path / "junit.xml"
+        asked: list[Any] = []
+        network = {k: v for k, v in _MEASURED.items()
+                   if k not in ("gate_worker_seconds", "subprocess_share")}
+        local = {k: _MEASURED[k] for k in ("gate_worker_seconds", "subprocess_share")}
+        monkeypatch.setattr(RS, "ROOT", root)
+        monkeypatch.setattr(RS, "measure", lambda _root: tree)
+        monkeypatch.setattr(RS.SC, "github_values", lambda: asked.append("github") or network)
+        monkeypatch.setattr(RS.SC, "junit_values", lambda path: asked.append(path) or local)
+        monkeypatch.setattr(sys, "path", list(sys.path))
+        assert RS.main(["--github", "--junit", str(junit)]) == 0
+        assert asked == [junit, "github"]
+        block = RS.blocks_in((root / "TESTING.md").read_text(encoding="utf-8"))["scorecard"]
+        assert block == RS.render(tree, _MEASURED)["scorecard"]
+        assert RS.main([]) == 0, "a render without the flags writes them unmeasured"
+        block = RS.blocks_in((root / "TESTING.md").read_text(encoding="utf-8"))["scorecard"]
+        assert RS.SC.NOT_MEASURED in block
+
+    def test_a_row_it_cannot_measure_writes_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        root = _synthetic(tmp_path)
+        before = (root / "TESTING.md").read_text(encoding="utf-8")
+
+        def unreachable() -> Any:
+            raise RS.SC.MeasureError("could not read https://api.github.com/x: refused")
+
+        monkeypatch.setattr(RS, "ROOT", root)
+        monkeypatch.setattr(RS, "measure", lambda _root: _measure(root))
+        monkeypatch.setattr(RS.SC, "github_values", unreachable)
+        monkeypatch.setattr(sys, "path", list(sys.path))
+        assert RS.main(["--github"]) == 1
+        assert (root / "TESTING.md").read_text(encoding="utf-8") == before
+        assert "refused" in capsys.readouterr().err
 
     def test_a_tree_it_cannot_measure_writes_nothing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,

@@ -82,6 +82,7 @@ class TestIsSubstantive:
         "README.md",
         "ROADMAP.md",
         "KNOWN_ISSUES.md",
+        "limitations.json",
         "FAQ.md",
         "CONTRIBUTING.md",
         "TESTING.md",
