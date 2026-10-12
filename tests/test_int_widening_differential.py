@@ -25,17 +25,10 @@ In every case an in-range input returns the value unchanged on both sides.
 
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
 
 import pytest
 import wasmtime
 
-from vera.checker import typecheck_with_artifacts
-from vera.codegen import compile as codegen_compile
-from vera.codegen import execute
-from vera.parser import parse_to_ast
-from vera.resolver import ModuleResolver
 from tests import pipeline
 
 U64_MAX = 18446744073709551615
@@ -50,31 +43,16 @@ def _verify_statuses(source: str) -> list[str]:
 
 
 def _run(source: str, fn: str, arg: int) -> int | None:
-    """Compile + execute *fn* with one i64 arg; ``None`` if it traps."""
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False, encoding="utf-8",
-    ) as f:
-        f.write(source)
-        path = f.name
+    """Compile + execute *fn* with one i64 arg; ``None`` if it traps.
+
+    Compiled past the check's verdict (``past_check``), as it always was.
+    """
+    result = pipeline.compile(source, file="fixture.vera", past_check=True).result
     try:
-        program = parse_to_ast(source)
-        resolver = ModuleResolver(_root=Path(path).parent)
-        resolved = resolver.resolve_imports(program, Path(path))
-        _diags, arts = typecheck_with_artifacts(
-            program, source, file=path, resolved_modules=resolved,
-        )
-        result = codegen_compile(
-            program, source=source, file=path, resolved_modules=resolved,
-            expr_semantic_types=arts.expr_semantic_types,
-            expr_target_types=arts.expr_target_types,
-        )
-        try:
-            exec_result = execute(result, fn_name=fn, args=[arg])
-        except (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError):
-            return None
-        return exec_result.value
-    finally:
-        Path(path).unlink(missing_ok=True)
+        ran = pipeline.run(result, fn, [arg], capture_stderr=False)
+    except (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError):
+        return None
+    return None if ran.trap is not None else ran.value
 
 
 # (label, source, fn, guarded)

@@ -24,19 +24,14 @@ type, and the outer clause answers 1000.
 
 from __future__ import annotations
 
-import os
-import tempfile
 
 import pytest
 
 from vera import ast
-from vera.checker import typecheck_with_artifacts
-from vera.codegen import compile as codegen_compile
-from vera.codegen.api import CompileResult
-from vera.parser import parse_to_ast
 from vera.wasm import WasmContext
 from vera.wasm.helpers import StringPool
 from tests.module_fixture_helpers import module_value as _run
+from tests.codegen_helpers import _compile_checked_ok as _compile
 
 
 # The issue's repro: an Int-payload inner handler whose clause rethrows at the
@@ -249,35 +244,6 @@ _MIXED = [
     ("cond_clause_completes", _COND_COMPLETES, 5),
     ("match_mixed_arms", _MATCH_MIXED, 42),
 ]
-
-
-def _compile(source: str) -> CompileResult:
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False, encoding="utf-8",
-    ) as f:
-        f.write(source)
-        f.flush()
-        path = f.name
-    try:
-        program = parse_to_ast(source)
-        diags, arts = typecheck_with_artifacts(
-            program, source, file=path, collect_module_artifacts=True,
-        )
-        errors = [d.description for d in diags if d.severity == "error"]
-        assert not errors, f"typecheck errors: {errors}"
-        result = codegen_compile(
-            program, source=source, file=path,
-            expr_semantic_types=arts.expr_semantic_types,
-            expr_target_types=arts.expr_target_types,
-            module_artifacts=arts.module_artifacts,
-        )
-    finally:
-        os.unlink(path)
-    cg_errors = [
-        d.description for d in result.diagnostics if d.severity == "error"
-    ]
-    assert not cg_errors, f"codegen errors: {cg_errors}"
-    return result
 
 
 @pytest.mark.parametrize(

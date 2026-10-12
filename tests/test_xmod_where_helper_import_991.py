@@ -29,44 +29,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from vera.checker import typecheck_with_artifacts
 from vera.codegen import CompileResult
-from vera.codegen import compile as codegen_compile
-from vera.parser import parse_to_ast
-from vera.resolver import ModuleResolver
 from tests import pipeline
-
-
-def _compile_main(
-    tmp_path: Path, files: dict[str, str], main_name: str,
-) -> CompileResult:
-    tmp_path.mkdir(parents=True, exist_ok=True)
-    for name, src in files.items():
-        (tmp_path / name).write_text(src, encoding="utf-8")
-    main_path = tmp_path / main_name
-    source = files[main_name]
-    program = parse_to_ast(source)
-    resolver = ModuleResolver(_root=tmp_path)
-    resolved = resolver.resolve_imports(program, main_path)
-    # A broken/missing fixture must fail loudly here, not silently leave the
-    # imported function unresolved so a control test passes vacuously.
-    assert not resolver.errors, \
-        f"module resolution errors: {[e.description for e in resolver.errors]}"
-    diags, arts = typecheck_with_artifacts(
-        program, source, file=str(main_path), resolved_modules=resolved,
-        collect_module_artifacts=True,
-    )
-    errors = [d for d in diags if d.severity == "error"]
-    assert not errors, f"typecheck errors: {[d.description for d in errors]}"
-    result = codegen_compile(
-        program, source=source, file=str(main_path), resolved_modules=resolved,
-        expr_semantic_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-        module_artifacts=arts.module_artifacts,
-    )
-    errs = [d for d in result.diagnostics if d.severity == "error"]
-    assert not errs, f"codegen errors: {[d.description for d in errs]}"
-    return result
+from tests.module_fixture_helpers import compile_multi_module_ok as _compile_main
 
 
 def _run(result: CompileResult, fn: str, arg: int) -> int:

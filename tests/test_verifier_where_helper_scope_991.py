@@ -14,6 +14,7 @@ verifier, and codegen agree on helper-name scoping.
 from __future__ import annotations
 
 from tests.verifier_helpers import _verify, _verify_err, _verify_ok
+from tests import pipeline
 
 
 # The diamond: `branchA` and `branchB` each own a nested `leaf`; both are named
@@ -160,22 +161,14 @@ public fn decoy(@Int -> @Int)
 def _run(source: str, fn: str, args: list[int]) -> int:
     """Compile and execute, mirroring the codegen-test pipeline — paired with
     the verify assertion so verifier↔codegen agreement is pinned per shape."""
-    from vera.checker import typecheck_with_artifacts
-    from vera.codegen import compile as codegen_compile
-    from vera.codegen import execute
-    from vera.parser import parse_to_ast
-
-    program = parse_to_ast(source)
-    diags, arts = typecheck_with_artifacts(program, source)
-    assert not [d for d in diags if d.severity == "error"]
-    result = codegen_compile(
-        program, source=source,
-        expr_semantic_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-    )
+    compiled = pipeline.compile(source)
+    _ = compiled.parsed.program  # raises the parse or transform error, if any
+    assert compiled.checked is not None
+    assert not compiled.checked.errors
+    result = compiled.result
     errs = [d for d in result.diagnostics if d.severity == "error"]
     assert not errs, f"codegen errors: {[d.description for d in errs]}"
-    return execute(result, fn_name=fn, args=args).value
+    return pipeline.run(result, fn, args, capture_stderr=False).value
 
 
 class TestGenericCloneEnclosingScope1013:

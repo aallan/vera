@@ -30,12 +30,8 @@ from typing import ClassVar
 import pytest
 import wasmtime
 
-from vera.checker import typecheck_with_artifacts
-from vera.codegen import compile as codegen_compile
-from vera.parser import parse_to_ast
-from vera.resolver import ModuleResolver
-from vera.verifier import verify
 from tests import pipeline
+from tests.module_fixture_helpers import compile_multi_module_ok as _compile_main
 
 U64_MAX = 18446744073709551615
 INT63_MAX = 9223372036854775807  # 2^63 - 1, the largest value that stays @Nat==@Int
@@ -134,44 +130,11 @@ def _scenarios() -> list[tuple[str, dict[str, str], str, str, str]]:
 def _lib_tier3_count(source: str) -> int:
     """Number of Tier-3 ``nat_to_int_coerce`` obligations the STANDALONE library
     verify emits — the promise the importer must honour."""
-    program = parse_to_ast(source)
-    _diags, arts = typecheck_with_artifacts(program, source)
-    result = verify(
-        program, source,
-        expr_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-    )
+    result = pipeline.verify(source, past_check=True).result
     return sum(
         1 for o in result.obligations
         if o.kind == _KIND and o.status == "tier3"
     )
-
-
-def _compile_main(tmp_path, files: dict[str, str], main_name: str):
-    """Write every fixture, then compile *main_name* exactly as ``vera run``
-    does — per-module target tables threaded (#987)."""
-    for name, src in files.items():
-        (tmp_path / name).write_text(src, encoding="utf-8")
-    main_path = tmp_path / main_name
-    source = files[main_name]
-    program = parse_to_ast(source)
-    resolver = ModuleResolver(_root=tmp_path)
-    resolved = resolver.resolve_imports(program, main_path)
-    diags, arts = typecheck_with_artifacts(
-        program, source, file=str(main_path), resolved_modules=resolved,
-        collect_module_artifacts=True,  # opt-in (PR #997): codegen path
-    )
-    errors = [d for d in diags if d.severity == "error"]
-    assert not errors, f"typecheck errors: {[d.description for d in errors]}"
-    result = codegen_compile(
-        program, source=source, file=str(main_path), resolved_modules=resolved,
-        expr_semantic_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-        module_artifacts=arts.module_artifacts,
-    )
-    errs = [d for d in result.diagnostics if d.severity == "error"]
-    assert not errs, f"codegen errors: {[d.description for d in errs]}"
-    return result
 
 
 def _run(result, fn: str, arg: int) -> int | None:

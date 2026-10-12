@@ -33,8 +33,6 @@ from typing import ClassVar
 
 import wasmtime
 
-from vera.checker import typecheck_with_artifacts
-from vera.parser import parse_to_ast
 from tests import pipeline
 from tests.module_fixture_helpers import compile_multi_module_ok as _compile_main
 
@@ -119,15 +117,7 @@ where {
 def _lib_tier3_count(source: str) -> int:
     """Number of Tier-3 ``nat_to_int_coerce`` obligations the standalone verify
     emits — the promise the importer must honour."""
-    program = parse_to_ast(source)
-    _diags, arts = typecheck_with_artifacts(program, source)
-    from vera.verifier import verify
-
-    result = verify(
-        program, source,
-        expr_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-    )
+    result = pipeline.verify(source, past_check=True).result
     return sum(
         1 for o in result.obligations
         if o.kind == _KIND and o.status == "tier3"
