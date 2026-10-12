@@ -1,5 +1,6 @@
 #!/usr/bin/env python
-"""Plan, validate, and verify Vera package releases.
+"""Plan, validate, and verify Vera package releases, and assemble each
+release's CHANGELOG section from its fragments.
 
 The GitHub Actions release workflow deliberately keeps policy in this tested
 Python helper instead of embedding it in shell conditionals.  Nothing in this
@@ -11,6 +12,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+import datetime
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -22,6 +24,10 @@ import tomllib
 from typing import Any
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from check_changelog_fragments import SECTIONS, Fragment, read_fragments
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -44,6 +50,20 @@ _SECTION_HEADING_RE = re.compile(r"^### .+$")
 _BULLET_LEAD_RE = re.compile(r"^- \*\*(?P<lead>.+?)\*\*")
 _BULLET_RE = re.compile(r"^-\s+(?P<text>\S.*)$")
 _ISSUE_LINK_RE = re.compile(r"\[#\d+\]\(https://github\.com/[^\s)]+\)")
+
+# A release section's subsections, in order: the Highlights the release PR
+# writes, then the Keep a Changelog sections the fragments name (#1529).
+RELEASE_SUBSECTIONS = ("Highlights", *(section.capitalize() for section in SECTIONS))
+_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+_UNRELEASED_RE = re.compile(r"^## \[Unreleased\][ \t]*$", re.MULTILINE)
+_NEXT_HEADING_RE = re.compile(r"^## \[", re.MULTILINE)
+_RELEASE_HEADING_RE = re.compile(r"## \[(?P<version>[0-9]+\.[0-9]+\.[0-9]+)\]")
+_SUBSECTION_RE = re.compile(r"### (?P<name>.+?)[ \t]*")
+_UNRELEASED_LINK_RE = re.compile(
+    r"^\[Unreleased\]: (?P<base>https://github\.com/[^\s/]+/[^\s/]+)/compare/"
+    r"v(?P<previous>[0-9]+\.[0-9]+\.[0-9]+)\.\.\.HEAD[ \t]*$",
+    re.MULTILINE,
+)
 
 
 class ReleaseError(ValueError):
@@ -273,6 +293,133 @@ def release_body(
     if not kept:
         return changelog_link(section, repo=repo) + "\n"
     return "\n".join(kept) + closing
+
+
+def _without_blank_edges(lines: list[str]) -> list[str]:
+    start, end = 0, len(lines)
+    while start < end and not lines[start].strip():
+        start += 1
+    while end > start and not lines[end - 1].strip():
+        end -= 1
+    return lines[start:end]
+
+
+def assemble_changelog(
+    text: str, fragments: Sequence[Fragment], version: str, date: str
+) -> str:
+    """Return ``text`` with the ``## [version] - date`` section assembled.
+
+    The section goes below a fresh, empty ``[Unreleased]`` and holds its
+    subsections in ``RELEASE_SUBSECTIONS`` order.  In each, whatever was
+    already under ``[Unreleased]`` comes first, as it merged before any
+    fragment, and then the fragments, by issue number and then by slug.
+    ``[Unreleased]``'s compare link moves to the new tag and the new
+    version's link follows it.  The same inputs give the same text.
+    """
+    parse_version(version)
+    if _DATE_RE.fullmatch(date) is None:
+        raise ReleaseError(f"invalid release date {date!r}; expected YYYY-MM-DD")
+    try:
+        datetime.date.fromisoformat(date)
+    except ValueError as exc:
+        raise ReleaseError(
+            f"invalid release date {date!r}; expected YYYY-MM-DD"
+        ) from exc
+    if re.search(rf"^(?:## )?\[{re.escape(version)}\]", text, re.MULTILINE):
+        raise ReleaseError(f"CHANGELOG.md already has a [{version}] section or link")
+    unreleased = _UNRELEASED_RE.search(text)
+    if unreleased is None:
+        raise ReleaseError("CHANGELOG.md has no ## [Unreleased] section")
+    following = _NEXT_HEADING_RE.search(text, unreleased.end())
+    latest = _RELEASE_HEADING_RE.match(text, following.start()) if following else None
+    if following is None or latest is None:
+        raise ReleaseError("CHANGELOG.md has no release section after [Unreleased]")
+    previous = latest.group("version")
+    if parse_version(version) <= parse_version(previous):
+        raise ReleaseError(
+            f"version {version} must be later than the latest release, {previous}"
+        )
+
+    subsections: dict[str, list[str]] = {}
+    current: str | None = None
+    for line in text[unreleased.end() : following.start()].splitlines():
+        heading = _SUBSECTION_RE.fullmatch(line)
+        if heading is not None:
+            current = heading.group("name")
+            if current not in RELEASE_SUBSECTIONS:
+                raise ReleaseError(
+                    f"[Unreleased] has a ### {current} subsection; a release "
+                    f"section holds {', '.join(RELEASE_SUBSECTIONS)}"
+                )
+            subsections.setdefault(current, [])
+        elif current is not None:
+            subsections[current].append(line)
+        elif line.strip():
+            raise ReleaseError(
+                f"[Unreleased] has a line outside a ### subsection: {line!r}"
+            )
+    blocks = {
+        name: _without_blank_edges(subsections.get(name, []))
+        for name in RELEASE_SUBSECTIONS
+    }
+    for fragment in sorted(fragments, key=lambda fragment: fragment.order):
+        blocks[fragment.section.capitalize()].extend(
+            fragment.text.rstrip("\n").split("\n")
+        )
+    if not any(blocks[name] for name in RELEASE_SUBSECTIONS[1:]):
+        raise ReleaseError(
+            "nothing to assemble: no fragment under changelog.d/ and no entry "
+            "under [Unreleased]"
+        )
+    section = f"## [Unreleased]\n\n## [{version}] - {date}\n\n" + "".join(
+        f"### {name}\n\n" + "\n".join(lines) + "\n\n"
+        for name, lines in blocks.items()
+        if lines
+    )
+    assembled = text[: unreleased.start()] + section + text[following.start() :]
+
+    links = list(_UNRELEASED_LINK_RE.finditer(assembled))
+    if len(links) != 1:
+        raise ReleaseError(
+            f"CHANGELOG.md has {len(links)} [Unreleased] compare links, not one"
+            if links
+            else "CHANGELOG.md has no [Unreleased] compare link"
+        )
+    link = links[0]
+    if link.group("previous") != previous:
+        raise ReleaseError(
+            f"CHANGELOG.md's [Unreleased] link compares from "
+            f"v{link.group('previous')}, not from the latest release, {previous}"
+        )
+    base = link.group("base")
+    assembled = (
+        assembled[: link.start()]
+        + f"[Unreleased]: {base}/compare/v{version}...HEAD\n"
+        + f"[{version}]: {base}/compare/v{previous}...v{version}"
+        + assembled[link.end() :]
+    )
+    changelog_section(assembled, version)
+    return assembled
+
+
+def assemble_release(version: str, date: str, root: Path = ROOT) -> list[Path]:
+    """Assemble ``changelog.d/`` into CHANGELOG.md's ``## [version] - date``.
+
+    Every fragment is read and checked, and the new text built, before
+    anything is written, and the fragments are deleted only once CHANGELOG.md
+    is.  Returns the paths of the fragments consumed.
+    """
+    fragments, problems = read_fragments(root / "changelog.d")
+    if problems:
+        raise ReleaseError("malformed changelog fragments:\n" + "\n".join(problems))
+    path = root / "CHANGELOG.md"
+    text = assemble_changelog(
+        path.read_text(encoding="utf-8"), fragments, version, date
+    )
+    path.write_text(text, encoding="utf-8", newline="\n")
+    for fragment in fragments:
+        fragment.path.unlink()
+    return [fragment.path for fragment in fragments]
 
 
 def tag_exists(version: str, root: Path = ROOT) -> bool:
@@ -508,6 +655,12 @@ def _parser() -> argparse.ArgumentParser:
     notes.add_argument("--output", type=Path, required=True)
     notes.add_argument("--repo", default=REPOSITORY)
 
+    assemble = commands.add_parser(
+        "assemble", help="assemble changelog.d/ into the release's CHANGELOG section"
+    )
+    assemble.add_argument("--version", required=True)
+    assemble.add_argument("--date", required=True)
+
     manifest = commands.add_parser("manifest", help="write archive SHA-256 values")
     manifest.add_argument("--dist-dir", type=Path, default=Path("dist"))
     manifest.add_argument("--output", type=Path, required=True)
@@ -549,6 +702,12 @@ def main(argv: list[str] | None = None) -> int:
                     f"{len(section.notes):,} to {len(body):,} characters "
                     f"(GitHub's limit is {GITHUB_RELEASE_BODY_LIMIT:,})."
                 )
+        elif args.command == "assemble":
+            consumed = assemble_release(args.version, args.date)
+            print(
+                f"CHANGELOG.md: ## [{args.version}] - {args.date} assembled from "
+                f"{len(consumed)} changelog.d/ fragments."
+            )
         elif args.command == "manifest":
             write_manifest(args.dist_dir, args.output)
         elif args.command == "assert-absent":

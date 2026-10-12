@@ -749,7 +749,287 @@ class TestArchivesAndRegistry:
             )
 
 
+_PREVIOUS_LINK = "[Unreleased]: https://github.com/aallan/vera/compare/v0.2.1...HEAD\n"
+_ASSEMBLED_LINKS = (
+    "[Unreleased]: https://github.com/aallan/vera/compare/v0.2.2...HEAD\n"
+    "[0.2.2]: https://github.com/aallan/vera/compare/v0.2.1...v0.2.2\n"
+)
+
+
+def _changelog(unreleased: str) -> str:
+    """A CHANGELOG.md whose `[Unreleased]` section holds `unreleased`."""
+    return (
+        "# Changelog\n\n"
+        "All notable changes to this project will be documented in this file.\n\n"
+        "## [Unreleased]\n\n"
+        f"{unreleased}"
+        "## [0.2.1] - 2026-10-10\n\n"
+        "### Fixed\n\n"
+        "- Previous.\n\n"
+        f"{_PREVIOUS_LINK}"
+        "[0.2.1]: https://github.com/aallan/vera/compare/v0.2.0...v0.2.1\n"
+    )
+
+
+def _manual_release(unreleased: str) -> str:
+    """What the release PR wrote by hand before fragments: `[Unreleased]`'s
+    bullets become the dated section under a fresh empty `[Unreleased]`, and
+    the compare links move to the new tag."""
+    return (
+        _changelog(unreleased)
+        .replace("## [Unreleased]\n\n", "## [Unreleased]\n\n## [0.2.2] - 2026-10-13\n\n", 1)
+        .replace(_PREVIOUS_LINK, _ASSEMBLED_LINKS, 1)
+    )
+
+
+def _tree(tmp_path: Path, fragments: dict[str, str], unreleased: str = "") -> Path:
+    """A checkout's CHANGELOG.md and changelog.d/, its README included."""
+    root = tmp_path / "tree"
+    (root / "changelog.d").mkdir(parents=True)
+    (root / "CHANGELOG.md").write_text(_changelog(unreleased), encoding="utf-8")
+    (root / "changelog.d" / "README.md").write_text(
+        "# CHANGELOG fragments\n\nThe convention.\n", encoding="utf-8"
+    )
+    for name, text in fragments.items():
+        (root / "changelog.d" / name).write_text(text, encoding="utf-8")
+    return root
+
+
+def _assembled(root: Path) -> str:
+    return (root / "CHANGELOG.md").read_text(encoding="utf-8")
+
+
+_LEFTOVER = "- **A bullet merged before fragments.** Under `[Unreleased]`.\n"
+_ADDED = (
+    "- **CHANGELOG fragments.** One file per pull request "
+    "([#1529](https://github.com/aallan/vera/issues/1529)).\n"
+    "  - Its sub-bullet, carried verbatim.\n"
+)
+_FIXED_ISSUE = (
+    "- **A fix** ([#1610](https://github.com/aallan/vera/issues/1610)).  "
+    "With a `@Nat` in backticks.\n"
+)
+_FIXED_SLUG = "- **A fix with no issue.** From the branch `ci/fast-lane`.\n"
+
+
+class TestAssemble:
+    """#1529: the release PR assembles the `changelog.d/` fragments into the
+    release's CHANGELOG section, so no fix PR edits a line another edits."""
+
+    def test_the_assembled_section_is_what_the_manual_flow_writes(
+        self, tmp_path: Path
+    ) -> None:
+        """Three fragments across two sections and one bullet still under
+        `[Unreleased]` assemble into exactly the section the manual flow
+        writes for the same bullets: the leftover bullet merged first, so it
+        leads its section, and the fragments follow it in issue order."""
+        root = _tree(
+            tmp_path,
+            {
+                "+fast-lane.fixed.md": _FIXED_SLUG,
+                "1610.fixed.md": _FIXED_ISSUE,
+                "1529.added.md": _ADDED,
+            },
+            unreleased=f"### Fixed\n\n{_LEFTOVER}\n",
+        )
+        release.assemble_release("0.2.2", "2026-10-13", root)
+        manual = _manual_release(
+            f"### Added\n\n{_ADDED}\n"
+            f"### Fixed\n\n{_LEFTOVER}{_FIXED_ISSUE}{_FIXED_SLUG}\n"
+        )
+        assert _assembled(root) == manual
+        # The notes builder reads the section it wrote, unchanged.
+        assert release.section_for_version("0.2.2", root).notes == (
+            f"### Added\n\n{_ADDED}\n### Fixed\n\n{_LEFTOVER}{_FIXED_ISSUE}{_FIXED_SLUG}"
+        ).rstrip("\n")
+
+    def test_two_runs_over_the_same_inputs_write_the_same_bytes(
+        self, tmp_path: Path
+    ) -> None:
+        """Same fragments, written in opposite orders, so a listing that
+        follows creation order would differ: the bytes do not."""
+        files = {
+            "1610.fixed.md": _FIXED_ISSUE,
+            "1529.added.md": _ADDED,
+            "+fast-lane.fixed.md": _FIXED_SLUG,
+            "+alpha.changed.md": "- **A change.**\n",
+        }
+        first = _tree(tmp_path / "first", files, unreleased=f"### Fixed\n\n{_LEFTOVER}\n")
+        second = _tree(
+            tmp_path / "second",
+            dict(reversed(list(files.items()))),
+            unreleased=f"### Fixed\n\n{_LEFTOVER}\n",
+        )
+        release.assemble_release("0.2.2", "2026-10-13", first)
+        release.assemble_release("0.2.2", "2026-10-13", second)
+        assert (first / "CHANGELOG.md").read_bytes() == (
+            second / "CHANGELOG.md"
+        ).read_bytes()
+        assert b"\r" not in (first / "CHANGELOG.md").read_bytes()
+
+    def test_bullets_are_ordered_by_issue_number_then_by_slug(
+        self, tmp_path: Path
+    ) -> None:
+        """Numerically, so 999 precedes 1529 precedes 10000, and every issue
+        fragment precedes every slug fragment."""
+        root = _tree(
+            tmp_path,
+            {
+                "+zeta.fixed.md": "- zeta\n",
+                "10000.fixed.md": "- 10000\n",
+                "+alpha.fixed.md": "- alpha\n",
+                "1529.fixed.md": "- 1529\n",
+                "999.fixed.md": "- 999\n",
+            },
+        )
+        release.assemble_release("0.2.2", "2026-10-13", root)
+        assert _assembled(root) == _manual_release(
+            "### Fixed\n\n- 999\n- 1529\n- 10000\n- alpha\n- zeta\n\n"
+        )
+
+    def test_sections_are_in_keep_a_changelog_order(self, tmp_path: Path) -> None:
+        """Added, Changed, Deprecated, Removed, Fixed, Security: not the
+        alphabetical order, which puts Fixed before Removed."""
+        root = _tree(
+            tmp_path,
+            {
+                f"{number}.{section}.md": f"- {section}\n"
+                for number, section in enumerate(
+                    ["security", "fixed", "removed", "deprecated", "changed", "added"],
+                    start=1,
+                )
+            },
+        )
+        release.assemble_release("0.2.2", "2026-10-13", root)
+        assert _assembled(root) == _manual_release(
+            "### Added\n\n- added\n\n"
+            "### Changed\n\n- changed\n\n"
+            "### Deprecated\n\n- deprecated\n\n"
+            "### Removed\n\n- removed\n\n"
+            "### Fixed\n\n- fixed\n\n"
+            "### Security\n\n- security\n\n"
+        )
+
+    def test_the_consumed_fragments_are_deleted_and_the_readme_stays(
+        self, tmp_path: Path
+    ) -> None:
+        root = _tree(tmp_path, {"1529.added.md": _ADDED, "+lane.fixed.md": _FIXED_SLUG})
+        consumed = release.assemble_release("0.2.2", "2026-10-13", root)
+        assert sorted(path.name for path in consumed) == ["+lane.fixed.md", "1529.added.md"]
+        assert sorted(path.name for path in (root / "changelog.d").iterdir()) == [
+            "README.md"
+        ]
+
+    def test_highlights_under_unreleased_open_the_section(self, tmp_path: Path) -> None:
+        """A `### Highlights` already written under `[Unreleased]` stays the
+        section's first subsection, above the assembled ones."""
+        root = _tree(
+            tmp_path,
+            {"1529.added.md": _ADDED},
+            unreleased="### Highlights\n\n- **The headline.**\n\n",
+        )
+        release.assemble_release("0.2.2", "2026-10-13", root)
+        assert _assembled(root) == _manual_release(
+            f"### Highlights\n\n- **The headline.**\n\n### Added\n\n{_ADDED}\n"
+        )
+
+    def test_a_malformed_fragment_stops_the_assembly_and_changes_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        root = _tree(
+            tmp_path, {"1529.added.md": _ADDED, "1530.fix.md": _FIXED_ISSUE}
+        )
+        before = _assembled(root)
+        with pytest.raises(release.ReleaseError, match=r"changelog\.d/1530\.fix\.md"):
+            release.assemble_release("0.2.2", "2026-10-13", root)
+        assert _assembled(root) == before
+        assert sorted(path.name for path in (root / "changelog.d").iterdir()) == [
+            "1529.added.md",
+            "1530.fix.md",
+            "README.md",
+        ]
+
+    @pytest.mark.parametrize(
+        ("version", "date", "unreleased", "files", "message"),
+        [
+            ("0.2.1", "2026-10-13", "", {"1529.added.md": _ADDED}, r"already has"),
+            ("0.2.0", "2026-10-13", "", {"1529.added.md": _ADDED}, r"must be later"),
+            ("0.2", "2026-10-13", "", {"1529.added.md": _ADDED}, r"expected X\.Y\.Z"),
+            ("0.2.2", "13-10-2026", "", {"1529.added.md": _ADDED}, r"YYYY-MM-DD"),
+            ("0.2.2", "2026-13-01", "", {"1529.added.md": _ADDED}, r"YYYY-MM-DD"),
+            ("0.2.2", "2026-10-13", "", {}, r"nothing to assemble"),
+            (
+                "0.2.2",
+                "2026-10-13",
+                "### Documentation\n\n- Old-style.\n\n",
+                {"1529.added.md": _ADDED},
+                r"### Documentation",
+            ),
+            (
+                "0.2.2",
+                "2026-10-13",
+                "- A bullet under no subsection.\n\n",
+                {"1529.added.md": _ADDED},
+                r"outside a ### subsection",
+            ),
+        ],
+    )
+    def test_an_assembly_that_cannot_be_right_is_refused(
+        self,
+        tmp_path: Path,
+        version: str,
+        date: str,
+        unreleased: str,
+        files: dict[str, str],
+        message: str,
+    ) -> None:
+        root = _tree(tmp_path, files, unreleased=unreleased)
+        before = _assembled(root)
+        with pytest.raises(release.ReleaseError, match=message):
+            release.assemble_release(version, date, root)
+        assert _assembled(root) == before
+        assert len(list((root / "changelog.d").iterdir())) == len(files) + 1
+
+    @pytest.mark.parametrize(
+        ("link", "message"),
+        [
+            ("", r"no \[Unreleased\] compare link"),
+            (
+                "[Unreleased]: https://github.com/aallan/vera/compare/v0.2.0...HEAD\n",
+                r"v0\.2\.0.*0\.2\.1",
+            ),
+        ],
+    )
+    def test_an_unreleased_link_that_does_not_name_the_latest_release_is_refused(
+        self, tmp_path: Path, link: str, message: str
+    ) -> None:
+        root = _tree(tmp_path, {"1529.added.md": _ADDED})
+        path = root / "CHANGELOG.md"
+        path.write_text(
+            _assembled(root).replace(_PREVIOUS_LINK, link), encoding="utf-8"
+        )
+        with pytest.raises(release.ReleaseError, match=message):
+            release.assemble_release("0.2.2", "2026-10-13", root)
+
+
 class TestCLI:
+    def test_main_assemble(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        calls: list[tuple[str, str]] = []
+
+        def assemble(version: str, date: str) -> list[Path]:
+            calls.append((version, date))
+            return [Path("changelog.d/1529.added.md")]
+
+        monkeypatch.setattr(release, "assemble_release", assemble)
+        assert (
+            release.main(["assemble", "--version", "0.2.2", "--date", "2026-10-13"])
+            == 0
+        )
+        assert calls == [("0.2.2", "2026-10-13")]
+        assert "## [0.2.2] - 2026-10-13" in capsys.readouterr().out
+
     def test_write_github_outputs(self, tmp_path: Path) -> None:
         output = tmp_path / "github-output"
         release._write_github_outputs(
