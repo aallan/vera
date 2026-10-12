@@ -59,11 +59,9 @@ The instrument:
 
 from __future__ import annotations
 
-import contextlib
-import io
 import json
 from pathlib import Path
-from typing import Any, Callable, NamedTuple
+from typing import Any, NamedTuple
 
 import pytest
 
@@ -211,7 +209,8 @@ def _entry(imports: str, body: str) -> str:
 
 def _write_cell(root: Path, form: str, position: str, placement: str, *,
                 qualified: bool) -> tuple[Path, dict[str, Any]]:
-    """Write one cell; return the file to run and the `cmd_run` keywords."""
+    """Write one cell; return the file to run and the `run` keywords `_cli`
+    takes."""
     path, rel = _FORMS[form]
     q = f"{path}::" if qualified else ""
     pos = _positions(q)[position]
@@ -236,22 +235,23 @@ def _write_cell(root: Path, form: str, position: str, placement: str, *,
 # ---------------------------------------------------------------------------
 
 
-def _cli(command: str, path: Path, **kwargs: Any) -> dict[str, Any]:
-    """Run `vera <command> --json <path>` in process and parse its output."""
-    from vera import cli
-
-    fns: dict[str, Callable[..., int]] = {
-        "check": cli.cmd_check, "run": cli.cmd_run, "verify": cli.cmd_verify}
-    out, err = io.StringIO(), io.StringIO()
-    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-        rc = fns[command](str(path), as_json=True, **kwargs)
+def _cli(command: str, path: Path, *, fn_name: str | None = None,
+         raw_fn_args: list[str] | None = None) -> dict[str, Any]:
+    """Run `vera <command> --json <path>` in process and parse its output;
+    a `run` calls *fn_name* (`--fn`) with *raw_fn_args* (after `--`)."""
+    argv = [command, "--json", str(path)]
+    if fn_name is not None:
+        argv += ["--fn", fn_name]
+    if raw_fn_args is not None:
+        argv += ["--", *raw_fn_args]
+    ran = pipeline.cli(*argv)
     try:
-        payload: dict[str, Any] = json.loads(out.getvalue())
+        payload: dict[str, Any] = ran.json()
     except json.JSONDecodeError:  # pragma: no cover - a failure report
         raise AssertionError(
             f"vera {command} --json printed no JSON: "
-            f"{out.getvalue()!r} {err.getvalue()!r}") from None
-    payload["_rc"] = rc
+            f"{ran.stdout!r} {ran.stderr!r}") from None
+    payload["_rc"] = ran.returncode
     return payload
 
 
