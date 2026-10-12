@@ -4,11 +4,15 @@ Each stage is held to the command it stands in for: over every corpus
 program, ``check``, ``verify`` and ``compile`` give exactly the envelope
 ``vera <stage> --json`` prints and ``compile`` exactly the WAT ``vera compile
 --wat`` prints, and over every conformance program whose run is pinned,
-``run`` gives the envelope ``vera run --json`` prints.  The CLI side runs in
-process through ``pipeline.cli``, which is itself held to the CLI run as a
-process.  The rest pins the driver's own rules: what a stage takes, what
-reading an artefact a stage did not make raises, the unchecked compile, and
-what ``cli`` borrows and gives back.
+``run`` gives the envelope ``vera run --json`` prints.  Programs shaped as no
+corpus program is (a trap of each kind after output, an exit status set
+through ``IO.exit``, a missing ``main``, every export dropped, an ill-typed and
+an unparsed program) are held to every command the same way, with the status
+``vera run`` exits with in both modes.  The CLI side runs in process through
+``pipeline.cli``, which is itself held to the CLI run as a process.  The
+rest pins the driver's own rules: what a stage takes, what reading an
+artefact a stage did not make raises, the unchecked compile, and what ``cli``
+borrows and gives back.
 """
 
 from __future__ import annotations
@@ -69,6 +73,95 @@ def test_a_run_reports_what_vera_run_reports(path: Path) -> None:
     ran = pipeline.run(path, stdin="")
     assert ran.envelope() == pipeline.cli("run", "--json", path).json()
     assert ran.returncode == pipeline.cli("run", path).returncode
+
+
+_IO_MAIN = (
+    "public fn main(@Unit -> @Unit)\n"
+    "  requires(true)\n  ensures(true)\n  effects(<IO>)\n{\n")
+_PRINTS_FIRST = _IO_MAIN + '  IO.print("before");\n  IO.stderr("note");\n'
+
+#: Programs whose shapes no corpus program has: a trap of each kind after
+#: output on both streams, an exit status set through `IO.exit`, an entry
+#: chosen because there is no `main`, a compile that drops every export, and
+#: programs the check and the parser refuse.
+_OFF_CORPUS: dict[str, str] = {
+    "trap-divide-by-zero": _PRINTS_FIRST + (
+        "  let @Int = 0;\n  let @Int = 10 / @Int.0;\n"
+        '  IO.print("after")\n}\n'),
+    "trap-precondition": (
+        "private fn positive(@Int -> @Int)\n"
+        "  requires(@Int.0 > 0)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  @Int.0\n}\n\n" + _PRINTS_FIRST
+        + '  let @Int = positive(0);\n  IO.print("after")\n}\n'),
+    "trap-overflow": _PRINTS_FIRST + (
+        "  let @Int = 9223372036854775807;\n  let @Int = @Int.0 + 1;\n"
+        '  IO.print("after")\n}\n'),
+    "trap-index": _PRINTS_FIRST + (
+        "  let @Array<Int> = [1, 2];\n  let @Int = @Array<Int>.0[5];\n"
+        '  IO.print("after")\n}\n'),
+    "exit-3": _IO_MAIN + '  IO.print("bye");\n  IO.exit(3)\n}\n',
+    "stderr-then-exit-2": _IO_MAIN + '  IO.stderr("failing");\n  IO.exit(2)\n}\n',
+    "no-main": (
+        "public fn only_one(-> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n{\n  4243\n}\n"),
+    "every-export-dropped": (
+        "private fn tally(-> @Int) requires(true) ensures(true) effects(pure) {\n"
+        '  let @Map<String, Array<Int>> = map_insert(map_new(), "a", [1, 2]);\n'
+        "  map_size(@Map<String, Array<Int>>.0)\n}\n\n"
+        "public fn main(-> @Int) requires(true) ensures(true) effects(pure) {\n"
+        "  tally()\n}\n"),
+    "ill-typed": (
+        "public fn f(@Int -> @Bool)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n{\n  @Int.0\n}\n"),
+    "unparsed": "public fn f(@Int -> @Int) {",
+}
+
+#: `vera run` refuses to run a `main` code generation dropped, and says why;
+#: the driver leaves that refusal to the CLI (`pipeline.cli`).
+_RUN_REFUSED_BY_THE_CLI = {"every-export-dropped"}
+
+
+@pytest.mark.parametrize("name", sorted(_OFF_CORPUS))
+def test_each_stage_reports_what_its_command_reports_off_the_corpus(
+    name: str, tmp_path: Path,
+) -> None:
+    path = tmp_path / f"{name}.vera"
+    path.write_text(_OFF_CORPUS[name], encoding="utf-8")
+    assert pipeline.check(path).envelope() == (
+        pipeline.cli("check", "--json", path).json())
+    assert pipeline.verify(path).envelope() == (
+        pipeline.cli("verify", "--json", path).json())
+    assert pipeline.compile(path).envelope() == (
+        pipeline.cli("compile", "--json", path).json())
+    if name in _RUN_REFUSED_BY_THE_CLI:
+        return
+    ran = pipeline.run(path, stdin="")
+    as_json = pipeline.cli("run", "--json", path)
+    assert ran.envelope() == as_json.json()
+    assert ran.returncode == as_json.returncode == (
+        pipeline.cli("run", path).returncode)
+
+
+def test_the_off_corpus_shapes_are_the_ones_named() -> None:
+    """Each cell above reaches the branch it is there for."""
+    def ran(name: str) -> pipeline.Ran:
+        return pipeline.run(_OFF_CORPUS[name], stdin="")
+
+    kinds = {name: ran(name).trap for name in _OFF_CORPUS
+             if name.startswith("trap-")}
+    assert {name: t.kind if t else None for name, t in kinds.items()} == {
+        "trap-divide-by-zero": "divide_by_zero",
+        "trap-precondition": "contract_violation",
+        "trap-overflow": "overflow",
+        "trap-index": "index_out_of_bounds",
+    }
+    assert all(t is not None and t.frames and t.stdout == "before"
+               and t.stderr == "note" for t in kinds.values())
+    assert (ran("exit-3").returncode, ran("stderr-then-exit-2").returncode) == (3, 2)
+    assert ran("no-main").envelope()["function"] == "only_one"
+    dropped = pipeline.compile(_OFF_CORPUS["every-export-dropped"])
+    assert dropped.ok and dropped.exports == []
+    assert dropped.envelope()["ok"] is False
 
 
 @pytest.mark.parametrize("name,distrust", [

@@ -176,6 +176,12 @@ class TestThing:
 """
 
 
+_VERA_ARGV = "[sys.executable, '-m', 'vera.cli', 'check']"
+# Another class with a method named like the runner, so a receiver reaches
+# the runner only by being placed, never by the name alone.
+_OTHER = "class Other:\n    def _run(self, argv):\n        return argv\n"
+
+
 @pytest.mark.parametrize("handing,expected", [
     ("class TestIt:\n"
      "    ARGV = [sys.executable, '-m', 'vera.cli', 'version']\n"
@@ -185,25 +191,39 @@ class TestThing:
      "        ARGV = [sys.executable, '-m', 'vera.cli']\n"
      "        return ARGV\n"
      "    VERSION = _run_json(ARGV)\n", []),
-    ("def test_other(obj):\n"
-     "    obj._run([sys.executable, '-m', 'vera.cli', 'check'])\n", []),
-    ("def test_other(obj):\n"
-     "    obj._run_json([sys.executable, '-m', 'vera.cli', 'check'])\n", []),
-    ("class TestOwn(TestThing):\n"
-     "    def test_it(self):\n"
-     "        self._run([sys.executable, '-m', 'vera.cli', 'check'])\n",
+    (f"def test_other(runner):\n    runner._run({_VERA_ARGV})\n",
      ["TestThing._run"]),
-    ("class TestElse:\n"
-     "    def test_it(self):\n"
-     "        self._run([sys.executable, '-m', 'vera.cli', 'check'])\n", []),
-    ("class TestThing2(TestThing):\n"
+    (_OTHER + f"def test_other(obj):\n    obj._run({_VERA_ARGV})\n", []),
+    (f"def test_other(obj):\n    obj._run_json({_VERA_ARGV})\n", []),
+    (_OTHER + f"def test_it():\n    TestThing()._run({_VERA_ARGV})\n",
+     ["TestThing._run"]),
+    (_OTHER + f"def test_it():\n    thing = TestThing()\n    thing._run({_VERA_ARGV})\n",
+     ["TestThing._run"]),
+    (_OTHER + "class TestOwn(TestThing):\n"
+     f"    def test_it(self):\n        self._run({_VERA_ARGV})\n",
+     ["TestThing._run"]),
+    (_OTHER + "class TestOwn(TestThing):\n"
+     f"    def test_it(self):\n        super()._run({_VERA_ARGV})\n",
+     ["TestThing._run"]),
+    (_OTHER + "class TestMid(TestThing):\n"
      "    pass\n"
-     "def test_named(p):\n"
-     "    TestThing._run(None, [sys.executable, '-m', 'vera.cli', p])\n",
+     "class TestLeaf(TestMid):\n"
+     f"    def test_it(self):\n        self._run({_VERA_ARGV})\n",
+     ["TestThing._run"]),
+    ("class TestSub(TestThing):\n"
+     "    def _run(self, argv):\n"
+     "        return argv\n"
+     f"    def test_it(self):\n        self._run({_VERA_ARGV})\n", []),
+    ("class TestElse:\n"
+     f"    def test_it(self):\n        self._run({_VERA_ARGV})\n", []),
+    (_OTHER + f"def test_named(p):\n    TestThing._run(None, {_VERA_ARGV})\n",
      ["TestThing._run"]),
 ], ids=["class-body-name", "method-local-is-not-the-class-binding",
-        "another-objects-method", "another-objects-attribute",
-        "a-subclass-self-call", "another-class-self-call", "the-class-named-call"])
+        "a-fixtures-object", "another-classes-same-named-method",
+        "another-objects-attribute", "an-instance", "an-instance-in-a-name",
+        "a-subclass-self-call", "a-super-call", "a-grandchild-self-call",
+        "an-override-is-another-method", "another-class-self-call",
+        "the-class-named-call"])
 def test_a_handed_command_reaches_the_runner_it_names(
     gate: ModuleType, handing: str, expected: list[str],
 ) -> None:
