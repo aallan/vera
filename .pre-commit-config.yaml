@@ -255,6 +255,15 @@ repos:
         pass_filenames: false
         files: '(vera/browser/.*|vera/codegen/api\.py$|vera/wasm/markdown\.py$|vera/markdown\.py$)'
 
+      # #1529 — every file under changelog.d/ other than its README is a
+      # CHANGELOG fragment: a fragment's name, and bullets for content.
+      - id: changelog-fragments
+        name: changelog fragments
+        entry: .venv/bin/python scripts/check_changelog_fragments.py
+        language: system
+        pass_filenames: false
+        files: '^(changelog\.d/|scripts/check_changelog_fragments\.py$)'
+
       # Pre-push stage: runs once before `git push`, not per-commit.
       # Checks that PRs touching substantive code (vera/, spec/, SKILL.md)
       # also include a new CHANGELOG entry.  Escape hatches: a
