@@ -1,0 +1,91 @@
+{
+ "https://api.codecov.io/api/v2/github/aallan/repos/vera/commits/?branch=main&page_size=20": {
+  "results": [
+   {
+    "commitid": "d4488257af1db63358e42b775a4ae690bfdb2616"
+   },
+   {
+    "commitid": "345af0c97fdc573d86ca2ebeba8a863d14747f38"
+   },
+   {
+    "commitid": "8bcb661f549b11068827882625c728de17b51eb2"
+   },
+   {
+    "commitid": "2ad5258a06ee5d3c6f1641e482f071d9d8af69cf"
+   },
+   {
+    "commitid": "73dd01d58298fd79e1c49c8039af87264f85e7d1"
+   },
+   {
+    "commitid": "d2905a30ebe8d75883882055d884e901e9570ef6"
+   },
+   {
+    "commitid": "9b6c3653fa5b709ef361b695e340682f46afd750"
+   },
+   {
+    "commitid": "3ad7095a1c8e29dff657e48d26c19d6e022ea2c8"
+   },
+   {
+    "commitid": "9e4659378e1141c590b6cdd9389b110ae25805f7"
+   },
+   {
+    "commitid": "96e6e18442c94d13f78004b6dc836109197fe3b1"
+   },
+   {
+    "commitid": "7c8e1b4675cbf831a087659114201f5f5ddcfd81"
+   },
+   {
+    "commitid": "8ae33b9bf0175490d42f5a402b73ecf5011a2ddd"
+   },
+   {
+    "commitid": "1f55a157fc8c3445e03445069494dcf605bdc975"
+   },
+   {
+    "commitid": "627575dc09d700ce05f0967270d9b1a00f070b99"
+   },
+   {
+    "commitid": "9ee3c33b73a2b683fdd26a04545de03c9f1ec945"
+   },
+   {
+    "commitid": "a21bd281045cd151056032d35b3f8c8b74c34bc2"
+   },
+   {
+    "commitid": "7b429dd7d350d06f699e9bcdfae873c0982556af"
+   },
+   {
+    "commitid": "d9e6609c3794de668033a7733c1eb3228c649cf0"
+   },
+   {
+    "commitid": "57d1b60acf79e9422ba3471cb076c60805af4da2"
+   },
+   {
+    "commitid": "15b11dd6461b1a689c1f60b42f20f8356f3d49b9"
+   }
+  ]
+ },
+ "https://api.codecov.io/api/v2/github/aallan/repos/vera/commits/d4488257af1db63358e42b775a4ae690bfdb2616/uploads/": {
+  "results": [
+   {
+    "created_at": "2026-10-12 08:12:36.684117+00:00",
+    "flags": [
+     "javascript"
+    ],
+    "upload_type": "uploaded"
+   },
+   {
+    "created_at": "2026-10-12 08:31:25.890398+00:00",
+    "flags": [
+     "python"
+    ],
+    "upload_type": "uploaded"
+   }
+  ]
+ },
+ "https://api.codecov.io/api/v2/github/aallan/repos/vera/totals/?flag=python&sha=d4488257af1db63358e42b775a4ae690bfdb2616": {
+  "totals": {
+   "coverage": 96.26,
+   "lines": 41498,
+   "misses": 1548
+  }
+ }
+}

@@ -21,7 +21,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 Written by `scripts/render_status.py` from the tree.  The tests are counted by a collection, `pytest --collect-only -o addopts= --matrix=full`, which includes the stress tests and every class-instrument cell, not by a run, so a run's passed, skipped and xfailed split is not recorded here.
 <!-- render_status:end status -->
 
-This block, the [test file table](#test-files) and the [skipped tests](#skipped-tests) are written by `scripts/render_status.py` from the tree, each between a pair of `render_status` markers.  The release PR runs it, and `python scripts/check_doc_counts.py --release` fails the release when a block is not what the script writes now.  Between releases a pull request leaves the blocks alone, so they show the tree as of the last release.  The one other place these counts are stated is the landing page's status paragraph, which is copied by hand ([ROADMAP.md](ROADMAP.md), Stage 22).
+This block, the [test file table](#test-files), the [skipped tests](#skipped-tests) and the [scorecard](#scorecard) are written by `scripts/render_status.py`, each between a pair of `render_status` markers.  The release PR runs it, and `python scripts/check_doc_counts.py --release` fails the release when a block is not what the script writes now.  Between releases a pull request leaves the blocks alone, so they show the tree as of the last release.  The one other place these counts are stated is the landing page's status paragraph, which is copied by hand ([ROADMAP.md](ROADMAP.md), Stage 22).
 
 | Measure | Where it is |
 |---------|-------------|
@@ -29,6 +29,64 @@ This block, the [test file table](#test-files) and the [skipped tests](#skipped-
 | **Documentation code blocks** | `check_doc_examples.py` prints each gated document's Vera blocks by stage and category on every run; see [Documentation example pipeline](#documentation-example-pipeline) |
 | **Contract verification** | the tiers `vera verify --json` reports over the examples; see [Contract Verification Coverage](#contract-verification-coverage) |
 | **CI matrix** | the platforms and Python versions [README § Supported platforms](README.md#supported-platforms) lists, plus browser parity (Node.js 22) and the wheel-availability preflight; see [CI Pipeline](#ci-pipeline) |
+
+## Scorecard
+
+The measures [ROADMAP.md](ROADMAP.md)'s Stage 29 holds v0.3.0 to, each beside the audit's value at v0.2.0.  The release PR writes the block with `python scripts/render_status.py --github --junit PATH` ([RELEASING.md](RELEASING.md) has the run that writes `PATH`); a measure that needs judgment has its target in Stage 29 and no row here.
+
+<!-- render_status:begin scorecard -->
+| Measure | v0.2.0, the audit (2026-10-06) | Now | Measured over |
+|---------|---------------------------|-----|---------------|
+| Open `soundness` bugs | 14 (≥17 by definition) | 18 | the tracker, 2026-10-12 09:24 UTC |
+| Open bugs | 82 | 89 | the tracker, 2026-10-12 09:24 UTC |
+| Backend `_infer_*` functions | 32 | 32 | the tree |
+| Same-named `Nat`/`Int` helpers in `vera/verifier.py` and `vera/wasm/` | 12 | 12 | the tree |
+| Explicit `guarded=` claims by the verifier | 38 | 38 | the tree |
+| Hand-rolled `isinstance` dispatchers over `Expr` | 191 | 201 | the tree |
+| Functions over 500 lines | 17 | 17 | the tree |
+| Host built-ins hand-mirrored across hosts | 53 × 2, plus WASI | 53 × 2, plus WASI's 10 map operations | the tree |
+| Gate scripts that exist only to sync copies | 8 of 23 | 6 of 24 | the tree |
+| CI wall time per pull-request push | 57 min | 34.3 min | 20 pull-request runs, 2026-10-09 to 2026-10-12 |
+| Runner-minutes per pull-request push | 375 | 256 | 20 pull-request runs, 2026-10-09 to 2026-10-12 |
+| Fix pull requests, median: CI runs | 6 | 5 | 3 pull requests merged since v0.2.1 (2026-10-11), to 2026-10-12 |
+| Fix pull requests, median: hours to merge | 11.0 | 1.5 | 3 pull requests merged since v0.2.1 (2026-10-11), to 2026-10-12 |
+| Suite in the pull-request gate: tests | 30,095 | 20,864 | the tree |
+| Suite in the pull-request gate: worker-seconds | 9,037 | 2,944 | a run of 20,288 tests, 2026-10-12 09:14 UTC |
+| Subprocess share of suite time | 52% | 70.1% | a run of 20,288 tests, 2026-10-12 09:14 UTC |
+| Conformance entries with golden output | 0 of 256 | 175 of 256; every run-level entry, one of them by exit status only | the tree |
+| Program generator with differentials | none | none | the tree |
+| `vera test` executes proved functions | no | yes, in CI | the tree |
+| Statement coverage | 96.2% | 96.26% | Codecov, the post-merge run of `d448825` (2026-10-12) |
+| Spec words | 86,558 | 87,060 | the tree |
+| Issue links in the spec | 175 | 140 | the tree |
+
+What each row counts, as the v0.2.0 column counted it:
+
+- **Open `soundness` bugs**: the open issues labelled both `bug` and `soundness`.
+- **Open bugs**: the open issues labelled `bug`.
+- **Backend `_infer_*` functions**: the functions named `_infer_*` anywhere in `vera/`.
+- **Same-named `Nat`/`Int` helpers in `vera/verifier.py` and `vera/wasm/`**: the function names both define, a `vera/wasm/` name read without its `codegen` word, that carry the word `nat`, `int`, `overflow` or `underflow`, or a word that begins `widen`.
+- **Explicit `guarded=` claims by the verifier**: the calls in `vera/verifier.py` to a `_record_*_tier3` recorder that pass `guarded`, by keyword or by position.
+- **Hand-rolled `isinstance` dispatchers over `Expr`**: the functions outside `vera/ast.py` whose own body, its nested functions apart, tests a value with `isinstance` against a subclass of `vera.ast.Expr`.
+- **Functions over 500 lines**: the functions in `vera/` more than 500 lines long, from the `def` line to the last.
+- **Host built-ins hand-mirrored across hosts**: the built-ins in the host-import family sets of `vera/codegen/compilability.py` (`_MD_BUILTINS` and the rest), each written by hand in the Python host and in `vera/browser/runtime.mjs`, and the map operations `vera/codegen/wasi.py` writes again for the WASI server world (`_MAP_OPS`).
+- **Gate scripts that exist only to sync copies**: the audit's eight such scripts (`check_doc_counts`, `check_version_sync`, `check_limitations_sync`, `check_editor_grammars`, `check_site_assets`, `check_grammar_alignment`, `check_examples_readme`, `check_diagnostic_examples`) that still exist, of the `scripts/check_*.py`.
+- **CI wall time per pull-request push**: the median, over the last 20 pull-request runs of `ci.yml` that reached a verdict, of the time from a run's start to its last job's end.
+- **Runner-minutes per pull-request push**: the median, over the same runs, of the sum of a run's job durations.
+- **Fix pull requests, median: CI runs**: the pull-request runs of `ci.yml` of each pull request merged since the last release, Dependabot's and the `prep/` release branches' apart.
+- **Fix pull requests, median: hours to merge**: the hours from opening to merge of the same pull requests.
+- **Suite in the pull-request gate: tests**: the tests a sample-mode collection keeps, the stress tests deselected as the gate deselects them (`pytest --collect-only --matrix=sample --matrix-seed=scorecard`).
+- **Suite in the pull-request gate: worker-seconds**: the sum of the test times in the junit file of one sample-mode run.
+- **Subprocess share of suite time**: the share of those seconds taken by the tests that started a process, as `tests/subprocess_census.py` counts them.
+- **Conformance entries with golden output**: the entries of `tests/conformance/manifest.json` that pin their `expected_stdout`, of all of them; then the run-level entries, the only ones whose program runs, that pin their run.
+- **Program generator with differentials**: when the workflows run a step that names `program_generator`.
+- **`vera test` executes proved functions**: whether `vera/tester.py`'s `test` takes `distrust`, a test under `tests/` passes `distrust=True`, and a job in `ci.yml` runs the suite.
+- **Statement coverage**: Codecov's `python` flag for the last post-merge coverage run that uploaded it.
+- **Spec words**: the whitespace-separated words of `spec/*.md`.
+- **Issue links in the spec**: the `https://github.com/aallan/vera/issues/N` links in `spec/*.md`.
+
+Measured for v0.2.1 by `scripts/render_status.py`.  The v0.2.0 column is the audit's measurement of 6508cc32, taken on 2026-10-06 and held in `scripts/scorecard.py`.  `scripts/check_doc_counts.py --release` measures the tree's rows again; the others change from one moment to the next, so it asks of each only that it states the window it was measured over.
+<!-- render_status:end scorecard -->
 
 ## Running Tests
 
@@ -62,7 +120,7 @@ python scripts/check_conformance.py                  # the conformance suite (ev
 python scripts/check_examples.py                     # every example program
 python scripts/check_doc_examples.py                 # every agent-facing doc's Vera blocks: parse + check + verify + vera:run
 python scripts/check_wheel_availability.py           # pre-flight: every runtime dep has wheels for all supported platforms (#691 backstop)
-python scripts/render_status.py                      # the release PR: rewrite this file's generated status
+python scripts/render_status.py --github --junit PATH # the release PR: rewrite this file's generated status, the scorecard's network and junit rows too
 ```
 
 ## Test Files
@@ -1303,8 +1361,8 @@ The scripts in `scripts/` validate cross-cutting concerns beyond unit tests.  `b
 | `check_doc_examples.py` | hook, CI `lint` | Every Vera block in the agent-facing documents (SKILL.md, README.md, FAQ.md, EXAMPLES.md, DE_BRUIJN.md, PYPI_README.md, `spec/*.md`, `docs/index.html`, `docs/index.md`) parses, passes `vera check` (with no warning outside a named benign set) and `vera verify`, and prints exactly what each `vera:run` marker says, or carries a `vera:skip-<stage>` marker naming the stage and the codes it fails with; a block that exports a function names an invocation or a `vera:no-run` property that holds of each export it does not run; every `vera run examples/...` a document names is run unless `check_examples_run.py` already runs that exact invocation or skips that example by property; a tracked document with Vera blocks in neither `DOC_GATES` nor `NOT_GATED` fails it ([#1481](https://github.com/aallan/vera/issues/1481); see "Documentation example pipeline" below) |
 | `check_diagnostic_examples.py` | hook, CI `lint` | Every `vera:diagnostic`-annotated ```` ```text ```` fence is byte-identical to the live diagnostic its program produces ([#1291](https://github.com/aallan/vera/issues/1291)) |
 | `check_site_assets.py` | hook, CI `lint` | Generated site assets under `docs/` are up-to-date, and `check_fact_coherence()` verifies the load-bearing facts of `docs/index.html` and `docs/index.md` agree (#1154) |
-| `check_doc_counts.py` | CI `plan` (on a push) and `lint`; the release PR | The documentation's release-time checks, and nothing else: with `--release` (which CI turns on for the change that raises `[project].version`, `--release-if-version-raised`), that TESTING.md's generated status is what `render_status.py` writes now, and every `render_lists` block what `render_lists.py` writes now; with `--check-bug-issues`, that KNOWN_ISSUES.md's Bugs table carries one row per open `bug`-labelled issue (it needs the GitHub API); with `--print-release-mode`, the release-mode answer ci.yml's `plan` job reads.  No hook runs it |
-| `render_status.py` | the release PR | Writes TESTING.md's generated status from the tree, between `render_status` markers: the test totals from a `--matrix=full` collection, the per-file and skipped-tests tables, and the counts of conformance programs, examples, corpus programs, built-ins, effects, spec chapters, hooks, CI jobs and gate scripts.  The release PR runs it |
+| `check_doc_counts.py` | CI `plan` (on a push) and `lint`; the release PR | The documentation's release-time checks, and nothing else: with `--release` (which CI turns on for the change that raises `[project].version`, `--release-if-version-raised`), that TESTING.md's generated status is what `render_status.py` writes now, save the scorecard's network and junit rows, which must each state the window they were measured over, and every `render_lists` block what `render_lists.py` writes now; with `--check-bug-issues`, that KNOWN_ISSUES.md's Bugs table carries one row per open `bug`-labelled issue (it needs the GitHub API); with `--print-release-mode`, the release-mode answer ci.yml's `plan` job reads.  No hook runs it |
+| `render_status.py` | the release PR | Writes TESTING.md's generated status, between `render_status` markers: the test totals from a `--matrix=full` collection, the per-file and skipped-tests tables, the counts of conformance programs, examples, corpus programs, built-ins, effects, spec chapters, hooks, CI jobs and gate scripts, and the scorecard (`scripts/scorecard.py`), whose rows that need the GitHub API or Codecov's `--github` measures, and whose worker-seconds and subprocess share `--junit PATH` reads from the junit file of a sample-mode run that loaded `tests/subprocess_census.py`.  The release PR runs it |
 | `render_lists.py` | `--write` by hand when a source changes; `--check` in the release PR, through `check_doc_counts.py --release` | Writes the lists that have one source, each between `render_lists` markers: the built-in effect names, from the registry `vera effects --json` publishes, into the editor grammars under `editors/` and the two extension READMEs; and the limitation tables, from `limitations.json`, into KNOWN_ISSUES.md, vera/README.md, spec chapters 8, 9 and 12, SKILL.md and LSP_SERVER.md.  `--check` names each block that is not what `--write` writes |
 | `check_limitations_sync.py` | hook, CI `lint`; weekly with `--check-states` (`limitations-sync.yml`) | `limitations.json` loads, and KNOWN_ISSUES.md's and SKILL.md's Bugs headings survive; with `--check-states`, every issue `limitations.json` names, and every issue in the Issue column of those two Bugs tables, is still open (it needs the GitHub API) |
 | `check_changelog_updated.py` | pre-push hook, CI `lint` | A branch that changes substantive files adds a `changelog.d/` fragment, or a CHANGELOG.md entry (`Skip-changelog:` trailer to bypass) |

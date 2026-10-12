@@ -102,7 +102,11 @@ The release-prep PR must:
 4. Regenerate TESTING.md's status — the test totals, the per-file and
    skipped-tests tables, and the tree's counts — with
    `python scripts/render_status.py`, and commit it; confirm with
-   `python scripts/check_doc_counts.py --release`.  Fix PRs leave the status
+   `python scripts/check_doc_counts.py --release`.  The same run measures the
+   scorecard when it is given `--github`, with `GH_TOKEN` exported, and
+   `--junit PATH`, the junit file of one sample-mode run of the suite,
+   `python -m pytest -n auto -p tests.subprocess_census --junitxml=PATH`.
+   Fix PRs leave the status
    alone, since every one of them moves it.  CI runs that check on the change
    that raises `[project].version`, the same signal `release.yml` publishes on:
    a pull request whose version is higher than its base branch's, and the push
