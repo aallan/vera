@@ -255,6 +255,25 @@ def test_the_suite_asks_the_record_whether_a_module_holds_a_check(
     assert gate.main([]) == 0, capsys.readouterr().err
 
 
+def test_a_name_imported_from_the_module_it_carries_a_site_in_is_a_site(
+    gate: ModuleType, tmp_path: Path,
+) -> None:
+    """A pattern kept in one test module is not read from another unseen."""
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_kept.py").write_text(
+        "import re\n\n_CALL = re.compile(r'call \\$vera\\.contract_fail')\n"
+        "_UNRELATED = 3\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_reader.py").write_text(
+        "from tests.test_kept import _CALL, _UNRELATED\n\n"
+        "def test_it(wat):\n    assert _CALL.search(wat)\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_relative.py").write_text(
+        "from .test_kept import _CALL\n", encoding="utf-8")
+    assert [s.key for s in gate.scan(tmp_path)] == [
+        "tests/test_kept.py::_CALL::contract_fail",
+        "tests/test_reader.py::<module>::_CALL",
+        "tests/test_relative.py::<module>::_CALL"]
+
+
 def test_a_site_planted_in_the_suite_fails_the_gate(
     gate: ModuleType, tmp_path: Path,
 ) -> None:

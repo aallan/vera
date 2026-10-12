@@ -21,7 +21,8 @@ the text instead:
   $vera.trap")``, ``r"i32\\.const 2\\s+...call \\$vera\\.trap"``;
 - a use, in another scope, of a name the module binds at its top level to
   one of these (a pattern, a table holding one, a helper building or reading
-  one), so a pattern kept for one reason is not read for another unseen.
+  one), or an import of such a name from the test module that binds it, so a
+  pattern kept for one reason is not read for another unseen.
 
 The gate's own tests (``SELF_TEST``) are not scanned: the sites in them are
 source text planted for the gate to find.
@@ -221,6 +222,14 @@ def sites_in(source: str, file: str) -> list[Site]:
     of that name in another scope is a site too, its shape the name, so a
     pattern kept for one reason is not read for another unseen.
     """
+    return _analysed(source, file)[0]
+
+
+def _analysed(
+    source: str, file: str,
+) -> tuple[list[Site], set[str], list[tuple[ast.AST, str]]]:
+    """:func:`sites_in`'s sites, the names that carry one, and the
+    module's nodes with their scopes."""
     tree = ast.parse(source, filename=file)
     alone = _statement_strings(tree)
     watched = _watched(tree)
@@ -255,16 +264,40 @@ def sites_in(source: str, file: str) -> list[Site]:
             if (isinstance(node, ast.Name) and node.id in new
                     and scope.split(".")[0] != node.id):
                 add(node, scope, node.id)
-    return sorted(found.values(), key=lambda s: (s.line, s.shape))
+    return (sorted(found.values(), key=lambda s: (s.line, s.shape)),
+            carriers, nodes)
+
+
+def _imported_from(node: ast.ImportFrom) -> str | None:
+    """The test module an import names, as ``tests.<name>``."""
+    if node.level == 0 and node.module and node.module.startswith("tests."):
+        return node.module
+    if node.level == 1 and node.module:
+        return f"tests.{node.module}"
+    return None
 
 
 def scan(root: Path = ROOT) -> list[Site]:
-    """Every site in ``tests/*.py`` under *root*, bar the gate's own tests."""
-    out: list[Site] = []
+    """Every site in ``tests/*.py`` under *root*, bar the gate's own tests.
+
+    An import of a name that carries a site in the test module it comes
+    from is a site where it is imported, its shape the name.
+    """
+    analysed: dict[str, tuple[list[Site], set[str], list[tuple[ast.AST, str]]]] = {}
     for path in sorted((root / "tests").glob("*.py")):
         rel = path.relative_to(root).as_posix()
         if rel != SELF_TEST:
-            out.extend(sites_in(path.read_text(encoding="utf-8"), rel))
+            analysed[rel] = _analysed(path.read_text(encoding="utf-8"), rel)
+    carried = {rel.removesuffix(".py").replace("/", "."): carriers
+               for rel, (_sites, carriers, _nodes) in analysed.items()}
+    out: list[Site] = []
+    for rel, (sites, _carriers, nodes) in analysed.items():
+        imported = [
+            Site(rel, scope, alias.name, node.lineno)
+            for node, scope in nodes if isinstance(node, ast.ImportFrom)
+            for alias in node.names
+            if alias.name in carried.get(_imported_from(node) or "", set())]
+        out.extend(sorted([*sites, *imported], key=lambda s: (s.line, s.shape)))
     return out
 
 
