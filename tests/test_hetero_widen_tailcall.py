@@ -33,61 +33,21 @@ Constants:
 
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
 
 import pytest
 
 from vera.checker import typecheck_with_artifacts
-from vera.codegen import compile as codegen_compile
-from vera.codegen import execute
 from vera.codegen.api import WasmTrapError
 from vera.trap_registry import signal_call_pattern
 from vera.parser import parse_to_ast
-from vera.resolver import ModuleResolver
-from vera.verifier import verify
+from tests import pipeline
+from tests.codegen_helpers import _compile_checked_ok as _compile_with_types, _run_checked as _run
 
 I64_MAX = 9223372036854775807
 TWO_63 = 9223372036854775808
 U64_MAX = 18446744073709551615
 _MASK64 = (1 << 64) - 1
 _KIND = "nat_to_int_coerce"
-
-
-def _compile_with_types(source: str):
-    """Compile via the artifact-threaded path (mirrors cmd_run): the widening
-    classifier consults the checker's resolved- and target-type tables."""
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False, encoding="utf-8",
-    ) as f:
-        f.write(source)
-        path = f.name
-    try:
-        program = parse_to_ast(source)
-        resolver = ModuleResolver(_root=Path(path).parent)
-        resolved = resolver.resolve_imports(program, Path(path))
-        diags, arts = typecheck_with_artifacts(
-            program, source, file=path, resolved_modules=resolved,
-        )
-        errors = [d for d in diags if d.severity == "error"]
-        assert not errors, f"typecheck errors: {[d.description for d in errors]}"
-        result = codegen_compile(
-            program, source=source, file=path, resolved_modules=resolved,
-            expr_semantic_types=arts.expr_semantic_types,
-            expr_target_types=arts.expr_target_types,
-        )
-        errs = [d for d in result.diagnostics if d.severity == "error"]
-        assert not errs, f"codegen errors: {[d.description for d in errs]}"
-        return result
-    finally:
-        Path(path).unlink(missing_ok=True)
-
-
-def _run(source: str, fn: str, args: list[int]) -> int:
-    result = _compile_with_types(source)
-    exec_result = execute(result, fn_name=fn, args=args)
-    assert exec_result.value is not None
-    return exec_result.value
 
 
 def _assert_traps(
@@ -110,7 +70,7 @@ def _assert_traps(
     """
     result = _compile_with_types(source)
     with pytest.raises(WasmTrapError) as exc_info:
-        execute(result, fn_name=fn, args=args)
+        _ = pipeline.run(result, fn, args, capture_stderr=False).execution
     assert exc_info.value.kind == kind, (
         f"expected the {kind!r} guard at this site, got "
         f"{exc_info.value.kind!r}"
@@ -122,13 +82,7 @@ def _assert_no_trap(source: str, fn: str, args: list[int], expect: int) -> None:
 
 
 def _coerce_statuses(source: str) -> list[str]:
-    program = parse_to_ast(source)
-    _diags, arts = typecheck_with_artifacts(program, source)
-    result = verify(
-        program, source,
-        expr_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-    )
+    result = pipeline.verify(source).result
     return [o.status for o in result.obligations if o.kind == _KIND]
 
 

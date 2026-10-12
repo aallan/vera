@@ -11,92 +11,19 @@ import re
 from unittest import mock
 
 import pytest
-import wasmtime
 
 from vera.codegen import (
-    CompileResult,
-    compile,
     execute,
 )
 from vera.parser import parse_file
 from vera.transform import transform
 
-from tests.codegen_helpers import _assert_no_orphan_call_indirect
+from tests.codegen_helpers import _compile, _compile_ok, _run, _run_io
 
 
 # =====================================================================
 # Helpers
 # =====================================================================
-
-
-def _compile(source: str) -> CompileResult:
-    """Compile a Vera source string to WASM."""
-    # Write to a temp source and parse
-    import tempfile
-
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False, encoding="utf-8"
-    ) as f:
-        f.write(source)
-        f.flush()
-        path = f.name
-
-    tree = parse_file(path)
-    ast = transform(tree)
-    result = compile(ast, source=source, file=path)
-    # #1185: this module owns a local `_compile`, so it does not inherit
-    # the gate in `tests/codegen_helpers.py` — and it is the module with
-    # the densest closure / `call_indirect` coverage, where an orphaned
-    # indirect call is likeliest to be introduced.
-    _assert_no_orphan_call_indirect(result.wat)
-    return result
-
-
-def _compile_ok(source: str) -> CompileResult:
-    """Compile and assert no errors."""
-    result = _compile(source)
-    errors = [d for d in result.diagnostics if d.severity == "error"]
-    assert not errors, f"Unexpected errors: {errors}"
-    return result
-
-
-def _run(source: str, fn: str | None = None, args: list[int] | None = None) -> int:
-    """Compile, execute, and return the integer result."""
-    result = _compile_ok(source)
-    exec_result = execute(result, fn_name=fn, args=args)
-    assert exec_result.value is not None, "Expected a return value"
-    return exec_result.value
-
-
-def _run_float(
-    source: str, fn: str | None = None, args: list[int | float] | None = None
-) -> float:
-    """Compile, execute, and return the float result."""
-    result = _compile_ok(source)
-    exec_result = execute(result, fn_name=fn, args=args)
-    assert exec_result.value is not None, "Expected a return value"
-    assert isinstance(exec_result.value, float), (
-        f"Expected float, got {type(exec_result.value).__name__}"
-    )
-    return exec_result.value
-
-
-def _run_io(
-    source: str, fn: str | None = None, args: list[int] | None = None
-) -> str:
-    """Compile, execute, and return captured stdout."""
-    result = _compile_ok(source)
-    exec_result = execute(result, fn_name=fn, args=args)
-    return exec_result.stdout
-
-
-def _run_trap(
-    source: str, fn: str | None = None, args: list[int] | None = None
-) -> None:
-    """Compile, execute, and assert a WASM trap."""
-    result = _compile_ok(source)
-    with pytest.raises((wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)):
-        execute(result, fn_name=fn, args=args)
 
 
 def _has_gc_shadow_push(wat_body: str) -> bool:

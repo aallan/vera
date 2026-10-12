@@ -39,6 +39,7 @@ Two soundness/regression invariants are pinned alongside the crash fix:
 from __future__ import annotations
 
 from tests.verifier_helpers import _verify, _verify_ok, _verify_err
+from tests.codegen_helpers import _compile, _run
 
 
 # A nested-`Option`-returning function whose body is `Some(Some(@Int.0))`.
@@ -259,38 +260,11 @@ def test_no_sort_mismatch_traceback_in_diagnostics() -> None:
 # type coincides with the fallback).
 # =====================================================================
 
-import tempfile  # noqa: E402
 
 import pytest  # noqa: E402
 
 from vera.codegen import execute  # noqa: E402
-from vera.codegen import compile as codegen_compile  # noqa: E402
 from vera.codegen.api import WasmTrapError  # noqa: E402
-from vera.parser import parse_file  # noqa: E402
-from vera.transform import transform  # noqa: E402
-
-
-def _compile(source: str):
-    """Compile a source string to a `CompileResult` (mirrors the #912 test)."""
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False, encoding="utf-8"
-    ) as f:
-        f.write(source)
-        f.flush()
-        path = f.name
-    tree = parse_file(path)
-    ast = transform(tree)
-    return codegen_compile(ast, source=source, file=path)
-
-
-def _run(source: str, fn: str | None = None) -> int:
-    """Compile and execute *source*, returning the integer result."""
-    result = _compile(source)
-    errors = [d for d in result.diagnostics if d.severity == "error"]
-    assert not errors, f"Unexpected compile errors: {errors}"
-    exec_result = execute(result, fn_name=fn)
-    assert exec_result.value is not None, "Expected a return value"
-    return exec_result.value
 
 
 # Single-level `Some(@Nat.0)` returning `Option<Nat>` with a TRUE

@@ -6,44 +6,15 @@ expression translation branches via the full compilation pipeline.
 
 from __future__ import annotations
 
-import tempfile
 
 
 from vera.wasm import StringPool, WasmSlotEnv
-from vera.codegen import CompileResult, compile, execute
-from vera.parser import parse_file
-from vera.transform import transform
+from tests.codegen_helpers import _compile_ok, _run
 
 
 # =====================================================================
 # Helpers
 # =====================================================================
-
-def _compile(source: str) -> CompileResult:
-    """Compile a Vera source string to WASM."""
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False, encoding="utf-8"
-    ) as f:
-        f.write(source)
-        f.flush()
-        path = f.name
-    tree = parse_file(path)
-    ast = transform(tree)
-    return compile(ast, source=source, file=path)
-
-
-def _compile_ok(source: str) -> CompileResult:
-    result = _compile(source)
-    assert result.wasm_bytes is not None, f"Compile failed: {result.errors}"
-    return result
-
-
-def _run(source: str, fn: str | None = None,
-         args: list[int] | None = None) -> int:
-    result = _compile_ok(source)
-    exec_result = execute(result, fn_name=fn, args=args or [])
-    assert exec_result.value is not None
-    return int(exec_result.value)
 
 
 # =====================================================================

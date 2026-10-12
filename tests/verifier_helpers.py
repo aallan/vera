@@ -7,15 +7,15 @@ The established pattern:
     _verify_warn(source, match) -> assert at least one matching warning
     _nat_sub_status(source) -> per-obligation nat_sub statuses
 plus the EXAMPLES_DIR / ALL_EXAMPLES corpus constants and the _MK
-source template.
+source template.  ``_verify`` drives the verifier through
+``tests/pipeline.py``'s ``verify``.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
-from vera.parser import parse_to_ast
-from vera.checker import typecheck_with_artifacts
-from vera.verifier import VerifyResult, verify
+from tests import pipeline
+from vera.verifier import VerifyResult
 
 
 EXAMPLES_DIR = Path(__file__).parent.parent / "examples"
@@ -32,29 +32,26 @@ ALL_EXAMPLES = sorted(f.name for f in EXAMPLES_DIR.glob("*.vera"))
 def _verify(source: str) -> VerifyResult:
     """Parse, type-check, and verify a source string.
 
-    Mirrors the CLI verify path (``cmd_verify``): collects the #747
-    semantic-type side-tables during type-check and threads them into
-    ``verify()``, so the projection / generic-instantiation @Nat
-    narrowing obligations fire here exactly as for ``vera verify``.
+    Through ``tests/pipeline.py``'s ``verify``, the CLI verify path
+    (``cmd_verify``): the #747 semantic-type side-tables collected during
+    the type check are threaded into ``verify()``, so the projection /
+    generic-instantiation @Nat narrowing obligations fire here exactly as
+    for ``vera verify``.  A parse or transform error is raised.
     """
-    ast = parse_to_ast(source)
-    diags, arts = typecheck_with_artifacts(ast, source)
+    verified = pipeline.verify(source)
+    _ = verified.checked.program  # raises the parse or transform error, if any
     # Check-clean is every verifier test's premise: verification
     # semantics on an ill-typed program are meaningless, and discarding
     # the checker diagnostics here let a fixture with a dangling slot
     # ref (E130) pass its `errors == []` assertion trivially — the same
     # fake-green class the differential harness's gate closed (PR #1202
     # review rounds, twice).
-    check_errors = [d for d in diags if d.severity == "error"]
+    check_errors = verified.checked.errors
     assert not check_errors, (
         "verifier-test fixture must type-check cleanly, got: "
         f"{[(d.error_code, d.description[:70]) for d in check_errors]}"
     )
-    return verify(
-        ast, source,
-        expr_types=arts.expr_semantic_types,
-        expr_target_types=arts.expr_target_types,
-    )
+    return verified.result
 
 
 def _verify_ok(source: str) -> None:

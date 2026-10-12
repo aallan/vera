@@ -34,12 +34,10 @@ import re
 from pathlib import Path
 
 import pytest
-import wasmtime
 
 from vera.ast import Program
 from vera.checker import typecheck_with_artifacts
 from vera.codegen import compile as codegen_compile
-from vera.codegen import execute
 from vera.codegen.api import CompileResult
 from vera.codegen.core import CodeGenerator
 from vera.monomorphize import (
@@ -49,8 +47,8 @@ from vera.monomorphize import (
 )
 from vera.parser import parse_to_ast
 from vera.resolver import ModuleResolver, ResolvedModule
-from vera.runtime.traps import WasmTrapError
 from vera.verifier import ContractVerifier, verify
+from tests.module_fixture_helpers import module_value as _value
 
 # The library's private answer.  Chosen so it cannot coincide with the
 # importer's (999) nor with any default/fallback in the mangler.
@@ -164,16 +162,6 @@ def _build(
         d.description for d in result.diagnostics if d.severity == "error"
     ]
     return verify_errors, result, cg_errors
-
-
-def _value(
-    result: CompileResult, fn: str = "main",
-) -> tuple[str, object]:
-    """``(kind, payload)`` — ``("ok", value)`` or ``("trap", message)``."""
-    try:
-        return "ok", execute(result, fn_name=fn).value
-    except (WasmTrapError, wasmtime.WasmtimeError, wasmtime.Trap) as exc:
-        return "trap", str(exc)
 
 
 def _assert_cell(
