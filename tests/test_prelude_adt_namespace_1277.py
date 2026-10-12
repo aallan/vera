@@ -44,8 +44,7 @@ from pathlib import Path
 import pytest
 
 from tests import pipeline
-from vera import ast, naming
-from vera.checker.core import TypeChecker
+from vera import ast
 from vera.codegen.core import CodeGenerator
 from vera.errors import ERROR_CODES
 from vera.parser import parse_file
@@ -183,15 +182,14 @@ def _checker_data_types(
     mods = checked.resolved or []
     mod = next(m for m in mods if m.path == (module,))
     mod_direct = {imp.path for imp in mod.program.imports}
-    scoped = TypeChecker(
-        source=mod.source, file=str(mod.file_path),
-        resolved_modules=[
+    scoped = pipeline.check(
+        mod.source, file=str(mod.file_path),
+        modules=[
             replace(other, direct=other.path in mod_direct)
             for other in mods if other.path != mod.path
         ],
     )
-    scoped.check_program(mod.program)
-    return frozenset(naming.alias_env_from_environment(scoped.env).data_types)
+    return frozenset(scoped.artifacts.alias_env.data_types)
 
 
 # ---------------------------------------------------------------------

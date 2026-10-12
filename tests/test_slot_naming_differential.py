@@ -273,14 +273,13 @@ def _sweep_source(origin: str, source: str, sweep: Sweep) -> None:
     """
     sweep.files_seen.append(origin)
     try:
-        program = pipeline.parse(source).program
+        _ = pipeline.parse(source).program
     except Exception:  # noqa: BLE001 — any parse failure, by design
         sweep.parse_skipped.append(origin)
         return
-    checker = TypeChecker(source=source, file=origin)
     with _record(origin, sweep):
         try:
-            checker.check_program(program)
+            pipeline.check(source, file=origin)
         except VeraError as exc:
             # A `VeraError` is the checker's own diagnostic-carrying family,
             # so a malformed program raising one is a program-level failure

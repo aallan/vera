@@ -14,8 +14,9 @@ helper drives a stage when it calls, under whatever name its module imports
 it as:
 
 - a stage function of the compiler (``STAGE_FUNCTIONS``);
-- a stage method (``STAGE_METHODS``): ``CodeGenerator.compile_program``,
-  ``ContractVerifier.verify_program``, ``ModuleResolver.resolve_imports``;
+- a stage method (``STAGE_METHODS``): ``TypeChecker.check_program``,
+  ``CodeGenerator.compile_program``, ``ContractVerifier.verify_program``,
+  ``ModuleResolver.resolve_imports``;
 - ``vera.cli.main`` or a ``vera.cli.cmd_*`` command;
 - a subprocess (``subprocess.run``, ``Popen``, ``check_output``, ``call``,
   ``check_call``) whose command names ``vera``: a string in it, or in a value
@@ -60,7 +61,9 @@ STAGE_FUNCTIONS: Mapping[str, frozenset[str]] = {
 }
 
 #: Stage methods, matched by name on any receiver.
-STAGE_METHODS = frozenset({"compile_program", "verify_program", "resolve_imports"})
+STAGE_METHODS = frozenset({
+    "check_program", "compile_program", "verify_program", "resolve_imports",
+})
 
 SUBPROCESS_CALLS = frozenset({"run", "Popen", "check_output", "call", "check_call"})
 
@@ -94,11 +97,18 @@ _VERIFY_ALONE = (
     "budget wraps the verification alone; every stage that verifies checks "
     "first"
 )
+_CHECKER_ITSELF = (
+    "reads the TypeChecker itself after its check, or its TypeEnv; "
+    "pipeline.check hands back the checker's tables and naming environment, "
+    "not the checker"
+)
 
 #: The drivers that stay, ``"tests/<file>::<helper>"`` (a method as
 #: ``Class.method``) to the reason.
 ALLOWED: Mapping[str, str] = {
+    "tests/test_adt_eq_reject_928.py::_checker_env": _CHECKER_ITSELF,
     "tests/test_ambiguous_import_refusal_1304.py::_run_check_json": _PART_B,
+    "tests/test_ambiguous_import_refusal_1304.py::TestTheRefusedDataNamesBindToNothing._env": _CHECKER_ITSELF,
     "tests/test_binder_position_generator.py::_cli": _PART_B,
     "tests/test_boundary_guard_correctness_1466.py::_cli": _PART_B,
     "tests/test_clause_binder_guard_1445.py::_cli": _PART_B,
@@ -111,6 +121,7 @@ ALLOWED: Mapping[str, str] = {
     "tests/test_disclosure_taint_follows_value_1406.py::_cli": _PART_B,
     "tests/test_disclosure_taint_follows_value_1406.py::_cli_unpatched": _PART_B,
     "tests/test_doc_annotations.py::_try_parse": _LARK_TREE,
+    "tests/test_duplicate_names_1433.py::_checker_after_a_check": _CHECKER_ITSELF,
     "tests/test_effect_op_determinism.py::_run_seeded": _PART_B,
     "tests/test_element_facts_statable_1430.py::_cli": _PART_B,
     "tests/test_evaluated_position_obligations_1480.py::_cli_json": _PART_B,

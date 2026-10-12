@@ -1940,13 +1940,8 @@ public fn main(@Unit -> @Int)
 
 
 def _checker_env(source: str, modules: list[ResolvedModule]) -> naming.AliasEnv:
-    from vera.checker.core import TypeChecker
-
-    checker = TypeChecker(
-        source=source, file="main.vera", resolved_modules=modules,
-    )
-    checker.check_program(pipeline.parse(source).program)
-    return naming.alias_env_from_environment(checker.env)
+    checked = pipeline.check(source, file="main.vera", modules=modules)
+    return checked.artifacts.alias_env  # raises the parse or transform error
 
 
 def _codegen_env(

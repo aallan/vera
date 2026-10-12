@@ -68,6 +68,7 @@ def _drivers(gate: ModuleType, source: str) -> dict[str, tuple[str, ...]]:
     ("", "gen.compile_program(s)", "compile_program"),
     ("", "verifier.verify_program(s)", "verify_program"),
     ("", "resolver.resolve_imports(s, p)", "resolve_imports"),
+    ("", "checker.check_program(s)", "check_program"),
 ], ids=lambda v: v if isinstance(v, str) and "(" in v else None)
 def test_a_helper_that_calls_a_stage_is_a_driver(
     gate: ModuleType, imports: str, call: str, expected: str,
@@ -98,6 +99,22 @@ def test_a_helper_method_of_a_test_class_is_a_driver(gate: ModuleType) -> None:
     """), "tests/test_planted.py")
     assert [(d.helper, d.calls) for d in found] == [
         ("TestThing._parse", ("parse_to_ast",))]
+
+
+def test_a_helper_that_checks_with_a_checker_of_its_own_is_a_driver(
+    gate: ModuleType,
+) -> None:
+    """Its parse goes through the pipeline and its check does not: the
+    ``TypeChecker`` it builds is wired by hand, as ``typecheck`` wires one."""
+    assert _drivers(gate, """
+        from tests import pipeline
+        from vera.checker.core import TypeChecker
+
+        def _checker_env(source):
+            checker = TypeChecker(source=source)
+            checker.check_program(pipeline.parse(source).program)
+            return checker.env
+    """) == {"_checker_env": ("check_program",)}
 
 
 def test_a_nested_function_counts_toward_its_helper(gate: ModuleType) -> None:
@@ -276,9 +293,6 @@ def test_what_is_not_a_driver_is_left_alone(gate: ModuleType) -> None:
 
         def test_hands_it_git(tmp_path):
             _runs_its_argv(["git", "init", str(tmp_path)])
-
-        def _checks_a_program(checker, program):
-            return checker.check_program(program)
     """) == {}
 
 
