@@ -747,6 +747,51 @@ def test_mutant_a_return_type_refused_where_it_is_written_is_not_judged() -> Non
         assert _refused_return(params, ret, body, ens) == codes, name
 
 
+_HOLE_IN_RETURN = """public fn f(@Int -> @{{ @{base} | ? }})
+  requires(true)
+  ensures({ens})
+  effects(pure)
+{{
+  {body}
+}}
+"""
+
+
+def test_repro_a_warning_inside_the_return_type_leaves_it_judged() -> None:
+    # A typed hole in the return type's refinement is a warning (W001), and
+    # a warning refuses nothing: the reference is still held to the type,
+    # so the program is refused and nothing about it is proved.
+    for base, ref, ens, body in (
+            ("Bool", "@Int.result", "@Int.result", "true"),
+            ("Int", "@Nat.result", "@Nat.result == 1", "@Int.0")):
+        source = _HOLE_IN_RETURN.format(base=base, ens=ens, body=body)
+        checked = pipeline.check(source)
+        assert [d.error_code for d in checked.warnings] == ["W001"], base
+        assert _codes(checked) == ["E163"], base
+        assert _e163(checked) == [("", *_place(source, ref))], base
+        assert not pipeline.verify(source).ran, base
+
+
+_HOLE_IN_ARGUMENT = """public fn f(@Int -> @Option<{ @Int | ? }>)
+  requires(true)
+  ensures(@Option<Nat>.result == None)
+  effects(pure)
+{
+  None
+}
+"""
+
+
+def test_repro_a_warning_inside_a_return_type_argument_leaves_it_judged() -> None:
+    # The same hole, in the refinement of a type argument.
+    checked = pipeline.check(_HOLE_IN_ARGUMENT)
+    assert [d.error_code for d in checked.warnings] == ["W001"]
+    assert _codes(checked) == ["E163"]
+    assert _e163(checked) == [
+        ("", *_place(_HOLE_IN_ARGUMENT, "@Option<Nat>.result"))]
+    assert not pipeline.verify(_HOLE_IN_ARGUMENT).ran
+
+
 def test_repro_an_alias_return_is_named_as_declared() -> None:
     source = _PRE + _ISSUE.format(ref="@Int.result").replace(
         "-> @Int)", "-> @Cnt)")

@@ -615,14 +615,19 @@ class ExpressionsMixin:
     def _return_type_refused(self, te: ast.TypeExpr, ret: Type) -> bool:
         """Whether the check refused the declared return type *te*, which
         resolved to *ret*, where it is written: a part of it resolved to no
-        type, or a diagnostic is placed inside it (#1517).
+        type, or an error is placed inside it (#1517).
 
         Registration resolves a signature first and reports it then, and the
         diagnostic table keeps one copy of a report (`_seen_diag_keys`), so
         what tells is where the reports stand, not whether resolving the type
         again reports one.  A removed alias is reported at its first use
         only, so a return type that repeats one is reported nowhere; the part
-        it leaves unresolved tells instead.
+        it leaves unresolved tells instead.  Only an error counts: a warning
+        inside the type (a typed hole in its refinement, W001) refuses
+        nothing, so the reference is still judged.  Either way the skip only
+        ever drops an E163 from a program already refused, since every part
+        that resolves to no type was reported as an error where its name was
+        first written.
         """
         if _holds_unknown(ret):
             return True
@@ -632,7 +637,8 @@ class ExpressionsMixin:
         start = (span.line, span.column)
         end = (span.end_line, span.end_column)
         return any(
-            d.location.file == self.file
+            d.severity == "error"
+            and d.location.file == self.file
             and start <= (d.location.line, d.location.column) < end
             for d in self.errors)
 
