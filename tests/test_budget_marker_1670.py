@@ -13,7 +13,8 @@ and without it, with the default lowered to 0.5 s and a stage call that takes
 1.5 s.  Unmarked, the call is ended at the default, and inside a ``budget(5)``
 test the call that passes ``budget_s=0.5`` is ended at its own budget: either
 way the run names the test.  Marked ``budget(5)``, or ``stress``, the test
-passes.
+passes.  Each child test first asserts the budget in force when it starts, to
+within a second: none, 5 s, or 600 s for the ``stress`` test.
 """
 
 from __future__ import annotations
@@ -29,7 +30,8 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 
 #: The child's tests: one stage call that takes 1.5 s, under a default budget
-#: of 0.5 s, in each place a budget can come from.
+#: of 0.5 s, in each place a budget can come from.  Each first asserts the
+#: budget in force when it starts, within a second: none, 5 s or 600 s.
 _CELLS = '''\
 import time
 
@@ -49,29 +51,35 @@ def _slow_parse_tree(*args, **kwargs):
     return _parse_tree(*args, **kwargs)
 
 
-def _parse_slowly(monkeypatch, **budget):
+def _parse_slowly(monkeypatch, in_force, **budget):
+    left = (pipeline._deadlines[-1] - time.monotonic()
+            if pipeline._deadlines else None)
+    if in_force is None:
+        assert left is None, left
+    else:
+        assert left is not None and in_force - 1 < left <= in_force, left
     monkeypatch.setattr(pipeline, "DEFAULT_BUDGET_S", 0.5)
     monkeypatch.setattr(pipeline, "_parse_tree", _slow_parse_tree)
     assert pipeline.parse(_SOURCE, **budget).ok
 
 
 def test_unmarked(monkeypatch):
-    _parse_slowly(monkeypatch)
+    _parse_slowly(monkeypatch, None)
 
 
 @pytest.mark.budget(5)
 def test_marked_budget(monkeypatch):
-    _parse_slowly(monkeypatch)
+    _parse_slowly(monkeypatch, 5)
 
 
 @pytest.mark.stress
 def test_marked_stress(monkeypatch):
-    _parse_slowly(monkeypatch)
+    _parse_slowly(monkeypatch, 600)
 
 
 @pytest.mark.budget(5)
 def test_own_budget_inside_a_marked_test(monkeypatch):
-    _parse_slowly(monkeypatch, budget_s=0.5)
+    _parse_slowly(monkeypatch, 5, budget_s=0.5)
 '''
 
 
@@ -113,7 +121,7 @@ def test_a_test_runs_under_the_budget_its_marker_names(
         return
     assert "Timeout (0:00:00.500000)!" in output, output
     assert "in _slow_parse_tree" in output, output
-    assert re.search(rf"line \d+ in {test}$", output, re.M), output
+    assert re.search(rf"line \d+ in {re.escape(test)}$", output, re.M), output
     if runner[0] == "-n":
         assert f"crashed while running 'test_slow_stage.py::{test}'" in output, output
     else:
