@@ -2643,8 +2643,19 @@ public fn main(@Unit -> @Unit)
                 # hang; a miss reproduces at worst the old flake, not
                 # a deadlock.
                 _thread.interrupt_main()
-            # Release the handler either way so shutdown(wait=True)
-            # in execute()'s finally can complete.
+                # #1644: interrupt_main() only sets a pending SIGINT flag.
+                # Do not release the HTTP handler immediately — under xdist
+                # load the await can finish before the flag is raised inside
+                # Future.result, yielding exit_code=None + "after await".
+                # Hold until the main thread leaves the await wait (interrupt
+                # delivered / unwind started) or the hold deadline elapses.
+                hold_deadline = time.monotonic() + 10.0
+                while (
+                    time.monotonic() < hold_deadline
+                    and _main_blocked_in_await()
+                ):
+                    time.sleep(0.005)
+            # Release so shutdown(wait=True) in execute()'s finally can finish.
             release.set()
 
         interrupter = threading.Thread(target=interrupt_when_in_flight)
