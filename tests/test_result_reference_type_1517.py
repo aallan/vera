@@ -20,22 +20,27 @@ a `@Cnt` return is `@Cnt.result`, and neither `@Int.result` names it nor
 and `@Option<Int>.result` both name an `Option<Int>` result.  An inline
 refinement is written as its base, an alias of a refinement by its own name,
 a type parameter as itself, and an inline function type as `@Fn.result`.  A
-reference that names another type is E163, reported at the reference and
-naming the type the reference spells, the return type and the reference to
-write; the reference then types as `Unknown`, so nothing else is reported
-about it, bar a `match` over it, which is also reported E313 (#1671).
+reference that names another type is E163, reported at the reference.  Its
+message quotes the reference as written and the return type as the
+signature spells it, and its fix names the reference in that spelling, which
+the program accepts in place of the refused one; the reference then types
+as `Unknown`, so nothing else is reported about it, bar a `match` over it,
+which is also reported E313 (#1671).  A return type the check refused where
+it is written is not judged, so its own error stands alone, as on `main`.
 
 The class is every result reference whose name is not the return type's.
 The instrument crosses where the function is declared (at the top level, as
 a `where` helper, in an imported module), what it returns (a primitive, an
 alias, an inline refinement and an alias of one, constructors with
-arguments, a type parameter, a concrete type in a generic, an inline and an
-aliased function type), and how the reference's name differs from the
-return type's (an undeclared name, another built-in, `Nat` for `Int` and the
-reverse, an alias and its body either way, a refinement's base, a type
-parameter for a concrete type and the reverse, the right head with other,
-missing or undeclared arguments, another head, `Fn` for a type that is not
-an inline function type).  The complement holds every spelling that names
+arguments, refinements among them, a type parameter, a concrete type in a
+generic, an inline and an aliased function type), and how the reference's
+name differs from the return type's (an undeclared name, another built-in,
+`Nat` for `Int` and the reverse, an alias and its body either way, a
+refinement's base at the head or in an argument, a type parameter for a
+concrete type and the reverse, the right head with other, missing or
+undeclared arguments, another head, `Fn` for a type that is not an inline
+function type).  Every refused cell also writes the fix's reference in place
+of the refused one and checks the program clean.  The complement holds every spelling that names
 the result, in every position, clean at check with its postcondition's
 verification unchanged, and chapter 3's own examples with them.
 """
@@ -48,6 +53,7 @@ from pathlib import Path
 import pytest
 
 from tests import pipeline
+from vera.checker import typecheck
 from vera.errors import Diagnostic
 
 # A generated class instrument (tests/matrix_sample.py): a pull request runs a
@@ -189,6 +195,8 @@ KINDS: dict[str, str] = {
     "alias_body": "the type the return type's alias stands for",
     "refinement_base": "the base of the refinement the return type's alias "
                        "names",
+    "refinement_arg_base": "the base of a refinement among the return type's "
+                           "arguments",
     "type_param": "a type parameter for a concrete type",
     "concrete": "a concrete type for a type parameter",
     "wrong_args": "the return type's head with other type arguments",
@@ -206,9 +214,11 @@ class Ret:
     """A return type, a function of that type, and the names that do and do
     not name its result.
 
-    *key* is the name its result reference is written with; *ensures* is the
-    postcondition the complement proves of the result, with `{r}` where the
-    reference goes; *proved* is whether `vera verify` proves it at Tier 1
+    *written* is the name its result reference is written with, spelled as
+    the signature spells the return type: an argument as written, a
+    refinement written out at the head by its base, and a function type
+    written out at the head as `Fn`.  *ensures* is the postcondition the
+    complement proves of the result, with `{r}` where the reference goes; *proved* is whether `vera verify` proves it at Tier 1
     (a function-typed result's postcondition is a runtime check, E522).
     A generic's *caller* instantiates it, so its postcondition is verified
     at a concrete type: the caller's parameters, return type and body, with
@@ -218,7 +228,7 @@ class Ret:
     """
 
     spelling: str
-    key: str
+    written: str
     params: str
     args: str
     body: str
@@ -269,10 +279,22 @@ RETURNS: dict[str, Ret] = {
                "missing_args": "Option", "undeclared_arg": "Option<Qzt>",
                "other_head": "Int"}),
     "option_alias_arg": Ret(
-        "@Option<Cnt>", "Option<Int>", "@Int", "@Int.0", "Some(@Int.0)",
+        "@Option<Cnt>", "Option<Cnt>", "@Int", "@Int.0", "Some(@Int.0)",
         "{r} == Some(@Int.0)",
         right=("Option<Int>", "Option<Cnt>"),
         wrong={"wrong_args": "Option<String>", "missing_args": "Option"}),
+    "option_refined_alias_arg": Ret(
+        "@Option<PosInt>", "Option<PosInt>", "@PosInt", "@PosInt.0",
+        "Some(@PosInt.0)", "{r} == Some(@PosInt.0)",
+        right=("Option<PosInt>", "Option<{ @Int | @Int.0 > 0 }>"),
+        wrong={"refinement_arg_base": "Option<Int>", "missing_args": "Option"}),
+    "array_refined_arg": Ret(
+        "@Array<{ @Int | @Int.0 > 0 }>", "Array<{ @Int | @Int.0 > 0 }>",
+        "@Array<{ @Int | @Int.0 > 0 }>", "@Array<{ @Int | @Int.0 > 0 }>.0",
+        "@Array<{ @Int | @Int.0 > 0 }>.0",
+        "array_length({r}) == array_length(@Array<{{ @Int | @Int.0 > 0 }}>.0)",
+        right=("Array<{ @Int | @Int.0 > 0 }>", "Array<PosInt>"),
+        wrong={"refinement_arg_base": "Array<Int>", "missing_args": "Array"}),
     "tuple": Ret(
         "@Tuple<Int, String>", "Tuple<Int, String>", "@Int, @String",
         "@Int.0, @String.0", "Tuple(@Int.0, @String.0)",
@@ -391,6 +413,13 @@ LOCATIONS = {
 }
 
 
+def _fixed_reference(diag: Diagnostic) -> str:
+    """The reference an E163's fix says to write."""
+    prefix, suffix = "Write ", "."
+    assert diag.fix.startswith(prefix) and diag.fix.endswith(suffix), diag.fix
+    return diag.fix[len(prefix):-len(suffix)]
+
+
 def _check(program: Program, tmp_path: Path) -> pipeline.Checked:
     if not program.files:
         return pipeline.check(program.source)
@@ -419,7 +448,7 @@ def test_every_kind_is_exercised() -> None:
 
 def test_the_wrong_and_right_names_are_disjoint() -> None:
     for ret in RETURNS.values():
-        assert ret.key in ret.right
+        assert ret.written in ret.right
         assert not set(ret.right) & set(ret.wrong.values())
 
 
@@ -435,11 +464,18 @@ def test_a_reference_of_another_type_is_refused_where_it_is_written(
     line, column = _place(program.source, wrong)
     assert _e163(checked) == [(program.file, line, column)]
     diag = next(d for d in checked.errors if d.error_code == "E163")
-    assert diag.description.startswith(
+    # The reference the fix names is one the program accepts: written in
+    # place of the refused one, the program checks clean.
+    fixed = _fixed_reference(diag)
+    repaired = LOCATIONS[location](ret, ret.ensures.format(r=fixed))
+    assert _check(repaired, tmp_path).diagnostics == (), diag.fix
+    # Every spelling in the message is the program's own: the reference as
+    # written, the return type as the signature spells it, and the
+    # reference to write in that spelling.
+    assert diag.description == (
         f"{wrong} does not refer to the result of '{program.fn}', which "
-        "returns ")
-    assert diag.description.endswith(f": its result is {_ref(ret.key)}.")
-    assert diag.fix == f"Write {_ref(ret.key)}."
+        f"returns {ret.spelling[1:]}: its result is {_ref(ret.written)}.")
+    assert diag.fix == f"Write {_ref(ret.written)}."
 
 
 @pytest.mark.parametrize(("location", "ret_name", "name"), _right_cells())
@@ -651,11 +687,107 @@ def test_mutant_a_declared_type_that_is_not_the_return_type_is_refused() -> None
         _refused_at_the_reference(source, ref)
 
 
-_UNRESOLVED_RETURN = """type Box<T> = Option<T>;
+_REFUSED_RETURN = """type Box<T> = Option<T>;
+type PosInt = {{ @Int | @Int.0 > 0 }};
 
-public fn f(@Int -> @Box)
+public fn f({params} -> {ret})
   requires(true)
-  ensures(@Option<Int>.result == None)
+  ensures({ens})
+  effects(pure)
+{{
+  {body}
+}}
+"""
+
+
+def _refused_return(params: str, ret: str, body: str,
+                    ens: str) -> list[str]:
+    """The error codes of a function whose return type is *ret*."""
+    source = _REFUSED_RETURN.format(params=params, ret=ret, body=body,
+                                    ens=ens)
+    return _codes(pipeline.check(source))
+
+
+def test_repro_an_unresolved_argument_of_the_return_type_is_not_judged() -> None:
+    # `Box` takes one argument and is given none (E133), so the return type
+    # resolves to no type, and the reference is not held to it: E133 alone,
+    # as on `main`.
+    assert _refused_return("@Int", "@Option<Box>", "None",
+                           "@Option<Int>.result == None") == ["E133"]
+
+
+def test_repro_an_undeclared_argument_of_the_return_type_is_not_judged() -> None:
+    # `Qzt` is declared nowhere (E136): E136 alone, as on `main`.
+    assert _refused_return("@Int", "@Array<Qzt>", "[]",
+                           "array_length(@Array<Int>.result) == 0") == ["E136"]
+
+
+#: Return types refused where they are written, each beside a reference of
+#: another type, with the codes `main` reports for the program: the return
+#: type's own errors, then whatever the reference, typed as the return type,
+#: draws there.  A removed alias is reported at its first use only, here the
+#: parameter, so the return type that repeats it is reported nowhere and is
+#: still not judged.
+_REFUSED_RETURNS: dict[str, tuple[str, str, str, str, list[str]]] = {
+    "arity": ("@Int", "@Box", "None", "@Option<Int>.result == None",
+              ["E133"]),
+    "undeclared": ("@Qzt", "@Qzt", "@Qzt.0", "@Int.result == 1",
+                   ["E136", "E136", "E142"]),
+    "zero_size_argument": ("@Int", "@Array<Unit>", "[]",
+                           "array_length(@Array<Int>.result) == 0", ["E135"]),
+    "removed_alias_argument": ("@Float", "@Option<Float>", "None",
+                               "@Option<Float64>.result == None", [""]),
+}
+
+
+def test_mutant_a_return_type_refused_where_it_is_written_is_not_judged() -> None:
+    # A reference held to a return type the check refused would add an
+    # E163 naming a spelling that is itself refused.
+    for name, (params, ret, body, ens, codes) in _REFUSED_RETURNS.items():
+        assert _refused_return(params, ret, body, ens) == codes, name
+
+
+def test_repro_an_alias_return_is_named_as_declared() -> None:
+    source = _PRE + _ISSUE.format(ref="@Int.result").replace(
+        "-> @Int)", "-> @Cnt)")
+    diag = _refused_at_the_reference(source, "@Int.result")
+    assert diag.description == (
+        "@Int.result does not refer to the result of 'f', which returns "
+        "Cnt: its result is @Cnt.result.")
+    assert diag.fix == "Write @Cnt.result."
+
+
+def test_repro_a_refinement_argument_is_written_as_declared() -> None:
+    # The return type's key elides the refinement's predicate, so it is no
+    # spelling: the fix names the argument as the signature writes it.
+    source = _REFUSED_RETURN.format(
+        params="@Int", ret="@Option<PosInt>", body="None",
+        ens="@Option<Int>.result == None")
+    diag = _refused_at_the_reference(source, "@Option<Int>.result")
+    assert diag.description == (
+        "@Option<Int>.result does not refer to the result of 'f', which "
+        "returns Option<PosInt>: its result is @Option<PosInt>.result.")
+    assert diag.fix == "Write @Option<PosInt>.result."
+    repaired = source.replace("@Option<Int>.result", _fixed_reference(diag))
+    assert pipeline.check(repaired).diagnostics == ()
+
+
+def test_repro_the_reference_is_quoted_as_written() -> None:
+    # The reference's key resolves its argument (`Option<Int>`); the message
+    # quotes what the program wrote.
+    source = _PRE + _OPTION.format(ref="@Option<Cnt>.result").replace(
+        "-> @Option<Int>)", "-> @Option<String>)").replace(
+        "Some(@Int.0)", "None")
+    diag = _refused_at_the_reference(source, "@Option<Cnt>.result")
+    assert diag.description == (
+        "@Option<Cnt>.result does not refer to the result of 'f', which "
+        "returns Option<String>: its result is @Option<String>.result.")
+
+
+_ACROSS_LINES = """public fn f(@Int -> @Option<
+    Int>)
+  requires(true)
+  ensures(@Option<Nat>.result == None)
   effects(pure)
 {
   None
@@ -663,12 +795,27 @@ public fn f(@Int -> @Box)
 """
 
 
-def test_mutant_an_unresolvable_return_type_is_not_judged_again() -> None:
-    # The return type is refused where it is written (E133) and resolves to
-    # nothing, so a reference held to it would add a second error naming
-    # the refused spelling as the one to write.
-    checked = pipeline.check(_UNRESOLVED_RETURN)
-    assert _codes(checked) == ["E133"], checked.errors
+def test_a_return_type_written_across_lines_is_quoted_on_one_line() -> None:
+    diag = _refused_at_the_reference(_ACROSS_LINES, "@Option<Nat>.result")
+    assert diag.description == (
+        "@Option<Nat>.result does not refer to the result of 'f', which "
+        "returns Option< Int>: its result is @Option< Int>.result.")
+    repaired = _ACROSS_LINES.replace("@Option<Nat>.result",
+                                     _fixed_reference(diag))
+    assert pipeline.check(repaired).diagnostics == ()
+
+
+def test_a_check_without_source_text_names_the_keys() -> None:
+    # `typecheck` takes the source text as an option.  Without it there is
+    # no spelling to quote, so the message names what the rule compares.
+    source = _PRE + _ISSUE.format(ref="@Int.result").replace(
+        "-> @Int)", "-> @Cnt)")
+    (diag,) = typecheck(pipeline.parse(source).program)
+    assert diag.error_code == "E163"
+    assert diag.description == (
+        "@Int.result does not refer to the result of 'f', which returns "
+        "Int: its result is @Cnt.result.")
+    assert diag.fix == "Write @Cnt.result."
 
 
 _SECOND_OPERAND = """public fn f(@Int -> @Int)

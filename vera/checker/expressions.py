@@ -99,6 +99,20 @@ def _render_scope_table(bindings: Sequence[tuple[str, str]]) -> str:
     return table
 
 
+def _holds_unknown(ty: Type) -> bool:
+    """Whether a part of *ty* is the `Unknown` an unresolvable type leaves."""
+    if isinstance(ty, UnknownType):
+        return True
+    if isinstance(ty, AdtType):
+        return any(_holds_unknown(a) for a in ty.type_args)
+    if isinstance(ty, FunctionType):
+        return (any(_holds_unknown(p) for p in ty.params)
+                or _holds_unknown(ty.return_type))
+    if isinstance(ty, RefinedType):
+        return _holds_unknown(ty.base)
+    return False
+
+
 class ExpressionsMixin:
     """Mixin providing expression type synthesis and related methods."""
 
@@ -560,35 +574,96 @@ class ExpressionsMixin:
         # `@Int.result`), type arguments resolve, a refinement is written as
         # its base and an inline function type as `Fn`.  The return type's
         # own diagnostics were reported when its signature was resolved, so
-        # this renders it without the reporting pass, and an unresolvable
-        # return type is not judged again.  `in_ensures` is set only while
+        # this renders it without the reporting pass, and a return type the
+        # check refused where it is written is not judged again
+        # (`_return_type_refused`).  `in_ensures` is set only while
         # `_check_fn` checks its own contracts, so the frame on top of the
         # scope stack is the function whose contract this is.
         fn = self._fn_scope_stack[-1]
         ret_key = naming.slot_name(fn.return_type, self._naming_env())
-        if key == ret_key or isinstance(ret, UnknownType):
+        if key == ret_key or self._return_type_refused(fn.return_type, ret):
             return ret
+        # The message spells each type as the program does (`_as_written`): a
+        # key elides a refinement's predicate, so it is a name to match and
+        # not one to write.  The name the fix gives is the return type's own
+        # spelling, which keys as the declaration does, so it is accepted.
+        written = self._written_slot_name(fn.return_type, ret_key)
         self._error(
             ref,
-            f"@{key}.result does not refer to the result of '{fn.name}', "
-            f"which returns {pretty_type(ret)}: its result is "
-            f"@{ret_key}.result.",
+            f"{self._as_written(ref, f'@{key}.result')} does not refer to "
+            f"the result of '{fn.name}', which returns "
+            f"{self._as_written(fn.return_type, pretty_type(ret))}: its "
+            f"result is @{written}.result.",
             rationale=(
                 "@T.result refers to the function's return value, where T is "
                 "the return type, written as a slot reference to a binding of "
                 "that type is written: an alias at the head stays the alias, "
-                "type arguments resolve through aliases, a refinement written "
-                "out is written as its base type, and a function type written "
-                "out as Fn.  A result reference of any other type refers to "
-                "no value, so a contract written with one would be checked "
-                "and verified against a value of a type the function does "
-                "not return."
+                "a refinement written out at the head is written as its base "
+                "type and a function type written out there as Fn, and type "
+                "arguments resolve through aliases, a refinement among them "
+                "staying a refinement.  A result reference of any other type "
+                "refers to no value, so a contract written with one would be "
+                "checked and verified against a value of a type the function "
+                "does not return."
             ),
-            fix=f"Write @{ret_key}.result.",
+            fix=f"Write @{written}.result.",
             spec_ref='Chapter 3, Section 3.6 "The `@result` Reference"',
             error_code="E163",
         )
         return UnknownType()
+
+    def _return_type_refused(self, te: ast.TypeExpr, ret: Type) -> bool:
+        """Whether the check refused the declared return type *te*, which
+        resolved to *ret*, where it is written: a part of it resolved to no
+        type, or a diagnostic is placed inside it (#1517).
+
+        Registration resolves a signature first and reports it then, and the
+        diagnostic table keeps one copy of a report (`_seen_diag_keys`), so
+        what tells is where the reports stand, not whether resolving the type
+        again reports one.  A removed alias is reported at its first use
+        only, so a return type that repeats one is reported nowhere; the part
+        it leaves unresolved tells instead.
+        """
+        if _holds_unknown(ret):
+            return True
+        span = te.span
+        if span is None:
+            return False
+        start = (span.line, span.column)
+        end = (span.end_line, span.end_column)
+        return any(
+            d.location.file == self.file
+            and start <= (d.location.line, d.location.column) < end
+            for d in self.errors)
+
+    def _as_written(self, node: ast.Node, fallback: str) -> str:
+        """*node* as the source spells it, on one line, or *fallback* where
+        the checker holds no source text for it."""
+        span = node.span
+        lines = self.source.split("\n") if self.source else []
+        if span is None or not 0 < span.line <= span.end_line <= len(lines):
+            return fallback
+        if span.line == span.end_line:
+            text = lines[span.line - 1][span.column - 1:span.end_column - 1]
+        else:
+            text = "\n".join([
+                lines[span.line - 1][span.column - 1:],
+                *lines[span.line:span.end_line - 1],
+                lines[span.end_line - 1][:span.end_column - 1],
+            ])
+        return " ".join(text.split()) or fallback
+
+    def _written_slot_name(self, te: ast.TypeExpr, key: str) -> str:
+        """The name a slot reference to a binding declared *te* is written
+        with, as the source spells it, or the key *key* where no source text
+        is held: a refinement written out is named by its base and a function
+        type written out by `Fn` (§3.7), and every argument keeps its
+        spelling, so the name keys as the declaration does."""
+        while isinstance(te, ast.RefinementType):
+            te = te.base_type
+        if isinstance(te, ast.FnType):
+            return "Fn"
+        return self._as_written(te, key)
 
     # -----------------------------------------------------------------
     # Binary operators
