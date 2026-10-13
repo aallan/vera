@@ -1,0 +1,15 @@
+-- Conformance: a result reference names the function's return type
+-- (Chapter 3, Section 3.6).
+-- Tests: E163 — `@T.result` refers to the return value, where `T` is the
+-- return type, written as a slot reference to a binding of that type is
+-- written.  Here the function returns `@Int` and its postcondition reads the
+-- result as `@Nat.result`.  Previously the reference's type was never
+-- compared with the return type (#1517): this passed check, and verify
+-- proved the postcondition at Tier 1.
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(@Nat.result == 1)
+  effects(pure)
+{
+  1
+}

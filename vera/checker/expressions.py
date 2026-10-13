@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import ClassVar
 
-from vera import ast
+from vera import ast, naming
 from vera.checker.resolution import is_literal_only, literal_int_value
 from vera.checker.sql import resolve_array_len, resolve_literal_string
 from vera.types import (
@@ -542,17 +542,53 @@ class ExpressionsMixin:
             return UnknownType()
 
         # #1489: a result reference's type ARGUMENTS name types, and resolve
-        # like a slot reference's (`_check_slot_name_args`), so a name in one
-        # that nothing declares is refused (E136) instead of being ignored.
-        # The head is a slot-name head, not a type to resolve: a function-
-        # typed result is `@Fn.result`, and `Fn` names no declaration.
-        self._check_slot_name_args(
-            ast.NamedType(name=ref.type_name, type_args=ref.type_args))
+        # like a slot reference's (`_check_slot_name_args`, which
+        # `_slot_type_name` runs), so a name in one that nothing declares is
+        # refused (E136) instead of being ignored.  The head is a slot-name
+        # head, not a type to resolve: a function-typed result is
+        # `@Fn.result`, and `Fn` names no declaration.
+        key = self._slot_type_name(ref.type_name, ref.type_args)
 
         ret = self.env.current_return_type
         if ret is None:
             return UnknownType()
-        return ret
+        # #1517: the reference names the result only if its name is the
+        # return type's (§3.6), judged as a slot reference names its binding
+        # (§3.4, §3.8): the reference's key against the key a binding of the
+        # declared return type is bound under, one renderer for both.  So the
+        # head stays opaque (`@Cnt.result` for a `@Cnt` return, never
+        # `@Int.result`), type arguments resolve, a refinement is written as
+        # its base and an inline function type as `Fn`.  The return type's
+        # own diagnostics were reported when its signature was resolved, so
+        # this renders it without the reporting pass, and an unresolvable
+        # return type is not judged again.  `in_ensures` is set only while
+        # `_check_fn` checks its own contracts, so the frame on top of the
+        # scope stack is the function whose contract this is.
+        fn = self._fn_scope_stack[-1]
+        ret_key = naming.slot_name(fn.return_type, self._naming_env())
+        if key == ret_key or isinstance(ret, UnknownType):
+            return ret
+        self._error(
+            ref,
+            f"@{key}.result does not refer to the result of '{fn.name}', "
+            f"which returns {pretty_type(ret)}: its result is "
+            f"@{ret_key}.result.",
+            rationale=(
+                "@T.result refers to the function's return value, where T is "
+                "the return type, written as a slot reference to a binding of "
+                "that type is written: an alias at the head stays the alias, "
+                "type arguments resolve through aliases, a refinement written "
+                "out is written as its base type, and a function type written "
+                "out as Fn.  A result reference of any other type refers to "
+                "no value, so a contract written with one would be checked "
+                "and verified against a value of a type the function does "
+                "not return."
+            ),
+            fix=f"Write @{ret_key}.result.",
+            spec_ref='Chapter 3, Section 3.6 "The `@result` Reference"',
+            error_code="E163",
+        )
+        return UnknownType()
 
     # -----------------------------------------------------------------
     # Binary operators
