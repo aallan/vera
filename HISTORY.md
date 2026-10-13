@@ -482,15 +482,16 @@ Stages 19 and 20 run dual-threaded: community PRs against the single-source spri
 | v0.1.13 | 21 Aug | **The inference response-shape fix** — `Inference.complete` selects text by block type, and every failure names its provider. |
 | v0.2.0 | 28 Sep | **The soundness release** — termination, obligations where the program evaluates, and runtime traps that name their cause ([#1480](https://github.com/aallan/vera/issues/1480)). |
 
-## Stage 21: Instruments and truth (9–10 October)
+## Stage 21: Instruments and truth (9–13 October)
 
 *The pipeline checks its own claims.*
 
-The first of the releases toward v0.3.0's sound base gave the pipeline instruments: `vera verify --reconcile` joins the verifier's runtime-check claims with the checks the compiled module holds, `vera test --distrust` runs the functions the verifier proved, and the conformance manifest pins every run-level program's exit status and the stdout of 175 of the 176.  The pipe became the call it stands for at transform, closing six pipe bugs; CI took coverage off the pull request, re-ran the matrix after a merge only for a release, and sampled the class-instrument matrices on a pull request; six dependency bumps landed as one lock update; counts left the prose for a status generated into TESTING.md at release; the ROADMAP laid out the releases to v0.3.0; the class-fix rules were revised; and the documents dropped their hedges.
+The first of the releases toward v0.3.0's sound base gave the pipeline instruments: `vera verify --reconcile` joins the verifier's runtime-check claims with the checks the compiled module holds, `vera test --distrust` runs the functions the verifier proved, and the conformance manifest pins every run-level program's exit status and the stdout of 175 of the 176.  The pipe became the call it stands for at transform, closing six pipe bugs; CI took coverage off the pull request, re-ran the matrix after a merge only for a release, and sampled the class-instrument matrices on a pull request; six dependency bumps landed as one lock update; counts left the prose for a status generated into TESTING.md at release; the ROADMAP laid out the releases to v0.3.0; the class-fix rules were revised; and the documents dropped their hedges.  v0.2.2 gave every later fix a faster path: a 12-to-19-minute pull-request lane with the full matrix kept for releases and nights, one in-process driver for the whole test suite, CHANGELOG fragments, lists rendered from one source, and the scorecard measured at release.
 
 | Version | Date | What shipped |
 |---------|------|-------------|
 | v0.2.1 | 10 Oct | **Instruments and truth** — the pipeline checks its own claims. |
+| v0.2.2 | 13 Oct | **Fast lane and one driver** — a 12-to-19-minute pull-request lane, one in-process test driver, CHANGELOG fragments, rendered lists, and the scorecard measured at release. |
 
 ---
 
