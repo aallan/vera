@@ -674,6 +674,7 @@ MARKED_FILES = (
     "test_clone_decreases_1569.py",
     "test_self_qualified_calls_1558.py",
     "test_binder_position_generator.py",
+    "test_array_literal_elements_1584.py",
 )
 UNMARKED_FILES = (
     "test_obligations.py",
