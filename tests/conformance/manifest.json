@@ -4017,6 +4017,20 @@
     ]
   },
   {
+    "id": "ch03_result_reference_type",
+    "file": "ch03_result_reference_type.vera",
+    "chapter": 3,
+    "title": "A result reference whose type is not the function's return type is a checker error (#1517)",
+    "level": "check",
+    "spec_ref": "Section 3.6",
+    "expected_error": "E163",
+    "features": [
+      "slot_result",
+      "ensures",
+      "check_error"
+    ]
+  },
+  {
     "id": "ch07_exn_payload_guard",
     "file": "ch07_exn_payload_guard.vera",
     "chapter": 7,
