@@ -59,14 +59,16 @@ def _compatible_modulo_typevars(
     """Structural compatibility treating UNRESOLVED TypeVars as wildcards
     (#993).
 
-    Used only when a subtype check between two types has failed AND at
-    least one side still carries unresolved type variables — i.e. the
-    call's instantiation could not be pinned down (every argument is
-    itself polymorphic, e.g. `option_unwrap_or(nothing(()), None)`).
+    Used only by `CallsMixin._fits`, when a subtype check between two
+    types has failed AND at least one side still carries unresolved type
+    variables — a call's instantiation that could not be pinned down
+    (every argument is itself polymorphic, e.g.
+    `option_unwrap_or(nothing(()), None)`), or an array literal's element
+    type that its first element left open (`[None, Some(1)]`, #1584).
     An unresolved var on either side matches anything: there EXISTS an
     instantiation making the two sides agree, so rejecting would be a
-    false E202.  Unresolved means a fresh `T$n`, a `#b`-marked builtin
-    var, or a callee forall var leaked raw from an uninferrable call —
+    false E202 (or E162).  Unresolved means a fresh `T$n`, a `#b`-marked
+    builtin var, or a callee forall var leaked raw from an uninferrable call —
     everything EXCEPT the enclosing function's own declared forall params
     (*rigid*, passed by name from `env.type_params`).  A rigid var is NOT
     a wildcard — inside its own body it is an opaque, already-quantified
@@ -184,6 +186,28 @@ def _reported_at_the_stage(check: _Check) -> _Check:
 
 class CallsMixin:
     """Methods for checking function calls, constructors, and qualified calls."""
+
+    def _fits(self, ty: Type, target: Type) -> bool:
+        """Whether a value of type *ty* may stand where *target* is
+        required: the judgement a call argument is held to its parameter
+        with, and an array literal's element to the literal's element type
+        (#1584).
+
+        A subtype fits.  So does a type that a type variable left unresolved
+        on either side makes compatible (#993): when the instantiation is
+        not pinned down — `option_unwrap_or(nothing(()), None)`, whose every
+        argument is itself polymorphic, or `[None, Some(1)]`, whose first
+        element leaves `Option`'s `T` open — a structural match treating
+        each such variable as a wildcard means some instantiation makes the
+        two agree, and refusing it would be a false error.  The enclosing
+        function's own type parameters are rigid, not wildcards
+        (`_compatible_modulo_typevars`), and fully concrete mismatches are
+        unaffected."""
+        if is_subtype(ty, target):
+            return True
+        return ((contains_typevar(ty) or contains_typevar(target))
+                and _compatible_modulo_typevars(
+                    ty, target, frozenset(self.env.type_params)))
 
     # -----------------------------------------------------------------
     # Function calls
@@ -657,19 +681,10 @@ class CallsMixin:
                 if re is not None and not isinstance(re, UnknownType):
                     arg_ty = re
                     arg_types[i] = re
-            if not is_subtype(arg_ty, param_ty):
-                # #993: when unresolved variables remain on either side
-                # (e.g. `option_unwrap_or(nothing(()), None)` — the callee's
-                # instantiation never resolves because every argument is
-                # itself polymorphic), a structural match treating type
-                # variables as wildcards means the call is satisfiable at
-                # SOME instantiation — rejecting it is a false E202.  Fully
-                # concrete mismatches are unaffected.
-                if ((contains_typevar(arg_ty) or contains_typevar(param_ty))
-                        and _compatible_modulo_typevars(
-                            arg_ty, param_ty,
-                            frozenset(self.env.type_params))):
-                    continue
+            # #993: a type variable left unresolved on either side is a
+            # wildcard here (`_fits`), so a call satisfiable at SOME
+            # instantiation is not a false E202.
+            if not self._fits(arg_ty, param_ty):
                 self._error(
                     args[i],
                     f"Argument {i} of '{fn_info.name}' has type "

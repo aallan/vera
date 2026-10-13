@@ -955,6 +955,7 @@ ERROR_CODES: dict[str, str] = {
     "E159": "Two data declarations share a constructor name",
     "E160": "Array index must be Int or Nat",
     "E161": "Cannot index non-array type",
+    "E162": "Array literal element type mismatch",
     "E170": "Let binding type mismatch",
     "E171": "Anonymous function body type mismatch",
     "E172": "Assert requires Bool",

@@ -1,0 +1,14 @@
+-- Conformance: every element of an array literal has the literal's element
+-- type (Chapter 4, Section 4.12.1).
+-- Tests: E162 — the element type is the type of the literal's first element,
+-- and an element of another type is refused where it is written.  Here the
+-- literal's first element is a String and its second a Nat.  Previously the
+-- other elements were never compared with the first (#1584): this passed
+-- check, and code generation then wrote a module that failed to load.
+public fn main(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_length(["a", 5])
+}
