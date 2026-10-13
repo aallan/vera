@@ -24,6 +24,11 @@ Also hands ``tests/pipeline.py``'s budget watchdog a descriptor on the
 stderr the run started with, so the traceback of a stage call that runs
 past its budget reaches the terminal or the CI log.
 
+Also holds a test to the budget its ``budget(seconds)`` marker names, or to
+600 s for a ``stress``-marked test that names none, so a stage call in it
+that names no budget of its own runs under the test's rather than under the
+120 s default (#1670).
+
 Also prints the session totals of ``test_distrust_corpus.py`` (proofs
 exercised, refuted, unattributed traps) when it ran.
 """
@@ -32,6 +37,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
@@ -68,6 +74,47 @@ def pytest_configure(config: pytest.Config) -> None:
     from tests import pipeline
 
     pipeline.watch_stderr()
+
+
+#: The budget of a ``stress``-marked test that names none: its work at scale
+#: takes longer than the 120 s a stage call has by default, and on a slow
+#: runner one call alone can (#1670).
+STRESS_BUDGET_S = 600.0
+
+
+def _marked_budget_s(item: pytest.Item) -> float | None:
+    """The seconds *item*'s closest ``budget`` marker names, else
+    :data:`STRESS_BUDGET_S` for a ``stress``-marked test, else ``None``."""
+    marker = item.get_closest_marker("budget")
+    if marker is None:
+        if item.get_closest_marker("stress") is not None:
+            return STRESS_BUDGET_S
+        return None
+    if len(marker.args) != 1 or marker.kwargs:
+        pytest.fail(
+            f"{item.nodeid}: the budget marker takes one argument, the "
+            f"seconds, not {marker.args!r} {marker.kwargs!r}", pytrace=False)
+    return float(marker.args[0])
+
+
+@pytest.fixture(autouse=True)
+def _marked_budget(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Run the test under the budget its marker names (#1670).
+
+    A stage call that names no budget runs under the one in force
+    (``pipeline._budget``), so every such call in the test, and in the
+    function-scoped fixtures set up after this one, runs under the test's
+    budget, and a call that names its own keeps it.  A test whose markers
+    name no budget runs as before, each stage call under its own.
+    """
+    seconds = _marked_budget_s(request.node)
+    if seconds is None:
+        yield
+        return
+    from tests import pipeline
+
+    with pipeline._budget(seconds):
+        yield
 
 
 @pytest.fixture(scope="session", autouse=True)

@@ -165,6 +165,7 @@ testpaths = ["tests"]
 markers = [
     "stress: scale-dependent regression tests (#596); skipped by default, run via -m stress or nightly CI",
     "matrix(decides): a generated class-instrument matrix, with the modules that decide its class; by default a run keeps a weekly-seeded stratified sample of its parametrised cells, and every cell when VERA_MATRIX_CHANGED names the file or one of those modules; --matrix=full runs every cell (tests/matrix_sample.py)",
+    "budget(seconds): the test runs under a pipeline budget of that many seconds, which every stage call in it that names no budget_s of its own runs under, in place of the 120 s default; a stress test that names none runs under 600 s (tests/conftest.py, #1670)",
 ]
 addopts = "-m 'not stress'"
 
