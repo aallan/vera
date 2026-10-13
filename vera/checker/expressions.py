@@ -1319,9 +1319,10 @@ class ExpressionsMixin:
             elem_types.append(et)
 
         first = None
-        for et in elem_types:
+        first_at = 0
+        for i, et in enumerate(elem_types):
             if et and not isinstance(et, UnknownType):
-                first = et
+                first, first_at = et, i
                 break
 
         if first is None:
@@ -1366,7 +1367,57 @@ class ExpressionsMixin:
                 error_code="E135",
             )
 
+        # #1584: every element has the element type.  A zero-size one is
+        # refused for the whole literal (E135, here or at the annotation the
+        # literal meets), so its elements are not held to it as well.
+        if not erases_to_unit(first):
+            self._check_array_elements(expr, elem_types, first, first_at)
+
         return AdtType("Array", (first,))
+
+    def _check_array_elements(self, expr: ast.ArrayLit,
+                              elem_types: Sequence[Type | None],
+                              element_type: Type, first_at: int) -> None:
+        """Hold each element of *expr* after its first typed one, at
+        *first_at*, to the literal's *element_type* (#1584).
+
+        Spec §4.12.1: all elements of an array literal have the same type.
+        The element type is the first typed element's: it is the type the
+        literal is given, `Array<element_type>`, and the type code
+        generation stores and reads back every element at.  Each other
+        element is held to it by the judgement a call argument is held to
+        its parameter by (`_fits`), and one it refuses is E162, at the
+        element.  An element whose type is already an error was reported by
+        its own check and is not judged again."""
+        for i, (elem, ty) in enumerate(zip(expr.elements, elem_types)):
+            if i <= first_at or ty is None or isinstance(ty, UnknownType):
+                continue
+            if self._fits(ty, element_type):
+                continue
+            shown = pretty_inferred_type(element_type)
+            self._error(
+                elem,
+                f"Array literal element {i} has type "
+                f"{pretty_inferred_type(ty)}, but the literal's element "
+                f"type is {shown}, the type of element {first_at}.",
+                rationale=(
+                    "An array literal has one element type (Section "
+                    "4.12.1): it is an Array<T> whose T is the type of its "
+                    "first element, and every element is stored and read "
+                    "back as a T, so an element of another type would be "
+                    "stored at the wrong width or read back as a value it "
+                    "does not hold."
+                ),
+                fix=(
+                    f"Give element {i} the type {shown}, or give every "
+                    f"element the type {pretty_inferred_type(ty)} if that "
+                    "is what the array holds.  To keep values of different "
+                    "types in one array, wrap each in a constructor of one "
+                    "data type and make the array of that type."
+                ),
+                spec_ref='Chapter 4, Section 4.12.1 "Array Literals"',
+                error_code="E162",
+            )
 
     # -----------------------------------------------------------------
     # Typed holes
