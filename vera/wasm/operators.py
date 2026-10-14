@@ -1826,7 +1826,14 @@ class OperatorsMixin:
                 expr)
         param_te = pred.params[0]
         assert isinstance(param_te, ast.NamedType)  # noqa: S101
-        param_type_name = param_te.name
+        # #1208: the counter is bound under the parameter's slot name as the
+        # checker binds it, the key the body's `@T.n` looks itself up under
+        # (`naming.slot_ref_key`).  The name's head alone missed for a
+        # parameterised alias: `fn(@Id<Int> -> @Bool)` read `@Id<Int>.0` as
+        # a dangling slot (E699), or as an enclosing `@Id<Int>` parameter
+        # where one was in scope (PR #1687 review).
+        param_type_name = self._type_expr_to_slot_name(param_te)
+        assert param_type_name is not None  # noqa: S101 — a name renders
         counter_local = self.alloc_local("i64")
         limit_local = self.alloc_local("i64")
         result_local = self.alloc_local("i32")

@@ -260,6 +260,69 @@ _REPRO_1506_BOUND = _QUANT_GENERIC.replace(
 ).replace("ARG", "true")
 
 
+#: A predicate whose parameter is a parameterised alias of `Int`, read by its
+#: body (PR #1687 review).  Code generation bound the counter under the
+#: alias's head, `Id`, and the body's `@Id<Int>.0` looks itself up under
+#: `Id<Int>`.
+_REPRO_ALIAS_PARAMETER = """\
+type Id<X> = X;
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if forall(@Int, 3, fn(@Id<Int> -> @Bool) effects(pure) { @Id<Int>.0 < 3 }) then {
+    1
+  } else {
+    0
+  }
+}
+"""
+
+#: The same predicate where the enclosing function has a parameter of the
+#: same type: the reference found that parameter, so `q(7)` tested 7 three
+#: times and answered false.
+_REPRO_ALIAS_PARAMETER_ENCLOSED = """\
+type Id<X> = X;
+
+private fn q(@Id<Int> -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  forall(@Int, 3, fn(@Id<Int> -> @Bool) effects(pure) { @Id<Int>.0 < 3 })
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if q(7) then {
+    1
+  } else {
+    0
+  }
+}
+"""
+
+
+def test_repro_1506_parameterised_alias_parameter() -> None:
+    """Checked clean, verified, and compile stopped at E699 (a dangling
+    `@T.n`).  The counter is bound under the parameter's slot name now."""
+    assert vera_pipeline.check(_REPRO_ALIAS_PARAMETER).ok
+    assert vera_pipeline.run(_REPRO_ALIAS_PARAMETER, fn="main").value == 1
+
+
+def test_repro_1506_parameterised_alias_parameter_enclosed() -> None:
+    """With a parameter of the same type in scope the reference read it in
+    place of the counter, silently: `q(7)` answered false."""
+    assert vera_pipeline.check(_REPRO_ALIAS_PARAMETER_ENCLOSED).ok
+    assert vera_pipeline.run(
+        _REPRO_ALIAS_PARAMETER_ENCLOSED, fn="main").value == 1
+
+
 def test_repro_1597_handler_for_http() -> None:
     """A `handle[Http]` mock: check accepted it and code generation dropped
     `test_fetch` (E602).  Refused at the handler."""
@@ -573,7 +636,7 @@ _CELLS: dict[str, tuple[str, str, str, str, str, bool]] = {
 #: pinned, and flipped when that issue closes.  The row cell reads the
 #: `Future` with no clause inlined, and runs.
 _CELL_KNOWN = {
-    ("Future<Int>", "handler"): "#1685: the clause inlining reads a Future "
+    ("Future<Int>", "handler"): "#1680: the clause inlining reads a Future "
                                 "cell as a heap pointer, and the module does "
                                 "not load",
 }
@@ -820,6 +883,46 @@ _BOUNDS: dict[str, tuple[str, str, bool]] = {
 }
 
 
+#: The predicate's parameter, READ by its body, with the index type it
+#: resolves to: Int and Nat, an alias of one, and parameterised aliases that
+#: resolve to each (an identity alias, a constant alias, an alias as the
+#: argument).  The counter is bound under the parameter's slot name and the
+#: body's reference looks itself up under its own, so these are the cells
+#: where two renderings of one name would miss: `@Id<Int>.0` dangled (E699)
+#: when the counter was bound under the alias's head alone (PR #1687 review).
+_READ_PARAMS: dict[str, str] = {
+    "Int": "Int", "Nat": "Nat", "Idx": "Nat",
+    "Id<Int>": "Int", "Id<Nat>": "Nat", "Id<Idx>": "Nat",
+    "K<Bool>": "Int", "KN<Bool>": "Nat",
+}
+_READ_DECLS = "type Id<X> = X;\n\ntype K<X> = Int;\n\ntype KN<X> = Nat;\n\n"
+#: Where the quantifier is.  Each predicate holds of the counter's values
+#: and not of 7, the value of the enclosing function's own parameter of the
+#: same type, so a counter bound under another key than the reference's is
+#: a dangling slot or that parameter, and never the value the cell asserts.
+_READ_POSITIONS = ("forall", "exists", "forall in ensures",
+                   "exists in ensures")
+
+
+def _read_source(param: str, position: str) -> str:
+    index = _READ_PARAMS[param]
+    if position.startswith("forall"):
+        quant = (f"forall(@{index}, 3, fn(@{param} -> @Bool) effects(pure) "
+                 f"{{ @{param}.0 < 3 }})")
+    else:
+        quant = (f"exists(@{index}, 5, fn(@{param} -> @Bool) effects(pure) "
+                 f"{{ @{param}.0 == 3 }})")
+    if position.endswith("in ensures"):
+        return _QUANT_DECLS + _READ_DECLS + (
+            f"private fn q(@{param} -> @Int)\n  requires(true)\n"
+            f"  ensures({quant})\n  effects(pure)\n{{\n  1\n}}\n\n"
+            + _main("q(7)"))
+    return _QUANT_DECLS + _READ_DECLS + (
+        f"private fn q(@{param} -> @Bool)\n  requires(true)\n"
+        f"  ensures(true)\n  effects(pure)\n{{\n  {quant}\n}}\n\n"
+        + _main("if q(7) then { 1 } else { 0 }"))
+
+
 def _quant_source(param: str, result: str, *, bound: str = "3",
                   arity: int = 1) -> str:
     body = "true" if result in ("Bool", "{ @Bool | true }", "Verdict") else (
@@ -888,6 +991,15 @@ class TestQuantifierSignature:
             + _main("if q(true) then { 1 } else { 0 }"))
         _holds(source, None, 1)
 
+    @pytest.mark.parametrize("position", _READ_POSITIONS)
+    @pytest.mark.parametrize("param", sorted(_READ_PARAMS))
+    def test_the_predicate_reads_the_counter(self, param: str,
+                                             position: str) -> None:
+        """Every parameter spelling the rule admits, read by the body, at
+        each quantifier in a body and in a postcondition: it checks clean,
+        compiles, loads, and the predicate sees the counter's values."""
+        _holds(_read_source(param, position), None, 1)
+
 
 # ---------------------------------------------------------------------
 # Rule 4: abilities (#1499)
@@ -951,6 +1063,23 @@ class TestAbility:
         # generation, so its refusal is the check's alone.
         _holds(_ability_source(ability, form), refused, 1,
                backend=form != "qualified")
+
+    @pytest.mark.parametrize("ability", sorted(_ABILITIES))
+    def test_a_qualified_call_to_an_operation_the_ability_lacks(
+        self, ability: str,
+    ) -> None:
+        """The qualified form's neighbour: `Sz.nope(1)` names no operation,
+        so it is an unresolved call (E220) that names the missing operation,
+        whether the ability is lowered or not, and never E340, which called
+        `nope` an operation of `Sz`, or told the reader to call `nope` bare
+        (PR #1687 review)."""
+        source = _ABILITIES[ability][0] + _main(f"{ability}.nope(1)")
+        errors = vera_pipeline.check(source).errors
+        assert _placed(errors) == [
+            ("E220", *_locate(source, f"{ability}.nope"))], [
+            (d.error_code, d.description) for d in errors]
+        assert (f"the ability '{ability}' declares no operation 'nope'"
+                in errors[0].description), errors[0].description
 
 
 # ---------------------------------------------------------------------
@@ -1078,6 +1207,49 @@ class TestGenericCellNesting:
 # text itself.
 
 
+#: The nestings that get E339's type-parameter message (the two cells'
+#: families differ, and an instantiation can make them one), each with the
+#: concrete, distinct pair its first rewrite writes in their place.
+_GENERIC_NESTINGS: dict[tuple[str, str], tuple[str, str]] = {
+    ("Int", "T"): ("Int", "Nat"),
+    ("T", "Int"): ("Nat", "Int"),
+    ("T", "U"): ("Int", "Nat"),
+    ("Option<T>", "Option<Int>"): ("Int", "Option<Int>"),
+}
+
+#: A type-parameter cell nested in the cell a function's row declares, with
+#: a clause-body operation that reaches the row's cell.
+_ROW_NEST = """\
+private forall<T> fn g(@T -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<State<Int>>)
+{
+  handle[State<T>](@T = @T.0) {
+    get(@Unit) -> { resume(@T.0) },
+    put(@T) -> { put(1);
+      resume(()) }
+  } in {
+    put(@T.0);
+    1
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Int>](@Int = 0) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) }
+  } in {
+    g(ARG)
+  }
+}
+"""
+
+
 def _only_fix(source: str, code: str) -> str:
     """The fix of *source*'s one error, which carries *code*."""
     errors = vera_pipeline.check(source).errors
@@ -1189,6 +1361,21 @@ class TestTheFixCompilesClean:
         bare = fix.removeprefix("Call it bare: ").removesuffix(".")
         _holds(_REPRO_1499_QUALIFIED.replace("Eq.eq(1, 1)", bare), None, 1)
 
+    @pytest.mark.parametrize("ability", sorted(_ABILITIES))
+    def test_a_qualified_call_to_an_operation_the_ability_lacks(
+        self, ability: str,
+    ) -> None:
+        """E220's message for an ability qualifier: the function its fix
+        declares, written in, with the call it names in place."""
+        source = _ABILITIES[ability][0] + _main(f"{ability}.nope(1)")
+        fix = _only_fix(source, "E220")
+        assert "declare private fn nope_of(...)" in fix, fix
+        call = _between(fix, "nope_of(1)", " in place")
+        fixed = source.replace(f"{ability}.nope(1)", call) + (
+            "\nprivate fn nope_of(@Int -> @Int)\n  requires(true)\n"
+            "  ensures(true)\n  effects(pure)\n{\n  @Int.0\n}\n")
+        _holds(fixed, None, 1)
+
     def test_a_user_ability_operation_call(self) -> None:
         fix = _only_fix(_REPRO_1499_BARE, "E340")
         assert "private fn size_of(...)" in fix, fix
@@ -1208,11 +1395,41 @@ class TestTheFixCompilesClean:
             + _main("measure(1, fn(@Int -> @Int) effects(pure) { @Int.0 })"))
         _holds(fixed, None, 1)
 
-    def test_a_generic_cell_nested_in_one_it_can_be(self) -> None:
-        errors = vera_pipeline.check(_REPRO_1522).errors
-        assert [d.error_code for d in errors] == ["E339"]
-        assert "a concrete State type" in errors[0].fix, errors[0].fix
-        _holds(_nest_source("Int", "Nat", "clause body", "5"), None, 1)
+    @pytest.mark.parametrize("at", ("5", "true"))
+    @pytest.mark.parametrize(("outer", "inner"), sorted(_GENERIC_NESTINGS))
+    def test_a_generic_cell_nested_in_one_it_can_be(
+        self, outer: str, inner: str, at: str,
+    ) -> None:
+        """Each rewrite the type-parameter message names, at both
+        instantiations: cells that cannot coincide, and the operation moved
+        out of the clause into the handled body of the handler it names.
+        Read as the INNER handler's handled body, the move reaches the inner
+        cell, and `g(true)` failed to load (#1691; PR #1687 review)."""
+        source = _nest_source(outer, inner, "clause body", at)
+        fix = _only_fix(source, "E339")
+        assert "a concrete State type" in fix, fix
+        _holds(_nest_source(*_GENERIC_NESTINGS[(outer, inner)],
+                            "clause body", at), None, 1)
+        handler = _between(fix, "handle[State<", "] whose") + "]"
+        assert handler == f"handle[State<{outer}>]", fix
+        op = f"put({_NEST_TYPES[outer][1]});"
+        moved = source.replace(f"{op}\n        resume(())", "resume(())")
+        body = moved.index("} in {\n", moved.index(handler)) + len("} in {\n")
+        _holds(moved[:body] + f"    {op}\n" + moved[body:], None, 1)
+
+    @pytest.mark.parametrize("at", ("5", "true"))
+    def test_a_generic_cell_nested_in_a_declared_cell(self, at: str) -> None:
+        """The cell the operation reaches is the declared row's: the fix
+        moves it into the function body, outside every handler."""
+        source = _ROW_NEST.replace("ARG", at)
+        fix = _only_fix(source, "E339")
+        assert ("into the function body, outside every handler, where it "
+                "reaches the State<Int> cell the function's effects declare"
+                in fix), fix
+        moved = source.replace("put(1);\n      resume(())", "resume(())")
+        moved = moved.replace("{\n  handle[State<T>]",
+                              "{\n  put(1);\n  handle[State<T>]")
+        _holds(moved, None, 1)
 
     def test_a_type_parameter_predicate_parameter(self) -> None:
         fix = _only_fix(_REPRO_1506_PARAMETER, "E179")

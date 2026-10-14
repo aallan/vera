@@ -77,6 +77,9 @@ class _ClauseCell:
     #: The checker's semantic type of the cell, which E339 unifies when a
     #: type parameter is in it (#1522).
     type: Type | None = None
+    #: The cell type as its handler or row writes it, alias-opaque, which
+    #: E339's type-parameter fix names the cell's handler by.
+    written: str = ""
 
     @property
     def identity(self) -> Cell:
@@ -1450,10 +1453,8 @@ class ControlFlowMixin:
                         fix=(
                             "Nest handlers whose cells cannot coincide (a "
                             "concrete State type, distinct from every cell "
-                            "around it), move the operation into the handled "
-                            "body, or override this handler's own state with "
-                            "'with @T = ...' on the clause instead of "
-                            "performing the operation."
+                            "around it), or move the operation out of this "
+                            "clause " + _where_the_cell_is_reached(cell) + "."
                         ),
                         spec_ref='Chapter 7, Section 7.5.2 "Handler Semantics"',
                         error_code="E339",
@@ -1522,6 +1523,7 @@ class ControlFlowMixin:
             # Resolved again for the type: `_check_handle` reported whatever
             # resolving it reports, and an exact repeat collapses (`_error`).
             type=self._resolve_type(te),
+            written=type_expr_slot_name(te) or fallback,
         )
 
     def _row_op_scope(self, row: ast.EffectRow) -> _OpScope:
@@ -1647,6 +1649,21 @@ class ControlFlowMixin:
                     node.name, self._user_fn_names)):
             return node.name
         return None
+
+
+def _where_the_cell_is_reached(cell: _ClauseCell) -> str:
+    """Where an operation reaches *cell* with no handler between, for E339's
+    type-parameter fix: the handled body of the handler that pushes the
+    cell, outside the handlers nested in it, or, for a cell the declared row
+    gives, the function body outside every handler.  Named, because "the
+    handled body" reads as the inner handler's too, where the operation
+    reaches the inner cell (PR #1687 review)."""
+    if cell.scope is None:
+        return (f"into the function body, outside every handler, where it "
+                f"reaches the State<{cell.written}> cell the function's "
+                f"effects declare")
+    return (f"into the handled body of the handle[State<{cell.written}>] "
+            f"whose cell it reaches, outside the handlers nested in it")
 
 
 def _instantiation_text(a: Type | None, b: Type | None) -> str:

@@ -2299,9 +2299,40 @@ class CallsMixin:
         # (declare an effect of that name) is false for an ability.
         ability = self.env.abilities.get(expr.qualifier)
         if ability is not None:
-            self._refuse_unlowerable_ability(
-                expr, expr.qualifier, op=ability.operations.get(expr.name),
-                qualified=expr)
+            op = ability.operations.get(expr.name)
+            if op is not None:
+                self._refuse_unlowerable_ability(
+                    expr, expr.qualifier, op=op, qualified=expr)
+            else:
+                # The ability declares no operation of that name, so the
+                # call is unresolved, whatever lowers (PR #1687 review): its
+                # E340 named `nope` an operation of `Sz`, or told the reader
+                # to call it bare, which is E200.
+                ops = ", ".join(f"'{name}'" for name in ability.operations)
+                call = ast.format_expr(
+                    ast.FnCall(name=f"{expr.name}_of", args=expr.args))
+                self._error(
+                    expr,
+                    f"Unresolved qualified call '{expr.qualifier}."
+                    f"{expr.name}': the ability '{expr.qualifier}' declares "
+                    f"no operation '{expr.name}'.",
+                    rationale=(
+                        f"A qualified call 'Effect.op' performs an operation "
+                        f"of an effect.  '{expr.qualifier}' names an ability, "
+                        f"whose operations are {ops}, and none is named "
+                        f"'{expr.name}', so the call names nothing to perform "
+                        f"and the program cannot compile."
+                    ),
+                    fix=(
+                        f"Write what the call means as a function under its "
+                        f"own name and call that: declare private fn "
+                        f"{expr.name}_of(...) with the signature this call "
+                        f"needs, and write {call} in place of "
+                        f"'{expr.qualifier}.{expr.name}(...)'."
+                    ),
+                    spec_ref='Chapter 9, Section 9.8 "Abilities"',
+                    error_code="E220",
+                )
             for arg in expr.args:
                 self._synth_expr(arg)
             return UnknownType()
