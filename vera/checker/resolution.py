@@ -668,10 +668,10 @@ class ResolutionMixin:
 
         Every row for the first two: a function's, a closure literal's, and
         a function type's.  Code generation dropped a function whose own row
-        held one (E603, E606, E611); a closure or a function type naming one
+        held one; a closure or a function type naming one
         compiled, and could be applied only under a row naming it, which is
         refused.  A row variable only in a *declaration*'s own row, which
-        code generation dropped with every clone (E603): in a function
+        code generation dropped with every clone: in a function
         type's row it compiles.  *rest* is the row's other entries."""
         refusal = effect_row_entry_refusal(
             ref.name, len(ref.type_args or ()),

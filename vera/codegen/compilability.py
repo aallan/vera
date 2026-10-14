@@ -134,8 +134,8 @@ class CompilabilityMixin:
                     # checker refuses a user-declared effect, State or Exn
                     # without a type argument, and a row variable in this,
                     # the function's own row, where the row names it (E340).
-                    # This dropped the function (E603, E606, E611) before the
-                    # rule moved to the check.  A clone's row variable is no
+                    # This dropped the function before the rule moved to the
+                    # check.  A clone's row variable is no
                     # longer one of its `forall` variables, and is refused as
                     # an effect the roster lacks.  The roster is the one the
                     # verifier reads to decide whether an operation argument

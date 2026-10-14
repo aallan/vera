@@ -528,8 +528,8 @@ def effect_row_entry_refusal(
     for ``State`` and ``Exn``, carries exactly one type argument: the cell's
     type, the payload's.  Replaces the refusals in ``_is_compilable``
     (``vera/codegen/compilability.py``), which dropped a function whose row
-    named a user-declared effect (E603), or ``State`` or ``Exn`` without a
-    type argument (E606, E611).
+    named a user-declared effect, or ``State`` or ``Exn`` without a type
+    argument.
 
     A *row_variable*, a ``forall`` variable written as an entry, lowers in a
     function type's row, a parameter's or a closure literal's, where the
@@ -538,7 +538,7 @@ def effect_row_entry_refusal(
     instantiation of its type parameters, and an instantiation substitutes
     the types and leaves the row as written, so a clone's row still names
     the variable and there is no effect to compile for it: the template and
-    every clone were dropped (E603).  The checker admits a function value
+    every clone were dropped.  The checker admits a function value
     under a row variable only when its row fits the row's other entries, so
     a value's variable stands for no effect.
 
