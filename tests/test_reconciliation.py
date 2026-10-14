@@ -214,7 +214,7 @@ def test_every_allowlisted_issue_is_an_open_bug() -> None:
     table, and an entry still citing it would excuse a mismatch nobody is
     tracking."""
     cited = {entry.issue for entry in GATE.KNOWN}
-    cited |= {issue for issue, *_ in _REPRO_KNOWN} | {1613}
+    cited |= {issue for issue, *_ in _REPRO_KNOWN}
     assert cited <= _open_bug_issues(), sorted(cited - _open_bug_issues())
 
 
@@ -344,14 +344,18 @@ public fn f(@Nat, @Nat -> @Nat)
 #: mismatch each repro shows today.  Keyed by the issue whose class it is,
 #: which is not always the repro's own: #1530's repro also returns a
 #: `handle` the static `@Nat` rule cannot read (#1557).
+#: The issue column names the OPEN issue the mismatch is tracked under:
+#: #1695 carries the guard-agreement class, whose instances #1530, #1557,
+#: #1607, #1608 and #1613 were consolidated into it on 2026-10-14 (the
+#: repro keys keep the instance numbers, which name the programs).
 _REPRO_KNOWN: tuple[tuple[int, str, str, str, int, int], ...] = (
-    (1607, "1607", "recorded_unguarded", "ensures", 3, 3),
-    (1607, "1607", "recorded_unguarded", "index_bounds", 3, 92),
-    (1530, "1530", "recorded_unguarded", "decreases", 4, 3),
-    (1557, "1530", "guarded_unrecorded", "nat_bind", 15, 3),
-    (1530, "1530-measure", "recorded_unguarded", "decreases_bound", 25, 21),
+    (1695, "1607", "recorded_unguarded", "ensures", 3, 3),
+    (1695, "1607", "recorded_unguarded", "index_bounds", 3, 92),
+    (1695, "1530", "recorded_unguarded", "decreases", 4, 3),
+    (1695, "1530", "guarded_unrecorded", "nat_bind", 15, 3),
+    (1695, "1530-measure", "recorded_unguarded", "decreases_bound", 25, 21),
     (1582, "1582", "recorded_unguarded", "nat_to_int_coerce", 6, 45),
-    (1608, "1608", "guarded_unrecorded", "nat_bind", 14, 32),
+    (1695, "1608", "guarded_unrecorded", "nat_bind", 14, 32),
 )
 
 

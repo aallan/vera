@@ -83,11 +83,18 @@ A pull request's review is capped at three rounds.  A fourth needs a written ans
 
 ### Filing: file the class, not the manifestation
 
-One issue per class of bug, with its known instances as a checklist in the body.  A finding that is another instance of an open class **extends that issue and its instrument** rather than opening a second one: two issues for one mechanism are fixed twice, or half-fixed once.  A new issue is for a different mechanism.
+One issue per class of bug, with its known instances as a checklist in the body.  Before filing, search the open `bug` issues for the mechanism — the rule that produces the wrong result, not the construct it surfaced in.  A finding that is another instance of an open class **extends that issue and its instrument** as a checklist line and a comment, never a second issue: two issues for one mechanism are fixed twice, or half-fixed once.  A new issue is for a mechanism no open issue names, and its title names the mechanism.
 
-**File, don't fold.**  A bug found while reviewing a pull request is filed as its own issue; it is not folded into that pull request and does not hold it up.  The exceptions are a regression against the pull request's base and a defect in the pull request's own code, which the pull request fixes.
+Every issue states two facts the fix depends on:
 
-`KNOWN_ISSUES.md`'s Bugs table stays one row per open `bug` issue, so the table counts classes rather than sightings.
+- **Effect.**  *Silent*: a wrong value, a wrong proof, or a wrong program accepted, with every gate green; it carries the `soundness` label.  *Loud*: a failure the user sees — a compile or load error after a green check, a false refusal, a wrong message or location; it never carries `soundness`.
+- **Reach.**  Where a program written to accomplish something meets the shape: a file under `examples/` or `tests/conformance/`, a VeraBench task, an idiom the documentation teaches, or "none found" after looking.  The corpus differentials every fix pull request runs answer this.
+
+Effect and reach decide the disposition at filing.  Silent and reachable: fixed by the next free lane, as its own pull request.  Silent and contrived: a checklist line on its mechanism's class issue, closed by the release that removes the mechanism.  Loud and reachable: a row in the limitation tables, fixed when a change is already in the file.  Loud and contrived: a checklist line, nothing scheduled.
+
+**File, don't fold.**  A bug found while reviewing a pull request never enters that pull request and does not hold it up, except a regression against its base or a defect in its own code, which the pull request fixes.  Instruments and reviewers do not file: they report the find in the pull request, with its effect and reach, and whoever runs the review routes it by the rules above.
+
+`bug` means the language and the behaviour of its toolchain.  A defect in the test suite, CI, the language server or the documentation carries `testing`, `ci`, `lsp` or `documentation` without `bug` (the bug report template applies `bug`; swap it for the right label when filing), so `KNOWN_ISSUES.md`'s Bugs table, one row per open `bug` issue, counts language classes rather than sightings.
 
 ## Development Setup
 

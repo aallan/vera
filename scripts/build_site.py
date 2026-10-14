@@ -91,7 +91,7 @@ Contracts are mandatory — every function must declare `requires(...)`, \
 `decreases(...)` measure or the `Diverge` effect. The Z3 SMT solver verifies \
 contracts statically where possible; every contract is also compiled as a \
 runtime check where code generation can express it, and most of what can be \
-neither proved nor guarded is disclosed (#1607 is a contract that is not). \
+neither proved nor guarded is disclosed (#1695 tracks the contracts that are not). \
 All side effects (IO, Http, HttpServer, State, Exceptions, Async, Inference, \
 DB, Random, Diverge) are tracked in the type system via algebraic effects.
 
