@@ -1513,7 +1513,7 @@ def _op_refusal(row: str, use: str, enclosing: str,
     beside the E125 that applying a closure whose row names `IO` gets there,
     as at the base.  Under any other row that does not name the effect, a
     user-declared effect's operation is refused at the call (E340), and a
-    built-in effect's is accepted, as at the base (#294)."""
+    built-in effect's is accepted, as at the base (#1702)."""
     if enclosing == "pure":
         applies_io = use == "applied" and row.startswith("IO")
         return ("E125", "E122") if applies_io else ("E122",)

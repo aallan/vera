@@ -2591,7 +2591,9 @@ class CallsMixin:
                 "handlers.  A user-declared effect has neither: a handler for "
                 "one is refused (E340), and so is a row naming one, so an "
                 "operation of one called under a row that does not name it is "
-                "the use left, and it is refused at the call."
+                "the use left, and it is refused at the call.  A built-in "
+                "effect's operation lowers under any row; that a row which is "
+                "not pure does not hold one to it is #1702."
             ),
             fix=(
                 f"Call a function under its own name in place of the "

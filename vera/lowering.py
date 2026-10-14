@@ -576,6 +576,6 @@ def effect_operation_lowerable(effect_name: str) -> bool:
 
     A built-in effect's operation under a row that does not name the effect
     is accepted, and compiled: that the row is not held to its operations
-    is the effect checker's question (#294), not a lowering one.
+    is the effect checker's defect (#1702), not a lowering one.
     """
     return effect_name in COMPILABLE_EFFECTS
