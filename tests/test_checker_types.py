@@ -3406,11 +3406,12 @@ private fn f(@String -> @Bool)
 """, "bound must be an integer")
         assert any(e.error_code == "E128" for e in errs)
 
-    def test_typevar_bound_accepted(self) -> None:
-        """A TypeVar bound in a generic fn defers to the instantiation —
-        the E128 gate must not kill the Int/Nat instantiations that
-        monomorphise and run (PR #1202 adversarial round regression)."""
-        _check_ok("""
+    def test_typevar_bound_refused_at_the_template(self) -> None:
+        """A TypeVar bound is E128 at the template (#1506).  It deferred to
+        the instantiation (PR #1202), which ran the Int/Nat instantiations
+        and compiled the others to a module that fails to load: the counter
+        loop compares an i64, and the checker holds no instantiation set."""
+        errs = _check_err("""
 private forall<T> fn p(@T -> @Bool)
   requires(true)
   ensures(true)
@@ -3422,7 +3423,8 @@ public fn main(@Unit -> @Bool)
   ensures(true)
   effects(pure)
 { p(3) }
-""")
+""", "the type parameter T")
+        assert [e.error_code for e in errs] == ["E128"], errs
 
     def test_float_bound_rejected(self) -> None:
         """A Float64 domain is E128 — numeric but not an index count (the
@@ -3604,8 +3606,9 @@ private fn use(@Unit -> @Int)
     def test_user_effect_state_stays_free(self) -> None:
         """The check scopes to the BUILTIN State effect only — a user
         effect's handler state is the handler's own accumulator and may
-        take any type."""
-        _check_ok("""
+        take any type.  The handler is refused for another reason, that no
+        user-declared effect is lowered (E340), and for that alone."""
+        errs = _check_err("""
 effect Tick {
   op tick(Unit -> Unit);
 }
@@ -3621,7 +3624,8 @@ private fn t(@Unit -> @Int)
     7
   }
 }
-""")
+""", "cannot lower a handler for Tick")
+        assert [e.error_code for e in errs] == ["E340"], errs
 
     def test_refined_divergent_predicates_rejected(self) -> None:
         """The adversarial round's F1: `types_equal` compares refined
@@ -3767,8 +3771,10 @@ private fn t(@Unit -> @Int)
         """The distinguishing input for the builtin-only scoping: a USER
         effect declared with two type parameters handles with two type
         arguments and must not produce E337 (a mutant dropping the
-        State/Exn name test fails here)."""
-        _check_ok("""
+        State/Exn name test fails here).  The handler is refused for
+        another reason, that no user-declared effect is lowered (E340), and
+        for that alone."""
+        errs = _check_err("""
 effect Pair<A, B> {
   op both(A, B -> Unit);
 }
@@ -3784,7 +3790,8 @@ private fn t(@Unit -> @Int)
     7
   }
 }
-""")
+""", "cannot lower a handler for Pair")
+        assert [e.error_code for e in errs] == ["E340"], errs
 
     def test_nested_refined_divergence_rejected(self) -> None:
         """`types_equal` compares refined types by base only INSIDE ADT

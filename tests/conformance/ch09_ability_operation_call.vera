@@ -1,0 +1,17 @@
+-- Conformance: a call to an operation of a user-declared ability is a
+-- checker error (Chapter 9, Section 9.8).
+-- Tests: E340 — no declaration implements an ability for a type, so a user
+-- ability's operation has no body to call; the call is refused where it is
+-- written instead of failing at compile (#1499).  The declaration itself
+-- stays accepted.
+ability Sz<T> {
+  op size(T -> Int);
+}
+
+public fn probe(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  size(1)
+}

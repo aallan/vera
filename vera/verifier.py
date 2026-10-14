@@ -82,11 +82,11 @@ from vera.smt import (
     _pattern_condition_exact,
     resolve_timeout_ms,
 )
+from vera.lowering import state_cell_lowerable
 from vera.types import (
     erases_to_unit,
     has_no_wasm_representation,
     is_pair_represented,
-    state_cell_lowerable,
     BOOL,
     BYTE,
     FLOAT64,
@@ -16358,7 +16358,7 @@ class ContractVerifier:
         function the module does not contain — #1268's lesson at the write
         boundary — so the obligation discloses instead.
 
-        The rule is :func:`vera.types.state_cell_lowerable`, which
+        The rule is :func:`vera.lowering.state_cell_lowerable`, which
         `_register_state_cell` reads with its own oracle, so the record
         cannot claim a cell the backend declines.  Every other site answers
         True: the question is about a `State` cell, not about the value.

@@ -7,10 +7,14 @@ for State handler expressions.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable
 
 from vera import ast
-from vera.types import state_cell_lowerable
+from vera.lowering import (
+    contract_exprs,
+    exn_payload_lowerable,
+    state_cell_lowerable,
+)
 from vera.narrowing import COMPILABLE_EFFECTS, MEMORY_EFFECTS
 from vera.monomorphize import mangle_type_name
 from vera.wasm.helpers import CellNames
@@ -76,44 +80,6 @@ def _oversized_family_reason(family: str) -> str | None:
         f"a cell family symbol of {n:,} characters, past the "
         f"{MAX_CELL_FAMILY_SYMBOL:,}-character limit"
     )
-
-
-def contract_exprs(
-    contracts: Sequence[ast.Contract],
-) -> Iterator[ast.Expr]:
-    """Every predicate expression carried by a function's contracts.
-
-    One enumeration shared by both import pre-scans (#1210 round 2), because
-    a contract is LOWERED code: `requires` / `ensures` become runtime checks
-    and `decreases` becomes the termination guard's measure, so anything in
-    one that needs a host import or a State/Exn family needs it registered.
-
-    `Decreases` is why this exists at all: it carries `exprs` (a tuple — a
-    lexicographic measure is several expressions) where the other kinds carry
-    `expr`, so the `getattr(c, "expr")` shortcut this replaced silently
-    skipped it and a `handle[State<Nat>]` in a `decreases` measure emitted
-    `state_push_Nat` against an import that was never declared.
-
-    The dispatch is EXPLICIT rather than attribute-probing (round-5 review).
-    A `getattr` fallback treats an unrecognised contract kind as "carries
-    nothing", which is the silent-skip failure this function was written to
-    fix — and it hides the field accesses from mypy, so a renamed field would
-    typecheck.  A new `ast.Contract` subclass now raises here instead, at the
-    commit that adds it.
-    """
-    for contract in contracts:
-        if isinstance(contract, (ast.Requires, ast.Ensures, ast.Invariant)):
-            yield contract.expr
-        elif isinstance(contract, ast.Decreases):
-            yield from contract.exprs
-        else:
-            raise TypeError(
-                f"contract_exprs does not know how to enumerate the "
-                f"predicates of {type(contract).__name__} — a new "
-                f"ast.Contract subclass must be added here (and to the "
-                f"walkers' WALKER_COVERAGE checklists), or its expressions "
-                f"go unregistered while codegen lowers them"
-            )
 
 
 class CompilabilityMixin:
@@ -289,12 +255,15 @@ class CompilabilityMixin:
         if not state_cell_lowerable(
                 representable=wt is not None and wt != "unsupported",
                 pair=wt == "i32_pair"):
-            # THE rule (`vera.types.state_cell_lowerable`), read by the
-            # verifier too: a cell's value crosses host imports that carry
-            # one word, so a `(ptr, len)` pair has no way through whatever
-            # the write guard could bind.  Sharing it is what stops the
-            # obligation stream recording a runtime check for a write inside
-            # a function this refusal drops (#1439).
+            # THE rule (`vera.lowering.state_cell_lowerable`), read by the
+            # checker and the verifier too: a cell's value crosses host
+            # imports that carry one word, so a `(ptr, len)` pair has no way
+            # through whatever the write guard could bind.  The checker
+            # refuses a cell written in the source (E340, #1512); what
+            # reaches here is a `State<T>` clone instantiated at such a type
+            # (#1679).  Sharing the rule is what stops the obligation stream
+            # recording a runtime check for a write inside a function this
+            # refusal drops (#1439).
             return UNSUPPORTED_CELL_TYPE
         cell = CellNames(
             family=self._family_name_te(type_arg),
@@ -342,8 +311,16 @@ class CompilabilityMixin:
             node,
             f"Function '{fn_name}' uses State with "
             "unsupported type — skipped.",
-            rationale="State<T> requires a compilable primitive type "
-            "(Int, Nat, Bool, Float64).",
+            rationale=(
+                "A State<T> cell's value crosses host imports that carry one "
+                "word, so a cell whose value is a (ptr, len) pair (String, "
+                "Array<T>) or has no representation (Unit, Never) is not "
+                "lowered; scalar, compound, data and Map cells are.  The "
+                "checker refuses such a cell where it is written (E340); "
+                "this one is a State<T> cell instantiated at such a type.  "
+                "Wrap the value in a one-constructor data type and "
+                "instantiate at that: private data Text { T(String) }."
+            ),
             error_code="E607",
         )
 
@@ -413,8 +390,15 @@ class CompilabilityMixin:
             node,
             f"Function '{fn_name}' uses Exn with "
             f"unsupported type — skipped.",
-            rationale="Exn<E> requires a compilable type "
-            "(Int, Nat, Bool, Float64, String).",
+            rationale=(
+                "An Exn<E> payload is thrown as a WebAssembly tag's "
+                "parameters, so a payload with no representation (Unit, "
+                "Never) has nothing to throw.  The checker refuses such a "
+                "payload where it is written (E340); this one is an Exn<E> "
+                "handler or row instantiated at such a type.  Throw a value: "
+                "Exn<Bool>, or a one-constructor data type such as "
+                "private data Failure { Failed }."
+            ),
             error_code="E612",
         )
 
@@ -435,7 +419,11 @@ class CompilabilityMixin:
         the tag takes two i32 params.
         """
         wt = self._type_expr_to_wasm_type(type_arg)
-        if wt is None or wt == "unsupported":
+        if not exn_payload_lowerable(
+                representable=wt is not None and wt != "unsupported"):
+            # THE rule (`vera.lowering.exn_payload_lowerable`): the checker
+            # refuses a payload written in the source (E340); what reaches
+            # here is an `Exn<E>` clone instantiated at such a type (#1679).
             return UNSUPPORTED_CELL_TYPE
         wasm_tag_t = "i32 i32" if wt == "i32_pair" else wt
         type_name = self._family_name_te(type_arg)

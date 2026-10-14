@@ -4557,9 +4557,12 @@ WHERE_HANDLERS = "\n".join([
 # fails E125.  `format_type_expr` renders a refinement as its bare base
 # type, so a key built straight from it would spell `Exn<Int>` for both
 # and prune those edges.
+# The refinement is named: a handler keys its cell by a type name, so an
+# inline refinement literal as `Exn<E>` is refused at check (E340).
 REFINED_INSTANCE = "\n".join([
+    "type NonNeg = { @Int | @Int.0 >= 0 };\n",
     _fn("target", "@Nat.0"),
-    _fn("refined", """handle[Exn<{ @Int | @Int.0 >= 0 }>] {
+    _fn("refined", """handle[Exn<NonNeg>] {
     throw(@Int) -> { 0 }
   } in {
     target(@Nat.0)

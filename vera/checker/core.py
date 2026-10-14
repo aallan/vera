@@ -35,6 +35,7 @@ from vera.errors import (
     SourceLocation,
     attach_partial_diagnostics,
 )
+from vera.lowering import ability_lowerable
 from vera.naming import AliasEnv
 from vera.registration import where_helper_parents
 from vera.environment import (
@@ -1186,6 +1187,11 @@ class TypeChecker(
                         spec_ref='Chapter 9, Section 9.8 "Abilities"',
                         error_code="E180",
                     )
+                elif not ability_lowerable(constraint.ability_name):
+                    # `vera.lowering` rule 4 (#1499): a user ability's
+                    # constraint has no lowering at any instantiation.
+                    self._refuse_unlowerable_ability(
+                        constraint, constraint.ability_name)
                 # E181: type var must be declared in forall
                 if (decl.forall_vars is None
                         or constraint.type_var not in decl.forall_vars):
@@ -1210,6 +1216,8 @@ class TypeChecker(
         # name declared by two effects in this row binds the first in SOURCE
         # order, which the frozenset alone cannot say.
         effect_row, effect_order = self._resolve_effect_row_ordered(decl.effect)
+        # `vera.lowering` rule 2 (#1512) over the row's State / Exn cells.
+        self._check_row_cells(decl.effect, effect_order)
 
         # 2b. Check refinement predicates written directly in the signature —
         # a refinement can reach a param / return via a type argument, e.g.

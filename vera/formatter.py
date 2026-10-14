@@ -2073,6 +2073,17 @@ def format_expr_canonical(expr: Expr, *, structural: bool = False) -> str:
     )._fmt_expr(expr)
 
 
+def format_type_canonical(te: TypeExpr) -> str:
+    """One type expression in canonical source form, without a slot's `@`:
+    ``Array<{ @Int | @Int.0 > 0 }>``.  The type half of
+    :func:`format_expr_canonical`, for a diagnostic whose fix writes the
+    type out to be pasted (E340's wrapper), where a resolved type's rendering
+    elides a refinement's predicate."""
+    return Formatter(
+        _Attached(before={}, inline=[], header=[], footer=[]),
+    )._fmt_type_bare(te)
+
+
 def format_source(source: str, file: str | None = None) -> str:
     """Format Vera source code to canonical form.
 

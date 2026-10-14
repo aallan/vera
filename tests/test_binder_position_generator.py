@@ -533,7 +533,9 @@ def test_no_excuse_is_empty() -> None:
 # The matrix
 # =====================================================================
 
-#: (site, kind) -> the compiler message that says the SHAPE is unsupported.
+#: (site, kind) -> the compiler message that says the SHAPE is unsupported:
+#: a pair `State` cell is refused at check (E340, #1512), a `Map` value in code
+#: generation.
 #:
 #: Not a cell.  A product the backend refuses outright exercises that refusal,
 #: not the narrowing, and TESTING.md § Class Instruments is explicit that such
@@ -542,17 +544,17 @@ def test_no_excuse_is_empty() -> None:
 #: entry is what tells a reader a cell is now owed.
 _UNSUPPORTED_SHAPES: dict[tuple[str, str], str] = {
     ("handler state init", "refined_string"):
-        "Function 'f' uses State with unsupported type — skipped",
+        "Code generation cannot lower a State<",
     ("handler state init", "refined_array"):
-        "Function 'f' uses State with unsupported type — skipped",
+        "Code generation cannot lower a State<",
     ("handler state update", "refined_string"):
-        "Function 'f' uses State with unsupported type — skipped",
+        "Code generation cannot lower a State<",
     ("handler state update", "refined_array"):
-        "Function 'f' uses State with unsupported type — skipped",
+        "Code generation cannot lower a State<",
     ("State-op resume", "refined_string"):
-        "Function 'f' uses State with unsupported type — skipped",
+        "Code generation cannot lower a State<",
     ("State-op resume", "refined_array"):
-        "Function 'f' uses State with unsupported type — skipped",
+        "Code generation cannot lower a State<",
     ("map value", "refined_array"):
         "Map/Set with an Array-typed or zero-size key, value, or element is "
         "not supported — function skipped",

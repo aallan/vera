@@ -9,13 +9,22 @@ from __future__ import annotations
 
 from typing import Callable, ClassVar
 
-from dataclasses import fields, is_dataclass
-
 from vera import ast, binders, naming, narrowing
+from vera.lowering import (
+    CLAUSE_NOT_SINGLE_SHOT,
+    CLAUSE_RESUME_IN_WITH,
+    STATE_CLAUSE_INLINE_DEPTH_CAP,
+    Cell,
+    cell_type_spelling_lowerable,
+    handler_lowerable,
+    shadowing_cell,
+    state_clause_refusal,
+    tail_resume_arg,
+)
 from vera.naming import display_adt_name
 from vera.monomorphize import mangle_type_name
 from vera.slots import effect_op_result_names, type_expr_slot_name
-from vera.skip import STATE_CLAUSE_INLINE_DEPTH_CAP, CodegenSkip
+from vera.skip import CodegenInvariantError, CodegenSkip
 from vera.wasm.helpers import (
     CellNames,
     StateClauseEntry,
@@ -1506,17 +1515,26 @@ class CallsHandlersMixin:
                 expr, "handle expression effect must be an EffectRef"
             )
 
+        # The backstop for `vera.lowering.handler_lowerable` (#1597): the
+        # checker refuses a handler for any other effect where it is written
+        # (E340), so reaching here is a program that passed a check that
+        # should have refused it.
+        if not handler_lowerable(effect.name):
+            raise CodegenInvariantError(
+                f"a handle[{effect.name}] reached code generation, and "
+                "vera.lowering.handler_lowerable refuses it: only State<T> "
+                "and Exn<E> handlers are lowered, and the checker refuses "
+                "any other at the handler (E340)", expr)
+
         if effect.name == "State" and effect.type_args and len(effect.type_args) == 1:
             return self._translate_handle_state(expr, env)
 
         if effect.name == "Exn" and effect.type_args and len(effect.type_args) == 1:
             return self._translate_handle_exn(expr, env)
 
-        # Unsupported handler type
-        raise CodegenSkip(
-            expr,
-            f"only State<T> and Exn<E> handlers supported (got {effect.name})",
-        )
+        raise CodegenInvariantError(
+            f"a handle[{effect.name}] without exactly one type argument "
+            "reached code generation; the checker refuses it (E337)", expr)
 
     def _translate_handle_state(
         self, expr: ast.HandleExpr, env: WasmSlotEnv,
@@ -1531,10 +1549,15 @@ class CallsHandlersMixin:
         """
         assert isinstance(expr.effect, ast.EffectRef)  # noqa: S101
         type_arg = expr.effect.type_args[0]  # type: ignore[index]
-        if not isinstance(type_arg, ast.NamedType):
-            raise CodegenSkip(
-                expr, "State<T> type argument must be a named type"
-            )
+        if not cell_type_spelling_lowerable(type_arg):
+            # The backstop for `vera.lowering.cell_type_spelling_lowerable`:
+            # the checker refuses an inline refinement cell (E340).
+            raise CodegenInvariantError(
+                "a State<T> handler whose type argument is not a type name "
+                "reached code generation; "
+                "vera.lowering.cell_type_spelling_lowerable refuses it, and "
+                "the checker refuses it at the cell type (E340)", expr)
+        assert isinstance(type_arg, ast.NamedType)  # noqa: S101
         # #914: use the FULL canonical slot name (`Tuple<Int, Int>`, not the
         # base `Tuple`) so the handler-body get/put/push/pop calls match the
         # `(import …)` decls emitted from `_state_types` (also full names) —
@@ -1902,7 +1925,13 @@ class CallsHandlersMixin:
                 return
             target_family = cell.family
             target_base = cell.base
-        if target_family not in shadowed:
+        # The rule is `vera.lowering.shadowing_cell` (E339), asked here with
+        # the clone's concrete families: the checker asks it of the template
+        # with semantic types, where a type-parameter cell may coincide with
+        # any cell it unifies with (#1522), so no check-green program reaches
+        # the raise below.
+        if shadowing_cell(
+                Cell(target_family), [Cell(f) for f in shadowed]) is None:
             return
         # The message names the cell's BASE, not its identity: since #1218 a
         # refined family's canonical rendering carries the whole predicate,
@@ -1910,8 +1939,7 @@ class CallsHandlersMixin:
         # width a diagnostic has.  The base is what a handler is written
         # over, and the shadowing cell shares it — the gate only fires when
         # the two identities are EQUAL, so one name describes both.
-        raise CodegenSkip(
-            call,
+        raise CodegenInvariantError(
             # Wording covers BOTH spellings: `State.put(x)` delegates to this
             # same gate (calls.py routes the qualified form through
             # `_translate_call`), so naming only the bare form described the
@@ -1923,9 +1951,9 @@ class CallsHandlersMixin:
             "handler shadows: the host cell intrinsics address only the "
             "innermost cell of a family, so the enclosing-context rule of "
             "spec 7.5.2 cannot be honoured when the same cell family is "
-            "nested (see https://github.com/aallan/vera/issues/1233) — nest "
-            "handlers over different cell types, or refine the inner cell "
-            "with 'with @T = ...', which is the clause's own state override",
+            "nested (see https://github.com/aallan/vera/issues/1233); the "
+            "checker refuses the operation where it is written (E339)",
+            call,
         )
 
     def _translate_state_clause_op(
@@ -1970,33 +1998,30 @@ class CallsHandlersMixin:
         decl_env = entry.decl_env
         get_import = entry.get_import
         put_import = entry.put_import
-        if not self._clause_lowerable(clause.body):
-            raise CodegenSkip(
-                call,
-                "State clause requires exactly one resume(...) as the body's "
-                "tail expression (single-shot); a missing, repeated, "
-                "non-tail, or per-branch-arm resume is not lowerable — "
-                "branch inside the argument instead: "
-                "resume(if c then a else b)",
-            )
-        if (clause.state_update is not None
-                and self._contains_resume(clause.state_update[1])):
-            # A resume inside the `with` expression was silently IGNORED
-            # (the lowering counts only the body's resume; the with-expr
-            # just evaluates for its value) — reject loudly instead of
-            # running a program whose resume does nothing (round-3
-            # review, F5).
-            raise CodegenSkip(
-                call,
-                "resume(...) inside a 'with' state-update expression has "
-                "no effect (the clause body's tail resume is the "
-                "single-shot continuation) — move the resume to the "
-                "clause body and keep the 'with' expression pure",
-            )
+        # The rule is `vera.lowering.state_clause_refusal`, which the checker
+        # applies at each clause an operation reaches (E340), so no
+        # check-green program reaches either raise.  A resume inside the
+        # `with` expression was once silently IGNORED (the lowering counts
+        # only the body's resume; the with-expr just evaluates for its
+        # value), which is why that shape is refused at all (round-3
+        # review, F5).
+        refusal = state_clause_refusal(clause)
+        if refusal == CLAUSE_NOT_SINGLE_SHOT:
+            raise CodegenInvariantError(
+                "a State clause without exactly one resume(...) as its "
+                "body's tail expression reached code generation; "
+                "vera.lowering.state_clause_refusal refuses it, and the "
+                "checker refuses the clause (E340)", call)
+        if refusal == CLAUSE_RESUME_IN_WITH:
+            raise CodegenInvariantError(
+                "a State clause with resume(...) inside its 'with' "
+                "state-update reached code generation; "
+                "vera.lowering.state_clause_refusal refuses it, and the "
+                "checker refuses the clause (E340)", call)
         # #1211: bound the outward re-entry.  Each nested clause body is a
         # fresh expansion of another clause, so the emitted code is
-        # exponential in this depth; past the cap the function is a loud
-        # [E602] skip rather than a multi-megabyte module.
+        # exponential in this depth.  The checker refuses a chain past the
+        # cap where its operation is written (E339), so this is a backstop.
         #
         # CHECK BEFORE MUTATE (round-5 review): this used to sit below the
         # six registry replacements, so its own raise left `_effect_ops`,
@@ -2008,15 +2033,15 @@ class CallsHandlersMixin:
         # exit here keeps, and a future caller that recovers closer in would
         # inherit a clause scope it never entered.
         if self._clause_inline_depth >= STATE_CLAUSE_INLINE_DEPTH_CAP:
-            raise CodegenSkip(
-                call,
+            raise CodegenInvariantError(
                 "handler clause bodies nest more than "
                 f"{STATE_CLAUSE_INLINE_DEPTH_CAP} deep in outward operation "
                 "re-entry: a bare get/put in a clause body is the ENCLOSING "
                 "handler's operation (spec 7.5.2), so each one inlines "
                 "another clause and the emitted code grows exponentially in "
-                "the nesting depth — reduce the handler nesting, or move the "
-                "clause-body operations into the handled body",
+                "the nesting depth; the checker refuses the operation where "
+                "it is written (E339)",
+                call,
             )
 
         # WASM type and pointer-ness derive from the threaded FAMILY name
@@ -2340,28 +2365,6 @@ class CallsHandlersMixin:
             te, value_local, where, node, env))
         return guard
 
-    @staticmethod
-    def _contains_resume(node: object) -> bool:
-        """Whether *node* contains a ``resume(...)`` call anywhere —
-        nested ``HandleExpr`` clauses excluded (their resumes are the
-        inner handler's), mirroring ``_clause_lowerable``'s counter."""
-        if isinstance(node, ast.HandleExpr):
-            if CallsHandlersMixin._contains_resume(node.body):
-                return True
-            return (node.state is not None
-                    and CallsHandlersMixin._contains_resume(
-                        node.state.init_expr))
-        if isinstance(node, ast.FnCall) and node.name == "resume":
-            return True
-        if isinstance(node, (list, tuple)):
-            return any(CallsHandlersMixin._contains_resume(i) for i in node)
-        if is_dataclass(node) and not isinstance(node, type):
-            return any(
-                CallsHandlersMixin._contains_resume(getattr(node, f.name))
-                for f in fields(node)
-            )
-        return False
-
     def _mark_state_byte_write(
         self, value: ast.Expr, family_base: str,
     ) -> None:
@@ -2388,79 +2391,9 @@ class CallsHandlersMixin:
         i32 width."""
         self._mark_byte_write_value(value, family_base)
 
-    @staticmethod
-    def _tail_resume_arg(body: ast.Expr) -> ast.Expr | None:
-        """The tail ``resume(v)``'s argument expression, descending the
-        join-free chain (Block trailing expression, single-arm match) —
-        ``None`` when the tail is not a one-argument resume.  The SINGLE
-        owner of the descent: :py:meth:`_clause_lowerable` consumes this
-        helper, so the lowering predicate and the #1203 get-result guard
-        can never drift apart."""
-        tail: ast.Expr = body
-        while True:
-            if isinstance(tail, ast.Block):
-                tail = tail.expr
-                continue
-            if isinstance(tail, ast.MatchExpr) and len(tail.arms) == 1:
-                tail = tail.arms[0].body
-                continue
-            break
-        if (isinstance(tail, ast.FnCall) and tail.name == "resume"
-                and len(tail.args) == 1):
-            return tail.args[0]
-        return None
-
-    def _clause_lowerable(self, body: ast.Expr) -> bool:
-        """True when the clause body has EXACTLY one ``resume(...)`` and it
-        IS the body's tail expression.
-
-        The tail chain descends only through join-free positions: a Block's
-        trailing expression and a SINGLE-arm match's arm body (no
-        alternative, so the arm's value flows straight through).  An ``if``
-        or a multi-arm ``match`` is a JOIN and is never a lowerable tail —
-        even when one or every arm resumes: ``resume`` types as ``Unit``, so
-        the checker records the branch as a VOID block, but the inline
-        lowering makes a resume push the op's result value; a value on (or
-        missing from) a void join's stack is an invalid WASM module either
-        way (PR #1003 review: both the per-arm shape and the
-        one-arm-resumes/other-arm-doesn't shape reproduced it).  The
-        canonical form branches inside the argument instead
-        (``resume(if c then a else b)``), which types the branch by the
-        value.
-
-        The total count treats a nested ``HandleExpr`` specially: its
-        CLAUSES own their resumes (they are the inner handler's, and would
-        otherwise spuriously reject this clause), but its body and
-        state-init are lexically part of THIS clause — a resume there
-        belongs here, is necessarily non-tail, and must reject the lowering
-        rather than corrupt the inner body's stack.
-        """
-        def total_count(node: object) -> int:
-            if isinstance(node, ast.HandleExpr):
-                n = total_count(node.body)
-                if node.state is not None:
-                    n += total_count(node.state.init_expr)
-                return n
-            if isinstance(node, ast.FnCall) and node.name == "resume":
-                # resume's own arguments cannot contain another resume in a
-                # checkable program (resume returns Unit); count args anyway
-                # so a pathological nesting is rejected, not miscounted.
-                return 1 + sum(total_count(a) for a in node.args)
-            if isinstance(node, (list, tuple)):
-                return sum(total_count(item) for item in node)
-            if is_dataclass(node) and not isinstance(node, type):
-                return sum(
-                    total_count(getattr(node, f.name))
-                    for f in fields(node)
-                )
-            return 0
-
-        # Single source of truth for the join-free tail descent: the same
-        # helper the get-resume guard uses (PR #1202 review — two copies
-        # of the descent would drift, and a drift silently un-guards a
-        # clause this predicate still lowers).
-        return (self._tail_resume_arg(body) is not None
-                and total_count(body) == 1)
+    #: The tail ``resume(v)``'s argument (`vera.lowering.tail_resume_arg`),
+    #: the one descent the #1203 get-result guard and the clause rule read.
+    _tail_resume_arg = staticmethod(tail_resume_arg)
 
     def _refined_exn_payload_type(
         self, cell: CellNames, call: ast.FnCall,
@@ -2584,10 +2517,15 @@ class CallsHandlersMixin:
         """
         assert isinstance(expr.effect, ast.EffectRef)  # noqa: S101
         type_arg = expr.effect.type_args[0]  # type: ignore[index]
-        if not isinstance(type_arg, ast.NamedType):
-            raise CodegenSkip(
-                expr, "Exn<E> type argument must be a named type"
-            )
+        if not cell_type_spelling_lowerable(type_arg):
+            # The backstop for `vera.lowering.cell_type_spelling_lowerable`:
+            # the checker refuses an inline refinement payload (E340).
+            raise CodegenInvariantError(
+                "an Exn<E> handler whose type argument is not a type name "
+                "reached code generation; "
+                "vera.lowering.cell_type_spelling_lowerable refuses it, and "
+                "the checker refuses it at the payload type (E340)", expr)
+        assert isinstance(type_arg, ast.NamedType)  # noqa: S101
         # #914: use the FULL canonical slot name (`Option<Int>`, not `Option`)
         # so the caught-payload slot env binds under the same key a
         # `@Option<Int>.n` ref in the handler body resolves against (root

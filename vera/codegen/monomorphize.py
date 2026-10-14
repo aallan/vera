@@ -20,6 +20,7 @@ import contextlib
 from collections.abc import Iterator
 
 from vera import ast
+from vera.lowering import ability_lowerable
 from vera.monomorphize import (
     MonoContext,
     Monomorphizer,
@@ -1441,7 +1442,11 @@ class MonomorphizationMixin:
             concrete = mapping.get(constraint.type_var)
             if concrete is None:
                 continue
-            entry = _ABILITY_TYPE_SETS.get(constraint.ability_name)
+            # Rule 4 (`vera.lowering.ability_lowerable`, #1499) decides which
+            # arm: a lowered ability is checked against its type set, any
+            # other is the backstop below.
+            entry = (_ABILITY_TYPE_SETS.get(constraint.ability_name)
+                     if ability_lowerable(constraint.ability_name) else None)
             if entry is not None:
                 type_set, desc = entry
                 # For Eq, also check ADT auto-derivation.  A constrained var
@@ -1568,15 +1573,24 @@ class MonomorphizationMixin:
                 ))
                 ok = False
             else:
+                # The backstop: the checker refuses a constraint naming an
+                # ability code generation does not implement where the
+                # constraint is written (E340), so a program reaching here
+                # passed a check that should have refused it.
                 self.diagnostics.append(Diagnostic(
                     description=(
-                        f"Ability '{constraint.ability_name}' is not yet "
-                        f"supported for code generation."
+                        f"Internal compiler error: a constraint on the "
+                        f"ability '{constraint.ability_name}' reached code "
+                        f"generation, and vera.lowering.ability_lowerable "
+                        f"refuses it; the checker refuses it at the "
+                        f"constraint (E340)."
                     ),
                     location=SourceLocation(file=self.file),
                     rationale=(
-                        "Code generation implements a fixed set of built-in "
-                        "abilities; this ability has no compilation support."
+                        "This is a codegen invariant violation — the type "
+                        "checker should have rejected the input before it "
+                        "reached this point.  Please file a bug report with "
+                        "the offending program."
                     ),
                     fix=(
                         "Constrain the type parameter with a built-in ability "
@@ -1584,7 +1598,7 @@ class MonomorphizationMixin:
                     ),
                     spec_ref='Chapter 9, Section 9.8 "Abilities"',
                     severity="error",
-                    error_code="E613",
+                    error_code="E699",
                 ))
                 ok = False
         return ok

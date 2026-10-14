@@ -14,6 +14,7 @@ import typing
 from typing import Any, cast
 
 from vera import ast, narrowing
+from vera.lowering import ability_lowerable
 from vera.slots import bare_call_denotes_user_fn
 from vera.checker.sql import (
     count_placeholders,
@@ -52,6 +53,13 @@ from vera.types import (
     substitute,
     types_equal,
 )
+
+
+def _op_signature_text(op: OpInfo) -> str:
+    """An operation's signature as a function type's inside, for E340's
+    fix: ``T -> Int``."""
+    params = ", ".join(pretty_type(p) for p in op.param_types)
+    return f"{params} -> {pretty_type(op.return_type)}"
 
 
 def _compatible_modulo_typevars(
@@ -1238,6 +1246,12 @@ class CallsMixin:
         arg_types: list[Type | None] = []
         for arg in args:
             arg_types.append(self._synth_expr(arg))
+        if not ability_lowerable(op_info.parent_effect):
+            # `vera.lowering` rule 4 (#1499): a user ability's operation
+            # has no body at any type.  Checked on, so the call's own
+            # argument diagnostics are reported too.
+            self._refuse_unlowerable_ability(
+                node, op_info.parent_effect, op=op_info)
 
         # Build type mapping from ability params → concrete types
         mapping = self._ability_type_mapping(op_info, arg_types)
@@ -2158,6 +2172,99 @@ class CallsMixin:
     # Qualified / module calls
     # -----------------------------------------------------------------
 
+    def _refuse_unlowerable_ability(
+        self, node: ast.Node, ability: str, *,
+        op: OpInfo | None = None,
+        qualified: ast.QualifiedCall | None = None,
+    ) -> None:
+        """E340 (`vera.lowering` rule 4, #1499): an ability use code
+        generation does not lower — a qualified ``Ability.op(...)`` call
+        (*qualified*), a bare call to a user-declared ability's operation
+        (*op*), or a ``where`` constraint naming a user-declared ability
+        (*node* the constraint).
+
+        Abilities as implemented are constraints that the four built-in
+        abilities satisfy, with operations code generation compiles for
+        each type that satisfies them; nothing implements a user-declared
+        ability for a type.
+        """
+        user_rationale = (
+            "Abilities as implemented are constraints that the four "
+            "built-in abilities — Eq, Ord, Hash and Show — satisfy, and code "
+            "generation compiles their operations for each type that "
+            "satisfies them.  No declaration implements an ability for a "
+            "type, so a user-declared ability's operation has no body at any "
+            "type, and a constraint on one is satisfied by none."
+        )
+        if qualified is not None and ability_lowerable(ability):
+            bare = ast.format_expr(
+                ast.FnCall(name=qualified.name, args=qualified.args))
+            self._error(
+                node,
+                f"Code generation cannot lower the qualified call "
+                f"'{ability}.{qualified.name}': an ability's operation is "
+                f"called bare.",
+                rationale=(
+                    "A qualifier names an effect, whose operation the call "
+                    "performs.  An ability's operations are called bare — at "
+                    "any type that satisfies the ability, and through a "
+                    "where constraint in a generic body — and code "
+                    "generation compiles them per type."
+                ),
+                fix=f"Call it bare: {bare}.",
+                spec_ref='Chapter 9, Section 9.8 "Abilities"',
+                error_code="E340",
+            )
+            return
+        if op is None and qualified is None:
+            ops = self.env.abilities.get(ability)
+            sig = "T -> Int"
+            if ops is not None and ops.operations:
+                first = next(iter(ops.operations.values()))
+                sig = _op_signature_text(first)
+            tv = getattr(node, "type_var", "T")
+            self._error(
+                node,
+                f"Code generation cannot lower the constraint "
+                f"'{ability}<{tv}>': '{ability}' is a user-declared ability, "
+                f"and only Eq, Ord, Hash and Show are lowered.",
+                rationale=user_rationale,
+                fix=(
+                    f"Constrain {tv} with a built-in ability (Eq, Ord, Hash "
+                    f"or Show), or drop the constraint and take each "
+                    f"operation as a function value: type {ability}Op<{tv}> "
+                    f"= fn({sig}) effects(pure); then a parameter "
+                    f"@{ability}Op<{tv}>, called as apply_fn(@{ability}Op<"
+                    f"{tv}>.0, ...)."
+                ),
+                spec_ref='Chapter 9, Section 9.8 "Abilities"',
+                error_code="E340",
+            )
+            return
+        name = qualified.name if qualified is not None else (
+            op.name if op is not None else "?")
+        written = (f"the qualified call '{ability}.{name}'"
+                   if qualified is not None else f"a call to '{name}'")
+        sig = _op_signature_text(op) if op is not None else "T -> Int"
+        self._error(
+            node,
+            f"Code generation cannot lower {written}: '{name}' is an "
+            f"operation of the user-declared ability '{ability}', which "
+            f"nothing implements.",
+            rationale=user_rationale,
+            fix=(
+                f"Write the operation as a function under its own name and "
+                f"call that in place of '{name}' — private fn "
+                f"{name}_of(...) with the operation's signature at this "
+                f"call — or, inside a generic, take it as a function value: "
+                f"type {ability}Op<T> = fn({sig}) effects(pure); then a "
+                f"parameter @{ability}Op<T>, called as "
+                f"apply_fn(@{ability}Op<T>.0, ...)."
+            ),
+            spec_ref='Chapter 9, Section 9.8 "Abilities"',
+            error_code="E340",
+        )
+
     @_reported_at_the_stage
     def _check_qualified_call(self, expr: ast.QualifiedCall) -> Type | None:
         """Type-check a qualified call: Effect.op(args)."""
@@ -2186,6 +2293,49 @@ class CallsMixin:
             and expr.args
         ):
             self._check_sql_provenance(expr.name, tuple(expr.args), expr)
+
+        # `vera.lowering` rule 4 (#1499): a qualifier names an effect, never
+        # an ability, whose operation is called bare.  E220's instruction
+        # (declare an effect of that name) is false for an ability.
+        ability = self.env.abilities.get(expr.qualifier)
+        if ability is not None:
+            op = ability.operations.get(expr.name)
+            if op is not None:
+                self._refuse_unlowerable_ability(
+                    expr, expr.qualifier, op=op, qualified=expr)
+            else:
+                # The ability declares no operation of that name, so the
+                # call is unresolved, whatever lowers (PR #1687 review): its
+                # E340 named `nope` an operation of `Sz`, or told the reader
+                # to call it bare, which is E200.
+                ops = ", ".join(f"'{name}'" for name in ability.operations)
+                call = ast.format_expr(
+                    ast.FnCall(name=f"{expr.name}_of", args=expr.args))
+                self._error(
+                    expr,
+                    f"Unresolved qualified call '{expr.qualifier}."
+                    f"{expr.name}': the ability '{expr.qualifier}' declares "
+                    f"no operation '{expr.name}'.",
+                    rationale=(
+                        f"A qualified call 'Effect.op' performs an operation "
+                        f"of an effect.  '{expr.qualifier}' names an ability, "
+                        f"whose operations are {ops}, and none is named "
+                        f"'{expr.name}', so the call names nothing to perform "
+                        f"and the program cannot compile."
+                    ),
+                    fix=(
+                        f"Write what the call means as a function under its "
+                        f"own name and call that: declare private fn "
+                        f"{expr.name}_of(...) with the signature this call "
+                        f"needs, and write {call} in place of "
+                        f"'{expr.qualifier}.{expr.name}(...)'."
+                    ),
+                    spec_ref='Chapter 9, Section 9.8 "Abilities"',
+                    error_code="E220",
+                )
+            for arg in expr.args:
+                self._synth_expr(arg)
+            return UnknownType()
 
         # Unresolved — an error (#1513): code generation has no operation
         # to call, and used to fail in the WAT assembler instead.

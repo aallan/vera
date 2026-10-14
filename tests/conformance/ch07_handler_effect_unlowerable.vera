@@ -1,0 +1,25 @@
+-- Conformance: a handler for an effect other than State or Exn is a
+-- checker error (Chapter 7, Section 7.5).
+-- Tests: E340 — code generation lowers handle[State<T>] and handle[Exn<E>]
+-- and no other handler, so a handle[Http] mock is refused where it is
+-- written instead of dropping its function at compile (#1597).
+public fn fetch(@String -> @Result<String, String>)
+  requires(true)
+  ensures(true)
+  effects(<Http>)
+{
+  Http.get(@String.0)
+}
+
+public fn test_fetch(@String -> @Result<String, String>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[Http] {
+    get(@String) -> { resume(Ok("mock")) },
+    post(@String, @String) -> { resume(Ok("mock")) }
+  } in {
+    fetch(@String.0)
+  }
+}

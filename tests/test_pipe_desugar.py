@@ -1002,6 +1002,11 @@ STAGES: tuple[Stage, ...] = (
     Stage("E203", '"x"', 'IO.print("y")', 'IO.print({v}, "y")', eff="<IO>",
           after="unit_id()"),
     Stage("E220", "@Int.0", "Nope.op()", "Nope.op({v})"),
+    # `vera.lowering` rule 4: a user ability's operation, and a qualified
+    # call to an ability's.
+    Stage("E340", "@Int.0", "size()", "size({v})",
+          head="ability Sz<T> {\n  op size(T -> Int);\n}\n\n"),
+    Stage("E340", "1", "Eq.eq(1)", "Eq.eq({v}, 1)"),
     Stage("E208", '"SELECT * FROM u WHERE a = ? AND b = ?"',
           'DB.query([Some("x")])', 'DB.query({v}, [Some("x")])', eff="<DB>",
           before=None),

@@ -1,0 +1,21 @@
+-- Conformance: a quantifier predicate whose parameter is a type parameter
+-- is a checker error (Chapter 6, Section 6.3.3).
+-- Tests: E179 — the predicate takes the index, an Int or a Nat, and code
+-- generation binds an i64 counter to it, so a type parameter there lowers
+-- only at an integer instantiation; at T = Bool the module failed to load
+-- (#1506).  It is refused at the generic, for every instantiation.
+private forall<T> fn always(@T -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  forall(@Nat, 3, fn(@T -> @Bool) effects(pure) { true })
+}
+
+public fn probe(@Unit -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  always(true)
+}

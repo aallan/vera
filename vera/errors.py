@@ -1025,6 +1025,7 @@ ERROR_CODES: dict[str, str] = {
     "E337": "Builtin effect handler type-argument arity",
     "E338": "Unknown effect in an effect row",
     "E339": "Handler-clause State operation code generation cannot lower",
+    "E340": "Code generation cannot lower this construct",
     # E5xx — Verification
     "E500": "Postcondition verified false",
     "E501": "Call-site precondition violation",

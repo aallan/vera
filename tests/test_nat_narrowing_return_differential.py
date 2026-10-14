@@ -2555,8 +2555,9 @@ public fn go(@Int -> @Int) requires(true) ensures(true) effects(pure)
 class TestResumeInWithExprRejected:
     """A `resume(...)` inside a `with` state-update expression was
     silently IGNORED (the lowering counts only the body's tail resume;
-    the with-expr just evaluates for its value) — now a loud E602 skip
-    with move-it-to-the-body guidance (round-3 review, F5)."""
+    the with-expr just evaluates for its value) — then a loud E602 skip
+    (round-3 review, F5), and now refused at check (E340, the clause rule of
+    `vera/lowering.py`), with code generation's site as the backstop."""
 
     _RESUME_IN_WITH = """\
 public fn go(@Int -> @Int) requires(true) ensures(true) effects(pure)
@@ -2570,19 +2571,17 @@ public fn go(@Int -> @Int) requires(true) ensures(true) effects(pure)
 }
 """
 
-    def test_resume_in_with_is_loud_skip(self) -> None:
-        with _resolved_pipeline(self._RESUME_IN_WITH) as (
-                program, arts, resolved, path):
-            result = codegen_compile(
-                program, source=self._RESUME_IN_WITH, file=path,
-                resolved_modules=resolved,
-                expr_semantic_types=arts.expr_semantic_types,
-            )
-            msgs = [d.description for d in result.diagnostics]
-            assert any(
-                "'with' state-update expression has no effect" in m
-                for m in msgs
-            ), msgs
+    def test_resume_in_with_is_refused(self) -> None:
+        checked = pipeline.check(self._RESUME_IN_WITH)
+        assert [d.error_code for d in checked.errors] == ["E340"], [
+            d.description for d in checked.errors]
+        assert "'with' update contains resume" in (
+            checked.errors[0].description)
+        past = pipeline.compile(self._RESUME_IN_WITH, past_check=True)
+        msgs = [d.description for d in past.result.diagnostics
+                if d.error_code == "E699"]
+        assert any("resume(...) inside its 'with' state-update" in m
+                   for m in msgs), msgs
 
 
 class TestClauseScopeMixedSpellings:

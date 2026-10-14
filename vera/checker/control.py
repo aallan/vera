@@ -7,8 +7,21 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from vera import ast, naming
+from vera.checker.registration import builtin_effect_names
 from vera.environment import Binding, FunctionInfo
-from vera.skip import STATE_CLAUSE_INLINE_DEPTH_CAP
+from vera.formatter import format_type_canonical
+from vera.lowering import (
+    CLAUSE_RESUME_IN_WITH,
+    STATE_CLAUSE_INLINE_DEPTH_CAP,
+    Cell,
+    cell_type_spelling_lowerable,
+    contract_exprs,
+    exn_payload_type_lowerable,
+    handler_lowerable,
+    shadowing_cell,
+    state_cell_type_lowerable,
+    state_clause_refusal,
+)
 from vera.slots import (
     bare_call_denotes_user_fn,
     family_fallback_name,
@@ -24,12 +37,15 @@ from vera.types import (
     UNIT,
     AdtType,
     ConcreteEffectRow,
+    EffectInstance,
     PrimitiveType,
     PureEffectRow,
     Type,
+    TypeVar,
     UnknownType,
     base_type,
     contains_typevar,
+    is_pair_represented,
     is_subtype,
     pretty_type,
     pretty_inferred_type,
@@ -58,6 +74,17 @@ class _ClauseCell:
     base: str
     clauses: Mapping[str, ast.HandlerClause]
     scope: _OpScope | None
+    #: The checker's semantic type of the cell, which E339 unifies when a
+    #: type parameter is in it (#1522).
+    type: Type | None = None
+    #: The cell type as its handler or row writes it, alias-opaque, which
+    #: E339's type-parameter fix names the cell's handler by.
+    written: str = ""
+
+    @property
+    def identity(self) -> Cell:
+        """The cell as `vera.lowering`'s shadowing rule compares it."""
+        return Cell(self.family, self.type)
 
 
 @dataclass(frozen=True)
@@ -81,9 +108,11 @@ class _ClauseWalk:
     while the walk runs.
     """
 
-    refused: list[tuple[ast.Node, str, _ClauseCell]]
+    #: Each refused operation: the call, why ("shadowed" or "depth"), the
+    #: cell it means, and for "shadowed" the pushed cell that shadows it.
+    refused: list[tuple[ast.Node, str, _ClauseCell, Cell | None]]
     inlined: dict[
-        tuple[int, int, tuple[str, ...], int],
+        tuple[int, int, tuple[Cell, ...], int],
         tuple[ast.HandlerClause, _OpScope],
     ]
 
@@ -793,6 +822,19 @@ class ControlFlowMixin:
             )
             return UnknownType()
 
+        # `vera.lowering` rules 1 and 2: a handler code generation lowers is
+        # for State or Exn (#1597), over a cell or payload it can hold
+        # (#1512).  Refused here, where the handler is written; the handler
+        # is still checked, so its other diagnostics are reported too.
+        if not handler_lowerable(effect_inst.name):
+            self._refuse_handler_effect(expr, effect_inst.name)
+        elif (isinstance(expr.effect, ast.EffectRef)
+              and expr.effect.type_args and effect_inst.type_args):
+            # State and Exn take exactly one type argument (E337 above).
+            self._check_cell_lowerable(
+                expr.effect.type_args[0], effect_inst.name,
+                effect_inst.type_args[0], handler=True)
+
         # Build type mapping for effect type params
         mapping: dict[str, Type] = {}
         if eff_info.type_params and effect_inst.type_args:
@@ -966,6 +1008,8 @@ class ControlFlowMixin:
             )
 
             self._synth_expr(clause.body)
+            if effect_inst.name == "State":
+                self._check_state_clause_lowerable(clause)
 
             # Type-check with clause (state update) if present
             if clause.state_update is not None:
@@ -1113,6 +1157,209 @@ class ControlFlowMixin:
         return body_type
 
     # -----------------------------------------------------------------
+    # `vera.lowering` rules 1, 2 and 2b at a handler (E340)
+    # -----------------------------------------------------------------
+
+    def _refuse_handler_effect(
+        self, expr: ast.HandleExpr, effect: str,
+    ) -> None:
+        """E340: a handler for an effect code generation does not lower
+        (rule 1, #1597)."""
+        if effect in builtin_effect_names():
+            why = (f"{effect}'s operations are implemented by the host, "
+                   f"which a handler cannot stand in for")
+            fix = (
+                f"Remove the handler and perform the {effect} operations "
+                f"directly, where the host implements them.  To substitute "
+                f"for one, write the substitute as a function and call it "
+                f"in place of the operation — for a mock of Http.get, a "
+                f"function that returns Ok(\"mock\").  Only "
+                f"handle[State<T>] and handle[Exn<E>] are lowered."
+            )
+        else:
+            why = (f"'{effect}' is a user-declared effect, and nothing "
+                   f"implements its operations")
+            fix = (
+                "Keep the state the handler would hold in a "
+                "handle[State<T>], or its failure in a handle[Exn<E>], or "
+                "pass each operation in as a function value — "
+                "type Op = fn(Unit -> Int) effects(pure); then a parameter "
+                "@Op, called as apply_fn(@Op.0, ()).  Only "
+                "handle[State<T>] and handle[Exn<E>] are lowered."
+            )
+        self._error(
+            expr,
+            f"Code generation cannot lower a handler for {effect}: only "
+            f"handle[State<T>] and handle[Exn<E>] are lowered.",
+            rationale=(
+                "A handler resumes the handled body from its clauses, which "
+                "needs each operation's continuation.  Code generation builds "
+                "that for State<T>, through the host's cell imports, and for "
+                "Exn<E>, through WebAssembly exception handling, and for no "
+                f"other effect: {why}."
+            ),
+            fix=fix,
+            spec_ref='Chapter 7, Section 7.5 "Effect Handlers"',
+            error_code="E340",
+        )
+
+    def _check_row_cells(
+        self, row: ast.EffectRow, order: tuple[EffectInstance, ...],
+    ) -> None:
+        """Rule 2 over a declared row: each ``State<T>`` / ``Exn<E>`` entry,
+        whose cell code generation registers from the row (E607 / E612
+        before #1512).  *order* is the row's resolved instances in source
+        order, effect row variables left out, as
+        ``_resolve_effect_row_ordered`` builds them."""
+        if not isinstance(row, ast.EffectSet):
+            return
+        instances = iter(order)
+        for ref in row.effects:
+            if (isinstance(ref, ast.EffectRef)
+                    and ref.name in self.env.type_params):
+                continue  # an effect row variable resolves to no instance
+            inst = next(instances, None)
+            if inst is None:
+                return
+            if (isinstance(ref, ast.EffectRef) and ref.name in ("State", "Exn")
+                    and ref.type_args and len(ref.type_args) == 1
+                    and len(inst.type_args) == 1):
+                self._check_cell_lowerable(
+                    ref.type_args[0], ref.name, inst.type_args[0],
+                    handler=False)
+
+    def _check_cell_lowerable(
+        self, te: ast.TypeExpr, effect: str, cell: Type, *, handler: bool,
+    ) -> None:
+        """E340: a State cell or Exn payload code generation does not lower
+        (rule 2, #1512) — a pair-represented cell, a type with no
+        representation, and in a handler an inline refinement — where *te*
+        writes it, in a handler or a declared row.
+
+        The type is shown as written, so the fix's wrapper is code to paste:
+        a resolved refinement renders with its predicate elided."""
+        shown = format_type_canonical(te)
+        if handler and not cell_type_spelling_lowerable(te):
+            self._error(
+                te,
+                f"Code generation cannot lower a handler whose {effect} "
+                f"type argument is an inline refinement: a handler's cell "
+                f"is keyed by a type name.",
+                rationale=(
+                    "A handle[State<T>] cell, or a handle[Exn<E>] tag, is "
+                    "named after the type its argument names, and an inline "
+                    "refinement literal names none.  The same refinement "
+                    "under a type alias is a name, and is lowered."
+                ),
+                fix=(
+                    f"Name the refinement with an alias and handle that: "
+                    f"type Small = {{ @Nat | @Nat.0 < 10 }}; then "
+                    f"handle[{effect}<Small>], with the state declared "
+                    f"@Small."
+                ),
+                spec_ref='Chapter 7, Section 7.5.1 "Handler Syntax"',
+                error_code="E340",
+            )
+            return
+        if effect == "State" and not state_cell_type_lowerable(cell):
+            if is_pair_represented(cell):
+                what = ("its value is a (ptr, len) pair, and a cell's host "
+                        "imports carry one word")
+                box, ctor = (("Text", "T") if shown == "String"
+                             else ("Wrapped", "W"))
+                fix = (
+                    f"Wrap the value in a one-constructor data type and use "
+                    f"that as the cell: private data {box} "
+                    f"{{ {ctor}({shown}) }} and State<{box}>, writing "
+                    f"{ctor}(...) into the cell and matching {ctor}(@{shown}) "
+                    f"to read the value back."
+                )
+            else:
+                what = f"{shown} has no runtime representation to store"
+                fix = (
+                    f"Remove the State<{shown}> cell, or keep a value in it: "
+                    f"State<Bool>, or a one-constructor data type such as "
+                    f"private data Mark {{ Marked }}."
+                )
+            self._error(
+                te,
+                f"Code generation cannot lower a State<{shown}> cell: "
+                f"{what}.",
+                rationale=(
+                    "A State<T> cell's value crosses four host imports whose "
+                    "signatures carry one word, so a cell whose value is a "
+                    "(ptr, len) pair — String, Array<T> — or has no "
+                    "representation — Unit, Never — cannot be stored.  "
+                    "Scalar, compound, data and Map cells are lowered."
+                ),
+                fix=fix,
+                spec_ref=('Chapter 7, Section 7.3 "Effect Rows" and '
+                          'Chapter 7, Section 7.5.1 "Handler Syntax"'),
+                error_code="E340",
+            )
+        elif effect == "Exn" and not exn_payload_type_lowerable(cell):
+            self._error(
+                te,
+                f"Code generation cannot lower an Exn<{shown}> payload: "
+                f"{shown} has no runtime representation to throw.",
+                rationale=(
+                    "An Exn<E> payload is thrown as a WebAssembly tag's "
+                    "parameters, so a payload type with no representation — "
+                    "Unit, Never — has nothing to throw."
+                ),
+                fix=(
+                    "Throw a value: Exn<Bool>, or a one-constructor data "
+                    "type such as private data Failure { Failed }, thrown "
+                    "as throw(Failed)."
+                ),
+                spec_ref=('Chapter 7, Section 7.3 "Effect Rows" and '
+                          'Chapter 7, Section 7.5.1 "Handler Syntax"'),
+                error_code="E340",
+            )
+
+    def _check_state_clause_lowerable(
+        self, clause: ast.HandlerClause,
+    ) -> None:
+        """E340: a State handler clause code generation cannot inline
+        (rule 2b): its body must end in exactly one resume, and its 'with'
+        update hold none."""
+        refusal = state_clause_refusal(clause)
+        if refusal is None:
+            return
+        if refusal == CLAUSE_RESUME_IN_WITH:
+            description = (
+                f"Code generation cannot lower this '{clause.op_name}' "
+                f"clause: its 'with' update contains resume(...), which has "
+                f"no effect there.")
+            fix = (
+                "Keep the 'with' expression free of resume(...): the clause "
+                "body's tail resume(...) is the one continuation.")
+        else:
+            description = (
+                f"Code generation cannot lower this '{clause.op_name}' "
+                f"clause: a State clause's body ends in exactly one "
+                f"resume(...), and contains no other.")
+            fix = (
+                "End the body in a single resume(...), and branch inside "
+                "its argument rather than around it: "
+                "resume(if @Int.0 > 0 then { 1 } else { 2 }).")
+        self._error(
+            clause,
+            description,
+            rationale=(
+                "Code generation inlines a State clause at each operation "
+                "that reaches it, and the clause's resume(v) becomes that "
+                "operation's result there, so a clause resumes exactly once, "
+                "as its last step.  A resume in each arm of an if or a match "
+                "puts a value on a branch typed Unit, and a missing or "
+                "repeated one leaves the operation's result wrong."
+            ),
+            fix=fix,
+            spec_ref='Chapter 7, Section 7.5.2 "Handler Semantics"',
+            error_code="E340",
+        )
+
+    # -----------------------------------------------------------------
     # #1233: a clause-body State operation code generation cannot lower
     # -----------------------------------------------------------------
 
@@ -1150,18 +1397,26 @@ class ControlFlowMixin:
         two are held together by a differential
         (``tests/test_check_implies_compile.py``).
 
-        A generic template's cells are named by their type parameters, so a
-        ``State<T>`` shadowed only at one instantiation is not seen here;
-        code generation still refuses that clone.
+        A generic template's cells are named by their type parameters, and
+        the shadowing judgement is `vera.lowering.shadowing_cell` (rule 5):
+        a cell whose type mentions a type parameter may be the family of any
+        cell its type unifies with (#1522), so an operation that some
+        instantiation would shadow is refused here, conservatively, at the
+        template.  The contracts are walked as well as the body: code
+        generation lowers a runtime-checked contract like the body.
         """
+        roots: list[object] = [decl.body]
+        roots.extend(contract_exprs(decl.contracts))
         if not any(isinstance(node, ast.HandleExpr)
-                   for node in _descendants(decl.body)):
+                   for root_node in roots
+                   for node in _descendants(root_node)):
             return
         walk = _ClauseWalk([], {})
         root = self._row_op_scope(decl.effect)
-        self._clause_op_walk(decl.body, root, (), 0, walk)
+        for root_node in roots:
+            self._clause_op_walk(root_node, root, (), 0, walk)
         seen: set[int] = set()
-        for node, why, cell in walk.refused:
+        for node, why, cell, shadow in walk.refused:
             if id(node) in seen:
                 continue
             seen.add(id(node))
@@ -1169,7 +1424,42 @@ class ControlFlowMixin:
             # About the call, after the checking: a piped operation's is
             # placed at its stage (`_placement`).
             with self._about_the_call(node):
-                if why == "shadowed":
+                if why == "shadowed" and shadow is not None and (
+                        shadow.family != cell.family):
+                    shadow_base = (pretty_type(shadow.type)
+                                   if shadow.type is not None
+                                   else shadow.family)
+                    at = _instantiation_text(cell.type, shadow.type)
+                    self._error(
+                        node,
+                        f"This '{name}' in a handler clause body cannot reach "
+                        f"its State<{cell.base}> cell at an instantiation "
+                        f"that makes the enclosing State<{shadow_base}> "
+                        f"handler's cell the same family: at {at}, that "
+                        f"handler shadows it.",
+                        rationale=(
+                            "An operation written in a handler clause body is "
+                            "the ENCLOSING context's (spec §7.5.2), so it "
+                            "reaches a State<" + cell.base + "> cell outside "
+                            "this handler.  Code generation lowers it where "
+                            "the clause is inlined, and its State intrinsics "
+                            "address only the innermost cell of one State "
+                            "type.  A cell named by a type parameter is that "
+                            "family at the instantiations that bind it so — "
+                            "here " + at + " — and the checker does not hold "
+                            "the instantiations a program makes, so the "
+                            "operation is refused for all of them."
+                        ),
+                        fix=(
+                            "Nest handlers whose cells cannot coincide (a "
+                            "concrete State type, distinct from every cell "
+                            "around it), or move the operation out of this "
+                            "clause " + _where_the_cell_is_reached(cell) + "."
+                        ),
+                        spec_ref='Chapter 7, Section 7.5.2 "Handler Semantics"',
+                        error_code="E339",
+                    )
+                elif why == "shadowed":
                     self._error(
                         node,
                         f"This '{name}' in a handler clause body cannot reach "
@@ -1230,6 +1520,10 @@ class ControlFlowMixin:
             base=naming.family_base_name(te, env, fallback),
             clauses=clauses,
             scope=scope,
+            # Resolved again for the type: `_check_handle` reported whatever
+            # resolving it reports, and an exact repeat collapses (`_error`).
+            type=self._resolve_type(te),
+            written=type_expr_slot_name(te) or fallback,
         )
 
     def _row_op_scope(self, row: ast.EffectRow) -> _OpScope:
@@ -1248,7 +1542,7 @@ class ControlFlowMixin:
         return _OpScope(cells, 0)
 
     def _clause_op_walk(
-        self, node: object, scope: _OpScope, pushed: tuple[str, ...],
+        self, node: object, scope: _OpScope, pushed: tuple[Cell, ...],
         depth: int, walk: _ClauseWalk,
     ) -> None:
         """Walk *node* as code generation emits it (see
@@ -1274,14 +1568,16 @@ class ControlFlowMixin:
             cell = scope.cells.get(op)
             if cell is None:
                 return
-            if cell.family in pushed[scope.addressable_from:]:
-                walk.refused.append((node, "shadowed", cell))
+            shadow = shadowing_cell(
+                cell.identity, pushed[scope.addressable_from:])
+            if shadow is not None:
+                walk.refused.append((node, "shadowed", cell, shadow))
                 return
             clause = cell.clauses.get(op)
             if clause is None or cell.scope is None:
                 return
             if depth >= STATE_CLAUSE_INLINE_DEPTH_CAP:
-                walk.refused.append((node, "depth", cell))
+                walk.refused.append((node, "depth", cell, None))
                 return
             key = (id(clause), id(cell.scope), pushed, depth + 1)
             if key in walk.inlined:
@@ -1304,7 +1600,7 @@ class ControlFlowMixin:
                 self._clause_op_walk(item, scope, pushed, depth, walk)
 
     def _clause_op_walk_handle(
-        self, node: ast.HandleExpr, scope: _OpScope, pushed: tuple[str, ...],
+        self, node: ast.HandleExpr, scope: _OpScope, pushed: tuple[Cell, ...],
         depth: int, walk: _ClauseWalk,
     ) -> None:
         """A ``handle`` expression, as code generation lowers it."""
@@ -1329,8 +1625,8 @@ class ControlFlowMixin:
             )
             # Clause bodies are NOT walked here: code generation emits one
             # only where an operation inlines it.
-            self._clause_op_walk(node.body, body_scope, (*pushed, cell.family),
-                                 depth, walk)
+            self._clause_op_walk(node.body, body_scope,
+                                 (*pushed, cell.identity), depth, walk)
             return
         if isinstance(eff, ast.EffectRef) and eff.name == "Exn":
             # An Exn clause is compiled once, at the handle, in the scope the
@@ -1338,7 +1634,8 @@ class ControlFlowMixin:
             for clause in node.clauses:
                 self._clause_op_walk(clause.body, scope, pushed, depth, walk)
             self._clause_op_walk(node.body, scope, pushed, depth, walk)
-        # Any other handler is refused by code generation outright.
+        # Any other handler is refused at check (E340, `vera.lowering` rule
+        # 1), so code generation never lowers it.
 
     def _state_op_name(
         self, node: ast.FnCall | ast.QualifiedCall,
@@ -1352,6 +1649,31 @@ class ControlFlowMixin:
                     node.name, self._user_fn_names)):
             return node.name
         return None
+
+
+def _where_the_cell_is_reached(cell: _ClauseCell) -> str:
+    """Where an operation reaches *cell* with no handler between, for E339's
+    type-parameter fix: the handled body of the handler that pushes the
+    cell, outside the handlers nested in it, or, for a cell the declared row
+    gives, the function body outside every handler.  Named, because "the
+    handled body" reads as the inner handler's too, where the operation
+    reaches the inner cell (PR #1687 review)."""
+    if cell.scope is None:
+        return (f"into the function body, outside every handler, where it "
+                f"reaches the State<{cell.written}> cell the function's "
+                f"effects declare")
+    return (f"into the handled body of the handle[State<{cell.written}>] "
+            f"whose cell it reaches, outside the handlers nested in it")
+
+
+def _instantiation_text(a: Type | None, b: Type | None) -> str:
+    """The binding that makes cells of types *a* and *b* one family, for
+    E339's message: ``T = Int`` when one is a bare type parameter."""
+    if isinstance(a, TypeVar) and b is not None:
+        return f"{a.name} = {pretty_type(b)}"
+    if isinstance(b, TypeVar) and a is not None:
+        return f"{b.name} = {pretty_type(a)}"
+    return "an instantiation that makes the two types one"
 
 
 def _descendants(node: object) -> list[object]:

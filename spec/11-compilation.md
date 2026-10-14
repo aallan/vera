@@ -213,7 +213,7 @@ A function is compilable if:
 1. All parameter and return types map to WASM types (Section 11.2) — primitives, ADTs, or monomorphized generics
 2. The function body uses only supported expression types
 3. Effects are `pure` or built-in — every built-in effect (`IO`, `State<T>`, `Exn<E>`, `Http`, `Async`, `HttpServer`, `Inference`, `DB`, `Random`, `Diverge`) compiles, with `T` and `E` compilable types; a user-declared effect drops the function with `E603`
-4. Every `handle` expression handles `State<T>` or `Exn<E>`; a handler for any other effect drops the function with `E602`
+4. Every `handle` expression handles `State<T>` or `Exn<E>`; a handler for any other effect is refused at check (`E340`)
 
 Generic (`forall<T>`) functions are compiled via monomorphization: for each concrete call site, a specialized copy is produced with type variables replaced by concrete types. The concrete types are read from the call's arguments, and an argument that is itself a generic call — `result_unwrap_or(result_map(r, f), 0)`, `idg(m::justg(2))` — is named by the specialization it instantiates. Where an argument's type is taken from the checker instead, it is read from the checker's record of the file the call is written in: an imported module's body is read in that module's own record, never the importer's. The call site and the specialization are therefore named the same way wherever the call is written.
 
@@ -502,7 +502,7 @@ call_indirect (type $closure_sig_N)    ;; indirect call
 
 ## 11.11 Effect Handler Compilation
 
-The `handle[Effect<T>]` expression compiles effect handlers to WASM. `State<T>` handlers use host imports (Section 11.7.2) and `Exn<E>` handlers use WASM exception handling (Section 11.11.4). A handler for any other effect drops its function with `E602`.
+The `handle[Effect<T>]` expression compiles effect handlers to WASM. `State<T>` handlers use host imports (Section 11.7.2) and `Exn<E>` handlers use WASM exception handling (Section 11.11.4). A handler for any other effect is refused at check (`E340`).
 
 ### 11.11.1 State Handler Compilation
 
@@ -545,7 +545,7 @@ A `handle[State<T>]` expression discharges the `State<T>` effect. This means a f
 
 Cross-function throws work via WASM stack unwinding — no additional codegen is needed for functions that declare `effects(<Exn<E>>)` and call `throw`.
 
-Custom effect handlers (general continuations) are not compilable. Functions containing unsupported handler types are skipped with an `E602` warning.
+Custom effect handlers (general continuations) are not compilable, and the checker refuses a handler for any effect but `State<T>` and `Exn<E>` (`E340`).
 
 ## 11.12 Array Compilation
 

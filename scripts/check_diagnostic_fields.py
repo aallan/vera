@@ -983,6 +983,20 @@ KNOWN_MULTI_SITE_ERROR_CODES: dict[str, frozenset[tuple[str, str]]] = {
         ("vera/codegen/functions.py",
          "FunctionCompilationMixin._lift_closures_or_drop"),
     }),
+    # Code generation cannot lower this construct (#1597, #1512, #1499):
+    # one concept, the `vera.lowering` rule a construct fails, reported
+    # where the construct is written — a handler's effect, a State cell or
+    # Exn payload (handler or row), a State clause's resume, and an
+    # ability's call or constraint.
+    "E340": frozenset({
+        ("vera/checker/calls.py", "CallsMixin._refuse_unlowerable_ability"),
+        ("vera/checker/control.py",
+         "ControlFlowMixin._check_cell_lowerable"),
+        ("vera/checker/control.py",
+         "ControlFlowMixin._check_state_clause_lowerable"),
+        ("vera/checker/control.py",
+         "ControlFlowMixin._refuse_handler_effect"),
+    }),
     # Ability-not-satisfied: the Eq-derivability failure and the generic
     # constraint-checking failure both name "Type T does not satisfy
     # ability A", spec §9.8.
@@ -999,12 +1013,16 @@ KNOWN_MULTI_SITE_ERROR_CODES: dict[str, frozenset[tuple[str, str]]] = {
     # an analysis that raised the same way the CLI reports a command
     # that did (#1444), and `_compile_program` reports the #1433
     # backstop: a module binding one function identifier twice.
+    # `_check_constraints` reports the `vera.lowering` rule 4 backstop: a
+    # constraint on a user ability, which the checker refuses (E340).
     "E699": frozenset({
         ("vera/cli.py", "_internal_error_envelope"),
         ("vera/codegen/core.py", "CodeGenerator._compile_program"),
         ("vera/codegen/functions.py", "FunctionCompilationMixin._compile_fn"),
         ("vera/codegen/functions.py",
          "FunctionCompilationMixin._lift_closures_or_drop"),
+        ("vera/codegen/monomorphize.py",
+         "MonomorphizationMixin._check_constraints"),
         ("vera/lsp/features.py", "analysis_failure"),
     }),
 }

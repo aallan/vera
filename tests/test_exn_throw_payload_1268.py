@@ -47,6 +47,7 @@ from tests.codegen_helpers import (
     _run_trap,
     wat_fn_body,
 )
+from tests import pipeline as vera_pipeline
 from tests.pipeline import checks
 from tests.verifier_helpers import _verify, _verify_err
 
@@ -195,14 +196,10 @@ private fn boom(@Unit -> @Unit)
 public fn main(@Unit -> @Int)
   requires(true)
   ensures(true)
-  effects(pure)
+  effects(<Log>)
 {
-  handle[Log] {
-    emit(@Pos) -> { resume(()) }
-  } in {
-    boom(());
-    0
-  }
+  boom(());
+  0
 }
 """
 
@@ -627,14 +624,10 @@ effect Counter {
 public fn main(@Unit -> @Int)
   requires(true)
   ensures(true)
-  effects(pure)
+  effects(<Counter>)
 {
-  handle[Counter] {
-    bump(@Nat) -> { resume(()) }
-  } in {
-    Counter.bump(array_length(string_lines("a\\nb")));
-    0
-  }
+  Counter.bump(array_length(string_lines("a\\nb")));
+  0
 }
 """)
         binds = [o for o in result.obligations if o.kind == "nat_bind"]
@@ -976,11 +969,19 @@ public fn main(@Unit -> @Int)
     def test_a_bare_user_op_argument_is_obligated_whatever_its_name(
         self, name: str,
     ) -> None:
-        """Both spellings are loud.  `put` was already, by coincidence."""
-        errs = _verify_err(self._USER_OP % {"name": name},
-                           "refinement predicate")
+        """Both spellings are loud.  `put` was already, by coincidence.
+
+        A bare call to a user effect's operation needs a handler for the
+        effect, which the checker refuses (E340), so the verifier's reading
+        is measured past the check."""
+        src = self._USER_OP % {"name": name}
+        assert {d.error_code
+                for d in vera_pipeline.check(src).errors} == {"E340"}
+        result = vera_pipeline.verify(src, past_check=True).result
+        errs = [d for d in result.diagnostics if d.severity == "error"
+                and "refinement predicate" in d.description]
         assert any(e.error_code == "E505" for e in errs), [
-            (e.error_code, e.description[:80]) for e in errs
+            (e.error_code, e.description[:80]) for e in result.diagnostics
         ]
 
     def test_a_user_op_is_not_claimed_runtime_guarded(self) -> None:
@@ -990,9 +991,10 @@ public fn main(@Unit -> @Int)
 
         Named `put` deliberately: the coincidence that made the old gate look
         right is the same coincidence that would make a name-keyed
-        guardedness computation look right.
+        guardedness computation look right.  Measured past the check, which
+        refuses the handler (E340).
         """
-        result = _verify("""
+        src = """
 effect Log {
   op put(Nat -> Unit);
 }
@@ -1009,7 +1011,10 @@ public fn main(@Unit -> @Int)
     0
   }
 }
-""")
+"""
+        assert {d.error_code
+                for d in vera_pipeline.check(src).errors} == {"E340"}
+        result = vera_pipeline.verify(src, past_check=True).result
         binds = [o for o in result.obligations if o.kind == "nat_bind"]
         assert [o.status for o in binds] == ["tier3_unguarded"], binds
         assert [o.error_code for o in binds] == ["E504"], binds

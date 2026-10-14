@@ -676,6 +676,7 @@ MARKED_FILES = (
     "test_binder_position_generator.py",
     "test_array_literal_elements_1584.py",
     "test_result_reference_type_1517.py",
+    "test_lowering_boundary.py",
 )
 UNMARKED_FILES = (
     "test_obligations.py",
