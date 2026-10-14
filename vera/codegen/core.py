@@ -186,11 +186,10 @@ class CodeGenerator(
             dict[tuple[int, int, int, int], Type] | None
         ) = expr_semantic_types
         # #820: the checker's TARGET-type side-table (``expected`` per expr
-        # span).  Threaded into every ``WasmContext`` so the @Nat -> @Int
-        # widening guard can recover the per-component target type at a tuple
-        # component / array element / heterogeneous if-arm — the codegen dual
-        # of the verifier's ``_target_type_of``.  ``None`` when a caller
-        # skipped typecheck (those component sites then stay E531-disclosed).
+        # span).  Threaded into every ``WasmContext`` so the narrowing guards
+        # can recover the per-component target type at a tuple component /
+        # array element — the codegen dual of the verifier's
+        # ``_target_type_of``.  ``None`` when a caller skipped typecheck.
         self._expr_target_types: (
             dict[tuple[int, int, int, int], Type] | None
         ) = expr_target_types
@@ -223,20 +222,16 @@ class CodeGenerator(
         # formals fixed to @Nat at the call site erase to i64 here, so they
         # stay statically-only (verifier-obligated).
         self._fn_nat_params: dict[str, tuple[bool, ...]] = {}
-        # #813: per-parameter "is a concrete @Int formal" flags, the dual of
-        # `_fn_nat_params`, for the runtime @Nat -> @Int widening guard at
-        # call sites.
-        self._fn_int_params: dict[str, tuple[bool, ...]] = {}
         # #865: per-parameter "is a concrete @Byte formal" flags.  `@Byte` is
         # i32 (spec §11) but an int-literal argument defaults to `i64.const`;
         # a Byte-typed formal makes the call site coerce a literal argument to
         # `i32.const`, mirroring the #766 binop-operand fix at the call-arg
-        # position.  Disjoint from the @Nat/@Int bitmaps (a formal resolves to
-        # one primitive base or neither).
+        # position.  Disjoint from the @Nat bitmap (a formal resolves to one
+        # primitive base or neither).
         self._fn_byte_params: dict[str, tuple[bool, ...]] = {}
         # #754: per-formal base type NAME for every effect OPERATION, keyed
         # `(effect_name, op_name)`.  The narrowing guards at a call site read
-        # the callee's formals from `_fn_nat_params` / `_fn_int_params`; an
+        # the callee's formals from `_fn_nat_params`; an
         # effect operation had no such table, so `IO.sleep(@Int.0)` — whose
         # formal is `@Nat` — stored whatever it was given, and a negative
         # reached the host.  Built from the SAME registry the checker typed
@@ -3389,6 +3384,11 @@ class CodeGenerator(
             name: [t for t in params if t is not None]
             for name, (params, _) in self._fn_sigs.items()
         }
+        fn_param_nat = {
+            name: [bool(nat) for t, nat in zip(
+                params, self._fn_nat_params.get(name, ())) if t is not None]
+            for name, (params, _) in self._fn_sigs.items()
+        }
         # Collect functions whose Vera return type resolves to `String`
         # so `execute()` can decode their (ptr, len) pair back into a
         # str.  Walks the AST rather than using `_fn_sigs` because
@@ -3437,6 +3437,7 @@ class CodeGenerator(
             random_ops_used=set(self._random_ops_used),
             math_ops_used=set(self._math_ops_used),
             fn_param_types=fn_param_types,
+            fn_param_nat=fn_param_nat,
             fn_string_returns=fn_string_returns,
             fn_adt_signatures=fn_adt_signatures,
             prelude_injected_adts=set(self._prelude_injected_adts),

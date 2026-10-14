@@ -87,9 +87,6 @@ class Known:
 #:   is guarded with no `nat_bind` record (the verifier sees no narrowing).
 #: * #1598 — a signed division's `INT_MIN / -1` check
 #:   (`_note_quotient_overflow`) has no `int_overflow` obligation.
-#: * #1628 — a `@Nat` widened into a built-in's `@Int` argument is recorded
-#:   `nat_to_int_coerce` `tier3`, and the built-in's translator emits no
-#:   widening guard.
 #: * #1695 (#1629) — a site the verifier records no obligation for is still checked:
 #:   a division by a non-zero literal, a `@Nat` destructure or pattern
 #:   binder over a value that is already `@Nat`, a refinement guard on a
@@ -148,7 +145,6 @@ KNOWN: tuple[Known, ...] = (
     Known(1695, "tests/conformance/ch07_state_alias_op_result_positions.vera", "guarded_unrecorded", "nat_bind", "ch07_state_alias_op_result_positions.vera:20:16"),
     Known(1695, "tests/conformance/ch07_state_alias_op_result_positions.vera", "guarded_unrecorded", "nat_bind", "ch07_state_alias_op_result_positions.vera:30:28"),
     Known(1695, "tests/conformance/ch07_state_alias_op_result_positions.vera", "guarded_unrecorded", "nat_bind", "ch07_state_alias_op_result_positions.vera:47:28"),
-    Known(1695, "tests/conformance/ch07_exn_string_alias.vera", "recorded_unguarded", "nat_sub", "ch07_exn_string_alias.vera:59:3"),
     Known(1695, "tests/conformance/ch08_state_alias_per_module_lib.vera", "guarded_unrecorded", "nat_bind", "ch08_state_alias_per_module_lib.vera:15:28"),
     Known(1695, "tests/conformance/ch08_state_alias_per_module_lib.vera", "guarded_unrecorded", "nat_bind", "ch08_state_alias_per_module_lib.vera:19:16"),
     Known(1695, "tests/conformance/ch08_state_alias_module_table_lib.vera", "guarded_unrecorded", "nat_bind", "ch08_state_alias_module_table_lib.vera:17:16"),
@@ -169,11 +165,6 @@ KNOWN: tuple[Known, ...] = (
     Known(1598, "examples/refinement_types.vera", "guarded_unrecorded", "int_overflow", "refinement_types.vera:30:3"),
     Known(1598, "examples/safe_divide.vera", "guarded_unrecorded", "int_overflow", "safe_divide.vera:4:26"),
     Known(1598, "examples/safe_divide.vera", "guarded_unrecorded", "int_overflow", "safe_divide.vera:7:3"),
-    # #1628
-    Known(1628, "examples/json.vera", "recorded_unguarded", "nat_to_int_coerce", "json.vera:60:60"),
-    Known(1628, "examples/life.vera", "recorded_unguarded", "nat_to_int_coerce", "life.vera:195:36"),
-    Known(1628, "examples/life.vera", "recorded_unguarded", "nat_to_int_coerce", "life.vera:196:109"),
-    Known(1628, "examples/string_ops.vera", "recorded_unguarded", "nat_to_int_coerce", "string_ops.vera:40:58"),
     # #1695 (#1629)
     Known(1695, "tests/conformance/ch04_arithmetic.vera", "guarded_unrecorded", "div_zero", "ch04_arithmetic.vera:32:3"),
     Known(1695, "tests/conformance/ch04_arithmetic.vera", "guarded_unrecorded", "div_zero", "ch04_arithmetic.vera:40:3"),

@@ -2230,10 +2230,10 @@ public fn mk(@Int -> @Int)
 
     _RECORDERS = (
         "_record_refined_bind_tier3",
-        # The E531/E504 families, swept onto the same derivation (#1251).
-        # Both carried a fixed "untranslatable or the solver timed out" for
-        # every demotion, so they are exactly what this pin exists to catch.
-        "_record_int_widen_tier3",
+        # The E504 family, swept onto the same derivation (#1251).  It
+        # carried a fixed "untranslatable or the solver timed out" for every
+        # demotion, so it is exactly what this pin exists to catch (as was
+        # the E531 family's recorder, which went with the u64 `Nat`).
         "_record_nat_bind_tier3",
     )
 

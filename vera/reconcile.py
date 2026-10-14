@@ -85,7 +85,7 @@ never a sibling's (PR #1630 review).  Three things keep them apart:
   every arm has one, or is a ``nat_bind`` arm code generation decided
   narrows nothing (:func:`_left_unguarded`, its own record of that
   decision).
-* **Matching.**  The records at one span (two widened fields of a scrutinee
+* **Matching.**  The records at one span (two narrowed fields of a scrutinee
   the verifier cannot see into are both recorded at it) are matched one to
   one with the sites the checks there stand for (:func:`_match_sites`), so
   one check never answers two records.  The copies of one check — in a
@@ -1094,7 +1094,7 @@ def _match_sites(
     there stand for, one to one.
 
     The records of one kind at one span are indistinguishable to the join
-    (an opaque scrutinee's two widened fields are recorded at the
+    (an opaque scrutinee's two narrowed fields are recorded at the
     scrutinee, twice), so each needs a site of its own: one check never
     answers two of them, and a missing one cannot hide behind its sibling.
     A record that claims no runtime check is matched first, so where the

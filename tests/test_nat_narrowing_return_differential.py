@@ -59,6 +59,7 @@ _NAT_GUARD_KIND = "nat_guard"
 # u64.MAX stored in an i64 slot reads back as -1; used by the #984 closure
 # controls to prove an @Nat -> @Nat closure return is NOT false-trapped.
 U64_MAX = 18446744073709551615
+I64_MAX = 2 ** 63 - 1
 
 
 #: The file every fixture here is checked, verified and compiled as.  No
@@ -140,6 +141,13 @@ def _run(source: str, fn: str, arg: int) -> int | None:
     if ran.trap is not None:
         return None
     return ran.value
+
+
+def _refused(source: str, arg: int) -> None:
+    """`go(arg)` is refused before the call: *arg* is no `@Nat`."""
+    with pytest.raises(RuntimeError,
+                       match="out of range for parameter type @Nat"):
+        pipeline.run(_compiled(source), "go", [arg], capture_stderr=False)
 
 
 def _trap_kind(source: str, fn: str, arg: int | None) -> str | None:
@@ -367,15 +375,15 @@ public fn go(@Int -> @Nat) requires(true) ensures(true) effects(pure)
 # (label, source, input, expect) — a closure whose return does NOT narrow: no
 # closure-return nat_bind obligation, no guard, and no false trap.
 _CLOSURE_UNOBLIGATED = [
-    # @Nat -> @Nat: the return is already @Nat, so no narrowing; a u64.MAX value
-    # (reads as -1 i64) MUST pass through without a guard false-trapping it.
+    # @Nat -> @Nat: the return is already @Nat, so no narrowing; the top of the
+    # range MUST pass through without a guard false-trapping it.
     ("closure_natnat", """
 type F = fn(Nat -> Nat) effects(pure);
 private fn mk(@Int -> @F) requires(true) ensures(true) effects(pure)
 { fn(@Nat -> @Nat) effects(pure) { @Nat.0 } }
 public fn go(@Nat -> @Nat) requires(true) ensures(true) effects(pure)
 { let @F = mk(0); apply_fn(@F.0, @Nat.0) }
-""", U64_MAX, -1),
+""", I64_MAX, I64_MAX),
     # @Int -> @Int: no @Nat slot in sight; a negative flows through untouched.
     ("closure_intint", """
 type F = fn(Int -> Int) effects(pure);
@@ -644,9 +652,8 @@ public fn go(@Int -> @Nat) requires(@Int.0 >= 0) ensures(true) effects(pure)
 ]
 
 # (label, source, fn, arg, expect) — a @Nat argument into a @Nat formal: NO
-# narrowing, so no obligation and no guard.  A u64.MAX value (reads as -1 in the
-# i64 slot) must pass through unguarded — the narrowing-side dual of the widen
-# guard's false-trap hazard.
+# narrowing, so no obligation and no guard.  The top of the range must pass
+# through unguarded.
 _APPLYFN_ARG_UNOBLIGATED = [
     ("nat_arg_nat_formal", """
 type NatToNat = fn(Nat -> Nat) effects(pure);
@@ -654,7 +661,7 @@ private fn mk(@Unit -> @NatToNat) requires(true) ensures(true) effects(pure)
 { fn(@Nat -> @Nat) effects(pure) { 5 } }
 public fn go(@Nat -> @Nat) requires(true) ensures(true) effects(pure)
 { let @NatToNat = mk(()); apply_fn(@NatToNat.0, @Nat.0) }
-""", "go", U64_MAX, 5),
+""", "go", I64_MAX, 5),
 ]
 
 # (label, source, fn) — the TIER-3 quadrant: an OPAQUE @Int argument the solver
@@ -1340,47 +1347,33 @@ public fn go(@Nat -> @Int)
 
 
 class TestRefinedOverIntWidenIntersection:
-    """A refinement OVER `@Int` receiving an intrinsically-`@Nat` value is an
-    INTERSECTION: codegen emits BOTH the refinement guard (the predicate) and
-    the #820 widen guard (`value < 0` = a u64 above i64.MAX reinterpreted) —
-    the predicate may not imply fit-in-i64 (`< 100` is SATISFIED by a
-    reinterpreted negative), so the widen guard is not subsumable.  The
-    obligation stream must describe both guards (PR #1034 review): the
-    refined-first arm records the predicate obligation AND the widen
-    obligation, never an either/or.
+    """A refinement OVER `@Int` receiving an intrinsically-`@Nat` value: the
+    predicate is the one fact to check.  On the u64 `Nat` it was an
+    INTERSECTION, the #820 widen guard beside the refinement guard (a u64
+    above i64.MAX reinterpreted satisfies `< 100`), and the stream recorded
+    both (PR #1034 review); a `@Nat` is an `@Int` at the value level now.
     """
 
-    def test_refined_int_return_with_nat_body_records_both(self) -> None:
+    def test_refined_int_return_with_nat_body_records_the_predicate(
+            self) -> None:
         kinds = _obligation_kinds_statuses(_CAP_RET_INTERSECTION)
         assert (_REFINE_KIND, "tier3") in kinds, kinds
-        assert any(k != _REFINE_KIND and s == "tier3" for k, s in kinds), (
-            f"the #820 widen guard codegen emits for this return has no "
-            f"obligation describing it — got only {kinds}"
-        )
+        assert not [k for k, s in kinds if k != _REFINE_KIND
+                    and s == "tier3"], kinds
 
-    def test_refined_int_formal_with_nat_arg_records_both(self) -> None:
+    def test_refined_int_formal_with_nat_arg_records_the_predicate(
+            self) -> None:
         # The formal side discharges via full SMT (unlike the opacity-shallow
         # return), so the refine_bind here is a correct E505 `violated` — an
-        # unconstrained @Nat can exceed the `< 100` predicate.  The pin is
-        # the WIDEN kind's presence: the call-site widen guard codegen emits
-        # must have an obligation describing it, whatever the predicate
-        # obligation resolved to.
+        # unconstrained @Nat can exceed the `< 100` predicate.
         kinds = _obligation_kinds_statuses(_CAP_FORMAL_INTERSECTION)
-        assert any(k == _REFINE_KIND for k, _ in kinds), kinds
-        assert any(
-            k != _REFINE_KIND and s in ("tier3", "verified")
-            for k, s in kinds
-        ), (
-            f"the #820 call-site widen guard for this formal has no "
-            f"obligation describing it — got only {kinds}"
-        )
+        assert (_REFINE_KIND, "violated") in kinds, kinds
+        assert not [k for k, s in kinds if k != _REFINE_KIND
+                    and s in ("tier3", "verified")], kinds
 
     def test_intersection_runtime_behavior_pinned(self) -> None:
-        # The guards themselves: a satisfying value passes intact; a value
-        # violating the predicate traps at the refinement guard.  (The widen
-        # guard's own firing needs a u64 above i64.MAX and is pinned by the
-        # #820 suites; here we pin that adding the obligation changed no
-        # runtime behavior.)
+        # The guard itself: a satisfying value passes intact; a value
+        # violating the predicate traps at the refinement guard.
         assert _run(_CAP_RET_INTERSECTION, "go", 5) == 5
         kind = _trap_kind(_CAP_RET_INTERSECTION, "go", 150)
         assert kind == "contract_violation", kind
@@ -1672,11 +1665,11 @@ public fn go(@Int -> @Bool) requires(true) ensures(true) effects(<State<Nat>>)
 
 class TestHandlerStateWidenDifferential1203:
     """The widen DUAL of the boundary differentials: a `State<Int>` cell
-    receiving an intrinsically-@Nat value is guarded at every boundary —
-    a @Nat above i64.MAX would bit-reinterpret to a negative @Int.  The
-    adversarial round's mutation battery showed every widen arm was
-    deletable without detection; these pin each arm at U64_MAX with
-    in-range and i64.MAX boundary controls."""
+    receiving an intrinsically-@Nat value.  On the u64 `Nat` each boundary
+    was guarded, a @Nat above i64.MAX bit-reinterpreting to a negative
+    @Int; a @Nat holds `0 .. i64.MAX` now, so each arm carries the value
+    through at the top of the range, and a value above it is no @Nat and
+    is refused before the call."""
 
     _WIDEN_INIT = """\
 public fn go(@Nat -> @Int) requires(true) ensures(true) effects(pure)
@@ -1710,12 +1703,14 @@ public fn go(@Nat -> @Int) requires(true) ensures(true) effects(pure)
 }
 """
 
-    def test_widen_init_u64max_traps(self) -> None:
-        assert _run(self._WIDEN_INIT, "go", U64_MAX) is None
+    def test_widen_init_i64max_passes(self) -> None:
+        assert _run(self._WIDEN_INIT, "go", I64_MAX) == I64_MAX
+        _refused(self._WIDEN_INIT, U64_MAX)
     def test_widen_init_in_range_passes(self) -> None:
         assert _run(self._WIDEN_INIT, "go", 42) == 42
-    def test_widen_put_u64max_traps(self) -> None:
-        assert _run(self._WIDEN_PUT, "go", U64_MAX) is None
+    def test_widen_put_i64max_passes(self) -> None:
+        assert _run(self._WIDEN_PUT, "go", I64_MAX) == I64_MAX
+        _refused(self._WIDEN_PUT, U64_MAX)
     def test_widen_put_in_range_passes(self) -> None:
         assert _run(self._WIDEN_PUT, "go", 42) == 42
     def test_widen_resume_i64max_passes(self) -> None:
@@ -1723,11 +1718,10 @@ public fn go(@Nat -> @Int) requires(true) ensures(true) effects(pure)
         established no-trap-at-i64-max convention)."""
         assert _run(self._WIDEN_RESUME, "go", 2**63 - 1) == 2**63 - 1
 
-    def test_widen_resume_u64max_traps(self) -> None:
-        """The resume widen arm's own U64_MAX probe — the class
-        docstring's promise; deleting the get-resume widen guard was
-        green without it (PR #1202 review)."""
-        assert _run(self._WIDEN_RESUME, "go", U64_MAX) is None
+    def test_widen_resume_u64max_is_refused(self) -> None:
+        """The resume arm's U64_MAX probe (PR #1202 review): no @Nat holds
+        it, so it is refused before the call."""
+        _refused(self._WIDEN_RESUME, U64_MAX)
 
     _WIDEN_WITH = """\
 public fn go(@Nat -> @Int) requires(true) ensures(true) effects(pure)
@@ -1742,11 +1736,11 @@ public fn go(@Nat -> @Int) requires(true) ensures(true) effects(pure)
 }
 """
 
-    def test_widen_with_update_u64max_traps(self) -> None:
-        """The `with @Int = <@Nat>` state-update widen arm — obligated
-        `widen_guarded=True`, so the guard promise needs its trap
-        witness."""
-        assert _run(self._WIDEN_WITH, "go", U64_MAX) is None
+    def test_widen_with_update_i64max_passes(self) -> None:
+        """The `with @Int = <@Nat>` state-update arm carries the top of the
+        range through; U64_MAX is no @Nat."""
+        assert _run(self._WIDEN_WITH, "go", I64_MAX) == I64_MAX
+        _refused(self._WIDEN_WITH, U64_MAX)
     def test_widen_with_update_in_range_passes(self) -> None:
         assert _run(self._WIDEN_WITH, "go", 42) == 42
 
@@ -1925,10 +1919,12 @@ public fn go(@Nat -> @Int) requires(true) ensures(true) effects(pure)
 }
 """
 
-    def test_alias_widen_init_u64max_traps(self) -> None:
-        """The widen dual through an Int alias: a @Nat above i64.MAX
-        into the `Whole`(=Int) cell traps."""
-        assert _run(self._ALIAS_WIDEN_INIT, "go", U64_MAX) is None
+    def test_alias_widen_init_i64max_passes(self) -> None:
+        """The widen dual through an Int alias: the top of the @Nat range
+        into the `Whole`(=Int) cell comes back as itself; a value above it
+        is no @Nat."""
+        assert _run(self._ALIAS_WIDEN_INIT, "go", I64_MAX) == I64_MAX
+        _refused(self._ALIAS_WIDEN_INIT, U64_MAX)
     def test_alias_widen_init_in_range_passes(self) -> None:
         assert _run(self._ALIAS_WIDEN_INIT, "go", 42) == 42
 

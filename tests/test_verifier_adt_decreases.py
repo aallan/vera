@@ -250,19 +250,15 @@ private fn sum_to(@Nat -> @Nat)
         result = verify(ast, text, file=str(source))
         e525 = [d for d in result.diagnostics if d.error_code == "E525"]
         assert e525 == [], "Mutual recursion decreases should be verified"
-        # #1222: each unbounded `@Nat` measure also carries a
-        # `decreases_bound` obligation — `component <= i64.MAX`, the fact the
-        # unbounded-integer proof and the i64 runtime comparison need in
-        # common.  Unprovable for an unconstrained `@Nat`, so Tier 3 with the
-        # measure-range guard as its backstop; a bounded measure proves it at
-        # Tier 1 and adds nothing here.
-        assert result.summary.tier3_runtime == 2
-        assert sorted(
-            o.kind for o in result.obligations if o.status == "tier3"
-        ) == ["decreases_bound", "decreases_bound"]
+        # A `@Nat` measure is an i64 (spec §2.2), so the unbounded-integer
+        # proof and the i64 runtime comparison agree on it with nothing to
+        # obligate (#1222's `decreases_bound` went with the u64 `Nat`).
+        assert result.summary.tier3_runtime == 0
+        assert [o.kind for o in result.obligations
+                if o.status == "tier3"] == []
 
     def test_factorial_example_all_t1(self) -> None:
-        """factorial.vera: two Tier-3 obligations, both runtime-guarded."""
+        """factorial.vera: one Tier-3 obligation, runtime-guarded."""
         source = EXAMPLES_DIR / "factorial.vera"
         if not source.exists():
             pytest.skip("factorial.vera not found")
@@ -272,18 +268,16 @@ private fn sum_to(@Nat -> @Nat)
         result = verify(ast, text, file=str(source))
         # #798: the `@Nat.0 * factorial(@Nat.0 - 1)` multiply emits an
         # int_overflow obligation; operands are unbounded so it falls to
-        # Tier 3 (runtime overflow trap).  #1222 adds the second: the
-        # `decreases(@Nat.0)` measure is unbounded, so `component <= i64.MAX`
-        # — the fact the unbounded-integer termination proof and the i64
-        # runtime comparison need in common — is Tier 3 with the
-        # measure-range guard behind it.  All other contracts stay Tier 1.
-        assert result.summary.tier3_runtime == 2, (
-            f"factorial.vera should have 2 T3, got "
+        # Tier 3 (runtime overflow trap).  The `decreases(@Nat.0)` measure is
+        # an i64 (spec §2.2), so #1222's `decreases_bound` beside it went with
+        # the u64 `Nat`.  All other contracts stay Tier 1.
+        assert result.summary.tier3_runtime == 1, (
+            f"factorial.vera should have 1 T3, got "
             f"{result.summary.tier3_runtime}"
         )
         assert sorted(
             o.kind for o in result.obligations if o.status == "tier3"
-        ) == ["decreases_bound", "int_overflow"]
+        ) == ["int_overflow"]
 
 
 # =====================================================================
@@ -773,9 +767,22 @@ private fn sum(@List<Int> -> @Int)
         # rows named them, with their `requires(true) ensures(true)` (-4 T1);
         # `effect_handler.vera`'s `count_to_three` is rowed `<State<Int>>`
         # and its counts do not move: 424/142/566 -> 420/142/562.
-        assert t1 == 420, f"Expected 420 T1, got {t1}"
-        assert t3 == 142, f"Expected 142 T3, got {t3}"
-        assert total == 562, f"Expected 562 total, got {total}"
+        #
+        # v0.2.3: `Nat` is the non-negative i64 and every integer literal is
+        # an `Int`.  The widening is a no-op, so the 14 `nat_to_int_coerce`
+        # obligations go (13 T3, and `string_ops.vera`'s one T1), and a
+        # `@Nat` measure is an i64, so the 10 `decreases_bound` ones go (T3).
+        # `@Nat.0 - 1` is an `@Int` subtraction narrowed into a `@Nat`: each
+        # of its 9 `nat_sub` obligations becomes a `nat_bind` and an
+        # `int_overflow`, all proved.  A literal-only `0 - 1` is an `@Int`
+        # subtraction with its own proved `int_overflow` (4 sites).  And a
+        # `@Nat` is bounded at i64.MAX, so 8 `int_overflow` obligations the
+        # u64 range left at Tier 3 prove (`life.vera` 7, `fizzbuzz.vera` 1).
+        # T1 -1 -9 +9 +9 +4 +8 = +20; T3 -13 -10 -8 = -31; total -11:
+        # 420/142/562 -> 440/111/551.
+        assert t1 == 440, f"Expected 440 T1, got {t1}"
+        assert t3 == 111, f"Expected 111 T3, got {t3}"
+        assert total == 551, f"Expected 551 total, got {total}"
         # Zero is the load-bearing value, not a vacuous one: every corpus
         # narrowing is now covered by an emitted guard, so any reappearance
         # is a REGRESSION in guard coverage rather than a new example.  The
@@ -816,16 +823,12 @@ public fn is_even(@Nat -> @Bool)
         result = _verify(source)
         e525 = [d for d in result.diagnostics if d.error_code == "E525"]
         assert e525 == [], f"Expected no E525, got {e525}"
-        # #1222: each unbounded `@Nat` measure also carries a
-        # `decreases_bound` obligation — `component <= i64.MAX`, the fact the
-        # unbounded-integer proof and the i64 runtime comparison need in
-        # common.  Unprovable for an unconstrained `@Nat`, so Tier 3 with the
-        # measure-range guard as its backstop; a bounded measure proves it at
-        # Tier 1 and adds nothing here.
-        assert result.summary.tier3_runtime == 2
-        assert sorted(
-            o.kind for o in result.obligations if o.status == "tier3"
-        ) == ["decreases_bound", "decreases_bound"]
+        # A `@Nat` measure is an i64 (spec §2.2), so the unbounded-integer
+        # proof and the i64 runtime comparison agree on it with nothing to
+        # obligate (#1222's `decreases_bound` went with the u64 `Nat`).
+        assert result.summary.tier3_runtime == 0
+        assert [o.kind for o in result.obligations
+                if o.status == "tier3"] == []
 
     def test_sibling_without_decreases_is_refused_at_check(self) -> None:
         """#1492: a sibling on the cycle with no measure is E137 at check.
@@ -892,19 +895,17 @@ public fn outer(@Nat -> @Nat)
         prog = parse_to_ast(text)
         typecheck(prog, text)
         result = verify(prog, text, file=str(source))
-        # #1222: each unbounded `@Nat` measure also carries a
-        # `decreases_bound` obligation — `component <= i64.MAX`, the fact the
-        # unbounded-integer proof and the i64 runtime comparison need in
-        # common.  Unprovable for an unconstrained `@Nat`, so Tier 3 with the
-        # measure-range guard as its backstop; a bounded measure proves it at
-        # Tier 1 and adds nothing here.
-        assert result.summary.tier3_runtime == 2
-        assert sorted(
-            o.kind for o in result.obligations if o.status == "tier3"
-        ) == ["decreases_bound", "decreases_bound"]
-        # 8 contract obligations + 2 @Nat.0 - 1 underflow obligations
-        # (#520) — both discharged from `if @Nat.0 == 0` path condition.
-        assert result.summary.tier1_verified == 10
+        # A `@Nat` measure is an i64 (spec §2.2), so the unbounded-integer
+        # proof and the i64 runtime comparison agree on it with nothing to
+        # obligate (#1222's `decreases_bound` went with the u64 `Nat`).
+        assert result.summary.tier3_runtime == 0
+        assert [o.kind for o in result.obligations
+                if o.status == "tier3"] == []
+        # 8 contract obligations, and each `@Nat.0 - 1` argument's two: the
+        # `@Int` subtraction's overflow and its narrowing into the callee's
+        # `@Nat` (spec §4.4), the narrowing discharged from the `if @Nat.0 ==
+        # 0` path condition.
+        assert result.summary.tier1_verified == 12
 
 
 class TestWalkerBlindSpots1179:

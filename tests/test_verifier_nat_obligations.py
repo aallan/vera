@@ -202,7 +202,9 @@ private fn negative_sentinel(@Unit -> @Int)
         (@Nat.1 + 1)` has neither operand a *direct* shadow, so the direct
         guard misses it — `_contains_opaque_shadow` catches the embedded
         shadows (PR #778 review, the subtraction analogue of the E526
-        compound-divisor fix)."""
+        compound-divisor fix).  The 1 is `string_length("a")`, a `@Nat`: a
+        literal is an `Int`, which would make each operand an `@Int` sum and
+        the subtraction no `@Nat` one."""
         result = _verify("""
 private fn mksub(@Nat -> @Tuple<Nat, Nat>)
   requires(true)
@@ -214,7 +216,7 @@ private fn sub_compound(@Nat -> @Nat)
   requires(true)
   ensures(true)
   effects(pure)
-{ let Tuple<@Nat, @Nat> = mksub(@Nat.0); (@Nat.0 + 1) - (@Nat.1 + 1) }
+{ let Tuple<@Nat, @Nat> = mksub(@Nat.0); (@Nat.0 + string_length("a")) - (@Nat.1 + string_length("a")) }
 """)
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert errors == [], [e.error_code for e in errors]

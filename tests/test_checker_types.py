@@ -13,7 +13,7 @@ from tests.checker_helpers import (
 )
 from vera import ast
 from vera.checker.core import TypeChecker
-from vera.checker.expressions import _U64_MAX
+from vera.checker.expressions import _I64_MAX
 
 
 # =====================================================================
@@ -293,7 +293,7 @@ private forall<T> fn bad(@T -> @Int)
 private forall<T> fn bad(@T -> @T)
   requires(true) ensures(true) effects(pure)
 { 42 }
-""", "Nat")
+""", "Int")
 
     def test_typevar_in_let_binding(self) -> None:
         """TypeVar value should not bind to a concrete slot."""
@@ -691,7 +691,7 @@ private forall<T> fn bad_some(@Unit -> @Option<T>)
 {
   Some(5)
 }
-""", "Option<Nat>")
+""", "Option<Int>")
         assert any(e.error_code == "E121" for e in errs), \
             f"Expected E121, got: {[e.error_code for e in errs]}"
 
@@ -705,13 +705,13 @@ private forall<T> fn bad_mixed(@Bool -> @Option<T>)
 {
   if @Bool.0 then { None } else { Some(3) }
 }
-""", "Option<Nat>")
+""", "Option<Int>")
         assert any(e.error_code == "E121" for e in errs), \
             f"Expected E121, got: {[e.error_code for e in errs]}"
 
     def test_mixed_match_arms_rejected(self) -> None:
         """Shape (c) ill-typed: against forall<T> -> @Option<T> the arm
-        `None` is an Option<T> and `Some(3)` an Option<Nat>, which no `T`
+        `None` is an Option<T> and `Some(3)` an Option<Int>, which no `T`
         makes one type, so the arms are refused where they disagree (E302,
         #1668)."""
         errs = _check_err("""
@@ -723,7 +723,7 @@ private forall<T> fn bad_mixed_match(@Bool -> @Option<T>)
     false -> Some(3)
   }
 }
-""", "Option<Nat>")
+""", "Option<Int>")
         assert any(e.error_code == "E302" for e in errs), \
             f"Expected E302, got: {[e.error_code for e in errs]}"
 
@@ -851,7 +851,7 @@ private forall<T> fn bad2(@Unit -> @Option<Option<T>>)
 {
   Some(Some(5))
 }
-""", "Option<Option<Nat>>")
+""", "Option<Option<Int>>")
         assert any(e.error_code == "E121" for e in errs), \
             f"Expected E121, got: {[e.error_code for e in errs]}"
 
@@ -1915,8 +1915,10 @@ public fn byte_diff(@Byte, @Byte -> @Int)
 
 
 class TestIntegerLiteralRange812:
-    """#812 — integer literals must fit their target machine type (`@Int` = i64,
-    `@Nat` = u64), checked at type-check time.
+    """#812 — integer literals must fit their target machine type, checked at
+    type-check time: an i64, which `@Int` and `@Nat` share (`@Nat` its
+    non-negative half, spec §2.2), so a literal above `2^63 - 1` is E149
+    wherever it is written.
 
     Before this check the gap had two faces, both rooted in the verifier
     modeling a literal at its unbounded mathematical value while codegen emits a
@@ -1955,6 +1957,7 @@ public fn f(@Unit -> @Int)
 
     def test_literal_exceeding_u64_is_error(self) -> None:
         # The LOUD case (#812 as filed): >= 2^64 previously reached codegen.
+        # (In a `@Nat` context, past `2^63 - 1` is enough since v0.2.3.)
         self._e149("""
 public fn f(@Unit -> @Nat)
   requires(true) ensures(true) effects(pure)
@@ -1968,12 +1971,28 @@ public fn f(@Unit -> @Int)
 { 9223372036854775807 }
 """)
 
-    def test_nat_literal_at_u64_max_ok(self) -> None:
-        # u64.MAX is valid as @Nat — only the @Int context (and > u64.MAX) errors.
-        _check_ok("""
+    def test_nat_literal_at_u64_max_is_error(self) -> None:
+        # A `@Nat` holds `0 .. 2^63 - 1` (spec §2.2): u64.MAX, valid as a
+        # `@Nat` on the u64 `Nat`, is E149 in a `@Nat` context as in any.
+        self._e149("""
 public fn f(@Unit -> @Nat)
   requires(true) ensures(true) effects(pure)
 { 18446744073709551615 }
+""")
+
+    def test_nat_literal_at_i64_max_ok(self) -> None:
+        # The nearest accepted neighbour: the top of the `@Nat` range.
+        _check_ok("""
+public fn f(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ 9223372036854775807 }
+""")
+
+    def test_nat_literal_at_i64_max_plus_one_is_error(self) -> None:
+        self._e149("""
+public fn f(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ 9223372036854775808 }
 """)
 
     def test_call_arg_int_context_exceeding_i64_is_error(self) -> None:
@@ -1990,9 +2009,9 @@ public fn f(@Unit -> @Int)
     def test_negated_i64_min_literal_ok(self) -> None:
         # i64.MIN = -(2^63): the magnitude 2^63 exceeds i64.MAX but is valid as
         # the operand of negation — the asymmetric i64 range [-2^63, 2^63-1].
-        # `-N` parses as unary-minus over the magnitude literal, which is checked
-        # against the u64 bound (2^63 <= u64.MAX), so i64.MIN is NOT falsely
-        # rejected.  (Guards the asymmetric boundary against a future tightening.)
+        # `-N` parses as unary-minus over the magnitude literal, which the
+        # negation holds to 2^63, so i64.MIN is NOT falsely rejected.  (Guards
+        # the asymmetric boundary against a future tightening.)
         _check_ok("""
 public fn f(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -2002,10 +2021,10 @@ public fn f(@Unit -> @Int)
     def test_negated_i64_min_minus_one_is_error(self) -> None:
         # SOUNDNESS: -(2^63 + 1) = -9223372036854775809 is one below i64.MIN, so
         # it is out of @Int range.  It parses as unary-minus over the magnitude
-        # literal 9223372036854775809, which is <= u64.MAX — so without an
-        # explicit unary-neg bound it slipped through and ran to a wrong POSITIVE
-        # value (9223372036854775807), the same silent reinterpretation the
-        # positive check closes.  Must be E149.
+        # literal 9223372036854775809 — so without an explicit unary-neg bound
+        # it slipped through and ran to a wrong POSITIVE value
+        # (9223372036854775807), the same silent reinterpretation the positive
+        # check closes.  Must be E149.
         self._e149("""
 public fn f(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -2013,8 +2032,7 @@ public fn f(@Unit -> @Int)
 """)
 
     def test_negated_literal_exceeding_u64_magnitude_is_error(self) -> None:
-        # -(2^64): the magnitude itself exceeds u64.MAX, caught at the inner
-        # literal regardless of the negation.
+        # -(2^64): the magnitude itself exceeds 2^63, caught at the negation.
         self._e149("""
 public fn f(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -2101,11 +2119,11 @@ public fn f(@Unit -> @{ @Byte | @Byte.0 < 10 })
         """One literal, one verdict (PR #1282 review).
 
         A refinement predicate's operands are synthesised twice: once
-        with no expected type, where a literal past the u64 bound draws
-        the `@Nat` range error, and again against the refined base,
+        with no expected type, where a literal past the i64 bound draws
+        the `@Int` range error, and again against the refined base,
         where the same literal draws the `@Byte` one.  Both fired, so a
         single mistake produced two E149s naming two different bounds.
-        The unconstrained pass is a GUESS — it reports `@Nat` only
+        The unconstrained pass is a GUESS — it reports `@Int` only
         because nothing told it otherwise — so the contextual verdict
         supersedes it rather than joining it.
         """
@@ -2117,9 +2135,9 @@ public fn f(@Unit -> @{ @Byte | @Byte.0 < 18446744073709551616 })
         e149 = [e for e in errs if e.error_code == "E149"]
         assert len(e149) == 1, [e.description for e in e149]
         assert "0..255" in e149[0].description, e149[0].description
-        assert "u64" not in e149[0].description, e149[0].description
+        assert "i64" not in e149[0].description, e149[0].description
 
-    def test_an_unconstrained_vast_literal_still_reports_u64(self) -> None:
+    def test_an_unconstrained_vast_literal_still_reports_i64(self) -> None:
         """Superseding must not silence the #812 gate itself.
 
         With no `@Byte` anywhere the unconstrained verdict is the only
@@ -2133,7 +2151,7 @@ public fn f(@Unit -> @{ @Nat | @Nat.0 < 18446744073709551616 })
 """)
         e149 = [e for e in errs if e.error_code == "E149"]
         assert len(e149) == 1, [e.description for e in e149]
-        assert "u64" in e149[0].description, e149[0].description
+        assert "i64" in e149[0].description, e149[0].description
 
     def test_two_distinct_literals_keep_two_errors(self) -> None:
         """Superseding is per-literal, not per-program.
@@ -2232,21 +2250,21 @@ public fn f(@Unit -> @Int)
 
         Driven at the function's own boundary rather than through source:
         every contextual verdict a program can currently reach re-renders
-        the message (`@Byte; the range is 0..255` supersedes `@Nat (u64)`),
+        the message (`@Byte; the range is 0..255` supersedes `@Int (i64)`),
         so no `.vera` input reproduces it.  That makes this the invariant's
         only honest test — and the invariant, not the reachability, is what
         the next contextual verdict will rest on.
         """
         checker = TypeChecker(source="\n\n\n", file="m.vera")
         node = ast.IntLit(
-            value=_U64_MAX + 1,
+            value=_I64_MAX + 1,
             span=ast.Span(line=3, column=5, end_line=3, end_column=25),
         )
         message = (
-            f"Integer literal {_U64_MAX + 1} is out of range for "
-            f"@Nat (u64); the maximum is {_U64_MAX}."
+            f"Integer literal {_I64_MAX + 1} is out of range for "
+            f"@Int (i64); the maximum is {_I64_MAX}."
         )
-        # Pass 1 — unconstrained, so a GUESS at `@Nat`.
+        # Pass 1 — unconstrained, so a GUESS at `@Int`.
         checker._literal_range_error(
             node, message, rationale="r", fix="f", contextual=False)
         assert len([e for e in checker.errors
@@ -2264,7 +2282,7 @@ public fn f(@Unit -> @Int)
         # re-opening the question.
         assert checker._literal_range_verdict[id(node)][1] is True
 
-    def test_byte_context_reports_the_byte_bound_not_the_u64_one(
+    def test_byte_context_reports_the_byte_bound_not_the_i64_one(
         self,
     ) -> None:
         """A vast literal in a `@Byte` context gets ONE error, about Byte."""

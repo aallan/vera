@@ -88,8 +88,6 @@ FIXTURES: dict[str, tuple[str, int]] = {
     "wasm/operators.py:_emit_nat_bind_guard": (
         "public fn f(@Int -> @Nat)\n" + _HEAD
         + "{\n  let @Nat = @Int.0;\n  @Nat.0\n}\n", 4),
-    "wasm/operators.py:_emit_int_widen_guard": (
-        "public fn f(@Nat -> @Int)\n" + _HEAD + "{\n  @Nat.0\n}\n", 4),
     "wasm/operators.py:_translate_assert": (
         "public fn f(@Int -> @Int)\n" + _HEAD
         + "{\n  assert(@Int.0 > 0);\n  @Int.0\n}\n", 4),
@@ -103,6 +101,9 @@ FIXTURES: dict[str, tuple[str, int]] = {
     "wasm/calls_math.py:_translate_float_to_int": (
         "public fn f(@Float64 -> @Int)\n" + _HEAD
         + "{\n  float_to_int(@Float64.0)\n}\n", 4),
+    "wasm/calls_math.py:_translate_abs": (
+        "public fn f(@Int -> @Int)\n" + _HEAD
+        + "{\n  abs(@Int.0)\n}\n", 4),
     "wasm/calls_math.py:_translate_floor": (
         "public fn f(@Float64 -> @Int)\n" + _HEAD
         + "{\n  floor(@Float64.0)\n}\n", 4),
@@ -135,10 +136,6 @@ FIXTURES: dict[str, tuple[str, int]] = {
         "  requires(true) ensures(true) decreases(@Nat.1) effects(pure)\n"
         "{\n  if @Nat.1 == 0 then { @Nat.0 } else "
         "{ f(@Nat.1 - 1, @Nat.0 + 1) }\n}\n", 2),
-    "codegen/contracts.py:_dec_bound_check_pairs": (
-        "public fn f(@Nat -> @Nat)\n"
-        "  requires(true) ensures(true) decreases(@Nat.0) effects(pure)\n"
-        "{\n  if @Nat.0 == 0 then { 0 } else { f(@Nat.0 - 1) }\n}\n", 2),
 }
 
 
@@ -323,9 +320,10 @@ def test_an_imported_body_names_its_own_file(tmp_path: Path) -> None:
 
 
 def test_the_record_matches_the_signals_in_the_module() -> None:
-    """Per function, the record's contract / narrowing / widening entries
-    number exactly the module's calls to those signals — one call per
-    check, so a phantom entry or a missed one shows as a count mismatch."""
+    """Per function, the record's contract and narrowing entries number
+    exactly the module's calls to those signals — one call per check, so a
+    phantom entry or a missed one shows as a count mismatch.  (`let @Int =
+    @Nat.1` widens, which checks nothing.)"""
     result = _compile(
         "type Pos = { @Int | @Int.0 > 0 };\n"
         "public fn f(@Pos, @Int, @Nat -> @Int)\n"
@@ -334,7 +332,7 @@ def test_the_record_matches_the_signals_in_the_module() -> None:
     body = wat_fn_body(result.wat, "f")
     recorded = Counter(c.kind for c in result.emitted_checks
                        if c.function == "f")
-    for kind in ("contract_violation", "nat_guard", "widen_guard"):
+    for kind in ("contract_violation", "nat_guard"):
         emitted = len(signal_call_pattern(kind).findall(body))
         assert recorded[kind] == emitted > 0, (kind, recorded[kind], emitted)
 
@@ -546,20 +544,23 @@ def test_a_marker_outside_every_function_is_an_invariant_error() -> None:
     ("@Int.0 / (0 - 1)", "@Int", ["divide_by_zero", "overflow"]),
     ("@Int.0 / 5", "@Int", ["divide_by_zero"]),
     ("@Int.1 % @Int.0", "@Int, @Int", ["divide_by_zero"]),
-    ("@Nat.1 / @Nat.0", "@Nat, @Nat", ["divide_by_zero", "overflow"]),
-    ("@Nat.0 / 18446744073709551615", "@Nat",
-     ["divide_by_zero", "overflow"]),
+    ("@Nat.1 / @Nat.0", "@Nat, @Nat", ["divide_by_zero"]),
+    ("@Nat.0 / 9223372036854775807", "@Nat", ["divide_by_zero"]),
     ("@Nat.0 / 7", "@Nat", ["divide_by_zero"]),
+    ("@Int.0 / @Nat.0", "@Int, @Nat", ["divide_by_zero"]),
+    ("@Nat.0 / @Int.0", "@Nat, @Int", ["divide_by_zero"]),
 ], ids=["int-by-int", "by-a-computed-minus-one", "by-five", "remainder",
-        "nat-by-nat", "nat-by-the-bits-of-minus-one", "nat-by-seven"])
+        "nat-by-nat", "nat-by-the-top-of-the-range", "nat-by-seven",
+        "int-by-nat", "nat-by-int"])
 def test_a_division_lists_its_overflow_condition_where_it_can_occur(
     body: str, params: str, kinds: list[str],
 ) -> None:
     """`i64.div_s` traps on a zero divisor and on `INT_MIN / -1`: a division
     lowered to it whose divisor can hold -1's bits is two checks on one
-    instruction.  A `@Nat` division is `i64.div_s` today and meets the pair
-    at 2^63 / (2^64 - 1) (#1504); a remainder cannot overflow, and a literal
-    divisor whose bits are not -1's cannot meet it."""
+    instruction.  A `@Nat` operand meets neither half of the pair, holding
+    neither `INT_MIN` nor -1 (spec §2.2; on the u64 `Nat` it met it at
+    2^63 / (2^64 - 1), #1504); a remainder cannot overflow, and a literal
+    divisor other than -1 cannot meet it."""
     result = _compile(
         f"public fn f({params} -> @Int)\n" + _HEAD + "{\n  " + body + "\n}\n")
     division = {"wasm/operators.py:_translate_binary",

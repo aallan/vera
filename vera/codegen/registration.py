@@ -101,17 +101,10 @@ class RegistrationMixin:
         self._fn_nat_params[decl.name] = tuple(
             self._type_resolves_to_nat(p) for p in decl.params
         )
-        # #813: dual bitmap of concrete-@Int formals, for the runtime
-        # @Nat -> @Int *widening* guard at call sites (a @Nat value above
-        # i64.MAX reinterprets to a negative @Int).  Disjoint from the @Nat
-        # bitmap above: a formal resolves to one primitive base or neither.
-        self._fn_int_params[decl.name] = tuple(
-            self._type_resolves_to_int(p) for p in decl.params
-        )
         # #865: per-parameter concrete-@Byte flags, for the call-site
         # int-literal → i32.const coercion (an int-literal argument otherwise
         # defaults to i64.const against the callee's i32 Byte parameter).
-        # Disjoint from the @Nat/@Int bitmaps above.
+        # Disjoint from the @Nat bitmap above.
         self._fn_byte_params[decl.name] = tuple(
             self._type_resolves_to_base(p, "Byte") for p in decl.params
         )
@@ -392,7 +385,6 @@ class RegistrationMixin:
         offset = 4  # tag (i32) at offset 0, occupies 4 bytes
         field_offsets: list[tuple[int, str]] = []
         nat_fields: list[bool] = []
-        int_fields: list[bool] = []
         field_types: list[str] = []
         field_type_exprs: list[object | None] = []
 
@@ -412,9 +404,6 @@ class RegistrationMixin:
                 # (type param) instantiated to @Nat is erased to i64
                 # here, so it stays statically-only (verifier-obligated).
                 nat_fields.append(self._type_resolves_to_nat(field_te))
-                # #813: a concrete @Int field receives the runtime @Nat -> @Int
-                # widening guard when constructed with a @Nat argument.
-                int_fields.append(self._type_resolves_to_int(field_te))
                 # #773: the RESOLVED Vera type name of the field, for
                 # structural Eq derivation (type params stay bare, e.g. "T";
                 # aliases and refinements resolve to their ground type).
@@ -431,7 +420,6 @@ class RegistrationMixin:
             field_offsets=tuple(field_offsets),
             total_size=total_size,
             nat_fields=tuple(nat_fields),
-            int_fields=tuple(int_fields),
             field_type_exprs=tuple(field_type_exprs),
             field_types=tuple(field_types),
         )
@@ -522,20 +510,11 @@ class RegistrationMixin:
         """
         return self._type_resolves_to_base(te, "Nat")
 
-    def _type_resolves_to_int(self, te: ast.TypeExpr) -> bool:
-        """True if *te* resolves to a concrete ``@Int`` — directly, through a
-        ``type X = Int`` alias, the base of a refinement (``{ @Int | p }``),
-        or a generic alias instantiated to @Int.  The #813 dual of
-        ``_type_resolves_to_nat``: a @Int formal receiving a @Nat-typed
-        argument widens it, and a @Nat value above i64.MAX reinterprets to a
-        negative @Int, so the call site needs the runtime widening guard."""
-        return self._type_resolves_to_base(te, "Int")
-
     def _register_effect_op_params(self, program: ast.Program) -> None:
         """Per-formal base type NAME for every effect operation (#754).
 
         A call site guards its arguments from the callee's formals — the
-        `_fn_nat_params` / `_fn_int_params` bitmaps for a function, the cell
+        `_fn_nat_params` bitmap for a function, the cell
         for a `State` write or an `Exn` payload.  An effect OPERATION had
         neither: `_effect_ops` carries a dispatch target and nothing about
         types, so `IO.sleep(@Int.0)` — whose declared formal is `@Nat` —
@@ -599,8 +578,8 @@ class RegistrationMixin:
         self, te: ast.TypeExpr, base_name: str,
     ) -> bool:
         """Shared alias/refinement-resolving check behind
-        ``_type_resolves_to_nat`` / ``_type_resolves_to_int``: True if *te*
-        resolves to the primitive named *base_name*."""
+        ``_type_resolves_to_nat`` and the `@Byte` parameter bitmap: True if
+        *te* resolves to the primitive named *base_name*."""
         seen: set[str] = set()
         while True:
             if isinstance(te, ast.RefinementType):

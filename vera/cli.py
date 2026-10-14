@@ -1795,10 +1795,10 @@ def cmd_test(
 
         # Type-check first.  #986: use the artifact-returning check and thread the
         # resolved- / target-type side-tables into the tester (below) so the WASM
-        # the tester compiles carries the SAME @Nat->@Int widen guards
-        # (tuple/array components, recovered only from the target table) the
-        # verifier obligates — without them the tester executed guard-free WASM
-        # the verifier had classified tier3-guarded (a `vera test` desync).
+        # the tester compiles carries the SAME component guards (tuple/array
+        # components, recovered only from the target table) the verifier
+        # obligates — without them the tester executed guard-free WASM the
+        # verifier had classified tier3-guarded (a `vera test` desync).
         check_diags, artifacts = typecheck_with_artifacts(
             ast, source, file=str(p), resolved_modules=resolved,
             collect_module_artifacts=True,

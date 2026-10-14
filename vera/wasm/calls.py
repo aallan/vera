@@ -334,7 +334,7 @@ class CallsMixin:
                 )
             # Numeric math builtins
             if call.name == "abs" and len(call.args) == 1:
-                return self._translate_abs(call.args[0], env)
+                return self._translate_abs(call.args[0], env, at=call)
             if call.name == "min" and len(call.args) == 2:
                 return self._translate_min(
                     call.args[0], call.args[1], env,
@@ -537,8 +537,8 @@ class CallsMixin:
             # dispatch target, not the op's formal types (#754 tracks the
             # general registry).  The builtin State `put` is the exception
             # (#1203, PR #1202 adversarial round): the cell it writes is
-            # recorded beside the dispatch target, so the same nat/widen
-            # guard pair the clause-inlined path emits wraps the argument on
+            # recorded beside the dispatch target, so the same nat
+            # guard the clause-inlined path emits wraps the argument on
             # the bare path too — a handler with no `put` clause, a `put`
             # inside another clause's body, and a delegated bare `put`
             # (handler in the caller) all previously stored a negative
@@ -620,7 +620,7 @@ class CallsMixin:
             # it — `throw(0 - 5)` into an `Exn<Nat>` ran to completion and
             # handed `-5` to a clause that had assumed non-negativity, and a
             # `@Nat`-typed consumer's Tier-1-PROVED `ensures` then failed at
-            # run time.  The three arms mirror the verifier's
+            # run time.  The two arms mirror the verifier's
             # `_obligate_binding_triple` one-for-one, refined FIRST for the
             # same reason it is: the refinement's own predicate carries the
             # base's implicit range (`_refinement_guard_parts` conjoins it),
@@ -633,24 +633,9 @@ class CallsMixin:
                 if refined_payload is not None:
                     instructions = self._emit_exn_payload_refine_guard(
                         instructions, refined_payload, cell, call, env)
-                    # #820 INTERSECTION (PR #1325 review): the predicate does
-                    # not imply fit-in-i64, so a refinement OVER `@Int` keeps
-                    # the widening guard BESIDE its predicate guard rather
-                    # than replacing it.  Without this, adding a refinement
-                    # weakened the boundary: `Exn<Int>` fed a @Nat of u64.MAX
-                    # trapped, `Exn<{ @Int | true }>` returned -1.  The
-                    # verifier's `_obligate_binding_triple` records the pair
-                    # in the same shape, so obligation and guard still match
-                    # one-for-one.
-                    if base == "Int" and self._result_is_nat(call.args[0]):
-                        instructions = self._emit_int_widen_guard(
-                            instructions, at=call.args[0])
             if refined_payload is None and (is_state_put or is_exn_throw):
                 if base == "Nat" and self._narrows_into_nat(call.args[0]):
                     instructions = self._emit_nat_bind_guard(
-                        instructions, at=call.args[0])
-                elif base == "Int" and self._result_is_nat(call.args[0]):
-                    instructions = self._emit_int_widen_guard(
                         instructions, at=call.args[0])
             # #754's registry contributes NOTHING on this route, and the
             # reason is a property of the route rather than an omission.
@@ -715,16 +700,11 @@ class CallsMixin:
         # actual callee.  So `f<Nat>(@Int.0)` runtime-guards the narrowing
         # exactly like a concrete `f(@Nat -> …)` call.
         nat_params = self._fn_nat_params.get(call_target, ())
-        # #813: dual bitmap — concrete-@Int formals receiving a @Nat-typed
-        # argument widen it; a @Nat above i64.MAX reinterprets to a negative
-        # @Int, so the call site needs the runtime widening guard.  Disjoint
-        # from `nat_params` (a formal resolves to one base or neither).
-        int_params = self._fn_int_params.get(call_target, ())
         # #865: concrete-@Byte formals.  `@Byte` is i32 (spec §11), but an int
         # literal defaults to `i64.const`; a literal argument to a Byte formal
         # must lower at i32 so the pushed value matches the callee's parameter
         # width.  Mirrors the #766 binop-operand coercion at the call-arg
-        # position.  Disjoint from `nat_params` / `int_params`.
+        # position.  Disjoint from `nat_params`.
         byte_params = self._fn_byte_params.get(call_target, ())
         for i, arg in enumerate(call.args):
             if i < len(byte_params) and byte_params[i]:
@@ -745,9 +725,6 @@ class CallsMixin:
             if (i < len(nat_params) and nat_params[i]
                     and self._narrows_into_nat(arg)):
                 arg_instrs = self._emit_nat_bind_guard(arg_instrs, at=arg)
-            elif (i < len(int_params) and int_params[i]
-                    and self._result_is_nat(arg)):
-                arg_instrs = self._emit_int_widen_guard(arg_instrs, at=arg)
             instructions.extend(arg_instrs)
 
         # #517 — emit ``return_call $target`` for tail-position
@@ -784,14 +761,12 @@ class CallsMixin:
         index: int,
     ) -> list[str]:
         """Wrap one effect-operation argument in the guard its FORMAL calls
-        for (#754) — the operation-site twin of the `_fn_nat_params` /
-        `_fn_int_params` bitmaps a function call site reads.
+        for (#754) — the operation-site twin of the `_fn_nat_params` bitmap
+        a function call site reads.
 
-        The two directions, and the same conditions the function call site
-        applies them under: an ``@Int`` value narrowing into a ``@Nat``
-        formal traps if it is negative, and a ``@Nat`` value widening into
-        an ``@Int`` formal traps above i64.MAX (where it would reinterpret
-        as negative).  Both are gated on the VALUE — a value already at the
+        The same condition the function call site applies it under: an
+        ``@Int`` value narrowing into a ``@Nat`` formal traps if it is
+        negative.  It is gated on the VALUE — a value already at the
         formal's type needs no check — so a program whose arguments are
         provably in range pays dead instructions and never a trap.
 
@@ -802,8 +777,6 @@ class CallsMixin:
         base = op_formals[index] if index < len(op_formals) else None
         if base == "Nat" and self._narrows_into_nat(arg):
             return self._emit_nat_bind_guard(arg_instrs, at=arg)
-        if base == "Int" and self._result_is_nat(arg):
-            return self._emit_int_widen_guard(arg_instrs, at=arg)
         return arg_instrs
 
     def _translate_qualified_call(

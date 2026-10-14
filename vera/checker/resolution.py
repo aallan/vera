@@ -19,9 +19,7 @@ from vera.checker.registration import (
     builtin_effect_names,
 )
 from vera.types import (
-    INT_LITERAL_HOLE,
     LITERAL_HOLE,
-    NEGATIVE_LITERAL_HOLE,
     PRIMITIVES,
     REMOVED_ALIASES,
     AdtType,
@@ -35,13 +33,11 @@ from vera.types import (
     Type,
     TypeVar,
     UnknownType,
-    collection_element_vars,
     contains_literal_hole,
     default_literal_holes,
     erases_to_unit,
     fill_literal_holes,
     is_literal_hole,
-    join_literal_holes,
     merge_inferred_types,
     pretty_effect,
     pretty_type,
@@ -69,57 +65,6 @@ def is_literal_only(expr: ast.Expr) -> bool:
     if isinstance(expr, ast.BinaryExpr) and expr.op in _LITERAL_ARITH:
         return is_literal_only(expr.left) and is_literal_only(expr.right)
     return False
-
-
-def literal_only_is_int(expr: ast.Expr) -> bool:
-    """Whether the checker types the literal-only expression *expr* `Int`
-    rather than `Nat`: a negation, an operand that is `Int`, or a negative
-    value (`ExpressionsMixin._check_binary` / `_check_unary`)."""
-    if isinstance(expr, ast.UnaryExpr):
-        return True
-    if isinstance(expr, ast.BinaryExpr):
-        if (literal_only_is_int(expr.left)
-                or literal_only_is_int(expr.right)):
-            return True
-        value = literal_int_value(expr)
-        return value is not None and value < 0
-    return False
-
-
-def literal_int_value(expr: ast.Expr) -> int | None:
-    """The value of a literal-only integer expression, or ``None`` when
-    *expr* is not one or has no value (a division by zero).
-
-    Division truncates toward zero and the remainder takes the dividend's
-    sign, as at run time (spec §4.4).
-    """
-    if isinstance(expr, ast.IntLit):
-        return expr.value
-    if isinstance(expr, ast.UnaryExpr):
-        if expr.op != ast.UnaryOp.NEG:
-            return None
-        v = literal_int_value(expr.operand)
-        return None if v is None else -v
-    if isinstance(expr, ast.BinaryExpr) and expr.op in _LITERAL_ARITH:
-        left = literal_int_value(expr.left)
-        right = literal_int_value(expr.right)
-        if left is None or right is None:
-            return None
-        if expr.op == ast.BinOp.ADD:
-            return left + right
-        if expr.op == ast.BinOp.SUB:
-            return left - right
-        if expr.op == ast.BinOp.MUL:
-            return left * right
-        if right == 0:
-            return None
-        quotient = abs(left) // abs(right)
-        if (left < 0) != (right < 0):
-            quotient = -quotient
-        if expr.op == ast.BinOp.DIV:
-            return quotient
-        return left - right * quotient
-    return None
 
 
 class ResolutionMixin:
@@ -939,18 +884,9 @@ class ResolutionMixin:
         """
         if ty is None or isinstance(ty, UnknownType):
             return ty
-        if isinstance(ty, PrimitiveType) and ty.name in ("Int", "Nat"):
-            if is_literal_only(expr):
-                # The hole's fallback is the type rule 1 gives the
-                # expression itself (PR #1583 review): `-0` and
-                # `(0 - 3) + 4` are `Int` although their values are not
-                # negative, so they fall back to `Int` as they did.
-                if literal_only_is_int(expr):
-                    value = literal_int_value(expr)
-                    if value is not None and value < 0:
-                        return NEGATIVE_LITERAL_HOLE
-                    return INT_LITERAL_HOLE
-                return LITERAL_HOLE
+        if (isinstance(ty, PrimitiveType) and ty.name in ("Int", "Nat")
+                and is_literal_only(expr)):
+            return LITERAL_HOLE
         if isinstance(expr, ast.Block):
             return self._literal_soft_type(expr.expr, ty)
         if isinstance(expr, ast.IfExpr):
@@ -1024,11 +960,10 @@ class ResolutionMixin:
            the closure `fn(@Int, @Int -> @Int)` fixes `array_fold`'s `U`
            before the accumulator literal `0` can;
         2. the type the call's result is expected at, which fills a hole
-           still open (`let @Int = id(5)` is `id` at `Int`) unless it is a
-           mixed one (:func:`~vera.types.context_may_fill`): a negative
-           literal beside a non-negative one need not reach the result;
-        3. the literals' own types by value, joined — `Nat` when every
-           literal at the position is non-negative, `Int` otherwise.
+           still open whatever the signs of the literals at it
+           (`let @Nat = id(5)` is `id` at `Nat`, and so is
+           `let @Nat = second(-3, 5)`, whose -3 is then refuted);
+        3. `Int`, the literals' own type.
 
         Returns ``(mapping, soft)``.  *soft* is the same mapping with the
         positions step 3 decided still holes, so a caller can record which
@@ -1058,13 +993,9 @@ class ResolutionMixin:
             from_expected: dict[str, Type] = {}
             self._unify_for_inference(result_type, expected, from_expected,
                                       forall_set)
-            # A variable the result holds as a collection's element type is
-            # every element the call was given (`context_may_fill`).
-            in_collection = collection_element_vars(result_type)
             for tv in holed:
                 mapping[tv] = fill_literal_holes(
-                    mapping[tv], from_expected.get(tv),
-                    tv in in_collection)
+                    mapping[tv], from_expected.get(tv))
         soft = dict(mapping)
         for tv in holed:
             mapping[tv] = default_literal_holes(mapping[tv])
@@ -1198,10 +1129,7 @@ def _meet_literal_holes(parts: tuple[Type | None, ...], ty: Type) -> Type:
     if len(known) != len(parts):
         return ty
     if known and all(is_literal_hole(p) for p in known):
-        hole: Type = known[0]
-        for p in known[1:]:
-            hole = join_literal_holes(hole, p)
-        return hole
+        return LITERAL_HOLE
     adts = [p for p in known if isinstance(p, AdtType)
             and isinstance(ty, AdtType) and p.name == ty.name
             and len(p.type_args) == len(ty.type_args)]

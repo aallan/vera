@@ -779,7 +779,7 @@ public fn f(@Small -> @Nat)
         # -1 satisfies `< 10` but not `>= 0`: the guard message proves the
         # base invariant is conjoined into the lowered check.
         with pytest.raises(RuntimeError, match=r"@Nat\.0 >= 0"):
-            execute(result, fn_name="f", args=[-1])
+            execute(result, fn_name="f", args=[-1], check_int_args=False)
         assert _run(src, fn="f", args=[7]) == 7
 
     def test_aliased_nat_base_param_guard_enforces_ge_zero(self) -> None:
@@ -798,7 +798,7 @@ public fn f(@SmallAge -> @Age)
 """
         result = _compile_ok(src)
         with pytest.raises(RuntimeError, match=r"@Age\.0 >= 0"):
-            execute(result, fn_name="f", args=[-1])
+            execute(result, fn_name="f", args=[-1], check_int_args=False)
         assert _run(src, fn="f", args=[7]) == 7
 
     def test_bool_base_param_guard_traps_on_false(self) -> None:

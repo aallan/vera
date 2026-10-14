@@ -21,11 +21,15 @@ class CallsMathMixin:
     # -----------------------------------------------------------------
 
     def _translate_abs(
-        self, arg: ast.Expr, env: WasmSlotEnv,
+        self, arg: ast.Expr, env: WasmSlotEnv, *, at: ast.Node | None,
     ) -> list[str] | None:
         """Translate abs(@Int) → @Nat (i64).
 
         WASM has no i64.abs; uses ``select`` on (value, -value, value>=0).
+        The one argument whose absolute value no `@Nat` holds is `-2^63`
+        (its negation is `2^63`, past i64.MAX, spec §2.2), so the call
+        traps there as an ``overflow``: the runtime half of the
+        ``int_overflow`` obligation the verifier records at the call.
         """
         arg_instrs = self.translate_expr(arg, env)
         if arg_instrs is None:
@@ -34,6 +38,14 @@ class CallsMathMixin:
         instructions: list[str] = []
         instructions.extend(arg_instrs)
         instructions.append(f"local.set {tmp}")
+        instructions.append(f"local.get {tmp}")
+        instructions.append(f"i64.const {-(2 ** 63)}")
+        instructions.append("i64.eq")
+        instructions.append("if")
+        instructions.extend(
+            f"  {i}" for i in self._emit_trap(
+                "wasm/calls_math.py:_translate_abs", at=at))
+        instructions.append("end")
         # select(val_if_true, val_if_false, cond)
         instructions.append(f"local.get {tmp}")          # value (cond true)
         instructions.append("i64.const 0")

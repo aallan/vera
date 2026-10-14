@@ -143,8 +143,8 @@ class ClosuresMixin:
         # Push closure pointer as first arg (env for lifted function)
         instructions.append(f"local.get {tmp}")
 
-        # #820: recover the closure's declared formal types so a @Nat argument
-        # widening into an @Int formal is runtime-guarded at the call boundary
+        # #820: recover the closure's declared formal types so an argument
+        # narrowing into a @Nat formal is runtime-guarded at the call boundary
         # (the call_indirect has no per-formal coercion otherwise).  The formal
         # types come from the closure's function-type (a `SlotRef` alias chain
         # or an inline `AnonFn`); `None`/short lists leave an argument unguarded.
@@ -170,7 +170,7 @@ class ClosuresMixin:
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
                 return None
-            # #1017: the @Int -> @Nat NARROWING dual of the widen guard below.
+            # #1017: the @Int -> @Nat NARROWING.
             # A negative @Int argument narrowing into a @Nat closure formal would
             # otherwise enter the formal reinterpreted (silently) — guard it at
             # the call_indirect boundary, exactly as the verifier's apply_fn
@@ -179,10 +179,6 @@ class ClosuresMixin:
                     and self._type_expr_base_is_nat(formal_te)
                     and self._narrows_into_nat(arg)):
                 arg_instrs = self._emit_nat_bind_guard(arg_instrs, at=arg)
-            elif (formal_te is not None
-                    and self._type_expr_base_is_int(formal_te)
-                    and self._result_is_nat(arg)):
-                arg_instrs = self._emit_int_widen_guard(arg_instrs, at=arg)
             instructions.extend(arg_instrs)
             # The parameter's width in the `call_indirect` signature is the
             # DECLARED formal's, not the argument's (#1256).  Both sides of

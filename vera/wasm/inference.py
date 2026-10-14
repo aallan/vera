@@ -2386,19 +2386,9 @@ class InferenceMixin:
             return tuple(closure_arg.params)
         return None
 
-    def _type_expr_base_is_int(self, te: ast.TypeExpr) -> bool:
-        """True iff *te* resolves (through aliases / refinements) to ``@Int``
-        (#820).  Alias-aware (`type Age = Int`), so a closure formal declared
-        with an @Int alias is guarded like a bare @Int.  Deliberately narrow —
-        a @Nat / generic / other formal is not @Int and must not be guarded."""
-        name = self._type_expr_to_slot_name(te)
-        if name is None:
-            return False
-        return self._resolve_base_type_name(name) == "Int"
-
     def _type_expr_base_is_nat(self, te: ast.TypeExpr) -> bool:
-        """True iff *te* resolves (through aliases) to ``@Nat`` (#984) — the
-        narrowing dual of :py:meth:`_type_expr_base_is_int`.  Alias-aware
+        """True iff *te* resolves (through aliases) to ``@Nat`` (#984).
+        Alias-aware
         (`type Count = Nat`), so a closure return declared with a @Nat alias is
         guarded like a bare @Nat.  A refinement over @Nat also resolves to
         ``Nat`` here; the closure-return narrow gate additionally excludes

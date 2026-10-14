@@ -73,7 +73,7 @@ ObligationKind = Literal[
                      # guard).
     "int_overflow",  # @Int/@Nat `+`/`-`/`*` range obligation at one site
                      # (#798).  Two-check like index_bounds: result provably in
-                     # i64 (@Int) / u64 (@Nat) range -> tier-1; provably out of
+                     # the i64 range -> tier-1; provably out of
                      # range -> loud E528; else honest tier3 (the codegen
                      # overflow trap is the guard).  @Nat `-` is underflow
                      # (nat_sub), not high-overflow, so it is excluded here.
@@ -88,26 +88,6 @@ ObligationKind = Literal[
                   # symbolic arg -> honest tier3 (Z3's FP<->Real reasoning is
                   # unreliable; codegen's `float_conversion` check is the
                   # guard).
-    "nat_to_int_coerce",  # @Nat value widening into an @Int slot at one
-                  # coercion site (#813) — the dual of `nat_bind`.  @Nat is u64
-                  # and @Int is i64, so a @Nat in (i64.MAX, u64.MAX] reinterprets
-                  # its bits when widened (u64.MAX -> -1).  Two-check like
-                  # `int_overflow`: provably `<= i64.MAX` -> tier-1; provably
-                  # `> i64.MAX` -> loud E530; else honest tier3 (the codegen
-                  # coercion trap is the guard, so the postcondition stays
-                  # sound).
-    "decreases_bound",  # a @Nat `decreases` measure component fitting the
-                  # i64 the runtime termination guard compares in (#1222).  The
-                  # proof reasons over unbounded integers and the guard uses
-                  # `i64.lt_s` / `i64.ge_s`, so the two agree only while the
-                  # measure IS an i64 — above i64.MAX a @Nat reads negative and
-                  # a Tier-1-proved termination aborts as "failed to decrease".
-                  # Two-check like `nat_to_int_coerce`: provably `<= i64.MAX` ->
-                  # tier-1; provably `> i64.MAX` -> loud E536; else tier3, with
-                  # `_dec_measure_bound_check` as the guard so the failure names
-                  # the range rather than borrowing the termination rule's
-                  # message.  Recorded only for a @Nat component: an @Int one IS
-                  # the i64, an ADT one is ranked by a heap-bounded size.
     "state_decl",  # a generic handler's declared state type diverging from
                   # the instantiated State<T> cell (#1206's E336 defers on a
                   # TypeVar cell; the monomorphized clone re-checks it and a
@@ -127,10 +107,7 @@ ObligationStatus = Literal[
                         # (nat_bind, #552/#747), an E506 warning for an
                         # *internal* refinement narrowing (refine_bind, #746:
                         # let / field / match / destructure — boundary sites
-                        # ARE runtime-guarded and recorded `tier3` instead), or
-                        # an E531 warning for an unguarded @Nat->@Int widening
-                        # (nat_to_int_coerce, #813: the tuple / array /
-                        # generic-ADT component coercions codegen cannot guard)
+                        # ARE runtime-guarded and recorded `tier3` instead)
 ]
 
 

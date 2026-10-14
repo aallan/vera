@@ -462,12 +462,25 @@ class TestObligationKinds:
             "{\n"
             "  if @Nat.0 == 0 then { 0 } else { count(@Nat.0 - 1) }\n"
             "}\n"
+            "\n"
+            "public fn diff(@Nat, @Nat -> @Nat)\n"
+            "  requires(@Nat.1 >= @Nat.0)\n"
+            "  ensures(true)\n"
+            "  effects(pure)\n"
+            "{\n"
+            "  @Nat.1 - @Nat.0\n"
+            "}\n"
         )
         result = self._verify_source(source)
         kinds = [(o.fn_name, o.kind, o.status) for o in result.obligations]
         assert ("dec", "requires", "verified") in kinds
-        assert ("dec", "nat_sub", "verified") in kinds
+        # `@Nat.0 - 1` is an `@Int` subtraction (spec §4.4): its overflow,
+        # and its narrowing into the `@Nat` return.
+        assert ("dec", "int_overflow", "verified") in kinds
+        assert ("dec", "nat_bind", "verified") in kinds
         assert ("dec", "ensures", "verified") in kinds
+        # `@Nat.1 - @Nat.0` is the `@Nat` subtraction.
+        assert ("diff", "nat_sub", "verified") in kinds
         assert ("count", "decreases", "verified") in kinds
         # Trivial requires(true)/ensures(true) still enumerate.
         assert ("count", "requires", "verified") in kinds
@@ -657,18 +670,18 @@ class TestObligationKinds:
         self,
     ) -> None:
         source = (
-            "public fn twice(@Nat -> @Nat)\n"
-            "  requires(@Nat.0 >= 2)\n"
+            "public fn twice(@Nat, @Nat -> @Nat)\n"
+            "  requires(@Nat.1 >= @Nat.0)\n"
             "  ensures(true)\n"
             "  effects(pure)\n"
             "{\n"
-            "  if @Nat.0 >= 2 then { @Nat.0 - 1 } else { @Nat.0 - 1 }\n"
+            "  if @Nat.0 >= 2 then { @Nat.1 - @Nat.0 } else { @Nat.1 - @Nat.0 }\n"
             "}\n"
         )
         result = self._verify_source(source)
         subs = [o for o in result.obligations if o.kind == "nat_sub"]
         assert len(subs) == 2
-        assert subs[0].expr_text == subs[1].expr_text == "@Nat.0 - 1"
+        assert subs[0].expr_text == subs[1].expr_text == "@Nat.1 - @Nat.0"
         # Same text, different columns → distinct identities.
         assert subs[0].content_key() != subs[1].content_key()
 

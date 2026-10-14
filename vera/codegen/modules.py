@@ -585,12 +585,6 @@ class CrossModuleMixin:
             for fn_name, nat_params in temp._fn_nat_params.items():
                 self._fn_nat_params.setdefault(fn_name, nat_params)
 
-            # #813: same harvest for the dual @Int-parameter bitmap, so a
-            # cross-module call `f(@Nat.0)` into an imported `f(@Int -> …)`
-            # keeps its runtime widening guard.
-            for fn_name, int_params in temp._fn_int_params.items():
-                self._fn_int_params.setdefault(fn_name, int_params)
-
             # #865: same harvest for the @Byte-parameter bitmap, so a
             # cross-module call `f(3)` into an imported `f(@Byte -> …)`
             # coerces the int-literal argument to i32.const.
@@ -1892,8 +1886,6 @@ class CrossModuleMixin:
         #    inference for a shadowed fn returning ``String`` / ``Array<T>``.
         self._fn_nat_params.setdefault(
             mangled, temp._fn_nat_params.get(fn_name, ()))
-        self._fn_int_params.setdefault(  # #813: dual widening-guard bitmap
-            mangled, temp._fn_int_params.get(fn_name, ()))
         self._fn_byte_params.setdefault(  # #865: byte-literal coercion bitmap
             mangled, temp._fn_byte_params.get(fn_name, ()))
         # #1189: and the trap source map, keyed on the MANGLED name.  A trap

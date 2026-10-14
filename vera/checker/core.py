@@ -628,6 +628,10 @@ class TypeChecker(
         # `ExpressionsMixin`'s IntLit branch for why an unconstrained
         # verdict is provisional.
         self._literal_range_verdict: dict[int, tuple[Diagnostic, bool]] = {}
+        # The integer literal being synthesized as a negation's operand, if
+        # one is: its magnitude may reach 2^63, `Int`'s minimum, which the
+        # negation bounds (`ExpressionsMixin._check_unary`, #812).
+        self._negated_literal: ast.IntLit | None = None
         # Monotonic counter for fresh TypeVar names (prevents
         # self-referential mappings when different ADTs share a type
         # parameter name — see #243).
@@ -690,12 +694,12 @@ class TypeChecker(
         refinement predicate's operands are typed with no expected type
         first and against the refined base afterwards — and the two
         passes answer with different bounds, so a single mistake drew
-        two E149s naming ``@Nat (u64)`` and ``@Byte`` (PR #1282 review).
+        two E149s naming the i64 bound and ``@Byte``'s (PR #1282 review).
         ``_error``'s duplicate collapse cannot see it: the messages
         differ, which is precisely the problem.
 
-        The unconstrained pass is provisional.  It reports the u64 bound
-        because nothing has told it the target type, not because u64 is
+        The unconstrained pass is provisional.  It reports the i64 bound
+        because nothing has told it the target type, not because i64 is
         the target — so a later CONTEXTUAL verdict supersedes it rather
         than joining it, and the earlier diagnostic is withdrawn.  The
         reverse never happens: a guess does not overrule knowledge, and

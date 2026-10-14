@@ -5,18 +5,21 @@ The checker's target-type side-table is SINGLE-MODULE and keyed by span alone
 so it holds entries for the MAIN file only.  Imported module bodies are compiled
 into the same flat WASM module (Pass 2.5), and — before the fix — used that same
 main-file table.  An imported body's expression whose span happens to coincide
-with a main-file entry therefore picked up the WRONG target type: an all-@Nat
-imported ``Tuple(@Nat.0, @Nat.0)`` construction, colliding with a main-file
-``Tuple<Int, Int>`` construction at the same (line, col), was handed the
-``Tuple<Int, Int>`` target and emitted a SPURIOUS @Nat -> @Int widen guard that
-traps a legal @Nat — while the imported function is verify-clean (no widen).
+with a main-file entry therefore picked up the WRONG target type: an all-@Int
+imported ``Tuple(@Int.0, @Int.0)`` construction, colliding with a main-file
+``Tuple<Nat, Nat>`` construction at the same (line, col), would be handed the
+``Tuple<Nat, Nat>`` target and emit a SPURIOUS @Int -> @Nat narrowing guard
+that traps a legal negative @Int — while the imported function is
+verify-clean (no narrowing).  (The collision was found on the u64 `Nat`
+through the widening dual, whose guard has gone: a widening checks
+nothing.)
 
 The #986 fix suppressed the span-keyed table lookups for imported bodies, so
 they fell back to the AST-only classifier (no spurious guard).  #987 supersedes
 that with the *correct* mechanism: each imported body is now compiled against
 its OWN module's span-keyed table (threaded via ``module_artifacts``), so the
-colliding span resolves to ``collidelib``'s real ``Tuple<Nat, Nat>`` target —
-no guard because it is genuinely all-@Nat, not because the table was ignored.
+colliding span resolves to ``collidelib``'s real ``Tuple<Int, Int>`` target —
+no guard because it is genuinely all-@Int, not because the table was ignored.
 Same-file top-level guards are unaffected.  Both properties are pinned below.
 
 The two fixtures are engineered line-for-line so the ``Tuple(...)`` constructions
@@ -38,27 +41,26 @@ from vera.parser import parse_to_ast
 from vera.resolver import ModuleResolver
 from tests import pipeline
 
-U64_MAX = 18446744073709551615
 
 # The imported lib: an ALL-@Nat function.  Its `Tuple(@Nat.0, @Nat.0)` targets
 # `Tuple<Nat, Nat>` (no widen), so standalone it has NO guard.  The leading
 # comment pads the body onto line 3 to align with main.vera's line 3.
 _COLLIDE_LIB = (
     "-- pad line so the Tuple construction lands on line 3, matching main.vera\n"
-    "public fn lw(@Nat -> @Nat) requires(true) ensures(true) effects(pure)\n"
-    "{ let @Tuple<Nat, Nat> = Tuple(@Nat.0, @Nat.0); @Nat.0 }\n"
+    "public fn lw(@Int -> @Int) requires(true) ensures(true) effects(pure)\n"
+    "{ let @Tuple<Int, Int> = Tuple(@Int.0, @Int.0); @Int.0 }\n"
 )
 
-# main.vera: `mw`'s `Tuple(@Nat.0, @Nat.0)` targets `Tuple<Int, Int>` and lands
+# main.vera: `mw`'s `Tuple(@Int.0, @Int.0)` targets `Tuple<Nat, Nat>` and lands
 # at the SAME (line, col) as lib's construction (both line 3, col 26 — `Nat` and
-# `Int` are the same width).  `callit` invokes the imported `lw` at u64.MAX.
+# `Int` are the same width).  `callit` invokes the imported `lw` at -5.
 _MAIN = (
     "import collidelib(lw);\n"
-    "public fn mw(@Nat -> @Int) requires(true) ensures(true) effects(pure)\n"
-    "{ let @Tuple<Int, Int> = Tuple(@Nat.0, @Nat.0); "
-    "match @Tuple<Int, Int>.0 { Tuple(@Int, @Int) -> @Int.0 } }\n"
-    "public fn callit(@Unit -> @Nat) requires(true) ensures(true) effects(pure)\n"
-    "{ lw(18446744073709551615) }\n"
+    "public fn mw(@Int -> @Nat) requires(true) ensures(true) effects(pure)\n"
+    "{ let @Tuple<Nat, Nat> = Tuple(@Int.0, @Int.0); "
+    "match @Tuple<Nat, Nat>.0 { Tuple(@Nat, @Nat) -> @Nat.0 } }\n"
+    "public fn callit(@Unit -> @Int) requires(true) ensures(true) effects(pure)\n"
+    "{ lw(-5) }\n"
 )
 
 
@@ -121,41 +123,38 @@ class TestCrossModuleSpanCollision:
         )
 
     def test_imported_body_not_false_guarded_by_collision(self, tmp_path) -> None:
-        # BUG at the #986-base head: the imported all-@Nat `lw` picked up main's
-        # `Tuple<Int, Int>` target at the colliding span and emitted a spurious
-        # widen guard, so `callit` (which calls `lw(u64.MAX)`) trapped.  After
-        # #987 the imported body resolves the colliding span in `collidelib`'s
-        # OWN table (`Tuple<Nat, Nat>`) — genuinely no widen, so no trap.
+        # The #986 class: an imported all-@Int `lw` that picked up main's
+        # `Tuple<Nat, Nat>` target at the colliding span would emit a spurious
+        # narrowing guard, so `callit` (which calls `lw(-5)`) would trap.  The
+        # imported body resolves the colliding span in `collidelib`'s OWN
+        # table (`Tuple<Int, Int>`) — genuinely no narrowing, so no trap.
         result = _compile_main(tmp_path)
+        assert pipeline.checks(result, function="lw") == ()
         exec_result = execute(result, fn_name="callit", args=[])
-        # `lw` is the @Nat identity, so u64.MAX must round-trip bit-exactly
-        # (read back as a signed i64: compare under the u64 mask) — "no trap"
-        # alone would miss a silent truncation.
-        assert exec_result.value is not None
-        assert exec_result.value & ((1 << 64) - 1) == U64_MAX
+        # `lw` is the @Int identity, so -5 must round-trip exactly — "no trap"
+        # alone would miss a silent clamp.
+        assert exec_result.value == -5
 
     def test_imported_body_not_false_guarded_without_module_tables(
         self, tmp_path,
     ) -> None:
         # Pin the FALLBACK (#986): a caller that threads no module artifacts must
-        # still not false-guard the imported all-@Nat `lw` — the imported body's
+        # still not false-guard the imported all-@Int `lw` — the imported body's
         # span-keyed lookups are suppressed, so the colliding main-file
-        # `Tuple<Int, Int>` target cannot leak in.  Without this suppression
-        # fallback, `callit` would trap on a legal @Nat.
+        # `Tuple<Nat, Nat>` target cannot leak in.  Without this suppression
+        # fallback, `callit` would trap on a legal negative @Int.
         result = _compile_main(tmp_path, thread_modules=False)
+        assert pipeline.checks(result, function="lw") == ()
         exec_result = execute(result, fn_name="callit", args=[])
-        assert exec_result.value is not None
-        assert exec_result.value & ((1 << 64) - 1) == U64_MAX
+        assert exec_result.value == -5
 
     def test_same_file_top_level_guard_unaffected(self, tmp_path) -> None:
-        # Control: the SAME-file `mw` genuinely targets `Tuple<Int, Int>`, so its
-        # @Nat component widen guard must remain — `mw(u64.MAX)` still traps.
+        # Control: the SAME-file `mw` genuinely targets `Tuple<Nat, Nat>`, so its
+        # @Int component narrowing guard must remain — `mw(-5)` traps.
         result = _compile_main(tmp_path)
         with pytest.raises(WasmTrapError) as exc_info:
-            execute(result, fn_name="mw", args=[U64_MAX])
-        # Pin the kind: since #1438 the widen guard signals `widen_guard`
-        # before its `unreachable` (through `vera.trap` since #1479), so it
-        # reports its own kind rather than the anonymous `unreachable` a
-        # shadow-stack overflow reports.  Naming it here is what makes this a
-        # control: a trap from some other guard at u64.MAX would no longer pass.
-        assert exc_info.value.kind == "widen_guard", exc_info.value.kind
+            execute(result, fn_name="mw", args=[-5])
+        # Pin the kind: naming it is what makes this a control, a trap from
+        # some other guard at -5 would no longer pass.
+        assert exc_info.value.kind == "nat_guard", exc_info.value.kind
+        assert execute(result, fn_name="mw", args=[5]).value == 5

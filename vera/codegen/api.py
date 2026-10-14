@@ -101,6 +101,12 @@ class CompileResult:
     random_ops_used: set[str] = field(default_factory=set)  # #465
     math_ops_used: set[str] = field(default_factory=set)  # #467
     fn_param_types: dict[str, list[str]] = field(default_factory=dict)
+    # Parallel to `fn_param_types`: whether each lowered parameter is a
+    # `@Nat` (through aliases and refinements), so `execute` holds a raw
+    # argument to the range its type has — `0 .. 2^63 - 1` for a `@Nat`,
+    # the i64 range for any other `i64` (spec §2.2) — instead of letting
+    # the host wrap it.
+    fn_param_nat: dict[str, list[bool]] = field(default_factory=dict)
     # Functions whose Vera return type is `String` (after alias
     # resolution).  Used by ``execute()`` to decode the (ptr, len)
     # pair returned by such functions back into a Python `str` for
@@ -276,15 +282,13 @@ def compile(
     ``expr_semantic_types`` is the checker's resolved-type side-table
     (``CheckerArtifacts.expr_semantic_types``), keyed by ``ast.span_key``.
     The #798 integer-overflow guard consults it to classify an arithmetic
-    operand as ``@Int`` (i64) vs ``@Nat`` (u64) using the *same* resolved
-    type the verifier's ``int_overflow`` obligation uses, so the runtime
-    guard fires at exactly the sites — and with the exact signed/unsigned
-    range — the verifier obligates (keeping codegen in lockstep with
-    ``vera/verifier.py``).  When omitted (a ``transform -> compile`` caller
-    that skipped typecheck), the guard falls back to the AST-only classifier,
-    which is sound for slot-/call-typed operands but cannot disambiguate a
-    bare-literal operand's Int-vs-Nat context — such callers should thread
-    the table to stay precise.
+    operand as ``@Int`` or ``@Nat`` using the *same* resolved type the
+    verifier's ``int_overflow`` obligation uses, so the runtime guard fires
+    at exactly the sites the verifier obligates (keeping codegen in lockstep
+    with ``vera/verifier.py``).  When omitted (a ``transform -> compile``
+    caller that skipped typecheck), the guard falls back to the AST-only
+    classifier, which reads each operand's declaration the way the checker
+    does.
 
     ``expr_target_types`` is the checker's *target*-type side-table
     (``CheckerArtifacts.expr_target_types``): the ``expected`` type each
@@ -292,10 +296,9 @@ def compile(
     codegen dual of the verifier's ``_target_type_of`` (#747), and the #820
     enabler: it lets code generation recover the per-component *target* type
     at a construction / array / if-join site — which the erased WASM layout
-    cannot — so the @Nat -> @Int widening guard (#813) fires at a tuple
-    component, array element, and heterogeneous-arm slot exactly where the
-    verifier obligates it.  Omitted callers keep the pre-#820 behaviour (those
-    per-component sites stay E531-disclosed, never falsely runtime-counted).
+    cannot — so the narrowing guard fires at a tuple component and an array
+    element exactly where the verifier obligates it.  Omitted callers keep
+    the pre-#820 behaviour.
 
     ``module_artifacts`` (#987) maps each resolved module's path to ITS own
     ``(expr_semantic_types, expr_target_types)`` pair (from
@@ -367,6 +370,29 @@ def dropped_entry_message(
     return "\n".join(lines)
 
 
+#: The range of each integer parameter type a host argument is held to
+#: (spec §2.2): a `@Nat` is the non-negative half of the i64 an `@Int` is.
+_I64_MIN = -(2**63)
+_I64_MAX = 2**63 - 1
+
+
+def _check_int_argument(raw: str, value: int, is_nat: bool) -> None:
+    """Refuse a raw integer argument outside its parameter type's range.
+
+    A host hands an export an i64, and one outside the type's range would
+    be wrapped into it — `2^64` into 0, `-1` into a `@Nat` — and enter the
+    function as a value its type does not hold.  So `vera run --fn f -- …`
+    refuses it before the call."""
+    lo = 0 if is_nat else _I64_MIN
+    if lo <= value <= _I64_MAX:
+        return
+    type_name = "@Nat" if is_nat else "@Int"
+    raise RuntimeError(
+        f"Argument {raw!r} is out of range for parameter type {type_name}: "
+        f"{'a @Nat' if is_nat else 'an @Int'} holds {lo} .. {_I64_MAX}."
+    )
+
+
 def execute(
     result: CompileResult,
     fn_name: str | None = None,
@@ -379,6 +405,7 @@ def execute(
     capture_stderr: bool = False,
     tee_stdout: bool = False,
     http_request: "HttpRequestData | None" = None,
+    check_int_args: bool = True,
 ) -> ExecuteResult:
     """Execute a function from a compiled WASM module.
 
@@ -413,6 +440,12 @@ def execute(
         JSON mode and tests, broken for animations and TUIs).
         ``cmd_run`` text mode opts in so interactive output appears
         in real time (#543).
+    check_int_args : bool
+        If *True* (the default), an integer in ``args`` outside its
+        parameter type's range (a ``@Nat`` holds ``0 .. 2^63 - 1``, an
+        ``@Int`` the i64 range) is refused before the call, as a raw
+        argument always is.  *False* hands it over as an untrusted host
+        would, to exercise a function's own entry guard.
     """
     if not result.ok:
         raise RuntimeError("Cannot execute: compilation had errors")
@@ -1196,11 +1229,17 @@ def execute(
                 buf[ptr + i] = b
             return ptr, len(encoded)
 
+        nat_params = result.fn_param_nat.get(fn_name or "", [])
         parsed: list[int | float] = []
-        for raw, wasm_type in zip(raw_args, vera_params, strict=True):
+        for index, (raw, wasm_type) in enumerate(
+                zip(raw_args, vera_params, strict=True)):
             try:
                 if wasm_type == "i64":
-                    parsed.append(int(raw))
+                    int_arg = int(raw)
+                    _check_int_argument(
+                        raw, int_arg,
+                        index < len(nat_params) and nat_params[index])
+                    parsed.append(int_arg)
                 elif wasm_type == "f64":
                     parsed.append(float(raw))
                 elif wasm_type == "i32":
@@ -1247,6 +1286,19 @@ def execute(
         )
         call_args = [request_ptr]
         given = 1
+
+    if raw_args is None and http_request is None and check_int_args:
+        # A programmatic integer is held to its parameter's range as a raw
+        # one is: outside it, the host would wrap it into the i64 slot.
+        nat_params = result.fn_param_nat.get(fn_name or "", [])
+        if len(nat_params) == given == expected:
+            for index, (call_arg, param) in enumerate(
+                    zip(call_args, func_type.params)):
+                if (isinstance(call_arg, int)
+                        and not isinstance(call_arg, bool)
+                        and str(param) == "i64"):
+                    _check_int_argument(
+                        str(call_arg), call_arg, nat_params[index])
 
     if given != expected:
         exports_str = ", ".join(result.exports)

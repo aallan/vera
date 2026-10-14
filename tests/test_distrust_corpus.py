@@ -192,14 +192,27 @@ def test_no_proof_is_refuted(
 # Premises: the instrument can fail, and it reaches proofs
 # =====================================================================
 
-# #1587's repro: proved at Tier 1, refuted by its one run.
+# #1555's address comparison: proved at Tier 1, refuted by its one run.
+# `mo`'s own `ensures` is Tier 3, so the false proof brings no proved check of
+# its own (tests/test_tester_distrust.py's `_MO`).
 _FALSE_PROOF = """\
 public fn main(-> @Int)
   requires(true)
   ensures(@Int.result < 0)
   effects(pure)
 {
-  0 - 18446744073709551615
+  if mo(7) == mo(7) then { 0 - 1 } else { 1 }
+}
+
+private fn mo(@Int -> @Option<Int>)
+  requires(true)
+  ensures(@Option<Int>.result == Some(@Int.0))
+  effects(pure)
+{
+  match parse_int(show(@Int.0)) {
+    Ok(@Int) -> Some(@Int.0),
+    Err(@String) -> Some(@Int.0)
+  }
 }
 """
 

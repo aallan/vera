@@ -8,7 +8,6 @@ orchestration.
 from __future__ import annotations
 
 import functools
-from collections import Counter
 from collections.abc import Callable
 import typing
 from typing import Any, cast
@@ -362,52 +361,6 @@ class _Join:
         if is_subtype(a_base, b_base) or is_subtype(b_base, a_base):
             return b
         return None
-
-
-def _type_var_occurrences(ty: Type, out: Counter[str]) -> None:
-    """Count into *out* every occurrence of a type variable in *ty*, at any
-    depth: through type arguments, a function type's parameters, result and
-    effect row, and a refinement's base."""
-    if isinstance(ty, TypeVar):
-        out[ty.name] += 1
-    elif isinstance(ty, AdtType):
-        for arg in ty.type_args:
-            _type_var_occurrences(arg, out)
-    elif isinstance(ty, FunctionType):
-        for param in ty.params:
-            _type_var_occurrences(param, out)
-        _type_var_occurrences(ty.return_type, out)
-        _effect_type_var_occurrences(ty.effect, out)
-    elif isinstance(ty, RefinedType):
-        _type_var_occurrences(ty.base, out)
-
-
-def _effect_type_var_occurrences(row: object, out: Counter[str]) -> None:
-    """:func:`_type_var_occurrences` over an effect row's type arguments."""
-    if isinstance(row, ConcreteEffectRow):
-        for inst in row.effects:
-            for arg in inst.type_args:
-                _type_var_occurrences(arg, out)
-
-
-def _instantiation_ends_at_formal(fn_info: FunctionInfo, index: int) -> bool:
-    """Whether the instantiation a call infers from argument *index* types
-    nothing but that argument: every type variable formal *index* mentions
-    occurs exactly once in *fn_info*'s whole signature — so in no other
-    parameter (a callback's parameters and result included), not in the
-    result or the effect row, and not twice in the formal itself.
-
-    Read off the signature's structure, so every callee is answered the
-    same way: `array_length(@Array<T>)` qualifies; `array_any(@Array<T>,
-    fn(T -> Bool))`, whose callback reads the elements at `T`, does not."""
-    counts: Counter[str] = Counter()
-    for param in fn_info.param_types:
-        _type_var_occurrences(param, counts)
-    _type_var_occurrences(fn_info.return_type, counts)
-    _effect_type_var_occurrences(fn_info.effect, counts)
-    formal: Counter[str] = Counter()
-    _type_var_occurrences(fn_info.param_types[index], formal)
-    return bool(formal) and all(counts[var] == 1 for var in formal)
 
 
 def _names(name: str) -> Callable[[str], bool]:
@@ -861,36 +814,10 @@ class CallsMixin:
                 # check (Int <: Nat holds).  Record the instantiated
                 # formal as each argument's target now, so the verifier's
                 # @Nat narrowing walker can obligate it.
-                #
-                # #1503: except a COMPOSITE argument carrying a pure-literal
-                # subtraction at a formal whose instantiation types nothing
-                # else in the callee's signature.  `array_length([0 - 1, 5])`
-                # infers `T = Nat` from the literal itself, because the
-                # checker types `0 - 1` bottom-up as `Nat`; recorded as the
-                # literal's target, it has the construction-position element
-                # leg (#1440) obligate and guard -1 against it — E503 and a
-                # trap on a program whose value is 2.  That instantiation
-                # ends at this call: nothing past it is typed by it, so
-                # declining it declines no fact anything downstream reads.
-                # A formal whose variables reach anything else keeps its
-                # target, as a scalar argument does since #747: the result
-                # (`array_reverse`, `id`), where the instantiation leaves
-                # through the call and is read as a declaration (#1541);
-                # and another parameter, which the callee reads at the same
-                # instantiation — `array_any`'s callback takes each element
-                # as its `@Nat`, so -1 arrived there as 18446744073709551615
-                # in a program that verified clean.
                 if self.expr_target_types is not None:
-                    for index, (c_arg, c_pt) in enumerate(
-                            zip(args, param_types)):
+                    for c_arg, c_pt in zip(args, param_types):
                         key = ast.span_key(c_arg)
                         if key is None or contains_typevar(c_pt):
-                            continue
-                        if (_instantiation_ends_at_formal(fn_info, index)
-                                and narrowing.carries_literal_subtraction(
-                                    c_arg)
-                                and not narrowing.holds_literal_subtraction(
-                                    c_arg)):
                             continue
                         self.expr_target_types[key] = c_pt
 
@@ -2049,31 +1976,11 @@ class CallsMixin:
         # consults the return, so overwriting lost the `nat_bind` that
         # conformance program exists to pin (the one corpus mover on the
         # first shape of this change).
-        #
-        # #1503: except where the instantiation is the argument's OWN
-        # bottom-up type and that type is the one the shared classifier
-        # refutes.  `W(0 - 3)` infers `A = Nat` because `0 - 3` is two
-        # non-negative literals; recording that `Nat` as the argument's
-        # target turned a store of -3 into a field of its own type into a
-        # narrowing — E503 at verify and a trapping guard at run time, on a
-        # program that reads the field back at `@Int` and was valid on
-        # `main`.  A target the context forced is untouched (it was recorded
-        # above, through `expected`), and so is an inferred one whose
-        # argument carries no pure-literal subtraction, where the checker's
-        # type is the value's type.  The narrowing such a value can meet is
-        # obligated where a pattern binds it at a scalar position, by the
-        # legs that know the type it is bound at (`vera.narrowing`); a
-        # pattern that binds it within a COMPOSITE is the context of the
-        # construction instead (`_register_pattern_reads`).
+
         if self.expr_target_types is not None:
-            for c_arg, c_ft, declared_ft in zip(
-                    expr.args, field_types, ci.field_types):
+            for c_arg, c_ft in zip(expr.args, field_types):
                 key = ast.span_key(c_arg)
                 if key is None or contains_typevar(c_ft):
-                    continue
-                if (contains_typevar(substitute(declared_ft,
-                                                expected_mapping))
-                        and narrowing.carries_literal_subtraction(c_arg)):
                     continue
                 recorded = self.expr_target_types.setdefault(key, c_ft)
                 if (isinstance(c_arg, ast.ConstructorCall)

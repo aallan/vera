@@ -834,7 +834,7 @@ public fn abs(@Int -> @Nat)
   effects(pure)
 ```
 
-Returns the absolute value of an integer. The result type is `Nat` because absolute values are always non-negative. Both `Nat` and `Int` are `i64` at the WASM level, so this involves no runtime conversion.
+Returns the absolute value of an integer. The result type is `Nat` because absolute values are always non-negative. Both `Nat` and `Int` are `i64` at the WASM level, so this involves no runtime conversion.  One argument has an absolute value no `Nat` holds: `-9223372036854775808`, whose absolute value is `2^63` (§2.2).  The call traps there as an `overflow`, and carries the overflow obligation of §6.4.3 at the call site — proved where a precondition or path condition excludes that argument, a runtime check otherwise.
 
 ```
 abs(-42)
@@ -1034,7 +1034,7 @@ public fn nat_to_int(@Nat -> @Int)
   effects(pure)
 ```
 
-Converts a natural number to a signed integer. This is a no-op at runtime — both types share the same representation (i64). The postcondition captures the invariant that the result is non-negative.
+Converts a natural number to a signed integer. This is a no-op at runtime — both types share the same representation (i64), and a `Nat` holds `0 .. 2^63 - 1`. The postcondition captures the invariant that the result is non-negative.  It is never needed to widen: a `Nat` is an `Int` as it stands (§2.2.1), and `nat_to_int` serves only where an operation on `Nat` values is meant to give an `Int` (`nat_to_int(@Nat.1) - @Nat.0` may be negative where `@Nat.1 - @Nat.0` traps).
 
 ```
 nat_to_int(abs(42))
@@ -1478,6 +1478,7 @@ Parses a non-negative integer from a string. After stripping whitespace, the rem
 Error messages:
 - `"empty string"` — the input is empty or contains only whitespace
 - `"invalid digit"` — a non-digit character was encountered
+- `"out of range"` — the numeral is above `9223372036854775807`, the largest `Nat` (§2.2)
 
 <!-- vera:skip-parse category="FRAGMENT" reason="bare parse_nat calls with their results in comments" -->
 ```vera
@@ -1487,6 +1488,7 @@ parse_nat("007")       -- Ok(7)   (leading zeros allowed)
 parse_nat("abc")       -- Err("invalid digit")
 parse_nat("")          -- Err("empty string")
 parse_nat("  ")        -- Err("empty string")
+parse_nat("9223372036854775808")  -- Err("out of range")
 ```
 
 #### parse_int
