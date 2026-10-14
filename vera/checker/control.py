@@ -296,8 +296,9 @@ class ControlFlowMixin:
                     if (joined is None and outcome.builtin
                             and self._fits(result_type, arm_ty)):
                         # A built-in's type variable the join leaves alone
-                        # (`map_new()`'s): this arm's type, as an arm after
-                        # an open arm always gave.
+                        # (one a failed substitution left, #1688): this
+                        # arm's type, as an arm after an open arm always
+                        # gave.
                         joined = arm_ty
                 else:
                     joined = self._join(arm_ty, result_type)

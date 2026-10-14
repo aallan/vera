@@ -167,9 +167,10 @@ class JoinOutcome(typing.NamedTuple):
     the argument judgement (`_fits`, one position at a time) does not see.
     *builtin* is whether it failed only where a built-in's type variable
     met another type, with no variable kept for behaviour on either side:
-    the join neither fills nor refuses such a variable (it can be one no
-    argument fixed, as `map_new()`'s, or stand for a type a failed
-    substitution lost), and a site keeps the verdict it gave it before."""
+    the join neither fills nor refuses such a variable (one a parameter of
+    its call mentions that the arguments left unbound, standing for a type
+    a failed substitution lost, #1688), and a site keeps the verdict it
+    gave it before."""
 
     joined: Type | None
     conflict: bool
@@ -189,8 +190,10 @@ class _Join:
     fixed (`CallsMixin._join`, #1668).
 
     A type variable is open where nothing has fixed it: not the enclosing
-    function's own (*rigid*), not a built-in's (a `#b` variable can stand
-    for a type a failed substitution lost), and nowhere in its own type
+    function's own (*rigid*), not a built-in's (a `#b` variable left after
+    the call is one a parameter mentions that the arguments did not bind,
+    standing for a type a failed substitution lost; one no parameter
+    mentions is minted fresh, `_mint_free_builtin_vars`), and nowhere in its own type
     inside a function type or a data type's position a constructor field
     holds a function over (`_behaviour_params`), since code generation
     compiles the behaviour there at a type of its own choosing.  Each open
@@ -985,7 +988,36 @@ class CallsMixin:
                     error_code="E125",
                 )
 
+        if fn_info.forall_vars:
+            return_type = self._mint_free_builtin_vars(
+                fn_info, mapping, return_type)
         return return_type
+
+    def _mint_free_builtin_vars(self, fn_info: FunctionInfo,
+                                bound: typing.Mapping[str, Type],
+                                result: Type) -> Type:
+        """*result*, with each of the built-in *fn_info*'s type variables
+        that no parameter type mentions, and so no argument could bind,
+        minted fresh, as a constructor mints a type parameter no field
+        holds (#1668).
+
+        `map_new()` has no parameters: its `K` and `V` are open positions
+        the call leaves, which a join fills (`[map_new(), map_insert(...)]`
+        is one map type).  A variable a parameter mentions that the
+        arguments left unbound (*bound* lacks it) stays the built-in's: it
+        stands for a type a failed substitution lost (`map_values` read
+        through a refinement alias, #1688), and the join leaves it alone.
+        Read off the signature, so no built-in is named."""
+        mentioned: Counter[str] = Counter()
+        for param in fn_info.param_types:
+            _type_var_occurrences(param, mentioned)
+        fresh: dict[str, Type] = {
+            tv: self._fresh_typevar(strip_builtin_typevar_marker(tv))
+            for tv in fn_info.forall_vars or ()
+            if BUILTIN_TYPEVAR_MARKER in tv and tv not in bound
+            and not mentioned[tv]
+        }
+        return substitute(result, fresh) if fresh else result
 
     def _check_apply_fn(self, args: tuple[ast.Expr, ...],
                         node: ast.Node) -> Type | None:

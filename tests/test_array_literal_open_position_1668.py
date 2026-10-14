@@ -20,9 +20,12 @@ each part is held to that joined type.  One function computes the join
 name, so one that occurs twice takes one type.  It does not fill a type
 variable where code generation compiles behaviour for it (inside a function
 type, or under a data type's parameter a constructor field holds a function
-over), nor a built-in's, and those shapes keep the verdict each site gave
-them, bar a `match` arm such a variable would have to take the type of.  A
-position no part fills stays open, and the context fills it as before.
+over), nor a built-in's that a parameter of its call mentions and the
+arguments left unbound, and those shapes keep the verdict each site gave
+them, bar a `match` arm a variable withheld for behaviour would have to take
+the type of.  A built-in's variable no parameter mentions (`map_new()`'s) is
+minted fresh at the call and filled.  A position no part fills stays open,
+and the context fills it as before.
 
 The class instrument crosses the site the parts are joined at (an array
 literal's elements, an `if`'s branches, a `match`'s arms), the type
@@ -814,11 +817,15 @@ def test_mutant_a_match_arm_refused_in_an_argument_is_reported_once() -> None:
 # from its arguments and the type it is expected at, never from a join, so
 # it compiles `mk(())` at a default of its own (`$mk$Bool`), and a closure
 # the join called `fn(Nat -> Nat)` would be called with an `@Nat` it was
-# not compiled for.  Nor does it fill a built-in's type variable, which can
-# be one no argument fixed (`map_new()`) or stand for a type a failed
-# substitution lost (`map_values` read through a refinement alias, whose
-# values here are `Int`).  For those shapes each site keeps the verdict it
-# gave before: the literal holds each element to the element type one
+# not compiled for.  Nor does it fill a built-in's type variable that a
+# parameter of the call mentions and the arguments left unbound: that one
+# stands for a type a failed substitution lost (`map_values` read through
+# a refinement alias, whose values here are `Int`, #1688).  A built-in's
+# variable no parameter mentions is one no argument could fix
+# (`map_new()`'s `K` and `V`): the call mints it fresh, as a constructor
+# mints a type parameter no field holds, and the join fills it.  For the
+# shapes the join leaves, each site keeps the verdict it gave before: the
+# literal holds each element to the element type one
 # position at a time and keeps its first element's type; an `if`
 # synthesizes the open branch again against the other, which fixes a call
 # whose result is a data type (`mkbox(())`, `map_new()`) where it is
@@ -951,15 +958,29 @@ SHAPES: dict[str, _Shape] = {
     "leak-disagree": _Shape(
         ("map_values(@M.0)[0]", '"s"'),
         {"literal": (None, "V"), "if": (1, None), "match": (None, "String")}),
+    # A built-in's variable no parameter mentions is fresh: filled.
     "map-agree": _Shape(
         ("map_new()", 'map_insert(map_new(), "k", 1)'),
-        {"literal": (None, "Map<K, V>"), "if": (None, "Map<String, Nat>"),
-         "match": (None, "Map<String, Nat>")}),
+        _everywhere(None, "Map<String, Nat>")),
     "map-disagree": _Shape(
         ("map_new()", 'map_insert(map_new(), "k", 1)',
-         'map_insert(map_new(), 1, "v")'),
-        {"literal": (None, "Map<K, V>"), "if": (2, None),
-         "match": (2, None)}),
+         'map_insert(map_new(), 5, "v")'),
+        {"literal": (2, "Map<String, Nat>"), "if": (2, None),
+         "match": (2, None)},
+        description=(
+            "Array literal element 2 has type Map<Nat, String>, but the "
+            "literal's element type is Map<String, Nat>, the type of "
+            "element 0, completed by element 1.")),
+    "set-agree": _Shape(
+        ("set_new()", "set_add(set_new(), 5)"),
+        _everywhere(None, "Set<Nat>")),
+    "set-disagree": _Shape(
+        ("set_new()", "set_add(set_new(), 5)", 'set_add(set_new(), "s")'),
+        {"literal": (2, "Set<Nat>"), "if": (2, None), "match": (2, None)},
+        description=(
+            "Array literal element 2 has type Set<String>, but the literal's "
+            "element type is Set<Nat>, the type of element 0, completed by "
+            "element 1.")),
 }
 
 
@@ -1086,24 +1107,98 @@ def test_mutant_a_data_field_holding_a_function_keeps_its_variable() -> None:
         ("E302", *_place(source, literal, literal.index("MkBox(")))]
 
 
-def test_mutant_a_builtin_variable_is_not_filled() -> None:
-    # `map_new()`'s variables are a built-in's: the literal keeps them, as
-    # it did before the join.
+def test_mutant_a_lost_builtin_variable_is_not_filled() -> None:
+    # `map_values`'s `V` is a parameter's, left unbound through the
+    # refinement alias (#1688): the literal keeps it, as it did before the
+    # join.
+    literal = "[map_values(@M.0)[0], 0 - 5]"
+    source = _shape_source(f"array_length({literal})")
+    checked = _checked(source)
+    assert checked.diagnostics == ()
+    assert _literal_types(checked)[_place(source, literal)] == "Array<V>"
+
+
+def test_mutant_a_fresh_builtin_variable_is_filled() -> None:
+    # `map_new()`'s `K` and `V` are mentioned by no parameter: the later
+    # element fills them, and the context meets the joined type.
     literal = '[map_new(), map_insert(map_new(), "k", 1)]'
-    source = _shape_source(f"array_length({literal})")
+    source = _shape_source(f"takes({literal})") .replace(
+        "\nprivate data Box", _TAKES.format(c="Map<Nat, String>")
+        + "\nprivate data Box", 1)
     checked = _checked(source)
-    assert checked.diagnostics == ()
-    assert _literal_types(checked)[_place(source, literal)] == (
-        "Array<Map<K, V>>")
-
-
-def test_mutant_a_builtin_variable_keeps_the_match_verdict() -> None:
-    # A `match` cannot synthesize its earlier arms again: an arm after
-    # `map_new()` gives the match its type, as it did before the join.
-    literal = ('[match @Nat.0 { 0 -> map_new(), '
-               '_ -> map_insert(map_new(), "k", 1) }]')
-    source = _shape_source(f"array_length({literal})")
-    checked = _checked(source)
-    assert checked.diagnostics == ()
+    assert _where(checked) == [("E202", *_place(source, literal))]
     assert _literal_types(checked)[_place(source, literal)] == (
         "Array<Map<String, Nat>>")
+
+
+def test_mutant_a_lost_builtin_variable_keeps_the_match_verdict() -> None:
+    # A `match` cannot synthesize its earlier arms again: an arm after a
+    # lost variable gives the match its type, as it did before the join.
+    literal = "[match @Nat.0 { 0 -> map_values(@M.0)[0], _ -> 0 - 5 }]"
+    source = _shape_source(f"array_length({literal})")
+    checked = _checked(source)
+    assert checked.diagnostics == ()
+    assert _literal_types(checked)[_place(source, literal)] == "Array<Int>"
+
+
+# A fresh built-in variable meets a context that disagrees with the type
+# the later element gives it: refused where the context holds the literal
+# (E202), at every site.
+
+_FRESH_CONTEXT_PARTS = ("map_new()", 'map_insert(map_new(), "k", 1)')
+
+
+@pytest.mark.parametrize("site", SITES)
+def test_fresh_builtin_variable_meets_its_context(site: str) -> None:
+    site_text, _offsets, _inner = _site(site, list(_FRESH_CONTEXT_PARTS))
+    literal = site_text if site == "literal" else f"[{site_text}]"
+    source = _fn(f"takes({literal})", params="@M, @Bool, @Nat",
+                 pre=_SHAPES_PRE + _TAKES.format(c="Map<Nat, String>"))
+    checked = _checked(source)
+    assert _where(checked) == [("E202", *_place(source, literal))]
+    assert _literal_types(checked)[_place(source, literal)] == (
+        "Array<Map<String, Nat>>")
+
+
+# R69's two programs for the fresh built-in variable, refused at check and
+# never run: two later elements that give `map_new()`'s variables
+# different types, and a context that gives them a third, which f3b4415d
+# ran with a map's `1` read as a `String`.
+
+_FRESH_DISAGREE_PROGRAM = """public fn main(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_length([map_new(), map_insert(map_new(), "k", 1), map_insert(map_new(), 5, "v")])
+}
+"""
+
+_FRESH_CONTEXT_PROGRAM = """private fn show_value(@Array<Map<Nat, String>> -> @String)
+  requires(array_length(@Array<Map<Nat, String>>.0) > 1)
+  ensures(true)
+  effects(pure)
+{
+  let @Array<String> = map_values(@Array<Map<Nat, String>>.0[1]);
+  if array_length(@Array<String>.0) > 0 then { @Array<String>.0[0] } else { "none" }
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.print(string_concat("[", string_concat(show_value([map_new(), map_insert(map_new(), "k", 1)]), "]")))
+}
+"""
+
+
+@pytest.mark.parametrize(("program", "code"), [
+    (_FRESH_DISAGREE_PROGRAM, "E162"), (_FRESH_CONTEXT_PROGRAM, "E202")],
+    ids=["disagree", "context"])
+def test_run_fresh_builtin_variable_is_refused_before_it_runs(
+        program: str, code: str) -> None:
+    ran = pipeline.run(program)
+    assert ran.module is None
+    assert ran.compiled is not None and ran.compiled.checked is not None
+    assert [d.error_code for d in ran.compiled.checked.errors] == [code]

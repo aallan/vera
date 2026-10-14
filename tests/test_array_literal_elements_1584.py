@@ -465,10 +465,11 @@ KEPT: dict[str, _Kept] = {
     "none_then_some": _Kept("[None, Some(1)]", "Array<Option<Nat>>"),
     "some_then_none": _Kept("[Some(1), None]", "Array<Option<Nat>>"),
     "ok_then_err": _Kept('[Ok(1), Err("e")]', "Array<Result<Nat, String>>"),
-    # A built-in's type variables are not filled (#1668): one can stand for
-    # a type a failed substitution lost.
+    # `map_new()`'s variables are mentioned by no parameter, so the call
+    # mints them fresh and the later element fills them (#1668).
     "fresh_map_then_map": _Kept(
-        '[map_new(), map_insert(map_new(), "k", 1)]', "Array<Map<K, V>>"),
+        '[map_new(), map_insert(map_new(), "k", 1)]',
+        "Array<Map<String, Nat>>"),
     "map_then_fresh_map": _Kept(
         '[map_insert(map_new(), "k", 1), map_new()]',
         "Array<Map<String, Nat>>"),
