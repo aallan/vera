@@ -230,6 +230,10 @@ NOT_NAMESPACES: dict[str, str] = {
         "keyed by a declaration's IDENTITY, a memo of `_fn_info_for_decl`"),
     "TypeChecker._literal_range_verdict": (
         "keyed by a literal's source span, a memo of the range check"),
+    "TypeChecker._forward_effect_decls": (
+        "the first declaration of each effect name, read for an E340's "
+        "message before registration; the effect namespace's row holds "
+        "the duplicates"),
     "TypeChecker.expr_types": "keyed by source span, the LSP's side table",
     "TypeChecker.expr_semantic_types": "keyed by source span, for the verifier",
     "TypeChecker.expr_target_types": "keyed by source span, for codegen",

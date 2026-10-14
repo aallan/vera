@@ -791,14 +791,28 @@ class ResolutionMixin:
         info = self.env.lookup_effect(ref.name)
         op = (next(iter(info.operations.values()), None)
               if info is not None else None)
+        decl = self._forward_effect_decls.get(ref.name)
+        first: tuple[str, str] | None = None
         if op is not None:
-            sig = (", ".join(pretty_type(p) for p in op.param_types)
-                   + " -> " + pretty_type(op.return_type))
+            first = (op.name,
+                     ", ".join(pretty_type(p) for p in op.param_types)
+                     + " -> " + pretty_type(op.return_type))
+        elif decl is not None and decl.operations:
+            # Declared further down the file, so not registered yet: the
+            # declaration's own text, as the registered signature reads.
+            op_decl = decl.operations[0]
+            first = (op_decl.name,
+                     ", ".join(ast.format_type_expr(t).replace("@", "")
+                               for t in op_decl.param_types)
+                     + " -> "
+                     + ast.format_type_expr(op_decl.return_type).replace("@", ""))
+        if first is not None:
+            name, sig = first
             replace = (
                 f", and call a function under its own name in place of each "
-                f"of its operations: private fn {op.name}_of(...) with the "
+                f"of its operations: private fn {name}_of(...) with the "
                 f"operation's signature ({sig}), called in place of "
-                f"{ref.name}.{op.name}(...)"
+                f"{ref.name}.{name}(...)"
             )
         else:
             replace = ""

@@ -599,6 +599,7 @@ class TypeChecker(
         # unknown name (E136 / E338).
         self._forward_type_names: frozenset[str] = frozenset()
         self._forward_effect_names: frozenset[str] = frozenset()
+        self._forward_effect_decls: dict[str, ast.EffectDecl] = {}
         # #1489: each import whose module did not resolve, with its name list
         # (``None`` for a wildcard), so an E136 on a name it lists can say
         # which import to fix.  Set by `_register_modules`.

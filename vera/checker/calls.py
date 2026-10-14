@@ -2565,19 +2565,23 @@ class CallsMixin:
         self, op_info: OpInfo, node: ast.Node,
     ) -> None:
         """E340 (`vera.lowering` rule 6, #1681): an operation of a
-        user-declared effect, called under a row that does not name the
-        effect.
+        user-declared effect, called where the row in force does not name
+        the effect.
 
-        A row naming the effect is refused at the entry, a handler for it at
-        the handler (which adds the effect to the row its body is checked
-        under), and a pure row's operations at the function (E122), so this
-        call is the one use of the effect none of them refuses.  A bare call
-        outside a handler is E217's."""
+        A row naming the effect is refused at the entry, and a handler for
+        it at the handler, which adds the effect to the row its body is
+        checked under, so a call under either is not refused twice.  Every
+        other call is refused here: under a row that does not name it, a
+        pure one too (whose function's E122 reports the operation beside
+        it), and where no function's row is in force, a refinement predicate
+        of an alias, a data field or a signature, which is checked before
+        its function installs its row.  A bare call outside a handler is
+        E217's."""
         effect = op_info.parent_effect
         if effect_operation_lowerable(effect):
             return
         row = self.env.current_effect_row
-        if not isinstance(row, ConcreteEffectRow) or any(
+        if isinstance(row, ConcreteEffectRow) and any(
                 e.name == effect for e in row.effects):
             return
         self._error(
@@ -2590,8 +2594,8 @@ class CallsMixin:
                 "through the host, and State<T> and Exn<E> through their "
                 "handlers.  A user-declared effect has neither: a handler for "
                 "one is refused (E340), and so is a row naming one, so an "
-                "operation of one called under a row that does not name it is "
-                "the use left, and it is refused at the call.  A built-in "
+                "operation of one called where no row names it is the use "
+                "left, and it is refused at the call.  A built-in "
                 "effect's operation lowers under any row; that a row which is "
                 "not pure does not hold one to it is #1702."
             ),

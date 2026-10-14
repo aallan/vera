@@ -1509,15 +1509,39 @@ def _op_source(row: str, use: str, enclosing: str, op: str) -> str:
 
 def _op_refusal(row: str, use: str, enclosing: str,
                 op: str) -> tuple[str, ...] | None:
-    """The rule: under a pure row the function's E122 reports the operation,
-    beside the E125 that applying a closure whose row names `IO` gets there,
-    as at the base.  Under any other row that does not name the effect, a
-    user-declared effect's operation is refused at the call (E340), and a
-    built-in effect's is accepted, as at the base (#1702)."""
+    """The rule: a user-declared effect's operation is refused at the call
+    (E340) under any row that does not name the effect, a pure one too.  A
+    pure row's function also draws its E122, beside the E125 that applying a
+    closure whose row names `IO` gets there, as at the base.  A built-in
+    effect's operation under `<IO>` is accepted, as at the base (#1702)."""
+    codes: tuple[str, ...] = ("E340",) if op == "user" else ()
     if enclosing == "pure":
-        applies_io = use == "applied" and row.startswith("IO")
-        return ("E125", "E122") if applies_io else ("E122",)
-    return ("E340",) if op == "user" else None
+        if use == "applied" and row.startswith("IO"):
+            codes += ("E125",)
+        return codes + ("E122",)
+    return codes or None
+
+
+#: A refinement predicate, OP its operation call, in each place one is
+#: checked with no row of its function's in force.
+_PREDICATE_PLACES: dict[str, str] = {
+    "alias": (
+        "type Pos = { @Int | OP > 0 };\n\n"
+        "private fn f(@Pos -> @Int)\n  requires(true)\n  ensures(true)\n"
+        "  effects(pure)\n{\n  1\n}\n\n" + _main("f(5)")),
+    "data field": (
+        "private data Box { MkBox({ @Int | OP > 0 }) }\n\n"
+        + _main("match MkBox(5) {\n    MkBox(@Int) -> 1\n  }")),
+    "signature": (
+        "private fn f(@{ @Int | OP > 0 } -> @Int)\n  requires(true)\n"
+        "  ensures(true)\n  effects(pure)\n{\n  1\n}\n\n" + _main("f(5)")),
+    "where helper signature": (
+        "private fn f(@Unit -> @Int)\n  requires(true)\n  ensures(true)\n"
+        "  effects(pure)\n{\n  h(5)\n}\nwhere {\n"
+        "  fn h(@{ @Int | OP > 0 } -> @Int)\n    requires(true)\n"
+        "    ensures(true)\n    effects(pure)\n  {\n    1\n  }\n}\n\n"
+        + _main("f(())")),
+}
 
 
 class TestEffectRow:
@@ -1614,13 +1638,33 @@ class TestEffectRow:
             assert {o.status for o in verified.obligations} == {"verified"}
             return
         _holds(source, refused, None, backend=op == "user")
-        if refused == ("E340",):
+        placed = _placed(vera_pipeline.check(source).errors)
+        if op == "user":
+            assert ("E340", *_locate(source, "Counter.tick")) in placed
+        if enclosing == "pure":
+            # E122 at the function, as at the base.
+            assert ("E122", *_locate(source, "forall<E> fn f")) in placed
+
+    @pytest.mark.parametrize("op", sorted(_OPS))
+    @pytest.mark.parametrize("place", sorted(_PREDICATE_PLACES))
+    def test_an_operation_in_a_refinement_predicate(
+        self, place: str, op: str,
+    ) -> None:
+        """A predicate is checked before the row of the function it guards
+        is in force, or with none: an alias's, a data field's, a signature's
+        (a `where` helper's under its parent's row).  A user-declared
+        effect's operation there is refused at the call; a built-in one's
+        runs, as at the base (#1702)."""
+        call = ("Counter.tick(())" if op == "user"
+                else "Random.random_int(1, 1)")
+        source = ((_COUNTER if op == "user" else "")
+                  + _PREDICATE_PLACES[place].replace("OP", call))
+        if op == "user":
+            _holds(source, ("E340",), None)
             assert _placed(vera_pipeline.check(source).errors) == [
                 ("E340", *_locate(source, "Counter.tick"))]
-        else:
-            # E122 at the function, as at the base.
-            assert ("E122", *_locate(source, "forall<E> fn f")) in _placed(
-                vera_pipeline.check(source).errors)
+            return
+        _holds(source, None, 1)
 
 
 # =====================================================================
@@ -1925,6 +1969,27 @@ class TestTheFixCompilesClean:
         named = _between(fix, "effects(", " when it performs no others")
         fixed = source.replace("  effects(<E>)\n{", f"  {named}\n{{")
         assert "effects(<E>);" in fixed and fixed != source
+        _holds(fixed, None, 7)
+
+    @pytest.mark.parametrize("row", ("function", "alias"))
+    def test_a_row_naming_an_effect_declared_later(self, row: str) -> None:
+        """The message is the one a row before the declaration gets: the
+        operation it names is read from the declaration when the effect is
+        not registered yet (CodeRabbit, PR #1699)."""
+        if row == "function":
+            source = _REPRO_1681_USER.replace(_COUNTER, "") + _COUNTER
+        else:
+            source = ("type F = fn(Unit -> Int) effects(<Counter>);\n\n"
+                      + _COUNTER + _main("7"))
+        fix = _only_fix(source, "E340")
+        assert fix == _only_fix(_REPRO_1681_USER, "E340"), fix
+        if row == "function":
+            fixed = source.replace("effects(<Counter>)", "effects(pure)").replace(
+                "Counter.tick(())", "tick_of(())") + (
+                "\nprivate fn tick_of(@Unit -> @Int)\n  requires(true)\n"
+                "  ensures(true)\n  effects(pure)\n{\n  1\n}\n")
+        else:
+            fixed = source.replace("effects(<Counter>)", "effects(pure)")
         _holds(fixed, None, 7)
 
     def test_an_operation_under_a_row_without_its_effect(self) -> None:

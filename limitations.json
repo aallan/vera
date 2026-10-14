@@ -494,7 +494,7 @@
       "issues": [372],
       "rows": {
         "KNOWN_ISSUES.md#limitations": [
-          "The Inference effect cannot be handled in user code — `handle[Inference]` is rejected. Full handler support enables mocking, caching, and routing strategies (Milestone 2)."
+          "The Inference effect cannot be handled in user code — `handle[Inference]` is rejected. Full handler support enables mocking, caching, and routing strategies (Milestone 2). Until then a user-declared effect is a declaration only: no row may name it and no handler handles it (`E340`)."
         ],
         "vera/README.md#limitations": [
           "**Inference: no user handlers**",
@@ -505,7 +505,7 @@
         ],
         "SKILL.md#limitations": [
           "`Inference` effect has no user-defined handlers",
-          "`Inference` is always host-backed (dispatches to a real API). User-defined handlers for mocking, local models, or replay are not supported."
+          "`Inference` is always host-backed (dispatches to a real API). User-defined handlers for mocking, local models, or replay are not supported, and a user-declared effect is a declaration only: no row may name it and no handler handles it (`E340`)."
         ]
       }
     },

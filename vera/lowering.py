@@ -566,10 +566,11 @@ def effect_operation_lowerable(effect_name: str) -> bool:
 
     A built-in effect's operations are lowered, through the host and, for
     ``State`` and ``Exn``, through their handlers; a user-declared effect's
-    are lowered nowhere.  The checker holds an operation to the row it is
-    called under only when that row is pure (E122), so under any other row
-    that does not name the effect the call is a use no row entry and no
-    handler refuses, and the checker refuses it there.  Code generation
+    are lowered nowhere.  A row naming the effect is refused at the entry
+    and a handler for it at the handler, so the checker refuses a call of
+    one wherever the row in force does not name it: under another row, a
+    pure one too, and where no function's row is in force yet, in a
+    refinement predicate.  Code generation
     lowers an operation by its effect's name and has no site that tells
     such a call apart: it emits a call to a host import no host provides,
     and the module does not load.
