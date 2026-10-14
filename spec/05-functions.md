@@ -397,7 +397,7 @@ private forall<A, B> fn option_map(@Option<A>, fn(A -> B) effects(<E>) -> @Optio
 }
 ```
 
-The stored function value is applied with `apply_fn` (Section 11.10.5). The effect variable `E` means: "whatever effects the function argument has, this function also has."
+The stored function value is applied with `apply_fn` (Section 11.10.5). The effect variable `E` means: "whatever effects the function argument has, this function also has." The reference implementation refuses a row variable in a function's own row (`E340`, Chapter 7, Section 7.6), and accepts one in a parameter's function type.
 
 ## 5.10 Function Type Summary
 

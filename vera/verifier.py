@@ -6320,10 +6320,12 @@ class ContractVerifier:
         carries none, so it is emitted beside them.  What remains is a
         function code generation does not emit AT ALL — the same
         :data:`~vera.narrowing.COMPILABLE_EFFECTS` intersection
-        :py:meth:`_effect_op_formal_guarded` performs, for the same reason: a
-        user-declared effect drops its enclosing function with a loud E603,
-        and a Tier-3 status there would promise a runtime check for a module
-        with no code in it.
+        :py:meth:`_effect_op_formal_guarded` performs, for the same reason:
+        code generation emits no function whose row names an entry outside
+        that roster (a user-declared effect, or a row variable in the
+        function's own row), which the checker refuses at the entry (E340,
+        `vera.lowering` rule 6), and a Tier-3 status there would promise a
+        runtime check for a module with no code in it.
 
         The effect row is what this mirrors, and not the whole of codegen's
         compilability walk: a declaration can also be dropped for an
@@ -16315,11 +16317,13 @@ class ContractVerifier:
         Two conditions, and both are about whether a guard can exist at all.
 
         First, the OPERATION has to be one codegen lowers: a user-declared
-        effect makes its whole enclosing function an E603 skip, so there is
-        no run for a guard to protect and claiming one would repeat #1268's
-        promise about a runtime that is never reached.  The roster is
-        :data:`~vera.narrowing.COMPILABLE_EFFECTS`, read by codegen's own
-        `_is_compilable` to make the same decision.
+        effect's operation is lowered nowhere, and the checker refuses every
+        use of one (E340, `vera.lowering` rule 6: a row naming the effect, a
+        handler for it, a call of its operation under a row that does not
+        name it), so there is no run for a guard to protect and claiming one
+        would repeat #1268's promise about a runtime that is never reached.
+        The roster is :data:`~vera.narrowing.COMPILABLE_EFFECTS`, read by
+        codegen's own `_is_compilable` to make the same decision.
 
         Second, the FORMAL has to resolve to a concrete `@Nat` or `@Int`,
         which is what codegen's registry records and what its narrowing /

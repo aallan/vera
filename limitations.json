@@ -234,15 +234,15 @@
       "issues": [294],
       "rows": {
         "KNOWN_ISSUES.md#limitations": [
-          "Effect row variables cannot be unified, so higher-order functions polymorphic over their effect rows are not expressible. Full effect polymorphism is Milestone 4 work."
+          "Effect row variables cannot be unified, and code generation lowers none in a function's own row, which the checker refuses there (`E340`) and accepts in a parameter's function type, so higher-order functions polymorphic over their effect rows are not expressible. Full effect polymorphism is Milestone 4 work."
         ],
         "vera/README.md#limitations": [
           "**No effect row variable unification**",
-          "Subeffecting implemented; `forall<E>` row variables permissive (full row-variable unification not implemented)"
+          "Subeffecting implemented; a `forall<E>` row variable refused in a function's own row (`E340`) and permissive in a function type's (full row-variable unification not implemented)"
         ],
         "SKILL.md#limitations": [
           "Effect row variable unification",
-          "Effect rows containing type variables (e.g. `<E>` in a generic function) are not unified with concrete effect rows at call sites. Functions that abstract over effects require explicit row declarations."
+          "A function's own row may not name a type variable (`effects(<E>)` is `E340`), and one in a parameter's function type is not unified with concrete effect rows at call sites. Functions that abstract over effects require explicit row declarations."
         ]
       }
     },
@@ -494,7 +494,7 @@
       "issues": [372],
       "rows": {
         "KNOWN_ISSUES.md#limitations": [
-          "The Inference effect cannot be handled in user code — `handle[Inference]` is rejected. Full handler support enables mocking, caching, and routing strategies (Milestone 2)."
+          "The Inference effect cannot be handled in user code — `handle[Inference]` is rejected. Full handler support enables mocking, caching, and routing strategies (Milestone 2). Until then a user-declared effect is a declaration only: no row may name it and no handler handles it (`E340`)."
         ],
         "vera/README.md#limitations": [
           "**Inference: no user handlers**",
@@ -505,7 +505,7 @@
         ],
         "SKILL.md#limitations": [
           "`Inference` effect has no user-defined handlers",
-          "`Inference` is always host-backed (dispatches to a real API). User-defined handlers for mocking, local models, or replay are not supported."
+          "`Inference` is always host-backed (dispatches to a real API). User-defined handlers for mocking, local models, or replay are not supported, and a user-declared effect is a declaration only: no row may name it and no handler handles it (`E340`)."
         ]
       }
     },

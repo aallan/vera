@@ -230,6 +230,10 @@ NOT_NAMESPACES: dict[str, str] = {
         "keyed by a declaration's IDENTITY, a memo of `_fn_info_for_decl`"),
     "TypeChecker._literal_range_verdict": (
         "keyed by a literal's source span, a memo of the range check"),
+    "TypeChecker._forward_effect_decls": (
+        "the first declaration of each effect name, read for an E340's "
+        "message before registration; the effect namespace's row holds "
+        "the duplicates"),
     "TypeChecker.expr_types": "keyed by source span, the LSP's side table",
     "TypeChecker.expr_semantic_types": "keyed by source span, for the verifier",
     "TypeChecker.expr_target_types": "keyed by source span, for codegen",
@@ -819,14 +823,8 @@ CELLS: list[Cell] = [
        "effect E {\n  op a(Unit -> Int);\n  op a(Unit -> Bool);\n}\n\n"
        + _main("1"),
        "E184", surplus=("main.vera", r"^  op a\(")),
-    # Performed where the row declares it: a handler for a user-declared
-    # effect is refused at check (E340), so the use is the qualified call.
-    _c("op/twice-and-performed", "effect_operation", "same_scope",
-       "effect E {\n  op a(Unit -> Int);\n  op a(Unit -> Int);\n}\n\n"
-       + "public fn g(@Unit -> @Int)\n  requires(true)\n  ensures(true)\n"
-         "  effects(<E>)\n{\n  E.a(())\n}\n"
-       + "\n" + _main("1"),
-       "E184", surplus=("main.vera", r"^  op a\(")),
+    # Performed, `op/twice` is refused at its row as well (E340, #1681):
+    # `test_a_duplicate_operation_performed_under_its_row`.
     _c("op/two-effects-share-a-name", "effect_operation", "sibling_scope",
        "effect E1 {\n  op a(Unit -> Int);\n}\n\n"
        "effect E2 {\n  op a(Unit -> Int);\n}\n\n" + _main("3"),
@@ -1251,6 +1249,24 @@ def _check(tmp_path: Path, files: dict[str, str]) -> list[Diagnostic]:
 def _lines_of(pattern: str, source: str) -> list[int]:
     return [source.count("\n", 0, m.start()) + 1
             for m in re.finditer(pattern, source, re.MULTILINE)]
+
+
+def test_a_duplicate_operation_performed_under_its_row(
+    tmp_path: Path,
+) -> None:
+    """`op/twice` performed: the surplus `op a` is the one E184, and the use
+    draws no second error against it.  Performing the operation needs a row
+    naming the effect, which is refused at its entry (E340, #1681): that is
+    the other error, at the row, and there is no third."""
+    main = ("effect E {\n  op a(Unit -> Int);\n  op a(Unit -> Int);\n}\n\n"
+            "public fn g(@Unit -> @Int)\n  requires(true)\n  ensures(true)\n"
+            "  effects(<E>)\n{\n  E.a(())\n}\n\n" + _main("1"))
+    errors = _check(tmp_path, {"main.vera": main})
+    ops = _lines_of(r"^  op a\(", main)
+    row = _lines_of(r"effects\(<E>\)", main)
+    assert sorted((d.error_code, d.location.line) for d in errors) == [
+        ("E184", ops[1]), ("E340", row[0])], [
+        (d.error_code, d.location.line, d.description) for d in errors]
 
 
 _REFUSED = [c for c in CELLS if c.expect != "legal"]

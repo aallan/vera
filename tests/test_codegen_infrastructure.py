@@ -47,7 +47,10 @@ public fn simple(-> @Int)
         assert "simple" in result.exports
 
     def test_unsupported_effect_skipped(self) -> None:
-        """Functions with non-IO effects produce warnings, not errors."""
+        """A function whose row names an effect code generation does not
+        lower is dropped, with `vera.lowering` rule 6's internal error
+        (E699): the checker refuses the row (E340, #1681), so only an
+        unchecked compile reaches it.  The rest of the module compiles."""
         source = """\
 effect Counter {
   op tick(Unit -> Unit);
@@ -64,11 +67,8 @@ public fn simple(-> @Int)
 { 42 }
 """
         result = _compile(source)
-        errors = [d for d in result.diagnostics if d.severity == "error"]
-        warnings = [d for d in result.diagnostics if d.severity == "warning"]
-        assert not errors
-        assert len(warnings) > 0
-        # Unsupported effect function is skipped
+        assert [d.error_code for d in result.diagnostics] == ["E699"]
+        # The function whose row names the effect is dropped
         assert "count" not in result.exports
         # Pure function still compiles
         assert "simple" in result.exports

@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests.checker_helpers import _check_err, _check_ok
+from tests.checker_helpers import _check_err, _check_ok, _errors
 from tests.codegen_helpers import _compile, _run, wat_calls
 from tests.verifier_helpers import _verify_ok
 
@@ -324,6 +324,10 @@ def test_an_open_row_tail_may_supply_the_family() -> None:
     not expressible and asserted that instead. A tripwire over the compiler's
     own `row_var` assignments refuted it — `resolution.py` sets one whenever a
     row entry names a type parameter — which is the shape below.
+
+    A function's own row may not name a row variable, which code generation
+    does not lower (`vera.lowering` rule 6, #1681), so the program is refused
+    at the variable (E340); E177 still says nothing about the open row.
     """
     source = """
 public forall<E> fn probe(@Unit -> @Int)
@@ -334,7 +338,10 @@ public forall<E> fn probe(@Unit -> @Int)
   7
 }
 """
-    _check_ok(source)
+    errors = _errors(source)
+    assert [e.error_code for e in errors] == ["E340"], [
+        (e.error_code, e.description) for e in errors]
+    assert "row variable 'E'" in errors[0].description
 
 
 def test_the_declared_family_is_still_accepted() -> None:

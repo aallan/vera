@@ -1037,15 +1037,16 @@ private fn f(@Int -> @Int)
 
     def test_effect_operation_argument_discharges_and_violates(self) -> None:
         """A refined effect-operation formal obligates its argument (the #747
-        instantiated-`param_types` path), at both discharge and violation."""
+        instantiated-`param_types` path), at both discharge and violation:
+        `State.put`'s formal is the cell type, instantiated at `PosInt`.  The
+        formal was a user-declared effect's, which no row may name since
+        #1681 (E340)."""
         ok = _verify("""
 type PosInt = { @Int | @Int.0 > 0 };
 
-effect Counter { op bump(PosInt -> Unit); }
-
 private fn run(@Unit -> @Unit)
-  requires(true) ensures(true) effects(<Counter>)
-{ Counter.bump(5) }
+  requires(true) ensures(true) effects(<State<PosInt>>)
+{ State.put(5) }
 """)
         assert [d for d in ok.diagnostics if d.severity == "error"] == []
         assert len(self._refine_obligations(ok, "verified")) == 1
@@ -1053,11 +1054,9 @@ private fn run(@Unit -> @Unit)
         bad = _verify("""
 type PosInt = { @Int | @Int.0 > 0 };
 
-effect Counter { op bump(PosInt -> Unit); }
-
 private fn run(@Int -> @Unit)
-  requires(true) ensures(true) effects(<Counter>)
-{ Counter.bump(@Int.0) }
+  requires(true) ensures(true) effects(<State<PosInt>>)
+{ State.put(@Int.0) }
 """)
         errs = [d for d in bad.diagnostics if d.error_code == "E505"]
         assert errs, "expected E505 on the unconstrained effect-op argument"

@@ -2,8 +2,10 @@
 {- This is a multi-line
 comment. -}
 
--- An effect is a named capability a function can use: a set of typed
--- operations, declared once and referenced via `effects(...)` clauses.
+-- An effect declaration names a set of typed operations.  A user-declared
+-- effect checks as a declaration, and no effects(...) row may name it:
+-- code generation implements its operations nowhere, so a row naming one
+-- is refused at check (E340).  The built-in effects are named in rows below.
 effect Counter {
   -- Single line comments can be indented.
   -- Semi-colons separate op declarations.
@@ -187,29 +189,6 @@ private fn to_percentage(@PosInt -> @Percentage)
   -- The verifier does not check assumptions.
   assume(@Float64.0 <= 1.0);
   @Float64.0
-}
-
-private fn count_to_three(@Unit -> @Unit)
-  requires(true)
-  ensures(true)
-  -- `<Counter>` puts a user-defined effect in the function's row.
-  effects(<Counter>)
-{
-  -- User-defined effect operations are called qualified: `Effect.op(...)`.
-  Counter.increment(());
-  Counter.increment(());
-  Counter.increment(())
-}
-
--- `<Logger<Int>>` instantiates the generic custom effect's type
--- variable.
-private fn log_twice(@Int -> @Unit)
-  requires(true)
-  ensures(true)
-  effects(<Logger<Int>>)
-{
-  Logger.log(@Int.0);
-  Logger.log(@Int.0)
 }
 
 -- old()/new() refer to the ambient State<T> before/after this function's

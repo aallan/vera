@@ -12,10 +12,11 @@ from collections.abc import Callable
 from vera import ast
 from vera.lowering import (
     contract_exprs,
+    effect_row_entry_refusal,
     exn_payload_lowerable,
     state_cell_lowerable,
 )
-from vera.narrowing import COMPILABLE_EFFECTS, MEMORY_EFFECTS
+from vera.narrowing import MEMORY_EFFECTS
 from vera.monomorphize import mangle_type_name
 from vera.wasm.helpers import CellNames
 from vera.wasm.async_fusion import await_needs_check, fused_async_target
@@ -120,35 +121,45 @@ class CompilabilityMixin:
     def _is_compilable(self, decl: ast.FnDecl) -> bool:
         """Check if a function can be compiled to WASM.
 
-        Accepts pure functions, IO effects, and State<T> where T is
-        a compilable primitive type (Int, Nat, Bool, Float64).
+        Accepts pure functions, the built-in effects, and State<T> and
+        Exn<E> where T and E are compilable types.
         """
-        # Check effect: must be pure, <IO>, or <State<T>>
         effect = decl.effect
         if isinstance(effect, ast.PureEffect):
             pass  # OK
         elif isinstance(effect, ast.EffectSet):
             for eff in effect.effects:
                 if isinstance(eff, ast.EffectRef):
-                    # #754: membership is ONE test against the shared roster,
-                    # not the tail of a per-effect chain.  The verifier reads
-                    # the same roster to decide whether an operation argument
-                    # can be guarded at all — an operation of an effect this
-                    # rejects has no run to guard — and a chain whose accepted
-                    # names were listed only by its own branches gave that
-                    # question no table to consult.
-                    if eff.name not in COMPILABLE_EFFECTS:
-                        self._warning(
-                            decl,
-                            f"Function '{decl.name}' uses unsupported "
-                            f"effect '{eff.name}' — skipped.",
+                    # The backstop for rule 6 (`vera.lowering`, #1681): the
+                    # checker refuses a user-declared effect, State or Exn
+                    # without a type argument, and a row variable in this,
+                    # the function's own row, where the row names it (E340).
+                    # This dropped the function (E603, E606, E611) before the
+                    # rule moved to the check.  A clone's row variable is no
+                    # longer one of its `forall` variables, and is refused as
+                    # an effect the roster lacks.  The roster is the one the
+                    # verifier reads to decide whether an operation argument
+                    # can be guarded at all (#754).
+                    refusal = effect_row_entry_refusal(
+                        eff.name, len(eff.type_args or ()),
+                        row_variable=eff.name in (decl.forall_vars or ()),
+                        declaration=True)
+                    if refusal is not None:
+                        self._error(
+                            eff,
+                            f"Internal compiler error: the effect row entry "
+                            f"'{eff.name}' of '{decl.name}' reached code "
+                            f"generation, and "
+                            f"vera.lowering.effect_row_entry_refusal refuses "
+                            f"it ({refusal}); the checker refuses it at the "
+                            f"row (E340).",
                             rationale=(
-                                "Only pure and the built-in effects are "
-                                "compilable: "
-                                + ", ".join(sorted(COMPILABLE_EFFECTS))
-                                + "."
+                                "This is a codegen invariant violation — the "
+                                "type checker should have rejected the input "
+                                "before it reached this point.  Please file a "
+                                "bug report with the offending program."
                             ),
-                            error_code="E603",
+                            error_code="E699",
                         )
                         return False
                     if eff.name == "State":
@@ -215,15 +226,9 @@ class CompilabilityMixin:
 
         Returns True if compilable, False otherwise.
         """
-        if not eff.type_args or len(eff.type_args) != 1:
-            self._warning(
-                decl,
-                f"Function '{decl.name}' uses State without "
-                f"a type argument — skipped.",
-                rationale="State<T> requires exactly one type argument.",
-                error_code="E606",
-            )
-            return False
+        # One type argument: rule 6 (`effect_row_entry_refusal`) is asked
+        # first, in `_is_compilable`.
+        assert eff.type_args is not None and len(eff.type_args) == 1  # noqa: S101
         type_arg = eff.type_args[0]
         reason = self._register_state_cell(type_arg)
         if reason is not None:
@@ -331,15 +336,9 @@ class CompilabilityMixin:
 
         Returns True if compilable, False otherwise.
         """
-        if not eff.type_args or len(eff.type_args) != 1:
-            self._warning(
-                decl,
-                f"Function '{decl.name}' uses Exn without "
-                f"a type argument — skipped.",
-                rationale="Exn<E> requires exactly one type argument.",
-                error_code="E611",
-            )
-            return False
+        # One type argument: rule 6 (`effect_row_entry_refusal`) is asked
+        # first, in `_is_compilable`.
+        assert eff.type_args is not None and len(eff.type_args) == 1  # noqa: S101
         type_arg = eff.type_args[0]
         reason = self._register_exn_tag(type_arg)
         if reason is not None:

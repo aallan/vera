@@ -2619,26 +2619,27 @@ public fn main(-> @Unit)
         ), [d.description for d in diags]
 
     def test_module_user_effect_still_accepted(self) -> None:
-        """The negative control: a module's own effect name is untouched."""
+        """The negative control: a module's own effect name is untouched.
+
+        An effect declaration is module-local (spec §8.4.1), so the importer
+        declares its own copy.  Each declaration checks; a row naming either
+        would be refused (E340, #1681), so the functions use a built-in."""
         mod = _resolved_module(("logger",), """\
 effect Logger {
   op log(String -> Unit);
 }
 
 public fn shout(@String -> @Unit)
-  requires(true) ensures(true) effects(<Logger>)
-{ Logger.log(@String.0) }
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print(@String.0) }
 """)
-        # An effect declaration is module-local (spec §8.4.1), so the
-        # importer names `Logger` in its row through its own copy — without
-        # one the row names nothing in scope (E338, #1489).
         source = """\
 import logger(shout);
 effect Logger {
   op log(String -> Unit);
 }
 public fn main(-> @Unit)
-  requires(true) ensures(true) effects(<Logger>)
+  requires(true) ensures(true) effects(<IO>)
 { logger::shout("hi") }
 """
         prog = parse_to_ast(source)

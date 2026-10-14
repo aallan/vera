@@ -196,7 +196,7 @@ Exit criterion: the Http and Inference limitation rows are retired; an agent can
 | [#353](https://github.com/aallan/vera/issues/353) | Http: per-request timeout control. |
 | [#356](https://github.com/aallan/vera/issues/356) | Http: PUT / PATCH / DELETE. |
 | [#370](https://github.com/aallan/vera/issues/370) | Inference: configurable `max_tokens` / `temperature` — cost gates and deterministic replays. |
-| [#372](https://github.com/aallan/vera/issues/372) | Inference: user-defined `handle[Inference]` handlers — mocking, caching, routing. |
+| [#372](https://github.com/aallan/vera/issues/372) | Inference: user-defined `handle[Inference]` handlers — mocking, caching, routing — and, on the same handler lowering, user-declared effects, which an effect row can name once a handler for one is lowered. |
 | [#1467](https://github.com/aallan/vera/issues/1467) | `Decision` effect — typed probabilistic decisions from System One models: `noul` / `choice` / `score` return a value already in the type system with a `Confidence` refinement, a fast tier beside `Inference` so a function's effect row states what it may spend.  Userland first (a declared effect with a handler over `Http.post`), then a calibration measurement as a hard gate, then promotion to a built-in host effect mirroring `Http` and `DB` with the `async` whitelist entry; a batch `Decision.ask` and handler support follow, the latter decided with #372. |
 | [#373](https://github.com/aallan/vera/issues/373) | Host-import `Array<Float64>` returns (`alloc_result_ok_float_array`) — the infrastructure #371 needs. |
 | [#371](https://github.com/aallan/vera/issues/371) | `Inference.embed` — vector embeddings, unblocked by #373. |

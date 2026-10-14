@@ -14,7 +14,7 @@ import typing
 from typing import Any, cast
 
 from vera import ast, narrowing
-from vera.lowering import ability_lowerable
+from vera.lowering import ability_lowerable, effect_operation_lowerable
 from vera.slots import bare_call_denotes_user_fn
 from vera.checker.sql import (
     count_placeholders,
@@ -2561,13 +2561,65 @@ class CallsMixin:
             error_code="E340",
         )
 
+    def _check_operation_lowerable(
+        self, op_info: OpInfo, node: ast.Node,
+    ) -> bool:
+        """E340 (`vera.lowering` rule 6, #1681): an operation of a
+        user-declared effect, called where the row in force does not name
+        the effect.
+
+        A row naming the effect is refused at the entry, and a handler for
+        it at the handler, which adds the effect to the row its body is
+        checked under, so a call under either is not refused twice.  Every
+        other call is refused here: under a row that does not name it, a
+        pure one too, and where no function's row is in force, a refinement
+        predicate of an alias, a data field or a signature, which is checked
+        before its function installs its row.  Returns whether it refused;
+        a refused call is not one the purity check (E122) counts, so the
+        call gets one refusal, the one that says nothing lowers it.  A bare
+        call outside a handler is E217's."""
+        effect = op_info.parent_effect
+        if effect_operation_lowerable(effect):
+            return False
+        row = self.env.current_effect_row
+        if isinstance(row, ConcreteEffectRow) and any(
+                e.name == effect for e in row.effects):
+            return False
+        self._error(
+            node,
+            f"Code generation cannot lower the operation "
+            f"'{effect}.{op_info.name}': '{effect}' is a user-declared "
+            f"effect, and nothing implements its operations.",
+            rationale=(
+                "Code generation lowers the built-in effects' operations "
+                "through the host, and State<T> and Exn<E> through their "
+                "handlers.  A user-declared effect has neither: a handler for "
+                "one is refused (E340), and so is a row naming one, so an "
+                "operation of one called where no row names it is the use "
+                "left, and it is refused at the call.  A built-in "
+                "effect's operation lowers under any row; that a row which is "
+                "not pure does not hold one to it is #1702."
+            ),
+            fix=(
+                f"Call a function under its own name in place of the "
+                f"operation: private fn {op_info.name}_of(...) with the "
+                f"operation's signature ({_op_signature_text(op_info)}), "
+                f"called as {op_info.name}_of(...) in place of "
+                f"{effect}.{op_info.name}(...)."
+            ),
+            spec_ref='Chapter 7, Section 7.2 "Effect Declarations"',
+            error_code="E340",
+        )
+        return True
+
     @_reported_at_the_stage
     def _check_qualified_call(self, expr: ast.QualifiedCall) -> Type | None:
         """Type-check a qualified call: Effect.op(args)."""
         # Try as effect operation
         op_info = self.env.lookup_effect_op(expr.name, expr.qualifier)
         if op_info:
-            self._effect_ops_used.add(op_info.parent_effect)
+            if not self._check_operation_lowerable(op_info, expr):
+                self._effect_ops_used.add(op_info.parent_effect)
             return self._check_op_call(op_info, expr.args, expr)
 
         # #309 (Cortex #1147 Finding 1): op resolution failed, but codegen

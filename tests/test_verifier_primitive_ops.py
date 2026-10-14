@@ -9,6 +9,7 @@ from tests.verifier_helpers import (
     _verify,
     _verify_err,
     _verify_ok,
+    _verify_user_effect,
 )
 
 
@@ -384,8 +385,10 @@ private fn compound_shadow(@Int -> @Int)
         `requires(@Int.0 != 0)` silently verifies `1 / @Int.0` against the
         *outer* param's `!= 0` while the matched field can be 0 — a silent
         false-discharge (PR #778 review, outside-diff; the match-arm analogue
-        of the untranslatable-`let` shadow, mirroring `_fresh_pattern_env`)."""
-        result = _verify("""
+        of the untranslatable-`let` shadow, mirroring `_fresh_pattern_env`).
+        No built-in operation returns an `Option<Int>`, so the scrutinee is a
+        user-declared effect's, measured past the check (E340, #1681)."""
+        result = _verify_user_effect("""
 effect Source {
   op next(Unit -> Option<Int>);
 }

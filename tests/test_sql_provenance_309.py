@@ -30,7 +30,7 @@ import pytest
 
 from vera.checker.sql import count_placeholders
 
-from tests.checker_helpers import _check_err, _check_ok
+from tests.checker_helpers import _check_err, _check_ok, _errors
 
 
 def _check_code(source: str, code: str) -> None:
@@ -561,9 +561,10 @@ public fn run(-> @Result<Array<Array<Option<String>>>, String>)
     def test_unrelated_effect_query_op_not_gated(self) -> None:
         # A user effect NOT named `DB` (here `Analytics`) has `parent_effect ==
         # "Analytics"`, so it is NOT a DB SQL op and the provenance gate never
-        # fires: a non-literal arg to the user's own op is accepted.  This is
-        # sound because codegen routes such an op to the user's handler, not to
-        # the host database — only qualifier `DB` reaches `$vera.db_*`.
+        # fires on a non-literal arg to the user's own op: only qualifier `DB`
+        # reaches `$vera.db_*`.  The row naming `Analytics` is refused (E340,
+        # #1681), since nothing implements its operations, and that is the
+        # only error: no provenance E207.
         src = """
 effect Analytics {
   op query(String -> String);
@@ -573,7 +574,7 @@ public fn run(@String -> @String)
   requires(true) ensures(true) effects(<Analytics>)
 { Analytics.query(@String.0) }
 """
-        _check_ok(src)
+        assert [e.error_code for e in _errors(src)] == ["E340"]
 
 
 class TestDbEffectShadowGated309:

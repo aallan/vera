@@ -282,6 +282,12 @@ class RegistrationMixin:
             tld.decl.name for tld in program.declarations
             if isinstance(tld.decl, ast.EffectDecl)
         )
+        # The first declaration of each, for what an E340 at a row naming
+        # one says before the declaration is registered (#1681).
+        self._forward_effect_decls: dict[str, ast.EffectDecl] = {}
+        for tld in program.declarations:
+            if isinstance(tld.decl, ast.EffectDecl):
+                self._forward_effect_decls.setdefault(tld.decl.name, tld.decl)
         # #1433: the first declaration of each name in each of the four
         # top-level namespaces this pass holds (see `_DECL_NAMESPACES`).  The
         # same scope as `_ns_ctor_owners` and for the same reason: `env`

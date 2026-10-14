@@ -81,10 +81,11 @@ def _cli(*args: str, eager_gc: bool = False) -> pipeline.CliResult:
     return pipeline.cli(*args, env={"VERA_EAGER_GC": "1" if eager_gc else None})
 
 
-def _verify(tmp_path: Path, source: str, name: str) -> dict:
+def _verify(tmp_path: Path, source: str, name: str, *,
+            past_check: bool = False) -> dict:
     p = tmp_path / f"{name}.vera"
     p.write_text(source, encoding="utf-8")
-    return pipeline.verify(p).envelope()
+    return pipeline.verify(p, past_check=past_check).envelope()
 
 
 def _refine_bind_statuses(envelope: dict) -> Counter:
@@ -1352,6 +1353,9 @@ _PRODUCERS: dict[str, tuple[str, str]] = {
         "  requires(true)\n  ensures(true)\n  effects(pure)\n"
         "{\n  consume(@Array<Int>.0)\n}\n",
     ),
+    # A user-declared effect's operation, the opaque producer no built-in
+    # operation is at both depths (none returns an `Array<Int>`).  No row may
+    # name one since #1681 (E340), so the cell is measured past the check.
     "effect-operation": (
         "effect Source {\n  op fetch(Unit -> Int);\n}\n\n"
         "private fn consume(@Pos -> @Int)\n"
@@ -1386,10 +1390,13 @@ def test_the_element_arm_answers_what_the_scalar_arm_answers(
     """
     header = "type Pos = { @Int | @Int.0 > 0 };\n\n"
     scalar_src, element_src = _PRODUCERS[producer]
-    scalar = _refine_bind_statuses(
-        _verify(tmp_path, header + scalar_src, f"scalar-{producer}"))
-    element = _refine_bind_statuses(
-        _verify(tmp_path, header + element_src, f"element-{producer}"))
+    past_check = producer == "effect-operation"
+    scalar = _refine_bind_statuses(_verify(
+        tmp_path, header + scalar_src, f"scalar-{producer}",
+        past_check=past_check))
+    element = _refine_bind_statuses(_verify(
+        tmp_path, header + element_src, f"element-{producer}",
+        past_check=past_check))
     assert scalar, f"the scalar twin raised no refine_bind at all: {scalar}"
     assert element, f"the element case raised no refine_bind at all: {element}"
     worst = ["violated", "tier3_unguarded", "tier3", "verified"]

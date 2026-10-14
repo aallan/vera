@@ -1,0 +1,17 @@
+-- Conformance: an effect row naming a user-declared effect is a checker
+-- error (Chapter 7, Section 7.2).
+-- Tests: E340 — code generation lowers the built-in effects, and State<T>
+-- and Exn<E> handlers, and nothing for a user-declared effect, so a row
+-- naming one is refused where it is written instead of dropping its
+-- function at compile (#1681).  The effect declaration itself checks.
+effect Counter {
+  op tick(Unit -> Int);
+}
+
+public fn bump(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<Counter>)
+{
+  Counter.tick(())
+}

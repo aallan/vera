@@ -1539,11 +1539,6 @@ def corpus_outcome(path: Path) -> Outcome:
     return build(path, path.read_text(encoding="utf-8"), path.parent)
 
 
-_USER_EFFECT = (
-    "a user-declared effect in a function's row is not compilable: the "
-    "function is the E603 skip spec §11.4.1 names, which the checker does "
-    "not apply yet (#1681)"
-)
 _UNINSTANTIATED_GENERIC = (
     "a library module compiled as the entry: its `forall` function has no "
     "instantiation in the program, so there is no concrete signature to emit "
@@ -1555,8 +1550,6 @@ _UNINSTANTIATED_GENERIC = (
 #: refusal signature (:attr:`Outcome.signature`), so an entry cannot hide a
 #: new drop in the same file.
 KNOWN_CHECK_GREEN_REFUSALS: dict[str, tuple[tuple[str, ...], str]] = {
-    "examples/effect_handler.vera": (("E603",), _USER_EFFECT),
-    "examples/maximum_syntax.vera": (("E603", "E603"), _USER_EFFECT),
     "tests/conformance/ch03_typed_holes.vera": (
         ("E614", "missing-export"),
         "a typed hole is a W001 warning at check and refused at compile — "

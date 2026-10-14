@@ -835,15 +835,11 @@ class TestObligationKinds:
         cannot pin the iteration.  Two violating calls in one argument list must
         raise two independent `call_pre` obligations (#776).
 
-        The two-argument op is a *user* effect: a built-in one cannot be
-        redeclared (E152, #1149) and no built-in `IO` op takes two `String`s
-        and returns `Unit`.
+        The two-argument op is `IO.write_file`, whose two `String` arguments
+        are each a violating call.  It was a user-declared effect's, which no
+        row may name since #1681 (E340).
         """
         source = (
-            "effect Audit {\n"
-            "  op log(String, String -> Unit);\n"
-            "}\n"
-            "\n"
             "private fn need_pos(@Nat -> @String)\n"
             "  requires(@Nat.0 >= 1)\n"
             "  ensures(true)\n"
@@ -855,9 +851,10 @@ class TestObligationKinds:
             "public fn caller(@Nat, @Nat -> @Unit)\n"
             "  requires(true)\n"
             "  ensures(true)\n"
-            "  effects(<Audit>)\n"
+            "  effects(<IO>)\n"
             "{\n"
-            "  Audit.log(need_pos(@Nat.1), need_pos(@Nat.0));\n"
+            "  let @Result<Unit, String> = IO.write_file(need_pos(@Nat.1), "
+            "need_pos(@Nat.0));\n"
             "  ()\n"
             "}\n"
         )
@@ -878,39 +875,35 @@ class TestObligationKinds:
         must never enter the solver.  Returning an argument's term instead
         (`return last`) is UNSOUND, and nothing else in the suite notices:
 
-            effect Counter { op bump(Int -> Int); }
             public fn echo_bump(@Int -> @Int)
-              ensures(@Int.result == @Int.0) effects(<Counter>)
-            { Counter.bump(@Int.0) }
+              ensures(@Int.result == @Int.0) effects(<Random>)
+            { Random.random_int(0, @Int.0) }
 
         With `return None` the postcondition is not entailed and `vera verify`
         honestly reports it as `tier3` — not proved, deferred to the runtime
         contract check.  With `return last` the body translates to `@Int.0`, so
         the verifier *proves* `@Int.result == @Int.0` and reports `verified`, for
-        a claim only the handler could satisfy.  (Codegen never reads the tiers,
-        so the runtime `contract_fail` guard survives either way; what breaks is
-        `vera verify`'s claim.)  Mutating `return None` -> `return last` moves
-        this obligation from `tier3` to `verified` and leaves all 371 other tests
-        green (PR #953 review).
+        a claim only the operation's own value could satisfy.  The operation
+        was a user-declared effect's, which no row may name since #1681.
+        Codegen never reads the tiers, so the runtime `contract_fail` guard
+        survives either way; what breaks is `vera verify`'s claim.  Mutating
+        `return None` -> `return last` moves this obligation from `tier3` to
+        `verified` and leaves all 371 other tests green (PR #953 review).
         """
         source = (
-            "effect Counter {\n"
-            "  op bump(Int -> Int);\n"
-            "}\n"
-            "\n"
             "public fn echo_bump(@Int -> @Int)\n"
-            "  requires(true)\n"
+            "  requires(@Int.0 >= 0)\n"
             "  ensures(@Int.result == @Int.0)\n"
-            "  effects(<Counter>)\n"
+            "  effects(<Random>)\n"
             "{\n"
-            "  Counter.bump(@Int.0)\n"
+            "  Random.random_int(0, @Int.0)\n"
             "}\n"
         )
         result = self._verify_source(source)
         posts = [o for o in result.obligations if o.kind == "ensures"]
         assert len(posts) == 1, posts
         assert posts[0].status == "tier3", (
-            "the effect op's result is the handler's choice — proving "
+            "the effect op's result is the operation's own value — proving "
             "`@Int.result == @Int.0` at Tier 1 is a false claim; "
             f"got status={posts[0].status!r}"
         )
@@ -941,10 +934,6 @@ class TestObligationKinds:
         reachable on `main` today (PR #953 review).
         """
         source = (
-            "effect Slp {\n"
-            "  op sleep(Nat -> Unit);\n"
-            "}\n"
-            "\n"
             "private fn dec5(@Nat -> @Nat)\n"
             "  requires(@Nat.0 >= 5)\n"
             "  ensures(@Nat.result == @Nat.0 - 5)\n"
@@ -956,9 +945,9 @@ class TestObligationKinds:
             "public fn main(@Nat -> @Nat)\n"
             "  requires(true)\n"
             "  ensures(@Nat.0 >= 5)\n"
-            "  effects(<Slp>)\n"
+            "  effects(<IO>)\n"
             "{\n"
-            "  if @Nat.0 >= 5 then { Slp.sleep(dec5(@Nat.0)) } else { () };\n"
+            "  if @Nat.0 >= 5 then { IO.sleep(dec5(@Nat.0)) } else { () };\n"
             "  @Nat.0\n"
             "}\n"
         )

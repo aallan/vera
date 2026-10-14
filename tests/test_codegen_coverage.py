@@ -94,8 +94,10 @@ class TestCodegenCoverageGaps:
 
     # -- E606: State effect without type argument ----------------------
 
-    def test_e606_state_without_type_arg(self) -> None:
-        """State without <T> triggers E606."""
+    def test_state_without_type_arg_is_an_internal_error(self) -> None:
+        """State without <T> reaches `vera.lowering` rule 6's backstop, an
+        internal error (E699): the checker refuses the row entry (E340,
+        #1681), and code generation dropped the function with E606."""
         from vera.ast import EffectRef, EffectSet, NamedType
 
         fn = self._make_fn(
@@ -106,7 +108,9 @@ class TestCodegenCoverageGaps:
         prog = self._make_program(fn)
         result = compile(prog)
         codes = [d.error_code for d in result.diagnostics]
-        assert "E606" in codes, f"Expected E606, got {codes}"
+        assert codes == ["E699"], f"Expected E699, got {codes}"
+        assert "effect_row_entry_refusal" in result.diagnostics[0].description
+        assert "bad_state" not in result.exports
 
     # -- E600: defensive param type guard in _compile_fn ---------------
 

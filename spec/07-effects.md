@@ -47,6 +47,7 @@ Rules:
 3. Each operation has a typed signature: parameter types and return type.
 4. Operations implicitly have access to the `resume` continuation (see Section 7.5).
 5. A declaration MUST NOT name a built-in effect (Section 7.7): `effect IO { ... }`, `effect Exn<E> { ... }`, `effect DB { ... }`, and every other built-in name are compile errors (`E152`). The built-in operations are in scope automatically for any function whose effect row names the effect.
+6. A user-declared effect is a declaration only. The reference implementation lowers the built-in effects' operations, and a handler only for `State<T>` and `Exn<E>` (Section 7.5), so nothing implements a user-declared effect's operations: an effect row that names one, in a function's signature, a closure's or a function type's, is a checker error (`E340`), reported at the row entry, and so is a call of one of its operations under a row that does not name it, reported at the call. The declaration itself checks.
 
 ## 7.3 Effect Rows
 
@@ -58,6 +59,8 @@ effects(<IO>)                        -- may perform IO
 effects(<IO, State<Int>>)            -- may perform IO and use Int state
 effects(<Exn<String>, IO>)           -- may throw String errors and perform IO
 ```
+
+Each entry of a row is a built-in effect (Section 7.7) or, in a function type's row, an effect row variable (Section 7.6.1), and `State` and `Exn` carry their one type argument, which types the cell and the payload. A row naming a user-declared effect (Section 7.2, rule 6), `State` or `Exn` without a type argument, or, in a function's own row, a row variable, is a checker error (`E340`), reported at the entry.
 
 ### 7.3.1 Syntax
 
@@ -122,7 +125,7 @@ Effect operations are resolved by the effect declared in the function's effect r
 
 **Resolution order.** More than one effect in scope may declare the same operation name — the built-in `State` and `Http` both declare `get`. A bare operation name binds to the **first** effect that declares it in this order: the innermost enclosing `handle[E]` (§7.5), then each enclosing handler outwards, then the function's declared effect row **in the order the row is written**, and finally the **registered** effects in registration order — the built-ins first, then any user `effect` declaration in source order. So `effects(<State<Int>, Http>)` binds a bare `get` to `State`, `effects(<Http, State<Int>>)` binds it to `Http`, and a `handle[State<Int>]` around the call binds it to `State` whatever the row says. Every step of that list is an ordered sequence, so the binding is a property of the program text alone — never of the order an implementation happens to enumerate the row's members.
 
-**Bare operation calls and routing (`E217`).** A bare (unqualified) operation name is only well-formed when the compiler can route it to a concrete implementation. The built-in `State` and `Exn` operations (`get`, `put`, `throw`) are always routable — they are backed by intrinsic host cells — so they may be called bare, as in `increment` above. Every other operation — those of `IO`, `DB`, `Http`, `Inference`, `Random`, and any user-declared effect — is routable bare only inside a `handle[E]` block for its effect `E` (§7.5); outside such a block it has no bare route and MUST be called qualified as `E.op(...)`, the way `hello` calls `IO.print`. Calling one of these operations bare with no enclosing handler is a compile-time error (`E217`), reported by the checker so the backend never receives an operation it cannot lower.
+**Bare operation calls and routing (`E217`).** A bare (unqualified) operation name is only well-formed when the compiler can route it to a concrete implementation. The built-in `State` and `Exn` operations (`get`, `put`, `throw`) are always routable — they are backed by intrinsic host cells — so they may be called bare, as in `increment` above. Every other built-in operation — those of `IO`, `DB`, `Http`, `Inference` and `Random` — is routable bare only inside a `handle[E]` block for its effect `E` (§7.5); outside such a block it has no bare route and MUST be called qualified as `E.op(...)`, the way `hello` calls `IO.print`. Calling one of these operations bare with no enclosing handler is a compile-time error (`E217`), reported by the checker so the backend never receives an operation it cannot lower. A user-declared effect's operation has no route at all (Section 7.2, rule 6): a call of one is `E217` bare and `E340` qualified.
 
 **Effect ordering.** Effect operations execute in program order.  The one sanctioned relaxation is `async(e)` (§9.5.4): when `e`'s effect row is commutative — its operations' completions cannot be observably reordered against any other effect in the program — an implementation MAY overlap `e`'s execution with subsequent computation, resolving at the corresponding `await`.  Effects outside that whitelist retain strict program order; the checker warns (`W002`) where this forces eager evaluation, so verified sequential semantics remain literally true for every Tier-1 claim.
 
@@ -130,20 +133,15 @@ Effect operations are resolved by the effect declared in the function's effect r
 
 If two effects in scope define an operation with the same name, the call is ambiguous to a reader and SHOULD be qualified. The compiler does not reject the bare form *for ambiguity*: it binds by the resolution order in §7.4, and qualifying says which effect is meant without depending on that order. The binding it picks must still be well-formed on its own terms — a bare call that resolves to an operation with no bare route is `E217` (§7.4), and one whose signature does not fit the call site is an ordinary type error — so "not rejected for ambiguity" is not "always accepted".
 
-<!-- vera:skip-parse category="FRAGMENT" reason="effect Logger + anonymous fn body" -->
+<!-- vera:skip-parse category="FRAGMENT" reason="anonymous fn body" -->
 ```
-effect Logger {
-  op put(String -> Unit);
-}
-
-fn(@Unit -> @Unit)
+fn(@Unit -> @Int)
   requires(true)
   ensures(true)
-  effects(<State<Int>, Logger>)
+  effects(<State<Int>, Http>)
 {
-  State.put(42);            -- qualified: State<Int>'s put
-  Logger.put("logged");     -- qualified: Logger's put
-  ()
+  let @Result<String, String> = Http.get("https://example.com");  -- qualified: Http's get
+  State.get(())                                                    -- qualified: State<Int>'s get
 }
 ```
 
@@ -347,6 +345,8 @@ private forall<A, B> fn option_map(@Option<A>, fn(A -> B) effects(<E>) -> @Optio
 
 Stored function values are applied with `apply_fn` (Section 11.10.5). The effect variable `E` is unified at each call site. If the passed function is `pure`, then `option_map` is `pure`. If it has `effects(<IO>)`, then `option_map` has `effects(<IO>)`.
 
+The reference implementation compiles a generic function once per instantiation of its types, never of its row, so a function's own row naming a row variable is a checker error (`E340`), reported at the entry: `option_map`'s `effects(<E>)` is refused, and its parameter's `fn(A -> B) effects(<E>)` checks and compiles.
+
 ### 7.6.1 Effect Row Variables
 
 Effect row variables can appear alongside concrete effects:
@@ -365,7 +365,7 @@ private forall<A> fn with_logging(fn(Unit -> A) effects(<E>) -> @A)
 }
 ```
 
-This function always performs `IO` (for the logging), plus whatever effects `E` the argument function has.
+This function always performs `IO` (for the logging), plus whatever effects `E` the argument function has. In the reference implementation its own row `<IO, E>` is a checker error (`E340`) at `E`, and the parameter's `fn(Unit -> A) effects(<E>)` checks.
 
 ## 7.7 Built-in Effects
 
