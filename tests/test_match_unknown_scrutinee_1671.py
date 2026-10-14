@@ -256,6 +256,15 @@ def test_an_unrelated_error_withholds_the_judgement_of_an_unknown() -> None:
         "E313", "E130")
 
 
+def test_a_warning_does_not_count() -> None:
+    """Only an error counts: a warning refuses nothing, so an `Unknown` with
+    no error reported beside an earlier warning is still judged."""
+    warned = _UNRELATED.format(body="match @Int.0 {\n    _ -> 0,\n    1 -> 1\n  }")
+    generic = _GENERIC.format(arms="Some(@Int) -> @Int.0,\n    None -> 0")
+    assert _report(pipeline.check(warned + generic)) == [
+        ("E310", "warning"), ("E313", "error")]
+
+
 def test_a_call_two_imports_supply_is_reported_at_the_import_alone(
         tmp_path: Path) -> None:
     """The name two imports supply denotes neither declaration, so the call
