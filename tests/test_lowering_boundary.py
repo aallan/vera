@@ -1011,10 +1011,22 @@ _NEST_CELLS = [
 ]
 
 
+def _one_family_at(outer: str, inner: str, at: str) -> bool:
+    """Whether the instantiation `main` makes, `g(at)` (or `g(at, at)`),
+    turns the two cells into one family: at `T = Int` every pair that may
+    coincide does, and at `T = Bool` the two whose cells are both named by
+    type parameters (`T`/`T`, and `T`/`U` with both bound to `Bool`)."""
+    if at == "5":
+        return _NESTINGS[(outer, inner)]
+    return (outer, inner) in (("T", "T"), ("T", "U"))
+
+
 class TestGenericCellNesting:
     """Rule 5: E339 treats a cell named by a type parameter as able to be
-    any family it unifies with.  Conservative: `g(true)` ran at the base
-    for the shapes refused here."""
+    any family it unifies with.  Conservative: past the check, code
+    generation refuses the refused cells whose instantiation makes the two
+    cells one family, and builds and runs the others (`g(true)` over
+    `Int`/`T`, which ran at the base), and both kinds occur."""
 
     @pytest.mark.parametrize(("outer", "inner", "op_place", "at"),
                              _NEST_CELLS)
@@ -1023,11 +1035,25 @@ class TestGenericCellNesting:
         refused = (_NESTINGS[(outer, inner)]
                    and op_place == "clause body")
         source = _nest_source(outer, inner, op_place, at)
-        if refused:
-            verdict = _verdict(source)
-            assert verdict.check_codes == ("E339",), verdict.describe()
+        if not refused:
+            _holds(source, None, 1)
             return
-        _holds(source, None, 1)
+        verdict = _verdict(source)
+        assert verdict.check_codes == ("E339",), verdict.describe()
+        if _one_family_at(outer, inner, at):
+            assert _codegen_refuses(source), source
+        else:
+            past = vera_pipeline.compile(source, past_check=True).result
+            assert vera_pipeline.run(past, fn="main").value == 1, source
+
+    def test_both_kinds_of_refusal_occur(self) -> None:
+        """Not vacuous: among the refused cells, some instantiations make the
+        cells one family and some do not."""
+        refused = [(o, i, at) for (o, i, op, at) in (
+            c.values for c in _NEST_CELLS)
+            if _NESTINGS[(o, i)] and op == "clause body"]
+        kinds = {_one_family_at(o, i, at) for o, i, at in refused}
+        assert kinds == {True, False}, refused
 
     def test_the_issue_instance_is_refused_at_both_instantiations(
         self,

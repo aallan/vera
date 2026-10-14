@@ -201,9 +201,10 @@ def tail_resume_arg(body: ast.Expr) -> ast.Expr | None:
     Block's trailing expression, a single-arm match) — ``None`` when the
     tail is not a one-argument resume.
 
-    The one owner of the descent: :func:`state_clause_refusal` reads it, and
-    so does code generation's #1203 get-result guard, so the lowering
-    predicate and the guard cannot drift apart.
+    Read by :func:`state_clause_refusal` and by code generation's #1203
+    get-result guard, so the lowering predicate and the guard cannot drift
+    apart.  The verifier keeps its own copy of the descent for that guard's
+    obligation (``ContractVerifier._tail_resume_value``).
     """
     tail: ast.Expr = body
     while True:
