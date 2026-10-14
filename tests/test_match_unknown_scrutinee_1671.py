@@ -17,10 +17,10 @@ checked, so an error inside an arm is still reported.  The pattern-fit rule
 unchanged.  An `Unknown` scrutinee with no error reported (`apply_fn` over a
 type variable) is judged as before, so the one error that refuses such a
 program stays.  The skip is keyed on the type, never on a list of codes, and
-every error the module has reported by the time the scrutinee is typed
-counts, since the error behind an `Unknown` can sit at a declaration (E158)
-or an import (E155): an `Unknown` with no error of its own beside an earlier,
-unrelated error is not judged until that error is fixed.
+every error reported by the time the scrutinee is typed counts, since the
+error behind an `Unknown` can sit at a declaration (E158) or an import
+(E155): an `Unknown` with no error of its own beside an earlier, unrelated
+error is not judged until that error is fixed.
 
 The class is every `match` whose scrutinee is typed `Unknown` after an
 error.  The instrument crosses how the scrutinee came to be in error (an
@@ -28,9 +28,9 @@ unresolved slot E130, an undefined call E200, a result reference naming
 another type E163, a result reference outside a postcondition E131, an
 undefined constructor E210, an index into a value that is no collection
 E161, the slot inside a block, both branches of an `if` in error, a block
-whose `let` declares the removed alias `Float`, an error with no code, and
-the constructor of a declaration refused as E158, its error placed at the
-declaration) with the arm shape (constructor arms complete and incomplete,
+whose `let` declares the removed alias `Float`, whose error carries no code,
+and the constructor of a declaration refused as E158, its error placed at
+the declaration) with the arm shape (constructor arms complete and incomplete,
 a literal nested in a constructor, literal arms with and without a
 wildcard, `true`/`false` and `true` alone, a wildcard alone, an arm after a
 wildcard, patterns of another type, an error inside an arm) and where the
@@ -43,8 +43,9 @@ with every obligation verified where they do not); over a scrutinee whose
 error leaves it a type (a call with the wrong arity, a `let` whose
 initialiser is in error, an `if` with one branch in error), judged as
 before; and over an `Unknown` scrutinee with no error reported, judged as
-before.  The call two imports supply (E155), the module-wide count and each
-mechanism's edge are pinned by unparametrised tests.
+before.  The call two imports supply (E155), the count of every error
+reported before the scrutinee, and each mechanism's edge are pinned by
+unparametrised tests.
 """
 
 from __future__ import annotations
@@ -213,8 +214,8 @@ _GENERIC = """private forall<T> fn g(@T -> @Int)
 def test_an_unknown_scrutinee_with_no_error_reported_is_still_judged() -> None:
     """`apply_fn` over a type variable is `Unknown` with no error reported,
     and the E313 its `match` draws is the one error that refuses the
-    program: without it, the program passes check and code generation
-    refuses it."""
+    program: without it, a caller instantiating `g` at `Int` passes check
+    and verify, and code generation drops the caller and `g$Int` (E620)."""
     source = _GENERIC.format(arms="Some(@Int) -> @Int.0,\n    None -> 0")
     assert _report(pipeline.check(source)) == _errors("E313")
 
@@ -238,10 +239,10 @@ _UNRELATED = """public fn h(@Int -> @Int)
 
 
 def test_an_unrelated_error_withholds_the_judgement_of_an_unknown() -> None:
-    """The rule counts every error the module has reported by the time the
-    scrutinee is typed, not only those raised while typing it, because the
-    error behind an `Unknown` can sit elsewhere (E158 at a declaration,
-    E155 at an import).  So an `Unknown` with no error of its own beside an
+    """The rule counts every error reported by the time the scrutinee is
+    typed, not only those raised while typing it, because the error behind
+    an `Unknown` can sit elsewhere (E158 at a declaration, E155 at an
+    import).  So an `Unknown` with no error of its own beside an
     earlier, unrelated error is not judged: the program is refused by that
     error alone, and the E313 returns once it is fixed.  An error reported
     after the scrutinee is typed does not count."""

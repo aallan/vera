@@ -211,7 +211,7 @@ Every arm's pattern MUST be one the scrutinee's type can take: a constructor pat
 
 ### 4.9.2 Exhaustiveness
 
-The compiler MUST verify that the match is exhaustive: every possible value of the scrutinee type is covered by at least one arm. If the match is not exhaustive, the program is rejected. A `match` over an expression already reported as an error is not judged for exhaustiveness, since that expression has no type for the arms to cover; the arms themselves are still checked.
+The compiler MUST verify that the match is exhaustive: every possible value of the scrutinee type is covered by at least one arm. If the match is not exhaustive, the program is rejected. A `match` whose scrutinee has no type is not judged for exhaustiveness once an error has been reported, since there is no type for its arms to cover; its arms are still checked. The compiler leaves an expression it has rejected with no type unless the type is still known: a call with the wrong number of arguments has its declared result type, and a `match` over it is judged as any other.
 
 Wildcard `_` matches everything and makes any match exhaustive if it is the last arm.
 

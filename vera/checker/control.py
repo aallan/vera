@@ -254,7 +254,7 @@ class ControlFlowMixin:
             return None
         # #1671: an expression the check has refused is typed `Unknown`,
         # which gives the arms no type to cover, so a scrutinee typed
-        # `Unknown` once the module has reported an error is not judged for
+        # `Unknown` once an error has been reported is not judged for
         # coverage.  Any error counts, not only one raised while typing the
         # scrutinee: the error behind an `Unknown` can sit at a declaration
         # (E158) or an import (E155).  It is read here, before the arms are
