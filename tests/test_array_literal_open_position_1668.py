@@ -873,6 +873,14 @@ private forall<T> fn twice(@Option<T> -> @Tuple<Option<T>, Option<T>>)
 {
   Tuple(@Option<T>.0, @Option<T>.0)
 }
+
+private forall<T> fn dup(@Option<T> -> @Tuple<Array<T>, Array<T>>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Tuple([], [])
+}
 """
 
 
@@ -923,6 +931,23 @@ SHAPES: dict[str, _Shape] = {
             "Array literal element 2 has type Pair<Option<String>>, but the "
             "literal's element type is Pair<Option<Nat>>, the type of "
             "element 0, completed by element 1.")),
+    # One part's variable at two positions, one of them where the joined
+    # type is still unknown: the binding holds at both.  An `if` and a
+    # `match` synthesize `dup(None)` again against the other part's type,
+    # which the call takes position by position (#1684), base's verdict.
+    "dup-agree": _Shape(
+        ("Tuple([1], [])", "dup(None)", "Tuple([2], [3])"),
+        _everywhere(None, "Tuple<Array<Nat>, Array<Nat>>")),
+    "dup-disagree": _Shape(
+        ("Tuple([1], [])", "dup(None)", 'Tuple([2], ["s"])'),
+        {"literal": (2, "Tuple<Array<Nat>, Array<Nat>>"),
+         "if": (None, "Tuple<Array<Nat>, Array<String>>"),
+         "match": (None, "Tuple<Array<Nat>, Array<String>>")},
+        description=(
+            "Array literal element 2 has type Tuple<Array<Nat>, "
+            "Array<String>>, but the literal's element type is "
+            "Tuple<Array<Nat>, Array<Nat>>, the type of element 0, completed "
+            "by element 1.")),
     # Withheld for behaviour: not filled; refused at an `if` or a `match`.
     "fn-agree": _Shape(
         ("mkf(())", _NAT_ID),
@@ -1280,3 +1305,19 @@ def test_mutant_an_effect_row_holds_behaviour() -> None:
     assert checked.diagnostics == ()
     assert _literal_types(checked)[_place(source, literal)] == (
         "Array<Cell<T>>")
+
+
+def test_mutant_a_variable_bound_on_the_part_side_takes_one_type() -> None:
+    # `dup(None)`'s one `T` meets `Nat` where element 0 fixes it and `?`
+    # where element 0 leaves its second array open: kept at the second
+    # position without its binding, the third element would give it
+    # `String` there.
+    literal = '[Tuple([1], []), dup(None), Tuple([2], ["s"])]'
+    source = _shape_source(f"array_length({literal})")
+    checked = _checked(source)
+    assert _where(checked) == [
+        ("E162", *_place(source, literal, literal.index('Tuple([2]')))]
+    assert checked.errors[0].description == (
+        "Array literal element 2 has type Tuple<Array<Nat>, Array<String>>, "
+        "but the literal's element type is Tuple<Array<Nat>, Array<Nat>>, "
+        "the type of element 0, completed by element 1.")

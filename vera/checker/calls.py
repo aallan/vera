@@ -235,12 +235,18 @@ class _Join:
         self.kept = (kept_a, kept_b)
         self.behaviour = (held_a, held_b)
         joined = self._walk(a, b, False)
-        if joined is None or not self.bound[1]:
-            return joined
-        # A position of *b* whose variable another position bound (one
-        # *a* left unknown there) takes the binding too.
-        for _ in range(len(self.bound[1]) + 1):
-            again = substitute(joined, self.bound[1])
+        if joined is None:
+            return None
+        # A variable bound at one position takes its binding at every
+        # other: one of *b*'s where *a* left that position unknown, and one
+        # of *a*'s kept where *b* was unknown there.  *b* itself comes back
+        # where nothing changes, which `_join_elements` reads as a part that
+        # filled nothing.
+        for _ in range(len(self.bound[0]) + len(self.bound[1]) + 1):
+            again = joined
+            for bound in self.bound:
+                if bound:
+                    again = substitute(again, bound)
             if again == joined:
                 break
             joined = again
