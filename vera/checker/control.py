@@ -192,27 +192,42 @@ class ControlFlowMixin:
         if types_equal(else_ty, NEVER):
             return then_ty
 
-        # Branches must have compatible types
+        # Branches must have compatible types.  The `if` has the type the
+        # two have together (`_join`, #1668): the type of the branch the
+        # other is a subtype of, with each position it leaves open given by
+        # the other, so `[]` beside `["abc"]` is an `Array<String>` in
+        # either order.
         if is_subtype(then_ty, else_ty):
-            return else_ty
+            return self._join(then_ty, else_ty) or else_ty
         if is_subtype(else_ty, then_ty):  # pragma: no cover — subtyping is symmetric for current rules
-            return then_ty
+            return self._join(else_ty, then_ty) or then_ty
 
-        # Re-synthesis fallback: if one branch has unresolved TypeVars,
-        # re-synth it with the concrete branch as expected.
-        if contains_typevar(then_ty) and not contains_typevar(else_ty):  # pragma: no cover — requires unresolved TypeVar in branch
+        # Re-synthesis: a branch with an unresolved type variable is
+        # synthesized again with the other branch's type expected, so a
+        # constructor takes from it the type arguments it cannot fix
+        # itself, and the two are joined.  The join also fills what
+        # re-synthesis does not reach (a `None` inside a `Tuple`), and
+        # joins two branches that both leave a position open; branches of
+        # two types no position reconciles are refused.
+        joined: Type | None
+        if contains_typevar(then_ty) and not contains_typevar(else_ty):
             then_ty = self._synth_expr(
-                expr.then_branch, expected=else_ty)
-            if then_ty and is_subtype(then_ty, else_ty):
-                return else_ty
-        elif contains_typevar(else_ty) and not contains_typevar(then_ty):  # pragma: no cover
+                expr.then_branch, expected=else_ty) or then_ty
+            joined = self._join(then_ty, else_ty)
+        elif contains_typevar(else_ty) and not contains_typevar(then_ty):
             else_ty = self._synth_expr(
-                expr.else_branch, expected=then_ty)
-            if else_ty and is_subtype(else_ty, then_ty):
-                return then_ty
-        elif contains_typevar(then_ty) and contains_typevar(else_ty):  # pragma: no cover
-            # Both have TypeVars — pick either (both unresolved)
-            return then_ty
+                expr.else_branch, expected=then_ty) or else_ty
+            joined = self._join(else_ty, then_ty)
+        else:
+            outcome = self._join_parts(else_ty, then_ty)
+            joined = outcome.joined or self._join(then_ty, else_ty)
+            if (joined is None and outcome.builtin
+                    and self._fits(else_ty, then_ty)):
+                # A built-in's type variable the join leaves alone: the
+                # then branch, as two open branches always gave.
+                joined = then_ty
+        if joined is not None:
+            return joined
 
         self._error(
             expr,
@@ -261,24 +276,48 @@ class ControlFlowMixin:
                 result_type = arm_ty
             elif not types_equal(arm_ty, NEVER):
                 # Re-synthesis fallback for unresolved TypeVars
-                if contains_typevar(arm_ty) and not contains_typevar(result_type):  # pragma: no cover — requires unresolved TypeVar in arm
+                if contains_typevar(arm_ty) and not contains_typevar(result_type):
                     arm_ty = self._synth_expr(
                         arm.body, expected=result_type)
                     if arm_ty is None or isinstance(arm_ty, UnknownType):
                         continue
-                elif contains_typevar(result_type) and not contains_typevar(arm_ty):  # pragma: no cover
-                    result_type = arm_ty
-                    continue
 
-                if not (is_subtype(arm_ty, result_type)
-                        or is_subtype(result_type, arm_ty)):
+                # The arms so far and this one have the type they have
+                # together (`_join`, #1668).  Where the arms so far leave a
+                # position open and this arm leaves none, it is this arm's
+                # type, with any part this arm leaves unknown given by
+                # them; otherwise it is theirs, with each position they
+                # leave open given by this arm.
+                joined: Type | None
+                if (contains_typevar(result_type)
+                        and not contains_typevar(arm_ty)):
+                    outcome = self._join_parts(result_type, arm_ty)
+                    joined = outcome.joined
+                    if (joined is None and outcome.builtin
+                            and self._fits(result_type, arm_ty)):
+                        # A built-in's type variable the join leaves alone
+                        # (one a failed substitution left, #1688): this
+                        # arm's type, as an arm after an open arm always
+                        # gave.
+                        joined = arm_ty
+                else:
+                    joined = self._join(arm_ty, result_type)
+                    if joined is None and is_subtype(result_type, arm_ty):
+                        joined = result_type
+                if joined is not None:
+                    result_type = joined
+                else:
+                    # Both types are inferred, so an open position shows
+                    # as `?` (`pretty_inferred_type`): an arm synthesized
+                    # again, as a call argument is, then reports once.
                     self._error(
                         arm.body if hasattr(arm, 'body') else expr,
-                        f"Match arm type {pretty_type(arm_ty)} is "
+                        f"Match arm type {pretty_inferred_type(arm_ty)} is "
                         f"incompatible with previous arm type "
-                        f"{pretty_type(result_type)}.",
+                        f"{pretty_inferred_type(result_type)}.",
                         rationale="All match arms must have the same type.",
-                        fix=f"Make this arm produce {pretty_type(result_type)} "
+                        fix=f"Make this arm produce "
+                            f"{pretty_inferred_type(result_type)} "
                             f"to match the other arms (or change every arm to "
                             f"a common type).",
                         spec_ref='Chapter 4, Section 4.9 "Match Expressions"',

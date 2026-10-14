@@ -710,8 +710,10 @@ private forall<T> fn bad_mixed(@Bool -> @Option<T>)
             f"Expected E121, got: {[e.error_code for e in errs]}"
 
     def test_mixed_match_arms_rejected(self) -> None:
-        """Shape (c) ill-typed: a match with arms `None` / `Some(3)` unifies
-        at Option<Nat>; against forall<T> -> @Option<T> that is E121."""
+        """Shape (c) ill-typed: against forall<T> -> @Option<T> the arm
+        `None` is an Option<T> and `Some(3)` an Option<Nat>, which no `T`
+        makes one type, so the arms are refused where they disagree (E302,
+        #1668)."""
         errs = _check_err("""
 private forall<T> fn bad_mixed_match(@Bool -> @Option<T>)
   requires(true) ensures(true) effects(pure)
@@ -722,8 +724,8 @@ private forall<T> fn bad_mixed_match(@Bool -> @Option<T>)
   }
 }
 """, "Option<Nat>")
-        assert any(e.error_code == "E121" for e in errs), \
-            f"Expected E121, got: {[e.error_code for e in errs]}"
+        assert any(e.error_code == "E302" for e in errs), \
+            f"Expected E302, got: {[e.error_code for e in errs]}"
 
 
 class TestForallNullaryCtorNested979:

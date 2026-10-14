@@ -30,6 +30,8 @@ from vera.environment import (
     OpInfo,
 )
 from vera.types import (
+    BUILTIN_TYPEVAR_MARKER,
+    FREE_BUILTIN_TYPEVAR_MARKER,
     ORDERABLE_TYPES,
     AdtType,
     ConcreteEffectRow,
@@ -122,6 +124,244 @@ def _compatible_modulo_typevars(
     # accept a subtype relationship either way (Nat vs Int).
     return is_subtype(a, b) or is_subtype(b, a)
 
+
+def _behaviour_params(
+        name: str, data_types: typing.Mapping[str, AdtInfo],
+        visiting: frozenset[str] = frozenset()) -> frozenset[int]:
+    """The positions of data type *name*'s parameters that a value of it
+    can hold behaviour over: those a constructor field holds inside a
+    function type, its effect row included, directly or through another
+    data type's such position (#1668).  A built-in container (`Array`, `Map`, `Tuple`, ...) has no
+    fields, so it holds behaviour only where its argument is a function."""
+    info = data_types.get(name)
+    if info is None or not info.type_params or name in visiting:
+        return frozenset()
+    params = info.type_params
+    inside = visiting | {name}
+    held: set[int] = set()
+
+    def walk(ty: Type, behaviour: bool) -> None:
+        ty = base_type(ty)
+        if isinstance(ty, TypeVar):
+            if behaviour and ty.name in params:
+                held.add(params.index(ty.name))
+        elif isinstance(ty, AdtType):
+            holds = _behaviour_params(ty.name, data_types, inside)
+            for i, arg in enumerate(ty.type_args):
+                walk(arg, behaviour or i in holds)
+        elif isinstance(ty, FunctionType):
+            for param in ty.params:
+                walk(param, True)
+            walk(ty.return_type, True)
+            if isinstance(ty.effect, ConcreteEffectRow):
+                for inst in ty.effect.effects:
+                    for arg in inst.type_args:
+                        walk(arg, True)
+
+    for ctor in info.constructors.values():
+        for field in ctor.field_types or ():
+            walk(field, False)
+    return frozenset(held)
+
+
+class JoinOutcome(typing.NamedTuple):
+    """What `CallsMixin._join_parts` found (#1668).
+
+    *joined* is the join, or None.  *conflict* is whether it failed
+    because an open type variable took two types that do not agree, which
+    the argument judgement (`_fits`, one position at a time) does not see.
+    *builtin* is whether it failed only where a built-in's type variable
+    met another type, with no variable kept for behaviour on either side:
+    the join neither fills nor refuses such a variable (one a parameter of
+    its call mentions that the arguments left unbound, standing for a type
+    a failed substitution lost, #1688), and a site keeps the verdict it
+    gave it before."""
+
+    joined: Type | None
+    conflict: bool
+    builtin: bool
+
+
+def _lost_builtin_var(name: str) -> bool:
+    """Whether *name* is a built-in's type variable that a parameter of its
+    call mentions and the arguments left unbound: one standing for a type
+    a failed substitution lost (#1688), which the join does not fill.  A
+    built-in's variable the call marked free is open (#1668)."""
+    return (BUILTIN_TYPEVAR_MARKER in name
+            and FREE_BUILTIN_TYPEVAR_MARKER not in name)
+
+
+def _rewrapped(original: Type, joined: Type) -> Type:
+    """*joined*, under the refinements *original* has over its base."""
+    if isinstance(original, RefinedType):
+        return RefinedType(_rewrapped(original.base, joined),
+                           original.predicate)
+    return joined
+
+
+class _Join:
+    """One join of two types, *b* the one the result keeps where both are
+    fixed (`CallsMixin._join`, #1668).
+
+    A type variable is open where nothing has fixed it: not the enclosing
+    function's own (*rigid*), not a built-in's (a `#b` variable left after
+    the call is one a parameter mentions that the arguments did not bind,
+    standing for a type a failed substitution lost; one no parameter
+    mentions is minted fresh, `_mint_free_builtin_vars`), and nowhere in its own type
+    inside a function type or a data type's position a constructor field
+    holds a function over (`_behaviour_params`), since code generation
+    compiles the behaviour there at a type of its own choosing.  Each open
+    variable is bound by name, once per side, to the other side's type at
+    its first position; a later occurrence is joined with that binding,
+    and one that disagrees is a conflict.  A variable that is not open
+    matches only itself.  The checker's unknown (`?`, an empty literal's
+    element type) has no name: it is filled where it stands, except
+    inside a function type, where it is kept."""
+
+    def __init__(self, rigid: frozenset[str],
+                 data_types: typing.Mapping[str, AdtInfo]) -> None:
+        self.rigid = rigid
+        self.data_types = data_types
+        self.kept: tuple[frozenset[str], frozenset[str]] = (
+            frozenset(), frozenset())
+        self.behaviour: tuple[frozenset[str], frozenset[str]] = (
+            frozenset(), frozenset())
+        self.bound: tuple[dict[str, Type], dict[str, Type]] = ({}, {})
+        self.conflict = False
+        self.builtin = False
+
+    def join(self, a: Type, b: Type) -> Type | None:
+        (kept_a, held_a), (kept_b, held_b) = self._kept(a), self._kept(b)
+        self.kept = (kept_a, kept_b)
+        self.behaviour = (held_a, held_b)
+        joined = self._walk(a, b, False)
+        if joined is None:
+            return None
+        # A variable bound at one position takes its binding at every
+        # other: one of *b*'s where *a* left that position unknown, and one
+        # of *a*'s kept where *b* was unknown there.  *b* itself comes back
+        # where nothing changes, which `_join_elements` reads as a part that
+        # filled nothing.
+        for _ in range(len(self.bound[0]) + len(self.bound[1]) + 1):
+            again = joined
+            for bound in self.bound:
+                if bound:
+                    again = substitute(again, bound)
+            if again == joined:
+                break
+            joined = again
+        return joined
+
+    def _kept(self, ty: Type) -> tuple[frozenset[str], frozenset[str]]:
+        """The type variables of *ty* that are not open, and those of them
+        that are not open because code generation compiles behaviour for
+        them."""
+        out: set[str] = set()
+        held: set[str] = set()
+
+        def walk(t: Type, behaviour: bool) -> None:
+            t = base_type(t)
+            if isinstance(t, TypeVar):
+                if (behaviour or _lost_builtin_var(t.name)
+                        or ("$" not in t.name and t.name in self.rigid)):
+                    out.add(t.name)
+                if behaviour:
+                    held.add(t.name)
+            elif isinstance(t, AdtType):
+                holds = _behaviour_params(t.name, self.data_types)
+                for i, arg in enumerate(t.type_args):
+                    walk(arg, behaviour or i in holds)
+            elif isinstance(t, FunctionType):
+                for param in t.params:
+                    walk(param, True)
+                walk(t.return_type, True)
+                if isinstance(t.effect, ConcreteEffectRow):
+                    for inst in t.effect.effects:
+                        for arg in inst.type_args:
+                            walk(arg, True)
+
+        walk(ty, False)
+        return frozenset(out), frozenset(held)
+
+    def _open(self, ty: Type, side: int) -> str | None:
+        if isinstance(ty, TypeVar) and ty.name not in self.kept[side]:
+            return ty.name
+        return None
+
+    def _bind(self, side: int, name: str, other: Type) -> Type | None:
+        """Bind *side*'s variable *name* where the other side has *other*;
+        the type the position takes."""
+        prior = self.bound[side].get(name)
+        if prior is None:
+            self.bound[side][name] = other
+            return other
+        again = _Join(self.rigid, self.data_types).join(prior, other)
+        if again is None:
+            self.conflict = True
+            return None
+        self.bound[side][name] = again
+        return again
+
+    def _walk(self, a: Type, b: Type, behaviour: bool) -> Type | None:
+        a_base = base_type(a)
+        b_base = base_type(b)
+        if isinstance(a_base, UnknownType):
+            return b
+        if isinstance(b_base, UnknownType):
+            return b if behaviour else a
+        a_var = self._open(a_base, 0)
+        if a_var is not None:
+            return self._bind(0, a_var, b)
+        b_var = self._open(b_base, 1)
+        if b_var is not None:
+            return self._bind(1, b_var, a)
+        if isinstance(a_base, TypeVar) or isinstance(b_base, TypeVar):
+            # Neither is open: only the same variable matches.
+            if (isinstance(a_base, TypeVar) and isinstance(b_base, TypeVar)
+                    and a_base.name == b_base.name):
+                return b
+            self.builtin = any(
+                isinstance(t, TypeVar) and _lost_builtin_var(t.name)
+                for t in (a_base, b_base))
+            return None
+        if isinstance(a_base, AdtType) and isinstance(b_base, AdtType):
+            if (a_base.name != b_base.name
+                    or len(a_base.type_args) != len(b_base.type_args)):
+                return None
+            holds = _behaviour_params(b_base.name, self.data_types)
+            args: list[Type] = []
+            for i, (x, y) in enumerate(zip(a_base.type_args,
+                                           b_base.type_args)):
+                arg = self._walk(x, y, behaviour or i in holds)
+                if arg is None:
+                    return None
+                args.append(arg)
+            if all(arg is y for arg, y in zip(args, b_base.type_args)):
+                return b
+            return _rewrapped(b, AdtType(b_base.name, tuple(args)))
+        if isinstance(a_base, FunctionType) and isinstance(b_base, FunctionType):
+            if (len(a_base.params) != len(b_base.params)
+                    or not is_effect_subtype(a_base.effect, b_base.effect)):
+                return None
+            params: list[Type] = []
+            for x, y in zip(a_base.params, b_base.params):
+                param = self._walk(x, y, True)
+                if param is None:
+                    return None
+                params.append(param)
+            ret = self._walk(a_base.return_type, b_base.return_type, True)
+            if ret is None:
+                return None
+            if (ret is b_base.return_type
+                    and all(p is y for p, y in zip(params, b_base.params))):
+                return b
+            return _rewrapped(
+                b, FunctionType(tuple(params), ret, b_base.effect))
+        # Leaves (primitives): a subtype either way, as the argument
+        # judgement accepts them (Nat and Int).
+        if is_subtype(a_base, b_base) or is_subtype(b_base, a_base):
+            return b
+        return None
 
 
 def _type_var_occurrences(ty: Type, out: Counter[str]) -> None:
@@ -216,6 +456,32 @@ class CallsMixin:
         return ((contains_typevar(ty) or contains_typevar(target))
                 and _compatible_modulo_typevars(
                     ty, target, frozenset(self.env.type_params)))
+
+    def _join(self, ty: Type, onto: Type) -> Type | None:
+        """The type a value of *ty* and a value of *onto* have together:
+        *onto*, with each position it leaves open given *ty*'s type there;
+        None where the two do not agree (#1668).
+
+        The join an array literal's elements, an `if`'s branches and a
+        `match`'s arms are given (`_Join`): each open type variable is
+        bound by name, so one that occurs twice takes one type, and a
+        variable code generation compiles behaviour for, a built-in's,
+        or the enclosing function's own is not filled.  Where both leave a
+        position open it stays open, for the context to fill.  *onto*
+        itself comes back where *ty* fills nothing."""
+        return self._join_parts(ty, onto).joined
+
+    def _join_parts(self, ty: Type, onto: Type) -> JoinOutcome:
+        """`_join`, with why it failed where it did (`JoinOutcome`)."""
+        walk = _Join(frozenset(self.env.type_params), self.env.data_types)
+        joined = walk.join(ty, onto)
+        if joined is None and not walk.conflict and is_subtype(ty, onto):
+            # A subtype the walk refuses (`Never` beside a variable that
+            # is not open): it fills nothing.
+            return JoinOutcome(onto, False, False)
+        builtin = (joined is None and walk.builtin and not walk.conflict
+                   and not (walk.behaviour[0] or walk.behaviour[1]))
+        return JoinOutcome(joined, walk.conflict, builtin)
 
     # -----------------------------------------------------------------
     # Function calls
@@ -742,7 +1008,37 @@ class CallsMixin:
                     error_code="E125",
                 )
 
+        if fn_info.forall_vars:
+            return_type = self._mint_free_builtin_vars(
+                fn_info, mapping, return_type)
         return return_type
+
+    def _mint_free_builtin_vars(self, fn_info: FunctionInfo,
+                                bound: typing.Mapping[str, Type],
+                                result: Type) -> Type:
+        """*result*, with each of the built-in *fn_info*'s type variables
+        that no parameter type mentions, and so no argument could bind,
+        marked free (`FREE_BUILTIN_TYPEVAR_MARKER`, numbered for the call),
+        as a constructor mints a type parameter no field holds (#1668).
+
+        `map_new()` has no parameters: its `K` and `V` are open positions
+        the call leaves, which a join fills (`[map_new(), map_insert(...)]`
+        is one map type).  A variable a parameter mentions that the
+        arguments left unbound (*bound* lacks it) stays the built-in's: it
+        stands for a type a failed substitution lost (`map_values` read
+        through a refinement alias, #1688), and the join leaves it alone.
+        Read off the signature, so no built-in is named."""
+        mentioned: Counter[str] = Counter()
+        for param in fn_info.param_types:
+            _type_var_occurrences(param, mentioned)
+        free: dict[str, Type] = {}
+        for tv in fn_info.forall_vars or ():
+            if (BUILTIN_TYPEVAR_MARKER in tv and tv not in bound
+                    and not mentioned[tv]):
+                self._fresh_id += 1
+                free[tv] = TypeVar(
+                    f"{tv}{FREE_BUILTIN_TYPEVAR_MARKER}{self._fresh_id}")
+        return substitute(result, free) if free else result
 
     def _check_apply_fn(self, args: tuple[ast.Expr, ...],
                         node: ast.Node) -> Type | None:

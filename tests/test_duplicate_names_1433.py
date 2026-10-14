@@ -239,6 +239,10 @@ NOT_NAMESPACES: dict[str, str] = {
     "TypeChecker._pattern_arg_targets": (
         "keyed by an argument's source span, the composite type a pattern "
         "binds it at, which is its construction's context (#1503)"),
+    "TypeChecker.bound": (
+        "the join's bindings, `calls._Join.bound`, which the source scan "
+        "reads as the checker's: keyed by an open type variable, the type "
+        "it takes in one join (#1668)"),
     "TypeChecker._builtin_data_types": (
         "the built-in data types the environment starts with, kept by "
         "identity to tell them from a same-named declaration or import "

@@ -4017,6 +4017,19 @@
     ]
   },
   {
+    "id": "ch04_array_literal_open_position",
+    "file": "ch04_array_literal_open_position.vera",
+    "chapter": 4,
+    "title": "An array literal element that contradicts the type a later element gives an open position is a checker error (#1668)",
+    "level": "check",
+    "spec_ref": "Section 4.12.1",
+    "expected_error": "E162",
+    "features": [
+      "array_literal",
+      "check_error"
+    ]
+  },
+  {
     "id": "ch03_result_reference_type",
     "file": "ch03_result_reference_type.vera",
     "chapter": 3,

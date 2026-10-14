@@ -455,16 +455,21 @@ KEPT: dict[str, _Kept] = {
                                    errors=("E130",)),
     "unresolved_call": _Kept('["s", nope()]', "Array<String>",
                              errors=("E200",)),
-    # The empty literal, alone and beside a typed one.
+    # The empty literal, alone and beside a typed one.  Where a later
+    # element fills a position an earlier one leaves open, the literal has
+    # the type the two have together (#1668).
     "empty": _Kept("[]", "Array<?>"),
-    "empty_then_typed": _Kept("[[], [1]]", "Array<Array<?>>"),
+    "empty_then_typed": _Kept("[[], [1]]", "Array<Array<Nat>>"),
     "typed_then_empty": _Kept("[[1], []]", "Array<Array<Nat>>"),
     # A type variable left unresolved by a constructor or a call.
-    "none_then_some": _Kept("[None, Some(1)]", "Array<Option<T$>>"),
+    "none_then_some": _Kept("[None, Some(1)]", "Array<Option<Nat>>"),
     "some_then_none": _Kept("[Some(1), None]", "Array<Option<Nat>>"),
-    "ok_then_err": _Kept('[Ok(1), Err("e")]', "Array<Result<Nat, E$>>"),
+    "ok_then_err": _Kept('[Ok(1), Err("e")]', "Array<Result<Nat, String>>"),
+    # `map_new()`'s variables are mentioned by no parameter, so the call
+    # marks them free and the later element fills them (#1668).
     "fresh_map_then_map": _Kept(
-        '[map_new(), map_insert(map_new(), "k", 1)]', "Array<Map<K, V>>"),
+        '[map_new(), map_insert(map_new(), "k", 1)]',
+        "Array<Map<String, Nat>>"),
     "map_then_fresh_map": _Kept(
         '[map_insert(map_new(), "k", 1), map_new()]',
         "Array<Map<String, Nat>>"),
@@ -475,7 +480,7 @@ KEPT: dict[str, _Kept] = {
     "rigid_option_then_none": _Kept("[Some(@T.0), None]", "Array<Option<T>>",
                                     params="@T", generic=True),
     "none_then_rigid_option": _Kept("[None, Some(@T.0)]",
-                                    "Array<Option<T$>>", params="@T",
+                                    "Array<Option<T>>", params="@T",
                                     generic=True),
     # A zero-size element type is refused as a whole, once (E135), and its
     # other elements are not held to it.

@@ -106,6 +106,14 @@ def _render_scope_table(bindings: Sequence[tuple[str, str]]) -> str:
     return table
 
 
+def _element_list(indices: Sequence[int]) -> str:
+    """`element 1`, `elements 1 and 3`, `elements 1, 2 and 4`."""
+    if len(indices) == 1:
+        return f"element {indices[0]}"
+    head = ", ".join(str(i) for i in indices[:-1])
+    return f"elements {head} and {indices[-1]}"
+
+
 def _holds_unknown(ty: Type) -> bool:
     """Whether a part of *ty* is the `Unknown` an unresolvable type leaves."""
     if isinstance(ty, UnknownType):
@@ -1491,46 +1499,95 @@ class ExpressionsMixin:
                 error_code="E135",
             )
 
-        # #1584: every element has the element type.  A zero-size one is
-        # refused for the whole literal (E135, here or at the annotation the
-        # literal meets), so its elements are not held to it as well.
+        # #1584, #1668: every element has the element type, the type the
+        # elements have together.  A zero-size one is refused for the whole
+        # literal (E135, here or at the annotation the literal meets), so its
+        # elements are not held to it as well.
+        element_type = first
         if not erases_to_unit(first):
-            self._check_array_elements(expr, elem_types, first, first_at)
+            element_type, completed_by, conflicting = self._join_elements(
+                elem_types, first, first_at)
+            self._check_array_elements(
+                expr, elem_types, element_type, first_at, completed_by,
+                conflicting)
 
-        return AdtType("Array", (first,))
+        return AdtType("Array", (element_type,))
+
+    def _join_elements(self, elem_types: Sequence[Type | None],
+                       first: Type, first_at: int,
+                       ) -> tuple[Type, tuple[int, ...], frozenset[int]]:
+        """The element type of a literal whose element types are
+        *elem_types*, the elements after its first typed one (*first*, at
+        *first_at*) that completed it, and the elements whose type gives
+        one open type variable two types that do not agree (#1668).
+
+        The element type is the join of the elements (`_join`): *first*,
+        with each position it leaves open — a `None`'s `T`, an empty
+        literal's element type — given by the first later element that
+        fills it.  An element that does not fit the join of the elements
+        before it fills nothing; `_check_array_elements` reports it.  A
+        position no element fills, or one the join does not fill (a type
+        variable code generation compiles behaviour for, or a built-in's),
+        stays as the elements leave it, and the context the literal meets
+        decides it."""
+        joined = first
+        completed_by: list[int] = []
+        conflicting: set[int] = set()
+        for i, ty in enumerate(elem_types):
+            if i <= first_at or ty is None or isinstance(ty, UnknownType):
+                continue
+            step, conflict, _ = self._join_parts(ty, joined)
+            if conflict:
+                conflicting.add(i)
+            elif step is not None and step is not joined:
+                joined = step
+                completed_by.append(i)
+        return joined, tuple(completed_by), frozenset(conflicting)
 
     def _check_array_elements(self, expr: ast.ArrayLit,
                               elem_types: Sequence[Type | None],
-                              element_type: Type, first_at: int) -> None:
+                              element_type: Type, first_at: int,
+                              completed_by: Sequence[int] = (),
+                              conflicting: frozenset[int] = frozenset(),
+                              ) -> None:
         """Hold each element of *expr* after its first typed one, at
         *first_at*, to the literal's *element_type* (#1584).
 
         Spec §4.12.1: all elements of an array literal have the same type.
-        The element type is the first typed element's: it is the type the
-        literal is given, `Array<element_type>`, and the type code
+        The element type is the join of the elements (`_join_elements`):
+        the first typed element's type, completed by the elements in
+        *completed_by* where it leaves a position open (#1668).  It is the
+        type the literal is given, `Array<element_type>`, and the type code
         generation stores and reads back every element at.  Each other
         element is held to it by the judgement a call argument is held to
         its parameter by (`_fits`), and one it refuses is E162, at the
-        element.  An element whose type is already an error was reported by
-        its own check and is not judged again."""
+        element; so is one in *conflicting*, whose type gives one type
+        variable two types, which that judgement, one position at a time,
+        does not see.  An element whose type is already an error was
+        reported by its own check and is not judged again."""
+        source = f"the type of element {first_at}"
+        if completed_by:
+            source += f", completed by {_element_list(completed_by)}"
         for i, (elem, ty) in enumerate(zip(expr.elements, elem_types)):
             if i <= first_at or ty is None or isinstance(ty, UnknownType):
                 continue
-            if self._fits(ty, element_type):
+            if i not in conflicting and self._fits(ty, element_type):
                 continue
             shown = pretty_inferred_type(element_type)
             self._error(
                 elem,
                 f"Array literal element {i} has type "
                 f"{pretty_inferred_type(ty)}, but the literal's element "
-                f"type is {shown}, the type of element {first_at}.",
+                f"type is {shown}, {source}.",
                 rationale=(
                     "An array literal has one element type (Section "
                     "4.12.1): it is an Array<T> whose T is the type of its "
-                    "first element, and every element is stored and read "
-                    "back as a T, so an element of another type would be "
-                    "stored at the wrong width or read back as a value it "
-                    "does not hold."
+                    "first element, with each part that type leaves open "
+                    "(a None's T, the element type of []) given by the "
+                    "first element that fills it, and every element is "
+                    "stored and read back as a T, so an element of another "
+                    "type would be stored at the wrong width or read back "
+                    "as a value it does not hold."
                 ),
                 fix=(
                     f"Give element {i} the type {shown}, or give every "
