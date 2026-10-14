@@ -483,7 +483,7 @@ TRAP_EMITTERS: dict[str, TrapEmitter] = _emitters(
     ),
     # `float_to_string` takes the integer part it prints with an
     # `i64.trunc_f64_s` that traps by itself on a finite magnitude of 2^63 or
-    # more (#1482, `KNOWN_TRAP_DEFECTS`).  The instruction is recorded as a
+    # more (#1698, its #1482 instance; `KNOWN_TRAP_DEFECTS`).  The instruction is recorded as a
     # check, so a trap there is read against the obligation the verifier
     # records for the rendering, and never against the module's other checks
     # of its kind.
@@ -882,7 +882,7 @@ SAFE_NATIVE_SITES: tuple[NativeSite, ...] = (
 KNOWN_TRAP_DEFECTS: tuple[NativeSite, ...] = (
     NativeSite(
         "wasm/calls_strings.py:_float_to_string_core", "i64.trunc_f64_s", 1,
-        "#1482: the integer part of a finite value of magnitude 2^63 or "
+        "#1698 (#1482): the integer part of a finite value of magnitude 2^63 or "
         "more does not fit the i64 the digit loop runs over, so the total "
         "`float_to_string` traps, as float_conversion",
         kind="float_conversion",
