@@ -39,7 +39,7 @@ of another type, closed or open), and where the whole stands (a bare
 argument), 1,584 cells.  The expectation of every cell is stated by rule,
 below, never read back from the checker.  The rule has every context fill a
 position the parts leave open; a `let` and a return value refuse a type
-variable there instead (#1682), and those 162 cells are strict xfails.
+variable there instead (#1684), and those 162 cells are strict xfails.
 """
 
 from __future__ import annotations
@@ -430,7 +430,7 @@ class _Context:
     context does: an argument is held to its parameter with each
     unresolved variable a wildcard, and a generic call's inference binds
     it, but a `let` and a return value hold the literal by subtyping,
-    which meets a type variable only by name, and refuse it (#1682).
+    which meets a type variable only by name, and refuse it (#1684).
     Those cells are strict xfails.  Every context admits the open element
     type of an empty literal, which subtyping treats as unknown."""
 
@@ -524,7 +524,7 @@ class _Cell:
 
 def _refused_open_var(cell: _Cell) -> bool:
     """Whether *cell*'s context refuses the type variable its parts leave
-    open, which the rule says it fills (#1682, `_Context.fills_open_var`)."""
+    open, which the rule says it fills (#1684, `_Context.fills_open_var`)."""
     return (FILLERS[cell.filler].joined is None and cell.head != "array"
             and not CONTEXTS[cell.context].fills_open_var)
 
@@ -546,7 +546,7 @@ def _params() -> list[object]:
     return [
         pytest.param(cell, id=_cell_id(cell), marks=pytest.mark.xfail(
             strict=True,
-            reason="#1682: a `let` or a return refuses an open type "
+            reason="#1684: a `let` or a return refuses an open type "
                    "variable"))
         if _refused_open_var(cell) else pytest.param(cell, id=_cell_id(cell))
         for cell in _cells()
