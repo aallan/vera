@@ -62,65 +62,118 @@ def _op_signature_text(op: OpInfo) -> str:
     return f"{params} -> {pretty_type(op.return_type)}"
 
 
-def _compatible_modulo_typevars(
-        a: Type, b: Type, rigid: frozenset[str]) -> bool:
-    """Structural compatibility treating UNRESOLVED TypeVars as wildcards
-    (#993).
+def _is_open(ty: Type, rigid: frozenset[str]) -> bool:
+    """Whether *ty*, its refinements set aside, is a position nothing has
+    fixed: the checker's unknown (the element type of an empty literal
+    `[]`), or a type variable other than the enclosing function's own
+    (#993)."""
+    ty = base_type(ty)
+    if isinstance(ty, UnknownType):
+        return True
+    return isinstance(ty, TypeVar) and ("$" in ty.name
+                                        or ty.name not in rigid)
 
-    Used only by `CallsMixin._fits`, when a subtype check between two
-    types has failed AND at least one side still carries unresolved type
-    variables — a call's instantiation that could not be pinned down
+
+def _rewrapped(original: Type, joined: Type) -> Type:
+    """*joined*, under the refinements *original* has over its base."""
+    if isinstance(original, RefinedType):
+        return RefinedType(_rewrapped(original.base, joined),
+                           original.predicate)
+    return joined
+
+
+def _join_modulo_typevars(
+        a: Type, b: Type, rigid: frozenset[str]) -> Type | None:
+    """*b*, with each position it leaves open given *a*'s type there, where
+    the two are structurally compatible treating each open position as a
+    wildcard (#993); None where they are not (#1668).
+
+    The compatibility is `CallsMixin._fits`'s, when a subtype check between
+    two types has failed AND at least one side still carries unresolved
+    type variables — a call's instantiation that could not be pinned down
     (every argument is itself polymorphic, e.g.
     `option_unwrap_or(nothing(()), None)`), or an array literal's element
     type that its first element left open (`[None, Some(1)]`, #1584).
-    An unresolved var on either side matches anything: there EXISTS an
+    An open position on either side matches anything: there EXISTS an
     instantiation making the two sides agree, so rejecting would be a
-    false E202 (or E162).  Unresolved means a fresh `T$n`, a `#b`-marked
-    builtin var, or a callee forall var leaked raw from an uninferrable call —
-    everything EXCEPT the enclosing function's own declared forall params
-    (*rigid*, passed by name from `env.type_params`).  A rigid var is NOT
-    a wildcard — inside its own body it is an opaque, already-quantified
-    type, so `Option<T>` passed where `Option<Int>` is required must stay
-    E202 (the body must be valid for EVERY `T`, PR #1009 review); two
-    rigid vars agree only by name.  (A callee var leaked under a
-    same-named enclosing forall is conservatively treated as rigid —
-    the safe direction.)  Concrete structure must still line up —
-    `Option<...>` never matches `Result<...>`, a function's effect row
-    must still be permitted by the parameter's (`<IO>` never satisfies
-    `pure`), and a genuinely concrete leaf mismatch (`Int` vs `String`)
-    is rejected via the subtype fallback.
+    false E202 (or E162).  Open means the checker's unknown, or an
+    unresolved type variable: a fresh `T$n`, a `#b`-marked builtin var, or
+    a callee forall var leaked raw from an uninferrable call — everything
+    EXCEPT the enclosing function's own declared forall params (*rigid*,
+    passed by name from `env.type_params`).  A rigid var is NOT a wildcard
+    — inside its own body it is an opaque, already-quantified type, so
+    `Option<T>` passed where `Option<Int>` is required must stay E202 (the
+    body must be valid for EVERY `T`, PR #1009 review); two rigid vars
+    agree only by name.  (A callee var leaked under a same-named enclosing
+    forall is conservatively treated as rigid — the safe direction.)
+    Concrete structure must still line up — `Option<...>` never matches
+    `Result<...>`, a function's effect row must still be permitted by the
+    parameter's (`<IO>` never satisfies `pure`), and a genuinely concrete
+    leaf mismatch (`Int` vs `String`) is rejected via the subtype fallback.
+
+    The type returned is the witness of that compatibility, the join
+    (`CallsMixin._join`): *b* wherever it is fixed, refinements included,
+    and *a*'s type wherever *b* is open and *a* is not.  Where both are
+    open *b*'s position is kept.  Nothing else is returned in place of
+    *b*, so *b* itself comes back when *a* fills nothing.
     """
-    a = base_type(a)
-    b = base_type(b)
-    if isinstance(a, UnknownType) or isinstance(b, UnknownType):
-        return True
-    if isinstance(a, TypeVar) or isinstance(b, TypeVar):
-        a_rigid = (isinstance(a, TypeVar)
-                   and "$" not in a.name and a.name in rigid)
-        b_rigid = (isinstance(b, TypeVar)
-                   and "$" not in b.name and b.name in rigid)
-        if isinstance(a, TypeVar) and not a_rigid:
-            return True
-        if isinstance(b, TypeVar) and not b_rigid:
-            return True
+    if _is_open(a, rigid):
+        return b
+    if _is_open(b, rigid):
+        return a
+    a_base = base_type(a)
+    b_base = base_type(b)
+    if isinstance(a_base, TypeVar) or isinstance(b_base, TypeVar):
         # Every TypeVar side is rigid here: only the same var matches.
-        return (isinstance(a, TypeVar) and isinstance(b, TypeVar)
-                and a.name == b.name)
-    if isinstance(a, AdtType) and isinstance(b, AdtType):
-        return (a.name == b.name
-                and len(a.type_args) == len(b.type_args)
-                and all(_compatible_modulo_typevars(x, y, rigid)
-                        for x, y in zip(a.type_args, b.type_args)))
-    if isinstance(a, FunctionType) and isinstance(b, FunctionType):
-        return (len(a.params) == len(b.params)
-                and all(_compatible_modulo_typevars(x, y, rigid)
-                        for x, y in zip(a.params, b.params))
-                and _compatible_modulo_typevars(
-                    a.return_type, b.return_type, rigid)
-                and is_effect_subtype(a.effect, b.effect))
+        if (isinstance(a_base, TypeVar) and isinstance(b_base, TypeVar)
+                and a_base.name == b_base.name):
+            return b
+        return None
+    if isinstance(a_base, AdtType) and isinstance(b_base, AdtType):
+        if (a_base.name != b_base.name
+                or len(a_base.type_args) != len(b_base.type_args)):
+            return None
+        args: list[Type] = []
+        for x, y in zip(a_base.type_args, b_base.type_args):
+            arg = _join_modulo_typevars(x, y, rigid)
+            if arg is None:
+                return None
+            args.append(arg)
+        if all(arg is y for arg, y in zip(args, b_base.type_args)):
+            return b
+        return _rewrapped(b, AdtType(b_base.name, tuple(args)))
+    if isinstance(a_base, FunctionType) and isinstance(b_base, FunctionType):
+        if (len(a_base.params) != len(b_base.params)
+                or not is_effect_subtype(a_base.effect, b_base.effect)):
+            return None
+        params: list[Type] = []
+        for x, y in zip(a_base.params, b_base.params):
+            param = _join_modulo_typevars(x, y, rigid)
+            if param is None:
+                return None
+            params.append(param)
+        ret = _join_modulo_typevars(
+            a_base.return_type, b_base.return_type, rigid)
+        if ret is None:
+            return None
+        if (ret is b_base.return_type
+                and all(p is y for p, y in zip(params, b_base.params))):
+            return b
+        return _rewrapped(
+            b, FunctionType(tuple(params), ret, b_base.effect))
     # Leaves (primitives): the instantiation direction is unknown, so
     # accept a subtype relationship either way (Nat vs Int).
-    return is_subtype(a, b) or is_subtype(b, a)
+    if is_subtype(a_base, b_base) or is_subtype(b_base, a_base):
+        return b
+    return None
+
+
+def _compatible_modulo_typevars(
+        a: Type, b: Type, rigid: frozenset[str]) -> bool:
+    """Structural compatibility treating UNRESOLVED TypeVars as wildcards
+    (#993): whether :func:`_join_modulo_typevars` finds a type the two
+    agree at.  Used only by `CallsMixin._fits`."""
+    return _join_modulo_typevars(a, b, rigid) is not None
 
 
 
@@ -216,6 +269,28 @@ class CallsMixin:
         return ((contains_typevar(ty) or contains_typevar(target))
                 and _compatible_modulo_typevars(
                     ty, target, frozenset(self.env.type_params)))
+
+    def _join(self, ty: Type, onto: Type) -> Type | None:
+        """The type a value of *ty* and a value of *onto* have together:
+        *onto*, with each position it leaves open given *ty*'s type there;
+        None where *ty* does not fit *onto* (`_fits`) (#1668).
+
+        The join an array literal's elements, an `if`'s branches and a
+        `match`'s arms are given.  An open position is one `_fits` treats
+        as a wildcard — the checker's unknown, or a type variable other
+        than the enclosing function's own — so the join is the witness of
+        the judgement each part is held to (`_join_modulo_typevars`): it
+        fills exactly the positions that judgement let through, and no
+        position one of the two fixes stays open in the type of both.
+        Where both leave a position open it stays open, for the context to
+        fill.  *onto* itself comes back where *ty* fills nothing."""
+        if not self._fits(ty, onto):
+            return None
+        joined = _join_modulo_typevars(
+            ty, onto, frozenset(self.env.type_params))
+        # `_fits` admits a subtype the structural walk refuses (`Never`
+        # beside a rigid type variable): it fills nothing.
+        return onto if joined is None else joined
 
     # -----------------------------------------------------------------
     # Function calls
