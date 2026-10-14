@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from vera import ast, naming
 from vera.lexical import blank_comments
+from vera.lowering import ROW_TYPE_ARGUMENT, effect_row_entry_refusal
 from vera.checker.registration import (
     _RESERVED_TYPE_PREFIX_RE,
     builtin_effect_names,
@@ -612,6 +613,10 @@ class ResolutionMixin:
                     if (self.env.lookup_effect(ref.name) is None
                             and ref.name not in self._forward_effect_names):
                         self._report_unknown_row_effect(ref)
+                    else:
+                        # `vera.lowering` rule 6 (#1681), at each entry of
+                        # every row: a declaration's, a closure's, a type's.
+                        self._check_row_entry_lowerable(ref)
                     instances.append(EffectInstance(ref.name, args))
                 elif isinstance(ref, ast.QualifiedEffectRef):
                     args = tuple(
@@ -689,6 +694,78 @@ class ResolutionMixin:
             fix=fix,
             spec_ref='Chapter 7, Section 7.3.1 "Syntax"',
             error_code="E338",
+        )
+
+    def _check_row_entry_lowerable(self, ref: ast.EffectRef) -> None:
+        """E340 (`vera.lowering` rule 6, #1681): a row entry code generation
+        does not lower, refused where the row names it — a user-declared
+        effect, or ``State`` / ``Exn`` without its type argument.
+
+        Every row: a function's, a closure literal's, and a function type's.
+        Code generation dropped a function whose own row held one (E603,
+        E606, E611); a closure or a function type naming one compiled, and
+        could be applied only under a row naming it, which is refused."""
+        refusal = effect_row_entry_refusal(ref.name, len(ref.type_args or ()))
+        if refusal is None:
+            return
+        if refusal == ROW_TYPE_ARGUMENT:
+            cell = "cell" if ref.name == "State" else "payload"
+            written = "State<Int>" if ref.name == "State" else "Exn<String>"
+            self._error(
+                ref,
+                f"Code generation cannot lower the effect row entry "
+                f"'{ref.name}' without a type argument: {ref.name}<T> names "
+                f"the type of its {cell}.",
+                rationale=(
+                    "State<T> is lowered as a host cell holding a T, and "
+                    "Exn<E> as a WebAssembly exception tag carrying an E.  "
+                    "The type argument is the cell's type or the payload's, "
+                    "so an entry without one gives code generation nothing "
+                    "to lower."
+                ),
+                fix=(
+                    f"Write the type argument: {written} in place of "
+                    f"{ref.name} in the row, with the type the function's "
+                    f"operations {'read and write' if cell == 'cell' else 'throw'}."
+                ),
+                spec_ref='Chapter 7, Section 7.3 "Effect Rows"',
+                error_code="E340",
+            )
+            return
+        info = self.env.lookup_effect(ref.name)
+        op = (next(iter(info.operations.values()), None)
+              if info is not None else None)
+        if op is not None:
+            sig = (", ".join(pretty_type(p) for p in op.param_types)
+                   + " -> " + pretty_type(op.return_type))
+            replace = (
+                f", and call a function under its own name in place of each "
+                f"of its operations: private fn {op.name}_of(...) with the "
+                f"operation's signature ({sig}), called in place of "
+                f"{ref.name}.{op.name}(...)"
+            )
+        else:
+            replace = ""
+        self._error(
+            ref,
+            f"Code generation cannot lower an effect row naming "
+            f"'{ref.name}': it is a user-declared effect, and nothing "
+            f"implements its operations.",
+            rationale=(
+                "Code generation lowers a row's effects through the host, for "
+                "the built-in effects, and through State<T> and Exn<E> "
+                "handlers.  A user-declared effect is neither: its operations "
+                "have no implementation, and a handler for it is refused "
+                "(E340), so no function that performs it can run, and no "
+                "value whose row names it can be applied by one that can.  "
+                "The effect declaration itself checks."
+            ),
+            fix=(
+                f"Drop '{ref.name}' from the row (a row with nothing left is "
+                f"effects(pure)){replace}."
+            ),
+            spec_ref='Chapter 7, Section 7.2 "Effect Declarations"',
+            error_code="E340",
         )
 
     def _resolve_effect_ref(self, ref: ast.EffectRefNode) -> EffectInstance | None:

@@ -1413,6 +1413,14 @@ termination guard only if it also declares `decreases`. Like any effect, it
 propagates: every function that calls a `Diverge` function must declare
 `Diverge` too (`E125`), up to `main`.
 
+Every entry of a row names a built-in effect or an effect variable. A
+user-declared effect (`effect Logger { op log(String -> Unit); }`) checks as a
+declaration, and no row may name it: nothing implements its operations, and a
+handler for it is refused too, so a row naming it, a function's, a closure's
+or a function type's, is refused at check (`E340`). `State` and `Exn` take
+their type argument in a row: `effects(<State<Int>>)`, never
+`effects(<State>)` (`E340`).
+
 ### Effect declarations
 
 The IO effect is built-in — no declaration is needed. It provides eleven operations:
@@ -3744,15 +3752,12 @@ Diagnostics carry stable codes, grouped by compiler phase; the list after the ta
 - **E600**: Unsupported parameter type
 - **E601**: Unsupported return type
 - **E602**: Unsupported body expression type
-- **E603**: Unsupported closure
 - **E604**: Unsupported state effect type
 - **E605**: Unsupported state type parameter
-- **E606**: State without proper effect declaration
 - **E607**: State with unsupported operations
 - **E608**: Name collision: function
 - **E609**: Name collision: ADT type
 - **E610**: Name collision: constructor
-- **E611**: Exn without type argument
 - **E612**: Exn with unsupported type
 - **E613**: Type does not satisfy ability constraint
 - **E614**: Program contains typed holes

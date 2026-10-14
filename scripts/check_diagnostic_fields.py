@@ -983,11 +983,11 @@ KNOWN_MULTI_SITE_ERROR_CODES: dict[str, frozenset[tuple[str, str]]] = {
         ("vera/codegen/functions.py",
          "FunctionCompilationMixin._lift_closures_or_drop"),
     }),
-    # Code generation cannot lower this construct (#1597, #1512, #1499):
-    # one concept, the `vera.lowering` rule a construct fails, reported
-    # where the construct is written — a handler's effect, a State cell or
-    # Exn payload (handler or row), a State clause's resume, and an
-    # ability's call or constraint.
+    # Code generation cannot lower this construct (#1597, #1512, #1499,
+    # #1681): one concept, the `vera.lowering` rule a construct fails,
+    # reported where the construct is written — a handler's effect, a State
+    # cell or Exn payload (handler or row), a State clause's resume, an
+    # ability's call or constraint, and an effect row's entry.
     "E340": frozenset({
         ("vera/checker/calls.py", "CallsMixin._refuse_unlowerable_ability"),
         ("vera/checker/control.py",
@@ -996,6 +996,8 @@ KNOWN_MULTI_SITE_ERROR_CODES: dict[str, frozenset[tuple[str, str]]] = {
          "ControlFlowMixin._check_state_clause_lowerable"),
         ("vera/checker/control.py",
          "ControlFlowMixin._refuse_handler_effect"),
+        ("vera/checker/resolution.py",
+         "ResolutionMixin._check_row_entry_lowerable"),
     }),
     # Ability-not-satisfied: the Eq-derivability failure and the generic
     # constraint-checking failure both name "Type T does not satisfy
@@ -1014,9 +1016,12 @@ KNOWN_MULTI_SITE_ERROR_CODES: dict[str, frozenset[tuple[str, str]]] = {
     # that did (#1444), and `_compile_program` reports the #1433
     # backstop: a module binding one function identifier twice.
     # `_check_constraints` reports the `vera.lowering` rule 4 backstop: a
-    # constraint on a user ability, which the checker refuses (E340).
+    # constraint on a user ability, which the checker refuses (E340), and
+    # `_is_compilable` the rule 6 backstop: a row entry the checker refuses
+    # (E340).
     "E699": frozenset({
         ("vera/cli.py", "_internal_error_envelope"),
+        ("vera/codegen/compilability.py", "CompilabilityMixin._is_compilable"),
         ("vera/codegen/core.py", "CodeGenerator._compile_program"),
         ("vera/codegen/functions.py", "FunctionCompilationMixin._compile_fn"),
         ("vera/codegen/functions.py",

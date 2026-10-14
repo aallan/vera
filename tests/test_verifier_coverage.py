@@ -1039,15 +1039,11 @@ class TestEffectRowResolution:
     def test_effect_set_resolution(self) -> None:
         """EffectSet resolves to ConcreteEffectRow."""
         _verify_ok("""
-effect Console {
-  op print(String -> Unit);
-}
-
 private fn greet(@Int -> @Unit)
   requires(true)
   ensures(true)
-  effects(<Console>)
-{ Console.print("hello") }
+  effects(<IO>)
+{ IO.print("hello") }
 """)
 
 

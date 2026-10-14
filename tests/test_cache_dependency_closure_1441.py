@@ -759,22 +759,6 @@ _ADT_VARIANT_ADDED = _ADT_ORIGINAL.replace(
 _ADT_REMOVED = _ADT_ORIGINAL.replace(
     "public data Sign { Neg, Zero, Pos }\n\n", "", 1)
 
-_EFFECT_ORIGINAL = """effect Counter {
-  op bump(Int -> Int);
-}
-
-public fn use_c(@Int -> @Int)
-  requires(@Int.0 > 0)
-  ensures(true)
-  effects(<Counter>)
-{
-  Counter.bump(@Int.0)
-}
-"""
-
-_EFFECT_RETYPED = _EFFECT_ORIGINAL.replace(
-    "op bump(Int -> Int);", "op bump(Bool -> Int);", 1)
-
 #: An imported module's surface: the caller reads `cap`'s contract across a
 #: module boundary, where the closure cannot follow it — the session's
 #: per-module (path, source digest) keys are what covers this.
@@ -990,17 +974,15 @@ public fn build2(@Unit -> @Int)
 }
 """
 
+#: `State.put`'s parameter is the cell's type, `Small`.  The row was a
+#: user-declared effect's operation, which no row may name since #1681.
 _OP_CALL_ORIGINAL = _ADT_CARRIER_PRELUDE + """
-effect Counter {
-  op bump(Small -> Int);
-}
-
-public fn use_c(@Unit -> @Int)
+public fn use_c(@Unit -> @Unit)
   requires(true)
   ensures(true)
-  effects(<Counter>)
+  effects(<State<Small>>)
 {
-  Counter.bump(3)
+  State.put(3)
 }
 """
 
@@ -1113,21 +1095,21 @@ _CLASS_MATRIX_IDS = [
 ]
 
 #: Edits whose kind has no type-correct form: removing a type alias,
-#: retyping an effect operation, withdrawing a module export, and removing a
+#: withdrawing a module export, and removing a
 #: callee or an ADT the program still uses (E200 or E322 since #1513, and E136
 #: for a signature that still names the ADT, #1489).  The checker refuses
 #: each, so verification never runs and BOTH paths report an empty obligation
 #: stream — which means these cannot hold the cache key to account, and a
 #: cache key replaced by a constant passes every one of them (#1458 review).
 #: They are kept as what they are: agreement across a refusal, pinning that
-#: the checker is not itself replayed.
+#: the checker is not itself replayed.  Retyping an effect operation was one:
+#: the only operation a program can retype is a user-declared effect's, and
+#: no row may name one (E340, #1681), so no checked program performs it.
 _CHECK_PHASE_GUARDS = [
     ("type alias", "declaration removed",
      _ALIAS_ORIGINAL, _ALIAS_REMOVED, None, None),
     ("ADT", "declaration removed",
      _ADT_ORIGINAL, _ADT_REMOVED, None, None),
-    ("effect operation signature", "definition changed",
-     _EFFECT_ORIGINAL, _EFFECT_RETYPED, None, None),
     ("imported module export", "declaration removed",
      _MODULE_MAIN, _MODULE_MAIN, _MODULE_LIB, _MODULE_LIB_UNEXPORTED),
     ("callee", "declaration removed",
@@ -1137,7 +1119,6 @@ _CHECK_PHASE_GUARDS = [
 _CHECK_PHASE_GUARD_IDS = [
     "alias_removed",
     "adt_removed",
-    "effect_op_retyped",
     "module_export_removed",
     "callee_removed",
 ]

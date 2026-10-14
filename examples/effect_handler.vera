@@ -1,24 +1,18 @@
 -- Effect handlers — State patterns
--- A counter effect (user-defined effect)
-effect Counter {
-  op get_count(Unit -> Int);
-  op increment(Unit -> Unit);
-}
-
--- Use the counter effect (not compilable — Counter is not a host effect)
+-- A function whose row declares State<Int> performs get and put on the
+-- cell of whichever handler discharges the effect
 private fn count_to_three(@Unit -> @Unit)
   requires(true)
   ensures(true)
-  effects(<Counter>)
+  effects(<State<Int>>)
 {
-  Counter.increment(());
-  Counter.increment(());
-  Counter.increment(())
+  put(get(()) + 1);
+  put(get(()) + 1);
+  put(get(()) + 1)
 }
 
 -- Handle State<Int> to implement a counter
 -- The handle expression discharges the effect: run_counter is pure
--- The put clause uses 'with' to explicitly update handler state
 public fn run_counter(@Unit -> @Int)
   requires(true)
   ensures(true)
@@ -29,9 +23,7 @@ public fn run_counter(@Unit -> @Int)
     put(@Int) -> { resume(()) }
   } in {
     put(0);
-    put(get(()) + 1);
-    put(get(()) + 1);
-    put(get(()) + 1);
+    count_to_three(());
     get(())
   }
 }

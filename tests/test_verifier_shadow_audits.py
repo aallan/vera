@@ -6,6 +6,7 @@ from __future__ import annotations
 
 
 from tests.verifier_helpers import (
+    _verify_user_effect,
     _MK,
     _nat_sub_status,
     _verify,
@@ -667,7 +668,7 @@ private fn f(@Int -> @Int)
         outer `@Int` param carries `requires(@Int.0 != 0)`.  The matched field
         can be 0; discharging against the outer guard would be a silent
         false-discharge."""
-        result = _verify("""
+        result = _verify_user_effect("""
 effect Source {
   op next(Unit -> Option<Int>);
 }
@@ -750,7 +751,7 @@ effect Src { op g(Unit -> Option<Nat>); }
 private fn m(@Nat -> @Nat)
   requires(true) ensures(true) effects(<Src>)
 { match Src.g(()) { Some(@Nat) -> @Nat.0 - 1, None -> 0 } }
-""")
+""", past_check=True)
         assert st == ["tier3"], st
 
     def test_param_requires_does_not_leak_to_shadow(self) -> None:
@@ -768,14 +769,12 @@ private fn leak(@Nat -> @Nat)
         assert st == ["tier3"], st
 
     def test_effect_op_nat_operands_are_tier3(self) -> None:
-        """Two @Nat values produced by an effect op (`Rng.rand()`), let-bound
+        """Two @Nat values produced by an effect op (`IO.time()`), let-bound
         and subtracted, are opaque -> Tier-3."""
         st = _nat_sub_status("""
-effect Rng { op rand(Unit -> Nat); }
-
 private fn drawtwo(@Unit -> @Nat)
-  requires(true) ensures(true) effects(<Rng>)
-{ let @Nat = Rng.rand(()); let @Nat = Rng.rand(()); @Nat.0 - @Nat.1 }
+  requires(true) ensures(true) effects(<IO>)
+{ let @Nat = IO.time(()); let @Nat = IO.time(()); @Nat.0 - @Nat.1 }
 """)
         assert st == ["tier3"], st
 
@@ -1255,7 +1254,7 @@ private fn f(@Int -> @Int)
         SMT layer returns None for a match over an effect op), so a later
         `1 / @Int.0` is Tier-3 even when both arms are non-zero literals (the
         arm taken is unknown)."""
-        result = _verify("""
+        result = _verify_user_effect("""
 effect Src {
   op g(Unit -> Option<Int>);
 }
@@ -1273,7 +1272,7 @@ private fn f(@Int -> @Int)
         opaque effect-op scrutinee, is Tier-3 — `_fresh_pattern_env` shadows the
         inner pattern slot through two arm levels, never discharging against the
         outer `requires(@Int.0 != 0)`."""
-        result = _verify("""
+        result = _verify_user_effect("""
 effect Src {
   op g(Unit -> Option<Int>);
 }
@@ -1369,7 +1368,7 @@ private fn f(@Int -> @Int)
         """The modulo analogue of the opaque-match-scrutinee case: `1 % @Int.0`
         in an arm over an opaque effect op is Tier-3 (modulo carries the same
         `!= 0` obligation)."""
-        result = _verify("""
+        result = _verify_user_effect("""
 effect Src {
   op g(Unit -> Option<Int>);
 }
@@ -1386,7 +1385,7 @@ private fn f(@Int -> @Int)
         """The subtraction analogue: `@Nat.0 - @Nat.1` in an arm over an opaque
         effect op (returning Option<Nat>) is Tier-3 — the matched field is an
         opaque shadow, so the underflow obligation can't discharge against it."""
-        result = _verify("""
+        result = _verify_user_effect("""
 effect SrcN {
   op g(Unit -> Option<Nat>);
 }

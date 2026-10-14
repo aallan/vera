@@ -11,6 +11,7 @@ from tests.verifier_helpers import (
     _verify,
     _verify_err,
     _verify_ok,
+    _verify_user_effect,
 )
 
 
@@ -648,7 +649,7 @@ private fn f(@Option<Nat> -> @Nat)
         narrows an @Int argument.  #747 makes the checker synthesise op
         arguments against their instantiated formal, recording the @Nat
         target, so the obligation now fires (deferred pre-#747)."""
-        result = _verify("""
+        result = _verify_user_effect("""
 effect E<T> {
   op wait(T -> Unit);
 }
@@ -670,7 +671,7 @@ public fn f(@Int -> @Unit)
         """The generic effect-op narrowing discharges from a precondition.
         Pins the emitted `nat_bind` status as ``verified`` so a regression to
         *no* obligation can't pass silently (CR #756)."""
-        result = _verify("""
+        result = _verify_user_effect("""
 effect E<T> {
   op wait(T -> Unit);
 }
@@ -943,15 +944,15 @@ private fn f(@Int -> @Nat)
         layer can't translate surfaces an E504 warning + a `tier3_unguarded`
         obligation — NOT a silent `tier3_runtime` 'runtime check'.  A
         user-declared effect's operation argument is the canonical
-        unguarded site: code generation does not compile a user-declared
-        effect's operations at all (E603), so no runtime guard exists
-        there, and an untranslatable narrowing into a @Nat effect-op formal
+        unguarded site: a row naming one is refused at check (E340, #1681),
+        so no run reaches its operations, no runtime guard exists there, and
+        the fixture is measured past the check, and an untranslatable narrowing into a @Nat effect-op formal
         (here `array_length`'s opaque @Int into `E.wait(Nat)`) is neither
         statically proven nor runtime-checked.  Distinct from the concrete @Nat *call argument*
         form, which #747 codegen DOES guard (now a `tier3_runtime`) — the
         `guarded` flag the verifier threads must distinguish them
         (CodeRabbit, PR #756 round 6)."""
-        result = _verify('''
+        result = _verify_user_effect('''
 effect E {
   op wait(Nat -> Unit);
 }
@@ -988,7 +989,7 @@ public fn f(@Unit -> @Unit)
         The same fixture as the test above, read for what it SAYS rather than
         which tier it lands in.
         """
-        result = _verify('''
+        result = _verify_user_effect('''
 effect E {
   op wait(Nat -> Unit);
 }
@@ -1315,8 +1316,10 @@ public fn f(@Int -> @Unit)
         """A user-declared effect operation with a @Nat parameter obligates
         an @Int argument the same as built-in IO.sleep. User effects must
         register their OpInfo (operations were previously stored empty), so
-        lookup_effect_op exposes param_types (CodeRabbit, PR #748)."""
-        _verify_err("""
+        lookup_effect_op exposes param_types (CodeRabbit, PR #748).  Measured
+        past the check: a row naming a user-declared effect is refused there
+        (E340, #1681)."""
+        result = _verify_user_effect("""
 effect E {
   op wait(Nat -> Unit);
 }
@@ -1328,7 +1331,9 @@ public fn f(@Int -> @Unit)
 {
   E.wait(@Int.0)
 }
-""", "may be negative")
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert any("may be negative" in e.description.lower() for e in errors)
 
     def test_user_effect_op_argument_narrowing_discharged(self) -> None:
         """The user-effect-op narrowing verifies cleanly when the argument
@@ -1336,7 +1341,7 @@ public fn f(@Int -> @Unit)
         test_user_effect_op_argument_narrowing_caught.  Asserts the
         `nat_bind` obligation actually fired and verified, not merely "no
         error" (CodeRabbit, PR #748)."""
-        result = _verify("""
+        result = _verify_user_effect("""
 effect E {
   op wait(Nat -> Unit);
 }

@@ -1,9 +1,9 @@
 """What code generation can lower is decided once, and the checker refuses the rest.
 
-The class (#1597, #1512, #1506, #1499, #1522): a construct `vera check`
-accepts, and code generation then refuses (E602, E607, E612, E613, E699) or
-compiles to a module that does not load, because the backend has no lowering
-for it.  `vera/lowering.py` holds each rule once; the checker refuses the
+The class (#1597, #1512, #1506, #1499, #1522, #1681): a construct `vera
+check` accepts, and code generation then refuses (E602, E603, E606, E607,
+E611, E612, E613, E699) or compiles to a module that does not load, because
+the backend has no lowering for it.  `vera/lowering.py` holds each rule once; the checker refuses the
 construct where it is written, and code generation asks the same function at
 its own refusal site, where a refusal is an internal error naming the rule
 the checker should have applied.
@@ -36,6 +36,7 @@ pytestmark = pytest.mark.matrix(
         "vera/checker/calls.py",
         "vera/checker/core.py",
         "vera/checker/expressions.py",
+        "vera/checker/resolution.py",
         "vera/codegen/compilability.py",
         "vera/codegen/monomorphize.py",
         "vera/wasm/calls_handlers.py",
@@ -321,6 +322,79 @@ def test_repro_1506_parameterised_alias_parameter_enclosed() -> None:
     assert vera_pipeline.check(_REPRO_ALIAS_PARAMETER_ENCLOSED).ok
     assert vera_pipeline.run(
         _REPRO_ALIAS_PARAMETER_ENCLOSED, fn="main").value == 1
+
+
+#: #1681's instances: an effect row code generation cannot lower.  Each
+#: passed check and verify, and compile dropped the function (E603, E606,
+#: E611) and exported `main` alone.
+_REPRO_1681_USER = """\
+effect Counter {
+  op tick(Unit -> Int);
+}
+
+public fn bump(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<Counter>)
+{
+  Counter.tick(())
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  7
+}
+"""
+
+_REPRO_1681_BARE = """\
+public fn f(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<EFFECT>)
+{
+  1
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  7
+}
+"""
+
+
+def test_repro_1681_user_declared_effect_in_a_row() -> None:
+    """`effects(<Counter>)`: E603 at compile, `bump` not exported.  Refused
+    at the row entry."""
+    assert _codegen_refuses(_REPRO_1681_USER)
+    checked = vera_pipeline.check(_REPRO_1681_USER)
+    assert _placed(checked.errors) == [
+        ("E340", *_locate(_REPRO_1681_USER, "Counter>)"))]
+
+
+def _bare_row_holds(effect: str) -> None:
+    source = _REPRO_1681_BARE.replace("EFFECT", effect)
+    assert _codegen_refuses(source)
+    assert "f" not in vera_pipeline.compile(
+        source, past_check=True).result.exports
+    checked = vera_pipeline.check(source)
+    assert _placed(checked.errors) == [
+        ("E340", *_locate(source, f"{effect}>)"))]
+
+
+def test_repro_1681_state_without_a_type_argument() -> None:
+    """`effects(<State>)`: E606 at compile.  Refused at the row entry."""
+    _bare_row_holds("State")
+
+
+def test_repro_1681_exn_without_a_type_argument() -> None:
+    """`effects(<Exn>)`: E611 at compile.  Refused at the row entry."""
+    _bare_row_holds("Exn")
 
 
 def test_repro_1597_handler_for_http() -> None:
@@ -1196,6 +1270,114 @@ class TestGenericCellNesting:
         assert _codegen_refuses(_nest_source("Int", "T", "clause body", "5"))
 
 
+
+# ---------------------------------------------------------------------
+# Rule 6: an effect row's entries (#1681)
+# ---------------------------------------------------------------------
+
+_COUNTER = "effect Counter {\n  op tick(Unit -> Int);\n}\n\n"
+
+#: Each kind of row entry, and whether the rule refuses it.  The built-in
+#: effects without a type parameter are the registry's
+#: (`test_every_registry_effect_has_a_row_kind`), `State` and `Exn` take
+#: one type argument, and `Counter` is user-declared.
+_ROW_KINDS: dict[str, bool] = {
+    "IO": False, "Http": False, "Async": False, "HttpServer": False,
+    "Inference": False, "DB": False, "Random": False, "Diverge": False,
+    "State<Int>": False, "Exn<Int>": False,
+    "State": True, "Exn": True, "Counter": True, "IO, Counter": True,
+}
+
+#: Where the row is written, each with its rows marked ROW.  A declaration's
+#: row, a `where` helper's, a constrained generic's (with the caller that
+#: instantiates it, whose row is the same); a closure literal's,
+#: whose let is typed by a function type with the same row; and a function
+#: type's alone, the parameter of a function a pure closure is passed to.
+_ROW_PLACES: dict[str, str] = {
+    "function": (
+        "private fn f(@Unit -> @Int)\n  requires(true)\n  ensures(true)\n"
+        "  effects(<ROW>)\n{\n  1\n}\n\n" + _main("1")),
+    "where helper": (
+        "private fn f(@Unit -> @Int)\n  requires(true)\n  ensures(true)\n"
+        "  effects(pure)\n{\n  1\n}\nwhere {\n  fn h(@Unit -> @Int)\n"
+        "    requires(true)\n    ensures(true)\n    effects(<ROW>)\n  {\n"
+        "    1\n  }\n}\n\n" + _main("f(())")),
+    "constrained generic": (
+        "private forall<T where Eq<T>> fn g(@T -> @Int)\n  requires(true)\n"
+        "  ensures(true)\n  effects(<ROW>)\n{\n  1\n}\n\n"
+        "private fn f(@Unit -> @Int)\n  requires(true)\n  ensures(true)\n"
+        "  effects(<ROW>)\n{\n  g(1)\n}\n\n" + _main("1")),
+    "closure literal": (
+        "type F = fn(Unit -> Int) effects(<ROW>);\n\n"
+        + _main("let @F = fn(@Unit -> @Int) effects(<ROW>) { 1 };\n  1")),
+    "function type": (
+        "type F = fn(Unit -> Int) effects(<ROW>);\n\n"
+        "private fn keep(@F -> @Int)\n  requires(true)\n  ensures(true)\n"
+        "  effects(pure)\n{\n  1\n}\n\n"
+        + _main("keep(fn(@Unit -> @Int) effects(pure) { 7 })")),
+}
+
+#: The places code generation itself refuses a row at: a declaration's.  A
+#: closure's row and a function type's compile, as values nothing can apply
+#: (`test_a_closure_naming_a_user_effect_is_applied_under_a_refused_row`).
+_ROW_DECLARATIONS = frozenset({"function", "where helper",
+                               "constrained generic"})
+
+
+def _row_source(kind: str, place: str) -> str:
+    decls = _COUNTER if "Counter" in kind else ""
+    return decls + _ROW_PLACES[place].replace("ROW", kind)
+
+
+class TestEffectRow:
+    """Rule 6: every entry of every row names a built-in effect, `State`
+    and `Exn` with their one type argument.  A user-declared effect is a
+    declaration only."""
+
+    def test_every_registry_effect_has_a_row_kind(self) -> None:
+        """The registry is the enumeration: each built-in effect is a row
+        kind, at its one type argument where it takes one."""
+        builtin = {k.split("<")[0] for k, refused in _ROW_KINDS.items()
+                   if not refused}
+        assert builtin == set(builtin_effect_names())
+
+    @pytest.mark.parametrize("place", sorted(_ROW_PLACES))
+    @pytest.mark.parametrize("kind", sorted(_ROW_KINDS))
+    def test_row(self, kind: str, place: str) -> None:
+        source = _row_source(kind, place)
+        if not _ROW_KINDS[kind]:
+            _holds(source, None, 1)
+            # The negative space: the verdict a row the rule admits had at
+            # the base, every obligation proved.
+            verified = vera_pipeline.verify(source)
+            assert verified.ok, verified.errors
+            assert {o.status for o in verified.obligations} == {"verified"}, [
+                (o.kind, o.status) for o in verified.obligations]
+            return
+        rows = _ROW_PLACES[place].count("ROW")
+        _holds(source, ("E340",) * rows, None,
+               backend=place in _ROW_DECLARATIONS)
+        entry = kind.split(", ")[-1]
+        placed = sorted(_placed(vera_pipeline.check(source).errors))
+        assert placed == sorted(
+            ("E340", *_locate(source, f"{entry}>)", i)) for i in range(rows)
+        ), placed
+
+    def test_a_closure_naming_a_user_effect_is_applied_under_a_refused_row(
+        self,
+    ) -> None:
+        """Why the rule refuses a closure's row and a function type's too,
+        which code generation compiles: applying such a value needs the
+        effect in the caller's row, a declaration's, which code generation
+        refuses past the check."""
+        source = _COUNTER + (
+            "type F = fn(Unit -> Int) effects(<Counter>);\n\n"
+            + _main("let @F = fn(@Unit -> @Int) effects(<Counter>) { 1 };\n"
+                    "  apply_fn(@F.0, ())", eff="<Counter>"))
+        assert _verdict(source).check_codes == ("E340",) * 3
+        assert _codegen_refuses(source)
+
+
 # =====================================================================
 # Every refusal's fix compiles clean
 # =====================================================================
@@ -1447,3 +1629,27 @@ class TestTheFixCompilesClean:
         ).replace("@T.0, fn", "@Nat.0, fn").replace("q(true)", "q(3)"
         ).replace(_KEEP, "")
         _holds(fixed, None, 1)
+
+    def test_a_row_naming_a_user_effect(self) -> None:
+        """Rule 6's message for a user-declared effect: the row without it,
+        and the function the fix declares called in place of its operation."""
+        fix = _only_fix(_REPRO_1681_USER, "E340")
+        assert "Drop 'Counter' from the row" in fix, fix
+        assert "effects(pure)" in fix and "private fn tick_of(...)" in fix, fix
+        fixed = _REPRO_1681_USER.replace(
+            "effects(<Counter>)", "effects(pure)").replace(
+            "Counter.tick(())", "tick_of(())") + (
+            "\nprivate fn tick_of(@Unit -> @Int)\n  requires(true)\n"
+            "  ensures(true)\n  effects(pure)\n{\n  1\n}\n")
+        _holds(fixed, None, 7)
+
+    @pytest.mark.parametrize(("effect", "written"),
+                             (("State", "State<Int>"), ("Exn", "Exn<String>")))
+    def test_a_row_entry_without_its_type_argument(
+        self, effect: str, written: str,
+    ) -> None:
+        source = _REPRO_1681_BARE.replace("EFFECT", effect)
+        fix = _only_fix(source, "E340")
+        assert f"{written} in place of {effect} in the row" in fix, fix
+        _holds(source.replace(f"effects(<{effect}>)", f"effects(<{written}>)"),
+               None, 7)

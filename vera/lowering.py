@@ -7,7 +7,8 @@ what the backend then refused: a handler for an effect other than ``State``
 and ``Exn`` (#1597), a ``State`` cell whose value is a ``(ptr, len)`` pair
 (#1512), a quantifier the counter loop cannot bind (#1506), a call to a user
 ability's operation (#1499), a generic cell that an instantiation makes the
-same family as an enclosing one (#1522).  Each rule is a function here.
+same family as an enclosing one (#1522), an effect row naming a user-declared
+effect (#1681).  Each rule is a function here.
 
 The checker applies a rule where its construct is written and refuses the
 construct there, with **E340** ("code generation cannot lower this
@@ -28,8 +29,8 @@ and code generation's E607 stays the report for a clone at ``String``: the
 checker infers each call's type arguments but holds no instantiation set
 (#1679).
 
-Imports ``vera.ast`` and ``vera.types`` only, so the checker imports this
-module without importing code generation.
+Imports ``vera.ast``, ``vera.types`` and ``vera.narrowing``'s effect roster
+only, so the checker imports this module without importing code generation.
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field, fields, is_dataclass
 
 from vera import ast
+from vera.narrowing import COMPILABLE_EFFECTS
 from vera.types import (
     BOOL,
     INT,
@@ -497,4 +499,42 @@ def shadowing_cell(target: Cell, pushed: Sequence[Cell]) -> Cell | None:
     for cell in pushed:
         if cells_may_coincide(target, cell):
             return cell
+    return None
+
+
+# =====================================================================
+# Rule 6: an effect row's entries (#1681)
+# =====================================================================
+
+#: The reasons :func:`effect_row_entry_refusal` gives: the entry names an
+#: effect code generation lowers nothing for, or ``State`` / ``Exn`` without
+#: the one type argument that types its cell or its payload.
+ROW_EFFECT_NOT_LOWERED = "effect"
+ROW_TYPE_ARGUMENT = "type argument"
+
+
+def effect_row_entry_refusal(name: str, type_args: int) -> str | None:
+    """Why code generation cannot lower an effect row entry naming *name*
+    with *type_args* type arguments, or ``None`` when it lowers (#1681).
+
+    An entry lowers when it names an effect code generation compiles,
+    :data:`~vera.narrowing.COMPILABLE_EFFECTS` (every built-in effect), and,
+    for ``State`` and ``Exn``, carries exactly one type argument: the cell's
+    type, the payload's.  Replaces the refusals in ``_is_compilable``
+    (``vera/codegen/compilability.py``), which dropped a function whose row
+    named a user-declared effect (E603), or ``State`` or ``Exn`` without a
+    type argument (E606, E611).
+
+    A user-declared effect has no lowering anywhere: no handler for one is
+    lowered (rule 1), so its operations have no implementation.  The checker
+    refuses it in every row, a closure's and a function type's as well as a
+    declaration's.  Code generation compiles a closure whose row names one,
+    and nothing applies it: applying it needs the effect in the caller's row,
+    and that row is refused.  So the declaration is all of a user-declared
+    effect that checks.
+    """
+    if name not in COMPILABLE_EFFECTS:
+        return ROW_EFFECT_NOT_LOWERED
+    if name in ("State", "Exn") and type_args != 1:
+        return ROW_TYPE_ARGUMENT
     return None

@@ -998,12 +998,8 @@ private fn f(@Tuple -> @Tuple)
     def test_effect_set_with_type_variable(self) -> None:
         """A forall type variable used in an effect set becomes a row var."""
         _check_ok("""
-effect Console {
-  op print(String -> Unit);
-}
-
 private forall<E> fn f(@Int -> @Int)
-  requires(true) ensures(true) effects(<Console, E>)
+  requires(true) ensures(true) effects(<IO, E>)
 { @Int.0 }
 """)
 

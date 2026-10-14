@@ -49,7 +49,7 @@ from tests.codegen_helpers import (
 )
 from tests import pipeline as vera_pipeline
 from tests.pipeline import checks
-from tests.verifier_helpers import _verify, _verify_err
+from tests.verifier_helpers import _verify, _verify_err, _verify_user_effect
 
 
 _POS = "type Pos = { @Int | @Int.0 > 0 };\n"
@@ -208,8 +208,13 @@ public fn main(@Unit -> @Int)
         the same value against the same refinement — the asymmetry that made
         this a bug rather than a documented limitation.  Both are loud now,
         at the same site name, so a reader cannot learn one rule from a user
-        effect and have it fail to hold for `Exn`."""
-        user = _verify_err(self._USER_EFFECT, "refinement predicate")
+        effect and have it fail to hold for `Exn`.  The declared op is
+        measured past the check: a row naming a user-declared effect is
+        refused there (E340, #1681)."""
+        user = [e for e in _verify_user_effect(self._USER_EFFECT).diagnostics
+                if e.severity == "error"
+                and "refinement predicate" in e.description.lower()]
+        assert user, "Expected a refinement-predicate error at the declared op"
         thrown = _verify_err(
             _thrower("Pos", "0 - 5", prelude=_POS), "refinement predicate")
         assert {e.error_code for e in user} == {"E505"}, user
@@ -614,9 +619,10 @@ public fn main(@Float64 -> @Int)
         the diagnostic at its word would add a defensive check the compiler
         already emits.  Reached through the site that IS still unguarded, a
         user-declared effect's operation argument, so the sentence is read
-        from a real diagnostic rather than from the source.
+        from a real diagnostic rather than from the source, measured past the
+        check, where a row naming the effect is refused (E340, #1681).
         """
-        result = _verify("""
+        result = _verify_user_effect("""
 effect Counter {
   op bump(Nat -> Unit);
 }

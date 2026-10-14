@@ -65,10 +65,14 @@ def _run(tmp_path: Path, source: str, *args: str, name: str = "p.vera") -> str:
 
 
 def _obligations(tmp_path: Path, source: str,
-                 name: str = "p.vera") -> tuple[list[dict], dict]:
+                 name: str = "p.vera", *,
+                 past_check: bool = False) -> tuple[list[dict], dict]:
     """What ``vera verify --json`` prints for *source*, and its obligations:
-    the verify stage's envelope."""
-    envelope = pipeline.verify(_write(tmp_path, source, name), budget_s=_BUDGET_S).envelope()
+    the verify stage's envelope (*past_check*: measured on a program the
+    check refuses, with the tables the check collected)."""
+    envelope = pipeline.verify(_write(tmp_path, source, name),
+                               budget_s=_BUDGET_S,
+                               past_check=past_check).envelope()
     return envelope["obligations"], envelope
 
 
@@ -656,8 +660,9 @@ class TestEffectOperationArgumentsAreGuarded754:
     ) -> None:
         """The over-claiming control, and the reason the roster is consulted.
 
-        A user-declared effect makes its whole enclosing function an E603
-        codegen skip, so there is no run for a guard to protect.  Recording
+        A row naming a user-declared effect is refused at check (E340,
+        #1681), so there is no run for a guard to protect, and the verifier's
+        classification is measured past the check.  Recording
         `guarded` there would be #1268's mistake one boundary over — a
         Tier-3 promise about a runtime that is never reached — so the
         classification intersects the formal's base with
@@ -665,7 +670,7 @@ class TestEffectOperationArgumentsAreGuarded754:
         compilability from.
         """
         obs, envelope = _obligations(
-            tmp_path, _754_USER_EFFECT, name="user754.vera")
+            tmp_path, _754_USER_EFFECT, name="user754.vera", past_check=True)
         binds = [o for o in obs if o["kind"] == "nat_bind"]
         assert [o["status"] for o in binds] == ["tier3_unguarded"], binds
         assert [o.get("error_code") for o in binds] == ["E504"], binds
@@ -673,7 +678,7 @@ class TestEffectOperationArgumentsAreGuarded754:
 
         proc = pipeline.cli("compile", "--wat",
                             str(_write(tmp_path, _754_USER_EFFECT, "user754c.vera")), budget_s=_BUDGET_S)
-        assert "E603" in (proc.stdout + proc.stderr), (
+        assert "E340" in (proc.stdout + proc.stderr), (
             "the fixture compiles after all, so the disclosure is about a "
             "run that CAN happen and the reasoning above no longer applies"
         )

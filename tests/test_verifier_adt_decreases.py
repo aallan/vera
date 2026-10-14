@@ -362,7 +362,7 @@ private fn sum(@List<Int> -> @Int)
         assert result.summary.tier1_verified == 8
 
     def test_overall_tier_counts(self) -> None:
-        """All examples together: 424 T1 / 142 T3 / 566 total (current).
+        """All examples together: 420 T1 / 142 T3 / 562 total (current).
 
         Counts move when examples are added or their contracts become
         more / less verifiable.  Trajectory:
@@ -766,9 +766,16 @@ private fn sum(@List<Int> -> @Int)
         # `@Nat.result == @Int.0 || @Nat.result == -@Int.0` (2) and
         # `life.vera`'s two `@Nat.0 >= array_length(...)` bounds tests (2),
         # none bounded above: +4 T3: 424/138/562 -> 424/142/566.
-        assert t1 == 424, f"Expected 424 T1, got {t1}"
+        #
+        # #1681: a row naming a user-declared effect is refused at check, so
+        # `maximum_syntax.vera` keeps its `Counter` and `Logger<T>`
+        # declarations and drops `count_to_three` and `log_twice`, whose
+        # rows named them, with their `requires(true) ensures(true)` (-4 T1);
+        # `effect_handler.vera`'s `count_to_three` is rowed `<State<Int>>`
+        # and its counts do not move: 424/142/566 -> 420/142/562.
+        assert t1 == 420, f"Expected 420 T1, got {t1}"
         assert t3 == 142, f"Expected 142 T3, got {t3}"
-        assert total == 566, f"Expected 566 total, got {total}"
+        assert total == 562, f"Expected 562 total, got {total}"
         # Zero is the load-bearing value, not a vacuous one: every corpus
         # narrowing is now covered by an emitted guard, so any reappearance
         # is a REGRESSION in guard coverage rather than a new example.  The

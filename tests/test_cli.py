@@ -1560,13 +1560,14 @@ public fn positive(@Int -> @Int)
     ) -> None:
         """Compile JSON mode includes warnings from compilation."""
         import tempfile
-        # Use an unsupported effect to trigger a compilation warning
+        # A closure-typed parameter applied where the program writes no
+        # closure literal is a compilation warning (E620, spec §11.4.1).
         source = """\
-effect Counter { op inc(Unit -> Unit); }
+type F = fn(Int -> Int) effects(pure);
 
-private fn count(@Unit -> @Unit)
-  requires(true) ensures(true) effects(<Counter>)
-{ () }
+private fn app(@F -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ apply_fn(@F.0, 1) }
 
 private fn simple(-> @Int)
   requires(true) ensures(true) effects(pure)
@@ -1581,8 +1582,8 @@ private fn simple(-> @Int)
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
         assert data["ok"] is True
-        # The Counter effect function produces a compilation warning
-        assert len(data["warnings"]) > 0
+        # The closure application produces a compilation warning
+        assert [w["error_code"] for w in data["warnings"]] == ["E620"]
 
     def test_run_invalid_int_arg(self) -> None:
         """Non-parseable arguments after -- produce a clean type error."""

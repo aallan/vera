@@ -29,7 +29,21 @@ private fn pure_fn(@Int -> @Int)
 """)
 
     def test_effect_declaration(self) -> None:
+        """A user-declared effect checks as a declaration, and a row naming
+        it is refused at the entry (E340, #1681): code generation implements
+        its operations nowhere."""
         _check_ok("""
+effect Logger {
+  op log(String -> Unit);
+}
+
+private fn greet(@String -> @Unit)
+  requires(true) ensures(true) effects(pure)
+{
+  ()
+}
+""")
+        errs = _errors("""
 effect Logger {
   op log(String -> Unit);
 }
@@ -40,6 +54,8 @@ private fn greet(@String -> @Unit)
   Logger.log(@String.0)
 }
 """)
+        assert [(e.error_code, e.location.line) for e in errs] == [
+            ("E340", 7)], [e.description for e in errs]
 
     def test_pure_calling_effectful_error(self) -> None:
         _check_err("""
@@ -424,15 +440,10 @@ private fn incr(@Unit -> @Unit)
 
     def test_qualified_effect_call(self) -> None:
         _check_ok("""
-effect Counter {
-  op get_count(Unit -> Int);
-  op increment(Unit -> Unit);
-}
-
-private fn use_counter(@Unit -> @Unit)
-  requires(true) ensures(true) effects(<Counter>)
+private fn use_io(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
 {
-  Counter.increment(())
+  IO.print("tick")
 }
 """)
 
@@ -656,18 +667,14 @@ private fn bad(@Unit -> @Unit)
     def test_effectful_calling_same_effect_ok(self) -> None:
         """Calling a function with the same effect row is fine."""
         _check_ok("""
-effect Logger {
-  op log(String -> Unit);
-}
-
 private fn effectful(@Unit -> @Unit)
-  requires(true) ensures(true) effects(<Logger>)
+  requires(true) ensures(true) effects(<IO>)
 {
-  Logger.log("hi")
+  IO.print("hi")
 }
 
 private fn caller(@Unit -> @Unit)
-  requires(true) ensures(true) effects(<Logger>)
+  requires(true) ensures(true) effects(<IO>)
 {
   effectful(())
 }
@@ -676,22 +683,14 @@ private fn caller(@Unit -> @Unit)
     def test_effectful_calling_subset_ok(self) -> None:
         """Calling a function whose effects are a subset of the caller's."""
         _check_ok("""
-effect Logger {
-  op log(String -> Unit);
-}
-
-effect Tracer {
-  op trace(String -> Unit);
-}
-
 private fn log_only(@Unit -> @Unit)
-  requires(true) ensures(true) effects(<Logger>)
+  requires(true) ensures(true) effects(<IO>)
 {
-  Logger.log("hi")
+  IO.print("hi")
 }
 
 private fn caller(@Unit -> @Unit)
-  requires(true) ensures(true) effects(<Logger, Tracer>)
+  requires(true) ensures(true) effects(<IO, Random>)
 {
   log_only(())
 }
@@ -1418,8 +1417,10 @@ private fn safe_div(@Int, @Int -> @Int)
 """)
 
     def test_user_named_effect_still_accepted(self) -> None:
-        """A non-built-in effect name is untouched — this gate is name-keyed."""
-        _check_ok("""
+        """A non-built-in effect name is untouched — this gate is name-keyed.
+        The declaration checks; the only error is the row naming it (E340,
+        #1681), never E152."""
+        errs = _errors("""
 effect Foo {
   op bar(String -> Unit);
 }
@@ -1427,6 +1428,8 @@ private fn use_foo(@String -> @Unit)
   requires(true) ensures(true) effects(<Foo>)
 { Foo.bar(@String.0) }
 """)
+        assert [e.error_code for e in errs] == ["E340"], [
+            (e.error_code, e.description) for e in errs]
 
     def test_builtin_stays_canonical_after_rejection(self) -> None:
         """The rejected block is not registered, so the built-in stays in scope.

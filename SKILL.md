@@ -1454,6 +1454,14 @@ termination guard only if it also declares `decreases`. Like any effect, it
 propagates: every function that calls a `Diverge` function must declare
 `Diverge` too (`E125`), up to `main`.
 
+Every entry of a row names a built-in effect or an effect variable. A
+user-declared effect (`effect Logger { op log(String -> Unit); }`) checks as a
+declaration, and no row may name it: nothing implements its operations, and a
+handler for it is refused too, so a row naming it, a function's, a closure's
+or a function type's, is refused at check (`E340`). `State` and `Exn` take
+their type argument in a row: `effects(<State<Int>>)`, never
+`effects(<State>)` (`E340`).
+
 ### Effect declarations
 
 The IO effect is built-in — no declaration is needed. It provides eleven operations:

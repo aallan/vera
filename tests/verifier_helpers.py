@@ -54,6 +54,29 @@ def _verify(source: str) -> VerifyResult:
     return verified.result
 
 
+def _verify_user_effect(source: str) -> VerifyResult:
+    """Verify a fixture whose subject needs a user-declared effect's
+    operation, past the check.
+
+    A row naming a user-declared effect is refused at check since #1681
+    (E340), so ``vera verify`` never reaches the operation, and the
+    verifier's treatment of it is measured on the tables the check
+    collected.  The premise `_verify` holds stays, narrowed by exactly that
+    refusal: the program is well typed, and the check's errors are the
+    rows' E340s and nothing else.
+    """
+    verified = pipeline.verify(source, past_check=True)
+    _ = verified.checked.program  # raises the parse or transform error, if any
+    check_errors = verified.checked.errors
+    assert check_errors and all(
+        d.error_code == "E340" for d in check_errors), (
+        "a user-effect verifier fixture is refused at its rows (E340) and "
+        "nowhere else, got: "
+        f"{[(d.error_code, d.description[:70]) for d in check_errors]}"
+    )
+    return verified.result
+
+
 def _verify_ok(source: str) -> None:
     """Assert source verifies with no errors."""
     result = _verify(source)
@@ -85,14 +108,15 @@ def _verify_warn(source: str, match: str) -> list:
     return matched
 
 
-def _nat_sub_status(source: str) -> list[str]:
+def _nat_sub_status(source: str, *, past_check: bool = False) -> list[str]:
     """Statuses of the `nat_sub` (#520/E502) obligations for *source*.
 
     Helper for the shadow/projection audit battery
     (:class:`TestShadowAuditSubtraction680`): returns one status string per
     recorded `@Nat`-subtraction site so a test can assert the tier directly.
     """
-    result = _verify(source)
+    result = (_verify_user_effect(source) if past_check
+              else _verify(source))
     return [o.status for o in result.obligations if o.kind == "nat_sub"]
 
 
