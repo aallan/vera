@@ -8,7 +8,7 @@ assignees: ''
 
 ## Description
 
-A clear description of the bug.
+A clear description of the bug. This template applies the `bug` label, which means the language and the behaviour of its toolchain: for a defect in the test suite, CI, the language server or the documentation, replace `bug` with `testing`, `ci`, `lsp` or `documentation` when filing.
 
 ## Mechanism, Class and Instances
 

@@ -671,7 +671,10 @@ class TestIssueColumnScoping:
         # 0.2.0 Bugs rows brought two more: #1496's row cites #1469 (the
         # reservation that would fix it) and #1602's cites #1426 (the fix
         # its message predates), neither of them the row's own issue.
-        prose_only: set[int] = {1426, 1451, 1459, 1469}
+        # #1469 left the set when #1496's row left the table: #1496 was
+        # consolidated into the bare-name class #1694 on 2026-10-14, whose
+        # row cites no other issue.
+        prose_only: set[int] = {1426, 1451, 1459}
         narrow: set[int] = set()
         wide: set[int] = set()
         for header in ("## Limitations", "## Bugs"):

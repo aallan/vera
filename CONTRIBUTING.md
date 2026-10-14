@@ -94,7 +94,7 @@ Effect and reach decide the disposition at filing.  Silent and reachable: fixed 
 
 **File, don't fold.**  A bug found while reviewing a pull request never enters that pull request and does not hold it up, except a regression against its base or a defect in its own code, which the pull request fixes.  Instruments and reviewers do not file: they report the find in the pull request, with its effect and reach, and whoever runs the review routes it by the rules above.
 
-`bug` means the language and the behaviour of its toolchain.  A defect in the test suite, CI, the language server or the documentation carries `testing`, `ci`, `lsp` or `documentation` without `bug`, so `KNOWN_ISSUES.md`'s Bugs table, one row per open `bug` issue, counts language classes rather than sightings.
+`bug` means the language and the behaviour of its toolchain.  A defect in the test suite, CI, the language server or the documentation carries `testing`, `ci`, `lsp` or `documentation` without `bug` (the bug report template applies `bug`; swap it for the right label when filing), so `KNOWN_ISSUES.md`'s Bugs table, one row per open `bug` issue, counts language classes rather than sightings.
 
 ## Development Setup
 
