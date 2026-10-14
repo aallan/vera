@@ -768,3 +768,29 @@ def test_mutant_the_join_keeps_the_rigid_type_variable() -> None:
     assert checked.errors[0].description == (
         "Array literal element 2 has type Option<Nat>, but the literal's "
         "element type is Option<T>, the type of element 0.")
+
+
+def test_mutant_if_joins_what_re_synthesis_does_not_reach() -> None:
+    # The open branch is synthesized again against the closed one, which
+    # fills nothing inside a `Tuple`: held by subtyping after it, the
+    # branches would be refused, though they agree once joined.
+    literal = '[if @Bool.0 then { Tuple(None, -1) } else { Tuple(Some("abc"), -1) }]'
+    source = _fn(f"array_length({literal})")
+    checked = _checked(source)
+    assert checked.diagnostics == ()
+    assert _literal_types(checked)[_place(source, literal)] == (
+        "Array<Tuple<Option<String>, Int>>")
+
+
+def test_mutant_a_match_arm_refused_in_an_argument_is_reported_once() -> None:
+    # A call argument is synthesized more than once, each time with fresh
+    # type variables: a message spelling them (`Option<T$1>`, `Option<T$2>`)
+    # is not the same message twice, and is reported once per synthesis.
+    literal = "[match @Nat.0 { 0 -> None, _ -> 5 }]"
+    source = _fn(f"takes({literal})", pre=_TAKES.format(c="Option<Nat>"))
+    checked = _checked(source)
+    assert _where(checked) == [
+        ("E302", *_place(source, literal, literal.index("5")))]
+    assert checked.errors[0].description == (
+        "Match arm type Nat is incompatible with previous arm type "
+        "Option<?>.")
