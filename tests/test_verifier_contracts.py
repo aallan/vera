@@ -466,14 +466,15 @@ private fn factorial(@Nat -> @Nat)
 """)
         # ensures(@Nat.result >= 1) — Tier 1 via modular verification
         # decreases(@Nat.0) — Tier 1 via termination verification
-        # @Nat.0 - 1 underflow obligation (#520) — Tier 1 via path condition
+        # `@Nat.0 - 1` is an `@Int` subtraction (spec §4.4): its overflow, and
+        # its narrowing into `factorial`'s `@Nat` parameter, Tier 1 via the
+        # path condition.
         # #798: @Nat.0 * factorial(...) multiply emits an int_overflow
-        # obligation; operands are unbounded so it falls to Tier 3.
-        # #1222: so does `decreases_bound` — `@Nat.0 <= i64.MAX`, the fact
-        # the unbounded-integer termination proof and the i64 runtime
-        # comparison need in common, unprovable for an unconstrained @Nat.
-        assert result.summary.tier1_verified == 4
-        assert result.summary.tier3_runtime == 2
+        # obligation; operands are unbounded so it falls to Tier 3.  A `@Nat`
+        # measure is an i64, so #1222's `decreases_bound` is gone with the
+        # u64 `Nat`.
+        assert result.summary.tier1_verified == 5
+        assert result.summary.tier3_runtime == 1
 
 
 # =====================================================================
@@ -584,14 +585,15 @@ private fn f(@Nat -> @Nat)
         # requires(true) → Tier 1 trivial
         # ensures — Tier 1 via modular verification
         # decreases — Tier 1 via termination verification
-        # @Nat.0 - 1 underflow obligation (#520) — Tier 1 via path condition
+        # `@Nat.0 - 1` is an `@Int` subtraction (spec §4.4): its overflow, and
+        # its narrowing into `f`'s `@Nat` parameter, Tier 1 via the path
+        # condition.
         # #798: @Nat.0 + f(...) add emits an int_overflow obligation; operands
-        # are unbounded so it falls to Tier 3.
-        # #1222: `decreases_bound` joins it — `@Nat.0 <= i64.MAX`, likewise
-        # unprovable for an unconstrained @Nat and likewise runtime-guarded.
+        # are unbounded so it falls to Tier 3.  #1222's `decreases_bound` is
+        # gone with the u64 `Nat`.
         assert result.summary.total == 6
-        assert result.summary.tier1_verified == 4
-        assert result.summary.tier3_runtime == 2
+        assert result.summary.tier1_verified == 5
+        assert result.summary.tier3_runtime == 1
 
     def test_multiple_functions_accumulate(self) -> None:
         result = _verify("""

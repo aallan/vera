@@ -473,8 +473,8 @@ class FunctionCompilationMixin:
         (``self._expr_semantic_types`` / ``self._expr_target_types``) must NOT be
         consulted for an imported body: an imported expression whose span
         coincides with a main-file entry would pick up the WRONG type and, at a
-        tuple/array widen site, emit a SPURIOUS @Nat -> @Int guard that traps a
-        legal @Nat (confirmed cross-module collision, #986 review).
+        tuple/array component site, emit a SPURIOUS guard (confirmed
+        cross-module collision, #986 review).
 
         *module_tables* (#987) is the imported module's OWN
         ``(expr_semantic_types, expr_target_types)`` pair, keyed by that module's
@@ -482,8 +482,8 @@ class FunctionCompilationMixin:
         cross-file collision.  When supplied (the normal path from Pass 2.5 / 2.6
         via ``CheckArtifacts.module_artifacts``), the imported body gets the same
         per-component target-type recovery a same-file body does, so its
-        array-element / tuple-construction @Nat -> @Int widening guard fires
-        through the import door.  When absent (a caller that threaded no module
+        array-element / tuple-construction narrowing guard fires through the
+        import door.  When absent (a caller that threaded no module
         artifacts), we fall back to suppression (both tables ``None``) — the
         pre-#987 behaviour: those component sites stay unguarded, never
         false-guarded.  Fn-type-based recovery (closure formal / return types) is
@@ -733,10 +733,10 @@ class FunctionCompilationMixin:
         # mis-classify an imported operand (see the *imported* note above).
         ctx.set_expr_semantic_types(
             imported_semantic if imported else self._expr_semantic_types)
-        # #820: target-type side-table for the @Nat -> @Int widening guard's
-        # per-component target-type recovery (tuple component / array element
-        # / heterogeneous if-arm), the codegen dual of ``_target_type_of``.
-        # #987: an imported body uses its own module's table (so its widen guard
+        # #820: target-type side-table for the narrowing guards'
+        # per-component target-type recovery (tuple component / array
+        # element), the codegen dual of ``_target_type_of``.
+        # #987: an imported body uses its own module's table (so its guard
         # fires through the import door) or None; the main-file table would
         # false-guard a colliding span.
         ctx.set_expr_target_types(
@@ -744,9 +744,6 @@ class FunctionCompilationMixin:
         # #747: per-parameter concrete-@Nat flags for the call-site
         # runtime narrowing guard.
         ctx.set_fn_nat_params(self._fn_nat_params)
-        # #813: per-parameter concrete-@Int flags for the call-site
-        # runtime @Nat -> @Int widening guard.
-        ctx.set_fn_int_params(self._fn_int_params)
         # #754: per-formal base type names for every effect
         # operation, so an op call site guards its narrowing
         # arguments the way a function call site does.
@@ -982,21 +979,8 @@ class FunctionCompilationMixin:
             self._record_unguarded_return_leaves(ctx)
         ctx._nat_return_leaf_ids = nat_leaf_ids
 
-        # #820 FIX-1 — a @Nat arm of a heterogeneous @Int-join if/match is
-        # widen-guarded PER-ARM (`_emit_int_widen_guard`, appended AFTER the arm
-        # body).  A call inside such an arm that lowered to `return_call` would
-        # return before the appended guard runs, leaving it DEAD (a @Nat above
-        # i64.MAX silently reinterprets to a negative @Int) — the widen sibling
-        # of the #983 narrowing-leaf hazard.  Subtract those call ids from
-        # `tail_sites` so they lower to a plain `call` the guard can follow.  The
-        # collector uses the SAME `_is_hetero_int_widen_join` gate as the emitters,
-        # so a call is only stripped if its arm is actually guarded.
-        hetero_widen_ids: set[int] = set()
-        if decl.body is not None:
-            hetero_widen_ids = ctx._collect_hetero_widen_arm_calls(decl.body)
-
         ctx.set_tail_call_context(
-            tail_sites - nat_leaf_ids - hetero_widen_ids,
+            tail_sites - nat_leaf_ids,
             self_ret_wt=ret_wt if ret_wt != "unsupported" else None,
         )
 
@@ -1314,36 +1298,10 @@ class FunctionCompilationMixin:
         # import / memory declaration.  See the propagation block after the
         # postcondition compile (#808 / #823).
 
-        # #813: guard a @Nat -> @Int widening at the return position.  A @Nat
-        # result above i64.MAX reinterprets to a negative @Int (u64.MAX -> -1),
-        # so trap rather than silently return it — the runtime backstop for the
-        # verifier's nat_to_int_coerce obligation (7c).  @Int is i64, so this
-        # runs before (and is unaffected by) the i32 coercion below.
-        # Alias-aware via `_boundary_base` so an alias-typed @Int return is
-        # guarded too — matching the verifier's 7c gate (`_is_int_type` over the
-        # *resolved* return type).  The raw `_type_expr_to_slot_name` returned
-        # the opaque alias name and missed `type MyInt = Int` entirely (#983
-        # review, the widen sibling of the alias-blind narrow gate); the
-        # name-only chase that replaced it still dropped an APPLICATION's type
-        # arguments, so `type MyInt = Ident<Int>` answered the head `Ident` and
-        # the widen guard went missing again (#1256, measured against the plain
-        # spelling's).  `_boundary_base` resolves the type expression, so both
-        # spellings answer `Int` — the same derivation the narrow gate above,
-        # the `throw` payload and the `apply_fn` signature ask.  A refinement
-        # over @Int stays here (the verifier's 7c fires on refined @Int too: the
-        # `<= i64.MAX` bound is not subsumed by the predicate), which the
-        # wrapper-stripping resolution preserves rather than changes.
-        widen_guarded = (
-            ctx._boundary_base(decl.return_type) == "Int"
-            and ctx._result_is_nat(decl.body)
-        )
-        if widen_guarded:
-            body_instrs = ctx._emit_int_widen_guard(body_instrs, at=decl.body)
-
         # #758/#983: an @Int body narrowing into a @Nat return can be negative
         # (`to_nat(0 - 5)` = -5), so trap rather than store a negative in the
         # @Nat slot — the runtime backstop for the verifier's return nat_bind
-        # obligation (7d), the dual of the #813 widen guard above.  This is
+        # obligation (7d).  This is
         # emitted PER NARROWING LEAF during body translation (via the
         # `_nat_return_leaf_ids` set threaded above), NOT as a whole-body wrap:
         # the whole-body wrap appended the guard after the entire body and so
@@ -1351,8 +1309,8 @@ class FunctionCompilationMixin:
         # @Nat->@Nat recursive tail call (`drain`) that then stack-exhausted at
         # depth (#983 regression).  Guarding only the genuine narrowing leaves
         # inline leaves the recursive tail call's `return_call` structurally
-        # intact — nothing is appended after the body — so, unlike the widen
-        # guard, this no longer forces a revert below.  The alias-aware +
+        # intact — nothing is appended after the body — so this forces no
+        # revert below.  The alias-aware +
         # refinement-excluded gate lives where `nat_leaf_ids` is computed.
 
         # Coerce body result if return type is i32 but body produces i64
@@ -1535,14 +1493,10 @@ class FunctionCompilationMixin:
             ctx.alloc_local("i32") if ctx.needs_alloc else None
         )
 
-        if post_instrs or widen_guarded:
-            # Postcondition checks must run; return_call would skip them.  The
-            # #813 @Nat->@Int return widen guard is the same case: it is appended
-            # *after* the trailing tail call (whole-body wrap), so a
-            # `return_call` would return before the guard runs, silently leaking
-            # a reinterpreted negative @Int (e.g. `fn f(@Nat -> @Int) {
-            # make_nat(@Nat.0) }`).  Revert every return_call to plain call so
-            # the guard is reached.  The #758 @Int->@Nat narrow guard is NOT
+        if post_instrs:
+            # Postcondition checks must run; return_call would skip them, so
+            # revert every return_call to plain call so the checks are
+            # reached.  The #758 @Int->@Nat narrow guard is NOT
             # here: it is emitted per narrowing LEAF during body translation, so
             # a non-narrowing @Nat->@Nat recursive tail call keeps its
             # `return_call` (a narrowing-leaf call was already excluded from
@@ -1610,7 +1564,7 @@ class FunctionCompilationMixin:
             body_instrs = patched_dec
 
         if (
-            not (post_instrs or widen_guarded)
+            not post_instrs
             and ctx.needs_alloc
         ):
             # #549: GC-aware TCO.  Prepend a ``$gc_sp`` restore

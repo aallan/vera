@@ -640,10 +640,6 @@ KIND_CASES: dict[str, tuple[str, tuple[str, ...]]] = {
         "private fn nb(@Int -> @Nat)\n" + _HEAD
         + "{\n  let @Nat = @Int.0;\n  @Nat.0\n}\n", "nb(0 - 5)", "@Nat"),
         ("Negative value bound into a @Nat slot",)),
-    "widen_guard": (_prog(
-        "private fn wid(@Nat -> @Int)\n" + _HEAD + "{\n  @Nat.0\n}\n",
-        "wid(18446744073709551615)"),
-        ("widened into an @Int slot",)),
     "divide_by_zero": (_prog(
         "private fn div(@Int, @Int -> @Int)\n" + _HEAD
         + "{\n  @Int.1 / @Int.0\n}\n", "div(1, 0)"),
@@ -1317,7 +1313,7 @@ def _escaped(payload: str, entry: str, value: str | None) -> str:
 ESCAPES: dict[str, tuple[str, str, int, str | None]] = {
     "Int": ("Int", "throw(0 - @Int.0 - 1)", 9223372036854775807,
             "-9223372036854775808"),
-    "Nat": ("Nat", "throw(18446744073709551615)", 0, "18446744073709551615"),
+    "Nat": ("Nat", "throw(9223372036854775807)", 0, "9223372036854775807"),
     "Byte": ("Byte", "match int_to_byte(@Int.0) {\n"
              "    Some(@Byte) -> throw(@Byte.0),\n    None -> 0\n  }",
              200, "200"),
@@ -1869,14 +1865,17 @@ _NAT_SUB = (
 @pytest.mark.parametrize(("lhs", "rhs", "expected"), [
     (5, 3, 2),
     (3, 5, "nat_underflow"),
-    # Past i64.MAX: a `@Nat` is a u64, so the guard compares unsigned.  A
-    # signed compare read 2^63 as negative, trapping the first with a
-    # message saying the right operand was larger and passing the second.
-    (2 ** 63, 1, 2 ** 63 - 1),
-    (1, 2 ** 63, "nat_underflow"),
-    (2 ** 64 - 1, 2 ** 64 - 1, 0),
+    # At the top of the range: a `@Nat` holds `0 .. i64.MAX`, over which
+    # the signed compare the guard makes is exact.  On the u64 `Nat` the
+    # guard compared unsigned, for operands past i64.MAX; such an operand
+    # is no `@Nat` now, and is refused before the call.
+    (2 ** 63 - 1, 1, 2 ** 63 - 2),
+    (1, 2 ** 63 - 1, "nat_underflow"),
+    (2 ** 63 - 1, 2 ** 63 - 1, 0),
+    (2 ** 63, 1, "refused"),
+    (1, 2 ** 63, "refused"),
 ])
-def test_a_nat_subtraction_is_checked_unsigned(
+def test_a_nat_subtraction_is_checked_at_the_top_of_the_range(
     lhs: int, rhs: int, expected: object,
 ) -> None:
     try:
@@ -1884,6 +1883,9 @@ def test_a_nat_subtraction_is_checked_unsigned(
             _compile(_NAT_SUB), fn_name="sub", args=[lhs, rhs]).value
     except WasmTrapError as exc:
         outcome = exc.kind
+    except RuntimeError as exc:
+        assert "out of range for parameter type @Nat" in str(exc), exc
+        outcome = "refused"
     assert outcome == expected, (lhs, rhs, outcome)
 
 

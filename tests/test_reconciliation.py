@@ -266,13 +266,16 @@ public fn main(@Unit -> @Nat)
   }
 }
 """,
+    # #1582's own repro was a widening inside an `assume`; the widening has
+    # nothing to check since v0.2.3, and an overflow inside one is the
+    # class's live member: recorded `tier3`, and no check can answer it.
     "1582": """\
-public fn f(@Nat, @Bool -> @Int)
+public fn f(@Array<Int>, @Bool -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  assume({ let Tuple<@Int, @Int> = Tuple(1, @Nat.0); @Int.0 >= 0 });
+  assume({ let @Nat = array_length(@Array<Int>.0) - 1; @Nat.0 >= 0 });
   7
 }
 """,
@@ -303,41 +306,6 @@ public fn g(@Float64 -> @Int)
   7
 }
 """,
-    # #1530, PR #1630 review: the chain guard is declined (the call-valued
-    # ADT component), and the declined path's range checks skip the
-    # call-valued `@Nat` component, so `sz(@Nat.0)` is claimed `tier3` and
-    # checked by nothing: `f(0, 2^63)` returns 0.
-    "1530-measure": """\
-private data Chain {
-  End,
-  Link(Int, Chain)
-}
-
-private fn mk(@Nat -> @Chain)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  End
-}
-
-private fn sz(@Nat -> @Nat)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  @Nat.0
-}
-
-public fn f(@Nat, @Nat -> @Nat)
-  requires(true)
-  ensures(true)
-  decreases(@Nat.1, sz(@Nat.0), mk(@Nat.1))
-  effects(pure)
-{
-  if @Nat.1 == 0 then { 0 } else { f(@Nat.1 - 1, @Nat.0) }
-}
-""",
 }
 
 #: (issue, repro, mismatch kind, obligation kind, line, column): every
@@ -346,15 +314,14 @@ public fn f(@Nat, @Nat -> @Nat)
 #: `handle` the static `@Nat` rule cannot read (#1557).
 #: The issue column names the OPEN issue the mismatch is tracked under:
 #: #1695 carries the guard-agreement class, whose instances #1530, #1557,
-#: #1607, #1608 and #1613 were consolidated into it on 2026-10-14 (the
+#: #1582, #1607, #1608 and #1613 were consolidated into it on 2026-10-14 (the
 #: repro keys keep the instance numbers, which name the programs).
 _REPRO_KNOWN: tuple[tuple[int, str, str, str, int, int], ...] = (
     (1695, "1607", "recorded_unguarded", "ensures", 3, 3),
     (1695, "1607", "recorded_unguarded", "index_bounds", 3, 92),
     (1695, "1530", "recorded_unguarded", "decreases", 4, 3),
     (1695, "1530", "guarded_unrecorded", "nat_bind", 15, 3),
-    (1695, "1530-measure", "recorded_unguarded", "decreases_bound", 25, 21),
-    (1582, "1582", "recorded_unguarded", "nat_to_int_coerce", 6, 45),
+    (1695, "1582", "recorded_unguarded", "int_overflow", 6, 23),
     (1695, "1608", "guarded_unrecorded", "nat_bind", 14, 32),
 )
 
@@ -474,15 +441,14 @@ def _example(name: str) -> ReconcileRun:
 
 
 #: One real pair per location class: (program, record kind, record line).
+#: The corpus holds no binder pair since the widening went (v0.2.3), so the
+#: binder case is `_BINDERS`'s, written to a temporary file.
 _RULE_CASES = [
-    ("examples/absolute_value.vera", "nat_to_int_coerce", 5),        # value
+    ("examples/factorial.vera", "int_overflow", 11),                 # value
     ("tests/conformance/ch05_closure_nat_return.vera", "nat_bind", 25),
     #                                          value: a join's arms
-    ("tests/conformance/ch02_generic_over_param_adt.vera",
-     "nat_to_int_coerce", 22),                                        # binder
+    ("<binders>", "nat_bind", 20),                                    # binder
     ("examples/http.vera", "call_pre", 32),        # clause: callee prologue
-    ("examples/factorial.vera", "decreases_bound", 5),  # value: a measure
-    #                                     component, checked where it stands
     ("tests/conformance/ch05_decreases_guard.vera", "decreases", 8),  # clause
     ("tests/conformance/ch02_byte_refinement.vera", "refine_bind", 55),
     #                                                         parameter
@@ -491,8 +457,13 @@ _RULE_CASES = [
 ]
 
 
-def _pair(path: str, kind: str, line: int) -> tuple[ReconcileRun, list]:
-    run = _run(ROOT / path)
+def _pair(path: str, kind: str, line: int,
+          tmp_path: Path | None = None) -> tuple[ReconcileRun, list]:
+    if path == "<binders>":
+        assert tmp_path is not None
+        run = _written(tmp_path, "binders.vera", _BINDERS)
+    else:
+        run = _run(ROOT / path)
     assert run.reconciliation is not None
     pairs = [(r, c) for r, c in run.reconciliation.pairs
              if r.kind == kind and r.line == line]
@@ -502,11 +473,11 @@ def _pair(path: str, kind: str, line: int) -> tuple[ReconcileRun, list]:
 
 @pytest.mark.parametrize(("path", "kind", "line"), _RULE_CASES)
 def test_taking_the_check_away_leaves_the_record_unguarded(
-    path: str, kind: str, line: int,
+    path: str, kind: str, line: int, tmp_path: Path,
 ) -> None:
     """A paired record, its answering checks removed, is
     `recorded_unguarded`: the pairing the rule made is what kept it clean."""
-    run, pairs = _pair(path, kind, line)
+    run, pairs = _pair(path, kind, line, tmp_path)
     record = pairs[0][0]
     gone = {id(c) for r, c in pairs if r is record}
     checks = [c for c in run.compile_result.emitted_checks  # type: ignore[union-attr]
@@ -520,11 +491,11 @@ def test_taking_the_check_away_leaves_the_record_unguarded(
 @pytest.mark.parametrize(("path", "kind", "line"), [
     case for case in _RULE_CASES if case[1] != "call_pre"])
 def test_taking_the_record_away_leaves_the_check_unrecorded(
-    path: str, kind: str, line: int,
+    path: str, kind: str, line: int, tmp_path: Path,
 ) -> None:
     """The reverse: the record removed, the check it answered is
     `guarded_unrecorded`, since no other record accounts for it."""
-    run, pairs = _pair(path, kind, line)
+    run, pairs = _pair(path, kind, line, tmp_path)
     record, check = pairs[0]
     records = [r for r in run.verify_result.obligations  # type: ignore[union-attr]
                if r is not record]
@@ -823,24 +794,6 @@ def _unguarded(result: object, kind: str) -> set[tuple[int, int]]:
             if m.kind == "recorded_unguarded" and m.obligation == kind}
 
 
-def test_a_measure_component_without_its_own_range_check_is_unguarded(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Code generation range-checking only the first `@Nat` component of
-    ackermann's measure leaves `@Nat.0` checked by nothing, at entry and at
-    both tail sites; its record must not borrow `@Nat.1`'s checks."""
-    from vera.codegen.contracts import ContractsMixin
-
-    first_only = ContractsMixin._dec_nat_measure_indices
-    monkeypatch.setattr(
-        ContractsMixin, "_dec_nat_measure_indices",
-        lambda self, ctx, contract: first_only(self, ctx, contract)[:1])
-    run = reconcile_file(
-        ROOT / "tests" / "conformance" / "ch05_decreases_guard.vera")
-    assert run.reconciliation is not None
-    assert _unguarded(run.reconciliation, "decreases_bound") == {(8, 21)}
-
-
 @pytest.mark.parametrize("gone", [(25, 58), (25, 74)])
 def test_a_record_at_a_join_needs_the_check_on_every_arm(
     gone: tuple[int, int],
@@ -908,23 +861,23 @@ private forall<T> fn gid(@T -> @T)
   @T.0
 }
 
-public fn visible(@Nat, @Nat -> @Int)
+public fn visible(@Float64, @Float64 -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  match MkPair(@Nat.1, @Nat.0) {
-    MkPair(@Int, @Int) -> @Int.1 - @Int.0
+  match MkPair(float_to_int(@Float64.1), float_to_int(@Float64.0)) {
+    MkPair(@Nat, @Nat) -> nat_to_int(@Nat.1)
   }
 }
 
-public fn opaque(@Nat, @Nat -> @Int)
+public fn opaque(@Float64, @Float64 -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  match gid(MkPair(@Nat.1, @Nat.0)) {
-    MkPair(@Int, @Int) -> @Int.1 - @Int.0
+  match gid(MkPair(float_to_int(@Float64.1), float_to_int(@Float64.0))) {
+    MkPair(@Nat, @Nat) -> nat_to_int(@Nat.1)
   }
 }
 
@@ -941,25 +894,25 @@ public fn destructure(@Float64 -> @Int)
 
 @pytest.mark.parametrize(("gone", "field"), [
     ((21, 12), (20, 16)),
-    ((21, 18), (20, 24)),
+    ((21, 18), (20, 42)),
 ])
 def test_a_sub_pattern_check_answers_only_its_own_field(
     tmp_path: Path, gone: tuple[int, int], field: tuple[int, int],
 ) -> None:
-    """Each sub-pattern of `MkPair(@Int, @Int)` widens the field it binds,
-    and the verifier records each widening at that field of the scrutinee
+    """Each sub-pattern of `MkPair(@Nat, @Nat)` narrows the field it binds,
+    and the verifier records each narrowing at that field of the scrutinee
     it can see: with one sub-pattern's guard gone, its field's record is
     unguarded, whatever the other sub-pattern checks."""
     run = _written(tmp_path, "binders.vera", _BINDERS)
     checks = [c for c in run.compile_result.emitted_checks  # type: ignore[union-attr]
               if (c.line, c.column) != gone]
     result = _rejoin(run, checks=checks)
-    assert _unguarded(result, "nat_to_int_coerce") == {field}
+    assert _unguarded(result, "nat_bind") == {field}
 
 
 def test_records_sharing_a_node_need_a_check_each(tmp_path: Path) -> None:
     """Over a scrutinee the verifier cannot see into, it records the two
-    widenings at the scrutinee itself, two records at one node: one
+    narrowings at the scrutinee itself, two records at one node: one
     sub-pattern guard answers one of them, never both."""
     run = _written(tmp_path, "binders.vera", _BINDERS)
     checks = [c for c in run.compile_result.emitted_checks  # type: ignore[union-attr]
@@ -1251,10 +1204,10 @@ def test_a_join_with_one_opaque_arm_is_answered_by_the_component_check(
 def test_a_tier3_unguarded_record_does_not_account_for_a_check() -> None:
     """A record saying its site has no runtime check contradicts the check
     standing there."""
-    run = _example("absolute_value.vera")
+    run = _example("factorial.vera")
     assert run.reconciliation is not None
     record, check = next((r, c) for r, c in run.reconciliation.pairs
-                         if r.kind == "nat_to_int_coerce")
+                         if r.kind == "int_overflow")
     records = [replace(r, status="tier3_unguarded") if r is record else r
                for r in run.verify_result.obligations]  # type: ignore[union-attr]
     result = _rejoin(run, records=records)
@@ -1265,7 +1218,7 @@ def test_a_tier3_unguarded_record_does_not_account_for_a_check() -> None:
 
 
 def test_a_record_of_a_kind_no_emitter_answers_is_no_mapping() -> None:
-    run = _example("absolute_value.vera")
+    run = _example("factorial.vera")
     record = next(r for r in run.verify_result.obligations  # type: ignore[union-attr]
                   if r.status == "tier3")
     records = [replace(r, kind="unmapped_kind")  # type: ignore[arg-type]
@@ -1279,7 +1232,7 @@ def test_a_record_of_a_kind_no_emitter_answers_is_no_mapping() -> None:
 def test_a_state_decl_record_is_excluded() -> None:
     """No runtime check stands for `state_decl`, so even a `tier3` one —
     which the verifier never records — would claim nothing to join."""
-    run = _example("absolute_value.vera")
+    run = _example("factorial.vera")
     record = next(r for r in run.verify_result.obligations  # type: ignore[union-attr]
                   if r.status == "tier3")
     records = [*run.verify_result.obligations,  # type: ignore[union-attr]
@@ -1289,7 +1242,7 @@ def test_a_state_decl_record_is_excluded() -> None:
 
 
 def test_a_record_at_no_node_is_no_mapping() -> None:
-    run = _example("absolute_value.vera")
+    run = _example("factorial.vera")
     record = next(r for r in run.verify_result.obligations  # type: ignore[union-attr]
                   if r.status == "tier3")
     moved = replace(record, line=999, column=1, end_line=999, end_column=2)
@@ -1335,9 +1288,9 @@ def test_an_imported_body_is_out_of_scope_here() -> None:
 def test_each_mismatch_kind_has_its_diagnostic() -> None:
     """E541 for a claim the module does not answer, W004 for a check no
     record accounts for; both fully tagged, quoting the source line."""
-    run = _example("absolute_value.vera")
+    run = _example("factorial.vera")
     record, check = next((r, c) for r, c in run.reconciliation.pairs  # type: ignore[union-attr]
-                         if r.kind == "nat_to_int_coerce")
+                         if r.kind == "int_overflow")
     lost_check = _rejoin(run, checks=[
         c for c in run.compile_result.emitted_checks if c is not check])  # type: ignore[union-attr]
     lost_record = _rejoin(run, records=[
@@ -1397,10 +1350,10 @@ def test_reconcile_reports_an_unrecorded_check_as_w004(
 def test_reconcile_text_mode_prints_its_summary(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    rc = cmd_verify(str(EXAMPLES_DIR / "absolute_value.vera"), reconcile=True)
+    rc = cmd_verify(str(EXAMPLES_DIR / "factorial.vera"), reconcile=True)
     out = capsys.readouterr().out
     assert rc == 0
-    assert "Reconciliation: 2 of 2 runtime checks (Tier 3) found in the " \
+    assert "Reconciliation: 1 of 1 runtime checks (Tier 3) found in the " \
         "compiled module" in out
 
 

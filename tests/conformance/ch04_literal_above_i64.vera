@@ -1,0 +1,15 @@
+-- Conformance: an integer literal above i64 is refused in a `@Nat` context
+-- (Chapter 4, Section 4.2)
+-- Features: int_literal, literal_range, nat_range, check_error
+--
+-- Every integer literal is an `Int`, and its range is i64's wherever it is
+-- written: `9223372036854775808` (2^63) is out of range (E149) in a `@Nat`
+-- return as in an `@Int` one, though 2^63 is non-negative, because a `@Nat`
+-- is the non-negative half of an i64.
+public fn main(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  9223372036854775808
+}

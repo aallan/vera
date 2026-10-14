@@ -61,6 +61,8 @@ _FLOAT64_SORT = z3.FPSort(11, 53)
 # float_to_int's `i64.trunc_f64_s` (#807).
 _I64_MIN = -(2**63)
 _I64_MAX = 2**63 - 1
+# The largest value a @Nat holds: the top of the i64 it is (spec §2.2).
+_NAT_MAX = _I64_MAX
 
 
 def _wasm_fp_max(a: z3.FPRef, b: z3.FPRef) -> z3.FPRef:
@@ -830,10 +832,12 @@ class SmtContext:
         return v
 
     def declare_nat(self, name: str) -> z3.ArithRef:
-        """Declare a Z3 integer variable constrained >= 0 (for Nat)."""
+        """Declare a Z3 integer variable holding a `@Nat`: the non-negative
+        half of the i64 a `@Nat` is (spec §2.2), `0 .. 2^63 - 1`."""
         v = z3.Int(name)
         self._vars[name] = v
         self.assume(v >= 0)
+        self.assume(v <= _NAT_MAX)
         return v
 
     def declare_string(self, name: str) -> z3.SeqRef:

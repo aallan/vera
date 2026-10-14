@@ -33,12 +33,6 @@ class ConstructorLayout:
     # `Box<Nat>` is guarded from.  A consumer wanting "is this field @Nat
     # HERE" must ask both.
     nat_fields: tuple[bool, ...] = ()
-    # #813: per-field "is a concrete @Int field" flags, the dual of
-    # ``nat_fields``, for the runtime @Nat -> @Int *widening* guard when a
-    # @Nat-typed argument is stored into an @Int field.  Same length / empty
-    # conventions as ``nat_fields``, and the same #757 caveat: the generic
-    # instantiation comes from the argument's recorded target, not from here.
-    int_fields: tuple[bool, ...] = ()
     # #773: per-field RESOLVED Vera type name (e.g. "Int", "String", "T",
     # "Inner", "Map<String, Int>"), used by structural ``Eq`` auto-derivation to
     # dispatch each field to the right comparison (scalar `.eq`, String content
@@ -53,8 +47,8 @@ class ConstructorLayout:
     # then fall back to the scalar-rep basis for that layout).
     field_types: tuple[str, ...] = ()
     # #1426: the DECLARED field type expressions, kept verbatim.  Every other
-    # per-field table here is a derived scalar — a wasm-type string, two
-    # booleans, a resolved name with the refinement discarded — because every
+    # per-field table here is a derived scalar — a wasm-type string, a
+    # boolean, a resolved name with the refinement discarded — because every
     # consumer before #1426 asked a base-shaped question.  The §2.6.5
     # predicate guard asks the opposite one: the predicate IS the answer, and
     # no derived name can reconstruct it.  This is the only place the
@@ -76,11 +70,6 @@ class ConstructorLayout:
         if self.nat_fields and len(self.nat_fields) != len(self.field_offsets):
             raise ValueError(
                 f"nat_fields (len {len(self.nat_fields)}) must match "
-                f"field_offsets (len {len(self.field_offsets)}) or be empty"
-            )
-        if self.int_fields and len(self.int_fields) != len(self.field_offsets):
-            raise ValueError(
-                f"int_fields (len {len(self.int_fields)}) must match "
                 f"field_offsets (len {len(self.field_offsets)}) or be empty"
             )
         # #773: ``field_types`` runs parallel to ``field_offsets`` for user

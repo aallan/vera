@@ -1,19 +1,18 @@
 module ch08_xmod_widen_lib;
 
--- Conformance: cross-module @Nat -> @Int widening library (Chapter 8, #987)
--- Features: cross_module, nat_int_widening, imported_widen_guard
+-- Conformance: cross-module @Nat -> @Int widening library (Chapter 8, spec §11.2.1)
+-- Features: cross_module, nat_int_widening
 --
--- An imported @Nat -> @Int widening body.  The array-literal element coercion
--- is a per-component widen (#820) whose target type (`Array<Int>`) the checker
--- records only in THIS module's own span-keyed target-type table.  #987 threads
--- that table into codegen so the runtime widening guard is emitted for this
--- body even when it is compiled into an importer's flat WASM module -- before
--- #987 the guard silently vanished through the import door.
+-- An imported body that reads a @Nat as an @Int twice: bound into an @Int
+-- slot, and stored as an element of an Array<Int>.  A @Nat is the
+-- non-negative i64, so each read is the identity, with nothing to obligate
+-- or check, in an imported body as in the importer's own.
 public fn widen_elem(@Nat -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  let @Array<Int> = [@Nat.0];
-  @Array<Int>.0[0]
+  let @Int = @Nat.0;
+  let @Array<Int> = [@Int.0, @Nat.0];
+  @Array<Int>.0[1]
 }

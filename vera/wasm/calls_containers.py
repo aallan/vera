@@ -670,6 +670,9 @@ class CallsContainersMixin:
                 # #1440: the SIGN obligation at the same insert.
                 arg_instrs = self._emit_construction_nat_guard(
                     arg_instrs, arg, value_component)
+            else:
+                # The key is `K`'s argument: checked where `K` is `Nat`.
+                arg_instrs = self._guard_nat_instantiated_arg(arg, arg_instrs)
             ins.extend(arg_instrs)
         ins.append(f"call {wasm_name}")
         # Shadow-root the returned wrapper_ptr as the result.
@@ -732,7 +735,8 @@ class CallsContainersMixin:
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
                 return None
-            ins.extend(arg_instrs)
+            # The key is `K`'s argument: checked where `K` is `Nat`.
+            ins.extend(self._guard_nat_instantiated_arg(arg, arg_instrs))
         ins.append(f"call {wasm_name}")
         return ins
 
@@ -870,7 +874,8 @@ class CallsContainersMixin:
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
                 return None
-            ins.extend(arg_instrs)
+            # The key is `K`'s argument: checked where `K` is `Nat`.
+            ins.extend(self._guard_nat_instantiated_arg(arg, arg_instrs))
         ins.append(f"call {wasm_name}")
         return ins
 
@@ -909,7 +914,8 @@ class CallsContainersMixin:
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
                 return None
-            ins.extend(arg_instrs)
+            # The key is `K`'s argument: checked where `K` is `Nat`.
+            ins.extend(self._guard_nat_instantiated_arg(arg, arg_instrs))
         ins.append(f"call {wasm_name}")
         self.needs_alloc = True
         return ins
@@ -1172,7 +1178,8 @@ class CallsContainersMixin:
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
                 return None
-            ins.extend(arg_instrs)
+            # The element is `T`'s argument: checked where `T` is `Nat`.
+            ins.extend(self._guard_nat_instantiated_arg(arg, arg_instrs))
         ins.append(f"call {wasm_name}")
         self.needs_alloc = True
         return ins
@@ -1211,7 +1218,8 @@ class CallsContainersMixin:
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
                 return None
-            ins.extend(arg_instrs)
+            # The element is `T`'s argument: checked where `T` is `Nat`.
+            ins.extend(self._guard_nat_instantiated_arg(arg, arg_instrs))
         ins.append(f"call {wasm_name}")
         return ins
 
@@ -1250,7 +1258,8 @@ class CallsContainersMixin:
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
                 return None
-            ins.extend(arg_instrs)
+            # The element is `T`'s argument: checked where `T` is `Nat`.
+            ins.extend(self._guard_nat_instantiated_arg(arg, arg_instrs))
         ins.append(f"call {wasm_name}")
         self.needs_alloc = True
         return ins

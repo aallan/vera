@@ -5,7 +5,7 @@ Stage 2 made the verifier emit an ``int_overflow`` obligation at every
 separate ``nat_sub`` underflow, excluded).  Stage 3 (this file) makes the
 codegen emit a runtime guard at *exactly* those sites so ``vera run`` /
 ``vera compile`` programs trap on overflow instead of silently wrapping at the
-i64 / u64 boundary.
+i64 boundary, which ``@Nat`` shares as its top (spec §2.2).
 
 The #798 guard originally emitted a bare ``unreachable`` (Option A in the design
 doc — matching the #520 ``nat_sub`` and #552 nat-bind precedent), so it
@@ -13,12 +13,11 @@ classified as ``kind="unreachable"``.  #808 gave it a host signal, so an
 integer-overflow trap classifies as ``kind="overflow"`` and carries the overflow
 Fix paragraph; since #1479 every named check signals through the ONE
 ``vera.trap`` import, its kind a code.  ``TestOverflowTrapKind808`` pins the
-overflow kind, with controls proving the overflow code does not leak into the
-neighbouring guards.  Those controls assert each neighbour's OWN kind, not a
+overflow kind, with a control proving the overflow code does not leak into
+the neighbouring guard.  The control asserts the neighbour's OWN kind, not a
 shared one: the #520 ``nat_sub`` underflow reports ``kind="nat_underflow"``
-(#1479) and the #813 ``@Nat``→``@Int`` widen guard ``kind="widen_guard"``
-(#1438) — before those, each was indistinguishable from a bare
-``unreachable``.  What matters for the #808 boundary is that neither reports
+(#1479) — before that, it was indistinguishable from a bare ``unreachable``.
+What matters for the #808 boundary is that it does not report
 ``"overflow"``.
 
 Written test-first: every ``*_traps`` test FAILS on the pre-Stage-3 codegen
@@ -26,9 +25,8 @@ Written test-first: every ``*_traps`` test FAILS on the pre-Stage-3 codegen
 ``*_no_trap`` test passes both before and after (safe arithmetic is unchanged).
 
 Constants:
-    I64_MAX = 9223372036854775807   ( 2^63 - 1 )
+    I64_MAX = 9223372036854775807   ( 2^63 - 1, the top of ``@Nat`` too )
     I64_MIN = -9223372036854775808  (-2^63 )
-    U64_MAX = 18446744073709551615  ( 2^64 - 1 )
 """
 
 from __future__ import annotations
@@ -49,7 +47,6 @@ from tests import pipeline
 
 I64_MAX = 9223372036854775807
 I64_MIN = -9223372036854775808
-U64_MAX = 18446744073709551615
 
 
 def _compile_multifile(files: dict[str, str], main: str):
@@ -125,8 +122,7 @@ public fn sub(@Nat, @Nat -> @Nat)
 
 
 # Literal-LEFT @Int: the site is classified on the EXPRESSION's resolved type
-# (@Int / i64), not the literal's @Nat self-type — so the overflow is caught
-# (#798 RISK-6 fix).
+# (@Int / i64) — so the overflow is caught (#798 RISK-6 fix).
 _INT_LITERAL_LEFT = """
 public fn f(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -136,11 +132,11 @@ public fn f(@Int -> @Int)
 
 class TestLiteralLeftIntOverflow798:
     """A positive-literal LEFT operand of an @Int add is guarded at the i64
-    range — the literal's own @Nat self-type must not widen the site to u64."""
+    range.  A literal is an `Int` (spec §4.2); on the u64 `Nat` a positive
+    literal was a `Nat`, which must not have widened the site to u64."""
 
     def test_literal_left_int_add_traps_at_i64_range(self) -> None:
-        # 5 + I64_MAX = 2^63 + 4 overflows i64 → must trap.  Were the site
-        # mis-classified @Nat (u64), 2^63+4 would be "in range" and slip through.
+        # 5 + I64_MAX = 2^63 + 4 overflows i64 → must trap.
         _assert_traps(_INT_LITERAL_LEFT, "f", [I64_MAX])
 
     def test_literal_left_small_sum_no_trap(self) -> None:
@@ -242,53 +238,57 @@ class TestIntMulOverflow798:
 
 
 class TestNatAddOverflow798:
-    """@Nat ADD traps on u64 carry-out."""
+    """@Nat ADD traps past i64.MAX, the top of `@Nat` (spec §2.2)."""
 
     def test_max_plus_one_traps(self) -> None:
-        _assert_traps(_NAT_ADD, "add", [U64_MAX, 1])
+        _assert_traps(_NAT_ADD, "add", [I64_MAX, 1])
 
     def test_max_plus_max_traps(self) -> None:
-        _assert_traps(_NAT_ADD, "add", [U64_MAX, U64_MAX])
+        _assert_traps(_NAT_ADD, "add", [I64_MAX, I64_MAX])
 
     def test_half_plus_half_traps(self) -> None:
-        _assert_traps(_NAT_ADD, "add", [2**63, 2**63])
+        _assert_traps(_NAT_ADD, "add", [2**62, 2**62])
 
     def test_max_plus_zero_no_trap(self) -> None:
-        _assert_no_trap(_NAT_ADD, "add", [U64_MAX, 0], U64_MAX)
+        _assert_no_trap(_NAT_ADD, "add", [I64_MAX, 0], I64_MAX)
 
     def test_small_sum_no_trap(self) -> None:
         _assert_no_trap(_NAT_ADD, "add", [5, 3], 8)
 
     def test_half_plus_half_minus_one_no_trap(self) -> None:
-        # 2^63 + (2^63 - 1) = U64_MAX, exact.
-        _assert_no_trap(_NAT_ADD, "add", [2**63, 2**63 - 1], U64_MAX)
+        # 2^62 + (2^62 - 1) = I64_MAX, exact.
+        _assert_no_trap(_NAT_ADD, "add", [2**62, 2**62 - 1], I64_MAX)
 
 
 class TestNatMulOverflow798:
-    """@Nat MUL traps on u64 overflow; the a==0 branch dodges div-by-zero."""
+    """@Nat MUL traps past i64.MAX; the a==0 branch dodges div-by-zero."""
 
     def test_max_times_two_traps(self) -> None:
-        _assert_traps(_NAT_MUL, "mul", [U64_MAX, 2])
+        _assert_traps(_NAT_MUL, "mul", [I64_MAX, 2])
 
     def test_two_pow_32_squared_traps(self) -> None:
         _assert_traps(_NAT_MUL, "mul", [2**32, 2**32])
 
     def test_max_times_max_traps(self) -> None:
-        _assert_traps(_NAT_MUL, "mul", [U64_MAX, U64_MAX])
+        _assert_traps(_NAT_MUL, "mul", [I64_MAX, I64_MAX])
 
     def test_zero_times_max_no_trap(self) -> None:
         # The a==0 branch — without it, 0/0 div-by-zero (wrong trap).
-        _assert_no_trap(_NAT_MUL, "mul", [0, U64_MAX], 0)
+        _assert_no_trap(_NAT_MUL, "mul", [0, I64_MAX], 0)
 
     def test_one_times_max_no_trap(self) -> None:
-        _assert_no_trap(_NAT_MUL, "mul", [1, U64_MAX], U64_MAX)
+        _assert_no_trap(_NAT_MUL, "mul", [1, I64_MAX], I64_MAX)
 
-    def test_two_pow_32_times_below_no_trap(self) -> None:
-        # 2^32 * (2^32 - 1) < 2^64.
-        _assert_no_trap(_NAT_MUL, "mul", [2**32, 2**32 - 1], 2**32 * (2**32 - 1))
+    def test_two_pow_31_times_below_no_trap(self) -> None:
+        # 2^31 * (2^32 - 1) = 2^63 - 2^31 <= i64.MAX.
+        _assert_no_trap(_NAT_MUL, "mul", [2**31, 2**32 - 1], 2**31 * (2**32 - 1))
+
+    def test_two_pow_32_times_below_traps(self) -> None:
+        # 2^32 * (2^32 - 1) is above i64.MAX, so no `@Nat` holds it.
+        _assert_traps(_NAT_MUL, "mul", [2**32, 2**32 - 1])
 
     def test_max_times_one_no_trap(self) -> None:
-        _assert_no_trap(_NAT_MUL, "mul", [U64_MAX, 1], U64_MAX)
+        _assert_no_trap(_NAT_MUL, "mul", [I64_MAX, 1], I64_MAX)
 
 
 class TestNatSubUnderflow798:
@@ -298,7 +298,7 @@ class TestNatSubUnderflow798:
     boundary so a regression that started overflow-guarding @Nat subtraction
     surfaces right next to the overflow tests (nat_sub codegen is also covered in
     test_codegen_nat_guards.py).  Operands are slots so the guard applies — a pure-literal
-    `0 - 1` is intentionally exempt and would not trap.  De Bruijn: sub(a, b)
+    `0 - 1` is an `@Int` subtraction, no `@Nat` one.  De Bruijn: sub(a, b)
     computes @Nat.1 - @Nat.0 = a - b.
     """
 
@@ -337,15 +337,16 @@ class TestMulRoundTripDifferential798:
     round-trip ever disagrees with the true product's range, the MUL guard is
     unsound.  Compile each ``mul`` once, then sweep thousands of pseudo-random
     operand pairs (plus the hand-picked boundary values) and assert
-    ``codegen-traps(a*b) <=> (a*b outside the i64 / u64 range)``.
+    ``codegen-traps(a*b) <=> (a*b outside the i64 range)``, which is the
+    `@Nat` range's top too.
     """
 
     _BOUNDARIES_SIGNED: ClassVar[list[int]] = [
         0, 1, -1, 2, -2, I64_MAX, I64_MIN, I64_MAX - 1, I64_MIN + 1,
         2**31, -(2**31), 2**32, -(2**32), 2**62, -(2**62),
     ]
-    _BOUNDARIES_UNSIGNED: ClassVar[list[int]] = [
-        0, 1, 2, 3, U64_MAX, U64_MAX - 1, 2**32, 2**32 - 1, 2**63, 2**63 - 1,
+    _BOUNDARIES_NAT: ClassVar[list[int]] = [
+        0, 1, 2, 3, I64_MAX, I64_MAX - 1, 2**32, 2**32 - 1, 2**62, 2**62 - 1,
         2**31, 2**16,
     ]
 
@@ -380,18 +381,18 @@ class TestMulRoundTripDifferential798:
         rng = random.Random(0xC0FFEE798)
         result = _compile_with_types(_NAT_MUL)
         pairs: list[tuple[int, int]] = []
-        for a in self._BOUNDARIES_UNSIGNED:
-            for b in self._BOUNDARIES_UNSIGNED:
+        for a in self._BOUNDARIES_NAT:
+            for b in self._BOUNDARIES_NAT:
                 pairs.append((a, b))
         for _ in range(4000):
             pairs.append((
-                rng.randint(0, U64_MAX),
-                rng.randint(0, U64_MAX),
+                rng.randint(0, I64_MAX),
+                rng.randint(0, I64_MAX),
             ))
         mismatches: list[tuple[int, int, bool, bool]] = []
         for a, b in pairs:
             trapped = _traps(result, "mul", [a, b])
-            overflows = a * b > U64_MAX
+            overflows = a * b > I64_MAX
             if trapped != overflows:
                 mismatches.append((a, b, trapped, overflows))
         assert not mismatches, (
@@ -439,14 +440,14 @@ class TestMulRoundTripDifferential798:
         import random
         rng = random.Random(0xADD_4A7)
         result = _compile_with_types(_NAT_ADD)
-        pairs = [(a, b) for a in self._BOUNDARIES_UNSIGNED
-                 for b in self._BOUNDARIES_UNSIGNED]
+        pairs = [(a, b) for a in self._BOUNDARIES_NAT
+                 for b in self._BOUNDARIES_NAT]
         for _ in range(3000):
-            pairs.append((rng.randint(0, U64_MAX), rng.randint(0, U64_MAX)))
+            pairs.append((rng.randint(0, I64_MAX), rng.randint(0, I64_MAX)))
         mismatches = []
         for a, b in pairs:
             trapped = _traps(result, "add", [a, b])
-            overflows = a + b > U64_MAX
+            overflows = a + b > I64_MAX
             if trapped != overflows:
                 mismatches.append((a, b, trapped, overflows))
         assert not mismatches, mismatches[:10]
@@ -512,30 +513,14 @@ def _trap_kind(source: str, fn: str, args: list[int]) -> str:
     return exc_info.value.kind
 
 
-# #813 @Nat -> @Int widening: a @Nat value above i64.MAX reinterprets to a
-# negative @Int at the return position, so the #813 guard traps.  #1438 finally
-# gave that guard the dedicated trap kind #820 deferred: it signals
-# ``widen_guard`` before its ``unreachable``, so the trap reports that kind
-# instead of the anonymous ``"unreachable"`` it used to share with every other
-# bare trap.  It is still NOT ``"overflow"``, which is the boundary this control
-# measures: the overflow code must NOT leak into it.  De Bruijn: widen returns
-# @Nat.0.
-_NAT_TO_INT_WIDEN = """
-public fn widen(@Nat -> @Int)
-  requires(true) ensures(true) effects(pure)
-{ @Nat.0 }
-"""
-
-
 class TestOverflowTrapKind808:
     """#808: the #798 integer-overflow guard surfaces a precise
     ``kind="overflow"`` (signalled through ``vera.trap``) rather than the
     generic ``"unreachable"``, so the runtime diagnostic carries the overflow
     Fix paragraph.  The neighbouring guards keep their own classification: the
-    ``@Nat``-underflow (#520) classifies ``"nat_underflow"`` (#1479), the
-    negative-i64 nat-bind (#552) ``"nat_guard"`` (#754), and the
-    ``@Nat``->``@Int`` widen guard (#813) ``"widen_guard"`` (#1438).  None of
-    the three is ``"overflow"``."""
+    ``@Nat``-underflow (#520) classifies ``"nat_underflow"`` (#1479), and the
+    negative-i64 nat-bind (#552) ``"nat_guard"`` (#754).  Neither is
+    ``"overflow"``."""
 
     def test_int_add_overflow_is_overflow_kind(self) -> None:
         assert _trap_kind(_INT_ADD, "add", [I64_MAX, 1]) == "overflow"
@@ -558,16 +543,15 @@ class TestOverflowTrapKind808:
         assert _trap_kind(_INT_MUL, "mul", [-1, I64_MIN]) == "overflow"
 
     def test_nat_add_overflow_is_overflow_kind(self) -> None:
-        assert _trap_kind(_NAT_ADD, "add", [U64_MAX, 1]) == "overflow"
+        assert _trap_kind(_NAT_ADD, "add", [I64_MAX, 1]) == "overflow"
 
     def test_nat_mul_overflow_is_overflow_kind(self) -> None:
-        assert _trap_kind(_NAT_MUL, "mul", [U64_MAX, 2]) == "overflow"
+        assert _trap_kind(_NAT_MUL, "mul", [I64_MAX, 2]) == "overflow"
 
     # --- controls: the neighbouring guards keep their OWN kind ---
     # These pin the #808 boundary: the overflow code is signalled ONLY by
     # the #798 integer-overflow guard, NOT by the #520 nat_sub underflow guard
-    # (its own `nat_underflow` kind since #1479) nor by the #813 @Nat->@Int
-    # widen guard (its own `widen_guard` kind since #1438).  Without them, a
+    # (its own `nat_underflow` kind since #1479).  Without them, a
     # regression signalling overflow from *every* guard would still pass the
     # "overflow" cases above — the controls make the change distinguishable
     # from "classify everything as overflow".  Each asserts its neighbour's
@@ -576,9 +560,6 @@ class TestOverflowTrapKind808:
 
     def test_nat_sub_underflow_is_nat_underflow_kind(self) -> None:
         assert _trap_kind(_NAT_SUB, "sub", [3, 5]) == "nat_underflow"
-
-    def test_nat_to_int_widen_is_widen_guard_kind(self) -> None:
-        assert _trap_kind(_NAT_TO_INT_WIDEN, "widen", [U64_MAX]) == "widen_guard"
 
 
 # A lifted closure body performs the overflowing @Int add (captured + arg).

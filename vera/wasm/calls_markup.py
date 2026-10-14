@@ -324,7 +324,11 @@ class CallsMarkupMixin:
         """
         target = fused_async_arg_target(arg)
         if target is None:
-            return self.translate_expr(arg, env)
+            instrs = self.translate_expr(arg, env)
+            if instrs is None:
+                return None
+            # The value is `T`'s argument: checked where `T` is `Nat`.
+            return self._guard_nat_instantiated_arg(arg, instrs)
         assert isinstance(arg, ast.QualifiedCall)  # noqa: S101 — mypy narrowing; fused_async_arg_target guarantees the shape
         instructions: list[str] = []
         for http_arg in arg.args:

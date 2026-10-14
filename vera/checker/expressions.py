@@ -12,7 +12,6 @@ from collections.abc import Sequence
 from typing import ClassVar
 
 from vera import ast, naming
-from vera.checker.resolution import is_literal_only, literal_int_value
 from vera.checker.sql import resolve_array_len, resolve_literal_string
 from vera.lowering import (
     PREDICATE_ARITY,
@@ -36,7 +35,7 @@ from vera.types import (
     INT,
     is_subtype,
     NAT,
-    negative_literal_meets_nat,
+    literal_meets_nat,
     numeric_join,
     NUMERIC_TYPES,
     ORDERABLE_TYPES,
@@ -53,14 +52,14 @@ from vera.types import (
     UnknownType,
 )
 
-# Machine bounds for the integer types (#812): `@Int` is i64, `@Nat` is u64.  An
-# integer literal must fit its target type's range — otherwise codegen's
-# fixed-width `i64.const` either hard-fails (> u64.MAX) or silently reinterprets
-# the bit pattern (an `@Int` literal in (i64.MAX, u64.MAX] runs as a negative)
-# while the verifier reasons over the unbounded mathematical value.
+# Machine bounds for the integer types (#812): `@Int` is i64 and `@Nat` its
+# non-negative half (spec §2.2).  An integer literal must fit — otherwise
+# codegen's fixed-width `i64.const` either hard-fails or silently reinterprets
+# the bit pattern (a literal above i64.MAX runs as a negative) while the
+# verifier reasons over the unbounded mathematical value.  A literal's
+# magnitude reaches 2^63 only under a negation, as `Int`'s minimum.
 _I64_MAX = 2**63 - 1
 _I64_MIN = -(2**63)
-_U64_MAX = 2**64 - 1
 
 
 # Shared E174/E175 fix text — one copy so the two diagnostics cannot
@@ -263,44 +262,45 @@ class ExpressionsMixin:
                 )
                 return BYTE
             # #812: range-check the literal against its target machine type
-            # before typing it.  The target's base type (refinements stripped)
-            # decides the bound: an `@Int` context is i64 (max 2^63-1), anything
-            # else — `@Nat`, or no expected type, where a non-negative literal
-            # defaults to `@Nat` below — is u64 (max 2^64-1).  A literal past its
-            # bound is a clean error here instead of (loud) an opaque
-            # `i64.const … out of range` codegen failure or (silent, unsound) a
-            # Tier-1 proof over a value the i64 runtime reinterprets.
-            base = base_type(expected) if expected is not None else None
-            targets_int = (isinstance(base, PrimitiveType)
-                           and base.name == "Int")
-            bound = _I64_MAX if targets_int else _U64_MAX
-            if expr.value > bound:
-                type_name = "@Int (i64)" if targets_int else "@Nat (u64)"
+            # before typing it.  Every target but `@Byte` is i64 — `@Int`, and
+            # `@Nat`, its non-negative half — so the bound is i64.MAX wherever
+            # the literal is written, whatever its context.  A literal past it
+            # is a clean error here instead of (loud) an opaque `i64.const …
+            # out of range` codegen failure or (silent, unsound) a Tier-1
+            # proof over a value the i64 runtime reinterprets.  The operand of
+            # a negation reaches 2^63, `Int`'s minimum, and `_check_unary`
+            # bounds it there.
+            if (expr.value > _I64_MAX
+                    and self._negated_literal is not expr):
+                base = base_type(expected) if expected is not None else None
+                type_name = ("@Nat" if isinstance(base, PrimitiveType)
+                             and base.name == "Nat" else "@Int")
                 self._literal_range_error(
                     expr,
                     f"Integer literal {expr.value} is out of range for "
-                    f"{type_name}; the maximum is {bound}.",
+                    f"{type_name} (i64); the maximum is {_I64_MAX}.",
                     rationale=(
-                        "Integer literals are fixed-width at runtime — `@Int` "
-                        "is a signed 64-bit integer, `@Nat` an unsigned one.  A "
-                        "literal beyond the type's range cannot be represented: "
-                        "codegen would either reject it or silently reinterpret "
-                        "its bit pattern, diverging from what the verifier "
-                        "proved (#812)."
+                        "Integer literals are fixed-width at runtime: `@Int` "
+                        "is a signed 64-bit integer and `@Nat` holds its "
+                        "non-negative half, so neither holds a value above "
+                        f"{_I64_MAX}.  A literal beyond that range cannot be "
+                        "represented: codegen would either reject it or "
+                        "silently reinterpret its bit pattern, diverging from "
+                        "what the verifier proved (#812)."
                     ),
                     fix=(
-                        "Use a literal within the type's range, or choose a "
-                        "wider target type (`@Nat` reaches "
-                        f"{_U64_MAX} where `@Int` stops at {_I64_MAX})."
+                        "Use a literal no greater than "
+                        f"{_I64_MAX}, or hold a larger value as a `@Float64` "
+                        "or a `@Decimal`."
                     ),
-                    # `expected is None` is a GUESS at `@Nat`, not knowledge
-                    # of the target — a later contextual verdict wins.
+                    # `expected is None` names no target, so a later
+                    # contextual verdict (a `@Byte` one) wins.
                     contextual=expected is not None,
                 )
-            # Non-negative integer literals are Nat (which is a subtype of
-            # Int).  This lets literals like 0, 1, 42 satisfy Nat parameters
-            # without refinement verification.
-            return NAT if expr.value >= 0 else INT
+            # Every integer literal is an `Int` (spec §4.2).  In a `@Nat` or
+            # refined context it is a narrowing, which the checker admits
+            # (`Int` where `Nat` is expected) and the verifier obligates.
+            return INT
         if isinstance(expr, ast.FloatLit):
             return FLOAT64
         if isinstance(expr, ast.StringLit):
@@ -699,9 +699,9 @@ class ExpressionsMixin:
             return None
         # #861: inside a refinement predicate over a `@Byte` BASE (§2.6),
         # an integer literal compared against a Byte-typed operand is typed
-        # against Byte, not Nat.  `@Byte.0 < 10` has a defined i32
+        # against Byte, not Int.  `@Byte.0 < 10` has a defined i32
         # runtime-guard lowering (#766's `_translate_byte_binop`), so —
-        # unlike a general expression, where Byte-vs-Nat is E142 (no
+        # unlike a general expression, where Byte-vs-Int is E142 (no
         # implicit numeric coercion, DESIGN §0.2.2) — the literal takes the
         # binder's Byte type here.  A literal is not a runtime value, so
         # this is literal-typing-from-context (the same rule that lets
@@ -764,17 +764,6 @@ class ExpressionsMixin:
             # non-negativity with no verifier obligation (§0.2.2).
             joined = numeric_join(left_base, right_base)
             if joined is not None:
-                # #1541: a literal-only expression whose value is negative is
-                # an `Int`.
-                # `0 - 3` is two non-negative literals, and `Nat - Nat` would
-                # make it a `Nat` holding -3; whatever instantiation it then
-                # fixed (`id(0 - 3)`, `[0 - 1, 5]`) declared the value
-                # non-negative, and the `@Nat` guards on it refused or
-                # trapped a program whose value is plainly -3.
-                if types_equal(joined, NAT) and is_literal_only(expr):
-                    value = literal_int_value(expr)
-                    if value is not None and value < 0:
-                        return INT
                 return joined
             self._error(
                 expr,
@@ -1033,7 +1022,14 @@ class ExpressionsMixin:
 
     def _check_unary(self, expr: ast.UnaryExpr) -> Type | None:
         """Type-check a unary operator expression."""
-        operand_ty = self._synth_expr(expr.operand)
+        negated = self._negated_literal
+        if (expr.op == ast.UnaryOp.NEG
+                and isinstance(expr.operand, ast.IntLit)):
+            self._negated_literal = expr.operand
+        try:
+            operand_ty = self._synth_expr(expr.operand)
+        finally:
+            self._negated_literal = negated
         if operand_ty is None:
             return None
         if isinstance(operand_ty, UnknownType):
@@ -1080,14 +1076,13 @@ class ExpressionsMixin:
                 return UnknownType()
             # #812: a negated integer literal `-m` is an `@Int` (i64), whose
             # magnitude may reach 2^63 (forming i64.MIN = -2^63) but no further.
-            # The operand literal `m` is checked above against the u64 bound (it
-            # has no `@Int` context under the negation), so the band
-            # (2^63, u64.MAX] slips past — and would reinterpret to a wrong value
-            # at runtime (e.g. `-9223372036854775809` runs to 9223372036854775807).
-            # Reject it here.  (`m > u64.MAX` is already E149 at the operand, so
-            # cap at u64.MAX to avoid a double diagnostic.)
+            # The operand literal `m` is synthesized as a negation's operand
+            # (`_negated_literal`), so the IntLit branch leaves its bound to
+            # this check, which names the value the program wrote: a larger
+            # magnitude would reinterpret to a wrong value at runtime (e.g.
+            # `-9223372036854775809` runs to 9223372036854775807).
             if (isinstance(expr.operand, ast.IntLit)
-                    and 2**63 < expr.operand.value <= _U64_MAX):
+                    and expr.operand.value > 2**63):
                 self._error(
                     expr,
                     f"Integer literal -{expr.operand.value} is out of range "
@@ -1122,16 +1117,15 @@ class ExpressionsMixin:
         """Type-check array index: collection[index].
 
         An element expected at a type is read from an array of that type:
-        where the collection's literals decided an `Int` element that
-        *expected* makes a `Nat`, the collection is checked against it
+        where the collection's literals decided an element that *expected*
+        makes a `Nat`, the collection is checked against it
         (:meth:`_check_in_literal_context`; PR #1583 review), so
-        `let @Nat = array_reverse([0 - 3])[0]` is refused (E503) as
+        `let @Nat = array_reverse([0 - 3, 5])[0]` is refused (E503) as
         `let @Nat = id(0 - 3)` is."""
         coll_ty = self._synth_expr(expr.collection)
         if expected is not None:
             coll_ty = self._check_in_literal_context(
-                expr.collection, coll_ty, AdtType("Array", (expected,)),
-                element_reads=1)
+                expr.collection, coll_ty, AdtType("Array", (expected,)))
         idx_ty = self._synth_expr(expr.index)
         if coll_ty is None or idx_ty is None:
             return None
@@ -1307,61 +1301,50 @@ class ExpressionsMixin:
             self.env.bind(tname, resolved, "destruct")
 
     def _check_in_literal_context(self, expr: ast.Expr, ty: Type | None,
-                                  context: Type, *,
-                                  element_reads: int = 0,
-                                  ) -> Type | None:
+                                  context: Type) -> Type | None:
         """*expr*, synthesized as *ty* without an expected type, checked
         again against *context* where a generic call it reaches let its
-        literals fix an `Int` that *context* makes a `Nat`
+        literals fix a position that *context* makes a `Nat`
         (:meth:`_call_literal_meets_nat`; #1541, PR #1583 review).
 
         `if`, `match`, a block, a tuple, an array literal and an index each
-        thread the expected type to the call, which then places
-        each literal at the type *context* gives it, where a negative one
-        is a narrowing the verifier refutes (E503).  A literal the source
-        builds directly is not re-checked: the destructure's or the
-        binding's own narrowing reads it where it is.  *element_reads*
-        counts the indexes that read one element out of *context*
-        (:meth:`_call_literal_meets_nat`).  Returns the type the check
-        settled on."""
+        thread the expected type to the call, which then places each literal
+        at the type *context* gives it, where it is a narrowing the verifier
+        obligates — refuted where the literal is negative (E503).  A literal
+        the source builds directly is not re-checked: the destructure's or
+        the binding's own narrowing reads it where it is.  Returns the type
+        the check settled on."""
         if (ty is None or isinstance(ty, UnknownType)
                 or contains_typevar(context)
-                or not self._call_literal_meets_nat(
-                    expr, context, element_reads=element_reads)):
+                or not self._call_literal_meets_nat(expr, context)):
             return ty
         rechecked = self._synth_expr(expr, expected=context)
         if rechecked is None or isinstance(rechecked, UnknownType):
             return ty
         return rechecked
 
-    def _call_literal_meets_nat(self, expr: ast.Expr, context: Type, *,
-                                element_reads: int = 0) -> bool:
+    def _call_literal_meets_nat(self, expr: ast.Expr, context: Type) -> bool:
         """Whether a generic call that *expr* evaluates to, or builds into
-        the value, fixed a type argument at `Int` from its literals' values
-        where *context* holds a `Nat` (:func:`negative_literal_meets_nat`
-        over the call's recorded soft result).  Read through a block's
-        result, the branches of an `if` and the arms of a `match`, a
-        tuple's fields, an array literal's elements, and the array an index
-        reads — one element of it, so that array level is no collection of
-        the value (*element_reads* counts such reads)."""
+        the value, fixed a type argument from its literals where *context*
+        holds a `Nat`
+        (:func:`literal_meets_nat` over the recorded soft result).  Read
+        through a block's result, the branches of an `if` and the arms of a
+        `match`, a tuple's fields, an array literal's elements, and the
+        array an index reads."""
         while isinstance(context, RefinedType):
             context = context.base
         if isinstance(expr, ast.Block):
-            return self._call_literal_meets_nat(
-                expr.expr, context, element_reads=element_reads)
+            return self._call_literal_meets_nat(expr.expr, context)
         if isinstance(expr, ast.IfExpr):
             return any(
-                self._call_literal_meets_nat(
-                    branch, context, element_reads=element_reads)
+                self._call_literal_meets_nat(branch, context)
                 for branch in (expr.then_branch, expr.else_branch))
         if isinstance(expr, ast.MatchExpr):
-            return any(self._call_literal_meets_nat(
-                arm.body, context, element_reads=element_reads)
-                for arm in expr.arms)
+            return any(self._call_literal_meets_nat(arm.body, context)
+                       for arm in expr.arms)
         if isinstance(expr, ast.IndexExpr):
             return self._call_literal_meets_nat(
-                expr.collection, AdtType("Array", (context,)),
-                element_reads=element_reads + 1)
+                expr.collection, AdtType("Array", (context,)))
         if (isinstance(expr, ast.ConstructorCall) and expr.name == "Tuple"
                 and isinstance(context, AdtType) and context.name == "Tuple"
                 and len(context.type_args) == len(expr.args)):
@@ -1373,8 +1356,7 @@ class ExpressionsMixin:
                        for e in expr.elements)
         if isinstance(expr, (ast.FnCall, ast.ModuleCall)):
             soft = self._literal_soft_results.get(ast.span_key(expr))
-            return soft is not None and negative_literal_meets_nat(
-                soft, context, element_reads=element_reads)
+            return soft is not None and literal_meets_nat(soft, context)
         return False
 
     # -----------------------------------------------------------------

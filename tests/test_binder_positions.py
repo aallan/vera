@@ -226,11 +226,6 @@ _NAT_CONSTRUCTION_GUARDED_SITES_AS_MEASURED = frozenset({
     "map value",
 })
 
-_INT_WIDENING_CONSTRUCTION_GUARDED_SITES_AS_MEASURED = frozenset({
-    "array element",
-    "tuple component",
-})
-
 
 def test_the_refinement_roster_is_what_it_was() -> None:
     assert (narrowing.REFINED_BIND_GUARDED_SITES
@@ -244,19 +239,13 @@ def test_the_nat_construction_roster_is_what_it_was() -> None:
             == _NAT_CONSTRUCTION_GUARDED_SITES_AS_MEASURED)
 
 
-def test_the_widening_construction_roster_is_what_it_was() -> None:
-    from vera import verifier
-
-    assert (verifier._INT_WIDENING_CONSTRUCTION_GUARDED_SITES
-            == _INT_WIDENING_CONSTRUCTION_GUARDED_SITES_AS_MEASURED)
-
-
 def test_the_rosters_come_from_the_table_rather_than_a_literal() -> None:
     """Dropping a table entry moves the roster that reads it.
 
-    Without this the three assertions above are satisfied by three literals
+    Without this the two assertions above are satisfied by two literals
     that happen to agree with the table, which is the arrangement #1412
-    replaced.
+    replaced.  (A third roster, the widening's at construction, went with
+    the u64 `Nat`: a widening checks nothing.)
     """
     from vera import verifier
 
@@ -264,8 +253,6 @@ def test_the_rosters_come_from_the_table_rather_than_a_literal() -> None:
             == binders.guarded_sites("refinement_predicate"))
     assert (verifier._NAT_CONSTRUCTION_GUARDED_SITES
             == binders.guarded_sites("nat_sign_at_construction"))
-    assert (verifier._INT_WIDENING_CONSTRUCTION_GUARDED_SITES
-            == binders.guarded_sites("int_widen_at_construction"))
 
 
 # =====================================================================

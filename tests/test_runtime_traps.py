@@ -1613,7 +1613,6 @@ public fn main(@Unit -> @Int)
             "unreachable",
             "overflow",
             "nat_guard",
-            "widen_guard",
             # #1479: the five checks that trapped as a bare `unreachable`,
             # and the Float64 -> Int conversions that trapped as `unknown`.
             "nat_underflow",

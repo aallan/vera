@@ -2,8 +2,9 @@
 
 ``_collect_module_artifacts`` (#987) runs a full ``check_program`` per resolved
 module so codegen can thread each module's OWN span-keyed target table into the
-imported body (recovering the #820 @Nat -> @Int widening guard through the
-import door).  That pass is O(N^2) sub-checks in the module count, so PR #997
+imported body (recovering the narrowing guards at its array-element and
+tuple-construction sites through the import door).  That pass is O(N^2)
+sub-checks in the module count, so PR #997
 made the collection **opt-in** (``collect_module_artifacts=`` on
 ``typecheck_with_artifacts``, default ``False``).  Every caller that compiles
 passes ``True``, and so do ``vera verify`` and the warm

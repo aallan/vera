@@ -271,7 +271,7 @@ def test_repro_two_later_elements_that_disagree() -> None:
                          literal.index('Some("abc")')))]
     assert checked.errors[0].description == (
         "Array literal element 2 has type Option<String>, but the literal's "
-        "element type is Option<Nat>, the type of element 0, completed by "
+        "element type is Option<Int>, the type of element 0, completed by "
         "element 1.")
 
 
@@ -291,7 +291,7 @@ def test_repro_result_parameters_filled_by_two_elements() -> None:
         ("E162", *_place(_ISSUE_RESULT, literal, literal.index('Ok("x")')))]
     assert checked.errors[0].description == (
         "Array literal element 2 has type Result<String, ?>, but the "
-        "literal's element type is Result<Nat, String>, the type of element "
+        "literal's element type is Result<Int, String>, the type of element "
         "0, completed by element 1.")
 
 
@@ -301,7 +301,7 @@ def test_repro_rigid_type_variable_fills_the_position() -> None:
     assert _where(checked) == [
         ("E162", *_place(_ISSUE_RIGID, literal, literal.index("Some(0)")))]
     assert checked.errors[0].description == (
-        "Array literal element 2 has type Option<Nat>, but the literal's "
+        "Array literal element 2 has type Option<Int>, but the literal's "
         "element type is Option<T>, the type of element 0, completed by "
         "element 1.")
 
@@ -379,14 +379,14 @@ DEPTHS: dict[str, tuple[str, str]] = {
 VALUES: dict[str, tuple[str, str]] = {
     "s": ('"abc"', "String"),
     "t": ('"xyz"', "String"),
-    "n": ("5", "Nat"),
+    "n": ("5", "Int"),
 }
 
 
 @dataclass(frozen=True)
 class _Filler:
     """What fills the open position, as the parts in order: `open` (the
-    head's open part), `fill:<value>`, `other_closed` (a `Nat` where the
+    head's open part), `fill:<value>`, `other_closed` (an `Int` where the
     head's value is) or `other_open` (the head's other open part).
 
     *joined* is the type the position is given by the parts (None where no
@@ -408,7 +408,7 @@ FILLERS: dict[str, _Filler] = {
     "agree2": _Filler(("open", "fill:s", "fill:t"), "String", "String"),
     "disagree2": _Filler(("open", "fill:s", "fill:n"), "String", "String",
                          refused=2, completed_by=(1,)),
-    "ctx_agree": _Filler(("open", "fill:n"), "Nat", "Nat"),
+    "ctx_agree": _Filler(("open", "fill:n"), "Int", "Nat"),
     "ctx_disagree": _Filler(("open", "fill:s"), "String", "Nat"),
     "nothing": _Filler(("open", "open"), None, "Nat"),
     "other_closed": _Filler(("open", "other_closed"), None, "String",
@@ -476,7 +476,7 @@ def _part(head: _Head, depth: str, part: str) -> tuple[str, str]:
     elif part == "other_open":
         text, shown = head.other_open, head.other_open_shown
     elif part == "other_closed":
-        text, shown = "5", "Nat"
+        text, shown = "5", "Int"
     else:
         value, value_type = VALUES[part.split(":")[1]]
         text = head.fill.format(v=value)
@@ -616,8 +616,11 @@ def _build(cell: _Cell) -> _Built:
             expected.append(
                 ("E302", *_place(source, literal, shift + offsets[k])))
     # The context then meets the joined type: it refuses a position the
-    # parts filled with another type, and fills one they left open.
-    if filler.joined not in (None, filler.context):
+    # parts filled with another type, and fills one they left open.  An
+    # `Int` part where the context expects a `Nat` is a narrowing, which
+    # the check admits and the verifier obligates (spec §2.2.1).
+    if filler.joined not in (None, filler.context) and (
+            (filler.joined, filler.context) != ("Int", "Nat")):
         assert context.code is not None
         at = context.at.format(lit=literal)
         expected.append((context.code, *_place(source, at)))
@@ -682,8 +685,8 @@ def test_mutant_an_element_before_the_filler_is_held_to_the_full_join(
     checked = _checked(source)
     assert _where(checked) == [("E162", *_place(source, literal, 7))]
     assert checked.errors[0].description == (
-        "Array literal element 1 has type Nat, but the literal's element "
-        "type is Option<Nat>, the type of element 0, completed by element 2.")
+        "Array literal element 1 has type Int, but the literal's element "
+        "type is Option<Int>, the type of element 0, completed by element 2.")
 
 
 def test_mutant_each_element_is_held_to_the_join_of_every_filler() -> None:
@@ -697,8 +700,8 @@ def test_mutant_each_element_is_held_to_the_join_of_every_filler() -> None:
     at = literal.index("Tuple(None, [5])")
     assert _where(checked) == [("E162", *_place(source, literal, at))]
     assert checked.errors[0].description == (
-        "Array literal element 3 has type Tuple<Option<?>, Array<Nat>>, but "
-        "the literal's element type is Tuple<Option<Nat>, Array<String>>, "
+        "Array literal element 3 has type Tuple<Option<?>, Array<Int>>, but "
+        "the literal's element type is Tuple<Option<Int>, Array<String>>, "
         "the type of element 0, completed by elements 1 and 2.")
 
 
@@ -730,7 +733,7 @@ def test_mutant_if_of_two_open_branches_is_their_join() -> None:
     checked = _checked(source)
     assert checked.diagnostics == ()
     assert _literal_types(checked)[_place(source, literal)] == (
-        "Array<Result<Nat, String>>")
+        "Array<Result<Int, String>>")
 
 
 def test_mutant_match_arm_fills_the_earlier_arms_position() -> None:
@@ -748,7 +751,7 @@ def test_mutant_match_of_two_open_arms_is_their_join() -> None:
     checked = _checked(source)
     assert checked.diagnostics == ()
     assert _literal_types(checked)[_place(source, literal)] == (
-        "Array<Result<Nat, String>>")
+        "Array<Result<Int, String>>")
 
 
 def test_mutant_match_arm_is_held_to_an_open_earlier_arm() -> None:
@@ -772,7 +775,7 @@ def test_mutant_the_join_keeps_the_rigid_type_variable() -> None:
     assert _where(checked) == [
         ("E162", *_place(source, literal, literal.index("Some(0)")))]
     assert checked.errors[0].description == (
-        "Array literal element 2 has type Option<Nat>, but the literal's "
+        "Array literal element 2 has type Option<Int>, but the literal's "
         "element type is Option<T>, the type of element 0.")
 
 
@@ -798,7 +801,7 @@ def test_mutant_a_match_arm_refused_in_an_argument_is_reported_once() -> None:
     assert _where(checked) == [
         ("E302", *_place(source, literal, literal.index("5")))]
     assert checked.errors[0].description == (
-        "Match arm type Nat is incompatible with previous arm type "
+        "Match arm type Int is incompatible with previous arm type "
         "Option<?>.")
 
 
@@ -907,29 +910,29 @@ SHAPES: dict[str, _Shape] = {
     # The substitution: one variable, one type.
     "tuple-agree": _Shape(
         ("twice(None)", "Tuple(Some(1), Some(2))"),
-        _everywhere(None, "Tuple<Option<Nat>, Option<Nat>>")),
+        _everywhere(None, "Tuple<Option<Int>, Option<Int>>")),
     "tuple-disagree": _Shape(
         ("twice(None)", 'Tuple(Some(1), Some("a"))'),
         # The `if` synthesizes `twice(None)` again against the other
         # branch's type, which the call takes position by position
         # (f3b4415d's verdict, before any join is reached).
         {"literal": (1, "Tuple<Option<T$>, Option<T$>>"),
-         "if": (None, "Tuple<Option<Nat>, Option<String>>"),
+         "if": (None, "Tuple<Option<Int>, Option<String>>"),
          "match": (1, None)},
         description=(
-            "Array literal element 1 has type Tuple<Option<Nat>, "
+            "Array literal element 1 has type Tuple<Option<Int>, "
             "Option<String>>, but the literal's element type is "
             "Tuple<Option<?>, Option<?>>, the type of element 0.")),
     "pair-agree": _Shape(
         ("P(None, None)", "P(Some(1), Some(2))"),
-        _everywhere(None, "Pair<Option<Nat>>")),
+        _everywhere(None, "Pair<Option<Int>>")),
     "pair-disagree": _Shape(
         ("P(None, None)", "P(Some(1), Some(2))", 'P(Some("a"), Some("b"))'),
-        {"literal": (2, "Pair<Option<Nat>>"), "if": (2, None),
+        {"literal": (2, "Pair<Option<Int>>"), "if": (2, None),
          "match": (2, None)},
         description=(
             "Array literal element 2 has type Pair<Option<String>>, but the "
-            "literal's element type is Pair<Option<Nat>>, the type of "
+            "literal's element type is Pair<Option<Int>>, the type of "
             "element 0, completed by element 1.")),
     # One part's variable at two positions, one of them where the joined
     # type is still unknown: the binding holds at both.  An `if` and a
@@ -937,16 +940,16 @@ SHAPES: dict[str, _Shape] = {
     # which the call takes position by position (#1684), base's verdict.
     "dup-agree": _Shape(
         ("Tuple([1], [])", "dup(None)", "Tuple([2], [3])"),
-        _everywhere(None, "Tuple<Array<Nat>, Array<Nat>>")),
+        _everywhere(None, "Tuple<Array<Int>, Array<Int>>")),
     "dup-disagree": _Shape(
         ("Tuple([1], [])", "dup(None)", 'Tuple([2], ["s"])'),
-        {"literal": (2, "Tuple<Array<Nat>, Array<Nat>>"),
-         "if": (None, "Tuple<Array<Nat>, Array<String>>"),
-         "match": (None, "Tuple<Array<Nat>, Array<String>>")},
+        {"literal": (2, "Tuple<Array<Int>, Array<Int>>"),
+         "if": (None, "Tuple<Array<Int>, Array<String>>"),
+         "match": (None, "Tuple<Array<Int>, Array<String>>")},
         description=(
-            "Array literal element 2 has type Tuple<Array<Nat>, "
+            "Array literal element 2 has type Tuple<Array<Int>, "
             "Array<String>>, but the literal's element type is "
-            "Tuple<Array<Nat>, Array<Nat>>, the type of element 0, completed "
+            "Tuple<Array<Int>, Array<Int>>, the type of element 0, completed "
             "by element 1.")),
     # Withheld for behaviour: not filled; refused at an `if` or a `match`.
     "fn-agree": _Shape(
@@ -986,25 +989,25 @@ SHAPES: dict[str, _Shape] = {
     # A built-in's variable no parameter mentions is fresh: filled.
     "map-agree": _Shape(
         ("map_new()", 'map_insert(map_new(), "k", 1)'),
-        _everywhere(None, "Map<String, Nat>")),
+        _everywhere(None, "Map<String, Int>")),
     "map-disagree": _Shape(
         ("map_new()", 'map_insert(map_new(), "k", 1)',
          'map_insert(map_new(), 5, "v")'),
-        {"literal": (2, "Map<String, Nat>"), "if": (2, None),
+        {"literal": (2, "Map<String, Int>"), "if": (2, None),
          "match": (2, None)},
         description=(
-            "Array literal element 2 has type Map<Nat, String>, but the "
-            "literal's element type is Map<String, Nat>, the type of "
+            "Array literal element 2 has type Map<Int, String>, but the "
+            "literal's element type is Map<String, Int>, the type of "
             "element 0, completed by element 1.")),
     "set-agree": _Shape(
         ("set_new()", "set_add(set_new(), 5)"),
-        _everywhere(None, "Set<Nat>")),
+        _everywhere(None, "Set<Int>")),
     "set-disagree": _Shape(
         ("set_new()", "set_add(set_new(), 5)", 'set_add(set_new(), "s")'),
-        {"literal": (2, "Set<Nat>"), "if": (2, None), "match": (2, None)},
+        {"literal": (2, "Set<Int>"), "if": (2, None), "match": (2, None)},
         description=(
             "Array literal element 2 has type Set<String>, but the literal's "
-            "element type is Set<Nat>, the type of element 0, completed by "
+            "element type is Set<Int>, the type of element 0, completed by "
             "element 1.")),
 }
 
@@ -1112,7 +1115,7 @@ def _shape_source(body: str) -> str:
 
 def test_mutant_a_variable_that_occurs_twice_takes_one_type() -> None:
     # Filled one position at a time, `twice(None)`'s one `T` would take
-    # `Nat` and `String`, the type of neither element.
+    # `Int` and `String`, the type of neither element.
     literal = '[twice(None), Tuple(Some(1), Some("a"))]'
     source = _shape_source(f"array_length({literal})")
     checked = _checked(source)
@@ -1153,7 +1156,7 @@ def test_mutant_a_fresh_builtin_variable_is_filled() -> None:
     checked = _checked(source)
     assert _where(checked) == [("E202", *_place(source, literal))]
     assert _literal_types(checked)[_place(source, literal)] == (
-        "Array<Map<String, Nat>>")
+        "Array<Map<String, Int>>")
 
 
 def test_mutant_a_lost_builtin_variable_keeps_the_match_verdict() -> None:
@@ -1182,7 +1185,7 @@ def test_fresh_builtin_variable_meets_its_context(site: str) -> None:
     checked = _checked(source)
     assert _where(checked) == [("E202", *_place(source, literal))]
     assert _literal_types(checked)[_place(source, literal)] == (
-        "Array<Map<String, Nat>>")
+        "Array<Map<String, Int>>")
 
 
 # R69's two programs for the fresh built-in variable, refused at check and
@@ -1250,7 +1253,7 @@ def test_mutant_each_call_marks_its_own_free_variables() -> None:
     checked = _checked(source)
     assert checked.diagnostics == ()
     assert _literal_types(checked)[_place(source, literal)] == (
-        "Array<Tuple<Map<String, Nat>, Map<Nat, String>>>")
+        "Array<Tuple<Map<String, Int>, Map<Int, String>>>")
 
 
 # A data parameter a constructor field holds only in a function's effect
@@ -1308,7 +1311,7 @@ def test_mutant_an_effect_row_holds_behaviour() -> None:
 
 
 def test_mutant_a_variable_bound_on_the_part_side_takes_one_type() -> None:
-    # `dup(None)`'s one `T` meets `Nat` where element 0 fixes it and `?`
+    # `dup(None)`'s one `T` meets `Int` where element 0 fixes it and `?`
     # where element 0 leaves its second array open: kept at the second
     # position without its binding, the third element would give it
     # `String` there.
@@ -1318,6 +1321,6 @@ def test_mutant_a_variable_bound_on_the_part_side_takes_one_type() -> None:
     assert _where(checked) == [
         ("E162", *_place(source, literal, literal.index('Tuple([2]')))]
     assert checked.errors[0].description == (
-        "Array literal element 2 has type Tuple<Array<Nat>, Array<String>>, "
-        "but the literal's element type is Tuple<Array<Nat>, Array<Nat>>, "
+        "Array literal element 2 has type Tuple<Array<Int>, Array<String>>, "
+        "but the literal's element type is Tuple<Array<Int>, Array<Int>>, "
         "the type of element 0, completed by element 1.")

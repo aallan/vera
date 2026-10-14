@@ -251,13 +251,13 @@ def test(
     ``expr_semantic_types`` / ``expr_target_types`` are the checker's
     resolved- and target-type side-tables (``CheckerArtifacts``).  #986: they
     are threaded into BOTH the verifier (classification) and codegen (the WASM
-    the tester executes) so the tester compiles the SAME @Nat->@Int widen guards
-    the verifier obligates — without them a tuple/array-component widen guard
+    the tester executes) so the tester compiles the SAME component guards the
+    verifier obligates — without them a tuple/array-component guard
     (recovered only from the target table) silently vanished from the
     tester-compiled WASM while the verifier still classified it tier3-guarded.
 
     ``module_artifacts`` (#987) carries each resolved module's OWN side-tables so
-    the tester-compiled WASM also emits the widen guards for IMPORTED bodies —
+    the tester-compiled WASM also emits the component guards for IMPORTED bodies —
     the same threading ``vera run`` / ``vera compile`` use.
 
     ``alias_env`` (#1208) is the checked program's naming environment
@@ -311,10 +311,10 @@ class _TestEngine:
         self.resolved_modules = resolved_modules or []
         # #986: the checker's resolved- / target-type side-tables, threaded into
         # both `verify` and `codegen_compile` below so the tester's WASM carries
-        # the same widen guards the verifier obligates.
+        # the same component guards the verifier obligates.
         self.expr_semantic_types = expr_semantic_types
         self.expr_target_types = expr_target_types
-        # #987: per-module tables so the tester's WASM emits the widen guards for
+        # #987: per-module tables so the tester's WASM emits the component guards for
         # imported bodies too (threaded into `codegen_compile` below).
         self.module_artifacts = module_artifacts
         # #1208: the checked program's naming environment, threaded into the

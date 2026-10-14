@@ -66,9 +66,6 @@ class SiteGuards:
     #: emitters instead and are not construction positions, so they are False
     #: here and the verifier never asks them this question.
     nat_sign_at_construction: bool = False
-    #: The `@Nat` -> `@Int` widening check at the same construction position
-    #: (#820's enabler threads a target type to these two shapes only).
-    int_widen_at_construction: bool = False
     #: Why the answers above are what they are — measured, not remembered.
     note: str = ""
 
@@ -132,22 +129,18 @@ GUARD_SITES: dict[str, SiteGuards] = {
     "tuple component": SiteGuards(
         refinement_predicate=True,
         nat_sign_at_construction=True,
-        int_widen_at_construction=True,
         note="the built-in `Tuple` carrier reads its target from the "
              "threaded table (#1416); predicate since #1426",
     ),
     "array element": SiteGuards(
         refinement_predicate=True,
         nat_sign_at_construction=True,
-        int_widen_at_construction=True,
         note="predicate since #1426, sign since #1440",
     ),
     "map value": SiteGuards(
         refinement_predicate=True,
         nat_sign_at_construction=True,
-        note="predicate since #1426, sign since #1440.  No widening entry: "
-             "#820's enabler threads a target type to the array and tuple "
-             "shapes only",
+        note="predicate since #1426, sign since #1440",
     ),
     "State write boundary": SiteGuards(
         refinement_predicate=True,

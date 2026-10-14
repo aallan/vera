@@ -11,10 +11,10 @@ obligation the verifier did not prove — a Tier-3 guard — firing on an input
 the contract admits is a program finding, reported as a failing trial exactly
 as for a Tier-3 function.
 
-The red-first cases are open soundness bugs whose repros refute today:
-#1587 (a literal-only expression below `Int`'s minimum proves
-`ensures(@Int.result < 0)` and returns 1) and #1555 (`==` between two calls
-returning a generic data type compares addresses).  Default mode is pinned
+The red-first case is an open soundness bug whose repro refutes today:
+#1555 (`==` between two calls returning a generic data type compares
+addresses, so `mo(7) == mo(7)` is proved true and runs false), which the
+fixtures hold as their false proof.  Default mode is pinned
 byte-for-byte on a fixed program (`TestDefaultModeUnchanged`); the corpus-wide
 default-versus-distrust differential lives in `tests/test_distrust_corpus.py`.
 """
@@ -134,30 +134,51 @@ def _main(
 # Fixtures
 # =====================================================================
 
-# #1587, verbatim: proved at Tier 1, and `vera run` reports the postcondition
-# violated (the u64 literal is -1's bits, so the difference is 1).  `main` takes
-# no parameter at all, so it is exercised exactly once.
-SRC_1587 = """\
+# #1555's address comparison as a false proof a fixture can hold: the
+# verifier models `==` structurally and proves `mo(7) == mo(7)` from `mo`'s
+# `ensures`, and the compiled `==` compares two heap addresses, so it runs
+# false.  `mo`'s own `ensures` is Tier 3 (the verifier cannot see through
+# `parse_int(show(...))`), so the check it compiles to stands for no proof
+# and a run that reaches it exercises nothing: the false proof brings no
+# proved check of its own.  A fixture appends `_MO` after its own functions,
+# so their lines stay where they are.
+_MO = """
+private fn mo(@Int -> @Option<Int>)
+  requires(true)
+  ensures(@Option<Int>.result == Some(@Int.0))
+  effects(pure)
+{
+  match parse_int(show(@Int.0)) {
+    Ok(@Int) -> Some(@Int.0),
+    Err(@String) -> Some(@Int.0)
+  }
+}
+"""
+
+# Proved at Tier 1, and `vera run` reports the postcondition violated (the
+# comparison runs false, so the result is 1).  `main` takes no parameter at
+# all, so it is exercised exactly once.
+SRC_FALSE_PROOF = """\
 public fn main(-> @Int)
   requires(true)
   ensures(@Int.result < 0)
   effects(pure)
 {
-  0 - 18446744073709551615
+  if mo(7) == mo(7) then { 0 - 1 } else { 1 }
 }
-"""
+""" + _MO
 
 # The same false proof behind a parameter, so the generator's own inputs reach
 # it: every one of them refutes, since the body ignores the argument.
-SRC_1587_PARAM = """\
+SRC_FALSE_PROOF_PARAM = """\
 public fn below_min(@Int -> @Int)
   requires(true)
   ensures(@Int.result < 0)
   effects(pure)
 {
-  0 - 18446744073709551615
+  if mo(7) == mo(7) then { 0 - 1 } else { 1 }
 }
-"""
+""" + _MO
 
 # #1555's repro with the function under test made public: `duo(x) == duo(x)`
 # compiles to an address comparison, so the proved `ensures(@Bool.result)` fails.
@@ -204,7 +225,7 @@ public fn answer(@Unit -> @Int)
 """
 
 # Every default-mode category at once: two proved functions (one of them
-# #1587's false proof), a Tier-3 function, a verifier-refuted one, and the two
+# #1555's false proof), a Tier-3 function, a verifier-refuted one, and the two
 # skip reasons.  Pinned byte-for-byte below in default mode.
 SRC_MIXED = """\
 public fn add1(@Int -> @Int)
@@ -220,7 +241,7 @@ public fn below_min(@Int -> @Int)
   ensures(@Int.result < 0)
   effects(pure)
 {
-  0 - 18446744073709551615
+  if mo(7) == mo(7) then { 0 - 1 } else { 1 }
 }
 
 public fn identity(@Nat -> @Nat)
@@ -255,7 +276,7 @@ public fn trivial(@Int -> @Int)
 {
   @Int.0
 }
-"""
+""" + _MO
 
 
 # =====================================================================
@@ -269,16 +290,16 @@ class TestRefutedFalseProof:
     def test_default_mode_reports_the_false_proof_verified_and_never_runs_it(
         self,
     ) -> None:
-        """The blindness `--distrust` exists for (#1587): default mode calls
+        """The blindness `--distrust` exists for (#1555): default mode calls
         the false proof Tier 1 and runs no trial against it."""
-        f = _fn(_run(SRC_1587, distrust=False), "main")
+        f = _fn(_run(SRC_FALSE_PROOF, distrust=False), "main")
         assert (f.category, f.trials_run) == ("verified", 0)
 
-    def test_1587_zero_parameter_main_is_refuted(self) -> None:
-        result = _run(SRC_1587, distrust=True)
+    def test_a_zero_parameter_main_is_refuted(self) -> None:
+        result = _run(SRC_FALSE_PROOF, distrust=True)
         f = _fn(result, "main")
         assert f.category == "refuted", (
-            "vera test --distrust must refute #1587's proof: the run returns 1 "
+            "vera test --distrust must refute #1555's proof: the run returns 1 "
             f"where the proved ensures says < 0; got {f.category!r} ({f.reason})"
         )
         # One trial: a function with no parameter has exactly one input.
@@ -299,10 +320,10 @@ class TestRefutedFalseProof:
         assert (diag.location.line, diag.location.column) == (3, 3)
         assert diag.source_line == "  ensures(@Int.result < 0)"
 
-    def test_1587_behind_a_parameter_names_the_arguments_in_slot_form(
+    def test_a_proof_behind_a_parameter_names_the_arguments_in_slot_form(
         self,
     ) -> None:
-        result = _run(SRC_1587_PARAM, distrust=True, trials=12)
+        result = _run(SRC_FALSE_PROOF_PARAM, distrust=True, trials=12)
         f = _fn(result, "below_min")
         assert f.category == "refuted"
         # Nine boundary values for one @Int, then the diversity loop to 12.
@@ -329,11 +350,11 @@ class TestRefutedFalseProof:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Through the real argument parser: `vera test --distrust --json`."""
-        path = _write(tmp_path, SRC_1587)
+        path = _write(tmp_path, SRC_FALSE_PROOF)
         rc = _main(monkeypatch, "test", "--distrust", "--json", path)
         payload = json.loads(capsys.readouterr().out)
         assert "summary" in payload, (
-            "vera test --distrust must run the tester and refute #1587's "
+            "vera test --distrust must run the tester and refute #1555's "
             f"false proof; got {payload}"
         )
         assert rc == 1
@@ -382,7 +403,7 @@ class TestProvedFunctionsExercised:
     def test_text_output_marks_a_held_proof_and_a_refutation(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        path = _write(tmp_path, SRC_ADD1 + "\n" + SRC_1587_PARAM)
+        path = _write(tmp_path, SRC_ADD1 + "\n" + SRC_FALSE_PROOF_PARAM)
         rc = cmd_test(path, trials=9, distrust=True)
         out = capsys.readouterr().out
         assert rc == 1
@@ -525,7 +546,7 @@ class TestDistrustFnFilter:
         capsys: pytest.CaptureFixture[str],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        path = _write(tmp_path, SRC_ADD1 + "\n" + SRC_1587_PARAM)
+        path = _write(tmp_path, SRC_ADD1 + "\n" + SRC_FALSE_PROOF_PARAM)
         rc = _main(monkeypatch, "test", "--distrust", "--fn", "add1",
                    "--json", "--trials", "9", path)
         payload = json.loads(capsys.readouterr().out)
@@ -1007,17 +1028,17 @@ class TestTrapsAtSitesTheRecordOmitted:
 # round-2 class below).  Its other reasons not to run, E701's and E702's, are
 # `TestUnexercisedProofs`'.
 
-# The reviewer's repro: proved (#1587's literal reads as -1), yet `vera run
-# --fn s -- 3` returns "pos", and nothing checks the `ensures`.
+# The reviewer's repro: proved (#1555's comparison is proved true), yet `vera
+# run --fn s -- 3` returns "pos", and nothing checks the `ensures`.
 SRC_STRING_RETURN = """\
 public fn s(@Int -> @String)
   requires(true)
   ensures(@String.result == "neg")
   effects(pure)
 {
-  if 0 - 18446744073709551615 < 0 then { "neg" } else { "pos" }
+  if mo(7) == mo(7) then { "neg" } else { "pos" }
 }
-"""
+""" + _MO
 
 # The `Array` case, and a caller whose proof rests on the unchecked clause:
 # `wrap`'s own `ensures` is checked, and its trials refute it.
@@ -1027,7 +1048,7 @@ public fn pair_or_one(@Int -> @Array<Int>)
   ensures(array_length(@Array<Int>.result) == 2)
   effects(pure)
 {
-  if 0 - 18446744073709551615 < 0 then { [1, 2] } else { [1] }
+  if mo(7) == mo(7) then { [1, 2] } else { [1] }
 }
 
 public fn wrap(@Int -> @Int)
@@ -1037,7 +1058,7 @@ public fn wrap(@Int -> @Int)
 {
   array_length(pair_or_one(@Int.0))
 }
-"""
+""" + _MO
 
 # One proved clause is checked (the `assert`) and one is not (the `ensures`
 # over a `String` result): the function runs, and its reason names the gap.
@@ -1149,7 +1170,7 @@ class TestProofsNoCheckStandsFor:
 # one.  Skipping it skips a run that can refute.
 
 # The reviewer's repro: the `ensures` over a `String` result has no check, but
-# the index at 7:14 is proved (#1587's literal reads it as 1) and checked, and
+# the index at 7:14 is proved (#1555's comparison makes it 1) and checked, and
 # every run indexes 7.
 SRC_UNCHECKED_ENSURES_BESIDE_A_PROOF = """\
 public fn label(@Int -> @String)
@@ -1158,10 +1179,10 @@ public fn label(@Int -> @String)
   effects(pure)
 {
   let @Array<Int> = [10, 20, 30];
-  let @Int = @Array<Int>.0[if 0 - 18446744073709551615 < 0 then { 1 } else { 7 }];
+  let @Int = @Array<Int>.0[if mo(7) == mo(7) then { 1 } else { 7 }];
   "ok"
 }
-"""
+""" + _MO
 
 # The `Array` case: nothing checks the `ensures` over the result, but each
 # element's `Pos` is proved and guarded where the array is built, and the
@@ -1174,12 +1195,12 @@ public fn positives(@Int -> @Array<Pos>)
   ensures(array_length(@Array<Pos>.result) == 2)
   effects(pure)
 {
-  [1, if 0 - 18446744073709551615 < 0 then { 1 } else { 0 }]
+  [1, if mo(7) == mo(7) then { 1 } else { 0 }]
 }
-"""
+""" + _MO
 
 # A tuple component's refinement is recorded, and guarded, at the component
-# the function builds, not at the body; with #1587's literal the component is
+# the function builds, not at the body; with #1555's comparison the component is
 # 0 at run time.
 SRC_REFINED_COMPONENT = """\
 type Pos = { @Int | @Int.0 > 0 };
@@ -1189,12 +1210,12 @@ public fn pos_pair(@Int -> @Tuple<Pos, Int>)
   ensures(true)
   effects(pure)
 {
-  Tuple(if 0 - 18446744073709551615 < 0 then { @Int.0 } else { 0 }, 3)
+  Tuple(if mo(7) == mo(7) then { @Int.0 } else { 0 }, 3)
 }
-"""
+""" + _MO
 
 # A proof reached only through a callee: nothing of `s2`'s own has a check,
-# and its private `helper`'s false `ensures` (#1587's literal) is checked
+# and its private `helper`'s false `ensures` (#1555's comparison) is checked
 # inside `helper`, which every run of `s2` calls.
 SRC_CALLEE_PROOF = """\
 private fn helper(@Int -> @Int)
@@ -1202,7 +1223,7 @@ private fn helper(@Int -> @Int)
   ensures(@Int.result < 0)
   effects(pure)
 {
-  0 - 18446744073709551615
+  if mo(7) == mo(7) then { 0 - 1 } else { 1 }
 }
 
 public fn s2(@Int -> @String)
@@ -1213,7 +1234,7 @@ public fn s2(@Int -> @String)
   let @Int = helper(@Int.0);
   "ok"
 }
-"""
+""" + _MO
 
 # The proved `nat_bind` is recorded at the value (`Tuple(@Int.0, 5)`) and
 # guarded at the binders, so the exact-span join places the guards nowhere
@@ -1313,7 +1334,8 @@ class TestAProofIsRunWhereverACheckStandsForIt:
     def test_a_component_refined_return_is_a_checked_clause(self) -> None:
         program = transform(parse(SRC_REFINED_COMPONENT, file=_FILE))
         (decl,) = [t.decl for t in program.declarations
-                   if isinstance(t.decl, ast.FnDecl)]
+                   if isinstance(t.decl, ast.FnDecl)
+                   and t.decl.name == "pos_pair"]
         index = _index(SRC_REFINED_COMPONENT)
         assert index.proof_clauses(decl, _FILE) == (
             ["the refinement of its return type `@Tuple<@Pos, @Int>`"], [])
@@ -1767,7 +1789,7 @@ _SOUNDNESS = (
     "runs")
 
 # Two `where` helpers of one name: `f1`'s rests on an `assume`, `f2`'s
-# carries #1587's false proof and no `assume`.
+# carries #1555's false proof and no `assume`.
 SRC_SAME_NAMED_HELPERS = """\
 public fn f1(@Int -> @Int)
   requires(true)
@@ -1800,14 +1822,14 @@ where {
     ensures(@Int.result < 0)
     effects(pure)
   {
-    0 - 18446744073709551615
+    if mo(7) == mo(7) then { 0 - 1 } else { 1 }
   }
 }
-"""
+""" + _MO
 
 #: Where an `assume` sits relative to the refuted proof, and whether these
 #: arguments violate it: the comparison `f`'s `ensures(@Int.result _ 0)`
-#: makes (`<` where #1587's literal supplies the false proof), its body, and
+#: makes (`<` where #1555's comparison supplies the false proof), its body, and
 #: what E703's description ends with.
 _ASSUME_CELLS: dict[str, tuple[str, str, str]] = {
     # At the head of the body, evaluated on the arguments: they violate it.
@@ -1815,9 +1837,10 @@ _ASSUME_CELLS: dict[str, tuple[str, str, str]] = {
         ">", "assume(@Int.0 > 0);\n  @Int.0",
         "; the proof rests on `assume(@Int.0 > 0)` at line 6, which these "
         "arguments violate"),
-    # At the head, and it holds: the false proof is the verifier's (#1587).
+    # At the head, and it holds: the false proof is the verifier's (#1555).
     "head_satisfied": (
-        "<", "assume(@Int.0 == @Int.0);\n  0 - 18446744073709551615",
+        "<", "assume(@Int.0 == @Int.0);\n  "
+        "if mo(7) == mo(7) then { 0 - 1 } else { 1 }",
         "; the proof also rests on `assume(@Int.0 == @Int.0)` at line 6, "
         "which these arguments satisfy"),
     # After a binding the slots it reads may not be the parameters, so it
@@ -1846,7 +1869,7 @@ def _assume_program(cell: str) -> str:
         "  effects(pure)\n"
         "{\n"
         f"  {body}\n"
-        "}\n")
+        "}\n") + (_MO if "mo(" in body else "")
 
 
 def _refutations(result: TestResult) -> list[Any]:
@@ -1909,7 +1932,7 @@ class TestRefutationsRestingOnAnAssume:
     def test_without_an_assume_the_rationale_still_names_the_case(
         self,
     ) -> None:
-        (d,) = _run(SRC_1587, distrust=True).diagnostics
+        (d,) = _run(SRC_FALSE_PROOF, distrust=True).diagnostics
         assert "assume(" not in d.description
         assert "unless an `assume` the proof rests on is false" in d.rationale
 
@@ -2365,7 +2388,7 @@ class TestE703Registered:
         assert gate.error_code_collision_violations(tester) == []
 
     def test_the_refutation_carries_every_field(self) -> None:
-        (diag,) = _run(SRC_1587, distrust=True).diagnostics
+        (diag,) = _run(SRC_FALSE_PROOF, distrust=True).diagnostics
         assert diag.error_code == "E703"
         assert diag.rationale and diag.fix
         assert diag.spec_ref == 'Chapter 0, Section 0.5.6 "Contract-Driven Testing"'
@@ -2378,7 +2401,7 @@ class TestE703Registered:
 
 def test_refutes_holds_the_streams_own_records() -> None:
     """`TrialResult.refutes` is the verifier's ProofObligation, not a copy."""
-    f = _fn(_run(SRC_1587, distrust=True), "main")
+    f = _fn(_run(SRC_FALSE_PROOF, distrust=True), "main")
     (obligation,) = f.failures[0].refutes
     assert isinstance(obligation, ProofObligation)
     assert (obligation.line, obligation.column, obligation.file) == (3, 3, _FILE)

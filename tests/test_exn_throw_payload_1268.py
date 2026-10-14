@@ -21,10 +21,12 @@ a WASM ``throw $exn_<family>`` with the argument on the stack — so a program
 that never ran ``vera verify`` (and one whose ``E503`` its author ignored)
 still delivered the violating value.  It now takes the write boundary's
 guards, at the op-call site beside ``put``'s: the ``@Int`` -> ``@Nat`` sign
-guard, the ``@Nat`` -> ``@Int`` widening guard, and — refined FIRST, as
-everywhere else — the §2.6.5 predicate guard for a refined payload, which
-traps through ``$vera.contract_fail`` naming the predicate.  So the obligation
-is ``guarded`` at all three arms and its Tier-3 leg is counted, not disclosed.
+guard and — refined FIRST, as everywhere else — the §2.6.5 predicate guard
+for a refined payload, which traps through ``$vera.contract_fail`` naming the
+predicate.  So the obligation is ``guarded`` at both arms and its Tier-3 leg
+is counted, not disclosed.  (On the u64 `Nat` a third arm, the ``@Nat`` ->
+``@Int`` widening, had a guard of its own; a ``@Nat`` is an ``@Int`` at the
+value level now, so it has nothing to check.)
 
 That claim is checked against codegen rather than asserted: each arm's status
 is pinned AND a run confirms the value really is stopped, with a satisfying
@@ -32,13 +34,11 @@ twin beside it so "guarded" cannot be satisfied by a site that always traps.
 """
 from __future__ import annotations
 
-import re
 
 import pytest
 
 from vera.codegen import execute
 from vera.codegen.api import WasmTrapError
-from vera.trap_registry import signal_call_pattern
 from tests.codegen_helpers import (
     _compile,
     _compile_ok,
@@ -116,20 +116,20 @@ class TestTheThrowPayloadIsObligated:
         binds = [o for o in _verify(src).obligations if o.kind == "refine_bind"]
         assert [o.status for o in binds] == ["violated"], binds
 
-    def test_a_nat_payload_widening_into_an_int_slot_is_obligated(
+    def test_a_nat_payload_into_an_int_slot_has_nothing_to_check(
         self,
     ) -> None:
-        """The widening arm: a bare `@Nat` thrown into an `Exn<Int>` payload
-        reinterprets above i64.MAX, so the site records a
-        `nat_to_int_coerce` obligation where it recorded nothing."""
+        """A bare `@Nat` thrown into an `Exn<Int>` payload is an `@Int` at
+        the value level: the site records nothing beside the contracts.  (On
+        the u64 `Nat` it reinterpreted above i64.MAX, and the site recorded
+        a `nat_to_int_coerce` obligation.)"""
         src = _thrower("Int", "@Nat.0", params="@Nat",
                        handler_body="@Int.0")
         # `boom(0 - 5)` is not a @Nat argument, so drive the call directly.
         src = src.replace("boom((0 - 5))", "boom(5)")
         result = _verify(src)
-        coerce = [o for o in result.obligations
-                  if o.kind == "nat_to_int_coerce"]
-        assert coerce, [o.kind for o in result.obligations]
+        assert [o.kind for o in result.obligations] == [
+            "requires", "ensures", "requires", "ensures"], result.obligations
 
 
 class TestTheConcreteGateReachesTheThrowPayload:
@@ -645,17 +645,16 @@ public fn main(@Unit -> @Int)
         assert "or an Exn `throw` payload)" not in rationales[0], rationales[0]
 
 
-class TestTheQualifiedArmObligatesAllThreeArms:
-    """The qualified arm records the WIDENING too, not just two of three.
+class TestTheQualifiedArmAgreesWithTheBareOne:
+    """The qualified spelling of an op records and guards what the bare one
+    does.
 
     PR #1325 review.  The `QualifiedCall` arm was hand-written as a
-    refined-then-@Nat chain, and simply had no `@Nat` -> `@Int` widening
-    branch — so `State.put(@Nat.0)` / `Exn.throw(@Nat.0)` into an `@Int`
-    cell recorded NO obligation at all, while codegen emitted the widening
-    guard on both spellings (the qualified forms synthesize a bare node and
-    delegate to the dispatcher that emits it).  A guard the obligation
-    stream never mentions is the same disease as a guard it claims and does
-    not emit: `verify --json` is the only place a reader can see either.
+    refined-then-@Nat chain, and on the u64 `Nat` it had no `@Nat` ->
+    `@Int` widening branch — so `State.put(@Nat.0)` / `Exn.throw(@Nat.0)`
+    into an `@Int` cell recorded NO obligation, while codegen emitted the
+    widening guard on both spellings.  A `@Nat` is an `@Int` at the value
+    level now, so neither spelling has anything to record or to guard.
 
     Asserted as a differential over the two spellings of each op rather
     than as literals, because the two spellings ARE one boundary.
@@ -713,66 +712,48 @@ public fn main(@Nat -> @Int)
         ("op", "bare", "qualified"),
         [("throw", "throw", "Exn.throw"), ("put", "put", "State.put")],
     )
-    def test_both_spellings_record_the_widening(
+    def test_both_spellings_record_the_same_thing(
         self, op: str, bare: str, qualified: str,
     ) -> None:
-        """One `nat_to_int_coerce` on each side, at the same status."""
-        def coerce(src: str) -> list[tuple[str, str]]:
-            return [(o.kind, o.status) for o in _verify(src).obligations
-                    if o.kind == "nat_to_int_coerce"]
+        """The same records on each side: the contracts, and nothing for the
+        widening."""
+        def records(src: str) -> list[tuple[str, str]]:
+            return [(o.kind, o.status) for o in _verify(src).obligations]
 
-        b = coerce(self._widen(op, bare))
-        q = coerce(self._widen(op, qualified))
+        b = records(self._widen(op, bare))
+        q = records(self._widen(op, qualified))
         assert b == q, (b, q)
-        assert b == [("nat_to_int_coerce", "tier3")], b
+        assert {kind for kind, _ in b} == {"requires", "ensures"}, b
 
     @pytest.mark.parametrize(
         ("op", "spelling"),
         [("throw", "throw"), ("throw", "Exn.throw"),
          ("put", "put"), ("put", "State.put")],
     )
-    def test_the_guard_the_obligation_promises_is_emitted(
+    def test_neither_spelling_guards_the_widening(
         self, op: str, spelling: str,
     ) -> None:
-        """...and codegen really does emit it, on BOTH spellings.
-
-        The obligation above says `tier3` — runtime-guarded — so this is the
-        half that makes that a fact rather than a claim.  Without it the
-        differential is satisfied by two sides agreeing on a promise neither
-        keeps.
-        """
+        """...and codegen agrees, on BOTH spellings: the function holds no
+        check at all, so the records above promise nothing it does not
+        keep."""
         result = _compile_ok(self._widen(op, spelling))
-        body = wat_fn_body(result.wat, "boom" if op == "throw" else "store")
-        # The signal between the `if` and the `unreachable` is #1438's: the
-        # widening guard names itself so its trap reports
-        # `kind="widen_guard"` rather than the generic paragraph (through
-        # the one `vera.trap` import since #1479).  Required, not optional —
-        # a guard that traps anonymously here is the defect #1438 closed.
-        guard = re.compile(
-            r"local\.tee \d+\s+i64\.const 0\s+i64\.lt_s\s+if\s+"
-            + signal_call_pattern("widen_guard").pattern
-            + r"\s+unreachable\s+end",
-            re.S,
-        )
-        assert guard.search(body), body
+        fn = "boom" if op == "throw" else "store"
+        assert checks(result, function=fn) == (), wat_fn_body(result.wat, fn)
+        assert _run(self._widen(op, spelling), "main", [5]) == (
+            5 if op == "throw" else 0)
 
 
-class TestARefinementDoesNotDisableTheWideningGuard:
-    """A refinement OVER `@Int` rides BESIDE the widening obligation.
+class TestARefinementDoesNotWeakenTheBoundary:
+    """A refinement OVER `@Int` on a `@Nat` payload is checked, and the
+    refined spelling behaves as the bare one does.
 
-    The #820 intersection, which the shared triple was missing at this
-    boundary (PR #1325 review).  The three arms are an `elif` chain, so a
-    refined formal claimed the value and the widening check never ran — and
-    codegen mirrored it exactly, which is why this was not a
-    verifier-versus-codegen desync but something worse in one respect: both
-    sides agreed to skip a check the UNREFINED spelling performs.
-
-    A refinement predicate does not imply fit-in-i64.  `@Nat` is u64 and
-    `@Int` is i64, so a `@Nat` above i64.MAX reinterprets to a negative
-    `@Int` — and `{ @Int | true }` is satisfied by that negative, as `< 100`
-    would be.  Adding a refinement therefore WEAKENED the boundary: measured
-    before the fix, `Exn<Int>` fed u64.MAX trapped on the widening guard
-    while `Exn<{ @Int | true }>` fed the same value returned -1.
+    The #820 intersection (PR #1325 review).  On the u64 `Nat` a `@Nat`
+    above i64.MAX reinterpreted to a negative `@Int`, which `{ @Int | true
+    }` admits, so the refined spelling needed the widening guard beside its
+    predicate: measured before that fix, `Exn<Int>` fed u64.MAX trapped on
+    the widening guard while `Exn<{ @Int | true }>` returned -1.  A `@Nat`
+    holds `0 .. i64.MAX` now, so the predicate is the one fact the site
+    checks, and both spellings return the value at the top of the range.
     """
 
     _REFINED = """
@@ -804,47 +785,32 @@ public fn main(@Nat -> @Int)
     _BARE = _REFINED.replace(
         "type AnyInt = { @Int | true };\n\n", "").replace("AnyInt", "Int")
 
-    #: u64.MAX in an i64 slot reads back as -1.
-    _U64_MAX = 18446744073709551615
+    _I64_MAX = 2 ** 63 - 1
+    _U64_MAX = 2 ** 64 - 1
 
-    def test_both_obligations_are_recorded(self) -> None:
-        """`refine_bind` AND `nat_to_int_coerce`, not one or the other.
-
-        Different kinds describing different facts about one value, so this
-        is a pair rather than a double-record: the predicate is about which
-        inhabitants are legal, the coercion about whether the value survives
-        the u64-to-i64 reinterpretation at all.
-        """
+    def test_the_refinement_is_recorded(self) -> None:
+        """`refine_bind`, and nothing for the widening."""
         kinds = [o.kind for o in _verify(self._REFINED).obligations
-                 if o.kind in ("refine_bind", "nat_to_int_coerce")]
-        assert kinds == ["refine_bind", "nat_to_int_coerce"], kinds
+                 if o.kind not in ("requires", "ensures")]
+        assert kinds == ["refine_bind"], kinds
 
-    def test_both_guards_are_emitted(self) -> None:
-        """...and codegen emits both, so neither obligation is a promise
-        the module does not keep."""
+    def test_the_refinement_guard_is_emitted_alone(self) -> None:
+        """...and codegen emits its predicate guard, and no other check."""
         result = _compile_ok(self._REFINED)
         body = wat_fn_body(result.wat, "boom")
-        assert checks(result, kind="contract_violation", function="boom"), body
-        assert re.search(
-            r"i64\.const 0\s+i64\.lt_s\s+if\s+"
-            + signal_call_pattern("widen_guard").pattern,
-            body, re.S,
-        ), body
+        assert [c.kind for c in checks(result, function="boom")] == [
+            "contract_violation"], body
 
     def test_the_refinement_does_not_weaken_the_boundary(self) -> None:
-        """The behavioural pin, as a DIFFERENTIAL against the bare spelling.
-
-        Asserting "the refined one traps" alone would be satisfied by a
-        boundary that traps on everything; asserting it agrees with the bare
-        spelling is the property that was broken — refined returned -1 where
-        bare trapped.
-        """
-        with pytest.raises(WasmTrapError):
-            execute(_compile_ok(self._BARE), fn_name="main",
-                    args=[self._U64_MAX])
-        with pytest.raises(WasmTrapError):
-            execute(_compile_ok(self._REFINED), fn_name="main",
-                    args=[self._U64_MAX])
+        """The behavioural pin, as a DIFFERENTIAL against the bare spelling:
+        both return i64.MAX, the largest `@Nat`, and both refuse u64.MAX
+        before the call, since no `@Nat` holds it."""
+        for source in (self._BARE, self._REFINED):
+            assert _run(source, "main", [self._I64_MAX]) == self._I64_MAX
+            with pytest.raises(RuntimeError,
+                               match="out of range for parameter type @Nat"):
+                execute(_compile_ok(source), fn_name="main",
+                        raw_args=[str(self._U64_MAX)])
 
     def test_a_value_that_fits_still_passes(self) -> None:
         """The over-refusal control: the guard is dead for an in-range value,

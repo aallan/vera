@@ -86,7 +86,6 @@ Exit criterion: the corpus differential names every program whose verdict or out
 
 | Change | What |
 |---|---|
-| `Nat` as the non-negative i64 | `Nat` becomes the non-negative i64 that spec §2.2 defines.  Every integer literal is `Int`, narrowing into `@Nat` stays obligated and is Tier 1 for a literal, and the u64 range, `nat_to_int_coerce`, the sign-provenance classifiers and §4.2's typing-by-value rules go.  A program that held a `@Nat` above i64.MAX breaks, and a literal above it draws a diagnostic. |
 | `can_lower` | One module answers whether code generation can lower a construct, and the checker refuses what it cannot, in place of mirrored gates such as E339.  A handler for an effect other than `State` or `Exn` is refused at check, general handlers become feature work after v0.3.0, and DESIGN.md's effects paragraph is restated to match. |
 | Debt, first batch | Local-debt bugs from the verifier, checker, termination, runtime and tooling clusters, in small pull requests. |
 

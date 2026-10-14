@@ -1,16 +1,13 @@
 import ch08_xmod_widen_lib;
 
--- Conformance: cross-module @Nat -> @Int widening at run level (Chapter 8, #987)
--- Features: cross_module, nat_int_widening, imported_widen_guard
+-- Conformance: cross-module @Nat -> @Int widening at run level (Chapter 8, spec §11.2.1)
+-- Features: cross_module, nat_int_widening
 --
--- The imported widening body must compile AND run correctly across the module
--- boundary.  main exercises `widen_elem` at 2^63 - 1 -- the largest value where
--- @Nat and @Int coincide, so it round-trips bit-exactly and the widening guard
--- must NOT over-fire.  The `assert` is the enforced sentinel: it traps if the
--- cross-module widening ever returns a corrupted value or the guard over-fires
--- at the coincidence boundary.  A silently DROPPED guard is invisible here
--- (at 2^63 - 1 the guard is a no-op) — that regression is owned by the
--- u64.MAX cases in tests/test_xmod_widening_differential.py.
+-- The imported widening body compiles and runs across the module boundary.
+-- main passes it 2^63 - 1, the top of the @Nat range, which it reads into
+-- an @Int slot and an Array<Int> element and returns unchanged: the
+-- widening is a no-op through the import door.  The assert traps if the
+-- value comes back as anything else.
 public fn main(@Unit -> @Int)
   requires(true)
   ensures(true)

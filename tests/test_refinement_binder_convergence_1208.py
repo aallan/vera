@@ -343,7 +343,8 @@ public fn f(@BigByte -> @Byte)
     # unrelated trap wearing the same words (PR #1224 review).  Both, not
     # either.
     with pytest.raises(WasmTrapError, match=r"@Byte\.0 <= 255") as exc:
-        execute(result, fn_name="f", args=[300])
+        # An untrusted host: `execute` refuses 300 for a `@Byte` by default.
+        execute(result, fn_name="f", args=[300], check_int_args=False)
     assert exc.value.kind == "contract_violation", exc.value.kind
     assert _run(source, fn="f", args=[7]) == 7
 
@@ -371,7 +372,8 @@ public fn f(@SmallNat -> @Nat)
     # Same pairing as the `@Byte` twin: the regex pins the implicit conjunct,
     # `kind` pins that it is the contract guard that rejected the value.
     with pytest.raises(WasmTrapError, match=r"@Nat\.0 >= 0") as exc:
-        execute(result, fn_name="f", args=[-1])
+        # An untrusted host's -1: `execute` refuses it by default.
+        execute(result, fn_name="f", args=[-1], check_int_args=False)
     assert exc.value.kind == "contract_violation", exc.value.kind
     assert _run(source, fn="f", args=[7]) == 7
 

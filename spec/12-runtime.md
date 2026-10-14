@@ -453,7 +453,7 @@ The `Random` effect provides three host-backed operations for non-deterministic 
 **Import:** `(import "vera" "trap" (func $vera.trap (param i32 i32 i32)))`
 
 **Parameters:**
-- `kind` (i32): the trap kind's code — `1` `overflow`, `2` `nat_guard`, `3` `widen_guard`, `4` `nat_underflow`, `5` `assertion_failed`, `6` `index_out_of_bounds`, `7` `string_index_out_of_bounds`, `8` `float_conversion`, `9` `heap_exhausted`, `10` `uncaught_exception` (`TRAP_KINDS` in `vera/trap_registry.py`).
+- `kind` (i32): the trap kind's code — `1` `overflow`, `2` `nat_guard`, `4` `nat_underflow`, `5` `assertion_failed`, `6` `index_out_of_bounds`, `7` `string_index_out_of_bounds`, `8` `float_conversion`, `9` `heap_exhausted`, `10` `uncaught_exception` (`TRAP_KINDS` in `vera/trap_registry.py`).
 - `ptr` (i32), `len` (i32): the check's own message in linear memory, as for `contract_fail`; both zero for a kind whose checks carry no message of their own.
 
 **Behaviour:**
@@ -612,7 +612,7 @@ WASM traps are unrecoverable runtime errors. The following conditions cause trap
 | Integer division by zero | `i64.div_s`, `i64.rem_s` | `/` or `%` on `Int` or `Nat` | `divide_by_zero` |
 | Integer overflow (in `i64.div_s`) | `i64.div_s` | `Int.min_value / -1` | `overflow` |
 | Float-to-integer truncation of NaN, an infinity or a value past its range | `i64.trunc_f64_s`, etc. | `float_to_string` of a finite value of magnitude 2^63 or more; every other conversion is checked before it truncates (Chapter 11, Section 11.8.5) | `float_conversion` |
-| A failed runtime check | `unreachable`, after a `vera.contract_fail` or `vera.trap` call | A contract, arithmetic overflow, a `@Nat` narrowing or widening, `@Nat` subtraction, an `assert`, an array or `string_char_code` index, a `Float64` to `Int` conversion, heap exhaustion, an exception leaving an entry point (Chapter 11, Section 11.8.5) | The kind the call names (Sections 12.4.3, 12.4.6) |
+| A failed runtime check | `unreachable`, after a `vera.contract_fail` or `vera.trap` call | A contract, arithmetic overflow (`abs(-2^63)` included), a `@Nat` narrowing, `@Nat` subtraction, an `assert`, an array or `string_char_code` index, a `Float64` to `Int` conversion, heap exhaustion, an exception leaving an entry point (Chapter 11, Section 11.8.5) | The kind the call names (Sections 12.4.3, 12.4.6) |
 | An exception leaving an export no boundary wraps | `throw` | A module not compiled from Vera; every Vera entry point declaring `Exn<T>` has a boundary | `uncaught_exception` |
 | A runtime-internal limit | `unreachable`, with no call before it | GC shadow-stack overflow, a collector limit, a WASI host I/O failure | `unreachable` |
 | Out-of-bounds memory access | `i64.load`, etc. | Invalid pointer dereference by a runtime helper | `out_of_bounds` |

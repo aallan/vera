@@ -126,6 +126,8 @@ class CallsArraysMixin:
         elem_instrs = self.translate_expr(elem_arg, env)
         if arr_instrs is None or elem_instrs is None:
             return None
+        # The element is `T`'s argument: checked where `T` is `Nat`.
+        elem_instrs = self._guard_nat_instantiated_arg(elem_arg, elem_instrs)
 
         # Infer element type from the pushed element.
         # NB: uses _infer_vera_type on the element (not the array)
@@ -1228,6 +1230,8 @@ class CallsArraysMixin:
         fn_instrs = self.translate_expr(fn_arg, env)
         if arr_instrs is None or init_instrs is None or fn_instrs is None:
             return None
+        # The accumulator is `U`'s argument: checked where `U` is `Nat`.
+        init_instrs = self._guard_nat_instantiated_arg(init_arg, init_instrs)
 
         t_type, t_size, t_wasm = self._array_elem_triad_or_skip(
             arr_arg, role="array_fold input"

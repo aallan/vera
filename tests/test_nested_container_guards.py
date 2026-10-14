@@ -27,14 +27,14 @@ GENERATED from the positions the descent walks rather than listed by hand:
   guard's own message wherever a store is recorded `tier3`, and an allowed
   control runs to its value, so a guard cannot pass by over-firing.
 
-Three leaf kinds, one per obligation the store carries: a `@Nat` narrowing
-(`nat_bind`), a refinement predicate (`refine_bind`) and a `@Nat` -> `@Int`
-widening (`nat_to_int_coerce`).  The narrowing and refinement leaves are
+Two leaf kinds, one per obligation the store carries: a `@Nat` narrowing
+(`nat_bind`) and a refinement predicate (`refine_bind`).  Both leaves are
 `float_to_int(@Float64.0)`, opaque to the solver, so the input decides the
-value; the widening leaf is the `@Nat` parameter, and a value above
-`i64.MAX` is the forbidden one.  The container is built and never read
-back, so only a guard AT THE STORE can trap — a read-side pattern guard
-cannot stand in for a missing store guard.
+value.  The container is built and never read back, so only a guard AT THE
+STORE can trap — a read-side pattern guard cannot stand in for a missing
+store guard.  (Reading a `@Nat` at an `@Int` slot checks nothing: a `@Nat`
+is the non-negative half of the `i64` an `@Int` is, so there is no third
+leaf to store.)
 """
 
 from __future__ import annotations
@@ -82,9 +82,6 @@ _LEAVES = {
     "refined": _Leaf("PosInt", "float_to_int(@Float64.0)", "refine_bind",
                      "contract_violation", (-5.0, 5),
                      "Refinement violation"),
-    # 2^64 - 1 is a `@Nat` above i64.MAX.
-    "widen": _Leaf("Int", "@Nat.0", "nat_to_int_coerce", "widen_guard",
-                   (5.0, 2**64 - 1), "widened into an @Int slot"),
 }
 
 _PRELUDE = "type PosInt = { @Int | @Int.0 > 0 };\n\n"
@@ -311,8 +308,8 @@ def test_every_recorded_guard_is_emitted_and_every_emitted_guard_recorded(
     # Outside #1608's positions, the converse: every guard is on the record
     # (a guard the solver also PROVED is over-checking, never unsound), and
     # every stored leaf is.  `tier3_unguarded` is an honest disclosure — a
-    # position whose guard the backend does not emit, such as a widening
-    # into a `Map` value (E531) — so it counts as recorded.
+    # position whose guard the backend does not emit — so it counts as
+    # recorded.
     assert guards <= tier3 + verified, (
         f"{label}: {guards} guard(s) in the WAT against {tier3} tier3 + "
         f"{verified} verified {leaf.obligation} record(s)")

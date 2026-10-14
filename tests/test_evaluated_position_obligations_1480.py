@@ -185,8 +185,11 @@ class TestMeasureIsObligated:
         assert _records(v, "nat_sub", measure) == ["violated/E502"]
         assert _records(v, "nat_sub", tail_call) == ["violated/E502"]
         # The measure's own `+ 1` is a checked add in the WAT at both points.
+        # On entry the difference can be `i64.MAX`; at the tail call the
+        # subtrahend is `@Nat.0 + 1`, at least 1, so the difference is at most
+        # `i64.MAX - 1` and the add is proved.
         assert _records(v, "int_overflow", measure) == ["tier3"]
-        assert _records(v, "int_overflow", tail_call) == ["tier3"]
+        assert _records(v, "int_overflow", tail_call) == ["verified"]
         assert ("E502", *measure) in v.errors
         assert ("E502", *tail_call) in v.errors
         assert not v.ok
@@ -200,8 +203,13 @@ class TestMeasureIsObligated:
         v = _verify(COUNT_TO_FIXED)
         measure = _at(COUNT_TO_FIXED, "@Nat.1 + 1 - @Nat.0")
         tail_call = _at(COUNT_TO_FIXED, "loop(@Nat.1, @Nat.0 + 1)")
-        assert _records(v, "nat_sub", measure) == ["verified"]
-        assert _records(v, "nat_sub", tail_call) == ["verified"]
+        # `@Nat.1 + 1` is a `Nat + Int`, so the measure is an `@Int` and its
+        # subtraction cannot underflow: the measure's non-negativity is the
+        # `decreases` obligation's, which the stated invariant proves.
+        assert _records(v, "nat_sub", measure) == []
+        assert _records(v, "nat_sub", tail_call) == []
+        assert [o.status for o in v.obligations
+                if o.kind == "decreases"] == ["verified"]
         assert v.ok, v.errors
         assert _run(COUNT_TO_FIXED, "count_to", [3]).value == 4
         assert _run(COUNT_TO_FIXED, "count_to", [0]).value == 1
@@ -262,10 +270,13 @@ class TestMeasureOperations:
         assert "Precondition violation in pred" in ran.trap_message
 
 
-# Item 2: a guard evaluates the left disjunct first, and `3 - 5` underflows on
-# a value that satisfies the type.
+# Item 2: a guard evaluates the left disjunct first, and `3 - 5`, a `@Nat`
+# subtraction, underflows on a value that satisfies the type.  The issue
+# wrote the subtrahend as the literal `5`, which makes it a `Nat - Int`, an
+# `@Int` subtraction that cannot underflow (`ODD3_INT`); a `@Nat` subtrahend
+# keeps the trap.
 ODD3 = """\
-type Odd3 = { @Nat | @Nat.0 - 5 > 0 || @Nat.0 == 3 };
+type Odd3 = { @Nat | @Nat.0 - string_length("abcde") > 0 || @Nat.0 == 3 };
 
 public fn mk(@Nat -> @Odd3)
   requires(@Nat.0 == 3)
@@ -287,7 +298,7 @@ public fn take(@Odd3 -> @Nat)
 # The same membership written so the subtraction is evaluated only where it
 # is defined: the `if` is lazy in the compiled guard.
 ODD3_GUARDED = """\
-type Odd3 = { @Nat | if @Nat.0 >= 5 then { @Nat.0 - 5 > 0 } else { @Nat.0 == 3 } };
+type Odd3 = { @Nat | if @Nat.0 >= 5 then { @Nat.0 - string_length("abcde") > 0 } else { @Nat.0 == 3 } };
 
 public fn mk(@Nat -> @Odd3)
   requires(@Nat.0 == 3)
@@ -310,7 +321,7 @@ public fn take(@Odd3 -> @Nat)
 # (`i32.or`), so a left operand that decides the result does not stop the
 # right one from trapping.
 ODD3_OR_FIRST = """\
-type Odd3 = { @Nat | @Nat.0 == 3 || @Nat.0 - 5 > 0 };
+type Odd3 = { @Nat | @Nat.0 == 3 || @Nat.0 - string_length("abcde") > 0 };
 
 public fn take(@Odd3 -> @Nat)
   requires(true)
@@ -322,12 +333,15 @@ public fn take(@Odd3 -> @Nat)
 """
 
 
+ODD3_INT = ODD3.replace('string_length("abcde")', "5")
+
+
 class TestRefinementPredicateIsObligated:
     """Item 2: a predicate is discharged once, at its declaration."""
 
     def test_ill_formed_predicate_is_one_error_at_the_declaration(self) -> None:
         v = _verify(ODD3)
-        sub = _at(ODD3, "@Nat.0 - 5")
+        sub = _at(ODD3, "@Nat.0 - string_length")
         assert _records(v, "nat_sub", sub) == ["violated/E502"]
         # Once: neither guard position repeats it.
         assert [o for o in v.obligations if o.kind == "nat_sub"] == [
@@ -344,7 +358,8 @@ class TestRefinementPredicateIsObligated:
 
     def test_an_if_in_the_predicate_discharges_it(self) -> None:
         v = _verify(ODD3_GUARDED)
-        assert _records(v, "nat_sub", _at(ODD3_GUARDED, "@Nat.0 - 5")) == [
+        assert _records(v, "nat_sub", _at(ODD3_GUARDED,
+                                          "@Nat.0 - string_length")) == [
             "verified"]
         assert v.ok, v.errors
         assert _run(ODD3_GUARDED, "mk", [3]).value == 3
@@ -353,9 +368,20 @@ class TestRefinementPredicateIsObligated:
 
     def test_an_or_is_not_a_guard(self) -> None:
         v = _verify(ODD3_OR_FIRST)
-        assert _records(v, "nat_sub", _at(ODD3_OR_FIRST, "@Nat.0 - 5")) == [
+        assert _records(v, "nat_sub", _at(ODD3_OR_FIRST,
+                                          "@Nat.0 - string_length")) == [
             "violated/E502"]
         assert _run(ODD3_OR_FIRST, "take", [3]).trap_kind is not None
+
+    def test_the_issues_literal_subtrahend_is_an_int_subtraction(self) -> None:
+        """`@Nat.0 - 5` is a `Nat - Int`: no underflow check, so the
+        issue's own predicate verifies clean and admits 3 at both guards."""
+        v = _verify(ODD3_INT)
+        assert [o for o in v.obligations if o.kind == "nat_sub"] == []
+        assert v.ok, v.errors
+        assert _run(ODD3_INT, "mk", [3]).value == 3
+        assert _run(ODD3_INT, "take", [3]).value == 3
+        assert _run(ODD3_INT, "take", [9]).value == 9
 
 
 # A call in a predicate, with two uses of the type: its precondition is the
@@ -753,12 +779,13 @@ def test_a_violated_call_before_a_tail_call_is_one_record_at_the_call(
 # read (an effect operation's result).  Read against the enclosing env, the
 # argument was the PARAMETER, whose path proves the measure's subtraction —
 # a Tier-1 claim about a value the program never passes.  The compiled
-# measure is evaluated on the value `get` returns, and traps on 0.
+# measure is evaluated on the value `get` returns, and traps on 0.  The
+# subtrahend is a `@Nat`, so the measure's subtraction is a `@Nat` one.
 OPAQUE_TAIL_ARGUMENT = """\
 public fn f(@Nat -> @Nat)
   requires(@Nat.0 >= 1)
   ensures(true)
-  decreases(@Nat.0 - 1)
+  decreases(@Nat.0 - string_length("a"))
   effects(<State<Nat>>)
 {
   if @Nat.0 <= 1 then {
@@ -798,7 +825,9 @@ def test_an_opaque_tail_argument_leaves_the_measure_to_its_guard() -> None:
 # and a constructor pattern has nothing to project: the scrutinee translates
 # and the pattern does not bind.  Read against the enclosing env, the arm's
 # `@Nat.0` was the PARAMETER, the termination proof held over it, and the
-# arm's own subtraction was proved from the parameter's path.
+# arm's own subtraction was proved from the parameter's path.  The
+# subtraction is a `Nat - Int`, so what the arm's binder decides is its
+# narrowing into `f`'s `@Nat` parameter.
 ARM_OF_AN_UNSORTED_ADT = """\
 private data Box {
   MkBox(Map<Int, Int>, Nat)
@@ -839,8 +868,8 @@ public fn main0(@Unit -> @Nat)
 
 def test_an_arm_of_an_unsorted_adt_reads_its_own_binders() -> None:
     v = _verify(ARM_OF_AN_UNSORTED_ADT)
-    assert _records(v, "nat_sub", _at(ARM_OF_AN_UNSORTED_ADT,
-                                      "@Nat.0 - 1)")) == ["tier3"]
+    assert _records(v, "nat_bind", _at(ARM_OF_AN_UNSORTED_ADT,
+                                       "@Nat.0 - 1)")) == ["tier3"]
     ran = _run(ARM_OF_AN_UNSORTED_ADT, "main0", [])
     assert ran.trap_kind is not None, ran
     assert "failed to decrease" not in ran.trap_message, ran
@@ -1325,14 +1354,14 @@ type Pos = { @Int | @Int.0 > 0 };
 
 type OverPos = { @Pos | 10 / @Pos.0 > 0 };
 
-type Unused = { @Nat | @Nat.0 - 1 >= 0 };
+type Unused = { @Nat | @Nat.0 - string_length("a") >= 0 };
 
 private data Box {
   MkBox({ @Int | 10 / @Int.0 > 0 })
 }
 
 effect Log {
-  op log({ @Nat | @Nat.0 - 2 >= 0 } -> Unit);
+  op log({ @Nat | @Nat.0 - string_length("ab") >= 0 } -> Unit);
 }
 
 public fn f(@Int -> @Int)
@@ -1370,12 +1399,13 @@ class TestDeclarationPositions:
     def test_a_type_used_nowhere_is_checked(self) -> None:
         v = _verify(DECLARATION_POSITIONS)
         assert _records(v, "nat_sub",
-                        _at(DECLARATION_POSITIONS, "@Nat.0 - 1")) == [
+                        _at(DECLARATION_POSITIONS,
+                            '@Nat.0 - string_length("a")')) == [
             "violated/E502"]
 
     @pytest.mark.parametrize(("kind", "needle", "code"), [
         ("div_zero", "10 / @Int.0", "E526"),        # a constructor field
-        ("nat_sub", "@Nat.0 - 2", "E502"),          # an operation's formal
+        ("nat_sub", '@Nat.0 - string_length("ab")', "E502"),  # an op's formal
         ("div_zero", "100 / @Int.0", "E526"),       # a `let` annotation
     ])
     def test_a_refinement_written_inline(
@@ -1506,8 +1536,10 @@ class Op:
 
 
 _OPS: tuple[Op, ...] = (
-    Op("nat_sub", "nat_sub", "E502", "Nat", "{v} - 5", "{v} >= 5",
-       "7", "3", 7, 3, "violated"),
+    # The subtrahend is a `@Nat`: `{v} - 5` is a `Nat - Int`, an `@Int`
+    # subtraction, which cannot underflow.
+    Op("nat_sub", "nat_sub", "E502", "Nat", '{v} - string_length("abcde")',
+       "{v} >= 5", "7", "3", 7, 3, "violated"),
     Op("div", "div_zero", "E526", "Int", "10 / {v}", "{v} != 0",
        "2", "0", 2, 0, "violated"),
     Op("mod", "div_zero", "E526", "Int", "10 % {v}", "{v} != 0",
@@ -3466,9 +3498,6 @@ _ROOTS: dict[tuple[str, str, str], str] = {
     ("contracts.py", "_compile_preconditions", "contract.expr"): "requires",
     ("contracts.py", "_compile_postconditions", "ensures.expr"): "ensures",
     ("contracts.py", "_dec_translate_measure", "expr"): "measure",
-    # The range check where the chain guard is declined (#1222).
-    ("contracts.py", "_dec_bound_checks_only", "contract.exprs[k]"):
-        "measure at entry",
     ("contracts.py", "_emit_refinement_check", "predicate"):
         "refinement predicate",
 }
@@ -3609,7 +3638,6 @@ def _records_violated(node: object) -> bool:
 _VIOLATED_SITES = {
     "_verify_fn": "no placeholder: the function's own `ensures` and "
                   "refined return, recorded before #1480",
-    "_check_decreases_bound": "two-check",
     "_record_call_obligations": "gate: SmtContext._rests_on_unknown",
     "_check_state_decl_divergence": "no placeholder: a handler's state",
     "_check_subtraction_obligation": "gate",
@@ -3620,8 +3648,6 @@ _VIOLATED_SITES = {
     "_check_float_to_int_domain_obligation": "no placeholder: a constant",
     "_check_nat_binding_obligation": "gate",
     "_check_nat_binding_obligation_term": "gate",
-    "_check_int_widening_obligation": "two-check",
-    "_check_int_widening_obligation_term": "two-check",
     "_check_refined_binding_obligation": "gate",
     "_check_nested_refinement_obligation": "gate",
     "_reject_or_excuse_concrete_violation": "no placeholder: a literal",
@@ -3681,12 +3707,14 @@ def test_every_assumption_is_stated_over_the_projections() -> None:
 # The char-code measure at the i64 bound the runtime compares in
 # ---------------------------------------------------------------------
 #
-# `_MEASURE_CHAR_CODE`'s measure is a `@Nat` sum, and the termination guard
-# compares a `@Nat` measure in signed i64 (`decreases_bound`, E536): a sum
-# just below i64.MAX runs, one just above it traps on entry.  Neither side is
-# provable of an unconstrained `@Nat`, so the bound is Tier 3.  The state is
-# `None`, so the function returns after the entry check rather than counting
-# down from 2^63.
+# `_MEASURE_CHAR_CODE`'s measure is a `@Nat` sum, which carries the i64
+# overflow obligation every sum does: a sum at i64.MAX runs, one past it
+# traps on entry as an overflow.  Neither side is provable of an
+# unconstrained `@Nat`, so the obligation is Tier 3.  (On the u64 `Nat` the
+# sum reached past i64.MAX, and a bound of its own, `decreases_bound`, E536,
+# held the measure to the range the termination guard compares in.)  The
+# state is `None`, so the function returns after the entry check rather than
+# counting down from 2^63.
 
 _MEASURE_CHAR_CODE_AT_THE_BOUND = _MEASURE_CHAR_CODE.split(
     "public fn main")[0] + """public fn main(@Nat -> @Nat)
@@ -3713,14 +3741,14 @@ _I64_MAX = 2**63 - 1
 def test_the_char_code_measure_at_the_i64_bound(nat: int, traps: bool) -> None:
     src = _MEASURE_CHAR_CODE_AT_THE_BOUND
     v = _verify(src)
-    assert _records(v, "decreases_bound", _at(src, "@Nat.0 + string_char_code")
+    assert _records(v, "int_overflow", _at(src, "@Nat.0 + string_char_code")
                     ) == ["tier3"], (
         [(o.kind, o.status, o.error_code, o.line, o.column)
          for o in v.obligations])
     assert v.ok, v.errors
     ran = _run(src, "main", [nat])
     if traps:
-        assert "outside the i64 range" in ran.trap_message, ran
+        assert ran.trap_kind == "overflow", ran
     else:
         assert ran.value == 0, ran
 

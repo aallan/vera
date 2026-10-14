@@ -1,12 +1,12 @@
 """An integer literal takes its type from its context (#1541, #1565).
 
-Spec §4.2: integer literals are checked against the type their context
-expects.  When a generic call infers its type arguments, that context is the
-call's other arguments (a closure's declared parameter types, a slot, a
-call result) and the type the call's result is expected at.  The checker
-used to type a literal, and a literal-only expression such as `0 - 3`,
-bottom-up as `@Nat`, and let that `Nat` fix the type argument before any of
-that context was read:
+Spec §4.2: every integer literal is an `Int`, checked against the type its
+context expects.  When a generic call infers its type arguments, that
+context is the call's other arguments (a closure's declared parameter
+types, a slot, a call result) and the type the call's result is expected
+at.  The checker used to type a literal, and a literal-only expression such
+as `0 - 3`, bottom-up as `@Nat`, and let that `Nat` fix the type argument
+before any of that context was read:
 
 * **#1541** — `0 - 3` is two non-negative literals, so `Nat - Nat`, so
   `id(0 - 3)` was `id` at `Nat`, `[0 - 1, 5]` an `Array<Nat>`, and
@@ -16,26 +16,24 @@ that context was read:
 * **#1565** — in SKILL.md's sum idiom `array_fold(xs, 0, fn(@Int, @Int ->
   @Int) ...)` the accumulator `0` bound `U = Nat` first, and the closure's
   declared `@Int` never displaced it, so the sum trapped once it went
-  negative.  Typing a literal-only expression by its value does not reach
-  this one: `0` IS a `Nat` by value.
+  negative.
 
-The rule the checker now follows:
+The rule the checker follows:
 
-1. a literal-only integer expression whose value is negative is `@Int`;
+1. every integer literal, and every literal-only expression, is an `@Int`;
 2. a type argument a literal would fix is fixed first by the call's other
-   arguments, then by the type its result is expected at, and only when
-   neither constrains it by the literal's own value (`Nat` when every such
-   literal is non-negative, `Int` otherwise).
+   arguments, then by the type its result is expected at, whatever the
+   literals' signs; when neither constrains it, it is `Int`.
 
 A program that is genuinely wrong stays refused: a negative literal whose
-context is `@Nat` is a narrowing, obligated and refused (E503) as before —
-#1541's `get_nat(id(W(0 - 3)))` among them, and a tuple destructure's and a
-refinement of `Nat`'s context too.
+context is `@Nat` is a narrowing, obligated and refused (E503) — #1541's
+`get_nat(id(W(0 - 3)))` among them, a tuple destructure's and a refinement
+of `Nat`'s context too, and a negative literal beside a non-negative one.
 
-With `0 - 3` an `@Int`, `@Nat.0 + (0 - 3)` is a `Nat + Int` — an `@Int`
-operation on the `@Nat`'s bits (PR #1583 review, #1588).  The last blocks
-hold every `@Nat` such an operation reads to its widening: computed in
-range, trapping above `i64.MAX`, obligated and guarded at one site.
+With `0 - 3` an `@Int`, `@Nat.0 + (0 - 3)` is a `Nat + Int`: an `@Int`
+operation on the value the `@Nat` holds (PR #1583 review, #1588).  The last
+blocks hold every such operation to its value over the integers, or to its
+overflow trap, at the top of the `@Nat` range.
 """
 
 from __future__ import annotations
@@ -51,7 +49,7 @@ from tests import pipeline
 # A generated class instrument (tests/matrix_sample.py): a pull request runs a
 # sample of its parametrised cells, and all of them when it changes this file or
 # a module that decides its class, here the checker's typing of a literal from
-# its context, and the widening of a `Nat` an `Int` operation reads.
+# its context, and the narrowing of a literal into a `Nat`.
 pytestmark = pytest.mark.matrix(
     decides=[
         "vera/checker/resolution.py",
@@ -110,28 +108,24 @@ public fn f(@{param} -> @{ret})
 
 
 # ---------------------------------------------------------------------
-# Rule 1: a literal-only expression whose value is negative is `Int`;
-# otherwise its operators type it.  Read from the
-# checker's `expr_types` table, so the type is the one synthesized and not
-# a consequence observed downstream.
+# Every integer literal is an `Int`, and so is every literal-only
+# expression, whatever its value: the sign of a literal never decides a type
+# (spec §4.2).  Read from the checker's `expr_types` table, so the type is
+# the one synthesized and not a consequence observed downstream.
 # ---------------------------------------------------------------------
 
-_BY_VALUE = {
-    "0 - 3": "Int",
-    "2 - 5": "Int",
-    "(0 - 3) + 1": "Int",
-    "(1 - 4) * 2": "Int",
-    "(0 - 7) / 2": "Int",
-    "(0 - 7) % 2": "Int",
-    "5 - 2": "Nat",
-    "(0 - 3) - (0 - 5)": "Int",
-    "3 * 4": "Nat",
-    "7 / 0": "Nat",
-}
+#: On the u64 `Nat` a non-negative literal was a `Nat` and a literal-only
+#: expression was typed by its value, so `5 - 2`, `3 * 4`, `7 / 0` and `5`
+#: were `Nat`.
+_LITERAL_ONLY = (
+    "0", "5", "9223372036854775807",
+    "0 - 3", "2 - 5", "(0 - 3) + 1", "(1 - 4) * 2", "(0 - 7) / 2",
+    "(0 - 7) % 2", "5 - 2", "(0 - 3) - (0 - 5)", "3 * 4", "7 / 0",
+)
 
 
-class TestLiteralOnlyTypedByValue:
-    @pytest.mark.parametrize("expr", sorted(_BY_VALUE))
+class TestALiteralOnlyExpressionIsInt:
+    @pytest.mark.parametrize("expr", _LITERAL_ONLY)
     def test_synthesized_type(self, expr: str) -> None:
         # Written as a tuple component, a position with no type of its own
         # (`Tuple(...)` synthesizes each component with no expected type).
@@ -142,7 +136,7 @@ class TestLiteralOnlyTypedByValue:
             f"  let Tuple<@Int, @Int> = Tuple(0, {expr});") + 1
         col = len("  let Tuple<@Int, @Int> = Tuple(0, ") + 1
         key = (line, col, line, col + len(expr))
-        assert arts.expr_types[key] == _BY_VALUE[expr]
+        assert arts.expr_types[key] == "Int"
 
 
 # ---------------------------------------------------------------------
@@ -234,8 +228,8 @@ class TestIssue1541:
         assert _run(source, "f", [0]) == -3
 
     def test_nat_context_still_refuses_a_negative_literal(self) -> None:
-        # The context wins over the literal's value in both directions: an
-        # expected `@Nat` makes `id` a `Nat` function, and -3 cannot be one.
+        # The context decides the type argument: an expected `@Nat` makes
+        # `id` a `Nat` function, and -3 cannot be one.
         source = _ID + _fn("let @Nat = id(0 - 3);\n  @Nat.0", ret="Nat")
         assert "E503" in _codes(source)
 
@@ -595,15 +589,12 @@ class TestNatContextMatrix:
         ids=[c[0] for c in _NAT_CELLS])
     def test_context_decides(self, name: str, source: str,
                              value: int) -> None:
-        if value < 0 and name.endswith("-tuple_second_let"):
-            # `second(Tuple(1, 2), Tuple(5, L))` holds the negative literal
-            # beside the 2 at one type argument, so the context does not
-            # fix it (spec §4.2): the call may return either.  It returns
-            # the literal, which the destructure's `@Nat` guard stops.
-            assert _codes(source) == [], name
-            assert _run(source, "f", [0]) == (
-                "trap: Negative value bound into a @Nat slot"), name
-        elif value < 0:
+        # The expected type fixes the type argument whatever the
+        # literals' signs (spec §4.2), so `second(Tuple(1, 2), Tuple(5, L))`
+        # under a `Tuple<@Nat, @Nat>` destructure is `second` at
+        # `Tuple<Nat, Nat>`, and a negative `L` is refused as in every other
+        # context.
+        if value < 0:
             # A `Small` sibling meets the literal at the refinement itself,
             # whose predicate refutes it first (E505).
             refusals = ({"E503", "E505"} if name.endswith("-small_sibling")
@@ -846,6 +837,16 @@ def _dropped_at_compile(name: str) -> bool:
 
 
 class TestANegativeLiteralBesideTheValueRead:
+    """A negative literal beside the non-negative value a call returns.
+
+    The type the call's result is expected at fixes the type argument its
+    literals leave open, whatever their signs (spec §4.2 rule 2): in a
+    `@Nat` context the call is instantiated at `Nat` and the negative
+    literal is a refuted narrowing (E503), though the value read is 5; in an
+    `@Int` context it is instantiated at `Int` and returns 5.  Before
+    v0.2.3 a scalar `@Nat` context did not fix it, and every cell verified
+    and returned 5."""
+
     def test_the_matrix_generates_every_cell(self) -> None:
         assert len(_BESIDE_CELLS) == len(_BESIDE_LITERALS) * (
             len(_BESIDE_SCALARS) * len(_BESIDE_SCALAR_CONSUMERS)
@@ -855,8 +856,11 @@ class TestANegativeLiteralBesideTheValueRead:
 
     @pytest.mark.parametrize(("name", "source"), _BESIDE_CELLS,
                              ids=[c[0] for c in _BESIDE_CELLS])
-    def test_verifies_and_returns_the_value_read(
+    def test_the_context_fixes_the_type_argument(
             self, name: str, source: str) -> None:
+        if name.split("-")[2] != "int_let":
+            assert _codes(source) == ["E503"], name
+            return
         assert _codes(source) == [], name
         if not _dropped_at_compile(name):
             assert _run(source, "f", [0]) == 5, name
@@ -968,38 +972,48 @@ class TestAMixedCollectionIsRefused:
     @pytest.mark.parametrize("literal", ["-3", "0 - 3"])
     def test_a_collection_without_the_negative_is_refused_too(
             self, body: str, literal: str) -> None:
-        """The accepted trade-off (spec §4.2, #1605): the value is `[5]`
-        and `main` ran it, but a `Nat` collection context decides the
-        type argument whether or not the call returns the negative, since
-        nothing checks an `Array<Int>` bound into an `Array<Nat>` element
-        by element (#1542).  Refused, it fails closed."""
+        """The expected type fixes the type argument whatever the
+        literals' signs (spec §4.2, #1605): the value is `[5]`, but the
+        call is at `Nat`, so the negative literal is a narrowing into
+        `@Nat` and is refused."""
         source = _NAT_PRELUDE + _fn(body.replace("{L}", literal), ret="Nat")
         assert "E503" in _codes(source), body
 
     @pytest.mark.parametrize("literal", ["-3", "0 - 3"])
-    def test_an_element_read_through_nested_indexes_is_no_collection(
+    def test_an_element_read_through_nested_indexes_is_refused_too(
             self, literal: str) -> None:
-        """Each index reads one element, so neither array level it reads
-        is a collection of the value: the 5 read from `[[L, 5]]` at
-        `[0][1]` verifies and returns 5, as on `main`.  Read at `[0]`,
-        the whole inner array is the value, and is refused."""
+        """The expected `Nat` reaches the type argument through each index
+        and fixes it whatever the literals' signs (spec §4.2), so the 5
+        read from `[[L, 5]]` at `[0][1]` is refused, as the whole inner
+        array read at `[0]` is.  On the u64 `Nat` the scalar read left the
+        type argument to its literals, and returned 5."""
         read = _NAT_PRELUDE + _fn(
             f"let @Nat = array_reverse([[{literal}, 5]])[0][1];\n"
             "  nat_to_int(@Nat.0)")
-        assert _codes(read) == []
-        assert _run(read, "f", [0]) == 5
+        assert "E503" in _codes(read)
         whole = _NAT_PRELUDE + _fn(
             f"let @Array<Nat> = array_reverse([[{literal}, 5]])[0];\n"
             "  nat_to_int(array_length(@Array<Nat>.0))")
         assert "E503" in _codes(whole)
 
+    def test_a_non_negative_element_read_through_nested_indexes_runs(
+            self) -> None:
+        """The refusal's nearest accepted neighbour: the same read with
+        every literal non-negative verifies and returns the element."""
+        read = _NAT_PRELUDE + _fn(
+            "let @Nat = array_reverse([[3, 5]])[0][1];\n"
+            "  nat_to_int(@Nat.0)")
+        assert _codes(read) == []
+        assert _run(read, "f", [0]) == 5
 
-# The accepted trade-off at a scalar position (PR #1583 review): a negative
-# literal beside a non-negative one, where the call does return the
-# negative.  It cannot be told from a call that returns the other, so it is
-# not refused; it verifies clean, and the run traps on the `@Nat` guard (or
-# a callee's refinement at entry) before the -3 is observed.  Where the
-# `@Nat` is a collection's element the same call is refused (E503).
+
+# A negative literal beside a non-negative one at a scalar position (PR
+# #1583 review), where the call does return the negative.  The expected
+# `Nat` fixes the type argument whatever the literals' signs (spec §4.2),
+# so the negative literal is a narrowing into `@Nat` and is refused (E503),
+# as at a collection's element.  On the u64 `Nat` a scalar position left the
+# type argument to its literals: the call verified clean, and the run
+# trapped on the `@Nat` guard or a callee's refinement at entry.
 _TRADE_PRELUDE = _BESIDE_PRELUDE + """
 private fn at1(@Array<Nat> -> @Nat)
   requires(array_length(@Array<Nat>.0) > 1)
@@ -1094,50 +1108,49 @@ private fn nat_lt(@Nat -> @Bool)
 }
 """
 
-# name -> (body over the literal L, return type, ensures, refused): the
-# last is whether the `@Nat` the negative reaches is a collection's element.
+# name -> (body over the literal L, return type, ensures, refused).
 _TRADE_CELLS_SPEC = {
     "let": ("let @Nat = second(5, {L});\n  nat_to_int(@Nat.0)", "Int",
-            "true", False),
+            "true", True),
     "let_pos": ("let @Nat = second(5, {L});\n  nat_pos(@Nat.0)", "Int",
-                "true", False),
-    "ret_nat": ("second(5, {L})", "Nat", "@Nat.result >= 0", False),
-    "ret_nat_pin": ("second(5, {L})", "Nat", "@Nat.result == 5", False),
-    "arg": ("nat_to_int(nat_of(second(5, {L})))", "Int", "true", False),
-    "arg_pos": ("nat_pos(second(5, {L}))", "Int", "true", False),
+                "true", True),
+    "ret_nat": ("second(5, {L})", "Nat", "@Nat.result >= 0", True),
+    "ret_nat_pin": ("second(5, {L})", "Nat", "@Nat.result == 5", True),
+    "arg": ("nat_to_int(nat_of(second(5, {L})))", "Int", "true", True),
+    "arg_pos": ("nat_pos(second(5, {L}))", "Int", "true", True),
     "arg_lt": ("if nat_lt(second(5, {L})) then { 1 } else { 0 }", "Int",
-               "true", False),
+               "true", True),
     "destr": ("let Tuple<@Nat, @Nat> = second(Tuple(1, 2), Tuple(5, {L}));"
-              "\n  nat_to_int(@Nat.0)", "Int", "true", False),
+              "\n  nat_to_int(@Nat.0)", "Int", "true", True),
     "destr_pos": ("let Tuple<@Nat, @Nat> = second(Tuple(1, 2), "
-                  "Tuple(5, {L}));\n  nat_pos(@Nat.0)", "Int", "true", False),
+                  "Tuple(5, {L}));\n  nat_pos(@Nat.0)", "Int", "true", True),
     "field": ("let Tuple<@Nat, @Nat> = Tuple(1, second(5, {L}));\n"
-              "  nat_to_int(@Nat.0)", "Int", "true", False),
+              "  nat_to_int(@Nat.0)", "Int", "true", True),
     "idx": ("let @Nat = array_reverse([{L}, 5])[1];\n  nat_to_int(@Nat.0)",
-            "Int", "true", False),
-    "idx_pos": ("nat_pos(array_reverse([{L}, 5])[1])", "Int", "true", False),
+            "Int", "true", True),
+    "idx_pos": ("nat_pos(array_reverse([{L}, 5])[1])", "Int", "true", True),
     "arrelem": ("let @Array<Nat> = [second(5, {L})];\n"
-                "  nat_to_int(@Array<Nat>.0[0])", "Int", "true", False),
+                "  nat_to_int(@Array<Nat>.0[0])", "Int", "true", True),
     "pipe": ("let @Nat = (5) |> second({L});\n  nat_to_int(@Nat.0)", "Int",
-             "true", False),
+             "true", True),
     "if": ("let @Nat = if @Int.0 == 1000 then { 1 } else "
-           "{ second(5, {L}) };\n  nat_to_int(@Nat.0)", "Int", "true", False),
+           "{ second(5, {L}) };\n  nat_to_int(@Nat.0)", "Int", "true", True),
     "match": ("let @Nat = match @Int.0 { 1000 -> 1, _ -> second(5, {L}) };"
-              "\n  nat_to_int(@Nat.0)", "Int", "true", False),
+              "\n  nat_to_int(@Nat.0)", "Int", "true", True),
     "block": ("let @Nat = { second(5, {L}) };\n  nat_to_int(@Nat.0)", "Int",
-              "true", False),
+              "true", True),
     "last": ("let @Nat = last_of([5, {L}], 1);\n  nat_to_int(@Nat.0)", "Int",
-             "true", False),
+             "true", True),
     "tup_callee": ("let @Tuple<Nat, Nat> = second(Tuple(1, 5), "
                    "Tuple(1, {L}));\n  tsnd_int(@Tuple<Nat, Nat>.0)", "Int",
-                   "true", False),
+                   "true", True),
     "tup_callee_nat": ("tsnd(second(Tuple(1, 5), Tuple(1, {L})))", "Nat",
-                       "true", False),
+                       "true", True),
     "opt_callee": ("let @Option<Nat> = second(Some(5), Some({L}));\n"
-                   "  opt_get(@Option<Nat>.0)", "Int", "true", False),
-    "opt_arg": ("opt_get(second(Some(5), Some({L})))", "Int", "true", False),
+                   "  opt_get(@Option<Nat>.0)", "Int", "true", True),
+    "opt_arg": ("opt_get(second(Some(5), Some({L})))", "Int", "true", True),
     "box_callee": ("let @Box<Nat> = second(MkBox(5), MkBox({L}));\n"
-                   "  box_get(@Box<Nat>.0)", "Int", "true", False),
+                   "  box_get(@Box<Nat>.0)", "Int", "true", True),
     "arr_at1": ("let @Array<Nat> = array_reverse([{L}, 5]);\n"
                 "  nat_to_int(at1(@Array<Nat>.0))", "Int", "true", True),
     "arr_at1_ret": ("at1(array_reverse([{L}, 5]))", "Nat", "true", True),
@@ -1160,10 +1173,11 @@ _TRADE_CELLS_SPEC = {
                 "Int", "true", True),
     "arr_opt": ("let @Array<Option<Nat>> = array_reverse([Some({L}), "
                 "Some(5)]);\n  opt_get(@Array<Option<Nat>>.0[1])", "Int",
-                # `Some(-3)` is built at its own `Option<Int>`.  An `Option`
-                # pattern's `@Nat` bind guards it, as here; a read through
-                # `option_unwrap_or` binds nothing and returns the -3, as on
-                # `main` (#1542).
+                # `Some(-3)` is built at its own `Option<Int>`, so no
+                # expected type reaches the literal.  An `Option` pattern's
+                # `@Nat` bind guards it, as here; a read through
+                # `option_unwrap_or` binds nothing and returns the -3
+                # (#1542).
                 "true", False),
     "tup_arr": ("let @Tuple<Array<Nat>, Nat> = Tuple(array_reverse([{L}, 5]),"
                 " 1);\n  match @Tuple<Array<Nat>, Nat>.0 { Tuple(@Array<Nat>,"
@@ -1182,7 +1196,7 @@ _TRADE_CELLS = [
 ]
 
 
-class TestTheScalarTradeOffFailsClosed:
+class TestANegativeLiteralBesideANonNegativeOneIsRefused:
     @pytest.mark.parametrize(("name", "source", "refused"), _TRADE_CELLS,
                              ids=[c[0] for c in _TRADE_CELLS])
     def test_refused_or_trapped(self, name: str, source: str,
@@ -1249,15 +1263,15 @@ class TestRigidTypeParameter:
         assert [d for d in diags if d.severity == "error"], name
 
 
-# A literal-only expression the checker types `Int` although its value is
-# not negative (a negation, an `Int` operand) falls back to `Int` when
-# nothing constrains it, as it did before #1541 (PR #1583 review): its own
-# type is its type by value.
-_INT_TYPED_NONNEGATIVE = ("-0", "(0 - 3) + 4", "-(0 - 3)")
+# A type argument nothing constrains is `Int`, whatever the value of the
+# literal that would fix it (spec §4.2; PR #1583 review): a negation, an
+# `Int` operand, and a non-negative literal, which on the u64 `Nat` made
+# `id(5)` and `id(5 - 2)` the `Nat` instantiation.
+_UNCONSTRAINED = ("-0", "(0 - 3) + 4", "-(0 - 3)", "5", "5 - 2", "0")
 
 
-class TestIntTypedNonNegativeFallsBackToInt:
-    @pytest.mark.parametrize("expr", _INT_TYPED_NONNEGATIVE)
+class TestAnUnconstrainedTypeArgumentIsInt:
+    @pytest.mark.parametrize("expr", _UNCONSTRAINED)
     def test_instantiation(self, expr: str) -> None:
         source = _ID + _fn(f"let Tuple<@Int, @Int> = Tuple(0, id({expr}));"
                            "\n  @Int.0")
@@ -1273,117 +1287,21 @@ class TestIntTypedNonNegativeFallsBackToInt:
 # ---------------------------------------------------------------------
 # A genuine `@Nat` operand beside an `@Int` one (PR #1583 review).
 #
-# With `0 - 3` an `Int`, `@Nat.0 + (0 - 3)` is a `Nat + Int`: the operation
-# runs at the signed width, on the `@Nat`'s bits.  A `@Nat` above
-# `i64.MAX` reads there as a negative `@Int`, and the result came back
-# wrong and silent — against a Tier-1 `ensures` too — where `main` had
-# read `0 - 3` as a `Nat` and trapped.  `@Nat.0 + @Int.0` did the same on
-# every revision (#1588).  The `@Nat` operand is widened into the `@Int`
-# operation, so it carries that widening's obligation and its guard.
+# `@Nat.0 + (0 - 3)` is a `Nat + Int`: an `@Int` operation on the value the
+# `@Nat` holds.  A `@Nat` holds `0 .. 2^63 - 1`, the non-negative half of
+# the operation's own range, so the operand is read as the value it is and
+# nothing is checked at it: the operation computes its value over the
+# integers, or traps as an overflow where that value leaves the i64 range;
+# a result narrowed into `@Nat` is checked there.  On the u64 `Nat` a
+# `@Nat` above `i64.MAX` was read as a negative `@Int` (#1588), and then
+# guarded at every such operand; no `@Nat` holds one now (#1504).
 #
 # Every operator, both operand orders, each way a `@Nat` reaches the
 # operation (a slot, a call's result, a constructor field, an array
 # element), beside a negative literal and beside an `@Int` slot, with the
-# result read at `@Int` and — for arithmetic — narrowed into `@Nat`.  At
-# `@Nat.0 = 5` each cell computes its value; above `i64.MAX` it traps on
-# the widening and returns nothing.
+# result read at `@Int` and — for arithmetic — narrowed into `@Nat`, at
+# `@Nat.0 = 5` and at the top of the range, `@Nat.0 = i64.MAX`.
 # ---------------------------------------------------------------------
-
-_U64_MAX = 2 ** 64 - 1
-_BIG_NATS = (2 ** 63, 2 ** 63 + 5, _U64_MAX)
-_WIDEN_TRAP = "@Nat value above i64.MAX widened into an @Int slot"
-
-_MIXED_PRELUDE = """private data NatBox { NB(Nat) }
-
-private fn nat_of(@Nat -> @Nat)
-  requires(true)
-  ensures(@Nat.result == @Nat.0)
-  effects(pure)
-{
-  @Nat.0
-}
-"""
-
-#: How the `@Nat` operand is read.  The field form binds the constructor's
-#: `@Nat` field as the arm's `@Nat.0`, around the whole body; the element
-#: form indexes an `Array<Nat>` bound first.
-_NAT_OPERANDS = {
-    "slot": "@Nat.0",
-    "call": "nat_of(@Nat.0)",
-    "field": "@Nat.0",
-    "element": "@Array<Nat>.0[0]",
-}
-
-#: The `@Int` sibling, and the value it holds (the slot is passed -3).
-#: Neither operand is zero (`requires`), so a division is not refused for
-#: its divisor.
-_INT_OPERANDS = {"literal": "(0 - 3)", "slot": "@Int.0"}
-
-_MIXED_ARITH = {"+": int.__add__, "-": int.__sub__, "*": int.__mul__,
-                "/": lambda a, b: _trunc_div(a, b),
-                "%": lambda a, b: a - b * _trunc_div(a, b)}
-_MIXED_CMP = {"<": int.__lt__, "<=": int.__le__, ">": int.__gt__,
-              ">=": int.__ge__, "==": int.__eq__, "!=": int.__ne__}
-
-#: A constructor pattern binding a `@Nat` above `i64.MAX` traps as a
-#: negative value on every revision, before the operation is reached
-#: (#1589).  The field form's run above `i64.MAX` is that trap; its
-#: widening is held to its site statically, as every cell's is.
-_FIELD_BIND_TRAP = "Negative value bound into a @Nat slot"
-
-
-def _trunc_div(a: int, b: int) -> int:
-    """`i64.div_s`: truncation toward zero."""
-    q = abs(a) // abs(b)
-    return q if (a >= 0) == (b >= 0) else -q
-
-
-def _mixed_cells() -> list[tuple[str, str, str, int | None, str]]:
-    """(id, source, result type, the value at `@Nat.0 = 5` or None where
-    the program must refuse it: a negative result narrowed into `@Nat`,
-    the operation's text).  An id is `order:op:source:sibling:result`."""
-    cells = []
-    for op, fn in {**_MIXED_ARITH, **_MIXED_CMP}.items():
-        for order in ("nat_left", "nat_right"):
-            for source, nat in _NAT_OPERANDS.items():
-                for sibling, int_text in _INT_OPERANDS.items():
-                    a, b = (5, -3) if order == "nat_left" else (-3, 5)
-                    left, right = ((nat, int_text) if order == "nat_left"
-                                   else (int_text, nat))
-                    expr = f"{left} {op} {right}"
-                    value = fn(a, b)
-                    results = (("Int", "Nat") if op in _MIXED_ARITH
-                               else ("Int",))
-                    for ret in results:
-                        if op in _MIXED_CMP:
-                            body = f"if {expr} then {{ 1 }} else {{ 0 }}"
-                            want: int | None = int(value)
-                        elif ret == "Int":
-                            body = f"let @Int = {expr};\n  @Int.0"
-                            want = value
-                        else:
-                            body = (f"let @Nat = {expr};\n"
-                                    "  nat_to_int(@Nat.0)")
-                            want = value if value >= 0 else None
-                        if source == "element":
-                            body = ("let @Array<Nat> = [@Nat.0];\n  "
-                                    + body)
-                        if source == "field":
-                            body = ("match NB(@Nat.0) {\n"
-                                    f"    NB(@Nat) -> {{\n  {body}\n  }}"
-                                    "\n  }")
-                        program = _MIXED_PRELUDE + (
-                            "public fn f(@Nat, @Int -> @Int)\n"
-                            "  requires(@Nat.0 != 0 && @Int.0 != 0)\n"
-                            "  ensures(true)\n"
-                            f"  effects(pure)\n{{\n  {body}\n}}\n")
-                        cells.append((
-                            f"{order}:{op}:{source}:{sibling}:{ret}",
-                            program, ret, want, expr))
-    return cells
-
-
-_MIXED_CELLS = _mixed_cells()
 
 
 def _compile(source: str):  # type: ignore[no-untyped-def]
@@ -1410,18 +1328,123 @@ def _run_many(source: str, fn: str,
     return out
 
 
-def _widening_sites(source: str) -> tuple[set, set]:
-    """The `nat_to_int_coerce` obligations' sites and the widening guards'
-    sites, as (line, column)."""
-    verified = pipeline.verify(source, past_check=True).result
-    claimed = {(o.line, o.column) for o in verified.obligations
-               if o.kind == "nat_to_int_coerce"}
-    guarded = {(c.line, c.column) for c in _compile(source).emitted_checks
-               if c.emitter == "wasm/operators.py:_emit_int_widen_guard"}
-    return claimed, guarded
+_I64_MIN, _I64_MAX = -(2 ** 63), 2 ** 63 - 1
+
+_MIXED_PRELUDE = """private data NatBox { NB(Nat) }
+
+private fn nat_of(@Nat -> @Nat)
+  requires(true)
+  ensures(@Nat.result == @Nat.0)
+  effects(pure)
+{
+  @Nat.0
+}
+"""
+
+#: How the `@Nat` operand is read.  The field form binds the constructor's
+#: `@Nat` field as the arm's `@Nat.0`, around the whole body; the element
+#: form indexes an `Array<Nat>` bound first.
+_NAT_OPERANDS = {
+    "slot": "@Nat.0",
+    "call": "nat_of(@Nat.0)",
+    "field": "@Nat.0",
+    "element": "@Array<Nat>.0[0]",
+}
+
+#: The `@Int` sibling; the slot is passed -3, the value the literal spells.
+#: Neither operand is zero (`requires`), so a division is not refused for
+#: its divisor.
+_INT_OPERANDS = {"literal": "(0 - 3)", "slot": "@Int.0"}
 
 
-class TestANatOperandBesideAnIntIsWidened:
+def _trunc_div(a: int, b: int) -> int:
+    """`i64.div_s`: truncation toward zero."""
+    q = abs(a) // abs(b)
+    return q if (a >= 0) == (b >= 0) else -q
+
+
+_MIXED_ARITH = {"+": int.__add__, "-": int.__sub__, "*": int.__mul__,
+                "/": _trunc_div,
+                "%": lambda a, b: a - b * _trunc_div(a, b)}
+_MIXED_CMP = {"<": int.__lt__, "<=": int.__le__, ">": int.__gt__,
+              ">=": int.__ge__, "==": int.__eq__, "!=": int.__ne__}
+
+#: The `@Nat` values each cell runs at: inside the range and at its top.
+_MIXED_NATS = (5, _I64_MAX)
+
+
+def _expected(value: int, ret: str) -> int | tuple[str, str]:
+    """The rule: the value over the integers where it lies in i64, else the
+    overflow trap; a negative value narrowed into `@Nat`, the narrowing's
+    trap."""
+    if not _I64_MIN <= value <= _I64_MAX:
+        return ("trap", "overflow")
+    if ret == "Nat" and value < 0:
+        return ("trap", "nat_guard")
+    return value
+
+
+def _mixed_cells() -> list[tuple[str, str, str, list[int | tuple[str, str]]]]:
+    """(id, source, result type, the outcome at each of `_MIXED_NATS`).  An
+    id is `order:op:source:sibling:result`."""
+    cells = []
+    for op, fn in {**_MIXED_ARITH, **_MIXED_CMP}.items():
+        for order in ("nat_left", "nat_right"):
+            for source, nat in _NAT_OPERANDS.items():
+                for sibling, int_text in _INT_OPERANDS.items():
+                    left, right = ((nat, int_text) if order == "nat_left"
+                                   else (int_text, nat))
+                    expr = f"{left} {op} {right}"
+                    results = (("Int", "Nat") if op in _MIXED_ARITH
+                               else ("Int",))
+                    for ret in results:
+                        wants: list[int | tuple[str, str]] = []
+                        for n in _MIXED_NATS:
+                            a, b = (n, -3) if order == "nat_left" else (-3, n)
+                            if op in _MIXED_CMP:
+                                wants.append(int(fn(a, b)))
+                            else:
+                                wants.append(_expected(fn(a, b), ret))
+                        if op in _MIXED_CMP:
+                            body = f"if {expr} then {{ 1 }} else {{ 0 }}"
+                        elif ret == "Int":
+                            body = f"let @Int = {expr};\n  @Int.0"
+                        else:
+                            body = (f"let @Nat = {expr};\n"
+                                    "  nat_to_int(@Nat.0)")
+                        if source == "element":
+                            body = ("let @Array<Nat> = [@Nat.0];\n  "
+                                    + body)
+                        if source == "field":
+                            body = ("match NB(@Nat.0) {\n"
+                                    f"    NB(@Nat) -> {{\n  {body}\n  }}"
+                                    "\n  }")
+                        program = _MIXED_PRELUDE + (
+                            "public fn f(@Nat, @Int -> @Int)\n"
+                            "  requires(@Nat.0 != 0 && @Int.0 != 0)\n"
+                            "  ensures(true)\n"
+                            f"  effects(pure)\n{{\n  {body}\n}}\n")
+                        cells.append((
+                            f"{order}:{op}:{source}:{sibling}:{ret}",
+                            program, ret, wants))
+    return cells
+
+
+_MIXED_CELLS = _mixed_cells()
+
+
+def _outcomes(source: str, fn: str,
+              args_list: list[list[int]]) -> list[int | tuple[str, str]]:
+    """The value each argument list returns, or ("trap", its kind)."""
+    result = _compile(source)
+    out: list[int | tuple[str, str]] = []
+    for args in args_list:
+        ran = pipeline.run(result, fn, args, capture_stderr=False)
+        out.append(ran.value if ran.trap is None else ("trap", ran.trap.kind))
+    return out
+
+
+class TestANatOperandBesideAnIntIsReadAsItIs:
     def test_the_matrix_covers_the_class(self) -> None:
         ids = [c[0].split(":") for c in _MIXED_CELLS]
         assert {i[1] for i in ids} == set(_MIXED_ARITH) | set(_MIXED_CMP)
@@ -1429,58 +1452,45 @@ class TestANatOperandBesideAnIntIsWidened:
         assert {i[2] for i in ids} == set(_NAT_OPERANDS)
         assert {i[3] for i in ids} == set(_INT_OPERANDS)
         assert {i[4] for i in ids} == {"Int", "Nat"}
+        # The top of the range reaches each outcome the rule names.
+        tops = {c[3][1] if isinstance(c[3][1], tuple) else "value"
+                for c in _MIXED_CELLS}
+        assert tops == {"value", ("trap", "overflow"), ("trap", "nat_guard")}
 
     @pytest.mark.parametrize(
-        ("name", "source", "ret", "want"), [c[:4] for c in _MIXED_CELLS],
+        ("name", "source", "ret", "wants"), _MIXED_CELLS,
         ids=[c[0] for c in _MIXED_CELLS])
-    def test_computes_in_range_and_traps_above_it(
+    def test_computes_its_value_or_traps_as_an_overflow(
             self, name: str, source: str, ret: str,
-            want: int | None) -> None:
+            wants: list[int | tuple[str, str]]) -> None:
         # A result narrowed into `@Nat` is refused (E503) where the
         # verifier cannot show it non-negative; nothing else is refused.
         codes = _codes(source)
         assert codes == [] or (ret == "Nat" and codes == ["E503"]), (
             name, codes)
-        runs = _run_many(source, "f", [[5, -3]]
-                         + [[big, -3] for big in _BIG_NATS])
-        if want is None:
-            assert str(runs[0]).startswith("trap:"), (name, runs)
-        else:
-            assert runs[0] == want, (name, runs)
-        trap = _FIELD_BIND_TRAP if ":field:" in name else _WIDEN_TRAP
-        for big, got in zip(_BIG_NATS, runs[1:]):
-            assert trap in str(got), (name, big, got)
-
-    @pytest.mark.parametrize(
-        ("name", "source", "expr"), [(c[0], c[1], c[4]) for c in _MIXED_CELLS],
-        ids=[c[0] for c in _MIXED_CELLS])
-    def test_the_claim_and_the_guard_share_a_site(
-            self, name: str, source: str, expr: str) -> None:
-        """The `@Nat` operand's widening is obligated and guarded at the
-        operand: the verifier's record and code generation's guard name
-        the same sites, and the operation's line holds one."""
-        claimed, guarded = _widening_sites(source)
-        line = next(i for i, ln in enumerate(source.splitlines(), 1)
-                    if expr in ln)
-        assert claimed == guarded, (name, claimed, guarded)
-        assert any(site[0] == line for site in claimed), (
-            name, line, claimed)
+        got = _outcomes(source, "f", [[n, -3] for n in _MIXED_NATS])
+        assert got == wants, (name, got)
 
 
-# The finding's own programs, with a Tier-1 `ensures`: the widening traps
-# before the postcondition could be reached with a reinterpreted value.
+# The finding's own programs, with a Tier-1 `ensures`: each is proved, and
+# at the top of the range it returns a value that meets it or traps as an
+# overflow, never a reinterpreted value.
 _MIXED_ENSURES = {
-    "nat_plus_literal": ("@Nat.0 + (0 - 1)", "@Int.result >= 0 - 1"),
-    "literal_times_nat": ("(0 - 1) * @Nat.0", "@Int.result <= 0"),
-    "nat_minus_literal": ("@Nat.0 - (0 - 3)", "@Int.result >= 3"),
-    "nat_plus_int": ("@Nat.0 + @Int.0", "@Int.result >= @Int.0"),
+    "nat_plus_literal": ("@Nat.0 + (0 - 1)", "@Int.result >= 0 - 1",
+                         lambda n, i: n - 1),
+    "literal_times_nat": ("(0 - 1) * @Nat.0", "@Int.result <= 0",
+                          lambda n, i: -n),
+    "nat_minus_literal": ("@Nat.0 - (0 - 3)", "@Int.result >= 3",
+                          lambda n, i: n + 3),
+    "nat_plus_int": ("@Nat.0 + @Int.0", "@Int.result >= @Int.0",
+                     lambda n, i: n + i),
 }
 
 
 class TestATierOneEnsuresOverAMixedOperation:
     @pytest.mark.parametrize("name", sorted(_MIXED_ENSURES))
     def test_proved_and_never_violated(self, name: str) -> None:
-        expr, post = _MIXED_ENSURES[name]
+        expr, post, value = _MIXED_ENSURES[name]
         source = ("public fn f(@Nat, @Int -> @Int)\n  requires(true)\n"
                   f"  ensures({post})\n  effects(pure)\n{{\n  {expr}\n}}\n")
         ast = parse_to_ast(source)
@@ -1495,11 +1505,10 @@ class TestATierOneEnsuresOverAMixedOperation:
         assert ("ensures", "verified") in {
             (o.kind, o.status) for o in result.obligations}, (
             name, result.obligations)
-        runs = _run_many(source, "f", [[5, -1]]
-                         + [[big, -1] for big in _BIG_NATS])
-        assert isinstance(runs[0], int), (name, runs)
-        for got in runs[1:]:
-            assert _WIDEN_TRAP in str(got), (name, got)
+        args = [[5, -1], [_I64_MAX, -1]]
+        got = _outcomes(source, "f", args)
+        assert got == [_expected(value(n, i), "Int") for n, i in args], (
+            name, got)
 
 
 # The `@Nat`-subtraction guard reads its operands as the verifier's

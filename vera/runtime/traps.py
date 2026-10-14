@@ -113,8 +113,6 @@ class WasmTrapError(RuntimeError):
           (shadow-stack overflow, a collector limit, a WASI host I/O
           failure, a compiler bug), never a check on a program value.
         * ``overflow`` — integer overflow trap.
-        * ``widen_guard`` — a ``@Nat`` above ``i64.MAX`` was widened into
-          an ``@Int`` slot, where it would reinterpret as negative (#1438).
         * ``nat_guard`` — a negative ``@Int`` was bound into a ``@Nat``
           slot and the narrowing guard caught it (#754).
         * ``nat_underflow`` — a ``@Nat`` subtraction would have gone

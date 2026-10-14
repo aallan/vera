@@ -211,10 +211,10 @@ _FIT = '"s"'
 #: `rigid_slot` is a slot of the generic body's own type parameter, which
 #: exists only where one is in scope.
 KINDS: dict[str, tuple[str, str]] = {
-    "literal": ("5", "Nat"),
+    "literal": ("5", "Int"),
     "slot": ("@Nat.0", "Nat"),
     "call": ('string_length("ab")', "Nat"),
-    "nested_literal": ("[5]", "Array<Nat>"),
+    "nested_literal": ("[5]", "Array<Int>"),
     "rigid_slot": ("@T.0", "T"),
 }
 
@@ -269,7 +269,7 @@ def test_repro_mixed_literal_is_refused_at_its_second_element() -> None:
     assert _e162(checked) == [_place(_ISSUE_MIXED, '["a", 5]', 6)]
     (diag,) = checked.errors
     assert diag.description == (
-        "Array literal element 1 has type Nat, but the literal's element "
+        "Array literal element 1 has type Int, but the literal's element "
         "type is String, the type of element 0.")
     assert diag.spec_ref == 'Chapter 4, Section 4.12.1 "Array Literals"'
     assert diag.rationale and diag.fix
@@ -281,7 +281,7 @@ def test_repro_literal_beside_a_rigid_type_variable_is_refused() -> None:
     assert _e162(checked) == [_place(_ISSUE_RIGID, "[@T.0, 0]", 7)]
     (diag,) = checked.errors
     assert diag.description == (
-        "Array literal element 1 has type Nat, but the literal's element "
+        "Array literal element 1 has type Int, but the literal's element "
         "type is T, the type of element 0.")
 
 
@@ -425,7 +425,7 @@ _ID = """private forall<T> fn id(@T -> @T)
 class _Kept:
     """A literal the fix must leave alone: the errors the check reports for
     it (none, or the ones another check owns), and the type the checker
-    gives it, as `main` gives it."""
+    gives it, in which an integer literal is an `Int` (spec §4.2)."""
 
     literal: str
     literal_type: str
@@ -438,10 +438,10 @@ class _Kept:
 KEPT: dict[str, _Kept] = {
     # An integer literal or slot beside a `Nat` or an `Int` slot.
     "nat_slot_then_literal": _Kept("[@Nat.0, 5]", "Array<Nat>"),
-    "literal_then_nat_slot": _Kept("[5, @Nat.0]", "Array<Nat>"),
+    "literal_then_nat_slot": _Kept("[5, @Nat.0]", "Array<Int>"),
     "int_slot_then_literal": _Kept("[@Int.0, 5]", "Array<Int>"),
-    "literal_then_int_slot": _Kept("[5, @Int.0]", "Array<Nat>"),
-    "literal_then_negative": _Kept("[1, -1]", "Array<Nat>"),
+    "literal_then_int_slot": _Kept("[5, @Int.0]", "Array<Int>"),
+    "literal_then_negative": _Kept("[1, -1]", "Array<Int>"),
     "negative_then_literal": _Kept("[-1, 1]", "Array<Int>"),
     "byte_slots": _Kept("[@Byte.0, @Byte.0]", "Array<Byte>"),
     # A refinement beside its base, either way round.
@@ -459,21 +459,21 @@ KEPT: dict[str, _Kept] = {
     # element fills a position an earlier one leaves open, the literal has
     # the type the two have together (#1668).
     "empty": _Kept("[]", "Array<?>"),
-    "empty_then_typed": _Kept("[[], [1]]", "Array<Array<Nat>>"),
-    "typed_then_empty": _Kept("[[1], []]", "Array<Array<Nat>>"),
+    "empty_then_typed": _Kept("[[], [1]]", "Array<Array<Int>>"),
+    "typed_then_empty": _Kept("[[1], []]", "Array<Array<Int>>"),
     # A type variable left unresolved by a constructor or a call.
-    "none_then_some": _Kept("[None, Some(1)]", "Array<Option<Nat>>"),
-    "some_then_none": _Kept("[Some(1), None]", "Array<Option<Nat>>"),
-    "ok_then_err": _Kept('[Ok(1), Err("e")]', "Array<Result<Nat, String>>"),
+    "none_then_some": _Kept("[None, Some(1)]", "Array<Option<Int>>"),
+    "some_then_none": _Kept("[Some(1), None]", "Array<Option<Int>>"),
+    "ok_then_err": _Kept('[Ok(1), Err("e")]', "Array<Result<Int, String>>"),
     # `map_new()`'s variables are mentioned by no parameter, so the call
     # marks them free and the later element fills them (#1668).
     "fresh_map_then_map": _Kept(
         '[map_new(), map_insert(map_new(), "k", 1)]',
-        "Array<Map<String, Nat>>"),
+        "Array<Map<String, Int>>"),
     "map_then_fresh_map": _Kept(
         '[map_insert(map_new(), "k", 1), map_new()]',
-        "Array<Map<String, Nat>>"),
-    "generic_call": _Kept("[id(1), 2]", "Array<Nat>", pre=_ID),
+        "Array<Map<String, Int>>"),
+    "generic_call": _Kept("[id(1), 2]", "Array<Int>", pre=_ID),
     # The rigid type variable beside itself, and in a constructor.
     "rigid_slots": _Kept("[@T.0, @T.0]", "Array<T>", params="@T",
                          generic=True),
@@ -523,14 +523,14 @@ def test_mutant_every_element_is_compared_not_only_the_second() -> None:
 
 
 def test_mutant_the_element_type_is_the_first_elements_not_the_last() -> None:
-    # Held to the LAST element's type, `Nat`, the three strings would each be
+    # Held to the LAST element's type, `Int`, the three strings would each be
     # refused and the `5` accepted.
     source, literal, offsets = _mixed_strings(3)
     checked = _checked(source)
     assert _e162(checked) == [_place(source, literal, offsets[3])]
     (diag,) = checked.errors
     assert diag.description.startswith(
-        "Array literal element 3 has type Nat, but the literal's element "
+        "Array literal element 3 has type Int, but the literal's element "
         "type is String")
 
 
@@ -562,5 +562,5 @@ def test_element_type_comes_from_the_first_typed_element() -> None:
     assert _e162(checked) == [_place(source, literal, offsets[2])]
     diag = checked.errors[1]
     assert diag.description == (
-        "Array literal element 2 has type Nat, but the literal's element "
+        "Array literal element 2 has type Int, but the literal's element "
         "type is String, the type of element 1.")

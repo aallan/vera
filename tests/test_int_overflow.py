@@ -93,12 +93,14 @@ public fn over(@Int -> @Int)
             d.error_code for d in result.diagnostics
         ]
 
-    def test_nat_overflow_obligation_violated_at_u64_ceiling(self) -> None:
-        # The @Nat (u64) ceiling variant of the E528 path.
+    def test_nat_overflow_obligation_violated_at_the_i64_ceiling(self) -> None:
+        # The @Nat variant of the E528 path, at the top of `@Nat`, which is
+        # i64.MAX (spec §2.2; on the u64 `Nat` it was u64.MAX).
         result = _verify("""
-public fn over(@Nat -> @Nat)
-  requires(@Nat.0 >= 18446744073709551615) ensures(true) effects(pure)
-{ @Nat.0 + 1 }
+public fn over(@Nat, @Nat -> @Nat)
+  requires(@Nat.1 >= 9223372036854775807 && @Nat.0 >= 1)
+  ensures(true) effects(pure)
+{ @Nat.1 + @Nat.0 }
 """)
         ovf = [o for o in result.obligations if o.kind == "int_overflow"]
         assert len(ovf) == 1, [(o.kind, o.status) for o in result.obligations]

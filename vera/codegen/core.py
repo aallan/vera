@@ -186,11 +186,10 @@ class CodeGenerator(
             dict[tuple[int, int, int, int], Type] | None
         ) = expr_semantic_types
         # #820: the checker's TARGET-type side-table (``expected`` per expr
-        # span).  Threaded into every ``WasmContext`` so the @Nat -> @Int
-        # widening guard can recover the per-component target type at a tuple
-        # component / array element / heterogeneous if-arm — the codegen dual
-        # of the verifier's ``_target_type_of``.  ``None`` when a caller
-        # skipped typecheck (those component sites then stay E531-disclosed).
+        # span).  Threaded into every ``WasmContext`` so the narrowing guards
+        # can recover the per-component target type at a tuple component /
+        # array element — the codegen dual of the verifier's
+        # ``_target_type_of``.  ``None`` when a caller skipped typecheck.
         self._expr_target_types: (
             dict[tuple[int, int, int, int], Type] | None
         ) = expr_target_types
@@ -200,9 +199,9 @@ class CodeGenerator(
         # cannot recover its component targets from them.  ``_compile_fn``
         # selects the entry for the module being compiled — via the ``path`` its
         # ``_imported_fn_decls`` / ``_shadowed_module_fns`` entry carries — so the
-        # imported body's array-element / tuple-construction @Nat -> @Int
-        # widening guard fires exactly as the module's standalone compile emits
-        # it.  Empty when a caller skipped ``typecheck_with_artifacts`` (or has no
+        # imported body's array-element / tuple-construction narrowing guard
+        # fires exactly as the module's standalone compile emits it.  Empty
+        # when a caller skipped ``typecheck_with_artifacts`` (or has no
         # imports); the imported body then falls back to suppressed lookups
         # (#986), never a wrong-file-keyed guard.
         self._module_artifacts: dict[
@@ -223,20 +222,16 @@ class CodeGenerator(
         # formals fixed to @Nat at the call site erase to i64 here, so they
         # stay statically-only (verifier-obligated).
         self._fn_nat_params: dict[str, tuple[bool, ...]] = {}
-        # #813: per-parameter "is a concrete @Int formal" flags, the dual of
-        # `_fn_nat_params`, for the runtime @Nat -> @Int widening guard at
-        # call sites.
-        self._fn_int_params: dict[str, tuple[bool, ...]] = {}
         # #865: per-parameter "is a concrete @Byte formal" flags.  `@Byte` is
         # i32 (spec §11) but an int-literal argument defaults to `i64.const`;
         # a Byte-typed formal makes the call site coerce a literal argument to
         # `i32.const`, mirroring the #766 binop-operand fix at the call-arg
-        # position.  Disjoint from the @Nat/@Int bitmaps (a formal resolves to
-        # one primitive base or neither).
+        # position.  Disjoint from the @Nat bitmap (a formal resolves to one
+        # primitive base or neither).
         self._fn_byte_params: dict[str, tuple[bool, ...]] = {}
         # #754: per-formal base type NAME for every effect OPERATION, keyed
         # `(effect_name, op_name)`.  The narrowing guards at a call site read
-        # the callee's formals from `_fn_nat_params` / `_fn_int_params`; an
+        # the callee's formals from `_fn_nat_params`; an
         # effect operation had no such table, so `IO.sleep(@Int.0)` — whose
         # formal is `@Nat` — stored whatever it was given, and a negative
         # reached the host.  Built from the SAME registry the checker typed
@@ -792,7 +787,7 @@ class CodeGenerator(
         # (unshadowed, shadowed `mod$…`, and their hoisted where-helpers).
         # Monomorphization preserves node spans, so a clone's body is keyed by
         # its TEMPLATE module's span tables — the mono compile loop threads
-        # `_module_artifacts[origin]` for these so the #820 widen guards fire
+        # `_module_artifacts[origin]` for these so the component guards fire
         # (a local generic's clones are absent and keep the main-file tables).
         self._imported_generic_origins: dict[str, tuple[str, ...]] = {}
         self._mono_clone_origins: dict[str, tuple[str, ...]] = {}
@@ -3075,7 +3070,7 @@ class CodeGenerator(
                     imported=True,  # #986: don't consult main-file span tables
                     own_path=self._own_path_of(path),
                     # #987: thread THIS module's own span-keyed tables so the
-                    # imported body's @Nat -> @Int widening guard fires.
+                    # imported body's component guards fire.
                     module_tables=self._module_artifacts.get(path),
                     # #1299: no `where_scope`.  This body resolves bare names
                     # in ITS module's namespace, which the alias scope above
@@ -3119,7 +3114,7 @@ class CodeGenerator(
                     # #987: the ``mod$…`` rename only changes the WASM
                     # function name; the body's node spans are unchanged, so
                     # THIS module's table still keys them correctly and its
-                    # widen guard fires.
+                    # component guards fire.
                     module_tables=self._module_artifacts.get(path),
                     # #1299: the ``mod$…`` rename moves the body into no other
                     # namespace, and adds no helper — same reasoning, and the
@@ -3389,6 +3384,16 @@ class CodeGenerator(
             name: [t for t in params if t is not None]
             for name, (params, _) in self._fn_sigs.items()
         }
+        fn_param_nat = {
+            name: [bool(nat) for t, nat in zip(
+                params, self._fn_nat_params.get(name, ())) if t is not None]
+            for name, (params, _) in self._fn_sigs.items()
+        }
+        fn_param_byte = {
+            name: [bool(byte) for t, byte in zip(
+                params, self._fn_byte_params.get(name, ())) if t is not None]
+            for name, (params, _) in self._fn_sigs.items()
+        }
         # Collect functions whose Vera return type resolves to `String`
         # so `execute()` can decode their (ptr, len) pair back into a
         # str.  Walks the AST rather than using `_fn_sigs` because
@@ -3437,6 +3442,8 @@ class CodeGenerator(
             random_ops_used=set(self._random_ops_used),
             math_ops_used=set(self._math_ops_used),
             fn_param_types=fn_param_types,
+            fn_param_nat=fn_param_nat,
+            fn_param_byte=fn_param_byte,
             fn_string_returns=fn_string_returns,
             fn_adt_signatures=fn_adt_signatures,
             prelude_injected_adts=set(self._prelude_injected_adts),

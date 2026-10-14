@@ -1641,8 +1641,7 @@ class CallsHandlersMixin:
             if init_instrs is None:
                 return None
             # #1203: the init value BINDS into the state CELL — guard the
-            # @Int -> @Nat narrowing (and the @Nat -> @Int widen dual)
-            # exactly like a `let` binding, so an unverified compile traps
+            # @Int -> @Nat narrowing exactly like a `let` binding, so an unverified compile traps
             # instead of storing a negative through the @Nat cell.  Keyed
             # off `family_base` — the cell's REPRESENTATION (#1218), the
             # same source every other guard site uses, derived from the
@@ -1658,10 +1657,6 @@ class CallsHandlersMixin:
             if (family_base == "Nat"
                     and self._narrows_into_nat(expr.state.init_expr)):
                 init_instrs = self._emit_nat_bind_guard(
-                    init_instrs, at=expr.state.init_expr)
-            elif (family_base == "Int"
-                    and self._result_is_nat(expr.state.init_expr)):
-                init_instrs = self._emit_int_widen_guard(
                     init_instrs, at=expr.state.init_expr)
             instructions.extend(init_instrs)
 
@@ -2075,17 +2070,13 @@ class CallsHandlersMixin:
             if arg_instrs is None:
                 return None
             # #1203: put's argument writes the state cell — guard the
-            # narrowing/widening at the boundary (the `let` guard's twin).
+            # narrowing at the boundary (the `let` guard's twin).
             arg_instrs = self._emit_state_write_refine_guard(
                 arg_instrs, entry.family_type_expr, call.args[0],
                 "State put(…) write", env)
             if (family_base == "Nat"
                     and self._narrows_into_nat(call.args[0])):
                 arg_instrs = self._emit_nat_bind_guard(
-                    arg_instrs, at=call.args[0])
-            elif (family_base == "Int"
-                    and self._result_is_nat(call.args[0])):
-                arg_instrs = self._emit_int_widen_guard(
                     arg_instrs, at=call.args[0])
             arg_local = self.alloc_local(state_wt)
             instructions.extend(arg_instrs)
@@ -2213,7 +2204,7 @@ class CallsHandlersMixin:
             return None
         # #1203: for a GET clause the body's net value is the tail
         # `resume(v)` argument — the op's @T-typed RESULT at this call
-        # site — so guard a narrowing/widening resume value the same way
+        # site — so guard a narrowing resume value the same way
         # the closure-return guard works (`_compile_lifted_closure`'s
         # analogue for the inlined clause).
         if call.name == "get":
@@ -2223,26 +2214,18 @@ class CallsHandlersMixin:
                         and self._narrows_into_nat(resume_arg)):
                     body_instrs = self._emit_nat_bind_guard(
                         body_instrs, at=resume_arg)
-                elif (family_base == "Int"
-                        and self._result_is_nat(resume_arg)):
-                    body_instrs = self._emit_int_widen_guard(
-                        body_instrs, at=resume_arg)
         instructions.extend(body_instrs)
         if clause.state_update is not None:
             if upd_instrs is None:
                 return None
             # #1203: `with @T = <expr>` overrides the state cell — the
-            # third write boundary; same guard pair as put's argument.
+            # third write boundary; same guard as put's argument.
             upd_instrs = self._emit_state_write_refine_guard(
                 upd_instrs, entry.family_type_expr, clause.state_update[1],
                 "State with(…) override", env)
             if (family_base == "Nat"
                     and self._narrows_into_nat(clause.state_update[1])):
                 upd_instrs = self._emit_nat_bind_guard(
-                    upd_instrs, at=clause.state_update[1])
-            elif (family_base == "Int"
-                    and self._result_is_nat(clause.state_update[1])):
-                upd_instrs = self._emit_int_widen_guard(
                     upd_instrs, at=clause.state_update[1])
             instructions.extend(upd_instrs)
             instructions.append(f"call {put_import}")
@@ -2432,9 +2415,9 @@ class CallsHandlersMixin:
         call: ast.FnCall, env: WasmSlotEnv,
     ) -> list[str]:
         """Wrap *value* with the §2.6.5 predicate guard for a refined
-        ``Exn<E>`` payload (#1268) — the refined twin of the sign guards
-        ``_emit_nat_bind_guard`` / ``_emit_int_widen_guard`` give the
-        unrefined payload at the same call site.
+        ``Exn<E>`` payload (#1268) — the refined twin of the sign guard
+        ``_emit_nat_bind_guard`` gives the unrefined payload at the same
+        call site.
 
         ``throw(v)`` narrows *v* into the payload slot exactly as a call
         argument narrows into a refined formal, but the payload crosses no

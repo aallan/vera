@@ -32,8 +32,8 @@ class TestNatSubtractionRuntimeGuard520:
 
     The verifier (vera/verifier.py, #520 commit b446cac) emits a
     Tier-1 proof obligation `lhs >= rhs` at every @Nat-Nat
-    subtraction site.  The codegen mirrors that detection (same
-    helpers — _is_static_nat_typed + _has_nat_origin_codegen) and
+    subtraction site.  The codegen mirrors that detection (one rule,
+    `vera.narrowing.is_guarded_nat_subtraction`: both operands `@Nat`) and
     emits a runtime guard that traps on underflow.
 
     The guard exists because `vera compile` doesn't run the verifier
@@ -96,7 +96,7 @@ public fn main(@Unit -> @Nat)
     def test_safe_subtraction_returns_correct_result(self) -> None:
         """safe(5, 3) returns 2 — guard passes through cleanly.
 
-        The guard is `if (i64.lt_u lhs rhs) then <signal> unreachable end`, so
+        The guard is `if (i64.lt_s lhs rhs) then <signal> unreachable end`, so
         when lhs >= rhs the branch is not taken and the subtraction
         proceeds normally.  Confirms the guard doesn't introduce a
         regression on the happy path.
@@ -104,14 +104,12 @@ public fn main(@Unit -> @Nat)
         assert _run(self._SAFE_SUB) == 2
 
     def test_guard_emitted_in_wat_for_nat_sub(self) -> None:
-        """The guarded WAT contains `i64.lt_u` and `unreachable`.
+        """The guarded WAT contains `i64.lt_s` and `unreachable`.
 
         Structural assertion that the codegen actually inserted the
-        guard sequence rather than emitting a bare `i64.sub`.  The
-        unguarded WAT (e.g. for `@Int - @Int`) would contain
-        `i64.sub` but no `i64.lt_u` paired with `unreachable`.  Unsigned,
-        because a `@Nat` is a u64 (#1479): a signed compare read one above
-        i64.MAX as negative.
+        guard sequence rather than emitting a bare `i64.sub`.  Signed: a
+        `@Nat` holds `0 .. i64.MAX`, over which the signed compare is exact
+        (spec §2.2; on the u64 `Nat` it compared unsigned, #1479).
         """
         result = _compile_ok(self._GUARDED_SUB)
         wat = result.wat
@@ -124,10 +122,11 @@ public fn main(@Unit -> @Nat)
         if body_end < 0:
             body_end = len(wat)
         body = wat[unsafe_idx:body_end]
-        assert "i64.lt_u" in body, (
-            f"Expected `i64.lt_u` in unsafe body for underflow guard, "
+        assert "i64.lt_s" in body, (
+            f"Expected `i64.lt_s` in unsafe body for underflow guard, "
             f"got: {body!r}"
         )
+        assert checks(result, kind="nat_underflow", function="unsafe"), body
         assert "unreachable" in body, (
             f"Expected `unreachable` in unsafe body for underflow guard, "
             f"got: {body!r}"
@@ -148,12 +147,11 @@ public fn main(@Unit -> @Nat)
         not fire on ``5 - 10`` (in range), so the runtime behaviour this test
         cares about (no spurious trap on a negative Int result) is unchanged.
         The discriminator below is therefore the *shape*: the #520 guard
-        compares the two operands directly (``i64.lt_u`` on lhs/rhs straight
+        compares the two operands directly (``i64.lt_s`` on lhs/rhs straight
         after loading them, no ``i64.xor``), whereas the #798 overflow guard
         is XOR-based.  We assert the overflow-guard shape is present and the
-        nat-sub shape (an ``i64.lt_u`` not preceded by the XOR sign-test) is
-        not the mechanism, by pinning runtime behaviour: ``5 - 10 = -5`` must
-        return cleanly, never trap.
+        nat-sub shape is not the mechanism, by pinning runtime behaviour:
+        ``5 - 10 = -5`` must return cleanly, never trap.
         """
         src = """
 private fn int_sub(@Int, @Int -> @Int)
@@ -195,21 +193,14 @@ public fn main(@Unit -> @Int)
             "nat-sub underflow guard must not apply to @Int - @Int."
         )
 
-    def test_pure_literal_subtract_emits_no_guard(self) -> None:
-        """`0 - 1` (pure-literal idiom) emits no guard — Path-A scope.
-
-        The codegen guard fires only when at least one operand has
-        @Nat *provenance* (slot ref or @Nat-returning function),
-        matching the verifier's _has_nat_origin filter.  This keeps
-        the corpus's `Err(_) -> 0 - 1` and `throw(0 - 1)` idioms
-        unaffected — they consume the result at @Int positions where
-        the upcast is well-defined.
+    def test_pure_literal_subtract_emits_no_underflow_guard(self) -> None:
+        """`0 - 1` is an `@Int` subtraction (spec §4.2): it carries the #798
+        overflow guard every `@Int` subtraction does, and no `@Nat`
+        underflow guard.  The corpus's `Err(_) -> 0 - 1` and `throw(0 - 1)`
+        idioms consume the result at `@Int` positions, where it is -1.  (On
+        the u64 `Nat` both literals were `Nat`, and a provenance filter kept
+        the underflow guard off the pure-literal idiom.)
         """
-        # ensures(true) avoids confounding `i64.lt_s` from the
-        # postcondition-check codegen (which compiles `< 0` to
-        # `i64.lt_s; i32.eqz; if; ...; call $vera.contract_fail`).
-        # We're isolating whether the underflow guard fires, not the
-        # postcondition check.
         src = """
 public fn neg_sentinel(@Unit -> @Int)
   requires(true)
@@ -226,39 +217,20 @@ public fn main(@Unit -> @Int)
 }
 """
         result = _compile_ok(src)
-        wat = result.wat
-        sentinel_idx = wat.find("(func $neg_sentinel")
-        assert sentinel_idx >= 0
-        body_end = wat.find("\n  (func ", sentinel_idx + 1)
-        if body_end < 0:
-            body_end = len(wat)
-        body = wat[sentinel_idx:body_end]
-        # Bare i64.sub, no guard — even though both operands are
-        # non-negative IntLits and thus statically @Nat per checker.
-        # The provenance filter excludes pure-literal subtractions.
-        # As with test_int_subtract_emits_no_guard, banning both
-        # `i64.lt_s` / `i64.lt_u` and any `unreachable` defends
-        # against future codegen variants that switch comparator or
-        # trap mechanism.
-        assert "i64.sub" in body
-        assert not re.search(r"\bi64\.lt_[su]\b", body), (
-            f"Pure-literal `0 - 1` should not get a guard at Path-A "
-            f"scope. Body:\n{body}"
-        )
-        assert "unreachable" not in body, (
-            f"Pure-literal `0 - 1` should not emit a trap guard at "
-            f"Path-A scope. Body:\n{body}"
-        )
+        assert checks(result, kind="nat_underflow", function="neg_sentinel") == ()
+        assert checks(result, kind="overflow", function="neg_sentinel")
+        assert _run(src) == -1
 
     def test_recursion_with_path_guard_runs_clean(self) -> None:
         """`if @Nat.0 == 0 then 0 else f(@Nat.0 - 1)` runs at deep depth.
 
-        The verifier discharges the underflow obligation from the
-        path condition (the else-branch implies @Nat.0 != 0, hence
-        @Nat.0 >= 1).  The codegen still emits the runtime guard
-        (no Tier-1 skip-channel currently), but `lhs >= rhs` always
-        holds at runtime so the branch is never taken — confirming
-        the guard doesn't fire spuriously on path-discharged sites.
+        `@Nat.0 - 1` is an `@Int` subtraction narrowed into `countdown`'s
+        `@Nat` parameter (spec §4.4).  The verifier discharges the
+        narrowing from the path condition (the else-branch implies @Nat.0
+        != 0, hence @Nat.0 >= 1).  The codegen still emits the narrowing
+        guard (no Tier-1 skip-channel currently), but the value is never
+        negative at runtime so the branch is never taken — confirming the
+        guard doesn't fire spuriously on path-discharged sites.
         """
         src = """
 private fn countdown(@Nat -> @Nat)
@@ -287,13 +259,12 @@ public fn main(@Unit -> @Nat)
         # path-discharged @Nat.0 - 1 site.  Pure behavioural assertion
         # (countdown(100) == 0) would pass even if the guard were
         # accidentally elided, because the path condition keeps
-        # @Nat.0 >= 1 in the recursive arm so underflow can never
-        # fire — making the test silently coverage-blind.  Pinning
-        # the WAT shape catches a future regression where the codegen
-        # detector skips path-discharged sites (that's a Tier-1
-        # skip-channel optimisation; until it lands, every @Nat-Nat
-        # site with provenance gets the guard regardless of static
-        # discharge status).
+        # @Nat.0 >= 1 in the recursive arm so the value can never be
+        # negative — making the test silently coverage-blind.  Pinning
+        # the module's record catches a future regression where the codegen
+        # skips path-discharged sites (that's a Tier-1 skip-channel
+        # optimisation; until it lands, every narrowing gets the guard
+        # regardless of static discharge status).
         result = _compile_ok(src)
         wat = result.wat
         countdown_idx = wat.find("(func $countdown")
@@ -302,17 +273,15 @@ public fn main(@Unit -> @Nat)
         if body_end < 0:
             body_end = len(wat)
         body = wat[countdown_idx:body_end]
-        # The guard's own comparison, in the text, and its own check, in the
-        # module's record (#1479): not tokens another check in the body could
-        # supply.
-        assert "i64.lt_u" in body, (
-            f"Expected the @Nat.0 - 1 underflow guard's i64.lt_u inside "
-            f"countdown body, got: {body!r}"
-        )
-        assert checks(result, kind="nat_underflow", function="countdown"), (
-            f"Expected the @Nat.0 - 1 underflow guard's nat_underflow check "
+        # The guard's own check, in the module's record (#1479): not tokens
+        # another check in the body could supply.  The subtraction carries
+        # the `@Int` overflow guard and no `@Nat` underflow guard.
+        assert checks(result, kind="nat_guard", function="countdown"), (
+            f"Expected the @Nat.0 - 1 narrowing guard's nat_guard check "
             f"in countdown, got: {body!r}"
         )
+        assert checks(result, kind="overflow", function="countdown"), body
+        assert checks(result, kind="nat_underflow", function="countdown") == ()
 
     def test_modulecall_provenance_emits_guard_and_traps(self) -> None:
         """ModuleCall with @Nat return type carries provenance.
@@ -363,8 +332,8 @@ public fn main(@Unit -> @Nat)
         if body_end < 0:
             body_end = len(wat)
         body = wat[fn_idx:body_end]
-        assert "i64.lt_u" in body, (
-            f"Expected the underflow guard's i64.lt_u for ModuleCall-provenance "
+        assert "i64.lt_s" in body, (
+            f"Expected the underflow guard's i64.lt_s for ModuleCall-provenance "
             f"@Nat - @Nat inside unsafe_modcall body, got: {body!r}"
         )
         assert checks(result, kind="nat_underflow", function="unsafe_modcall"), (
@@ -402,24 +371,12 @@ public fn main(@Unit -> @Nat)
         # safe_modcall(5, 3): abs(@Int.1) - abs(@Int.0) = abs(5) - abs(3) = 2.
         assert _run(safe_src) == 2
 
-    def test_rhs_only_provenance_emits_guard_and_traps(self) -> None:
-        """`0 - @Nat.0` carries provenance via the RHS slot only.
-
-        The codegen detector requires `_has_nat_origin_codegen(left)
-        OR _has_nat_origin_codegen(right)` — symmetric in both
-        operands.  Existing positive tests pin the left-has-provenance
-        case (`@Nat.1 - @Nat.0`, `@Nat.0 - 1`) and the both-provenance
-        ModuleCall case, but not the right-only-provenance case.
-        Without that coverage a future refactor that accidentally
-        ignored `expr.right` (or changed `or` to `and`) would still
-        pass every existing test while silently re-opening the
-        underflow hole on the right-only shape.
-
-        Body: `0 - @Nat.0` (a non-negative IntLit on the left, a
-        @Nat slot on the right).  Both operands are statically @Nat
-        per the checker, but only the slot has @Nat provenance —
-        the literal is exempt at Path-A scope.  The guard must
-        still fire because the right operand provides provenance.
+    def test_a_literal_minus_a_nat_is_narrowed_at_the_return(self) -> None:
+        """`0 - @Nat.0` is an `@Int` subtraction (the literal is an `Int`,
+        spec §4.2), so into a `@Nat` return it is a narrowing: guarded at
+        the return, with no `@Nat` underflow guard at the subtraction.  On
+        the u64 `Nat` it was a `@Nat - @Nat` whose underflow guard the
+        right operand's provenance alone had to trigger.
         """
         src = """
 private fn lit_minus_slot(@Nat -> @Nat)
@@ -430,53 +387,21 @@ private fn lit_minus_slot(@Nat -> @Nat)
   0 - @Nat.0
 }
 
-public fn main(@Unit -> @Nat)
+public fn main(@Nat -> @Nat)
   requires(true) ensures(true) effects(pure)
 {
-  -- @Nat.0 = 1 → `0 - 1` underflows.
-  lit_minus_slot(1)
+  lit_minus_slot(@Nat.0)
 }
 """
-        # Structural assertion: guard emitted in lit_minus_slot body
-        # despite the LHS being a literal.
         result = _compile_ok(src)
-        wat = result.wat
-        fn_idx = wat.find("(func $lit_minus_slot")
-        assert fn_idx >= 0, "lit_minus_slot not found in WAT"
-        body_end = wat.find("\n  (func ", fn_idx + 1)
-        if body_end < 0:
-            body_end = len(wat)
-        body = wat[fn_idx:body_end]
-        assert "i64.lt_u" in body, (
-            f"Expected the underflow guard's i64.lt_u for rhs-only-provenance "
-            f"`0 - @Nat.0` inside lit_minus_slot body, got:\n{body}"
-        )
-        assert checks(result, kind="nat_underflow", function="lit_minus_slot"), (
-            f"Expected the underflow guard's nat_underflow check for "
-            f"rhs-only-provenance `0 - @Nat.0` in lit_minus_slot, got:\n{body}"
-        )
-
-        # Behavioural assertion: lit_minus_slot(1) → 0 - 1 → trap.
-        with pytest.raises(WasmTrapError):
-            execute(result, fn_name="main", args=[])
-
-        # Safe case: lit_minus_slot(0) → 0 - 0 = 0 (no underflow).
-        safe_src = """
-private fn lit_minus_slot(@Nat -> @Nat)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  0 - @Nat.0
-}
-
-public fn main(@Unit -> @Nat)
-  requires(true) ensures(true) effects(pure)
-{
-  lit_minus_slot(0)
-}
-"""
-        assert _run(safe_src) == 0
+        assert checks(result, kind="nat_guard", function="lit_minus_slot")
+        assert checks(result, kind="nat_underflow",
+                      function="lit_minus_slot") == ()
+        # @Nat.0 = 1 → `0 - 1` is -1, which the return narrowing stops.
+        with pytest.raises(WasmTrapError) as trapped:
+            execute(result, fn_name="main", args=[1])
+        assert trapped.value.kind == "nat_guard"
+        assert execute(result, fn_name="main", args=[0]).value == 0
 
 
 # =====================================================================
@@ -489,9 +414,9 @@ class TestNatBindingRuntimeGuard552:
     subtraction guard.
 
     The verifier emits a Tier-1 `value >= 0` obligation; codegen mirrors
-    the detection (_narrows_into_nat, sharing _is_static_nat_typed +
-    _has_nat_origin_codegen) and traps if a negative value would reach a
-    @Nat slot.  Like the #520 guard, it protects programs compiled
+    the detection (_narrows_into_nat, the shared rule
+    `vera.narrowing.narrows_into_nat`) and traps if a negative value would
+    reach a @Nat slot.  Like the #520 guard, it protects programs compiled
     without `vera verify`.
 
     #552 guarded the canonical `let` site; #747 extends the runtime guard
@@ -1288,17 +1213,14 @@ public fn g(@Nat -> @MyInt)
 { @Nat.0 }
 """
 
-    def test_alias_int_return_widen_guard_emitted(self) -> None:
-        """A ``type MyInt = Int`` return with a @Nat body carries the
-        @Nat->@Int widening guard — pre-fix the alias name masked the bare @Int
-        and no widen guard was emitted, though the verifier obligated it
-        ``nat_to_int_coerce`` ``tier3`` (the widen sibling of the alias-blind
-        narrow gate)."""
+    def test_alias_int_return_of_a_nat_has_nothing_to_check(self) -> None:
+        """A ``type MyInt = Int`` return with a @Nat body is a widening, which
+        is a no-op at the value level (spec §2.2): no check, and i64.MAX
+        comes back as itself.  (On the u64 `Nat` it carried a widening guard,
+        which the alias name once masked.)"""
         result = _compile_ok(self._ALIAS_WIDEN)
-        body = _fn_body(result.wat, "g")
-        assert "i64.lt_s" in body and "unreachable" in body, (
-            f"missing alias widen guard:\n{body}"
-        )
+        assert checks(result, function="g") == (), _fn_body(result.wat, "g")
+        assert _run(self._ALIAS_WIDEN, fn="g", args=[2**63 - 1]) == 2**63 - 1
 
     _ALIAS_TO_REFINEMENT = """
 type Pos = { @Nat | @Nat.0 > 0 };
@@ -1382,16 +1304,30 @@ public fn g(@Nat -> @MyInt)
         [
             pytest.param(_NARROW, "f", id="narrow"),
             pytest.param(_NARROW_TWIN, "f", id="narrow_unparameterised_twin"),
-            pytest.param(_WIDEN, "g", id="widen"),
-            pytest.param(_WIDEN_TWIN, "g", id="widen_unparameterised_twin"),
         ],
     )
     def test_the_guard_is_emitted_through_the_application(
         self, source: str, fn: str,
     ) -> None:
-        """Pre-fix the two parameterised cases emitted no guard at all."""
+        """Pre-fix the parameterised case emitted no guard at all."""
         body = _fn_body(_compile_ok(source).wat, fn)
         assert "i64.lt_s" in body and "unreachable" in body, body
+
+    @pytest.mark.parametrize(
+        ("source", "fn"),
+        [
+            pytest.param(_WIDEN, "g", id="widen"),
+            pytest.param(_WIDEN_TWIN, "g", id="widen_unparameterised_twin"),
+        ],
+    )
+    def test_a_widening_through_the_application_checks_nothing(
+        self, source: str, fn: str,
+    ) -> None:
+        """A `@Nat` into an `Ident<Int>` return is a widening, a no-op at the
+        value level, on both spellings.  (On the u64 `Nat` both carried the
+        widening guard, which the parameterised spelling once lost.)"""
+        result = _compile_ok(source)
+        assert checks(result, function=fn) == (), _fn_body(result.wat, fn)
 
     def test_a_negative_through_the_application_traps(self) -> None:
         """The soundness statement: -5 no longer reaches the `@Nat` slot.

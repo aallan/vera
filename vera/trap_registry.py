@@ -198,12 +198,11 @@ TRAP_KINDS: dict[str, TrapKind] = _kinds(
     TrapKind(
         "overflow", 1, "Integer overflow",
         "Integer arithmetic produced a value outside the representable "
-        "range — the signed i64 range `[-2^63, 2^63)` for `@Int`, or the "
-        "unsigned u64 range `[0, 2^64)` for `@Nat` (#808 routes `@Nat` "
-        "overflows here too).  Add a `requires` precondition that "
-        "constrains the operands so Z3 can prove the result is "
-        "representable, or change the operation to a saturating / checked "
-        "variant via a helper function.",
+        "range — the signed i64 range `[-2^63, 2^63)`, which `@Nat` shares "
+        "as its non-negative half `[0, 2^63)`; `abs(-2^63)` is `2^63`, past "
+        "it too.  Add a `requires` precondition that constrains the operands "
+        "so Z3 can prove the result is representable, or change the "
+        "operation to a saturating / checked variant via a helper function.",
     ),
     TrapKind(
         "nat_guard", 2, "Negative value bound into a @Nat slot",
@@ -215,19 +214,6 @@ TRAP_KINDS: dict[str, TrapKind] = _kinds(
         "precondition, or narrow through an explicit branch "
         "(`if x >= 0 then { ... }`), so Z3 discharges it at compile time and "
         "the check becomes dead.",
-    ),
-    TrapKind(
-        "widen_guard", 3,
-        "@Nat value above i64.MAX widened into an @Int slot",
-        "A `@Nat` value above `i64.MAX` was widened into an `@Int` slot — a "
-        "return, a `let`, a call argument, a constructor field, an array "
-        "element or a tuple component whose target is `@Int`.  `Nat` (u64) "
-        "and `Int` (i64) share one machine representation, so such a value "
-        "REINTERPRETS as a negative `@Int` (`u64.MAX` becomes `-1`); the "
-        "verifier could not prove it in range, so it left a runtime check "
-        "here (Tier 3).  Add a `requires(... <= i64.MAX)` precondition, or "
-        "keep the value in `@Nat` and widen only where a bound is known, so "
-        "Z3 discharges it at compile time and the check becomes dead.",
     ),
     TrapKind(
         "nat_underflow", 4, "@Nat subtraction would be negative",
@@ -441,14 +427,14 @@ TRAP_EMITTERS: dict[str, TrapEmitter] = _emitters(
         "wasm/operators.py:_note_quotient_overflow", "overflow",
         ("int_overflow",), "native:i64.div_s", _OPERATION,
     ),
+    TrapEmitter(
+        "wasm/calls_math.py:_translate_abs", "overflow",
+        ("int_overflow",), "signal", "the `abs(...)` call",
+    ),
     # --- the @Int / @Nat boundary -------------------------------------
     TrapEmitter(
         "wasm/operators.py:_emit_nat_bind_guard", "nat_guard",
         ("nat_bind",), "signal", _VALUE,
-    ),
-    TrapEmitter(
-        "wasm/operators.py:_emit_int_widen_guard", "widen_guard",
-        ("nat_to_int_coerce",), "signal", _VALUE,
     ),
     # --- assertions and indexing --------------------------------------
     TrapEmitter(
@@ -516,11 +502,6 @@ TRAP_EMITTERS: dict[str, TrapEmitter] = _emitters(
     TrapEmitter(
         "codegen/contracts.py:_dec_self_tail_prefix", "contract_violation",
         ("decreases",), "contract", "the `decreases(...)` clause",
-    ),
-    TrapEmitter(
-        "codegen/contracts.py:_dec_bound_check_pairs", "contract_violation",
-        ("decreases_bound",), "contract",
-        "the `decreases(...)` measure component it range-checks",
     ),
     # --- runtime functions: one per module, no source site --------------
     TrapEmitter(
@@ -808,10 +789,6 @@ SAFE_NATIVE_SITES: tuple[NativeSite, ...] = (
     NativeSite(
         "wasm/operators.py:_emit_int_mul_guard", "i64.div_s", 1,
         "reached only when the left operand is neither 0 nor -1",
-    ),
-    NativeSite(
-        "wasm/operators.py:_emit_nat_mul_guard", "i64.div_u", 1,
-        "reached only when the left operand is not 0",
     ),
     NativeSite(
         "wasm/calls_encoding.py:_translate_base64_encode", "i32.div_u", 1,

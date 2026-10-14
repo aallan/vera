@@ -691,6 +691,10 @@ class TestShadowAuditSubtraction680:
     """Soundness battery for the `nat_sub` (#520, E502) underflow obligation
     under the shadow/projection machinery.
 
+    Every constant operand is a `@Nat` (`string_length("a")` is 1): a literal
+    is an `Int` (spec §4.2), so `@Nat.0 - 1` is an `@Int` subtraction, whose
+    sign the narrowing into the `@Nat` return checks, and no `@Nat` one.
+
     Invariant trichotomy:
       * provably non-underflowing  -> 'verified' (Tier-1)
       * an opaque operand (direct OR embedded in a compound) for which the
@@ -705,7 +709,7 @@ class TestShadowAuditSubtraction680:
         st = _nat_sub_status(_MK + """
 private fn d(@Nat -> @Nat)
   requires(true) ensures(true) effects(pure)
-{ let Tuple<@Nat, @Nat> = mk(@Nat.0); @Nat.0 - 1 }
+{ let Tuple<@Nat, @Nat> = mk(@Nat.0); @Nat.0 - string_length("a") }
 """)
         assert st == ["tier3"], st
 
@@ -717,7 +721,7 @@ private fn d(@Nat -> @Nat)
         st = _nat_sub_status(_MK + """
 private fn c(@Nat -> @Nat)
   requires(true) ensures(true) effects(pure)
-{ let Tuple<@Nat, @Nat> = mk(@Nat.0); (@Nat.0 + 1) - (@Nat.1 + 1) }
+{ let Tuple<@Nat, @Nat> = mk(@Nat.0); (@Nat.0 + string_length("a")) - (@Nat.1 + string_length("a")) }
 """)
         assert st == ["tier3"], st
 
@@ -727,7 +731,7 @@ private fn c(@Nat -> @Nat)
         st = _nat_sub_status(_MK + """
 private fn c(@Nat -> @Nat)
   requires(true) ensures(true) effects(pure)
-{ let Tuple<@Nat, @Nat> = mk(@Nat.0); (@Nat.0 + 1) - @Nat.1 }
+{ let Tuple<@Nat, @Nat> = mk(@Nat.0); (@Nat.0 + string_length("a")) - @Nat.1 }
 """)
         assert st == ["tier3"], st
 
@@ -737,7 +741,7 @@ private fn c(@Nat -> @Nat)
         st = _nat_sub_status(_MK + """
 private fn c(@Nat -> @Nat)
   requires(true) ensures(true) effects(pure)
-{ let Tuple<@Nat, @Nat> = mk(@Nat.0); (2 * @Nat.0) - (@Nat.1 + 5) }
+{ let Tuple<@Nat, @Nat> = mk(@Nat.0); (string_length("ab") * @Nat.0) - (@Nat.1 + string_length("abcde")) }
 """)
         assert st == ["tier3"], st
 
@@ -750,9 +754,25 @@ effect Src { op g(Unit -> Option<Nat>); }
 
 private fn m(@Nat -> @Nat)
   requires(true) ensures(true) effects(<Src>)
-{ match Src.g(()) { Some(@Nat) -> @Nat.0 - 1, None -> 0 } }
+{ match Src.g(()) { Some(@Nat) -> @Nat.0 - string_length("a"), None -> 0 } }
 """, past_check=True)
         assert st == ["tier3"], st
+
+    def test_a_literal_subtrahend_is_narrowed_where_the_value_binds(
+            self) -> None:
+        """`@Nat.0 - 1` is an `@Int` subtraction: no `nat_sub`, and the
+        narrowing into the `@Nat` return reads the destructure through
+        `mk`'s contract, which allows a 0 component, so it is refuted (E503)
+        rather than left to a guard.  `mk(0)` is `Tuple(0, 0)`, so the
+        refusal is of a program that does fail at 0."""
+        r = _verify(_MK + """
+private fn d(@Nat -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ let Tuple<@Nat, @Nat> = mk(@Nat.0); @Nat.0 - 1 }
+""")
+        assert [o.status for o in r.obligations if o.kind == "nat_sub"] == []
+        assert [(o.status, o.error_code) for o in r.obligations
+                if o.kind == "nat_bind"] == [("violated", "E503")]
 
     def test_param_requires_does_not_leak_to_shadow(self) -> None:
         """SILENT-FAILURE guard: a `requires(@Nat.0 >= 100)` constraining the
@@ -787,7 +807,7 @@ private fn drawtwo(@Unit -> @Nat)
         st = _nat_sub_status(_MK + """
 private fn safe(@Nat -> @Nat)
   requires(true) ensures(true) effects(pure)
-{ let Tuple<@Nat, @Nat> = mk(@Nat.0); (@Nat.0 + 2) - (@Nat.0 + 1) }
+{ let Tuple<@Nat, @Nat> = mk(@Nat.0); (@Nat.0 + string_length("ab")) - (@Nat.0 + string_length("a")) }
 """)
         assert st == ["verified"], st
 
@@ -800,7 +820,7 @@ private fn safe(@Nat -> @Nat)
         r = _verify(_MK + """
 private fn bad(@Nat -> @Nat)
   requires(true) ensures(true) effects(pure)
-{ let Tuple<@Nat, @Nat> = mk(@Nat.0); (@Nat.0 + 1) - (@Nat.0 + 2) }
+{ let Tuple<@Nat, @Nat> = mk(@Nat.0); (@Nat.0 + string_length("a")) - (@Nat.0 + string_length("ab")) }
 """)
         subs = [o.status for o in r.obligations if o.kind == "nat_sub"]
         assert subs == ["violated"], subs

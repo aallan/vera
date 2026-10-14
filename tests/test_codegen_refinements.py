@@ -779,7 +779,7 @@ public fn f(@Small -> @Nat)
         # -1 satisfies `< 10` but not `>= 0`: the guard message proves the
         # base invariant is conjoined into the lowered check.
         with pytest.raises(RuntimeError, match=r"@Nat\.0 >= 0"):
-            execute(result, fn_name="f", args=[-1])
+            execute(result, fn_name="f", args=[-1], check_int_args=False)
         assert _run(src, fn="f", args=[7]) == 7
 
     def test_aliased_nat_base_param_guard_enforces_ge_zero(self) -> None:
@@ -798,7 +798,7 @@ public fn f(@SmallAge -> @Age)
 """
         result = _compile_ok(src)
         with pytest.raises(RuntimeError, match=r"@Age\.0 >= 0"):
-            execute(result, fn_name="f", args=[-1])
+            execute(result, fn_name="f", args=[-1], check_int_args=False)
         assert _run(src, fn="f", args=[7]) == 7
 
     def test_bool_base_param_guard_traps_on_false(self) -> None:
@@ -956,7 +956,9 @@ public fn f(@BigByte -> @Byte)
         # 300 satisfies `> 5` but not `<= 255`: the guard message proves the
         # Byte range invariant is conjoined into the lowered check.
         with pytest.raises(RuntimeError, match=r"@Byte\.0 <= 255"):
-            execute(result, fn_name="f", args=[300])
+            # An untrusted host: `execute` refuses 300 for a `@Byte` by
+            # default.
+            execute(result, fn_name="f", args=[300], check_int_args=False)
         assert _run(src, fn="f", args=[7]) == 7
 
     def test_nested_refinement_base_rejected_e600(self) -> None:

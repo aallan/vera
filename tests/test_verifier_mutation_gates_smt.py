@@ -44,20 +44,21 @@ class TestVerifierGates387:
         return [o for o in result.obligations if o.kind == "refine_bind"]
 
     # =================================================================
-    # _is_nat_typed / _has_nat_origin  (4402-4543)
+    # _is_nat_typed / _is_guarded_nat_subtraction
     # Gate the #520 `@Nat - @Nat` underflow obligation (kind nat_sub,
-    # E502) at _walk_for_primitive_op_obligations:2097-2101.  The
-    # obligation fires iff op==SUB AND both operands _is_nat_typed AND
-    # (either _has_nat_origin).  A wrong boolean flips the obligation's
-    # EXISTENCE — the cleanest differential.
+    # E502) in _walk_for_primitive_op_obligations.  The obligation fires
+    # iff op==SUB AND both operands _is_nat_typed
+    # (`vera.narrowing.is_guarded_nat_subtraction`).  A literal operand is an
+    # `Int` (spec §4.2), so it makes the subtraction an `@Int` one.  A wrong
+    # boolean flips the obligation's EXISTENCE — the cleanest differential.
     # =================================================================
 
     def test_nat_slot_subtraction_is_obligated(self) -> None:
-        """``@Nat.0 - @Nat.1`` (both SlotRefs, @Nat-typed + @Nat-origin) →
-        exactly one ``nat_sub`` E502 (unguarded → violated, with CE).  Pins the
-        baseline gate: ``_is_nat_typed(SlotRef)`` / ``_has_nat_origin(SlotRef)``
-        both keyed on ``type_name == "Nat"`` (line 4431/4494).  A mutation
-        flipping either SlotRef branch drops the obligation (false Tier-1)."""
+        """``@Nat.0 - @Nat.1`` (both SlotRefs, @Nat-typed) → exactly one
+        ``nat_sub`` E502 (unguarded → violated, with CE).  Pins the baseline
+        gate: ``_is_nat_typed(SlotRef)`` keyed on ``type_name == "Nat"``.  A
+        mutation flipping the SlotRef branch drops the obligation (false
+        Tier-1)."""
         result = _verify("""
 private fn slotsub_neg_387(@Nat, @Nat -> @Nat)
   requires(true) ensures(true) effects(pure)
@@ -89,15 +90,12 @@ private fn intsub_387(@Int, @Int -> @Int)
         assert [d for d in result.diagnostics if d.severity == "error"] == [], [
             d.error_code for d in result.diagnostics if d.severity == "error"]
 
-    def test_pure_literal_subtraction_origin_gate_skips(self) -> None:
-        """``0 - 1`` consumed at @Int: both operands are @Nat-TYPED (non-negative
-        IntLits, ``_is_nat_typed`` line 4434 ``value >= 0``) but NEITHER has
-        @Nat *origin* (``_has_nat_origin`` returns False for IntLit — it has no
-        IntLit branch), so the ``(_has_nat_origin OR _has_nat_origin)`` conjunct
-        at 2100-2101 is False and NO obligation fires.  This is the #520
-        deliberate pure-literal exemption: a mutation deleting the origin
-        conjunct would spuriously E502 every ``0 - 1`` sentinel in the
-        corpus."""
+    def test_pure_literal_subtraction_is_no_nat_subtraction(self) -> None:
+        """``0 - 1`` consumed at @Int: both literals are `Int` (spec §4.2), so
+        it is an `@Int` subtraction and no ``nat_sub`` fires.  A mutation
+        typing a non-negative literal `Nat` would spuriously E502 every
+        ``0 - 1`` sentinel in the corpus.  (On the u64 `Nat` the literals were
+        `Nat`, and a provenance conjunct exempted the pure-literal case.)"""
         result = _verify("""
 private fn litsub_387(@Unit -> @Int)
   requires(true) ensures(@Int.result < 0) effects(pure)
@@ -108,39 +106,39 @@ private fn litsub_387(@Unit -> @Int)
         assert [d for d in result.diagnostics if d.severity == "error"] == [], [
             d.error_code for d in result.diagnostics if d.severity == "error"]
 
-    def test_literal_minus_natslot_origin_or_branch(self) -> None:
-        """``0 - @Nat.0``: left IntLit has no @Nat origin, right SlotRef does.
-        The gate fires only because ``_has_nat_origin`` uses ``left OR right``
-        (line 4528-4529).  A mutation ``or → and`` makes ``(False and True) =
-        False`` and the obligation vanishes — so this pins the OR specifically,
-        not just "some operand has origin".  Unguarded → violated E502 with a
-        CE (``@Nat.0 = 1`` gives ``-1``)."""
+    def test_literal_minus_natslot_is_an_int_subtraction(self) -> None:
+        """``0 - @Nat.0``: the literal is an `Int` (spec §4.2), so this is an
+        `@Int` subtraction, no `nat_sub`, and its narrowing into the `@Nat`
+        return carries the verdict: violated E503 with a CE (``@Nat.0 = 1``
+        gives ``-1``).  (On the u64 `Nat` the literal was a `Nat`, and a
+        provenance gate, ``left OR right``, decided the `nat_sub`.)"""
         result = _verify("""
 private fn litnat_387(@Nat -> @Nat)
   requires(true) ensures(true) effects(pure)
 { 0 - @Nat.0 }
 """)
-        subs = self._subs(result)
-        assert len(subs) == 1, [(o.kind, o.status) for o in result.obligations]
-        o = subs[0]
+        assert self._subs(result) == [], result.obligations
+        binds = [o for o in result.obligations if o.kind == "nat_bind"]
+        assert len(binds) == 1, [(o.kind, o.status) for o in result.obligations]
+        o = binds[0]
         assert o.status == "violated", o.status
-        assert o.error_code == "E502", o.error_code
+        assert o.error_code == "E503", o.error_code
         assert o.fn_name == "litnat_387", o.fn_name
         assert o.counterexample, o.counterexample
 
-    def test_natslot_minus_literal_origin_or_left(self) -> None:
-        """``@Nat.0 - 1``: left SlotRef has @Nat origin, right IntLit does not.
-        The mirror of the previous test — pins the LEFT disjunct of the OR.
-        Guarded by ``@Nat.0 >= 1`` so it verifies, isolating the gate's
-        existence (one ``nat_sub``, verified) from the discharge."""
+    def test_natslot_minus_literal_is_an_int_subtraction(self) -> None:
+        """``@Nat.0 - 1``: the mirror of the previous test.  Guarded by
+        ``@Nat.0 >= 1``, its narrowing into the `@Nat` return verifies: no
+        ``nat_sub``, one ``nat_bind``, verified."""
         result = _verify("""
 private fn natlit_387(@Nat -> @Nat)
   requires(@Nat.0 >= 1) ensures(true) effects(pure)
 { @Nat.0 - 1 }
 """)
-        subs = self._subs(result)
-        assert len(subs) == 1, [(o.kind, o.status) for o in result.obligations]
-        o = subs[0]
+        assert self._subs(result) == [], result.obligations
+        binds = [o for o in result.obligations if o.kind == "nat_bind"]
+        assert len(binds) == 1, [(o.kind, o.status) for o in result.obligations]
+        o = binds[0]
         assert o.status == "verified", o.status
         assert o.error_code == "", o.error_code
         assert o.fn_name == "natlit_387", o.fn_name
@@ -194,14 +192,13 @@ private fn blocksub_387(@Nat, @Nat -> @Nat)
         assert subs[0].status == "violated", subs[0].status
         assert subs[0].error_code == "E502", subs[0].error_code
 
-    def test_has_nat_origin_recurses_index_element(self) -> None:
-        """``arr[0] - arr[1]`` on ``@Array<Nat>`` (length >= 2): array indexing
-        carries @Nat provenance only because ``_has_nat_origin``'s IndexExpr
-        branch (4518-4526) consults the resolved ELEMENT type — it cannot
-        recurse on the ``@Array`` operand, which is not itself @Nat.  Drop that
-        branch and the underflow is silently skipped (CR #756).  Both indices
-        in-bounds → the obligation is the genuine value comparison (violated:
-        ``arr[0] < arr[1]`` is possible)."""
+    def test_an_index_element_is_a_nat_operand(self) -> None:
+        """``arr[0] - arr[1]`` on ``@Array<Nat>`` (length >= 2): an array
+        element is a `@Nat` operand because ``_is_nat_typed`` consults its
+        resolved ELEMENT type — the ``@Array`` operand is not itself @Nat.
+        Drop that and the underflow is silently skipped (CR #756).  Both
+        indices in-bounds → the obligation is the genuine value comparison
+        (violated: ``arr[0] < arr[1]`` is possible)."""
         result = _verify("""
 public fn arrsub_387(@Array<Nat> -> @Nat)
   requires(array_length(@Array<Nat>.0) >= 2)

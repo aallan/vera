@@ -187,7 +187,7 @@ _ID = ("private forall<T> fn id(@T -> @T)\n  requires(true)\n"
        "  ensures(true)\n  effects(pure)\n{\n  @T.0\n}\n")
 _BIG = _fn("big(@Nat -> @Nat)", "@Nat.0")
 _TWICE = _fn("twice(@Int -> @Int)", "@Int.0 * 2")
-_U64_MAX = 18446744073709551615
+_I64_MAX = 2 ** 63 - 1
 
 
 class TestTheReportedPrograms:
@@ -299,14 +299,15 @@ class TestTheReportedPrograms:
     ))
     def test_1580_a_piped_nat_widening(self, fn: str, body: str,
                                        tmp_path: Path) -> None:
-        """Obligated as `nat_to_int_coerce`, and guarded: `u64.MAX` traps
-        instead of coming back as -1."""
+        """The piped call widens as the direct one does, a no-op that
+        records and checks nothing, so the top of the range comes back as
+        itself.  (On the u64 `Nat` it was obligated as `nat_to_int_coerce`
+        and guarded, and the pipe had lost both.)"""
         built = _single(tmp_path, _with(_BIG, main=_fn(
             f"{fn}(@Nat -> @Int)", body, vis="public")))
-        assert (fn, "nat_to_int_coerce", "tier3") in {
-            o[:3] for o in built.obligations}, built.obligations
-        ran = _value(built, fn, [_U64_MAX])
-        assert ran[0] == "trap", ran
+        assert {o[1] for o in built.obligations if o[0] == fn} == {
+            "requires", "ensures"}, built.obligations
+        assert _value(built, fn, [_I64_MAX]) == ("ok", _I64_MAX)
         assert _value(built, fn, [42]) == ("ok", 42)
 
     def test_1578_a_pipe_as_a_match_scrutinee(self, tmp_path: Path) -> None:

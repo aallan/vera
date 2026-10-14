@@ -6,10 +6,11 @@
 -- ch08_builtin_tuple_redefinition_rejected for `Tuple`); this one reserves
 -- the constructor name, which code generation keys separately: constructor
 -- layouts are flattened by name across every ADT, so this declaration's
--- fixed layout displaced the built-in carrier's and silently disabled the
--- `@Nat` -> `@Int` widening guard on a genuine built-in tuple construction
--- elsewhere in the same program. A `Bool` payload is deliberate: an `Int`
--- one re-guards the component by coincidence and hides the hole.
+-- fixed layout displaced the built-in carrier's and, while `@Nat` was a
+-- u64, silently disabled the `@Nat` -> `@Int` widening guard on a genuine
+-- built-in tuple construction elsewhere in the same program. A `Bool`
+-- payload is deliberate: an `Int` one re-guarded the component by
+-- coincidence and hid the hole.
 private data ZzBox {
   Tuple(Bool)
 }

@@ -394,15 +394,12 @@ class ClosureLiftingMixin:
         # #798: resolved-type side-table for the integer-overflow guard's
         # Int/Nat operand classifier, inside closure bodies too.
         ctx.set_expr_semantic_types(self._expr_semantic_types)
-        # #820: target-type side-table for the @Nat -> @Int widening guard's
+        # #820: target-type side-table for the narrowing guards'
         # per-component target-type recovery, inside closure bodies too.
         ctx.set_expr_target_types(self._expr_target_types)
         # #747: per-parameter concrete-@Nat flags for the call-site
         # runtime narrowing guard inside closure bodies too.
         ctx.set_fn_nat_params(self._fn_nat_params)
-        # #813: per-parameter concrete-@Int flags for the call-site
-        # runtime @Nat -> @Int widening guard inside closure bodies too.
-        ctx.set_fn_int_params(self._fn_int_params)
         # #754: per-formal base type names for every effect
         # operation, so an op call site guards its narrowing
         # arguments the way a function call site does.
@@ -933,21 +930,6 @@ class ClosureLiftingMixin:
                             *ret_guard,
                             f"local.get {ret_local}",
                         ]
-
-        # #820: a @Nat closure body widening into an @Int closure RETURN
-        # reinterprets above i64.MAX (u64.MAX -> -1) — the definition-side dual
-        # of the closure-argument guard (`_translate_apply_fn`).  The verifier
-        # obligates this shallow-syntactically (the AnonFn body is opaque to its
-        # SMT layer, so it records tier3), and codegen guards the body's @Int
-        # return value here.  Fires only when the declared return is @Int and the
-        # body is intrinsically @Nat (`_result_is_nat`) — never a genuine @Int
-        # body (which may be legitimately negative).  The #984 narrowing dual
-        # is guarded per-leaf during body translation above (`_nat_return_leaf_ids`),
-        # not as a whole-body wrap here — see that block for why.
-        if (ctx._type_expr_base_is_int(anon_fn.return_type)
-                and ctx._result_is_nat(anon_fn.body)):
-            body_instrs = ctx._emit_int_widen_guard(
-                body_instrs, at=anon_fn.body)
 
         # Propagate host-import tracking from closure ctx to module level
         self._map_ops_used.update(ctx._map_ops_used)

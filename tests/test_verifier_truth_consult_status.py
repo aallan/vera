@@ -269,7 +269,6 @@ def _opaque_program(name: str) -> str:
     return _program(params, body.replace("@Int.0", f"({_OPAQUE_INT})"))
 
 
-
 def _traps_on_negative(tmp_path: Path, name: str) -> bool:
     """Whether the compiled program traps when the argument is negative.
 
@@ -347,12 +346,13 @@ def test_nat_arg_guard_parity(tmp_path: Path, name: str) -> None:
         )
 
     # THE ARTIFACT IS THE ORACLE — the program is run on the value the guard
-    # exists to catch.  A WAT `unreachable` delta was the first reading and it
-    # is confounded: for `nat_to_int` the body IS the argument, so declaring
-    # the parameter `@Nat` in the control also removes the `@Nat -> @Int`
-    # RETURN-widening guard, and the delta measures both boundaries at once.
-    # That is the same confound in the other direction as the control which
-    # rewrote the return type (PR review); running it has no such ambiguity.
+    # exists to catch.  A WAT `unreachable` delta was the first reading, and
+    # on the u64 `Nat` it was confounded: for `nat_to_int` the body IS the
+    # argument, so declaring the parameter `@Nat` in the control also
+    # removed the `@Nat -> @Int` RETURN-widening guard, and the delta
+    # measured both boundaries at once.  That was the same confound in the
+    # other direction as the control which rewrote the return type (PR
+    # review); running it has no such ambiguity.
     codegen_guards = _traps_on_negative(tmp_path, name)
 
     result = _verify(tmp_path, _opaque_program(name), name=f"{name}_v.vera")
@@ -539,14 +539,9 @@ def test_every_obligation_kind_is_classified() -> None:
         "assert", "decreases", "ensures", "requires",
     ], sorted(_CONTRACT_KINDS)
     assert sorted(safety) == [
-        # `decreases_bound` is a per-site SAFETY guard, not a demoted
-        # contract: a range fact about one measure component, backed by a
-        # runtime check, exactly like `nat_to_int_coerce`.  The contract it
-        # is a premise of — `decreases` — is classified separately and keeps
-        # its own tier.
-        "call_pre", "decreases_bound", "div_zero", "float_to_int_domain",
+        "call_pre", "div_zero", "float_to_int_domain",
         "index_bounds", "int_overflow", "nat_bind", "nat_sub",
-        "nat_to_int_coerce", "refine_bind", "state_decl",
+        "refine_bind", "state_decl",
     ], (
         "a new ObligationKind appeared — decide whether a Tier-3 instance of "
         f"it means a DEMOTED CONTRACT (add to _CONTRACT_KINDS) or a per-site "
@@ -712,37 +707,6 @@ public fn use_bool(@Bool -> @Bool)
     assert result["verification"]["assumptions"] == 1, result["verification"]
 
 
-def test_the_widening_reason_forwards_every_non_verdict() -> None:
-    """A demotion says which event demoted it — including `disclosed`.
-
-    `_int_widen_undischarged_reason` forwarded `unknown` and `opaque` to
-    `_undecided_reason` and let everything else fall through to its default
-    sentence, which describes an unconstrained `@Nat` leaving countermodels on
-    both sides.  That is a fact about the PROGRAM, and it told a reader to go
-    bound a value.  A `disclosed` widening is a fact about the PROOF — the
-    goal holds only from something this run could neither prove nor guard —
-    so inheriting that text sent the reader to fix the wrong thing, the exact
-    misattribution `_undecided_reason` was factored out to prevent.
-
-    Asserted against the DEFAULT rather than for a keyword, so a future
-    status that silently inherits the default fails here.
-    """
-    from vera.verifier import ContractVerifier
-
-    default = ContractVerifier._int_widen_undischarged_reason(
-        "violated", "violated",
-    )
-    for status in ("unknown", "opaque", "disclosed"):
-        reason = ContractVerifier._int_widen_undischarged_reason(
-            status, "violated",
-        )
-        assert reason != default, (
-            f"a {status!r} widening inherits the unconstrained-@Nat text, "
-            f"which names a program problem for a proof event"
-        )
-        assert reason == ContractVerifier._undecided_reason(status)
-
-
 _DISCLOSED_CALL_PRE = """\
 public fn mk(@Int -> @Option<Nat>)
   requires(true) ensures(true) effects(pure)
@@ -815,27 +779,21 @@ public fn caller(@Int -> @Int)
     assert pres and pres[0]["status"] == "violated", pres
 
 
-def test_the_guard_question_uses_codegen_s_nat_origin_oracle() -> None:
-    """The verifier and codegen must ask the @Nat-provenance question alike.
+def test_the_guard_question_is_answered_as_codegen_answers_it() -> None:
+    """The verifier's `guarded` claim for a call argument is what the module
+    holds.
 
     `narrows_into_nat` takes its oracles as PARAMETERS precisely so the two
     sides can supply their own type readings while sharing one rule.  A
-    constant `False` stood in for the verifier's @Nat-provenance oracle,
-    justified in a comment as conservative.  It is not: for
-    `nat_to_int(@Nat.0 - 1)` the constant answers "this narrows" (so a guard
-    is claimed) while codegen's `_has_nat_origin_codegen` suppresses the
-    underflow leaf and emits none — a claimed guard that is not in the
-    module, which is #1362 itself, in the code that fixes #1362.
-
-    Asserted as AGREEMENT between the two oracles rather than against a
-    hardcoded verdict, so the cell keeps meaning if the rule changes.  It is
-    pinned here, at the derivation, rather than through a program: no shape
-    was found where this alone flips an obligation's reported status, because
-    the site records no `nat_bind` for a @Nat-origin argument by another
-    route.  A divergence that is currently masked is still a divergence — the
-    masking is not part of either side's contract.
+    constant `False` stood in for the verifier's @Nat-subtraction oracle
+    once, and claimed a guard the module did not hold (#1362).  Here the
+    claim is held to the compiled module itself: `nat_to_int(@Nat.0 - 1)`'s
+    argument is an `@Int` subtraction (the literal is an `Int`, spec §4.2),
+    so it narrows into `nat_to_int`'s `@Nat` and code generation guards it.
+    Asked of a verifier built with no checker tables, so its own readings
+    answer — a literal read as a `@Nat` would make it a guarded `@Nat`
+    subtraction, which narrows nothing.
     """
-    from vera import narrowing
     from vera.parser import parse
     from vera.transform import transform
 
@@ -848,26 +806,16 @@ public fn f(@Nat -> @Int)
     body = fn.body
     call = getattr(body, "expr", None) or body
     arg = call.args[0]
-    def ret(c: object) -> str | None:
-        """The declared-return oracle, standing in for the registry lookup."""
-        return "Nat" if getattr(c, "name", "") == "nat_to_int" else None
-
-    # Codegen's reading: a @Nat-origin subtraction has no underflow leaf to
-    # guard, so nothing narrows here.
-    codegen_says = narrowing.narrows_into_nat(arg, ret, lambda _e: True)
-    # The constant that shipped, which is what the fix removed.
-    constant_says = narrowing.narrows_into_nat(arg, ret, lambda _e: False)
-    assert codegen_says != constant_says, (
-        "the shape no longer distinguishes the two oracles, so this cell "
-        "cannot show the divergence it exists for — pick a new shape"
-    )
+    module = pipeline.compile(source).result
+    assert pipeline.checks(module, kind="nat_guard", function="f"), (
+        "code generation no longer guards this argument")
 
     from vera.verifier import ContractVerifier
 
     verifier = ContractVerifier(source=source, file="f.vera")
-    assert verifier._call_arg_nat_guarded("nat_to_int", arg) == codegen_says, (
-        "the verifier's `guarded` claim disagrees with codegen's own "
-        "@Nat-provenance reading of the same expression"
+    assert verifier._call_arg_nat_guarded("nat_to_int", arg) is True, (
+        "the verifier's `guarded` claim disagrees with the guard code "
+        "generation emits for the same argument"
     )
 
 
@@ -1043,26 +991,6 @@ public fn f(@Int -> @Int)
     fn="f", arg="-5", trap_marker="Refinement violation",
 )
 
-_GENERIC_FIELD = _GuardShape(
-    kind="nat_to_int_coerce",
-    classify_src="""\
-public fn gf(@Nat -> @Int)
-  requires(true) ensures(true) effects(pure)
-{
-  let @Option<Int> = Some(@Nat.0);
-  match @Option<Int>.0 { Some(@Int) -> @Int.0, None -> 0 }
-}
-""",
-    run_src="""\
-public fn gf(@Nat -> @Int)
-  requires(true) ensures(true) effects(pure)
-{
-  let @Option<Int> = Some(@Nat.0);
-  match @Option<Int>.0 { Some(@Int) -> @Int.0, None -> 0 }
-}
-""",
-    fn="gf", arg="18446744073709551615", trap_marker="i64.MAX",
-)
 
 _NONPLAIN_BASE = _GuardShape(
     kind="refine_bind",
@@ -1122,62 +1050,6 @@ public fn f(@Int -> @Int)
     fn="f", arg="-5", trap_marker="Negative value bound into a @Nat slot",
 )
 
-_MEASURE_RANGE = _GuardShape(
-    kind="decreases_bound",
-    classify_src="""\
-private fn size(@Nat -> @Nat)
-  requires(true) ensures(true) effects(pure)
-{
-  @Nat.0
-}
-
-public fn walk(@Nat -> @Nat)
-  requires(true) ensures(true) decreases(size(@Nat.0)) effects(pure)
-{
-  if @Nat.0 == 0 then { 0 } else { walk(@Nat.0 / 2) }
-}
-""",
-    run_src="""\
-private fn size(@Nat -> @Nat)
-  requires(true) ensures(true) effects(pure)
-{
-  @Nat.0
-}
-
-public fn walk(@Nat -> @Nat)
-  requires(true) ensures(true) decreases(size(@Nat.0)) effects(pure)
-{
-  if @Nat.0 == 0 then { 0 } else { walk(@Nat.0 / 2) }
-}
-""",
-    fn="walk", arg="9223372036854775808", trap_marker="i64 range",
-)
-
-_TUPLE_DESTRUCTURE = _GuardShape(
-    kind="nat_to_int_coerce",
-    classify_src="""\
-public fn td(@Nat -> @Int)
-  requires(true) ensures(true) effects(pure)
-{
-  let Tuple<@Int, @Int> =
-    if @Nat.0 > 0 then { Tuple(@Nat.0, @Nat.0) }
-    else { Tuple(@Nat.0, @Nat.0) };
-  @Int.1
-}
-""",
-    run_src="""\
-public fn td(@Nat -> @Int)
-  requires(true) ensures(true) effects(pure)
-{
-  let Tuple<@Int, @Int> =
-    if @Nat.0 > 0 then { Tuple(@Nat.0, @Nat.0) }
-    else { Tuple(@Nat.0, @Nat.0) };
-  @Int.1
-}
-""",
-    fn="td", arg="18446744073709551615", trap_marker="i64.MAX",
-)
-
 
 _ARRAY_ELEMENT = _GuardShape(
     kind="refine_bind",
@@ -1215,13 +1087,14 @@ public fn f(@Int -> @Int)
 )
 
 
+#: The widening shapes the roster held on the u64 `Nat` (#757's generic
+#: field, #1416's tuple destructure) and #1222's measure range check guard
+#: nothing now: a `@Nat` is an `@Int` at the value level, and a `@Nat` measure
+#: an i64.
 _GUARD_SHAPES: dict[str, _GuardShape] = {
-    "1416_tuple_destructure": _TUPLE_DESTRUCTURE,
     "765_refined_bind": _REFINED_BIND,
-    "757_generic_field": _GENERIC_FIELD,
     "1036_nonplain_base": _NONPLAIN_BASE,
     "754_op_argument": _OP_ARGUMENT,
-    "1222_measure_range": _MEASURE_RANGE,
     "1426_array_element": _ARRAY_ELEMENT,
 }
 

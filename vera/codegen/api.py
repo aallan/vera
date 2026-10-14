@@ -101,6 +101,15 @@ class CompileResult:
     random_ops_used: set[str] = field(default_factory=set)  # #465
     math_ops_used: set[str] = field(default_factory=set)  # #467
     fn_param_types: dict[str, list[str]] = field(default_factory=dict)
+    # Parallel to `fn_param_types`: whether each lowered parameter is a
+    # `@Nat` (through aliases and refinements), so `execute` holds a raw
+    # argument to the range its type has — `0 .. 2^63 - 1` for a `@Nat`,
+    # the i64 range for any other `i64` (spec §2.2) — instead of letting
+    # the host wrap it.
+    fn_param_nat: dict[str, list[bool]] = field(default_factory=dict)
+    # Parallel to `fn_param_types` too: whether each lowered parameter is a
+    # `@Byte`, an `i32` `execute` holds to `0 .. 255`.
+    fn_param_byte: dict[str, list[bool]] = field(default_factory=dict)
     # Functions whose Vera return type is `String` (after alias
     # resolution).  Used by ``execute()`` to decode the (ptr, len)
     # pair returned by such functions back into a Python `str` for
@@ -276,15 +285,13 @@ def compile(
     ``expr_semantic_types`` is the checker's resolved-type side-table
     (``CheckerArtifacts.expr_semantic_types``), keyed by ``ast.span_key``.
     The #798 integer-overflow guard consults it to classify an arithmetic
-    operand as ``@Int`` (i64) vs ``@Nat`` (u64) using the *same* resolved
-    type the verifier's ``int_overflow`` obligation uses, so the runtime
-    guard fires at exactly the sites — and with the exact signed/unsigned
-    range — the verifier obligates (keeping codegen in lockstep with
-    ``vera/verifier.py``).  When omitted (a ``transform -> compile`` caller
-    that skipped typecheck), the guard falls back to the AST-only classifier,
-    which is sound for slot-/call-typed operands but cannot disambiguate a
-    bare-literal operand's Int-vs-Nat context — such callers should thread
-    the table to stay precise.
+    operand as ``@Int`` or ``@Nat`` using the *same* resolved type the
+    verifier's ``int_overflow`` obligation uses, so the runtime guard fires
+    at exactly the sites the verifier obligates (keeping codegen in lockstep
+    with ``vera/verifier.py``).  When omitted (a ``transform -> compile``
+    caller that skipped typecheck), the guard falls back to the AST-only
+    classifier, which reads each operand's declaration the way the checker
+    does.
 
     ``expr_target_types`` is the checker's *target*-type side-table
     (``CheckerArtifacts.expr_target_types``): the ``expected`` type each
@@ -292,10 +299,9 @@ def compile(
     codegen dual of the verifier's ``_target_type_of`` (#747), and the #820
     enabler: it lets code generation recover the per-component *target* type
     at a construction / array / if-join site — which the erased WASM layout
-    cannot — so the @Nat -> @Int widening guard (#813) fires at a tuple
-    component, array element, and heterogeneous-arm slot exactly where the
-    verifier obligates it.  Omitted callers keep the pre-#820 behaviour (those
-    per-component sites stay E531-disclosed, never falsely runtime-counted).
+    cannot — so the narrowing guard fires at a tuple component and an array
+    element exactly where the verifier obligates it.  Omitted callers keep
+    the pre-#820 behaviour.
 
     ``module_artifacts`` (#987) maps each resolved module's path to ITS own
     ``(expr_semantic_types, expr_target_types)`` pair (from
@@ -303,8 +309,8 @@ def compile(
     bare span with no file identity, so an imported body compiled into this flat
     WASM module (Pass 2.5 / 2.6) cannot recover its component targets from them.
     Codegen threads the matching entry when compiling each module's body, so the
-    @Nat -> @Int widening guard fires at the array-element / tuple-construction
-    sites through the import door.  A module absent from this map (or an omitted
+    narrowing guards fire at the array-element / tuple-construction sites
+    through the import door.  A module absent from this map (or an omitted
     argument) falls back to the pre-#987 behaviour: that imported body's
     span-keyed lookups are suppressed (never wrong-file-keyed), so those
     component sites stay unguarded rather than risk a spurious guard.
@@ -367,6 +373,49 @@ def dropped_entry_message(
     return "\n".join(lines)
 
 
+#: The range of each integer parameter type a host argument is held to
+#: (spec §2.2): a `@Nat` is the non-negative half of the i64 an `@Int` is,
+#: and a `@Byte` the eight bits its i32 holds.
+_I64_MIN = -(2**63)
+_I64_MAX = 2**63 - 1
+_ARGUMENT_RANGES: dict[str, tuple[str, int, int]] = {
+    "@Int": ("an @Int", _I64_MIN, _I64_MAX),
+    "@Nat": ("a @Nat", 0, _I64_MAX),
+    "@Byte": ("a @Byte", 0, 255),
+}
+
+
+def _check_int_argument(raw: str, value: int, type_name: str) -> None:
+    """Refuse a raw integer argument outside its parameter type's range.
+
+    A host hands an export an i64 (an i32 for a `@Byte`), and one outside
+    the type's range would be wrapped into it — `2^64` into 0, `-1` into a
+    `@Nat`, 256 into a `@Byte` — and enter the function as a value its type
+    does not hold.  So `vera run --fn f -- …` refuses it before the call."""
+    article, lo, hi = _ARGUMENT_RANGES[type_name]
+    if lo <= value <= hi:
+        return
+    raise RuntimeError(
+        f"Argument {raw!r} is out of range for parameter type {type_name}: "
+        f"{article} holds {lo} .. {hi}."
+    )
+
+
+def _argument_range_name(
+    result: "CompileResult", fn_name: str, index: int, wasm_type: str,
+) -> str | None:
+    """The integer type whose range parameter *index* of *fn_name* holds,
+    lowered to *wasm_type*: `@Nat` or `@Int` for an i64, `@Byte` for an
+    i32 the signature declares a `@Byte`, and None for any other."""
+    if wasm_type == "i64":
+        nat = result.fn_param_nat.get(fn_name, [])
+        return "@Nat" if index < len(nat) and nat[index] else "@Int"
+    byte = result.fn_param_byte.get(fn_name, [])
+    if wasm_type == "i32" and index < len(byte) and byte[index]:
+        return "@Byte"
+    return None
+
+
 def execute(
     result: CompileResult,
     fn_name: str | None = None,
@@ -379,6 +428,7 @@ def execute(
     capture_stderr: bool = False,
     tee_stdout: bool = False,
     http_request: "HttpRequestData | None" = None,
+    check_int_args: bool = True,
 ) -> ExecuteResult:
     """Execute a function from a compiled WASM module.
 
@@ -413,6 +463,12 @@ def execute(
         JSON mode and tests, broken for animations and TUIs).
         ``cmd_run`` text mode opts in so interactive output appears
         in real time (#543).
+    check_int_args : bool
+        If *True* (the default), an integer in ``args`` outside its
+        parameter type's range (a ``@Nat`` holds ``0 .. 2^63 - 1``, an
+        ``@Int`` the i64 range, a ``@Byte`` ``0 .. 255``) is refused before
+        the call, as a raw argument always is.  *False* hands it over as an
+        untrusted host would, to exercise a function's own entry guard.
     """
     if not result.ok:
         raise RuntimeError("Cannot execute: compilation had errors")
@@ -1197,10 +1253,16 @@ def execute(
             return ptr, len(encoded)
 
         parsed: list[int | float] = []
-        for raw, wasm_type in zip(raw_args, vera_params, strict=True):
+        for index, (raw, wasm_type) in enumerate(
+                zip(raw_args, vera_params, strict=True)):
+            range_name = _argument_range_name(
+                result, fn_name or "", index, wasm_type)
             try:
                 if wasm_type == "i64":
-                    parsed.append(int(raw))
+                    int_arg = int(raw)
+                    if range_name is not None:
+                        _check_int_argument(raw, int_arg, range_name)
+                    parsed.append(int_arg)
                 elif wasm_type == "f64":
                     parsed.append(float(raw))
                 elif wasm_type == "i32":
@@ -1210,7 +1272,10 @@ def execute(
                     elif raw.lower() in ("false", "no", "0"):
                         parsed.append(0)
                     else:
-                        parsed.append(int(raw))
+                        int_arg = int(raw)
+                        if range_name is not None:
+                            _check_int_argument(raw, int_arg, range_name)
+                        parsed.append(int_arg)
                 elif wasm_type == "i32_pair":
                     ptr, length = _alloc_string_arg(raw)
                     parsed.extend([ptr, length])
@@ -1247,6 +1312,27 @@ def execute(
         )
         call_args = [request_ptr]
         given = 1
+
+    if raw_args is None and http_request is None and check_int_args:
+        # A programmatic integer is held to its parameter's range as a raw
+        # one is: outside it, the host would wrap it into the i64 slot.  A
+        # parameter takes its lowered width in WASM arguments (an `i32_pair`
+        # String or Array takes two), so each argument's range is read from
+        # the Vera parameter it belongs to.
+        vera_params = result.fn_param_types.get(fn_name or "", [])
+        widths = [2 if t == "i32_pair" else 1 for t in vera_params]
+        if sum(widths) == given == expected:
+            position = 0
+            for index, (wasm_type, width) in enumerate(
+                    zip(vera_params, widths)):
+                call_arg = call_args[position]
+                position += width
+                range_name = _argument_range_name(
+                    result, fn_name or "", index, wasm_type)
+                if (range_name is not None
+                        and isinstance(call_arg, int)
+                        and not isinstance(call_arg, bool)):
+                    _check_int_argument(str(call_arg), call_arg, range_name)
 
     if given != expected:
         exports_str = ", ".join(result.exports)

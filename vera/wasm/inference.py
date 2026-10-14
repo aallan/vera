@@ -2361,14 +2361,14 @@ class InferenceMixin:
         self, closure_arg: ast.Expr,
     ) -> tuple[ast.TypeExpr, ...] | None:
         """Declared *parameter* TypeExprs of the closure an ``apply_fn`` applies
-        (#820) — the formal-type recovery the @Nat -> @Int argument widening
+        (#820) — the formal-type recovery the @Int -> @Nat argument narrowing
         guard needs, the parameter dual of :py:meth:`_closure_arg_return_type`.
 
         A ``SlotRef`` is resolved through the shared
         :func:`resolve_fn_type_alias` (transitively to the terminal ``FnType``),
         an inline ``AnonFn`` yields its declared params directly; any other
-        shape yields ``None``.  The closure *return* direction (widening #820,
-        narrowing #984) is handled separately — those gates read the
+        shape yields ``None``.  The closure *return* direction (narrowing
+        #984) is handled separately — those gates read the
         ``AnonFn``'s own ``return_type`` in ``_compile_lifted_closure``, not a
         recovered formal — so this argument-side recovery stands alone.
         """
@@ -2386,19 +2386,9 @@ class InferenceMixin:
             return tuple(closure_arg.params)
         return None
 
-    def _type_expr_base_is_int(self, te: ast.TypeExpr) -> bool:
-        """True iff *te* resolves (through aliases / refinements) to ``@Int``
-        (#820).  Alias-aware (`type Age = Int`), so a closure formal declared
-        with an @Int alias is guarded like a bare @Int.  Deliberately narrow —
-        a @Nat / generic / other formal is not @Int and must not be guarded."""
-        name = self._type_expr_to_slot_name(te)
-        if name is None:
-            return False
-        return self._resolve_base_type_name(name) == "Int"
-
     def _type_expr_base_is_nat(self, te: ast.TypeExpr) -> bool:
-        """True iff *te* resolves (through aliases) to ``@Nat`` (#984) — the
-        narrowing dual of :py:meth:`_type_expr_base_is_int`.  Alias-aware
+        """True iff *te* resolves (through aliases) to ``@Nat`` (#984).
+        Alias-aware
         (`type Count = Nat`), so a closure return declared with a @Nat alias is
         guarded like a bare @Nat.  A refinement over @Nat also resolves to
         ``Nat`` here; the closure-return narrow gate additionally excludes

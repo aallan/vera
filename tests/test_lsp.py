@@ -1317,9 +1317,10 @@ class TestSpeculativeEdit:
         assert out["diagnostics"] == 0
 
     def test_breaking_edit_reports_newly_undischarged(self) -> None:
-        """Weakening the precondition makes the @Nat subtraction
-        violated — the keeps/drops signal the #222 design notes call
-        the one thing no generic language server can produce."""
+        """Weakening the precondition makes the narrowing of `@Nat.0 - 1`
+        (an `@Int` subtraction, spec §4.4) into the `@Nat` return violated
+        — the keeps/drops signal the #222 design notes call the one thing no
+        generic language server can produce."""
         session, baseline = self._baseline()
         broken = SPEC_BASE.replace(
             "requires(@Nat.0 >= 1)", "requires(true)",
@@ -1329,7 +1330,7 @@ class TestSpeculativeEdit:
         )
         und = out["proof_delta"]["newly_undischarged"]
         assert any(
-            i["kind"] == "nat_sub" and i["status_after"] == "violated"
+            i["kind"] == "nat_bind" and i["status_after"] == "violated"
             for i in und
         )
         # The edit must NOT have been committed anywhere — the session
@@ -1344,8 +1345,8 @@ class TestSpeculativeEdit:
 
     def test_strengthening_edit_reports_newly_discharged(self) -> None:
         """The reverse direction: starting from the weak (violated)
-        state, the speculative strong contract discharges the
-        subtraction obligation."""
+        state, the speculative strong contract discharges the narrowing
+        obligation."""
         weak = SPEC_BASE.replace("requires(@Nat.0 >= 1)", "requires(true)")
         session = VerificationSession()
         # Through `analyze`, as the server does: a baseline built by a
@@ -1359,15 +1360,15 @@ class TestSpeculativeEdit:
             session, baseline, SPEC_URI, SPEC_BASE,
         )
         dis = out["proof_delta"]["newly_discharged"]
-        assert any(i["kind"] == "nat_sub" for i in dis), dis
-        # `nat_sub` is the obligation that SURVIVES the edit — same
+        assert any(i["kind"] == "nat_bind" for i in dis), dis
+        # `nat_bind` is the obligation that SURVIVES the edit — same
         # expression, same site, only its provability changes — so it
         # must be re-proved rather than replaced.  A baseline keyed
         # apart from the speculative run reports it as removed, which
         # is what distinguishes the two.  (`requires` legitimately does
         # appear in `removed`: this edit rewrites that contract.)
         removed = out["proof_delta"]["removed"]
-        assert not any(i["kind"] == "nat_sub" for i in removed), removed
+        assert not any(i["kind"] == "nat_bind" for i in removed), removed
 
     def test_parse_error_reports_not_ok(self) -> None:
         session, baseline = self._baseline()
@@ -1856,7 +1857,7 @@ class TestProposeEditGate:
         assert should is False
         assert response["applied"] is False
         und = response["proof_delta"]["newly_undischarged"]
-        assert any(i["kind"] == "nat_sub" for i in und)
+        assert any(i["kind"] == "nat_bind" for i in und)
 
     def test_error_edit_refused(self) -> None:
         session, baseline = self._baseline()

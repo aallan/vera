@@ -19,7 +19,9 @@ place that already knows the obligation exists rather than at the symptom:
 * #754 — an effect operation's argument reached no per-formal type, so a
   narrowing into a concrete `@Nat` / refined formal was unguarded.
 * #1222 — the `decreases` measure is evaluated in machine i64 while the
-  prover reasons over unbounded integers.
+  prover reasons over unbounded integers.  A `@Nat` holds `0 .. i64.MAX`
+  (v0.2.3), so the two readings agree on every `@Nat` measure, and the
+  range check this site had on the u64 `Nat` is gone.
 
 Every cell here is the issue's own reproducer, run on a value chosen so that
 no fallback can coincide with the right answer: a NEGATIVE `Int` into every
@@ -380,6 +382,8 @@ public fn f(@Int -> @Int)
 """
 
 _U64_MAX = "18446744073709551615"
+_I64_MAX = "9223372036854775807"
+_I64_MAX_PLUS_1 = "9223372036854775808"
 
 #: What a tripped `@Int` -> `@Nat` narrowing guard says since #754 gave it a
 #: dedicated trap kind.  Asserted instead of the bare instruction name
@@ -430,33 +434,34 @@ class TestGenericInstantiatedFieldsAreGuarded757:
                    name="n757ok.vera")
         assert out.strip() == "7", out
 
-    def test_a_nat_above_i64_max_into_a_generic_int_field_traps(
+    def test_a_nat_at_the_top_of_its_range_into_a_generic_int_field(
         self, tmp_path: Path,
     ) -> None:
-        """The widening dual, at the only value that distinguishes it.
+        """The widening dual, at the value that distinguishes it.
 
-        u64.MAX is the input because every smaller `@Nat` widens exactly; a
-        guard that never fires and a guard that fires correctly are
-        indistinguishable at 42.  Unguarded, this returned -1.
+        i64.MAX is the largest `@Nat`, and it comes back as itself; a value
+        above it is no `@Nat` and is refused before the call.  On the u64
+        `Nat`, u64.MAX was the input that distinguished a guard, and
+        unguarded it returned -1.
         """
-        out = _run(tmp_path, _757_WIDEN, "--fn", "gf", "--", _U64_MAX,
+        out = _run(tmp_path, _757_WIDEN, "--fn", "gf", "--", _I64_MAX,
                    name="w757.vera")
-        # The WIDEN guard, which names itself since #1438: its trap
-        # classifies as `widen_guard` and its message cites the
-        # `i64.MAX` bound, not the sign guard's `_NAT_GUARD_TRAP`.
-        assert "i64.MAX" in out, (
-            f"u64.MAX widened into a generic `@Int` field silently — the "
-            f"reinterpreted -1 flowed on:\n{out}"
-        )
+        assert out.strip() == _I64_MAX, out
+        over = _run(tmp_path, _757_WIDEN, "--fn", "gf", "--", _U64_MAX,
+                    name="w757u.vera")
+        assert "out of range for parameter type @Nat" in over, over
         out_ok = _run(tmp_path, _757_WIDEN, "--fn", "gf", "--", "42",
                       name="w757ok.vera")
         assert out_ok.strip() == "42", out_ok
 
-    def test_the_obligation_stream_says_guarded(self, tmp_path: Path) -> None:
+    def test_the_widening_has_nothing_to_check(self, tmp_path: Path) -> None:
+        """A `@Nat` is an `@Int` at the value level: the stream records
+        nothing at the widening, and the module checks nothing there."""
         obs, envelope = _obligations(tmp_path, _757_WIDEN, name="ob757.vera")
-        coerce = [o for o in obs if o["kind"] == "nat_to_int_coerce"]
-        assert [o["status"] for o in coerce] == ["tier3"], coerce
+        assert [(o["kind"], o["status"]) for o in obs] == [
+            ("requires", "verified"), ("ensures", "verified")], obs
         _assert_partition(envelope)
+        assert _compiled(tmp_path, _757_WIDEN, "c757.vera").checks() == ()
 
 
 # ===========================================================================
@@ -809,44 +814,22 @@ public fn halve(@Nat -> @Nat)
 }
 """
 
-_1222_BOUNDED = _1222_UNBOUNDED.replace(
-    "requires(true)", "requires(@Nat.0 < 1000)")
 
-_1222_PROVABLY_OUT = _1222_UNBOUNDED.replace(
-    "requires(true)", "requires(@Nat.0 > 9223372036854775807)")
-
-_I64_MAX = "9223372036854775807"
-_I64_MAX_PLUS_1 = "9223372036854775808"
-
-
-class TestDecreasesMeasureFitsTheGuardsRange1222:
-    """The termination proof and the termination check must agree on the
-    value they are talking about.
+class TestANatMeasureIsAnI64_1222:
+    """The termination proof and the termination check agree on the value.
 
     The proof reasons over unbounded integers; the runtime guard compares
-    with `i64.lt_s` / `i64.ge_s`.  A `@Nat` is a u64 in that i64, so above
-    `i64.MAX` it reads NEGATIVE, the guard's non-negativity clause fails, and
-    a program whose termination the verifier PROVED at Tier 1 aborts with
-    "failed to decrease" — a true statement about the machine value and a
-    false one about the program.
-
-    The remedy is disclosure, not a wider comparison: this compiler treats a
-    `@Nat` above `i64.MAX` as an edge it discloses (E530 and E531 exist for
-    exactly that), so widening this one comparison would support a range the
-    rest of the language does not.  The shared fact is obligated instead —
-    Tier 1 where the measure is bounded, Tier 3 with a runtime backstop where
-    it is not, and a loud E536 where it provably does not hold.
+    with `i64.lt_s` / `i64.ge_s`.  A `@Nat` holds `0 .. i64.MAX`, so the two
+    readings agree on every value a `@Nat` measure can take.  On the u64
+    `Nat` a measure above `i64.MAX` read negative in the guard, and a range
+    check of its own (`decreases_bound`, E536, E537) held it to the guard's
+    range.
     """
 
-    def test_the_boundary_is_where_the_two_readings_part(
+    def test_the_top_of_the_range_runs_and_past_it_is_refused(
         self, tmp_path: Path,
     ) -> None:
-        """i64.MAX runs; i64.MAX + 1 does not.
-
-        The pair, not either alone: a guard that rejected both would be
-        indistinguishable from one that rejects everything, and one that
-        accepted both would not be measuring the boundary at all.
-        """
+        """i64.MAX runs; i64.MAX + 1 is no `@Nat`, refused before the call."""
         ok = _run(tmp_path, _1222_UNBOUNDED, "--fn", "halve", "--", _I64_MAX,
                   name="d1222a.vera")
         assert ok.strip() == "0", (
@@ -854,85 +837,14 @@ class TestDecreasesMeasureFitsTheGuardsRange1222:
         )
         over = _run(tmp_path, _1222_UNBOUNDED, "--fn", "halve", "--",
                     _I64_MAX_PLUS_1, name="d1222b.vera")
-        assert "i64 range" in over, (
-            f"a measure past i64.MAX ran, or failed for another reason:\n"
-            f"{over}"
-        )
+        assert "out of range for parameter type @Nat" in over, over
 
-    def test_the_failure_names_the_range_not_the_termination_rule(
-        self, tmp_path: Path,
-    ) -> None:
-        """It reported "failed to decrease", which is the wrong advice.
-
-        The measure decreases perfectly well; what it does not do is fit the
-        i64 the check compares in.  A reader told the metric fails to
-        decrease goes looking for a bug in a recursion that has none.
-        """
-        out = _run(tmp_path, _1222_UNBOUNDED, "--fn", "halve", "--",
-                   _I64_MAX_PLUS_1, name="d1222c.vera")
-        assert "failed to decrease" not in out, (
-            f"the trap still blames the termination rule for a range "
-            f"problem:\n{out}"
-        )
-        assert "@Nat above i64.MAX" in out, out
-
-    def test_an_unbounded_measure_is_a_guarded_tier3(
-        self, tmp_path: Path,
-    ) -> None:
+    def test_the_termination_proof_stands_alone(self, tmp_path: Path) -> None:
         obs, envelope = _obligations(
             tmp_path, _1222_UNBOUNDED, name="d1222v.vera")
-        bounds = [o for o in obs if o["kind"] == "decreases_bound"]
-        assert [o["status"] for o in bounds] == ["tier3"], obs
-        # The termination proof itself is unaffected — it was never wrong.
-        assert [o["status"] for o in obs if o["kind"] == "decreases"] == [
-            "verified"], obs
-        _assert_partition(envelope)
-
-    def test_a_bounded_measure_proves_at_tier_1(self, tmp_path: Path) -> None:
-        """The over-disclosure control.
-
-        Without it, "the obligation exists" is equally satisfied by one that
-        never discharges, which would put every terminating program on Tier 3
-        for a fact most of them establish.
-        """
-        obs, envelope = _obligations(
-            tmp_path, _1222_BOUNDED, name="d1222w.vera")
-        bounds = [o for o in obs if o["kind"] == "decreases_bound"]
-        assert [o["status"] for o in bounds] == ["verified"], obs
-        _assert_partition(envelope)
-
-    def test_a_provably_out_of_range_measure_is_a_loud_error(
-        self, tmp_path: Path,
-    ) -> None:
-        obs, envelope = _obligations(
-            tmp_path, _1222_PROVABLY_OUT, name="d1222x.vera")
-        bounds = [o for o in obs if o["kind"] == "decreases_bound"]
-        assert [(o["status"], o.get("error_code")) for o in bounds] == [
-            ("violated", "E536")], obs
-        assert envelope["ok"] is False
-        assert "E536" in [d.get("error_code") for d in envelope["diagnostics"]]
-        _assert_partition(envelope)
-
-    def test_an_int_measure_records_nothing(self, tmp_path: Path) -> None:
-        """The scope control: only `@Nat` has two readings.
-
-        An `@Int` measure IS the i64 the guard compares in, so there is no
-        fact to obligate and no guard to emit; recording one would put every
-        `@Int`-measured recursion on Tier 3 for nothing, and the guard would
-        false-trip a legitimately negative first activation.
-        """
-        source = """\
-public fn down(@Int -> @Int)
-  requires(@Int.0 >= 0)
-  ensures(true)
-  decreases(@Int.0)
-  effects(pure)
-{
-  if @Int.0 <= 0 then { 0 } else { down(@Int.0 - 1) }
-}
-"""
-        obs, envelope = _obligations(tmp_path, source, name="d1222i.vera")
-        assert not [o for o in obs if o["kind"] == "decreases_bound"], obs
+        assert [(o["kind"], o["status"]) for o in obs] == [
+            ("requires", "verified"), ("ensures", "verified"),
+            ("decreases", "verified")], obs
         _assert_partition(envelope)
 
 
@@ -987,7 +899,6 @@ def _guard_mutations() -> list[tuple]:
     contain WITH the guard and WITHOUT it.  They differ for every entry,
     which is the whole content of the check.
     """
-    from vera.codegen.contracts import ContractsMixin
     from vera.wasm.calls import CallsMixin
     from vera.wasm.data import DataMixin
 
@@ -1016,15 +927,6 @@ def _guard_mutations() -> list[tuple]:
             lambda self, arg, instrs, formals, index: instrs,
             (_754_OP_ARG, "f", [-5]),
             "Negative value bound into a @Nat slot", "ran",
-        ),
-        (
-            # The pre-fix behaviour was not "runs": it was a trap blaming the
-            # termination rule for a measure that decreases perfectly well.
-            "1222 decreases measure range",
-            ContractsMixin, "_dec_measure_bound_check",
-            lambda self, ctx, contract, measured, name, indent="": [],
-            (_1222_UNBOUNDED, "halve", [2 ** 63]),
-            "i64 range", "failed to decrease",
         ),
     ]
 
@@ -1075,115 +977,14 @@ class TestEveryGuardIsLoadBearing:
         )
 
 
-# ---------------------------------------------------------------------------
-# #1222, self-review: the range check does not ride on the CHAIN guard
-# ---------------------------------------------------------------------------
-
-# The chain guard is declined for a function that declares `Exn` (a throw
-# unwinds past the exit restores and would leave stale chain state)...
-_1222_EXN = _1222_UNBOUNDED.replace("effects(pure)", "effects(<Exn<Int>>)", 1)
-
-# ...and for a measure with a component the backend cannot rank, which here is
-# the SIBLING of a `@Nat` component that translates perfectly well (#1177's
-# parameterized-ADT limitation).
-_1222_UNRANKABLE_SIBLING = """\
-private data List<T> {
-  Nil,
-  Cons(T, List<T>)
-}
-
-public fn walk(@Nat, @List<Int> -> @Nat)
-  requires(true)
-  ensures(true)
-  decreases(@Nat.0, @List<Int>.0)
-  effects(pure)
-{
-  if @Nat.0 == 0 then {
-    0
-  } else {
-    walk(@Nat.0 / 2, @List<Int>.0)
-  }
-}
-"""
-
-
-class TestTheRangeCheckSurvivesADeclinedChainGuard1222:
-    """A declined CHAIN guard must not take the RANGE check with it.
-
-    Found reviewing this PR's own first cut, which folded the range check
-    into `_compile_decreases_entry`'s success path.  Three shapes decline the
-    chain guard — an `Exn`-declaring function, an untranslatable component,
-    an ADT component with no structural-rank helper — and every one of them
-    is a statement about state carried ACROSS activations.  A `@Nat`
-    component's range check reads one locally-evaluated value and compares it
-    against a constant; it carries nothing.  So the obligation recorded a
-    guarded Tier 3 for a module with no guard in it at all, which is the
-    exact class of false claim this PR exists to close, introduced by the
-    fix for it.
-    """
-
-    @pytest.mark.parametrize(
-        ("label", "source", "fn"),
-        [
-            ("exn_declared", _1222_EXN, "halve"),
-            ("unrankable_sibling", _1222_UNRANKABLE_SIBLING, "walk"),
-        ],
-        ids=["exn_declared", "unrankable_sibling"],
-    )
-    def test_the_measure_range_is_still_checked(
-        self, label: str, source: str, fn: str, tmp_path: Path,
-    ) -> None:
-        # The premise: this shape really does decline the chain guard, so the
-        # cell is about the range check surviving alone rather than about a
-        # chain guard that happens to cover it.
-        proc = pipeline.cli("compile", "--wat",
-                            str(_write(tmp_path, source, f"{label}_c.vera")), budget_s=_BUDGET_S)
-        assert proc.returncode == 0, proc.stderr[-500:]
-        assert "dec_prev" not in proc.stdout, (
-            f"{label}: the chain guard IS emitted here, so this cell no "
-            f"longer isolates the range check"
-        )
-        assert "i64 range" in proc.stdout, (
-            f"{label}: the chain guard is declined and took the range check "
-            f"with it — the obligation claims a runtime check the module "
-            f"does not contain"
-        )
-
-    def test_the_exn_shape_traps_past_the_boundary_and_runs_below_it(
-        self, tmp_path: Path,
-    ) -> None:
-        """The artifact, not the WAT: the pair that settles it."""
-        over = _run(tmp_path, _1222_EXN, "--fn", "halve", "--",
-                    _I64_MAX_PLUS_1, name="exn1222a.vera")
-        assert "i64 range" in over, over
-        ok = _run(tmp_path, _1222_EXN, "--fn", "halve", "--", "10",
-                  name="exn1222b.vera")
-        assert ok.strip() == "0", ok
-
-    def test_the_obligation_was_already_claiming_this(
-        self, tmp_path: Path,
-    ) -> None:
-        """Both shapes recorded a guarded `tier3` before the guard existed.
-
-        Kept as the statement of what made the gap a defect rather than a
-        missing feature: the claim came first.
-        """
-        for label, source in (("exn", _1222_EXN),
-                              ("sibling", _1222_UNRANKABLE_SIBLING)):
-            obs, envelope = _obligations(
-                tmp_path, source, name=f"{label}_ob.vera")
-            bounds = [o for o in obs if o["kind"] == "decreases_bound"]
-            assert [o["status"] for o in bounds] == ["tier3"], (label, obs)
-            _assert_partition(envelope)
-
-
 # ===========================================================================
 # #1416 — the two Tuple-component sites, from this PR's own review round
 # ===========================================================================
 
-# The narrowing at CONSTRUCTION.  Its widening twin at the same site has read
-# the checker's target-type table since #820; this arm never did, so one
-# field could be guarded and its neighbour not, at one construction.
+# The narrowing at CONSTRUCTION.  On the u64 `Nat` its widening twin at the
+# same site read the checker's target-type table since #820; this arm never
+# did, so one field could be guarded and its neighbour not, at one
+# construction.
 _1416_CONSTRUCT = """\
 private fn snd(@Tuple<Nat, Int> -> @Int)
   requires(true)
@@ -1467,7 +1268,8 @@ class TestTupleComponentSitesAreGuarded1416:
     gains the same reader for a non-literal source, where only a literal one
     was covered.
 
-    The destructure half was observable — it returned a reinterpreted `-1`.
+    The destructure half was observable on the u64 `Nat` — it returned a
+    reinterpreted `-1`.
     The construction half was not: every consumer path is itself guarded (a
     callee's parameter component check, a return component check, the
     destructure), so the negative could not escape. What it was, was an
@@ -1476,18 +1278,26 @@ class TestTupleComponentSitesAreGuarded1416:
     site's own claim true rather than borrowing its neighbours'.
     """
 
-    def test_the_destructure_widening_traps_at_u64_max(
+    def test_the_destructure_widening_reads_the_top_of_the_range(
         self, tmp_path: Path,
     ) -> None:
-        out = _run(tmp_path, _1416_DESTRUCTURE, "--fn", "td", "--", _U64_MAX,
+        """i64.MAX, the largest `@Nat`, read out of a tuple component into
+        an `@Int` binding comes back as itself, with nothing recorded or
+        checked at the widening.  On the u64 `Nat`, u64.MAX came back
+        reinterpreted, and then guarded."""
+        out = _run(tmp_path, _1416_DESTRUCTURE, "--fn", "td", "--", _I64_MAX,
                    name="d1416.vera")
-        assert "i64.MAX" in out, (
-            f"u64.MAX read out of a `@Nat` tuple component into an `@Int` "
-            f"binding returned a reinterpreted value:\n{out}"
-        )
+        assert out.strip() == _I64_MAX, out
         ok = _run(tmp_path, _1416_DESTRUCTURE, "--fn", "td", "--", "42",
                   name="d1416ok.vera")
         assert ok.strip() == "42", ok
+        obs, envelope = _obligations(
+            tmp_path, _1416_DESTRUCTURE, name="d1416_ob.vera")
+        assert [(o["kind"], o["status"]) for o in obs] == [
+            ("requires", "verified"), ("ensures", "verified")], obs
+        _assert_partition(envelope)
+        assert _compiled(tmp_path, _1416_DESTRUCTURE,
+                         "d1416c.vera").checks() == ()
 
     def test_the_construction_narrowing_is_guarded_at_the_store(
         self, tmp_path: Path,
@@ -1501,17 +1311,15 @@ class TestTupleComponentSitesAreGuarded1416:
         compiled = _compiled(tmp_path, _1416_CONSTRUCT, "c1416.vera")
         assert compiled.checks(kind="nat_guard"), (
             "the `@Int` component stored into a `Tuple<Nat, Int>` carries no "
-            "narrowing guard, while its `@Int` neighbour's widening twin at "
-            "the same site does"
+            "narrowing guard"
         )
 
     @pytest.mark.parametrize(
         ("label", "source", "kind"),
         [
             ("construct", _1416_CONSTRUCT, "nat_bind"),
-            ("destructure", _1416_DESTRUCTURE, "nat_to_int_coerce"),
         ],
-        ids=["construct", "destructure"],
+        ids=["construct"],
     )
     def test_the_obligation_no_longer_discloses_unguarded(
         self, label: str, source: str, kind: str, tmp_path: Path,
@@ -1546,21 +1354,16 @@ public fn walk(@Nat -> @Nat)
 """
 
 
-class TestTheRangeCheckDoesNotRunTheMeasureAgain1222:
+class TestADeclinedChainGuardDoesNotRunTheMeasure1222:
     """The decline path may not make an extra evaluation observable.
 
-    Found by CodeRabbit on this PR.  Where the CHAIN guard is emitted the
-    measure is evaluated once and the range check reads its locals, so
-    nothing new runs.  Where the chain is declined the check evaluates the
-    component itself — and for an effectful component that is a new action
-    at function entry, before the body.
-
-    Measured: `decreases(risky(@Nat.0))` on a function declaring `Exn<Int>`,
-    where `risky` throws on zero.  The chain guard is declined for the `Exn`
-    row, and evaluating the measure there turned a program that returned 0
-    into one that threw.  The check is now emitted only for a component an
-    extra evaluation cannot make observable, and the obligation discloses
-    E537 where it is not.
+    Found by CodeRabbit on PR #1290.  Where the chain guard is declined
+    nothing may evaluate the measure at entry: for an effectful component
+    that would be a new action, before the body.  Measured on the u64 `Nat`,
+    whose measure range check evaluated the component itself:
+    `decreases(risky(@Nat.0))` on a function declaring `Exn<Int>`, where
+    `risky` throws on zero, turned a program that returned 0 into one that
+    threw.
     """
 
     def test_the_program_still_returns_rather_than_throwing(
@@ -1569,57 +1372,10 @@ class TestTheRangeCheckDoesNotRunTheMeasureAgain1222:
         out = _run(tmp_path, _1222_EFFECTFUL_MEASURE, "--fn", "walk", "--",
                    "4", name="eff1222.vera")
         assert out.strip() == "0", (
-            f"the range check evaluated an effectful measure at entry, so a "
-            f"program that returned 0 now throws:\n{out}"
+            f"an effectful measure was evaluated at entry, so a program "
+            f"that returned 0 now throws:\n{out}"
         )
 
-    def test_and_says_so_instead_of_claiming_a_check(
-        self, tmp_path: Path,
-    ) -> None:
-        obs, envelope = _obligations(
-            tmp_path, _1222_EFFECTFUL_MEASURE, name="eff1222v.vera")
-        bounds = [o for o in obs if o["kind"] == "decreases_bound"]
-        assert [(o["status"], o.get("error_code")) for o in bounds] == [
-            ("tier3_unguarded", "E537")], obs
-        _assert_partition(envelope)
-
-    def test_a_pure_measure_on_the_same_decline_path_is_still_checked(
-        self, tmp_path: Path,
-    ) -> None:
-        """The over-restriction control.
-
-        Without it, "do not evaluate" is equally satisfied by never emitting
-        the check on the decline path at all — which would undo the fix this
-        cell's neighbours cover, since an `Exn`-declaring function is one of
-        the shapes that has no chain guard to fall back on.
-        """
-        proc = pipeline.cli("compile", "--wat",
-                            str(_write(tmp_path, _1222_EXN, "eff1222c.vera")), budget_s=_BUDGET_S)
-        assert proc.returncode == 0, proc.stderr[-400:]
-        assert "i64 range" in proc.stdout, (
-            "a PURE measure on the same declined-chain path lost its range "
-            "check too"
-        )
-
-
-_1222_MIXED_PURITY = """\
-private fn size(@Nat -> @Nat)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  @Nat.0
-}
-
-public fn walk(@Nat -> @Nat)
-  requires(true)
-  ensures(true)
-  decreases(@Nat.0, size(@Nat.0))
-  effects(<Exn<Int>>)
-{
-  if @Nat.0 == 0 then { 0 } else { walk(@Nat.0 / 2) }
-}
-"""
 
 _1222_RANKABLE_ADT_SIBLING = """\
 private data Tree {
@@ -1646,94 +1402,21 @@ public fn walk(@Nat, @Tree -> @Nat)
 """
 
 
-class TestTheBoundFlagIsPerComponent1222:
-    """The obligation's guarded flag is computed the way codegen filters.
-
-    Found by the re-verification.  Codegen decides per COMPONENT — the
-    declined-chain path emits a range check for each component whose extra
-    evaluation cannot be observed — while the flag was computed once per
-    CONTRACT and a second test, "is any component non-scalar", stood in for
-    "is the chain declined".  Both over-answered, so two shapes carried an
-    E537 for a component the emitted module does check: exactly the
-    obligation-versus-guard drift this release exists to remove, in the
-    machinery added to remove it.
-    """
-
-    def test_a_mixed_measure_splits_rather_than_condemning_both(
-        self, tmp_path: Path,
-    ) -> None:
-        """`decreases(@Nat.0, size(@Nat.0))` on an `Exn` function.
-
-        The chain guard is declined for the `Exn` row, so the range check
-        evaluates the components itself: it does for the slot reference and
-        does not for the call.  One `tier3`, one `tier3_unguarded` — and the
-        module carries exactly the one check that pairs with them.
-        """
-        obs, envelope = _obligations(
-            tmp_path, _1222_MIXED_PURITY, name="mix1222.vera")
-        bounds = [(o["status"], o.get("error_code"))
-                  for o in obs if o["kind"] == "decreases_bound"]
-        assert bounds == [("tier3", None), ("tier3_unguarded", "E537")], bounds
-        _assert_partition(envelope)
-
-        proc = pipeline.cli("compile", "--wat",
-                            str(_write(tmp_path, _1222_MIXED_PURITY, "mix1222c.vera")), budget_s=_BUDGET_S)
-        assert proc.returncode == 0, proc.stderr[-400:]
-        assert proc.stdout.count("i64 range") == 1, (
-            f"expected exactly one range check to pair with the one guarded "
-            f"obligation, got {proc.stdout.count('i64 range')}"
-        )
+class TestARankableAdtSiblingKeepsTheChainGuard1222:
+    """A non-scalar measure component declines the chain guard only when the
+    backend cannot structurally rank it — the #1177 parameterized-ADT case.
+    A concrete ADT ranks, so the chain is emitted."""
 
     def test_a_rankable_adt_sibling_does_not_decline_the_chain(
         self, tmp_path: Path,
     ) -> None:
-        """`decreases(size(@Nat.0), @Tree.0)` with a CONCRETE `Tree`.
-
-        A non-scalar component declines the chain only when the backend
-        cannot structurally rank it — the #1177 parameterized-ADT case.  A
-        concrete ADT ranks, so the chain is emitted, the measure is evaluated
-        once by it, and the call component's purity never arises.  Reading
-        "non-scalar" as "declined" put an E537 on a measure the module does
-        check.
-        """
-        obs, envelope = _obligations(
-            tmp_path, _1222_RANKABLE_ADT_SIBLING, name="rank1222.vera")
-        bounds = [(o["status"], o.get("error_code"))
-                  for o in obs if o["kind"] == "decreases_bound"]
-        assert bounds == [("tier3", None)], bounds
-        _assert_partition(envelope)
-
+        """`decreases(size(@Nat.0), @Tree.0)` with a CONCRETE `Tree`."""
         proc = pipeline.cli("compile", "--wat",
                             str(_write(tmp_path, _1222_RANKABLE_ADT_SIBLING,
                                        "rank1222c.vera")), budget_s=_BUDGET_S)
         assert proc.returncode == 0, proc.stderr[-400:]
-        # BOTH halves: "i64 range" is the standalone measure-range
-        # check, which a declined chain would also emit, so on its own
-        # it cannot tell this cell's not-declined path from the declined
-        # one.  `dec_prev` is the chain guard itself (CR PR-review).
         assert "dec_prev" in proc.stdout, (
-            "the chain guard is NOT emitted for a concrete ADT sibling, "
-            "so this cell no longer measures the not-declined path"
-        )
-        assert "i64 range" in proc.stdout
-
-    def test_the_disclosure_names_the_cause_it_actually_had(
-        self, tmp_path: Path,
-    ) -> None:
-        """Two causes, two sentences.
-
-        The unguarded leg told the author of a `pure` function that it had
-        been "dropped with an E603", which is the OTHER cause — an effect row
-        the backend cannot lower.  A reader following that goes looking for a
-        diagnostic that was never emitted.
-        """
-        proc = pipeline.cli("verify", str(_write(
-            tmp_path, _1222_MIXED_PURITY, "why1222.vera")), budget_s=_BUDGET_S)
-        out = proc.stdout + proc.stderr
-        assert "termination CHAIN guard is declined" in out, out
-        assert "dropped with an E603" not in out, (
-            f"a `pure`-bodied measure was told its function is E603-dropped:"
-            f"\n{out}"
+            "the chain guard is NOT emitted for a concrete ADT sibling"
         )
 
 
@@ -1915,17 +1598,24 @@ class TestArrayElementNarrowingIsObligated:
         assert binds == [("violated", "E503")], obs
         _assert_partition(envelope)
 
-    def test_the_widening_arm_still_fires(self, tmp_path: Path) -> None:
+    def test_a_nat_element_of_an_int_array_has_nothing_to_check(
+        self, tmp_path: Path,
+    ) -> None:
         """The over-reach control.
 
-        Routing refined-first must not take the `@Nat` -> `@Int` widening
-        element off the record — #820 guards that store and its obligation
-        counts the guard.
+        Routing refined-first must not put a check on a `@Nat` stored as an
+        `@Int` element, which is an `@Int` at the value level: the stream
+        records only the index, and the module checks only the index.  (On
+        the u64 `Nat` the store carried a widening guard, which #820 added
+        and its obligation counted.)
         """
         obs, _ = _obligations(tmp_path, _N4_WIDEN_CONTROL, name="n4f.vera")
-        coerce = [(o["status"], o.get("error_code"))
-                  for o in obs if o["kind"] == "nat_to_int_coerce"]
-        assert coerce == [("tier3", None)], obs
+        assert [(o["kind"], o["status"]) for o in obs] == [
+            ("requires", "verified"), ("index_bounds", "verified"),
+            ("ensures", "verified")], obs
+        compiled = _compiled(tmp_path, _N4_WIDEN_CONTROL, "n4g.vera")
+        assert [c.kind for c in compiled.checks()] == [
+            "index_out_of_bounds"], compiled.checks()
 
 
 # The two closure-argument fixtures differ in EXACTLY one token — the payload
@@ -2200,77 +1890,42 @@ public fn f(@Nat -> @Int)
 """
 
 
-class TestARefinedIntElementCountsItsWideningGuardToo:
-    """A refined `@Int` element records the RANGE obligation beside the
-    predicate one (CR PR-review).
+class TestARefinedIntElementCountsItsPredicateAlone:
+    """A refined `@Int` element fed a `@Nat` records its predicate (CR
+    PR-review), and nothing for the widening.
 
-    Routing refined-FIRST fixed the swallowed predicate and introduced the
-    opposite error at the same site: the refined arm returned, so an
-    `@Array<{ @Int | ... }>` element fed a `@Nat` recorded only
-    `refine_bind`.  Code generation does not distinguish the two — it
-    resolves the refined element target to `@Int` and emits the same
-    widening guard it emits for a plain one — so the site had a guard that
-    fires with nothing counting it.  That is a Tier-3 UNDERcount, the same
-    defect as the overcount in the other direction and just as much a
-    verifier/codegen desync.
-
-    The two obligations are about different things and neither implies the
-    other: the predicate is about the VALUE, the widening check about the
-    REPRESENTATION a `@Nat` above `i64.MAX` takes when it is reinterpreted
-    as a signed `i64`.  A `@Nat` narrowing twin is deliberately absent — a
-    refinement over `@Nat` discharges its full predicate on the refined arm,
-    which already implies `>= 0`.
+    Routing refined-FIRST fixed the swallowed predicate.  On the u64 `Nat`
+    the same site also carried a widening guard, for the representation a
+    `@Nat` above `i64.MAX` took when it was reinterpreted as a signed
+    `i64`, and a record had to count it.  A `@Nat` is an `@Int` at the value
+    level now, so the predicate is the one fact the site checks.
     """
 
-    def test_the_refined_element_records_both_obligations(
+    def test_the_refined_element_records_its_predicate(
         self, tmp_path: Path,
     ) -> None:
         obs, envelope = _obligations(
             tmp_path, _CR_REFINED_INT_ELEMENT, name="cr4a.vera")
-        kinds = [(o["kind"], o["status"]) for o in obs
-                 if o["kind"] in ("refine_bind", "nat_to_int_coerce")]
-        assert ("nat_to_int_coerce", "tier3") in kinds, (
-            f"the widening guard the module emits here is counted by no "
-            f"obligation: {kinds}"
-        )
-        assert ("refine_bind", "verified") in kinds, kinds
+        assert [(o["kind"], o["status"]) for o in obs] == [
+            ("requires", "verified"), ("index_bounds", "verified"),
+            ("refine_bind", "verified"), ("ensures", "verified")], obs
         _assert_partition(envelope)
 
-    def test_and_the_module_really_does_guard_it(
+    def test_and_the_module_checks_the_predicate_alone(
         self, tmp_path: Path,
     ) -> None:
-        """The differential that makes the missing record a defect.
-
-        The plain `@Array<Int>` element is the control: #820 guards its
-        store and `nat_to_int_coerce` counts that guard.  The refined
-        element must carry AT LEAST the same traps — the widening guard does
-        not go away because the element is refined, which is exactly why the
-        record for it has to exist.
-
-        It carries more since #1426: the §2.6.5 predicate guard is emitted
-        at the same store, and the two are different obligations about
-        different things.  So the comparison is `>=`, not `==`.  It cannot
-        be sharpened to an exact count while the widening guard is a bare
-        `unreachable` with nothing naming it, which is #1438; once that
-        guard signals itself the two can be counted apart by name.
-        """
-        def traps(source: str, name: str) -> int:
-            # The WIDENING checks specifically (#1438), not every trap: the
-            # predicate guard #1426 adds shares the `unreachable`, so a
-            # shared-token count cannot see a missing widening guard
-            # (CR PR-review).  The module's record tells them apart by kind.
+        """The plain `@Array<Int>` element is the control: its store checks
+        nothing, and the refined element's checks are the control's plus
+        the §2.6.5 predicate guard (#1426)."""
+        def checks(source: str, name: str) -> list[str]:
             compiled = _compiled(tmp_path, source, name)
-            return len(compiled.checks(kind="widen_guard", function="f"))
+            return sorted(c.emitter for c in compiled.checks(function="f"))
 
-        plain = traps(_CR_PLAIN_INT_ELEMENT, "cr4b.vera")
-        refined = traps(_CR_REFINED_INT_ELEMENT, "cr4c.vera")
-        assert plain > 0, "the control emits no guard, so it controls nothing"
-        assert refined == plain, (
-            f"the refined element emits {refined} widening signals and the "
-            f"plain one {plain}; a refined element must keep exactly the "
-            f"widening guard a plain one gets, which is what its record "
-            f"counts — an extra predicate guard cannot stand in for it"
-        )
+        plain = checks(_CR_PLAIN_INT_ELEMENT, "cr4b.vera")
+        refined = checks(_CR_REFINED_INT_ELEMENT, "cr4c.vera")
+        assert plain == ["wasm/data.py:_translate_index_expr"], plain
+        assert refined == sorted(
+            plain + ["codegen/contracts.py:_emit_refinement_check"]), refined
 
 
 #: A refinement-over-refinement `let` whose base the verifier does not model.

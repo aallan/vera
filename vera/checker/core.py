@@ -161,8 +161,8 @@ class CheckArtifacts:
     # with no file identity, so an imported body compiled into the flat WASM
     # module (Pass 2.5 / 2.6) cannot recover its component targets from them.
     # Codegen threads the matching entry when compiling each module's body, so
-    # the #820 @Nat -> @Int widening guard fires at the array-element /
-    # tuple-construction sites through the import door, not just same-file.
+    # the narrowing guards fire at the array-element / tuple-construction
+    # sites through the import door, not just same-file.
     module_artifacts: ModuleArtifacts
     # #1208: the ENTRY module's naming environment — the alias bodies, alias
     # parameters, and declared-ADT names :mod:`vera.naming` renders slot names,
@@ -280,8 +280,8 @@ def _collect_module_artifacts(
     The top-level program's ``expr_target_types`` / ``expr_semantic_types`` are
     keyed by bare span ``(line, col, end_line, end_col)`` with no file identity,
     so an imported body compiled into the flat WASM module (Pass 2.5 / 2.6) has
-    no entries there — codegen dropped the #820 @Nat -> @Int widening guard at
-    the array-element / tuple-construction sites through the import door, while
+    no entries there — codegen dropped the component guards at the
+    array-element / tuple-construction sites through the import door, while
     the library's own ``vera verify`` reported them Tier-3-guarded (the broken
     promise).  Run the full check over each module in isolation to collect ITS
     table, keyed by module path, so codegen can thread the right one when it
@@ -628,6 +628,10 @@ class TypeChecker(
         # `ExpressionsMixin`'s IntLit branch for why an unconstrained
         # verdict is provisional.
         self._literal_range_verdict: dict[int, tuple[Diagnostic, bool]] = {}
+        # The integer literal being synthesized as a negation's operand, if
+        # one is: its magnitude may reach 2^63, `Int`'s minimum, which the
+        # negation bounds (`ExpressionsMixin._check_unary`, #812).
+        self._negated_literal: ast.IntLit | None = None
         # Monotonic counter for fresh TypeVar names (prevents
         # self-referential mappings when different ADTs share a type
         # parameter name — see #243).
@@ -690,12 +694,12 @@ class TypeChecker(
         refinement predicate's operands are typed with no expected type
         first and against the refined base afterwards — and the two
         passes answer with different bounds, so a single mistake drew
-        two E149s naming ``@Nat (u64)`` and ``@Byte`` (PR #1282 review).
+        two E149s naming the i64 bound and ``@Byte``'s (PR #1282 review).
         ``_error``'s duplicate collapse cannot see it: the messages
         differ, which is precisely the problem.
 
-        The unconstrained pass is provisional.  It reports the u64 bound
-        because nothing has told it the target type, not because u64 is
+        The unconstrained pass is provisional.  It reports the i64 bound
+        because nothing has told it the target type, not because i64 is
         the target — so a later CONTEXTUAL verdict supersedes it rather
         than joining it, and the earlier diagnostic is withdrawn.  The
         reverse never happens: a guess does not overrule knowledge, and

@@ -117,14 +117,15 @@ public fn f(@Array<Int> -> @Array<Int>)
 
     def test_nat_sub_in_closure_body_is_tier3(self) -> None:
         """`@Nat - @Nat` underflow on a fresh closure param is obligated
-        Tier-3."""
+        Tier-3.  (The subtrahend is a `@Nat`: `@Nat.0 - 1` would be an
+        `@Int` subtraction, spec §4.4.)"""
         obls = _obligations_of("""
 public fn f(@Array<Nat> -> @Array<Int>)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  array_map(@Array<Nat>.0, fn(@Nat -> @Int) effects(pure) { nat_to_int(@Nat.0 - 1) })
+  array_map(@Array<Nat>.0, fn(@Nat -> @Int) effects(pure) { nat_to_int(@Nat.0 - string_length("a")) })
 }
 """, "nat_sub")
         assert len(obls) == 1
@@ -235,36 +236,7 @@ public fn f(@Int -> @Int)
 # #985 — nested closure return widening
 # =====================================================================
 
-class TestNestedClosureWidening:
-    def test_nested_closure_widen_return_is_obligated(self) -> None:
-        """A closure nested inside another closure's body that widens
-        `@Nat` into an `@Int` return carries a `nat_to_int_coerce`
-        obligation matching codegen's `_compile_lifted_closure` guard —
-        the #985 reporting-completeness residual of #820's single-level
-        closure obligations."""
-        result = _verify("""
-public fn f(@Array<Nat>, @Array<Int> -> @Array<Int>)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  array_map(@Array<Int>.0, fn(@Int -> @Int) effects(pure) { nat_to_int(array_length(array_map(@Array<Nat>.0, fn(@Nat -> @Int) effects(pure) { @Nat.0 }))) })
-}
-""")
-        errors = [d for d in result.diagnostics if d.severity == "error"]
-        assert not errors
-        widen = [
-            o for o in result.obligations
-            if o.kind == "nat_to_int_coerce" and o.status == "tier3"
-        ]
-        # Exactly ONE record: only the NESTED closure return widens (the
-        # outer body is `nat_to_int(...)`, already @Int) — the exact count
-        # fails on a stopped descent (0) and on double-recording (2).
-        assert len(widen) == 1, (
-            "the nested closure's @Nat body widening into its @Int return "
-            "must be obligated (codegen guards it; the stream must say so)"
-        )
-
+class TestNestedClosureNarrowing:
     def test_nested_closure_narrow_return_is_obligated(self) -> None:
         """The narrowing twin (#984's closure dual, also #985): a nested
         closure whose bare `@Int` body narrows into a `@Nat` return
@@ -853,46 +825,11 @@ public fn go(@Int -> @Int)
 
 
 class TestHandlerStateWidenAndRefinedStream:
-    """Stream twins for the widen and refined boundary arms (the
-    adversarial mutation battery showed the widen sites were deletable
-    undetected) and the refined disclosure honesty: no handler boundary
-    emits a refined-predicate guard, so those obligations must record
-    `tier3_unguarded` + E506, never a guarded claim."""
-
-    def test_widen_init_obligated(self) -> None:
-        obls = _obligations_of("""
-public fn go(@Nat -> @Int)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  handle[State<Int>](@Int = @Nat.0) {
-    get(@Unit) -> { resume(@Int.0) }
-  } in {
-    get(())
-  }
-}
-""", "nat_to_int_coerce")
-        assert len(obls) == 1
-        assert obls[0].status == "tier3"
-
-    def test_widen_put_obligated(self) -> None:
-        obls = _obligations_of("""
-public fn go(@Nat -> @Int)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  handle[State<Int>](@Int = 0) {
-    get(@Unit) -> { resume(@Int.0) }
-  } in {
-    put(@Nat.0);
-    get(())
-  }
-}
-""", "nat_to_int_coerce")
-        assert len(obls) == 1
-        assert obls[0].status == "tier3"
+    """Stream twins for the refined boundary arms and their disclosure
+    honesty: no handler boundary emits a refined-predicate guard, so those
+    obligations must record `tier3_unguarded` + E506, never a guarded claim.
+    (The widen arms' twins went with the u64 `Nat`: a widening records
+    nothing.)"""
 
     def test_refined_update_counts_its_guard(self) -> None:
         """`with @Pos = <clause slot>` — the refined predicate is guarded

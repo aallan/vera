@@ -301,17 +301,6 @@ class WasmContext(
         # Stack shapes recorded by a lowering that installs its own
         # scope, keyed by expression id (#1371).  See `_stack_shape_of`.
         self._scoped_expr_shape: dict[int, str] = {}
-        # Instructions a guarded @Nat subtraction has arranged to run right
-        # after an expression inside one of its operands produces its value,
-        # keyed by expression id (#1503): recording which arm of a join ran,
-        # or keeping a sub-value the operand consumes, for the sign the guard
-        # reads.  Installed and withdrawn around the operands' translation by
-        # `_translate_nat_subtraction`; applied by `translate_expr`.
-        self._nat_sub_hooks: dict[int, list[str]] = {}
-        # The `@Nat` operands of an `@Int` operation being translated, by
-        # node: each is widened into it, and guarded as it is evaluated
-        # (`narrowing.widened_nat_operands`).
-        self._widened_operands: set[int] = set()
         self._scoped_fns: set[str] = (
             self._known_fns if scoped_fns is None else scoped_fns
         )
@@ -409,14 +398,6 @@ class WasmContext(
         # the position names and nothing else translated beneath it.  See
         # `_handing_down` (operators.py).
         self._handed_down_types: dict[int, tuple[ast.Expr, object]] = {}
-        # The constructor arguments that widen a genuine `@Nat` into the
-        # `@Int` component a binding reads, where the component's other
-        # sources can be negative — the per-arm widening of #820 at the
-        # argument that supplies it (#1503).  Registered by the destructure
-        # or `match` that binds the component, before its value is
-        # translated; read by `_translate_constructor_call`.  Keyed by
-        # expression id, holding the node so the id stays its own.
-        self._heterogeneous_widen_args: dict[int, ast.Expr] = {}
         # #773: structural-Eq helper functions this context generated, keyed by
         # the mangled `$eq_<type>` function name → its full WAT text.  Each
         # helper takes two i32 ADT pointers and returns i32 (1 = equal).  A
@@ -521,9 +502,6 @@ class WasmContext(
         # `set_effect_op_params` before translation.
         self._effect_op_params: dict[
             tuple[str, str], tuple[str | None, ...]] = {}
-        # #813: per-parameter concrete-@Int flags, the dual, for the runtime
-        # @Nat -> @Int widening guard at call sites.
-        self._fn_int_params: dict[str, tuple[bool, ...]] = {}
         # #865: per-parameter concrete-@Byte flags, for the call-site
         # int-literal → i32.const coercion (spec §11 — @Byte is i32).
         self._fn_byte_params: dict[str, tuple[bool, ...]] = {}
@@ -634,19 +612,18 @@ class WasmContext(
         # #798: the checker's resolved-type side-table (keyed by
         # ``ast.span_key``), threaded from the CodeGenerator.  The
         # integer-overflow guard reads it to classify an arithmetic operand
-        # as @Int (i64) vs @Nat (u64) using the SAME resolved type the
-        # verifier's ``int_overflow`` obligation uses, so codegen guards
-        # exactly the sites — at exactly the range — the verifier obligates.
-        # ``None`` when typecheck was skipped (AST-only fallback).
+        # as @Int or @Nat using the SAME resolved type the verifier's
+        # ``int_overflow`` obligation uses, so codegen guards exactly the
+        # sites the verifier obligates.  ``None`` when typecheck was skipped
+        # (AST-only fallback).
         self._expr_semantic_types: (
             dict[tuple[int, int, int, int], object] | None
         ) = None
         # #820: the checker's TARGET-type side-table (``expected`` per expr
         # span).  Consulted by ``_target_codegen_type`` — the codegen dual of
-        # the verifier's ``_target_type_of`` — so the @Nat -> @Int widening
-        # guard fires at a tuple component / array element / heterogeneous
-        # if-arm exactly where the verifier obligates it.  ``None`` when
-        # typecheck was skipped (those component sites stay E531-disclosed).
+        # the verifier's ``_target_type_of`` — so the narrowing guards fire
+        # at a tuple component / array element exactly where the verifier
+        # obligates them.  ``None`` when typecheck was skipped.
         self._expr_target_types: (
             dict[tuple[int, int, int, int], object] | None
         ) = None
@@ -712,7 +689,7 @@ class WasmContext(
         types: dict[tuple[int, int, int, int], object] | None,
     ) -> None:
         """Seed the checker's TARGET-type side-table (#820) for the
-        @Nat -> @Int widening guard's per-component target-type recovery
+        narrowing guards' per-component target-type recovery
         (``_target_codegen_type`` — the dual of the verifier's
         ``_target_type_of``)."""
         self._expr_target_types = types
@@ -795,15 +772,8 @@ class WasmContext(
         self, op_params: dict[tuple[str, str], tuple[str | None, ...]],
     ) -> None:
         """Set the per-formal base type names of every effect operation, for
-        the op-call-site narrowing / widening guards (#754)."""
+        the op-call-site narrowing guards (#754)."""
         self._effect_op_params = op_params
-
-    def set_fn_int_params(
-        self, int_params: dict[str, tuple[bool, ...]],
-    ) -> None:
-        """Set per-parameter concrete-@Int flags for the call-site
-        runtime @Nat -> @Int widening guard (#813)."""
-        self._fn_int_params = int_params
 
     def set_fn_byte_params(
         self, byte_params: dict[str, tuple[bool, ...]],
@@ -1140,15 +1110,7 @@ class WasmContext(
         instructions = self._translate_expr_unscoped(expr, env)
         if instructions is None:
             return None
-        scoped = self._scope_shadow_roots(expr, instructions)
-        # A `@Nat` operand widened into an `@Int` operation traps above
-        # `i64.MAX` before the operation reads its bits (PR #1583 review).
-        if id(expr) in self._widened_operands:
-            scoped = self._emit_int_widen_guard(scoped, at=expr)
-        # A guarded @Nat subtraction's record of this value (#1503): it
-        # reads the value on the stack and leaves it there.
-        recorded = self._nat_sub_hooks.get(id(expr))
-        return scoped if recorded is None else [*scoped, *recorded]
+        return self._scope_shadow_roots(expr, instructions)
 
     def _scope_shadow_roots(
         self, expr: ast.Expr, instructions: list[str]
@@ -1490,7 +1452,7 @@ class WasmContext(
             return self._translate_slot_ref(expr, env)
 
         if isinstance(expr, ast.BinaryExpr):
-            return self._translate_widening_binary(expr, env)
+            return self._translate_binary(expr, env)
 
         if isinstance(expr, ast.UnaryExpr):
             return self._translate_unary(expr, env)
@@ -1725,12 +1687,6 @@ class WasmContext(
                 if (self._resolve_base_type_name(type_name) == "Nat"
                         and self._narrows_into_nat(stmt.value)):
                     stmt_instrs.extend(self._emit_nat_bind_guard(
-                        val_instrs, at=stmt.value))
-                elif (self._resolve_base_type_name(type_name) == "Int"
-                        and self._result_is_nat(stmt.value)):
-                    # #813: guard a @Nat -> @Int let widening — a @Nat value
-                    # above i64.MAX reinterprets to a negative @Int.
-                    stmt_instrs.extend(self._emit_int_widen_guard(
                         val_instrs, at=stmt.value))
                 else:
                     # A `@Byte` target's literals were already marked before

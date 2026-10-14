@@ -568,14 +568,13 @@ where {
 _CALL_ORACLES = (
     "_declared_ret_type_name",
     "_is_nat_typed",
-    "_has_nat_origin",
     "narrows_into_nat",
     "_call_arg_nat_guarded",
 )
 
 
 def _oracle_readings(source: str) -> tuple[object, ...]:
-    """The five readings, taken at the `h(())` node during the real walk."""
+    """The four readings, taken at the `h(())` node during the real walk."""
     from vera import ast as vast
     from vera import narrowing
     from vera import verifier as verifier_module
@@ -588,9 +587,9 @@ def _oracle_readings(source: str) -> tuple[object, ...]:
             seen["r"] = (
                 self._declared_ret_type_name(expr),
                 self._is_nat_typed(expr),
-                self._has_nat_origin(expr),
                 narrowing.narrows_into_nat(
-                    expr, self._declared_ret_type_name, self._has_nat_origin),
+                    expr, self._declared_ret_type_name,
+                    self._is_guarded_nat_subtraction),
                 self._call_arg_nat_guarded("nat_to_int", expr),
             )
         return original(self, decl, expr, smt, slot_env, assumptions)
@@ -610,13 +609,15 @@ def _oracle_readings(source: str) -> tuple[object, ...]:
 
 
 class TestEveryReaderOfACallAnswersTheSameForBothSpellings:
-    """The five readings, at one call node, in both spellings.
+    """The four readings, at one call node, in both spellings.
 
-    Three readers besides the formal loop answer a question about a CALL by
-    looking its callee up — the declared return type name, the static `@Nat`
-    typing, and the `@Nat` provenance — and two more are derived from them.
-    All five read the flat registry, so all five went blind to a `where`
-    helper when #1378 stopped publishing helpers there.
+    Two readers besides the formal loop answer a question about a CALL by
+    looking its callee up — the declared return type name and the static
+    `@Nat` typing — and two more are derived from them.  All of them read
+    the flat registry, so all went blind to a `where` helper when #1378
+    stopped publishing helpers there.  (A fifth, the `@Nat` provenance
+    reader, went with v0.2.3's literal typing: a literal is an `Int`, so
+    no subtraction needs its operands' provenance.)
 
     The reviewer of this PR measured every one of them flipping between the
     two spellings — `Nat` -> None, True -> False, True -> False, False ->
@@ -627,7 +628,7 @@ class TestEveryReaderOfACallAnswersTheSameForBothSpellings:
     depending on how the call is spelled is the same omission, whether or not
     a consumer notices today.  Asserted as EQUALITY between the spellings
     rather than as literal values, so it is about the property and not about
-    what `@Nat` happens to make these five say.
+    what `@Nat` happens to make these four say.
     """
 
     def test_the_readings_do_not_depend_on_the_spelling(self) -> None:
@@ -641,14 +642,14 @@ class TestEveryReaderOfACallAnswersTheSameForBothSpellings:
     ) -> None:
         """The premise, pinned to the readings rather than to non-emptiness.
 
-        Four of the five are booleans and so never `None`, which means an
+        Three of the four are booleans and so never `None`, which means an
         "are they all None?" premise could not detect the two spellings
         regressing TOGETHER (CodeRabbit on PR #1465).  These are what the
-        five say about `nat_to_int(h(()))` where `h` returns `@Nat`: the
-        declared return name is `Nat`, the call is statically `@Nat` and
-        carries `@Nat` provenance, so it does NOT narrow into `@Nat` and the
-        call-argument guard question does not arise.  If those move, the
-        equality cell above is comparing two spellings of something else.
+        four say about `nat_to_int(h(()))` where `h` returns `@Nat`: the
+        declared return name is `Nat` and the call is statically `@Nat`, so
+        it does NOT narrow into `@Nat` and the call-argument guard question
+        does not arise.  If those move, the equality cell above is comparing
+        two spellings of something else.
         """
         assert _oracle_readings(_ORACLE_TOP) == (
-            "Nat", True, True, False, False)
+            "Nat", True, False, False)

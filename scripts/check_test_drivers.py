@@ -155,7 +155,6 @@ ALLOWED: Mapping[str, str] = {
     "tests/test_field_layout_one_source_1466.py::_run": _ANOTHER_TREE,
     "tests/test_html.py::_try_parse": _LARK_TREE,
     "tests/test_nonregular_data_rejected_1429.py::_cli": _DEADLINE,
-    "tests/test_one_classifier_1503.py::_pipeline": _SUBSTITUTED_TABLE,
     "tests/test_overflow_fails_closed_1417.py::_compiled": _SUBSTITUTED_TABLE,
     "tests/test_readme.py::_try_parse": _LARK_TREE,
     "tests/test_resolver.py::_resolve_ok": _RESOLVER_UNIT,

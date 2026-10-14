@@ -691,22 +691,22 @@ def _fn(ret: str, body: str) -> str:
 _SIBLING_SITES = [
     pytest.param(
         "E140", _fn("Int", f"{_V} + 1"),
-        "found ? and Nat", "found V and", id="E140-arith-left"),
+        "found ? and Int", "found V and", id="E140-arith-left"),
     pytest.param(
         "E140", _fn("Int", f"1 + {_V}"),
-        "found Nat and ?", "and V.", id="E140-arith-right"),
+        "found Int and ?", "and V.", id="E140-arith-right"),
     pytest.param(
         "E142", _fn("Bool", f"{_V} == 1"),
-        "Cannot compare ? with Nat", "compare V with", id="E142-eq-left"),
+        "Cannot compare ? with Int", "compare V with", id="E142-eq-left"),
     pytest.param(
         "E142", _fn("Bool", f"1 == {_V}"),
-        "Cannot compare Nat with ?", "with V.", id="E142-eq-right"),
+        "Cannot compare Int with ?", "with V.", id="E142-eq-right"),
     pytest.param(
         "E143", _fn("Bool", f"{_V} < 1"),
-        "found ? and Nat", "found V and", id="E143-ord-left"),
+        "found ? and Int", "found V and", id="E143-ord-left"),
     pytest.param(
         "E143", _fn("Bool", f"1 < {_V}"),
-        "found Nat and ?", "and V.", id="E143-ord-right"),
+        "found Int and ?", "and V.", id="E143-ord-right"),
     pytest.param(
         "E144", _fn("Bool", f"{_V} && true"),
         "must be Bool, found ?", "found V.", id="E144-logical-left"),
@@ -744,11 +744,11 @@ _SIBLING_SITES = [
         "If condition must be Bool, found ?", "found V.", id="E300-if-cond"),
     pytest.param(
         "E301", _fn("Int", f"if true then {{ {_V} }} else {{ 2 }}"),
-        "then-branch is ?, else-branch is Nat",
+        "then-branch is ?, else-branch is Int",
         "then-branch is V", id="E301-then-branch"),
     pytest.param(
         "E301", _fn("Int", f"if true then {{ 2 }} else {{ {_V} }}"),
-        "then-branch is Nat, else-branch is ?",
+        "then-branch is Int, else-branch is ?",
         "else-branch is V", id="E301-else-branch"),
     pytest.param(
         "E123",

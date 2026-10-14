@@ -224,12 +224,6 @@ _STATUS_PROGRAMS: dict[tuple[str, str | None], str] = {
         "{\n  assert(@Int.0 < 0);\n  @Int.0\n}\n"),
     ("violated", "E526"): (
         "public fn f(@Int -> @Int)\n" + _PURE + "{\n  10 / @Int.0\n}\n"),
-    ("violated", "E536"): (
-        "public fn halve(@Nat -> @Nat)\n"
-        "  requires(@Nat.0 > 9223372036854775807)\n  ensures(true)\n"
-        "  decreases(@Nat.0)\n  effects(pure)\n"
-        "{\n  if @Nat.0 == 0 then {\n    0\n  } else {\n"
-        "    halve(@Nat.0 / 2)\n  }\n}\n"),
     ("tier3", None): (
         "public fn f(@Float64 -> @Int)\n" + _PURE
         + "{\n  float_to_int(@Float64.0)\n}\n"),
@@ -273,13 +267,6 @@ _STATUS_PROGRAMS: dict[tuple[str, str | None], str] = {
         "public fn f(@Float64 -> @Int)\n"
         "  requires(true)\n  ensures(@Int.result > 0)\n  effects(pure)\n"
         "{\n  consume(mk(@Float64.0))\n}\n"),
-    ("tier3_unguarded", "E537"): (
-        "private fn risky(@Nat -> @Nat)\n  requires(true)\n  ensures(true)\n"
-        "  effects(<Exn<Int>>)\n"
-        "{\n  if @Nat.0 == 0 then { throw(1) } else { @Nat.0 }\n}\n\n"
-        "public fn walk(@Nat -> @Nat)\n  requires(true)\n  ensures(true)\n"
-        "  decreases(risky(@Nat.0))\n  effects(<Exn<Int>>)\n"
-        "{\n  if @Nat.0 == 0 then { 0 } else { walk(@Nat.0 / 2) }\n}\n"),
     ("tier3_unguarded", "E538"): (
         "public fn f(@Int -> @Int)\n  requires(@Int.0 > 5 && @Int.0 < 3)\n"
         "  ensures(@Int.result > 0)\n  effects(pure)\n{\n  @Int.0\n}\n"),
@@ -814,7 +801,7 @@ def test_stderr_is_captured_as_vera_run_captures_it(
 # The checks a module holds
 # =====================================================================
 
-#: A module whose record holds five trap kinds from eight emitters, at two
+#: A module whose record holds four trap kinds from six emitters, at two
 #: paths, in five functions (a lifted closure and two clones of one generic
 #: among them) and none in a sixth, so each filter keeps a strict part of the
 #: record that is not empty.
@@ -882,7 +869,7 @@ def test_each_filter_keeps_the_checks_it_names(
 def test_no_filter_is_the_whole_record() -> None:
     result = pipeline.compile(_CHECKED_MODULE).result
     assert pipeline.checks(result) == tuple(result.emitted_checks)
-    assert len(result.emitted_checks) == 10
+    assert len(result.emitted_checks) == 9
 
 
 def test_a_function_with_no_check_holds_none() -> None:

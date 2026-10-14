@@ -89,8 +89,8 @@ _EXN = "tests/test_exn_throw_payload_1268.py::"
 #: The sites that stay on the text, ``"tests/<file>::<scope>::<shape>"`` to
 #: the reason.
 KEPT: Mapping[str, str] = {
-    "tests/test_cli.py::TestNatIntWideningCliThreading820."
-    "test_compile_wat_array_elem_emits_widen_guard::signal_call_pattern":
+    "tests/test_cli.py::TestNatNarrowingCliThreading820."
+    "test_compile_wat_array_elem_emits_narrowing_guard::signal_call_pattern":
         _CLI_OUTPUT,
     "tests/test_codegen_collections.py::TestWrapperHandleTagging578."
     "test_alloc_emits_heap_ceiling_guard::vera.trap": _RENDERING,
@@ -105,11 +105,6 @@ KEPT: Mapping[str, str] = {
     "::signal_call_pattern": _RECORD_ORACLE,
     _1479 + "test_the_self_tail_prefix_records_its_measure_per_splice"
     "::_record_mismatches": _RECORD_ORACLE,
-    _EXN + "TestARefinementDoesNotDisableTheWideningGuard."
-    "test_both_guards_are_emitted::signal_call_pattern": _RENDERING,
-    _EXN + "TestTheQualifiedArmObligatesAllThreeArms."
-    "test_the_guard_the_obligation_promises_is_emitted::signal_call_pattern":
-        _RENDERING,
     _NAMED + "FAN_IN_CELLS::contract_fail": _RENDERING,
     _NAMED + "test_a_check_only_in_one_scope_still_links::FAN_IN_CELLS":
         _RENDERING,
