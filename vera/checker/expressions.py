@@ -39,9 +39,11 @@ from vera.types import (
     numeric_join,
     NUMERIC_TYPES,
     ORDERABLE_TYPES,
+    pretty_effect,
     pretty_inferred_type,
     pretty_type,
     PrimitiveType,
+    PureEffectRow,
     RefinedType,
     STRING,
     TO_STRING_BUILTINS,
@@ -1364,7 +1366,16 @@ class ExpressionsMixin:
     # -----------------------------------------------------------------
 
     def _check_anon_fn(self, expr: ast.AnonFn) -> Type | None:
-        """Type-check an anonymous function."""
+        """Type-check an anonymous function.
+
+        Its body is checked under its own row (#1702), as a function's is
+        under the row it declares: that row is the row in force, its order
+        resolves a bare operation name, and the effects the body performs
+        are the closure's, held to that row.  A `pure` closure that performs
+        one is refused at the closure (E122).  The function around it is
+        held to the closure's row where the closure is applied (`apply_fn`,
+        E125), not where it is written, and the type the closure is given,
+        its parameters, result and row, is the one it declares."""
         # #861: closure signatures carry the same refinement positions as
         # top-level fn signatures.
         for param_te in expr.params:
@@ -1372,15 +1383,36 @@ class ExpressionsMixin:
         self._check_refinement_predicates(expr.return_type)
         param_types = tuple(self._resolve_type(p) for p in expr.params)
         ret_type = self._resolve_type(expr.return_type)
-        eff = self._resolve_effect_row(expr.effect)
+        eff, eff_order = self._resolve_effect_row_ordered(expr.effect)
+
+        saved_effect = self.env.current_effect_row
+        saved_effect_order = self.env.current_effect_order
+        saved_ops = self._effect_ops_used
+        saved_row_owner = self._row_owner
+        self.env.current_effect_row = eff
+        self.env.current_effect_order = eff_order
+        self._effect_ops_used: set[str] = set()
+        self._row_owner = (
+            "the anonymous function's effects clause and to the row of the "
+            "function type it is given", eff)
 
         self.env.push_scope()
         for param_te, param_ty in zip(expr.params, param_types):
             tname = self._type_expr_to_slot_name(param_te)
             self.env.bind(tname, param_ty, "param")
 
+        # `vera.lowering` rule 7: the handlers written inside this body are
+        # the ones its State and Exn operations lower under.
+        self._closure_handler_marks.append(len(self._handled_effects))
         body_type = self._synth_expr(expr.body, expected=ret_type)
+        self._closure_handler_marks.pop()
         self.env.pop_scope()
+
+        performed = self._effect_ops_used
+        self.env.current_effect_row = saved_effect
+        self.env.current_effect_order = saved_effect_order
+        self._effect_ops_used = saved_ops
+        self._row_owner = saved_row_owner
 
         if body_type and not isinstance(body_type, UnknownType):
             if not is_subtype(body_type, ret_type):
@@ -1402,7 +1434,43 @@ class ExpressionsMixin:
                     error_code="E171",
                 )
 
+        if isinstance(eff, PureEffectRow) and performed:
+            self._refuse_pure_closure_effects(expr, performed)
+
         return FunctionType(param_types, ret_type, eff)
+
+    def _refuse_pure_closure_effects(
+        self, expr: ast.AnonFn, performed: set[str],
+    ) -> None:
+        """E122 at a `pure` closure whose body performs effects (#1702),
+        the purity check a `pure` function's body is held to, worded for
+        the closure; each effect the fix names is written with its type
+        parameters where it takes them (`State<T>`)."""
+        entries = []
+        for name in sorted(performed):
+            info = self.env.lookup_effect(name)
+            params = tuple(info.type_params or ()) if info else ()
+            entries.append(EffectInstance(
+                name, tuple(TypeVar(p) for p in params)))
+        wanted = pretty_effect(ConcreteEffectRow(frozenset(entries)))
+        self._error(
+            expr,
+            f"Pure anonymous function performs effect operations: "
+            f"{', '.join(sorted(performed))}.",
+            rationale=(
+                "An anonymous function declared with effects(pure) cannot "
+                "perform effects: its row is part of its type, and an effect "
+                "it performs would be hidden from every function that "
+                "applies it."
+            ),
+            fix=(
+                f"Declare the effects in the anonymous function's effects "
+                f"clause and in the row of the function type it is given: "
+                f"{wanted}."
+            ),
+            spec_ref='Chapter 5, Section 5.7 "Anonymous Functions (Closures)"',
+            error_code="E122",
+        )
 
     # -----------------------------------------------------------------
     # Arrays

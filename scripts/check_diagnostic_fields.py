@@ -908,11 +908,21 @@ KNOWN_MULTI_SITE_ERROR_CODES: dict[str, frozenset[tuple[str, str]]] = {
         ("vera/codegen/monomorphize.py", "MonomorphizationMixin._report_uninferred_type_args"),
         ("vera/verifier.py", "ContractVerifier._report_one_uninferred"),
     }),
-    # Call-site effect subeffecting: a named function call and an
-    # apply_fn-applied closure value are two call SHAPES for one rule.
+    # A `pure` declaration whose body performs an effect: a function's and
+    # a closure literal's (#1702) are two declaration shapes for one rule,
+    # spec §5.5 and §5.7, each reported where the row `pure` is declared.
+    "E122": frozenset({
+        ("vera/checker/core.py", "TypeChecker._check_fn"),
+        ("vera/checker/expressions.py",
+         "ExpressionsMixin._refuse_pure_closure_effects"),
+    }),
+    # Call-site effect subeffecting: a named function call, an
+    # apply_fn-applied closure value and an effect operation (#1702) are
+    # three call SHAPES for one rule.
     "E125": frozenset({
         ("vera/checker/calls.py", "CallsMixin._check_apply_fn"),
         ("vera/checker/calls.py", "CallsMixin._check_fn_call_with_info"),
+        ("vera/checker/calls.py", "CallsMixin._refuse_operation_outside_row"),
     }),
     # A module-qualified call to a function the named module does not
     # declare: an imported module's path and the file's own path (#1558)
@@ -987,9 +997,12 @@ KNOWN_MULTI_SITE_ERROR_CODES: dict[str, frozenset[tuple[str, str]]] = {
     # #1681): one concept, the `vera.lowering` rule a construct fails,
     # reported where the construct is written — a handler's effect, a State
     # cell or Exn payload (handler or row), a State clause's resume, an
-    # ability's call or constraint, an effect row's entry, and a call of a
-    # user-declared effect's operation.
+    # ability's call or constraint, an effect row's entry, a call of a
+    # user-declared effect's operation, and a State or Exn operation in a
+    # closure's body outside a handler written in it (#1702).
     "E340": frozenset({
+        ("vera/checker/calls.py",
+         "CallsMixin._check_closure_operation_lowerable"),
         ("vera/checker/calls.py", "CallsMixin._check_operation_lowerable"),
         ("vera/checker/calls.py", "CallsMixin._refuse_unlowerable_ability"),
         ("vera/checker/control.py",

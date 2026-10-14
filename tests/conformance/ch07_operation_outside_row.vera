@@ -1,0 +1,12 @@
+-- Conformance: an effect operation performed where the row in force does
+-- not name its effect is a checker error (Chapter 7, Section 7.4).
+-- Tests: E125 — an operation is held to the effect row in force as a call
+-- to a function is (Section 7.8), so `Random.random_int` in a function
+-- whose row names only `IO` is refused at the call (#1702).
+public fn roll(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  Random.random_int(1, 6)
+}

@@ -14,7 +14,12 @@ import typing
 from typing import Any, cast
 
 from vera import ast, narrowing
-from vera.lowering import ability_lowerable, effect_operation_lowerable
+from vera.lowering import (
+    ability_lowerable,
+    closure_operation_lowerable,
+    effect_operation_lowerable,
+    handler_lowerable,
+)
 from vera.slots import bare_call_denotes_user_fn
 from vera.checker.sql import (
     count_placeholders,
@@ -35,6 +40,7 @@ from vera.types import (
     ORDERABLE_TYPES,
     AdtType,
     ConcreteEffectRow,
+    EffectInstance,
     FunctionType,
     PureEffectRow,
     RefinedType,
@@ -42,6 +48,7 @@ from vera.types import (
     TypeVar,
     UnknownType,
     base_type,
+    canonical_type_name,
     contains_fresh_typevar,
     contains_literal_hole,
     contains_typevar,
@@ -516,10 +523,10 @@ class CallsMixin:
                 return self._check_fn_call_with_info(fn_info, args, node,
                                                      expected=expected)
 
-        # Maybe it's an effect operation
+        # Maybe it's an effect operation (`_check_op_call` counts its effect
+        # for the purity check)
         op_info = self.env.lookup_effect_op(name)
         if op_info:
-            self._effect_ops_used.add(op_info.parent_effect)
             # #1148: a BARE (unqualified) op call is codegen-routable only for
             # the built-in State/Exn ops get/put/throw (which route to host
             # cells / a host tag even unhandled) or when the effect is handled by
@@ -1257,8 +1264,15 @@ class CallsMixin:
 
     def _check_op_call(self, op_info: OpInfo,
                        args: tuple[ast.Expr, ...],
-                       node: ast.Node) -> Type | None:
-        """Check a call to an effect operation."""
+                       node: ast.Node, *,
+                       counted: bool = True) -> Type | None:
+        """Check a call to an effect operation.
+
+        The call is judged once (#1702): refused by `vera.lowering` rule 7
+        (E340) when it is a `State` or `Exn` operation in a closure's body
+        outside a handler written there, otherwise held to the row in force
+        (E125).  Its effect counts for the purity check (E122) unless it was
+        refused for lowering, here or, *counted* false, by the caller."""
         # Resolve type params from the current effect context first, so
         # each argument is synthesised against its *instantiated* formal.
         # That records the @Nat target for an ``E<Nat>.op(@Int.0)``
@@ -1267,6 +1281,10 @@ class CallsMixin:
         mapping = self._effect_type_mapping(op_info.parent_effect)
         param_types = tuple(substitute(p, mapping) for p in op_info.param_types)
         return_type = substitute(op_info.return_type, mapping)
+        lowers = self._check_closure_operation_lowerable(
+            op_info, node, mapping)
+        if counted and lowers:
+            self._effect_ops_used.add(op_info.parent_effect)
 
         arg_types: list[Type | None] = []
         for i, arg in enumerate(args):
@@ -1363,7 +1381,155 @@ class CallsMixin:
             if not e204_cascade:
                 self._check_sql_provenance(op_info.name, args, node)
 
+        refused = not lowers or self._refuse_operation_outside_row(
+            op_info, arg_types, node)
+        if refused and not mapping and contains_typevar(op_info.return_type):
+            # A refused `State.get`: no row entry and no handler gives the
+            # instance its result is typed by, so the result is not the
+            # effect's own type parameter, and a use of it is no second
+            # error.  An operation whose signature fixes its result keeps it.
+            return UnknownType()
         return return_type
+
+    def _check_closure_operation_lowerable(
+        self, op_info: OpInfo, node: ast.Node, mapping: dict[str, Type],
+    ) -> bool:
+        """E340 (`vera.lowering` rule 7, #1702): a `State` or `Exn`
+        operation in a closure's body, outside a handler for its effect
+        written inside the closure.  *mapping* is the operation's type
+        arguments, which the handler the fix writes is given.  Returns
+        whether it lowers."""
+        if not self._closure_handler_marks:
+            return True
+        effect = op_info.parent_effect
+        inside = self._handled_effects[self._closure_handler_marks[-1]:]
+        if closure_operation_lowerable(
+                effect, handled_in_closure=effect in inside):
+            return True
+        written = (f"{node.qualifier}.{node.name}"
+                   if isinstance(node, ast.QualifiedCall) else op_info.name)
+        eff_info = self.env.lookup_effect(effect)
+        param = (eff_info.type_params or ("T",))[0] if eff_info else "T"
+        arg = pretty_type(mapping.get(param, TypeVar(param)))
+        handler = (
+            f"handle[State<{arg}>](@{arg} = <its initial value>) {{ "
+            f"get(@Unit) -> {{ resume(@{arg}.0) }}, put(@{arg}) -> "
+            f"{{ resume(()) }} }} in {{ ... }}"
+            if effect == "State" else
+            f"handle[Exn<{arg}>] {{ throw(@{arg}) -> {{ <the closure's "
+            f"result when it throws> }} }} in {{ ... }}")
+        self._error(
+            node,
+            f"Code generation cannot lower '{written}' in the body of an "
+            f"anonymous function: a {effect} operation in a closure is "
+            f"lowered only under a handler for {effect} written inside the "
+            f"closure.",
+            rationale=(
+                f"Code generation lifts a closure into a function of its own.  "
+                f"A {effect} operation needs the "
+                + ("cell it reads and writes" if effect == "State"
+                   else "tag it throws to")
+                + ", which a function's row or a handler in its body "
+                "registers, and the lifted closure has none from its row, so "
+                "a bare operation there has no route and a qualified one "
+                "calls an import the module does not declare.  A handler "
+                "written inside the closure registers it in the lifted "
+                "function.  A handler around the closure does not: the "
+                "closure is compiled apart from it, and can be applied "
+                "outside it."
+            ),
+            fix=(
+                f"Perform '{written}' in the enclosing function's body, with "
+                f"{effect} in that function's effects clause or under a "
+                f"handler there, and pass the closure what it needs; or write "
+                f"the handler inside the closure, around the operation: "
+                f"{handler}."
+            ),
+            spec_ref='Chapter 5, Section 5.7 "Anonymous Functions (Closures)"',
+            error_code="E340",
+        )
+        return False
+
+    def _refuse_operation_outside_row(
+        self, op_info: OpInfo, arg_types: list[Type | None], node: ast.Node,
+    ) -> bool:
+        """E125 (#1702): an operation of a built-in effect, performed where
+        the row in force does not name the effect.
+
+        The judgement a call to a function is held to (§7.8, E125 above),
+        made for an operation, whose row is its effect: the row in force
+        must name the effect, by name, at any instance (`<State<Int>>`
+        permits `put`; which instance types the call is the operation's
+        typing).  A row variable names no effect, so an open row permits
+        what its entries name and nothing else.  The row in force is the
+        declaration's, a handler's body adds the handled effect to it
+        (`_check_handle`), and a closure's body has the closure's own
+        (`_check_anon_fn`).  Under `effects(pure)` the declaration that
+        performs the operation is refused instead (E122, the purity check),
+        so the call draws one code; where no row is in force, a refinement
+        predicate checked before its function's row is, it is not judged.
+        A user-declared effect's operation is E340's
+        (`_check_operation_lowerable`).  Returns whether it refused."""
+        effect = op_info.parent_effect
+        row = self.env.current_effect_row
+        if (not isinstance(row, ConcreteEffectRow)
+                or not effect_operation_lowerable(effect)
+                or any(e.name == effect for e in row.effects)):
+            return False
+        written = (f"{node.qualifier}.{node.name}"
+                   if isinstance(node, ast.QualifiedCall) else op_info.name)
+        inst = self._operation_instance(op_info, arg_types)
+        shown = canonical_type_name(inst.name, inst.type_args or None)
+        target, declared = self._row_owner or (
+            "the enclosing function's effects clause", row)
+        entries = (declared.effects if isinstance(declared, ConcreteEffectRow)
+                   else frozenset())
+        row_var = (declared.row_var
+                   if isinstance(declared, ConcreteEffectRow) else None)
+        wanted = pretty_effect(ConcreteEffectRow(entries | {inst}, row_var))
+        handler = (f"  Or perform it inside a handle[{shown}] block, whose "
+                   f"body permits it."
+                   if handler_lowerable(effect) else "")
+        self._error(
+            node,
+            f"Effect operation '{written}' requires "
+            f"{pretty_effect(ConcreteEffectRow(frozenset({inst})))} but call "
+            f"site only allows {pretty_effect(row)}.",
+            rationale=(
+                "An effect operation performs its effect where it is called, "
+                "so the effect row in force there must name the effect, as a "
+                "call to a function is held to its declared effects "
+                "(subeffecting).  The row in force is the declaring "
+                "function's, a closure's own inside the closure's body, and "
+                "the row around a handler with the handled effect added "
+                "inside the handler's body.  A row variable names no effect, "
+                "so it permits no operation the row does not name."
+            ),
+            fix=f"Add {shown} to {target}: {wanted}.{handler}",
+            spec_ref='Chapter 7, Section 7.4 "Performing Effects"',
+            error_code="E125",
+        )
+        return True
+
+    def _operation_instance(
+        self, op_info: OpInfo, arg_types: list[Type | None],
+    ) -> EffectInstance:
+        """The instance of *op_info*'s effect a fix names: the effect, each
+        type parameter the type of an argument that fixes it (`put(@Int.0)`
+        is `State<Int>`), and the parameter itself where none does (a
+        `get`, whose instance only its result would say)."""
+        eff_info = self.env.lookup_effect(op_info.parent_effect)
+        params = tuple(eff_info.type_params or ()) if eff_info else ()
+        fixed: dict[str, Type] = {}
+        for formal, actual in zip(op_info.param_types, arg_types):
+            if (isinstance(formal, TypeVar) and formal.name in params
+                    and actual is not None
+                    and not isinstance(actual, UnknownType)
+                    and not contains_typevar(actual)):
+                fixed.setdefault(formal.name, actual)
+        return EffectInstance(
+            op_info.parent_effect,
+            tuple(fixed.get(p, TypeVar(p)) for p in params))
 
     def _check_sql_provenance(
         self, op_name: str, args: tuple[ast.Expr, ...], node: ast.Node,
@@ -2531,8 +2697,8 @@ class CallsMixin:
                 "one is refused (E340), and so is a row naming one, so an "
                 "operation of one called where no row names it is the use "
                 "left, and it is refused at the call.  A built-in "
-                "effect's operation lowers under any row; that a row which is "
-                "not pure does not hold one to it is #1702."
+                "effect's operation lowers under any row, which holds it to "
+                "the effects the row names (E125)."
             ),
             fix=(
                 f"Call a function under its own name in place of the "
@@ -2552,9 +2718,9 @@ class CallsMixin:
         # Try as effect operation
         op_info = self.env.lookup_effect_op(expr.name, expr.qualifier)
         if op_info:
-            if not self._check_operation_lowerable(op_info, expr):
-                self._effect_ops_used.add(op_info.parent_effect)
-            return self._check_op_call(op_info, expr.args, expr)
+            refused = self._check_operation_lowerable(op_info, expr)
+            return self._check_op_call(op_info, expr.args, expr,
+                                       counted=not refused)
 
         # #309 (Cortex #1147 Finding 1): op resolution failed, but codegen
         # routes a ``DB.query`` / ``DB.execute`` SPELLING to the host database

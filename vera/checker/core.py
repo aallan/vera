@@ -46,6 +46,7 @@ from vera.environment import (
 from vera.regularity import occurrence_grows, suggested_occurrence
 from vera.types import (
     EffectInstance,
+    EffectRowType,
     BOOL,
     INT,
     NAT,
@@ -414,6 +415,17 @@ class TypeChecker(
         self.source = source
         self.file = file
         self._effect_ops_used: set[str] = set()
+        # #1702: the declaration whose row an operation outside the row in
+        # force is added to, by the fix of its E125 — the function or the
+        # closure whose body is being checked, worded as the fix names it,
+        # with the row it declares (a handler's body extends the row in
+        # force, never this one).  Set and restored with the row.
+        self._row_owner: tuple[str, EffectRowType] | None = None
+        # #1702, `vera.lowering` rule 7: for each closure whose body is
+        # being checked, innermost last, the depth of `_handled_effects`
+        # where its body begins, so the handlers written inside it are the
+        # entries above the mark.  Empty outside every closure.
+        self._closure_handler_marks: list[int] = []
         # #973: canonical type names of the handler state(s) whose HANDLED
         # BODY is currently being checked.  State is in scope as a slot only in
         # handler clauses, never the handled body — the body reaches state
@@ -1161,6 +1173,7 @@ class TypeChecker(
         saved_return = self.env.current_return_type
         saved_effect = self.env.current_effect_row
         saved_effect_order = self.env.current_effect_order
+        saved_row_owner = self._row_owner
         # #991 checker leg: this function's frame joins the lexical scope
         # stack for the duration of its body, contracts, AND its where-helper
         # recursion (step 8) — a helper's body must see this function's
@@ -1239,6 +1252,7 @@ class TypeChecker(
         self.env.current_effect_row = effect_row
         self.env.current_effect_order = effect_order
         self._effect_ops_used = set()
+        self._row_owner = (f"the effects clause of '{decl.name}'", effect_row)
 
         # 4. Push scope and bind parameters
         self.env.push_scope()
@@ -1337,6 +1351,7 @@ class TypeChecker(
         self.env.current_return_type = saved_return
         self.env.current_effect_row = saved_effect
         self.env.current_effect_order = saved_effect_order
+        self._row_owner = saved_row_owner
 
     def _helper_index_sources(
         self, program: ast.Program,

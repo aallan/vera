@@ -119,7 +119,7 @@ public fn hello(-> @Unit)
 }
 ```
 
-Effect operations are resolved by the effect declared in the function's effect row. If `get` appears in a function with `effects(<State<Int>>)`, it refers to the `get` operation of `State<Int>`.
+Effect operations are resolved by the effect declared in the function's effect row. An operation performed where the row in force does not name its effect, at any instance of it, is refused as a call to a function is (§7.8): a checker error at the call (`E125`), or at the function when its row is `effects(pure)` (`E122`); the row in force in a handler's body is the row around it with the handled effect added, and in a closure's body the closure's own row, which a handler around the closure does not extend. If `get` appears in a function with `effects(<State<Int>>)`, it refers to the `get` operation of `State<Int>`.
 
 **Declarations first.** A bare name is resolved as an operation only when no *function declaration* of that name is in scope. A program declaring `fn get` owns every bare `get(...)` in that declaration's scope — including inside a `handle[State<T>]` body, which is not an exception — and the resolution order below never runs for it. Operation names are not reserved, so this is the ordinary shadowing rule rather than a special case, and it is a property of the call site's scope alone. The qualified spelling is unaffected: `State.get(())` names the effect, so no declaration can shadow it, and it is how a program that declares `fn get` still reaches the cell.
 
