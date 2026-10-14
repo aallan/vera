@@ -86,7 +86,7 @@ Built-in effects:
 | `Inference` | `complete` | LLM calls; `String → Result<String, String>`; provider selected by env var |
 | `DB` | `query`, `execute` | SQL against SQLite (chosen by `VERA_DB_URL`); the SQL argument must be literal-provenance (`E207`) with runtime values through `?` placeholders; rows are `Array<Array<Option<String>>>` (SQL `NULL` = `None`) |
 
-User-defined effects follow the same pattern. Effects compose in rows: `effects(<IO, Http>)`, `effects(<Inference, IO>)`.
+Effects compose in rows: `effects(<IO, Http>)`, `effects(<Inference, IO>)`.
 
 ![Effect subtyping by row inclusion: pure fits where IO is allowed, and IO fits where IO plus State is allowed — fewer effects always fit where more are expected.](assets/diagrams/effect-row-lattice.svg)
 

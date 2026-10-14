@@ -35,8 +35,8 @@ from vera import ast, binders
 #: The effects whose operations code generation can lower at all (#754).
 #:
 #: A guard is a claim about a RUN, so an operation of an effect codegen
-#: refuses cannot be "guarded" in any useful sense: the enclosing function is
-#: dropped with a loud E603 and there is no run to guard.  The verifier's
+#: refuses cannot be "guarded" in any useful sense: a row naming the effect is
+#: refused at check (E340), and there is no run to guard.  The verifier's
 #: op-argument classification therefore has to intersect its guard question
 #: with this set, or it repeats the #1268 mistake one boundary over —
 #: recording a Tier-3 runtime check for a program that never reaches a
