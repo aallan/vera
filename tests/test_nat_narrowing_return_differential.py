@@ -596,8 +596,9 @@ class TestClosureNarrowingBoundary984:
 # backstop: a false Tier-1 AND a silent negative (`apply_fn(clo, @Int.0)` on -5
 # returned the body value rather than trapping).  The verifier now obligates the
 # argument narrowing at its apply_fn branch (mirroring the generic call-argument
-# narrowing) and codegen guards the call_indirect argument (mirroring its
-# @Int-formal widen guard).  Every closure body below returns a CONSTANT, so the
+# narrowing) and codegen guards the call_indirect argument (mirroring the
+# @Int-formal widen guard it emitted on the u64 `Nat`).  Every closure body
+# below returns a CONSTANT, so the
 # ONLY narrowing/guard in play is the ARGUMENT — any trap is the arg guard, not
 # a closure-return guard (the #984 corpus above covers that dual).
 # ---------------------------------------------------------------------------

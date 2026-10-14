@@ -35,7 +35,7 @@ from pathlib import Path
 import pytest
 
 from tests import pipeline
-from vera.codegen.api import execute
+from vera.codegen.api import CompileResult, execute
 from vera.reconcile import ReconcileRun, reconcile_file
 
 # A generated class instrument (tests/matrix_sample.py): a pull request runs a
@@ -1152,6 +1152,35 @@ def test_an_instantiation_s_neighbours_take_no_argument_check(
                         raw_args=["0"]).value == value
 
 
+_REFINED_AT_NAT = ("type PosNat = { @Nat | @Nat.0 > 0 };\n\n" + _PICK
+                   + _fn("@Int -> @PosNat", "pick(-3, 5)"))
+
+
+def test_a_negative_argument_at_a_refined_instantiation_over_nat_traps(
+        tmp_path: Path) -> None:
+    """`pick(-3, 5)` at `@PosNat`: the argument narrows into the
+    refinement's `Nat` base, so the verifier refutes it there (`nat_bind`,
+    E503) and the module checks its sign where the call passes it
+    (`nat_guard`), while the refined binding of the result keeps its own
+    record and predicate check (`refine_bind`, `contract_violation`).  The
+    join pairs each record with its check, and the run traps at the
+    argument (PR #1700 review)."""
+    path = tmp_path / "refined.vera"
+    path.write_text(_REFINED_AT_NAT, encoding="utf-8")
+    run = reconcile_file(path)
+    assert run.verify_result is not None and run.compile_result is not None
+    assert [(d.error_code, d.location.line, d.location.column)
+            for d in run.verify_result.diagnostics] == [
+        ("E503", 16, 8), ("E506", 16, 3)]
+    assert [(o.kind, o.status) for o in run.verify_result.obligations
+            if o.kind not in ("requires", "ensures")] == [
+        ("nat_bind", "violated"), ("refine_bind", "tier3")]
+    assert sorted(c.kind for c in run.compile_result.emitted_checks) == [
+        "contract_violation", "nat_guard"]
+    assert run.mismatches == []
+    assert _trap_kind(_REFINED_AT_NAT, "f", 0) == "nat_guard"
+
+
 # =====================================================================
 # The operations matrix
 # =====================================================================
@@ -1425,6 +1454,94 @@ def test_the_argument_range_check_is_the_host_s() -> None:
     module = pipeline.compile(_ARGUMENTS).result
     assert execute(module, fn_name="f", args=[-1, 0],
                    check_int_args=False).value == -1
+
+
+#: Signatures whose integer parameters sit among two-slot ones.  A `@String`
+#: or an `@Array` lowers to an `i32_pair`, two WASM arguments, so the
+#: arguments `execute` takes do not line up one to one with the parameters
+#: they belong to.  Each: (the parameters, the result, the body); no body
+#: reads a pair, which a call passes as a zero pointer and length.
+_PAIRED: dict[str, tuple[tuple[str, ...], str, str]] = {
+    "a @Nat after a @String": (("@String", "@Nat"), "@Nat", "@Nat.0"),
+    "a @Nat after two pairs": (
+        ("@String", "@Array<Int>", "@Nat"), "@Nat", "@Nat.0"),
+    "a @Nat before a @String": (("@Nat", "@String"), "@Nat", "@Nat.0"),
+    "an @Int and a @Nat after a @String": (
+        ("@String", "@Int", "@Nat"), "@Int", "@Int.0"),
+    "a @Byte after a @String": (
+        ("@String", "@Byte"), "@Int", "byte_to_int(@Byte.0)"),
+    "an @Int after a @String": (("@String", "@Int"), "@Int", "@Int.0"),
+}
+
+
+@functools.lru_cache(maxsize=None)
+def _paired_module(shape: str) -> CompileResult:
+    params, result, body = _PAIRED[shape]
+    return pipeline.compile(
+        _fn(f"{', '.join(params)} -> {result}", body)).result
+
+
+def _paired_args(shape: str,
+                 ints: tuple[int, ...]) -> tuple[list[int | float], list[str]]:
+    """A call's programmatic and raw arguments: *ints* to the integer
+    parameters in order, and each pair a zero pointer and length (the empty
+    string, raw)."""
+    values = iter(ints)
+    programmatic: list[int | float] = []
+    raw: list[str] = []
+    for param in _PAIRED[shape][0]:
+        if param in ("@String", "@Array<Int>"):
+            programmatic += [0, 0]
+            raw.append("")
+        else:
+            value = next(values)
+            programmatic.append(value)
+            raw.append(str(value))
+    return programmatic, raw
+
+
+@pytest.mark.parametrize(("shape", "ints", "outcome"), [
+    ("a @Nat after a @String", (-1,), "@Nat"),
+    ("a @Nat after a @String", (I64_MAX,), I64_MAX),
+    ("a @Nat after two pairs", (-1,), "@Nat"),
+    ("a @Nat after two pairs", (I64_MAX,), I64_MAX),
+    ("a @Nat before a @String", (-1,), "@Nat"),
+    ("a @Nat before a @String", (I64_MAX,), I64_MAX),
+    ("an @Int and a @Nat after a @String", (7, -1), "@Nat"),
+    ("an @Int and a @Nat after a @String", (-1, 7), -1),
+    ("a @Byte after a @String", (256,), "@Byte"),
+    ("a @Byte after a @String", (255,), 255),
+    ("an @Int after a @String", (I64_MAX + 1,), "@Int"),
+    ("an @Int after a @String", (I64_MAX,), I64_MAX),
+])
+def test_an_argument_beside_a_pair_is_held_to_its_parameter_s_range(
+        shape: str, ints: tuple[int, ...], outcome: int | str) -> None:
+    """A `@String` or an `@Array` parameter is two WASM arguments, and the
+    programmatic check reads each integer's range from the parameter it
+    belongs to, wherever the pairs sit: it skipped every function with a
+    pair, so `execute` passed -1 into a `@Nat` after a `@String` (PR #1700
+    review).  The raw path holds the same ranges; the edge of each range is
+    accepted, and so is an `@Int` -1 beside the `@Nat`."""
+    module = _paired_module(shape)
+    programmatic, raw = _paired_args(shape, ints)
+    if isinstance(outcome, int):
+        assert execute(module, fn_name="f",
+                       args=programmatic).value == outcome
+        assert pipeline.run(module, fn="f", raw_args=raw).value == outcome
+        return
+    message = f"out of range for parameter type {outcome}"
+    with pytest.raises(RuntimeError, match=message):
+        execute(module, fn_name="f", args=programmatic)
+    with pytest.raises(RuntimeError, match=message):
+        pipeline.run(module, fn="f", raw_args=raw)
+
+
+def test_the_range_check_beside_a_pair_is_the_host_s() -> None:
+    """With the host's check off, -1 reaches the `@Nat` after a `@String` as
+    the i64 it is: the refusal above is the host's."""
+    programmatic, _ = _paired_args("a @Nat after a @String", (-1,))
+    assert execute(_paired_module("a @Nat after a @String"), fn_name="f",
+                   args=programmatic, check_int_args=False).value == -1
 
 
 _ABS = _fn("@Int -> @Nat", "abs(@Int.0)")

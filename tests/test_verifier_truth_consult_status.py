@@ -346,12 +346,13 @@ def test_nat_arg_guard_parity(tmp_path: Path, name: str) -> None:
         )
 
     # THE ARTIFACT IS THE ORACLE — the program is run on the value the guard
-    # exists to catch.  A WAT `unreachable` delta was the first reading and it
-    # is confounded: for `nat_to_int` the body IS the argument, so declaring
-    # the parameter `@Nat` in the control also removes the `@Nat -> @Int`
-    # RETURN-widening guard, and the delta measures both boundaries at once.
-    # That is the same confound in the other direction as the control which
-    # rewrote the return type (PR review); running it has no such ambiguity.
+    # exists to catch.  A WAT `unreachable` delta was the first reading, and
+    # on the u64 `Nat` it was confounded: for `nat_to_int` the body IS the
+    # argument, so declaring the parameter `@Nat` in the control also
+    # removed the `@Nat -> @Int` RETURN-widening guard, and the delta
+    # measured both boundaries at once.  That was the same confound in the
+    # other direction as the control which rewrote the return type (PR
+    # review); running it has no such ambiguity.
     codegen_guards = _traps_on_negative(tmp_path, name)
 
     result = _verify(tmp_path, _opaque_program(name), name=f"{name}_v.vera")

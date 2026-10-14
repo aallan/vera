@@ -49,7 +49,7 @@ from tests import pipeline
 
 def _compile(source: str, file: str = "prog.vera") -> CompileResult:
     """Parse, check (collecting artifacts) and compile, as `vera compile`
-    does — the overflow classifier and the widening guards read the
+    does — the overflow classifier and the narrowing guards read the
     checker's side tables, so a bare transform-and-compile would measure a
     different backend."""
     compiled = pipeline.compile(source, file=file)

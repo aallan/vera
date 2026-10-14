@@ -9339,7 +9339,7 @@ class ContractVerifier:
                 # said "codegen does NOT yet guard effect-op arguments",
                 # stale since #1203 gave `State`'s write boundaries their
                 # guards and false again since #1268 gave `throw`'s payload
-                # the sign pair AND the predicate guard: `Exn.throw(v)` was
+                # the sign guard AND the predicate guard: `Exn.throw(v)` was
                 # guarded at run time and disclosed E504/E506 as if it were
                 # not.  The qualifier NAMES the effect, so `op.parent_effect`
                 # is exactly the bare arm's resolved answer with no

@@ -1315,13 +1315,20 @@ def execute(
 
     if raw_args is None and http_request is None and check_int_args:
         # A programmatic integer is held to its parameter's range as a raw
-        # one is: outside it, the host would wrap it into the i64 slot.
-        nat_params = result.fn_param_nat.get(fn_name or "", [])
-        if len(nat_params) == given == expected:
-            for index, (call_arg, param) in enumerate(
-                    zip(call_args, func_type.params)):
+        # one is: outside it, the host would wrap it into the i64 slot.  A
+        # parameter takes its lowered width in WASM arguments (an `i32_pair`
+        # String or Array takes two), so each argument's range is read from
+        # the Vera parameter it belongs to.
+        vera_params = result.fn_param_types.get(fn_name or "", [])
+        widths = [2 if t == "i32_pair" else 1 for t in vera_params]
+        if sum(widths) == given == expected:
+            position = 0
+            for index, (wasm_type, width) in enumerate(
+                    zip(vera_params, widths)):
+                call_arg = call_args[position]
+                position += width
                 range_name = _argument_range_name(
-                    result, fn_name or "", index, str(param))
+                    result, fn_name or "", index, wasm_type)
                 if (range_name is not None
                         and isinstance(call_arg, int)
                         and not isinstance(call_arg, bool)):
