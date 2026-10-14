@@ -53,7 +53,7 @@ Vera's contracts are checked in two implemented tiers, applied at every call sit
 
 **Tier 1 — Z3 static (decidable fragment).** The compiler generates a verification condition and sends it to Z3. If Z3 returns `unsat`, the contract is proved for all inputs. This covers linear integer and real arithmetic, boolean logic, strings, ADT constructor discrimination and fields, array lengths and literals, and refinement predicates (spec §6.8).
 
-**Tier 3 — Runtime fallback.** If Z3 returns `unknown` or times out, the contract is compiled as a runtime check in the WASM binary. A violation traps on entry to the function (a `requires`) or on its return (an `ensures`), naming the contract. A site that can be neither proved nor guarded is disclosed as a warning (`E504`, `E506`, `E531`, `E537`) and counted in neither tier.
+**Tier 3 — Runtime fallback.** If Z3 returns `unknown` or times out, the contract is compiled as a runtime check in the WASM binary. A violation traps on entry to the function (a `requires`) or on its return (an `ensures`), naming the contract. A site that can be neither proved nor guarded is disclosed as a warning (`E504`, `E506`) and counted in neither tier.
 
 `vera verify --json` reports the tier breakdown:
 

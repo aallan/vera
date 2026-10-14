@@ -562,22 +562,6 @@
     ]
   },
   {
-    "id": "ch04_nat_int_widening",
-    "file": "ch04_nat_int_widening.vera",
-    "chapter": 4,
-    "title": "@Nat -> @Int widening coercion obligation (#813)",
-    "level": "run",
-    "spec_ref": "Section 2.2.1 / Section 11.2.1",
-    "expected_stdout": "5\n",
-    "expected_exit": 0,
-    "features": [
-      "nat_int_widening",
-      "coercion_obligation",
-      "tier1_discharge",
-      "requires_discharge"
-    ]
-  },
-  {
     "id": "ch04_int_overflow",
     "file": "ch04_int_overflow.vera",
     "chapter": 4,
@@ -1909,34 +1893,6 @@
       "monomorphization",
       "bare_call",
       "module_qualified_call"
-    ]
-  },
-  {
-    "id": "ch08_xmod_widen_lib",
-    "file": "ch08_xmod_widen_lib.vera",
-    "chapter": 8,
-    "title": "Cross-module @Nat -> @Int widening library",
-    "level": "check",
-    "spec_ref": "Section 11.2.1",
-    "features": [
-      "cross_module",
-      "nat_int_widening",
-      "imported_widen_guard"
-    ]
-  },
-  {
-    "id": "ch08_xmod_widen",
-    "file": "ch08_xmod_widen.vera",
-    "chapter": 8,
-    "title": "Cross-module @Nat -> @Int widening guard emitted through the import door (#987)",
-    "level": "run",
-    "spec_ref": "Section 11.2.1",
-    "expected_stdout": "9223372036854775807\n",
-    "expected_exit": 0,
-    "features": [
-      "cross_module",
-      "nat_int_widening",
-      "imported_widen_guard"
     ]
   },
   {
@@ -4134,6 +4090,38 @@
     "expected_error": "E339",
     "features": [
       "state_handler",
+      "check_error"
+    ]
+  },
+  {
+    "id": "ch02_nat_i64",
+    "file": "ch02_nat_i64.vera",
+    "chapter": 2,
+    "title": "`@Nat` is the non-negative i64: the top of its range widens, renders, compares and parses as itself",
+    "level": "run",
+    "spec_ref": "Section 2.2",
+    "expected_stdout": "9223372036854775807\n9223372036854775807\nfalse\n4611686018427387903\n-9223372036854775807\n9223372036854775800\n9223372036854775807\nout of range\n",
+    "expected_exit": 0,
+    "features": [
+      "nat_range",
+      "nat_int_widening",
+      "nat_arithmetic",
+      "int_literal",
+      "parse_nat"
+    ]
+  },
+  {
+    "id": "ch04_literal_above_i64",
+    "file": "ch04_literal_above_i64.vera",
+    "chapter": 4,
+    "title": "An integer literal above i64 is out of range in a `@Nat` context (E149)",
+    "level": "check",
+    "spec_ref": "Section 4.2",
+    "expected_error": "E149",
+    "features": [
+      "int_literal",
+      "literal_range",
+      "nat_range",
       "check_error"
     ]
   }

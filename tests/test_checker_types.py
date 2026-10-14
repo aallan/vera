@@ -674,17 +674,17 @@ public fn main(@Unit -> @Int)
 
     # -----------------------------------------------------------------
     # Ill-typed direction pins: the relaxed bidirectional fill must not
-    # over-admit.  When a payload-bearing sibling `Some(<Nat literal>)`
-    # pins the body to Option<Nat>, the program is genuinely ill-typed
+    # over-admit.  When a payload-bearing sibling `Some(<literal>)`
+    # pins the body to Option<Int>, the program is genuinely ill-typed
     # against the declared Option<T> and must still be rejected E121.  The
     # fresh-var adoption only ties a *bare nullary* ctor to the declared
-    # forall var; it never launders a concrete Option<Nat> into Option<T>.
-    # (The diagnostic names Option<Nat> because 5/3 are Nat literals.)
+    # forall var; it never launders a concrete Option<Int> into Option<T>.
+    # (The diagnostic names Option<Int> because every literal is an Int.)
     # -----------------------------------------------------------------
 
     def test_some_literal_return_rejected(self) -> None:
         """Shape (a) ill-typed: `Some(5)` returned under forall<T> ->
-        @Option<T> is Option<Nat>, not Option<T>, and must still fail E121."""
+        @Option<T> is Option<Int>, not Option<T>, and must still fail E121."""
         errs = _check_err("""
 private forall<T> fn bad_some(@Unit -> @Option<T>)
   requires(true) ensures(true) effects(pure)
@@ -697,7 +697,7 @@ private forall<T> fn bad_some(@Unit -> @Option<T>)
 
     def test_mixed_if_arms_rejected(self) -> None:
         """Shape (b) ill-typed: `if @Bool.0 then None else Some(3)` types the
-        whole `if` at Option<Nat> (the concrete arm wins), so against
+        whole `if` at Option<Int> (the concrete arm wins), so against
         forall<T> -> @Option<T> it is E121 — None does not force Option<T>."""
         errs = _check_err("""
 private forall<T> fn bad_mixed(@Bool -> @Option<T>)
@@ -842,7 +842,7 @@ private forall<T> fn bad(@Unit -> @Alpha<Alpha<T>>)
             f"Expected E121/E213, got: {[e.error_code for e in errs]}"
 
     def test_nested_some_literal_still_rejected(self) -> None:
-        """Ill-typed pin: `Some(Some(5))` is Option<Option<Nat>>, not
+        """Ill-typed pin: `Some(Some(5))` is Option<Option<Int>>, not
         Option<Option<T>>; the fill ties only a bare nullary ctor to the
         declared var, never launders a concrete payload, so this stays E121."""
         errs = _check_err("""

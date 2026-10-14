@@ -15,15 +15,18 @@ now refused at check, at the construct, with its code.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, is_dataclass
 
 import pytest
 import wasmtime
 
 from tests import pipeline as vera_pipeline
+from vera import ast
 from vera.checker.registration import builtin_effect_names
 from vera.environment import TypeEnv
 from vera.errors import Diagnostic
+from vera.lowering import tail_resume_arg
+from vera.verifier import ContractVerifier
 
 # A class instrument (tests/matrix_sample.py): a pull request runs a sample of
 # its parametrised cells, and all of them when it changes this file or a
@@ -1032,6 +1035,44 @@ class TestStateClause:
         assert _verdict(source).check_codes == ("E340",)
         compiled = vera_pipeline.compile(source, past_check=True)
         assert vera_pipeline.run(compiled.result, fn="main").value == 7
+
+
+def _handler_clauses(node: object) -> list[ast.HandlerClause]:
+    """Every handler clause in *node*, in source order."""
+    if isinstance(node, ast.HandlerClause):
+        return [node, *_handler_clauses(node.body)]
+    if isinstance(node, (list, tuple)):
+        return [c for item in node for c in _handler_clauses(item)]
+    if is_dataclass(node) and not isinstance(node, type):
+        return [c for f in fields(node)
+                for c in _handler_clauses(getattr(node, f.name))]
+    return []
+
+
+class TestTheVerifierReadsTheLoweringsTailResume:
+    """The `State` get-result guard's obligation reads the clause's tail
+    resume with the function the lowering rule and code generation's guard
+    read it with, so the three cannot drift apart."""
+
+    def test_the_verifier_asks_the_lowering_rule(self) -> None:
+        assert ContractVerifier._tail_resume_value is tail_resume_arg
+
+    def test_the_two_agree_on_every_clause_shape(self) -> None:
+        sources = [_clause_source(get_clause, put_clause)
+                   for get_clause, put_clause, _ in _CLAUSES.values()]
+        sources += [_handler_source(effect, "function") for effect in _HANDLED]
+        sources.append(_clause_source(
+            "resume(@Int.0)", "resume(())",
+            with_update=" with @Int = { resume(());\n      @Int.0 }"))
+        answers = []
+        for source in sources:
+            for clause in _handler_clauses(
+                    vera_pipeline.parse(source).program):
+                ours = ContractVerifier._tail_resume_value(clause.body)
+                assert ours is tail_resume_arg(clause.body), source
+                answers.append(ours is None)
+        # Both answers are exercised: a tail resume's argument, and none.
+        assert set(answers) == {True, False}, answers
 
 
 # ---------------------------------------------------------------------

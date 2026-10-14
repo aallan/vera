@@ -81,7 +81,7 @@ from vera.smt import (
     _pattern_condition_exact,
     resolve_timeout_ms,
 )
-from vera.lowering import state_cell_lowerable
+from vera.lowering import state_cell_lowerable, tail_resume_arg
 from vera.types import (
     erases_to_unit,
     has_no_wasm_representation,
@@ -8838,25 +8838,11 @@ class ContractVerifier:
                     ),
                 )
 
-    @staticmethod
-    def _tail_resume_value(body: ast.Expr) -> ast.Expr | None:
-        """The tail ``resume(v)``'s argument, descending the same join-free
-        chain codegen's ``_tail_resume_arg`` uses (Block trailing
-        expression, single-arm match) — ``None`` when the tail is not a
-        one-argument resume (#1203)."""
-        tail: ast.Expr = body
-        while True:
-            if isinstance(tail, ast.Block):
-                tail = tail.expr
-                continue
-            if isinstance(tail, ast.MatchExpr) and len(tail.arms) == 1:
-                tail = tail.arms[0].body
-                continue
-            break
-        if (isinstance(tail, ast.FnCall) and tail.name == "resume"
-                and len(tail.args) == 1):
-            return tail.args[0]
-        return None
+    #: The tail ``resume(v)``'s argument (#1203): the lowering rule's
+    #: :func:`vera.lowering.tail_resume_arg`, which code generation's
+    #: get-result guard reads too, so the obligation and the guard read one
+    #: descent.
+    _tail_resume_value = staticmethod(tail_resume_arg)
 
     def _walk_for_nat_binding_obligations(
         self,

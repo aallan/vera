@@ -58,6 +58,11 @@ from vera.types import (
 #: The State operations a bare or ``State.``-qualified call can name.
 _STATE_OPS = frozenset({"get", "put"})
 
+#: The largest value an integer literal pattern can name: i64's, which an
+#: `@Int` is and a `@Nat` is the non-negative half of, and `@Byte`'s.
+_I64_MAX = 2**63 - 1
+_BYTE_MAX = 255
+
 
 @dataclass(frozen=True)
 class _ClauseCell:
@@ -496,12 +501,59 @@ class ControlFlowMixin:
         if isinstance(pat, ast.WildcardPattern):
             return []
         if isinstance(pat, ast.IntPattern):
+            self._check_int_pattern_range(pat, expected)
             return []
         if isinstance(pat, ast.StringPattern):
             return []
         if isinstance(pat, ast.BoolPattern):
             return []
         return []  # pragma: no cover — exhaustive isinstance chain above
+
+    def _check_int_pattern_range(
+        self, pat: ast.IntPattern, expected: Type | None,
+    ) -> None:
+        """E149 for an integer literal pattern its scrutinee's type cannot
+        hold: the range an integer literal has wherever it is written (spec
+        §4.2), `@Byte`'s 0..255 over a `Byte` scrutinee and i64's over any
+        other.  A pattern is written without a sign, so only the upper bound
+        can be passed.  Past it, code generation compares the scrutinee with
+        the literal's bits: `9223372036854775808` would match -2^63."""
+        base = base_type(expected) if expected is not None else None
+        if base == BYTE:
+            if pat.value > _BYTE_MAX:
+                self._literal_range_error(
+                    pat,
+                    f"Integer literal {pat.value} is out of range for "
+                    f"@Byte; the range is 0..{_BYTE_MAX}.",
+                    rationale=(
+                        "A `@Byte` is an unsigned 8-bit integer, so no "
+                        "value of the scrutinee equals a literal outside "
+                        "0..255, and code generation compares at that "
+                        "width."
+                    ),
+                    fix=("Use a pattern literal in 0..255, or match the "
+                         "value at a wider type such as `@Int`."),
+                    contextual=True,
+                )
+            return
+        if pat.value > _I64_MAX:
+            type_name = "@Nat" if base == NAT else "@Int"
+            self._literal_range_error(
+                pat,
+                f"Integer literal {pat.value} is out of range for "
+                f"{type_name} (i64); the maximum is {_I64_MAX}.",
+                rationale=(
+                    "`@Int` is a signed 64-bit integer and `@Nat` holds its "
+                    "non-negative half, so no value of the scrutinee equals "
+                    f"a literal above {_I64_MAX}, and code generation would "
+                    "compare it with the literal's bits reinterpreted as a "
+                    "negative i64."
+                ),
+                fix=(f"Use a pattern literal no greater than {_I64_MAX}, "
+                     "or match the value with a binding pattern and a "
+                     "comparison."),
+                contextual=True,
+            )
 
     # -----------------------------------------------------------------
     # Pattern / scrutinee agreement (#1315, #1320)

@@ -1,0 +1,78 @@
+-- Conformance: `@Nat` is the non-negative i64 (Chapter 2, Section 2.2)
+-- Features: nat_range, nat_int_widening, nat_arithmetic, int_literal, parse_nat
+--
+-- A `@Nat` holds 0 .. 2^63 - 1, the non-negative half of the i64 an `@Int`
+-- is, so widening a `@Nat` into an `@Int` is the identity and every
+-- operation reads the value the `@Nat` holds.  At the top of the range,
+-- 9223372036854775807, the value renders, widens, compares with the `@Int`
+-- -1 as the larger, halves, negates and subtracts as itself.  A literal is an
+-- `Int`: `9223372036854775807` narrows into `top`'s `@Nat` return, proved at
+-- Tier 1.  `parse_nat` reads the top of the range and refuses the numeral
+-- past it.
+private fn top(@Unit -> @Nat)
+  requires(true)
+  ensures(@Nat.result == 9223372036854775807)
+  effects(pure)
+{
+  9223372036854775807
+}
+
+private fn widen(@Nat -> @Int)
+  requires(true)
+  ensures(@Int.result == @Nat.0)
+  effects(pure)
+{
+  @Nat.0
+}
+
+private fn below(@Nat, @Int -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Nat.0 < @Int.0
+}
+
+private fn halve(@Nat -> @Nat)
+  requires(@Nat.0 >= 1)
+  ensures(@Nat.result < @Nat.0)
+  effects(pure)
+{
+  @Nat.0 / 2
+}
+
+private fn gap(@Nat, @Nat -> @Nat)
+  requires(@Nat.0 <= @Nat.1)
+  ensures(@Nat.result == @Nat.1 - @Nat.0)
+  effects(pure)
+{
+  @Nat.1 - @Nat.0
+}
+
+private fn parsed(@String -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match parse_nat(@String.0) {
+    Ok(@Nat) -> nat_to_string(@Nat.0),
+    Err(@String) -> @String.0
+  }
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  let @Nat = top(());
+  IO.print("\(@Nat.0)\n");
+  IO.print("\(widen(@Nat.0))\n");
+  IO.print("\(below(@Nat.0, -1))\n");
+  IO.print("\(halve(@Nat.0))\n");
+  IO.print("\(-widen(@Nat.0))\n");
+  IO.print("\(gap(@Nat.0, 7))\n");
+  IO.print(string_concat(parsed("9223372036854775807"), "\n"));
+  IO.print(string_concat(parsed("9223372036854775808"), "\n"));
+  ()
+}

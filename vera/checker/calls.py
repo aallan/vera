@@ -8,6 +8,7 @@ orchestration.
 from __future__ import annotations
 
 import functools
+from collections import Counter
 from collections.abc import Callable
 import typing
 from typing import Any, cast
@@ -361,6 +362,32 @@ class _Join:
         if is_subtype(a_base, b_base) or is_subtype(b_base, a_base):
             return b
         return None
+
+
+def _type_var_occurrences(ty: Type, out: Counter[str]) -> None:
+    """Count into *out* every occurrence of a type variable in *ty*, at any
+    depth: through type arguments, a function type's parameters, result and
+    effect row, and a refinement's base."""
+    if isinstance(ty, TypeVar):
+        out[ty.name] += 1
+    elif isinstance(ty, AdtType):
+        for arg in ty.type_args:
+            _type_var_occurrences(arg, out)
+    elif isinstance(ty, FunctionType):
+        for param in ty.params:
+            _type_var_occurrences(param, out)
+        _type_var_occurrences(ty.return_type, out)
+        _effect_type_var_occurrences(ty.effect, out)
+    elif isinstance(ty, RefinedType):
+        _type_var_occurrences(ty.base, out)
+
+
+def _effect_type_var_occurrences(row: object, out: Counter[str]) -> None:
+    """:func:`_type_var_occurrences` over an effect row's type arguments."""
+    if isinstance(row, ConcreteEffectRow):
+        for inst in row.effects:
+            for arg in inst.type_args:
+                _type_var_occurrences(arg, out)
 
 
 def _names(name: str) -> Callable[[str], bool]:

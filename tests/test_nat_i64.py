@@ -26,9 +26,58 @@ instrument crosses:
 
 from __future__ import annotations
 
+import functools
+from collections.abc import Callable
+from dataclasses import dataclass
+
 import pytest
 
 from tests import pipeline
+from vera.codegen.api import execute
+
+# A generated class instrument (tests/matrix_sample.py): a pull request runs a
+# sample of its parametrised cells, and all of them when it changes this file
+# or a module that decides its class: the literal's type and range, the
+# `@Nat` value's representation in the verifier and in code generation, its
+# operations, guards and host boundary.
+pytestmark = pytest.mark.matrix(
+    decides=[
+        "vera/binders.py",
+        "vera/browser/runtime.mjs",
+        "vera/checker/calls.py",
+        "vera/checker/control.py",
+        "vera/checker/core.py",
+        "vera/checker/expressions.py",
+        "vera/checker/resolution.py",
+        "vera/cli.py",
+        "vera/codegen/api.py",
+        "vera/codegen/closures.py",
+        "vera/codegen/contracts.py",
+        "vera/codegen/core.py",
+        "vera/codegen/functions.py",
+        "vera/codegen/memory.py",
+        "vera/codegen/modules.py",
+        "vera/codegen/registration.py",
+        "vera/narrowing.py",
+        "vera/obligations/core.py",
+        "vera/reconcile.py",
+        "vera/runtime/traps.py",
+        "vera/smt.py",
+        "vera/tester.py",
+        "vera/trap_registry.py",
+        "vera/types.py",
+        "vera/verifier.py",
+        "vera/wasm/calls.py",
+        "vera/wasm/calls_handlers.py",
+        "vera/wasm/calls_math.py",
+        "vera/wasm/calls_parsing.py",
+        "vera/wasm/closures.py",
+        "vera/wasm/context.py",
+        "vera/wasm/data.py",
+        "vera/wasm/inference.py",
+        "vera/wasm/operators.py",
+    ],
+)
 
 I64_MAX = 2**63 - 1
 I64_MIN = -(2**63)
@@ -500,3 +549,518 @@ def test_repro_1628_a_nat_widened_into_a_builtin_needs_no_check() -> None:
     assert _value(_BUILTIN_INT_ARGUMENT, "g", I64_MAX) == str(I64_MAX)
     _refuses_argument(_BUILTIN_INT_ARGUMENT, "f", U64_MAX)
     _refuses_argument(_BUILTIN_INT_ARGUMENT, "g", U64_MAX)
+
+
+# =====================================================================
+# The literal matrix
+# =====================================================================
+#
+# Every literal value at both edges of the i64 range and one past each, in
+# every context a literal can be written in, through the check, the
+# verifier's obligations, the emitted checks and a run.  The expectation is
+# the rule below, written from spec §2.2 and §4.2, never read back from the
+# checker:
+#
+# 1. A literal is written without a sign; `-n` negates the literal `n`, and
+#    a pattern has no negation (a parse error, E005).
+# 2. The range is i64's in every context, `9223372036854775807` the
+#    largest and `-9223372036854775808` the smallest (its magnitude is
+#    allowed under the negation alone): E149 past either, once per literal
+#    written, a pattern's included.  In a `Byte` context, and over a `Byte`
+#    scrutinee, the range is `Byte`'s, 0..255; a negated literal there is an
+#    `Int` (E170).
+# 3. In range, every literal is an `Int`.  In a `@Nat` context it is a
+#    narrowing: a negative literal is refuted (E503, `nat_bind` violated)
+#    and its guard traps; a non-negative one records nothing.  In a refined
+#    context it is the refinement's narrowing (`refine_bind`, E505 refuted).
+#    Anywhere else it is the `Int` it is.
+
+
+@dataclass(frozen=True)
+class _Literal:
+    text: str
+    value: int
+
+
+_LITERALS = {
+    "0": _Literal("0", 0),
+    "1": _Literal("1", 1),
+    "i64.MAX": _Literal(str(I64_MAX), I64_MAX),
+    "i64.MAX+1": _Literal(str(I64_MAX + 1), I64_MAX + 1),
+    "u64.MAX": _Literal(str(U64_MAX), U64_MAX),
+    "-1": _Literal("-1", -1),
+    "i64.MIN": _Literal(f"-{-I64_MIN}", I64_MIN),
+    "i64.MIN-1": _Literal(f"-{-I64_MIN + 1}", I64_MIN - 1),
+}
+
+
+def _fn(sig: str, body: str, *, name: str = "f", vis: str = "public",
+        requires: str = "true", ensures: str = "true",
+        decreases: str | None = None) -> str:
+    measure = f"\n  decreases({decreases})" if decreases else ""
+    return (f"{vis} fn {name}({sig})\n  requires({requires})\n"
+            f"  ensures({ensures}){measure}\n  effects(pure)\n{{\n  {body}\n}}\n")
+
+
+_ID = ("private forall<T> fn id(@T -> @T)\n  requires(true)\n  ensures(true)\n"
+       "  effects(pure)\n{\n  @T.0\n}\n\n")
+
+
+@dataclass(frozen=True)
+class _Context:
+    """A program with `LIT` where the literal goes, and `f(0)` to run."""
+
+    source: str
+    #: What the literal's context is: `none`, `int`, `nat`, `refined`,
+    #: `byte`, `pattern`, `byte pattern`, `predicate`, `contract` or
+    #: `measure`.
+    target: str
+    #: Whether code generation reads the narrowed value back at run time
+    #: (an argument, a component, a generic call) rather than the literal.
+    reads_value: bool = False
+    #: How many times the literal is written.
+    occurrences: int = 1
+    #: What `f(0)` returns for the literal's value (a trap kind as `!kind`).
+    run: Callable[[int], object] = lambda v: v
+
+
+_CONTEXTS: dict[str, _Context] = {
+    "no context": _Context(
+        _fn("@Int -> @Int", "if LIT == 0 then { 0 } else { 1 }"), "none",
+        run=lambda v: int(v != 0)),
+    "let @Nat": _Context(
+        _fn("@Int -> @Int", "let @Nat = LIT;\n  nat_to_int(@Nat.0)"), "nat"),
+    "let @Int": _Context(
+        _fn("@Int -> @Int", "let @Int = LIT;\n  @Int.0"), "int"),
+    "@Nat argument": _Context(
+        _fn("@Nat -> @Nat", "@Nat.0", name="g", vis="private") + "\n"
+        + _fn("@Int -> @Int", "nat_to_int(g(LIT))"), "nat", reads_value=True),
+    "@Int argument": _Context(
+        _fn("@Int -> @Int", "@Int.0", name="g", vis="private") + "\n"
+        + _fn("@Int -> @Int", "g(LIT)"), "int"),
+    "@Nat return": _Context(_fn("@Int -> @Nat", "LIT"), "nat"),
+    "@Int return": _Context(_fn("@Int -> @Int", "LIT"), "int"),
+    "@Nat array element": _Context(
+        _fn("@Int -> @Int",
+            "let @Array<Nat> = [LIT];\n  array_length(@Array<Nat>.0)"),
+        "nat", run=lambda v: 1),
+    "@Int array element": _Context(
+        _fn("@Int -> @Int",
+            "let @Array<Int> = [LIT];\n  array_length(@Array<Int>.0)"),
+        "int", run=lambda v: 1),
+    "@Nat tuple component": _Context(
+        _fn("@Int -> @Int", "let Tuple<@Nat, @Bool> = Tuple(LIT, true);\n"
+            "  nat_to_int(@Nat.0)"), "nat", reads_value=True),
+    "@Nat constructor field": _Context(
+        "private data NB { NB(Nat) }\n\n" + _fn(
+            "@Int -> @Int",
+            "match NB(LIT) {\n    NB(@Nat) -> nat_to_int(@Nat.0)\n  }"),
+        "nat", reads_value=True),
+    "generic argument at an expected @Nat": _Context(
+        _ID + _fn("@Int -> @Int", "let @Nat = id(LIT);\n  nat_to_int(@Nat.0)"),
+        "nat", reads_value=True),
+    "generic argument with no expected type": _Context(
+        _ID + _fn("@Int -> @Int", "if id(LIT) == 0 then { 0 } else { 1 }"),
+        "none", run=lambda v: int(v != 0)),
+    "literal pattern over @Int": _Context(
+        _fn("@Int -> @Int", "match @Int.0 {\n    LIT -> 1,\n    _ -> 0\n  }"),
+        "pattern", run=lambda v: int(v == 0)),
+    "literal pattern over @Nat": _Context(
+        _fn("@Nat -> @Int", "match @Nat.0 {\n    LIT -> 1,\n    _ -> 0\n  }"),
+        "pattern", run=lambda v: int(v == 0)),
+    "literal pattern over @Byte": _Context(
+        _fn("@Int -> @Int",
+            "match int_to_byte(@Int.0) {\n    Some(@Byte) -> match @Byte.0 {\n"
+            "      LIT -> 1,\n      _ -> 0\n    },\n    None -> 9\n  }"),
+        "byte pattern", run=lambda v: int(v == 0)),
+    "refinement predicate": _Context(
+        "type R = { @Int | @Int.0 != LIT };\n\n" + _fn("@R -> @Int", "@R.0"),
+        "predicate", run=lambda v: "!contract_violation" if v == 0 else 0),
+    "refined binding": _Context(
+        "type Pos = { @Int | @Int.0 >= 0 };\n\n"
+        + _fn("@Int -> @Int", "let @Pos = LIT;\n  @Pos.0"), "refined"),
+    "requires and ensures": _Context(
+        _fn("@Int -> @Int", "@Int.0", requires="@Int.0 == LIT",
+            ensures="@Int.result == LIT"),
+        "contract", occurrences=2,
+        run=lambda v: 0 if v == 0 else "!contract_violation"),
+    "decreases": _Context(
+        _fn("@Nat -> @Nat",
+            "if @Nat.0 == 0 then { 0 } else { f(@Nat.0 - 1) }",
+            decreases="LIT"), "measure", run=lambda v: 0),
+    "let @Byte": _Context(
+        _fn("@Int -> @Int", "let @Byte = LIT;\n  byte_to_int(@Byte.0)"), "byte"),
+}
+
+
+@dataclass(frozen=True)
+class _Verdict:
+    """What one program does at each stage."""
+
+    check: tuple[str, ...] = ()
+    verify: tuple[str, ...] = ()
+    obligations: tuple[tuple[str, str], ...] = ()
+    checks: frozenset[str] = frozenset()
+    run: object = None
+
+
+#: The obligations and checks the `decreases` program's own body carries,
+#: whatever its measure: the narrowing of `@Nat.0 - 1` into `f`'s `@Nat`
+#: parameter and that subtraction's overflow, both proved, and the measure,
+#: which the verifier does not prove of a constant.
+_MEASURE_BODY = _Verdict(
+    obligations=(("int_overflow", "verified"), ("nat_bind", "verified"),
+                 ("decreases", "tier3")),
+    checks=frozenset({"contract_violation", "nat_guard", "overflow"}),
+)
+
+
+def _literal_rule(context: _Context, v: int) -> _Verdict:
+    """The rule stated above, for the literal *v* in *context*."""
+    if context.target in ("pattern", "byte pattern") and v < 0:
+        return _Verdict(check=("E005",))
+    if context.target == "byte pattern" and v > 255:
+        return _Verdict(check=("E149",))
+    if context.target == "byte":
+        codes = (("E149",) if v > 255 or v < I64_MIN else ()) + (
+            ("E170",) if v < 0 else ())
+        if codes:
+            return _Verdict(check=codes)
+        return _Verdict(run=v)
+    if not I64_MIN <= v <= I64_MAX:
+        return _Verdict(check=("E149",) * context.occurrences)
+    run = context.run(v)
+    if context.target == "nat":
+        if v < 0:
+            return _Verdict(verify=("E503",),
+                            obligations=(("nat_bind", "violated"),),
+                            checks=frozenset({"nat_guard"}),
+                            run="!nat_guard")
+        return _Verdict(checks=frozenset({"nat_guard"} if context.reads_value
+                                         else ()), run=run)
+    if context.target == "refined":
+        checks = frozenset({"contract_violation"})
+        if v < 0:
+            return _Verdict(verify=("E505",),
+                            obligations=(("refine_bind", "violated"),),
+                            checks=checks, run="!contract_violation")
+        return _Verdict(obligations=(("refine_bind", "verified"),),
+                        checks=checks, run=run)
+    if context.target in ("predicate", "contract"):
+        return _Verdict(checks=frozenset({"contract_violation"}), run=run)
+    if context.target == "measure":
+        return _Verdict(obligations=_MEASURE_BODY.obligations,
+                        checks=_MEASURE_BODY.checks, run=run)
+    return _Verdict(run=run)
+
+
+def _measure(source: str) -> _Verdict:
+    """What the toolchain does with *source*: the check's codes, or the
+    verifier's codes and obligations, the module's checks and `f(0)`."""
+    checked = pipeline.check(source)
+    if not checked.ok:
+        return _Verdict(check=tuple(_codes(checked)))
+    verified = pipeline.verify(source)
+    compiled = pipeline.compile(source)
+    ran = pipeline.run(compiled, fn="f", raw_args=["0"])
+    return _Verdict(
+        verify=tuple(_codes(verified)),
+        obligations=tuple(_kinds(verified)),
+        checks=frozenset(c.kind for c in compiled.checks()),
+        run=f"!{ran.trap.kind}" if ran.trap is not None else ran.value,
+    )
+
+
+@pytest.mark.parametrize("literal", list(_LITERALS))
+@pytest.mark.parametrize("context", list(_CONTEXTS))
+def test_a_literal_in_every_context(context: str, literal: str) -> None:
+    lit = _LITERALS[literal]
+    ctx = _CONTEXTS[context]
+    source = ctx.source.replace("LIT", lit.text)
+    assert _measure(source) == _literal_rule(ctx, lit.value), source
+
+
+# =====================================================================
+# The operations matrix
+# =====================================================================
+#
+# `@Nat` values at both ends of the range, passed through a parameter as
+# `vera run --fn f -- n` passes them, under every operation a `@Nat` meets
+# an `@Int` in.  The rule: each operation computes over the integers, and
+# the result is the true one, or the trap of the type it leaves: `overflow`
+# past the i64 range, `nat_underflow` for a `@Nat` subtraction below zero,
+# `nat_guard` for a narrowing into a `@Nat` below zero.  No cell wraps,
+# reinterprets a bit pattern, or reads a `@Nat` as a negative number.
+
+_NAT_VALUES = (0, 1, I64_MAX - 1, I64_MAX)
+
+
+def _int(v: int) -> object:
+    """*v*, or the overflow trap when it is past the i64 range."""
+    return v if I64_MIN <= v <= I64_MAX else "!overflow"
+
+
+@dataclass(frozen=True)
+class _Operation:
+    #: The function `f`'s signature and body; `f` takes the `@Nat` first.
+    sig: str
+    body: str
+    #: What `f` returns for the `@Nat` value (a trap kind as `!kind`).
+    rule: Callable[[int], object]
+    #: The arguments after the `@Nat`.
+    extra: tuple[int, ...] = ()
+    #: Declarations the body needs.
+    decls: str = ""
+
+
+_NB = "private data NB { NB(Nat) }\n\n"
+_IDI = _fn("@Int -> @Int", "@Int.0", name="idi", vis="private") + "\n"
+
+_OPERATIONS: dict[str, _Operation] = {
+    "+ 1": _Operation("@Nat -> @Int", "@Nat.0 + 1", lambda n: _int(n + 1)),
+    "- 1": _Operation("@Nat -> @Int", "@Nat.0 - 1", lambda n: n - 1),
+    "* 2": _Operation("@Nat -> @Int", "@Nat.0 * 2", lambda n: _int(n * 2)),
+    "/ 2": _Operation("@Nat -> @Int", "@Nat.0 / 2", lambda n: n // 2),
+    "% 2": _Operation("@Nat -> @Int", "@Nat.0 % 2", lambda n: n % 2),
+    "negation": _Operation("@Nat -> @Int", "-@Nat.0", lambda n: -n),
+    "nat_to_int": _Operation("@Nat -> @Int", "nat_to_int(@Nat.0)",
+                             lambda n: n),
+    "nat_to_string": _Operation("@Nat -> @String", "nat_to_string(@Nat.0)",
+                                str),
+    "string interpolation": _Operation("@Nat -> @String", '"\\(@Nat.0)"',
+                                       str),
+    "int_to_float": _Operation("@Nat -> @Float64", "int_to_float(@Nat.0)",
+                               float),
+    "into an @Int slot": _Operation(
+        "@Nat -> @Int", "let @Int = @Nat.0;\n  @Int.0", lambda n: n),
+    "into a built-in's @Int argument": _Operation(
+        "@Nat -> @Int", "max(@Nat.0, -1)", lambda n: n),
+    "abs": _Operation("@Nat -> @Nat", "abs(@Nat.0)", lambda n: n),
+    "bound into @Nat out of a tuple": _Operation(
+        "@Nat -> @Int",
+        "let Tuple<@Nat, @Int> = Tuple(@Nat.0, -1);\n  nat_to_int(@Nat.0)",
+        lambda n: n),
+    "bound into @Nat out of a constructor pattern": _Operation(
+        "@Nat -> @Int",
+        "match NB(@Nat.0) {\n    NB(@Nat) -> nat_to_int(@Nat.0)\n  }",
+        lambda n: n, decls=_NB),
+    "a match arm's @Int binder": _Operation(
+        "@Nat -> @Int",
+        "match Some(@Nat.0) {\n    Some(@Int) -> @Int.0,\n    None -> -1\n  }",
+        lambda n: n),
+    "an if join with an @Int arm": _Operation(
+        "@Nat -> @Int", "if @Nat.0 >= 1 then { @Nat.0 } else { -5 }",
+        lambda n: n if n >= 1 else -5),
+    "a match join with an @Int arm": _Operation(
+        "@Nat -> @Int",
+        "match Some(@Nat.0) {\n    Some(@Nat) -> @Nat.0,\n    None -> -5\n  }",
+        lambda n: n),
+    "a handle join": _Operation(
+        "@Nat -> @Int",
+        "handle[Exn<Int>] {\n    throw(@Int) -> { @Int.0 }\n  } in {\n"
+        "    if @Nat.0 == 0 then { throw(-7) } else { @Nat.0 }\n  }",
+        lambda n: -7 if n == 0 else n),
+    "a pipe into an @Int parameter": _Operation(
+        "@Nat -> @Int", "@Nat.0 |> idi()", lambda n: n, decls=_IDI),
+    "- 1 into a @Nat slot": _Operation(
+        "@Nat -> @Int", "let @Nat = @Nat.0 - 1;\n  nat_to_int(@Nat.0)",
+        lambda n: "!nat_guard" if n == 0 else n - 1),
+    "@Nat - @Nat": _Operation(
+        "@Nat, @Nat -> @Nat", "@Nat.1 - @Nat.0",
+        lambda n: "!nat_underflow" if n < 1 else n - 1, extra=(1,)),
+    "@Nat + @Nat": _Operation(
+        "@Nat, @Nat -> @Nat", "@Nat.1 + @Nat.0", lambda n: _int(n + 1),
+        extra=(1,)),
+    "@Nat * @Nat": _Operation(
+        "@Nat, @Nat -> @Nat", "@Nat.1 * @Nat.0", lambda n: _int(n * 2),
+        extra=(2,)),
+    "@Nat / @Nat": _Operation(
+        "@Nat, @Nat -> @Nat", "@Nat.1 / @Nat.0", lambda n: n // 2,
+        extra=(2,)),
+    "@Nat % @Nat": _Operation(
+        "@Nat, @Nat -> @Nat", "@Nat.1 % @Nat.0", lambda n: n % 2,
+        extra=(2,)),
+}
+
+# A comparison against an `@Int`: -1 tells a signed comparison from an
+# unsigned one (whose -1 is u64.MAX), and i64.MAX the top of the range.
+_COMPARISONS: dict[str, Callable[[int, int], bool]] = {
+    "==": lambda a, b: a == b, "<": lambda a, b: a < b,
+    "<=": lambda a, b: a <= b, ">": lambda a, b: a > b,
+    ">=": lambda a, b: a >= b,
+}
+for _op, _holds_for in _COMPARISONS.items():
+    for _m in (-1, I64_MAX):
+        _OPERATIONS[f"{_op} {_m}"] = _Operation(
+            "@Nat, @Int -> @Bool", f"@Nat.0 {_op} @Int.0",
+            lambda n, m=_m, holds=_holds_for: int(holds(n, m)), extra=(_m,))
+
+
+@functools.lru_cache(maxsize=None)
+def _compiled_operation(name: str) -> pipeline.Compiled:
+    op = _OPERATIONS[name]
+    compiled = pipeline.compile(op.decls + _fn(op.sig, op.body))
+    assert compiled.ok, compiled.errors
+    return compiled
+
+
+@pytest.mark.parametrize("n", _NAT_VALUES)
+@pytest.mark.parametrize("operation", list(_OPERATIONS))
+def test_a_nat_operation_at_both_ends_of_the_range(
+        operation: str, n: int) -> None:
+    op = _OPERATIONS[operation]
+    ran = pipeline.run(_compiled_operation(operation), fn="f",
+                       raw_args=[str(a) for a in (n, *op.extra)])
+    got = f"!{ran.trap.kind}" if ran.trap is not None else ran.value
+    assert got == op.rule(n), f"{operation} at {n}"
+
+
+# =====================================================================
+# The negative space of every refusal
+# =====================================================================
+
+
+def _neighbour(context: str, text: str) -> str:
+    return _CONTEXTS[context].source.replace("LIT", text)
+
+
+@pytest.mark.parametrize("context", [
+    "no context", "let @Nat", "@Nat argument", "@Int return",
+    "literal pattern over @Int", "literal pattern over @Nat",
+])
+def test_the_top_of_the_i64_range_is_accepted_beside_the_value_past_it(
+        context: str) -> None:
+    """E149 at 2^63 has, beside it, 2^63 - 1 checked clean, verified with
+    nothing refuted, and run: the bound is the range's, not one short."""
+    assert _codes(pipeline.check(_neighbour(context, str(I64_MAX + 1)))) == [
+        "E149"]
+    accepted = _neighbour(context, str(I64_MAX))
+    checked = pipeline.check(accepted)
+    assert checked.ok and not checked.warnings
+    verified = pipeline.verify(accepted)
+    assert verified.ok
+    assert all(status == "verified" for _, status in _kinds(verified))
+    assert pipeline.run(accepted, fn="f", raw_args=["0"]).trap is None
+
+
+def test_the_bottom_of_the_i64_range_is_accepted_beside_the_value_past_it(
+) -> None:
+    """Under the negation the magnitude reaches 2^63 and no further."""
+    refused = _neighbour("let @Int", f"-{-I64_MIN + 1}")
+    assert _codes(pipeline.check(refused)) == ["E149"]
+    accepted = _neighbour("let @Int", f"-{-I64_MIN}")
+    assert pipeline.verify(accepted).ok
+    assert _value(accepted, "f", 0) == I64_MIN
+
+
+def test_a_byte_pattern_at_255_is_accepted_beside_256() -> None:
+    """The `Byte` scrutinee's pattern bound is the `Byte` range: 256 is
+    E149, 255 checks clean and matches the byte 255."""
+    context = "literal pattern over @Byte"
+    assert _codes(pipeline.check(_neighbour(context, "256"))) == ["E149"]
+    accepted = _neighbour(context, "255")
+    assert pipeline.verify(accepted).ok
+    assert _value(accepted, "f", 255) == 1
+    assert _value(accepted, "f", 254) == 0
+
+
+@pytest.mark.parametrize("context", [
+    "let @Nat", "@Nat argument", "@Nat return", "@Nat array element",
+    "@Nat tuple component", "@Nat constructor field",
+    "generic argument at an expected @Nat",
+])
+def test_zero_into_a_nat_is_accepted_beside_minus_one(context: str) -> None:
+    """A negative literal narrowed into `@Nat` is refuted (E503); zero, the
+    nearest value the narrowing holds, verifies with nothing refuted."""
+    assert _codes(pipeline.verify(_neighbour(context, "-1"))) == ["E503"]
+    accepted = _neighbour(context, "0")
+    verified = pipeline.verify(accepted)
+    assert verified.ok and _kinds(verified) == []
+    assert pipeline.run(accepted, fn="f", raw_args=["0"]).trap is None
+
+
+def test_the_fix_of_a_pattern_literal_past_the_range_checks_clean() -> None:
+    """The E149 fix, applied: the pattern literal at the top of the range
+    (or the `Byte` range) checks with no E149."""
+    for context, past, top in (
+            ("literal pattern over @Int", I64_MAX + 1, I64_MAX),
+            ("literal pattern over @Byte", 256, 255)):
+        refused = pipeline.check(_neighbour(context, str(past)))
+        assert [d.error_code for d in refused.errors] == ["E149"]
+        assert str(top) in refused.errors[0].fix
+        assert pipeline.check(_neighbour(context, str(top))).ok
+
+
+_ARGUMENTS = _fn("@Nat, @Int -> @Nat", "@Nat.0")
+
+
+@pytest.mark.parametrize(("args", "refused"), [
+    ((I64_MAX, 0), None),
+    ((I64_MAX + 1, 0), "@Nat"),
+    ((0, 0), None),
+    ((-1, 0), "@Nat"),
+    ((0, I64_MAX), None),
+    ((0, I64_MAX + 1), "@Int"),
+    ((0, I64_MIN), None),
+    ((0, I64_MIN - 1), "@Int"),
+])
+def test_an_argument_is_held_to_its_parameter_type_s_range(
+        args: tuple[int, int], refused: str | None) -> None:
+    """`vera run` and `execute` refuse an integer argument outside its
+    parameter type's range rather than wrap it; the edge of each range is
+    accepted.  `check_int_args=False` models a host that does not check,
+    whose wrapped value then reaches the function's own guards."""
+    module = pipeline.compile(_ARGUMENTS).result
+    if refused is None:
+        assert pipeline.run(module, fn="f",
+                            raw_args=[str(a) for a in args]).value == args[0]
+        assert execute(module, fn_name="f", args=list(args)).value == args[0]
+        return
+    message = f"out of range for parameter type {refused}"
+    with pytest.raises(RuntimeError, match=message):
+        pipeline.run(module, fn="f", raw_args=[str(a) for a in args])
+    with pytest.raises(RuntimeError, match=message):
+        execute(module, fn_name="f", args=list(args))
+
+
+def test_the_argument_range_check_is_the_host_s() -> None:
+    """The refusal is the host's: with it off, `-1` reaches a `@Nat`
+    parameter as the i64 it is, and nothing in the function converts it."""
+    module = pipeline.compile(_ARGUMENTS).result
+    assert execute(module, fn_name="f", args=[-1, 0],
+                   check_int_args=False).value == -1
+
+
+_ABS = _fn("@Int -> @Nat", "abs(@Int.0)")
+
+
+def test_repro_abs_of_the_i64_minimum_traps_rather_than_wrap() -> None:
+    """`abs(-2^63)` is 2^63, which no `@Nat` holds: the call carries the
+    i64 overflow obligation (Tier 3 over an unconstrained `@Int`) and traps
+    with the overflow kind; one above the minimum returns i64.MAX."""
+    assert _kinds(pipeline.verify(_ABS)) == [("int_overflow", "tier3")]
+    assert [c.kind for c in pipeline.compile(_ABS).checks()] == ["overflow"]
+    assert _trap_kind(_ABS, "f", I64_MIN) == "overflow"
+    assert _value(_ABS, "f", I64_MIN + 1) == I64_MAX
+    assert _value(_ABS, "f", -5) == 5
+
+
+_PARSE_NAT = _fn(
+    "@String -> @String",
+    "match parse_nat(@String.0) {\n    Ok(@Nat) -> nat_to_string(@Nat.0),\n"
+    "    Err(@String) -> @String.0\n  }")
+
+
+@pytest.mark.parametrize(("numeral", "result"), [
+    (str(I64_MAX), str(I64_MAX)),
+    (str(I64_MAX + 1), "out of range"),
+    (str(U64_MAX), "out of range"),
+    (str(U64_MAX + 1), "out of range"),
+    ("99999999999999999999", "out of range"),
+    ("12", "12"),
+])
+def test_repro_parse_nat_refuses_a_numeral_past_the_range(
+        numeral: str, result: str) -> None:
+    """`parse_nat` returns `Err("out of range")` for a numeral above
+    i64.MAX, where it trapped or wrapped (2^64 parsed as 0)."""
+    assert _value(_PARSE_NAT, "f", numeral) == result

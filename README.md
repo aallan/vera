@@ -207,7 +207,7 @@ $ vera run examples/hello_world.vera
 Hello, World!
 ```
 
-`vera check` parses and type-checks. `vera verify` adds contract verification via Z3 — Tier 1 contracts (decidable arithmetic, comparisons, Boolean logic, ADTs, termination) are proved automatically; contracts Z3 cannot decide become Tier 3 runtime checks, and the few sites with no runtime guard are disclosed as warnings (`E504`, `E506`, `E531`, `E537`) rather than counted in either tier. A function's premises are checked first: a `requires` or `assume` that can never hold is refused (`E538`), so a contradiction proves nothing. A query that runs out of solver time falls back to Tier 3; `--timeout-ms` raises the budget. `vera run` compiles to WebAssembly and executes; a runtime trap names its cause (`@Nat` underflow, a failed contract or `assert`, an index out of bounds, an escaped exception) with a fix.
+`vera check` parses and type-checks. `vera verify` adds contract verification via Z3 — Tier 1 contracts (decidable arithmetic, comparisons, Boolean logic, ADTs, termination) are proved automatically; contracts Z3 cannot decide become Tier 3 runtime checks, and the few sites with no runtime guard are disclosed as warnings (`E504`, `E506`) rather than counted in either tier. A function's premises are checked first: a `requires` or `assume` that can never hold is refused (`E538`), so a contradiction proves nothing. A query that runs out of solver time falls back to Tier 3; `--timeout-ms` raises the budget. `vera run` compiles to WebAssembly and executes; a runtime trap names its cause (`@Nat` underflow, a failed contract or `assert`, an index out of bounds, an escaped exception) with a fix.
 
 ```bash
 vera run file.vera --fn f -- 42           # call function f with argument 42
