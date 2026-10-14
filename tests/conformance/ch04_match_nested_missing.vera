@@ -1,0 +1,17 @@
+-- Conformance: a case missing inside a nested constructor pattern is a
+-- checker error (Chapter 4, Section 4.9.2).
+-- Tests: E311 — exhaustiveness is judged to the full depth of every
+-- pattern, so arms that name every constructor at the top and leave a
+-- case uncovered inside one are refused, naming it (`Some(Some(_))`).
+-- Previously the check read each arm by its outer constructor alone, and
+-- a value no arm matches took the last arm (#1540, #1697).
+public fn depth(@Option<Option<Int>> -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  match @Option<Option<Int>>.0 {
+    Some(None) -> 1,
+    None -> 0
+  }
+}

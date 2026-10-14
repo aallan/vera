@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from vera import ast, naming
+from vera import ast, naming, patterns
 from vera.checker.registration import builtin_effect_names
-from vera.environment import Binding, FunctionInfo
+from vera.environment import AdtInfo, Binding, ConstructorInfo, FunctionInfo
 from vera.formatter import format_type_canonical
 from vera.lowering import (
     CLAUSE_RESUME_IN_WITH,
@@ -408,20 +408,18 @@ class ControlFlowMixin:
         # --- ADT exhaustiveness ---
         if isinstance(raw_ty, AdtType):
             # #1513: a type this file does not import is judged by its own
-            # declaration, as its constructors are resolved by it.
-            adt_info = (self.env.data_types.get(raw_ty.name)
-                        or self._stranger_data_type(raw_ty.name))
-            if adt_info is None:
+            # declaration, as its constructors are resolved by it.  A tuple
+            # type is its one constructor, `Tuple`, over its components.
+            if (raw_ty.name != "Tuple"
+                    and self._match_data_type(raw_ty.name) is None):
                 return  # unknown ADT, can't check
-            all_ctors = set(adt_info.constructors.keys())
-            covered: set[str] = set()
-            for arm in expr.arms:
-                pat = arm.pattern
-                if isinstance(pat, ast.ConstructorPattern):
-                    covered.add(pat.name)
-                elif isinstance(pat, ast.NullaryPattern):
-                    covered.add(pat.name)
-            missing = sorted(all_ctors - covered)
+            # #1697: every pattern is read to its full depth, so a case
+            # missing inside a constructor's fields is missing as one at
+            # the top is, and the message names it (`W(Green)`).
+            scrutinee: Type = raw_ty
+            missing = patterns.missing_cases(
+                [arm.pattern for arm in expr.arms], scrutinee,
+                self._pattern_domain)
             if missing:
                 self._error(
                     expr,
@@ -471,6 +469,98 @@ class ControlFlowMixin:
             spec_ref='Chapter 4, Section 4.9.2 "Exhaustiveness"',
             error_code="E313",
         )
+
+    def _match_data_type(self, name: str) -> AdtInfo | None:
+        """The data declaration a `match` over type *name* is judged by: the
+        one in scope, or (#1513) the one a type this file does not import
+        denotes."""
+        return (self.env.data_types.get(name)
+                or self._stranger_data_type(name))
+
+    def _pattern_domain(
+        self, ty: Type,
+        heads: Sequence[patterns.CtorHead | patterns.LitHead],
+    ) -> patterns.Domain[Type] | None:
+        """What the values at a `match` position of type *ty* are, for the
+        coverage reading (`vera.patterns.missing_cases`, #1697).
+
+        A data type's are its declaration's constructors, each field at the
+        type the scrutinee's type arguments give it, as a constructor
+        pattern binds them; a tuple type's, its one constructor `Tuple` over
+        its components; `Bool`'s, `true` and `false`.  Every other primitive
+        and every built-in with no constructors has an open domain, which
+        only a catch-all covers.  Where the type does not say (a type
+        variable, an unknown type) the patterns' *heads* do.
+        """
+        raw = base_type(ty)
+        if isinstance(raw, PrimitiveType):
+            return (patterns.Booleans() if raw.name == "Bool"
+                    else patterns.Open())
+        if isinstance(raw, AdtType):
+            info = self._match_data_type(raw.name)
+            if info is not None:
+                return self._declared_constructors(info, raw)
+            if raw.name == "Tuple":
+                if raw.type_args:
+                    return patterns.Constructors(
+                        (patterns.Constructor("Tuple", raw.type_args),))
+            elif raw.name in _CONSTRUCTORLESS_BUILTIN_TYPES:
+                return patterns.Open()
+        return self._domain_of_heads(heads)
+
+    def _domain_of_heads(
+        self, heads: Sequence[patterns.CtorHead | patterns.LitHead],
+    ) -> patterns.Domain[Type] | None:
+        """The domain the patterns at a position say its type has, where the
+        type does not say (`_pattern_domain`): a constructor pattern there
+        names a constructor of one data type, whose declaration gives the
+        domain; `Bool` literals, `Bool`'s; any other literal, or nothing but
+        catch-alls, an open one.  ``None`` where the heads name no one type,
+        whose errors are reported where the patterns are checked."""
+        ctors = [h for h in heads if isinstance(h, patterns.CtorHead)]
+        if not ctors:
+            if heads and all(h.kind == "Bool" for h in heads
+                             if isinstance(h, patterns.LitHead)):
+                return patterns.Booleans()
+            return patterns.Open()
+        if len(ctors) != len(heads):
+            return None
+        owners: set[str] = set()
+        for h in ctors:
+            ci = self.env.lookup_constructor(h.name)
+            if ci is None and h.name not in self._refused_ctor_names:
+                _candidates, ci = self._stranger_constructor(h.name)
+            if ci is None:
+                return None
+            owners.add(ci.parent_type)
+        if len(owners) != 1:
+            return None
+        info = self._match_data_type(owners.pop())
+        return None if info is None else self._declared_constructors(info, None)
+
+    def _declared_constructors(
+        self, info: AdtInfo, ty: Type | None,
+    ) -> patterns.Constructors[Type]:
+        """*info*'s constructors in declaration order, each field at the
+        type a value of *ty* gives it (`_constructor_fields`)."""
+        return patterns.Constructors(tuple(
+            patterns.Constructor(ci.name, self._constructor_fields(ci, ty))
+            for ci in info.constructors.values()))
+
+    @staticmethod
+    def _constructor_fields(
+        ci: ConstructorInfo, ty: Type | None,
+    ) -> tuple[Type, ...]:
+        """The types of *ci*'s fields in a value of type *ty*: the declared
+        ones, each type parameter replaced by *ty*'s argument for it.  The
+        one reading of a constructor's fields, for the types a constructor
+        pattern binds and the values the coverage reading splits (#1697)."""
+        fields = ci.field_types or ()
+        if (isinstance(ty, AdtType) and ci.parent_type_params
+                and ty.type_args):
+            mapping = dict(zip(ci.parent_type_params, ty.type_args))
+            fields = tuple(substitute(ft, mapping) for ft in fields)
+        return fields
 
     # -----------------------------------------------------------------
     # Patterns
@@ -772,15 +862,7 @@ class ControlFlowMixin:
             return []
 
         # Infer type args from expected type
-        mapping: dict[str, Type] = {}
-        if (isinstance(expected, AdtType) and ci.parent_type_params
-                and expected.type_args):
-            for tv, arg in zip(ci.parent_type_params, expected.type_args):
-                mapping[tv] = arg
-
-        field_types = ci.field_types or ()
-        if mapping:
-            field_types = tuple(substitute(ft, mapping) for ft in field_types)
+        field_types = self._constructor_fields(ci, expected)
 
         if len(pat.sub_patterns) != len(field_types):
             self._error(

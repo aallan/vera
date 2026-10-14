@@ -78,7 +78,6 @@ from vera.smt import (
     SlotEnv,
     SmtContext,
     SmtResult,
-    _pattern_condition_exact,
     resolve_timeout_ms,
 )
 from vera.lowering import state_cell_lowerable, tail_resume_arg
@@ -6507,22 +6506,22 @@ class ContractVerifier:
         @Nat.0 - 1 }` E502, and a count-up loop's recursive call E501 and
         E502, each where `vera run` returns cleanly (#1576, #1480 review).
         Only an EXACT earlier condition is negated
-        (`_pattern_condition_exact`): a nested pattern's condition is its
-        outer constructor alone (#1562), so it holds of values the arm does
-        not take, and its negation would drop runs that reach this arm —
-        after `Some(None) ->`, a `Some(Some(5))` still reaches `_ ->`.
+        (`PatternCondition.exact`): an inexact one, a pattern with a test
+        the SMT layer cannot state (a `String` literal inside a constructor),
+        holds of values the arm does not take, and its negation would drop
+        runs that reach this arm.  The arm's own condition is a premise of
+        its scope, so an inexact one is as good as any weaker premise.
         """
         if scrutinee_z3 is None:
             return ArmContext(
                 self._fresh_pattern_env(pattern, env, smt, track=True),
                 None, (),
             )
-        condition = smt._pattern_condition(scrutinee_z3, pattern)
+        condition = smt._pattern_condition(scrutinee_z3, pattern).condition
         excluded = [
             z3.Not(prior_cond) for prior in earlier
-            if _pattern_condition_exact(prior)
-            and (prior_cond := smt._pattern_condition(
-                scrutinee_z3, prior)) is not None
+            if (reading := smt._pattern_condition(scrutinee_z3, prior)).exact
+            and (prior_cond := reading.condition) is not None
         ]
         if excluded:
             condition = z3.And(
