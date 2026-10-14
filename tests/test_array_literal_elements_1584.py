@@ -466,7 +466,7 @@ KEPT: dict[str, _Kept] = {
     "some_then_none": _Kept("[Some(1), None]", "Array<Option<Nat>>"),
     "ok_then_err": _Kept('[Ok(1), Err("e")]', "Array<Result<Nat, String>>"),
     # `map_new()`'s variables are mentioned by no parameter, so the call
-    # mints them fresh and the later element fills them (#1668).
+    # marks them free and the later element fills them (#1668).
     "fresh_map_then_map": _Kept(
         '[map_new(), map_insert(map_new(), "k", 1)]',
         "Array<Map<String, Nat>>"),

@@ -32,12 +32,26 @@ if TYPE_CHECKING:
 # mistaken for a fresh hole.  Stripped for user-facing display (``pretty_type``).
 BUILTIN_TYPEVAR_MARKER = "#b"
 
+#: The mark a built-in call puts, with a number for the call, on a type
+#: variable of the built-in that no parameter of it mentions, so that no
+#: argument could bind it (#1668): ``K#b#f3``.  Such a variable is an open
+#: position the call leaves, as a constructor's type parameter no field
+#: holds is, and the join fills it; a ``#b`` variable without the mark is
+#: one a parameter mentions that the arguments left unbound.  Display drops
+#: it with the ``#b`` marker.
+FREE_BUILTIN_TYPEVAR_MARKER = "#f"
+
 
 def strip_builtin_typevar_marker(name: str) -> str:
-    """Drop the #970 built-in-namespacing marker for user-facing display.
+    """Drop the #970 built-in-namespacing marker for user-facing display,
+    and the free mark a built-in call puts on it (#1668).
 
-    ``"T#b"`` → ``"T"``.  A name without the marker is returned unchanged.
+    ``"T#b"`` → ``"T"``, ``"K#b#f3"`` → ``"K"``.  A name without the
+    marker is returned unchanged.
     """
+    head, mark, number = name.rpartition(FREE_BUILTIN_TYPEVAR_MARKER)
+    if mark and number.isdigit():
+        name = head
     return name.removesuffix(BUILTIN_TYPEVAR_MARKER)
 
 

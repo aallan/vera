@@ -24,7 +24,7 @@ over), nor a built-in's that a parameter of its call mentions and the
 arguments left unbound, and those shapes keep the verdict each site gave
 them, bar a `match` arm a variable withheld for behaviour would have to take
 the type of.  A built-in's variable no parameter mentions (`map_new()`'s) is
-minted fresh at the call and filled.  A position no part fills stays open,
+marked free at the call and filled.  A position no part fills stays open,
 and the context fills it as before.
 
 The class instrument crosses the site the parts are joined at (an array
@@ -822,8 +822,8 @@ def test_mutant_a_match_arm_refused_in_an_argument_is_reported_once() -> None:
 # stands for a type a failed substitution lost (`map_values` read through
 # a refinement alias, whose values here are `Int`, #1688).  A built-in's
 # variable no parameter mentions is one no argument could fix
-# (`map_new()`'s `K` and `V`): the call mints it fresh, as a constructor
-# mints a type parameter no field holds, and the join fills it.  For the
+# (`map_new()`'s `K` and `V`): the call marks it free, an open position as
+# a constructor's type parameter no field holds is, and the join fills it.  For the
 # shapes the join leaves, each site keeps the verdict it gave before: the
 # literal holds each element to the element type one
 # position at a time and keeps its first element's type; an `if`
@@ -1202,3 +1202,27 @@ def test_run_fresh_builtin_variable_is_refused_before_it_runs(
     assert ran.module is None
     assert ran.compiled is not None and ran.compiled.checked is not None
     assert [d.error_code for d in ran.compiled.checked.errors] == [code]
+
+
+def test_mutant_a_free_builtin_variable_displays_as_the_builtins() -> None:
+    # The free mark is the join's, not the reader's: a literal nothing
+    # fills shows `map_new()`'s variables as the built-in names them.
+    literal = "[map_new(), map_new()]"
+    source = _shape_source(f"array_length({literal})")
+    checked = _checked(source)
+    assert checked.diagnostics == ()
+    assert _literal_types(checked)[_place(source, literal)] == (
+        "Array<Map<K, V>>")
+
+
+def test_mutant_each_call_marks_its_own_free_variables() -> None:
+    # Two calls of `map_new()` leave two maps' variables: one name for both
+    # would bind the first map's key type to the second's.
+    literal = ("[Tuple(map_new(), map_new()), "
+               'Tuple(map_insert(map_new(), "k", 1), '
+               'map_insert(map_new(), 1, "v"))]')
+    source = _shape_source(f"array_length({literal})")
+    checked = _checked(source)
+    assert checked.diagnostics == ()
+    assert _literal_types(checked)[_place(source, literal)] == (
+        "Array<Tuple<Map<String, Nat>, Map<Nat, String>>>")

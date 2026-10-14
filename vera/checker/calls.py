@@ -31,6 +31,7 @@ from vera.environment import (
 )
 from vera.types import (
     BUILTIN_TYPEVAR_MARKER,
+    FREE_BUILTIN_TYPEVAR_MARKER,
     ORDERABLE_TYPES,
     AdtType,
     ConcreteEffectRow,
@@ -177,6 +178,15 @@ class JoinOutcome(typing.NamedTuple):
     builtin: bool
 
 
+def _lost_builtin_var(name: str) -> bool:
+    """Whether *name* is a built-in's type variable that a parameter of its
+    call mentions and the arguments left unbound: one standing for a type
+    a failed substitution lost (#1688), which the join does not fill.  A
+    built-in's variable the call marked free is open (#1668)."""
+    return (BUILTIN_TYPEVAR_MARKER in name
+            and FREE_BUILTIN_TYPEVAR_MARKER not in name)
+
+
 def _rewrapped(original: Type, joined: Type) -> Type:
     """*joined*, under the refinements *original* has over its base."""
     if isinstance(original, RefinedType):
@@ -242,7 +252,7 @@ class _Join:
         def walk(t: Type, behaviour: bool) -> None:
             t = base_type(t)
             if isinstance(t, TypeVar):
-                if (behaviour or BUILTIN_TYPEVAR_MARKER in t.name
+                if (behaviour or _lost_builtin_var(t.name)
                         or ("$" not in t.name and t.name in self.rigid)):
                     out.add(t.name)
                 if behaviour:
@@ -301,7 +311,7 @@ class _Join:
                     and a_base.name == b_base.name):
                 return b
             self.builtin = any(
-                isinstance(t, TypeVar) and BUILTIN_TYPEVAR_MARKER in t.name
+                isinstance(t, TypeVar) and _lost_builtin_var(t.name)
                 for t in (a_base, b_base))
             return None
         if isinstance(a_base, AdtType) and isinstance(b_base, AdtType):
@@ -998,8 +1008,8 @@ class CallsMixin:
                                 result: Type) -> Type:
         """*result*, with each of the built-in *fn_info*'s type variables
         that no parameter type mentions, and so no argument could bind,
-        minted fresh, as a constructor mints a type parameter no field
-        holds (#1668).
+        marked free (`FREE_BUILTIN_TYPEVAR_MARKER`, numbered for the call),
+        as a constructor mints a type parameter no field holds (#1668).
 
         `map_new()` has no parameters: its `K` and `V` are open positions
         the call leaves, which a join fills (`[map_new(), map_insert(...)]`
@@ -1011,13 +1021,14 @@ class CallsMixin:
         mentioned: Counter[str] = Counter()
         for param in fn_info.param_types:
             _type_var_occurrences(param, mentioned)
-        fresh: dict[str, Type] = {
-            tv: self._fresh_typevar(strip_builtin_typevar_marker(tv))
-            for tv in fn_info.forall_vars or ()
-            if BUILTIN_TYPEVAR_MARKER in tv and tv not in bound
-            and not mentioned[tv]
-        }
-        return substitute(result, fresh) if fresh else result
+        free: dict[str, Type] = {}
+        for tv in fn_info.forall_vars or ():
+            if (BUILTIN_TYPEVAR_MARKER in tv and tv not in bound
+                    and not mentioned[tv]):
+                self._fresh_id += 1
+                free[tv] = TypeVar(
+                    f"{tv}{FREE_BUILTIN_TYPEVAR_MARKER}{self._fresh_id}")
+        return substitute(result, free) if free else result
 
     def _check_apply_fn(self, args: tuple[ast.Expr, ...],
                         node: ast.Node) -> Type | None:
