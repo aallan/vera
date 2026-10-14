@@ -16,10 +16,13 @@ None, _ -> 5 }` was a `Nat`.
 The checker now joins the parts: the type of the first typed part, with each
 position it leaves open given by the first later part that fills it, and
 each part is held to that joined type.  One function computes the join
-(`CallsMixin._join`), and it is the witness of the judgement each part is
-held to (`_compatible_modulo_typevars`): the positions that judgement treats
-as wildcards are the ones the join fills.  A position no part fills stays
-open, and the context fills it as before.
+(`CallsMixin._join`), a substitution: each open type variable is bound by
+name, so one that occurs twice takes one type.  It does not fill a type
+variable where code generation compiles behaviour for it (inside a function
+type, or under a data type's parameter a constructor field holds a function
+over), nor a built-in's, and those shapes keep the verdict each site gave
+them, bar a `match` arm such a variable would have to take the type of.  A
+position no part fills stays open, and the context fills it as before.
 
 The class instrument crosses the site the parts are joined at (an array
 literal's elements, an `if`'s branches, a `match`'s arms), the type
@@ -794,3 +797,313 @@ def test_mutant_a_match_arm_refused_in_an_argument_is_reported_once() -> None:
     assert checked.errors[0].description == (
         "Match arm type Nat is incompatible with previous arm type "
         "Option<?>.")
+
+
+# =====================================================================
+# A variable that occurs twice, and the shapes the join does not fill
+# =====================================================================
+#
+# The join is a substitution: a type variable is bound by name, once per
+# part, so one that occurs twice takes one type, and a part that gives it
+# two is refused (E162 at the element, E301 at the `if`, E302 at the arm).
+#
+# It does not fill a type variable where code generation compiles
+# behaviour for it: inside a function type (`fn(T -> T)`, `Endo<T>`), or
+# under a data type's parameter that a constructor field holds a function
+# over (`Box<T>`).  Code generation finds a generic call's instantiation
+# from its arguments and the type it is expected at, never from a join, so
+# it compiles `mk(())` at a default of its own (`$mk$Bool`), and a closure
+# the join called `fn(Nat -> Nat)` would be called with an `@Nat` it was
+# not compiled for.  Nor does it fill a built-in's type variable, which can
+# be one no argument fixed (`map_new()`) or stand for a type a failed
+# substitution lost (`map_values` read through a refinement alias, whose
+# values here are `Int`).  For those shapes each site keeps the verdict it
+# gave before: the literal holds each element to the element type one
+# position at a time and keeps its first element's type; an `if`
+# synthesizes the open branch again against the other, which fixes a call
+# whose result is a data type (`mkbox(())`, `map_new()`) where it is
+# checked and does not fix one whose result is a function (`mk(())`), and
+# refuses what still differs (E301); a `match` arm after an open arm takes
+# the arm's type where the variable is a built-in's and the argument
+# judgement admits it.  A variable withheld for behaviour is refused at the
+# arm (E302): a `match` cannot synthesize its earlier arms again, and
+# f3b4415d took the arm's type without comparing the two, so the program
+# ran with the closure called at a type it was not compiled for.
+
+_SHAPES_PRE = """type Endo<T> = fn(T -> T) effects(pure);
+type M = { @Map<String, Int> | map_size(@Map<String, Int>.0) >= 0 };
+private data Box<T> { MkBox(fn(T -> T) effects(pure)) }
+private data Pair<T> { P(T, T) }
+
+private forall<T> fn mk(@Unit -> @Endo<T>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  fn(@T -> @T) effects(pure) { @T.0 }
+}
+
+private forall<T> fn mkf(@Unit -> @fn(T -> T) effects(pure))
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  fn(@T -> @T) effects(pure) { @T.0 }
+}
+
+private forall<T> fn mkbox(@Unit -> @Box<T>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  MkBox(fn(@T -> @T) effects(pure) { @T.0 })
+}
+
+private forall<T> fn twice(@Option<T> -> @Tuple<Option<T>, Option<T>>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Tuple(@Option<T>.0, @Option<T>.0)
+}
+"""
+
+
+@dataclass(frozen=True)
+class _Shape:
+    """Parts whose open variable occurs twice, or that the join does not
+    fill.  *expect* maps each site to the part it refuses there (None for
+    none) and the type the parts are recorded with where it refuses none."""
+
+    parts: tuple[str, ...]
+    expect: dict[str, tuple[int | None, str | None]]
+    description: str | None = None
+
+
+def _everywhere(refused: int | None, element: str | None,
+                ) -> dict[str, tuple[int | None, str | None]]:
+    return {site: (refused, element) for site in SITES}
+
+
+_NAT_ID = "fn(@Nat -> @Nat) effects(pure) { @Nat.0 }"
+_NAT_STR = 'fn(@Nat -> @String) effects(pure) { "x" }'
+
+SHAPES: dict[str, _Shape] = {
+    # The substitution: one variable, one type.
+    "tuple-agree": _Shape(
+        ("twice(None)", "Tuple(Some(1), Some(2))"),
+        _everywhere(None, "Tuple<Option<Nat>, Option<Nat>>")),
+    "tuple-disagree": _Shape(
+        ("twice(None)", 'Tuple(Some(1), Some("a"))'),
+        # The `if` synthesizes `twice(None)` again against the other
+        # branch's type, which the call takes position by position
+        # (f3b4415d's verdict, before any join is reached).
+        {"literal": (1, "Tuple<Option<T$>, Option<T$>>"),
+         "if": (None, "Tuple<Option<Nat>, Option<String>>"),
+         "match": (1, None)},
+        description=(
+            "Array literal element 1 has type Tuple<Option<Nat>, "
+            "Option<String>>, but the literal's element type is "
+            "Tuple<Option<?>, Option<?>>, the type of element 0.")),
+    "pair-agree": _Shape(
+        ("P(None, None)", "P(Some(1), Some(2))"),
+        _everywhere(None, "Pair<Option<Nat>>")),
+    "pair-disagree": _Shape(
+        ("P(None, None)", "P(Some(1), Some(2))", 'P(Some("a"), Some("b"))'),
+        {"literal": (2, "Pair<Option<Nat>>"), "if": (2, None),
+         "match": (2, None)},
+        description=(
+            "Array literal element 2 has type Pair<Option<String>>, but the "
+            "literal's element type is Pair<Option<Nat>>, the type of "
+            "element 0, completed by element 1.")),
+    # Withheld for behaviour: not filled; refused at an `if` or a `match`.
+    "fn-agree": _Shape(
+        ("mkf(())", _NAT_ID),
+        {"literal": (None, "fn(T -> T) effects(pure)"),
+         "if": (1, None), "match": (1, None)}),
+    "fn-disagree": _Shape(
+        ("mkf(())", _NAT_STR),
+        {"literal": (None, "fn(T -> T) effects(pure)"),
+         "if": (1, None), "match": (1, None)}),
+    "endo-agree": _Shape(
+        ("mk(())", _NAT_ID),
+        {"literal": (None, "fn(T -> T) effects(pure)"),
+         "if": (1, None), "match": (1, None)}),
+    "endo-disagree": _Shape(
+        ("mk(())", _NAT_STR),
+        {"literal": (None, "fn(T -> T) effects(pure)"),
+         "if": (1, None), "match": (1, None)}),
+    # The `if` synthesizes `mkbox(())` again against the other branch's
+    # type, which fixes the call's instantiation where it is checked.
+    "box-agree": _Shape(
+        ("mkbox(())", f"MkBox({_NAT_ID})"),
+        {"literal": (None, "Box<T>"), "if": (None, "Box<Nat>"),
+         "match": (1, None)}),
+    "box-disagree": _Shape(
+        ("mkbox(())",
+         "MkBox(fn(@String -> @String) effects(pure) { @String.0 })"),
+        {"literal": (None, "Box<T>"), "if": (None, "Box<String>"),
+         "match": (1, None)}),
+    # A built-in's variable: each site's verdict as before.
+    "leak-agree": _Shape(
+        ("map_values(@M.0)[0]", "0 - 5"),
+        {"literal": (None, "V"), "if": (1, None), "match": (None, "Int")}),
+    "leak-disagree": _Shape(
+        ("map_values(@M.0)[0]", '"s"'),
+        {"literal": (None, "V"), "if": (1, None), "match": (None, "String")}),
+    "map-agree": _Shape(
+        ("map_new()", 'map_insert(map_new(), "k", 1)'),
+        {"literal": (None, "Map<K, V>"), "if": (None, "Map<String, Nat>"),
+         "match": (None, "Map<String, Nat>")}),
+    "map-disagree": _Shape(
+        ("map_new()", 'map_insert(map_new(), "k", 1)',
+         'map_insert(map_new(), 1, "v")'),
+        {"literal": (None, "Map<K, V>"), "if": (2, None),
+         "match": (2, None)}),
+}
+
+
+@pytest.mark.parametrize(
+    ("shape", "site"), [(shape, site) for shape in SHAPES for site in SITES])
+def test_shape_the_join_binds_once_or_leaves(shape: str, site: str) -> None:
+    spec = SHAPES[shape]
+    refused, element = spec.expect[site]
+    site_text, offsets, inner_at = _site(site, list(spec.parts))
+    literal = site_text if site == "literal" else f"[{site_text}]"
+    shift = 0 if site == "literal" else 1
+    source = _fn(f"array_length({literal})", params="@M, @Bool, @Nat",
+                 pre=_SHAPES_PRE)
+    checked = _checked(source)
+    expected: list[tuple[str, int, int]] = []
+    if refused is not None:
+        if site == "literal":
+            expected.append(("E162", *_place(source, literal,
+                                             offsets[refused])))
+        elif site == "if":
+            at = inner_at if refused == len(spec.parts) - 1 else 0
+            expected.append(("E301", *_place(source, literal, shift + at)))
+        else:
+            expected.append(("E302", *_place(source, literal,
+                                             shift + offsets[refused])))
+    assert _where(checked) == expected, checked.diagnostics
+    if site == "literal" and spec.description is not None:
+        assert checked.errors[0].description == spec.description
+    if element is not None:
+        assert _literal_types(checked)[_place(source, literal)] == (
+            f"Array<{element}>")
+
+
+# The two programs refused at check and never run: R69's, where the join
+# gave the identity closure `mk(())` the type `fn(Option<Nat> ->
+# Option<String>)` and `vera run` read a `Nat` as a `String`, and one whose
+# closure agrees with `mk(())` at `fn(Nat -> Nat)` and which, compiled at
+# `mk`'s default, trapped with an indirect call type mismatch.
+
+_CONV_PROGRAM = """type Conv = fn(Option<Nat> -> Option<String>) effects(pure);
+type Endo<T> = fn(T -> T) effects(pure);
+
+private forall<T> fn mk(@Unit -> @Endo<T>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  fn(@T -> @T) effects(pure) { @T.0 }
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  let @Conv = if true then { mk(()) } else { fn(@Option<Nat> -> @Option<String>) effects(pure) { None } };
+  match apply_fn(@Conv.0, Some(0)) {
+    Some(@String) -> IO.print(string_concat("[", string_concat(@String.0, "]"))),
+    None -> IO.print("none")
+  }
+}
+"""
+
+_AGREEING_PROGRAM = """type NatToNat = fn(Nat -> Nat) effects(pure);
+type Endo<T> = fn(T -> T) effects(pure);
+
+private forall<T> fn mk(@Unit -> @Endo<T>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  fn(@T -> @T) effects(pure) { @T.0 }
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @NatToNat = if true then { mk(()) } else { fn(@Nat -> @Nat) effects(pure) { @Nat.0 } };
+  apply_fn(@NatToNat.0, 5)
+}
+"""
+
+
+@pytest.mark.parametrize("program", [_CONV_PROGRAM, _AGREEING_PROGRAM],
+                         ids=["conv", "agreeing"])
+def test_run_closure_the_join_cannot_type_is_refused_before_it_runs(
+        program: str) -> None:
+    ran = pipeline.run(program)
+    assert ran.module is None
+    assert ran.compiled is not None and ran.compiled.checked is not None
+    checked = ran.compiled.checked
+    line = next(text for text in program.splitlines()
+                if "let @" in text and "mk(())" in text)
+    assert [d.error_code for d in checked.errors] == ["E301", "E170"]
+    assert checked.errors[0].location.line == (
+        program.splitlines().index(line) + 1)
+
+
+def _shape_source(body: str) -> str:
+    return _fn(body, params="@M, @Bool, @Nat", pre=_SHAPES_PRE)
+
+
+def test_mutant_a_variable_that_occurs_twice_takes_one_type() -> None:
+    # Filled one position at a time, `twice(None)`'s one `T` would take
+    # `Nat` and `String`, the type of neither element.
+    literal = '[twice(None), Tuple(Some(1), Some("a"))]'
+    source = _shape_source(f"array_length({literal})")
+    checked = _checked(source)
+    assert _where(checked) == [
+        ("E162", *_place(source, literal, literal.index("Tuple(Some")))]
+
+
+def test_mutant_a_data_field_holding_a_function_keeps_its_variable() -> None:
+    # `Box<T>` holds `fn(T -> T)` in its field: filled from the later arm,
+    # the box `mkbox(())` built at its own default would be called as a
+    # box of `Nat`.
+    literal = ("[match @Nat.0 { 0 -> mkbox(()), _ -> "
+               f"MkBox({_NAT_ID}) }}]")
+    source = _shape_source(f"array_length({literal})")
+    checked = _checked(source)
+    assert _where(checked) == [
+        ("E302", *_place(source, literal, literal.index("MkBox(")))]
+
+
+def test_mutant_a_builtin_variable_is_not_filled() -> None:
+    # `map_new()`'s variables are a built-in's: the literal keeps them, as
+    # it did before the join.
+    literal = '[map_new(), map_insert(map_new(), "k", 1)]'
+    source = _shape_source(f"array_length({literal})")
+    checked = _checked(source)
+    assert checked.diagnostics == ()
+    assert _literal_types(checked)[_place(source, literal)] == (
+        "Array<Map<K, V>>")
+
+
+def test_mutant_a_builtin_variable_keeps_the_match_verdict() -> None:
+    # A `match` cannot synthesize its earlier arms again: an arm after
+    # `map_new()` gives the match its type, as it did before the join.
+    literal = ('[match @Nat.0 { 0 -> map_new(), '
+               '_ -> map_insert(map_new(), "k", 1) }]')
+    source = _shape_source(f"array_length({literal})")
+    checked = _checked(source)
+    assert checked.diagnostics == ()
+    assert _literal_types(checked)[_place(source, literal)] == (
+        "Array<Map<String, Nat>>")

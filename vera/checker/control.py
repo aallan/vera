@@ -219,8 +219,13 @@ class ControlFlowMixin:
                 expr.else_branch, expected=then_ty) or else_ty
             joined = self._join(else_ty, then_ty)
         else:
-            joined = (self._join(else_ty, then_ty)
-                      or self._join(then_ty, else_ty))
+            outcome = self._join_parts(else_ty, then_ty)
+            joined = outcome.joined or self._join(then_ty, else_ty)
+            if (joined is None and outcome.builtin
+                    and self._fits(else_ty, then_ty)):
+                # A built-in's type variable the join leaves alone: the
+                # then branch, as two open branches always gave.
+                joined = then_ty
         if joined is not None:
             return joined
 
@@ -286,7 +291,14 @@ class ControlFlowMixin:
                 joined: Type | None
                 if (contains_typevar(result_type)
                         and not contains_typevar(arm_ty)):
-                    joined = self._join(result_type, arm_ty)
+                    outcome = self._join_parts(result_type, arm_ty)
+                    joined = outcome.joined
+                    if (joined is None and outcome.builtin
+                            and self._fits(result_type, arm_ty)):
+                        # A built-in's type variable the join leaves alone
+                        # (`map_new()`'s): this arm's type, as an arm after
+                        # an open arm always gave.
+                        joined = arm_ty
                 else:
                     joined = self._join(arm_ty, result_type)
                     if joined is None and is_subtype(result_type, arm_ty):
