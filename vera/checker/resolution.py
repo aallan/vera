@@ -9,7 +9,11 @@ from __future__ import annotations
 
 from vera import ast, naming
 from vera.lexical import blank_comments
-from vera.lowering import ROW_TYPE_ARGUMENT, effect_row_entry_refusal
+from vera.lowering import (
+    ROW_TYPE_ARGUMENT,
+    ROW_VARIABLE,
+    effect_row_entry_refusal,
+)
 from vera.checker.registration import (
     _RESERVED_TYPE_PREFIX_RE,
     builtin_effect_names,
@@ -39,6 +43,7 @@ from vera.types import (
     is_literal_hole,
     join_literal_holes,
     merge_inferred_types,
+    pretty_effect,
     pretty_type,
     substitute,
 )
@@ -580,7 +585,7 @@ class ResolutionMixin:
         return self._resolve_effect_row_ordered(er)[0]
 
     def _resolve_effect_row_ordered(
-        self, er: ast.EffectRow,
+        self, er: ast.EffectRow, *, declaration: bool = False,
     ) -> tuple[EffectRowType, tuple[EffectInstance, ...]]:
         """Resolve an AST EffectRow to its row type AND its SOURCE order.
 
@@ -591,17 +596,22 @@ class ResolutionMixin:
         order: the ``ast.EffectSet``'s own sequence, minus the row variable,
         with each instance resolved exactly once here so the two views can
         never describe different effects.
+
+        *declaration* marks a function declaration's own row, the one row
+        `vera.lowering` rule 6 refuses a row variable in.
         """
         if isinstance(er, ast.PureEffect):
             return PureEffectRow(), ()
         if isinstance(er, ast.EffectSet):
             instances = []
             row_var = None
+            variables: list[ast.EffectRef] = []
             for ref in er.effects:
                 if isinstance(ref, ast.EffectRef):
                     # Check if it's a type variable (effect polymorphism)
                     if ref.name in self.env.type_params:
                         row_var = ref.name
+                        variables.append(ref)
                         continue
                     args = tuple(
                         self._resolve_type(a) for a in ref.type_args
@@ -629,6 +639,12 @@ class ResolutionMixin:
                     self._report_unknown_row_effect(ref)
                     instances.append(
                         EffectInstance(f"{ref.module}.{ref.name}", args))
+            # Rule 6's row-variable leg, once the row's other entries are
+            # resolved, which the fix names.
+            for ref in variables:
+                self._check_row_entry_lowerable(
+                    ref, row_variable=True, declaration=declaration,
+                    rest=tuple(instances))
             return (ConcreteEffectRow(frozenset(instances), row_var),
                     tuple(instances))
         return PureEffectRow(), ()
@@ -696,17 +712,57 @@ class ResolutionMixin:
             error_code="E338",
         )
 
-    def _check_row_entry_lowerable(self, ref: ast.EffectRef) -> None:
+    def _check_row_entry_lowerable(
+        self, ref: ast.EffectRef, *, row_variable: bool = False,
+        declaration: bool = False, rest: tuple[EffectInstance, ...] = (),
+    ) -> None:
         """E340 (`vera.lowering` rule 6, #1681): a row entry code generation
         does not lower, refused where the row names it — a user-declared
-        effect, or ``State`` / ``Exn`` without its type argument.
+        effect, ``State`` / ``Exn`` without its type argument, or a row
+        variable in a function's own row.
 
-        Every row: a function's, a closure literal's, and a function type's.
-        Code generation dropped a function whose own row held one (E603,
-        E606, E611); a closure or a function type naming one compiled, and
-        could be applied only under a row naming it, which is refused."""
-        refusal = effect_row_entry_refusal(ref.name, len(ref.type_args or ()))
+        Every row for the first two: a function's, a closure literal's, and
+        a function type's.  Code generation dropped a function whose own row
+        held one (E603, E606, E611); a closure or a function type naming one
+        compiled, and could be applied only under a row naming it, which is
+        refused.  A row variable only in a *declaration*'s own row, which
+        code generation dropped with every clone (E603): in a function
+        type's row it compiles.  *rest* is the row's other entries."""
+        refusal = effect_row_entry_refusal(
+            ref.name, len(ref.type_args or ()),
+            row_variable=row_variable, declaration=declaration)
         if refusal is None:
+            return
+        if refusal == ROW_VARIABLE:
+            named = pretty_effect(
+                ConcreteEffectRow(frozenset(rest)) if rest
+                else PureEffectRow())
+            self._error(
+                ref,
+                f"Code generation cannot lower a function whose own effect "
+                f"row names the row variable '{ref.name}'.",
+                rationale=(
+                    "Code generation compiles a generic function once for "
+                    "each instantiation of its type parameters, and an "
+                    "instantiation substitutes the types and leaves the "
+                    "effect row as written, so a row variable in a "
+                    "function's own row leaves no effect to compile: no "
+                    "function whose own row names one is lowered.  A row "
+                    "variable in a function type's row, a parameter's or a "
+                    "closure literal's, compiles, since that row is erased "
+                    "with the function value."
+                ),
+                fix=(
+                    f"Replace '{ref.name}' in the function's own row with "
+                    f"the effects the function performs: {named} when it "
+                    f"performs no others.  A function polymorphic over the "
+                    f"effects of a function it takes keeps '{ref.name}' in "
+                    f"that parameter's function type, as fn(A -> B) "
+                    f"effects(<{ref.name}>), and out of its own row."
+                ),
+                spec_ref='Chapter 7, Section 7.6.1 "Effect Row Variables"',
+                error_code="E340",
+            )
             return
         if refusal == ROW_TYPE_ARGUMENT:
             cell = "cell" if ref.name == "State" else "payload"

@@ -1214,8 +1214,10 @@ class TypeChecker(
         return_type = self._resolve_type(decl.return_type)
         # #1215: the row AND its source order, from one resolution — a bare op
         # name declared by two effects in this row binds the first in SOURCE
-        # order, which the frozenset alone cannot say.
-        effect_row, effect_order = self._resolve_effect_row_ordered(decl.effect)
+        # order, which the frozenset alone cannot say.  The function's own
+        # row: `vera.lowering` rule 6 refuses a row variable here.
+        effect_row, effect_order = self._resolve_effect_row_ordered(
+            decl.effect, declaration=True)
         # `vera.lowering` rule 2 (#1512) over the row's State / Exn cells.
         self._check_row_cells(decl.effect, effect_order)
 

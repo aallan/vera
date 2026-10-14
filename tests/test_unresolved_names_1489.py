@@ -160,12 +160,15 @@ class TestTheReportedPrograms:
 
     def test_the_known_names_stay_legal(self, tmp_path: Path) -> None:
         """Primitives, containers, the prelude's types, Decimal, Future,
-        type parameters and effect row variables all resolve."""
+        type parameters and effect row variables all resolve.  The row
+        variable is a parameter's, as a function's own row may not name one
+        (E340, `vera.lowering` rule 6)."""
         src = (
             "public forall<T, E> fn f(@T, @Array<Option<Result<Int, "
             "String>>>, @Map<String, Set<Int>>, @Decimal, @Future<Int>, "
-            "@Ordering, @Json -> @Int)\n  requires(true)\n  ensures(true)\n"
-            "  effects(<IO, State<Nat>, E>)\n{\n  1\n}\n"
+            "@Ordering, @Json, @fn(Int -> Int) effects(<IO, E>) -> @Int)\n"
+            "  requires(true)\n  ensures(true)\n"
+            "  effects(<IO, State<Nat>>)\n{\n  1\n}\n"
         )
         out = _check(tmp_path, src)
         assert not {"E136", "E338"} & {

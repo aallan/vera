@@ -883,12 +883,12 @@ class TestObligationKinds:
         honestly reports it as `tier3` — not proved, deferred to the runtime
         contract check.  With `return last` the body translates to `@Int.0`, so
         the verifier *proves* `@Int.result == @Int.0` and reports `verified`, for
-        a claim only the operation's own value could satisfy.  (The operation
-        was a user-declared effect's, which no row may name since #1681.)  (Codegen never reads the tiers,
-        so the runtime `contract_fail` guard survives either way; what breaks is
-        `vera verify`'s claim.)  Mutating `return None` -> `return last` moves
-        this obligation from `tier3` to `verified` and leaves all 371 other tests
-        green (PR #953 review).
+        a claim only the operation's own value could satisfy.  The operation
+        was a user-declared effect's, which no row may name since #1681.
+        Codegen never reads the tiers, so the runtime `contract_fail` guard
+        survives either way; what breaks is `vera verify`'s claim.  Mutating
+        `return None` -> `return last` moves this obligation from `tier3` to
+        `verified` and leaves all 371 other tests green (PR #953 review).
         """
         source = (
             "public fn echo_bump(@Int -> @Int)\n"

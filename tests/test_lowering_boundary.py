@@ -397,6 +397,108 @@ def test_repro_1681_exn_without_a_type_argument() -> None:
     _bare_row_holds("Exn")
 
 
+#: A user-declared effect, for rule 6's cells.
+_COUNTER = "effect Counter {\n  op tick(Unit -> Int);\n}\n\n"
+
+#: #1681's class through a row variable (PR #1699 review).  A function whose
+#: own row names a `forall` variable passed check and verify, and code
+#: generation never lowered it: the base dropped the template and its clone
+#: (E603), and rule 6 judging effects alone left it to the backstop (E699).
+_REPRO_ROW_VARIABLE = """\
+private forall<A, E> fn twice(@A -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<ROW>)
+{
+  1
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  MAIN
+}
+"""
+
+#: A user-declared effect's operation performed under such a row.
+_REPRO_OPERATION_THROUGH_A_ROW_VARIABLE = _COUNTER + """\
+private forall<E> fn run(@fn(Unit -> Int) effects(<E>) -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<E>)
+{
+  Counter.tick(())
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  run(fn(@Unit -> @Int) effects(pure) { 1 })
+}
+"""
+
+#: The same operation under a row that names no row variable: the checker
+#: held an operation to the row only when the row was pure (E122).
+_REPRO_USER_OPERATION = _COUNTER + """\
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  Counter.tick(())
+}
+"""
+
+
+def _row_variable_holds(row: str, main: str) -> None:
+    source = _REPRO_ROW_VARIABLE.replace("ROW", row).replace("MAIN", main)
+    assert _codegen_refuses(source)
+    assert _placed(vera_pipeline.check(source).errors) == [
+        ("E340", *_locate(source, "E>)"))]
+
+
+def test_repro_1681_row_variable_in_an_uncalled_function() -> None:
+    """`effects(<E>)`, never called: it ran at the base as dead code, the
+    function dropped (E603).  Refused at the entry."""
+    _row_variable_holds("E", "7")
+
+
+def test_repro_1681_row_variable_in_a_called_function() -> None:
+    """Called as `twice(1)`: the template and the clone `twice$Int_JBool`
+    were dropped, and `main` with them (E620).  Refused at the entry."""
+    _row_variable_holds("E", "twice(1)")
+
+
+def test_repro_1681_row_variable_beside_a_built_in_effect() -> None:
+    """`effects(<IO, E>)`: the same beside `IO`."""
+    _row_variable_holds("IO, E", "7")
+
+
+def test_repro_1681_user_operation_through_a_row_variable() -> None:
+    """`Counter.tick(())` under `effects(<E>)`: check and verify passed.
+    The row variable is refused at the function's own row and the operation
+    at the call; the parameter's function type keeps its `<E>`."""
+    source = _REPRO_OPERATION_THROUGH_A_ROW_VARIABLE
+    assert _codegen_refuses(source)
+    assert _placed(vera_pipeline.check(source).errors) == [
+        ("E340", *_locate(source, "E>)", 1)),
+        ("E340", *_locate(source, "Counter.tick")),
+    ]
+
+
+def test_repro_1681_user_operation_under_a_row_without_it() -> None:
+    """`Counter.tick(())` under `effects(<IO>)`: check and verify passed,
+    and code generation emitted a call to a host import no host provides.
+    Refused at the call."""
+    assert _codegen_refuses(_REPRO_USER_OPERATION)
+    assert _placed(vera_pipeline.check(_REPRO_USER_OPERATION).errors) == [
+        ("E340", *_locate(_REPRO_USER_OPERATION, "Counter.tick"))]
+
+
 def test_repro_1597_handler_for_http() -> None:
     """A `handle[Http]` mock: check accepted it and code generation dropped
     `test_fetch` (E602).  Refused at the handler."""
@@ -1275,19 +1377,6 @@ class TestGenericCellNesting:
 # Rule 6: an effect row's entries (#1681)
 # ---------------------------------------------------------------------
 
-_COUNTER = "effect Counter {\n  op tick(Unit -> Int);\n}\n\n"
-
-#: Each kind of row entry, and whether the rule refuses it.  The built-in
-#: effects without a type parameter are the registry's
-#: (`test_every_registry_effect_has_a_row_kind`), `State` and `Exn` take
-#: one type argument, and `Counter` is user-declared.
-_ROW_KINDS: dict[str, bool] = {
-    "IO": False, "Http": False, "Async": False, "HttpServer": False,
-    "Inference": False, "DB": False, "Random": False, "Diverge": False,
-    "State<Int>": False, "Exn<Int>": False,
-    "State": True, "Exn": True, "Counter": True, "IO, Counter": True,
-}
-
 #: Where the row is written, each with its rows marked ROW.  A declaration's
 #: row, a `where` helper's, a constrained generic's (with the caller that
 #: instantiates it, whose row is the same); a closure literal's,
@@ -1317,22 +1406,126 @@ _ROW_PLACES: dict[str, str] = {
         + _main("keep(fn(@Unit -> @Int) effects(pure) { 7 })")),
 }
 
+#: The same places for a row variable `E`: the declaration that writes the
+#: row binds it (`forall<E>`, the constrained generic beside its `T`), and a
+#: function type takes it as its alias's parameter, inside a function that
+#: binds it.
+_ROW_VARIABLE_PLACES: dict[str, str] = {
+    "function": (
+        "private forall<E> fn f(@Unit -> @Int)\n  requires(true)\n"
+        "  ensures(true)\n  effects(<ROW>)\n{\n  1\n}\n\n" + _main("1")),
+    "where helper": (
+        "private fn f(@Unit -> @Int)\n  requires(true)\n  ensures(true)\n"
+        "  effects(pure)\n{\n  1\n}\nwhere {\n  forall<E> fn h(@Unit -> @Int)\n"
+        "    requires(true)\n    ensures(true)\n    effects(<ROW>)\n  {\n"
+        "    1\n  }\n}\n\n" + _main("f(())")),
+    "constrained generic": (
+        "private forall<T, E where Eq<T>> fn g(@T -> @Int)\n  requires(true)\n"
+        "  ensures(true)\n  effects(<ROW>)\n{\n  1\n}\n\n"
+        "private forall<E> fn f(@Unit -> @Int)\n  requires(true)\n"
+        "  ensures(true)\n  effects(<ROW>)\n{\n  g(1)\n}\n\n" + _main("1")),
+    "closure literal": (
+        "type F<E> = fn(Unit -> Int) effects(<ROW>);\n\n"
+        "private forall<E> fn f(@Unit -> @Int)\n  requires(true)\n"
+        "  ensures(true)\n  effects(pure)\n{\n"
+        "  let @F<E> = fn(@Unit -> @Int) effects(<ROW>) { 1 };\n  1\n}\n\n"
+        + _main("f(())")),
+    "function type": (
+        "type F<E> = fn(Unit -> Int) effects(<ROW>);\n\n"
+        "private forall<E> fn keep(@F<E> -> @Int)\n  requires(true)\n"
+        "  ensures(true)\n  effects(pure)\n{\n  1\n}\n\n"
+        + _main("keep(fn(@Unit -> @Int) effects(pure) { 7 })")),
+}
+
 #: The places code generation itself refuses a row at: a declaration's.  A
-#: closure's row and a function type's compile, as values nothing can apply
-#: (`test_a_closure_naming_a_user_effect_is_applied_under_a_refused_row`).
+#: closure's row and a function type's compile, as values: one naming a
+#: user-declared effect is a value nothing can apply
+#: (`test_a_closure_naming_a_user_effect_is_applied_under_a_refused_row`),
+#: and one naming a row variable is applied
+#: (`test_a_row_variable_on_a_parameter_is_applied`).
 _ROW_DECLARATIONS = frozenset({"function", "where helper",
                                "constrained generic"})
+_EVERY_ROW_PLACE = frozenset(_ROW_PLACES)
+
+#: Each kind of row entry, and the places the rule refuses it at.  The
+#: built-in effects without a type parameter are the registry's
+#: (`test_every_registry_effect_has_a_row_kind`), `State` and `Exn` take
+#: one type argument, `Counter` is user-declared, and `E` is a row
+#: variable: refused in a declaration's own row, which code generation
+#: compiles once per instantiation of the types and never of the row, and
+#: accepted in a function type's, whose row is erased with the value.
+_ROW_KINDS: dict[str, frozenset[str]] = {
+    "IO": frozenset(), "Http": frozenset(), "Async": frozenset(),
+    "HttpServer": frozenset(), "Inference": frozenset(), "DB": frozenset(),
+    "Random": frozenset(), "Diverge": frozenset(),
+    "State<Int>": frozenset(), "Exn<Int>": frozenset(),
+    "State": _EVERY_ROW_PLACE, "Exn": _EVERY_ROW_PLACE,
+    "Counter": _EVERY_ROW_PLACE, "IO, Counter": _EVERY_ROW_PLACE,
+    "E": _ROW_DECLARATIONS, "IO, E": _ROW_DECLARATIONS,
+}
+
+_ROW_VARIABLE_KINDS = frozenset({"E", "IO, E"})
+
+
+def _row_template(kind: str, place: str) -> str:
+    if kind in _ROW_VARIABLE_KINDS:
+        return _ROW_VARIABLE_PLACES[place]
+    return _ROW_PLACES[place]
 
 
 def _row_source(kind: str, place: str) -> str:
     decls = _COUNTER if "Counter" in kind else ""
-    return decls + _ROW_PLACES[place].replace("ROW", kind)
+    return decls + _row_template(kind, place).replace("ROW", kind)
+
+
+#: An operation performed in a closure literal whose row is a row variable,
+#: bound to a let and applied or not, in a function whose own row is
+#: ENCLOSING: the closure's body is checked under that row.
+_OP_THROUGH_A_CLOSURE = """\
+type F<E> = fn(Unit -> Int) effects(<ROW>);
+
+private forall<E> fn f(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(ENCLOSING)
+{
+  let @F<E> = fn(@Unit -> @Int) effects(<ROW>) { OP };
+  USE
+}
+
+"""
+
+_OP_USES = {"applied": ("apply_fn(@F<E>.0, ())", 3), "bound": ("1", 1)}
+_OPS = {"user": "Counter.tick(())", "built-in": "Random.random_int(3, 3)"}
+
+
+def _op_source(row: str, use: str, enclosing: str, op: str) -> str:
+    body = (_OP_THROUGH_A_CLOSURE.replace("ROW", row)
+            .replace("ENCLOSING", enclosing)
+            .replace("OP", _OPS[op]).replace("USE", _OP_USES[use][0]))
+    decls = _COUNTER if op == "user" else ""
+    return decls + body + _main("f(())", eff=enclosing)
+
+
+def _op_refusal(row: str, use: str, enclosing: str,
+                op: str) -> tuple[str, ...] | None:
+    """The rule: under a pure row the function's E122 reports the operation,
+    beside the E125 that applying a closure whose row names `IO` gets there,
+    as at the base.  Under any other row that does not name the effect, a
+    user-declared effect's operation is refused at the call (E340), and a
+    built-in effect's is accepted, as at the base (#294)."""
+    if enclosing == "pure":
+        applies_io = use == "applied" and row.startswith("IO")
+        return ("E125", "E122") if applies_io else ("E122",)
+    return ("E340",) if op == "user" else None
 
 
 class TestEffectRow:
     """Rule 6: every entry of every row names a built-in effect, `State`
-    and `Exn` with their one type argument.  A user-declared effect is a
-    declaration only."""
+    and `Exn` with their one type argument, and a declaration's own row
+    names no row variable.  A user-declared effect is a declaration only:
+    no row may name it, and an operation of one is refused where it is
+    called under a row that does not."""
 
     def test_every_registry_effect_has_a_row_kind(self) -> None:
         """The registry is the enumeration: each built-in effect is a row
@@ -1341,11 +1534,16 @@ class TestEffectRow:
                    if not refused}
         assert builtin == set(builtin_effect_names())
 
+    def test_a_row_variable_is_held_at_every_place(self) -> None:
+        """The row-variable kinds are written at every place a named kind
+        is."""
+        assert set(_ROW_VARIABLE_PLACES) == set(_ROW_PLACES)
+
     @pytest.mark.parametrize("place", sorted(_ROW_PLACES))
     @pytest.mark.parametrize("kind", sorted(_ROW_KINDS))
     def test_row(self, kind: str, place: str) -> None:
         source = _row_source(kind, place)
-        if not _ROW_KINDS[kind]:
+        if place not in _ROW_KINDS[kind]:
             _holds(source, None, 1)
             # The negative space: the verdict a row the rule admits had at
             # the base, every obligation proved.
@@ -1354,7 +1552,7 @@ class TestEffectRow:
             assert {o.status for o in verified.obligations} == {"verified"}, [
                 (o.kind, o.status) for o in verified.obligations]
             return
-        rows = _ROW_PLACES[place].count("ROW")
+        rows = _row_template(kind, place).count("ROW")
         _holds(source, ("E340",) * rows, None,
                backend=place in _ROW_DECLARATIONS)
         entry = kind.split(", ")[-1]
@@ -1362,6 +1560,11 @@ class TestEffectRow:
         assert placed == sorted(
             ("E340", *_locate(source, f"{entry}>)", i)) for i in range(rows)
         ), placed
+        # Refused at check, so `vera compile` stops there: code generation
+        # never runs on it.
+        compiled = vera_pipeline.compile(source)
+        assert compiled.generator is None, compiled.diagnostics
+        assert [d.error_code for d in compiled.errors] == ["E340"] * rows
 
     def test_a_closure_naming_a_user_effect_is_applied_under_a_refused_row(
         self,
@@ -1376,6 +1579,48 @@ class TestEffectRow:
                     "  apply_fn(@F.0, ())", eff="<Counter>"))
         assert _verdict(source).check_codes == ("E340",) * 3
         assert _codegen_refuses(source)
+
+    @pytest.mark.parametrize("kind", sorted(_ROW_VARIABLE_KINDS))
+    def test_a_row_variable_on_a_parameter_is_applied(self, kind: str) -> None:
+        """Why a function type's row may name a row variable: a function that
+        takes one applies it, and it ran at the base.  The checker admits
+        only a closure whose row fits the row's other entries, so the
+        variable adds no effect to compile."""
+        eff = "pure" if kind == "E" else "<IO>"
+        source = (
+            f"type F<E> = fn(Unit -> Int) effects(<{kind}>);\n\n"
+            "private forall<E> fn keep(@F<E> -> @Int)\n  requires(true)\n"
+            f"  ensures(true)\n  effects({eff})\n{{\n"
+            "  apply_fn(@F<E>.0, ())\n}\n\n"
+            + _main("keep(fn(@Unit -> @Int) effects(pure) { 7 })", eff=eff))
+        _holds(source, None, 7)
+        verified = vera_pipeline.verify(source)
+        assert verified.ok, verified.errors
+        assert {o.status for o in verified.obligations} == {"verified"}
+
+    @pytest.mark.parametrize("op", sorted(_OPS))
+    @pytest.mark.parametrize("enclosing", ("pure", "<IO>"))
+    @pytest.mark.parametrize("use", sorted(_OP_USES))
+    @pytest.mark.parametrize("row", sorted(_ROW_VARIABLE_KINDS))
+    def test_an_operation_through_a_closure_row_variable(
+        self, row: str, use: str, enclosing: str, op: str,
+    ) -> None:
+        source = _op_source(row, use, enclosing, op)
+        refused = _op_refusal(row, use, enclosing, op)
+        if refused is None:
+            _holds(source, None, _OP_USES[use][1])
+            verified = vera_pipeline.verify(source)
+            assert verified.ok, verified.errors
+            assert {o.status for o in verified.obligations} == {"verified"}
+            return
+        _holds(source, refused, None, backend=op == "user")
+        if refused == ("E340",):
+            assert _placed(vera_pipeline.check(source).errors) == [
+                ("E340", *_locate(source, "Counter.tick"))]
+        else:
+            # E122 at the function, as at the base.
+            assert ("E122", *_locate(source, "forall<E> fn f")) in _placed(
+                vera_pipeline.check(source).errors)
 
 
 # =====================================================================
@@ -1653,3 +1898,46 @@ class TestTheFixCompilesClean:
         assert f"{written} in place of {effect} in the row" in fix, fix
         _holds(source.replace(f"effects(<{effect}>)", f"effects(<{written}>)"),
                None, 7)
+
+    @pytest.mark.parametrize(("row", "eff"), (("E", "pure"), ("IO, E", "<IO>")))
+    def test_a_row_variable_in_a_function_row(self, row: str, eff: str) -> None:
+        """Rule 6's message for a row variable, its first rewrite: the
+        effects the function performs written in place of the variable."""
+        source = (
+            "private forall<A, E> fn twice(@A -> @Int)\n  requires(true)\n"
+            f"  ensures(true)\n  effects(<{row}>)\n{{\n  1\n}}\n\n"
+            + _main("twice(1)", eff=eff))
+        fix = _only_fix(source, "E340")
+        named = _between(fix, "effects(", " when it performs no others")
+        assert named == f"effects({eff})", fix
+        _holds(source.replace(f"effects(<{row}>)", named), None, 1)
+
+    def test_a_row_variable_kept_on_a_parameter(self) -> None:
+        """Its second rewrite: the variable kept in the function-typed
+        parameter's row, and out of the function's own row."""
+        source = (
+            "type H<E> = fn(Unit -> Int) effects(<E>);\n\n"
+            "private forall<E> fn run(@H<E> -> @Int)\n  requires(true)\n"
+            "  ensures(true)\n  effects(<E>)\n{\n  apply_fn(@H<E>.0, ())\n}\n\n"
+            + _main("run(fn(@Unit -> @Int) effects(pure) { 7 })"))
+        fix = _only_fix(source, "E340")
+        assert "keeps 'E' in that parameter's function type" in fix, fix
+        named = _between(fix, "effects(", " when it performs no others")
+        fixed = source.replace("  effects(<E>)\n{", f"  {named}\n{{")
+        assert "effects(<E>);" in fixed and fixed != source
+        _holds(fixed, None, 7)
+
+    def test_an_operation_under_a_row_without_its_effect(self) -> None:
+        """Rule 6's message for an operation: the function its fix
+        declares, called in place of the operation."""
+        fix = _only_fix(_REPRO_USER_OPERATION, "E340")
+        assert ("private fn tick_of(...) with the operation's signature "
+                "(Unit -> Int)") in fix, fix
+        call = _between(fix, "called as ", " in place of").removeprefix(
+            "called as ")
+        assert call == "tick_of(...)", fix
+        fixed = _REPRO_USER_OPERATION.replace(
+            "Counter.tick(())", call.replace("...", "()")) + (
+            "\nprivate fn tick_of(@Unit -> @Int)\n  requires(true)\n"
+            "  ensures(true)\n  effects(pure)\n{\n  1\n}\n")
+        _holds(fixed, None, 1)

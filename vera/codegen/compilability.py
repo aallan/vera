@@ -131,14 +131,19 @@ class CompilabilityMixin:
             for eff in effect.effects:
                 if isinstance(eff, ast.EffectRef):
                     # The backstop for rule 6 (`vera.lowering`, #1681): the
-                    # checker refuses a user-declared effect, and State or
-                    # Exn without a type argument, where the row names it
-                    # (E340).  This dropped the function (E603, E606, E611)
-                    # before the rule moved to the check.  The roster is the
-                    # one the verifier reads to decide whether an operation
-                    # argument can be guarded at all (#754).
+                    # checker refuses a user-declared effect, State or Exn
+                    # without a type argument, and a row variable in this,
+                    # the function's own row, where the row names it (E340).
+                    # This dropped the function (E603, E606, E611) before the
+                    # rule moved to the check.  A clone's row variable is no
+                    # longer one of its `forall` variables, and is refused as
+                    # an effect the roster lacks.  The roster is the one the
+                    # verifier reads to decide whether an operation argument
+                    # can be guarded at all (#754).
                     refusal = effect_row_entry_refusal(
-                        eff.name, len(eff.type_args or ()))
+                        eff.name, len(eff.type_args or ()),
+                        row_variable=eff.name in (decl.forall_vars or ()),
+                        declaration=True)
                     if refusal is not None:
                         self._error(
                             eff,

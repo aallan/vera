@@ -1454,13 +1454,17 @@ termination guard only if it also declares `decreases`. Like any effect, it
 propagates: every function that calls a `Diverge` function must declare
 `Diverge` too (`E125`), up to `main`.
 
-Every entry of a row names a built-in effect or an effect variable. A
-user-declared effect (`effect Logger { op log(String -> Unit); }`) checks as a
-declaration, and no row may name it: nothing implements its operations, and a
-handler for it is refused too, so a row naming it, a function's, a closure's
-or a function type's, is refused at check (`E340`). `State` and `Exn` take
-their type argument in a row: `effects(<State<Int>>)`, never
-`effects(<State>)` (`E340`).
+Every entry of a row names a built-in effect. An effect variable may stand in
+a function type's row, a parameter typed `fn(A -> B) effects(<E>)`, and never
+in a function's own row: `forall<E> fn f(...) effects(<E>)` is refused at check
+(`E340`), since code generation compiles each instantiation's types and never
+its row. A user-declared effect (`effect Logger { op log(String -> Unit); }`)
+checks as a declaration, and no row may name it: nothing implements its
+operations, and a handler for it is refused too, so a row naming it, a
+function's, a closure's or a function type's, is refused at check (`E340`),
+and so is a call of one of its operations under a row that does not name it.
+`State` and `Exn` take their type argument in a row: `effects(<State<Int>>)`,
+never `effects(<State>)` (`E340`).
 
 ### Effect declarations
 
@@ -2575,7 +2579,7 @@ These are known limitations in the reference implementation. Most are tracked as
 <!-- render_lists:begin limitations -->
 | Limitation | Details | Issue |
 |-----------|---------|-------|
-| Effect row variable unification | Effect rows containing type variables (e.g. `<E>` in a generic function) are not unified with concrete effect rows at call sites. Functions that abstract over effects require explicit row declarations. | [#294](https://github.com/aallan/vera/issues/294) |
+| Effect row variable unification | A function's own row may not name a type variable (`effects(<E>)` is `E340`), and one in a parameter's function type is not unified with concrete effect rows at call sites. Functions that abstract over effects require explicit row declarations. | [#294](https://github.com/aallan/vera/issues/294) |
 | `map_new()` / `set_new()` require type context | The empty-collection constructors `map_new()` and `set_new()` cannot infer their key/value types without a surrounding type annotation. Assign the result to a typed `let` binding: `let @Map<String, Int> = map_new();` | — |
 | `Inference.complete` has no `max_tokens` or temperature controls | The host sends a `max_tokens` of 1024 to Anthropic and nothing else; OpenAI-style requests take the provider's defaults, and `temperature`, top-p and a system prompt cannot be set from Vera. | [#370](https://github.com/aallan/vera/issues/370) |
 | `Inference` effect has no user-defined handlers | `Inference` is always host-backed (dispatches to a real API). User-defined handlers for mocking, local models, or replay are not supported. | [#372](https://github.com/aallan/vera/issues/372) |

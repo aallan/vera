@@ -987,8 +987,10 @@ KNOWN_MULTI_SITE_ERROR_CODES: dict[str, frozenset[tuple[str, str]]] = {
     # #1681): one concept, the `vera.lowering` rule a construct fails,
     # reported where the construct is written — a handler's effect, a State
     # cell or Exn payload (handler or row), a State clause's resume, an
-    # ability's call or constraint, and an effect row's entry.
+    # ability's call or constraint, an effect row's entry, and a call of a
+    # user-declared effect's operation.
     "E340": frozenset({
+        ("vera/checker/calls.py", "CallsMixin._check_operation_lowerable"),
         ("vera/checker/calls.py", "CallsMixin._refuse_unlowerable_ability"),
         ("vera/checker/control.py",
          "ControlFlowMixin._check_cell_lowerable"),

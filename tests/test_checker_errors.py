@@ -996,10 +996,13 @@ private fn f(@Tuple -> @Tuple)
 
     # Lines 117-118: EffectSet with type variable (effect row variable)
     def test_effect_set_with_type_variable(self) -> None:
-        """A forall type variable used in an effect set becomes a row var."""
+        """A forall type variable used in an effect set becomes a row var.
+
+        In a parameter's function type: a function's own row may not name
+        one (E340, `vera.lowering` rule 6)."""
         _check_ok("""
-private forall<E> fn f(@Int -> @Int)
-  requires(true) ensures(true) effects(<IO, E>)
+private forall<E> fn f(@Int, @fn(Int -> Int) effects(<IO, E>) -> @Int)
+  requires(true) ensures(true) effects(pure)
 { @Int.0 }
 """)
 

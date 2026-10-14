@@ -14,7 +14,7 @@ import typing
 from typing import Any, cast
 
 from vera import ast, narrowing
-from vera.lowering import ability_lowerable
+from vera.lowering import ability_lowerable, effect_operation_lowerable
 from vera.slots import bare_call_denotes_user_fn
 from vera.checker.sql import (
     count_placeholders,
@@ -2561,6 +2561,49 @@ class CallsMixin:
             error_code="E340",
         )
 
+    def _check_operation_lowerable(
+        self, op_info: OpInfo, node: ast.Node,
+    ) -> None:
+        """E340 (`vera.lowering` rule 6, #1681): an operation of a
+        user-declared effect, called under a row that does not name the
+        effect.
+
+        A row naming the effect is refused at the entry, a handler for it at
+        the handler (which adds the effect to the row its body is checked
+        under), and a pure row's operations at the function (E122), so this
+        call is the one use of the effect none of them refuses.  A bare call
+        outside a handler is E217's."""
+        effect = op_info.parent_effect
+        if effect_operation_lowerable(effect):
+            return
+        row = self.env.current_effect_row
+        if not isinstance(row, ConcreteEffectRow) or any(
+                e.name == effect for e in row.effects):
+            return
+        self._error(
+            node,
+            f"Code generation cannot lower the operation "
+            f"'{effect}.{op_info.name}': '{effect}' is a user-declared "
+            f"effect, and nothing implements its operations.",
+            rationale=(
+                "Code generation lowers the built-in effects' operations "
+                "through the host, and State<T> and Exn<E> through their "
+                "handlers.  A user-declared effect has neither: a handler for "
+                "one is refused (E340), and so is a row naming one, so an "
+                "operation of one called under a row that does not name it is "
+                "the use left, and it is refused at the call."
+            ),
+            fix=(
+                f"Call a function under its own name in place of the "
+                f"operation: private fn {op_info.name}_of(...) with the "
+                f"operation's signature ({_op_signature_text(op_info)}), "
+                f"called as {op_info.name}_of(...) in place of "
+                f"{effect}.{op_info.name}(...)."
+            ),
+            spec_ref='Chapter 7, Section 7.2 "Effect Declarations"',
+            error_code="E340",
+        )
+
     @_reported_at_the_stage
     def _check_qualified_call(self, expr: ast.QualifiedCall) -> Type | None:
         """Type-check a qualified call: Effect.op(args)."""
@@ -2568,6 +2611,7 @@ class CallsMixin:
         op_info = self.env.lookup_effect_op(expr.name, expr.qualifier)
         if op_info:
             self._effect_ops_used.add(op_info.parent_effect)
+            self._check_operation_lowerable(op_info, expr)
             return self._check_op_call(op_info, expr.args, expr)
 
         # #309 (Cortex #1147 Finding 1): op resolution failed, but codegen

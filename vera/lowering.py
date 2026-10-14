@@ -8,16 +8,17 @@ and ``Exn`` (#1597), a ``State`` cell whose value is a ``(ptr, len)`` pair
 (#1512), a quantifier the counter loop cannot bind (#1506), a call to a user
 ability's operation (#1499), a generic cell that an instantiation makes the
 same family as an enclosing one (#1522), an effect row naming a user-declared
-effect (#1681).  Each rule is a function here.
+effect or, in a function's own row, a row variable, and a call of a
+user-declared effect's operation (#1681).  Each rule is a function here.
 
 The checker applies a rule where its construct is written and refuses the
 construct there, with **E340** ("code generation cannot lower this
 construct") or with the rule's own code where the rule already had one:
 E179 and E128 for the quantifier (rule 3), E339 for a handler-clause
 operation (rule 5).  Code generation asks the same function at the site that
-lowers the construct; a refusal there means a program passed a check that
-should have refused it, so it is an internal error naming the rule (E699),
-never a silent skip.
+lowers the construct, where it has one; a refusal there means a program
+passed a check that should have refused it, so it is an internal error naming
+the rule (E699), never a silent skip.
 
 A rule whose answer depends on what a type parameter is instantiated at is
 applied at the template where the template's answer covers every
@@ -503,17 +504,22 @@ def shadowing_cell(target: Cell, pushed: Sequence[Cell]) -> Cell | None:
 
 
 # =====================================================================
-# Rule 6: an effect row's entries (#1681)
+# Rule 6: an effect row's entries, and an operation's effect (#1681)
 # =====================================================================
 
 #: The reasons :func:`effect_row_entry_refusal` gives: the entry names an
-#: effect code generation lowers nothing for, or ``State`` / ``Exn`` without
-#: the one type argument that types its cell or its payload.
+#: effect code generation lowers nothing for, ``State`` / ``Exn`` without
+#: the one type argument that types its cell or its payload, or a row
+#: variable in a declaration's own row.
 ROW_EFFECT_NOT_LOWERED = "effect"
 ROW_TYPE_ARGUMENT = "type argument"
+ROW_VARIABLE = "row variable"
 
 
-def effect_row_entry_refusal(name: str, type_args: int) -> str | None:
+def effect_row_entry_refusal(
+    name: str, type_args: int, *,
+    row_variable: bool = False, declaration: bool = False,
+) -> str | None:
     """Why code generation cannot lower an effect row entry naming *name*
     with *type_args* type arguments, or ``None`` when it lowers (#1681).
 
@@ -525,16 +531,51 @@ def effect_row_entry_refusal(name: str, type_args: int) -> str | None:
     named a user-declared effect (E603), or ``State`` or ``Exn`` without a
     type argument (E606, E611).
 
+    A *row_variable*, a ``forall`` variable written as an entry, lowers in a
+    function type's row, a parameter's or a closure literal's, where the
+    row is erased with the function value, and not in a *declaration*'s own
+    row.  Code generation compiles a generic function once per
+    instantiation of its type parameters, and an instantiation substitutes
+    the types and leaves the row as written, so a clone's row still names
+    the variable and there is no effect to compile for it: the template and
+    every clone were dropped (E603).  The checker admits a function value
+    under a row variable only when its row fits the row's other entries, so
+    a value's variable stands for no effect.
+
     A user-declared effect has no lowering anywhere: no handler for one is
     lowered (rule 1), so its operations have no implementation.  The checker
     refuses it in every row, a closure's and a function type's as well as a
     declaration's.  Code generation compiles a closure whose row names one,
-    and nothing applies it: applying it needs the effect in the caller's row,
-    and that row is refused.  So the declaration is all of a user-declared
-    effect that checks.
+    and nothing applies it: applying it needs the effect in the caller's
+    row, and that row is refused.  An operation of one, called under a row
+    that does not name it, is refused at the call
+    (:func:`effect_operation_lowerable`).  So the declaration is all of a
+    user-declared effect that checks.
     """
+    if row_variable:
+        return ROW_VARIABLE if declaration else None
     if name not in COMPILABLE_EFFECTS:
         return ROW_EFFECT_NOT_LOWERED
     if name in ("State", "Exn") and type_args != 1:
         return ROW_TYPE_ARGUMENT
     return None
+
+
+def effect_operation_lowerable(effect_name: str) -> bool:
+    """Whether code generation lowers an operation of *effect_name* (#1681).
+
+    A built-in effect's operations are lowered, through the host and, for
+    ``State`` and ``Exn``, through their handlers; a user-declared effect's
+    are lowered nowhere.  The checker holds an operation to the row it is
+    called under only when that row is pure (E122), so under any other row
+    that does not name the effect the call is a use no row entry and no
+    handler refuses, and the checker refuses it there.  Code generation
+    lowers an operation by its effect's name and has no site that tells
+    such a call apart: it emits a call to a host import no host provides,
+    and the module does not load.
+
+    A built-in effect's operation under a row that does not name the effect
+    is accepted, and compiled: that the row is not held to its operations
+    is the effect checker's question (#294), not a lowering one.
+    """
+    return effect_name in COMPILABLE_EFFECTS
