@@ -1896,6 +1896,32 @@
     ]
   },
   {
+    "id": "ch08_xmod_widen_lib",
+    "file": "ch08_xmod_widen_lib.vera",
+    "chapter": 8,
+    "title": "Cross-module @Nat -> @Int widening library",
+    "level": "check",
+    "spec_ref": "Section 11.2.1",
+    "features": [
+      "cross_module",
+      "nat_int_widening"
+    ]
+  },
+  {
+    "id": "ch08_xmod_widen",
+    "file": "ch08_xmod_widen.vera",
+    "chapter": 8,
+    "title": "Cross-module @Nat -> @Int widening is the identity through the import door",
+    "level": "run",
+    "spec_ref": "Section 11.2.1",
+    "expected_stdout": "9223372036854775807\n",
+    "expected_exit": 0,
+    "features": [
+      "cross_module",
+      "nat_int_widening"
+    ]
+  },
+  {
     "id": "ch08_transitive_module_import_base",
     "file": "ch08_transitive_module_import_base.vera",
     "chapter": 8,

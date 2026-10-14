@@ -2375,7 +2375,7 @@ public fn f(@Int -> @Int)
     def test_every_possibly_unguarded_demotion_supplies_a_reason(self) -> None:
         """Structural: the leg that emits a disclosure must state a cause.
 
-        The E504 and E531 families take ``reason`` as an optional keyword —
+        The E504 and E506 families take ``reason`` as an optional keyword —
         the GUARDED leg records an obligation and emits nothing, so text there
         would be dead — and the recorders raise when an unguarded demotion
         arrives without one.  That raise only fires on the paths a test

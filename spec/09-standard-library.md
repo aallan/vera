@@ -1502,8 +1502,8 @@ public fn parse_int(@String -> @Result<Int, String>)
 Parses a signed integer from a string. After stripping whitespace, an optional leading `+` or `-` sign is consumed. The remaining characters must all be ASCII digits (`0`–`9`). A bare sign with no digits (e.g., `"-"`) is an error.
 
 Error messages:
-- `"empty string"` — the input is empty or contains only whitespace
-- `"invalid character"` — a non-digit character was encountered (after any sign)
+- `"empty string"` — the input is empty, contains only whitespace, or is a sign with no digits
+- `"invalid digit"` — a non-digit character was encountered (after any sign)
 - `"out of range"` — the numeral is outside the `Int` range, `-9223372036854775808 .. 9223372036854775807` (§2.2)
 
 <!-- vera:skip-parse category="FRAGMENT" reason="bare parse_int calls with their results in comments" -->
@@ -1512,8 +1512,8 @@ parse_int("42")        -- Ok(42)
 parse_int("-7")        -- Ok(-7)
 parse_int("+3")        -- Ok(3)
 parse_int("  -42  ")   -- Ok(-42) (whitespace stripped)
-parse_int("abc")       -- Err("invalid character")
-parse_int("-")         -- Err("invalid character")
+parse_int("abc")       -- Err("invalid digit")
+parse_int("-")         -- Err("empty string")
 parse_int("")          -- Err("empty string")
 parse_int("-9223372036854775808")  -- Ok(-9223372036854775808)
 parse_int("9223372036854775808")   -- Err("out of range")

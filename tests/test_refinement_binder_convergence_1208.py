@@ -343,7 +343,8 @@ public fn f(@BigByte -> @Byte)
     # unrelated trap wearing the same words (PR #1224 review).  Both, not
     # either.
     with pytest.raises(WasmTrapError, match=r"@Byte\.0 <= 255") as exc:
-        execute(result, fn_name="f", args=[300])
+        # An untrusted host: `execute` refuses 300 for a `@Byte` by default.
+        execute(result, fn_name="f", args=[300], check_int_args=False)
     assert exc.value.kind == "contract_violation", exc.value.kind
     assert _run(source, fn="f", args=[7]) == 7
 

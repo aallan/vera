@@ -1307,13 +1307,13 @@ class TestRefinedNonPlainBaseParity1036:
 
 
 def _obligation_kinds_statuses(source: str) -> set[tuple[str, str]]:
-    """Every (kind, status) pair in the verifier's obligation stream — for
-    intersection shapes where ONE value carries obligations of two kinds
-    (a refinement over `@Int` receiving an intrinsically-`@Nat` value gets
-    both the predicate obligation and the widen obligation)."""
+    """Every (kind, status) pair in the verifier's obligation stream, the
+    function contracts aside — for the shapes where a refinement over `@Int`
+    receives a `@Nat` value, whose predicate is the one fact to check: a
+    `@Nat` read as an `@Int` records nothing of its own."""
     return {
         (o.kind, o.status) for o in _verified(source).obligations
-        if o.kind in (_REFINE_KIND, "nat_to_int_coerce", "int_widen")
+        if o.kind not in ("requires", "ensures")
     }
 
 

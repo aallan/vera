@@ -3389,6 +3389,11 @@ class CodeGenerator(
                 params, self._fn_nat_params.get(name, ())) if t is not None]
             for name, (params, _) in self._fn_sigs.items()
         }
+        fn_param_byte = {
+            name: [bool(byte) for t, byte in zip(
+                params, self._fn_byte_params.get(name, ())) if t is not None]
+            for name, (params, _) in self._fn_sigs.items()
+        }
         # Collect functions whose Vera return type resolves to `String`
         # so `execute()` can decode their (ptr, len) pair back into a
         # str.  Walks the AST rather than using `_fn_sigs` because
@@ -3438,6 +3443,7 @@ class CodeGenerator(
             math_ops_used=set(self._math_ops_used),
             fn_param_types=fn_param_types,
             fn_param_nat=fn_param_nat,
+            fn_param_byte=fn_param_byte,
             fn_string_returns=fn_string_returns,
             fn_adt_signatures=fn_adt_signatures,
             prelude_injected_adts=set(self._prelude_injected_adts),

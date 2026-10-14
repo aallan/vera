@@ -8892,7 +8892,8 @@ class ContractVerifier:
         Tier-3 obligation: the codegen-guarded sites (let, tuple
         destructure, top-level match-bind, ADT sub-pattern, concrete
         constructor-field, and *all* call-arguments — concrete directly,
-        generic on the monomorphised callee) are recorded ``tier3_runtime``
+        generic where the formal's recorded instantiation is ``@Nat``) are
+        recorded ``tier3_runtime``
         (backed by the codegen ``i64.lt_s`` guard), while the genuinely
         unguarded narrowings — the operation argument of a user-declared
         effect or of the builtin ``Exn`` ``throw`` (#1268), and
@@ -9172,13 +9173,15 @@ class ContractVerifier:
                             site="call argument",
                             # Codegen-guarded for a USER callee: a concrete
                             # @Nat formal guards directly, and a generic formal
-                            # fixed to @Nat is guarded on the monomorphised
-                            # callee (`pick$Nat` carries concrete @Nat flags;
-                            # the guard keys on the resolved call target,
-                            # CR #756).  Not universal, though — the builtins
-                            # bypass `_fn_nat_params` and one of them plants no
-                            # guard at all, so the flag is READ FROM the
-                            # measured inventory rather than assumed (#1362).
+                            # fixed to @Nat is guarded from the argument's
+                            # recorded target, the table this arm read
+                            # (`_guard_nat_instantiated_arg`): the clone is
+                            # named from the arguments' own types, so
+                            # `pick(-3, 5)` at `Nat` calls `pick$Int`.  A
+                            # built-in guards its type-variable formals the
+                            # same way, and one of them plants no guard at
+                            # all, so the flag is READ FROM the measured
+                            # inventory rather than assumed (#1362).
                             guarded=self._call_arg_nat_guarded(
                                 expr.name, arg),
                         )

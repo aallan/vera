@@ -1,0 +1,19 @@
+import ch08_xmod_widen_lib;
+
+-- Conformance: cross-module @Nat -> @Int widening at run level (Chapter 8, spec §11.2.1)
+-- Features: cross_module, nat_int_widening
+--
+-- The imported widening body compiles and runs across the module boundary.
+-- main passes it 2^63 - 1, the top of the @Nat range, which it reads into
+-- an @Int slot and an Array<Int> element and returns unchanged: the
+-- widening is a no-op through the import door.  The assert traps if the
+-- value comes back as anything else.
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Int = widen_elem(9223372036854775807);
+  assert(@Int.0 == 9223372036854775807);
+  @Int.0
+}

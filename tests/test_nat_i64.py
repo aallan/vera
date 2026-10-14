@@ -27,13 +27,16 @@ instrument crosses:
 from __future__ import annotations
 
 import functools
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
 from tests import pipeline
 from vera.codegen.api import execute
+from vera.reconcile import ReconcileRun, reconcile_file
 
 # A generated class instrument (tests/matrix_sample.py): a pull request runs a
 # sample of its parametrised cells, and all of them when it changes this file
@@ -68,7 +71,10 @@ pytestmark = pytest.mark.matrix(
         "vera/types.py",
         "vera/verifier.py",
         "vera/wasm/calls.py",
+        "vera/wasm/calls_arrays.py",
+        "vera/wasm/calls_containers.py",
         "vera/wasm/calls_handlers.py",
+        "vera/wasm/calls_markup.py",
         "vera/wasm/calls_math.py",
         "vera/wasm/calls_parsing.py",
         "vera/wasm/closures.py",
@@ -596,14 +602,41 @@ _LITERALS = {
 
 def _fn(sig: str, body: str, *, name: str = "f", vis: str = "public",
         requires: str = "true", ensures: str = "true",
-        decreases: str | None = None) -> str:
+        decreases: str | None = None, effects: str = "pure") -> str:
     measure = f"\n  decreases({decreases})" if decreases else ""
     return (f"{vis} fn {name}({sig})\n  requires({requires})\n"
-            f"  ensures({ensures}){measure}\n  effects(pure)\n{{\n  {body}\n}}\n")
+            f"  ensures({ensures}){measure}\n  effects({effects})\n"
+            f"{{\n  {body}\n}}\n")
 
 
 _ID = ("private forall<T> fn id(@T -> @T)\n  requires(true)\n  ensures(true)\n"
        "  effects(pure)\n{\n  @T.0\n}\n\n")
+#: Returns its first argument (`@T.1`: the earlier of the two `@T`s).
+_PICK = ("private forall<T> fn pick(@T, @T -> @T)\n  requires(true)\n"
+         "  ensures(true)\n  effects(pure)\n{\n  @T.1\n}\n\n")
+#: Stores its argument in an `Array<T>`.
+_WRAP = ("private forall<T> fn wrap(@T -> @Array<T>)\n  requires(true)\n"
+         "  ensures(true)\n  effects(pure)\n{\n  [@T.0]\n}\n\n")
+_G_NAT = _fn("@Nat -> @Nat", "@Nat.0", name="g", vis="private") + "\n"
+_NB = "private data NB { NB(Nat) }\n\n"
+
+#: A generic call whose type argument the `@Nat` it is returned or bound
+#: into fixes, `ARG` its argument: each is a site the instantiated `@Nat`
+#: formal makes a narrowing.  `f(0)` returns the argument's value.
+_GENERIC_AT_NAT: dict[str, str] = {
+    "a @Nat return": _PICK + _fn("@Int -> @Nat", "pick(ARG, 5)"),
+    "an if arm at a @Nat return": _PICK + _fn(
+        "@Int -> @Nat", "if @Int.0 > 0 then { 5 } else { pick(ARG, 5) }"),
+    "a closure's @Nat return": _PICK + _fn(
+        "@Int -> @Int",
+        "let @Nat = apply_fn(fn(@Int -> @Nat) effects(pure) { pick(ARG, 5) }"
+        ", 0);\n  nat_to_int(@Nat.0)"),
+    "a generic argument at a @Nat return": _PICK + _ID + _fn(
+        "@Int -> @Nat", "pick(id(ARG), 5)"),
+    "a generic beside a @Nat argument": _PICK + _fn(
+        "@Int -> @Int",
+        "let @Int = pick(ARG, string_length(\"ab\"));\n  @Int.0"),
+}
 
 
 @dataclass(frozen=True)
@@ -662,6 +695,38 @@ _CONTEXTS: dict[str, _Context] = {
     "generic argument with no expected type": _Context(
         _ID + _fn("@Int -> @Int", "if id(LIT) == 0 then { 0 } else { 1 }"),
         "none", run=lambda v: int(v != 0)),
+    # The generic call whose type argument the `@Nat` its result reaches
+    # fixes: the literal narrows into the instantiated `@Nat` formal, and is
+    # refuted and guarded there, whether the result is returned, returned
+    # through an arm or a closure, or bound.
+    **{f"generic argument at {site}": _Context(
+        source.replace("ARG", "LIT"), "nat")
+       for site, source in _GENERIC_AT_NAT.items()},
+    "generic argument piped at a @Nat return": _Context(
+        _PICK + _fn("@Int -> @Nat", "LIT |> pick(5)"), "nat"),
+    "generic call bound by a let @Nat": _Context(
+        _PICK + _fn("@Int -> @Int",
+                    "let @Nat = pick(LIT, 5);\n  nat_to_int(@Nat.0)"),
+        "nat", reads_value=True),
+    "generic call as a @Nat argument": _Context(
+        _PICK + _G_NAT + _fn("@Int -> @Int", "nat_to_int(g(pick(LIT, 5)))"),
+        "nat", reads_value=True),
+    "generic call as a @Nat constructor field": _Context(
+        _NB + _PICK + _fn(
+            "@Int -> @Int",
+            "match NB(pick(LIT, 5)) {\n    NB(@Nat) -> nat_to_int(@Nat.0)\n"
+            "  }"),
+        "nat", reads_value=True),
+    "generic call as a @Nat array element": _Context(
+        _PICK + _fn("@Int -> @Int",
+                    "let @Array<Nat> = [pick(LIT, 5)];\n"
+                    "  array_length(@Array<Nat>.0)"),
+        "nat", reads_value=True, run=lambda v: 1),
+    "generic call as a @Nat tuple component": _Context(
+        _PICK + _fn("@Int -> @Int",
+                    "let Tuple<@Nat, @Bool> = Tuple(pick(LIT, 5), true);\n"
+                    "  nat_to_int(@Nat.0)"),
+        "nat", reads_value=True),
     "literal pattern over @Int": _Context(
         _fn("@Int -> @Int", "match @Int.0 {\n    LIT -> 1,\n    _ -> 0\n  }"),
         "pattern", run=lambda v: int(v == 0)),
@@ -781,6 +846,313 @@ def test_a_literal_in_every_context(context: str, literal: str) -> None:
 
 
 # =====================================================================
+# A generic call instantiated at `Nat`
+# =====================================================================
+#
+# A type argument that only literals would fix takes the type the call's
+# result is expected at (spec §4.2), so `pick(-3, 5)` returned into a `@Nat`
+# is `pick` at `Nat`, and its `-3` narrows into the instantiated `@Nat`
+# formal.  Every argument a generic call passes at a `Nat` formal is that
+# binding site, whatever the callee (a user generic, a prelude one, a
+# built-in) and wherever the call's result goes.  A generic body computes no
+# `T` of its own (no ability gives a type variable arithmetic), so what a
+# call at `Nat` returns came in through such an argument, and the argument is
+# where it is checked.  The rule, for an argument whose value at `f(0)` is v:
+#
+# 1. A non-negative literal is no narrowing: nothing is recorded or checked.
+# 2. Any other argument narrows.  The verifier records `nat_bind` at it:
+#    `violated` (E503) where a counterexample makes it negative, `verified`
+#    where none can, `tier3` where it cannot decide.  The module checks it
+#    there (`nat_guard`).
+# 3. The run traps `nat_guard` where v < 0, and otherwise returns what the
+#    program computes from v.
+# 4. The record and the check agree: the reconciliation join (`vera verify
+#    --reconcile`) finds no claim without its check, and no check without
+#    its claim.
+
+_REPRO_GENERIC_RETURN = _PICK + _fn("@Int -> @Nat", "pick(-3, 5)") + "\n" + _fn(
+    "@Int -> @Int",
+    "let @Nat = apply_fn(fn(@Int -> @Nat) effects(pure) { pick(-3, 5) }, 0);"
+    "\n  nat_to_int(@Nat.0)", name="g")
+
+
+def test_repro_a_negative_literal_through_a_generic_at_a_nat_return_traps(
+) -> None:
+    """`pick(-3, 5)` returned from a `@Nat` function, and from a closure's
+    `@Nat` return, is `pick` at `Nat`: the verifier refutes the `-3` at the
+    argument, and the run traps there, where it printed -3 (PR #1700
+    review)."""
+    verified = pipeline.verify(_REPRO_GENERIC_RETURN)
+    assert [(d.error_code, d.location.line, d.location.column)
+            for d in verified.errors] == [("E503", 14, 8), ("E503", 22, 61)]
+    assert _trap_kind(_REPRO_GENERIC_RETURN, "f", 0) == "nat_guard"
+    assert _trap_kind(_REPRO_GENERIC_RETURN, "g", 0) == "nat_guard"
+
+
+def test_repro_id_of_a_literal_subtraction_at_a_nat_return_traps() -> None:
+    """`id(0 - 3)` returned from a `@Nat` function returned -3 on `main` too:
+    the argument narrows into `id`'s `@Nat` formal, and is guarded there."""
+    source = _ID + _fn("@Int -> @Nat", "id(0 - 3)")
+    assert _codes(pipeline.verify(source)) == ["E503"]
+    assert _trap_kind(source, "f", 0) == "nat_guard"
+
+
+def test_repro_a_generic_stores_no_negative_in_a_nat_collection() -> None:
+    """`wrap(-3)` bound at `@Array<Nat>` is `wrap` at `Nat`, which stores its
+    argument in the array: the argument is checked before it is stored, so
+    the element read back at `@Int` is never -3."""
+    source = _WRAP + _fn(
+        "@Int -> @Int",
+        "let @Array<Nat> = wrap(-3);\n  let @Int = @Array<Nat>.0[0];\n"
+        "  @Int.0")
+    assert _codes(pipeline.verify(source)) == ["E503"]
+    assert _trap_kind(source, "f", 0) == "nat_guard"
+
+
+#: A condition the verifier cannot translate, false at `f(0)`.
+_UNDECIDED = "array_length(array_range(0, @Int.0)) > 3"
+
+
+@dataclass(frozen=True)
+class _Argument:
+    text: str
+    #: Its value at `f(0)`.
+    value: int
+    #: Whether the verifier decides its sign.
+    decided: bool = True
+    #: Whether binding it into a `@Nat` is a narrowing.
+    narrows: bool = True
+
+
+_INSTANTIATED_ARGUMENTS: dict[str, _Argument] = {
+    "a negative literal": _Argument("-3", -3),
+    "a literal subtraction below zero": _Argument("0 - 3", -3),
+    "a literal subtraction above zero": _Argument("3 - 1", 2),
+    "an undecided join with a negative arm": _Argument(
+        f"if {_UNDECIDED} then {{ 1 }} else {{ 0 - 1 }}", -1, decided=False),
+    "an undecided join of non-negative arms": _Argument(
+        f"if {_UNDECIDED} then {{ 1 }} else {{ 3 - 1 }}", 2, decided=False),
+    "a non-negative literal": _Argument("5", 5, narrows=False),
+}
+
+
+@dataclass(frozen=True)
+class _Instantiation:
+    """A program passing `ARG` to a generic at a `Nat` instantiation."""
+
+    source: str
+    #: What `f(0)` returns for an argument of value v >= 0.
+    run: Callable[[int], object] = lambda v: v
+    #: The records the verifier keeps at the argument when it narrows.
+    records: int = 1
+
+
+_MAP_NAT_KEY = 'let @Map<Nat, String> = map_insert(map_new(), 2, "v");\n  '
+_SET_NAT = "let @Set<Nat> = set_add(set_new(), 2);\n  "
+
+#: The built-in generics' type-variable formals, `(name, index)`, each in a
+#: program instantiating it at `Nat`.  The prelude's `option_unwrap_or` and
+#: `result_unwrap_or` compile as user generics do; the rest are lowered by
+#: their own translators.
+_BUILTIN_AT_NAT: dict[tuple[str, int], _Instantiation] = {
+    ("array_append", 1): _Instantiation(_fn(
+        "@Int -> @Int",
+        "let @Array<Nat> = array_append([5], ARG);\n"
+        "  let @Int = @Array<Nat>.0[1];\n  @Int.0")),
+    ("array_fold", 1): _Instantiation(_fn(
+        "@Int -> @Nat",
+        "array_fold([1, 2], ARG, fn(@Nat, @Int -> @Nat) effects(pure) "
+        "{ @Nat.0 })")),
+    ("async", 0): _Instantiation(_fn(
+        "@Int -> @Int",
+        "let @Future<Nat> = async(ARG);\n"
+        "  let @Int = await(@Future<Nat>.0);\n  @Int.0", effects="<Async>")),
+    ("map_insert", 1): _Instantiation(_fn(
+        "@Int -> @Int",
+        'let @Map<Nat, String> = map_insert(map_new(), ARG, "v");\n'
+        "  let @Array<Nat> = map_keys(@Map<Nat, String>.0);\n"
+        "  let @Int = @Array<Nat>.0[0];\n  @Int.0")),
+    # A map value is recorded twice, as the call's argument and as the value
+    # the map stores (#1440), and checked once.
+    ("map_insert", 2): _Instantiation(_fn(
+        "@Int -> @Int",
+        'let @Map<String, Nat> = map_insert(map_new(), "k", ARG);\n'
+        '  match map_get(@Map<String, Nat>.0, "k") {\n'
+        "    Some(@Int) -> @Int.0,\n    None -> 7\n  }"), records=2),
+    ("map_get", 1): _Instantiation(_fn(
+        "@Int -> @Int",
+        _MAP_NAT_KEY + "match map_get(@Map<Nat, String>.0, ARG) {\n"
+        "    Some(@String) -> 1,\n    None -> 0\n  }"),
+        run=lambda v: int(v == 2)),
+    ("map_contains", 1): _Instantiation(_fn(
+        "@Int -> @Bool",
+        _MAP_NAT_KEY + "map_contains(@Map<Nat, String>.0, ARG)"),
+        run=lambda v: int(v == 2)),
+    ("map_remove", 1): _Instantiation(_fn(
+        "@Int -> @Int",
+        _MAP_NAT_KEY + "map_size(map_remove(@Map<Nat, String>.0, ARG))"),
+        run=lambda v: int(v != 2)),
+    ("set_add", 1): _Instantiation(_fn(
+        "@Int -> @Int",
+        "let @Set<Nat> = set_add(set_new(), ARG);\n"
+        "  let @Array<Nat> = set_to_array(@Set<Nat>.0);\n"
+        "  let @Int = @Array<Nat>.0[0];\n  @Int.0")),
+    ("set_contains", 1): _Instantiation(_fn(
+        "@Int -> @Bool", _SET_NAT + "set_contains(@Set<Nat>.0, ARG)"),
+        run=lambda v: int(v == 2)),
+    ("set_remove", 1): _Instantiation(_fn(
+        "@Int -> @Int", _SET_NAT + "set_size(set_remove(@Set<Nat>.0, ARG))"),
+        run=lambda v: int(v != 2)),
+    ("option_unwrap_or", 1): _Instantiation(_fn(
+        "@Int -> @Nat", "option_unwrap_or(None, ARG)")),
+    ("result_unwrap_or", 1): _Instantiation(_fn(
+        "@Int -> @Nat", 'result_unwrap_or(Err("e"), ARG)')),
+}
+
+_INSTANTIATIONS: dict[str, _Instantiation] = {
+    **{f"a user generic at {site}": _Instantiation(source)
+       for site, source in _GENERIC_AT_NAT.items()},
+    "a user generic storing it in an Array<T>": _Instantiation(_WRAP + _fn(
+        "@Int -> @Int",
+        "let @Array<Nat> = wrap(ARG);\n  let @Int = @Array<Nat>.0[0];\n"
+        "  @Int.0")),
+    **{f"{name}'s argument {index}": inst
+       for (name, index), inst in _BUILTIN_AT_NAT.items()},
+}
+
+
+def test_every_builtin_type_variable_formal_is_instantiated_at_nat() -> None:
+    """The built-ins above are every built-in generic with a formal that IS
+    a type variable, read from the registry: a new one joins the matrix or
+    fails here."""
+    from vera.environment import TypeEnv
+    from vera.types import TypeVar
+
+    formals = {
+        (name, index)
+        for name, info in TypeEnv().functions.items() if info.forall_vars
+        for index, formal in enumerate(info.param_types)
+        if isinstance(formal, TypeVar)
+    }
+    assert formals == set(_BUILTIN_AT_NAT)
+
+
+@functools.lru_cache(maxsize=None)
+def _instantiated(site: str, argument: str, root: str) -> ReconcileRun:
+    """The program at *site* with *argument*, through check, verify, compile
+    and the join, as `vera verify --reconcile` runs it."""
+    source = _INSTANTIATIONS[site].source.replace(
+        "ARG", _INSTANTIATED_ARGUMENTS[argument].text)
+    path = Path(root) / (re.sub(r"\W+", "_", f"{site} {argument}") + ".vera")
+    path.write_text(source, encoding="utf-8")
+    run = reconcile_file(path)
+    assert not run.check_errors and not run.compile_errors, (
+        run.check_errors, run.compile_errors, source)
+    return run
+
+
+@pytest.fixture(scope="module")
+def _instantiation_root(tmp_path_factory: pytest.TempPathFactory) -> str:
+    return str(tmp_path_factory.mktemp("instantiated"))
+
+
+@pytest.mark.parametrize("argument", list(_INSTANTIATED_ARGUMENTS))
+@pytest.mark.parametrize("site", list(_INSTANTIATIONS))
+def test_an_argument_at_a_nat_instantiation_is_a_narrowing(
+        site: str, argument: str, _instantiation_root: str) -> None:
+    inst = _INSTANTIATIONS[site]
+    arg = _INSTANTIATED_ARGUMENTS[argument]
+    run = _instantiated(site, argument, _instantiation_root)
+    assert run.verify_result is not None and run.compile_result is not None
+    statuses = [o.status for o in run.verify_result.obligations
+                if o.kind == "nat_bind"]
+    codes = [d.error_code for d in run.verify_result.diagnostics
+             if d.severity == "error"]
+    guards = [c for c in run.compile_result.emitted_checks
+              if c.kind == "nat_guard"]
+    ran = pipeline.run(run.compile_result, fn="f", raw_args=["0"])
+    got = f"!{ran.trap.kind}" if ran.trap is not None else ran.value
+    if not arg.narrows:
+        assert (statuses, codes, guards) == ([], [], [])
+    else:
+        status = ("tier3" if not arg.decided
+                  else "violated" if arg.value < 0 else "verified")
+        assert statuses == [status] * inst.records
+        assert codes == (["E503"] * inst.records
+                         if status == "violated" else [])
+        assert guards
+    assert got == ("!nat_guard" if arg.value < 0 else inst.run(arg.value))
+
+
+def _agreement_cells() -> list[object]:
+    """Every (site, argument) cell; the map value's undecided ones are the
+    #1695 instance it carries: two `tier3` records, one check."""
+    cells: list[object] = []
+    for site in _INSTANTIATIONS:
+        for argument, arg in _INSTANTIATED_ARGUMENTS.items():
+            marks = ()
+            if (_INSTANTIATIONS[site].records > 1 and arg.narrows
+                    and not arg.decided):
+                marks = (pytest.mark.xfail(
+                    strict=True, reason="#1695: the verifier records a map "
+                    "value twice, as the call's argument and as the value "
+                    "the map stores, and code generation checks it once"),)
+            cells.append(pytest.param(site, argument, marks=marks,
+                                      id=f"{site}-{argument}"))
+    return cells
+
+
+@pytest.mark.parametrize(("site", "argument"), _agreement_cells())
+def test_the_record_and_the_check_of_an_instantiated_argument_agree(
+        site: str, argument: str, _instantiation_root: str) -> None:
+    run = _instantiated(site, argument, _instantiation_root)
+    assert [m.to_dict() for m in run.mismatches] == []
+
+
+#: The nearest shapes the argument check must leave alone, each with what
+#: it is at base (`main` at a5b5de8f), the deleted `nat_to_int_coerce` aside:
+#: (source, the verifier's warnings, the obligations, the module's checks,
+#: what `f(0)` returns).
+_INSTANTIATION_NEIGHBOURS: dict[str, tuple[str, list[str],
+                                           list[tuple[str, str]],
+                                           list[str], object]] = {
+    "the same call at an Int instantiation": (
+        _PICK + _fn("@Int -> @Int", "pick(-3, 5)"), [], [], [], -3),
+    "an argument already a @Nat": (
+        _PICK + _fn("@Nat -> @Nat", "pick(@Nat.0, 5)"), [], [], [], 0),
+    "a refined instantiation over Nat": (
+        "type PosNat = { @Nat | @Nat.0 > 0 };\n\n" + _PICK
+        + _fn("@Int -> @PosNat", "pick(7, 5)"),
+        ["E506"], [("refine_bind", "tier3")], ["contract_violation"], 7),
+}
+
+
+@pytest.mark.parametrize("neighbour", list(_INSTANTIATION_NEIGHBOURS))
+def test_an_instantiation_s_neighbours_take_no_argument_check(
+        neighbour: str, tmp_path: Path) -> None:
+    """No `@Nat` instantiation, an argument that is already a `@Nat`, and a
+    refined instantiation, whose predicate is the refinement's own check:
+    none takes the sign check, and each verifies, compiles and runs as at
+    base."""
+    source, warnings, obligations, checks, value = (
+        _INSTANTIATION_NEIGHBOURS[neighbour])
+    path = tmp_path / "neighbour.vera"
+    path.write_text(source, encoding="utf-8")
+    run = reconcile_file(path)
+    assert run.verify_result is not None and run.compile_result is not None
+    diagnostics = run.verify_result.diagnostics
+    assert [d.error_code for d in diagnostics if d.severity == "error"] == []
+    assert [d.error_code for d in diagnostics
+            if d.severity == "warning"] == warnings
+    assert [(o.kind, o.status) for o in run.verify_result.obligations
+            if o.kind not in ("requires", "ensures")] == obligations
+    assert sorted(c.kind for c in run.compile_result.emitted_checks) == checks
+    assert run.mismatches == []
+    assert pipeline.run(run.compile_result, fn="f",
+                        raw_args=["0"]).value == value
+
+
+# =====================================================================
 # The operations matrix
 # =====================================================================
 #
@@ -813,7 +1185,6 @@ class _Operation:
     decls: str = ""
 
 
-_NB = "private data NB { NB(Nat) }\n\n"
 _IDI = _fn("@Int -> @Int", "@Int.0", name="idi", vis="private") + "\n"
 
 _OPERATIONS: dict[str, _Operation] = {
@@ -1021,6 +1392,31 @@ def test_an_argument_is_held_to_its_parameter_type_s_range(
         pipeline.run(module, fn="f", raw_args=[str(a) for a in args])
     with pytest.raises(RuntimeError, match=message):
         execute(module, fn_name="f", args=list(args))
+
+
+_BYTE_ARGUMENT = _fn("@Byte -> @Int", "byte_to_int(@Byte.0)")
+
+
+@pytest.mark.parametrize(("arg", "refused"), [
+    (0, False), (255, False), (256, True), (-1, True),
+])
+def test_a_byte_argument_is_held_to_the_byte_range(
+        arg: int, refused: bool) -> None:
+    """A `@Byte` parameter is held to `0 .. 255` as an `@Int` or a `@Nat`
+    one is to its range, a raw argument and a programmatic one alike:
+    `vera run` handed 256 to a `@Byte` function as the i32 256, and -1 as
+    4294967295.  The edges of the range are accepted."""
+    module = pipeline.compile(_BYTE_ARGUMENT).result
+    if not refused:
+        assert pipeline.run(module, fn="f",
+                            raw_args=[str(arg)]).value == arg
+        assert execute(module, fn_name="f", args=[arg]).value == arg
+        return
+    message = "out of range for parameter type @Byte"
+    with pytest.raises(RuntimeError, match=message):
+        pipeline.run(module, fn="f", raw_args=[str(arg)])
+    with pytest.raises(RuntimeError, match=message):
+        execute(module, fn_name="f", args=[arg])
 
 
 def test_the_argument_range_check_is_the_host_s() -> None:

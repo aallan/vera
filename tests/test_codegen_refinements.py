@@ -956,7 +956,9 @@ public fn f(@BigByte -> @Byte)
         # 300 satisfies `> 5` but not `<= 255`: the guard message proves the
         # Byte range invariant is conjoined into the lowered check.
         with pytest.raises(RuntimeError, match=r"@Byte\.0 <= 255"):
-            execute(result, fn_name="f", args=[300])
+            # An untrusted host: `execute` refuses 300 for a `@Byte` by
+            # default.
+            execute(result, fn_name="f", args=[300], check_int_args=False)
         assert _run(src, fn="f", args=[7]) == 7
 
     def test_nested_refinement_base_rejected_e600(self) -> None:

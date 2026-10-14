@@ -253,9 +253,9 @@ class TestCompositePostconditionVerifies912:
 #
 # SOUNDNESS — the corrected rationale (round 3).  The `ensures` obligation IS
 # proved at TIER 1 (the verifier substitutes `T:=Int` and proves the composite
-# `==` structurally); the earlier "defers to Tier 3" claim was WRONG — the only
-# Tier-3 obligation is an incidental `nat_to_int_coerce` in `main`, unrelated to
-# the `==`.  The scalar fallback is nonetheless sound because it only ever
+# `==` structurally); the earlier "defers to Tier 3" claim was WRONG, and no
+# obligation of the program is Tier 3.  The scalar fallback is nonetheless sound
+# because it only ever
 # affects UNREACHABLE DEAD CODE: the base generic clone `$id2` (the `Box<T>`
 # one, lowered `i32.eq`) is emitted but is never a call target and never
 # exported — a bare generic fn cannot escape higher-order (that is a parse

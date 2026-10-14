@@ -977,6 +977,9 @@ _TARGET_READERS: dict[tuple[str, str, str], str] = {
      "_target_codegen_type_full"): _TARGET,
     ("vera/wasm/operators.py", "OperatorsMixin._container_target_refined",
      "_target_codegen_type_refined"): _TARGET,
+    # A generic call's argument: the formal the checker instantiated it at.
+    ("vera/wasm/operators.py", "OperatorsMixin._instantiated_at_nat",
+     "_target_codegen_type_full"): _TARGET,
     ("vera/wasm/operators.py", "OperatorsMixin._target_codegen_type_full",
      "_expr_target_types"): "the accessor",
     ("vera/wasm/operators.py", "OperatorsMixin._target_codegen_type_refined",

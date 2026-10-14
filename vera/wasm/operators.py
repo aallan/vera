@@ -9,7 +9,7 @@ from typing import ClassVar
 from vera import ast, narrowing, naming
 from vera.lowering import quantifier_predicate_shape_lowerable
 from vera.monomorphize import resolve_type_alias
-from vera.types import TO_STRING_BUILTINS
+from vera.types import TO_STRING_BUILTINS, PrimitiveType
 from vera.skip import AdtEqNotDerivableError, CodegenInvariantError
 from vera.wasm.helpers import WasmSlotEnv, field_layout, state_type_arg
 
@@ -1972,7 +1972,10 @@ class OperatorsMixin:
 
         Consults the checker's resolved-type side-table first — the answer
         the verifier's leaf reads, so a verified build matches it
-        site-for-site.  A call's @Nat return cannot come from
+        site-for-site.  A generic call the checker instantiated at `Nat` is
+        a @Nat there because each of its arguments at a `Nat` formal is
+        checked where it enters (:meth:`_guard_nat_instantiated_arg`).  A
+        call's @Nat return cannot come from
         `_infer_fncall_vera_type` alone: it maps the i64 WASM return back to
         "Int" (both @Nat and @Int lower to i64) and so NEVER yields "Nat",
         which left a @Nat-returning call result read as a narrowing (#813
@@ -2182,6 +2185,47 @@ class OperatorsMixin:
         if not self._is_static_nat_typed(value):
             return True
         return self._has_underflow_leaf(value)
+
+    def _instantiated_at_nat(self, arg: ast.Expr) -> bool:
+        """Whether the checker instantiated the generic formal *arg* is
+        passed at to `@Nat`: the argument's recorded target, the table the
+        verifier's `_nat_binding_target` reads for the same question, read
+        at a refinement's base as a generic constructor field's is
+        (:meth:`_ctor_field_mono_base`)."""
+        target = self._target_codegen_type_full(arg)
+        return isinstance(target, PrimitiveType) and target.name == "Nat"
+
+    def _guard_nat_instantiated_arg(
+        self, arg: ast.Expr, instrs: list[str],
+    ) -> list[str]:
+        """The sign guard at a generic call's argument whose formal the
+        checker instantiated at `@Nat`, wrapped around *instrs*, the
+        argument's translation.
+
+        A type argument only literals would fix takes the type the call's
+        result is expected at (spec §4.2), so `pick(-3, 5)` returned into a
+        `@Nat` is `pick` at `Nat`, and the `-3` narrows into the `@Nat`
+        formal: the verifier records it there (`nat_bind`, a call
+        argument).  Nothing else checks it.  Monomorphisation names the
+        clone from the arguments' own types (`pick$Int`), so the clone's
+        `@Nat` flags say nothing, a built-in's translator has none, and the
+        call's result is a `@Nat` by the checker's types, which the return
+        boundary trusts (:func:`vera.narrowing.is_declared_nat`).  A generic
+        body computes no `T` of its own, so checking each argument where it
+        enters is what makes that trust sound.
+
+        Guarded where the argument narrows and is no `@Nat` by its
+        declarations: the pair the return boundary asks (#758), and the
+        verifier's answer, which records nothing for a generic call the
+        checker instantiated at `Nat` (its own arguments are checked at
+        its own call).
+        """
+        if (self._instantiated_at_nat(arg)
+                and self._narrows_into_nat(arg)
+                and not narrowing.is_declared_nat(
+                    arg, self._declared_result_is_nat)):
+            return self._emit_nat_bind_guard(instrs, at=arg)
+        return instrs
 
     def _collect_narrowing_return_leaves(self, body: ast.Expr) -> set[int]:
         """The ``id()`` of every tail-position return leaf that narrows into a

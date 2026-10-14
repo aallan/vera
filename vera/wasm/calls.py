@@ -13,6 +13,21 @@ from vera.slots import bare_call_denotes_user_fn
 from vera.wasm.helpers import WasmSlotEnv
 
 
+def _mentions_type_var(te: ast.TypeExpr, type_vars: frozenset[str]) -> bool:
+    """Whether the type expression *te* names one of *type_vars*: the
+    formal whose instantiation only the checker's table records, as the
+    verifier's `_nat_binding_target` asks of a formal containing one."""
+    if isinstance(te, ast.NamedType):
+        return te.name in type_vars or any(
+            _mentions_type_var(arg, type_vars) for arg in te.type_args or ())
+    if isinstance(te, ast.RefinementType):
+        return _mentions_type_var(te.base_type, type_vars)
+    if isinstance(te, ast.FnType):
+        return (any(_mentions_type_var(p, type_vars) for p in te.params)
+                or _mentions_type_var(te.return_type, type_vars))
+    return False
+
+
 class CallsMixin:
     """Core dispatch mixin for WasmContext.
 
@@ -700,6 +715,12 @@ class CallsMixin:
         # actual callee.  So `f<Nat>(@Int.0)` runtime-guards the narrowing
         # exactly like a concrete `f(@Nat -> …)` call.
         nat_params = self._fn_nat_params.get(call_target, ())
+        # A formal the generic DECLARES with a type variable is guarded where
+        # the checker instantiated it at `Nat` (`_guard_nat_instantiated_arg`):
+        # the clone is named from the arguments' own types, so `pick(-3, 5)`
+        # at `Nat` calls `pick$Int`, whose flags above are all False.
+        forall_vars, generic_formals = self._generic_fn_info.get(
+            call.name, ((), ()))
         # #865: concrete-@Byte formals.  `@Byte` is i32 (spec §11), but an int
         # literal defaults to `i64.const`; a literal argument to a Byte formal
         # must lower at i32 so the pushed value matches the callee's parameter
@@ -725,6 +746,10 @@ class CallsMixin:
             if (i < len(nat_params) and nat_params[i]
                     and self._narrows_into_nat(arg)):
                 arg_instrs = self._emit_nat_bind_guard(arg_instrs, at=arg)
+            elif (i < len(generic_formals)
+                    and _mentions_type_var(generic_formals[i],
+                                           frozenset(forall_vars))):
+                arg_instrs = self._guard_nat_instantiated_arg(arg, arg_instrs)
             instructions.extend(arg_instrs)
 
         # #517 — emit ``return_call $target`` for tail-position

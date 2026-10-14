@@ -330,10 +330,13 @@ def is_declared_nat(expr: ast.Expr, declared_is_nat: DeclaredIsNatOracle) -> boo
     return's `>= 0` check is stood down for a leaf the syntactic rule
     (:func:`narrows_into_nat`) cannot place but the checker's types do — a
     generic call instantiated at `Nat`, whose callee codegen's oracle does
-    not resolve.  It trusts nothing else: an index, an effect operation or a
-    `handle` keeps the check, so `@Array<Nat>.0[0] - @Nat.0`, whose
-    underflow no `@Nat`-subtraction guard sees, cannot come back negative
-    from a `@Nat` function.
+    not resolve.  Such a call's value is a `@Nat` because a generic body
+    computes no `T` of its own and each argument at a `Nat` formal is
+    checked where it enters (`_guard_nat_instantiated_arg`), so
+    `pick(-3, 5)` traps at its `-3`.  It trusts nothing else: an index, an
+    effect operation or a `handle` keeps the check, so
+    `@Array<Nat>.0[0] - @Nat.0`, whose underflow no `@Nat`-subtraction
+    guard sees, cannot come back negative from a `@Nat` function.
     """
     if isinstance(expr, ast.SlotRef):
         return expr.type_name == "Nat"

@@ -107,6 +107,9 @@ class CompileResult:
     # the i64 range for any other `i64` (spec §2.2) — instead of letting
     # the host wrap it.
     fn_param_nat: dict[str, list[bool]] = field(default_factory=dict)
+    # Parallel to `fn_param_types` too: whether each lowered parameter is a
+    # `@Byte`, an `i32` `execute` holds to `0 .. 255`.
+    fn_param_byte: dict[str, list[bool]] = field(default_factory=dict)
     # Functions whose Vera return type is `String` (after alias
     # resolution).  Used by ``execute()`` to decode the (ptr, len)
     # pair returned by such functions back into a Python `str` for
@@ -371,26 +374,46 @@ def dropped_entry_message(
 
 
 #: The range of each integer parameter type a host argument is held to
-#: (spec §2.2): a `@Nat` is the non-negative half of the i64 an `@Int` is.
+#: (spec §2.2): a `@Nat` is the non-negative half of the i64 an `@Int` is,
+#: and a `@Byte` the eight bits its i32 holds.
 _I64_MIN = -(2**63)
 _I64_MAX = 2**63 - 1
+_ARGUMENT_RANGES: dict[str, tuple[str, int, int]] = {
+    "@Int": ("an @Int", _I64_MIN, _I64_MAX),
+    "@Nat": ("a @Nat", 0, _I64_MAX),
+    "@Byte": ("a @Byte", 0, 255),
+}
 
 
-def _check_int_argument(raw: str, value: int, is_nat: bool) -> None:
+def _check_int_argument(raw: str, value: int, type_name: str) -> None:
     """Refuse a raw integer argument outside its parameter type's range.
 
-    A host hands an export an i64, and one outside the type's range would
-    be wrapped into it — `2^64` into 0, `-1` into a `@Nat` — and enter the
-    function as a value its type does not hold.  So `vera run --fn f -- …`
-    refuses it before the call."""
-    lo = 0 if is_nat else _I64_MIN
-    if lo <= value <= _I64_MAX:
+    A host hands an export an i64 (an i32 for a `@Byte`), and one outside
+    the type's range would be wrapped into it — `2^64` into 0, `-1` into a
+    `@Nat`, 256 into a `@Byte` — and enter the function as a value its type
+    does not hold.  So `vera run --fn f -- …` refuses it before the call."""
+    article, lo, hi = _ARGUMENT_RANGES[type_name]
+    if lo <= value <= hi:
         return
-    type_name = "@Nat" if is_nat else "@Int"
     raise RuntimeError(
         f"Argument {raw!r} is out of range for parameter type {type_name}: "
-        f"{'a @Nat' if is_nat else 'an @Int'} holds {lo} .. {_I64_MAX}."
+        f"{article} holds {lo} .. {hi}."
     )
+
+
+def _argument_range_name(
+    result: "CompileResult", fn_name: str, index: int, wasm_type: str,
+) -> str | None:
+    """The integer type whose range parameter *index* of *fn_name* holds,
+    lowered to *wasm_type*: `@Nat` or `@Int` for an i64, `@Byte` for an
+    i32 the signature declares a `@Byte`, and None for any other."""
+    if wasm_type == "i64":
+        nat = result.fn_param_nat.get(fn_name, [])
+        return "@Nat" if index < len(nat) and nat[index] else "@Int"
+    byte = result.fn_param_byte.get(fn_name, [])
+    if wasm_type == "i32" and index < len(byte) and byte[index]:
+        return "@Byte"
+    return None
 
 
 def execute(
@@ -443,9 +466,9 @@ def execute(
     check_int_args : bool
         If *True* (the default), an integer in ``args`` outside its
         parameter type's range (a ``@Nat`` holds ``0 .. 2^63 - 1``, an
-        ``@Int`` the i64 range) is refused before the call, as a raw
-        argument always is.  *False* hands it over as an untrusted host
-        would, to exercise a function's own entry guard.
+        ``@Int`` the i64 range, a ``@Byte`` ``0 .. 255``) is refused before
+        the call, as a raw argument always is.  *False* hands it over as an
+        untrusted host would, to exercise a function's own entry guard.
     """
     if not result.ok:
         raise RuntimeError("Cannot execute: compilation had errors")
@@ -1229,16 +1252,16 @@ def execute(
                 buf[ptr + i] = b
             return ptr, len(encoded)
 
-        nat_params = result.fn_param_nat.get(fn_name or "", [])
         parsed: list[int | float] = []
         for index, (raw, wasm_type) in enumerate(
                 zip(raw_args, vera_params, strict=True)):
+            range_name = _argument_range_name(
+                result, fn_name or "", index, wasm_type)
             try:
                 if wasm_type == "i64":
                     int_arg = int(raw)
-                    _check_int_argument(
-                        raw, int_arg,
-                        index < len(nat_params) and nat_params[index])
+                    if range_name is not None:
+                        _check_int_argument(raw, int_arg, range_name)
                     parsed.append(int_arg)
                 elif wasm_type == "f64":
                     parsed.append(float(raw))
@@ -1249,7 +1272,10 @@ def execute(
                     elif raw.lower() in ("false", "no", "0"):
                         parsed.append(0)
                     else:
-                        parsed.append(int(raw))
+                        int_arg = int(raw)
+                        if range_name is not None:
+                            _check_int_argument(raw, int_arg, range_name)
+                        parsed.append(int_arg)
                 elif wasm_type == "i32_pair":
                     ptr, length = _alloc_string_arg(raw)
                     parsed.extend([ptr, length])
@@ -1294,11 +1320,12 @@ def execute(
         if len(nat_params) == given == expected:
             for index, (call_arg, param) in enumerate(
                     zip(call_args, func_type.params)):
-                if (isinstance(call_arg, int)
-                        and not isinstance(call_arg, bool)
-                        and str(param) == "i64"):
-                    _check_int_argument(
-                        str(call_arg), call_arg, nat_params[index])
+                range_name = _argument_range_name(
+                    result, fn_name or "", index, str(param))
+                if (range_name is not None
+                        and isinstance(call_arg, int)
+                        and not isinstance(call_arg, bool)):
+                    _check_int_argument(str(call_arg), call_arg, range_name)
 
     if given != expected:
         exports_str = ", ".join(result.exports)

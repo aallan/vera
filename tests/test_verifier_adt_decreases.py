@@ -539,10 +539,10 @@ private fn sum(@List<Int> -> @Int)
             total += result.summary.total
             t3u += sum(1 for o in result.obligations
                        if o.status == "tier3_unguarded")
-        # #813: the @Nat -> @Int widening obligation (nat_to_int_coerce) fires at
-        # every genuine widening across the corpus — each a @Nat value flowing
-        # into an @Int slot that can exceed i64.MAX, so honest Tier-3
-        # (runtime-guarded) unless the value is provably bounded.
+        # #813: the @Nat -> @Int widening obligation (nat_to_int_coerce, deleted
+        # in v0.2.3) fired at every genuine widening across the corpus — each a
+        # @Nat value flowing into an @Int slot that could exceed i64.MAX, so
+        # honest Tier-3 (runtime-guarded) unless the value was provably bounded.
         #   Stage 2a (return position): `array_utilities.vera::count_above_cutoff`
         #   (a @Nat fold result) and `::lowest_grade`, `html.vera::text_length`
         #   (string_length is @Nat), `nested_closures.vera::grid_sum` — +4 T3:
@@ -555,7 +555,7 @@ private fn sum(@List<Int> -> @Int)
         #
         # #813 follow-up site 1 (the explicit `nat_to_int` built-in): its declared
         # @Int return previously masked the @Nat source, so `nat_to_int(@Nat.x)`
-        # widenings went unobligated.  Now obligated like an implicit widening —
+        # widenings went unobligated.  Then obligated like an implicit widening —
         # `json.vera::average`, `life.vera::initial_cell` (x2), `life.vera::make_grid`
         # each call `nat_to_int(@Nat.x)` on an unbounded @Nat: +4 T3, +4 total:
         # 271/88/359 -> 271/92/363.  (Site 2a — a literal-arm heterogeneous
