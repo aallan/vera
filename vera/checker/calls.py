@@ -130,8 +130,8 @@ def _behaviour_params(
         visiting: frozenset[str] = frozenset()) -> frozenset[int]:
     """The positions of data type *name*'s parameters that a value of it
     can hold behaviour over: those a constructor field holds inside a
-    function type, directly or through another data type's such position
-    (#1668).  A built-in container (`Array`, `Map`, `Tuple`, ...) has no
+    function type, its effect row included, directly or through another
+    data type's such position (#1668).  A built-in container (`Array`, `Map`, `Tuple`, ...) has no
     fields, so it holds behaviour only where its argument is a function."""
     info = data_types.get(name)
     if info is None or not info.type_params or name in visiting:
@@ -153,6 +153,10 @@ def _behaviour_params(
             for param in ty.params:
                 walk(param, True)
             walk(ty.return_type, True)
+            if isinstance(ty.effect, ConcreteEffectRow):
+                for inst in ty.effect.effects:
+                    for arg in inst.type_args:
+                        walk(arg, True)
 
     for ctor in info.constructors.values():
         for field in ctor.field_types or ():

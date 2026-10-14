@@ -1226,3 +1226,57 @@ def test_mutant_each_call_marks_its_own_free_variables() -> None:
     assert checked.diagnostics == ()
     assert _literal_types(checked)[_place(source, literal)] == (
         "Array<Tuple<Map<String, Nat>, Map<Nat, String>>>")
+
+
+# A data parameter a constructor field holds only in a function's effect
+# row is held for behaviour too: the closure `mkcell(())` stores is
+# compiled at `mkcell`'s default, its `State` cell with it.  Each site keeps
+# f3b4415d's verdict, bar the `match`, which refuses the arm (E302) where
+# f3b4415d took its type unchecked.
+
+_CELL_PRE = """private data Cell<T> { MkCell(fn(Unit -> Unit) effects(<State<T>>)) }
+
+private forall<T> fn mkcell(@Unit -> @Cell<T>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  MkCell(fn(@Unit -> @Unit) effects(<State<T>>) { () })
+}
+"""
+
+_CELL_EXPECT: dict[str, tuple[int | None, str]] = {
+    # The `if` synthesizes `mkcell(())` again against the other branch's
+    # type, which fixes the call where it is checked (f3b4415d's verdict).
+    "literal": (None, "Array<Cell<T>>"),
+    "if": (None, "Array<Cell<Nat>>"),
+    "match": (1, ""),
+}
+
+
+@pytest.mark.parametrize("site", SITES)
+def test_effect_row_holds_its_variable(site: str) -> None:
+    refused, literal_type = _CELL_EXPECT[site]
+    site_text, offsets, _inner = _site(site, ["mkcell(())", "@Cell<Nat>.0"])
+    literal = site_text if site == "literal" else f"[{site_text}]"
+    source = _fn(f"array_length({literal})", params="@Cell<Nat>, @Bool, @Nat",
+                 pre=_CELL_PRE)
+    checked = _checked(source)
+    if refused is None:
+        assert checked.diagnostics == ()
+        assert _literal_types(checked)[_place(source, literal)] == literal_type
+    else:
+        assert _where(checked) == [
+            ("E302", *_place(source, literal, 1 + offsets[refused]))]
+
+
+def test_mutant_an_effect_row_holds_behaviour() -> None:
+    # Read without its effect row, `Cell<T>` holds no behaviour, and the
+    # join would give `mkcell(())`'s cell the type `Cell<Nat>`.
+    literal = "[mkcell(()), @Cell<Nat>.0]"
+    source = _fn(f"array_length({literal})", params="@Cell<Nat>, @Nat",
+                 pre=_CELL_PRE)
+    checked = _checked(source)
+    assert checked.diagnostics == ()
+    assert _literal_types(checked)[_place(source, literal)] == (
+        "Array<Cell<T>>")
