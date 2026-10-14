@@ -252,6 +252,18 @@ class ControlFlowMixin:
         scrutinee_ty = self._synth_expr(expr.scrutinee)
         if scrutinee_ty is None:  # pragma: no cover — defensive: _synth_expr returns UnknownType, not None
             return None
+        # #1671: an expression the check has refused is typed `Unknown`,
+        # which gives the arms no type to cover, so a scrutinee typed
+        # `Unknown` once an error has been reported is not judged for
+        # coverage.  Any error counts, not only one raised while typing the
+        # scrutinee: the error behind an `Unknown` can sit at a declaration
+        # (E158) or an import (E155).  It is read here, before the arms are
+        # checked: an error inside an arm says nothing about the scrutinee.
+        # `Unknown` with no error reported (`apply_fn` over a type variable)
+        # is judged as before, and its E313 is the error that refuses the
+        # program.
+        in_error = (isinstance(base_type(scrutinee_ty), UnknownType)
+                    and any(d.severity == "error" for d in self.errors))
 
         result_type: Type | None = None
         for arm in expr.arms:
@@ -328,7 +340,7 @@ class ControlFlowMixin:
         # written against that declaration, so its coverage is not judged.
         if not (self._refused_ctor_names and any(
                 self._names_refused_ctor(arm.pattern) for arm in expr.arms)):
-            self._check_exhaustiveness(expr, scrutinee_ty)
+            self._check_exhaustiveness(expr, scrutinee_ty, in_error=in_error)
         return result_type or UnknownType()
 
     def _names_refused_ctor(self, pat: ast.Pattern) -> bool:
@@ -349,12 +361,16 @@ class ControlFlowMixin:
         return False
 
     def _check_exhaustiveness(
-        self, expr: ast.MatchExpr, scrutinee_ty: Type
+        self, expr: ast.MatchExpr, scrutinee_ty: Type, *, in_error: bool,
     ) -> None:
         """Check that match arms cover all possible values of the scrutinee.
 
         Spec Section 4.9.2: compiler MUST verify match is exhaustive.
         Spec Section 4.9.3: compiler SHOULD warn about unreachable arms.
+
+        A scrutinee *in_error* (#1671) has no type to judge coverage by, so
+        only the arms are judged: an arm after a catch-all is unreachable
+        whatever the scrutinee's type.
         """
         raw_ty = base_type(scrutinee_ty)
 
@@ -381,6 +397,8 @@ class ControlFlowMixin:
                     error_code="E310",
                 )
             return  # catch-all guarantees exhaustiveness
+        if in_error:
+            return  # #1671: no type for the arms to cover
 
         # --- ADT exhaustiveness ---
         if isinstance(raw_ty, AdtType):

@@ -24,8 +24,8 @@ reference that names another type is E163, reported at the reference.  Its
 message quotes the reference as written and the return type as the
 signature spells it, and its fix names the reference in that spelling, which
 the program accepts in place of the refused one; the reference then types
-as `Unknown`, so nothing else is reported about it, bar a `match` over it,
-which is also reported E313 (#1671).  A return type the check refused where
+as `Unknown`, so nothing else is reported about it, a `match` over it
+included (#1671).  A return type the check refused where
 it is written is not judged, so its own error stands alone, as on `main`.
 
 The class is every result reference whose name is not the return type's.
@@ -222,9 +222,7 @@ class Ret:
     (a function-typed result's postcondition is a runtime check, E522).
     A generic's *caller* instantiates it, so its postcondition is verified
     at a concrete type: the caller's parameters, return type and body, with
-    `{callee}` where the generic's name goes.  *cascade* is what the check
-    reports after E163 about a postcondition built on the refused
-    reference: a `match` over it is also reported E313 (#1671).
+    `{callee}` where the generic's name goes.
     """
 
     spelling: str
@@ -239,7 +237,6 @@ class Ret:
     requires: str = "true"
     caller: tuple[str, str, str] | None = None
     proved: bool = True
-    cascade: tuple[str, ...] = ()
 
 
 _CLOSURE = "fn(@Int -> @Int) effects(pure) { @Int.0 + @Int.1 }"
@@ -299,7 +296,6 @@ RETURNS: dict[str, Ret] = {
         "@Tuple<Int, String>", "Tuple<Int, String>", "@Int, @String",
         "@Int.0, @String.0", "Tuple(@Int.0, @String.0)",
         "match {r} {{ Tuple(@Int, @String) -> @Int.0 == @Int.1 }}",
-        cascade=("E313",),
         right=("Tuple<Int, String>",),
         wrong={"wrong_args": "Tuple<String, Int>", "missing_args": "Tuple"}),
     "array_param": Ret(
@@ -460,7 +456,7 @@ def test_a_reference_of_another_type_is_refused_where_it_is_written(
     program = LOCATIONS[location](ret, ret.ensures.format(r=wrong))
     checked = _check(program, tmp_path)
     expected = (["E136"] if kind == "undeclared_arg" else []) + ["E163"]
-    assert _codes(checked) == expected + list(ret.cascade), checked.errors
+    assert _codes(checked) == expected, checked.errors
     line, column = _place(program.source, wrong)
     assert _e163(checked) == [(program.file, line, column)]
     diag = next(d for d in checked.errors if d.error_code == "E163")

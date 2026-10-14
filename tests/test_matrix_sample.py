@@ -678,6 +678,7 @@ MARKED_FILES = (
     "test_array_literal_open_position_1668.py",
     "test_result_reference_type_1517.py",
     "test_lowering_boundary.py",
+    "test_match_unknown_scrutinee_1671.py",
 )
 UNMARKED_FILES = (
     "test_obligations.py",
