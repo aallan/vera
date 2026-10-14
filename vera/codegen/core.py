@@ -199,9 +199,9 @@ class CodeGenerator(
         # cannot recover its component targets from them.  ``_compile_fn``
         # selects the entry for the module being compiled — via the ``path`` its
         # ``_imported_fn_decls`` / ``_shadowed_module_fns`` entry carries — so the
-        # imported body's array-element / tuple-construction @Nat -> @Int
-        # widening guard fires exactly as the module's standalone compile emits
-        # it.  Empty when a caller skipped ``typecheck_with_artifacts`` (or has no
+        # imported body's array-element / tuple-construction narrowing guard
+        # fires exactly as the module's standalone compile emits it.  Empty
+        # when a caller skipped ``typecheck_with_artifacts`` (or has no
         # imports); the imported body then falls back to suppressed lookups
         # (#986), never a wrong-file-keyed guard.
         self._module_artifacts: dict[
@@ -787,7 +787,7 @@ class CodeGenerator(
         # (unshadowed, shadowed `mod$…`, and their hoisted where-helpers).
         # Monomorphization preserves node spans, so a clone's body is keyed by
         # its TEMPLATE module's span tables — the mono compile loop threads
-        # `_module_artifacts[origin]` for these so the #820 widen guards fire
+        # `_module_artifacts[origin]` for these so the component guards fire
         # (a local generic's clones are absent and keep the main-file tables).
         self._imported_generic_origins: dict[str, tuple[str, ...]] = {}
         self._mono_clone_origins: dict[str, tuple[str, ...]] = {}
@@ -3070,7 +3070,7 @@ class CodeGenerator(
                     imported=True,  # #986: don't consult main-file span tables
                     own_path=self._own_path_of(path),
                     # #987: thread THIS module's own span-keyed tables so the
-                    # imported body's @Nat -> @Int widening guard fires.
+                    # imported body's component guards fire.
                     module_tables=self._module_artifacts.get(path),
                     # #1299: no `where_scope`.  This body resolves bare names
                     # in ITS module's namespace, which the alias scope above
@@ -3114,7 +3114,7 @@ class CodeGenerator(
                     # #987: the ``mod$…`` rename only changes the WASM
                     # function name; the body's node spans are unchanged, so
                     # THIS module's table still keys them correctly and its
-                    # widen guard fires.
+                    # component guards fire.
                     module_tables=self._module_artifacts.get(path),
                     # #1299: the ``mod$…`` rename moves the body into no other
                     # namespace, and adds no helper — same reasoning, and the

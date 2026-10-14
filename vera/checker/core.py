@@ -161,8 +161,8 @@ class CheckArtifacts:
     # with no file identity, so an imported body compiled into the flat WASM
     # module (Pass 2.5 / 2.6) cannot recover its component targets from them.
     # Codegen threads the matching entry when compiling each module's body, so
-    # the #820 @Nat -> @Int widening guard fires at the array-element /
-    # tuple-construction sites through the import door, not just same-file.
+    # the narrowing guards fire at the array-element / tuple-construction
+    # sites through the import door, not just same-file.
     module_artifacts: ModuleArtifacts
     # #1208: the ENTRY module's naming environment — the alias bodies, alias
     # parameters, and declared-ADT names :mod:`vera.naming` renders slot names,
@@ -280,8 +280,8 @@ def _collect_module_artifacts(
     The top-level program's ``expr_target_types`` / ``expr_semantic_types`` are
     keyed by bare span ``(line, col, end_line, end_col)`` with no file identity,
     so an imported body compiled into the flat WASM module (Pass 2.5 / 2.6) has
-    no entries there — codegen dropped the #820 @Nat -> @Int widening guard at
-    the array-element / tuple-construction sites through the import door, while
+    no entries there — codegen dropped the component guards at the
+    array-element / tuple-construction sites through the import door, while
     the library's own ``vera verify`` reported them Tier-3-guarded (the broken
     promise).  Run the full check over each module in isolation to collect ITS
     table, keyed by module path, so codegen can thread the right one when it

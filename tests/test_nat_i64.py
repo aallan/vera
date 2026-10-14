@@ -1064,3 +1064,35 @@ def test_repro_parse_nat_refuses_a_numeral_past_the_range(
     """`parse_nat` returns `Err("out of range")` for a numeral above
     i64.MAX, where it trapped or wrapped (2^64 parsed as 0)."""
     assert _value(_PARSE_NAT, "f", numeral) == result
+
+
+# `parse_int` accumulates its digits as `parse_nat` does, and the two are
+# held to their ranges by one rule: a numeral past the type's range is
+# `Err("out of range")`, never a wrapped value.  `parse_int`'s range is the
+# i64's, so `-9223372036854775808` parses and its magnitude unsigned does not.
+_PARSE_INT = _fn(
+    "@String -> @String",
+    "match parse_int(@String.0) {\n    Ok(@Int) -> int_to_string(@Int.0),\n"
+    "    Err(@String) -> @String.0\n  }")
+
+
+@pytest.mark.parametrize(("numeral", "result"), [
+    (str(I64_MAX), str(I64_MAX)),
+    (f"+{I64_MAX}", str(I64_MAX)),
+    (f"-{I64_MAX}", str(-I64_MAX)),
+    (f"-{-I64_MIN}", str(I64_MIN)),
+    (str(I64_MAX + 1), "out of range"),
+    (f"+{I64_MAX + 1}", "out of range"),
+    (f"-{-I64_MIN + 1}", "out of range"),
+    ("99999999999999999999", "out of range"),
+    ("-99999999999999999999", "out of range"),
+    ("-12", "-12"),
+    ("12", "12"),
+])
+def test_repro_parse_int_refuses_a_numeral_past_the_range(
+        numeral: str, result: str) -> None:
+    """`parse_int` returns `Err("out of range")` for a numeral outside the
+    i64 range, where it wrapped (`9223372036854775808` parsed as -2^63),
+    and still reads `-9223372036854775808`, whose magnitude no `Int`
+    holds."""
+    assert _value(_PARSE_INT, "f", numeral) == result

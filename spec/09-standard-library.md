@@ -1504,6 +1504,7 @@ Parses a signed integer from a string. After stripping whitespace, an optional l
 Error messages:
 - `"empty string"` — the input is empty or contains only whitespace
 - `"invalid character"` — a non-digit character was encountered (after any sign)
+- `"out of range"` — the numeral is outside the `Int` range, `-9223372036854775808 .. 9223372036854775807` (§2.2)
 
 <!-- vera:skip-parse category="FRAGMENT" reason="bare parse_int calls with their results in comments" -->
 ```vera
@@ -1514,6 +1515,8 @@ parse_int("  -42  ")   -- Ok(-42) (whitespace stripped)
 parse_int("abc")       -- Err("invalid character")
 parse_int("-")         -- Err("invalid character")
 parse_int("")          -- Err("empty string")
+parse_int("-9223372036854775808")  -- Ok(-9223372036854775808)
+parse_int("9223372036854775808")   -- Err("out of range")
 ```
 
 #### parse_float64

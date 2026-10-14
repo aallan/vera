@@ -42,8 +42,8 @@ from vera.resolver import ModuleResolver
 from tests import pipeline
 
 
-# The imported lib: an ALL-@Nat function.  Its `Tuple(@Nat.0, @Nat.0)` targets
-# `Tuple<Nat, Nat>` (no widen), so standalone it has NO guard.  The leading
+# The imported lib: an ALL-@Int function.  Its `Tuple(@Int.0, @Int.0)` targets
+# `Tuple<Int, Int>` (no narrowing), so standalone it has NO guard.  The leading
 # comment pads the body onto line 3 to align with main.vera's line 3.
 _COLLIDE_LIB = (
     "-- pad line so the Tuple construction lands on line 3, matching main.vera\n"
@@ -80,11 +80,11 @@ def _compile_main(tmp_path, *, thread_modules: bool = True):
 
     * ``True`` (the real ``vera run`` / ``vera compile`` path, #987) — the
       per-module tables are threaded, so ``collidelib``'s imported body resolves
-      the colliding span in its OWN table (``Tuple<Nat, Nat>``) and emits no
+      the colliding span in its OWN table (``Tuple<Int, Int>``) and emits no
       guard by CORRECTNESS.
     * ``False`` (a caller that threads no module artifacts) — the imported body
       falls back to SUPPRESSION (#986): span-keyed lookups return ``None``, so
-      the colliding main-file ``Tuple<Int, Int>`` target can never leak in.
+      the colliding main-file ``Tuple<Nat, Nat>`` target can never leak in.
 
     Both must yield no false guard; the two paths are pinned by separate tests.
     """

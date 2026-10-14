@@ -699,9 +699,9 @@ class ExpressionsMixin:
             return None
         # #861: inside a refinement predicate over a `@Byte` BASE (§2.6),
         # an integer literal compared against a Byte-typed operand is typed
-        # against Byte, not Nat.  `@Byte.0 < 10` has a defined i32
+        # against Byte, not Int.  `@Byte.0 < 10` has a defined i32
         # runtime-guard lowering (#766's `_translate_byte_binop`), so —
-        # unlike a general expression, where Byte-vs-Nat is E142 (no
+        # unlike a general expression, where Byte-vs-Int is E142 (no
         # implicit numeric coercion, DESIGN §0.2.2) — the literal takes the
         # binder's Byte type here.  A literal is not a runtime value, so
         # this is literal-typing-from-context (the same rule that lets

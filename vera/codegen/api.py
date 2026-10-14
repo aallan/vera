@@ -306,8 +306,8 @@ def compile(
     bare span with no file identity, so an imported body compiled into this flat
     WASM module (Pass 2.5 / 2.6) cannot recover its component targets from them.
     Codegen threads the matching entry when compiling each module's body, so the
-    @Nat -> @Int widening guard fires at the array-element / tuple-construction
-    sites through the import door.  A module absent from this map (or an omitted
+    narrowing guards fire at the array-element / tuple-construction sites
+    through the import door.  A module absent from this map (or an omitted
     argument) falls back to the pre-#987 behaviour: that imported body's
     span-keyed lookups are suppressed (never wrong-file-keyed), so those
     component sites stay unguarded rather than risk a spurious guard.

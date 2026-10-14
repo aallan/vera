@@ -1345,9 +1345,10 @@ class RegistrationMixin:
           the tuple construction site and the SMT synthesis door key on
           ``expr.name``.  A ``data Box { Tuple(Bool) }`` therefore won the
           built-in carrier's flat layout slot with its own fixed layout, and
-          was measured DISARMING the #820 widening guard on a genuine
-          built-in tuple construction elsewhere in the same program (a
-          ``@Nat`` above ``i64.MAX`` stored and read back negative, no trap),
+          was measured, while ``@Nat`` was a u64, DISARMING the #820
+          widening guard on a genuine built-in tuple construction elsewhere
+          in the same program (a ``@Nat`` above ``i64.MAX`` stored and read
+          back negative, no trap),
           while the verifier stopped obligating it because
           ``_lookup_constructor_info`` found the user's constructor.
 

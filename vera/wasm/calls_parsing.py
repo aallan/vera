@@ -255,7 +255,11 @@ class CallsParsingMixin:
     ) -> list[str] | None:
         """Translate parse_int(s) → Result<Int, String> (i32 pointer).
 
-        Like parse_nat but handles optional leading sign (+ or -).
+        Like parse_nat but handles optional leading sign (+ or -).  The
+        digits are accumulated in the negative half of the i64 range, which
+        holds -2^63, so one bound serves both signs: a numeral outside
+        ``-2^63 .. 2^63 - 1`` is ``Err("out of range")``, checked before
+        each digit is added, so it never wraps.
 
         Returns an ADT heap object:
           Ok(Int):     [tag=0 : i32] [pad 4] [value : i64]   (16 bytes)
@@ -275,10 +279,13 @@ class CallsParsingMixin:
         out = self.alloc_local("i32")
         has_digit = self.alloc_local("i32")
         is_neg = self.alloc_local("i32")
+        digit = self.alloc_local("i64")
+        too_big = self.alloc_local("i32")
 
         # Intern error strings
         empty_off, empty_len = self.string_pool.intern("empty string")
         invalid_off, invalid_len = self.string_pool.intern("invalid digit")
+        range_off, range_len = self.string_pool.intern("out of range")
 
         ins: list[str] = []
 
@@ -296,6 +303,8 @@ class CallsParsingMixin:
         ins.append(f"local.set {has_digit}")
         ins.append("i32.const 0")
         ins.append(f"local.set {is_neg}")
+        ins.append("i32.const 0")
+        ins.append(f"local.set {too_big}")
 
         ins.append("block $done_pi")
         ins.append("block $err_pi")
@@ -397,15 +406,37 @@ class CallsParsingMixin:
         ins.append("    i32.const 57")
         ins.append("    i32.gt_u")
         ins.append("    br_if $err_pi")
-        # Digit: result = result * 10 + (byte - 48)
-        ins.append(f"    local.get {result}")
-        ins.append("    i64.const 10")
-        ins.append("    i64.mul")
+        # Digit: result = result * 10 - (byte - 48), the magnitude
+        # accumulated negatively, refused where it would pass -2^63 =
+        # 10 * q - 8: where result < q, or where result == q and the
+        # digit is above 8.
+        q = -((2 ** 63) // 10)
         ins.append(f"    local.get {byte}")
         ins.append("    i32.const 48")
         ins.append("    i32.sub")
         ins.append("    i64.extend_i32_u")
-        ins.append("    i64.add")
+        ins.append(f"    local.set {digit}")
+        ins.append(f"    local.get {result}")
+        ins.append(f"    i64.const {q}")
+        ins.append("    i64.lt_s")
+        ins.append(f"    local.get {result}")
+        ins.append(f"    i64.const {q}")
+        ins.append("    i64.eq")
+        ins.append(f"    local.get {digit}")
+        ins.append(f"    i64.const {(2 ** 63) % 10}")
+        ins.append("    i64.gt_s")
+        ins.append("    i32.and")
+        ins.append("    i32.or")
+        ins.append("    if")
+        ins.append("      i32.const 1")
+        ins.append(f"      local.set {too_big}")
+        ins.append("      br $err_pi")
+        ins.append("    end")
+        ins.append(f"    local.get {result}")
+        ins.append("    i64.const 10")
+        ins.append("    i64.mul")
+        ins.append(f"    local.get {digit}")
+        ins.append("    i64.sub")
         ins.append(f"    local.set {result}")
         # Mark that we saw a digit
         ins.append("    i32.const 1")
@@ -449,9 +480,20 @@ class CallsParsingMixin:
         ins.append("i32.eqz")
         ins.append("br_if $err_pi")
 
-        # -- Apply sign: if is_neg, negate result
+        # -- Apply sign: the result holds the negated magnitude, so a
+        # numeral without `-` is negated back, and -2^63, whose magnitude
+        # no `Int` holds, is out of range there.
         ins.append(f"local.get {is_neg}")
+        ins.append("i32.eqz")
         ins.append("if")
+        ins.append(f"  local.get {result}")
+        ins.append(f"  i64.const {-(2 ** 63)}")
+        ins.append("  i64.eq")
+        ins.append("  if")
+        ins.append("    i32.const 1")
+        ins.append(f"    local.set {too_big}")
+        ins.append("    br $err_pi")
+        ins.append("  end")
         ins.append("  i64.const 0")
         ins.append(f"  local.get {result}")
         ins.append("  i64.sub")
@@ -473,24 +515,34 @@ class CallsParsingMixin:
         ins.append("end")  # block $err_pi
 
         # -- Err path: allocate 16 bytes, tag=1, String at offsets 4,8 ----
-        ins.append(f"local.get {idx}")
-        ins.append(f"local.get {slen}")
-        ins.append("i32.lt_u")
-        ins.append("if (result i32)")
+        # A numeral outside the i64 range → "out of range"; else as
+        # parse_nat: "invalid digit" or "empty string".
+        ins.append(f"local.get {too_big}")
+        ins.append("if")
+        ins.append(f"  i32.const {range_off}")
+        ins.append(f"  local.set {idx}")
+        ins.append(f"  i32.const {range_len}")
+        ins.append(f"  local.set {byte}")
+        ins.append("else")
+        ins.append(f"  local.get {idx}")
+        ins.append(f"  local.get {slen}")
+        ins.append("  i32.lt_u")
+        ins.append("  if (result i32)")
+        ins.append(f"    i32.const {invalid_off}")
+        ins.append("  else")
+        ins.append(f"    i32.const {empty_off}")
+        ins.append("  end")
+        ins.append(f"  local.set {idx}")
+        ins.append(f"  local.get {idx}")
         ins.append(f"  i32.const {invalid_off}")
-        ins.append("else")
-        ins.append(f"  i32.const {empty_off}")
+        ins.append("  i32.eq")
+        ins.append("  if (result i32)")
+        ins.append(f"    i32.const {invalid_len}")
+        ins.append("  else")
+        ins.append(f"    i32.const {empty_len}")
+        ins.append("  end")
+        ins.append(f"  local.set {byte}")
         ins.append("end")
-        ins.append(f"local.set {idx}")
-        ins.append(f"local.get {idx}")
-        ins.append(f"i32.const {invalid_off}")
-        ins.append("i32.eq")
-        ins.append("if (result i32)")
-        ins.append(f"  i32.const {invalid_len}")
-        ins.append("else")
-        ins.append(f"  i32.const {empty_len}")
-        ins.append("end")
-        ins.append(f"local.set {byte}")
         ins.append("i32.const 16")
         ins.append("call $alloc")
         ins.append(f"local.tee {out}")
