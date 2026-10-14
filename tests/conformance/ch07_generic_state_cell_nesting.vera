@@ -1,0 +1,32 @@
+-- Conformance: a clause-body State operation that a type-parameter cell
+-- can shadow is a checker error (Chapter 7, Section 7.5.2).
+-- Tests: E339 — the put(1) in the State<T> clause is the enclosing
+-- State<Int> cell's operation, and at T = Int the inner cell is the same
+-- family and shadows it.  The checker holds no instantiation set, so the
+-- operation is refused at the generic for every instantiation (#1522).
+private forall<T> fn g(@T -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Int>](@Int = 0) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) }
+  } in {
+    handle[State<T>](@T = @T.0) {
+      get(@Unit) -> { resume(@T.0) },
+      put(@T) -> { put(1); resume(()) }
+    } in {
+      put(@T.0);
+      1
+    }
+  }
+}
+
+public fn probe(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  g(5)
+}

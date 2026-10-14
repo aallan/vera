@@ -43,7 +43,7 @@ import pytest
 from tests.codegen_helpers import _compile, _run, _run_io
 from tests.checker_helpers import _check_ok, _errors
 from tests.verifier_helpers import _verify_ok
-from vera.skip import STATE_CLAUSE_INLINE_DEPTH_CAP
+from vera.lowering import STATE_CLAUSE_INLINE_DEPTH_CAP
 
 # `probe` holds the shape; `main` just calls it, so every case shares one
 # entry point and the compiled value is the shape's own.
@@ -823,8 +823,9 @@ def test_same_family_clause_body_op_is_refused(source: str) -> None:
     because `state_put_Int` addresses only the innermost `Int` cell.  The
     checker refuses the operation where it is written (E339), and code
     generation's own gate — the backstop for a program that reaches it
-    without the checker — skips the function (E602).  Without them each of
-    these programs compiles to a value the spec rule does not describe.
+    without the checker — is an internal error (E699) that drops the
+    function.  Without them each of these programs compiles to a value the
+    spec rule does not describe.
     """
     errors = _errors(source)
     assert errors and {d.error_code for d in errors} == {"E339"}, [
@@ -834,8 +835,8 @@ def test_same_family_clause_body_op_is_refused(source: str) -> None:
     assert all("1233" in d.rationale for d in errors), errors
     result = _compile(source)
     codes = {d.error_code for d in result.diagnostics}
-    assert "E602" in codes, (
-        "expected the same-family codegen skip, got: "
+    assert "E699" in codes, (
+        "expected the same-family codegen backstop, got: "
         f"{[(d.error_code, d.description[:90]) for d in result.diagnostics]}"
     )
     joined = " ".join(d.description for d in result.diagnostics)
@@ -978,7 +979,7 @@ def test_outward_reentry_one_past_the_cap_is_the_first_refusal() -> None:
     checker refuses the operations that re-enter too deep (E339), at the
     depth code generation does.  This also pins the CALLER's fate in code
     generation's backstop: the dropped `probe` takes `main` with it, so the
-    program surfaces E602 **and** the E620 dropped-caller diagnostic rather
+    program surfaces E699 **and** the E620 dropped-caller diagnostic rather
     than silently exporting a `main` that cannot run.
     """
     source = _deep_nest(STATE_CLAUSE_INLINE_DEPTH_CAP + 1)
@@ -991,8 +992,8 @@ def test_outward_reentry_one_past_the_cap_is_the_first_refusal() -> None:
     ), errors
     result = _compile(source)
     codes = {d.error_code for d in result.diagnostics}
-    assert {"E602", "E620"} <= codes, (
-        f"expected the depth-cap skip AND the dropped-caller diagnostic at "
+    assert {"E699", "E620"} <= codes, (
+        f"expected the depth-cap backstop AND the dropped-caller diagnostic at "
         f"depth {STATE_CLAUSE_INLINE_DEPTH_CAP + 1}, got: "
         f"{[(d.error_code, d.description[:90]) for d in result.diagnostics]}"
     )
@@ -1006,7 +1007,7 @@ def test_outward_reentry_past_the_cap_is_refused() -> None:
 
     Without the bound, an 18-deep nest of 106 source lines expanded to ~2M
     lines of WAT — the runaway this turns into a diagnostic: E339 where the
-    operations are written, and code generation's located E602 naming the
+    operations are written, and code generation's located E699 naming the
     function as the backstop.
     """
     source = _deep_nest(STATE_CLAUSE_INLINE_DEPTH_CAP + 2)
@@ -1016,8 +1017,8 @@ def test_outward_reentry_past_the_cap_is_refused() -> None:
     ]
     result = _compile(source)
     codes = {d.error_code for d in result.diagnostics}
-    assert "E602" in codes, (
-        f"expected the depth-cap skip, got: "
+    assert "E699" in codes, (
+        f"expected the depth-cap backstop, got: "
         f"{[(d.error_code, d.description[:90]) for d in result.diagnostics]}"
     )
     joined = " ".join(d.description for d in result.diagnostics)

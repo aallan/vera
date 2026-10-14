@@ -426,7 +426,7 @@ Network I/O is modelled as a built-in algebraic effect with two operations: `get
 | `get` | `String -> Result<String, String>` | Performs an HTTP GET request; `Ok(body)` on success, `Err(message)` on failure |
 | `post` | `String, String -> Result<String, String>` | Performs an HTTP POST request with the given body (sent as `application/json`); `Ok(body)` on success, `Err(message)` on failure |
 
-This fits naturally with Vera's algebraic effect system and makes network I/O explicit. A `handle[Http]` passes `vera check` and `vera verify`, and code generation drops its function (`E602`), so the effect is declared and propagated but not mocked.
+This fits naturally with Vera's algebraic effect system and makes network I/O explicit. A `handle[Http]` is a checker error (`E340`), so the effect is declared and propagated but not mocked.
 
 **Composition with JSON:**
 
@@ -571,7 +571,7 @@ private fn classify(@String -> @Result<String, String>)
 - `complete` only — `embed` (returning `Array<Float64>`) is not supported
 - No streaming — full response only
 - No system prompt — single `complete(user_prompt)` call; structured prompting via `string_concat`
-- User-defined `handle[Inference]` handlers (for mocking, local models, replay) are rejected
+- User-defined `handle[Inference]` handlers (for mocking, local models, replay) are rejected at check (`E340`)
 
 ### 9.5.6 HttpServer
 
@@ -2646,7 +2646,7 @@ Key design points:
 
 2. **Built-in abilities** are auto-derivable for ADTs composed of types that already support them: `Eq`, `Hash`, `Encode`, `Decode`, `Show`; `Ord` is not (§9.8.1). If all fields of an ADT support `Eq`, the ADT supports `Eq` automatically. Four abilities are built-in: `Eq`, `Ord`, `Hash`, and `Show`; `Encode` and `Decode` are not implemented.
 
-3. **User-defined abilities** are permitted but restricted to first-order type parameters. This allows library authors to define domain-specific abilities without the complexity of higher-kinded polymorphism.
+3. **User-defined abilities** may be declared, first-order like the built-in ones, but no declaration implements an ability for a type, so no type satisfies one: a call to a user-declared ability's operation and a `where` constraint naming one are checker errors (**E340**). Abilities as implemented are the constraints the four built-in abilities satisfy.
 
 4. **`ability` declarations** look like `effect` declarations (using `op` for operations), keeping the language syntactically consistent.
 
@@ -2655,6 +2655,8 @@ Key design points:
 This design draws on Roc's abilities (deliberately no HKTs, auto-derivable) and Gleam's validation that useful languages need not have typeclasses.
 
 Ability **operation** names form one namespace across every ability in scope, the built-in abilities included: a bare call `size(x)` names the operation and not its ability. A second declaration of an operation name, in the same ability or another, is refused (**E184**, §8.5.5). A user ability named after a built-in ability, or an operation named after a built-in ability's operation, is refused as well (**E185**): code generation compiles `eq`, `compare`, `hash` and `show` against the built-in whatever a declaration says.
+
+An ability's operation is called bare — at a type that satisfies the ability, or through a `where` constraint in a generic body, where code generation compiles it for each instantiation. A qualifier names an effect, so a qualified call such as `Eq.eq(1, 1)` is a checker error (**E340**), and its fix is the bare call, `eq(1, 1)`.
 
 ### 9.8.1 Built-in Abilities
 

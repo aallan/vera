@@ -101,7 +101,7 @@ It is not a lint, so there is no configuration to get right and no suppression c
 
 Two smaller errors sit alongside it. A `?`-placeholder/parameter count mismatch is `E208` when the params array's length is statically known — written out at the call site, or reached through a `let` — while anything else defers that arity check to the driver — and numbered or named placeholder styles are rejected in favour of the single positional form (`E209`).
 
-The guarantee is exactly as wide as the query path, and no wider. Every string that reaches the database goes through `DB.query` / `DB.execute`, and the language has no other string-to-SQL route, so there is no back door to leave open. What it does not catch is a fixed query that is simply wrong: a literal `DELETE FROM users` compiles happily, because nothing in it came from outside. And the effect is SQLite-only, and a `handle[DB]` is not compiled, so a test cannot mock it.
+The guarantee is exactly as wide as the query path, and no wider. Every string that reaches the database goes through `DB.query` / `DB.execute`, and the language has no other string-to-SQL route, so there is no back door to leave open. What it does not catch is a fixed query that is simply wrong: a literal `DELETE FROM users` compiles happily, because nothing in it came from outside. And the effect is SQLite-only, and a `handle[DB]` is refused at check (`E340`), so a test cannot mock it.
 
 ## Does the compiler prove division-by-zero, out-of-bounds indexing, etc. can't happen?
 
@@ -154,7 +154,7 @@ The design choice to fix the ability set (rather than allowing user-defined abil
 
 HTTP is modelled as a built-in algebraic effect. `Http.get(url)` and `Http.post(url, body)` are effect operations that return `Result<String, String>`. Functions that use them must declare `effects(<Http>)` in their signature, making network access explicit and trackable in the type system.
 
-The effect system means a caller that only permits `<IO>` cannot invoke a function that performs `<Http>` — network access is a separate capability. User handlers for `Http` are not compiled: a `handle[Http]` type-checks, but code generation drops its function (`E602`), so a test cannot mock the network. The pattern for fetching and parsing JSON from an API is: call `Http.get`, then `json_parse` the response body.
+The effect system means a caller that only permits `<IO>` cannot invoke a function that performs `<Http>` — network access is a separate capability. User handlers for `Http` are not compiled: a `handle[Http]` is refused at check (`E340`), so a test cannot mock the network. The pattern for fetching and parsing JSON from an API is: call `Http.get`, then `json_parse` the response body.
 
 HTTP supports GET and POST. Custom headers, additional HTTP methods, response status codes, timeouts, and streaming are not supported.
 

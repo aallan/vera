@@ -122,30 +122,6 @@ if TYPE_CHECKING:
 DERIVED_HELPER_DEPTH_CAP = 32
 
 
-# #1211/#1233: nesting cap for the OUTWARD re-entry of inlined `State` clause
-# bodies.  A bare `get`/`put` written in a clause body is an operation of the
-# ENCLOSING context, so lowering it inlines the enclosing handler's clause,
-# whose own bare ops inline the one outside that, and so on.  Each clause body
-# is re-expanded once per bare op that reaches it, so a nest of N handlers
-# whose clauses each perform k bare ops emits O(k**N) instructions from O(N)
-# lines of source.  Reaching the depth needs N DISTINCT cell families — a
-# repeated family shadows the outer cell and is refused outright (#1233) — so
-# the series is measured over one ADT per level with two bare `put`s per
-# clause: WAT grows 851 → 1,583 → 4,331 → 15,143 lines at depths 2/4/6/8
-# (`_deep_nest` in `tests/test_nested_handler_clause_ops.py` generates it).
-#
-# Bounding the re-entry DEPTH turns that runaway into a clean, source-located
-# [E602] skip, the same shape `DERIVED_HELPER_DEPTH_CAP` gives the derived-
-# helper generators.  Like that cap it fires on PROGRAM STRUCTURE, not on the
-# interpreter's recursion limit, so the degradation is deterministic.  Set
-# generously: the legitimate nested-handler matrix (`tests/conformance/
-# ch07_clause_body_op_enclosing.vera`, `tests/test_nested_handler_clause_ops.py`)
-# reaches depth 2 and hand-written handler nests are shallower still, while a
-# program at the cap needs eight distinct cell families and two bare ops in
-# every clause — so anything past it is a generated program, not a written one.
-STATE_CLAUSE_INLINE_DEPTH_CAP = 8
-
-
 class CodegenSkip(Exception):
     """Raised by a translator when an AST node shape isn't supported.
 

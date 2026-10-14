@@ -4045,5 +4045,70 @@
       "nat_narrowing",
       "runtime_guard"
     ]
+  },
+  {
+    "id": "ch07_handler_effect_unlowerable",
+    "file": "ch07_handler_effect_unlowerable.vera",
+    "chapter": 7,
+    "title": "A handler for an effect other than State or Exn is a checker error (#1597)",
+    "level": "check",
+    "spec_ref": "Section 7.5",
+    "expected_error": "E340",
+    "features": [
+      "effect_handler",
+      "check_error"
+    ]
+  },
+  {
+    "id": "ch07_state_cell_unlowerable",
+    "file": "ch07_state_cell_unlowerable.vera",
+    "chapter": 7,
+    "title": "A State cell whose value is a (ptr, len) pair is a checker error (#1512)",
+    "level": "check",
+    "spec_ref": "Section 7.5.1",
+    "expected_error": "E340",
+    "features": [
+      "state_handler",
+      "check_error"
+    ]
+  },
+  {
+    "id": "ch06_quantifier_predicate_signature",
+    "file": "ch06_quantifier_predicate_signature.vera",
+    "chapter": 6,
+    "title": "A quantifier predicate whose parameter is a type parameter is a checker error (#1506)",
+    "level": "check",
+    "spec_ref": "Section 6.3.3",
+    "expected_error": "E179",
+    "features": [
+      "quantifier",
+      "check_error"
+    ]
+  },
+  {
+    "id": "ch09_ability_operation_call",
+    "file": "ch09_ability_operation_call.vera",
+    "chapter": 9,
+    "title": "A call to an operation of a user-declared ability is a checker error (#1499)",
+    "level": "check",
+    "spec_ref": "Section 9.8",
+    "expected_error": "E340",
+    "features": [
+      "abilities",
+      "check_error"
+    ]
+  },
+  {
+    "id": "ch07_generic_state_cell_nesting",
+    "file": "ch07_generic_state_cell_nesting.vera",
+    "chapter": 7,
+    "title": "A clause-body State operation a type-parameter cell can shadow is a checker error (#1522)",
+    "level": "check",
+    "spec_ref": "Section 7.5.2",
+    "expected_error": "E339",
+    "features": [
+      "state_handler",
+      "check_error"
+    ]
   }
 ]

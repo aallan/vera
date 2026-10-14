@@ -1461,20 +1461,17 @@ def test_dropping_any_boundary_roster_entry_is_visible() -> None:
 # The cells
 # =====================================================================
 
-#: (position, route index, representation) -> a shape the backend refuses
-#: outright, in the compiler's own words.  Not a cell: a product refused
-#: before the guard layer exercises that refusal rather than the binding, and
+#: (position, route index, representation) -> a shape the compiler refuses
+#: outright, in its own words: a pair `State` cell at check (E340, #1512), a
+#: `Map` value in code generation.  Not a cell: a product refused before the
+#: guard layer exercises that refusal rather than the binding, and
 #: TESTING.md § Class Instruments is explicit that such a cell is worse than
 #: an absent one because it reads as coverage.
 _UNSUPPORTED_SHAPES: dict[tuple[str, int, str], str] = {
-    ("State write boundary", 0, "string"):
-        "Function 'f' uses State with unsupported type — skipped",
-    ("State write boundary", 0, "array"):
-        "Function 'f' uses State with unsupported type — skipped",
     **{
         ("State write boundary", route, repr_name):
-            "Function 'f' uses State with unsupported type — skipped"
-        for route in (1, 2, 3)
+            "Code generation cannot lower a State<"
+        for route in (0, 1, 2, 3)
         for repr_name in ("string", "array")
     },
     ("map value", 0, "array"):
@@ -1989,20 +1986,23 @@ def test_a_pair_state_cell_is_refused_and_says_so(
     generation refuses the cell at registration and drops the function; the
     matrix's three readings cannot run, because there is no artifact to run.
 
-    What must still hold is that the refusal is SAID and the record is
-    honest: `vera verify` does not refuse the program, the obligation
-    discloses `tier3_unguarded` rather than claiming a check inside a
-    function the module does not contain (#1439, #1268's lesson at this
-    boundary), and the compiler names the refusal in its own words.  Before
-    this PR the record said `tier3` for exactly these rows.
+    The checker refuses the cell where it is written (E340, #1512), so no
+    such program reaches verification or code generation.  Past the check
+    the two must still agree, as they did when this was the only refusal:
+    the obligation discloses `tier3_unguarded` rather than claiming a check
+    inside a function the module does not contain (#1439, #1268's lesson at
+    this boundary), and code generation names the refusal in its own words.
     """
     cell = ("State write boundary", route, repr_name)
     good_src, _bad = _sources(cell)
     path = _write(tmp_path, good_src, "pair-cell.vera")
-    envelope = _envelope(path)
-    assert not _errors(envelope), (
-        f"the program is refused at verification: {_errors(envelope)}"
-    )
+    checked = pipeline.check(path)
+    assert {d.error_code for d in checked.errors} == {"E340"}, [
+        (d.error_code, d.description) for d in checked.errors]
+    assert all("Code generation cannot lower a State<" in d.description
+               for d in checked.errors), checked.errors
+    envelope = pipeline.verify(
+        path, past_check=True, budget_s=_BUDGET_S).envelope()
     statuses = _statuses(envelope)
     assert "tier3_unguarded" in statuses, (
         f"a pair `State` cell is registered by nobody, and the record says "
@@ -2012,10 +2012,10 @@ def test_a_pair_state_cell_is_refused_and_says_so(
         f"the record claims a runtime check for a write inside a function "
         f"code generation drops: {sorted(statuses)}"
     )
-    ran = pipeline.cli("run", path, budget_s=_BUDGET_S)
-    assert "uses State with unsupported type" in (ran.stdout + ran.stderr), (
-        f"the compiler no longer names the refusal:\n"
-        f"{(ran.stdout + ran.stderr)[-400:]}"
+    compiled = pipeline.compile(path, past_check=True, budget_s=_BUDGET_S)
+    said = " ".join(d.description for d in compiled.result.diagnostics)
+    assert "uses State with unsupported type" in said, (
+        f"code generation no longer names the refusal: {said[-400:]}"
     )
 
 
@@ -2072,9 +2072,10 @@ def test_the_record_and_registration_agree_about_a_state_cell(
 ) -> None:
     """One rule, two oracles, and a differential rather than a promise.
 
-    `vera.types.state_cell_lowerable` is asked by `_register_state_cell`
-    from the cell's TYPE EXPRESSION and by the verifier from the checker's
-    semantic type.  Two oracles is exactly the shape that drifts invisibly —
+    `vera.lowering.state_cell_lowerable` is asked by `_register_state_cell`
+    from the cell's TYPE EXPRESSION and by the checker and the verifier
+    from the semantic type.  The checker refuses a cell the rule refuses
+    (E340, #1512), so the refused rows are measured past the check.  Two oracles is exactly the shape that drifts invisibly —
     the verifier's answer is a claim about the backend's — so this drives
     both over the representations that decide the question and asserts they
     agree: a cell the backend registers may be recorded `tier3`, and one it
@@ -2096,13 +2097,16 @@ def test_the_record_and_registration_agree_about_a_state_cell(
         "  } in {\n    1\n  }\n}\n"
     )
     path = _write(tmp_path, source, "cell.vera")
-    envelope = _envelope(path)
-    assert not _errors(envelope), _errors(envelope)
+    checked = pipeline.check(path)
+    assert {d.error_code for d in checked.errors} == (
+        set() if expected else {"E340"}), checked.errors
+    envelope = pipeline.verify(
+        path, past_check=True, budget_s=_BUDGET_S).envelope()
     statuses = _statuses(envelope)
-    ran = pipeline.cli("run", path, budget_s=_BUDGET_S)
-    registered = "uses State with unsupported type" not in (
-        ran.stdout + ran.stderr)
-    wat = pipeline.cli("compile", "--wat", path, budget_s=_BUDGET_S).stdout
+    compiled = pipeline.compile(path, past_check=True, budget_s=_BUDGET_S)
+    registered = "uses State with unsupported type" not in " ".join(
+        d.description for d in compiled.result.diagnostics)
+    wat = compiled.result.wat
 
     assert registered == expected, (
         f"`State<{cell_type}>` registration changed: the backend "

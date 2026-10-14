@@ -815,12 +815,13 @@ CELLS: list[Cell] = [
        "effect E {\n  op a(Unit -> Int);\n  op a(Unit -> Bool);\n}\n\n"
        + _main("1"),
        "E184", surplus=("main.vera", r"^  op a\(")),
-    _c("op/twice-and-handled", "effect_operation", "same_scope",
+    # Performed where the row declares it: a handler for a user-declared
+    # effect is refused at check (E340), so the use is the qualified call.
+    _c("op/twice-and-performed", "effect_operation", "same_scope",
        "effect E {\n  op a(Unit -> Int);\n  op a(Unit -> Int);\n}\n\n"
-       + _fn("g", sig="@Unit -> @Int",
-             body="handle[E] {\n    a(@Unit) -> { resume(5) }\n  } in {\n"
-                  "    a(())\n  }")
-       + "\n" + _main("g(())"),
+       + "public fn g(@Unit -> @Int)\n  requires(true)\n  ensures(true)\n"
+         "  effects(<E>)\n{\n  E.a(())\n}\n"
+       + "\n" + _main("1"),
        "E184", surplus=("main.vera", r"^  op a\(")),
     _c("op/two-effects-share-a-name", "effect_operation", "sibling_scope",
        "effect E1 {\n  op a(Unit -> Int);\n}\n\n"
@@ -881,15 +882,17 @@ CELLS: list[Cell] = [
     # -- ability operations --------------------------------------------------
     _c("aop/twice", "ability_operation", "same_scope",
        "ability Sz<T> {\n  op size(T -> Int);\n  op size(T -> Bool);\n}"
-       "\n\n" + _main("size(1)"),
+       "\n\n" + _main("1"),
        "E184", surplus=("main.vera", r"^  op size\(")),
     # One namespace across abilities: a bare `size(1)` bound to whichever
-    # ability came first in the file (#1488 review, finding 2).
+    # ability came first in the file (#1488 review, finding 2).  A call to a
+    # user ability's operation is refused at check now (E340), so the
+    # declarations alone are the cell.
     _c("aop/two-abilities-share-a-name", "ability_operation",
        "sibling_scope",
        "ability Sz<T> {\n  op size(T -> Int);\n}\n\n"
        "ability Len<T> {\n  op size(T -> Bool);\n}\n\n"
-       + _main("size(1)"),
+       + _main("1"),
        "E184", surplus=("main.vera", r"^  op size\(")),
     # ...and the built-in abilities are in it: `eq(1, 1)` reached `Eq.eq`,
     # so `MyEq`'s operation could never be called.
@@ -903,7 +906,7 @@ CELLS: list[Cell] = [
        modules={"libaop": _module(
            "libaop", "ability Sz<T> {\n  op size(T -> Int);\n"
                      "  op size(T -> Int);\n}\n",
-           _fn("z", body="size(@Int.0)"))}),
+           _fn("z"))}),
 
     # -- handler clauses -----------------------------------------------------
     # At the base this RAN, and ran the later clause: `main` returned 1.

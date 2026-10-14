@@ -544,8 +544,10 @@ class TestAbilities:
 
         Named apart from the built-ins: `Show` and `show` are the built-in
         ability and its operation, and redeclaring either is E185 (#1433).
+        The constraint and the call resolve, and are refused only because
+        nothing implements a user-declared ability (E340, #1499).
         """
-        _check_ok("""
+        errs = _check_err("""
         ability Render<T> {
           op render(T -> String);
         }
@@ -555,7 +557,8 @@ class TestAbilities:
           ensures(true)
           effects(pure)
         { render(@T.0) }
-        """)
+        """, "user-declared ability")
+        assert [e.error_code for e in errs] == ["E340", "E340"], errs
 
     def test_unknown_ability_in_constraint(self) -> None:
         """Unknown ability in constraint → E180."""
@@ -1084,8 +1087,12 @@ private fn foo(@Unit -> @Unit)
     # --- Line 470: restore saved_resume (when resume was previously bound) ---
 
     def test_nested_handlers_resume_restore(self) -> None:
-        """Nested handlers restore outer resume binding (line 470)."""
-        _check_ok("""
+        """Nested handlers restore outer resume binding (line 470): the
+        outer clause's `resume(inner_op(()))` resolves after the inner
+        clauses were checked.  Both handlers are for user-declared effects,
+        which no handler lowers (E340), and that is the only refusal: a
+        resume left unrestored would add its own."""
+        errs = _check_err("""
 effect Inner {
   op inner_op(Unit -> Int);
 }
@@ -1109,24 +1116,22 @@ private fn foo(@Unit -> @Int)
     outer_op(())
   }
 }
-""")
+""", "cannot lower a handler")
+        assert [e.error_code for e in errs] == ["E340", "E340"], errs
 
     # --- Lines 484-485: ConcreteEffectRow merging ---
 
     def test_handler_merges_effect_rows(self) -> None:
         """Handler body adds effect to existing ConcreteEffectRow (lines 484-485)."""
         _check_ok("""
-effect Logger {
-  op log(String -> Unit);
-}
-
 private fn foo(@Unit -> @Unit)
   requires(true) ensures(true) effects(<IO>)
 {
-  handle[Logger] {
-    log(@String) -> { resume(()) }
+  handle[State<Int>](@Int = 0) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) }
   } in {
-    Logger.log("inside handler");
+    State.put(1);
     IO.print("also IO");
     ()
   }
@@ -1238,11 +1243,15 @@ public fn run(-> @Unit) requires(true) ensures(true) effects(<IO>)
 """)
 
     def test_bare_op_handled_by_enclosing_handle_accepted(self) -> None:
-        _check_ok("""
+        """No E217 for a bare op its enclosing handler handles.  The handler
+        is for a user-declared effect, which no handler lowers (E340), and
+        that is the only refusal."""
+        errs = _check_err("""
 effect Foo { op bar(Unit -> Int); }
 private fn run(@Unit -> @Int) requires(true) ensures(true) effects(pure)
 { handle[Foo] { bar(@Unit) -> { resume(0) } } in { bar(()) } }
-""")
+""", "cannot lower a handler for Foo")
+        assert [e.error_code for e in errs] == ["E340"], errs
 
     def test_bare_state_ops_accepted_unhandled(self) -> None:
         # Clause 1: State (and Exn) bare ops route to host cells even without an

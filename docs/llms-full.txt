@@ -1381,7 +1381,7 @@ exists(@Nat, array_length(@Array<Int>.0), fn(@Nat -> @Bool) effects(pure) {
 })
 ```
 
-The predicate takes exactly one parameter, the index, typed `@Nat` or `@Int` (or an alias of either), and returns `@Bool`. The index runs over every value from 0 up to the bound, so a refined parameter such as `fn(@{ @Nat | @Nat.0 < 10 } -> @Bool)` is refused (`E179`). Put the condition on the index type instead, `forall(@{ @Nat | @Nat.0 < 10 }, n, ...)`, which ranges over the values that satisfy it, or test it in the body: `P ==> Q` for `forall`, and `P && Q` for `exists`. The index type itself must be `@Nat` or `@Int`, or a refinement of one (`E186`).
+The predicate takes exactly one parameter, the index, typed `@Nat` or `@Int` (or an alias of either), and returns `@Bool`. The index runs over every value from 0 up to the bound, so a refined parameter such as `fn(@{ @Nat | @Nat.0 < 10 } -> @Bool)` is refused (`E179`). Put the condition on the index type instead, `forall(@{ @Nat | @Nat.0 < 10 }, n, ...)`, which ranges over the values that satisfy it, or test it in the body: `P ==> Q` for `forall`, and `P && Q` for `exists`. The index type itself must be `@Nat` or `@Int`, or a refinement of one (`E186`). In a generic, a type parameter is accepted as the index type but not as the predicate's parameter or result (`E179`) or as the bound's type (`E128`), whatever the generic is instantiated at: write `@Nat`, `@Int` or `@Bool` there.
 
 ## Effects
 
@@ -1721,11 +1721,11 @@ A query result is `Array<Array<Option<String>>>` — rows of cells, each cell `S
 
 **Keep the SQL literal.** The query string must be a literal (or a `string_concat` / `let` chain of literals). A SQL string built from a runtime value — a call result, a parameter, or a `\(expr)` interpolation of one — is a **compile-time error** (`E207`): that is the injection vector. (An interpolation or concatenation whose parts are all literals stays literal, so it is accepted.) Pass every runtime value through a `?` placeholder and the params array — `DB.query("SELECT * FROM users WHERE id = ?", [Some(@String.0)])`, never `DB.query(string_concat("... id = ", @String.0), [])`. A `?`-placeholder/parameter count mismatch is `E208` when both are statically known.
 
-The connection is chosen by `VERA_DB_URL` (default `sqlite::memory:`, or `sqlite:///path/to/file.db`). The effect is SQLite-only, single-connection, and un-mockable (`handle[DB]` is not supported). The browser runtime returns `Err` for every `DB` operation, and `vera compile --target wasi-p2` rejects `<DB>`.
+The connection is chosen by `VERA_DB_URL` (default `sqlite::memory:`, or `sqlite:///path/to/file.db`). The effect is SQLite-only, single-connection, and un-mockable (`handle[DB]` is refused at check, `E340`). The browser runtime returns `Err` for every `DB` operation, and `vera compile --target wasi-p2` rejects `<DB>`.
 
 ### Effect handlers
 
-Handlers eliminate an effect, converting effectful code to pure code. Only `State<T>` and `Exn<E>` handlers compile: a handler for any other effect, built-in (`IO`, `Inference`) or user-declared, passes `vera check` and `vera verify`, and then code generation drops its function (`E602`).
+Handlers eliminate an effect, converting effectful code to pure code. Only `State<T>` and `Exn<E>` handlers compile, and a handler for any other effect, built-in (`IO`, `Inference`) or user-declared, is refused at check (`E340`). A `State<T>` cell holds one word, so a `State<String>` or `State<Array<T>>` cell is refused too: wrap the value in a one-constructor `data` type (`private data Text { T(String) }`) and use `State<Text>`. A `State` clause ends in exactly one `resume(...)`, with any branch inside its argument (`resume(if c then { a } else { b })`).
 
 ```vera
 private fn run_counter(@Unit -> @Int)
@@ -1921,7 +1921,7 @@ Key rules:
 - Constraint syntax: `forall<T where Eq<T>>` — constraints go inside the angle brackets
 - Multiple constraints: `forall<T where Eq<T>, Ord<T>>`
 - Ability declarations mirror effect declarations (both use `op`)
-- User-defined abilities are declared with the same syntax and pass `vera check` and `vera verify`, but a call to one of their operations does not compile (`E613`); use the four built-in abilities, or pass an explicit function value
+- User-defined abilities are declared with the same syntax, but nothing implements one for a type, so a call to one of their operations and a `where` constraint naming one are refused at check (`E340`); use the four built-in abilities, or pass an explicit function value. An ability's operation is called bare: `Eq.eq(1, 1)` is refused (`E340`), `eq(1, 1)` is the call
 - ADT auto-derivation: `Eq` is derived **structurally** — a simple enum, or an ADT every field of which is itself `Eq` (an `Eq` primitive including `String` (compared by content), or a nested `Eq` ADT, recursively). A field with no `Eq` semantics (`Array`, `Map`, a host handle) makes the ADT non-derivable.
 - Unsatisfied constraints produce error E613
 
@@ -2486,7 +2486,7 @@ These are known limitations in the reference implementation. Most are tracked as
 | `Inference` effect has no user-defined handlers | `Inference` is always host-backed (dispatches to a real API). User-defined handlers for mocking, local models, or replay are not supported. | [#372](https://github.com/aallan/vera/issues/372) |
 | `DB` effect has no user-defined handlers | `DB` is always host-backed; `handle[DB]` for mocking or replay is not supported (shared with the other host effects). Test against `sqlite::memory:` for a hermetic real database. | [#372](https://github.com/aallan/vera/issues/372) |
 | `DB` effect is SQLite-only with positional string rows | `DB` supports SQLite only, a single connection per run, and stringly-typed positional rows (`Array<Array<Option<String>>>`). Named columns, typed cells, other backends, and transactions are not supported. | [#1143](https://github.com/aallan/vera/issues/1143) |
-| Nested handlers over the SAME cell type, with an operation in a clause body | A bare `get`/`put` in a clause body is the ENCLOSING context's operation (spec §7.5.2), but the host state intrinsics address only the innermost cell of a family — so when the enclosing handler (or the function's declared row) is the *same* `State<T>`, the outer cell cannot be reached. That shape is refused at check time (`E339`), where the operation is written, rather than silently writing the wrong cell — except inside a generic whose inner cell is `State<T>`, which matches the outer family only once `T` is instantiated: that program passes check and code generation drops the instantiation (`E602`, [#1522](https://github.com/aallan/vera/issues/1522)). Nest handlers over *different* cell types, or refine the inner cell with `with @T = expr`, which is the clause's own state override. Handler nesting is also capped at 8 levels of outward clause re-entry (the expansion is exponential in the nesting depth); past it the operation is refused at check time (`E339`). | [#1233](https://github.com/aallan/vera/issues/1233), [#1522](https://github.com/aallan/vera/issues/1522) |
+| Nested handlers over the SAME cell type, with an operation in a clause body | A bare `get`/`put` in a clause body is the ENCLOSING context's operation (spec §7.5.2), but the host state intrinsics address only the innermost cell of a family — so when the enclosing handler (or the function's declared row) is the *same* `State<T>`, the outer cell cannot be reached. That shape is refused at check time (`E339`), where the operation is written, rather than silently writing the wrong cell; a cell named by a type parameter counts as any family it can become at an instantiation, so a generic `State<T>` inside a `State<Int>` is refused whatever `T` is instantiated at. Nest handlers over *different* cell types, or refine the inner cell with `with @T = expr`, which is the clause's own state override. Handler nesting is also capped at 8 levels of outward clause re-entry (the expansion is exponential in the nesting depth); past it the operation is refused at check time (`E339`). | [#1233](https://github.com/aallan/vera/issues/1233) |
 | Browser target: `IO.sleep` freezes the tab | `IO.sleep` busy-waits the browser's main thread, so animations and paced simulations don't run meaningfully under `--target browser`. Write browser-target programs as a pure simulation core with a JS driver, or stick to terminal output. | [#609](https://github.com/aallan/vera/issues/609) |
 | Browser target: ANSI escapes render as literal text | ANSI escape sequences (cursor control, screen clear) appear as literal control characters in the DOM rather than being interpreted. Terminal-style rendering needs an ANSI-subset interpreter in `runtime.mjs`; no language change is required. | [#610](https://github.com/aallan/vera/issues/610) |
 
@@ -3320,7 +3320,7 @@ It is not a lint, so there is no configuration to get right and no suppression c
 
 Two smaller errors sit alongside it. A `?`-placeholder/parameter count mismatch is `E208` when the params array's length is statically known — written out at the call site, or reached through a `let` — while anything else defers that arity check to the driver — and numbered or named placeholder styles are rejected in favour of the single positional form (`E209`).
 
-The guarantee is exactly as wide as the query path, and no wider. Every string that reaches the database goes through `DB.query` / `DB.execute`, and the language has no other string-to-SQL route, so there is no back door to leave open. What it does not catch is a fixed query that is simply wrong: a literal `DELETE FROM users` compiles happily, because nothing in it came from outside. And the effect is SQLite-only, and a `handle[DB]` is not compiled, so a test cannot mock it.
+The guarantee is exactly as wide as the query path, and no wider. Every string that reaches the database goes through `DB.query` / `DB.execute`, and the language has no other string-to-SQL route, so there is no back door to leave open. What it does not catch is a fixed query that is simply wrong: a literal `DELETE FROM users` compiles happily, because nothing in it came from outside. And the effect is SQLite-only, and a `handle[DB]` is refused at check (`E340`), so a test cannot mock it.
 
 ## Does the compiler prove division-by-zero, out-of-bounds indexing, etc. can't happen?
 
@@ -3372,7 +3372,7 @@ The design choice to fix the ability set (rather than allowing user-defined abil
 
 HTTP is modelled as a built-in algebraic effect. `Http.get(url)` and `Http.post(url, body)` are effect operations that return `Result<String, String>`. Functions that use them must declare `effects(<Http>)` in their signature, making network access explicit and trackable in the type system.
 
-The effect system means a caller that only permits `<IO>` cannot invoke a function that performs `<Http>` — network access is a separate capability. User handlers for `Http` are not compiled: a `handle[Http]` type-checks, but code generation drops its function (`E602`), so a test cannot mock the network. The pattern for fetching and parsing JSON from an API is: call `Http.get`, then `json_parse` the response body.
+The effect system means a caller that only permits `<IO>` cannot invoke a function that performs `<Http>` — network access is a separate capability. User handlers for `Http` are not compiled: a `handle[Http]` is refused at check (`E340`), so a test cannot mock the network. The pattern for fetching and parsing JSON from an API is: call `Http.get`, then `json_parse` the response body.
 
 HTTP supports GET and POST. Custom headers, additional HTTP methods, response status codes, timeouts, and streaming are not supported.
 
@@ -3710,6 +3710,7 @@ Diagnostics carry stable codes, grouped by compiler phase; the list after the ta
 - **E337**: Builtin effect handler type-argument arity
 - **E338**: Unknown effect in an effect row
 - **E339**: Handler-clause State operation code generation cannot lower
+- **E340**: Code generation cannot lower this construct
 - **E500**: Postcondition verified false
 - **E501**: Call-site precondition violation
 - **E502**: @Nat subtraction underflow obligation not discharged

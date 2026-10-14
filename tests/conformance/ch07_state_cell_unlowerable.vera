@@ -1,0 +1,18 @@
+-- Conformance: a State cell whose value is a (ptr, len) pair is a checker
+-- error (Chapter 7, Section 7.5.1).
+-- Tests: E340 — a State<T> cell's host imports carry one word, so a
+-- State<String> cell is refused at its type argument, with a one-constructor
+-- data wrapper as the fix, instead of dropping its function at compile (#1512).
+public fn probe(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<String>](@String = "") {
+    get(@Unit) -> { resume(@String.0) },
+    put(@String) -> { resume(()) }
+  } in {
+    put("abcde");
+    string_length(get(()))
+  }
+}

@@ -1167,8 +1167,9 @@ class TestTheFixesWork:
 # ---------------------------------------------------------------------------
 
 
-# #1499: a bare call to an operation of a user-declared ability checks clean
-# and has no function for code generation to compile.
+# A bare call to an operation of a user-declared ability, which has no
+# function for code generation to compile.  Until #1499 it checked clean and
+# reached the rail; it is refused at check now (E340).
 _ABILITY_CALL = "ability Sz<T> {\n  op size(T -> Int);\n}\n\n" + _main("size(1)")
 
 
@@ -1176,34 +1177,28 @@ class TestTheGuardRail:
     """Code generation's rail for a call to no function, and spec §8.9.3,
     describe how such a call reaches code generation.
 
-    The checker refuses a call that names nothing (E200, E230, E233), but a
-    call it ACCEPTS can still name nothing code generation compiles: a user
-    ability's operation (#1499).  Neither text may say a checked program
-    never gets there.  The rail's rationale cites the issue; the spec states
-    the case as a fact, and KNOWN_ISSUES.md tracks the issue.
+    The checker refuses a call that names nothing (E200, E230, E233) and a
+    call to a user ability's operation (E340, #1499), so a call reaching the
+    rail was compiled without being checked, and both texts say so.
     """
 
-    def test_a_checked_call_reaches_the_rail_and_its_rationale_says_how(
+    def test_the_checker_refuses_the_call_and_the_rail_says_so(
         self, tmp_path: Path,
     ) -> None:
         path = _write(tmp_path, {"main.vera": _ABILITY_CALL})
         check = _cli("check", path)
-        # The premise, #1499: the call checks clean.  Once that issue is
-        # fixed this turns red, and the two texts can drop the case.
-        assert check["ok"] is True and check["warnings"] == [], check
-        run = _cli("run", path)
-        assert run["ok"] is False, run
-        (rail,) = [d for d in run["diagnostics"]
-                   if "is not defined in this module" in d["description"]]
-        assert "reached only by a program compiled without" not in (
-            rail["rationale"])
-        assert "ability" in rail["rationale"], rail
-        assert "#1499" in rail["rationale"], rail
+        assert check["ok"] is False, check
+        assert [d["error_code"] for d in check["diagnostics"]] == ["E340"]
+        unchecked = pipeline.compile(path, checked=False)
+        (rail,) = [d for d in unchecked.result.diagnostics
+                   if "is not defined in this module" in d.description]
+        assert "compiled without being checked" in rail.rationale, rail
+        assert "E340" in rail.rationale, rail
 
     def test_spec_8_9_3_names_the_checked_case(self) -> None:
         spec = (ROOT / "spec" / "08-modules.md").read_text(encoding="utf-8")
         start = spec.index("### 8.9.3 Guard Rail")
         section = spec[start:spec.index("\n## ", start)]
         assert "never calls an undefined function" not in section
-        assert "ability" in section, section
-        assert "code generation does not compile" in section, section
+        assert "ability" in section and "E340" in section, section
+        assert "compiled without being checked" in section, section

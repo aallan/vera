@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from typing import ClassVar
 
 from vera import ast, narrowing, naming
+from vera.lowering import quantifier_predicate_shape_lowerable
 from vera.monomorphize import resolve_type_alias
 from vera.types import TO_STRING_BUILTINS
 from vera.skip import AdtEqNotDerivableError, CodegenInvariantError
@@ -1812,13 +1813,19 @@ class OperatorsMixin:
 
         # Translate predicate body with counter as binding
         pred = expr.predicate
-        if len(pred.params) != 1:
+        # The backstop for rule 3 (`vera.lowering`): the checker refuses a
+        # predicate without one Int or Nat parameter written as a type name,
+        # or one typed by a type parameter (E179), so no check-green program
+        # reaches the raise.
+        if not quantifier_predicate_shape_lowerable(pred):
             raise CodegenInvariantError(  # pragma: no cover
-                "quantifier predicate must have exactly one parameter", expr)
+                "a quantifier predicate without exactly one parameter "
+                "written as a type name reached code generation; "
+                "vera.lowering.quantifier_predicate_shape_lowerable refuses "
+                "it, and the checker refuses it at the predicate (E179)",
+                expr)
         param_te = pred.params[0]
-        if not isinstance(param_te, ast.NamedType):
-            raise CodegenInvariantError(  # pragma: no cover
-                "quantifier predicate parameter is not a NamedType", expr)
+        assert isinstance(param_te, ast.NamedType)  # noqa: S101
         param_type_name = param_te.name
         counter_local = self.alloc_local("i64")
         limit_local = self.alloc_local("i64")

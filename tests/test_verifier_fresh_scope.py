@@ -26,6 +26,7 @@ from __future__ import annotations
 from vera.checker import typecheck_with_artifacts
 from vera.parser import parse_to_ast
 
+from tests import pipeline as vera_pipeline
 from tests.verifier_helpers import (
     _verify,
     _verify_err,
@@ -1062,7 +1063,9 @@ class TestUserEffectPutDisclosure:
     State's op, claimed its guard, and labeled the site "State-op"."""
 
     def test_user_effect_put_is_unguarded_effect_op_site(self) -> None:
-        errs = _verify_err("""
+        """Measured past the check, which refuses a handler for a
+        user-declared effect (E340)."""
+        src = """
 effect Store {
   op put(Nat -> Unit);
 }
@@ -1079,7 +1082,12 @@ public fn go(@Int -> @Int)
     7
   }
 }
-""", "effect-operation argument")
+"""
+        assert {d.error_code
+                for d in vera_pipeline.check(src).errors} == {"E340"}
+        result = vera_pipeline.verify(src, past_check=True).result
+        errs = [d for d in result.diagnostics if d.severity == "error"
+                and "effect-operation argument" in d.description]
         assert any(e.error_code == "E503" for e in errs)
 
     def test_builtin_state_put_keeps_its_site_label(self) -> None:
@@ -1096,8 +1104,9 @@ public fn go(@Int -> @Int)
         a bare `put` in a NESTED State handler's clause body under an
         outer user-effect handler is the USER effect's op (enclosing
         context): it must disclose as an unguarded effect-operation
-        argument, not claim the builtin State guard."""
-        result = _verify("""
+        argument, not claim the builtin State guard.  Measured past the
+        check, which refuses the user-effect handler (E340)."""
+        src = """
 effect Store {
   op put(Nat -> Unit);
 }
@@ -1118,7 +1127,10 @@ public fn go(@Int -> @Int)
     }
   }
 }
-""")
+"""
+        assert {d.error_code
+                for d in vera_pipeline.check(src).errors} == {"E340"}
+        result = vera_pipeline.verify(src, past_check=True).result
         disclosures = [
             d for d in result.diagnostics
             if "effect-operation argument" in d.description

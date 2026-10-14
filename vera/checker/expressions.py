@@ -14,6 +14,13 @@ from typing import ClassVar
 from vera import ast, naming
 from vera.checker.resolution import is_literal_only, literal_int_value
 from vera.checker.sql import resolve_array_len, resolve_literal_string
+from vera.lowering import (
+    PREDICATE_ARITY,
+    PREDICATE_PARAMETER,
+    PREDICATE_RESULT,
+    quantifier_bound_lowerable,
+    quantifier_predicate_refusals,
+)
 from vera.types import (
     AdtType,
     base_type,
@@ -1742,10 +1749,11 @@ class ExpressionsMixin:
         where it is honoured (`_check_quantifier_index`), or in the body, as
         ``P ==> ...`` for ``forall`` and ``P && ...`` for ``exists``.
 
-        A type parameter defers to the instantiation, as E128 does for the
-        bound: the generic's integer instantiations are the ones that run.
-        Checking the others where the types are known is #1506's remaining
-        work.
+        A type parameter is refused at either position (#1506): the predicate
+        lowers only at the instantiations that make it ``Int``/``Nat`` ->
+        ``Bool``, and the template answers for all of them.  The rule is
+        `vera.lowering.quantifier_predicate_refusals` (rule 3), which code
+        generation's ``_translate_quantifier`` backstops.
         """
         connective = "==>" if form == "forall" else "&&"
 
@@ -1782,23 +1790,16 @@ class ExpressionsMixin:
             ty = self._resolve_type(te)
             return None if len(self.errors) > before else ty
 
-        if len(pred.params) != 1:
-            refuse(pred, f"this one takes {len(pred.params)} parameters")
-        else:
-            param = resolve(pred.params[0])
-            if isinstance(param, RefinedType):
-                refuse(pred.params[0], "its parameter is a refinement type")
-            elif not (param is None
-                      or isinstance(param, (TypeVar, UnknownType))
-                      or param in (INT, NAT)):
-                refuse(pred.params[0],
-                       f"its parameter is {pretty_type(param)}")
+        param = (resolve(pred.params[0]) if len(pred.params) == 1 else None)
         result = resolve(pred.return_type)
-        while isinstance(result, RefinedType):
-            result = result.base
-        if not (result is None or result == BOOL
-                or isinstance(result, (TypeVar, UnknownType))):
-            refuse(pred.return_type, f"it returns {pretty_type(result)}")
+        at: dict[str, ast.Node] = {
+            PREDICATE_ARITY: pred,
+            PREDICATE_PARAMETER: (pred.params[0] if pred.params else pred),
+            PREDICATE_RESULT: pred.return_type,
+        }
+        for position, why in quantifier_predicate_refusals(
+                len(pred.params), param, result):
+            refuse(at[position], why)
 
     def _check_quantifier_bound(self, domain: ast.Expr, form: str) -> None:
         """The quantifier's domain is a numeric BOUND (spec §6.3.3:
@@ -1808,20 +1809,38 @@ class ExpressionsMixin:
         An array-typed domain previously type-checked and then died at
         codegen with a raw WASM translation error (`_translate_quantifier`
         lowers only the count form); rejecting it here keeps the
-        check-green ⇒ compilable contract."""
+        check-green ⇒ compilable contract.
+
+        The rule is `vera.lowering.quantifier_bound_lowerable` (rule 3).  A
+        bound typed by a type parameter is refused at the template (#1506):
+        the counter loop compares an ``i64``, so it lowers only at the
+        integer instantiations, and at any other the module failed to load.
+        """
         domain_ty = self._synth_expr(domain)
-        base = domain_ty
-        while isinstance(base, RefinedType):
-            base = base.base
-        if (base is None or isinstance(base, (UnknownType, TypeVar))
-                or (isinstance(base, PrimitiveType)
-                    and base.name in ("Int", "Nat"))):
-            # A TypeVar bound (`forall<T> fn ... forall(@Int, @T.0, ...)`)
-            # defers to the instantiation — rejecting it here would kill
-            # the Int/Nat instantiations that monomorphise and run
-            # correctly (PR #1202 adversarial round).  The non-integer
-            # instantiations remain a codegen-level gap tracked with the
-            # array-domain family.
+        if quantifier_bound_lowerable(domain_ty):
+            return
+        base = base_type(domain_ty) if domain_ty is not None else None
+        if isinstance(base, TypeVar):
+            self._error(
+                domain,
+                f"{form}() bound must be an integer count, got the type "
+                f"parameter {base.name}.",
+                rationale=(
+                    "A quantifier's second argument is the exclusive upper "
+                    "BOUND of the index range, which code generation "
+                    "compares as a 64-bit integer.  A bound typed by a type "
+                    "parameter is a count only at the instantiations that "
+                    "make it Int or Nat, and the template answers for all of "
+                    "them."
+                ),
+                fix=(
+                    f"Type the bound as a count: give the parameter it comes "
+                    f"from the type @Int or @Nat in place of @{base.name}, "
+                    f"or pass a length — array_length(...) — as the bound."
+                ),
+                spec_ref='Chapter 6, Section 6.3.3 "Quantified Expressions"',
+                error_code="E128",
+            )
             return
         shown = getattr(base, "name", None) or {
             "FunctionType": "a function type",

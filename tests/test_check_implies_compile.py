@@ -76,7 +76,7 @@ from vera.codegen.api import CompileResult
 from vera.errors import Diagnostic
 from vera.parser import parse_to_ast
 from vera.resolver import ModuleResolver
-from vera.skip import STATE_CLAUSE_INLINE_DEPTH_CAP
+from vera.lowering import STATE_CLAUSE_INLINE_DEPTH_CAP
 from vera.verifier import VerifyResult
 
 # A generated class instrument (tests/matrix_sample.py): a pull request runs a
@@ -966,10 +966,12 @@ QUANTIFIER_CELLS: tuple[QuantifierCell, ...] = tuple(
 )
 
 #: A type parameter at each of the quantifier's type positions, in a generic
-#: instantiated at each of these types (#1506 review).  The position defers
-#: to the instantiation (PR #1202), so every cell outside ``_TYPE_PARAM_GAPS``
-#: is accepted and runs.  The code beside each position is the one it gives a
-#: concrete type it does not admit; no cell here asserts it.
+#: instantiated at each of these types (#1506 review).  The index defers to
+#: the instantiation: code generation reads only its refinement, so it lowers
+#: at every one.  The other three are refused at the template with the code
+#: beside them (#1506): the counter is an i64 and the result an i32, so they
+#: lower only at the instantiations that make them Int/Nat -> Bool, and the
+#: checker holds no instantiation set (`vera.lowering` rule 3).
 _TYPE_PARAM_POSITIONS = {
     "index": ("E186", "forall(@T, 3, fn(@Nat -> @Bool) effects(pure) "
                       "{ true })"),
@@ -981,14 +983,8 @@ _TYPE_PARAM_POSITIONS = {
                       "{ true })"),
 }
 
-#: The instantiations that are written into a module that fails to load:
-#: a type parameter defers to the instantiation (PR #1202), and nothing
-#: checks it there yet.  Checking these where the types are known is
-#: #1506's remaining work; each cell flips when it lands.
-_TYPE_PARAM_GAPS = frozenset({
-    ("predicate result", "Int"), ("predicate result", "Nat"),
-    ("bound", "Bool"), ("bound", "String"), ("bound", "Colour"),
-})
+#: The positions code generation lowers at every instantiation.
+_TYPE_PARAM_DEFERRED = frozenset({"index"})
 _TYPE_PARAM_ARGS = {
     "Bool": "true", "Int": "5", "Nat": "5", "String": '"abc"', "Colour": "Red",
 }
@@ -1024,12 +1020,7 @@ TYPE_PARAM_CELLS: tuple[TypeParamCell, ...] = tuple(
 )
 
 _TYPE_PARAM_PARAMS = [
-    pytest.param(cell, id=cell.label, marks=pytest.mark.xfail(
-        strict=True,
-        reason="#1506: checked at the instantiation next, not yet"))
-    if (cell.position, cell.instance) in _TYPE_PARAM_GAPS
-    else pytest.param(cell, id=cell.label)
-    for cell in TYPE_PARAM_CELLS
+    pytest.param(cell, id=cell.label) for cell in TYPE_PARAM_CELLS
 ]
 
 
@@ -1053,16 +1044,22 @@ class TestQuantifierShapes:
         assert run_main(outcome) == ("ok", cell.value)
 
     @pytest.mark.parametrize("cell", _TYPE_PARAM_PARAMS)
-    def test_a_type_parameter_defers_to_the_instantiation(
+    def test_a_type_parameter_defers_only_where_it_lowers(
         self, cell: TypeParamCell, tmp_path: Path,
     ) -> None:
-        """A quantifier position typed by a type parameter is accepted, as
-        E128 accepts the bound's (PR #1202): the integer instantiations
-        run.  The ones that cannot are the strict xfails above."""
+        """A type parameter at the index is accepted and runs at every
+        instantiation; at the predicate's parameter or result, or the
+        bound, it is refused at the template with that position's code,
+        whatever the instantiation (#1506)."""
         outcome = _single_file_outcome(tmp_path, cell.source())
-        assert outcome.accepted and outcome.compiles_clean, (
+        if cell.position in _TYPE_PARAM_DEFERRED:
+            assert outcome.accepted and outcome.compiles_clean, (
+                outcome.describe())
+            assert run_main(outcome) == ("ok", 1)
+            return
+        code, _quant = _TYPE_PARAM_POSITIONS[cell.position]
+        assert [d.error_code for d in outcome.check_errors] == [code], (
             outcome.describe())
-        assert run_main(outcome) == ("ok", 1)
 
     def test_the_refinement_changes_the_answer(self) -> None:
         """Not vacuous: at the index position, a refined shape's expected
@@ -1544,7 +1541,8 @@ def corpus_outcome(path: Path) -> Outcome:
 
 _USER_EFFECT = (
     "a user-declared effect in a function's row is not compilable: the "
-    "function is the E603 skip spec §11.17 and SKILL.md name"
+    "function is the E603 skip spec §11.4.1 names, which the checker does "
+    "not apply yet (#1681)"
 )
 _UNINSTANTIATED_GENERIC = (
     "a library module compiled as the entry: its `forall` function has no "
@@ -1583,21 +1581,6 @@ KNOWN_CHECK_GREEN_REFUSALS: dict[str, tuple[tuple[str, ...], str]] = {
         ("E604",), _UNINSTANTIATED_GENERIC),
     "tests/probes/state_handlers/checker_gates/loclib.vera": (
         ("E604",), _UNINSTANTIATED_GENERIC),
-    "tests/probes/state_handlers/checker_gates/p2c_matching_refined.vera": (
-        ("E602", "E620", "missing-export", "missing-export"),
-        "an inline refinement literal as a State<T> argument is not "
-        "compilable — spec §7.5 and SKILL.md say to name it with an alias",
-    ),
-    "tests/probes/state_handlers/clause_scoping/p15_resume_in_with.vera": (
-        ("E602", "E620", "missing-export"),
-        "`resume(...)` inside a `with` state-update has no effect, and code "
-        "generation refuses it rather than dropping the resume silently",
-    ),
-    "tests/probes/state_handlers/clause_scoping/p_effparams.vera": (
-        ("E602", "missing-export"),
-        "a handler for a user-declared effect: only State<T> and Exn<E> "
-        "handlers lower (user effects are the E603 limitation)",
-    ),
     "tests/probes/state_handlers/old_state/p15_old_state_nested_alias.vera": (
         ("E602", "E602", "missing-export", "missing-export"),
         "a `let` of a parameterised alias (`let @Id<Nat>`) has no WASM "
@@ -1894,9 +1877,10 @@ POSITION_CELLS: tuple[PositionCell, ...] = tuple(
 
 
 def _gate_refused(outcome: Outcome) -> bool:
-    """Whether code generation's own clause-op gate refused ``f``."""
+    """Whether code generation's own clause-op gate refused ``f``: an
+    internal error (E699), since the gate is the backstop for E339."""
     return any(
-        d.error_code == "E602" and "'f'" in d.description
+        d.error_code == "E699" and "'f'" in d.description
         and any(m in d.description for m in _GATE_MARKERS)
         for d in outcome.drops
     )

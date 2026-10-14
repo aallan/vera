@@ -2258,10 +2258,9 @@ class CrossModuleMixin:
             "The WASM code generator compiles imported functions into the "
             "same binary.  An unresolved call has no target to compile "
             "against.  The checker refuses a call that names nothing (E200, "
-            "E230, E233), so a call reaching this was either compiled "
-            "without being checked, or accepted by the checker as something "
-            "code generation does not yet compile as a call: a bare call to "
-            "an operation of a user-declared ability is one (#1499)."
+            "E230, E233), and a call to an operation of a user-declared "
+            "ability (E340), so a call reaching this was compiled without "
+            "being checked."
         )
         source_line = self._get_source_line(loc.line)
         # A module-qualified call (`m::f`) and a bare call (`f`) fail for

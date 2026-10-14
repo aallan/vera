@@ -516,16 +516,6 @@ def wasm_representation(t: Type) -> str | None:
     return "unsupported"
 
 
-#: A `State<T>` cell's value crosses four host imports — `state_get_X (result W)`,
-#: `state_put_X (param W)` and the two scope markers — whose signatures carry
-#: ONE word.  So a `(ptr, len)` pair cannot be a cell however well the write
-#: guard could bind it: the value has no way through the import, which is a
-#: property of the cell's ABI rather than of the guard.  `vera/codegen`
-#: refuses one at registration and this is the rule both sides read, so the
-#: obligation stream cannot record a runtime check for a write in a function
-#: code generation never emits.  The rule is :func:`state_cell_lowerable`.
-
-
 def is_pair_represented(ty: Type) -> bool:
     """True if a value of *ty* occupies TWO WASM locals — a `(ptr, len)`
     pair.
@@ -563,20 +553,6 @@ def has_no_wasm_representation(ty: Type) -> bool:
     if isinstance(base, AdtType) and base.name == "Future" and base.type_args:
         return has_no_wasm_representation(base.type_args[0])
     return base is NEVER
-
-
-def state_cell_lowerable(*, representable: bool, pair: bool) -> bool:
-    """Whether code generation registers a `State<T>` cell whose value is
-    *representable* at all and is or is not a *pair* (#1439).
-
-    THE rule, once, for two components that answer its inputs with different
-    oracles — `_register_state_cell` from the cell's TYPE EXPRESSION through
-    `_type_expr_to_wasm_type`, the verifier from the checker's semantic type
-    through :func:`erases_to_unit` and :func:`is_pair_represented`.  What
-    legitimately differs is the oracle; what must not is the answer, because
-    the verifier's answer is a claim about the backend's.
-    """
-    return representable and not pair
 
 
 def erases_to_unit(ty: Type) -> bool:
