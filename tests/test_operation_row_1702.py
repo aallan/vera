@@ -30,7 +30,13 @@ its own, with no `State` cell or `Exn` tag from its row, so a `State` or
 handler for its effect is written inside the closure, around it; a handler
 around the closure does not count, since the closure can be applied outside
 it.  A call rule 7 refuses is not also held to the row, nor counted by the
-purity check.  A refused call keeps the result type its signature fixes,
+purity check.  A quantifier's predicate is a closure literal code
+generation inlines into the function around the quantifier: its body is
+under its own row, the quantifier is held to that row where it applies it
+(E125, its effects counted for the purity check, as `apply_fn` is), and
+rule 7 does not read it.  A function's signature, a `where` helper's
+included, is checked where no row is in force, its body under its own row.
+A refused call keeps the result type its signature fixes,
 and a `get` no row entry or handler gives an instance to is typed unknown,
 so a use of its result is no second error.  An operation of a user-declared
 effect is E340's (rule 6, #1699), and a refinement predicate checked where
@@ -45,14 +51,21 @@ arm, a `where` helper's body, a handler's body (for the operation's effect
 and for another), a handler's clause, a closure's body inside a function
 whose row is `pure`, names the effect or names another, a closure's body
 inside a handler for the effect, and a closure with that handler written
-inside it.  Each cell's expectation is the rule above, in `Cell.expected`:
-the codes, exactly one for a refused cell, where it is reported, and E122's
-and rule 7's messages.  The negative space is every cell the rules accept:
-it checks with no diagnostic and verifies with every obligation proved, and
-each accepted closure compiles and runs.  The reported programs, rule 7's
-base instances, the fix each new refusal names and a killer for each
-mechanism's mutant are unparametrised tests, which every pull request runs.
+inside it; and, in `test_quantifier_cell`, a quantifier's predicate whose
+row is each declared row, under a function whose row is `pure`, names the
+effect, or names both.  Each cell's expectation is the rule above, in
+`Cell.expected` and the quantifier test's own statement of it: one code
+for each judgement that refuses (an operation's, and a quantifier's
+application of its predicate), where each is reported, and E122's and rule
+7's messages.  The negative space is every cell the rules accept: it checks
+with no diagnostic and verifies with every obligation proved, each accepted
+closure compiles and runs, and each accepted quantifier compiles.  The
+reported programs, rule 7's base instances, a helper's signature under a
+`pure` and an `<IO>` parent, the fix each new refusal names and a killer
+for each mechanism's mutant are unparametrised tests, or parametrised
+within the sampler's floor, which every pull request runs.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -440,6 +453,81 @@ def test_rule_7_is_the_call_s_one_refusal(row: str) -> None:
         ("E340", *_locate(source, "put(@Int.0)"))]
 
 
+_REFINED = "@{ @Int | Random.random_int(1, 1) > 0 }"
+
+
+@pytest.mark.parametrize("row", ("pure", "<IO>"))
+@pytest.mark.parametrize("position", ("parameter", "return"))
+@pytest.mark.parametrize("body", ("clean", "performs"))
+def test_a_helper_s_signature_is_held_to_no_row(
+    row: str, position: str, body: str,
+) -> None:
+    """A `where` helper's signature is checked where no function's row is
+    in force, as a top-level signature is, so an operation in its
+    refinement predicate is held to no row under a `pure` parent and an
+    `<IO>` one alike, while the helper's body is held to the helper's own
+    row (PR #1703 review: the predicate was held to the parent's row, which
+    named the parent in its fix)."""
+    param = _REFINED if position == "parameter" else "@Int"
+    result = _REFINED if position == "return" else "@Int"
+    performed = "Random.random_int(1, 1);\n    " if body == "performs" else ""
+    source = (
+        _fn("f", row, "  h(@Int.0)").rstrip("\n")
+        + f"\nwhere {{\n  fn h({param} -> {result})\n    requires(true)\n"
+        f"    ensures(true)\n    effects({row})\n  {{\n    {performed}1\n"
+        "  }\n}\n")
+    checked = pipeline.check(source)
+    if body == "clean":
+        assert not checked.diagnostics, [
+            (d.error_code, d.description) for d in checked.diagnostics]
+        return
+    if row == "pure":
+        assert _placed(checked) == [("E122", *_locate(source, "fn h("))]
+        return
+    assert _placed(checked) == [
+        ("E125", *_locate(source, "Random.random_int(1, 1);"))]
+    assert "the effects clause of 'h'" in checked.errors[0].fix
+
+
+def _quantified(outer: str, pred: str, body: str, *, lead: str = "") -> str:
+    """A `forall` in a function whose row is *outer*, over a predicate
+    whose row is *pred* and whose body is *body*, after the statement
+    *lead*."""
+    return ("public fn f(@Int -> @Bool)\n  requires(true)\n  ensures(true)\n"
+            f"  effects({outer})\n{{\n{lead}"
+            f"  forall(@Int, 3, fn(@Int -> @Bool) effects({pred}) {{\n"
+            f"    {body}\n  }})\n}}\n")
+
+
+def test_repro_a_quantifier_applies_its_predicate_where_it_is_written() -> None:
+    """Code generation inlines a quantifier's predicate into the function
+    around it, so the quantifier performs the predicate's effects there:
+    it is held to the predicate's row as `apply_fn` is (E125, and the
+    effects counted for the purity check).  At the base the predicate's
+    operations were the function's, and this `pure` function was E122."""
+    source = _quantified("pure", "<IO>", 'IO.print("x");\n    true')
+    assert _placed(pipeline.check(source)) == [
+        ("E125", *_locate(source, "forall(")),
+        ("E122", *_locate(source, "fn f("))]
+    lacking = _quantified("<Random>", "<IO>", 'IO.print("x");\n    true')
+    checked = pipeline.check(lacking)
+    assert _placed(checked) == [("E125", *_locate(lacking, "forall("))]
+    assert checked.errors[0].description == (
+        "forall: its predicate requires effects(<IO>) but call site only "
+        "allows effects(<Random>).")
+
+
+def test_a_quantifier_predicate_s_cell_operation_lowers() -> None:
+    """Rule 7 reads lifted closures only: a quantifier's predicate is
+    compiled with the function around it, whose cell its `get` reads (it
+    ran at the base)."""
+    source = _quantified("<State<Int>>", "<State<Int>>", "get(()) > @Int.0",
+                         lead="  put(@Int.0);\n")
+    _holds_clean(source)
+    assert pipeline.run(source, fn="f", args=[5]).value in (1, True)
+    assert pipeline.run(source, fn="f", args=[1]).value in (0, False)
+
+
 # =====================================================================
 # The fix each new refusal names compiles clean
 # =====================================================================
@@ -493,6 +581,15 @@ def test_the_fix_of_an_operation_outside_a_closure_s_row() -> None:
     _holds_clean(fixed)
     ran = pipeline.run(fixed, fn="f", args=[4])
     assert ran.ok and ran.value == 3, ran
+
+
+def test_the_fix_of_a_quantifier_under_a_row_that_lacks_its_predicate_s() -> None:
+    source = _quantified("<Random>", "<IO>", 'IO.print("x");\n    true')
+    fix = _only_fix(source, "E125")
+    assert fix.startswith("Add IO to the effects clause of 'f': "), fix
+    row = _row_in(fix.split(".  Or ")[0])
+    assert row == "effects(<IO, Random>)", fix
+    _holds_clean(source.replace("effects(<Random>)", row))
 
 
 def test_the_fix_of_a_pure_closure_that_performs_an_effect() -> None:
@@ -829,6 +926,41 @@ class TestOperationRow:
         sites = {(c.op.effect, c.site) for c in _CELLS}
         assert {(e, s) for e in HANDLED_EFFECTS
                 for s in _CLOSURE_SITES} <= sites
+
+    @pytest.mark.parametrize("outer", ("pure", "<X>", "<X, Y>"))
+    @pytest.mark.parametrize("pred", _DECLARED_ROWS)
+    @pytest.mark.parametrize("op", _OPS, ids=lambda o: o.label)
+    def test_quantifier_cell(self, op: Op, pred: str, outer: str) -> None:
+        """A quantifier's predicate, a closure literal code generation
+        inlines: its operation is held to the predicate's own row (E125 at
+        the call, E122 at a `pure` predicate), and the quantifier, which
+        applies it in place, to that row (E125 at the quantifier, its
+        effects counted for the function's purity check), each judgement
+        one code; rule 7 does not read it, so an accepted cell's `State` or
+        `Exn` operation compiles with the function's cell or tag."""
+        source = _quantified(_row(outer, op), _row(pred, op),
+                             f"{op.call};\n    true")
+        entries = {"pure": set(), "<X>": {"X"}, "<Y>": {"Y"},
+                   "<X, Y>": {"X", "Y"}}
+        expected: list[tuple[str, int, int]] = []
+        if not _names(pred):
+            expected.append(
+                ("E122", *_locate(source, "fn(@Int -> @Bool)"))
+                if pred == "pure" else
+                ("E125", *_locate(source, op.call)))
+        if not entries[pred] <= entries[outer]:
+            expected.append(("E125", *_locate(source, "forall(")))
+        if outer == "pure" and entries[pred]:
+            expected.append(("E122", *_locate(source, "fn f(")))
+        if expected:
+            assert _placed(pipeline.check(source)) == expected, source
+            return
+        _holds_clean(source)
+        result = pipeline.compile(source).result
+        assert not [d for d in result.diagnostics
+                    if d.severity == "error"
+                    or (d.error_code or "").startswith("E6")], (
+            result.diagnostics, source)
 
     @pytest.mark.parametrize("cell", _CELLS, ids=lambda c: c.label)
     def test_cell(self, cell: Cell) -> None:

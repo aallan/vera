@@ -262,7 +262,7 @@ Anonymous functions:
 - MUST declare their effects
 - Can capture bindings from enclosing scopes (closures)
 
-A closure's body is checked under the effects the closure declares, not the enclosing function's (§7.4): a `pure` closure that performs an effect is a checker error at the closure (`E122`), and the enclosing function is held to the closure's row where it applies the closure, not where it writes it. The reference implementation compiles a closure as a function of its own, apart from the handlers around it, so a `State` or `Exn` operation in a closure's body is lowered only under a handler for the effect written inside the closure, and one outside such a handler, a handler around the closure included, is a checker error at the operation (`E340`).
+A closure's body is checked under the effects the closure declares, not the enclosing function's (§7.4): a `pure` closure that performs an effect is a checker error at the closure (`E122`), and the enclosing function is held to the closure's row where it applies the closure, not where it writes it. The reference implementation compiles a closure as a function of its own, apart from the handlers around it, so a `State` or `Exn` operation in a closure's body is lowered only under a handler for the effect written inside the closure, and one outside such a handler, a handler around the closure included, is a checker error at the operation (`E340`). A quantifier's predicate is the exception: it is compiled into the function around the quantifier (Chapter 11, Section 11.13.2), whose cells and tags its operations reach.
 
 ### 5.7.1 Closure Capture
 

@@ -917,12 +917,15 @@ KNOWN_MULTI_SITE_ERROR_CODES: dict[str, frozenset[tuple[str, str]]] = {
          "ExpressionsMixin._refuse_pure_closure_effects"),
     }),
     # Call-site effect subeffecting: a named function call, an
-    # apply_fn-applied closure value and an effect operation (#1702) are
-    # three call SHAPES for one rule.
+    # apply_fn-applied closure value, an effect operation and a quantifier
+    # applying its inlined predicate (#1702) are four call SHAPES for one
+    # rule.
     "E125": frozenset({
         ("vera/checker/calls.py", "CallsMixin._check_apply_fn"),
         ("vera/checker/calls.py", "CallsMixin._check_fn_call_with_info"),
         ("vera/checker/calls.py", "CallsMixin._refuse_operation_outside_row"),
+        ("vera/checker/expressions.py",
+         "ExpressionsMixin._apply_quantifier_predicate"),
     }),
     # A module-qualified call to a function the named module does not
     # declare: an imported module's path and the file's own path (#1558)

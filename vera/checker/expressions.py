@@ -25,6 +25,7 @@ from vera.types import (
     base_type,
     BOOL,
     BYTE,
+    canonical_type_name,
     ConcreteEffectRow,
     contains_fresh_typevar,
     contains_typevar,
@@ -33,6 +34,7 @@ from vera.types import (
     FLOAT64,
     FunctionType,
     INT,
+    is_effect_subtype,
     is_subtype,
     NAT,
     literal_meets_nat,
@@ -1402,10 +1404,15 @@ class ExpressionsMixin:
             self.env.bind(tname, param_ty, "param")
 
         # `vera.lowering` rule 7: the handlers written inside this body are
-        # the ones its State and Exn operations lower under.
-        self._closure_handler_marks.append(len(self._handled_effects))
+        # the ones its State and Exn operations lower under.  A quantifier's
+        # predicate is inlined into the function around it, not lifted, so
+        # it is no closure the rule reads.
+        lifted = id(expr) not in self._inlined_closures
+        if lifted:
+            self._closure_handler_marks.append(len(self._handled_effects))
         body_type = self._synth_expr(expr.body, expected=ret_type)
-        self._closure_handler_marks.pop()
+        if lifted:
+            self._closure_handler_marks.pop()
         self.env.pop_scope()
 
         performed = self._effect_ops_used
@@ -1777,7 +1784,7 @@ class ExpressionsMixin:
         self._check_quantifier_index(expr.binding_type, "forall")
         self._check_quantifier_bound(expr.domain, "forall")
         self._check_quantifier_predicate(expr.predicate, "forall")
-        self._synth_expr(expr.predicate)
+        self._apply_quantifier_predicate(expr, "forall")
         return BOOL
 
     def _check_exists_expr(self, expr: ast.ExistsExpr) -> Type | None:
@@ -1786,8 +1793,63 @@ class ExpressionsMixin:
         self._check_quantifier_index(expr.binding_type, "exists")
         self._check_quantifier_bound(expr.domain, "exists")
         self._check_quantifier_predicate(expr.predicate, "exists")
-        self._synth_expr(expr.predicate)
+        self._apply_quantifier_predicate(expr, "exists")
         return BOOL
+
+    def _apply_quantifier_predicate(
+        self, expr: ast.ForallExpr | ast.ExistsExpr, form: str,
+    ) -> None:
+        """Check a quantifier's predicate, and hold the quantifier to its
+        row (#1702).
+
+        The predicate is a closure literal, checked as one: its body under
+        its own row.  Code generation inlines it into the loop it lowers the
+        quantifier to (spec §11.13.2), so the quantifier performs the
+        predicate's effects where it is written, and is held to the
+        predicate's row as an `apply_fn` of it would be: the row in force
+        must permit it (E125), and its effects count for the purity check
+        (E122).  Inlined, the predicate is compiled with the function around
+        it, so `vera.lowering` rule 7 does not read it: its `State` and
+        `Exn` operations reach that function's cell and tag."""
+        self._inlined_closures.add(id(expr.predicate))
+        pred_ty = self._synth_expr(expr.predicate)
+        self._inlined_closures.discard(id(expr.predicate))
+        if not isinstance(pred_ty, FunctionType):
+            return
+        effect = pred_ty.effect
+        if isinstance(effect, ConcreteEffectRow):
+            for ei in effect.effects:
+                self._effect_ops_used.add(ei.name)
+        row = self.env.current_effect_row
+        if row is None or is_effect_subtype(effect, row):
+            return
+        allowed = row.effects if isinstance(row, ConcreteEffectRow) else frozenset()
+        missing = (effect.effects - allowed
+                   if isinstance(effect, ConcreteEffectRow) else frozenset())
+        target, declared = self._row_owner or (
+            "the enclosing function's effects clause", row)
+        entries = (declared.effects if isinstance(declared, ConcreteEffectRow)
+                   else frozenset())
+        row_var = (declared.row_var
+                   if isinstance(declared, ConcreteEffectRow) else None)
+        wanted = pretty_effect(ConcreteEffectRow(entries | missing, row_var))
+        shown = ", ".join(sorted(
+            canonical_type_name(e.name, e.type_args or None) for e in missing))
+        self._error(
+            expr,
+            f"{form}: its predicate requires {pretty_effect(effect)} but call "
+            f"site only allows {pretty_effect(row)}.",
+            rationale=(
+                "A quantifier applies its predicate in place, to each value of "
+                "its index, so it performs the predicate's effects where it is "
+                "written: the call site must permit all of them "
+                "(subeffecting), as for apply_fn."
+            ),
+            fix=(f"Add {shown} to {target}: {wanted}.  Or write a predicate "
+                 f"whose effects the call site permits."),
+            spec_ref='Chapter 7, Section 7.8 "Effect Subtyping"',
+            error_code="E125",
+        )
 
     def _check_quantifier_index(self, te: ast.TypeExpr, form: str) -> None:
         """The index type is ``Int`` or ``Nat``, or a refinement of one

@@ -608,6 +608,8 @@ def closure_operation_lowerable(
     under it lowers.  A handler around the closure does not: the closure is
     compiled apart from it, and can be applied outside it.  The other
     built-in effects' operations are the host's, and lower in a closure as
-    anywhere.
+    anywhere.  A quantifier's predicate is no closure here: code generation
+    inlines it into the function around the quantifier (spec §11.13.2),
+    whose cell and tag its operations reach.
     """
     return effect_name not in HANDLED_EFFECTS or handled_in_closure

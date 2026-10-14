@@ -426,6 +426,11 @@ class TypeChecker(
         # where its body begins, so the handlers written inside it are the
         # entries above the mark.  Empty outside every closure.
         self._closure_handler_marks: list[int] = []
+        # The `id`s of the closure literals being checked as a quantifier's
+        # predicate, which code generation inlines into the function around
+        # the quantifier rather than lifting (spec §11.13.2): no closure
+        # rule 7 reads.
+        self._inlined_closures: set[int] = set()
         # #973: canonical type names of the handler state(s) whose HANDLED
         # BODY is currently being checked.  State is in scope as a slot only in
         # handler clauses, never the handled body — the body reaches state
@@ -1242,7 +1247,14 @@ class TypeChecker(
         # 2b. Check refinement predicates written directly in the signature —
         # a refinement can reach a param / return via a type argument, e.g.
         # `@Array<{ @Int | @Int.0 > 0 }>` (#861).  Type params are already in
-        # scope from step 1.
+        # scope from step 1.  A signature is checked where no function's row
+        # is in force (#1702): a top-level one is checked between functions,
+        # and a `where` helper's, checked after its parent's body, would be
+        # held to the parent's row.  Step 3 installs this function's own.
+        self.env.current_effect_row = None
+        self.env.current_effect_order = ()
+        self._effect_ops_used = set()
+        self._row_owner = None
         for param_te in decl.params:
             self._check_refinement_predicates(param_te)
         self._check_refinement_predicates(decl.return_type)
