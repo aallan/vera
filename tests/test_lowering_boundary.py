@@ -490,6 +490,19 @@ def test_repro_1681_user_operation_through_a_row_variable() -> None:
     ]
 
 
+def test_a_pure_function_calling_a_user_operation_is_refused_once() -> None:
+    """Under a pure row the call is E340 alone: declaring the effect would
+    not help, since nothing lowers it, so the purity check (E122) does not
+    count a call the operation leg refused.  A built-in operation there is
+    E122 alone, as at the base."""
+    source = _REPRO_USER_OPERATION.replace("effects(<IO>)", "effects(pure)")
+    assert _placed(vera_pipeline.check(source).errors) == [
+        ("E340", *_locate(source, "Counter.tick"))]
+    builtin = source.replace("Counter.tick(())", "Random.random_int(1, 1)")
+    assert [d.error_code for d in vera_pipeline.check(builtin).errors] == [
+        "E122"]
+
+
 def test_repro_1681_user_operation_under_a_row_without_it() -> None:
     """`Counter.tick(())` under `effects(<IO>)`: check and verify passed,
     and code generation emitted a call to a host import no host provides.
@@ -1510,15 +1523,20 @@ def _op_source(row: str, use: str, enclosing: str, op: str) -> str:
 def _op_refusal(row: str, use: str, enclosing: str,
                 op: str) -> tuple[str, ...] | None:
     """The rule: a user-declared effect's operation is refused at the call
-    (E340) under any row that does not name the effect, a pure one too.  A
-    pure row's function also draws its E122, beside the E125 that applying a
-    closure whose row names `IO` gets there, as at the base.  A built-in
-    effect's operation under `<IO>` is accepted, as at the base (#1702)."""
+    (E340) under any row that does not name the effect, a pure one too, and
+    that is the call's one refusal: the purity check does not count it.  A
+    built-in effect's operation under a pure row is the function's E122, and
+    applying a closure whose row names `IO` there is E125 and adds `IO` to
+    the E122, as at the base.  A built-in effect's operation under `<IO>` is
+    accepted, as at the base (#1702)."""
     codes: tuple[str, ...] = ("E340",) if op == "user" else ()
     if enclosing == "pure":
-        if use == "applied" and row.startswith("IO"):
+        applies_io = use == "applied" and row.startswith("IO")
+        if applies_io:
             codes += ("E125",)
-        return codes + ("E122",)
+        if op == "built-in" or applies_io:
+            codes += ("E122",)
+        return codes
     return codes or None
 
 
@@ -1641,7 +1659,7 @@ class TestEffectRow:
         placed = _placed(vera_pipeline.check(source).errors)
         if op == "user":
             assert ("E340", *_locate(source, "Counter.tick")) in placed
-        if enclosing == "pure":
+        if "E122" in refused:
             # E122 at the function, as at the base.
             assert ("E122", *_locate(source, "forall<E> fn f")) in placed
 

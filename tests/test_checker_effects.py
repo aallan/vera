@@ -58,15 +58,14 @@ private fn greet(@String -> @Unit)
             ("E340", 7)], [e.description for e in errs]
 
     def test_pure_calling_effectful_error(self) -> None:
+        """A pure function performing an operation is E122.  Over a built-in
+        effect: a user-declared effect's operation is refused at the call
+        (E340), which the purity check then does not count (#1681)."""
         _check_err("""
-effect Logger {
-  op log(String -> Unit);
-}
-
 private fn bad(@String -> @Unit)
   requires(true) ensures(true) effects(pure)
 {
-  Logger.log(@String.0)
+  IO.print(@String.0)
 }
 """, "Pure function")
 

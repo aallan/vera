@@ -2563,7 +2563,7 @@ class CallsMixin:
 
     def _check_operation_lowerable(
         self, op_info: OpInfo, node: ast.Node,
-    ) -> None:
+    ) -> bool:
         """E340 (`vera.lowering` rule 6, #1681): an operation of a
         user-declared effect, called where the row in force does not name
         the effect.
@@ -2572,18 +2572,19 @@ class CallsMixin:
         it at the handler, which adds the effect to the row its body is
         checked under, so a call under either is not refused twice.  Every
         other call is refused here: under a row that does not name it, a
-        pure one too (whose function's E122 reports the operation beside
-        it), and where no function's row is in force, a refinement predicate
-        of an alias, a data field or a signature, which is checked before
-        its function installs its row.  A bare call outside a handler is
-        E217's."""
+        pure one too, and where no function's row is in force, a refinement
+        predicate of an alias, a data field or a signature, which is checked
+        before its function installs its row.  Returns whether it refused;
+        a refused call is not one the purity check (E122) counts, so the
+        call gets one refusal, the one that says nothing lowers it.  A bare
+        call outside a handler is E217's."""
         effect = op_info.parent_effect
         if effect_operation_lowerable(effect):
-            return
+            return False
         row = self.env.current_effect_row
         if isinstance(row, ConcreteEffectRow) and any(
                 e.name == effect for e in row.effects):
-            return
+            return False
         self._error(
             node,
             f"Code generation cannot lower the operation "
@@ -2609,6 +2610,7 @@ class CallsMixin:
             spec_ref='Chapter 7, Section 7.2 "Effect Declarations"',
             error_code="E340",
         )
+        return True
 
     @_reported_at_the_stage
     def _check_qualified_call(self, expr: ast.QualifiedCall) -> Type | None:
@@ -2616,8 +2618,8 @@ class CallsMixin:
         # Try as effect operation
         op_info = self.env.lookup_effect_op(expr.name, expr.qualifier)
         if op_info:
-            self._effect_ops_used.add(op_info.parent_effect)
-            self._check_operation_lowerable(op_info, expr)
+            if not self._check_operation_lowerable(op_info, expr):
+                self._effect_ops_used.add(op_info.parent_effect)
             return self._check_op_call(op_info, expr.args, expr)
 
         # #309 (Cortex #1147 Finding 1): op resolution failed, but codegen
