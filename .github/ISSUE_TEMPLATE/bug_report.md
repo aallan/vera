@@ -10,11 +10,19 @@ assignees: ''
 
 A clear description of the bug.
 
-## Class and Instances
+## Mechanism, Class and Instances
 
-Which class of input does the mechanism get wrong? List the known instances as a checklist — a further sighting of the same mechanism extends this issue rather than opening a new one.
+Which rule produces the wrong result, and which class of input does it get wrong? Search the open `bug` issues for the mechanism first: a further sighting of an open class is a checklist line on that issue, not a new one. List the known instances as a checklist.
 
 - [ ]
+
+## Effect
+
+Silent (a wrong value, a wrong proof, or a wrong program accepted, with every gate green) or loud (a failure the user sees: a compile or load error after a green check, a false refusal, a wrong message or location).
+
+## Reach
+
+Where a program written to accomplish something meets this shape: a file under `examples/` or `tests/conformance/`, a VeraBench task, an idiom the documentation teaches, or "none found" after looking.
 
 ## Steps to Reproduce
 
