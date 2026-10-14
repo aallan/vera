@@ -241,11 +241,11 @@ _FLOAT_CONVERSIONS: dict[str, _FloatConversion] = {
 _PREDICATE_FIX = (
     "A refinement predicate is evaluated on any value of its base type, so "
     "each operation in it must be defined for all of them.  Evaluate the "
-    "operation only where it is defined, inside an `if` in the predicate — "
-    "`{ @Nat | if @Nat.0 >= 5 then { @Nat.0 - 5 > 1 } else { false } }` — "
-    "or rewrite the predicate without it (`@Nat.0 > 6`).  A condition "
-    "written beside the operation with `&&` or `||` does not protect it "
-    "yet: the reference compiler currently evaluates both operands (#1501)."
+    "operation only where it is defined, behind the condition it needs — "
+    "`{ @Int | @Int.0 != 0 && 100 / @Int.0 > 1 }` evaluates the division "
+    "only where the divisor is not zero, as an `if` in the predicate "
+    "evaluates only the branch its condition selects — or rewrite the "
+    "predicate without it (`@Int.0 >= 1 && @Int.0 <= 50`)."
 )
 
 
@@ -4090,11 +4090,10 @@ class ContractVerifier:
         each use site instead would repeat the one obligation per use (R1's
         cost), and a type used nowhere would never be checked.
 
-        The premises include the predicate's own control flow: an `if` in the
-        predicate is lazy in the compiled guard, so its branches are walked
-        under their conditions.  `&&` and `||` are NOT: code generation
-        evaluates both operands (`i32.and` / `i32.or`), so the left operand
-        is no premise of the right one, here or anywhere else.
+        The premises include the predicate's own control flow, which the
+        compiled guard evaluates lazily: an `if`'s branches are walked under
+        its condition, and the right operand of `&&`, `||` and `==>` under
+        the left one (§4.6, #1501).
         """
         for site in refinement_declarations(program):
             self._verify_refinement_predicate(site)
@@ -5013,10 +5012,12 @@ class ContractVerifier:
                 smt._path_conditions.append(fact)
 
         # 5.8. #801: divisions / moduli / array indexes inside an ENSURES
-        #      predicate trap at runtime too (contracts evaluate eagerly, no
-        #      short-circuit), so they carry the same primitive-op safety
-        #      obligations as the body (#680).  An ensures runs after the body,
-        #      where every requires holds, so it uses the full assumption set
+        #      predicate trap at runtime too, wherever the compiled check
+        #      evaluates them (a right operand of `&&`, `||` or `==>` only
+        #      where the left one does not decide the result, #1501), so they
+        #      carry the same primitive-op safety obligations as the body
+        #      (#680).  An ensures runs after the body, where every requires
+        #      holds, so it uses the full assumption set
         #      and binds `@result` to the body result.  (Requires predicates are
         #      walked earlier, in the precondition-collection loop, with prefix
         #      semantics — CR #803.)  Reset opaque shadows: an ensures predicate
@@ -7565,7 +7566,8 @@ class ContractVerifier:
         #   Block              → let / destructure values, statements, tail,
         #                        with each binding pushed on the env and
         #                        each bare assert/assume's fact on the path
-        #   BinaryExpr         → recurse operands
+        #   BinaryExpr         → recurse operands, the right of `&&`,
+        #                        `||` and `==>` under the left (#1501)
         #   UnaryExpr          → recurse operand
         #   MatchExpr          → scrutinee; arm bodies in the arm's env
         #   HandleExpr         → state init + body (enclosing env); clause
@@ -7698,10 +7700,16 @@ class ContractVerifier:
             return
 
         if isinstance(expr, ast.BinaryExpr):
+            # #1501: the right operand of `&&`, `||` and `==>` runs only
+            # where the left one does not decide the result.
             self._walk_for_calls(match, expr.left, z3_path_conds,
                                  results, smt, slot_env)
-            self._walk_for_calls(match, expr.right, z3_path_conds,
-                                 results, smt, slot_env)
+            premise = smt.short_circuit_premise(expr, slot_env)
+            self._walk_for_calls(
+                match, expr.right,
+                z3_path_conds if premise is None
+                else [*z3_path_conds, premise],
+                results, smt, slot_env)
             return
 
         if isinstance(expr, ast.UnaryExpr):
@@ -7986,7 +7994,9 @@ class ContractVerifier:
         # every nested trapping primitive op.)
         #
         # Handled (explicit isinstance branch — check and/or recurse):
-        #   BinaryExpr         → div/mod by-zero check (E526); recurse operands
+        #   BinaryExpr         → div/mod by-zero check (E526); recurse
+        #                        operands, the right of `&&`, `||` and `==>`
+        #                        under the left (#1501)
         #   UnaryExpr          → recurse operand
         #   IndexExpr          → array-index bounds check (E527); recurse
         #   ArrayLit           → recurse elements
@@ -8249,13 +8259,16 @@ class ContractVerifier:
 
         if isinstance(expr, ast.BinaryExpr):
             # Recurse first so nested subtractions are checked even
-            # when the outer expression isn't @Nat-typed.
+            # when the outer expression isn't @Nat-typed.  The right operand
+            # of `&&`, `||` and `==>` runs only where the left one does not
+            # decide the result, so it is walked under that premise (#1501).
             self._walk_for_primitive_op_obligations(
                 decl, expr.left, smt, slot_env, assumptions,
             )
-            self._walk_for_primitive_op_obligations(
-                decl, expr.right, smt, slot_env, assumptions,
-            )
+            with smt.premise(smt.short_circuit_premise(expr, slot_env)):
+                self._walk_for_primitive_op_obligations(
+                    decl, expr.right, smt, slot_env, assumptions,
+                )
             if self._is_guarded_nat_subtraction(expr):
                 # Both operands are @Nat-typed (#520).  A literal operand
                 # is an `Int`, so `@Nat.0 - 1` and `0 - 1` are `@Int`
@@ -9705,12 +9718,15 @@ class ContractVerifier:
             return
 
         if isinstance(expr, ast.BinaryExpr):
+            # #1501: the right operand of `&&`, `||` and `==>` is walked
+            # under the left one, which decides whether it runs.
             self._walk_for_nat_binding_obligations(
                 decl, expr.left, smt, slot_env, assumptions,
             )
-            self._walk_for_nat_binding_obligations(
-                decl, expr.right, smt, slot_env, assumptions,
-            )
+            with smt.premise(smt.short_circuit_premise(expr, slot_env)):
+                self._walk_for_nat_binding_obligations(
+                    decl, expr.right, smt, slot_env, assumptions,
+                )
             return
 
         if isinstance(expr, ast.UnaryExpr):

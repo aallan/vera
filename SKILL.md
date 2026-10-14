@@ -2087,6 +2087,8 @@ See: spec Chapter 8 for the full module system specification.
 | 9 | `!` `-` (unary) | prefix |
 | 10 | `[]` (index) `()` (call) | postfix |
 
+`&&`, `||` and `==>` evaluate their right operand only where the left one does not decide the result, so the left operand guards the right one: `@Int.0 != 0 && 10 / @Int.0 > 0` is `false` on `0` without dividing, and `vera verify` proves the division safe under `@Int.0 != 0`.  The same holds for an index (`@Nat.0 < array_length(@Array<Int>.0) && @Array<Int>.0[@Nat.0] > 0`), a call whose `requires` the left operand establishes, and an effect, which runs only where the right operand is evaluated.
+
 ## Best Practices
 
 ### Keep functions small
@@ -2596,7 +2598,6 @@ These are known limitations in the reference implementation. Most are tracked as
 
 | Bug | Workaround | Issue |
 |-----|-----------|-------|
-| `&&`, `\|\|` and `==>` evaluate both operands, although spec §4.6 says `&&` and `\|\|` short-circuit, so `@Int.0 != 0 && 10 / @Int.0 > 0` traps on `0` and is refused `E526`. | Guard the operation with a nested `if`: `if @Int.0 != 0 then { 10 / @Int.0 > 0 } else { false }`, and write `P ==> Q` over a `Q` that can trap as `if P then { Q } else { true }`.  Write a precondition whose later conjunct relies on an earlier one as separate `requires` clauses. | [#1501](https://github.com/aallan/vera/issues/1501) |
 | A nested constructor pattern is read at its outer constructor only: a `match` that misses a case inside a nested constructor passes the exhaustiveness check and runs a wrong arm, and the verifier takes `Some(None)` to match every `Some`, so an `ensures` over a nested match can be proved and fail at run time. | Write nested matches as two levels: match the outer constructor, then match the inner value in the arm. | [#1697](https://github.com/aallan/vera/issues/1697) |
 | `==` between two generic-data values returned by calls compares heap addresses, so equal values compare unequal and a proved `ensures` fails at run time. `map_get` on a `Map` read straight from a `State` cell returns a wrong value. | Bind each call's result with `let` before comparing; bind the cell's value with `let` before `map_get`. | [#1525](https://github.com/aallan/vera/issues/1525) |
 | A callee's `ensures` can be assumed on a branch whose condition the verifier cannot translate (an `apply_fn` call in an `if` condition), so a postcondition can be proved from a call that never happens on that path. | Bind the condition with `let` first, or keep `apply_fn` out of `if` conditions whose branches carry contracted calls. | [#1696](https://github.com/aallan/vera/issues/1696) |

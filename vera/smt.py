@@ -1194,6 +1194,52 @@ class SmtContext:
             del self._call_demotions[marks[1]:]
             del self._call_discharges[marks[2]:]
 
+    def right_operand_premise(
+        self, op: ast.BinOp, left: z3.ExprRef | None,
+    ) -> z3.ExprRef:
+        """What holds wherever the right operand of `left op right` is
+        evaluated, `op` being `&&`, `||` or `==>` (§4.6, #1501): the left
+        operand for `&&` and `==>`, and its negation for `||`.
+
+        A left operand that does not translate is stood for by a fresh
+        Boolean.  Nothing states its value, so an obligation in the right
+        operand is asked as it would be with no premise, and a fact learned there
+        (a callee's assumed `ensures`, a guarded binder's predicate) holds
+        only where the stand-in does: assumed bare, it would hold on the runs
+        where the left operand decides and the right one never runs.
+        """
+        if left is None:
+            return z3.Bool(self._fresh_name("unstated_operand"))
+        return z3.Not(left) if op == ast.BinOp.OR else left
+
+    def short_circuit_premise(
+        self, expr: ast.BinaryExpr, env: SlotEnv,
+    ) -> z3.ExprRef | None:
+        """The premise of *expr*'s right operand, for a walk that descends
+        the operands itself, or None when *expr* is no `&&`, `||` or `==>`.
+
+        The left operand is translated here only to state the premise: the
+        walk's own descent of it obligates what it evaluates, so no
+        call-site outcome of this translation is kept.
+        """
+        if expr.op not in _BOOL_OPS:
+            return None
+        with self.call_outcomes_discarded():
+            left = self.translate_expr(expr.left, env)
+        return self.right_operand_premise(expr.op, left)
+
+    @contextlib.contextmanager
+    def premise(self, fact: z3.ExprRef | None) -> Iterator[None]:
+        """Hold *fact* on the path conditions for the block, as an `if` arm
+        holds its condition, and restore them on exit; None holds nothing."""
+        depth = len(self._path_conditions)
+        if fact is not None:
+            self._path_conditions.append(fact)
+        try:
+            yield
+        finally:
+            del self._path_conditions[depth:]
+
     @contextlib.contextmanager
     def strict_preconditions(self) -> Iterator[None]:
         """Translate a function body under #804's strict precondition rule.
@@ -1979,9 +2025,20 @@ class SmtContext:
     def _translate_binary(
         self, expr: ast.BinaryExpr, env: SlotEnv
     ) -> z3.ExprRef | None:
-        """Translate binary operators."""
+        """Translate binary operators.
+
+        The right operand of `&&`, `||` and `==>` runs only where the left
+        one does not decide the result (§4.6), so it is translated under that
+        premise, as an `if` arm is under its condition (#1501): a call's
+        precondition there is checked under it, and a fact learned there is
+        assumed under it.  The value is still `And`, `Or` or `Implies`.
+        """
         left = self.translate_expr(expr.left, env)
-        right = self.translate_expr(expr.right, env)
+        if expr.op in _BOOL_OPS:
+            with self.premise(self.right_operand_premise(expr.op, left)):
+                right = self.translate_expr(expr.right, env)
+        else:
+            right = self.translate_expr(expr.right, env)
         if left is None or right is None:
             return None
         # #797 defense-in-depth: a binary op mixing an FP operand with a non-FP

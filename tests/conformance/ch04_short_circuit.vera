@@ -1,0 +1,78 @@
+-- Conformance: short-circuit evaluation of && and || (Chapter 4, §4.6)
+-- Tests: the right operand is not evaluated where the left operand determines
+-- the result, so the left operand guards a division, an index and a call's
+-- precondition in the right one, and an effect in a decided right operand does
+-- not run; a ==> evaluates its right operand only where its left one is true,
+-- and a requires joined by && is checked as separate clauses are (§5.2.2).
+private fn say(@String -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.print(@String.0);
+  true
+}
+
+private fn need_pos(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(@Int.result == @Int.0)
+  effects(pure)
+{
+  @Int.0
+}
+
+public fn safe_div(@Int -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0 != 0 && 10 / @Int.0 > 0
+}
+
+public fn in_range(@Array<Int>, @Nat -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Nat.0 < array_length(@Array<Int>.0) && @Array<Int>.0[@Nat.0] > 15
+}
+
+public fn positive_checked(@Int -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0 <= 0 || need_pos(@Int.0) > 0
+}
+
+public fn nonzero_implies(@Int -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0 != 0 ==> 10 / @Int.0 != 11
+}
+
+public fn joined(@Int -> @Int)
+  requires(@Int.0 >= 1 && need_pos(@Int.0) > 0)
+  ensures(@Int.result >= 1)
+  effects(pure)
+{
+  @Int.0
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  let @Bool = true || say("not printed\n");
+  let @Bool = false && say("not printed\n");
+  let @Bool = false ==> say("not printed\n");
+  let @Bool = false || say("printed\n");
+  IO.print("\(safe_div(0)) \(safe_div(5))\n");
+  IO.print("\(in_range([10, 20, 30], 5)) \(in_range([10, 20, 30], 1))\n");
+  IO.print("\(positive_checked(0)) \(positive_checked(3))\n");
+  IO.print("\(nonzero_implies(0)) \(nonzero_implies(5))\n");
+  IO.print("\(joined(3))\n")
+}

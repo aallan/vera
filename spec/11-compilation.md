@@ -118,8 +118,8 @@ Binary operators compile to their WASM equivalents:
 | `>` | `i64.gt_s` | `f64.gt` | `i32.gt_s` |
 | `<=` | `i64.le_s` | `f64.le` | `i32.le_s` |
 | `>=` | `i64.ge_s` | `f64.ge` | `i32.ge_s` |
-| `&&` | — | — | `i32.and` |
-| `\|\|` | — | — | `i32.or` |
+| `&&` | — | — | an `if`, below |
+| `\|\|` | — | — | an `if`, below |
 
 Float64 modulo uses the decomposition `a % b = a - trunc(a / b) * b`, where `trunc` is `f64.trunc` (truncation toward zero). This matches C's `fmod` semantics and is consistent with integer `%` (which uses `i64.rem_s`, also truncated toward zero). WASM has no native `f64.rem` instruction, so the compiler emits a multi-instruction sequence using temporary locals.
 
@@ -135,11 +135,13 @@ Unary operators:
 | `-` (Float64 negation) | `f64.neg` |
 | `!` (Boolean not) | `[expr]  i32.eqz` |
 
-The implies operator `==>` is lowered to `(!a) || b`:
+`&&` and `||` evaluate their right operand only where the left operand does not determine the result (§4.6), and `a ==> b`, which is `(!a) || b`, evaluates `b` only where `a` is true.  Each compiles to a structured `if` (Section 11.3.5) over the left operand, so a trap or an effect in the right operand happens only where the right operand is evaluated:
 
-```
-[left]  i32.eqz  [right]  i32.or
-```
+| Operator | WASM Output |
+|----------|-------------|
+| `a && b` | `[a]  if (result i32)  [b]  else  i32.const 0  end` |
+| `a \|\| b` | `[a]  if (result i32)  i32.const 1  else  [b]  end` |
+| `a ==> b` | `[a]  if (result i32)  [b]  else  i32.const 1  end` |
 
 ### 11.3.4 Comparison Type Awareness
 
