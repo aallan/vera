@@ -1,0 +1,14 @@
+-- Conformance: an array literal's element type takes a part its first
+-- element leaves open from the first later element that fixes it, and every
+-- element has the resulting type (Chapter 4, Section 4.12.1).
+-- Tests: E162 — `None` leaves `Option`'s type argument open, `Some(1)` fixes
+-- it at Nat, so the element type is Option<Nat> and `Some("abc")` is refused
+-- where it is written.  Previously the type argument stayed open (#1668):
+-- each element fitted the literal on its own, and this passed check.
+public fn main(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_length([None, Some(1), Some("abc")])
+}

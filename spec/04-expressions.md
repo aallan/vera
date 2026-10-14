@@ -301,7 +301,7 @@ A right operand that is not a call — a literal, a slot reference, an operator 
 []
 ```
 
-All elements must have the same type. The type of the literal is `Array<T>` where `T` is the element type. Where the first element's type leaves a part open, as `None` leaves the `T` of `Option<T>` and `[]` its element type, `T` takes that part from the first later element that fixes it, and every element must have the resulting type: `[None, Some(1)]` is an `Array<Option<Nat>>`, and `[None, Some(1), Some("a")]` is refused (**E162**). Empty array literals require a type annotation in context (the expected type must be known).
+All elements must have the same type. The type of the literal is `Array<T>` where `T` is the element type. Where the first element's type leaves a part open, as `None` leaves `Option`'s type argument and `[]` its element type, the element type takes that part from the first later element that fixes it, and every element must have the resulting type: `[None, Some(1)]` is an `Array<Option<Nat>>`, and `[None, Some(1), Some("a")]` is refused (**E162**). Empty array literals require a type annotation in context (the expected type must be known).
 
 ### 4.12.2 Array Indexing
 
