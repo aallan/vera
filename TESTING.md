@@ -7,7 +7,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 <!-- render_status:begin status -->
 | Metric | Value |
 |--------|-------|
-| **Tests** | 36,206 collected from 261 test files, which hold 268,232 lines |
+| **Tests** | 36,206 collected from 261 test files, which hold 268,234 lines |
 | **Conformance programs** | 269 in `tests/conformance/manifest.json`: 0 at `parse`, 72 at `check`, 20 at `verify`, 177 at `run`; 60 of them negative fixtures (`expected_error`) |
 | **Example programs** | 43 in `examples/` |
 | **Corpus programs** | 319 `.vera` files under `examples/` and `tests/conformance/`, recursively |
@@ -37,8 +37,8 @@ The measures [ROADMAP.md](ROADMAP.md)'s Stage 29 holds v0.3.0 to, each beside th
 <!-- render_status:begin scorecard -->
 | Measure | v0.2.0, the audit (2026-10-06) | Now | Measured over |
 |---------|---------------------------|-----|---------------|
-| Open `soundness` bugs | 14 (≥17 by definition) | 8 | the tracker, 2026-10-15 02:14 UTC |
-| Open bugs | 82 | 33 | the tracker, 2026-10-15 02:14 UTC |
+| Open `soundness` bugs | 14 (≥17 by definition) | 8 | the tracker, 2026-10-15 02:39 UTC |
+| Open bugs | 82 | 33 | the tracker, 2026-10-15 02:39 UTC |
 | Backend `_infer_*` functions | 32 | 32 | the tree |
 | Same-named `Nat`/`Int` helpers in `vera/verifier.py` and `vera/wasm/` | 12 | 4 | the tree |
 | Explicit `guarded=` claims by the verifier | 38 | 27 | the tree |
@@ -278,7 +278,7 @@ One row per test file: its tests as a full collection counts them (the stress te
 | `test_introspect.py` | 39 | 221 | Tests for ``vera.introspect`` — the registry payloads behind ``vera builtins/effects/errors --json`` (#539). |
 | `test_json_accept_domain_1306_1308.py` | 97 | 720 | ``json_parse``'s accept domain (#1306, #1308). |
 | `test_lexical_fn_scope_1299.py` | 56 | 1,554 | #1299: codegen's bare-call ownership table must be the CALL SITE's scope. |
-| `test_literal_typing_from_context_1541_1565.py` | 3,125 | 1,563 | An integer literal takes its type from its context (#1541, #1565). |
+| `test_literal_typing_from_context_1541_1565.py` | 3,125 | 1,565 | Every integer literal is an `Int`, and a generic call's type argument is fixed by the call's other arguments, then by the type its result is expected at (#1541, #1565). |
 | `test_lowering_boundary.py` | 384 | 2,064 | What code generation can lower is decided once, and the checker refuses the rest. |
 | `test_lsp.py` | 329 | 5,460 | Tests for vera/lsp/ — transport skeleton + coordinate layer (#222 Phase C). |
 | `test_markdown.py` | 94 | 610 | Unit tests for the Python Markdown parser and renderer (§9.7.3). |

@@ -1,4 +1,6 @@
-"""An integer literal takes its type from its context (#1541, #1565).
+"""Every integer literal is an `Int`, and a generic call's type argument is
+fixed by the call's other arguments, then by the type its result is expected
+at (#1541, #1565).
 
 Spec §4.2: every integer literal is an `Int`, checked against the type its
 context expects.  When a generic call infers its type arguments, that
