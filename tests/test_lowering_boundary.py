@@ -1534,7 +1534,8 @@ def _row_source(kind: str, place: str) -> str:
 
 #: An operation performed in a closure literal whose row is a row variable,
 #: bound to a let and applied or not, in a function whose own row is
-#: ENCLOSING: the closure's body is checked under that row.
+#: ENCLOSING: the closure's body is checked under its own row, not that one
+#: (#1702).
 _OP_THROUGH_A_CLOSURE = """\
 type F<E> = fn(Unit -> Int) effects(<ROW>);
 
@@ -1549,36 +1550,34 @@ private forall<E> fn f(@Unit -> @Int)
 
 """
 
-_OP_USES = {"applied": ("apply_fn(@F<E>.0, ())", 3), "bound": ("1", 1)}
+_OP_USES = {"applied": "apply_fn(@F<E>.0, ())", "bound": "1"}
 _OPS = {"user": "Counter.tick(())", "built-in": "Random.random_int(3, 3)"}
 
 
 def _op_source(row: str, use: str, enclosing: str, op: str) -> str:
     body = (_OP_THROUGH_A_CLOSURE.replace("ROW", row)
             .replace("ENCLOSING", enclosing)
-            .replace("OP", _OPS[op]).replace("USE", _OP_USES[use][0]))
+            .replace("OP", _OPS[op]).replace("USE", _OP_USES[use]))
     decls = _COUNTER if op == "user" else ""
     return decls + body + _main("f(())", eff=enclosing)
 
 
 def _op_refusal(row: str, use: str, enclosing: str,
-                op: str) -> tuple[str, ...] | None:
-    """The rule: a user-declared effect's operation is refused at the call
-    (E340) under any row that does not name the effect, a pure one too, and
-    that is the call's one refusal: the purity check does not count it.  A
-    built-in effect's operation under a pure row is the function's E122, and
-    applying a closure whose row names `IO` there is E125 and adds `IO` to
-    the E122, as at the base.  A built-in effect's operation under `<IO>` is
-    accepted, as at the base (#1702)."""
-    codes: tuple[str, ...] = ("E340",) if op == "user" else ()
-    if enclosing == "pure":
-        applies_io = use == "applied" and row.startswith("IO")
-        if applies_io:
-            codes += ("E125",)
-        if op == "built-in" or applies_io:
-            codes += ("E122",)
-        return codes
-    return codes or None
+                op: str) -> tuple[str, ...]:
+    """The rule: an operation is held to the row in force where it is
+    performed, which in a closure's body is the closure's own (#1702).  A
+    user-declared effect's operation is refused at the call (E340) under any
+    row that does not name the effect, and that is the call's one refusal:
+    the purity check does not count it.  A built-in effect's operation is
+    refused at the call (E125) under `<E>` and `<IO, E>`, which name no
+    `Random`, whatever the row around the closure: a row variable names no
+    effect.  Applying a closure whose row names `IO` under a pure row is
+    E125 at the application and adds `IO` to the function's E122, as at the
+    base."""
+    codes: tuple[str, ...] = ("E340",) if op == "user" else ("E125",)
+    if enclosing == "pure" and use == "applied" and row.startswith("IO"):
+        codes += ("E125", "E122")
+    return codes
 
 
 #: A refinement predicate, OP its operation call, in each place one is
@@ -1690,16 +1689,12 @@ class TestEffectRow:
     ) -> None:
         source = _op_source(row, use, enclosing, op)
         refused = _op_refusal(row, use, enclosing, op)
-        if refused is None:
-            _holds(source, None, _OP_USES[use][1])
-            verified = vera_pipeline.verify(source)
-            assert verified.ok, verified.errors
-            assert {o.status for o in verified.obligations} == {"verified"}
-            return
         _holds(source, refused, None, backend=op == "user")
         placed = _placed(vera_pipeline.check(source).errors)
         if op == "user":
             assert ("E340", *_locate(source, "Counter.tick")) in placed
+        else:
+            assert ("E125", *_locate(source, "Random.random_int")) in placed
         if "E122" in refused:
             # E122 at the function, as at the base.
             assert ("E122", *_locate(source, "forall<E> fn f")) in placed
@@ -1713,7 +1708,9 @@ class TestEffectRow:
         is in force, or with none: an alias's, a data field's, a signature's
         (a `where` helper's under its parent's row).  A user-declared
         effect's operation there is refused at the call; a built-in one's
-        runs, as at the base (#1702)."""
+        runs: an operation is held to a row in force that is not `pure`
+        (#1702), and here there is none, or the `pure` row of the helper's
+        parent, whose purity check holds its body and not this signature."""
         call = ("Counter.tick(())" if op == "user"
                 else "Random.random_int(1, 1)")
         source = ((_COUNTER if op == "user" else "")

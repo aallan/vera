@@ -8,8 +8,10 @@ and ``Exn`` (#1597), a ``State`` cell whose value is a ``(ptr, len)`` pair
 (#1512), a quantifier the counter loop cannot bind (#1506), a call to a user
 ability's operation (#1499), a generic cell that an instantiation makes the
 same family as an enclosing one (#1522), an effect row naming a user-declared
-effect or, in a function's own row, a row variable, and a call of a
-user-declared effect's operation (#1681).  Each rule is a function here.
+effect or, in a function's own row, a row variable, a call of a
+user-declared effect's operation (#1681), and a ``State`` or ``Exn``
+operation in a closure's body outside a handler written in it (#1702).
+Each rule is a function here.
 
 The checker applies a rule where its construct is written and refuses the
 construct there, with **E340** ("code generation cannot lower this
@@ -575,8 +577,39 @@ def effect_operation_lowerable(effect_name: str) -> bool:
     such a call apart: it emits a call to a host import no host provides,
     and the module does not load.
 
-    A built-in effect's operation under a row that does not name the effect
-    is accepted, and compiled: that the row is not held to its operations
-    is the effect checker's defect (#1702), not a lowering one.
+    A built-in effect's operation is lowered under any row: the effect
+    checker holds it to the row in force (E125, #1702), and in a closure's
+    body rule 7 holds a ``State`` or ``Exn`` one to a handler written there.
     """
     return effect_name in COMPILABLE_EFFECTS
+
+
+# =====================================================================
+# Rule 7: a State or Exn operation in a closure's body (#1702)
+# =====================================================================
+
+
+def closure_operation_lowerable(
+    effect_name: str, *, handled_in_closure: bool,
+) -> bool:
+    """Whether code generation lowers an operation of *effect_name* written
+    in a closure literal's body, *handled_in_closure* saying that a handler
+    for the effect is written inside that closure, around the operation
+    (#1702).
+
+    A ``State`` operation reads or writes a cell, and an ``Exn`` one throws
+    to a tag, that the function being compiled registers from its row or
+    from a handler in its body.  A closure is lifted into a function of its
+    own, whose row registers neither: a bare ``put`` or ``throw`` there has
+    no route, and code generation drops the function (E602), and a
+    qualified one calls a host import the module does not declare, so the
+    module does not assemble.  A handler written inside the closure
+    registers its cell or its tag in the lifted function, and an operation
+    under it lowers.  A handler around the closure does not: the closure is
+    compiled apart from it, and can be applied outside it.  The other
+    built-in effects' operations are the host's, and lower in a closure as
+    anywhere.  A quantifier's predicate is no closure here: code generation
+    inlines it into the function around the quantifier (spec §11.13.2),
+    whose cell and tag its operations reach.
+    """
+    return effect_name not in HANDLED_EFFECTS or handled_in_closure

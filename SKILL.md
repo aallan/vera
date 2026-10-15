@@ -1466,6 +1466,16 @@ and so is a call of one of its operations under a row that does not name it.
 `State` and `Exn` take their type argument in a row: `effects(<State<Int>>)`,
 never `effects(<State>)` (`E340`).
 
+An operation is held to the row in force where it is performed, as a call to a
+function is: `Random.random_int(1, 6)` in a function declared `effects(<IO>)`
+is refused at the call (`E125`), and under `effects(pure)` the function is
+refused (`E122`). A row variable names no effect, so `effects(<IO, E>)`
+permits `IO`'s operations and no others. A handler's body is checked under the
+row around it with the handled effect added. A closure's body is checked under
+the closure's own row, which a handler around the closure does not extend, so
+a closure that performs a `State` or `Exn` operation writes the handler inside
+its own body (`E340` otherwise).
+
 ### Effect declarations
 
 The IO effect is built-in — no declaration is needed. It provides eleven operations:

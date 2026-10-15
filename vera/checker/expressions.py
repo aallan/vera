@@ -25,6 +25,7 @@ from vera.types import (
     base_type,
     BOOL,
     BYTE,
+    canonical_type_name,
     ConcreteEffectRow,
     contains_fresh_typevar,
     contains_typevar,
@@ -33,15 +34,18 @@ from vera.types import (
     FLOAT64,
     FunctionType,
     INT,
+    is_effect_subtype,
     is_subtype,
     NAT,
     literal_meets_nat,
     numeric_join,
     NUMERIC_TYPES,
     ORDERABLE_TYPES,
+    pretty_effect,
     pretty_inferred_type,
     pretty_type,
     PrimitiveType,
+    PureEffectRow,
     RefinedType,
     STRING,
     TO_STRING_BUILTINS,
@@ -1364,7 +1368,20 @@ class ExpressionsMixin:
     # -----------------------------------------------------------------
 
     def _check_anon_fn(self, expr: ast.AnonFn) -> Type | None:
-        """Type-check an anonymous function."""
+        """Type-check an anonymous function.
+
+        Its body is checked under its own row (#1702), as a function's is
+        under the row it declares: that row is the row in force, its order
+        resolves a bare operation name, and the operations the body
+        performs are held to that row.  A `pure` closure that performs an
+        effect is refused at the closure (E122).  The effects any other
+        closure performs, directly or through a closure written in it,
+        count for the purity of the declaration it is written in, so a
+        `pure` function cannot write a closure that performs one (E122 at
+        the function); under a row that is not `pure`, the closure's row is
+        held where the closure is applied (`apply_fn`, E125).  The type the
+        closure is given, its parameters, result and row, is the one it
+        declares."""
         # #861: closure signatures carry the same refinement positions as
         # top-level fn signatures.
         for param_te in expr.params:
@@ -1372,15 +1389,50 @@ class ExpressionsMixin:
         self._check_refinement_predicates(expr.return_type)
         param_types = tuple(self._resolve_type(p) for p in expr.params)
         ret_type = self._resolve_type(expr.return_type)
-        eff = self._resolve_effect_row(expr.effect)
+        eff, eff_order = self._resolve_effect_row_ordered(expr.effect)
+
+        saved_effect = self.env.current_effect_row
+        saved_effect_order = self.env.current_effect_order
+        saved_ops = self._effect_ops_used
+        saved_row_owner = self._row_owner
+        self.env.current_effect_row = eff
+        self.env.current_effect_order = eff_order
+        self._effect_ops_used: set[str] = set()
+        self._row_owner = (
+            "the anonymous function's effects clause and to the row of the "
+            "function type it is given", eff)
 
         self.env.push_scope()
         for param_te, param_ty in zip(expr.params, param_types):
             tname = self._type_expr_to_slot_name(param_te)
             self.env.bind(tname, param_ty, "param")
 
+        # `vera.lowering` rule 7: the handlers written inside this body are
+        # the ones its State and Exn operations lower under.  A quantifier's
+        # predicate is inlined into the function around it, not lifted, so
+        # it is no closure the rule reads.
+        lifted = id(expr) not in self._inlined_closures
+        if lifted:
+            self._closure_handler_marks.append(len(self._handled_effects))
         body_type = self._synth_expr(expr.body, expected=ret_type)
+        if lifted:
+            self._closure_handler_marks.pop()
         self.env.pop_scope()
+
+        performed = self._effect_ops_used
+        self.env.current_effect_row = saved_effect
+        self.env.current_effect_order = saved_effect_order
+        self._effect_ops_used = saved_ops
+        self._row_owner = saved_row_owner
+        # The effects the closure performs, those of the closures written in
+        # it included, count for the declaration it is written in, so they
+        # reach the function at any depth.  A row variable can drop a
+        # value's row on the way to an application (a sub with one is
+        # permissive, #294), so this is what holds a `pure` function to its
+        # closures.  An operation a judgement refused was never counted
+        # (`_check_op_call`): its code at the call is its one.
+        if isinstance(eff, ConcreteEffectRow):
+            self._effect_ops_used |= performed
 
         if body_type and not isinstance(body_type, UnknownType):
             if not is_subtype(body_type, ret_type):
@@ -1402,7 +1454,43 @@ class ExpressionsMixin:
                     error_code="E171",
                 )
 
+        if isinstance(eff, PureEffectRow) and performed:
+            self._refuse_pure_closure_effects(expr, performed)
+
         return FunctionType(param_types, ret_type, eff)
+
+    def _refuse_pure_closure_effects(
+        self, expr: ast.AnonFn, performed: set[str],
+    ) -> None:
+        """E122 at a `pure` closure whose body performs effects (#1702),
+        the purity check a `pure` function's body is held to, worded for
+        the closure; each effect the fix names is written with its type
+        parameters where it takes them (`State<T>`)."""
+        entries = []
+        for name in sorted(performed):
+            info = self.env.lookup_effect(name)
+            params = tuple(info.type_params or ()) if info else ()
+            entries.append(EffectInstance(
+                name, tuple(TypeVar(p) for p in params)))
+        wanted = pretty_effect(ConcreteEffectRow(frozenset(entries)))
+        self._error(
+            expr,
+            f"Pure anonymous function performs effect operations: "
+            f"{', '.join(sorted(performed))}.",
+            rationale=(
+                "An anonymous function declared with effects(pure) cannot "
+                "perform effects: its row is part of its type, and an effect "
+                "it performs would be hidden from every function that "
+                "applies it."
+            ),
+            fix=(
+                f"Declare the effects in the anonymous function's effects "
+                f"clause and in the row of the function type it is given: "
+                f"{wanted}."
+            ),
+            spec_ref='Chapter 5, Section 5.7 "Anonymous Functions (Closures)"',
+            error_code="E122",
+        )
 
     # -----------------------------------------------------------------
     # Arrays
@@ -1709,7 +1797,7 @@ class ExpressionsMixin:
         self._check_quantifier_index(expr.binding_type, "forall")
         self._check_quantifier_bound(expr.domain, "forall")
         self._check_quantifier_predicate(expr.predicate, "forall")
-        self._synth_expr(expr.predicate)
+        self._apply_quantifier_predicate(expr, "forall")
         return BOOL
 
     def _check_exists_expr(self, expr: ast.ExistsExpr) -> Type | None:
@@ -1718,8 +1806,63 @@ class ExpressionsMixin:
         self._check_quantifier_index(expr.binding_type, "exists")
         self._check_quantifier_bound(expr.domain, "exists")
         self._check_quantifier_predicate(expr.predicate, "exists")
-        self._synth_expr(expr.predicate)
+        self._apply_quantifier_predicate(expr, "exists")
         return BOOL
+
+    def _apply_quantifier_predicate(
+        self, expr: ast.ForallExpr | ast.ExistsExpr, form: str,
+    ) -> None:
+        """Check a quantifier's predicate, and hold the quantifier to its
+        row (#1702).
+
+        The predicate is a closure literal, checked as one: its body under
+        its own row.  Code generation inlines it into the loop it lowers the
+        quantifier to (spec §11.13.2), so the quantifier performs the
+        predicate's effects where it is written, and is held to the
+        predicate's row as an `apply_fn` of it would be: the row in force
+        must permit it (E125), and its effects count for the purity check
+        (E122).  Inlined, the predicate is compiled with the function around
+        it, so `vera.lowering` rule 7 does not read it: its `State` and
+        `Exn` operations reach that function's cell and tag."""
+        self._inlined_closures.add(id(expr.predicate))
+        pred_ty = self._synth_expr(expr.predicate)
+        self._inlined_closures.discard(id(expr.predicate))
+        if not isinstance(pred_ty, FunctionType):
+            return
+        effect = pred_ty.effect
+        if isinstance(effect, ConcreteEffectRow):
+            for ei in effect.effects:
+                self._effect_ops_used.add(ei.name)
+        row = self.env.current_effect_row
+        if row is None or is_effect_subtype(effect, row):
+            return
+        allowed = row.effects if isinstance(row, ConcreteEffectRow) else frozenset()
+        missing = (effect.effects - allowed
+                   if isinstance(effect, ConcreteEffectRow) else frozenset())
+        target, declared = self._row_owner or (
+            "the enclosing function's effects clause", row)
+        entries = (declared.effects if isinstance(declared, ConcreteEffectRow)
+                   else frozenset())
+        row_var = (declared.row_var
+                   if isinstance(declared, ConcreteEffectRow) else None)
+        wanted = pretty_effect(ConcreteEffectRow(entries | missing, row_var))
+        shown = ", ".join(sorted(
+            canonical_type_name(e.name, e.type_args or None) for e in missing))
+        self._error(
+            expr,
+            f"{form}: its predicate requires {pretty_effect(effect)} but call "
+            f"site only allows {pretty_effect(row)}.",
+            rationale=(
+                "A quantifier applies its predicate in place, to each value of "
+                "its index, so it performs the predicate's effects where it is "
+                "written: the call site must permit all of them "
+                "(subeffecting), as for apply_fn."
+            ),
+            fix=(f"Add {shown} to {target}: {wanted}.  Or write a predicate "
+                 f"whose effects the call site permits."),
+            spec_ref='Chapter 7, Section 7.8 "Effect Subtyping"',
+            error_code="E125",
+        )
 
     def _check_quantifier_index(self, te: ast.TypeExpr, form: str) -> None:
         """The index type is ``Int`` or ``Nat``, or a refinement of one

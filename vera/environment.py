@@ -274,9 +274,10 @@ class TypeEnv:
     # subeffect containment but a hash-seed lottery to iterate; two effects
     # in one row may declare the SAME op name (the built-in `State` and
     # `Http` both declare `get`), and which signature bound flipped with
-    # PYTHONHASHSEED.  Set in lock-step with `current_effect_row` at both
+    # PYTHONHASHSEED.  Set in lock-step with `current_effect_row` at the three
     # sites that assign it (checker/core.py `_check_fn`, checker/control.py's
-    # handler-body scope); `lookup_effect_op` orders the row by this tuple.
+    # handler-body scope, checker/expressions.py `_check_anon_fn`'s closure
+    # body, #1702); `lookup_effect_op` orders the row by this tuple.
     current_effect_order: tuple[EffectInstance, ...] = ()
 
     # #1208: the ONE per-module declaration counter that stamps

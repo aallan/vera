@@ -90,7 +90,7 @@ Effects compose in rows: `effects(<IO, Http>)`, `effects(<Inference, IO>)`.
 
 ![Effect subtyping by row inclusion: pure fits where IO is allowed, and IO fits where IO plus State is allowed — fewer effects always fit where more are expected.](assets/diagrams/effect-row-lattice.svg)
 
-`handle[State<T>]` and `handle[Exn<E>]` blocks give a computation local state and recoverable failure: the handler discharges its effect, so the function around it stays pure. See [spec/07-effects.md](spec/07-effects.md).
+`handle[State<T>]` and `handle[Exn<E>]` blocks give a computation local state and recoverable failure: the handler discharges its effect, so the function around it stays pure. A closure is a value that can be applied outside the handlers around it, so its body is held to its own row, and a closure that keeps state or throws writes the handler inside its own body. See [spec/07-effects.md](spec/07-effects.md).
 
 ---
 
