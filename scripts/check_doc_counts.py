@@ -4,8 +4,9 @@
 No gate compares two hand-written copies of a count: a count lives in one
 place, TESTING.md's generated status, which ``scripts/render_status.py``
 writes from the tree, and the other documents link it rather than state
-one (the landing page's status paragraph until its renderer lands, in
-ROADMAP.md's Stage 22, is the exception).  Between releases
+one (the landing page's status paragraph, which ``scripts/build_site.py``
+writes into ``docs/index.md`` and which is copied by hand into
+``docs/index.html``, is the exception).  Between releases
 the generated status may lag the tree, so a fix PR or a commit has nothing
 to keep in step.  What is left is checked when a release is cut:
 

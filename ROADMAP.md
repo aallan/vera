@@ -14,7 +14,7 @@ Ordering derives from the design principles ([DESIGN.md](DESIGN.md)): verificati
 
 [TESTING.md](TESTING.md#overview) counts the tests, the conformance programs and the examples.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs, plus the *limitations* the stages below retire.
 
-v0.3.0 is the sound base (Stage 29), reached through v0.2.2 to v0.2.8 (Stages 22 to 28).  The feature release follows it in Stage 30: the `Decision` effect ([#1467](https://github.com/aallan/vera/issues/1467)) and its blockers, [#351](https://github.com/aallan/vera/issues/351), [#352](https://github.com/aallan/vera/issues/352), [#372](https://github.com/aallan/vera/issues/372) and [#373](https://github.com/aallan/vera/issues/373).
+v0.3.0 is the sound base (Stage 29), reached through v0.2.4 to v0.2.8 (Stages 24 to 28).  The feature release follows it in Stage 30: the `Decision` effect ([#1467](https://github.com/aallan/vera/issues/1467)) and its blockers, [#351](https://github.com/aallan/vera/issues/351), [#352](https://github.com/aallan/vera/issues/352), [#372](https://github.com/aallan/vera/issues/372) and [#373](https://github.com/aallan/vera/issues/373).
 
 ## The bug queue
 
@@ -58,42 +58,11 @@ Exit criterion: each listed drift class has a generator or a gate, and a release
 | [#1611](https://github.com/aallan/vera/issues/1611) | Five test cells that can pass without exercising what they assert — each shown by a mutation or a direct run. |
 | [#1612](https://github.com/aallan/vera/issues/1612) | Stale comments and docstrings in tests and two compiler helpers, a test cache that never hits, and a mis-positioned constructor call. |
 
-## Stage 22 — The fast lane and single sources (v0.2.2)
-
-*A fix merges in under an hour.*
-
-The pull-request gate becomes a fast lane with the full matrix after merge, and the lists the docs copy by hand render from their sources.  Four rows carry over from v0.2.1: the distrust tester's nightly trials, its attribution through the reconciliation ([#1633](https://github.com/aallan/vera/issues/1633)), the desugar of a module's call by its own path, and three CI changes.
-
-Exit criterion: a pull request's CI finishes in 20 minutes or less, and every hand-copied list renders from its source.
-
-| Change | What |
-|---|---|
-| The fast lane | A pull request's required checks become lint, sharded Python 3.12 runs on Linux and Windows, eager-GC, browser parity, CodeQL and the supply-chain jobs.  The full platform matrix runs after merge, nightly and on a version-raising pull request; a failure files an issue, and the release waits for the post-merge run. |
-| One pipeline driver | `tests/pipeline.py` runs check, verify, compile and run in process and returns structured results.  The per-file drivers and the CLI subprocesses move to it, leaving `test_cli.py` and a few corpus programs as the CLI smoke test, and tests that read WAT text read instead a guard-and-trap manifest that code generation emits beside it. |
-| `vera test --distrust`, nightly | The nightly lane runs the distrust corpus test with many trials per function (`VERA_DISTRUST_TRIALS`); the pull-request run uses five. |
-| [#1633](https://github.com/aallan/vera/issues/1633) | `vera test --distrust` attributes a trap through the reconciliation join instead of by exact span, so a check whose obligation record sits at another node is attributed rather than unattributed. |
-| Desugar once | A module's call by its own path becomes the bare call, so no later phase meets it. |
-| CI | Path filters, a 94% coverage floor, and a CHANGELOG gate that reads the pull request's base. |
-| [#1645](https://github.com/aallan/vera/issues/1645) | Each run-level conformance program whose run reaches less than its header claims gets a `main` that reaches every feature the header names, and a check holds every function such a program defines reachable from the one `vera run` executes. |
-
-## Stage 23 — `Nat` and the lowering boundary (v0.2.3)
-
-*`Nat` is the type the spec defines, and what checks compiles.*
-
-The `Nat` change is a language change, so the release carries an upgrade note that names what breaks and how to fix it.  The stage closes the `Nat`-width and literal-typing clusters and the constructs code generation cannot lower ([milestone v0.2.3](https://github.com/aallan/vera/milestone/3)).
-
-Exit criterion: the corpus differential names every program whose verdict or output moves, and the distrust tester is green.
-
-| Change | What |
-|---|---|
-| `can_lower` | One module answers whether code generation can lower a construct, and the checker refuses what it cannot, in place of mirrored gates such as E339.  A handler for an effect other than `State` or `Exn` is refused at check, general handlers become feature work after v0.3.0, and DESIGN.md's effects paragraph is restated to match. |
-| Debt, first batch | Local-debt bugs from the verifier, checker, termination, runtime and tooling clusters, in small pull requests. |
-
 ## Stage 24 — Hosts, the generator and the fold (v0.2.4)
 
 *One source where there were many.*
 
-The host bindings, the tree walks and the test inputs each get one source: a registry, a fold and a generator.
+The host bindings, the tree walks and the test inputs each get one source: a registry, a fold and a generator.  Five rows carry over from v0.2.2: the distrust tester's nightly trials (`VERA_DISTRUST_TRIALS`), its attribution through the reconciliation ([#1633](https://github.com/aallan/vera/issues/1633)), the desugar of a module's call by its own path, the CI changes (path filters, a 94% coverage floor, and a CHANGELOG gate that reads the pull request's base), and a `main` that reaches every feature a run-level conformance program's header names ([#1645](https://github.com/aallan/vera/issues/1645)); the two with issues are on the [debt track](https://github.com/aallan/vera/milestone/10).
 
 Exit criterion: the fold leaves WAT byte-identical over the corpus, and the generator runs nightly.
 

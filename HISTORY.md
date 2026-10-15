@@ -493,6 +493,16 @@ The first of the releases toward v0.3.0's sound base gave the pipeline instrumen
 | v0.2.1 | 10 Oct | **Instruments and truth** — the pipeline checks its own claims. |
 | v0.2.2 | 13 Oct | **Fast lane and one driver** — a 12-to-19-minute pull-request lane, one in-process test driver, CHANGELOG fragments, rendered lists, and the scorecard measured at release. |
 
+## Stage 22: `Nat` and the lowering boundary (13–15 October)
+
+*`Nat` is the type the spec defines, and what checks compiles.*
+
+v0.2.3 made `Nat` the non-negative i64 that spec §2.2 defines, where the compiler had held an unsigned 64-bit integer, and typed every integer literal `Int`; its upgrade note names what breaks, a value or a literal above `9223372036854775807` and the typing of a literal by its value, and the fix for each.  One module, `vera/lowering.py`, says what code generation lowers, and the checker refuses the rest where it is written, a user-declared effect's row among it; an effect operation is held to the row in force wherever it is performed; an array literal's elements, an `if`'s branches and a `match`'s arms are joined into one type; a result reference is held to its function's return type; a `match` over a scrutinee in error is reported once; `&&`, `||` and `==>` short-circuit in compiled code and in the verifier's premises; and a nested pattern is read to its full depth by the exhaustiveness check and the verifier.  The filing rules put a bug's mechanism first, and the open bugs were consolidated by mechanism, 44 of them into seven class issues; with the cycle's fixes, the open `bug` issues went from 91 at v0.2.2 to 33.
+
+| Version | Date | What shipped |
+|---------|------|-------------|
+| v0.2.3 | 15 Oct | **`Nat` and the lowering boundary** — `Nat` the non-negative i64 and every literal an `Int`, what code generation cannot lower refused at check, effect operations held to their row, short-circuit `&&`, `\|\|` and `==>`, nested patterns read to full depth, and the open bugs consolidated by mechanism. |
+
 ---
 
 ## By the numbers
