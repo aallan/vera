@@ -7,10 +7,10 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 <!-- render_status:begin status -->
 | Metric | Value |
 |--------|-------|
-| **Tests** | 32,989 collected from 258 test files, which hold 263,215 lines |
-| **Conformance programs** | 256 in `tests/conformance/manifest.json`: 0 at `parse`, 60 at `check`, 20 at `verify`, 176 at `run`; 48 of them negative fixtures (`expected_error`) |
+| **Tests** | 36,206 collected from 261 test files, which hold 268,232 lines |
+| **Conformance programs** | 269 in `tests/conformance/manifest.json`: 0 at `parse`, 72 at `check`, 20 at `verify`, 177 at `run`; 60 of them negative fixtures (`expected_error`) |
 | **Example programs** | 43 in `examples/` |
-| **Corpus programs** | 306 `.vera` files under `examples/` and `tests/conformance/`, recursively |
+| **Corpus programs** | 319 `.vera` files under `examples/` and `tests/conformance/`, recursively |
 | **Built-in functions** | 164, as `vera builtins` lists them |
 | **Effects** | 10, as `vera effects` lists them |
 | **Spec chapters** | 14 in `spec/` |
@@ -21,7 +21,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 Written by `scripts/render_status.py` from the tree.  The tests are counted by a collection, `pytest --collect-only -o addopts= --matrix=full`, which includes the stress tests and every class-instrument cell, not by a run, so a run's passed, skipped and xfailed split is not recorded here.
 <!-- render_status:end status -->
 
-This block, the [test file table](#test-files), the [skipped tests](#skipped-tests) and the [scorecard](#scorecard) are written by `scripts/render_status.py`, each between a pair of `render_status` markers.  The release PR runs it, and `python scripts/check_doc_counts.py --release` fails the release when a block is not what the script writes now.  Between releases a pull request leaves the blocks alone, so they show the tree as of the last release.  The one other place these counts are stated is the landing page's status paragraph, which is copied by hand ([ROADMAP.md](ROADMAP.md), Stage 22).
+This block, the [test file table](#test-files), the [skipped tests](#skipped-tests) and the [scorecard](#scorecard) are written by `scripts/render_status.py`, each between a pair of `render_status` markers.  The release PR runs it, and `python scripts/check_doc_counts.py --release` fails the release when a block is not what the script writes now.  Between releases a pull request leaves the blocks alone, so they show the tree as of the last release.  The one other place these counts are stated is the landing page's status paragraph, which `scripts/build_site.py` writes into `docs/index.md` and which is copied by hand into `docs/index.html`.
 
 | Measure | Where it is |
 |---------|-------------|
@@ -37,28 +37,28 @@ The measures [ROADMAP.md](ROADMAP.md)'s Stage 29 holds v0.3.0 to, each beside th
 <!-- render_status:begin scorecard -->
 | Measure | v0.2.0, the audit (2026-10-06) | Now | Measured over |
 |---------|---------------------------|-----|---------------|
-| Open `soundness` bugs | 14 (≥17 by definition) | 18 | the tracker, 2026-10-12 23:46 UTC |
-| Open bugs | 82 | 91 | the tracker, 2026-10-12 23:46 UTC |
+| Open `soundness` bugs | 14 (≥17 by definition) | 8 | the tracker, 2026-10-15 02:14 UTC |
+| Open bugs | 82 | 33 | the tracker, 2026-10-15 02:14 UTC |
 | Backend `_infer_*` functions | 32 | 32 | the tree |
-| Same-named `Nat`/`Int` helpers in `vera/verifier.py` and `vera/wasm/` | 12 | 12 | the tree |
-| Explicit `guarded=` claims by the verifier | 38 | 38 | the tree |
-| Hand-rolled `isinstance` dispatchers over `Expr` | 191 | 201 | the tree |
+| Same-named `Nat`/`Int` helpers in `vera/verifier.py` and `vera/wasm/` | 12 | 4 | the tree |
+| Explicit `guarded=` claims by the verifier | 38 | 27 | the tree |
+| Hand-rolled `isinstance` dispatchers over `Expr` | 191 | 181 | the tree |
 | Functions over 500 lines | 17 | 17 | the tree |
 | Host built-ins hand-mirrored across hosts | 53 × 2, plus WASI | 53 × 2, plus WASI's 10 map operations | the tree |
 | Gate scripts that exist only to sync copies | 8 of 23 | 4 of 25 | the tree |
-| CI wall time per pull-request push | 57 min | 13.1 min | 20 pull-request runs, 2026-10-12 to 2026-10-12 |
-| Runner-minutes per pull-request push | 375 | 56 | 20 pull-request runs, 2026-10-12 to 2026-10-12 |
-| Fix pull requests, median: CI runs | 6 | 5 | 9 pull requests merged since v0.2.1 (2026-10-11), to 2026-10-12 |
-| Fix pull requests, median: hours to merge | 11.0 | 2.3 | 9 pull requests merged since v0.2.1 (2026-10-11), to 2026-10-12 |
-| Suite in the pull-request gate: tests | 30,095 | 21,419 | the tree |
-| Suite in the pull-request gate: worker-seconds | 9,037 | 1,296 | a run of 21,419 tests, 2026-10-12 23:43 UTC |
-| Subprocess share of suite time | 52% | 32.8% | a run of 21,419 tests, 2026-10-12 23:43 UTC |
-| Conformance entries with golden output | 0 of 256 | 175 of 256; every run-level entry, one of them by exit status only | the tree |
+| CI wall time per pull-request push | 57 min | 10.5 min | 20 pull-request runs, 2026-10-14 to 2026-10-15 |
+| Runner-minutes per pull-request push | 375 | 46 | 20 pull-request runs, 2026-10-14 to 2026-10-15 |
+| Fix pull requests, median: CI runs | 6 | 3.5 | 12 pull requests merged since v0.2.2 (2026-10-13), to 2026-10-15 |
+| Fix pull requests, median: hours to merge | 11.0 | 1.5 | 12 pull requests merged since v0.2.2 (2026-10-13), to 2026-10-15 |
+| Suite in the pull-request gate: tests | 30,095 | 22,294 | the tree |
+| Suite in the pull-request gate: worker-seconds | 9,037 | 1,232 | a run of 22,294 tests, 2026-10-15 02:11 UTC |
+| Subprocess share of suite time | 52% | 33.4% | a run of 22,294 tests, 2026-10-15 02:11 UTC |
+| Conformance entries with golden output | 0 of 256 | 176 of 269; every run-level entry, one of them by exit status only | the tree |
 | Program generator with differentials | none | none | the tree |
 | `vera test` executes proved functions | no | yes, in CI | the tree |
-| Statement coverage | 96.2% | 96.59% | Codecov, the post-merge run of `97e8158` (2026-10-12) |
-| Spec words | 86,558 | 87,060 | the tree |
-| Issue links in the spec | 175 | 140 | the tree |
+| Statement coverage | 96.2% | 96.66% | Codecov, the post-merge run of `139c587` (2026-10-15) |
+| Spec words | 86,558 | 86,928 | the tree |
+| Issue links in the spec | 175 | 125 | the tree |
 
 What each row counts, as the v0.2.0 column counted it:
 
@@ -85,7 +85,7 @@ What each row counts, as the v0.2.0 column counted it:
 - **Spec words**: the whitespace-separated words of `spec/*.md`.
 - **Issue links in the spec**: the `https://github.com/aallan/vera/issues/N` links in `spec/*.md`.
 
-Measured for v0.2.2 by `scripts/render_status.py`.  The v0.2.0 column is the audit's measurement of 6508cc32, taken on 2026-10-06 and held in `scripts/scorecard.py`.  `scripts/check_doc_counts.py --release` measures the tree's rows again; the others change from one moment to the next, so it asks of each only that it states the window it was measured over.
+Measured for v0.2.3 by `scripts/render_status.py`.  The v0.2.0 column is the audit's measurement of 6508cc32, taken on 2026-10-06 and held in `scripts/scorecard.py`.  `scripts/check_doc_counts.py --release` measures the tree's rows again; the others change from one moment to the next, so it asks of each only that it states the window it was measured over.
 <!-- render_status:end scorecard -->
 
 ## Running Tests
@@ -137,17 +137,20 @@ One row per test file: its tests as a full collection counts them (the stress te
 | `test_adt_ord_reject_921.py` | 40 | 646 | Regression tests for #921 — ``compare`` / ordering on a user ADT is a *silent wrong result*, the severest failure class. |
 | `test_alias_application_refinement_base_1237.py` | 11 | 376 | A parameterised alias APPLICATION substitutes its arguments (#1237). |
 | `test_ambiguous_import_refusal_1304.py` | 40 | 1,219 | #1304: two imports supplying one bare name are refused, in every namespace. |
+| `test_array_literal_elements_1584.py` | 633 | 566 | Every element of an array literal has the literal's element type (#1584). |
+| `test_array_literal_open_position_1668.py` | 1,692 | 1,326 | The type an array literal, an `if` or a `match` is given takes every part of it into account, an open position included (#1668). |
 | `test_array_map_slot_closure_1056.py` | 10 | 227 | Regression tests for #1056 — a fn-typed slot handed to ``array_map`` / ``array_mapi`` as the closure argument. |
 | `test_ast.py` | 138 | 1,148 | Tests for the Vera AST layer (vera.ast + vera.transform). |
 | `test_await_ci.py` | 49 | 408 | The release waits for CI (scripts/await_ci.py). |
-| `test_binder_position_generator.py` | 223 | 893 | The class instrument: every binder position, every refinement kind. |
-| `test_binder_positions.py` | 45 | 455 | The binder-position registry is held to the AST, and to the guard table. |
-| `test_boundary_guard_correctness_1466.py` | 991 | 2,299 | The class instrument: every guarded position, every WASM representation. |
-| `test_browser.py` | 426 | 5,305 | Parity tests: Python/wasmtime vs Node.js/JS-runtime. |
+| `test_binder_position_generator.py` | 223 | 895 | The class instrument: every binder position, every refinement kind. |
+| `test_binder_positions.py` | 44 | 442 | The binder-position registry is held to the AST, and to the guard table. |
+| `test_boundary_guard_correctness_1466.py` | 991 | 2,303 | The class instrument: every guarded position, every WASM representation. |
+| `test_browser.py` | 425 | 5,252 | Parity tests: Python/wasmtime vs Node.js/JS-runtime. |
+| `test_budget_marker_1670.py` | 8 | 128 | A test runs under the budget its marker names (#1670). |
 | `test_build_site.py` | 54 | 858 | Tests for the site-asset tooling: scripts/build_site.py and scripts/check_site_assets.py. |
 | `test_builtin_typevar_collision_970.py` | 61 | 811 | Regression tests for #970 — a user ``forall<T>`` var colliding *by name* with a built-in generic's internal type-variable name. |
 | `test_byte_literal_joins_1212.py` | 25 | 715 | #1212: a `@Byte` literal inside a value-position join lowers at i32. |
-| `test_cache_dependency_closure_1441.py` | 38 | 1,331 | #1441 — the warm session's cache key must cover what a proof actually reads. |
+| `test_cache_dependency_closure_1441.py` | 37 | 1,312 | #1441 — the warm session's cache key must cover what a proof actually reads. |
 | `test_callee_contract_scope_1220_1225_1226.py` | 40 | 1,430 | A callee's contract is READ in the callee's own module (#1220, #1225, #1226). |
 | `test_check_changelog_fragments.py` | 51 | 227 | Tests for scripts/check_changelog_fragments.py (#1529). |
 | `test_check_changelog_updated.py` | 90 | 878 | Tests for scripts/check_changelog_updated.py. |
@@ -157,23 +160,23 @@ One row per test file: its tests as a full collection counts them (the stress te
 | `test_check_examples_readme.py` | 15 | 190 | Tests for scripts/check_examples_readme.py's Demonstrates-column gate. |
 | `test_check_examples_run.py` | 79 | 1,313 | Tests for scripts/check_examples_run.py — the harness gate that RUNS the examples. |
 | `test_check_explicit_encoding.py` | 54 | 254 | Unit tests for `scripts/check_explicit_encoding.py` (#645). |
-| `test_check_implies_compile.py` | 1,528 | 3,851 | A program `vera check` accepts is a program code generation builds. |
-| `test_check_limitations_sync.py` | 35 | 688 | Tests for scripts/check_limitations_sync.py: the issues its state check queries, and its Bugs-section reader. |
+| `test_check_implies_compile.py` | 1,528 | 3,828 | A program `vera check` accepts is a program code generation builds. |
+| `test_check_limitations_sync.py` | 35 | 691 | Tests for scripts/check_limitations_sync.py: the issues its state check queries, and its Bugs-section reader. |
 | `test_check_record_assertions.py` | 26 | 288 | Tests for scripts/check_record_assertions.py, the gate that keeps the guard-and-trap assertions on the record. |
 | `test_check_test_drivers.py` | 72 | 515 | Tests for scripts/check_test_drivers.py, the gate that keeps one pipeline driver. |
 | `test_check_walker_coverage_597.py` | 15 | 310 | Unit tests for `scripts/check_walker_coverage.py` (#597). |
 | `test_checker_apply_fn.py` | 18 | 441 | Tests for the ``apply_fn`` checker special form (#854). |
 | `test_checker_builtins_collections.py` | 97 | 848 | Tests for the Vera type checker — builtins_collections (Map/Set/Decimal/Json/Html/Http/Inference builtin type-checking). |
 | `test_checker_builtins_strings.py` | 122 | 947 | Tests for the Vera type checker — builtins_strings (string/numeric/conversion/float/regex/markdown builtin type-checking). |
-| `test_checker_effects.py` | 90 | 1,475 | Tests for the Vera type checker — effects (effect declarations, abilities, effect subtyping, async, handler typing). |
-| `test_checker_errors.py` | 74 | 1,238 | Tests for the Vera type checker — errors (error codes, resolution diagnostics, contracts, error accumulation). |
+| `test_checker_effects.py` | 90 | 1,486 | Tests for the Vera type checker — effects (effect declarations, abilities, effect subtyping, async, handler typing). |
+| `test_checker_errors.py` | 74 | 1,237 | Tests for the Vera type checker — errors (error codes, resolution diagnostics, contracts, error accumulation). |
 | `test_checker_functions.py` | 86 | 1,112 | Tests for the Vera type checker — functions (function signatures, slot references, calls, control flow, where-blocks, IO, interpolation). |
 | `test_checker_int_nat.py` | 8 | 151 | Regression tests for #755 — mixed ``Int <op> Nat`` arithmetic must type as ``Int``, not ``Nat``. |
-| `test_checker_modules.py` | 242 | 2,647 | Tests for the Vera type checker — modules (module calls, cross-module typing, visibility, builtin redefinition). |
+| `test_checker_modules.py` | 242 | 2,648 | Tests for the Vera type checker — modules (module calls, cross-module typing, visibility, builtin redefinition). |
 | `test_checker_patterns.py` | 59 | 940 | Tests for the Vera type checker — patterns (pattern matching, exhaustiveness, match-arm typing, bidirectional inference, typed holes). |
-| `test_checker_types.py` | 249 | 3,835 | Tests for the Vera type checker — types (primitive types, ADTs, generics, constructors, arrays, tuples, refinement, literal ranges). |
+| `test_checker_types.py` | 251 | 3,862 | Tests for the Vera type checker — types (primitive types, ADTs, generics, constructors, arrays, tuples, refinement, literal ranges). |
 | `test_clause_binder_guard_1445.py` | 19 | 480 | The handler-clause binder is obligated and guarded (#1445, #1448). |
-| `test_cli.py` | 273 | 4,643 | Tests for vera.cli — command-line interface. |
+| `test_cli.py` | 273 | 4,636 | Tests for vera.cli — command-line interface. |
 | `test_clone_body_declaring_module_1241_1243.py` | 5 | 313 | #1241 + #1243: an imported clone's body calls its OWN module's functions. |
 | `test_clone_decreases_1569.py` | 362 | 760 | A generic's ``decreases`` keeps its verdict whoever verifies it (#1569). |
 | `test_closure_boundary_widths_1255_1256_1269.py` | 52 | 986 | Widths and pointer-ness at a closure/effect boundary: #1255, #1256, #1269. |
@@ -186,7 +189,7 @@ One row per test file: its tests as a full collection counts them (the stress te
 | `test_codegen_closures.py` | 63 | 1,951 | Tests for vera.codegen — Closures. |
 | `test_codegen_collections.py` | 69 | 1,151 | Tests for vera.codegen — collections (Map and Set collections, wrapper-handle bit-31 tagging). |
 | `test_codegen_contracts.py` | 33 | 532 | Tests for vera.codegen — Runtime contract insertion. |
-| `test_codegen_coverage.py` | 5 | 174 | Tests for vera.codegen — Coverage gap tests. |
+| `test_codegen_coverage.py` | 5 | 178 | Tests for vera.codegen — Coverage gap tests. |
 | `test_codegen_data_types.py` | 93 | 1,864 | Tests for vera.codegen — data_types (ADT metadata/constructors, match expressions, tuples, ADT string fields, generic-mono regressions). |
 | `test_codegen_decimal.py` | 57 | 779 | Tests for vera.codegen — decimal (Decimal collection and monomorphization). |
 | `test_codegen_decreases_guard.py` | 24 | 826 | Tests for vera.codegen — the runtime `decreases` termination guard (#1172). |
@@ -207,12 +210,12 @@ One row per test file: its tests as a full collection counts them (the stress te
 | `test_codegen_match_shadow_scope_1322.py` | 24 | 609 | #1322 — a `match` cost GC shadow roots for the whole FRAME. |
 | `test_codegen_modules.py` | 186 | 3,782 | Tests for vera.codegen — Cross-module codegen. |
 | `test_codegen_monomorphize.py` | 258 | 5,023 | Tests for vera.codegen — Monomorphization of generic (forall<T>) functions. |
-| `test_codegen_nat_guards.py` | 61 | 1,495 | Tests for vera.codegen — nat_guards (@Nat subtraction-underflow and binding-site narrowing runtime guards). |
+| `test_codegen_nat_guards.py` | 61 | 1,431 | Tests for vera.codegen — nat_guards (@Nat subtraction-underflow and binding-site narrowing runtime guards). |
 | `test_codegen_nested_nullary_ctor_994.py` | 7 | 220 | Regression: nested payload-less constructor in a forall ``==``/``!=`` (#994 F2). |
 | `test_codegen_numeric.py` | 86 | 1,104 | Tests for vera.codegen — numeric (math builtins, numeric type conversions, Float64 predicates and constants). |
 | `test_codegen_orphan_call_indirect_1185.py` | 9 | 433 | Tests for #1185 — an orphan ``call_indirect`` never reaches the output. |
 | `test_codegen_pair_scrutinee_1305.py` | 32 | 720 | #1305 — a `match` whose SCRUTINEE has the (ptr, len) pair representation. |
-| `test_codegen_refinements.py` | 72 | 1,208 | Tests for vera.codegen — refinements (assert/assume, forall/exists quantifiers, refinement type aliases and runtime guards). |
+| `test_codegen_refinements.py` | 72 | 1,210 | Tests for vera.codegen — refinements (assert/assume, forall/exists quantifiers, refinement type aliases and runtime guards). |
 | `test_codegen_root_lifetime_1371.py` | 122 | 1,333 | #1371 — GC shadow roots lived for the FRAME, not for their value. |
 | `test_codegen_skip_propagation_1100.py` | 8 | 325 | Tests for #1100 — a codegen skip propagates to (transitive) callers. |
 | `test_codegen_string_builtins.py` | 153 | 1,341 | Tests for vera.codegen — string_builtins (parse/encode builtins (parse_*, base64, url), search/transform builtins, to-string conversions). |
@@ -223,7 +226,7 @@ One row per test file: its tests as a full collection counts them (the stress te
 | `test_codegen_where_helper_mangling_991.py` | 13 | 550 | #991: duplicate ``where``-helper names crash WAT assembly on the non-generic path (``duplicate func identifier``) — and pre-#978 a colliding grandchild was silently dropped, binding its call to a same-named top-level function. |
 | `test_codegen_zero_size_fields_1043.py` | 22 | 463 | Tests for #1043 — registered constructor layouts erase zero-size fields. |
 | `test_composite_postcondition_eq_912.py` | 16 | 459 | Regression tests for #912 — a composite (ADT / Option / Tuple) equality in ``ensures`` position must lower its RUNTIME check to STRUCTURAL equality, so a postcondition ``vera verify`` proves at Tier 1 does not spuriously TRAP at run. |
-| `test_conformance.py` | 1,352 | 635 | Conformance test suite — spec-anchored feature validation. |
+| `test_conformance.py` | 1,417 | 635 | Conformance test suite — spec-anchored feature validation. |
 | `test_construction_guards_1426.py` | 44 | 1,550 | Construction-position refinement guards (#1426). |
 | `test_constructor_field_target.py` | 8 | 243 | A constructor argument's instantiated field type is recorded as its target. |
 | `test_contract_predicate_degradation_922.py` | 9 | 227 | Regression tests for #922 — a non-Eq composite ``==`` / ``hash`` / ``show`` in a CONTRACT-PREDICATE position must degrade to a clean diagnostic (E613 for a non-derivable ``==``, E602 for an unsupported ``hash`` / ``show``), NEVER escape as an uncaught Python traceback at compile. |
@@ -234,56 +237,55 @@ One row per test file: its tests as a full collection counts them (the stress te
 | `test_db_runtime.py` | 21 | 301 | Tests for the ``<DB>`` host binding (#229, S3) — ``vera/runtime/db.py``. |
 | `test_diagnostic_fields.py` | 98 | 1,618 | Unit tests for `scripts/check_diagnostic_fields.py` (#682). |
 | `test_disclosure_taint_follows_value_1406.py` | 112 | 2,238 | #1406 / #1407 — a disclosed fact's taint follows the VALUE, not the syntax. |
-| `test_distrust_corpus.py` | 223 | 233 | `vera test --distrust` over the corpus: a Tier-1 proof must survive a run. |
+| `test_distrust_corpus.py` | 224 | 246 | `vera test --distrust` over the corpus: a Tier-1 proof must survive a run. |
 | `test_doc_annotations.py` | 97 | 1,101 | Tests for scripts/doc_annotations.py — inline fence markers (#538, #1481). |
 | `test_doc_builtin_shadowing.py` | 11 | 183 | Tests for scripts/check_doc_builtin_shadowing.py (#819). |
 | `test_dropped_entry_1183_1186.py` | 21 | 527 | #1183 + #1186 — a dropped entry function must never be silently replaced. |
-| `test_duplicate_names_1433.py` | 150 | 1,688 | #1433: a namespace holds one declaration of each name (spec §8.5.5). |
+| `test_duplicate_names_1433.py` | 150 | 1,714 | #1433: a namespace holds one declaration of each name (spec §8.5.5). |
 | `test_effect_op_determinism.py` | 9 | 504 | #1215: bare effect-op resolution is deterministic and source-ordered. |
-| `test_element_facts_statable_1430.py` | 75 | 1,959 | #1430 — the nested-refinement goal is STATABLE for carriers the structural walk cannot decompose. |
-| `test_emitted_checks_1479.py` | 48 | 590 | The per-module record of emitted runtime checks (#1479). |
+| `test_element_facts_statable_1430.py` | 75 | 1,966 | #1430 — the nested-refinement goal is STATABLE for carriers the structural walk cannot decompose. |
+| `test_emitted_checks_1479.py` | 49 | 591 | The per-module record of emitted runtime checks (#1479). |
 | `test_eq_contract_874.py` | 13 | 398 | Regression tests for #874 — the ``eq`` / ``compare`` ability operations in contract position (``requires`` / ``ensures``) must lower to their canonical operator form, so a contract that ``vera check`` accepts also *compiles*, *runs*, and *verifies at Tier 1*. |
 | `test_errors.py` | 66 | 705 | Error message tests — verify LLM-oriented diagnostic quality. |
-| `test_evaluated_position_obligations_1480.py` | 1,579 | 4,567 | Every runtime check the compiled program performs has an obligation (#1480). |
+| `test_evaluated_position_obligations_1480.py` | 1,580 | 4,610 | Every runtime check the compiled program performs has an obligation (#1480). |
 | `test_examples_ephemeris.py` | 12 | 375 | Pins for `examples/ephemeris.vera` — the tree's only floating-point program. |
 | `test_execute_characterization.py` | 24 | 507 | Characterization harness for ``execute()`` — the #421 decomposition gate. |
-| `test_exn_throw_payload_1268.py` | 42 | 1,068 | ``throw``'s payload is obligated AND guarded like every other narrowing site (#1268). |
+| `test_exn_throw_payload_1268.py` | 42 | 1,045 | ``throw``'s payload is obligated AND guarded like every other narrowing site (#1268). |
 | `test_family_naming.py` | 66 | 1,598 | The State/Exn cell FAMILY is the cell the checker typed (#1209). |
 | `test_field_layout_one_source_1466.py` | 7 | 245 | One layout table, proved behaviourally: widen it and every walk follows. |
 | `test_float64_builtins_807.py` | 81 | 455 | #807 — Tier-1 Z3 modeling for the modelable Float64 builtins deferred from #797: `float_clamp`, `int_to_float`, `float_to_int`. |
 | `test_float64_fp.py` | 10 | 250 | Regression tests for #797 — @Float64 contracts via Z3's FloatingPoint sort. |
-| `test_formatter.py` | 554 | 3,639 | Tests for vera.formatter — canonical code formatter. |
+| `test_formatter.py` | 567 | 3,639 | Tests for vera.formatter — canonical code formatter. |
 | `test_gate_placement.py` | 50 | 889 | Every gate the local hook runs also runs in CI. |
 | `test_gc_shadow_bounds_860.py` | 9 | 255 | #860 — the four sibling shadow-stack bounds, made slot-complete. |
 | `test_generic_under_generic_callees_1223.py` | 8 | 282 | #1223: a generic `where`-helper under a GENERIC parent instantiates its own generic callees. |
 | `test_generic_where_helper_990.py` | 10 | 332 | #990: a ``forall<T>`` where-helper under a NON-generic parent never gets monomorphized — check and verify are green, but compile emits a dangling call. |
 | `test_git_hermetic.py` | 3 | 121 | The suite never acts on a repository it inherits (PR #1484). |
 | `test_grammar_alignment.py` | 91 | 753 | Tests for the grammar rule-name drift gate (scripts/check_grammar_alignment.py). |
-| `test_guard_completeness.py` | 75 | 2,358 | Guard completeness — the sites the verifier OBLIGATES and codegen must runtime-check (#765, #757, #1036, #754, #1222). |
+| `test_guard_completeness.py` | 61 | 2,018 | Guard completeness — the sites the verifier OBLIGATES and codegen must runtime-check (#765, #757, #1036, #754, #1222). |
 | `test_handle_exn_divergent_result_1276.py` | 10 | 347 | #1276: a ``handle[Exn]`` whose clause body AND handled body both diverge must still emit a block WASM accepts in a result-expecting context. |
 | `test_handler_op_ownership_1284.py` | 15 | 419 | #1284: whose declaration a bare ``get``/``put`` call site denotes. |
 | `test_handler_signature_1442.py` | 26 | 517 | #1442 — ``validate_handler`` must read the handler's VERA types. |
-| `test_hetero_widen_tailcall.py` | 21 | 345 | Verifier<->codegen desync tests for the #820 heterogeneous per-arm @Nat->@Int widen guard: three fixes found by review on PR #986. |
 | `test_html.py` | 4 | 159 | Tests for docs/index.html code samples — parse, check, and verify. |
 | `test_import_visibility_entry_point_1244.py` | 6 | 251 | #1244: one program, one verdict — whatever file `vera check` was given. |
 | `test_imported_trap_source_map_1189.py` | 8 | 308 | #1189 — an imported function's trap frame must name ITS module's file. |
 | `test_infer_vera_type_join_1286.py` | 26 | 528 | #1286: the Vera-level type namers must join over `if` / `match`, not read one branch. |
 | `test_inference_response_shapes_1333.py` | 164 | 2,129 | #1333 — `Inference.complete` must parse provider responses by SHAPE, not by position. |
-| `test_int_overflow.py` | 6 | 131 | Regression tests for #798 — @Int/@Nat arithmetic overflow obligations. |
-| `test_int_overflow_codegen.py` | 62 | 662 | Runtime overflow-trap codegen tests for #798 (Stage 3). |
-| `test_int_overflow_differential.py` | 261 | 400 | Verifier<->codegen classification differential for #798 (Stage 3, RISK 6/7). |
-| `test_int_widening_codegen.py` | 52 | 490 | Runtime @Nat -> @Int widening-trap codegen tests for #813 (stage 3). |
-| `test_int_widening_differential.py` | 28 | 318 | Verifier<->codegen behavioural differential for #813 @Nat -> @Int widening. |
+| `test_int_overflow.py` | 6 | 133 | Regression tests for #798 — @Int/@Nat arithmetic overflow obligations. |
+| `test_int_overflow_codegen.py` | 62 | 643 | Runtime overflow-trap codegen tests for #798 (Stage 3). |
+| `test_int_overflow_differential.py` | 262 | 400 | Verifier<->codegen classification differential for #798 (Stage 3, RISK 6/7). |
 | `test_interpolation_resolved_type_1347.py` | 33 | 201 | #1347 — interpolation decides on the RESOLVED type, not the spelling. |
 | `test_introspect.py` | 39 | 221 | Tests for ``vera.introspect`` — the registry payloads behind ``vera builtins/effects/errors --json`` (#539). |
 | `test_json_accept_domain_1306_1308.py` | 97 | 720 | ``json_parse``'s accept domain (#1306, #1308). |
 | `test_lexical_fn_scope_1299.py` | 56 | 1,554 | #1299: codegen's bare-call ownership table must be the CALL SITE's scope. |
-| `test_literal_typing_from_context_1541_1565.py` | 3,374 | 1,554 | An integer literal takes its type from its context (#1541, #1565). |
-| `test_lsp.py` | 329 | 5,456 | Tests for vera/lsp/ — transport skeleton + coordinate layer (#222 Phase C). |
+| `test_literal_typing_from_context_1541_1565.py` | 3,125 | 1,563 | An integer literal takes its type from its context (#1541, #1565). |
+| `test_lowering_boundary.py` | 384 | 2,064 | What code generation can lower is decided once, and the checker refuses the rest. |
+| `test_lsp.py` | 329 | 5,460 | Tests for vera/lsp/ — transport skeleton + coordinate layer (#222 Phase C). |
 | `test_markdown.py` | 94 | 610 | Unit tests for the Python Markdown parser and renderer (§9.7.3). |
+| `test_match_unknown_scrutinee_1671.py` | 617 | 559 | A `match` over a scrutinee already in error is not judged for coverage (#1671). |
 | `test_matrix_gate.py` | 328 | 640 | The matrix gate (scripts/matrix_gate.py): the required check that holds a pull request to the full test matrix exactly when it raises `[project].version`. |
 | `test_matrix_issue.py` | 37 | 224 | A failed cell of the full test matrix files an issue (ci.yml `matrix-issue`). |
-| `test_matrix_sample.py` | 71 | 682 | The `matrix` marker's sample (tests/matrix_sample.py). |
+| `test_matrix_sample.py` | 71 | 691 | The `matrix` marker's sample (tests/matrix_sample.py). |
 | `test_module_environment_1493.py` | 128 | 837 | A module is compiled in ITS OWN namespace, imports included (#1493, #1275). |
 | `test_module_generic_collision_1281.py` | 24 | 939 | #1281: E608 must not refuse two modules' PROVABLY DISTINCT generics. |
 | `test_module_generic_namespace_1274.py` | 24 | 988 | #1274: a module generic that does not own the importer's bare name must be reached under its module-qualified ``mod$<path>$name`` identity. |
@@ -292,103 +294,104 @@ One row per test file: its tests as a full collection counts them (the stress te
 | `test_monomorphize_differential.py` | 63 | 2,210 | #732 differential soundness test for per-monomorphization verification. |
 | `test_mutual_recursive_sorts_881.py` | 15 | 312 | Regression tests for #881 — mutually-recursive ``data`` declarations must not crash ``vera verify`` with a raw ``RecursionError`` during Z3 sort construction. |
 | `test_name_resolution_spine_1316.py` | 233 | 2,130 | #1316 / #1321 / #1331 — ONE name-resolution spine, asked in the DECLARING namespace. |
-| `test_named_traps_1479.py` | 386 | 1,917 | Every runtime trap names its cause (#1479). |
+| `test_named_traps_1479.py` | 375 | 1,919 | Every runtime trap names its cause (#1479). |
 | `test_naming_env_provenance_1208.py` | 45 | 2,091 | Every consumer renders against the env the CHECKER rendered under (#1208). |
 | `test_nat_bind_construction_soundness_1332.py` | 42 | 727 | #1332: a `@Nat` tuple-component narrowing at CONSTRUCTION is obligated, never assumed. |
-| `test_nat_int_widening.py` | 36 | 610 | Regression tests for #813 — @Nat -> @Int widening coercion obligations. |
-| `test_nat_narrowing_return_differential.py` | 136 | 2,933 | Verifier<->codegen behavioural differential for #758 — the @Int -> @Nat narrowing obligation at the RETURN position. |
-| `test_nested_container_guards.py` | 3,487 | 339 | A component type reaches a NESTED container literal (R-1412 F3, PR #1606). |
+| `test_nat_i64.py` | 712 | 1,611 | `Nat` is the non-negative i64 that spec §2.2 defines, and every integer literal is an `Int` (v0.2.3). |
+| `test_nat_narrowing_return_differential.py` | 136 | 2,929 | Verifier<->codegen behavioural differential for #758 — the @Int -> @Nat narrowing obligation at the RETURN position. |
+| `test_nested_container_guards.py` | 2,387 | 336 | A component type reaches a NESTED container literal (R-1412 F3, PR #1606). |
 | `test_nested_ctor_sort_1360.py` | 30 | 650 | #1360: a `Tuple` nested inside a constructor translates, and `--json` always envelopes. |
-| `test_nested_handler_clause_ops.py` | 28 | 1,025 | #1211: a clause body's bare op belongs to the ENCLOSING context. |
-| `test_new_state_family_1285.py` | 13 | 387 | #1285: which cell ``new(State<T>)`` reads under a multi-``State`` row. |
+| `test_nested_handler_clause_ops.py` | 28 | 1,026 | #1211: a clause body's bare op belongs to the ENCLOSING context. |
+| `test_nested_patterns_1697.py` | 335 | 1,323 | A nested pattern is read to its full depth, by the exhaustiveness check and by the verifier's arm condition (#1697). |
+| `test_new_state_family_1285.py` | 13 | 394 | #1285: which cell ``new(State<T>)`` reads under a multi-``State`` row. |
 | `test_nightly_stress_workflow.py` | 5 | 318 | Contract test for #1328: the nightly stress workflow's marker selection must actually collect every ``@pytest.mark.stress`` test, not just whichever file the invocation happens to name. |
 | `test_nonregular_data_rejected_1429.py` | 44 | 810 | #1429 — a non-regularly recursive `data` declaration is refused at CHECK. |
-| `test_obligations.py` | 785 | 1,911 | Tests for vera/obligations/ — reified obligations + warm session (#222 Phase A). |
-| `test_one_classifier_1503.py` | 1,116 | 3,475 | #1503 — every guard and every obligation reads ONE classifier. |
+| `test_obligations.py` | 788 | 1,913 | Tests for vera/obligations/ — reified obligations + warm session (#222 Phase A). |
+| `test_one_classifier_1503.py` | 356 | 1,067 | #1503 — every guard and every obligation reads a component where it is built. |
+| `test_operation_row_1702.py` | 660 | 1,265 | An effect operation is held to the row in force, wherever it is performed (#1702). |
 | `test_overflow_fails_closed_1417.py` | 5 | 256 | An unclassified operand pair emits the overflow guard (#1417). |
 | `test_parse_error_instructions_1348_1349.py` | 15 | 177 | #1349 / #1348 — the parser's fallback, brought up to the project's bar. |
 | `test_parser.py` | 178 | 1,472 | Parser tests — verify that valid Vera programs parse without error. |
 | `test_pattern_scrutinee_agreement_1315_1320.py` | 63 | 584 | #1315 / #1320 — a pattern must be able to match the scrutinee's type. |
 | `test_per_owner_adt_identity_1317.py` | 62 | 2,303 | #1317 / #187 (data half) — per-owner ADT identity. |
 | `test_phantom_generic_instances_1271.py` | 14 | 342 | #1271: discovery inside a still-generic scope must not instantiate a callee at an ENCLOSING scope's type VARIABLE. |
-| `test_pipe_desugar.py` | 695 | 1,498 | A pipe is the call it stands for. |
-| `test_pipeline.py` | 572 | 940 | tests/pipeline.py, the suite's one driver for the compiler pipeline. |
+| `test_pipe_desugar.py` | 724 | 1,504 | A pipe is the call it stands for. |
+| `test_pipeline.py` | 584 | 927 | tests/pipeline.py, the suite's one driver for the compiler pipeline. |
 | `test_prelude.py` | 29 | 583 | Tests for vera.prelude — standard prelude injection. |
 | `test_prelude_adt_namespace_1277.py` | 61 | 1,037 | #1277: a module's ADT name must not evict the prelude's from other scopes. |
 | `test_prelude_decl_stamp_1287.py` | 4 | 236 | #1287: the prelude's declaration block is a fact about the prelude. |
 | `test_prelude_diagnostics.py` | 8 | 271 | Tests for #851 — prelude combinator skip-warnings (E602/E604). |
 | `test_prelude_named_imports_1559.py` | 66 | 335 | #1559 — an imported data type named like a prelude type. |
 | `test_readme.py` | 2 | 79 | Tests for README.md code samples — the parse stage of every Vera block. |
-| `test_reconciliation.py` | 478 | 1,428 | The verifier's runtime-guard claims reconciled with the checks code generation emits (the audit's T2a): :mod:`vera.reconcile`, ``vera verify --reconcile`` and the corpus gate ``scripts/check_reconciliation.py``. |
-| `test_refinement_binder_convergence_1208.py` | 16 | 442 | Codegen's refinement guard and :mod:`vera.naming` share ONE derivation. |
+| `test_reconciliation.py` | 486 | 1,385 | The verifier's runtime-guard claims reconciled with the checks code generation emits (the audit's T2a): :mod:`vera.reconcile`, ``vera verify --reconcile`` and the corpus gate ``scripts/check_reconciliation.py``. |
+| `test_refinement_binder_convergence_1208.py` | 16 | 444 | Codegen's refinement guard and :mod:`vera.naming` share ONE derivation. |
 | `test_refinement_chain_convergence.py` | 63 | 377 | The two refinement-chain oracles answer the same question. |
 | `test_release.py` | 86 | 1,230 | Release-policy tests for ``scripts/release.py`` (#481). |
 | `test_render_lists.py` | 62 | 702 | scripts/render_lists.py, which writes the lists that have one source. |
 | `test_render_status.py` | 50 | 824 | scripts/render_status.py, which writes TESTING.md's generated status. |
 | `test_reserved_container_names_1547.py` | 61 | 217 | #1547 — the built-in container names are reserved (E158). |
 | `test_resolver.py` | 20 | 602 | Tests for vera.resolver — module resolution. |
-| `test_runtime_traps.py` | 99 | 3,273 | Runtime trap categorisation + stdout-on-trap preservation. |
+| `test_result_reference_type_1517.py` | 224 | 879 | A result reference names the function's return type (#1517). |
+| `test_runtime_traps.py` | 99 | 3,272 | Runtime trap categorisation + stdout-on-trap preservation. |
 | `test_scorecard.py` | 55 | 856 | scripts/scorecard.py, the scorecard rows of TESTING.md's generated status. |
 | `test_self_qualified_calls_1558.py` | 259 | 1,654 | #1558 — a module's qualified call to its own function. |
 | `test_serve.py` | 8 | 189 | End-to-end tests for the #305 ``vera serve`` driver. |
 | `test_shard.py` | 35 | 308 | Sharding (tests/shard.py): `--shard=K/N` runs the K-th of N parts of the collection. |
+| `test_short_circuit_1501.py` | 132 | 822 | `&&`, `\|\|` and `==>` short-circuit, in compiled code and in the verifier (#1501). |
 | `test_single_source_type_names.py` | 53 | 1,264 | #1327 / #1357 / #1365 / #1366: one source for an expression's type. |
 | `test_slot_naming.py` | 56 | 811 | Rule table for :mod:`vera.naming` — the ONE slot/family naming renderer. |
 | `test_slot_naming_blast_radius.py` | 15 | 316 | The measured blast radius of the #1208 slot-naming core flip. |
 | `test_slot_naming_differential.py` | 6 | 911 | Differential gate: the CHECKER must render what :mod:`vera.naming` renders. |
 | `test_soundness_392.py` | 36 | 572 | Regression tests for the #392 smt.py / verifier soundness audit. |
-| `test_sql_provenance_309.py` | 79 | 780 | Tests for the SQL literal-provenance checker (#309) — SQL injection as a compile-time error. |
+| `test_sql_provenance_309.py` | 79 | 781 | Tests for the SQL literal-provenance checker (#309) — SQL injection as a compile-time error. |
 | `test_state_clause_semantics.py` | 27 | 696 | #976 option C: ``handle[State<T>]`` clause bodies EXECUTE with intrinsic-hybrid semantics. |
 | `test_state_exn_registration.py` | 30 | 1,299 | #1210: State/Exn host-import registration must cover the whole handler. |
 | `test_stress.py` | 16 | 541 | Scale-dependent regression tests (#596). |
 | `test_string_length_soundness.py` | 15 | 272 | Regression tests for #802 — string_length code-point vs UTF-8 byte mismatch. |
 | `test_termination_rule.py` | 788 | 1,865 | Every recursive function proves it terminates or says it may not (#1492). |
 | `test_tester.py` | 17 | 442 | Tests for vera.tester — contract-driven test engine. |
-| `test_tester_artifacts.py` | 1 | 89 | `vera test` must thread the #747/#820 checker artifacts into BOTH the verifier and codegen (FIX 2, PR #986 review). |
+| `test_tester_artifacts.py` | 1 | 93 | `vera test` must thread the #747/#820 checker artifacts into BOTH the verifier and codegen (FIX 2, PR #986 review). |
 | `test_tester_coverage.py` | 49 | 1,402 | Tests for vera.tester — Coverage gap tests. |
-| `test_tester_distrust.py` | 177 | 2,384 | `vera test --distrust`: execute the functions the verifier proved. |
+| `test_tester_distrust.py` | 177 | 2,407 | `vera test --distrust`: execute the functions the verifier proved. |
 | `test_types.py` | 82 | 443 | Unit tests for vera.types — type operations. |
 | `test_uninferred_type_arg_e622.py` | 20 | 812 | #1327/#1366: a type argument the walker cannot name must FAIL CLOSED [E622]. |
-| `test_unresolved_names_1489.py` | 57 | 602 | Every type and effect name resolves, or check refuses it (#1489, #1506). |
+| `test_unresolved_names_1489.py` | 57 | 605 | Every type and effect name resolves, or check refuses it (#1489, #1506). |
 | `test_value_type_dispatch_1534_1539.py` | 86 | 507 | Show and hash dispatch on the VALUE's type, not on the compiling namespace's reading of its name (#1534, #1539). |
-| `test_verifier_adt_decreases.py` | 22 | 927 | Tests for vera.verifier — adt_decreases (match/ADT verification, decreases measures, mutual recursion). |
+| `test_verifier_adt_decreases.py` | 22 | 935 | Tests for vera.verifier — adt_decreases (match/ADT verification, decreases measures, mutual recursion). |
 | `test_verifier_assert_subpattern_facts.py` | 51 | 2,619 | One derivation of what a `match` arm means, read by every walk (#1403). |
 | `test_verifier_budget.py` | 36 | 306 | The configurable Z3 budget (#1350). |
 | `test_verifier_call_arg_payload_1410.py` | 51 | 2,095 | Stream V3 — a call ARGUMENT establishes its parameter's nested refinements. |
 | `test_verifier_calls_modules.py` | 82 | 2,263 | Tests for vera.verifier — calls_modules (call-site preconditions, pipe operator, cross-module contracts). |
-| `test_verifier_contracts.py` | 96 | 913 | Tests for vera.verifier — contracts (example corpus, trivial/ensures/if-else/let/multi contracts, counterexamples, tier classification, arithmetic, summaries, diverge, edge cases, string-length/predicate verification). |
-| `test_verifier_coverage.py` | 92 | 1,652 | Additional coverage tests for vera/smt.py and vera/verifier.py. |
+| `test_verifier_contracts.py` | 96 | 915 | Tests for vera.verifier — contracts (example corpus, trivial/ensures/if-else/let/multi contracts, counterexamples, tier classification, arithmetic, summaries, diverge, edge cases, string-length/predicate verification). |
+| `test_verifier_coverage.py` | 92 | 1,648 | Additional coverage tests for vera/smt.py and vera/verifier.py. |
 | `test_verifier_cross_module_disclosure.py` | 38 | 1,704 | Stream V — #1363's demotion has to cross a module boundary (#1399). |
-| `test_verifier_fresh_scope.py` | 46 | 1,130 | Tests for vera.verifier — fresh-scope obligation walking (#779, #985). |
-| `test_verifier_mutation_gates_smt.py` | 52 | 1,317 | Tests for vera.verifier — mutation_gates_smt (#387 mutation-hardening: verifier gates and SMT translation). |
-| `test_verifier_mutation_obligations.py` | 38 | 891 | Tests for vera.verifier — mutation_obligations (#387 mutation-hardening: obligation-record completeness and projection helpers). |
-| `test_verifier_nat_obligations.py` | 82 | 1,745 | Tests for vera.verifier — nat_obligations (@Nat subtraction-underflow (#520) and binding-site narrowing (#552) obligations). |
+| `test_verifier_fresh_scope.py` | 43 | 1,079 | Tests for vera.verifier — fresh-scope obligation walking (#779, #985). |
+| `test_verifier_mutation_gates_smt.py` | 52 | 1,314 | Tests for vera.verifier — mutation_gates_smt (#387 mutation-hardening: verifier gates and SMT translation). |
+| `test_verifier_mutation_obligations.py` | 38 | 892 | Tests for vera.verifier — mutation_obligations (#387 mutation-hardening: obligation-record completeness and projection helpers). |
+| `test_verifier_nat_obligations.py` | 82 | 1,752 | Tests for vera.verifier — nat_obligations (@Nat subtraction-underflow (#520) and binding-site narrowing (#552) obligations). |
 | `test_verifier_nested_ctor_sort_918.py` | 14 | 415 | Regression: same-ADT self-nested constructor sort selection (#918). |
 | `test_verifier_nullary_ctor_sort_994.py` | 11 | 228 | Regression: bare nullary-constructor sort selection in ``==``/``!=`` (#994 F1). |
 | `test_verifier_premise_consistency_1451.py` | 203 | 3,478 | A function's premise set is checked for satisfiability before it is trusted (#1451). |
-| `test_verifier_primitive_ops.py` | 39 | 662 | Tests for vera.verifier — primitive_ops (division/modulo-by-zero (E526) and array index-bounds (E527) obligations (#680)). |
+| `test_verifier_primitive_ops.py` | 39 | 665 | Tests for vera.verifier — primitive_ops (division/modulo-by-zero (E526) and array index-bounds (E527) obligations (#680)). |
 | `test_verifier_refined_sort_derivation.py` | 9 | 488 | One sort for a refined payload, wherever a term is rebuilt (#1421). |
 | `test_verifier_refinement_chain_1434.py` | 15 | 663 | A refinement over a refinement means the conjunction of its predicates (#1434). |
-| `test_verifier_refinements.py` | 92 | 2,493 | Tests for vera.verifier — refinements (refined param sorts, refinement-predicate translation and verification (#746)). |
-| `test_verifier_shadow_audits.py` | 71 | 1,400 | Tests for vera.verifier — shadow_audits (per-monomorphization verification (#732) and the #680 shadow/projection audit battery). |
+| `test_verifier_refinements.py` | 92 | 2,492 | Tests for vera.verifier — refinements (refined param sorts, refinement-predicate translation and verification (#746)). |
+| `test_verifier_shadow_audits.py` | 72 | 1,419 | Tests for vera.verifier — shadow_audits (per-monomorphization verification (#732) and the #680 shadow/projection audit battery). |
 | `test_verifier_sort_name_collision_884.py` | 5 | 203 | Regression: injective Z3 datatype sort names (#884). |
-| `test_verifier_truth_consult_status.py` | 35 | 1,289 | Stream B — the verifier consults the statuses it computes. |
+| `test_verifier_truth_consult_status.py` | 31 | 1,162 | Stream B — the verifier consults the statuses it computes. |
 | `test_verifier_where_helper_scope_991.py` | 5 | 228 | #991 (verifier facet): the verifier resolved a bare call to a ``where``-helper through the flat, last-wins ``env.functions`` lookup, so in a diamond shape — two sibling helpers each carrying a nested helper of the SAME name but a DIFFERENT postcondition — it assumed the WRONG helper's ``ensures`` at the call site and reported a false E500 against a correct program. |
 | `test_version.py` | 5 | 80 | `vera.__version__` is the version `pyproject.toml` states, read once. |
 | `test_walker_defensive_branches_597.py` | 34 | 855 | Synthetic-AST tests for the defensive `isinstance` branches added by #597 to compiler walker functions. |
-| `test_warning_severity_1513.py` | 80 | 1,209 | #1513 — a check-stage warning is one whose program compiles and runs. |
-| `test_wasi_target.py` | 279 | 2,195 | Tests for the WASI Preview 2 component emitter (#237). |
+| `test_warning_severity_1513.py` | 80 | 1,203 | #1513 — a check-stage warning is one whose program compiles and runs. |
+| `test_wasi_target.py` | 280 | 2,195 | Tests for the WASI Preview 2 component emitter (#237). |
 | `test_wasm.py` | 29 | 473 | Unit tests for vera.wasm — WASM translation layer. |
-| `test_wasm_coverage.py` | 226 | 3,942 | Tests for vera.wasm — Coverage gap tests. |
-| `test_where_helper_call_boundary_1455.py` | 36 | 654 | #1455 — a call boundary obligates its argument wherever the callee is declared. |
+| `test_wasm_coverage.py` | 226 | 3,947 | Tests for vera.wasm — Coverage gap tests. |
+| `test_where_helper_call_boundary_1455.py` | 36 | 655 | #1455 — a call boundary obligates its argument wherever the callee is declared. |
 | `test_where_helper_scope_1307.py` | 30 | 704 | #1307 — a `where`-helper is local to its parent, on the checker's table too. |
-| `test_widen_trap_kind_1438.py` | 4 | 165 | The `@Nat` -> `@Int` widening guard names itself (#1438). |
 | `test_xmod_ability_ops_992.py` | 5 | 127 | #992: imported function bodies never got the ability-op rewrite. |
-| `test_xmod_artifact_collection.py` | 5 | 203 | Opt-in collection of ``CheckArtifacts.module_artifacts`` (PR #997 review). |
-| `test_xmod_generic_widen_gap.py` | 15 | 378 | Cross-module differential for #998: imported GENERIC bodies keep the #820 widen guard at every monomorphized instantiation. |
-| `test_xmod_span_collision.py` | 4 | 161 | Cross-module span-collision false-guard (PROBE 5, PR #986 review). |
+| `test_xmod_artifact_collection.py` | 5 | 204 | Opt-in collection of ``CheckArtifacts.module_artifacts`` (PR #997 review). |
+| `test_xmod_span_collision.py` | 4 | 160 | Cross-module span-collision false-guard (PROBE 5, PR #986 review). |
 | `test_xmod_where_helper_import_991.py` | 3 | 155 | #991 round 4 (PR #1013 review): a non-generic where-helper's name must no longer suppress a same-named IMPORT's bare emission. |
-| `test_xmod_widening_differential.py` | 18 | 259 | Cross-module verifier<->codegen differential for #987 @Nat -> @Int widening. |
 <!-- render_status:end test-files -->
 
 ## Conformance Suite
@@ -429,7 +432,7 @@ Most programs are at the `run` level: they compile and execute, producing correc
 A conformance program skips every stage past its declared level: a `check`-level program skips `verify` and `run`, and a `verify`-level one skips `run`.  The table below is generated at release by calling each stage method of `tests/test_conformance.py` on each manifest entry, so it is the suite's own decision rather than a restatement of that rule, and the message is the one pytest reports.  The suite's other skips are platform- or tool-gated and documented beside the tests that declare them.
 
 <!-- render_status:begin skipped-tests -->
-The suite skips 140 conformance-stage tests:
+The suite skips 164 conformance-stage tests:
 
 | Test | Program | Declared level | Message | What the program is |
 |------|---------|----------------|---------|---------------------|
@@ -441,12 +444,22 @@ The suite skips 140 conformance-stage tests:
 | `test_run[ch02_map_unit_value_rejected]` | `ch02_map_unit_value_rejected.vera` | `check` | check-only | A Map with a zero-size value type is a checker error (#1075); negative: `expected_error: E135` |
 | `test_verify[ch02_nonregular_data_rejected]` | `ch02_nonregular_data_rejected.vera` | `check` | check-only | A data declaration may not recurse non-regularly; negative: `expected_error: E129` |
 | `test_run[ch02_nonregular_data_rejected]` | `ch02_nonregular_data_rejected.vera` | `check` | check-only | A data declaration may not recurse non-regularly; negative: `expected_error: E129` |
+| `test_verify[ch03_result_reference_type]` | `ch03_result_reference_type.vera` | `check` | check-only | A result reference whose type is not the function's return type is a checker error (#1517); negative: `expected_error: E163` |
+| `test_run[ch03_result_reference_type]` | `ch03_result_reference_type.vera` | `check` | check-only | A result reference whose type is not the function's return type is a checker error (#1517); negative: `expected_error: E163` |
 | `test_run[ch03_slot_let_chains]` | `ch03_slot_let_chains.vera` | `verify` | verify-only | Deep let-chain slot indexing |
 | `test_run[ch03_slot_noncommutative]` | `ch03_slot_noncommutative.vera` | `verify` | verify-only | Non-commutative slot indexing |
 | `test_verify[ch03_typed_holes]` | `ch03_typed_holes.vera` | `check` | check-only | Typed holes |
 | `test_run[ch03_typed_holes]` | `ch03_typed_holes.vera` | `check` | check-only | Typed holes |
+| `test_verify[ch04_array_literal_element_type]` | `ch04_array_literal_element_type.vera` | `check` | check-only | An array literal element whose type is not the literal's element type is a checker error (#1584); negative: `expected_error: E162` |
+| `test_run[ch04_array_literal_element_type]` | `ch04_array_literal_element_type.vera` | `check` | check-only | An array literal element whose type is not the literal's element type is a checker error (#1584); negative: `expected_error: E162` |
+| `test_verify[ch04_array_literal_open_position]` | `ch04_array_literal_open_position.vera` | `check` | check-only | An array literal element that contradicts the type a later element gives an open position is a checker error (#1668); negative: `expected_error: E162` |
+| `test_run[ch04_array_literal_open_position]` | `ch04_array_literal_open_position.vera` | `check` | check-only | An array literal element that contradicts the type a later element gives an open position is a checker error (#1668); negative: `expected_error: E162` |
 | `test_verify[ch04_let_unit_rejected]` | `ch04_let_unit_rejected.vera` | `check` | check-only | A let binding of the zero-size type Unit is a checker error (#1006); negative: `expected_error: E183` |
 | `test_run[ch04_let_unit_rejected]` | `ch04_let_unit_rejected.vera` | `check` | check-only | A let binding of the zero-size type Unit is a checker error (#1006); negative: `expected_error: E183` |
+| `test_verify[ch04_literal_above_i64]` | `ch04_literal_above_i64.vera` | `check` | check-only | An integer literal above i64 is out of range in a `@Nat` context (E149); negative: `expected_error: E149` |
+| `test_run[ch04_literal_above_i64]` | `ch04_literal_above_i64.vera` | `check` | check-only | An integer literal above i64 is out of range in a `@Nat` context (E149); negative: `expected_error: E149` |
+| `test_verify[ch04_match_nested_missing]` | `ch04_match_nested_missing.vera` | `check` | check-only | A case missing inside a nested constructor pattern is a checker error (#1697); negative: `expected_error: E311` |
+| `test_run[ch04_match_nested_missing]` | `ch04_match_nested_missing.vera` | `check` | check-only | A case missing inside a nested constructor pattern is a checker error (#1697); negative: `expected_error: E311` |
 | `test_run[ch04_nested_option_ctor]` | `ch04_nested_option_ctor.vera` | `verify` | verify-only | Nested same-ADT constructor sort selection (#918) |
 | `test_verify[ch04_pattern_ctor_over_container_rejected]` | `ch04_pattern_ctor_over_container_rejected.vera` | `check` | check-only | A constructor pattern over a scrutinee whose type declares no such constructor is a checker error (#1315); negative: `expected_error: E314` |
 | `test_run[ch04_pattern_ctor_over_container_rejected]` | `ch04_pattern_ctor_over_container_rejected.vera` | `check` | check-only | A constructor pattern over a scrutinee whose type declares no such constructor is a checker error (#1315); negative: `expected_error: E314` |
@@ -475,11 +488,19 @@ The suite skips 140 conformance-stage tests:
 | `test_run[ch06_adt_sort_disambiguation]` | `ch06_adt_sort_disambiguation.vera` | `verify` | verify-only | ADT sort disambiguation (generic vs flat-ADT name collision) |
 | `test_verify[ch06_quantifier_array_domain_rejected]` | `ch06_quantifier_array_domain_rejected.vera` | `check` | check-only | An array-typed quantifier domain is a check-time E128 (#1204); negative: `expected_error: E128` |
 | `test_run[ch06_quantifier_array_domain_rejected]` | `ch06_quantifier_array_domain_rejected.vera` | `check` | check-only | An array-typed quantifier domain is a check-time E128 (#1204); negative: `expected_error: E128` |
+| `test_verify[ch06_quantifier_predicate_signature]` | `ch06_quantifier_predicate_signature.vera` | `check` | check-only | A quantifier predicate whose parameter is a type parameter is a checker error (#1506); negative: `expected_error: E179` |
+| `test_run[ch06_quantifier_predicate_signature]` | `ch06_quantifier_predicate_signature.vera` | `check` | check-only | A quantifier predicate whose parameter is a type parameter is a checker error (#1506); negative: `expected_error: E179` |
 | `test_verify[ch07_bare_effect_op_rejected]` | `ch07_bare_effect_op_rejected.vera` | `check` | check-only | Bare (unqualified) effect-op call the WASM backend cannot route is a checker error; negative: `expected_error: E217` |
 | `test_run[ch07_bare_effect_op_rejected]` | `ch07_bare_effect_op_rejected.vera` | `check` | check-only | Bare (unqualified) effect-op call the WASM backend cannot route is a checker error; negative: `expected_error: E217` |
 | `test_run[ch07_cross_module_contracts]` | `ch07_cross_module_contracts.vera` | `verify` | verify-only | Cross-module contract verification |
 | `test_verify[ch07_cross_module_contracts_lib]` | `ch07_cross_module_contracts_lib.vera` | `check` | check-only | Cross-module contract library |
 | `test_run[ch07_cross_module_contracts_lib]` | `ch07_cross_module_contracts_lib.vera` | `check` | check-only | Cross-module contract library |
+| `test_verify[ch07_effect_row_unlowerable]` | `ch07_effect_row_unlowerable.vera` | `check` | check-only | An effect row naming a user-declared effect is a checker error (#1681); negative: `expected_error: E340` |
+| `test_run[ch07_effect_row_unlowerable]` | `ch07_effect_row_unlowerable.vera` | `check` | check-only | An effect row naming a user-declared effect is a checker error (#1681); negative: `expected_error: E340` |
+| `test_verify[ch07_generic_state_cell_nesting]` | `ch07_generic_state_cell_nesting.vera` | `check` | check-only | A clause-body State operation a type-parameter cell can shadow is a checker error (#1522); negative: `expected_error: E339` |
+| `test_run[ch07_generic_state_cell_nesting]` | `ch07_generic_state_cell_nesting.vera` | `check` | check-only | A clause-body State operation a type-parameter cell can shadow is a checker error (#1522); negative: `expected_error: E339` |
+| `test_verify[ch07_handler_effect_unlowerable]` | `ch07_handler_effect_unlowerable.vera` | `check` | check-only | A handler for an effect other than State or Exn is a checker error (#1597); negative: `expected_error: E340` |
+| `test_run[ch07_handler_effect_unlowerable]` | `ch07_handler_effect_unlowerable.vera` | `check` | check-only | A handler for an effect other than State or Exn is a checker error (#1597); negative: `expected_error: E340` |
 | `test_verify[ch07_handler_state_body_scope_rejected]` | `ch07_handler_state_body_scope_rejected.vera` | `check` | check-only | Reading handler state as a slot in the handled body is a checker error (#973); negative: `expected_error: E130` |
 | `test_run[ch07_handler_state_body_scope_rejected]` | `ch07_handler_state_body_scope_rejected.vera` | `check` | check-only | Reading handler state as a slot in the handled body is a checker error (#973); negative: `expected_error: E130` |
 | `test_verify[ch07_handler_state_type_mismatch_rejected]` | `ch07_handler_state_type_mismatch_rejected.vera` | `check` | check-only | Handler state diverging from the State<T> cell type is a checker error; negative: `expected_error: E336` |
@@ -489,7 +510,11 @@ The suite skips 140 conformance-stage tests:
 | `test_run[ch07_io_sleep]` | `ch07_io_sleep.vera` | `verify` | verify-only | IO.sleep operation (#463) |
 | `test_verify[ch07_old_outside_ensures_rejected]` | `ch07_old_outside_ensures_rejected.vera` | `check` | check-only | old() outside an ensures clause is rejected (#1173); negative: `expected_error: E174` |
 | `test_run[ch07_old_outside_ensures_rejected]` | `ch07_old_outside_ensures_rejected.vera` | `check` | check-only | old() outside an ensures clause is rejected (#1173); negative: `expected_error: E174` |
+| `test_verify[ch07_operation_outside_row]` | `ch07_operation_outside_row.vera` | `check` | check-only | An effect operation performed where the row in force does not name its effect is a checker error (#1702); negative: `expected_error: E125` |
+| `test_run[ch07_operation_outside_row]` | `ch07_operation_outside_row.vera` | `check` | check-only | An effect operation performed where the row in force does not name its effect is a checker error (#1702); negative: `expected_error: E125` |
 | `test_run[ch07_random_effect]` | `ch07_random_effect.vera` | `verify` | verify-only | Random effect (#465) |
+| `test_verify[ch07_state_cell_unlowerable]` | `ch07_state_cell_unlowerable.vera` | `check` | check-only | A State cell whose value is a (ptr, len) pair is a checker error (#1512); negative: `expected_error: E340` |
+| `test_run[ch07_state_cell_unlowerable]` | `ch07_state_cell_unlowerable.vera` | `check` | check-only | A State cell whose value is a (ptr, len) pair is a checker error (#1512); negative: `expected_error: E340` |
 | `test_verify[ch07_state_unit_op_param_read_rejected]` | `ch07_state_unit_op_param_read_rejected.vera` | `check` | check-only | Reading a get clause's @Unit op parameter is a checker error (#1005); negative: `expected_error: E182` |
 | `test_run[ch07_state_unit_op_param_read_rejected]` | `ch07_state_unit_op_param_read_rejected.vera` | `check` | check-only | Reading a get clause's @Unit op parameter is a checker error (#1005); negative: `expected_error: E182` |
 | `test_verify[ch08_ambiguous_import_adt_lib_bool]` | `ch08_ambiguous_import_adt_lib_bool.vera` | `check` | check-only | The sibling dependency exporting that same data name |
@@ -549,6 +574,8 @@ The suite skips 140 conformance-stage tests:
 | `test_run[ch08_visibility_private]` | `ch08_visibility_private.vera` | `check` | check-only | Private declarations are not importable; negative: `expected_error: E150` |
 | `test_verify[ch08_xmod_widen_lib]` | `ch08_xmod_widen_lib.vera` | `check` | check-only | Cross-module @Nat -> @Int widening library |
 | `test_run[ch08_xmod_widen_lib]` | `ch08_xmod_widen_lib.vera` | `check` | check-only | Cross-module @Nat -> @Int widening library |
+| `test_verify[ch09_ability_operation_call]` | `ch09_ability_operation_call.vera` | `check` | check-only | A call to an operation of a user-declared ability is a checker error (#1499); negative: `expected_error: E340` |
+| `test_run[ch09_ability_operation_call]` | `ch09_ability_operation_call.vera` | `check` | check-only | A call to an operation of a user-declared ability is a checker error (#1499); negative: `expected_error: E340` |
 | `test_verify[ch09_builtin_effect_redefinition_rejected]` | `ch09_builtin_effect_redefinition_rejected.vera` | `check` | check-only | Redeclaring a built-in effect is a checker error; negative: `expected_error: E152` |
 | `test_run[ch09_builtin_effect_redefinition_rejected]` | `ch09_builtin_effect_redefinition_rejected.vera` | `check` | check-only | Redeclaring a built-in effect is a checker error; negative: `expected_error: E152` |
 | `test_verify[ch09_builtin_redefinition]` | `ch09_builtin_redefinition.vera` | `check` | check-only | Redefining a built-in is a checker error; negative: `expected_error: E151` |
