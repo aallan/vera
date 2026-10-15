@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from vera import ast, naming, patterns
@@ -266,9 +266,11 @@ class ControlFlowMixin:
         # checked: an error inside an arm says nothing about the scrutinee.
         # `Unknown` with no error reported (`apply_fn` over a type variable)
         # is judged as before, and its E313 is the error that refuses the
-        # program.
+        # program.  A position inside the scrutinee whose type the check did
+        # not settle is read by the same rule (`_pattern_domain`, #1697).
+        after_error = any(d.severity == "error" for d in self.errors)
         in_error = (isinstance(base_type(scrutinee_ty), UnknownType)
-                    and any(d.severity == "error" for d in self.errors))
+                    and after_error)
 
         result_type: Type | None = None
         for arm in expr.arms:
@@ -345,7 +347,8 @@ class ControlFlowMixin:
         # written against that declaration, so its coverage is not judged.
         if not (self._refused_ctor_names and any(
                 self._names_refused_ctor(arm.pattern) for arm in expr.arms)):
-            self._check_exhaustiveness(expr, scrutinee_ty, in_error=in_error)
+            self._check_exhaustiveness(expr, scrutinee_ty, in_error=in_error,
+                                       after_error=after_error)
         return result_type or UnknownType()
 
     def _names_refused_ctor(self, pat: ast.Pattern) -> bool:
@@ -367,6 +370,7 @@ class ControlFlowMixin:
 
     def _check_exhaustiveness(
         self, expr: ast.MatchExpr, scrutinee_ty: Type, *, in_error: bool,
+        after_error: bool,
     ) -> None:
         """Check that match arms cover all possible values of the scrutinee.
 
@@ -375,7 +379,10 @@ class ControlFlowMixin:
 
         A scrutinee *in_error* (#1671) has no type to judge coverage by, so
         only the arms are judged: an arm after a catch-all is unreachable
-        whatever the scrutinee's type.
+        whatever the scrutinee's type.  *after_error*: an error had been
+        reported when the scrutinee was typed, which decides how a position
+        inside it whose type the check did not settle is read
+        (`_pattern_domain`).
         """
         raw_ty = base_type(scrutinee_ty)
 
@@ -418,8 +425,9 @@ class ControlFlowMixin:
             # the top is, and the message names it (`W(Green)`).
             scrutinee: Type = raw_ty
             missing = patterns.missing_cases(
-                [arm.pattern for arm in expr.arms], scrutinee,
-                self._pattern_domain)
+                [self._coverage_pattern(arm.pattern) for arm in expr.arms],
+                scrutinee,
+                lambda ty: self._pattern_domain(ty, after_error=after_error))
             if missing:
                 self._error(
                     expr,
@@ -470,6 +478,18 @@ class ControlFlowMixin:
             error_code="E313",
         )
 
+    def _coverage_pattern(self, pat: ast.Pattern) -> ast.Pattern:
+        """*pat* as the coverage reading takes it: a sub-pattern the check
+        refused (E314, an unknown constructor) takes every value, so its arm
+        draws no E311 beside that error, as a scrutinee in error draws none
+        (#1671).  The pattern itself is read as written, so what it leaves
+        at the scrutinee is named beside its error, as it always was."""
+        if not isinstance(pat, ast.ConstructorPattern):
+            return pat
+        return dataclasses.replace(pat, sub_patterns=tuple(
+            ast.WildcardPattern() if id(sub) in self._refused_patterns
+            else self._coverage_pattern(sub) for sub in pat.sub_patterns))
+
     def _match_data_type(self, name: str) -> AdtInfo | None:
         """The data declaration a `match` over type *name* is judged by: the
         one in scope, or (#1513) the one a type this file does not import
@@ -478,8 +498,7 @@ class ControlFlowMixin:
                 or self._stranger_data_type(name))
 
     def _pattern_domain(
-        self, ty: Type,
-        heads: Sequence[patterns.CtorHead | patterns.LitHead],
+        self, ty: Type, *, after_error: bool,
     ) -> patterns.Domain[Type] | None:
         """What the values at a `match` position of type *ty* are, for the
         coverage reading (`vera.patterns.missing_cases`, #1697).
@@ -487,10 +506,20 @@ class ControlFlowMixin:
         A data type's are its declaration's constructors, each field at the
         type the scrutinee's type arguments give it, as a constructor
         pattern binds them; a tuple type's, its one constructor `Tuple` over
-        its components; `Bool`'s, `true` and `false`.  Every other primitive
-        and every built-in with no constructors has an open domain, which
-        only a catch-all covers.  Where the type does not say (a type
-        variable, an unknown type) the patterns' *heads* do.
+        its components; `Bool`'s, `true` and `false`.  Every other type has
+        an open domain, which only a catch-all covers, as a scrutinee of it
+        needs one (E313): every other primitive, a built-in with no
+        constructors, a function type, and a type parameter the function
+        declares, which may be `Int`, so `Some(None)` and `Some(Some(_))`
+        over `Option<T>` leave `Some(_)`.  A position whose type the check
+        did not settle, `Unknown` or a type variable no inference bound
+        (`T$1`, which `Some(e)` has where `e` is in error), is open too,
+        unless an error has been reported by the time the scrutinee is typed
+        (*after_error*).  Then the error is what left it unsettled, and it
+        is not judged (``None``), as a scrutinee typed `Unknown` after an
+        error is not (#1671), so the arms draw no E311 beside that error.
+        Nor is a `Tuple` with no components, or a data type no declaration
+        in reach says, as a scrutinee of one is not.
         """
         raw = base_type(ty)
         if isinstance(raw, PrimitiveType):
@@ -506,40 +535,15 @@ class ControlFlowMixin:
                         (patterns.Constructor("Tuple", raw.type_args),))
             elif raw.name in _CONSTRUCTORLESS_BUILTIN_TYPES:
                 return patterns.Open()
-        return self._domain_of_heads(heads)
-
-    def _domain_of_heads(
-        self, heads: Sequence[patterns.CtorHead | patterns.LitHead],
-    ) -> patterns.Domain[Type] | None:
-        """The domain the patterns at a position say its type has, where the
-        type does not say (`_pattern_domain`): a constructor pattern there
-        names a constructor of one data type, whose declaration gives the
-        domain; `Bool` literals, `Bool`'s; any other literal, or nothing but
-        catch-alls, an open one.  ``None`` where the heads name no one type,
-        whose errors are reported where the patterns are checked."""
-        ctors = [h for h in heads if isinstance(h, patterns.CtorHead)]
-        if not ctors:
-            if heads and all(h.kind == "Bool" for h in heads
-                             if isinstance(h, patterns.LitHead)):
-                return patterns.Booleans()
+            return None
+        if isinstance(raw, TypeVar) and raw.name in self.env.type_params:
             return patterns.Open()
-        if len(ctors) != len(heads):
+        if isinstance(raw, (UnknownType, TypeVar)) and after_error:
             return None
-        owners: set[str] = set()
-        for h in ctors:
-            ci = self.env.lookup_constructor(h.name)
-            if ci is None and h.name not in self._refused_ctor_names:
-                _candidates, ci = self._stranger_constructor(h.name)
-            if ci is None:
-                return None
-            owners.add(ci.parent_type)
-        if len(owners) != 1:
-            return None
-        info = self._match_data_type(owners.pop())
-        return None if info is None else self._declared_constructors(info, None)
+        return patterns.Open()
 
     def _declared_constructors(
-        self, info: AdtInfo, ty: Type | None,
+        self, info: AdtInfo, ty: Type,
     ) -> patterns.Constructors[Type]:
         """*info*'s constructors in declaration order, each field at the
         type a value of *ty* gives it (`_constructor_fields`)."""
@@ -588,6 +592,7 @@ class ControlFlowMixin:
             # without them rather than reporting a second mismatch derived
             # from a type this pattern never sees.
             expected = None
+            self._refused_patterns[id(pat)] = pat
         if isinstance(pat, ast.ConstructorPattern):
             return self._check_ctor_pattern(pat, expected)
         if isinstance(pat, ast.NullaryPattern):
@@ -863,6 +868,7 @@ class ControlFlowMixin:
                          '"Algebraic Data Types (ADTs)"',
                 error_code="E320",
             )
+            self._refused_patterns[id(pat)] = pat
             return []
 
         # Infer type args from expected type
@@ -952,6 +958,7 @@ class ControlFlowMixin:
                          '"Algebraic Data Types (ADTs)"',
                 error_code="E322",
             )
+            self._refused_patterns[id(pat)] = pat
         return []
 
     def _check_binding_pattern(self, pat: ast.BindingPattern,

@@ -257,6 +257,9 @@ NOT_NAMESPACES: dict[str, str] = {
     "TypeChecker._unresolved_imports": (
         "keyed by the module PATH of an import that did not resolve, with "
         "the names its list mentions, for E136's instruction (#1489)"),
+    "TypeChecker._refused_patterns": (
+        "keyed by a pattern's IDENTITY, the patterns the check refused, "
+        "which the coverage judgement reads as catch-alls (#1697)"),
 }
 
 _MAPPING_ORIGINS = ("dict", "Dict", "Mapping", "MutableMapping",

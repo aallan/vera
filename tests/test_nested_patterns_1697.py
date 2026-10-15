@@ -16,7 +16,12 @@ check judges coverage over the pattern matrix (`missing_cases`): E311 iff
 some value of the scrutinee's type matches no arm, naming the cases missing
 at the first position that leaves one uncovered, at the scrutinee itself by
 the bare constructor as before (`None`) and inside a constructor as a
-pattern (`W(Green)`, `Some(_)`, `Tuple(None, _)`).  The verifier's condition
+pattern (`W(Green)`, `Some(_)`, `Tuple(None, _)`).  A type parameter the
+function declares has values no set of patterns enumerates, as `Int` has,
+so only a catch-all covers it, as a scrutinee of one needs (E313); a
+position whose type an error left unsettled is not judged, and a
+sub-pattern the check refused takes every value, so neither draws an E311
+beside the error.  The verifier's condition
 for an arm is the conjunction of every test the pattern makes
 (`patterns.tests`), each on the value its path reaches through the
 constructors' accessors; a `String` literal, which no pattern condition has
@@ -47,8 +52,13 @@ on every arm proves and one that fails on a reachable arm is refuted
 (none with a literal inside a constructor, which it refuses, E602), each
 value of the type runs the arm the oracle selects.  The flat sets and the
 `Bool`, `Int` and `String` scrutinees are the negative space: their verdicts
-and messages are base's.  The binder facts, the walks' exclusion, the
-decline and each mutant's killer are unparametrised tests.
+and messages are base's.  The positions no pattern enumerates (a type
+parameter, a function type, `Unknown` and an unbound type variable with and
+without an error reported, a `Tuple` with no components) and the refused
+sub-patterns are cells of their own, each with its nearest accepted
+neighbour.  The binder facts, the walks' exclusion, the decline, the search
+that stops at a row of catch-alls and each mutant's killer are
+unparametrised tests.
 """
 
 from __future__ import annotations
@@ -66,7 +76,8 @@ from tests import pipeline
 # or a module that decides its class: the reading of a pattern, the check's
 # coverage judgement and the verifier's arm condition.
 pytestmark = pytest.mark.matrix(decides=[
-    "vera/patterns.py", "vera/checker/control.py", "vera/smt.py"])
+    "vera/patterns.py", "vera/checker/control.py", "vera/smt.py",
+    "vera/verifier.py"])
 
 
 def _message(*missing: str) -> str:
@@ -923,31 +934,198 @@ def test_named_a_string_inside_a_constructor_is_not_a_proof() -> None:
     assert [d.error_code for d in verified.warnings] == ["E522"]
 
 
-def _generic(name: str, arms: str) -> str:
-    return (f"private forall<T> fn {name}(@Option<T> -> @Int)\n"
+_TAGGED = """
+private data Tagged<T> {
+  Tag(Colour, T),
+  Bare
+}
+"""
+
+_FUNCTION_FIELD = """
+type IntToInt = fn(Int -> Int) effects(pure);
+
+private data Op {
+  O(IntToInt)
+}
+"""
+
+
+def _matching(param: str, scrutinee: str, arms: list[str], *,
+              decls: str = "", generic: bool = True) -> str:
+    """A function over *param*, `forall<T>` when *generic*, whose body is
+    the `match` of *scrutinee* with *arms*."""
+    forall = "forall<T> " if generic else ""
+    body = ",\n".join(f"    {arm}" for arm in arms)
+    return (DECLS + decls + f"\nprivate {forall}fn f(@{param} -> @Int)\n"
             f"  requires(true)\n  ensures(true)\n  effects(pure)\n"
-            f"{{\n  match @Option<T>.0 {{\n{arms}\n  }}\n}}\n")
+            f"{{\n  match {scrutinee} {{\n{body}\n  }}\n}}\n")
 
 
-def test_named_a_type_parameter_position_is_read_from_its_patterns() -> None:
-    """Under `Option<T>` the field's type says nothing, so the patterns at
-    it do: `None` names `Option`'s constructors, `true` `Bool`'s values, `3`
-    an open domain.  `Some(None) -> 1, None -> 0` sends `Some(Some(3))` to
-    the `None` arm when `T` is `Option<Int>`, and `Some(5)` when `T` is
-    `Int`."""
-    source = "\n".join([
-        _generic("gap", "    Some(None) -> 1,\n    None -> 0"),
-        _generic("complete",
-                 "    Some(None) -> 1,\n    Some(Some(_)) -> 2,\n    None -> 0"),
-        _generic("bools", "    Some(true) -> 1,\n    None -> 0"),
-        _generic("ints", "    Some(3) -> 1,\n    None -> 0"),
-        _generic("binder", "    Some(@T) -> 1,\n    None -> 0"),
-    ])
-    assert _reported(pipeline.check(source)) == [
-        ("E311", "error", _message("Some(Some(_))")),
-        ("E311", "error", _message("Some(false)")),
-        ("E311", "error", _message("Some(_)")),
-    ]
+_E200 = ("E200", "error", "Unresolved function 'nope'.")
+
+_BROKEN = """
+private fn broken(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.1
+}
+"""
+
+#: A position whose values no set of patterns enumerates, by id: the program
+#: and what the check reports.  A type parameter the function declares is
+#: open, as `Int` is, since `T` may be `Int`: only a wildcard or a binder
+#: covers it, as a `match` over a `T` needs a catch-all (E313), whatever
+#: else the program reports.  So is a function type.  A position whose type
+#: the check did not settle, `Unknown` or a type variable no inference bound
+#: (`Some(e)` with `e` in error is `Option<T$1>`), is not judged once an
+#: error has been reported, as a scrutinee typed `Unknown` after one is not,
+#: so the arms draw nothing beside that error, whatever they leave; with no
+#: error reported (`apply_fn` over a type variable, `None` with no type to
+#: take) it is open, as a scrutinee of it is.  A `Tuple` with no components
+#: is not judged, as a scrutinee of one is not.
+OPEN_POSITIONS: dict[str, tuple[str, list[tuple[str, str, str]]]] = {
+    "option-t-constructor-subs": (_matching(
+        "Option<T>", "@Option<T>.0",
+        ["Some(None) -> 1", "Some(Some(_)) -> 2", "None -> 0"]),
+        [("E311", "error", _message("Some(_)"))]),
+    "option-t-beside-an-error": (_matching(
+        "Option<T>", "@Option<T>.0",
+        ["Some(None) -> 1", "Some(Some(_)) -> 2", "None -> 0"],
+        decls=_BROKEN),
+        [("E130", "error", "Cannot resolve @Int.1: only 1 Int binding(s) in "
+                           "scope (valid indices: 0..0)."),
+         ("E311", "error", _message("Some(_)"))]),
+    "option-t-a-constructor-sub-alone": (_matching(
+        "Option<T>", "@Option<T>.0", ["Some(None) -> 1", "None -> 0"]),
+        [("E311", "error", _message("Some(_)"))]),
+    "option-t-bool-literals": (_matching(
+        "Option<T>", "@Option<T>.0",
+        ["Some(true) -> 1", "Some(false) -> 2", "None -> 0"]),
+        [("E311", "error", _message("Some(_)"))]),
+    "option-t-int-literal": (_matching(
+        "Option<T>", "@Option<T>.0", ["Some(3) -> 1", "None -> 0"]),
+        [("E311", "error", _message("Some(_)"))]),
+    "option-t-wildcard-sub": (_matching(
+        "Option<T>", "@Option<T>.0",
+        ["Some(None) -> 1", "Some(_) -> 2", "None -> 0"]), []),
+    "option-t-binder-sub": (_matching(
+        "Option<T>", "@Option<T>.0",
+        ["Some(None) -> 1", "Some(@T) -> 2", "None -> 0"]), []),
+    "tagged-t-constructor-subs": (_matching(
+        "Tagged<T>", "@Tagged<T>.0",
+        ["Tag(Red, None) -> 1", "Tag(Red, Some(_)) -> 2", "Tag(Green, @T) -> 3",
+         "Tag(Blue, _) -> 4", "Bare -> 0"], decls=_TAGGED),
+        [("E311", "error", _message("Tag(Red, _)"))]),
+    "tagged-t-wildcard-sub": (_matching(
+        "Tagged<T>", "@Tagged<T>.0",
+        ["Tag(Red, None) -> 1", "Tag(Red, _) -> 2", "Tag(Green, @T) -> 3",
+         "Tag(Blue, _) -> 4", "Bare -> 0"], decls=_TAGGED), []),
+    "function-bool-literals": (_matching(
+        "Op", "@Op.0", ["O(true) -> 1", "O(false) -> 2"],
+        decls=_FUNCTION_FIELD, generic=False),
+        [("E311", "error", _message("O(_)"))]),
+    "function-binder": (_matching(
+        "Op", "@Op.0", ["O(@IntToInt) -> 1"],
+        decls=_FUNCTION_FIELD, generic=False), []),
+    "unknown-after-an-error-covered": (_matching(
+        "T", "Tuple(nope(@T.0), 3)",
+        ["Tuple(Some(None), _) -> 1", "Tuple(Some(Some(_)), _) -> 2",
+         "Tuple(None, _) -> 0"]), [_E200]),
+    "unknown-with-no-error": (_matching(
+        "T", "Some(apply_fn(@T.0, 1))",
+        ["Some(None) -> 1", "Some(Some(_)) -> 2", "None -> 0"]),
+        [("E311", "error", _message("Some(_)"))]),
+    "unbound-variable-after-an-error-covered": (_matching(
+        "Int", "Some(nope(@Int.0))",
+        ["Some(None) -> 1", "Some(Some(_)) -> 2", "None -> 0"],
+        generic=False), [_E200]),
+    "unbound-variable-after-an-error-gap": (_matching(
+        "Int", "Some(nope(@Int.0))", ["Some(None) -> 1", "None -> 0"],
+        generic=False), [_E200]),
+    "unbound-variable-with-no-error": (_matching(
+        "Int", "None",
+        ["Some(None) -> 1", "Some(Some(_)) -> 2", "None -> 0"],
+        generic=False),
+        [("E311", "error", _message("Some(_)"))]),
+    "tuple-with-no-components": (_matching(
+        "Option<Tuple>", "@Option<Tuple>.0",
+        ["Some(Tuple(@Int)) -> 1", "None -> 0"], generic=False), []),
+}
+
+
+@pytest.mark.parametrize("key", OPEN_POSITIONS)
+def test_a_position_no_pattern_enumerates_is_covered_by_a_catch_all(
+        key: str) -> None:
+    """Each open position's program reports what `OPEN_POSITIONS` says."""
+    source, expected = OPEN_POSITIONS[key]
+    assert _reported(pipeline.check(source)) == expected
+
+
+#: A sub-pattern the check refuses, by id: the arms, over `Option<{type}>`,
+#: and the one error the program reports.  The refused sub-pattern takes
+#: every value for coverage, so its arm draws no E311 beside the error;
+#: refused at the scrutinee itself, a pattern is read as written, so what it
+#: leaves is named beside its error, as before (`top-unknown-constructor`).
+REFUSED_SUB_PATTERNS: dict[str, tuple[str, str, list[tuple[str, str, str]]]] = {
+    "ill-typed-constructor": (
+        "Int", "Some(Red) -> 1,\n    None -> 0",
+        [("E314", "error", "Pattern 'Red' is a constructor of Colour, but "
+                           "the scrutinee has type Int.")]),
+    "ill-typed-literal": (
+        "Colour", "Some(3) -> 1,\n    None -> 0",
+        [("E314", "error", "Pattern literal 3 has type Int, but the "
+                           "scrutinee has type Colour.")]),
+    "unknown-nullary-constructor": (
+        "Colour", "Some(Purple) -> 1,\n    None -> 0",
+        [("E322", "error", "Unknown constructor 'Purple' in pattern.")]),
+    "unknown-constructor": (
+        "Colour", "Some(Mauve(@Int)) -> 1,\n    None -> 0",
+        [("E320", "error", "Unknown constructor 'Mauve' in pattern.")]),
+    "top-unknown-constructor": (
+        "Colour", "Purple -> 1,\n    None -> 0",
+        [("E322", "error", "Unknown constructor 'Purple' in pattern."),
+         ("E311", "error", _message("Some"))]),
+}
+
+
+def _refused(key: str) -> str:
+    field, arms, _expected = REFUSED_SUB_PATTERNS[key]
+    return (DECLS + f"\nprivate fn f(@Option<{field}> -> @Int)\n"
+            f"  requires(true)\n  ensures(true)\n  effects(pure)\n"
+            f"{{\n  match @Option<{field}>.0 {{\n    {arms}\n  }}\n}}\n")
+
+
+@pytest.mark.parametrize("key", REFUSED_SUB_PATTERNS)
+def test_a_refused_sub_pattern_draws_its_own_error_alone(key: str) -> None:
+    """Each refused pattern's program reports what `REFUSED_SUB_PATTERNS`
+    says."""
+    assert _reported(pipeline.check(_refused(key))) == (
+        REFUSED_SUB_PATTERNS[key][2])
+
+
+def _wide(n: int) -> str:
+    """`W` with *n* `Bool` fields, and two arms per field, `true` and then
+    `false` there, `_` in every other field."""
+    arms = []
+    for i in range(n):
+        for value in ("true", "false"):
+            subs = ["_"] * n
+            subs[i] = value
+            arms.append(f"    W({', '.join(subs)}) -> {len(arms)}")
+    return (f"private data Wide {{\n  W({', '.join(['Bool'] * n)})\n}}\n\n"
+            "private fn f(@Wide -> @Int)\n  requires(true)\n  ensures(true)\n"
+            "  effects(pure)\n{\n  match @Wide.0 {\n" + ",\n".join(arms)
+            + "\n  }\n}\n")
+
+
+def test_named_a_row_of_catch_alls_ends_the_search() -> None:
+    """The arms cover `Wide`: every value takes one of the first field's two
+    arms.  Once a split leaves a row of catch-alls nothing is uncovered, and
+    the fields after it are not split, which would visit every combination
+    of the `Bool` values the other arms name, two to the twentieth here."""
+    assert pipeline.check(_wide(20)).diagnostics == ()
 
 
 def test_named_a_constructor_given_too_few_sub_patterns_draws_e321_alone(
@@ -1044,6 +1222,40 @@ def test_mutant_the_missing_case_is_named_to_its_depth() -> None:
     assert _reported(pipeline.check(_program(
         WRAP, (ctor("W", ctor("Red")),), [("holds", "true")]))) == [
         ("E311", "error", _message("W(Blue)", "W(Green)"))]
+
+
+def test_mutant_a_type_parameter_position_is_open() -> None:
+    """Killed: a type parameter the function declares not judged, which
+    takes `Some(None), Some(Some(_)), None` to cover `Option<T>`, though at
+    `T = Int` `Some(5)` matches no arm and runs the last; and one read as an
+    unsettled type, which is not judged beside an earlier error."""
+    for key in ("option-t-constructor-subs", "option-t-beside-an-error"):
+        source, expected = OPEN_POSITIONS[key]
+        assert _reported(pipeline.check(source)) == expected, key
+
+
+def test_mutant_an_unsettled_position_is_not_judged_after_an_error() -> None:
+    """Killed: a position the check did not settle, after an error, judged
+    open, which draws an E311 beside the error, and a type variable no
+    inference bound read as a declared one, which is open, so the same E311
+    is drawn; and one with no error reported not judged, which takes
+    `apply_fn`'s `Unknown` and `None`'s `T$1` to be covered."""
+    for key in ("unbound-variable-after-an-error-gap",
+                "unknown-with-no-error", "unbound-variable-with-no-error",
+                "unbound-variable-after-an-error-covered",
+                "unknown-after-an-error-covered"):
+        source, expected = OPEN_POSITIONS[key]
+        assert _reported(pipeline.check(source)) == expected, key
+
+
+def test_mutant_a_refused_sub_pattern_takes_every_value() -> None:
+    """Killed: a sub-pattern the check refused read as written, which
+    matches no value, so its arm draws an E311 `Some(_)` beside its E314 or
+    unknown-constructor error."""
+    for key in ("ill-typed-constructor", "ill-typed-literal",
+                "unknown-nullary-constructor", "unknown-constructor"):
+        assert _reported(pipeline.check(_refused(key))) == (
+            REFUSED_SUB_PATTERNS[key][2]), key
 
 
 def test_mutant_a_field_no_arm_splits_is_named_by_a_wildcard() -> None:

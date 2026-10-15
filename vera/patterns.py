@@ -21,11 +21,13 @@ refuses traps at the bind (§2.6.5) rather than falling through to a later
 arm.
 
 What the values at a position are is the caller's to say: *constructors_of*
-answers it from the data declaration as a domain, a data type's
+answers it from the position's type as a domain, a data type's
 :class:`Constructors` with their fields' types, `Bool`'s two values
 (:class:`Booleans`), or an :class:`Open` domain, whose values no set of
-literal patterns covers and only a catch-all does (`Int`, `Nat`, `Byte`,
-`String`, `Float64`, and the built-in types with no constructors).
+literal or constructor patterns covers and only a catch-all does (`Int`,
+`Nat`, `Byte`, `String`, `Float64`, the built-in types with no
+constructors, a function type, and a type variable, which may be any of
+them), or with ``None`` for a position it does not judge.
 
 Imports ``vera.ast`` only, so either phase imports it without the other.
 """
@@ -164,11 +166,9 @@ class Open:
 #: What the values at a position are.
 Domain = Union[Constructors[Ty], Booleans, Open]
 
-#: Answers a position's domain from its type, and from the heads its
-#: patterns have there, which say what a type variable or an unknown type's
-#: values are when the type does not; ``None`` where it cannot say.
-ConstructorsOf = Callable[
-    [Ty, Sequence[Union[CtorHead, LitHead]]], Union[Domain[Ty], None]]
+#: Answers a position's domain from its type; ``None`` for a position the
+#: caller does not judge.
+ConstructorsOf = Callable[[Ty], Union[Domain[Ty], None]]
 
 
 @dataclass(frozen=True)
@@ -235,16 +235,21 @@ def _uncovered(
     a vector when each of its patterns matches the value at its position
     (the usefulness computation over a pattern matrix: Maranget, "Warnings
     for pattern matching", 2007).  *top*: the first position is the
-    scrutinee itself."""
+    scrutinee itself.  A row of catch-alls matches every vector, so where
+    one is left nothing is uncovered, and the positions after it are not
+    split, which would visit every combination of the values the other
+    rows name there."""
+    if any(all(head(p) is None for p in row) for row in rows):
+        return []
     if not types:
-        return [] if rows else [()]
+        return [()]
     rest = types[1:]
     heads = [head(row[0]) for row in rows]
-    domain = constructors_of(types[0], [h for h in heads if h is not None])
+    domain = constructors_of(types[0])
     if domain is None:
-        # The caller cannot say what the values here are: every pattern at
-        # this position is read as taking every value, as the check has
-        # never judged a type it does not know.
+        # The caller does not judge this position: every pattern here is
+        # read as taking every value, as the check does not judge a
+        # scrutinee it has no type for.
         return [(_ANY, *case) for case in _uncovered(
             [row[1:] for row in rows], rest, constructors_of)]
     if isinstance(domain, Constructors):
