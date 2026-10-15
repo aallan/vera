@@ -110,9 +110,10 @@ Logical operators work on `Bool`:
 !@Bool.0               -- NOT
 @Bool.0 && @Bool.1     -- AND (short-circuiting)
 @Bool.0 || @Bool.1     -- OR (short-circuiting)
+@Bool.0 ==> @Bool.1    -- IMPLIES (short-circuiting)
 ```
 
-`&&` and `||` are short-circuiting: the right operand is not evaluated if the left operand determines the result.
+`&&`, `||` and `==>` are short-circuiting: the right operand is not evaluated if the left operand determines the result.
 
 ## 4.7 Let Bindings
 

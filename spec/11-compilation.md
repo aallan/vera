@@ -135,7 +135,7 @@ Unary operators:
 | `-` (Float64 negation) | `f64.neg` |
 | `!` (Boolean not) | `[expr]  i32.eqz` |
 
-`&&` and `||` evaluate their right operand only where the left operand does not determine the result (§4.6), and `a ==> b`, which is `(!a) || b`, evaluates `b` only where `a` is true.  Each compiles to a structured `if` (Section 11.3.5) over the left operand, so a trap or an effect in the right operand happens only where the right operand is evaluated:
+`&&`, `||` and `==>` evaluate their right operand only where the left operand does not determine the result (§4.6), so each compiles to a structured `if` (Section 11.3.5) over the left operand, and a trap or an effect in the right operand happens only where the right operand is evaluated:
 
 | Operator | WASM Output |
 |----------|-------------|

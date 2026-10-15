@@ -157,6 +157,9 @@ KNOWN: tuple[Known, ...] = (
     Known(1598, "tests/conformance/ch03_slot_noncommutative.vera", "guarded_unrecorded", "int_overflow", "ch03_slot_noncommutative.vera:21:3"),
     Known(1598, "tests/conformance/ch04_primitive_obligations.vera", "guarded_unrecorded", "int_overflow", "ch04_primitive_obligations.vera:15:3"),
     Known(1598, "tests/conformance/ch04_primitive_obligations.vera", "guarded_unrecorded", "int_overflow", "ch04_primitive_obligations.vera:40:3"),
+    # The `@Int` division a left operand guards (`@Int.0 != 0 && 10 / @Int.0 > 0`, and the `==>` form).
+    Known(1598, "tests/conformance/ch04_short_circuit.vera", "guarded_unrecorded", "int_overflow", "ch04_short_circuit.vera:29:18"),
+    Known(1598, "tests/conformance/ch04_short_circuit.vera", "guarded_unrecorded", "int_overflow", "ch04_short_circuit.vera:53:19"),
     Known(1598, "tests/conformance/ch06_requires.vera", "guarded_unrecorded", "int_overflow", "ch06_requires.vera:5:26"),
     Known(1598, "tests/conformance/ch06_requires.vera", "guarded_unrecorded", "int_overflow", "ch06_requires.vera:8:3"),
     Known(1598, "tests/conformance/ch07_exn_handler.vera", "guarded_unrecorded", "int_overflow", "ch07_exn_handler.vera:11:5"),

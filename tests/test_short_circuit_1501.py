@@ -33,15 +33,19 @@ Every cell's expectation is §4.6's definition, stated as the `if` it means:
 `a && b` is `if a then { b } else { false }`, `a || b` is `if a then { true }
 else { b }`, and `a ==> b` is `if a then { b } else { true }`.  A cell builds
 the operator's program and its `if` program, and holds the two to the same
-obligation records and the same runs, beside literal premises that keep the
-equality from passing two sides that are equally wrong: on the input where
-the left operand decides, the right operand does not run (no trap of its own,
-no output) and the result is §4.6's; on the input where it does not, the
-right operand runs; and the right operand's obligation is `verified` wherever
-the position's walk can state the left operand, which is every position bar
-the fresh-scope ones (a closure's body and a quantifier's predicate are
-walked with no slot bound, #779), where it is the runtime-checked Tier 3 the
-same operation gets under an `if`.
+obligation records, the same runs and the same reconciliation of records with
+the checks the module holds, beside literal premises that keep the equality
+from passing two sides that are equally wrong: on the input where the left
+operand decides, the right operand does not run (no trap of its own, no
+output) and the result is §4.6's; on the input where it does not, the right
+operand runs; the right operand's obligation is `verified` wherever the
+position's walk can state the left operand, which is every position bar the
+fresh-scope ones (a closure's body and a quantifier's predicate are walked
+with no slot bound, #779), where it is the runtime-checked Tier 3 the same
+operation gets under an `if`; and every record has its check and every check
+its record, bar a division's `INT_MIN / -1` check, which has no record in any
+position (#1598).  The matrix's right operands are true wherever they run, so
+`test_repro_the_truth_table` runs each operator's four rows.
 """
 
 from __future__ import annotations
@@ -49,6 +53,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import pytest
+
+from vera.reconcile import reconcile
 
 from tests import pipeline
 
@@ -67,9 +73,14 @@ pytestmark = pytest.mark.matrix(
 # =====================================================================
 
 
+#: The name every program here is checked, verified and compiled under, so
+#: that `vera verify --reconcile`'s join can place a record and a check.
+FILE = "short_circuit.vera"
+
+
 def _verify(source: str) -> pipeline.Verified:
     """Verify *source*, which must type-check cleanly."""
-    verified = pipeline.verify(source)
+    verified = pipeline.verify(source, file=FILE)
     errors = verified.checked.errors
     assert not errors, (
         "fixture must type-check cleanly, got: "
@@ -123,13 +134,21 @@ class Outcome:
     stdout: str
 
 
-def _runs(source: str, fn: str, args: list[int]) -> list[Outcome]:
-    """Compile *source* once and call *fn* with each of *args*."""
-    compiled = pipeline.compile(source)
+def _compile(source: str) -> pipeline.Compiled:
+    """Compile *source*, which must compile."""
+    compiled = pipeline.compile(source, file=FILE)
     assert compiled.ok, (
         "fixture must compile, got: "
         f"{[(d.error_code, d.description[:80]) for d in compiled.diagnostics]}"
     )
+    return compiled
+
+
+def _runs(source: str | pipeline.Compiled, fn: str,
+          args: list[int]) -> list[Outcome]:
+    """Compile *source* once (unless it is compiled) and call *fn* with each
+    of *args*."""
+    compiled = _compile(source) if isinstance(source, str) else source
     outcomes = []
     for arg in args:
         ran = pipeline.run(compiled, fn, [arg])
@@ -139,6 +158,25 @@ def _runs(source: str, fn: str, args: list[int]) -> list[Outcome]:
         else:
             outcomes.append(Outcome(ran.value, None, "", ran.stdout))
     return outcomes
+
+
+#: The one mismatch a division has wherever it stands, under an `if` as in a
+#: right operand, and at the commit this file was written against: its
+#: `INT_MIN / -1` check has no obligation (#1598).
+QUOTIENT = (
+    "guarded_unrecorded:int_overflow:wasm/operators.py:_note_quotient_overflow")
+
+
+def _mismatches(
+    verified: pipeline.Verified, compiled: pipeline.Compiled,
+) -> list[str]:
+    """What `vera verify --reconcile` reports for one program, located
+    nowhere: a record whose runtime check the module does not hold, and a
+    check the module holds that no record accounts for."""
+    return sorted(
+        f"{m.kind}:{m.obligation}:{m.emitter}" for m in reconcile(
+            verified.result, compiled.result,
+            program=verified.checked.program, file=verified.checked.file))
 
 
 def _shape(outcome: Outcome) -> tuple[object, ...]:
@@ -503,23 +541,31 @@ CELLS = [
 def test_the_operator_means_its_if(position: str, kind: Kind, op: str) -> None:
     source = _program(position, kind, op, "op")
     defined = _program(position, kind, op, "if")
+    module, its_if = _compile(source), _compile(defined)
 
     # The runs: the right operand does not run where the left decides, the
     # value is §4.6's, and the `if` runs the same.
-    ran = _runs(source, "probe", [DECIDES, RUNS])
+    ran = _runs(module, "probe", [DECIDES, RUNS])
     for arg, outcome in zip((DECIDES, RUNS), ran):
         assert _observed(position, outcome) is _expected(position, op, arg), (
             arg, outcome)
     assert ran[0].stdout == "", ran[0]
     assert ran[1].stdout == kind.prints, ran[1]
     assert [_shape(o) for o in ran] == [
-        _shape(o) for o in _runs(defined, "probe", [DECIDES, RUNS])]
+        _shape(o) for o in _runs(its_if, "probe", [DECIDES, RUNS])]
 
     # The verdicts: the right operand's obligation is discharged under the
     # left one, as under the `if`, and nothing else in the program moves.
     v = _verify(source)
     w = _verify(defined)
     assert _signature(v) == _signature(w)
+
+    # The checks: every check the module holds in the right operand has its
+    # record and every record its check, as under the `if`.  A division's
+    # `INT_MIN / -1` check has none in either (#1598), and nothing else does.
+    reconciled = _mismatches(v, module)
+    assert reconciled == _mismatches(w, its_if)
+    assert reconciled == ([QUOTIENT] if kind is DIVISION else []), reconciled
     if kind.obligation is None:
         return
     mine = _right_records(v, source, kind)
@@ -543,6 +589,34 @@ def _right_records(
     return [r for site in _right_operation(source, kind)
             for r in _records_at(verified, site)
             if r.startswith(f"{kind.obligation}:")]
+
+
+#: §4.6's truth table, row by row: the value, and whether the right operand
+#: ran, for each left operand and each right operand.  The matrix's right
+#: operands are true wherever they run, so the rows a false right operand
+#: decides are pinned here.
+TRUTH = {
+    "&&": {(0, 0): (0, False), (0, 1): (0, False),
+           (1, 0): (0, True), (1, 1): (1, True)},
+    "||": {(0, 0): (0, True), (0, 1): (1, True),
+           (1, 0): (1, False), (1, 1): (1, False)},
+    "==>": {(0, 0): (1, False), (0, 1): (1, False),
+            (1, 0): (0, True), (1, 1): (1, True)},
+}
+
+
+@pytest.mark.parametrize("op", OPS)
+def test_repro_the_truth_table(op: str) -> None:
+    """`probe(a, b)` is `a op right(b)`, `right` printing as it runs."""
+    source = _fn("right", "@Bool", "@Bool", 'IO.print("right\\n");\n  @Bool.0',
+                 effects="<IO>") + "\n" + _fn(
+        "probe", "@Bool, @Bool", "@Bool", f"@Bool.1 {op} right(@Bool.0)",
+        effects="<IO>", visibility="public ")
+    compiled = _compile(source)
+    for (left, right), (value, ran) in TRUTH[op].items():
+        outcome = pipeline.run(compiled, "probe", [left, right])
+        assert (outcome.value, outcome.stdout) == (
+            value, "right\n" if ran else ""), (op, left, right)
 
 
 # =====================================================================
