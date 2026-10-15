@@ -552,10 +552,14 @@ class ControlFlowMixin:
         ci: ConstructorInfo, ty: Type | None,
     ) -> tuple[Type, ...]:
         """The types of *ci*'s fields in a value of type *ty*: the declared
-        ones, each type parameter replaced by *ty*'s argument for it.  The
-        one reading of a constructor's fields, for the types a constructor
-        pattern binds and the values the coverage reading splits (#1697)."""
+        ones, each type parameter replaced by *ty*'s argument for it, a
+        refinement of *ty* read as its base, since a refinement does not
+        change which patterns match a value (§4.9.1).  The one reading of a
+        constructor's fields, for the types a constructor pattern's
+        sub-patterns are checked against and the values the coverage reading
+        splits (#1697)."""
         fields = ci.field_types or ()
+        ty = base_type(ty) if ty is not None else None
         if (isinstance(ty, AdtType) and ci.parent_type_params
                 and ty.type_args):
             mapping = dict(zip(ci.parent_type_params, ty.type_args))
@@ -901,11 +905,13 @@ class ControlFlowMixin:
                 error_code="E323",
             )
             return []
-        # Derive field types from expected Tuple type if available
+        # Derive field types from expected Tuple type if available, a
+        # refinement of it read as its base (`_constructor_fields`).
         field_types: tuple[Type | None, ...] = (None,) * len(pat.sub_patterns)
-        if (isinstance(expected, AdtType) and expected.name == "Tuple"
-                and len(expected.type_args) == len(pat.sub_patterns)):
-            field_types = expected.type_args
+        tuple_ty = base_type(expected) if expected is not None else None
+        if (isinstance(tuple_ty, AdtType) and tuple_ty.name == "Tuple"
+                and len(tuple_ty.type_args) == len(pat.sub_patterns)):
+            field_types = tuple_ty.type_args
         bindings: list[Binding] = []
         for sub_pat, field_ty in zip(pat.sub_patterns, field_types):
             bindings.extend(self._check_pattern(sub_pat, field_ty))

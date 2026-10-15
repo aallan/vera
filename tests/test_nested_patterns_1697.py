@@ -923,6 +923,102 @@ def test_named_a_string_inside_a_constructor_is_not_a_proof() -> None:
     assert [d.error_code for d in verified.warnings] == ["E522"]
 
 
+def _generic(name: str, arms: str) -> str:
+    return (f"private forall<T> fn {name}(@Option<T> -> @Int)\n"
+            f"  requires(true)\n  ensures(true)\n  effects(pure)\n"
+            f"{{\n  match @Option<T>.0 {{\n{arms}\n  }}\n}}\n")
+
+
+def test_named_a_type_parameter_position_is_read_from_its_patterns() -> None:
+    """Under `Option<T>` the field's type says nothing, so the patterns at
+    it do: `None` names `Option`'s constructors, `true` `Bool`'s values, `3`
+    an open domain.  `Some(None) -> 1, None -> 0` sends `Some(Some(3))` to
+    the `None` arm when `T` is `Option<Int>`, and `Some(5)` when `T` is
+    `Int`."""
+    source = "\n".join([
+        _generic("gap", "    Some(None) -> 1,\n    None -> 0"),
+        _generic("complete",
+                 "    Some(None) -> 1,\n    Some(Some(_)) -> 2,\n    None -> 0"),
+        _generic("bools", "    Some(true) -> 1,\n    None -> 0"),
+        _generic("ints", "    Some(3) -> 1,\n    None -> 0"),
+        _generic("binder", "    Some(@T) -> 1,\n    None -> 0"),
+    ])
+    assert _reported(pipeline.check(source)) == [
+        ("E311", "error", _message("Some(Some(_))")),
+        ("E311", "error", _message("Some(false)")),
+        ("E311", "error", _message("Some(_)")),
+    ]
+
+
+def test_named_a_constructor_given_too_few_sub_patterns_draws_e321_alone(
+) -> None:
+    """An arm whose constructor has the wrong number of sub-patterns is read
+    as covering every value it builds, as the check read it before it read
+    sub-patterns at all: its E321 is the one error."""
+    checked = pipeline.check(DECLS + """
+private data Pair {
+  P(Colour, Colour)
+}
+
+private fn f(@Pair -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Pair.0 {
+    P(Red) -> 1
+  }
+}
+""")
+    assert [(d.error_code, d.severity) for d in checked.diagnostics] == [
+        ("E321", "error")]
+
+
+def test_named_arms_of_another_type_leave_every_constructor_missing() -> None:
+    """At the scrutinee itself the constructors no arm names are named, as
+    before, even when no arm names any (each arm's E314 says why)."""
+    checked = pipeline.check(_program(
+        option(INT), (lit(3),), [("holds", "true")]))
+    assert [(d.error_code, d.description) for d in checked.diagnostics] == [
+        ("E314", "Pattern literal 3 has type Int, but the scrutinee has type "
+                 "Option<Int>."),
+        ("E311", _message("None", "Some")),
+    ]
+
+
+_REFINED = {"Option<Int>": "type Held = { @Option<Int> | true };\n",
+            "Tuple<Int, Bool>": "type Held = { @Tuple<Int, Bool> | true };\n"}
+
+
+@pytest.mark.parametrize(("base", "arms", "codes"), [
+    ("Option<Int>", "Some(Red) -> 1,\n    Some(_) -> 2,\n    None -> 0",
+     ["E314"]),
+    ("Option<Int>", "Some(@Int) -> 1,\n    None -> 0", []),
+    ("Option<Int>", "Some(3) -> 1,\n    None -> 0", ["E311"]),
+    ("Tuple<Int, Bool>", "Tuple(Red, @Bool) -> 1,\n    Tuple(@Int, @Bool) -> 0",
+     ["E314"]),
+    ("Tuple<Int, Bool>", "Tuple(@Int, @Bool) -> 0", []),
+], ids=["ctor-ill-typed", "ctor-binder", "ctor-gap", "tuple-ill-typed",
+        "tuple-binder"])
+def test_named_a_refined_scrutinee_is_read_as_its_base(
+        base: str, arms: str, codes: list[str]) -> None:
+    """A refinement does not change which patterns match a value (§4.9.1),
+    so a constructor's or a tuple's fields are read at the base type's
+    arguments for the pattern's sub-patterns as for its coverage, and a
+    `match` over a refinement reports what one over its base does.  The
+    sub-patterns were checked against the declaration's `T`, so `Some(Red)`
+    under a refinement of `Option<Int>` was accepted."""
+    def program(scrutinee: str, decl: str) -> str:
+        return (DECLS + decl + f"\nprivate fn f(@{scrutinee} -> @Int)\n"
+                f"  requires(true)\n  ensures(true)\n  effects(pure)\n"
+                f"{{\n  match @{scrutinee}.0 {{\n    {arms}\n  }}\n}}\n")
+    plain = pipeline.check(program(base, ""))
+    refined = pipeline.check(program("Held", _REFINED[base]))
+    assert [d.error_code for d in plain.diagnostics] == codes
+    assert [(d.error_code, d.description) for d in refined.diagnostics] == [
+        (d.error_code, d.description) for d in plain.diagnostics]
+
+
 # =====================================================================
 # The mutants' killers
 # =====================================================================
@@ -948,6 +1044,20 @@ def test_mutant_the_missing_case_is_named_to_its_depth() -> None:
     assert _reported(pipeline.check(_program(
         WRAP, (ctor("W", ctor("Red")),), [("holds", "true")]))) == [
         ("E311", "error", _message("W(Blue)", "W(Green)"))]
+
+
+def test_mutant_a_field_no_arm_splits_is_named_by_a_wildcard() -> None:
+    """Killed: a field the arms never split, a data type's or a `Bool`'s,
+    named by each of its values rather than by `_`."""
+    assert _reported(pipeline.check(_program(
+        NODE, (ctor("Leaf"), ctor("Unary", ANY), ctor("Binary", ctor("Red"), ANY)),
+        [("holds", "true")]))) == [
+        ("E311", "error", _message("Binary(Blue, _)", "Binary(Green, _)"))]
+    assert _reported(pipeline.check(_program(
+        TUPLE, (ctor("Tuple", ctor("Some", lit(3)), ANY),
+                ctor("Tuple", ctor("None"), ANY)),
+        [("holds", "true")]))) == [
+        ("E311", "error", _message("Tuple(Some(_), _)"))]
 
 
 # =====================================================================
