@@ -91,7 +91,7 @@ public fn safe_divide(@Int, @Int -> @Int)
 
 Multiple `requires` clauses are equivalent to a single `requires` with `&&`. They are provided as separate clauses for readability and for more precise error reporting (the compiler indicates which specific precondition was violated).
 
-The equivalence rests on §4.6's short-circuit `&&`.  The reference compiler evaluates both operands of `&&`, so a precondition whose later conjunct relies on an earlier one is written as separate clauses: the compiled check evaluates the clauses in order and stops at the first that fails, and the verifier checks each clause under the ones before it.  With `need_pos` requiring a positive argument, `requires(@Int.0 >= 1) requires(need_pos(@Int.0) > 0)` verifies, while `requires(@Int.0 >= 1 && need_pos(@Int.0) > 0)` evaluates `need_pos(0)` on `0`, which traps, and is refused `E501`.
+The equivalence rests on §4.6's short-circuit `&&`: a later conjunct is evaluated only where the earlier ones hold, as a later clause is checked only once the earlier ones have passed, and the verifier checks each under the ones before it.  With `need_pos` requiring a positive argument, `requires(@Int.0 >= 1) requires(need_pos(@Int.0) > 0)` and `requires(@Int.0 >= 1 && need_pos(@Int.0) > 0)` both verify, and on `0` both fail the function's own precondition without calling `need_pos`.
 
 ## 5.3 Parameter Binding Order
 

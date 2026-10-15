@@ -358,7 +358,8 @@ public fn fneg(@Float64 -> @Float64)
         assert "f64.neg" in result.wat
 
     def test_implies_operator(self) -> None:
-        """Boolean implies (==>) compiles to i32.eqz + i32.or."""
+        """Boolean implies (==>) compiles to an `if` that evaluates the right
+        operand only where the left one is true (§4.6, #1501)."""
         source = """\
 public fn imp(@Bool, @Bool -> @Bool)
   requires(true) ensures(true) effects(pure)
@@ -367,8 +368,12 @@ public fn imp(@Bool, @Bool -> @Bool)
 }
 """
         result = _compile_ok(source)
-        assert "i32.eqz" in result.wat
-        assert "i32.or" in result.wat
+        body = result.wat.split("(func $imp", 1)[1].split("(func ", 1)[0]
+        assert "if (result i32)" in body and "i32.or" not in body
+        # `@Bool.0` is the second parameter: `imp(a, b)` is `b ==> a`.
+        assert _run(source, "imp", [0, 0]) == 1
+        assert _run(source, "imp", [0, 1]) == 0
+        assert _run(source, "imp", [1, 1]) == 1
 
     def test_assert_compiles(self) -> None:
         """assert() compiles to i32.eqz + unreachable trap."""
@@ -918,7 +923,7 @@ public fn bool_eq(@Bool, @Bool -> @Bool)
         assert "i32.eq" in result.wat
 
     def test_bool_and(self) -> None:
-        """Bool && compiles to i32.and."""
+        """Bool && compiles to an `if` over the left operand (§4.6)."""
         source = """\
 public fn band(@Bool, @Bool -> @Bool)
   requires(true) ensures(true) effects(pure)
@@ -930,7 +935,7 @@ public fn band(@Bool, @Bool -> @Bool)
         assert _run(source, "band", [1, 0]) == 0
 
     def test_bool_or(self) -> None:
-        """Bool || compiles to i32.or."""
+        """Bool || compiles to an `if` over the left operand (§4.6)."""
         source = """\
 public fn bor(@Bool, @Bool -> @Bool)
   requires(true) ensures(true) effects(pure)

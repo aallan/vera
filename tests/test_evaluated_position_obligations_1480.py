@@ -317,9 +317,11 @@ public fn take(@Odd3 -> @Nat)
 }
 """
 
-# `||` is NOT a guard in the compiled predicate: both operands are evaluated
-# (`i32.or`), so a left operand that decides the result does not stop the
-# right one from trapping.
+# `||` guards its right operand in the compiled predicate (§4.6, #1501): the
+# right operand is evaluated only where the left one is false.  Here the left
+# decides at 3 alone, so the subtraction still underflows on 0, 1, 2 and 4,
+# values of the base type, and the predicate is ill-formed; a guard handed 3
+# accepts it.
 ODD3_OR_FIRST = """\
 type Odd3 = { @Nat | @Nat.0 == 3 || @Nat.0 - string_length("abcde") > 0 };
 
@@ -331,6 +333,9 @@ public fn take(@Odd3 -> @Nat)
   @Odd3.0
 }
 """
+
+# The left operand rules out every value the subtraction underflows on.
+ODD3_OR_GUARDED = ODD3_OR_FIRST.replace("@Nat.0 == 3 ||", "@Nat.0 < 5 ||")
 
 
 ODD3_INT = ODD3.replace('string_length("abcde")', "5")
@@ -366,12 +371,20 @@ class TestRefinementPredicateIsObligated:
         assert _run(ODD3_GUARDED, "take", [3]).value == 3
         assert _run(ODD3_GUARDED, "take", [9]).value == 9
 
-    def test_an_or_is_not_a_guard(self) -> None:
+    def test_an_or_guards_its_right_operand(self) -> None:
         v = _verify(ODD3_OR_FIRST)
         assert _records(v, "nat_sub", _at(ODD3_OR_FIRST,
                                           "@Nat.0 - string_length")) == [
             "violated/E502"]
-        assert _run(ODD3_OR_FIRST, "take", [3]).trap_kind is not None
+        assert _run(ODD3_OR_FIRST, "take", [3]).value == 3
+        assert _run(ODD3_OR_FIRST, "take", [1]).trap_kind is not None
+        w = _verify(ODD3_OR_GUARDED)
+        assert _records(w, "nat_sub", _at(ODD3_OR_GUARDED,
+                                          "@Nat.0 - string_length")) == [
+            "verified"]
+        assert w.ok, w.errors
+        assert _run(ODD3_OR_GUARDED, "take", [3]).value == 3
+        assert _run(ODD3_OR_GUARDED, "take", [9]).value == 9
 
     def test_the_issues_literal_subtrahend_is_an_int_subtraction(self) -> None:
         """`@Nat.0 - 5` is a `Nat - Int`: no underflow check, so the
@@ -3163,12 +3176,12 @@ def test_an_enclosing_arm_that_runs_keeps_the_fact() -> None:
     assert "Refinement violation" in _run(src, "main", [-3]).trap_message
 
 
-#: A `match` in `&&`'s right operand binds whichever the left operand is,
-#: because the reference compiler evaluates both operands (#1501), so its
-#: fact needs no left operand in its antecedent, and the postcondition is
-#: proved.  PINNED: once `&&` short-circuits, `main(false, -3)` skips the
-#: bind and fails the postcondition, and the antecedent needs the left
-#: operand (`SmtContext._arm_guarded_binders`).
+#: A `match` in `&&`'s right operand runs only where the left operand is
+#: true (§4.6, #1501), so the fact its refined binder establishes holds only
+#: there: the left operand is in its antecedent, read from the path
+#: conditions (`SmtContext._arm_guarded_binders`), and the postcondition
+#: that rests on it is left to the runtime check.  `main(false, -3)` skips
+#: the bind and fails the postcondition.
 _AND_RIGHT_OPERAND = """\
 type Pos = { @Int | @Int.0 > 0 };
 
@@ -3198,13 +3211,15 @@ public fn main(@Bool, @Int -> @Int)
 """
 
 
-def test_a_match_in_a_right_operand_binds_whatever_the_left_is() -> None:
+def test_a_match_in_a_right_operand_binds_only_where_it_runs() -> None:
     src = _AND_RIGHT_OPERAND
     v = _verify(src)
     assert _records(v, "ensures", _at(src, "ensures(@Int.result")) == [
-        "verified"]
-    assert _run(src, "main", [0, 3]).value == 3
-    assert "Refinement violation" in _run(src, "main", [0, -3]).trap_message
+        "tier3/E522"]
+    assert _run(src, "main", [1, 3]).value == 3
+    assert "Refinement violation" in _run(src, "main", [1, -3]).trap_message
+    assert "Postcondition violation" in _run(
+        src, "main", [0, -3]).trap_message
 
 
 #: A `match` in an `if` condition is evaluated before either branch, so its

@@ -264,15 +264,21 @@ class OperatorsMixin:
                 return left + right + [i32_op]
             return left + right + [self._CMP_OPS[op]]
 
-        # Boolean
-        if op == ast.BinOp.AND:
-            return left + right + ["i32.and"]
-        if op == ast.BinOp.OR:
-            return left + right + ["i32.or"]
-
-        # IMPLIES: a ==> b  ≡  (not a) or b
-        if op == ast.BinOp.IMPLIES:
-            return left + ["i32.eqz"] + right + ["i32.or"]
+        # Boolean: short-circuit (§4.6).  The right operand is evaluated only
+        # where the left one does not decide the result, so a trap or an
+        # effect in it happens only there: `a && b` is `if a then b else 0`,
+        # `a || b` is `if a then 1 else b`, and `a ==> b` is `if a then b
+        # else 1`.  The verifier takes the left operand as a premise of the
+        # right one for the same reason (`SmtContext.right_operand_premise`).
+        if op in (ast.BinOp.AND, ast.BinOp.OR, ast.BinOp.IMPLIES):
+            evaluated = ["  " + i for i in right]
+            decided = ["  i32.const 0" if op == ast.BinOp.AND
+                       else "  i32.const 1"]
+            if op == ast.BinOp.OR:
+                return (left + ["if (result i32)"] + decided + ["else"]
+                        + evaluated + ["end"])
+            return (left + ["if (result i32)"] + evaluated + ["else"]
+                    + decided + ["end"])
 
         raise CodegenInvariantError(  # pragma: no cover
             "binary operator dispatch fell through", expr)

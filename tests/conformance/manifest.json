@@ -612,6 +612,26 @@
     ]
   },
   {
+    "id": "ch04_short_circuit",
+    "file": "ch04_short_circuit.vera",
+    "chapter": 4,
+    "title": "&& and || do not evaluate a right operand the left one decides (#1501)",
+    "level": "run",
+    "spec_ref": "Section 4.6",
+    "expected_stdout": "printed\nfalse true\nfalse true\ntrue true\ntrue true\n3\n",
+    "expected_exit": 0,
+    "features": [
+      "and",
+      "or",
+      "implies",
+      "short_circuit",
+      "division",
+      "array_index",
+      "precondition",
+      "path_condition_discharge"
+    ]
+  },
+  {
     "id": "ch04_if_else",
     "file": "ch04_if_else.vera",
     "chapter": 4,
