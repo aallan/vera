@@ -23,13 +23,15 @@ clauses under the row around it, and a closure's body under the closure's
 own row.  Under a row that is not `pure`, an operation the row does not
 name is refused at the call (E125); under `pure` the declaration that
 performs it is refused, as before (E122), a closure at the closure, with no
-second code at the call.  The effects a closure performs that its own row
-declares count for the purity of the declaration it is written in, so a
-`pure` function cannot write a closure that performs one (E122 at the
-function, as at the base); under a row that is not `pure`, the closure's
-row is held where the closure is applied (`apply_fn`, E125).  A value of
-row `<IO, E>` can be rebound at `<E>` and applied under `pure` (a sub with
-a row variable is permissive, #294), so that count is what holds a `pure`
+second code at the call.  The effects a closure performs, directly or
+through a closure written in it, count for the purity of the declaration
+it is written in, so a `pure` function cannot write a closure that
+performs one (E122 at the function, as at the base); an operation a
+judgement refused is counted nowhere, its code at the call its one; under
+a row that is not `pure`, the closure's row is held where the closure is
+applied (`apply_fn`, E125).  A value of row `<IO, E>` can be rebound at
+`<E>` and applied under `pure` (a sub with a row variable is permissive,
+#294), at any depth of closures, so that count is what holds a `pure`
 function to its closures.  The lowering,
 `vera.lowering` rule 7: code generation compiles a closure as a function of
 its own, with no `State` cell or `Exn` tag from its row, so a `State` or
@@ -329,6 +331,83 @@ def test_repro_a_closure_applied_by_a_pure_higher_order_function() -> None:
     _refused_as_at_the_base(_LAUNDERED_HOF)
 
 
+#: PR #1703 review, at 86a2ba8f: the laundering one level down.  The
+#: closure that launders and applies the `<IO>` one is itself declared
+#: `<E>`, which names no `IO`, and `mk` applies it.
+_LAUNDERED_NESTED = """\
+type F<E> = fn(Int -> Int) effects(<E>);
+type G<E> = fn(Int -> Int) effects(<IO, E>);
+
+private forall<E> fn mk(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @F<E> = fn(@Int -> @Int) effects(<E>) {
+    let @G<E> = fn(@Int -> @Int) effects(<IO>) {
+      IO.print("leak");
+      @Int.0
+    };
+    let @F<E> = @G<E>.0;
+    apply_fn(@F<E>.0, @Int.0)
+  };
+  apply_fn(@F<E>.0, @Int.0)
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  mk(3)
+}
+"""
+
+#: The same, in a quantifier's predicate declared `<E>`.
+_LAUNDERED_PREDICATE = """\
+type F<E> = fn(Int -> Int) effects(<E>);
+type G<E> = fn(Int -> Int) effects(<IO, E>);
+
+private forall<E> fn mk(@Int -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  forall(@Nat, 1, fn(@Nat -> @Bool) effects(<E>) {
+    let @G<E> = fn(@Int -> @Int) effects(<IO>) {
+      IO.print("leak");
+      @Int.0
+    };
+    let @F<E> = @G<E>.0;
+    apply_fn(@F<E>.0, 1) > 0
+  })
+}
+
+public fn main(@Unit -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  mk(3)
+}
+"""
+
+
+def test_repro_a_laundered_closure_nested_in_a_closure() -> None:
+    """Refused at the base; at 86a2ba8f it checked and printed `leak`: the
+    `<E>` closure's row does not name `IO`, so counting only what a row
+    declares dropped it there.  A closure's effects reach the function at
+    any depth."""
+    _refused_as_at_the_base(_LAUNDERED_NESTED)
+
+
+def test_repro_a_laundered_closure_in_a_quantifier_predicate() -> None:
+    """The predicate is a closure literal declared `<E>`, so its count is
+    the same; its application holds nothing, the row being a row
+    variable."""
+    _refused_as_at_the_base(_LAUNDERED_PREDICATE)
+
+
 #: `vera.lowering` rule 7's base instances: a closure performing a `State`
 #: or `Exn` operation with no handler for it written inside the closure,
 #: under a row naming the effect, was accepted at check and refused by code
@@ -446,11 +525,10 @@ def _closure_in(outer: str, row: str, body: str) -> str:
 
 
 def test_a_pure_function_cannot_write_a_closure_that_performs_an_effect() -> None:
-    """The effects a closure performs that its row declares count for the
-    purity of the function it is written in, applied or not: E122 at a
-    `pure` function, as at the base, whichever row names the effect,
-    closed, with another effect or open (mutant: the closure's effects
-    counted for nothing).  Under `<IO>` the same closure is accepted
+    """The effects a closure performs count for the purity of the function
+    it is written in, applied or not: E122 at a `pure` function, as at the
+    base, whichever row names the effect, closed, with another effect or
+    open (mutant: the closure's effects counted for nothing).  Under `<IO>` the same closure is accepted
     (`test_a_closure_is_held_to_its_own_row`), and its row is held where
     it is applied."""
     for row in ("<Random>", "<Random, IO>", "<Random, E>"):
@@ -465,10 +543,10 @@ def test_a_pure_function_cannot_write_a_closure_that_performs_an_effect() -> Non
 
 def test_a_closure_s_refused_operation_is_not_the_function_s() -> None:
     """An operation the closure's row does not name is refused at the call
-    (E125), its one code: the effect is not the closure's, and is not
-    counted for the `pure` function around it (mutants: every effect the
-    closure performs counted for that function, and the closure sharing
-    the function's operations set, each a second code, E122 at `f`)."""
+    (E125), its one code: a refused operation is counted nowhere, so not
+    for the `pure` function around the closure (mutant: the operation
+    counted whatever the row judgement says, a second code, E122 at
+    `f`)."""
     for row in ("<IO>", "<IO, E>"):
         source = _closure_in("pure", row, "Random.random_int(1, 1)")
         checked = pipeline.check(source)
@@ -480,12 +558,14 @@ def test_a_closure_s_refused_operation_is_not_the_function_s() -> None:
 def test_a_nested_closure_counts_where_it_is_written() -> None:
     """The count is the declaration's the closure is written in: a closure
     in a `pure` closure is refused at that closure (E122), and one in a
-    closure whose row names its effect is counted on, to the `pure`
-    function around both.  At the base every closure's operations were
-    the function's, E122 at `f` for both."""
+    closure whose row is not `pure` is counted on through it, whether or
+    not that row names the effect, to the `pure` function around both
+    (mutant: only the effects a closure's row declares counted on).  At
+    the base every closure's operations were the function's, E122 at `f`
+    for all three."""
     inner = ("let @G = fn(@Int -> @Int) effects(<IO>) {\n"
              '      IO.print("x");\n      @Int.0\n    };\n    @Int.0')
-    for outer_row in ("pure", "<IO>"):
+    for outer_row in ("pure", "<IO>", "<Random>"):
         source = ("type G = fn(Int -> Int) effects(<IO>);\n\n"
                   + _closure_in("pure", outer_row, inner))
         at = (_locate(source, "fn(@Int -> @Int) effects(pure)")
@@ -493,6 +573,35 @@ def test_a_nested_closure_counts_where_it_is_written() -> None:
         checked = pipeline.check(source)
         assert _placed(checked) == [("E122", *at)], (
             outer_row, [(d.error_code, d.description) for d in checked.errors])
+
+
+def test_a_closure_s_operations_set_is_its_own() -> None:
+    """A `pure` closure is judged on what it performs, not on what the
+    function around it performed before it (mutant: the closure sharing
+    that function's operations set, E122 at the closure for the
+    function's `IO`)."""
+    source = ("type F = fn(Int -> Int) effects(pure);\n\n"
+              + _fn("f", "<IO>", (
+                  '  IO.print("x");\n'
+                  "  let @F = fn(@Int -> @Int) effects(pure) {\n"
+                  "    @Int.0\n  };\n  apply_fn(@F.0, @Int.0)")))
+    _holds_clean(source)
+
+
+def test_an_arity_error_is_counted_as_at_the_base() -> None:
+    """A call with the wrong number of arguments is refused before the row
+    judgement is reached (E203), so nothing refuses its effect and it is
+    counted: under `pure` the function is E122 as well, directly and
+    through a closure, as at the base (mutant: the arity error not
+    counted)."""
+    direct = _fn("f", "pure", "  Random.random_int(1)")
+    assert _placed(pipeline.check(direct)) == [
+        ("E203", *_locate(direct, "Random.random_int")),
+        ("E122", *_locate(direct, "fn f("))]
+    closed = _closure_in("pure", "<IO>", "Random.random_int(1)")
+    assert _placed(pipeline.check(closed)) == [
+        ("E203", *_locate(closed, "Random.random_int")),
+        ("E122", *_locate(closed, "fn f("))]
 
 
 def test_a_pure_closure_that_performs_an_effect_is_refused() -> None:
@@ -982,11 +1091,12 @@ class Cell:
         if self.site == "handler body" and self.around == self.op.effect:
             return ()
         if _names(self.row):
-            # Permitted, and an effect a closure both declares and performs
-            # counts for the purity of the function it is written in: E122
-            # at that function where its row is `pure`.  Under a row that is
-            # not, the closure's row is held where the closure is applied
-            # (E125), and no such cell applies it.
+            # Permitted, so counted: an effect a closure performs counts for
+            # the purity of the function it is written in, E122 at that
+            # function where its row is `pure`.  Under a row that is not,
+            # the closure's row is held where the closure is applied (E125),
+            # and no such cell applies it.  A refused operation is counted
+            # nowhere.
             counted = self.site == "closure" and self.around == "pure"
             return ("E122",) if counted else ()
         in_force_pure = self.row == "pure" and self.site != "handler body"

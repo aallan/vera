@@ -1374,13 +1374,14 @@ class ExpressionsMixin:
         under the row it declares: that row is the row in force, its order
         resolves a bare operation name, and the operations the body
         performs are held to that row.  A `pure` closure that performs an
-        effect is refused at the closure (E122).  The effects the closure
-        performs that its row declares count for the purity of the
-        declaration it is written in, so a `pure` function cannot write a
-        closure that performs one (E122 at the function); under a row that
-        is not `pure`, the closure's row is held where the closure is
-        applied (`apply_fn`, E125).  The type the closure is given, its
-        parameters, result and row, is the one it declares."""
+        effect is refused at the closure (E122).  The effects any other
+        closure performs, directly or through a closure written in it,
+        count for the purity of the declaration it is written in, so a
+        `pure` function cannot write a closure that performs one (E122 at
+        the function); under a row that is not `pure`, the closure's row is
+        held where the closure is applied (`apply_fn`, E125).  The type the
+        closure is given, its parameters, result and row, is the one it
+        declares."""
         # #861: closure signatures carry the same refinement positions as
         # top-level fn signatures.
         for param_te in expr.params:
@@ -1423,14 +1424,15 @@ class ExpressionsMixin:
         self.env.current_effect_order = saved_effect_order
         self._effect_ops_used = saved_ops
         self._row_owner = saved_row_owner
-        # An effect the closure both declares and performs counts for the
-        # declaration it is written in.  A row variable can drop a value's
-        # row on the way to an application (a sub with one is permissive,
-        # #294), so this is what holds a `pure` function to its closures.
-        # One the closure's row does not declare was refused at its
-        # operation (E125), its one code.
+        # The effects the closure performs, those of the closures written in
+        # it included, count for the declaration it is written in, so they
+        # reach the function at any depth.  A row variable can drop a
+        # value's row on the way to an application (a sub with one is
+        # permissive, #294), so this is what holds a `pure` function to its
+        # closures.  An operation a judgement refused was never counted
+        # (`_check_op_call`): its code at the call is its one.
         if isinstance(eff, ConcreteEffectRow):
-            self._effect_ops_used |= {e.name for e in eff.effects} & performed
+            self._effect_ops_used |= performed
 
         if body_type and not isinstance(body_type, UnknownType):
             if not is_subtype(body_type, ret_type):

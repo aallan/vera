@@ -1271,8 +1271,9 @@ class CallsMixin:
         The call is judged once (#1702): refused by `vera.lowering` rule 7
         (E340) when it is a `State` or `Exn` operation in a closure's body
         outside a handler written there, otherwise held to the row in force
-        (E125).  Its effect counts for the purity check (E122) unless it was
-        refused for lowering, here or, *counted* false, by the caller."""
+        (E125).  Its effect is counted as performed, for the purity check
+        (E122) and for every closure around the call, only where neither
+        judgement refused it and the caller did not (*counted* false)."""
         # Resolve type params from the current effect context first, so
         # each argument is synthesised against its *instantiated* formal.
         # That records the @Nat target for an ``E<Nat>.op(@Int.0)``
@@ -1283,8 +1284,6 @@ class CallsMixin:
         return_type = substitute(op_info.return_type, mapping)
         lowers = self._check_closure_operation_lowerable(
             op_info, node, mapping)
-        if counted and lowers:
-            self._effect_ops_used.add(op_info.parent_effect)
 
         arg_types: list[Type | None] = []
         for i, arg in enumerate(args):
@@ -1305,6 +1304,10 @@ class CallsMixin:
                 spec_ref='Chapter 7, Section 7.4 "Performing Effects"',
                 error_code="E203",
             )
+            # The row judgement is not reached, so it refuses nothing: the
+            # call is counted unless rule 7 refused it, as at the base.
+            if counted and lowers:
+                self._effect_ops_used.add(op_info.parent_effect)
             return return_type
 
         for i, (arg_ty, param_ty) in enumerate(zip(arg_types, param_types)):
@@ -1383,6 +1386,8 @@ class CallsMixin:
 
         refused = not lowers or self._refuse_operation_outside_row(
             op_info, arg_types, node)
+        if counted and not refused:
+            self._effect_ops_used.add(op_info.parent_effect)
         if refused and not mapping and contains_typevar(op_info.return_type):
             # A refused `State.get`: no row entry and no handler gives the
             # instance its result is typed by, so the result is not the
