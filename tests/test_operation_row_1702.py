@@ -20,10 +20,17 @@ types the call is the operation's typing), and a row variable names no
 effect, so `<IO, E>` permits `IO`'s operations and no others.  A handler's
 body is checked under the row around it with the handled effect added, its
 clauses under the row around it, and a closure's body under the closure's
-own row, the operations it performs its own.  Under a row that is not
-`pure`, an operation the row does not name is refused at the call (E125);
-under `pure` the declaration that performs it is refused, as before (E122),
-a closure at the closure, with no second code at the call.  The lowering,
+own row.  Under a row that is not `pure`, an operation the row does not
+name is refused at the call (E125); under `pure` the declaration that
+performs it is refused, as before (E122), a closure at the closure, with no
+second code at the call.  The effects a closure performs that its own row
+declares count for the purity of the declaration it is written in, so a
+`pure` function cannot write a closure that performs one (E122 at the
+function, as at the base); under a row that is not `pure`, the closure's
+row is held where the closure is applied (`apply_fn`, E125).  A value of
+row `<IO, E>` can be rebound at `<E>` and applied under `pure` (a sub with
+a row variable is permissive, #294), so that count is what holds a `pure`
+function to its closures.  The lowering,
 `vera.lowering` rule 7: code generation compiles a closure as a function of
 its own, with no `State` cell or `Exn` tag from its row, so a `State` or
 `Exn` operation in a closure's body is refused at the call (E340) unless a
@@ -60,10 +67,12 @@ application of its predicate), where each is reported, and E122's and rule
 7's messages.  The negative space is every cell the rules accept: it checks
 with no diagnostic and verifies with every obligation proved, each accepted
 closure compiles and runs, and each accepted quantifier compiles.  The
-reported programs, rule 7's base instances, a helper's signature under a
-`pure` and an `<IO>` parent, the fix each new refusal names and a killer
-for each mechanism's mutant are unparametrised tests, or parametrised
-within the sampler's floor, which every pull request runs.
+reported programs (among them the closures a row variable carries to an
+application in a `pure` function), rule 7's base instances, a helper's
+signature under a `pure` and an `<IO>` parent, a closure in a `pure`
+function at each row that names its effect, the fix each new refusal names
+and a killer for each mechanism's mutant are unparametrised tests, or
+parametrised within the sampler's floor, which every pull request runs.
 """
 
 from __future__ import annotations
@@ -226,6 +235,100 @@ def test_repro_an_operation_in_a_handler_body_in_a_pure_function() -> None:
         "only allows effects(<State<Int>>).")
 
 
+#: PR #1703 review: a `pure` function writes a closure that performs an
+#: effect its own row declares, rebinds it at a row-variable type and
+#: applies it.  `<IO>` fits `<IO, E>`, `<IO, E>` fits `<E>` (a sub with a
+#: row variable is permissive, #294), and an `<E>` value applies under
+#: `pure`, so the application holds nothing.  The closure's `IO`, counted
+#: for the function it is written in, refuses it, as at the base.
+_LAUNDERED = """\
+type F<E> = fn(Int -> Int) effects(<E>);
+type G<E> = fn(Int -> Int) effects(<IO, E>);
+
+private forall<E> fn mk(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @G<E> = fn(@Int -> @Int) effects(<IO>) {
+    IO.print("leak");
+    @Int.0
+  };
+  let @F<E> = @G<E>.0;
+  apply_fn(@F<E>.0, @Int.0)
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  mk(3)
+}
+"""
+
+#: The same closure passed to a `pure` higher-order function that applies it.
+_LAUNDERED_HOF = """\
+type F<E> = fn(Int -> Int) effects(<E>);
+type G<E> = fn(Int -> Int) effects(<IO, E>);
+
+private forall<E> fn twice(@F<E>, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  apply_fn(@F<E>.0, @Int.0)
+}
+
+private forall<E> fn mk(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @G<E> = fn(@Int -> @Int) effects(<IO, E>) {
+    IO.print("leak");
+    @Int.0
+  };
+  twice(@G<E>.0, @Int.0)
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  mk(3)
+}
+"""
+
+
+def _refused_as_at_the_base(source: str) -> None:
+    """E122 at `mk`, its one error, with the base's message."""
+    checked = pipeline.check(source)
+    assert _placed(checked) == [
+        ("E122", *_locate(source, "forall<E> fn mk("))], [
+        (d.error_code, d.description) for d in checked.errors]
+    assert checked.errors[0].description == (
+        "Pure function 'mk' performs effect operations: IO.")
+
+
+def test_repro_a_closure_rebound_at_a_row_variable_type() -> None:
+    """Refused at the base; at 5ac6fdee it checked, verified and ran,
+    printing `leak` from a `pure` function."""
+    _refused_as_at_the_base(_LAUNDERED)
+
+
+def test_repro_an_open_row_closure_rebound_at_a_row_variable_type() -> None:
+    """The closure declared `<IO, E>`, bound straight to its `G<E>`."""
+    _refused_as_at_the_base(_LAUNDERED.replace(
+        "fn(@Int -> @Int) effects(<IO>) {", "fn(@Int -> @Int) effects(<IO, E>) {"))
+
+
+def test_repro_a_closure_applied_by_a_pure_higher_order_function() -> None:
+    """Its application is in `twice`, which holds an `<E>` value."""
+    _refused_as_at_the_base(_LAUNDERED_HOF)
+
+
 #: `vera.lowering` rule 7's base instances: a closure performing a `State`
 #: or `Exn` operation with no handler for it written inside the closure,
 #: under a row naming the effect, was accepted at check and refused by code
@@ -276,6 +379,9 @@ def test_repro_rule_7_a_cell_operation_in_a_closure(
     checked = pipeline.check(source)
     assert _placed(checked) == [("E340", *_locate(source, op))], (
         [(d.error_code, d.description) for d in checked.errors])
+    operation = {"State<Int>": "a State", "Exn<Int>": "an Exn"}[row]
+    assert f": {operation} operation in a closure" in (
+        checked.errors[0].description), checked.errors[0].description
     assert backend in _codegen_refuses(source)
 
 
@@ -326,17 +432,67 @@ def test_a_closure_is_held_to_its_own_row() -> None:
         ("E125", *_locate(refused, "Random.random_int"))]
 
 
-def test_a_closure_s_effects_are_not_the_function_s() -> None:
-    """A `pure` function that builds a closure performing `Random`, and
-    does not apply it, performs nothing (mutant: the closure's effects
-    counted for the function, as at the base, where this was E122)."""
-    source = ("type F = fn(Int -> Int) effects(<Random>);\n\n"
-              + _fn("f", "pure", (
-                  "  let @F = fn(@Int -> @Int) effects(<Random>) {\n"
-                  "    Random.random_int(1, 1)\n  };\n  @Int.0")))
-    _holds_clean(source)
-    ran = pipeline.run(source, fn="f", args=[4])
-    assert ran.ok and ran.value == 4, ran
+def _closure_in(outer: str, row: str, body: str) -> str:
+    """A closure whose row is *row* and whose body is *body*, bound and not
+    applied in a function whose row is *outer*; a row variable in *row*
+    makes both generic."""
+    generic = row.endswith(", E>")
+    params = "<E>" if generic else ""
+    return (f"type F{params} = fn(Int -> Int) effects({row});\n\n"
+            + _fn("f", outer, (
+                f"  let @F{params} = fn(@Int -> @Int) effects({row}) {{\n"
+                f"    {body}\n  }};\n  @Int.0"),
+                forall="forall<E> " if generic else ""))
+
+
+def test_a_pure_function_cannot_write_a_closure_that_performs_an_effect() -> None:
+    """The effects a closure performs that its row declares count for the
+    purity of the function it is written in, applied or not: E122 at a
+    `pure` function, as at the base, whichever row names the effect,
+    closed, with another effect or open (mutant: the closure's effects
+    counted for nothing).  Under `<IO>` the same closure is accepted
+    (`test_a_closure_is_held_to_its_own_row`), and its row is held where
+    it is applied."""
+    for row in ("<Random>", "<Random, IO>", "<Random, E>"):
+        source = _closure_in("pure", row, "Random.random_int(1, 1)")
+        head = "forall<E> fn f(" if row.endswith(", E>") else "fn f("
+        checked = pipeline.check(source)
+        assert _placed(checked) == [("E122", *_locate(source, head))], (
+            row, [(d.error_code, d.description) for d in checked.errors])
+        assert checked.errors[0].description == (
+            "Pure function 'f' performs effect operations: Random."), row
+
+
+def test_a_closure_s_refused_operation_is_not_the_function_s() -> None:
+    """An operation the closure's row does not name is refused at the call
+    (E125), its one code: the effect is not the closure's, and is not
+    counted for the `pure` function around it (mutants: every effect the
+    closure performs counted for that function, and the closure sharing
+    the function's operations set, each a second code, E122 at `f`)."""
+    for row in ("<IO>", "<IO, E>"):
+        source = _closure_in("pure", row, "Random.random_int(1, 1)")
+        checked = pipeline.check(source)
+        assert _placed(checked) == [
+            ("E125", *_locate(source, "Random.random_int"))], (
+            row, [(d.error_code, d.description) for d in checked.errors])
+
+
+def test_a_nested_closure_counts_where_it_is_written() -> None:
+    """The count is the declaration's the closure is written in: a closure
+    in a `pure` closure is refused at that closure (E122), and one in a
+    closure whose row names its effect is counted on, to the `pure`
+    function around both.  At the base every closure's operations were
+    the function's, E122 at `f` for both."""
+    inner = ("let @G = fn(@Int -> @Int) effects(<IO>) {\n"
+             '      IO.print("x");\n      @Int.0\n    };\n    @Int.0')
+    for outer_row in ("pure", "<IO>"):
+        source = ("type G = fn(Int -> Int) effects(<IO>);\n\n"
+                  + _closure_in("pure", outer_row, inner))
+        at = (_locate(source, "fn(@Int -> @Int) effects(pure)")
+              if outer_row == "pure" else _locate(source, "fn f("))
+        checked = pipeline.check(source)
+        assert _placed(checked) == [("E122", *at)], (
+            outer_row, [(d.error_code, d.description) for d in checked.errors])
 
 
 def test_a_pure_closure_that_performs_an_effect_is_refused() -> None:
@@ -782,9 +938,9 @@ class Cell:
     def _closure(self, outer: str, row: str) -> str:
         """A closure with row *row* in a function with row *outer*: bound
         and not applied, by itself or in a handler's body for the
-        operation's effect, since the function is held to the closure's row
-        only where the closure is applied; or, with the handler written
-        inside it, applied, so the cell runs what the closure performs."""
+        operation's effect, so no application's judgement is the cell's;
+        or, with the handler written inside it, applied, so the cell runs
+        what the closure performs."""
         op = self.op
         generic = self.row.endswith(", E>")
         params = "<E>" if generic else ""
@@ -816,7 +972,8 @@ class Cell:
 
     def expected(self) -> tuple[str, ...]:
         """THE rule: the codes the cell is refused with, one at most, none
-        where the operation lowers and the row in force names its effect."""
+        where the operation lowers, the row in force names its effect and
+        no `pure` declaration counts it."""
         if not self.lowers():
             return ("E340",)
         # A handler adds its effect to the row its body is checked under.
@@ -825,24 +982,36 @@ class Cell:
         if self.site == "handler body" and self.around == self.op.effect:
             return ()
         if _names(self.row):
-            return ()
+            # Permitted, and an effect a closure both declares and performs
+            # counts for the purity of the function it is written in: E122
+            # at that function where its row is `pure`.  Under a row that is
+            # not, the closure's row is held where the closure is applied
+            # (E125), and no such cell applies it.
+            counted = self.site == "closure" and self.around == "pure"
+            return ("E122",) if counted else ()
         in_force_pure = self.row == "pure" and self.site != "handler body"
         return ("E122",) if in_force_pure else ("E125",)
 
+    def _pure_closure(self) -> bool:
+        """Whether the declaration E122 refuses is the closure itself."""
+        return self.site in _CLOSURE_SITES and self.row == "pure"
+
     def refused_at(self, source: str) -> tuple[int, int]:
         """Where the refusal is reported: E125 and E340 at the call, E122
-        at the declaration whose row is pure (the closure, at a closure)."""
+        at the declaration whose row is pure: a closure whose own row is,
+        and otherwise the helper or the function."""
         if self.expected() in (("E125",), ("E340",)):
             return _locate(source, self.op.call)
-        if self.site in _CLOSURE_SITES:
+        if self._pure_closure():
             return _locate(source, "fn(@Int -> @Int) effects(")
         if self.site == "where helper":
             return _locate(source, "fn h(")
-        return _locate(source, "fn f(")
+        generic = self.site in _CLOSURE_SITES and self.row.endswith(", E>")
+        return _locate(source, "forall<E> fn f(" if generic else "fn f(")
 
     def purity_message(self) -> str:
         """E122's message, as the purity check words it."""
-        if self.site in _CLOSURE_SITES:
+        if self._pure_closure():
             return (f"Pure anonymous function performs effect operations: "
                     f"{self.op.effect}.")
         name = "h" if self.site == "where helper" else "f"
@@ -853,8 +1022,9 @@ class Cell:
         """Rule 7's E340, naming the closure and the operation."""
         written = self.op.call.split("(")[0]
         effect = self.op.effect
+        operation = {"State": "a State", "Exn": "an Exn"}[effect]
         return (f"Code generation cannot lower '{written}' in the body of an "
-                f"anonymous function: a {effect} operation in a closure is "
+                f"anonymous function: {operation} operation in a closure is "
                 f"lowered only under a handler for {effect} written inside "
                 f"the closure.")
 

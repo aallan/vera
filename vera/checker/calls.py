@@ -1418,15 +1418,16 @@ class CallsMixin:
             if effect == "State" else
             f"handle[Exn<{arg}>] {{ throw(@{arg}) -> {{ <the closure's "
             f"result when it throws> }} }} in {{ ... }}")
+        article = "an" if effect[:1].upper() in ("A", "E", "I", "O", "U") else "a"
         self._error(
             node,
             f"Code generation cannot lower '{written}' in the body of an "
-            f"anonymous function: a {effect} operation in a closure is "
-            f"lowered only under a handler for {effect} written inside the "
-            f"closure.",
+            f"anonymous function: {article} {effect} operation in a closure "
+            f"is lowered only under a handler for {effect} written inside "
+            f"the closure.",
             rationale=(
                 f"Code generation lifts a closure into a function of its own.  "
-                f"A {effect} operation needs the "
+                f"{article.capitalize()} {effect} operation needs the "
                 + ("cell it reads and writes" if effect == "State"
                    else "tag it throws to")
                 + ", which a function's row or a handler in its body "
