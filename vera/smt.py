@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any, Callable, cast
 
 import z3
 
-from vera import ast, naming
+from vera import ast, naming, patterns
 from vera.monomorphize import mangle_type_name, unmangle_type_name
 from vera import carriers
 from vera.regularity import RegularityIndex, adt_names_in
@@ -454,14 +454,23 @@ def _same_call_site(a: ast.Node, b: ast.Node) -> bool:
     return a is b
 
 
-def _pattern_condition_exact(pattern: ast.Pattern) -> bool:
-    """Whether `SmtContext._pattern_condition` holds of exactly the values
-    *pattern* matches.  A constructor pattern's condition is its outer
-    recognizer alone, so one with a refutable sub-pattern (`Some(None)`,
-    `Some(3)`) over-approximates what it matches (#1562)."""
-    return not isinstance(pattern, ast.ConstructorPattern) or all(
-        isinstance(sub, (ast.BindingPattern, ast.WildcardPattern))
-        for sub in pattern.sub_patterns)
+@dataclass(frozen=True)
+class PatternCondition:
+    """When a `match` pattern matches a value (`SmtContext._pattern_condition`).
+
+    *condition* is every test the pattern makes, to its full depth
+    (`vera.patterns.tests`), that the SMT layer can state, and *exact* says
+    it states them all, so that the condition holds of exactly the values
+    the pattern matches.  A test it cannot state — a `String` literal, which
+    no pattern condition has modelled, or a test on a value of a sort it
+    does not model — is left out, so an inexact condition holds of every
+    value the pattern matches and of some it does not: it may be assumed
+    where the arm is known to be taken, and it never selects one arm over
+    the next (#1562).  ``None`` where no test can be stated.
+    """
+
+    condition: z3.ExprRef | None
+    exact: bool
 
 
 def _sorts_agree(a: z3.ExprRef, b: z3.ExprRef) -> bool:
@@ -3824,6 +3833,12 @@ class SmtContext:
         Tracks pattern conditions in ``_path_conditions`` while
         translating each arm's body so that call-site precondition
         checks can see which arm is active.
+
+        An arm selects the value only by an exact condition (#1562): one
+        that held of values its pattern does not match took them from the
+        arms after it, whose results the proof then never saw.  A match
+        with an earlier arm whose condition is inexact is not translated,
+        as one with an arm no condition can be stated for never was.
         """
         scrutinee = self.translate_expr(expr.scrutinee, env)
         if scrutinee is None:
@@ -3835,15 +3850,22 @@ class SmtContext:
             return None
 
         # Collect preceding arm conditions for the default case
-        conds = [self._pattern_condition(scrutinee, arm.pattern)
-                 for arm in arms]
+        readings = [self._pattern_condition(scrutinee, arm.pattern)
+                    for arm in arms]
+        conds = [r.condition for r in readings]
+        exact = [r.exact for r in readings]
+        # The default arm runs where no earlier arm matched, which only an
+        # exact condition's negation under-states: an inexact one's would
+        # leave out runs that reach the default arm.
         preceding_conds: list[z3.ExprRef] = [
-            pc for pc in conds[:-1] if pc is not None]
+            r.condition for r in readings[:-1]
+            if r.exact and r.condition is not None]
 
         # Translate last arm body (default case)
         last_env = self._bind_pattern(
             scrutinee, arms[-1].pattern, env,
-            self._arm_guarded_binders(expr, scrutinee, len(arms) - 1, conds))
+            self._arm_guarded_binders(
+                expr, scrutinee, len(arms) - 1, conds, exact))
         if last_env is None:
             return None
 
@@ -3878,19 +3900,19 @@ class SmtContext:
         for index in reversed(range(len(arms) - 1)):
             arm = arms[index]
             cond = conds[index]
-            if cond is None:  # pragma: no cover
+            if cond is None or not exact[index]:
                 return None
             arm_env = self._bind_pattern(
                 scrutinee, arm.pattern, env,
-                self._arm_guarded_binders(expr, scrutinee, index, conds))
+                self._arm_guarded_binders(
+                    expr, scrutinee, index, conds, exact))
             if arm_env is None:  # pragma: no cover
                 return None
 
             self._path_conditions.append(cond)
             # The arm runs only if no earlier arm matched, which the path
-            # does not say; and a nested pattern's condition is its outer
-            # constructor alone (#1562), so nothing under-approximates it.
-            self._reach_extras.append(self._arm_reach(arm.pattern, conds, index))
+            # does not say.
+            self._reach_extras.append(self._arm_reach(conds, index))
             arm_facts = self._arm_source_facts(
                 expr.scrutinee, scrutinee, arm.pattern)
             for f in arm_facts:
@@ -3914,7 +3936,7 @@ class SmtContext:
 
     def _arm_guarded_binders(
         self, expr: ast.MatchExpr, scrutinee: z3.ExprRef, index: int,
-        conds: list[z3.ExprRef | None],
+        conds: list[z3.ExprRef | None], exact: list[bool],
     ) -> dict[int, z3.ExprRef] | None:
         """The fresh values arm *index* binds its guarded refined binders to
         (#1480 review; `ContractVerifier._guarded_binder_values`).
@@ -3923,18 +3945,17 @@ class SmtContext:
         earlier arm matching (the If-chain below tries them in order), and
         its own pattern.  Called before the arm's own conditions are pushed.
 
-        Only for a pattern whose condition is exact.  `_pattern_condition`
-        reads a nested pattern by its outer constructor alone, so for
-        `Some(Some(@Pos))` it holds of `Some(None)` too, where this arm's bind
-        never runs, and the fact would put `P` on a value the program never
-        guards: `ensures(@Int.result > 0)` over `Some(None) -> 0 - 7` was
-        proved.  An earlier arm's condition over-approximates the values it
+        Only for a pattern whose condition is exact (*exact*): an inexact
+        condition holds of values where this arm's bind never runs, and the
+        fact would put `P` on a value the program never guards:
+        `ensures(@Int.result > 0)` over `Some(None) -> 0 - 7` was proved
+        when a nested pattern's condition was its outer constructor alone.
+        An inexact earlier condition over-approximates the values its arm
         takes, so its negation only narrows *taken* and is safe either way.
         """
         if self._guarded_binder_hook is None:
             return None
-        pattern = expr.arms[index].pattern
-        if not _pattern_condition_exact(pattern):
+        if not exact[index]:
             return None
         # Under the enclosing branches the TRANSLATION entered as well: a
         # fact about the payload that held wherever an enclosing arm's
@@ -3953,14 +3974,11 @@ class SmtContext:
             expr.scrutinee, scrutinee, expr.arms[index].pattern, self, taken))
 
     def _arm_reach(
-        self, pattern: ast.Pattern, conds: list[z3.ExprRef | None],
-        index: int,
-    ) -> z3.ExprRef | None:
-        """What a non-default arm's pushed condition lacks for an under-
-        approximation of the arm running: no earlier arm matched.  None
-        where there is none, its own condition being inexact."""
-        if not _pattern_condition_exact(pattern):
-            return None
+        self, conds: list[z3.ExprRef | None], index: int,
+    ) -> z3.ExprRef:
+        """What a non-default arm's pushed condition, which is exact (the
+        translation declines an arm whose condition is not), lacks for an
+        under-approximation of the arm running: no earlier arm matched."""
         return z3.And(*[z3.Not(c) for c in conds[:index] if c is not None])
 
     def reach_conditions(self) -> list[z3.ExprRef] | None:
@@ -4023,35 +4041,61 @@ class SmtContext:
 
     def _pattern_condition(
         self, scrutinee: z3.ExprRef, pattern: ast.Pattern
+    ) -> PatternCondition:
+        """When *pattern* matches *scrutinee*: the conjunction of the tests
+        the pattern makes, to its full depth (`vera.patterns.tests`, #1697),
+        each on the value its path reaches through the constructors'
+        accessors — `is(Some)(x) ∧ is(None)(Some_0(x))` for `Some(None)`, a
+        literal an equality on its accessor, a wildcard or a binding pattern
+        no test at all."""
+        found = patterns.tests(pattern)
+        if not found:
+            return PatternCondition(z3.BoolVal(True), True)
+        parts: list[z3.ExprRef] = []
+        for test in found:
+            value = self._pattern_path_value(scrutinee, test.path)
+            part = (None if value is None
+                    else self._pattern_test_condition(value, test.head))
+            if part is not None:
+                parts.append(part)
+        if not parts:
+            return PatternCondition(None, False)
+        return PatternCondition(
+            parts[0] if len(parts) == 1 else z3.And(*parts),
+            len(parts) == len(found))
+
+    def _pattern_path_value(
+        self, value: z3.ExprRef, path: tuple[patterns.Step, ...],
     ) -> z3.ExprRef | None:
-        """Return a Z3 Boolean for when *pattern* matches *scrutinee*."""
-        if isinstance(pattern, ast.NullaryPattern):
-            sort = scrutinee.sort()
-            idx = self._find_ctor_index(sort, pattern.name)
-            if idx is None:  # pragma: no cover
+        """The value *path* reaches from *value*, through each step's
+        constructor accessor, the field read by the pattern's own position
+        as `_bind_pattern` binds it; ``None`` where the value's sort has no
+        such constructor."""
+        for step in path:
+            sort = value.sort()
+            idx = self._find_ctor_index(sort, step.constructor)
+            if idx is None:
                 return None
-            return sort.recognizer(idx)(scrutinee)
+            value = sort.accessor(idx, step.index)(value)
+        return value
 
-        if isinstance(pattern, ast.ConstructorPattern):
-            sort = scrutinee.sort()
-            idx = self._find_ctor_index(sort, pattern.name)
-            if idx is None:  # pragma: no cover
+    def _pattern_test_condition(
+        self, value: z3.ExprRef, at: patterns.CtorHead | patterns.LitHead,
+    ) -> z3.ExprRef | None:
+        """One test of a pattern on *value*; ``None`` where the SMT layer
+        cannot state it: a `String` literal, which no pattern condition has
+        modelled, or a test on a value of another sort."""
+        if isinstance(at, patterns.CtorHead):
+            sort = value.sort()
+            idx = self._find_ctor_index(sort, at.name)
+            if idx is None:  # pragma: no cover — the checker types the pattern
                 return None
-            return sort.recognizer(idx)(scrutinee)
-
-        if isinstance(pattern, ast.WildcardPattern):  # pragma: no cover
-            return z3.BoolVal(True)
-
-        if isinstance(pattern, ast.BindingPattern):
-            return z3.BoolVal(True)
-
-        if isinstance(pattern, ast.IntPattern):
-            return scrutinee == z3.IntVal(pattern.value)
-
-        if isinstance(pattern, ast.BoolPattern):
-            return scrutinee == z3.BoolVal(pattern.value)
-
-        return None  # pragma: no cover
+            return sort.recognizer(idx)(value)
+        if at.kind == "Int" and value.sort().eq(z3.IntSort()):
+            return value == z3.IntVal(at.value)
+        if at.kind == "Bool" and value.sort().eq(z3.BoolSort()):
+            return value == z3.BoolVal(at.value)
+        return None
 
     def _bind_pattern(
         self,

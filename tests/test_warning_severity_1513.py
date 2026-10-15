@@ -837,12 +837,11 @@ _PATTERN_CELLS: tuple[PatternCell, ...] = (
                 "match BW(MkBox(7)) {\n    BW(MkBox(@Int)) -> @Int.0\n  }",
                 {"boxc": ("BWrap",)}, _BOXED, (), 7,
                 "E130: the pattern bound nothing"),
-    # #1540: a case missing below the top level is not judged, for an
-    # imported type either.  Pinned as agreement only, so this cell neither
-    # depends on nor hides the fix for that issue.
+    # #1540: a case missing below the top level is judged (#1697), for a
+    # type the file does not import as for one it does.
     PatternCell("nested_missing_case_1540",
                 "match W(Green) {\n    W(Red) -> 1\n  }",
-                {"mb2": ("Wrap",)}, _COLOUR, (), None,
+                {"mb2": ("Wrap",)}, _COLOUR, ("E311",), None,
                 "1, the wrong arm (#1540)"),
     # Inside Option and Result.
     PatternCell("inside_option_wildcard",

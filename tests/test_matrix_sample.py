@@ -682,6 +682,7 @@ MARKED_FILES = (
     "test_match_unknown_scrutinee_1671.py",
     "test_nat_i64.py",
     "test_short_circuit_1501.py",
+    "test_nested_patterns_1697.py",
 )
 UNMARKED_FILES = (
     "test_obligations.py",

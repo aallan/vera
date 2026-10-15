@@ -691,6 +691,20 @@
     ]
   },
   {
+    "id": "ch04_match_nested_missing",
+    "file": "ch04_match_nested_missing.vera",
+    "chapter": 4,
+    "title": "A case missing inside a nested constructor pattern is a checker error (#1697)",
+    "level": "check",
+    "spec_ref": "Section 4.9.2",
+    "expected_error": "E311",
+    "features": [
+      "nested_pattern",
+      "exhaustiveness",
+      "check_error"
+    ]
+  },
+  {
     "id": "ch04_pipe_operator",
     "file": "ch04_pipe_operator.vera",
     "chapter": 4,

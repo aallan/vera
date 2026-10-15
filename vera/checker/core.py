@@ -491,6 +491,11 @@ class TypeChecker(
         # constructor name two imports supply is refused the same way, at
         # the import (E157, #1513).
         self._refused_ctor_names: set[str] = set()
+        # #1697: the patterns the check refused (E314, an unknown
+        # constructor), by `id`, which a coverage judgement reads as
+        # catch-alls below the scrutinee (`_coverage_pattern`).  Each is
+        # held, so its `id` is not reused while it is recorded.
+        self._refused_patterns: dict[int, ast.Pattern] = {}
         # #991 checker leg (PR #1013 review): lexically-scoped where-helper
         # resolution, mirroring the verifier and codegen.  ``env.functions``
         # is flat and last-wins, so a bare call to a same-named helper in a
