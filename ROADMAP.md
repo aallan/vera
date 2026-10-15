@@ -69,6 +69,7 @@ Exit criterion: the fold leaves WAT byte-identical over the corpus, and the gene
 | Change | What |
 |---|---|
 | Host bindings from the registry | The built-in registry gains implementation metadata and generates the import declarations, the set of host imports used, the `api.py` registration table, the `runtime.mjs` dispatch skeleton and the WASI refusal list, so a host operation is added in one place. |
+| Persistent `Map` and `Set` in WASM | `Map<K, V>` and `Set<T>` become structural persistent collections in the generated module, keyed through the `Hash` and `Ord` abilities, so an insert shares structure with the map it came from and costs O(log n), and their operations leave the host surface instead of being mirrored across the hosts.  The acceptance test is the measurement that opened the item: a fold of `map_insert` over 10,000 keys, a minute of host time today, completes in well under a second ([#1676](https://github.com/aallan/vera/issues/1676)). |
 | One fold | One `Expr` fold and one binder-aware scope walker; the hand-written dispatchers and scope implementations port to them one at a time, and the walker-coverage gate retires. |
 | A program generator | A type-directed generator feeds three nightly differentials: what checks compiles and loads with every public function exported; every obligation record has its guard and every guard its record; a Tier 1 proof meets no runtime violation on generated inputs. |
 | A mutation lane | Mutation testing scoped to a pull request's diff. |
