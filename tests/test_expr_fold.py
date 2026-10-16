@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import dataclasses
 import inspect
+import re
 import subprocess
 import sys
 import types
@@ -40,11 +41,13 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+import z3
 
 from tests import pipeline
 from vera import ast, binders, fold
 from vera.checker import sql
 from vera.environment import TypeEnv
+from vera.smt import SlotEnv, SmtContext
 from vera.wasm.context import WasmContext
 from vera.wasm.helpers import StringPool
 
@@ -612,7 +615,7 @@ def test_dispatch_refuses_a_table_that_misses_a_class() -> None:
 _TABLES = frozenset({
     "_is_void_expr", "_infer_expr_wasm_type", "_walk_vera_type",
     "_translate_expr_unscoped", "resolve_literal_string", "resolve_array_len",
-    "_synth_expr_impl",
+    "_synth_expr_impl", "translate_expr",
 })
 
 
@@ -651,7 +654,7 @@ def test_a_new_expr_subclass_fails_every_dispatching_module_at_import() -> None:
         "print(' '.join(sorted(refused)))\n"
     )
     modules = ["vera.checker.sql", "vera.checker.expressions",
-               "vera.wasm.context", "vera.wasm.inference"]
+               "vera.wasm.context", "vera.wasm.inference", "vera.smt"]
     out = subprocess.run(
         [sys.executable, "-c", script, *modules], cwd=ROOT, capture_output=True,
         text=True, encoding="utf-8", timeout=120, check=False)
@@ -764,6 +767,50 @@ def test_the_sql_tables_answer_each_shape() -> None:
     lengths = [(ast.ArrayLit(elements=(_ONE, _ONE)), 2), (lit("ab"), None)]
     assert [sql.resolve_array_len(e, env, key) for e, _ in lengths] == [
         want for _, want in lengths]
+
+
+def _smt_term(term: z3.ExprRef | None) -> str | None:
+    """A term as text, its fresh constants' counters elided."""
+    return None if term is None else re.sub(r"_\d+", "_N", str(term))
+
+
+def test_the_smt_table_answers_each_shape() -> None:
+    """`translate_expr`: each class's term in a bare context, one shape per
+    class, and none for the classes a contract never translates."""
+    smt = SmtContext()
+    smt.set_result_var(z3.Int("r"))
+    env = SlotEnv().push("Int", z3.Int("x"))
+    two, x0 = ast.IntLit(value=2), ast.SlotRef(type_name="Int", type_args=None, index=0)
+    pair = ast.ArrayLit(elements=(_ONE, two))
+    state = ast.EffectRef(name="State", type_args=(_ty("Int"),))
+    pred = _anon((_ty("Int"),), _tail(_TRUE), ret=_ty("Bool"))
+    pins = [
+        (_ONE, "1"), (_TRUE, "True"), (ast.StringLit(value="a"), '"a"'),
+        (_HALF, "1*(2**-1)"), (x0, "x"), (ast.ResultRef(type_name="Int", type_args=None), "r"),
+        (ast.BinaryExpr(op=ast.BinOp.ADD, left=_ONE, right=two), "1 + 2"),
+        (ast.UnaryExpr(op=ast.UnaryOp.NEG, operand=_ONE), "-1"),
+        (_if(_ONE, two), "If(True, 1, 2)"), (_tail(two), "2"),
+        (_match(_arm(two), scrutinee=_ONE), "2"),
+        (ast.FnCall(name="abs", args=(x0,)), "If(x >= 0, x, -x)"),
+        (pair, "_call_array_lit_N"),
+        (ast.IndexExpr(collection=pair, index=_ONE), "index_Array_Int(_call_array_lit_N, 1)"),
+        # A bare context registers no module function and no data type.
+        (ast.ModuleCall(path=("m",), name="f", args=(_ONE,)), None),
+        (ast.ConstructorCall(name="Some", args=(_ONE,)), None),
+        (ast.NullaryConstructor(name="None", owner=None), None),
+        # An effect operation is no term; its arguments are translated for
+        # their preconditions.
+        (ast.QualifiedCall(qualifier="IO", name="print", args=(ast.StringLit(value="a"),)), None),
+        (ast.UnitLit(), None), (ast.InterpolatedString(parts=("a", _ONE)), None),
+        (ast.HoleExpr(), None), (_CLOSURE, None), (_exn_handle(_ONE), None),
+        (ast.AssertExpr(expr=_TRUE), None), (ast.AssumeExpr(expr=_TRUE), None),
+        (ast.ForallExpr(binding_type=_ty("Int"), domain=_ONE, predicate=pred), None),
+        (ast.ExistsExpr(binding_type=_ty("Int"), domain=_ONE, predicate=pred), None),
+        (ast.OldExpr(effect_ref=state), None), (ast.NewExpr(effect_ref=state), None),
+    ]
+    assert {type(node) for node, _ in pins} == fold.EXPR_CLASSES
+    assert [_smt_term(smt.translate_expr(node, env)) for node, _ in pins] == [
+        want for _, want in pins]
 
 
 # =====================================================================
