@@ -49,6 +49,7 @@ Defects in shipped compiler, runtime, or tooling behaviour — this table matche
 | A string literal holding a lone-surrogate escape (`\u{D800}` to `\u{DFFF}`) passes `vera check` and `vera verify`, then `vera compile` and `vera run` exit 1 with a Python `UnicodeEncodeError` traceback from the string pool rather than a diagnostic: the escape decoder refuses only a code point above U+10FFFF (`E009`). | [#1728](https://github.com/aallan/vera/issues/1728) |
 | `array_find` writes the element it finds at offset 8 of the `Some`, where `Option` holds a `Bool`, `Byte`, `String` or heap value at offset 4, so a match on the result reads the wrong bytes: `Some(0)` for a `Byte`, `Some(false)` for a `Bool`, a wrong string for a `String` and garbage fields for a record.  An `Int`, `Nat` or `Float64` element is found right. | [#1730](https://github.com/aallan/vera/issues/1730) |
 | `IO.read_file` and `IO.write_file` transform bytes on the native host and move them unchanged under WASI: natively a CRLF line ending reads back as LF and a byte that is not UTF-8 is written as U+FFFD, so one program prints `crlf 4 bin 5` natively and `crlf 6 bin 3` as a WASI component.  `IO.read_bytes` and `IO.write_bytes` move the bytes unchanged on both. | [#1731](https://github.com/aallan/vera/issues/1731) |
+| The nightly sweep scores mutants of import-time functions as survivors mutmut can never kill: 61 of a night's 69 survivors were three functions evaluated at module load. | [#1740](https://github.com/aallan/vera/issues/1740) |
 
 ## Limitations
 
