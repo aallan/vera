@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
+from collections.abc import Callable, Mapping
+from typing import Any, ClassVar
 
-from vera import ast, naming
+from vera import ast, fold, naming
 from vera.monomorphize import (
     Monomorphizer,
     checker_clone_type_name,
@@ -114,193 +115,11 @@ class InferenceMixin:
         emits for it — the two deciders read the same mark so a marked leaf
         cannot be inferred at one width and lowered at the other.
 
-        # WALKER_COVERAGE: (#597 — every Expr subclass below has a
-        # disposition; check_walker_coverage.py enforces completeness.)
-        #
-        # Handled (explicit isinstance branch):
-        #   IntLit            → "i64"
-        #   FloatLit          → "f64"
-        #   BoolLit           → "i32"
-        #   UnitLit           → None
-        #   StringLit         → "i32_pair"
-        #   InterpolatedString → "i32_pair"
-        #   SlotRef           → from resolved type name
-        #   ResultRef         → from declared @Type
-        #   BinaryExpr        → from op + operands (arith/cmp/logic)
-        #   UnaryExpr         → from op + operand (neg/not)
-        #   FnCall            → from `_infer_fncall_wasm_type`
-        #   QualifiedCall     → from `_infer_qualified_call_wasm_type`
-        #   ConstructorCall   → "i32" (heap ptr) if known
-        #   NullaryConstructor → "i32" (heap ptr) if known
-        #   MatchExpr         → from the first arm whose body infers a type
-        #                       (an all-throwing arm contributes none, #1276)
-        #   IfExpr            → from the then-branch, falling back to the else
-        #                       branch when the then-branch is typeless (#1276)
-        #   Block             → from trailing expr
-        #   HandleExpr        → from body
-        #   IndexExpr         → from element type
-        #   ArrayLit          → "i32_pair"
-        #   ForallExpr        → "i32" (Bool)
-        #   ExistsExpr        → "i32" (Bool)
-        #   AssertExpr        → None (Unit)
-        #   AssumeExpr        → None (Unit)
-        #   AnonFn            → "i32" (closure ptr — defensive add #597)
-        #   ModuleCall        → resolve target via
-        #                       `_resolve_module_call_wasm_name` (the
-        #                       single shared resolver), then reuse
-        #                       `_infer_fncall_wasm_type` (#905 — a
-        #                       ModuleCall in a constructor field needs
-        #                       its WASM return type; the resolver
-        #                       consumes `path`, so no wrong-name lookup)
-        #   OldExpr           → State<T>'s WAT type (postcondition
-        #                       snapshot read; #914 finding 1)
-        #   NewExpr           → State<T>'s WAT type (postcondition
-        #                       fresh state read; #914 finding 1)
-        #
-        # Cannot occur (rejected before reaching this codegen-time
-        # helper):
-        #   HoleExpr          → parser placeholder; check time rejects
+        Each class's answer is its arm in ``_WASM_TYPE_ARMS``, a
+        ``vera.fold.dispatch`` table, so every `Expr` class has one.
         """
-        if isinstance(expr, ast.IntLit):
-            # #1212: same Byte-width mark the lowering reads — a `match`
-            # result type is inferred from an arm BODY through here, so the
-            # two deciders must agree about a marked leaf.
-            return "i32" if id(expr) in self._byte_literal_ids else "i64"
-        if isinstance(expr, ast.FloatLit):
-            return "f64"
-        if isinstance(expr, ast.BoolLit):
-            return "i32"
-        if isinstance(expr, ast.UnitLit):
-            return None
-        if isinstance(expr, ast.SlotRef):
-            return self._ref_type_name_wasm_type(
-                expr.type_name, expr.type_args)
-        if isinstance(expr, ast.ResultRef):
-            # #891: a `@T.result` in a monomorphized clone carries the same
-            # concrete `type_name` as `@T.0` (e.g. `Box` once `T = Box`), so it
-            # must lower through the SAME type-name → WAT-type logic.  Inferring
-            # only the scalar primitives here left an ADT-bound (pointer-
-            # represented) return inferred as `None`, so the postcondition
-            # `@T.result == @T.0` fell through to the i64 comparison default
-            # while both operands were i32 heap pointers — an ill-typed
-            # `i64.eq` that traps `gid$Box` at run with `expected i64, found
-            # i32`.  Sharing `_ref_type_name_wasm_type` keeps the ResultRef and
-            # SlotRef operands in agreement (ADT, pair, and handle types alike).
-            return self._ref_type_name_wasm_type(
-                expr.type_name, expr.type_args)
-        if isinstance(expr, ast.BinaryExpr):
-            if expr.op in self._ARITH_OPS:
-                # Propagate operand type: f64 if operands are f64
-                inner = self._infer_expr_wasm_type(expr.left)
-                return inner if inner == "f64" else "i64"
-            if expr.op in self._CMP_OPS:
-                return "i32"
-            if expr.op in (ast.BinOp.AND, ast.BinOp.OR, ast.BinOp.IMPLIES):
-                return "i32"
-        if isinstance(expr, ast.UnaryExpr):
-            if expr.op == ast.UnaryOp.NEG:
-                inner = self._infer_expr_wasm_type(expr.operand)
-                return inner if inner == "f64" else "i64"
-            if expr.op == ast.UnaryOp.NOT:
-                return "i32"
-        if isinstance(expr, ast.FnCall):
-            return self._infer_fncall_wasm_type(expr)
-        if isinstance(expr, ast.ConstructorCall):
-            # ctor-owner-exempt: membership test on a parsed name, not a layout
-            # read
-            return "i32" if expr.name in self._ctor_layouts else None
-        if isinstance(expr, ast.NullaryConstructor):
-            # ctor-owner-exempt: membership test on a parsed name, not a layout
-            # read
-            return "i32" if expr.name in self._ctor_layouts else None
-        if isinstance(expr, ast.MatchExpr):
-            # #1276 (F4): the FIRST arm that yields a type, not arm 0.  An arm
-            # whose every path throws contributes no WAT type, and reading only
-            # arm 0 answered `None` for the whole match — so an enclosing
-            # `handle` block was emitted result-less while the completing arms
-            # left a value in it (`values remaining on stack at end of block`,
-            # from check-green source).  Arms that DO complete must agree on
-            # their type (the checker enforces that), so the first answer is the
-            # answer.
-            for arm in expr.arms:
-                arm_wt = self._infer_expr_wasm_type(arm.body)
-                if arm_wt is not None:
-                    return arm_wt
-            return None
-        if isinstance(expr, ast.HandleExpr):
-            # Handle expression result type is the body's result type
-            if expr.body.expr:
-                return self._infer_expr_wasm_type(expr.body.expr)
-            return None  # pragma: no cover
-        if isinstance(expr, ast.IndexExpr):
-            elem_type = self._infer_index_element_type(expr)
-            return self._element_wasm_type(elem_type) if elem_type else None
-        if isinstance(expr, ast.ArrayLit):
-            return "i32_pair"
-        if isinstance(expr, ast.StringLit):
-            return "i32_pair"
-        if isinstance(expr, ast.InterpolatedString):
-            return "i32_pair"
-        if isinstance(expr, ast.QualifiedCall):
-            return self._infer_qualified_call_wasm_type(expr)
-        if isinstance(expr, ast.IfExpr):
-            # #1276 (F4): fall through to the ELSE branch when the THEN branch
-            # yields no type.  A `then` that always throws is typeless, and
-            # answering `None` for the whole `if` on that basis mistyped every
-            # consumer of the result — see the MatchExpr arm above, same shape.
-            then_wt = self._infer_block_result_type(expr.then_branch)
-            if then_wt is not None:
-                return then_wt
-            return self._infer_block_result_type(expr.else_branch)
-        if isinstance(expr, ast.Block):
-            return self._infer_block_result_type(expr)
-        if isinstance(expr, (ast.ForallExpr, ast.ExistsExpr)):
-            return "i32"  # quantifiers return Bool
-        if isinstance(expr, (ast.AssertExpr, ast.AssumeExpr)):
-            return None  # assert/assume return Unit
-        # Defensive add (#597): AnonFn literals are typically lifted
-        # before reaching this helper, but if one does flow here it
-        # represents a closure handle on the WASM stack (i32 ptr).
-        if isinstance(expr, ast.AnonFn):
-            return "i32"
-        # #905: a non-void ModuleCall used *directly* as a constructor argument
-        # (a Tuple/ADT field) reaches this helper via
-        # `_translate_constructor_call`, which needs the field's WASM type to lay
-        # out offsets.  Resolve the qualified target through the SAME single
-        # resolver the desugar and the statement-position result-shape predicates
-        # (`_is_void_expr` / `_is_pair_result_expr`) already use —
-        # `_resolve_module_call_wasm_name` returns the bare name, the `mod$…`
-        # name when a local shadows it, or a shadowed generic's per-
-        # instantiation clone — then reuse the FnCall inference on that resolved
-        # target.  This does NOT drop the path (the earlier #597 concern): the
-        # resolver consumes it, so a same-name local from a different module can
-        # never be matched.  Keeping all four sites on one resolver means they
-        # can never disagree on which function `m::f(...)` reaches.  Before this,
-        # returning None made `_translate_constructor_call` raise CodegenSkip and
-        # silently drop the enclosing function — a check-green program then
-        # dangled its call at run (`unknown func $mkt`).
-        if isinstance(expr, ast.ModuleCall):
-            target = self._resolve_module_call_wasm_name(expr)
-            return self._infer_fncall_wasm_type(
-                ast.FnCall(name=target, args=expr.args, span=expr.span))
-        # #914 finding 1: `old(State<T>)` / `new(State<T>)` in a postcondition
-        # each yield a value of type T — the snapshot local (old) or a fresh
-        # `state_get` (new).  Without a width here a composite `old == new`
-        # over a pointer-typed T (`Option<Int>` → i32) fell through to the
-        # i64 comparison default and emitted an ill-typed `i64.eq` on two
-        # i32 pointers (`expected i64, found i32`).  Resolve T's WAT type via
-        # the shared canonical-slot-name → WASM map so the `==` picks i32.
-        if isinstance(expr, (ast.OldExpr, ast.NewExpr)):
-            # The cell's REPRESENTATION name, not the source spelling, before
-            # the WT map — `old(State<Count>)` over `type Count = Nat` is an
-            # i64 read, not the unknown-name i32 default (#1205).  The base
-            # rather than the family (#1218): a refined cell's identity
-            # carries its predicate and would miss every entry in the map,
-            # silently defaulting a refined `Int` cell's `old`/`new` read to
-            # i32 — the base is the width both sides of the comparison have.
-            return self._type_name_to_wasm(
-                self._state_effect_family_base(expr.effect_ref))
-        return None
+        arm = _WASM_TYPE_ARMS.get(type(expr))
+        return arm(self, expr) if arm is not None else None
 
     _IO_WASM_TYPES: ClassVar[dict[str, str | None]] = {
         "print": None,
@@ -990,197 +809,11 @@ class InferenceMixin:
     def _walk_vera_type(self, expr: ast.Expr) -> str | None:
         """Infer the Vera type name of an expression, syntactically.
 
-        # WALKER_COVERAGE: (#597 — every Expr subclass below has a
-        # disposition; check_walker_coverage.py enforces completeness.)
-        #
-        # Handled (explicit isinstance branch):
-        #   IntLit            → "Int"
-        #   BoolLit           → "Bool"
-        #   FloatLit          → "Float64"
-        #   UnitLit           → "Unit"
-        #   StringLit         → "String"
-        #   InterpolatedString → "String"
-        #   SlotRef           → slot type name (with type-args)
-        #   ResultRef         → declared @Type name (with type-args) —
-        #                       shares the SlotRef arm.  A `@T.result`
-        #                       operand of `==`/`!=` in an `ensures`
-        #                       reaches here through the runtime
-        #                       postcondition-check lowering; without a
-        #                       Vera-type name the composite structural-
-        #                       `==` dispatch is skipped and the compare
-        #                       falls back to scalar `i32.eq` (a pointer
-        #                       compare) → a spurious trap on a proved
-        #                       composite postcondition (#912).
-        #   ConstructorCall   → parent ADT name
-        #   NullaryConstructor → parent ADT name
-        #   BinaryExpr        → "Bool" for cmp/logic, else left's type
-        #   UnaryExpr         → "Bool" for `not`, else operand's type
-        #   FnCall            → effect-op result registry first (#1006 —
-        #                       `get(())` as an array-literal element),
-        #                       else from `_infer_fncall_vera_type`
-        #   ArrayLit          → "Array"
-        #   IndexExpr         → element type
-        #   IfExpr            → from the first branch that yields a name
-        #                       (#1286 — the Vera-level twin of #1276's
-        #                       WAT join; a diverging `then` names nothing)
-        #   Block             → from trailing expr (defensive add #597)
-        #   MatchExpr         → from the first arm body that yields a name
-        #                       (defensive add #597; #1286 join)
-        #   HandleExpr        → from body (defensive add #597)
-        #   AssertExpr        → "Unit" (defensive add #597)
-        #   AssumeExpr        → "Unit" (defensive add #597)
-        #   AnonFn            → None (defensive add #597 — closure
-        #                       handle has no simple Vera-type
-        #                       name suitable for call rewriting;
-        #                       None lets callers handle the
-        #                       unknown-type case explicitly)
-        #   QualifiedCall     → None (defensive add #597 — the
-        #                       `qualifier` field can't be threaded
-        #                       through the bare-name FnCall
-        #                       dispatcher; None instead of a
-        #                       wrong same-name lookup)
-        #   ModuleCall        → resolve target via
-        #                       `_resolve_module_call_wasm_name`, then
-        #                       reuse `_infer_fncall_vera_type` (#905 —
-        #                       a ModuleCall as an array-literal element
-        #                       needs its Vera return type; the resolver
-        #                       consumes `path`, so no wrong-name lookup)
-        #
-        # Cannot occur (contract-only or check-time rejected):
-        #   OldExpr           → contract-only
-        #   NewExpr           → contract-only
-        #   ForallExpr        → contract-only quantifier
-        #   ExistsExpr        → contract-only quantifier
-        #   HoleExpr          → parser placeholder, check time rejects
+        Each class's answer is its arm in ``_VERA_TYPE_ARMS``, a
+        ``vera.fold.dispatch`` table, so every `Expr` class has one.
         """
-        if isinstance(expr, ast.IntLit):
-            return "Int"
-        if isinstance(expr, ast.BoolLit):
-            return "Bool"
-        if isinstance(expr, ast.FloatLit):
-            return "Float64"
-        if isinstance(expr, ast.UnitLit):
-            return "Unit"
-        if isinstance(expr, ast.SlotRef):
-            return self._ref_vera_type_name(expr.type_name, expr.type_args)
-        if isinstance(expr, ast.ResultRef):
-            # #912: a `@T.result` operand of `==`/`!=` in an `ensures` reaches
-            # here from the runtime postcondition-check lowering, carrying the
-            # same declared @Type shape as a SlotRef (`type_name` + optional
-            # `type_args`, no `index`).  Sharing the SlotRef name logic lets the
-            # composite structural-`==` dispatch in `operators.py` resolve
-            # `@Box.result` → "Box" (or "Option<Int>", "Tuple<Int, Int>", …) and
-            # route to structural equality instead of the scalar `i32.eq`
-            # pointer compare that spuriously trapped a proved composite
-            # postcondition.  `_infer_expr_wasm_type` already handled the
-            # ResultRef *width* (#891); this closes the parallel Vera-type gap.
-            return self._ref_vera_type_name(expr.type_name, expr.type_args)
-        if isinstance(expr, ast.ConstructorCall):
-            return self._ctor_to_adt_name(expr.name)
-        if isinstance(expr, ast.NullaryConstructor):
-            # #1414: a compiler-generated reference already knows its ADT.
-            # The by-name lookup below reads a table flattened across every
-            # ADT, so a user declaration sharing the name would answer for
-            # it — which is how `compare`'s desugared `Less` came back as
-            # the user's `ZzBox`.
-            return expr.owner or self._ctor_to_adt_name(expr.name)
-        if isinstance(expr, ast.BinaryExpr):
-            if expr.op in (ast.BinOp.EQ, ast.BinOp.NEQ, ast.BinOp.LT,
-                           ast.BinOp.GT, ast.BinOp.LE, ast.BinOp.GE,
-                           ast.BinOp.AND, ast.BinOp.OR, ast.BinOp.IMPLIES):
-                return "Bool"
-            return self._infer_vera_type(expr.left)
-        if isinstance(expr, ast.UnaryExpr):
-            if expr.op == ast.UnaryOp.NOT:
-                return "Bool"
-            return self._infer_vera_type(expr.operand)
-        if isinstance(expr, ast.FnCall):
-            # #1006: an effect op in a Vera-type-needing position (the
-            # array-literal ELEMENT case) — the op is not in the fn tables,
-            # so consult the op registry first.  Guarded on `_effect_ops`
-            # membership (op names only bind where ops are injected) AND on
-            # bare-call ownership (#1284), so a user fn shadowing an op name
-            # resolves through the normal fn path below — the registry
-            # itself no longer withholds the name, because it answers which
-            # cell the op reaches rather than whose name this is.  `get`
-            # maps to State<T>'s T; `put`/`throw` record no Vera result type
-            # and return None (unchanged skip for value-position uses).
-            if (self._bare_call_denotes_op(expr.name)
-                    and expr.name in self._effect_ops):
-                return self._effect_op_result_vera.get(expr.name)
-            return self._infer_fncall_vera_type(expr)
-        if isinstance(expr, ast.StringLit):
-            return "String"
-        if isinstance(expr, ast.InterpolatedString):
-            return "String"
-        if isinstance(expr, ast.ArrayLit):
-            return "Array"
-        if isinstance(expr, ast.IndexExpr):
-            elem = self._infer_index_element_type(expr)
-            return elem
-        if isinstance(expr, ast.IfExpr):
-            # #1286: the FIRST branch that yields a name, not the `then`
-            # branch alone — the Vera-level twin of the #1276 WAT join
-            # (`_infer_expr_wasm_type` / `_infer_block_result_type`).  A
-            # `then` whose every path throws names no type, and answering
-            # `None` for the whole `if` on that basis lost the type the
-            # completing branch carries: as an array-literal element the
-            # literal was dropped with the loud [E602] skip, and as a
-            # generic argument the instantiation fell to the phantom-var
-            # default (`idg$Bool` for an `Int` argument) and the module
-            # failed to load — both from check- and verify-green source.
-            # Branches that DO complete must agree on their type (the
-            # checker enforces that), so the first answer is the answer.
-            then_vt = self._infer_vera_type(expr.then_branch.expr)
-            if then_vt is not None:
-                return then_vt
-            return self._infer_vera_type(expr.else_branch.expr)
-        # Defensive adds (#597) — these compound expressions could
-        # flow in here from generic-arg inference paths, but today
-        # most callers preprocess first.  Returning the right Vera
-        # type instead of None hardens against a future caller
-        # extending the surface.
-        # Block.expr is non-Optional (vera/ast.py:470).
-        if isinstance(expr, ast.Block):
-            return self._infer_vera_type(expr.expr)
-        if isinstance(expr, ast.MatchExpr):
-            # #1286: the first arm that yields a name — see the `IfExpr`
-            # arm above, same shape and same two symptoms.
-            for arm in expr.arms:
-                arm_vt = self._infer_vera_type(arm.body)
-                if arm_vt is not None:
-                    return arm_vt
-            return None
-        # HandleExpr.body is non-Optional Block; its .expr is also
-        # non-Optional (vera/ast.py:481, 470).
-        if isinstance(expr, ast.HandleExpr):
-            return self._infer_vera_type(expr.body.expr)
-        if isinstance(expr, (ast.AssertExpr, ast.AssumeExpr)):
-            return "Unit"
-        # #905 (array-literal sibling): a ModuleCall used as the FIRST element
-        # of an array literal reaches here via `_infer_array_element_type`,
-        # which needs the element's Vera type name to lay the array out.
-        # Resolve the qualified target through the SAME single resolver the
-        # desugar uses (`_resolve_module_call_wasm_name` — it CONSUMES `path`,
-        # so no same-name-local mismatch, the earlier #597 concern) and delegate
-        # to the FnCall Vera-type inference.  Without this, `[m::f(x), …]` inferred
-        # a None element type → the array-let binding was dropped and the
-        # enclosing function silently vanished from the exports on a check-green
-        # program (same class as the constructor-field crash, quieter symptom).
-        if isinstance(expr, ast.ModuleCall):
-            target = self._resolve_module_call_wasm_name(expr)
-            return self._infer_fncall_vera_type(
-                ast.FnCall(name=target, args=expr.args, span=expr.span))
-        # AnonFn / QualifiedCall: return None rather than a placeholder string.
-        # AnonFn's Vera type would be a full `FnType` shape that isn't typically
-        # needed for call rewriting; QualifiedCall carries a `qualifier` the
-        # bare-name `FnCall` dispatcher cannot consume — synthesising a fake
-        # `FnCall` would drop it and could match a same-name local fn instead.
-        # None lets callers handle the unknown-type case explicitly rather than
-        # propagating a wrong type silently.
-        if isinstance(expr, (ast.AnonFn, ast.QualifiedCall)):
-            return None
-        return None  # pragma: no cover
+        arm = _VERA_TYPE_ARMS.get(type(expr))
+        return arm(self, expr) if arm is not None else None
 
     def _infer_fncall_vera_type(self, call: ast.FnCall) -> str | None:
         """Infer Vera return type of a function call.
@@ -2595,7 +2228,7 @@ class InferenceMixin:
 
         Delegates to :func:`vera.naming.slot_name` (#1208) so a closure's
         parameter-count keys (`param_type_counts`) use the same name that
-        `_translate_slot_ref` / `_walk_free_vars` resolve against — and that
+        `_translate_slot_ref` / `_collect_free_vars` resolve against — and that
         the checker bound the slot under.
         """
         return naming.slot_name_or_none(te, self._alias_env)
@@ -3015,3 +2648,361 @@ class InferenceMixin:
         if name.startswith("Future<") and name.endswith(">"):
             return self._slot_name_erases_to_unit(name[7:-1], _seen)
         return False
+
+
+# =====================================================================
+# `_infer_expr_wasm_type`: one arm per expression class
+# =====================================================================
+
+def _wt_int(ctx: InferenceMixin, expr: ast.IntLit) -> str | None:
+    # #1212: same Byte-width mark the lowering reads — a `match`
+    # result type is inferred from an arm BODY through here, so the
+    # two deciders must agree about a marked leaf.
+    return "i32" if id(expr) in ctx._byte_literal_ids else "i64"
+
+
+def _wt_ref(ctx: InferenceMixin, expr: ast.SlotRef | ast.ResultRef) -> str | None:
+    # #891: a `@T.result` in a monomorphized clone carries the same
+    # concrete `type_name` as `@T.0` (e.g. `Box` once `T = Box`), so it
+    # must lower through the SAME type-name → WAT-type logic.  Inferring
+    # only the scalar primitives here left an ADT-bound (pointer-
+    # represented) return inferred as `None`, so the postcondition
+    # `@T.result == @T.0` fell through to the i64 comparison default
+    # while both operands were i32 heap pointers — an ill-typed
+    # `i64.eq` that traps `gid$Box` at run with `expected i64, found
+    # i32`.  Sharing `_ref_type_name_wasm_type` keeps the ResultRef and
+    # SlotRef operands in agreement (ADT, pair, and handle types alike).
+    return ctx._ref_type_name_wasm_type(expr.type_name, expr.type_args)
+
+
+def _wt_binary(ctx: InferenceMixin, expr: ast.BinaryExpr) -> str | None:
+    if expr.op in ctx._ARITH_OPS:
+        # Propagate operand type: f64 if operands are f64
+        inner = ctx._infer_expr_wasm_type(expr.left)
+        return inner if inner == "f64" else "i64"
+    if expr.op in ctx._CMP_OPS:
+        return "i32"
+    if expr.op in (ast.BinOp.AND, ast.BinOp.OR, ast.BinOp.IMPLIES):
+        return "i32"
+    return None
+
+
+def _wt_unary(ctx: InferenceMixin, expr: ast.UnaryExpr) -> str | None:
+    if expr.op == ast.UnaryOp.NEG:
+        inner = ctx._infer_expr_wasm_type(expr.operand)
+        return inner if inner == "f64" else "i64"
+    if expr.op == ast.UnaryOp.NOT:
+        return "i32"
+    return None
+
+
+def _wt_fn_call(ctx: InferenceMixin, expr: ast.FnCall) -> str | None:
+    return ctx._infer_fncall_wasm_type(expr)
+
+
+def _wt_constructor(
+    ctx: InferenceMixin, expr: ast.ConstructorCall | ast.NullaryConstructor,
+) -> str | None:
+    # ctor-owner-exempt: membership test on a parsed name, not a layout
+    # read
+    return "i32" if expr.name in ctx._ctor_layouts else None
+
+
+def _wt_match(ctx: InferenceMixin, expr: ast.MatchExpr) -> str | None:
+    # #1276 (F4): the FIRST arm that yields a type, not arm 0.  An arm
+    # whose every path throws contributes no WAT type, and reading only
+    # arm 0 answered `None` for the whole match — so an enclosing
+    # `handle` block was emitted result-less while the completing arms
+    # left a value in it (`values remaining on stack at end of block`,
+    # from check-green source).  Arms that DO complete must agree on
+    # their type (the checker enforces that), so the first answer is the
+    # answer.
+    for arm in expr.arms:
+        arm_wt = ctx._infer_expr_wasm_type(arm.body)
+        if arm_wt is not None:
+            return arm_wt
+    return None
+
+
+def _wt_handle(ctx: InferenceMixin, expr: ast.HandleExpr) -> str | None:
+    # Handle expression result type is the body's result type
+    if expr.body.expr:
+        return ctx._infer_expr_wasm_type(expr.body.expr)
+    return None  # pragma: no cover
+
+
+def _wt_index(ctx: InferenceMixin, expr: ast.IndexExpr) -> str | None:
+    elem_type = ctx._infer_index_element_type(expr)
+    return ctx._element_wasm_type(elem_type) if elem_type else None
+
+
+def _wt_qualified_call(ctx: InferenceMixin, expr: ast.QualifiedCall) -> str | None:
+    return ctx._infer_qualified_call_wasm_type(expr)
+
+
+def _wt_if(ctx: InferenceMixin, expr: ast.IfExpr) -> str | None:
+    # #1276 (F4): fall through to the ELSE branch when the THEN branch
+    # yields no type.  A `then` that always throws is typeless, and
+    # answering `None` for the whole `if` on that basis mistyped every
+    # consumer of the result — see the MatchExpr arm above, same shape.
+    then_wt = ctx._infer_block_result_type(expr.then_branch)
+    if then_wt is not None:
+        return then_wt
+    return ctx._infer_block_result_type(expr.else_branch)
+
+
+def _wt_block(ctx: InferenceMixin, expr: ast.Block) -> str | None:
+    return ctx._infer_block_result_type(expr)
+
+
+def _wt_module_call(ctx: InferenceMixin, expr: ast.ModuleCall) -> str | None:
+    # #905: a non-void ModuleCall used *directly* as a constructor argument
+    # (a Tuple/ADT field) reaches this helper via
+    # `_translate_constructor_call`, which needs the field's WASM type to lay
+    # out offsets.  Resolve the qualified target through the SAME single
+    # resolver the desugar and the statement-position result-shape predicates
+    # (`_is_void_expr` / `_is_pair_result_expr`) already use —
+    # `_resolve_module_call_wasm_name` returns the bare name, the `mod$…`
+    # name when a local shadows it, or a shadowed generic's per-
+    # instantiation clone — then reuse the FnCall inference on that resolved
+    # target.  This does NOT drop the path (the earlier #597 concern): the
+    # resolver consumes it, so a same-name local from a different module can
+    # never be matched.  Keeping all four sites on one resolver means they
+    # can never disagree on which function `m::f(...)` reaches.  Before this,
+    # returning None made `_translate_constructor_call` raise CodegenSkip and
+    # silently drop the enclosing function — a check-green program then
+    # dangled its call at run (`unknown func $mkt`).
+    target = ctx._resolve_module_call_wasm_name(expr)
+    return ctx._infer_fncall_wasm_type(
+        ast.FnCall(name=target, args=expr.args, span=expr.span))
+
+
+def _wt_state_read(ctx: InferenceMixin, expr: ast.OldExpr | ast.NewExpr) -> str | None:
+    # #914 finding 1: `old(State<T>)` / `new(State<T>)` in a postcondition
+    # each yield a value of type T — the snapshot local (old) or a fresh
+    # `state_get` (new).  Without a width here a composite `old == new`
+    # over a pointer-typed T (`Option<Int>` → i32) fell through to the
+    # i64 comparison default and emitted an ill-typed `i64.eq` on two
+    # i32 pointers (`expected i64, found i32`).  Resolve T's WAT type via
+    # the shared canonical-slot-name → WASM map so the `==` picks i32.
+    #
+    # The cell's REPRESENTATION name, not the source spelling, before
+    # the WT map — `old(State<Count>)` over `type Count = Nat` is an
+    # i64 read, not the unknown-name i32 default (#1205).  The base
+    # rather than the family (#1218): a refined cell's identity
+    # carries its predicate and would miss every entry in the map,
+    # silently defaulting a refined `Int` cell's `old`/`new` read to
+    # i32 — the base is the width both sides of the comparison have.
+    return ctx._type_name_to_wasm(
+        ctx._state_effect_family_base(expr.effect_ref))
+
+
+def _answer(value: str | None) -> Callable[[InferenceMixin, ast.Expr], str | None]:
+    """An arm that gives every expression of its classes one answer."""
+    def arm(ctx: InferenceMixin, expr: ast.Expr) -> str | None:
+        return value
+    return arm
+
+
+_TypeArm = Callable[[InferenceMixin, Any], "str | None"]
+
+#: The WAT type of an expression's value, by class.
+_WASM_TYPE_ARMS: Mapping[type[ast.Expr], _TypeArm] = fold.dispatch(
+    "_infer_expr_wasm_type", {
+        ast.IntLit: _wt_int,
+        ast.FloatLit: _answer("f64"),
+        ast.BoolLit: _answer("i32"),
+        ast.UnitLit: _answer(None),
+        ast.SlotRef: _wt_ref,
+        ast.ResultRef: _wt_ref,
+        ast.BinaryExpr: _wt_binary,
+        ast.UnaryExpr: _wt_unary,
+        ast.FnCall: _wt_fn_call,
+        ast.ConstructorCall: _wt_constructor,
+        ast.NullaryConstructor: _wt_constructor,
+        ast.MatchExpr: _wt_match,
+        ast.HandleExpr: _wt_handle,
+        ast.IndexExpr: _wt_index,
+        **fold.each((ast.ArrayLit, ast.StringLit, ast.InterpolatedString),
+                    _answer("i32_pair")),
+        ast.QualifiedCall: _wt_qualified_call,
+        ast.IfExpr: _wt_if,
+        ast.Block: _wt_block,
+        # Quantifiers return Bool.
+        **fold.each((ast.ForallExpr, ast.ExistsExpr), _answer("i32")),
+        # assert/assume return Unit.
+        **fold.each((ast.AssertExpr, ast.AssumeExpr), _answer(None)),
+        # Defensive add (#597): AnonFn literals are typically lifted
+        # before reaching this helper, but if one does flow here it
+        # represents a closure handle on the WASM stack (i32 ptr).
+        ast.AnonFn: _answer("i32"),
+        ast.ModuleCall: _wt_module_call,
+        **fold.each((ast.OldExpr, ast.NewExpr), _wt_state_read),
+        # A parser placeholder the check rejects before code generation.
+        ast.HoleExpr: _answer(None),
+    })
+
+
+# =====================================================================
+# `_walk_vera_type`: one arm per expression class
+# =====================================================================
+
+def _vt_ref(ctx: InferenceMixin, expr: ast.SlotRef | ast.ResultRef) -> str | None:
+    # #912: a `@T.result` operand of `==`/`!=` in an `ensures` reaches
+    # here from the runtime postcondition-check lowering, carrying the
+    # same declared @Type shape as a SlotRef (`type_name` + optional
+    # `type_args`, no `index`).  Sharing the SlotRef name logic lets the
+    # composite structural-`==` dispatch in `operators.py` resolve
+    # `@Box.result` → "Box" (or "Option<Int>", "Tuple<Int, Int>", …) and
+    # route to structural equality instead of the scalar `i32.eq`
+    # pointer compare that spuriously trapped a proved composite
+    # postcondition.  `_infer_expr_wasm_type` already handled the
+    # ResultRef *width* (#891); this closes the parallel Vera-type gap.
+    return ctx._ref_vera_type_name(expr.type_name, expr.type_args)
+
+
+def _vt_constructor_call(ctx: InferenceMixin, expr: ast.ConstructorCall) -> str | None:
+    return ctx._ctor_to_adt_name(expr.name)
+
+
+def _vt_nullary(ctx: InferenceMixin, expr: ast.NullaryConstructor) -> str | None:
+    # #1414: a compiler-generated reference already knows its ADT.
+    # The by-name lookup below reads a table flattened across every
+    # ADT, so a user declaration sharing the name would answer for
+    # it — which is how `compare`'s desugared `Less` came back as
+    # the user's `ZzBox`.
+    return expr.owner or ctx._ctor_to_adt_name(expr.name)
+
+
+def _vt_binary(ctx: InferenceMixin, expr: ast.BinaryExpr) -> str | None:
+    if expr.op in (ast.BinOp.EQ, ast.BinOp.NEQ, ast.BinOp.LT,
+                   ast.BinOp.GT, ast.BinOp.LE, ast.BinOp.GE,
+                   ast.BinOp.AND, ast.BinOp.OR, ast.BinOp.IMPLIES):
+        return "Bool"
+    return ctx._infer_vera_type(expr.left)
+
+
+def _vt_unary(ctx: InferenceMixin, expr: ast.UnaryExpr) -> str | None:
+    if expr.op == ast.UnaryOp.NOT:
+        return "Bool"
+    return ctx._infer_vera_type(expr.operand)
+
+
+def _vt_fn_call(ctx: InferenceMixin, expr: ast.FnCall) -> str | None:
+    # #1006: an effect op in a Vera-type-needing position (the
+    # array-literal ELEMENT case) — the op is not in the fn tables,
+    # so consult the op registry first.  Guarded on `_effect_ops`
+    # membership (op names only bind where ops are injected) AND on
+    # bare-call ownership (#1284), so a user fn shadowing an op name
+    # resolves through the normal fn path below — the registry
+    # itself no longer withholds the name, because it answers which
+    # cell the op reaches rather than whose name this is.  `get`
+    # maps to State<T>'s T; `put`/`throw` record no Vera result type
+    # and return None (unchanged skip for value-position uses).
+    if (ctx._bare_call_denotes_op(expr.name)
+            and expr.name in ctx._effect_ops):
+        return ctx._effect_op_result_vera.get(expr.name)
+    return ctx._infer_fncall_vera_type(expr)
+
+
+def _vt_index(ctx: InferenceMixin, expr: ast.IndexExpr) -> str | None:
+    return ctx._infer_index_element_type(expr)
+
+
+def _vt_if(ctx: InferenceMixin, expr: ast.IfExpr) -> str | None:
+    # #1286: the FIRST branch that yields a name, not the `then`
+    # branch alone — the Vera-level twin of the #1276 WAT join
+    # (`_infer_expr_wasm_type` / `_infer_block_result_type`).  A
+    # `then` whose every path throws names no type, and answering
+    # `None` for the whole `if` on that basis lost the type the
+    # completing branch carries: as an array-literal element the
+    # literal was dropped with the loud [E602] skip, and as a
+    # generic argument the instantiation fell to the phantom-var
+    # default (`idg$Bool` for an `Int` argument) and the module
+    # failed to load — both from check- and verify-green source.
+    # Branches that DO complete must agree on their type (the
+    # checker enforces that), so the first answer is the answer.
+    then_vt = ctx._infer_vera_type(expr.then_branch.expr)
+    if then_vt is not None:
+        return then_vt
+    return ctx._infer_vera_type(expr.else_branch.expr)
+
+
+def _vt_block(ctx: InferenceMixin, expr: ast.Block) -> str | None:
+    # Defensive adds (#597) — this and the match and handle arms: these
+    # compound expressions could flow in here from generic-arg inference
+    # paths, but today most callers preprocess first.  Returning the
+    # right Vera type instead of None hardens against a future caller
+    # extending the surface.  Block.expr is non-Optional.
+    return ctx._infer_vera_type(expr.expr)
+
+
+def _vt_match(ctx: InferenceMixin, expr: ast.MatchExpr) -> str | None:
+    # #1286: the first arm that yields a name — see the `IfExpr`
+    # arm above, same shape and same two symptoms.
+    for arm in expr.arms:
+        arm_vt = ctx._infer_vera_type(arm.body)
+        if arm_vt is not None:
+            return arm_vt
+    return None
+
+
+def _vt_handle(ctx: InferenceMixin, expr: ast.HandleExpr) -> str | None:
+    # HandleExpr.body is non-Optional Block; its .expr is also
+    # non-Optional.
+    return ctx._infer_vera_type(expr.body.expr)
+
+
+def _vt_module_call(ctx: InferenceMixin, expr: ast.ModuleCall) -> str | None:
+    # #905 (array-literal sibling): a ModuleCall used as the FIRST element
+    # of an array literal reaches here via `_infer_array_element_type`,
+    # which needs the element's Vera type name to lay the array out.
+    # Resolve the qualified target through the SAME single resolver the
+    # desugar uses (`_resolve_module_call_wasm_name` — it CONSUMES `path`,
+    # so no same-name-local mismatch, the earlier #597 concern) and delegate
+    # to the FnCall Vera-type inference.  Without this, `[m::f(x), …]` inferred
+    # a None element type → the array-let binding was dropped and the
+    # enclosing function silently vanished from the exports on a check-green
+    # program (same class as the constructor-field crash, quieter symptom).
+    target = ctx._resolve_module_call_wasm_name(expr)
+    return ctx._infer_fncall_vera_type(
+        ast.FnCall(name=target, args=expr.args, span=expr.span))
+
+
+#: The Vera type name of an expression, read off its syntax, by class.
+_VERA_TYPE_ARMS: Mapping[type[ast.Expr], _TypeArm] = fold.dispatch(
+    "_walk_vera_type", {
+        ast.IntLit: _answer("Int"),
+        ast.BoolLit: _answer("Bool"),
+        ast.FloatLit: _answer("Float64"),
+        ast.UnitLit: _answer("Unit"),
+        ast.SlotRef: _vt_ref,
+        ast.ResultRef: _vt_ref,
+        ast.ConstructorCall: _vt_constructor_call,
+        ast.NullaryConstructor: _vt_nullary,
+        ast.BinaryExpr: _vt_binary,
+        ast.UnaryExpr: _vt_unary,
+        ast.FnCall: _vt_fn_call,
+        **fold.each((ast.StringLit, ast.InterpolatedString), _answer("String")),
+        ast.ArrayLit: _answer("Array"),
+        ast.IndexExpr: _vt_index,
+        ast.IfExpr: _vt_if,
+        ast.Block: _vt_block,
+        ast.MatchExpr: _vt_match,
+        ast.HandleExpr: _vt_handle,
+        **fold.each((ast.AssertExpr, ast.AssumeExpr), _answer("Unit")),
+        ast.ModuleCall: _vt_module_call,
+        # AnonFn / QualifiedCall: None rather than a placeholder string.
+        # AnonFn's Vera type would be a full `FnType` shape that isn't
+        # typically needed for call rewriting; QualifiedCall carries a
+        # `qualifier` the bare-name `FnCall` dispatcher cannot consume —
+        # synthesising a fake `FnCall` would drop it and could match a
+        # same-name local fn instead.  None lets callers handle the
+        # unknown-type case explicitly rather than propagating a wrong type
+        # silently.
+        **fold.each((ast.AnonFn, ast.QualifiedCall), _answer(None)),
+        # Contract-only (`old`, `new`, the quantifiers) or rejected at
+        # check (a hole): never asked here.
+        **fold.each((ast.OldExpr, ast.NewExpr, ast.ForallExpr,
+                     ast.ExistsExpr, ast.HoleExpr), _answer(None)),
+    })

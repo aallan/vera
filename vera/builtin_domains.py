@@ -9,7 +9,10 @@ program that trapped on every out-of-range index.
 
 Each entry here is that precondition, written as the Vera `requires` clause
 the built-in would carry if it were declared in Vera, over its parameters
-exactly as a user function's is.  The verifier obligates it at every call
+exactly as a user function's is.  It is written in the built-in's record in
+`vera.builtins` (#735), and this module derives its table from the records:
+the parameters from the record's signature, the trap from its emitter.  The
+verifier obligates it at every call
 site through the same call-site precondition machinery a user callee's
 `requires` goes through (E501 when it may not hold, E532 when it cannot be
 checked statically), with one difference: the check runs INLINE, at the call,
@@ -35,6 +38,8 @@ from dataclasses import dataclass
 from functools import lru_cache
 
 from vera import ast
+from vera.builtins import BUILTINS, BuiltinSpec, Prelude
+from vera.types import AdtType, PrimitiveType, Type
 
 
 @dataclass(frozen=True)
@@ -50,22 +55,36 @@ class BuiltinDomain:
     trap: str
 
 
+def _written(t: Type) -> str:
+    """*t* as a Vera signature writes it, without its ``@``."""
+    if isinstance(t, PrimitiveType):
+        return t.name
+    if isinstance(t, AdtType):
+        if not t.type_args:
+            return t.name
+        return f"{t.name}<{', '.join(_written(a) for a in t.type_args)}>"
+    raise TypeError(f"a domain's parameter of type {t!r} has no rendering here")
+
+
+def _domain(spec: BuiltinSpec) -> BuiltinDomain:
+    assert spec.domain is not None  # noqa: S101 — the caller's filter
+    if isinstance(spec.lowering, Prelude):  # pragma: no cover — table typo
+        raise ValueError(f"{spec.name}: a prelude body has no trapping translation")
+    return BuiltinDomain(
+        name=spec.name,
+        params=", ".join(f"@{_written(t)}" for t in spec.signature.params),
+        requires=spec.domain.requires,
+        trap=f"{spec.domain.trap} (`{spec.lowering.emitter}`)",
+    )
+
+
 #: Every built-in whose compiled translation checks its arguments and traps
-#: outside a domain the verifier can state.  Enumerated from the translators
-#: (see the module docstring for the one family deliberately left out), and
-#: held to them by `tests/test_evaluated_position_obligations_1480.py`.
-BUILTIN_DOMAINS: tuple[BuiltinDomain, ...] = (
-    BuiltinDomain(
-        name="string_char_code",
-        params="@String, @Int",
-        requires="@Int.0 >= 0 && @Int.0 < string_length(@String.0)",
-        trap=(
-            "the index is compared in i64 with the string's length in "
-            "bytes, and the call traps when it is negative or not below "
-            "that length (`_translate_char_code`)"
-        ),
-    ),
-)
+#: outside a domain the verifier can state: the records that carry one.
+#: Enumerated from the translators (see the module docstring for the one
+#: family deliberately left out), and held to them by
+#: `tests/test_evaluated_position_obligations_1480.py`.
+BUILTIN_DOMAINS: tuple[BuiltinDomain, ...] = tuple(
+    _domain(spec) for spec in BUILTINS.values() if spec.domain is not None)
 
 #: The names alone, for the translator's per-call test.
 BUILTIN_DOMAIN_NAMES: frozenset[str] = frozenset(
