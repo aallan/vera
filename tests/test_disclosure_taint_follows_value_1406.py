@@ -535,8 +535,11 @@ def test_1410_the_argument_position_is_obligated(
     `mk(@Float64.0)` (line 27) is recorded `refine_bind` /
     `tier3_unguarded` / E506 beside the producer's own disclosure (line 8),
     so the refutation the run gives is on the record rather than behind a
-    clean Tier 1.  The callee's `ensures` stays `verified` in both copies:
-    that proof is sound over the payload it assumes.
+    clean Tier 1.  The callee's `ensures` stays `verified`: that proof is
+    sound over the payload it assumes.  The caller's, which reads it, is Tier
+    3 (E534), as in every other spelling: the callee's postcondition is
+    assumed only under the argument fitting the parameter (#1706), and here
+    that fit rests on the producer's disclosure.
     """
     result = _verify(tmp_path, _ARGUMENT)
     assert result["ok"] is True, result.get("diagnostics")
@@ -557,7 +560,9 @@ def test_1410_the_argument_position_is_obligated(
     consume_ens = [o for o in result["obligations"]
                    if o["kind"] == "ensures"
                    and o["description"] == "@Int.result > 0"]
-    assert [o["status"] for o in consume_ens] == ["verified", "verified"], [
+    assert [(o["location"]["line"], o["status"], o.get("error_code"))
+            for o in consume_ens] == [
+        (13, "verified", None), (24, "tier3", "E534")], [
         (o["kind"], o["description"], o["status"]) for o in consume_ens
     ]
     out = _run(tmp_path, _ARGUMENT)
@@ -1032,9 +1037,14 @@ def test_1413_every_reader_of_a_source_fact_consults_the_one_gate() -> None:
     #: `_nested_refinement_facts` and mutually recursive with it (#1430), so
     #: they build these facts rather than read them; classifying a producer
     #: as a reader of itself would demand it gate its own output.
+    #: `_call_binding_facts` builds a call's GUARD (#1706): the facts its
+    #: arguments owe the callee's parameters, handed back to the call
+    #: translation, which assumes the callee's facts only under them.  It
+    #: assumes nothing; a guard read through the gate would be WEAKER, and a
+    #: weaker guard assumes the callee's facts where they are not promised.
     producers = {"_term_source_fact", "_subpattern_source_facts_term",
                  "_nested_refinement_facts", "_carrier_element_facts",
-                 "_element_facts"}
+                 "_element_facts", "_call_binding_facts"}
 
     # Both modules (#1418 review F5).  Every producer lives in the verifier
     # today, so the SMT half of this walk currently finds none and is
@@ -1092,8 +1102,11 @@ def test_1413_every_reader_of_a_source_fact_consults_the_one_gate() -> None:
     # and because a term can acquire a disclosed site through cross-module
     # widening.  `_declared_type_facts` is `_verify_fn`'s per-parameter
     # reading, factored out when a refinement predicate's binder came to need
-    # the same facts about its base type (#1480).
+    # the same facts about its base type (#1480).  `_call_result_facts` is a
+    # call result's: the refinements inside its return type, assumed of the
+    # result at the call (#1706).
     assert readers == [
+        "verifier:_call_result_facts",
         "verifier:_check_generic_refined_return",
         "verifier:_check_nested_refinement_obligation",
         "verifier:_check_refined_binding_obligation_term",

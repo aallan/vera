@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any, Callable, cast
 
 import z3
 
-from vera import ast, naming, patterns
+from vera import ast, fold, naming, patterns
 from vera.monomorphize import mangle_type_name, unmangle_type_name
 from vera import carriers
 from vera.regularity import RegularityIndex, adt_names_in
@@ -682,6 +682,14 @@ class SmtContext:
         # Path conditions accumulated from if/match branches so that
         # call-site precondition checks can see which branch is active.
         self._path_conditions: list[z3.ExprRef] = []
+        # #1706: while a call's callee contract is translated, the facts the
+        # call's arguments owe the callee's parameters, one entry per call
+        # being modelled (a call inside a callee's `ensures` nests).  Every
+        # fact the translation assumes about the call is assumed under them
+        # (`_guard_fact`, `_under_call_bindings`), so an obligation over an
+        # argument cannot be discharged by the facts of the call it feeds.
+        # Empty outside a call's translation, where nothing reads it.
+        self._call_bindings: list[z3.ExprRef] = []
         # #1363: declared-type facts whose OWN obligation resolved
         # not-proved-not-guarded.  Held apart from the solver rather than
         # asserted into it, so a goal is first asked WITHOUT them: anything
@@ -758,6 +766,25 @@ class SmtContext:
         # for the term rather than left on the verifier's live list.
         # None when no verifier is driving (pure-SMT tests).
         self._disclosed_call_hook: Any = None
+        # Optional hook (injected by the verifier) returning, for a call to a
+        # user function, the facts each argument owes the callee's parameter
+        # (#1706): what the callee's own proof assumed of that parameter,
+        # stated over the argument's term.  The verifier owns the formal's
+        # resolution (a refinement, a `@Nat`, a refinement nested in the
+        # type), which its binding-obligation walk reads too.  Signature:
+        # (call_node, callee_info, [term or None per argument], smt) ->
+        # [z3 fact].  None when no verifier is driving (pure-SMT tests).
+        self._call_binding_hook: Any = None
+        # Optional hook (injected by the verifier) returning what a call's
+        # declared return type says about its result beyond its head
+        # refinement (#1706): the refinements written INSIDE it, an
+        # `Option<PosInt>` payload, which the callee's return position was
+        # obligated to establish as it was the head.  Through the verifier's
+        # disclosure gate, which withholds them where the callee's own
+        # obligation for them was disclosed.  Signature: (callee_info,
+        # call_node, result_z3, smt) -> [z3 fact].  None when no verifier is
+        # driving (pure-SMT tests).
+        self._call_result_facts_hook: Any = None
         # Optional hook (injected by the verifier) returning the source-type
         # facts a constructor pattern's refined / @Nat sub-pattern bindings
         # carry, so a match arm body's call PRECONDITIONS see them (CR
@@ -1858,165 +1885,14 @@ class SmtContext:
         """Translate a Vera AST expression to a Z3 formula.
 
         Returns None if the expression contains unsupported constructs
-        (triggers Tier 3 fallback).
-
-        # WALKER_COVERAGE: (#597 — every Expr subclass below has a
-        # disposition; check_walker_coverage.py enforces completeness.
-        # SMT translation is intentionally narrow — contracts permit
-        # a subset of expression shapes — so most Expr subclasses are
-        # either "Cannot occur in contract context" or "deliberately
-        # unsupported pending issue-tracked expansion".)
-        #
-        # Handled (explicit isinstance branch):
-        #   IntLit            → z3.IntVal
-        #   BoolLit           → z3.BoolVal
-        #   StringLit         → z3.StringVal
-        #   FloatLit          → z3.FPVal (Float64 → FloatingPoint sort, #797)
-        #   SlotRef           → bound Z3 variable
-        #   ResultRef         → @Result substitution variable
-        #   BinaryExpr        → translated by op family
-        #   UnaryExpr         → translated by op family
-        #   IfExpr            → If(cond, then, else)
-        #   FnCall            → user-fn uninterpreted function or
-        #                       built-in axiomatised translation
-        #   ModuleCall        → cross-module fn lookup
-        #   Block             → trailing-expr translation
-        #   MatchExpr         → arm dispatch
-        #   ConstructorCall   → ADT constructor application
-        #   NullaryConstructor → ADT nullary tag
-        #   QualifiedCall     → effect op; NOT Z3-translated (returns None),
-        #                       but its args are walked for the E501
-        #                       precondition side effect (#776)
-        #   IndexExpr         → uninterpreted `index_<sort>(arr, i)`
-        #                       function call (#667)
-        #   ArrayLit          → fresh Array constant with asserted
-        #                       length and per-element values (#667)
-        #
-        # Intentionally ignored (returns None → Tier 3 fallback;
-        # listed in the inline comment after the dispatch chain):
-        #   AnonFn            → lambdas not in contract grammar
-        #   HandleExpr        → handle-effect not in contract grammar
-        #   ForallExpr        → quantifier translation deferred (#427)
-        #   ExistsExpr        → quantifier translation deferred (#427)
-        #   OldExpr           → contract operator; Tier 3 fallback
-        #   NewExpr           → contract operator; Tier 3 fallback
-        #   AssertExpr        → statement-like; not a predicate
-        #   AssumeExpr        → statement-like; not a predicate
-        #   UnitLit           → predicates are Bool, not Unit
-        #
-        # Cannot occur (rejected at check time or not in contracts):
-        #   InterpolatedString → not in contract predicates
-        #   HoleExpr          → check time rejects
+        (triggers Tier 3 fallback).  Each class's translation is its arm in
+        ``_SMT_ARMS``, a ``vera.fold.dispatch`` table, so every `Expr` class
+        has one.  SMT translation is intentionally narrow: contracts permit a
+        subset of expression shapes, so the classes outside it answer
+        ``None`` there, each with its reason.
         """
-        if isinstance(expr, ast.IntLit):
-            return z3.IntVal(expr.value)
-
-        if isinstance(expr, ast.BoolLit):
-            return z3.BoolVal(expr.value)
-
-        if isinstance(expr, ast.StringLit):
-            # #802: Z3's string sort cannot faithfully model two kinds of code
-            # point, so a literal containing either defers to Tier 3 (return
-            # None) rather than be reasoned over as a corrupted term.  For both,
-            # the Python binding silently stores the code point's *escape text*
-            # instead of the character (e.g. z3.StringVal("\U00030000") holds
-            # "\u{5c}u{30000}" — the backslash itself becomes "\u{5c}"), so
-            # Contains/PrefixOf/SuffixOf match phantom ASCII bytes the runtime
-            # never sees, proving false contracts.  The two cases:
-            #   - above the alphabet (> U+2FFFF); and
-            #   - a lone surrogate (U+D800..U+DFFF), which additionally has no
-            #     UTF-8 encoding at all (see string_length below).
-            # We must return None *before* z3.StringVal sees either.  (string_length
-            # models a literal via its UTF-8 byte count, not z3.StringVal, so it
-            # is unaffected by the alphabet limit — but it too must guard the
-            # surrogate case, below, where the byte encoding genuinely fails.)
-            if any(ord(ch) > 0x2FFFF or 0xD800 <= ord(ch) <= 0xDFFF
-                   for ch in expr.value):
-                return None
-            return z3.StringVal(expr.value)
-
-        if isinstance(expr, ast.FloatLit):
-            # #797: Float64 maps to Z3's IEEE-754 binary64 FloatingPoint sort, so
-            # a literal is an FPVal at that sort (the source decimal is rounded to
-            # the nearest double on construction, exactly as the runtime does).
-            return z3.FPVal(expr.value, _FLOAT64_SORT)
-
-        if isinstance(expr, ast.IndexExpr):
-            # #667: `arr[i]` translates to `index_<sort>(arr, i)`
-            # where `index_<sort>` is an uninterpreted function
-            # specific to the array's sort.  Sound — the verifier
-            # can reason that two references to `arr[i]` with the
-            # same `i` produce the same value (function congruence)
-            # — but doesn't know element structure beyond what
-            # explicit predicates assert.
-            return self._translate_index_expr(expr, env)
-
-        if isinstance(expr, ast.ArrayLit):
-            # #667: `[a, b, c]` translates to a fresh constant of
-            # the appropriate Array sort, with `length(lit) == N`
-            # and `index(lit, i) == translate(elem_i)` asserted to
-            # the solver for each known position.  Element types
-            # that can't be sorted (e.g. function-typed elements)
-            # fail the translation cleanly via None.
-            return self._translate_array_lit(expr, env)
-
-        if isinstance(expr, ast.SlotRef):
-            return self._translate_slot_ref(expr, env)
-
-        if isinstance(expr, ast.ResultRef):
-            return self._result_var
-
-        if isinstance(expr, ast.BinaryExpr):
-            return self._translate_binary(expr, env)
-
-        if isinstance(expr, ast.UnaryExpr):
-            return self._translate_unary(expr, env)
-
-        if isinstance(expr, ast.IfExpr):
-            return self._translate_if(expr, env)
-
-        if isinstance(expr, ast.FnCall):
-            return self._translate_call(expr, env)
-
-        if isinstance(expr, ast.ModuleCall):
-            return self._translate_module_call(expr, env)
-
-        if isinstance(expr, ast.Block):
-            return self._translate_block(expr, env)
-
-        if isinstance(expr, ast.MatchExpr):
-            return self._translate_match(expr, env)
-
-        if isinstance(expr, ast.NullaryConstructor):
-            return self._translate_nullary_ctor(expr)
-
-        if isinstance(expr, ast.ConstructorCall):
-            return self._translate_ctor_call(expr, env)
-
-        if isinstance(expr, ast.QualifiedCall):
-            # #776: an effect op (e.g. IO.print(...)) is itself untranslatable
-            # (effects in contracts violate purity — Z3-translating it would be
-            # unsound), but its ARGUMENTS may contain a call whose precondition
-            # must still be statically checked (E501).  Mirror the #730 ExprStmt
-            # handling: walk each arg for the precondition side effect, dropping
-            # the value, then return None so the effect op itself never becomes a
-            # Z3 term.  The #727 span-keyed dedup keeps re-translation
-            # duplicate-free.
-            #
-            # Translating a `FnCall` argument does more than record its E501: it
-            # also ASSUMES the callee's `ensures` (`_translate_call_with_info`).
-            # That assumption is scoped to the branch it was learned in by
-            # `_guard_fact`; without that guard it escapes the enclosing `if` and
-            # becomes an unconditional — and circular — fact about the CALLER's
-            # slots, letting a caller's false `ensures` prove at Tier 1.  See
-            # `_guard_fact` for the mechanism and the repro.
-            for arg in expr.args:
-                self.translate_expr(arg, env)
-            return None
-
-        # Unsupported: handle, lambdas, quantifiers,
-        # old/new, assert/assume, etc.
-        return None
+        arm = _SMT_ARMS.get(type(expr))
+        return None if arm is None else arm(self, expr, env)
 
     def _translate_slot_ref(
         self, ref: ast.SlotRef, env: SlotEnv
@@ -3182,21 +3058,36 @@ class SmtContext:
         recorded for both — neither is a violation).  Shared by the modelled-return
         path and the #882 opaque-return path so both check the obligation with
         identical dedup semantics.
+
+        Each precondition is translated under the call's binding (#1706), as
+        the postcondition is: a `match` on a parameter assumes its binders'
+        declared-type facts about the scrutinee as it translates, and inside
+        the call that scrutinee is the argument's term, so outside the binding
+        the facts discharged the argument's own obligation and this check.
+        Every path that checks a precondition comes through here, so the one
+        push covers them all.
         """
         callee_env = self._build_callee_env(callee_info, z3_args, zero_size)
         if callee_env is None:  # pragma: no cover
             return False
 
+        binding: z3.ExprRef | None = None
+        bound = False
         for contract in callee_info.contracts:
             if not isinstance(contract, ast.Requires):
                 continue
             # Skip trivial requires(true)
             if isinstance(contract.expr, ast.BoolLit) and contract.expr.value:
                 continue
+            if not bound:
+                binding = self._call_binding(
+                    callee_info, call_node, call_node.args, z3_args, zero_size)
+                bound = True
             # #1208: the precondition is the CALLEE's expression, so its
             # `@T.n` references resolve in the callee's namespace — the same
             # one `_build_callee_env` keyed the stack under.
-            with self._callee_contract_scope(callee_info):
+            with self._callee_contract_scope(callee_info), \
+                    self._call_bound(binding):
                 z3_pre = self.translate_expr(contract.expr, callee_env)
             if z3_pre is None:
                 # The precondition itself uses a construct outside the
@@ -3280,8 +3171,42 @@ class SmtContext:
           2. Translate actual arguments in the caller's env
           3. Check each callee precondition holds (solver has caller assumptions)
           4. Create a fresh return variable
-          5. Assume callee postconditions about the return variable
+          5. Assume callee postconditions about the return variable, under
+             the facts the arguments owe the callee's parameters
           6. Return the fresh variable
+
+        A call's facts about its result are assumed only where its arguments
+        fit the callee's parameters (#1706).  The callee proved its
+        `ensures`, and its refined return, from what it assumed of its
+        parameters: `>= 0` for a `@Nat`, a refinement's predicate, the
+        refinements nested in a parameter's type.  Assumed bare, those facts
+        re-derived what the arguments owe: `nat_id(@Nat -> @Nat)
+        ensures(@Nat.result == @Nat.0)` called as `nat_id(@Int.0)` put
+        `ret == @Int.0` and `ret >= 0` in the solver, which is the
+        `@Int.0 >= 0` the binding-obligation walk, run after the body is
+        translated, then discharged from them.  Under the parameters' facts
+        over the arguments (``_call_binding``), the facts tell a query
+        nothing about an argument the arguments' own facts do not, so no
+        obligation over an argument (its narrowing at this call, a `let` whose
+        slot it is, a constructor field inside it) rests on the call it
+        feeds.  That covers every fact the contract's translation assumes,
+        in its `requires` (translated under the binding in
+        :meth:`_check_call_preconditions`) as in its `ensures`, the arm facts
+        a `match` on a parameter assumes about the argument's term included
+        (``_under_call_bindings``).  Ordering the call's own
+        obligations before step 5 was not taken: it leaves every obligation
+        the walk discharges after the body to those facts, a `let` narrowing
+        of the same value among them.
+
+        The result carries its declared type's facts as it did, now with the
+        refinements written inside the return type beside its head
+        refinement (``_call_result_facts_hook``): an argument fits a
+        nested-refined parameter only where its payload is known, and a call
+        result was the one producer the solver held no such fact for.  The
+        fresh result's own type facts that constrain it alone stay
+        unconditional (`declare_nat`'s `ret >= 0` for a `@Nat` return): with
+        the `ensures` guarded nothing ties the fresh variable back to the
+        arguments.
         """
         # Does the callee carry a real (non-trivial) precondition?  A callee
         # with only `requires(true)` has no obligation to demote — a failed
@@ -3467,6 +3392,70 @@ class SmtContext:
                     self._disclosed_term_sites.setdefault(
                         ret_var.get_id(), []).extend(sites)
 
+        # #1706: every fact below is assumed under what the arguments owe the
+        # callee's parameters — the call's own facts, and the arm facts a
+        # `match` in the callee's contract assumes about its parameters.
+        binding = self._call_binding(
+            callee_info, call_node, args, z3_args, zero_size)
+        with self._call_bound(binding):
+            self._assume_callee_facts(
+                callee_info, call_node, callee_env, ret_var, refined_chain)
+        return ret_var
+
+    @contextlib.contextmanager
+    def _call_bound(self, binding: z3.ExprRef | None) -> Iterator[None]:
+        """Hold *binding* on ``_call_bindings`` while a callee's contract is
+        translated (#1706); a call whose arguments owe nothing holds none."""
+        if binding is None:
+            yield
+            return
+        self._call_bindings.append(binding)
+        try:
+            yield
+        finally:
+            self._call_bindings.pop()
+
+    def _call_binding(
+        self,
+        callee_info: Any,
+        call_node: ast.FnCall | ast.ModuleCall,
+        args: tuple[ast.Expr, ...],
+        z3_args: list[z3.ExprRef],
+        zero_size: tuple[bool, ...],
+    ) -> z3.ExprRef | None:
+        """The conjunction of the facts *call_node*'s arguments owe the
+        callee's parameters, or None when they owe none (#1706).
+
+        The facts come from the verifier (``_call_binding_hook``), which
+        resolves each formal the way its binding-obligation walk does; this
+        layer hands it one term per argument, ``None`` at a zero-size
+        position, whose argument :meth:`_translate_call_args` translated and
+        dropped (#1214).
+        """
+        if self._call_binding_hook is None:
+            return None
+        translated = iter(z3_args)
+        terms = [
+            None if (i < len(zero_size) and zero_size[i]) else next(translated)
+            for i in range(len(args))
+        ]
+        facts = self._call_binding_hook(call_node, callee_info, terms, self)
+        if not facts:
+            return None
+        return facts[0] if len(facts) == 1 else z3.And(*facts)
+
+    def _assume_callee_facts(
+        self,
+        callee_info: Any,
+        call_node: ast.FnCall | ast.ModuleCall,
+        callee_env: SlotEnv,
+        ret_var: z3.ExprRef,
+        refined_chain: tuple[Type, list[ast.Expr]] | None,
+    ) -> None:
+        """Assume the callee's postconditions, its refined return's
+        predicate and the refinements written inside its return type, about
+        the fresh result *ret_var* — each through :meth:`_guard_fact`, which
+        scopes it to the branch and to the call's binding (#1706)."""
         # Assume callee postconditions about the return variable
         saved_result = self._result_var
         self._result_var = ret_var
@@ -3493,8 +3482,8 @@ class SmtContext:
         # `@Unit` it isn't even runtime-guarded, so assuming e.g.
         # `always_false(@Unit.0)` would add `false` → UNSAT → vacuously
         # discharge the caller's own obligations).  The base-`@Nat` `>= 0` is
-        # already carried by the `declare_nat` above, so the predicate alone
-        # suffices here.
+        # already carried by the result's `declare_nat`, so the predicate
+        # alone suffices here.
         # For a CHAIN this is the conjunction over every level (R-1431 review
         # of PR #1453).  Gating on one level took the base to another
         # `RefinedType`, which is not in this tuple, so the fact was dropped
@@ -3551,7 +3540,19 @@ class SmtContext:
                     # is an ASSUMPTION, so dropping one only tells the caller
                     # less and can cost a proof, never soundness.
 
-        return ret_var
+        # #1706: and the refinements written INSIDE the return type, which
+        # the callee's return position was obligated for as it was for the
+        # head.  A call's argument is now required to fit a nested-refined
+        # formal before the callee's facts hold, and a result was the one
+        # producer of such a value whose declared type the solver did not
+        # hold, so `consume(mk(x))` lost `consume`'s postcondition where `mk`
+        # proved its payload.  The verifier's gate withholds them where `mk`
+        # disclosed that obligation instead, so a proof that needs them is
+        # Tier 3.
+        if self._call_result_facts_hook is not None:
+            for fact in self._call_result_facts_hook(
+                    callee_info, call_node, ret_var, self):
+                self.assume(self._guard_fact(fact))
 
     def _fresh_opaque_slot(
         self, node: ast.Expr, tag: str, ty: Type | None = None,
@@ -3883,10 +3884,10 @@ class SmtContext:
             # precondition checks that read `_path_conditions` live (CR
             # PR-review).  Empty preceding ⇒ irrefutable arm ⇒ unconditional.
             if preceding_conds:
-                self.assume(z3.Implies(
-                    z3.And(*[z3.Not(pc) for pc in preceding_conds]), f))
+                self.assume(self._under_call_bindings(z3.Implies(
+                    z3.And(*[z3.Not(pc) for pc in preceding_conds]), f)))
             else:
-                self.assume(f)
+                self.assume(self._under_call_bindings(f))
         result = self.translate_expr(arms[-1].body, last_env)
         for _ in last_facts:
             self._path_conditions.pop()
@@ -3920,7 +3921,7 @@ class SmtContext:
                 # note) so the refined-return goal sees it after the path
                 # conditions pop, while the live `_path_conditions` push covers
                 # in-arm precondition checks.
-                self.assume(z3.Implies(cond, f))
+                self.assume(self._under_call_bindings(z3.Implies(cond, f)))
                 self._path_conditions.append(f)
             arm_body = self.translate_expr(arm.body, arm_env)
             for _ in arm_facts:
@@ -4718,9 +4719,30 @@ class SmtContext:
         (`solver.add(z3.Implies(cond, f))`); the call translator did not.
         Guarding keeps each fact exactly as strong as the path that earned it
         (PR #953 review).
+
+        A fact is equally only as strong as the ARGUMENTS that earned it
+        (#1706): the callee guarantees it of arguments that fit its
+        parameters, so it is assumed under ``_call_bindings`` as well, the
+        facts the arguments of each call being modelled owe.  The path alone
+        left `nat_id(@Int.0)`'s `ret == @Int.0` free to discharge the very
+        `@Int.0 >= 0` its argument owed.
         """
-        if self._path_conditions:
-            return z3.Implies(z3.And(*self._path_conditions), fact)
+        conditions = [*self._path_conditions, *self._call_bindings]
+        if conditions:
+            return z3.Implies(z3.And(*conditions), fact)
+        return fact
+
+    def _under_call_bindings(self, fact: z3.ExprRef) -> z3.ExprRef:
+        """*fact* under the bindings of the calls being modelled (#1706).
+
+        For the facts a `match` in a callee's contract assumes about its
+        scrutinee: inside a call's translation that scrutinee is the
+        callee's parameter, its term the actual argument, and the binder
+        facts its declared type gives are what the argument owes.  Outside a
+        call's translation there are no bindings and *fact* is unchanged.
+        """
+        if self._call_bindings:
+            return z3.Implies(z3.And(*self._call_bindings), fact)
         return fact
 
     def check_valid(
@@ -5000,6 +5022,7 @@ class SmtContext:
         self._fresh_counter = 0
         self._opaque_tainted = False
         self._path_conditions.clear()
+        self._call_bindings.clear()  # #1706: empty between calls already
         self._tainted_facts.clear()   # #1363: per-function, must not survive
         self._value_facts.clear()  # #1480 review: per-function placeholders
         self._guarded_values.clear()  # and the guarded binders' projections
@@ -5031,3 +5054,118 @@ class SmtContext:
         # Keep _adt_registry and _ctor_to_adt (they persist across functions)
         # but clear cached Z3 sorts (tied to solver state)
         self._z3_sorts.clear()
+
+
+# =====================================================================
+# The translation table
+# =====================================================================
+
+_SmtArm = Callable[[SmtContext, Any, SlotEnv], "z3.ExprRef | None"]
+
+
+def _translate_string_lit(
+    ctx: SmtContext, expr: ast.StringLit, env: SlotEnv,
+) -> z3.ExprRef | None:
+    # #802: Z3's string sort cannot faithfully model two kinds of code
+    # point, so a literal containing either defers to Tier 3 (return
+    # None) rather than be reasoned over as a corrupted term.  For both,
+    # the Python binding silently stores the code point's *escape text*
+    # instead of the character (e.g. z3.StringVal("\U00030000") holds
+    # "\u{5c}u{30000}" — the backslash itself becomes "\u{5c}"), so
+    # Contains/PrefixOf/SuffixOf match phantom ASCII bytes the runtime
+    # never sees, proving false contracts.  The two cases:
+    #   - above the alphabet (> U+2FFFF); and
+    #   - a lone surrogate (U+D800..U+DFFF), which additionally has no
+    #     UTF-8 encoding at all (see string_length in `_translate_call`).
+    # We must return None *before* z3.StringVal sees either.  (string_length
+    # models a literal via its UTF-8 byte count, not z3.StringVal, so it
+    # is unaffected by the alphabet limit — but it too must guard the
+    # surrogate case, there, where the byte encoding genuinely fails.)
+    if any(ord(ch) > 0x2FFFF or 0xD800 <= ord(ch) <= 0xDFFF
+           for ch in expr.value):
+        return None
+    return z3.StringVal(expr.value)
+
+
+def _translate_effect_op(
+    ctx: SmtContext, expr: ast.QualifiedCall, env: SlotEnv,
+) -> None:
+    # #776: an effect op (e.g. IO.print(...)) is itself untranslatable
+    # (effects in contracts violate purity — Z3-translating it would be
+    # unsound), but its ARGUMENTS may contain a call whose precondition
+    # must still be statically checked (E501).  Mirror the #730 ExprStmt
+    # handling: walk each arg for the precondition side effect, dropping
+    # the value, then return None so the effect op itself never becomes a
+    # Z3 term.  The #727 span-keyed dedup keeps re-translation
+    # duplicate-free.
+    #
+    # Translating a `FnCall` argument does more than record its E501: it
+    # also ASSUMES the callee's `ensures` (`_translate_call_with_info`).
+    # That assumption is scoped to the branch it was learned in by
+    # `_guard_fact`; without that guard it escapes the enclosing `if` and
+    # becomes an unconditional — and circular — fact about the CALLER's
+    # slots, letting a caller's false `ensures` prove at Tier 1.  See
+    # `_guard_fact` for the mechanism and the repro.
+    for arg in expr.args:
+        ctx.translate_expr(arg, env)
+    return None
+
+
+def _untranslated(ctx: SmtContext, expr: ast.Expr, env: SlotEnv) -> None:
+    """No term: the table says why for each class that answers this."""
+    return None
+
+
+#: The Z3 term an expression translates to, by class.
+_SMT_ARMS: Mapping[type[ast.Expr], _SmtArm] = fold.dispatch(
+    "translate_expr", {
+        ast.IntLit: lambda ctx, e, env: z3.IntVal(e.value),
+        ast.BoolLit: lambda ctx, e, env: z3.BoolVal(e.value),
+        ast.StringLit: _translate_string_lit,
+        # #797: Float64 maps to Z3's IEEE-754 binary64 FloatingPoint sort, so
+        # a literal is an FPVal at that sort (the source decimal is rounded to
+        # the nearest double on construction, exactly as the runtime does).
+        ast.FloatLit: lambda ctx, e, env: z3.FPVal(e.value, _FLOAT64_SORT),
+        # #667: `arr[i]` translates to `index_<sort>(arr, i)`
+        # where `index_<sort>` is an uninterpreted function
+        # specific to the array's sort.  Sound — the verifier
+        # can reason that two references to `arr[i]` with the
+        # same `i` produce the same value (function congruence)
+        # — but doesn't know element structure beyond what
+        # explicit predicates assert.
+        ast.IndexExpr: lambda ctx, e, env: ctx._translate_index_expr(e, env),
+        # #667: `[a, b, c]` translates to a fresh constant of
+        # the appropriate Array sort, with `length(lit) == N`
+        # and `index(lit, i) == translate(elem_i)` asserted to
+        # the solver for each known position.  Element types
+        # that can't be sorted (e.g. function-typed elements)
+        # fail the translation cleanly via None.
+        ast.ArrayLit: lambda ctx, e, env: ctx._translate_array_lit(e, env),
+        ast.SlotRef: lambda ctx, e, env: ctx._translate_slot_ref(e, env),
+        ast.ResultRef: lambda ctx, e, env: ctx._result_var,
+        ast.BinaryExpr: lambda ctx, e, env: ctx._translate_binary(e, env),
+        ast.UnaryExpr: lambda ctx, e, env: ctx._translate_unary(e, env),
+        ast.IfExpr: lambda ctx, e, env: ctx._translate_if(e, env),
+        # A user function's uninterpreted application, or a built-in's
+        # axiomatised translation.
+        ast.FnCall: lambda ctx, e, env: ctx._translate_call(e, env),
+        # A cross-module function, looked up by its module path.
+        ast.ModuleCall: lambda ctx, e, env: ctx._translate_module_call(e, env),
+        # The block's trailing expression.
+        ast.Block: lambda ctx, e, env: ctx._translate_block(e, env),
+        ast.MatchExpr: lambda ctx, e, env: ctx._translate_match(e, env),
+        ast.NullaryConstructor: lambda ctx, e, env: ctx._translate_nullary_ctor(e),
+        ast.ConstructorCall: lambda ctx, e, env: ctx._translate_ctor_call(e, env),
+        ast.QualifiedCall: _translate_effect_op,
+        # Outside the contract grammar, so no term and a Tier 3 fallback:
+        # lambdas and `handle` are not contract expressions; quantifier
+        # translation is deferred (#427); `old` and `new` are contract
+        # operators; `assert` and `assume` are statement-like, not
+        # predicates; a predicate is a `Bool`, never a `Unit`.
+        **fold.each((ast.AnonFn, ast.HandleExpr, ast.ForallExpr, ast.ExistsExpr,
+                     ast.OldExpr, ast.NewExpr, ast.AssertExpr, ast.AssumeExpr,
+                     ast.UnitLit), _untranslated),
+        # Cannot occur: an interpolation is not in a contract predicate, and
+        # the check rejects a hole.
+        **fold.each((ast.InterpolatedString, ast.HoleExpr), _untranslated),
+    })

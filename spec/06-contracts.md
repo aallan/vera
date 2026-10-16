@@ -265,7 +265,7 @@ For each statement type:
 At each call site, the compiler generates two VCs:
 
 1. **Precondition check**: the caller's current context implies the callee's precondition (with actual arguments substituted).
-2. **Postcondition assumption**: after the call, the callee's postcondition (with actual arguments and return value substituted) is assumed to hold.
+2. **Postcondition assumption**: after the call, the callee's postcondition (with actual arguments and return value substituted) is assumed to hold of arguments that fit the callee's parameters.  The callee's verification assumed of each parameter what its type states (`>= 0` for a `@Nat`, a refinement's predicate, the refinements written inside the type), so the postcondition and a refined return's predicate are assumed under those facts stated over the actual arguments, and no obligation an argument owes its parameter is discharged by the postcondition of the call it feeds ([#1706](https://github.com/aallan/vera/issues/1706)).
 
 This means the verifier is modular: each function is verified independently, assuming its callees satisfy their contracts.
 
