@@ -21,16 +21,14 @@ from vera.wasm.helpers import MAX_INLINE_I32_VALUE
 # that argument into something a layout change cannot silently invalidate.
 GC_STACK_SIZE = 16384  # 16 KiB shadow stack (4 096 roots)
 
-# #348: GC mark-phase worklist.  Pre-fix this was 16 KiB (4096 entries)
-# and silently dropped pushes once full, which left reachable objects
-# unmarked and they got swept as garbage — a real use-after-free hole for
-# programs whose live object graph held more than ~4 K pointers reachable
-# from a single root.  Post-fix: quadruple the capacity (64 KiB / 16 384
-# entries — covers reasonable program shapes) AND trap (`unreachable`) on
-# overflow rather than silently dropping, so any residual overflow is a
-# clean runtime failure rather than silent corruption.  Eliminating the
-# trap entirely via iterative deepening or dynamic worklist growth is
-# tracked separately for follow-up.
+# The GC mark phase's worklist.  Its size bounds the collector's memory,
+# not the heap it can mark (#1510): a child push that finds it full is
+# dropped and the object being scanned recorded as dirty, and once the
+# worklist empties the dirty objects are scanned again, so marking
+# completes for any heap (`_emit_gc_collect`).  The seed's pushes are the
+# exception — one per shadow-stack root, onto an empty worklist, with no
+# object to record a drop against — so the worklist must hold at least as
+# many entries as the shadow stack holds roots (`_assemble_module` checks).
 GC_WORKLIST_SIZE = 65536  # 64 KiB worklist (16 384 entries)
 # #573: the wrapper table — 16 bytes per entry (obj_ptr / kind / handle /
 # reserved), 4 096 entries.
@@ -519,6 +517,19 @@ class AssemblyMixin:
                     "conservative mark phase could not distinguish a @Byte "
                     "or @Bool value on the shadow stack from a heap pointer"
                 )
+            # #1510: the mark phase's seed pushes one 4-byte worklist entry
+            # per 4-byte shadow-stack root onto an empty worklist, and is the
+            # one push with no dirty object to record a dropped push against
+            # (`_emit_gc_collect`), so it must always fit.  It does while the
+            # worklist is no smaller than the shadow stack; a raise for the
+            # same reason as the guard above.
+            if gc_worklist_size < gc_stack_size:
+                raise CodegenInvariantError(
+                    f"the GC worklist ({gc_worklist_size} bytes) is smaller "
+                    f"than the shadow stack ({gc_stack_size} bytes): a "
+                    "collection's seed could fill the worklist with roots, "
+                    "and a root the seed dropped would be swept while live"
+                )
             parts.append(
                 f"  (global $heap_ptr (export \"heap_ptr\") "
                 f"(mut i32) (i32.const {gc_heap_start}))"
@@ -583,6 +594,17 @@ class AssemblyMixin:
             # the bitmap is only live for the duration of one collection.
             parts.append(
                 "  (global $gc_bm_base (mut i32) (i32.const 0))"
+            )
+            # #1510: the mark phase's dirty range — the header of the lowest
+            # object a full worklist dropped a child of, the word it dropped
+            # at, and the header of the highest (`_emit_gc_collect`).  Module
+            # globals rather than `$gc_collect` locals: only the collector's
+            # cold paths touch them, and as locals they stayed live across
+            # the drain loop and cost every collection 10-20% with nothing
+            # dropped.
+            parts.extend(
+                f"  (global ${name} (mut i32) (i32.const 0))"
+                for name in ("gc_rs_lo", "gc_rs_off", "gc_rs_hi")
             )
             if wrap_enabled:
                 gc_wraptable_end = gc_wraptable_base + gc_wraptable_size
@@ -1320,12 +1342,147 @@ class AssemblyMixin:
             "  )"
         )
 
+    @staticmethod
+    def _emit_gc_scan(done: str, drop: str, loop: str, indent: str) -> str:
+        """The mark phase's scan of one object's words, as WAT text.
+
+        Scans the payload of ``$obj_ptr`` (``$obj_size`` bytes) from word
+        offset ``$scan_ptr`` and pushes every word that is an unmarked
+        object base onto the worklist.  A push that finds the worklist full
+        is dropped (#1510): the value stays unmarked, the scan stops — every
+        later push would be dropped too — and the object is recorded as
+        dirty from that word, the lowest dirty object's header in
+        ``$gc_rs_lo`` with the word in ``$gc_rs_off``, the highest in
+        ``$gc_rs_hi``.  The loop leaves for the recording by a bare
+        ``br_if`` to *drop*, so the recording stays out of the loop the
+        collector spends its time in, and the range is held in module
+        globals, which no register carries through that loop.  The Phase 2b
+        drain and its rescan of the dirty range both scan through this,
+        under labels of their own.
+        """
+        lines = (
+            f"block {done}",
+            f"block {drop}",
+            f"loop {loop}",
+            "  local.get $scan_ptr",
+            "  local.get $obj_size",
+            "  i32.ge_u",
+            f"  br_if {done}",
+            "  ;; Layer 1 (issue #515): defence-in-depth bound check.",
+            "  ;; Never load from an address >= heap_ptr.  Cheap (a single",
+            "  ;; ge_u) relative to the i32.load it guards.",
+            "  local.get $obj_ptr",
+            "  local.get $scan_ptr",
+            "  i32.add",
+            "  i32.const 4",
+            "  i32.add",
+            "  global.get $heap_ptr",
+            "  i32.gt_u",
+            f"  br_if {done}",
+            "  ;; val = load(obj_ptr + scan_ptr)",
+            "  local.get $obj_ptr",
+            "  local.get $scan_ptr",
+            "  i32.add",
+            "  i32.load",
+            "  local.set $val",
+            "  ;; Valid heap pointer check",
+            "  local.get $val",
+            "  global.get $gc_heap_start",
+            "  i32.const 4",
+            "  i32.add",
+            "  i32.ge_u",
+            "  if",
+            "    local.get $val",
+            "    global.get $heap_ptr",
+            "    i32.lt_u",
+            "    if",
+            "      local.get $val",
+            "      global.get $gc_heap_start",
+            "      i32.sub",
+            "      i32.const 7",
+            "      i32.and",
+            "      i32.const 4",
+            "      i32.eq",
+            "      ;; Layer 2 (issues #515, #1382): and it must be a REAL",
+            "      ;; object base.  The mark store writes through this",
+            "      ;; candidate, so a false positive that merely looks",
+            "      ;; aligned would corrupt whatever it points into.",
+            "      local.get $val",
+            "      call $gc_is_base",
+            "      i32.and",
+            "      if",
+            "        ;; Not already marked? Push to worklist.",
+            "        local.get $val",
+            "        i32.const 4",
+            "        i32.sub",
+            "        i32.load",
+            "        i32.const 1",
+            "        i32.and",
+            "        i32.eqz",
+            "        if",
+            "          ;; #1510: a full worklist drops the push, leaving",
+            "          ;; $val unmarked and $scan_ptr at this word.",
+            "          local.get $wl_ptr",
+            "          local.get $wl_end",
+            "          i32.ge_u",
+            f"          br_if {drop}",
+            "          local.get $wl_ptr",
+            "          local.get $val",
+            "          i32.store",
+            "          local.get $wl_ptr",
+            "          i32.const 4",
+            "          i32.add",
+            "          local.set $wl_ptr",
+            "        end",
+            "      end",
+            "    end",
+            "  end",
+            "  local.get $scan_ptr",
+            "  i32.const 4",
+            "  i32.add",
+            "  local.set $scan_ptr",
+            f"  br {loop}",
+            "end",
+            "end",
+            ";; Reached only from a dropped push: this object is dirty from",
+            ";; word $scan_ptr on, so the rescan reaches the value dropped.",
+            "local.get $obj_ptr",
+            "i32.const 4",
+            "i32.sub",
+            "global.get $gc_rs_lo",
+            "i32.lt_u",
+            "if",
+            "  local.get $obj_ptr",
+            "  i32.const 4",
+            "  i32.sub",
+            "  global.set $gc_rs_lo",
+            "  local.get $scan_ptr",
+            "  global.set $gc_rs_off",
+            "end",
+            "local.get $obj_ptr",
+            "i32.const 4",
+            "i32.sub",
+            "global.get $gc_rs_hi",
+            "i32.gt_u",
+            "if",
+            "  local.get $obj_ptr",
+            "  i32.const 4",
+            "  i32.sub",
+            "  global.set $gc_rs_hi",
+            "end",
+            "end",
+        )
+        return "".join(f"{indent}{line}\n" for line in lines)
+
     def _emit_gc_collect(self) -> str:
         """Emit the $gc_collect function: mark-sweep garbage collector.
 
         Three phases (plus Phase 2c when the wrap table is enabled):
           1. Clear all mark bits in the heap.
-          2. Mark from shadow-stack roots (iterative, conservative).
+          2. Mark from shadow-stack roots (iterative, conservative):
+             seed the worklist from the roots, drain it, and — when a
+             full worklist dropped a push (#1510) — rescan the dirty
+             objects and drain again, until a drain drops nothing.
           2c. (#573) Walk the wrap table: fire ``host_decref_handle``
               for unmarked wrapper entries; compact survivors in
               place.  Only emitted when ``self._needs_wrap_table``
@@ -1356,6 +1513,7 @@ class AssemblyMixin:
             "    (local $free_head i32)\n"
             "    (local $bm_bytes i32)\n"
             "    (local $bm_i i32)\n"
+            "    (local $rs_end i32)\n"
             + wrap_locals
             + "\n"
             "    ;; Worklist region: gc_stack_limit .. gc_worklist_end.\n"
@@ -1529,22 +1687,12 @@ class AssemblyMixin:
             "          call $gc_is_base\n"
             "          i32.and\n"
             "          if\n"
-            "            ;; Push onto worklist.  #348: pre-fix this\n"
-            "            ;; silently dropped pushes when the worklist\n"
-            "            ;; was full — reachable objects beyond the\n"
-            "            ;; capacity stayed unmarked and got swept\n"
-            "            ;; (use-after-free).  Post-fix: trap on\n"
-            "            ;; overflow so the failure is a clean WASM\n"
-            "            ;; trap rather than memory corruption.  The\n"
-            "            ;; worklist size has been quadrupled (64 KiB,\n"
-            "            ;; 16 384 entries) so reasonable program\n"
-            "            ;; shapes shouldn't reach this path.\n"
-            "            local.get $wl_ptr\n"
-            "            local.get $wl_end\n"
-            "            i32.ge_u\n"
-            "            if\n"
-            "              unreachable\n"
-            "            end\n"
+            "            ;; Push onto worklist.  #1510: the seed cannot\n"
+            "            ;; fill it — one entry per shadow-stack root,\n"
+            "            ;; onto an empty worklist no smaller than the\n"
+            "            ;; shadow stack (`_assemble_module` refuses a\n"
+            "            ;; layout where it is) — so this push, unlike a\n"
+            "            ;; child's in Phase 2b, needs no capacity test.\n"
             "            local.get $wl_ptr\n"
             "            local.get $val\n"
             "            i32.store\n"
@@ -1563,161 +1711,167 @@ class AssemblyMixin:
             "    end\n"
             "    end\n"
             "\n"
-            "    ;; === Phase 2b: Mark loop (drain worklist) ===\n"
-            "    block $m_done\n"
-            "    loop $m_loop\n"
-            "      ;; Pop from worklist\n"
-            "      local.get $wl_ptr\n"
-            "      local.get $wl_base\n"
-            "      i32.le_u\n"
-            "      br_if $m_done\n"
-            "      local.get $wl_ptr\n"
-            "      i32.const 4\n"
-            "      i32.sub\n"
-            "      local.set $wl_ptr\n"
-            "      local.get $wl_ptr\n"
-            "      i32.load\n"
-            "      local.set $obj_ptr\n"
-            "      ;; Load header\n"
-            "      local.get $obj_ptr\n"
-            "      i32.const 4\n"
-            "      i32.sub\n"
-            "      i32.load\n"
-            "      local.set $header\n"
-            "      ;; Compute obj_size early so we can sanity-check it.\n"
-            "      local.get $header\n"
-            "      i32.const 1\n"
-            "      i32.shr_u\n"
-            "      local.set $obj_size\n"
-            "      ;; Layer 2 (issue #515): conservative-GC sanity check.\n"
-            "      ;; The Phase 2 worklist push only guards on alignment and\n"
-            "      ;; range, not on header validity.  A non-pointer i32 in\n"
-            "      ;; payload data can satisfy those guards, in which case\n"
-            "      ;; #1382: the pre-#1382 guard here (skip when\n"
-            "      ;;   obj_ptr + obj_size > heap_ptr) existed only to\n"
-            "      ;;   stop a false-positive candidate's garbage header\n"
-            "      ;;   from driving an out-of-bounds scan and a mark\n"
-            "      ;;   store into a random payload word.  It caught only\n"
-            "      ;;   the LARGE-size false positive; a candidate whose\n"
-            "      ;;   header read as 0 passed it and corrupted live\n"
-            "      ;;   data.  Candidates are now validated against the\n"
-            "      ;;   object-base bitmap before they are ever enqueued,\n"
-            "      ;;   so $obj_ptr is a real body address and $header a\n"
-            "      ;;   real header: the bound holds by construction and\n"
-            "      ;;   the partial guard is gone (one mechanism).\n"
-            "      ;; Already marked? Skip.\n"
-            "      local.get $header\n"
-            "      i32.const 1\n"
-            "      i32.and\n"
-            "      if\n"
-            "        br $m_loop\n"
-            "      end\n"
+            "    ;; === Phase 2b: Mark — drain, then rescan the drops ===\n"
+            "    ;; #1510: a child push that finds the worklist full is\n"
+            "    ;; dropped and the object being scanned recorded as dirty\n"
+            "    ;; (`_emit_gc_scan`), so the dirty objects' headers lie in\n"
+            "    ;; [$gc_rs_lo, $gc_rs_hi] along the allocation chain, the\n"
+            "    ;; lowest dirty from word $gc_rs_off.  A round drains the\n"
+            "    ;; worklist, then walks the dirty range, scanning each marked\n"
+            "    ;; object again, which pushes the children it dropped.  A\n"
+            "    ;; drop during the walk ends it there and leaves the rest of\n"
+            "    ;; the range dirty, so the next walk resumes where this one\n"
+            "    ;; stopped.  Marking is complete when a drain ends with\n"
+            "    ;; nothing dirty.  A walk starts on an empty worklist, so it\n"
+            "    ;; either pushes nothing, and the next drain ends clean, or\n"
+            "    ;; gives that drain an unmarked object to mark: the rounds\n"
+            "    ;; end.\n"
+            "    i32.const -1\n"
+            "    global.set $gc_rs_lo\n"
+            "    i32.const 0\n"
+            "    global.set $gc_rs_hi\n"
+            "    block $mk_done\n"
+            "    loop $mk_loop\n"
+            "      block $m_done\n"
+            "      loop $m_loop\n"
+            "        ;; Pop from worklist\n"
+            "        local.get $wl_ptr\n"
+            "        local.get $wl_base\n"
+            "        i32.le_u\n"
+            "        br_if $m_done\n"
+            "        local.get $wl_ptr\n"
+            "        i32.const 4\n"
+            "        i32.sub\n"
+            "        local.set $wl_ptr\n"
+            "        local.get $wl_ptr\n"
+            "        i32.load\n"
+            "        local.set $obj_ptr\n"
+            "        ;; Load header\n"
+            "        local.get $obj_ptr\n"
+            "        i32.const 4\n"
+            "        i32.sub\n"
+            "        i32.load\n"
+            "        local.set $header\n"
+            "        ;; Compute obj_size early so we can sanity-check it.\n"
+            "        local.get $header\n"
+            "        i32.const 1\n"
+            "        i32.shr_u\n"
+            "        local.set $obj_size\n"
+            "        ;; Layer 2 (issue #515): conservative-GC sanity check.\n"
+            "        ;; The Phase 2 worklist push only guards on alignment\n"
+            "        ;; and range, not on header validity.  A non-pointer i32\n"
+            "        ;; in payload data can satisfy those guards, in which\n"
+            "        ;; case #1382: the pre-#1382 guard here (skip when\n"
+            "        ;;   obj_ptr + obj_size > heap_ptr) existed only to\n"
+            "        ;;   stop a false-positive candidate's garbage header\n"
+            "        ;;   from driving an out-of-bounds scan and a mark\n"
+            "        ;;   store into a random payload word.  It caught only\n"
+            "        ;;   the LARGE-size false positive; a candidate whose\n"
+            "        ;;   header read as 0 passed it and corrupted live\n"
+            "        ;;   data.  Candidates are now validated against the\n"
+            "        ;;   object-base bitmap before they are ever enqueued,\n"
+            "        ;;   so $obj_ptr is a real body address and $header a\n"
+            "        ;;   real header: the bound holds by construction and\n"
+            "        ;;   the partial guard is gone (one mechanism).\n"
+            "        ;; Already marked? Skip.\n"
+            "        local.get $header\n"
+            "        i32.const 1\n"
+            "        i32.and\n"
+            "        if\n"
+            "          br $m_loop\n"
+            "        end\n"
             + (
-                "      local.get $obj_ptr\n"
-                "      call $gc_assert_base\n"
+                "        local.get $obj_ptr\n"
+                "        call $gc_assert_base\n"
                 if flag_enabled("VERA_GC_CHECK_MARKS")
                 else ""
             )
-            + "      ;; Set mark bit\n"
-            "      local.get $obj_ptr\n"
-            "      i32.const 4\n"
-            "      i32.sub\n"
-            "      local.get $header\n"
-            "      i32.const 1\n"
-            "      i32.or\n"
-            "      i32.store\n"
-            "      ;; Conservative scan: check every i32-aligned word\n"
-            "      i32.const 0\n"
+            + "        ;; Set mark bit\n"
+            "        local.get $obj_ptr\n"
+            "        i32.const 4\n"
+            "        i32.sub\n"
+            "        local.get $header\n"
+            "        i32.const 1\n"
+            "        i32.or\n"
+            "        i32.store\n"
+            "        ;; Conservative scan: check every i32-aligned word\n"
+            "        i32.const 0\n"
+            "        local.set $scan_ptr\n"
+            + self._emit_gc_scan("$sc_done", "$sc_drop", "$sc_loop",
+                                 "        ")
+            + "        br $m_loop\n"
+            "      end\n"
+            "      end\n"
+            "      ;; The worklist is empty.  Nothing dirty: marking is done.\n"
+            "      global.get $gc_rs_lo\n"
+            "      global.get $gc_rs_hi\n"
+            "      i32.gt_u\n"
+            "      br_if $mk_done\n"
+            "      ;; Walk the dirty range, the first object from its\n"
+            "      ;; dropped word, with the range emptied for this walk's\n"
+            "      ;; own drops.\n"
+            "      global.get $gc_rs_lo\n"
+            "      local.set $ptr\n"
+            "      global.get $gc_rs_hi\n"
+            "      local.set $rs_end\n"
+            "      global.get $gc_rs_off\n"
             "      local.set $scan_ptr\n"
-            "      block $sc_done\n"
-            "      loop $sc_loop\n"
-            "        local.get $scan_ptr\n"
-            "        local.get $obj_size\n"
-            "        i32.ge_u\n"
-            "        br_if $sc_done\n"
-            "        ;; Layer 1 (issue #515): defence-in-depth bound check.\n"
-            "        ;; Even with the upstream sanity check above, never load\n"
-            "        ;; from an address >= heap_ptr.  Cheap (a single ge_u)\n"
-            "        ;; relative to the i32.load it guards, and protects any\n"
-            "        ;; future caller that reaches this loop without the\n"
-            "        ;; Layer-2 check.\n"
-            "        local.get $obj_ptr\n"
-            "        local.get $scan_ptr\n"
-            "        i32.add\n"
-            "        i32.const 4\n"
-            "        i32.add\n"
-            "        global.get $heap_ptr\n"
+            "      i32.const -1\n"
+            "      global.set $gc_rs_lo\n"
+            "      i32.const 0\n"
+            "      global.set $gc_rs_hi\n"
+            "      block $rw_done\n"
+            "      loop $rw_loop\n"
+            "        local.get $ptr\n"
+            "        local.get $rs_end\n"
             "        i32.gt_u\n"
-            "        br_if $sc_done\n"
-            "        ;; val = load(obj_ptr + scan_ptr)\n"
-            "        local.get $obj_ptr\n"
-            "        local.get $scan_ptr\n"
-            "        i32.add\n"
+            "        br_if $rw_done\n"
+            "        local.get $ptr\n"
             "        i32.load\n"
-            "        local.set $val\n"
-            "        ;; Valid heap pointer check\n"
-            "        local.get $val\n"
-            "        global.get $gc_heap_start\n"
-            "        i32.const 4\n"
-            "        i32.add\n"
-            "        i32.ge_u\n"
+            "        local.set $header\n"
+            "        ;; Only a marked object can hold a dropped child.\n"
+            "        local.get $header\n"
+            "        i32.const 1\n"
+            "        i32.and\n"
             "        if\n"
-            "          local.get $val\n"
-            "          global.get $heap_ptr\n"
-            "          i32.lt_u\n"
+            "          local.get $ptr\n"
+            "          i32.const 4\n"
+            "          i32.add\n"
+            "          local.set $obj_ptr\n"
+            "          local.get $header\n"
+            "          i32.const 1\n"
+            "          i32.shr_u\n"
+            "          local.set $obj_size\n"
+            + self._emit_gc_scan("$rs_scan_done", "$rs_scan_drop",
+                                 "$rs_scan_loop", "          ")
+            + "          ;; A dropped push ends the walk here: the rest of\n"
+            "          ;; the range stays dirty for the next walk.\n"
+            "          global.get $gc_rs_lo\n"
+            "          global.get $gc_rs_hi\n"
+            "          i32.le_u\n"
             "          if\n"
-            "            local.get $val\n"
-            "            global.get $gc_heap_start\n"
-            "            i32.sub\n"
-            "            i32.const 7\n"
-            "            i32.and\n"
-            "            i32.const 4\n"
-            "            i32.eq\n"
-            "            ;; Layer 2 (issues #515, #1382): and it must be a REAL\n"
-            "            ;; object base.  The mark store writes through this\n"
-            "            ;; candidate, so a false positive that merely looks\n"
-            "            ;; aligned would corrupt whatever it points into.\n"
-            "            local.get $val\n"
-            "            call $gc_is_base\n"
-            "            i32.and\n"
-            "            if\n"
-            "              ;; Not already marked? Push to worklist.\n"
-            "              ;; #348: trap on overflow rather than\n"
-            "              ;; silently dropping (see Phase 2 seed for\n"
-            "              ;; the rationale).\n"
-            "              local.get $val\n"
-            "              i32.const 4\n"
-            "              i32.sub\n"
-            "              i32.load\n"
-            "              i32.const 1\n"
-            "              i32.and\n"
-            "              i32.eqz\n"
-            "              if\n"
-            "                local.get $wl_ptr\n"
-            "                local.get $wl_end\n"
-            "                i32.ge_u\n"
-            "                if\n"
-            "                  unreachable\n"
-            "                end\n"
-            "                local.get $wl_ptr\n"
-            "                local.get $val\n"
-            "                i32.store\n"
-            "                local.get $wl_ptr\n"
-            "                i32.const 4\n"
-            "                i32.add\n"
-            "                local.set $wl_ptr\n"
-            "              end\n"
-            "            end\n"
+            "            local.get $rs_end\n"
+            "            global.set $gc_rs_hi\n"
+            "            br $rw_done\n"
             "          end\n"
             "        end\n"
-            "        local.get $scan_ptr\n"
-            "        i32.const 4\n"
-            "        i32.add\n"
+            "        i32.const 0\n"
             "        local.set $scan_ptr\n"
-            "        br $sc_loop\n"
+            "        ;; Advance: ptr += align_up(size + 4, 8)\n"
+            "        local.get $header\n"
+            "        i32.const 1\n"
+            "        i32.shr_u\n"
+            "        i32.const 11\n"
+            "        i32.add\n"
+            "        i32.const -8\n"
+            "        i32.and\n"
+            "        local.get $ptr\n"
+            "        i32.add\n"
+            "        local.set $ptr\n"
+            "        br $rw_loop\n"
             "      end\n"
             "      end\n"
-            "      br $m_loop\n"
+            "      br $mk_loop\n"
             "    end\n"
             "    end\n"
             "\n"
