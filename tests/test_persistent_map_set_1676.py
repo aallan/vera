@@ -871,7 +871,8 @@ _JSON_SHAPES: dict[str, tuple[str, str, str, Callable[[int], str]]] = {
 
 def _json_document(shape: str, n: int) -> tuple[str, str]:
     """The program that parses and re-serializes a document of *n* members
-    of *shape*, and the line it prints: the document's length."""
+    of *shape*, and the line it prints: the document itself, which is
+    canonical as written, so every key, value and position is compared."""
     open_, close, member, python_member = _JSON_SHAPES[shape]
     text = open_ + ",".join(python_member(i) for i in range(n)) + close
     source = f"""\
@@ -880,13 +881,13 @@ public fn main(@Unit -> @Unit)
 {{
   let @Array<String> = array_map(array_range(0, {n}), fn(@Int -> @String) effects(pure) {{ {member} }});
   match json_parse(string_concat(string_concat("{open_}", string_join(@Array<String>.0, ",")), "{close}")) {{
-    Ok(@Json) -> IO.print(int_to_string(string_length(json_stringify(@Json.0)))),
+    Ok(@Json) -> IO.print(json_stringify(@Json.0)),
     Err(@String) -> IO.print(@String.0)
   }};
   IO.print("\\n")
 }}
 """
-    return source, f"{len(text)}\n"
+    return source, f"{text}\n"
 
 
 @pytest.mark.parametrize("host", ["native", "browser"])
