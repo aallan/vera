@@ -590,11 +590,20 @@ def test_dispatch_refuses_a_table_that_misses_a_class() -> None:
         fold.dispatch("long", arms)
 
 
+#: Every `fold.dispatch` table the compiler builds, by the name it gives.
+_TABLES = frozenset({
+    "_is_void_expr", "_infer_expr_wasm_type", "_walk_vera_type",
+    "_translate_expr_unscoped", "resolve_literal_string", "resolve_array_len",
+    "_synth_expr_impl",
+})
+
+
 @pytest.mark.xfail(strict=True, reason="the dispatch ports have not landed")
 def test_a_new_expr_subclass_fails_every_dispatching_module_at_import() -> None:
-    """Declare a 30th `Expr` subclass before `vera.fold` is imported, and
-    every module that builds a `dispatch` table refuses to import, naming
-    the new class: the coverage the walker gate checked in comments."""
+    """Declare a 30th `Expr` subclass before `vera.fold` is imported: the
+    first dispatching module refuses to import, naming it, and every table
+    the compiler builds is refused, each by its own name, which is the
+    coverage the walker gate checked in comments."""
     script = (
         "import dataclasses, importlib, sys\n"
         "from vera import ast\n"
@@ -603,26 +612,36 @@ def test_a_new_expr_subclass_fails_every_dispatching_module_at_import() -> None:
         "    pass\n"
         "ZzNewExpr.__module__ = ast.__name__\n"
         "ast.ZzNewExpr = ZzNewExpr\n"
-        "import vera.fold\n"
-        "assert ast.ZzNewExpr in vera.fold.EXPR_CLASSES\n"
-        "failed = []\n"
-        "for name in sys.argv[1:]:\n"
+        "from vera import fold\n"
+        "assert ast.ZzNewExpr in fold.EXPR_CLASSES\n"
+        "try:\n"
+        "    importlib.import_module('vera.checker.sql')\n"
+        "except TypeError as exc:\n"
+        "    assert 'ZzNewExpr' in str(exc), exc\n"
+        "    print('import refused')\n"
+        "real = fold.dispatch\n"
+        "refused = []\n"
+        "def recording(name, arms):\n"
         "    try:\n"
-        "        importlib.import_module(name)\n"
+        "        return real(name, arms)\n"
         "    except TypeError as exc:\n"
-        "        if 'ZzNewExpr' in str(exc):\n"
-        "            failed.append(name)\n"
-        "        for key in [k for k in sys.modules if k.startswith(name)]:\n"
-        "            del sys.modules[key]\n"
-        "print(' '.join(failed))\n"
+        "        assert 'ZzNewExpr' in str(exc), exc\n"
+        "        refused.append(name)\n"
+        "        return arms\n"
+        "fold.dispatch = recording\n"
+        "for name in sys.argv[1:]:\n"
+        "    importlib.import_module(name)\n"
+        "print(' '.join(sorted(refused)))\n"
     )
-    modules = ["vera.checker.sql", "vera.wasm.context", "vera.wasm.inference",
-               "vera.checker.expressions"]
+    modules = ["vera.checker.sql", "vera.checker.expressions",
+               "vera.wasm.context", "vera.wasm.inference"]
     out = subprocess.run(
         [sys.executable, "-c", script, *modules], cwd=ROOT, capture_output=True,
         text=True, encoding="utf-8", timeout=120, check=False)
     assert out.returncode == 0, out.stderr
-    assert out.stdout.split() == modules, out.stdout + out.stderr
+    lines = out.stdout.splitlines()
+    assert lines[0] == "import refused", out.stdout
+    assert set(lines[1].split()) == _TABLES, out.stdout
 
 
 # =====================================================================
