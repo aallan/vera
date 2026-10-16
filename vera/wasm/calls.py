@@ -509,19 +509,19 @@ class CallsMixin:
         # Http operations use prefixed names to avoid collision
         if call.qualifier == "Http":
             wasm_name = f"http_{call.name}"
-            self._http_ops_used.add(wasm_name)
+            self._host_imports_used.add(wasm_name)
             self.needs_alloc = True
             instructions.append(f"call $vera.{wasm_name}")
         elif call.qualifier == "Inference":
             wasm_name = f"inference_{call.name}"
-            self._inference_ops_used.add(wasm_name)
+            self._host_imports_used.add(wasm_name)
             self.needs_alloc = True
             instructions.append(f"call $vera.{wasm_name}")
         elif call.qualifier == "DB":
             # #229 — DB.query / DB.execute → `call $vera.db_<op>`; both return
             # a Result ADT heap pointer, so $alloc is required.
             wasm_name = f"db_{call.name}"
-            self._db_ops_used.add(wasm_name)
+            self._host_imports_used.add(wasm_name)
             self.needs_alloc = True
             instructions.append(f"call $vera.{wasm_name}")
         elif call.qualifier == "Random":
@@ -530,7 +530,10 @@ class CallsMixin:
             # `vera.random_float`, `vera.random_bool`).  None of the
             # Random ops allocate or return heap data, so $alloc is
             # not required.
-            self._random_ops_used.add(call.name)
+            self._host_imports_used.add(call.name)
+            instructions.append(f"call $vera.{call.name}")
+        elif call.qualifier == "IO":
+            self._host_imports_used.add(call.name)
             instructions.append(f"call $vera.{call.name}")
         else:
             instructions.append(f"call $vera.{call.name}")

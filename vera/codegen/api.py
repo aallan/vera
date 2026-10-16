@@ -16,11 +16,13 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from io import StringIO
 from pathlib import Path
-from typing import TYPE_CHECKING
+from collections.abc import Callable, Iterable, Mapping
+from typing import TYPE_CHECKING, Any
 
 import wasmtime
 
 from vera import ast
+from vera.builtins import HOST_FAMILIES, host_import
 from vera.runtime.async_http import register_async
 from vera.wasm.helpers import CellNames
 from vera.runtime.decimal import register_decimal
@@ -87,19 +89,6 @@ class CompileResult:
     diagnostics: list["Diagnostic"] = field(default_factory=list)
     state_types: list[tuple[CellNames, str]] = field(
         default_factory=list)
-    md_ops_used: set[str] = field(default_factory=set)
-    regex_ops_used: set[str] = field(default_factory=set)
-    map_ops_used: set[str] = field(default_factory=set)
-    set_ops_used: set[str] = field(default_factory=set)
-    decimal_ops_used: set[str] = field(default_factory=set)
-    json_ops_used: set[str] = field(default_factory=set)
-    html_ops_used: set[str] = field(default_factory=set)
-    http_ops_used: set[str] = field(default_factory=set)
-    async_ops_used: set[str] = field(default_factory=set)  # #841
-    inference_ops_used: set[str] = field(default_factory=set)
-    db_ops_used: set[str] = field(default_factory=set)  # #229
-    random_ops_used: set[str] = field(default_factory=set)  # #465
-    math_ops_used: set[str] = field(default_factory=set)  # #467
     fn_param_types: dict[str, list[str]] = field(default_factory=dict)
     # Parallel to `fn_param_types`: whether each lowered parameter is a
     # `@Nat` (through aliases and refinements), so `execute` holds a raw
@@ -416,6 +405,141 @@ def _argument_range_name(
     return None
 
 
+class HostBindingError(RuntimeError):
+    """A module's host import that no row of the built-in registry declares,
+    or that the Python host does not bind (#735)."""
+
+
+@dataclass
+class HostEnv:
+    """What the family binders bind with, for one execution.
+
+    ``own`` holds `execute()`'s own bindings by import name: the IO
+    operations, the two signals and the wrap table's helpers, which IO's
+    observation channel (#421) keeps inline.  The stores are created by
+    `execute()`, which reads them back; the async binder creates the
+    executor `execute()` shuts down.
+    """
+
+    own: dict[str, tuple[wasmtime.FuncType, Callable[..., Any]]]
+    state_types: list[tuple[CellNames, str]]
+    initial_state: dict[str, int | float] | None
+    state_store: dict[str, list[int | float]]
+    env_vars: dict[str, str] | None
+    decimal_store: dict[int, PyDecimal]
+    future_store: dict[int, "Future[tuple[bool, str]]"]
+    host_store_refs: dict[str, dict[int, object]]
+    executor: ThreadPoolExecutor | None = None
+
+
+class _ExactLinker:
+    """Defines on the real linker exactly the module's own imports.
+
+    A family's binder may define more of its family than the module
+    imports (``register_md`` defines all five); this keeps only the ones the
+    module declares and records them, so the module's imports are bound
+    exactly and an unbound one can be named.
+    """
+
+    def __init__(self, linker: wasmtime.Linker, imported: set[str]) -> None:
+        self._linker = linker
+        self._imported = imported
+        self.defined: set[str] = set()
+
+    def define_func(self, module: str, name: str, ty: wasmtime.FuncType,
+                    func: Callable[..., Any], access_caller: bool = False) -> None:
+        if module != "vera" or name not in self._imported or name in self.defined:
+            return
+        self._linker.define_func(module, name, ty, func, access_caller=access_caller)
+        self.defined.add(name)
+
+
+Binder = Callable[[Any, set[str], HostEnv], None]
+
+
+def _bind_own(linker: Any, names: set[str], env: HostEnv) -> None:
+    """`execute()`'s own bindings for the module's imports among them."""
+    for name in sorted(names):
+        if name in env.own:
+            ty, func = env.own[name]
+            linker.define_func("vera", name, ty, func, access_caller=True)
+
+
+def _bind_async(linker: Any, names: set[str], env: HostEnv) -> None:
+    """The fused-async imports (#841), over an executor `execute()` shuts
+    down when the call returns."""
+    env.executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="vera-async")
+    register_async(linker, names, env.future_store, env.host_store_refs, env.executor)
+
+
+#: The Python host's binder for each family of the registry's host imports
+#: (``vera.builtins.HOST_FAMILIES``): what defines a module's imports of that
+#: family, given the names it declares.  ``bind_host_imports`` calls the one
+#: each import's row names.
+HOST_BINDERS: Mapping[str, Binder] = {
+    "io": _bind_own,
+    "md": lambda linker, names, env: register_md(linker),
+    "regex": lambda linker, names, env: register_regex(linker),
+    "map": lambda linker, names, env: register_map(linker, names),
+    "set": lambda linker, names, env: register_set(linker, names),
+    "decimal": lambda linker, names, env: register_decimal(
+        linker, names, env.decimal_store, env.host_store_refs),
+    "wrap": _bind_own,
+    "json": lambda linker, names, env: register_json(linker, names),
+    "html": lambda linker, names, env: register_html(linker, names),
+    "http": lambda linker, names, env: register_http(linker, names),
+    "async": _bind_async,
+    "inference": lambda linker, names, env: register_inference(linker, names, env.env_vars),
+    "db": lambda linker, names, env: register_db(linker, names, env.env_vars),
+    "random": lambda linker, names, env: register_random(linker, names),
+    "math": lambda linker, names, env: register_math(linker, names),
+    "contract": _bind_own,
+    "trap": _bind_own,
+    "state": lambda linker, names, env: register_state(
+        linker, env.state_types, env.initial_state, env.state_store),
+}
+
+
+def imported_families(imports: Iterable[tuple[str, str]]) -> dict[str, set[str]]:
+    """A module's ``vera`` imports grouped by the family of the registry row
+    each is an instance of.  Raises :class:`HostBindingError` for an import
+    no row declares."""
+    families: dict[str, set[str]] = {}
+    for module, name in imports:
+        if module != "vera":
+            continue
+        row = host_import(name)
+        if row is None:
+            raise HostBindingError(
+                f"the module imports vera.{name}, which no row of the built-in"
+                " registry declares (HOST_IMPORTS in vera/builtins.py)")
+        families.setdefault(row.family, set()).add(name)
+    return families
+
+
+def bind_host_imports(linker: wasmtime.Linker, imports: Iterable[tuple[str, str]],
+                      env: HostEnv) -> None:
+    """Bind exactly the module's ``vera`` imports: each family's through its
+    binder in :data:`HOST_BINDERS`, in the registry's family order.
+
+    Raises :class:`HostBindingError` naming the import, and the registry row
+    it is an instance of, when no row declares it or no binder defines it.
+    """
+    families = imported_families(imports)
+    exact = _ExactLinker(linker, set().union(*families.values()))
+    for family in HOST_FAMILIES:
+        if family.name in families:
+            HOST_BINDERS[family.name](exact, families[family.name], env)
+    for family_name, names in families.items():
+        for name in sorted(names - exact.defined):
+            row = host_import(name)
+            assert row is not None  # noqa: S101 — grouped by its row above
+            serving = f", which serves {row.serves}" if row.serves else ""
+            raise HostBindingError(
+                f"the Python host binds no vera.{name}, an import of the"
+                f" registry's {family_name} row {row.name}{serving}")
+
+
 def execute(
     result: CompileResult,
     fn_name: str | None = None,
@@ -493,7 +617,7 @@ def execute(
 
     # #573: introspection hook for tests verifying GC reclamation of
     # host-side stores.  Populated by reference inside the
-    # ``result.map_ops_used`` etc. branches below; we read its
+    # Map / Set / Decimal binders below; we read its
     # entries' ``len()`` after the program returns and ship them
     # in ``ExecuteResult.host_store_sizes``.  Empty for programs
     # that never used Map / Set / Decimal.
@@ -512,7 +636,8 @@ def execute(
     # effect families (Map/Set/Decimal/Json/Html/Markdown/Regex/Http/
     # Inference/Random/Math/State) were extracted to vera/runtime/ because
     # each is a pluggable WASM<->library adapter whose coupling to execute()
-    # is minimal: most are stateless and registered conditionally; the two
+    # is minimal: most are stateless and bound for a module that imports their
+    # family's rows; the two
     # stateful ones (Decimal, State) thread a single Python-side store,
     # passed as one explicit parameter, that execute() reads back.  IO is
     # different in DEGREE -- it is execute()'s OBSERVATION
@@ -526,6 +651,10 @@ def execute(
     # 7-field context object.  Cohesion wins over uniform "every effect in
     # runtime/" placement.  Full rationale: vera/README.md, "Host-binding
     # families (vera/runtime/)".
+
+    # `execute()`'s own bindings by import name, which `bind_host_imports`
+    # defines for the module's imports of their rows (#735).
+    own: dict[str, tuple[wasmtime.FuncType, Callable[..., Any]]] = {}
 
     # Host function: vera.print(ptr: i32, len: i32) -> ()
     def host_print(caller: wasmtime.Caller, ptr: int, length: int) -> None:
@@ -553,9 +682,7 @@ def execute(
         [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
         [],
     )
-    linker.define_func(
-        "vera", "print", print_type, host_print, access_caller=True
-    )
+    own["print"] = (print_type, host_print)
 
     # Host function: vera.read_line() -> (i32, i32)  [String pair]
     def host_read_line(caller: wasmtime.Caller) -> tuple[int, int]:
@@ -575,10 +702,7 @@ def execute(
         [],
         [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
     )
-    linker.define_func(
-        "vera", "read_line", read_line_type,
-        host_read_line, access_caller=True,
-    )
+    own["read_line"] = (read_line_type, host_read_line)
 
     # Host function: vera.read_file(ptr, len) -> i32  [Result<String,String>]
     def host_read_file(
@@ -595,10 +719,7 @@ def execute(
         [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
         [wasmtime.ValType.i32()],
     )
-    linker.define_func(
-        "vera", "read_file", read_file_type,
-        host_read_file, access_caller=True,
-    )
+    own["read_file"] = (read_file_type, host_read_file)
 
     # Host function: vera.write_file(p_ptr, p_len, d_ptr, d_len) -> i32
     # Result<Unit, String>
@@ -620,10 +741,7 @@ def execute(
          wasmtime.ValType.i32(), wasmtime.ValType.i32()],
         [wasmtime.ValType.i32()],
     )
-    linker.define_func(
-        "vera", "write_file", write_file_type,
-        host_write_file, access_caller=True,
-    )
+    own["write_file"] = (write_file_type, host_write_file)
 
     # Host function: vera.args() -> (i32, i32)  [Array<String> pair]
     def host_args(caller: wasmtime.Caller) -> tuple[int, int]:
@@ -633,9 +751,7 @@ def execute(
         [],
         [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
     )
-    linker.define_func(
-        "vera", "args", args_type, host_args, access_caller=True,
-    )
+    own["args"] = (args_type, host_args)
 
     # Host function: vera.exit(code: i64) -> ()
     def host_exit(_caller: wasmtime.Caller, code: int) -> None:
@@ -645,9 +761,7 @@ def execute(
         [wasmtime.ValType.i64()],
         [],
     )
-    linker.define_func(
-        "vera", "exit", exit_type, host_exit, access_caller=True,
-    )
+    own["exit"] = (exit_type, host_exit)
 
     # Host function: vera.sleep(ms: i64) -> ()
     # #463 — pause execution for `ms` milliseconds.
@@ -667,9 +781,7 @@ def execute(
         [wasmtime.ValType.i64()],
         [],
     )
-    linker.define_func(
-        "vera", "sleep", sleep_type, host_sleep, access_caller=True,
-    )
+    own["sleep"] = (sleep_type, host_sleep)
 
     # Host function: vera.time() -> i64  (current Unix time in ms).
     # Unit arg at the Vera level is erased at the WASM boundary, so
@@ -681,9 +793,7 @@ def execute(
         [],
         [wasmtime.ValType.i64()],
     )
-    linker.define_func(
-        "vera", "time", time_type, host_time, access_caller=True,
-    )
+    own["time"] = (time_type, host_time)
 
     # Host function: vera.stderr(ptr, len) -> ()
     # Mirrors host_print but writes to stderr instead of stdout.
@@ -705,9 +815,7 @@ def execute(
         [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
         [],
     )
-    linker.define_func(
-        "vera", "stderr", stderr_type, host_stderr, access_caller=True,
-    )
+    own["stderr"] = (stderr_type, host_stderr)
 
     # Host function: vera.read_char() -> i32  [Result<String, String>]
     # #618 — single-character input for real-time CLI programs.
@@ -910,10 +1018,7 @@ def execute(
         [],
         [wasmtime.ValType.i32()],
     )
-    linker.define_func(
-        "vera", "read_char", read_char_type,
-        host_read_char, access_caller=True,
-    )
+    own["read_char"] = (read_char_type, host_read_char)
 
     # Host function: vera.get_env(ptr, len) -> i32  [Option<String>]
     def host_get_env(
@@ -932,10 +1037,7 @@ def execute(
         [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
         [wasmtime.ValType.i32()],
     )
-    linker.define_func(
-        "vera", "get_env", get_env_type,
-        host_get_env, access_caller=True,
-    )
+    own["get_env"] = (get_env_type, host_get_env)
 
     # -----------------------------------------------------------------
     # Contract violation reporting
@@ -958,10 +1060,7 @@ def execute(
         [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
         [],
     )
-    linker.define_func(
-        "vera", "contract_fail", contract_fail_type,
-        host_contract_fail, access_caller=True,
-    )
+    own["contract_fail"] = (contract_fail_type, host_contract_fail)
 
     # Host function: vera.trap(kind: i32, ptr: i32, len: i32) -> ()  (#1479)
     # The one signal every named check calls immediately before its
@@ -985,189 +1084,98 @@ def execute(
          wasmtime.ValType.i32()],
         [],
     )
-    linker.define_func(
-        "vera", "trap", trap_type, host_trap, access_caller=True,
-    )
+    own["trap"] = (trap_type, host_trap)
 
-    # State<T> host functions
+    # The stores the family binders populate, created here so the shared
+    # `host_decref_handle` below closes over them and ExecuteResult reads
+    # them back: State's cell stacks, Decimal's value store (#421) and the
+    # fused-async futures (#841).
     state_store: dict[str, list[int | float]] = {}
-    register_state(linker, result.state_types, initial_state, state_store)
+    _decimal_store: dict[int, PyDecimal] = {}
+    _future_store: dict[int, "Future[tuple[bool, str]]"] = {}
 
-    # -----------------------------------------------------------------
-    # Markdown host functions (§9.7.3)
-    # -----------------------------------------------------------------
-
-    if result.md_ops_used:
-        register_md(linker)
-
-    # -----------------------------------------------------------------
-    # Regex host functions (§9.6.15)
-    # -----------------------------------------------------------------
-
-    if result.regex_ops_used:
-        register_regex(linker)
-
-    # -----------------------------------------------------------------
-    # Map<K, V> host functions
-    # -----------------------------------------------------------------
+    # The module's own imports, by the family of the registry row each is
+    # an instance of: what is bound, and the decref hook's families.
+    imports = [(imp.module, imp.name or "") for imp in module.imports]
+    families = imported_families(imports)
 
     # #573 / #706: Phase 2c destructor host import.  Only Decimal keeps
     # a value-typed Python store and registers its wrappers with the
-    # wrap table; Map / Set are now bucket-as-truth (plain heap objects
-    # reclaimed by ordinary mark-sweep, no store, no registration).  The
-    # import stays gated on the broad predicate so it is defined for any
-    # program that might declare it on the WAT side; the body only
-    # evicts Decimal handles.
-    # #421: the Decimal value store is created up-front (outside the Decimal
-    # branch) so the shared host_decref_handle below can close over it;
-    # register_decimal populates it when Decimal ops are actually used.
-    _decimal_store: dict[int, PyDecimal] = {}
+    # wrap table; Map / Set are bucket-as-truth (plain heap objects
+    # reclaimed by ordinary mark-sweep, no store, no registration).  It is
+    # bound when the module declares it, which any wrapper family's use
+    # does; the body only evicts Decimal handles and cancels futures.
+    def host_decref_handle(
+        _caller: wasmtime.Caller, kind: int, handle: int,
+    ) -> None:
+        # #706: only Decimal (kind=3) keeps a Python store to evict.
+        # Map (1) / Set (2) are bucket-as-truth — no store entry, and
+        # their wrappers are not registered with the wrap table, so
+        # Phase 2c never fires for them.  Other kinds: silent no-op.
+        if kind == 3 and "decimal" in families:
+            _decimal_store.pop(handle, None)
+        # #841: Future (kind=4) — an unawaited future whose wrapper
+        # became unreachable.  Cancel it if it hasn't started (a
+        # running fetch just completes into a dropped Future) and
+        # evict the store entry.
+        elif kind == 4 and "async" in families:
+            fut = _future_store.pop(handle, None)
+            if fut is not None:
+                fut.cancel()
 
-    # #841: the future store mirrors the Decimal pattern — created
-    # up-front so host_decref_handle can close over it; register_async
-    # populates it when fused-async ops are actually used.
-    _future_store: dict[int, "Future[tuple[bool, str]]"] = {}
-
-    _decref_used = (
-        result.map_ops_used or result.set_ops_used
-        or result.decimal_ops_used
-        or result.json_ops_used or result.html_ops_used
-        or result.async_ops_used
+    own["host_decref_handle"] = (
+        wasmtime.FuncType(
+            [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
+            [],
+        ),
+        host_decref_handle,
     )
-    if _decref_used:
-        def host_decref_handle(
-            _caller: wasmtime.Caller, kind: int, handle: int,
-        ) -> None:
-            # #706: only Decimal (kind=3) keeps a Python store to evict.
-            # Map (1) / Set (2) are bucket-as-truth — no store entry, and
-            # their wrappers are not registered with the wrap table, so
-            # Phase 2c never fires for them.  Other kinds: silent no-op.
-            if kind == 3 and result.decimal_ops_used:
-                _decimal_store.pop(handle, None)
-            # #841: Future (kind=4) — an unawaited future whose wrapper
-            # became unreachable.  Cancel it if it hasn't started (a
-            # running fetch just completes into a dropped Future) and
-            # evict the store entry.
-            elif kind == 4 and result.async_ops_used:
-                fut = _future_store.pop(handle, None)
-                if fut is not None:
-                    fut.cancel()
 
-        linker.define_func(
-            "vera", "host_decref_handle",
-            wasmtime.FuncType(
-                [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
-                [],
-            ),
-            host_decref_handle, access_caller=True,
-        )
+    # #706: attach_bucket_to_wrapper no longer populates a bucket.
+    # Map / Set wrappers carry their bucket directly (bucket-as-truth)
+    # and Decimal is value-typed, so nothing needs a bucket attached.
+    # The import stays defined because Decimal's ``_emit_wrap_handle``
+    # still emits a call to it; the body is a tripwire asserting only
+    # Decimal (kind=3) reaches this path, so a regression that routes a
+    # Map / Set wrapper back through ``_emit_wrap_handle`` fails loudly
+    # here instead of silently leaving its bucket unpopulated.
+    def host_attach_bucket(
+        _caller: wasmtime.Caller, _wrapper_ptr: int, kind: int,
+        _handle: int,
+    ) -> None:
+        # Only Decimal (kind=3) should reach this no-op path; Map (1)
+        # and Set (2) are bucket-as-truth and never wrap a handle.
+        if kind != 3:
+            raise RuntimeError(
+                f"#706: attach_bucket_to_wrapper called with kind={kind}; "
+                "expected Decimal (3).  A Map/Set wrapper was routed back "
+                "through _emit_wrap_handle — the bucket-as-truth invariant "
+                "is violated."
+            )
 
-        # #706: attach_bucket_to_wrapper no longer populates a bucket.
-        # Map / Set wrappers carry their bucket directly (bucket-as-truth)
-        # and Decimal is value-typed, so nothing needs a bucket attached.
-        # The import stays defined because Decimal's ``_emit_wrap_handle``
-        # still emits a call to it; the body is a tripwire asserting only
-        # Decimal (kind=3) reaches this path, so a regression that routes a
-        # Map / Set wrapper back through ``_emit_wrap_handle`` fails loudly
-        # here instead of silently leaving its bucket unpopulated.
-        def host_attach_bucket(
-            _caller: wasmtime.Caller, _wrapper_ptr: int, kind: int,
-            _handle: int,
-        ) -> None:
-            # Only Decimal (kind=3) should reach this no-op path; Map (1)
-            # and Set (2) are bucket-as-truth and never wrap a handle.
-            if kind != 3:
-                raise RuntimeError(
-                    f"#706: attach_bucket_to_wrapper called with kind={kind}; "
-                    "expected Decimal (3).  A Map/Set wrapper was routed back "
-                    "through _emit_wrap_handle — the bucket-as-truth invariant "
-                    "is violated."
-                )
+    own["attach_bucket_to_wrapper"] = (
+        wasmtime.FuncType(
+            [
+                wasmtime.ValType.i32(),  # wrapper_ptr
+                wasmtime.ValType.i32(),  # kind
+                wasmtime.ValType.i32(),  # handle
+            ],
+            [],
+        ),
+        host_attach_bucket,
+    )
 
-        linker.define_func(
-            "vera", "attach_bucket_to_wrapper",
-            wasmtime.FuncType(
-                [
-                    wasmtime.ValType.i32(),  # wrapper_ptr
-                    wasmtime.ValType.i32(),  # kind
-                    wasmtime.ValType.i32(),  # handle
-                ],
-                [],
-            ),
-            host_attach_bucket, access_caller=True,
-        )
-
-    if result.map_ops_used:
-        register_map(linker, result.map_ops_used)
-
-    # -----------------------------------------------------------------
-    # Set<T> host functions
-    # -----------------------------------------------------------------
-
-    if result.set_ops_used:
-        register_set(linker, result.set_ops_used)
-
-    # ── Decimal host functions ───────────────────────────────────
-    if result.decimal_ops_used:
-        register_decimal(linker, result.decimal_ops_used, _decimal_store, _host_store_refs)
-
-    # -----------------------------------------------------------------
-    # Json host functions
-    # -----------------------------------------------------------------
-    if result.json_ops_used:
-        register_json(linker, result.json_ops_used)
-
-    # -----------------------------------------------------------------
-    # Html host functions (§9.7.4)
-    # -----------------------------------------------------------------
-    if result.html_ops_used:
-        register_html(linker, result.html_ops_used)
-
-    # -----------------------------------------------------------------
-    # Http host functions
-    # -----------------------------------------------------------------
-    if result.http_ops_used:
-        register_http(linker, result.http_ops_used)
-
-    # -----------------------------------------------------------------
-    # Fused-async host functions (#841)
-    # -----------------------------------------------------------------
-    _async_executor: ThreadPoolExecutor | None = None
-    if result.async_ops_used:
-        _async_executor = ThreadPoolExecutor(
-            max_workers=8, thread_name_prefix="vera-async",
-        )
-        register_async(
-            linker, result.async_ops_used,
-            _future_store, _host_store_refs, _async_executor,
-        )
-
-    # -----------------------------------------------------------------
-    # Inference effect host functions
-    # -----------------------------------------------------------------
-    if result.inference_ops_used:
-        register_inference(linker, result.inference_ops_used, env_vars)
-
-    # -----------------------------------------------------------------
-    # DB effect host functions (#229) — SQL via stdlib sqlite3
-    # -----------------------------------------------------------------
-    if result.db_ops_used:
-        register_db(linker, result.db_ops_used, env_vars)
-    # ---------------------------------------------------------------
-    # Random host functions (#465).  Lazy import — `random` is
-    # stdlib so the import is cheap, but only pull it in when needed.
-    # ---------------------------------------------------------------
-    if result.random_ops_used:
-        register_random(linker, result.random_ops_used)
-    # ---------------------------------------------------------------
-    # Math host functions (#467).  Ten functions share one shape
-    # (Float64 → Float64) except `atan2` which takes two.  All are
-    # thin wrappers over Python's `math` module — IEEE 754
-    # semantics (NaN for out-of-domain inputs, ±inf for overflow)
-    # are preserved across the WASM boundary.
-    # ---------------------------------------------------------------
-    if result.math_ops_used:
-        register_math(linker, result.math_ops_used)
+    # Every import the module declares, bound through the binder of its
+    # row's family (#735); an import no row declares, or one no binder
+    # defines, is a HostBindingError naming the row.
+    env = HostEnv(
+        own=own, state_types=result.state_types,
+        initial_state=initial_state, state_store=state_store,
+        env_vars=env_vars, decimal_store=_decimal_store,
+        future_store=_future_store, host_store_refs=_host_store_refs,
+    )
+    bind_host_imports(linker, imports, env)
+    _async_executor = env.executor
     instance = linker.instantiate(store, module)
 
     def _peak_heap_bytes() -> int:

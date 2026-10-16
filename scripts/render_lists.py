@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Write the lists that have one source into the files that show them.
 
-A list has one source and is rendered, never copied.  Two lists are
+A list has one source and is rendered, never copied.  Four lists are
 rendered here, each between a pair of `render_lists` markers in the file
 that shows it:
 
@@ -20,10 +20,19 @@ that shows it:
   records in the order it shows them, and the Issue column is written from
   the record's issues.  KNOWN_ISSUES.md's Bugs table and SKILL.md's bug
   workarounds are hand-kept, and are not in the file.
+- ``host-imports``: the host imports a module can declare, from the built-in
+  registry's ``HOST_IMPORTS`` (``vera/builtins.py``), into the browser
+  runtime's roster (``vera/browser/runtime.mjs``), which its import object
+  holds every module's imports to.
+- ``signatures-*``: the signature tables of spec chapter 9, from the
+  registry's records and the effects' operations (``vera effects``).  Within
+  a table only each row's Signature cell is written; its name and its
+  description are the spec's own.
 
 A marker is a whole line in the file's own comment syntax:
 ``<!-- render_lists:begin NAME -->`` and ``<!-- render_lists:end NAME -->``
-in Markdown and XML, ``" render_lists:begin NAME`` in Vim script.  JSON has
+in Markdown and XML, ``" render_lists:begin NAME`` in Vim script,
+``// render_lists:begin NAME`` in JavaScript.  JSON has
 no comments, so the vscode grammar's marker is its effect rule's TextMate
 ``comment`` key, ``"comment": "render_lists:NAME"``, and the block is the
 rest of that rule.
@@ -34,7 +43,7 @@ block that is not what ``--write`` would write.  ``check_doc_counts.py
 --release`` runs the check, so a release cannot ship a stale block; between
 releases nothing compares a block with its source.
 
-Everything but the effect registry is read with the standard library, so
+Everything but the registries is read with the standard library, so
 ``check_limitations_sync.py`` can load the data file through this module on
 a bare Python.
 """
@@ -73,6 +82,7 @@ _MARKERS = {
     "html": re.compile(rf"<!--\s*render_lists:(begin|end)\s+({_BLOCK_NAME})\s*-->"),
     "vim": re.compile(rf'"\s*render_lists:(begin|end)\s+({_BLOCK_NAME})'),
     "json": re.compile(rf'"comment":\s*"render_lists:({_BLOCK_NAME})",?'),
+    "js": re.compile(rf"//\s*render_lists:(begin|end)\s+({_BLOCK_NAME})"),
 }
 
 
@@ -81,6 +91,8 @@ def _syntax(path: str) -> str:
         return "json"
     if path.endswith(".vim"):
         return "vim"
+    if path.endswith((".mjs", ".js")):
+        return "js"
     return "html"
 
 
@@ -149,6 +161,7 @@ def _begin_example(path: str, name: str) -> str:
         "html": f"<!-- render_lists:begin {name} -->",
         "vim": f'" render_lists:begin {name}',
         "json": f'"comment": "render_lists:{name}"',
+        "js": f"// render_lists:begin {name}",
     }[_syntax(path)]
 
 
@@ -550,12 +563,179 @@ def limitation_blocks(root: Path) -> tuple[list[Rendered], list[str]]:
 
 
 # ---------------------------------------------------------------------------
+# The host-import roster
+# ---------------------------------------------------------------------------
+
+#: The file whose roster lists the registry's host imports.
+ROSTER = "vera/browser/runtime.mjs"
+
+
+def host_import_rows() -> list[tuple[str, str, str]]:
+    """Every row of the registry's ``HOST_IMPORTS``, in its order: its name,
+    its family, and how a declared import names an instance of it.  The
+    caller puts the tree's root first on `sys.path`."""
+    from vera.builtins import HOST_IMPORTS
+
+    return [(row.name, row.family, row.instance) for row in HOST_IMPORTS]
+
+
+def render_roster(rows: Sequence[tuple[str, str, str]]) -> str:
+    """The roster, as it belongs between its markers."""
+    lines = [
+        "// The host imports a module can declare: one row of HOST_IMPORTS in",
+        "// vera/builtins.py each, its name, its family, and how a declared",
+        "// import names an instance of it (\"\" for none; \"k\", \"v\", \"kv\" or",
+        "// \"e\" for a Map or Set row named by its key, value or element tag, as",
+        "// `map_insert$ks_vi`; \"cell\" for a State row named by its cell, as",
+        "// `state_get_Int`).  scripts/render_lists.py writes this block.",
+        "const HOST_IMPORT_ROWS = new Map([",
+    ]
+    lines += [f'  ["{name}", "{family}", "{instance}"],' for name, family, instance in rows]
+    lines.append("].map(([name, family, instance]) => [name, { name, family, instance }]));")
+    return "".join(f"{line}\n" for line in lines)
+
+
+def roster_blocks(
+    root: Path, rows: Sequence[tuple[str, str, str]]
+) -> tuple[list[Rendered], list[str]]:
+    """The roster as it is and as the registry's `rows` render it, and every
+    reason it cannot be rendered."""
+    if not rows:
+        return [], ["the built-in registry lists no host import"]
+    read = _read(root, ROSTER, {"host-imports"})
+    if isinstance(read, str):
+        return [], [read]
+    text, spans = read
+    start, end = spans["host-imports"]
+    return [Rendered(ROSTER, "host-imports", text[start:end], render_roster(rows))], []
+
+
+# ---------------------------------------------------------------------------
+# The signature tables
+# ---------------------------------------------------------------------------
+
+#: The chapter whose signature tables are rendered.
+SPEC = "spec/09-standard-library.md"
+
+#: Each signature table's block, and what its rows name: built-in
+#: functions (``None``) or the operations of an effect.
+SIGNATURE_BLOCKS: dict[str, str | None] = {
+    "signatures-option": None,
+    "signatures-result": None,
+    "signatures-set": None,
+    "signatures-map": None,
+    "signatures-io": "IO",
+    "signatures-state": "State",
+    "signatures-http": "Http",
+    "signatures-inference": "Inference",
+    "signatures-math": None,
+    "signatures-json-parse": None,
+    "signatures-json-object": None,
+    "signatures-json-array": None,
+    "signatures-json-type": None,
+    "signatures-decimal-construct": None,
+    "signatures-decimal-arithmetic": None,
+    "signatures-decimal-comparison": None,
+}
+
+_ROW_NAME = re.compile(r"`(?:[A-Z][A-Za-z]*\.)?([a-z_][a-z0-9_]*)")
+
+
+def signature_text(params: Sequence[str], ret: str, forall: Sequence[str] = ()) -> str:
+    """A signature as the tables write it: the parameter types, or ``()``,
+    an ASCII arrow and the result type, after a ``forall`` when generic."""
+    body = (", ".join(params) if params else "()") + f" -> {ret}"
+    return f"forall<{', '.join(forall)}> {body}" if forall else body
+
+
+def signatures() -> dict[str | None, dict[str, str]]:
+    """Every signature a table can show: the built-in functions' under
+    ``None``, each effect's operations under its name.  The caller puts the
+    tree's root first on `sys.path`."""
+    from vera.builtins import BUILTINS
+    from vera.environment import TypeEnv
+    from vera.types import FunctionType, pretty_type
+
+    def written(ty: Any) -> str:
+        if isinstance(ty, FunctionType):
+            params = ", ".join(written(p) for p in ty.params)
+            return f"fn({params} -> {written(ty.return_type)})"
+        return pretty_type(ty)
+
+    out: dict[str | None, dict[str, str]] = {None: {}}
+    for name, spec in BUILTINS.items():
+        sig = spec.signature
+        out[None][name] = signature_text(
+            [written(p) for p in sig.params], written(sig.ret), sig.forall or ())
+    env = TypeEnv()
+    for effect in sorted({e for e in SIGNATURE_BLOCKS.values() if e is not None}):
+        ops = env.effects[effect].operations
+        out[effect] = {
+            op: signature_text([written(p) for p in info.param_types], written(info.return_type))
+            for op, info in ops.items()
+        }
+    return out
+
+
+def render_signature_table(
+    content: str, kind: str | None, known: dict[str, str], block: str
+) -> tuple[str, list[str]]:
+    """The table with each row's Signature cell written from `known`, and
+    every reason a row cannot be rendered."""
+    errors: list[str] = []
+    lines = content.splitlines(keepends=True)
+    rows = [i for i, line in enumerate(lines) if line.startswith("|")]
+    if len(rows) < 3:
+        return content, [f"{SPEC}: the `{block}` block holds no table"]
+    header = _row_cells(lines[rows[0]].rstrip("\n"))
+    if header is None or len(header) < 2 or header[1] != "Signature":
+        return content, [f"{SPEC}: the `{block}` block's table has no Signature column"]
+    out = list(lines)
+    for i in rows[2:]:
+        line = lines[i].rstrip("\n")
+        cells = _row_cells(line)
+        named = _ROW_NAME.match(cells[0]) if cells else None
+        if cells is None or named is None:
+            errors.append(f"{SPEC}: a row of the `{block}` block names no function: {line[:80]!r}")
+            continue
+        name = named.group(1)
+        if name not in known:
+            what = "built-in" if kind is None else f"operation of {kind}"
+            errors.append(f"{SPEC}: the `{block}` block lists `{name}`, which is no {what}")
+            continue
+        cells[1] = f"`{known[name]}`"
+        out[i] = "| " + " | ".join(cells) + " |\n"
+    return "".join(out), errors
+
+
+def signature_blocks(
+    root: Path, known: dict[str | None, dict[str, str]]
+) -> tuple[list[Rendered], list[str]]:
+    """Each signature table as it is and as the registries render it, and
+    every reason one cannot be rendered."""
+    read = _read(root, SPEC, set(SIGNATURE_BLOCKS))
+    if isinstance(read, str):
+        return [], [read]
+    text, spans = read
+    blocks: list[Rendered] = []
+    errors: list[str] = []
+    for block, kind in SIGNATURE_BLOCKS.items():
+        start, end = spans[block]
+        new, problems = render_signature_table(text[start:end], kind, known.get(kind, {}), block)
+        errors += problems
+        blocks.append(Rendered(SPEC, block, text[start:end], new))
+    return blocks, errors
+
+
+# ---------------------------------------------------------------------------
 # The whole tree
 # ---------------------------------------------------------------------------
 
 
 def _targets(root: Path) -> dict[str, set[str]]:
     targets: dict[str, set[str]] = {path: {"effects"} for path in EFFECT_TARGETS}
+    targets.setdefault(ROSTER, set()).add("host-imports")
+    targets.setdefault(SPEC, set()).update(SIGNATURE_BLOCKS)
     data = load_limitations(root)
     if not isinstance(data, list):
         for table in data.tables:
@@ -564,16 +744,24 @@ def _targets(root: Path) -> dict[str, set[str]]:
 
 
 def plan(
-    root: Path, *, effects: Sequence[str] | None = None
+    root: Path, *, effects: Sequence[str] | None = None,
+    host_rows: Sequence[tuple[str, str, str]] | None = None,
+    known_signatures: dict[str | None, dict[str, str]] | None = None,
 ) -> tuple[list[Rendered], list[str]]:
     """Every block in the tree, as it is and as its source renders it, and
-    every reason a block cannot be rendered.  `effects` stands in for the
-    registry; by default the tree's own is read."""
+    every reason a block cannot be rendered.  `effects`, `host_rows` and
+    `known_signatures` stand in for the registries; by default the tree's
+    own are read."""
     names = list(effects) if effects is not None else effect_names()
     blocks, errors = effect_blocks(root, names)
-    more, more_errors = limitation_blocks(root)
-    blocks += more
-    errors += more_errors
+    for more, more_errors in (
+        limitation_blocks(root),
+        roster_blocks(root, host_rows if host_rows is not None else host_import_rows()),
+        signature_blocks(
+            root, known_signatures if known_signatures is not None else signatures()),
+    ):
+        blocks += more
+        errors += more_errors
     for path, names_here in sorted(_targets(root).items()):
         file = root / path
         if not file.is_file():
@@ -593,11 +781,12 @@ def _first_difference(current: str, new: str) -> tuple[str, str]:
     return next(((a, b) for a, b in pairs if a != b), ("", ""))
 
 
-def stale_blocks(root: Path, *, effects: Sequence[str] | None = None) -> list[str]:
+def stale_blocks(root: Path, **sources: Any) -> list[str]:
     """Why the tree's rendered blocks are not what `--write` would write:
     one line per stale block, or every reason a block cannot be rendered;
-    ``[]`` when every block is current."""
-    blocks, errors = plan(root, effects=effects)
+    ``[]`` when every block is current.  `sources` stand in for the
+    registries, as `plan` takes them."""
+    blocks, errors = plan(root, **sources)
     return errors or _stale(blocks)
 
 
@@ -616,12 +805,11 @@ def _stale(blocks: Sequence[Rendered]) -> list[str]:
     return stale
 
 
-def write(
-    root: Path, *, effects: Sequence[str] | None = None
-) -> tuple[list[str], list[str]]:
+def write(root: Path, **sources: Any) -> tuple[list[str], list[str]]:
     """Render every block into its file: the files rewritten, and, when any
-    block cannot be rendered, every reason, with no file written."""
-    blocks, errors = plan(root, effects=effects)
+    block cannot be rendered, every reason, with no file written.  `sources`
+    stand in for the registries, as `plan` takes them."""
+    blocks, errors = plan(root, **sources)
     if errors:
         return [], errors
     by_path: dict[str, list[Rendered]] = {}
@@ -655,7 +843,7 @@ def main(argv: list[str] | None = None) -> int:
         help="write nothing; exit 1 naming each block that is not what --write writes",
     )
     args = parser.parse_args(argv)
-    # The effect registry is `vera`'s: this checkout's, whatever editable
+    # The registries are `vera`'s: this checkout's, whatever editable
     # install the interpreter would find first.
     sys.path.insert(0, str(ROOT))
     if args.check:

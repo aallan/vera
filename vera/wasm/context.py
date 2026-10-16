@@ -316,9 +316,11 @@ class WasmContext(
         self._adt_tp_param_names: dict[str, tuple[str, ...]] = (
             adt_tp_param_names or {}
         )
-        # Map host-import tracking (propagated to codegen core)
-        self._map_imports: set[str] = set()
-        self._map_ops_used: set[str] = set()
+        # #735: the host imports the emitted calls use, by import name (a
+        # row's, or an instance's: `map_insert$ks_vi`), each emitter adding
+        # the ones it calls, propagated to codegen core, which declares them
+        # from the registry's rows.
+        self._host_imports_used: set[str] = set()
         # #573: wrap-table flag — set when any host-handle type
         # migrates to the heap-wrap-as-ADT scheme so the GC
         # sweep can reclaim host-side store entries.  Currently
@@ -330,21 +332,6 @@ class WasmContext(
         # to `$gc_collect` that fires `host_decref_handle` for
         # unmarked wrappers.
         self._needs_wrap_table: bool = False
-        # Set host-import tracking (propagated to codegen core)
-        self._set_imports: set[str] = set()
-        self._set_ops_used: set[str] = set()
-        # Decimal host-import tracking (propagated to codegen core)
-        self._decimal_imports: set[str] = set()
-        self._decimal_ops_used: set[str] = set()
-        # Json host-import tracking (propagated to codegen core)
-        self._json_ops_used: set[str] = set()
-        # Html host-import tracking (propagated to codegen core)
-        self._html_ops_used: set[str] = set()
-        # Http host-import tracking (propagated to codegen core)
-        self._http_ops_used: set[str] = set()
-        # #841: fused-async host-import tracking (async_http_get /
-        # async_http_post / async_await; propagated to codegen core)
-        self._async_ops_used: set[str] = set()
         # #841: names of functions whose declared return type is
         # exactly Future<Result<String, String>> — the await lowering
         # consults this to decide whether a directly-awaited call
@@ -356,14 +343,6 @@ class WasmContext(
         self._future_ret_module_fns: frozenset[
             tuple[tuple[str, ...], str]
         ] = frozenset()
-        # Inference host-import tracking (propagated to codegen core)
-        self._inference_ops_used: set[str] = set()
-        # DB host-import tracking (#229; propagated to codegen core)
-        self._db_ops_used: set[str] = set()
-        # Random host-import tracking (propagated to codegen core, #465)
-        self._random_ops_used: set[str] = set()
-        # Math host-import tracking (propagated to codegen core, #467)
-        self._math_ops_used: set[str] = set()
         # #1479: set by `_emit_trap` beside every `vera.trap` call it emits
         # — the one signal every named check raises, its kind a code rather
         # than an import of its own — so assembly declares the import.

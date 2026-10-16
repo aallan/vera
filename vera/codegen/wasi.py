@@ -59,6 +59,14 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from vera.builtins import (
+    HOST_FAMILIES,
+    HOST_IMPORTS,
+    WASI_CLI,
+    WASI_SERVER,
+    host_import,
+    wasi_refused,
+)
 from vera.trap_registry import TRAP_KINDS, signal_instructions
 
 if TYPE_CHECKING:
@@ -556,36 +564,60 @@ _DROPS: dict[str, tuple[str, str, str]] = {
 # Family gate
 # =====================================================================
 
-#: (family name, CompileResult attribute) for every host family the
-#: wasi-p2 target does NOT support in v1.  Kept in lockstep with the
-#: ``*_ops_used`` fields of ``CompileResult`` — anything not IO/Random.
-_UNSUPPORTED_FAMILIES: tuple[tuple[str, str], ...] = (
-    ("http", "http_ops_used"),
-    ("inference", "inference_ops_used"),
-    ("db", "db_ops_used"),
-    ("md", "md_ops_used"),
-    ("regex", "regex_ops_used"),
-    ("map", "map_ops_used"),
-    ("set", "set_ops_used"),
-    ("decimal", "decimal_ops_used"),
-    ("json", "json_ops_used"),
-    ("html", "html_ops_used"),
-    ("math", "math_ops_used"),
-    ("async", "async_ops_used"),
-)
+#: The host families a module calls by name whose rows the cli world's
+#: component implements none of, from each row's WASI worlds
+#: (``vera.builtins``): a module that declares one of their imports is
+#: refused, naming the family and those imports.
+_CLI_REFUSED: tuple[str, ...] = wasi_refused(WASI_CLI)
+
+#: The same for the server world, which also implements the map operations
+#: at the ``Map<String, String>`` instances (``_MAP_OPS``).
+_SERVER_REFUSED: tuple[str, ...] = wasi_refused(WASI_SERVER)
+
+_DECLARED_IMPORT_RE = re.compile(r'^  \(import "vera" "([^"]+)" ', re.MULTILINE)
+
+
+def _declared_by_family(wat: str) -> dict[str, list[str]]:
+    """The module's ``vera`` imports by the family of the registry row each
+    is an instance of, each family's in name order."""
+    declared: dict[str, list[str]] = {}
+    for name in sorted(set(_DECLARED_IMPORT_RE.findall(wat))):
+        row = host_import(name)
+        if row is not None:
+            declared.setdefault(row.family, []).append(name)
+    return declared
+
+
+def _refuse_unimplemented(
+    declared: dict[str, list[str]], world: str, target: str,
+) -> None:
+    """Refuse every declared import whose registry row's ``wasi`` lacks
+    *world*: the gate's last check, behind the refusals that name what a
+    module calls.  It covers the imports a module declares by flag and by
+    cell too, so the import parser meets no row it has no op for."""
+    unimplemented = [
+        f"vera.{name}, an import of the registry's {row.family} row"
+        f" {row.name}, which the {world} world's component does not implement"
+        for family in HOST_FAMILIES for name in declared.get(family.name, ())
+        if (row := host_import(name)) is not None and world not in row.wasi
+    ]
+    if unimplemented:
+        raise ValueError(f"{target} does not support {'; '.join(unimplemented)}.")
 
 
 def _gate_families(result: CompileResult) -> None:
     """Reject programs using host families the wasi-p2 target lacks.
 
     Never a silent fallback: the diagnostic names every offending
-    family so the CLI layer can present it verbatim.
+    family, with the imports the module declares of it, so the CLI
+    layer can present it verbatim.  Any other declared import whose row
+    the cli world does not implement is refused last, naming its row.
     """
-    offending: list[str] = []
-    for family, attr in _UNSUPPORTED_FAMILIES:
-        ops = getattr(result, attr)
-        if ops:
-            offending.append(f"{family} ({', '.join(sorted(ops))})")
+    declared = _declared_by_family(result.wat)
+    offending = [
+        f"{family} ({', '.join(declared[family])})"
+        for family in _CLI_REFUSED if family in declared
+    ]
     if result.state_types:
         # The cell's BASE, never its identity (#1238 review F2): a
         # refined family carries the whole predicate as a
@@ -599,6 +631,7 @@ def _gate_families(result: CompileResult) -> None:
             f"famil{'ies' if len(offending) > 1 else 'y'}: "
             f"{'; '.join(offending)}. Supported families: IO, Random."
         )
+    _refuse_unimplemented(declared, WASI_CLI, "--target wasi-p2")
 
 
 # =====================================================================
@@ -2796,12 +2829,9 @@ _MAP_OPS: dict[str, _OpSpec] = {
 }
 
 #: Stage-C ops the server world keeps (proxy-world-linkable; design
-#: §1.3 verdict table).
-_SERVER_IO_OPS = frozenset({
-    "print", "stderr", "time", "sleep",
-    "random_int", "random_float", "random_bool",
-    "contract_fail", "trap",
-})
+#: §1.3 verdict table): the rows both worlds' components implement.
+_SERVER_IO_OPS = frozenset(
+    row.name for row in HOST_IMPORTS if set(row.wasi) == {WASI_CLI, WASI_SERVER})
 
 #: Stage-C ops the server world REJECTS, with the family/reason named
 #: in the diagnostic (design §1.3: filesystem/environment/exit are not
@@ -2856,15 +2886,14 @@ def _gate_families_server(result: CompileResult) -> None:
 
     Same shape as the cli gate but Map<String, String> is allowed
     (in-guest emulation); any other Map instantiation is rejected
-    naming the offending op.  Never a silent fallback.
+    naming the offending op, and a cli-only IO operation with its
+    reason.  Never a silent fallback.
     """
-    offending: list[str] = []
-    for family, attr in _UNSUPPORTED_FAMILIES:
-        if family == "map":
-            continue
-        ops = getattr(result, attr)
-        if ops:
-            offending.append(f"{family} ({', '.join(sorted(ops))})")
+    declared = _declared_by_family(result.wat)
+    offending = [
+        f"{family} ({', '.join(declared[family])})"
+        for family in _SERVER_REFUSED if family in declared
+    ]
     if result.state_types:
         # The cell's BASE, never its identity (#1238 review F2): a
         # refined family carries the whole predicate as a
@@ -2879,10 +2908,10 @@ def _gate_families_server(result: CompileResult) -> None:
             f"{'; '.join(offending)}. Supported families: IO (print, "
             "stderr, time, sleep), Random, Map<String, String>."
         )
-    bad_maps = sorted(
-        op for op in result.map_ops_used
+    bad_maps = [
+        op for op in declared.get("map", ())
         if "$" in op and not _map_op_is_string_string(op)
-    )
+    ]
     if bad_maps:
         raise ValueError(
             "--target wasi-p2 --world server supports Map host ops "
@@ -2890,6 +2919,15 @@ def _gate_families_server(result: CompileResult) -> None:
             f"(map_*$ks_vs); unsupported instantiation"
             f"{'s' if len(bad_maps) > 1 else ''}: {', '.join(bad_maps)}"
         )
+    for name in _DECLARED_IMPORT_RE.findall(result.wat):
+        if name in _SERVER_REJECTED_OPS:
+            raise ValueError(
+                "--target wasi-p2 --world server does not support "
+                f"{_SERVER_REJECTED_OPS[name]}. Supported ops: IO.print, "
+                "IO.stderr, IO.time, IO.sleep, Random, and "
+                "Map<String, String>."
+            )
+    _refuse_unimplemented(declared, WASI_SERVER, "--target wasi-p2 --world server")
 
 
 def _server_adt_layouts(
@@ -2923,9 +2961,10 @@ def _server_adt_layouts(
 def _parse_server_imports(wat: str) -> dict[str, _OpSpec]:
     """Collect + validate the ``vera.*`` imports for the server world.
 
-    Returns ``{op name: spec}``.  Rejected ops raise ``ValueError``
-    naming the op and its family; unknown ops or signature mismatches
-    raise (the op tables and vera/codegen/assembly.py are out of sync).
+    Returns ``{op name: spec}``.  The gate has refused every import
+    whose row the server world does not implement; an unknown op or a
+    signature mismatch raises (the op tables and
+    vera/codegen/assembly.py are out of sync).
     """
     used: dict[str, _OpSpec] = {}
     for line in wat.split("\n"):
@@ -2941,13 +2980,6 @@ def _parse_server_imports(wat: str) -> dict[str, _OpSpec]:
         name = m.group(1)
         params = " ".join(_CORE_TYPE_RE.findall(m.group(2)))
         results = " ".join(_CORE_TYPE_RE.findall(m.group(3)))
-        if name in _SERVER_REJECTED_OPS:
-            raise ValueError(
-                "--target wasi-p2 --world server does not support "
-                f"{_SERVER_REJECTED_OPS[name]}. Supported ops: IO.print, "
-                "IO.stderr, IO.time, IO.sleep, Random, and "
-                "Map<String, String>."
-            )
         spec = _MAP_OPS.get(name)
         if spec is None and name in _SERVER_IO_OPS:
             spec = _OPS[name]
