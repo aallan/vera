@@ -169,6 +169,20 @@ class TestDiffParse:
         old = self._by_new()["vera/old.py"]
         assert old.new_path is None and old.added == frozenset()
 
+    def test_an_empty_new_file_has_no_old_path(self) -> None:
+        """An empty file's diff has no `---`/`+++` lines: the mode line says
+        it is new, or the lane would look for it at the merge base."""
+        (change,) = md.parse_diff(
+            "diff --git a/vera/pkg/__init__.py b/vera/pkg/__init__.py\n"
+            "new file mode 100644\nindex 0000000..e69de29\n")
+        assert change.old_path is None and change.new_path == "vera/pkg/__init__.py"
+
+    def test_an_empty_deleted_file_has_no_new_path(self) -> None:
+        (change,) = md.parse_diff(
+            "diff --git a/vera/pkg/__init__.py b/vera/pkg/__init__.py\n"
+            "deleted file mode 100644\nindex e69de29..0000000\n")
+        assert change.new_path is None and change.old_path == "vera/pkg/__init__.py"
+
     def test_a_rename_keeps_both_paths(self) -> None:
         after = self._by_new()["vera/after.py"]
         assert after.old_path == "vera/before.py" and after.added == frozenset({3})
@@ -545,7 +559,10 @@ class TestNarrowing:
         monkeypatch.chdir(tmp_path)
         reset_config()
         try:
-            keep = {"x_top", f"x{SEP}Box{SEP}method", f"x{SEP}Box{SEP}static"}
+            # Two kept units hold a nested def, whose mutants are the kept
+            # unit's own: the narrowing must not mark it.
+            keep = {"x_top", "x_outer", f"x{SEP}Box{SEP}method", f"x{SEP}Box{SEP}static",
+                    f"x{SEP}Box{SEP}nested_holder"}
             full = mutate_file_contents("m.py", BASE).mutant_names
             narrowed = mutate_file_contents("m.py", md.narrow(BASE, keep)).mutant_names
         finally:
