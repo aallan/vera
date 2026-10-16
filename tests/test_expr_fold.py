@@ -43,6 +43,10 @@ import pytest
 
 from tests import pipeline
 from vera import ast, binders, fold
+from vera.checker import sql
+from vera.environment import TypeEnv
+from vera.wasm.context import WasmContext
+from vera.wasm.helpers import StringPool
 
 pytestmark = pytest.mark.matrix(decides=["vera/fold.py", "vera/binders.py"])
 
@@ -124,7 +128,7 @@ class _Builder:
             return ast.Span(1, 1, 1, 2)
         if inspect.isclass(annotation) and issubclass(annotation, ast.Node):
             node = self.node(annotation)
-            if not isinstance(node, fold.OPAQUE):
+            if not isinstance(node, _NOT_ENTERED):
                 expected.append(node)
             return node
         raise AssertionError(
@@ -182,6 +186,13 @@ class _Builder:
 
 #: The abstract field types a builder stands a concrete class in for.
 _STAND_INS: dict[type, type] = {}
+
+#: The kinds the fold promises never to enter as children, stated here and
+#: not read from `fold.OPAQUE`, so a fold that enters one cannot also move
+#: the expectation.
+_NOT_ENTERED: tuple[type[ast.Node], ...] = (
+    ast.TypeExpr, ast.Pattern, ast.EffectRow, ast.EffectRefNode, ast.Decl,
+)
 
 _UNIONS = (typing.Union, types.UnionType)
 
@@ -248,6 +259,13 @@ def test_every_child_is_yielded_once_in_order(cls: type[ast.Node]) -> None:
     for bad in builder.poison:
         assert id(bad) not in reached, (
             f"{cls.__name__}: the fold entered a type, pattern or effect")
+    entered = [type(n).__name__ for n in fold.walk(node)
+               if n is not node and isinstance(n, _NOT_ENTERED)]
+    assert not entered, f"{cls.__name__}: the fold entered {entered}"
+
+
+def test_the_kinds_the_fold_does_not_enter_are_the_documented_ones() -> None:
+    assert set(fold.OPAQUE) == set(_NOT_ENTERED)
 
 
 def test_walk_is_pre_order_and_survives_depth() -> None:
@@ -641,6 +659,111 @@ def test_a_new_expr_subclass_fails_every_dispatching_module_at_import() -> None:
     lines = out.stdout.splitlines()
     assert lines[0] == "import refused", out.stdout
     assert set(lines[1].split()) == _TABLES, out.stdout
+
+
+# =====================================================================
+# Per-node pins for the tables the ports built
+# =====================================================================
+
+def _wasm() -> WasmContext:
+    return WasmContext(string_pool=StringPool())
+
+
+def _arm(body: ast.Expr) -> ast.MatchArm:
+    return ast.MatchArm(pattern=ast.WildcardPattern(), body=body)
+
+
+def _tail(expr: ast.Expr) -> ast.Block:
+    return ast.Block(statements=(), expr=expr)
+
+
+_TRUE, _ONE, _HALF = ast.BoolLit(value=True), ast.IntLit(value=1), ast.FloatLit(value=0.5)
+_CLOSURE = _anon((), _tail(ast.IntLit(value=1)), ret=_ty("Int"))
+
+
+def _if(then: ast.Expr, other: ast.Expr) -> ast.IfExpr:
+    return ast.IfExpr(condition=_TRUE, then_branch=_tail(then), else_branch=_tail(other))
+
+
+def _exn_handle(body: ast.Expr) -> ast.HandleExpr:
+    return ast.HandleExpr(effect=ast.EffectRef(name="Exn", type_args=(_ty("Int"),)),
+                          state=None, clauses=(), body=_tail(body))
+
+
+def test_the_void_table_answers_each_shape() -> None:
+    """`_is_void_expr`: a compound is void when every value position is."""
+    ctx = _wasm()
+    pins = [
+        (ast.UnitLit(), True), (_ONE, False), (ast.AssertExpr(expr=_TRUE), True),
+        (ast.QualifiedCall(qualifier="IO", name="print", args=(ast.StringLit(value="x"),)), True),
+        (ast.QualifiedCall(qualifier="Http", name="get", args=()), False),
+        (_if(ast.UnitLit(), ast.UnitLit()), True), (_if(ast.UnitLit(), _ONE), False),
+        (_match(_arm(ast.UnitLit()), _arm(ast.UnitLit())), True),
+        (_match(_arm(ast.UnitLit()), _arm(_ONE)), False),
+        (_tail(ast.UnitLit()), True), (_exn_handle(ast.UnitLit()), True),
+        (_exn_handle(_ONE), False),
+    ]
+    assert [ctx._is_void_expr(node) for node, _ in pins] == [want for _, want in pins]
+
+
+def test_the_wat_type_table_answers_each_shape() -> None:
+    """`_infer_expr_wasm_type`: the first typed arm or branch of a join."""
+    ctx = _wasm()
+    pins = [
+        (_match(_arm(ast.AssertExpr(expr=_TRUE)), _arm(_HALF)), "f64"),
+        (_if(ast.AssertExpr(expr=_TRUE), _HALF), "f64"),
+        (ast.BinaryExpr(op=ast.BinOp.ADD, left=_HALF, right=_HALF), "f64"),
+        (ast.BinaryExpr(op=ast.BinOp.ADD, left=_ONE, right=_ONE), "i64"),
+        (ast.BinaryExpr(op=ast.BinOp.LT, left=_ONE, right=_ONE), "i32"),
+        (ast.UnaryExpr(op=ast.UnaryOp.NEG, operand=_HALF), "f64"),
+        (ast.UnaryExpr(op=ast.UnaryOp.NOT, operand=_TRUE), "i32"),
+        (ast.StringLit(value="x"), "i32_pair"), (ast.UnitLit(), None),
+        (_exn_handle(_HALF), "f64"), (_tail(_TRUE), "i32"),
+    ]
+    assert [ctx._infer_expr_wasm_type(node) for node, _ in pins] == [
+        want for _, want in pins]
+
+
+def test_the_vera_type_table_answers_each_shape() -> None:
+    """`_walk_vera_type`: a closure names nothing, so the join reads on."""
+    ctx = _wasm()
+    pins = [
+        (_match(_arm(_CLOSURE), _arm(_ONE)), "Int"),
+        (_if(_CLOSURE, _TRUE), "Bool"),
+        (ast.BinaryExpr(op=ast.BinOp.EQ, left=_ONE, right=_ONE), "Bool"),
+        (ast.BinaryExpr(op=ast.BinOp.ADD, left=_HALF, right=_HALF), "Float64"),
+        (ast.UnaryExpr(op=ast.UnaryOp.NEG, operand=_ONE), "Int"),
+        (ast.UnaryExpr(op=ast.UnaryOp.NOT, operand=_TRUE), "Bool"),
+        (ast.StringLit(value="x"), "String"), (ast.ArrayLit(elements=()), "Array"),
+        (_tail(ast.UnitLit()), "Unit"), (_exn_handle(_TRUE), "Bool"),
+        (ast.AssertExpr(expr=_TRUE), "Unit"), (_CLOSURE, None),
+    ]
+    assert [ctx._walk_vera_type(node) for node, _ in pins] == [want for _, want in pins]
+
+
+def test_the_sql_tables_answer_each_shape() -> None:
+    """The literal-provenance and array-length resolvers, slot-free."""
+    env = TypeEnv()
+
+    def key(ref: ast.SlotRef) -> str:
+        return ref.type_name
+
+    def lit(value: str) -> ast.StringLit:
+        return ast.StringLit(value=value)
+
+    strings = [
+        (lit("a"), "a"),
+        (ast.InterpolatedString(parts=("a", lit("b"), "c")), "abc"),
+        (ast.InterpolatedString(parts=("a", _ONE, "c")), None),
+        (ast.FnCall(name="string_concat", args=(lit("a"), lit("b"))), "ab"),
+        (ast.FnCall(name="string_upper", args=(lit("a"),)), None),
+        (_if(lit("a"), lit("a")), None),
+    ]
+    assert [sql.resolve_literal_string(e, env, key) for e, _ in strings] == [
+        want for _, want in strings]
+    lengths = [(ast.ArrayLit(elements=(_ONE, _ONE)), 2), (lit("ab"), None)]
+    assert [sql.resolve_array_len(e, env, key) for e, _ in lengths] == [
+        want for _, want in lengths]
 
 
 # =====================================================================
