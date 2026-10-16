@@ -298,6 +298,15 @@ class TestHostMirrored:
         with pytest.raises(SC.MeasureError, match="HOST_IMPORTS"):
             SC.host_mirrored(tmp_path)
 
+    def test_the_row_names_what_its_second_count_counts(self) -> None:
+        """The second count is WASI's own copies of host built-ins; at zero
+        the row reads "plus none", the target, and never "0 map operations",
+        a quantity the measure stopped counting when `_MAP_OPS` went."""
+        assert SC.host_mirrored_text(39, 0) == "39 × 2, plus none"
+        assert SC.host_mirrored_text(53, 10) == "53 × 2, plus WASI's 10"
+        root = Path(__file__).resolve().parent.parent
+        assert SC.host_mirrored_text(*SC.host_mirrored(root)).endswith(", plus none")
+
     def test_the_tree_reads_the_registrys_count(self) -> None:
         """The row read from the source is the registry's own count of the
         built-ins it lowers through a host import."""

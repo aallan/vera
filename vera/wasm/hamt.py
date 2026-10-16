@@ -239,7 +239,7 @@ def _copy(dst: list[str], src: list[str], words: list[str]) -> list[str]:
 # =====================================================================
 
 def _hamt_new() -> str:
-    return _func("hamt_new", [], ["i32"], [("m", "i32")], [
+    return _func("hamt$new", [], ["i32"], [("m", "i32")], [
         f"i32.const {HEADER_SIZE}", "call $alloc", "local.tee $m",
         "i32.const 0", "i32.store",
         "local.get $m", "i32.const 0", "i32.store offset=4",
@@ -252,7 +252,7 @@ def _hamt_mix() -> str:
     """MurmurHash3's finalizer: every bit of the result depends on every
     bit of the argument, so the low digits of a structured key spread."""
     step = ["local.get $h", "local.get $h", "i64.const 33", "i64.shr_u", "i64.xor"]
-    return _func("hamt_mix", [("h", "i64")], ["i64"], [], [
+    return _func("hamt$mix", [("h", "i64")], ["i64"], [], [
         *step, "local.set $h",
         "local.get $h", _i64(_FMIX_1), "i64.mul", "local.set $h",
         *step, "local.set $h",
@@ -265,7 +265,7 @@ def _hash_body(cls: str) -> list[str]:
     """The body of ``$hamt_hash$<cls>``: a key's hash, from its word or,
     for a `String`, from its bytes (FNV-1a, as the `Hash` intrinsic)."""
     if cls == "w":
-        return ["local.get $w", "call $hamt_mix"]
+        return ["local.get $w", "call $hamt$mix"]
     return [
         _i64(_FNV_BASIS), "local.set $h",
         "i32.const 0", "local.set $i",
@@ -275,7 +275,7 @@ def _hash_body(cls: str) -> list[str]:
         "i64.extend_i32_u", "i64.xor", _i64(_FNV_PRIME), "i64.mul", "local.set $h",
         "local.get $i", "i32.const 1", "i32.add", "local.set $i",
         "br $byte", "end", "end",
-        "local.get $h", "call $hamt_mix",
+        "local.get $h", "call $hamt$mix",
     ]
 
 
@@ -288,7 +288,7 @@ def _hamt_hash(cls: str) -> str:
 
 def _hamt_canon() -> str:
     """A `Float64` key's canonical value: every NaN as one, -0.0 as 0.0."""
-    return _func("hamt_canon", [("x", "f64")], ["f64"], [], [
+    return _func("hamt$canon", [("x", "f64")], ["f64"], [], [
         "local.get $x", "local.get $x", "f64.ne",
         "if (result f64)", "f64.const nan",
         "else", "local.get $x", "f64.const 0", "f64.add", "end",
@@ -297,7 +297,7 @@ def _hamt_canon() -> str:
 
 def _hamt_entry() -> str:
     return _func(
-        "hamt_entry", [("h", "i64"), ("seq", "i64"), ("kw", "i64"), ("vw", "i64")],
+        "hamt$entry", [("h", "i64"), ("seq", "i64"), ("kw", "i64"), ("vw", "i64")],
         ["i32"], [("e", "i32")], [
             f"i32.const {ENTRY_SIZE}", "call $alloc", "local.tee $e",
             "local.get $h", "i64.store",
@@ -313,7 +313,7 @@ def _hamt_merge() -> str:
     d1 = _digit(["local.get $e1", "i64.load"])
     d2 = _digit(["local.get $e2", "i64.load"])
     return _func(
-        "hamt_merge", [("e1", "i32"), ("e2", "i32"), ("shift", "i32")], ["i32"],
+        "hamt$merge", [("e1", "i32"), ("e2", "i32"), ("shift", "i32")], ["i32"],
         [("d1", "i32"), ("d2", "i32"), ("n", "i32"), ("sub", "i32")], [
             "local.get $shift", f"i32.const {LAST_SHIFT}", "i32.gt_u",
             "if",
@@ -341,7 +341,7 @@ def _hamt_merge() -> str:
             "local.get $n", "return",
             "end",
             "local.get $e1", "local.get $e2", "local.get $shift", "i32.const 5",
-            "i32.add", "call $hamt_merge", "local.set $sub",
+            "i32.add", "call $hamt$merge", "local.set $sub",
             *_alloc(["i32.const 12"], "$n"),
             "local.get $n", "i32.const 0", "i32.store",
             "local.get $n", "i32.const 1", "local.get $d1", "i32.shl",
@@ -354,7 +354,7 @@ def _hamt_merge() -> str:
 def _hamt_node_set() -> str:
     """A copy of a branch with child *idx* replaced."""
     return _func(
-        "hamt_node_set", [("node", "i32"), ("idx", "i32"), ("child", "i32")],
+        "hamt$node_set", [("node", "i32"), ("idx", "i32"), ("child", "i32")],
         ["i32"], [("size", "i32"), ("n", "i32")], [
             *_children("$node"), "i32.const 2", "i32.shl", "i32.const 8", "i32.add",
             "local.set $size",
@@ -369,7 +369,7 @@ def _hamt_node_set() -> str:
 def _hamt_node_add_entry() -> str:
     """A copy of a branch with entry *e* added at digit *bit*, data index *idx*."""
     return _func(
-        "hamt_node_add_entry",
+        "hamt$node_add_entry",
         [("node", "i32"), ("bit", "i32"), ("idx", "i32"), ("e", "i32")], ["i32"],
         [("cnt", "i32"), ("n", "i32")], [
             *_children("$node"), "local.set $cnt",
@@ -395,7 +395,7 @@ def _hamt_node_entry_to_sub() -> str:
     """A copy of a branch whose entry at data index *eidx* (digit *bit*)
     becomes the node *sub*."""
     return _func(
-        "hamt_node_entry_to_sub",
+        "hamt$node_entry_to_sub",
         [("node", "i32"), ("bit", "i32"), ("eidx", "i32"), ("sub", "i32")], ["i32"],
         [("cnt", "i32"), ("ne", "i32"), ("p", "i32"), ("n", "i32"), ("nm", "i32")], [
             *_children("$node"), "local.set $cnt",
@@ -432,7 +432,7 @@ def _hamt_node_entry_to_sub() -> str:
 def _hamt_node_remove_entry() -> str:
     """A copy of a branch without its entry at data index *idx* (digit *bit*)."""
     return _func(
-        "hamt_node_remove_entry", [("node", "i32"), ("bit", "i32"), ("idx", "i32")],
+        "hamt$node_remove_entry", [("node", "i32"), ("bit", "i32"), ("idx", "i32")],
         ["i32"], [("cnt", "i32"), ("n", "i32")], [
             *_children("$node"), "local.set $cnt",
             *_alloc(["local.get $cnt", "i32.const 1", "i32.sub", "i32.const 2",
@@ -456,7 +456,7 @@ def _hamt_node_sub_to_entry() -> str:
     """A copy of a branch whose node at child index *nidx* (digit *bit*)
     becomes the entry *e*, at its data index."""
     return _func(
-        "hamt_node_sub_to_entry",
+        "hamt$node_sub_to_entry",
         [("node", "i32"), ("bit", "i32"), ("nidx", "i32"), ("e", "i32")], ["i32"],
         [("cnt", "i32"), ("q", "i32"), ("dm", "i32"), ("n", "i32")], [
             *_children("$node"), "local.set $cnt",
@@ -489,7 +489,7 @@ def _hamt_node_sub_to_entry() -> str:
 def _hamt_coll_set() -> str:
     """A copy of a collision node with entry *i* replaced."""
     return _func(
-        "hamt_coll_set", [("node", "i32"), ("i", "i32"), ("e", "i32")], ["i32"],
+        "hamt$coll_set", [("node", "i32"), ("i", "i32"), ("e", "i32")], ["i32"],
         [("size", "i32"), ("n", "i32")], [
             "local.get $node", "i32.load", "i32.const 2", "i32.shl", "i32.const 4",
             "i32.add", "local.set $size",
@@ -504,7 +504,7 @@ def _hamt_coll_set() -> str:
 def _hamt_coll_add() -> str:
     """A copy of a collision node with entry *e* after its others."""
     return _func(
-        "hamt_coll_add", [("node", "i32"), ("e", "i32")], ["i32"],
+        "hamt$coll_add", [("node", "i32"), ("e", "i32")], ["i32"],
         [("cnt", "i32"), ("n", "i32")], [
             "local.get $node", "i32.load", "local.set $cnt",
             *_alloc(["local.get $cnt", "i32.const 2", "i32.shl", "i32.const 8",
@@ -521,7 +521,7 @@ def _hamt_coll_add() -> str:
 def _hamt_coll_remove() -> str:
     """A copy of a collision node without its entry *i*."""
     return _func(
-        "hamt_coll_remove", [("node", "i32"), ("i", "i32")], ["i32"],
+        "hamt$coll_remove", [("node", "i32"), ("i", "i32")], ["i32"],
         [("cnt", "i32"), ("n", "i32")], [
             "local.get $node", "i32.load", "local.set $cnt",
             *_alloc(["local.get $cnt", "i32.const 2", "i32.shl"], "$n"),
@@ -544,9 +544,9 @@ def _hamt_ins(cls: str) -> str:
     when a present key took a new value, 2 when the key is new."""
     name = f"hamt_ins${cls}"
     new_entry = ["local.get $h", "local.get $seq", "local.get $kw", "local.get $vw",
-                 "call $hamt_entry", "local.set $ne"]
+                 "call $hamt$entry", "local.set $ne"]
     kept_entry = ["local.get $h", "local.get $e", "i64.load offset=8", "local.get $kw",
-                  "local.get $vw", "call $hamt_entry", "local.set $ne"]
+                  "local.get $vw", "call $hamt$entry", "local.set $ne"]
     same_value = ["local.get $e", "i64.load offset=24", "local.get $vw", "i64.eq",
                   "if", "local.get $node", "i32.const 0", "return", "end"]
     return _func(
@@ -567,13 +567,13 @@ def _hamt_ins(cls: str) -> str:
             *_key_equal(cls),
             "if",
             *same_value, *kept_entry,
-            "local.get $node", "local.get $i", "local.get $ne", "call $hamt_coll_set",
+            "local.get $node", "local.get $i", "local.get $ne", "call $hamt$coll_set",
             "i32.const 1", "return",
             "end",
             "local.get $i", "i32.const 1", "i32.add", "local.set $i",
             "br $scan", "end", "end",
             *new_entry,
-            "local.get $node", "local.get $ne", "call $hamt_coll_add",
+            "local.get $node", "local.get $ne", "call $hamt$coll_add",
             "i32.const 2", "return",
             "end",
             "i32.const 1", *_digit(["local.get $h"]), "i32.shl", "local.set $bit",
@@ -586,14 +586,14 @@ def _hamt_ins(cls: str) -> str:
             *_hit(cls),
             "if",
             *same_value, *kept_entry,
-            "local.get $node", "local.get $idx", "local.get $ne", "call $hamt_node_set",
+            "local.get $node", "local.get $idx", "local.get $ne", "call $hamt$node_set",
             "i32.const 1", "return",
             "end",
             *new_entry,
             "local.get $e", "local.get $ne", "local.get $shift", "i32.const 5",
-            "i32.add", "call $hamt_merge", "local.set $sub",
+            "i32.add", "call $hamt$merge", "local.set $sub",
             "local.get $node", "local.get $bit", "local.get $idx", "local.get $sub",
-            "call $hamt_node_entry_to_sub",
+            "call $hamt$node_entry_to_sub",
             "i32.const 2", "return",
             "end",
             "local.get $nm", "local.get $bit", "i32.and",
@@ -605,12 +605,12 @@ def _hamt_ins(cls: str) -> str:
             f"call ${name}", "local.set $st", "local.set $sub",
             "local.get $st", "i32.eqz",
             "if", "local.get $node", "i32.const 0", "return", "end",
-            "local.get $node", "local.get $idx", "local.get $sub", "call $hamt_node_set",
+            "local.get $node", "local.get $idx", "local.get $sub", "call $hamt$node_set",
             "local.get $st", "return",
             "end",
             *new_entry,
             "local.get $node", "local.get $bit", *_below("$dm"), "local.get $ne",
-            "call $hamt_node_add_entry",
+            "call $hamt$node_add_entry",
             "i32.const 2",
         ])
 
@@ -629,7 +629,7 @@ def _hamt_insert(cls: str) -> str:
             "local.get $root", "i32.eqz",
             "if",
             "local.get $h", "local.get $seq", "local.get $kw", "local.get $vw",
-            "call $hamt_entry", "local.set $e",
+            "call $hamt$entry", "local.set $e",
             *_alloc(["i32.const 12"], "$r"),
             "local.get $r", "i32.const 1", *_digit(["local.get $h"]), "i32.shl",
             "i32.store",
@@ -723,7 +723,7 @@ def _hamt_rem(cls: str) -> str:
             "local.get $node", "i32.const 1", "local.get $i", "i32.sub", "i32.const 2",
             "i32.shl", "i32.add", "i32.load offset=4", "i32.const 2", "return",
             "end",
-            "local.get $node", "local.get $i", "call $hamt_coll_remove",
+            "local.get $node", "local.get $i", "call $hamt$coll_remove",
             "i32.const 1", "return",
             "end",
             "local.get $i", "i32.const 1", "i32.add", "local.set $i",
@@ -749,7 +749,7 @@ def _hamt_rem(cls: str) -> str:
             "i32.shl", "i32.add", "i32.load offset=8", "i32.const 2", "return",
             "end",
             "local.get $node", "local.get $bit", "local.get $idx",
-            "call $hamt_node_remove_entry", "i32.const 1", "return",
+            "call $hamt$node_remove_entry", "i32.const 1", "return",
             "end",
             "local.get $nm", "local.get $bit", "i32.and", "i32.eqz",
             "if", "i32.const 0", "i32.const 0", "return", "end",
@@ -761,7 +761,7 @@ def _hamt_rem(cls: str) -> str:
             "if", "i32.const 0", "i32.const 0", "return", "end",
             "local.get $st", "i32.const 1", "i32.eq",
             "if",
-            "local.get $node", "local.get $idx", "local.get $sub", "call $hamt_node_set",
+            "local.get $node", "local.get $idx", "local.get $sub", "call $hamt$node_set",
             "i32.const 1", "return",
             "end",
             "local.get $shift", "i32.const 0", "i32.ne",
@@ -769,7 +769,7 @@ def _hamt_rem(cls: str) -> str:
             "local.get $nm", "i32.popcnt", "i32.const 1", "i32.eq", "i32.and",
             "if", "local.get $sub", "i32.const 2", "return", "end",
             "local.get $node", "local.get $bit", "local.get $idx", "local.get $sub",
-            "call $hamt_node_sub_to_entry", "i32.const 1",
+            "call $hamt$node_sub_to_entry", "i32.const 1",
         ])
 
 
@@ -811,7 +811,7 @@ def _hamt_remove(cls: str) -> str:
 def _hamt_collect() -> str:
     """Write *node*'s entries at *buf*[*pos*..]; the position after them."""
     return _func(
-        "hamt_collect",
+        "hamt$collect",
         [("node", "i32"), ("shift", "i32"), ("buf", "i32"), ("pos", "i32")], ["i32"],
         [("ne", "i32"), ("nn", "i32"), ("j", "i32")], [
             "local.get $shift", f"i32.const {LAST_SHIFT}", "i32.gt_u",
@@ -834,7 +834,7 @@ def _hamt_collect() -> str:
             "local.get $node", "local.get $ne", "local.get $j", "i32.add",
             "i32.const 2", "i32.shl", "i32.add", "i32.load offset=8",
             "local.get $shift", "i32.const 5", "i32.add",
-            "local.get $buf", "local.get $pos", "call $hamt_collect", "local.set $pos",
+            "local.get $buf", "local.get $pos", "call $hamt$collect", "local.set $pos",
             "local.get $j", "i32.const 1", "i32.add", "local.set $j",
             "br $sub", "end", "end",
             "local.get $pos",
@@ -846,7 +846,7 @@ def _hamt_sorted() -> str:
     entry pointers, rooted (the caller restores ``$gc_sp``)."""
     seq = ["i32.const 2", "i32.shl", "i32.add", "i32.load", "i64.load offset=8"]
     return _func(
-        "hamt_sorted", [("m", "i32")], ["i32"],
+        "hamt$sorted", [("m", "i32")], ["i32"],
         [("n", "i32"), ("a", "i32"), ("b", "i32"), ("t", "i32"), ("w", "i32"),
          ("i", "i32"), ("mid", "i32"), ("hi", "i32"), ("l", "i32"), ("r", "i32"),
          ("o", "i32")], [
@@ -854,7 +854,7 @@ def _hamt_sorted() -> str:
             *_alloc(["local.get $n", "i32.const 2", "i32.shl"], "$a"),
             *_alloc(["local.get $n", "i32.const 2", "i32.shl"], "$b"),
             "local.get $m", "i32.load offset=4", "i32.const 0", "local.get $a",
-            "i32.const 0", "call $hamt_collect", "drop",
+            "i32.const 0", "call $hamt$collect", "drop",
             "i32.const 1", "local.set $w",
             "block $sorted", "loop $pass",
             "local.get $w", "local.get $n", "i32.ge_u", "br_if $sorted",
@@ -919,7 +919,7 @@ def _word(name: str, tag: str, *, key: bool) -> list[str]:
     if tag == "i":
         return [f"local.get ${name}"]
     if tag == "f":
-        canon = ["call $hamt_canon"] if key else []
+        canon = ["call $hamt$canon"] if key else []
         return [f"local.get ${name}", *canon, "i64.reinterpret_f64"]
     if tag == "s":
         return [f"local.get ${name}p", "i64.extend_i32_u", f"local.get ${name}l",
@@ -952,12 +952,12 @@ def _keyed(op: str, tags: dict[str, str]) -> tuple[str, str]:
 def _deps_for_key(tag: str) -> tuple[str, ...]:
     deps: tuple[str, ...] = (f"hamt_hash${_cls(tag)}",)
     if tag == "f":
-        deps += ("hamt_canon",)
+        deps += ("hamt$canon",)
     return deps
 
 
 def _op_new(name: str) -> tuple[str, tuple[str, ...]]:
-    return _func(name, [], ["i32"], [], ["call $hamt_new"]), ("hamt_new",)
+    return _func(name, [], ["i32"], [], ["call $hamt$new"]), ("hamt$new",)
 
 
 def _op_size(name: str) -> tuple[str, tuple[str, ...]]:
@@ -1062,7 +1062,7 @@ def _op_enumerate(name: str, tag: str, offset: int) -> tuple[str, tuple[str, ...
         *_save(), *_push("m"),
         "local.get $m", "i32.load", "local.tee $n", "i32.eqz",
         "if", *_restore(), "i32.const 0", "i32.const 0", "return", "end",
-        "local.get $m", "call $hamt_sorted", "local.set $buf",
+        "local.get $m", "call $hamt$sorted", "local.set $buf",
         *_alloc(["local.get $n", f"i32.const {cell}", "i32.mul"], "$out"),
         "i32.const 0", "local.set $i",
         "block $done", "loop $cells",
@@ -1079,7 +1079,7 @@ def _op_enumerate(name: str, tag: str, offset: int) -> tuple[str, tuple[str, ...
     text = _func(name, [("m", "i32")], ["i32", "i32"],
                  [("sp", "i32"), ("n", "i32"), ("buf", "i32"), ("out", "i32"),
                   ("i", "i32"), ("e", "i32"), ("c", "i32")], body)
-    return text, ("hamt_sorted",)
+    return text, ("hamt$sorted",)
 
 
 def _cell_word(array: str, tag: str, *, key: bool) -> list[str]:
@@ -1089,7 +1089,7 @@ def _cell_word(array: str, tag: str, *, key: bool) -> list[str]:
     if tag in ("i", "s"):
         return [*at, "i64.load"]
     if tag == "f":
-        canon = ["call $hamt_canon"] if key else []
+        canon = ["call $hamt$canon"] if key else []
         return [*at, "f64.load", *canon, "i64.reinterpret_f64"]
     if tag == "y":
         return [*at, "i32.load8_u", "i64.extend_i32_u"]
@@ -1108,7 +1108,7 @@ def _op_from_arrays(name: str, tags: dict[str, str]) -> tuple[str, tuple[str, ..
         hash_key = ["local.get $kw", "call $hamt_hash$w"]
     body = [
         *_save(), *_push("kp"), *_push("vp"),
-        "call $hamt_new", "local.set $m",
+        "call $hamt$new", "local.set $m",
         "global.get $gc_sp", "local.set $slot", *_push("m"),
         "i32.const 0", "local.set $i",
         "block $done", "loop $pairs",
@@ -1124,7 +1124,7 @@ def _op_from_arrays(name: str, tags: dict[str, str]) -> tuple[str, tuple[str, ..
     text = _func(name, [("kp", "i32"), ("kn", "i32"), ("vp", "i32"), ("vn", "i32")],
                  ["i32"], [("sp", "i32"), ("m", "i32"), ("slot", "i32"), ("i", "i32"),
                            ("kw", "i64")], body)
-    return text, ("hamt_new", f"hamt_insert${_cls(kt)}", *_deps_for_key(kt))
+    return text, ("hamt$new", f"hamt_insert${_cls(kt)}", *_deps_for_key(kt))
 
 
 # =====================================================================
@@ -1132,21 +1132,21 @@ def _op_from_arrays(name: str, tags: dict[str, str]) -> tuple[str, tuple[str, ..
 # =====================================================================
 
 _SHARED: dict[str, Callable[[], str]] = {
-    "hamt_new": _hamt_new, "hamt_mix": _hamt_mix, "hamt_canon": _hamt_canon,
-    "hamt_entry": _hamt_entry, "hamt_merge": _hamt_merge,
-    "hamt_node_set": _hamt_node_set, "hamt_node_add_entry": _hamt_node_add_entry,
-    "hamt_node_entry_to_sub": _hamt_node_entry_to_sub,
-    "hamt_node_remove_entry": _hamt_node_remove_entry,
-    "hamt_node_sub_to_entry": _hamt_node_sub_to_entry,
-    "hamt_coll_set": _hamt_coll_set, "hamt_coll_add": _hamt_coll_add,
-    "hamt_coll_remove": _hamt_coll_remove,
-    "hamt_collect": _hamt_collect, "hamt_sorted": _hamt_sorted,
+    "hamt$new": _hamt_new, "hamt$mix": _hamt_mix, "hamt$canon": _hamt_canon,
+    "hamt$entry": _hamt_entry, "hamt$merge": _hamt_merge,
+    "hamt$node_set": _hamt_node_set, "hamt$node_add_entry": _hamt_node_add_entry,
+    "hamt$node_entry_to_sub": _hamt_node_entry_to_sub,
+    "hamt$node_remove_entry": _hamt_node_remove_entry,
+    "hamt$node_sub_to_entry": _hamt_node_sub_to_entry,
+    "hamt$coll_set": _hamt_coll_set, "hamt$coll_add": _hamt_coll_add,
+    "hamt$coll_remove": _hamt_coll_remove,
+    "hamt$collect": _hamt_collect, "hamt$sorted": _hamt_sorted,
 }
 
 #: What each shared helper calls.
 _SHARED_DEPS: dict[str, tuple[str, ...]] = {
-    "hamt_merge": ("hamt_merge",),
-    "hamt_sorted": ("hamt_collect",),
+    "hamt$merge": ("hamt$merge",),
+    "hamt$sorted": ("hamt$collect",),
 }
 
 #: The helper ``eq_String`` is ``WasmContext``'s, shared with ``==``.
@@ -1157,18 +1157,18 @@ def _per_class(name: str) -> tuple[str, tuple[str, ...]]:
     base, _, cls = name.partition("$")
     eq: tuple[str, ...] = (EQ_STRING,) if cls == "s" else ()
     if base == "hamt_hash":
-        return _hamt_hash(cls), ("hamt_mix",)
+        return _hamt_hash(cls), ("hamt$mix",)
     if base == "hamt_ins":
-        return _hamt_ins(cls), ("hamt_entry", "hamt_merge", "hamt_node_set",
-                                "hamt_node_add_entry", "hamt_node_entry_to_sub",
-                                "hamt_coll_set", "hamt_coll_add", *eq)
+        return _hamt_ins(cls), ("hamt$entry", "hamt$merge", "hamt$node_set",
+                                "hamt$node_add_entry", "hamt$node_entry_to_sub",
+                                "hamt$coll_set", "hamt$coll_add", *eq)
     if base == "hamt_insert":
-        return _hamt_insert(cls), (f"hamt_ins${cls}", "hamt_entry")
+        return _hamt_insert(cls), (f"hamt_ins${cls}", "hamt$entry")
     if base == "hamt_find":
         return _hamt_find(cls), eq
     if base == "hamt_rem":
-        return _hamt_rem(cls), ("hamt_node_set", "hamt_node_remove_entry",
-                                "hamt_node_sub_to_entry", "hamt_coll_remove", *eq)
+        return _hamt_rem(cls), ("hamt$node_set", "hamt$node_remove_entry",
+                                "hamt$node_sub_to_entry", "hamt$coll_remove", *eq)
     if base == "hamt_remove":
         return _hamt_remove(cls), (f"hamt_rem${cls}",)
     raise KeyError(name)
@@ -1202,6 +1202,20 @@ def helper(name: str) -> tuple[str, tuple[str, ...]]:
     if op == "map_from_arrays":
         return _op_from_arrays(name, tags)
     raise KeyError(name)
+
+
+def register(
+    name: str, helpers: dict[str, str], request_eq: Callable[[], None],
+) -> None:
+    """Add the helper *name* and every helper it calls to *helpers*, each
+    once.  ``$eq_String``, which a `String` key compares by, is the one the
+    trie shares with ``==`` and does not generate, so *request_eq* asks the
+    caller for it."""
+    for needed in closure(name):
+        if needed == EQ_STRING:
+            request_eq()
+        elif needed not in helpers:
+            helpers[needed] = helper(needed)[0]
 
 
 def closure(name: str) -> Iterator[str]:

@@ -1214,13 +1214,12 @@ class CodeGenerator(
         from vera.wasm import hamt
         from vera.wasm.context import WasmContext
 
+        def request_eq() -> None:
+            self._adt_eq_helpers.setdefault(
+                "$eq_String", WasmContext._emit_string_eq_fn())
+
         for name in hamt.HOST_MAPS["s"]:
-            for needed in hamt.closure(name):
-                if needed == hamt.EQ_STRING:
-                    self._adt_eq_helpers.setdefault(
-                        "$eq_String", WasmContext._emit_string_eq_fn())
-                elif needed not in self._collection_helpers:
-                    self._collection_helpers[needed] = hamt.helper(needed)[0]
+            hamt.register(name, self._collection_helpers, request_eq)
             self._collection_exports.add(name)
         self._needs_alloc = True
         self._needs_memory = True

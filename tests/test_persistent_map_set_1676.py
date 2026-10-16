@@ -22,6 +22,7 @@ review recorded, each red before the change for the reason it names.
 
 from __future__ import annotations
 
+import itertools
 import json
 import re
 import shutil
@@ -645,6 +646,56 @@ def test_repro_no_module_declares_a_map_or_set_host_import() -> None:
 def test_repro_the_registry_has_no_map_or_set_host_row() -> None:
     rows = [row.name for row in HOST_IMPORTS if row.family in ("map", "set")]
     assert rows == []
+
+
+def _every_generated_name() -> set[str]:
+    """Every function name the generator can emit: each operation at every
+    tag of each of its slots, closed over the helpers it calls."""
+    from vera.wasm import hamt
+
+    names: set[str] = set()
+    for op, slots in hamt.OPERATIONS.items():
+        for combo in itertools.product(hamt.TAGS, repeat=len(slots)):
+            names |= set(hamt.closure(hamt.helper_name(op, **dict(zip(slots, combo)))))
+    return names
+
+
+def test_no_generated_helper_has_a_name_a_program_can_declare() -> None:
+    """A function a program declares is emitted under its own name, so a
+    generated helper whose name a program can also spell binds one
+    identifier twice, and the module is refused (E699) after `check`
+    passed.  Every name the generator emits carries a `$`, which no Vera
+    identifier can, but the four tagless operations, built-ins a program
+    cannot redeclare (E151), and `$eq_String`, the helper `==` on strings
+    has always emitted, whose collision is #1694's."""
+    from vera.wasm import hamt
+
+    spellable = {n for n in _every_generated_name() if "$" not in n}
+    assert spellable == {"map_new", "map_size", "set_new", "set_size", hamt.EQ_STRING}
+
+
+_HELPER_NAMED = """\
+private fn hamt_new(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  @Int.0 + 1
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(int_to_string(option_unwrap_or(map_get(map_insert(map_new(), "a", hamt_new(1)), "a"), 0)));
+  IO.print("\\n")
+}
+"""
+
+
+def test_repro_a_function_named_like_a_trie_helper_compiles_beside_a_map() -> None:
+    """At 4ced4bf2 the module bound `$hamt_new` twice, the program's
+    function and the trie's helper, and was refused with E699."""
+    result = pipeline.compile(_HELPER_NAMED, file="named.vera").result
+    assert result.ok, result.diagnostics
+    assert _native(result) == "2\n"
 
 
 def test_the_fourteen_names_keep_their_records() -> None:

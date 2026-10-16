@@ -502,6 +502,13 @@ def host_mirrored(root: Path) -> tuple[int, int]:
     return len(set().union(*families)), written
 
 
+def host_mirrored_text(built_ins: int, wasi: int) -> str:
+    """The host-mirrored row as the scorecard prints it: the hosted
+    built-ins, twice, and WASI's own copies of them, "none" at zero."""
+    rest = "none" if wasi == 0 else f"WASI's {wasi:,}"
+    return f"{built_ins:,} × 2, plus {rest}"
+
+
 def sync_gates(root: Path) -> tuple[int, int]:
     """The audit's copy-syncing gate scripts that still exist, and the gate
     scripts, `scripts/check_*.py`."""
@@ -728,7 +735,7 @@ def tree_values(
         tests = gate_tests(root)
         if isinstance(tests, str):
             return tests
-        built_ins, map_ops = host_mirrored(root)
+        built_ins, wasi_copies = host_mirrored(root)
         existing, gates = sync_gates(root)
         now = {
             "infer_functions": f"{infer_functions(root):,}",
@@ -736,7 +743,7 @@ def tree_values(
             "guarded_claims": f"{guarded_claims(root):,}",
             "expr_dispatchers": f"{expr_dispatchers(root):,}",
             "long_functions": f"{long_functions(root):,}",
-            "host_mirrored": f"{built_ins:,} × 2, plus WASI's {map_ops:,} map operations",
+            "host_mirrored": host_mirrored_text(built_ins, wasi_copies),
             "sync_gates": f"{existing:,} of {gates:,}",
             "gate_tests": f"{tests:,}",
             "golden_outputs": _golden(golden_outputs(root)),

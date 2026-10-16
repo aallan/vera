@@ -389,11 +389,7 @@ class CallsContainersMixin:
         ``$eq_String`` is the one a String key's equality shares with ``==``.
         """
         name = hamt.helper_name(op, **tags)
-        for needed in hamt.closure(name):
-            if needed == hamt.EQ_STRING:
-                self._request_string_eq_helper()
-            elif needed not in self._collection_helpers:
-                self._collection_helpers[needed] = hamt.helper(needed)[0]
+        hamt.register(name, self._collection_helpers, self._request_string_eq_helper)
         self.needs_alloc = True
         return f"${name}"
 
