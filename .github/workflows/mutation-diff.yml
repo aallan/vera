@@ -1,0 +1,82 @@
+name: Mutation (diff)
+
+# The diff-scoped mutation lane (MUTATION.md § CI): mutmut over the
+# functions a pull request changes, in a scratch tree, with a table of
+# what became of each function's mutants and the survivors' diffs in the
+# job summary, and the JSON record kept as an artifact.  It fails on a
+# survivor (exit 1) and on a run the budget or the engine stops short
+# (exit 2), so it shows red on the pull request.  It is not a required
+# check: branch protection's required list is the maintainer's, synced by
+# hand.
+#
+# `pull_request`, not `pull_request_target`: a fork's pull request runs
+# with a read-only token and no secrets.  The job reads the repository and
+# writes nothing back; every context value reaches the shell through `env`.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "vera/**/*.py"
+      - "scripts/mutate_diff.py"
+      - "tests/test_mutate_diff.py"
+      - ".github/workflows/mutation-diff.yml"
+
+permissions:
+  contents: read
+
+# A newer push to the same pull request replaces the run in progress.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  mutate:
+    name: mutation (diff)
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    # The script's budget (--budget, 40 min) plus installing the extra,
+    # the lane's own tests and the scratch tree.
+    timeout-minutes: 55
+    steps:
+      # The pull request's head, with the history that holds its merge base.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -e ".[mutation]"
+
+      # The tests that need mutmut itself (its status table, its generator
+      # honouring the narrowing pragma) skip in the shards, which install
+      # [dev] alone; here the engine is installed, so they run.
+      - name: Test the lane against the engine it installs
+        run: pytest tests/test_mutate_diff.py -q
+
+      - name: Mutate the functions this pull request changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: >-
+          python scripts/mutate_diff.py
+          --base "$BASE_SHA" --head "$HEAD_SHA"
+          --budget 2400
+          --workdir "$RUNNER_TEMP/mutate-diff"
+          --json "$RUNNER_TEMP/mutation-diff.json"
+          --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the record
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutation-diff
+          path: ${{ runner.temp }}/mutation-diff.json
+          retention-days: 30
