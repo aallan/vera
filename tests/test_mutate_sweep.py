@@ -225,6 +225,10 @@ BAD_STATES: dict[str, tuple[Any, str]] = {
     "a mutant number past the count": (_set("units", A.ident, "statuses", "5", "killed"),
                                        "vera/a.py::x_f's mutant '5' is out of range"),
     "a mutant number of zero": (_set("units", A.ident, "statuses", "0", "killed"), "mutant '0' is out of range"),
+    "a mutant number in other digits": (_set("units", A.ident, "statuses", "\u00b2", "killed"),
+                                        "mutant '\u00b2' is out of range"),
+    "a date in other digits": (_set("cycle_started", "\u0662\u0660\u0662\u0666-\u0661\u0660-\u0661\u0666"),
+                               "the cycle's start is malformed"),
     "a status mutmut does not print": (_set("units", A.ident, "statuses", "1", "pwned"),
                                        "has a status mutmut does not print"),
     "an undecided status": (_set("units", A.ident, "statuses", "1", "not checked"),
@@ -239,6 +243,44 @@ BAD_STATES: dict[str, tuple[Any, str]] = {
     "a night's head that is not a commit": (_set("nights", 0, "head", "abc"), "a night's head is malformed"),
     "too many nights": (lambda s: s.update(nights=s["nights"] * (sw.KEPT_NIGHTS + 1)), "the nights"),
 }
+
+
+def _carried() -> dict[str, Any]:
+    state = _state(f=4)
+    _decide(state, A, [1, 2])
+    return state
+
+
+def _lane_failed() -> dict[str, Any]:
+    record = _record(0, 1, {}, stopped="lane")
+    record["engine"] = None
+    return record
+
+
+#: Every path the stitch can take, problem or not: the state it starts
+#: from, and the night's records.
+STITCH_PATHS: dict[str, tuple[Any, Any]] = {
+    "a first night with no record": (lambda: sw.empty_state("2026-10-16"), lambda: []),
+    "a carried state with no record": (_carried, lambda: []),
+    "a first night whose every slice failed": (lambda: sw.empty_state("2026-10-16"), lambda: [_lane_failed()]),
+    "a carried state whose every slice failed": (_carried, lambda: [_lane_failed()]),
+    "a malformed record": (lambda: sw.empty_state("2026-10-16"),
+                           lambda: [{**_record(0, 1, {}), "head": "main"}]),
+    "a recount": (_carried, lambda: [_record(0, 1, {A.ident: {"hash": H, "mutants": 3, "statuses": {}}})]),
+    "a first night that decides": (lambda: sw.empty_state("2026-10-16"),
+                                   lambda: [_record(0, 1, {A.ident: {"hash": H, "mutants": 4,
+                                                                     "statuses": {"1": "killed"}}})]),
+}
+
+
+class TestTheStitchesOwnState:
+    """Whatever the night did, the state the stitch keeps is one the next
+    night loads: a state it refuses would stop every night after."""
+
+    @pytest.mark.parametrize("start,records", list(STITCH_PATHS.values()), ids=list(STITCH_PATHS))
+    def test_the_next_night_loads_it(self, start: Any, records: Any, tmp_path: Path) -> None:
+        state, _ = sw.stitch(start(), "none", records(), jobs=1, head=HEAD, units=UNITS, today="2026-10-17")
+        assert sw.load_state(sw.save_state(state, tmp_path), "x") == state
 
 
 class TestStateChecks:
@@ -510,10 +552,27 @@ class TestStitch:
         _decide(state, A, [1, 2])
         failed = _record(0, 1, {}, stopped="lane")
         failed["engine"] = None
+        state["cycle_started"] = "2026-10-01"
         kept, night = _stitch([failed], json.loads(json.dumps(state)), jobs=1)
-        assert night["problems"] == ["slice 0: stopped by the lane"]
-        assert kept["engine"] == "3.8.0"
+        assert night["problems"] == ["slice 0: stopped by the lane"] and night["notes"] == []
+        assert kept["engine"] == "3.8.0" and kept["cycle_started"] == "2026-10-01"
         assert kept["units"][A.ident] == {"hash": H, "mutants": 4, "statuses": {"1": "killed", "2": "killed"}}
+
+    def test_a_first_night_whose_every_slice_failed_leaves_a_state_that_loads(self, tmp_path: Path) -> None:
+        """No slice reported an engine and the state had none: it must stay
+        none, which the next night loads, not an empty version it refuses."""
+        failed = _record(0, 1, {}, stopped="lane")
+        failed["engine"] = None
+        state, _ = _stitch([failed], sw.empty_state("2026-10-16"), jobs=1)
+        assert state["engine"] is None
+        assert sw.load_state(sw.save_state(state, tmp_path), "x")["engine"] is None
+
+    def test_a_slice_whose_lane_failed_is_no_engine_mismatch(self) -> None:
+        good = _record(0, 2, {A.ident: {"hash": H, "mutants": 4, "statuses": {"1": "killed"}}})
+        failed = _record(1, 2, {}, stopped="lane")
+        failed["engine"] = None
+        _, night = _stitch([good, failed])
+        assert night["problems"] == ["slice 1: stopped by the lane"]
 
     def test_a_recount_starts_the_function_afresh_and_the_rest_of_the_record_counts(self) -> None:
         state = _state(f=4, g=5)

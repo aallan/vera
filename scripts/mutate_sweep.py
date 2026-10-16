@@ -233,10 +233,11 @@ def empty_state(today: str) -> dict[str, Any]:
 
 
 _HEX40 = re.compile(r"[0-9a-f]{40}")
+_NUMBER = re.compile(r"[1-9][0-9]{0,8}")
 _HEX16 = re.compile(r"[0-9a-f]{16}")
 _HEX64 = re.compile(r"[0-9a-f]{64}")
-_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
-_VERSION = re.compile(r"\d+(?:\.\d+)*(?:[.+-]?[0-9A-Za-z]+)*")
+_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+_VERSION = re.compile(r"[0-9]+(?:\.[0-9]+)*(?:[.+-]?[0-9A-Za-z]+)*")
 _PART = r"[A-Za-z_][A-Za-z0-9_]*"
 _PATH = re.compile(rf"vera/(?:{_PART}/)*{_PART}\.py")
 _KEY = rf"x(?:_{_PART}|{md.SEP}{_PART}{md.SEP}{_PART})"
@@ -279,8 +280,8 @@ def check_unit(ident: Any, record: Any) -> None:
     _check(isinstance(statuses, dict), f"{ident}'s statuses are not a mapping")
     _check(count is not None or not statuses, f"{ident} has decided mutants and no count")
     for number, status in statuses.items():
-        _check(isinstance(number, str) and number.isdigit() and number == str(int(number))
-               and 1 <= int(number) <= (count or 0), f"{ident}'s mutant {number!r} is out of range")
+        _check(isinstance(number, str) and _NUMBER.fullmatch(number) is not None
+               and int(number) <= (count or 0), f"{ident}'s mutant {number!r} is out of range")
         _check(status in DECIDED, f"{ident}'s mutant {number} has a status mutmut does not print")
 
 
@@ -434,11 +435,11 @@ def _fresh(unit: SweepUnit) -> dict[str, Any]:
 
 
 def reconcile(state: Mapping[str, Any], units: Iterable[SweepUnit],
-              engine: str) -> dict[str, Any]:
+              engine: str | None) -> dict[str, Any]:
     """The state with one record for each unit in the tree: a unit whose code
     changed starts afresh, a unit gone is dropped, and a new engine version
     starts every unit afresh."""
-    same_engine = state.get("engine") in (None, engine)
+    same_engine = engine is None or state.get("engine") in (None, engine)
     records: dict[str, Any] = {}
     for unit in units:
         old = state["units"].get(unit.ident)
@@ -447,7 +448,7 @@ def reconcile(state: Mapping[str, Any], units: Iterable[SweepUnit],
                                    "statuses": dict(old.get("statuses", {}))}
         else:
             records[unit.ident] = _fresh(unit)
-    return {**state, "engine": engine, "units": records}
+    return {**state, "engine": engine if engine is not None else state.get("engine"), "units": records}
 
 
 def undecided(record: Mapping[str, Any]) -> list[int] | None:
@@ -793,7 +794,7 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
     problems: list[str] = []
     valid: list[Mapping[str, Any]] = []
     seen: set[int] = set()
-    engines = {r.get("engine") for r in records if isinstance(r, dict)}
+    engines = {r.get("engine") for r in records if isinstance(r, dict) and r.get("engine") is not None}
     if len(engines) > 1:
         problems.append(f"the slices ran different engines: {sorted(map(str, engines))}")
     for record in records:
@@ -817,10 +818,12 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
     missing = sorted(set(range(jobs)) - seen)
     if missing:
         problems.append(f"no record from slice(s) {', '.join(map(str, missing))}")
-    engine = next((str(r["engine"]) for r in valid if r.get("engine")), state_in.get("engine") or "")
+    # A slice whose lane failed reports no engine; when none reports one,
+    # the state keeps its own.
+    engine: str | None = next((str(r["engine"]) for r in valid if r.get("engine")), None)
     state = reconcile(state_in, units, engine)
     notes: list[str] = []
-    if state_in.get("engine") not in (None, engine):
+    if engine is not None and state_in.get("engine") not in (None, engine):
         # Every function starts afresh under another engine: the cycle does.
         notes.append(f"mutmut {state_in.get('engine')} gave way to {engine}: every function "
                      "starts afresh, and so does the cycle")
