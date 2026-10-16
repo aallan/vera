@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any, Callable, cast
 
 import z3
 
-from vera import ast, naming, patterns
+from vera import ast, fold, naming, patterns
 from vera.monomorphize import mangle_type_name, unmangle_type_name
 from vera import carriers
 from vera.regularity import RegularityIndex, adt_names_in
@@ -1885,165 +1885,14 @@ class SmtContext:
         """Translate a Vera AST expression to a Z3 formula.
 
         Returns None if the expression contains unsupported constructs
-        (triggers Tier 3 fallback).
-
-        # WALKER_COVERAGE: (#597 — every Expr subclass below has a
-        # disposition; check_walker_coverage.py enforces completeness.
-        # SMT translation is intentionally narrow — contracts permit
-        # a subset of expression shapes — so most Expr subclasses are
-        # either "Cannot occur in contract context" or "deliberately
-        # unsupported pending issue-tracked expansion".)
-        #
-        # Handled (explicit isinstance branch):
-        #   IntLit            → z3.IntVal
-        #   BoolLit           → z3.BoolVal
-        #   StringLit         → z3.StringVal
-        #   FloatLit          → z3.FPVal (Float64 → FloatingPoint sort, #797)
-        #   SlotRef           → bound Z3 variable
-        #   ResultRef         → @Result substitution variable
-        #   BinaryExpr        → translated by op family
-        #   UnaryExpr         → translated by op family
-        #   IfExpr            → If(cond, then, else)
-        #   FnCall            → user-fn uninterpreted function or
-        #                       built-in axiomatised translation
-        #   ModuleCall        → cross-module fn lookup
-        #   Block             → trailing-expr translation
-        #   MatchExpr         → arm dispatch
-        #   ConstructorCall   → ADT constructor application
-        #   NullaryConstructor → ADT nullary tag
-        #   QualifiedCall     → effect op; NOT Z3-translated (returns None),
-        #                       but its args are walked for the E501
-        #                       precondition side effect (#776)
-        #   IndexExpr         → uninterpreted `index_<sort>(arr, i)`
-        #                       function call (#667)
-        #   ArrayLit          → fresh Array constant with asserted
-        #                       length and per-element values (#667)
-        #
-        # Intentionally ignored (returns None → Tier 3 fallback;
-        # listed in the inline comment after the dispatch chain):
-        #   AnonFn            → lambdas not in contract grammar
-        #   HandleExpr        → handle-effect not in contract grammar
-        #   ForallExpr        → quantifier translation deferred (#427)
-        #   ExistsExpr        → quantifier translation deferred (#427)
-        #   OldExpr           → contract operator; Tier 3 fallback
-        #   NewExpr           → contract operator; Tier 3 fallback
-        #   AssertExpr        → statement-like; not a predicate
-        #   AssumeExpr        → statement-like; not a predicate
-        #   UnitLit           → predicates are Bool, not Unit
-        #
-        # Cannot occur (rejected at check time or not in contracts):
-        #   InterpolatedString → not in contract predicates
-        #   HoleExpr          → check time rejects
+        (triggers Tier 3 fallback).  Each class's translation is its arm in
+        ``_SMT_ARMS``, a ``vera.fold.dispatch`` table, so every `Expr` class
+        has one.  SMT translation is intentionally narrow: contracts permit a
+        subset of expression shapes, so the classes outside it answer
+        ``None`` there, each with its reason.
         """
-        if isinstance(expr, ast.IntLit):
-            return z3.IntVal(expr.value)
-
-        if isinstance(expr, ast.BoolLit):
-            return z3.BoolVal(expr.value)
-
-        if isinstance(expr, ast.StringLit):
-            # #802: Z3's string sort cannot faithfully model two kinds of code
-            # point, so a literal containing either defers to Tier 3 (return
-            # None) rather than be reasoned over as a corrupted term.  For both,
-            # the Python binding silently stores the code point's *escape text*
-            # instead of the character (e.g. z3.StringVal("\U00030000") holds
-            # "\u{5c}u{30000}" — the backslash itself becomes "\u{5c}"), so
-            # Contains/PrefixOf/SuffixOf match phantom ASCII bytes the runtime
-            # never sees, proving false contracts.  The two cases:
-            #   - above the alphabet (> U+2FFFF); and
-            #   - a lone surrogate (U+D800..U+DFFF), which additionally has no
-            #     UTF-8 encoding at all (see string_length below).
-            # We must return None *before* z3.StringVal sees either.  (string_length
-            # models a literal via its UTF-8 byte count, not z3.StringVal, so it
-            # is unaffected by the alphabet limit — but it too must guard the
-            # surrogate case, below, where the byte encoding genuinely fails.)
-            if any(ord(ch) > 0x2FFFF or 0xD800 <= ord(ch) <= 0xDFFF
-                   for ch in expr.value):
-                return None
-            return z3.StringVal(expr.value)
-
-        if isinstance(expr, ast.FloatLit):
-            # #797: Float64 maps to Z3's IEEE-754 binary64 FloatingPoint sort, so
-            # a literal is an FPVal at that sort (the source decimal is rounded to
-            # the nearest double on construction, exactly as the runtime does).
-            return z3.FPVal(expr.value, _FLOAT64_SORT)
-
-        if isinstance(expr, ast.IndexExpr):
-            # #667: `arr[i]` translates to `index_<sort>(arr, i)`
-            # where `index_<sort>` is an uninterpreted function
-            # specific to the array's sort.  Sound — the verifier
-            # can reason that two references to `arr[i]` with the
-            # same `i` produce the same value (function congruence)
-            # — but doesn't know element structure beyond what
-            # explicit predicates assert.
-            return self._translate_index_expr(expr, env)
-
-        if isinstance(expr, ast.ArrayLit):
-            # #667: `[a, b, c]` translates to a fresh constant of
-            # the appropriate Array sort, with `length(lit) == N`
-            # and `index(lit, i) == translate(elem_i)` asserted to
-            # the solver for each known position.  Element types
-            # that can't be sorted (e.g. function-typed elements)
-            # fail the translation cleanly via None.
-            return self._translate_array_lit(expr, env)
-
-        if isinstance(expr, ast.SlotRef):
-            return self._translate_slot_ref(expr, env)
-
-        if isinstance(expr, ast.ResultRef):
-            return self._result_var
-
-        if isinstance(expr, ast.BinaryExpr):
-            return self._translate_binary(expr, env)
-
-        if isinstance(expr, ast.UnaryExpr):
-            return self._translate_unary(expr, env)
-
-        if isinstance(expr, ast.IfExpr):
-            return self._translate_if(expr, env)
-
-        if isinstance(expr, ast.FnCall):
-            return self._translate_call(expr, env)
-
-        if isinstance(expr, ast.ModuleCall):
-            return self._translate_module_call(expr, env)
-
-        if isinstance(expr, ast.Block):
-            return self._translate_block(expr, env)
-
-        if isinstance(expr, ast.MatchExpr):
-            return self._translate_match(expr, env)
-
-        if isinstance(expr, ast.NullaryConstructor):
-            return self._translate_nullary_ctor(expr)
-
-        if isinstance(expr, ast.ConstructorCall):
-            return self._translate_ctor_call(expr, env)
-
-        if isinstance(expr, ast.QualifiedCall):
-            # #776: an effect op (e.g. IO.print(...)) is itself untranslatable
-            # (effects in contracts violate purity — Z3-translating it would be
-            # unsound), but its ARGUMENTS may contain a call whose precondition
-            # must still be statically checked (E501).  Mirror the #730 ExprStmt
-            # handling: walk each arg for the precondition side effect, dropping
-            # the value, then return None so the effect op itself never becomes a
-            # Z3 term.  The #727 span-keyed dedup keeps re-translation
-            # duplicate-free.
-            #
-            # Translating a `FnCall` argument does more than record its E501: it
-            # also ASSUMES the callee's `ensures` (`_translate_call_with_info`).
-            # That assumption is scoped to the branch it was learned in by
-            # `_guard_fact`; without that guard it escapes the enclosing `if` and
-            # becomes an unconditional — and circular — fact about the CALLER's
-            # slots, letting a caller's false `ensures` prove at Tier 1.  See
-            # `_guard_fact` for the mechanism and the repro.
-            for arg in expr.args:
-                self.translate_expr(arg, env)
-            return None
-
-        # Unsupported: handle, lambdas, quantifiers,
-        # old/new, assert/assume, etc.
-        return None
+        arm = _SMT_ARMS.get(type(expr))
+        return None if arm is None else arm(self, expr, env)
 
     def _translate_slot_ref(
         self, ref: ast.SlotRef, env: SlotEnv
@@ -5205,3 +5054,118 @@ class SmtContext:
         # Keep _adt_registry and _ctor_to_adt (they persist across functions)
         # but clear cached Z3 sorts (tied to solver state)
         self._z3_sorts.clear()
+
+
+# =====================================================================
+# The translation table
+# =====================================================================
+
+_SmtArm = Callable[[SmtContext, Any, SlotEnv], "z3.ExprRef | None"]
+
+
+def _translate_string_lit(
+    ctx: SmtContext, expr: ast.StringLit, env: SlotEnv,
+) -> z3.ExprRef | None:
+    # #802: Z3's string sort cannot faithfully model two kinds of code
+    # point, so a literal containing either defers to Tier 3 (return
+    # None) rather than be reasoned over as a corrupted term.  For both,
+    # the Python binding silently stores the code point's *escape text*
+    # instead of the character (e.g. z3.StringVal("\U00030000") holds
+    # "\u{5c}u{30000}" — the backslash itself becomes "\u{5c}"), so
+    # Contains/PrefixOf/SuffixOf match phantom ASCII bytes the runtime
+    # never sees, proving false contracts.  The two cases:
+    #   - above the alphabet (> U+2FFFF); and
+    #   - a lone surrogate (U+D800..U+DFFF), which additionally has no
+    #     UTF-8 encoding at all (see string_length in `_translate_call`).
+    # We must return None *before* z3.StringVal sees either.  (string_length
+    # models a literal via its UTF-8 byte count, not z3.StringVal, so it
+    # is unaffected by the alphabet limit — but it too must guard the
+    # surrogate case, there, where the byte encoding genuinely fails.)
+    if any(ord(ch) > 0x2FFFF or 0xD800 <= ord(ch) <= 0xDFFF
+           for ch in expr.value):
+        return None
+    return z3.StringVal(expr.value)
+
+
+def _translate_effect_op(
+    ctx: SmtContext, expr: ast.QualifiedCall, env: SlotEnv,
+) -> None:
+    # #776: an effect op (e.g. IO.print(...)) is itself untranslatable
+    # (effects in contracts violate purity — Z3-translating it would be
+    # unsound), but its ARGUMENTS may contain a call whose precondition
+    # must still be statically checked (E501).  Mirror the #730 ExprStmt
+    # handling: walk each arg for the precondition side effect, dropping
+    # the value, then return None so the effect op itself never becomes a
+    # Z3 term.  The #727 span-keyed dedup keeps re-translation
+    # duplicate-free.
+    #
+    # Translating a `FnCall` argument does more than record its E501: it
+    # also ASSUMES the callee's `ensures` (`_translate_call_with_info`).
+    # That assumption is scoped to the branch it was learned in by
+    # `_guard_fact`; without that guard it escapes the enclosing `if` and
+    # becomes an unconditional — and circular — fact about the CALLER's
+    # slots, letting a caller's false `ensures` prove at Tier 1.  See
+    # `_guard_fact` for the mechanism and the repro.
+    for arg in expr.args:
+        ctx.translate_expr(arg, env)
+    return None
+
+
+def _untranslated(ctx: SmtContext, expr: ast.Expr, env: SlotEnv) -> None:
+    """No term: the table says why for each class that answers this."""
+    return None
+
+
+#: The Z3 term an expression translates to, by class.
+_SMT_ARMS: Mapping[type[ast.Expr], _SmtArm] = fold.dispatch(
+    "translate_expr", {
+        ast.IntLit: lambda ctx, e, env: z3.IntVal(e.value),
+        ast.BoolLit: lambda ctx, e, env: z3.BoolVal(e.value),
+        ast.StringLit: _translate_string_lit,
+        # #797: Float64 maps to Z3's IEEE-754 binary64 FloatingPoint sort, so
+        # a literal is an FPVal at that sort (the source decimal is rounded to
+        # the nearest double on construction, exactly as the runtime does).
+        ast.FloatLit: lambda ctx, e, env: z3.FPVal(e.value, _FLOAT64_SORT),
+        # #667: `arr[i]` translates to `index_<sort>(arr, i)`
+        # where `index_<sort>` is an uninterpreted function
+        # specific to the array's sort.  Sound — the verifier
+        # can reason that two references to `arr[i]` with the
+        # same `i` produce the same value (function congruence)
+        # — but doesn't know element structure beyond what
+        # explicit predicates assert.
+        ast.IndexExpr: lambda ctx, e, env: ctx._translate_index_expr(e, env),
+        # #667: `[a, b, c]` translates to a fresh constant of
+        # the appropriate Array sort, with `length(lit) == N`
+        # and `index(lit, i) == translate(elem_i)` asserted to
+        # the solver for each known position.  Element types
+        # that can't be sorted (e.g. function-typed elements)
+        # fail the translation cleanly via None.
+        ast.ArrayLit: lambda ctx, e, env: ctx._translate_array_lit(e, env),
+        ast.SlotRef: lambda ctx, e, env: ctx._translate_slot_ref(e, env),
+        ast.ResultRef: lambda ctx, e, env: ctx._result_var,
+        ast.BinaryExpr: lambda ctx, e, env: ctx._translate_binary(e, env),
+        ast.UnaryExpr: lambda ctx, e, env: ctx._translate_unary(e, env),
+        ast.IfExpr: lambda ctx, e, env: ctx._translate_if(e, env),
+        # A user function's uninterpreted application, or a built-in's
+        # axiomatised translation.
+        ast.FnCall: lambda ctx, e, env: ctx._translate_call(e, env),
+        # A cross-module function, looked up by its module path.
+        ast.ModuleCall: lambda ctx, e, env: ctx._translate_module_call(e, env),
+        # The block's trailing expression.
+        ast.Block: lambda ctx, e, env: ctx._translate_block(e, env),
+        ast.MatchExpr: lambda ctx, e, env: ctx._translate_match(e, env),
+        ast.NullaryConstructor: lambda ctx, e, env: ctx._translate_nullary_ctor(e),
+        ast.ConstructorCall: lambda ctx, e, env: ctx._translate_ctor_call(e, env),
+        ast.QualifiedCall: _translate_effect_op,
+        # Outside the contract grammar, so no term and a Tier 3 fallback:
+        # lambdas and `handle` are not contract expressions; quantifier
+        # translation is deferred (#427); `old` and `new` are contract
+        # operators; `assert` and `assume` are statement-like, not
+        # predicates; a predicate is a `Bool`, never a `Unit`.
+        **fold.each((ast.AnonFn, ast.HandleExpr, ast.ForallExpr, ast.ExistsExpr,
+                     ast.OldExpr, ast.NewExpr, ast.AssertExpr, ast.AssumeExpr,
+                     ast.UnitLit), _untranslated),
+        # Cannot occur: an interpolation is not in a contract predicate, and
+        # the check rejects a hole.
+        **fold.each((ast.InterpolatedString, ast.HoleExpr), _untranslated),
+    })
