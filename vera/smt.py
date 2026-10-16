@@ -3209,21 +3209,36 @@ class SmtContext:
         recorded for both — neither is a violation).  Shared by the modelled-return
         path and the #882 opaque-return path so both check the obligation with
         identical dedup semantics.
+
+        Each precondition is translated under the call's binding (#1706), as
+        the postcondition is: a `match` on a parameter assumes its binders'
+        declared-type facts about the scrutinee as it translates, and inside
+        the call that scrutinee is the argument's term, so outside the binding
+        the facts discharged the argument's own obligation and this check.
+        Every path that checks a precondition comes through here, so the one
+        push covers them all.
         """
         callee_env = self._build_callee_env(callee_info, z3_args, zero_size)
         if callee_env is None:  # pragma: no cover
             return False
 
+        binding: z3.ExprRef | None = None
+        bound = False
         for contract in callee_info.contracts:
             if not isinstance(contract, ast.Requires):
                 continue
             # Skip trivial requires(true)
             if isinstance(contract.expr, ast.BoolLit) and contract.expr.value:
                 continue
+            if not bound:
+                binding = self._call_binding(
+                    callee_info, call_node, call_node.args, z3_args, zero_size)
+                bound = True
             # #1208: the precondition is the CALLEE's expression, so its
             # `@T.n` references resolve in the callee's namespace — the same
             # one `_build_callee_env` keyed the stack under.
-            with self._callee_contract_scope(callee_info):
+            with self._callee_contract_scope(callee_info), \
+                    self._call_bound(binding):
                 z3_pre = self.translate_expr(contract.expr, callee_env)
             if z3_pre is None:
                 # The precondition itself uses a construct outside the
@@ -3326,8 +3341,10 @@ class SmtContext:
         obligation over an argument (its narrowing at this call, a `let` whose
         slot it is, a constructor field inside it) rests on the call it
         feeds.  That covers every fact the contract's translation assumes,
-        the arm facts a `match` on a parameter assumes about the argument's
-        term included (``_under_call_bindings``).  Ordering the call's own
+        in its `requires` (translated under the binding in
+        :meth:`_check_call_preconditions`) as in its `ensures`, the arm facts
+        a `match` on a parameter assumes about the argument's term included
+        (``_under_call_bindings``).  Ordering the call's own
         obligations before step 5 was not taken: it leaves every obligation
         the walk discharges after the body to those facts, a `let` narrowing
         of the same value among them.
@@ -3531,15 +3548,23 @@ class SmtContext:
         # `match` in the callee's contract assumes about its parameters.
         binding = self._call_binding(
             callee_info, call_node, args, z3_args, zero_size)
-        if binding is not None:
-            self._call_bindings.append(binding)
-        try:
+        with self._call_bound(binding):
             self._assume_callee_facts(
                 callee_info, call_node, callee_env, ret_var, refined_chain)
-        finally:
-            if binding is not None:
-                self._call_bindings.pop()
         return ret_var
+
+    @contextlib.contextmanager
+    def _call_bound(self, binding: z3.ExprRef | None) -> Iterator[None]:
+        """Hold *binding* on ``_call_bindings`` while a callee's contract is
+        translated (#1706); a call whose arguments owe nothing holds none."""
+        if binding is None:
+            yield
+            return
+        self._call_bindings.append(binding)
+        try:
+            yield
+        finally:
+            self._call_bindings.pop()
 
     def _call_binding(
         self,

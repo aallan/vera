@@ -1504,8 +1504,13 @@ class ContractVerifier:
         nested in the formal.  For every argument, whether or not it narrows
         at this call, because a fact over the argument's TERM is a fact over
         whatever produced it — a `let` whose slot it is, a constructor field
-        inside it — and a statically fitting argument's facts are ones the
-        solver already holds, so its guard discharges.  The nested facts are
+        inside it.  A statically fitting argument's guard discharges where the
+        solver holds the argument's own type facts (a parameter, a call
+        result, a `match` binder).  Where it holds none, an `Array<Nat>`
+        element or a `State<T>` read's value, the guard does not discharge
+        and the callee's facts are lost to the proofs after the call: the
+        caller is refused what it cannot show, never granted what it has not
+        shown.  The nested facts are
         taken raw rather than through :py:meth:`_established_facts`: the
         guard has to be at least what the callee assumed, and the callee's
         own parameter carries no disclosure.  An untranslatable refinement

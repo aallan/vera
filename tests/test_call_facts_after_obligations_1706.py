@@ -19,10 +19,11 @@ argument's TERM, so they discharged any obligation over that term: a `let`
 narrowing whose slot is the argument (`let @Nat = @Int.0; nat_id(@Nat.0)`),
 and a constructor field inside the argument (`payload(Some(@Int.0))`, whose
 field is obligated at the construction rather than at the call).  And they
-came through a second door: translating a callee's `ensures` that matches on
-its parameter assumes each binder's declared-type fact about the scrutinee,
-which inside the call is the argument's term, so a payload's refinement was
-assumed of the argument whatever the `ensures` said.
+came through a second door: translating a callee's `ensures` or `requires`
+that matches on its parameter assumes each binder's declared-type fact about
+the scrutinee, which inside the call is the argument's term, so a payload's
+refinement was assumed of the argument whatever the contract said, and in a
+`requires` it discharged the precondition it was part of as well.
 
 THE RULE.  A call's facts about its result are assumed only under the facts
 the callee's own proof assumed of its parameters, stated over the actual
@@ -34,8 +35,8 @@ an argument can be discharged by the facts of the call it feeds.  A statically
 `@Nat` argument's guard is a fact the solver holds already (a parameter, a
 `@Nat` result, `@Nat.0 + 1`), so it costs nothing; it binds only where the
 solver has no fact for the term, which is where the proof rested on the leak.
-The facts a `match` in the callee's contract assumes are under the same
-guard.  A call's result carries the refinements written inside its return
+The facts a `match` in the callee's `requires` or `ensures` assumes are under
+the same guard.  A call's result carries the refinements written inside its return
 type beside its head refinement, through the disclosure gate, since a result
 is the one producer of a nested-refined value the solver held no fact for.
 
@@ -66,7 +67,9 @@ sits.  The generated matrix crosses:
 * the position: the function's return expression; a `let` value; the argument
   of an outer call; an `if` condition's operand; a `match` arm.
 
-4 x 5 x 4 x 5 = 400 cells.  Every cell's expectation is the rule, stated, not
+4 x 5 x 4 x 5 = 400 cells, and 20 more crossing the argument and the position
+for a callee whose `requires` matches on its `Option<PosInt>` parameter.
+Every cell's expectation is the rule, stated, not
 computed: an argument the program does not prove fits is `violated` with
 E503 (`nat_bind`) or E505 (`refine_bind`) whatever the callee's facts, and the
 run on a negative input traps with the formal's own guard text; an argument
@@ -636,6 +639,37 @@ def test_kills_an_unguarded_match_arm_fact() -> None:
                     "refine_bind") == ["violated/E505"]
 
 
+def test_kills_an_unguarded_requires_match_arm_fact() -> None:
+    """The same door in the callee's `requires`: translated before the
+    binding was held, its `match` assumed the payload's `> 0` about the
+    argument outright, which discharged both the argument's refinement and
+    the precondition itself, and `g(-1)` trapped in a verified program."""
+    source = TYPES + "\n" + REQUIRES_MATCH_CALLEE.replace(
+        "callee", "peek") + "\n" + textwrap.dedent("""\
+        public fn f(@Option<Int> -> @Int)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {
+          peek(@Option<Int>.0)
+        }
+
+        public fn g(@Int -> @Int)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {
+          f(Some(@Int.0))
+        }
+        """)
+    verified = _verify(source)
+    call = _at(source, "peek(@Option<Int>.0)")
+    assert _records(verified, (call[0], call[1] + len("peek(")),
+                    "refine_bind") == ["violated/E505"]
+    assert _records(verified, call, "call_pre") == ["violated/E501"]
+    assert REFINED_TRAP in (_trap_text(_run(source, "g", [-1])) or "")
+
+
 def test_kills_a_misaligned_zero_size_argument() -> None:
     """A zero-size parameter has no term (#1214), so the guard pairs each
     remaining term with its own argument: here the `@Nat`'s fact is over
@@ -780,11 +814,30 @@ POSITIONS = ("return", "let", "outer", "cond", "arm")
 
 _TO_INT = {"Nat": "nat_to_int({})", "SmallNat": "nat_to_int({})"}
 _BASE = {"Nat": "Nat", "SmallNat": "Nat", "PosInt": "Int", "Big": "Int",
-         "Mid": "Int"}
+         "Mid": "Int", "Int": "Int"}
+
+
+#: A callee whose `requires` matches on its `Option<PosInt>` parameter: the
+#: match assumes the binder's `> 0` about the scrutinee as it translates, which
+#: inside the call is the argument's term (R77's finding on PR #1715).
+REQUIRES_MATCH_CALLEE = textwrap.dedent("""\
+    private fn callee(@Option<PosInt> -> @Int)
+      requires(match @Option<PosInt>.0 {
+        Some(@PosInt) -> @PosInt.0 > 0,
+        None -> true
+      })
+      ensures(true)
+      effects(pure)
+    {
+      0
+    }
+    """)
 
 
 def _callee(formal: Formal, fact: str) -> tuple[str, str]:
     """The callee's declaration and its return type."""
+    if fact == "requires_match":
+        return REQUIRES_MATCH_CALLEE, "Int"
     ret = formal.shifted_ret if fact == "shifted" else (
         "PosInt" if formal.name == "nested" else formal.ty)
     if formal.name == "nested":
@@ -916,9 +969,48 @@ def test_call_facts_never_discharge_their_arguments(
         assert formal.trap in (_trap_text(ran) or ""), _trap_text(ran)
 
 
+REQUIRES_CELLS = [
+    pytest.param(argument, position, id=f"requires-{argument}-{position}")
+    for argument in ARGUMENTS
+    for position in POSITIONS
+]
+
+
+@pytest.mark.parametrize(("argument", "position"), REQUIRES_CELLS)
+def test_a_requires_match_never_discharges_its_argument(
+    argument: str, position: str,
+) -> None:
+    """The callee's `requires` is translated under the call's binding as its
+    `ensures` is: a `match` there assumes nothing about the argument, so an
+    argument the program does not prove fits is refuted twice over (its
+    payload, E505, and the precondition the payload decides, E501) and its
+    negative traps; one it proves verifies with no record at the call."""
+    nested = next(f for f in FORMALS if f.name == "nested")
+    source, arg, fn = _program(nested, "requires_match", argument, position)
+    verified = _verify(source)
+    call = _at(source, f"callee({arg})")
+    offset = len("callee(Some(") if arg.startswith("Some(") else len("callee(")
+    value = (call[0], call[1] + offset)
+    if argument in ("requires", "guarded"):
+        assert _records(verified, value, "refine_bind") == ["verified"]
+        assert _records(verified, call, "call_pre") == []
+        assert verified.ok, [(d.error_code, d.description[:80])
+                             for d in verified.errors]
+        ran = _run(source, fn, [1, 5])
+        assert ran.trap is None, _trap_text(ran)
+    else:
+        assert _records(verified, value, "refine_bind") == ["violated/E505"]
+        assert _records(verified, call, "call_pre") == ["violated/E501"]
+        ran = _run(source, fn, [1, -1])
+        assert REFINED_TRAP in (_trap_text(ran) or ""), _trap_text(ran)
+
+
 def test_the_matrix_is_the_product() -> None:
     """Every product is a cell, and every cell id names one product."""
     ids = [c.id for c in CELLS]
     assert len(ids) == len(set(ids)) == (
         len(FORMALS) * len(FACTS) * len(ARGUMENTS) * len(POSITIONS)) == 400
     assert all(re.fullmatch(r"[a-z]+-[a-z]+-[a-z]+-[a-z]+", i) for i in ids)
+    requires = [c.id for c in REQUIRES_CELLS]
+    assert len(requires) == len(set(requires)) == (
+        len(ARGUMENTS) * len(POSITIONS)) == 20
