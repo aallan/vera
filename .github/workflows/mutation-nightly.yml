@@ -31,8 +31,9 @@ on:
 permissions:
   contents: read
 
-# One night at a time, and a night is never cancelled: the next one plans
-# from the state this one leaves.
+# One night at a time, and a running night is never cancelled: the next one
+# plans from the state this one leaves.  A night still waiting in the group
+# gives way to a newer one, which loses nothing: it has planned nothing yet.
 concurrency:
   group: mutation-nightly
   cancel-in-progress: false
@@ -57,22 +58,30 @@ jobs:
       # The schedule runs mutate_sweep.JOBS jobs; a dispatch runs the number
       # it is given, one by default.
       - id: jobs
+        shell: bash
         env:
           EVENT: ${{ github.event_name }}
           REQUESTED: ${{ inputs.jobs }}
-        run: python3 scripts/mutate_sweep.py matrix --event "$EVENT" --requested "$REQUESTED" >> "$GITHUB_OUTPUT"
+        run: |
+          matrix=$(python3 scripts/mutate_sweep.py matrix --event "$EVENT" --requested "$REQUESTED")
+          echo "$matrix" >> "$GITHUB_OUTPUT"
 
-      # The newest unexpired state artifact a run on main uploaded; none
-      # before the first night.
+      # The run whose state the night carries on from: the newest completed
+      # run of this workflow on this repository's own main, started by the
+      # schedule or a dispatch, with an unexpired state artifact (a fork's
+      # run on a branch named main, or another workflow's, could upload an
+      # artifact of the same name); none before the first night.  A lookup
+      # that fails fails the night: "no state" comes only from listings that
+      # succeeded, so an API error never restarts the cycle.
       - id: state
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-        run: >-
-          echo "run=$(gh api --paginate "repos/$REPO/actions/artifacts?name=mutation-sweep-state&per_page=100"
-          --jq '.artifacts[] | select(.expired | not) | select(.workflow_run.head_branch == "main")
-          | "\(.created_at) \(.workflow_run.id)"' | sort | tail -n 1 | cut -d " " -f 2)"
-          >> "$GITHUB_OUTPUT"
+          REPO_ID: ${{ github.repository_id }}
+        run: |
+          found=$(python3 scripts/mutate_sweep.py find-state --repo "$REPO" --repo-id "$REPO_ID")
+          echo "$found" >> "$GITHUB_OUTPUT"
 
   sweep:
     needs: setup
@@ -99,8 +108,12 @@ jobs:
         with:
           python-version: "3.12"
 
+      # The engine is pinned: the state compares its version exactly, and a
+      # new version starts every function afresh, so a version change is a
+      # reviewed pull request that restarts the cycle (uv.lock's version; a
+      # test holds the two equal).
       - name: Install dependencies
-        run: pip install -e ".[mutation]"
+        run: pip install -e ".[mutation]" "mutmut==3.8.0"
 
       - name: Test the sweep against the engine it installs
         run: pytest tests/test_mutate_sweep.py tests/test_mutate_diff.py -q

@@ -34,6 +34,8 @@ import yaml
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW = ROOT / ".github" / "workflows" / "mutation-nightly.yml"
 SEP = "ǁ"
+H = "0" * 16  # a code hash
+HEAD = "a" * 40
 
 
 def _load() -> Any:
@@ -49,7 +51,7 @@ def _load() -> Any:
 sw = _load()
 
 
-def _u(path: str, key: str, start: int = 1, code: str = "h", estimate: int = 4) -> Any:
+def _u(path: str, key: str, start: int = 1, code: str = H, estimate: int = 4) -> Any:
     return sw.SweepUnit(path=path, key=key, start=start, hash=code, estimate=estimate)
 
 
@@ -117,6 +119,14 @@ class TestInventory:
         (other,) = [u for u in sw.units_of(changed, "m.py") if u.key == "x_plain"]
         assert same.hash == plain.hash != other.hash
 
+    def test_a_pragma_line_enters_a_units_identity(self) -> None:
+        """`# pragma: no mutate` changes mutmut's mutants and not the code, so
+        it must change the identity, or a decided function is never redone."""
+        (plain,) = [u for u in sw.units_of(SOURCE, "m.py") if u.key == "x_plain"]
+        marked = SOURCE.replace("    return x + 1\n", "    return x + 1  # pragma: no mutate\n")
+        (pragma,) = [u for u in sw.units_of(marked, "m.py") if u.key == "x_plain"]
+        assert pragma.hash != plain.hash
+
     def test_the_inventory_is_in_the_trees_order(self) -> None:
         units = sw.inventory({"vera/b.py": "def z():\n    return 1\n",
                               "vera/a.py": "def y():\n    return 2\n\n\ndef x():\n    return 3\n"})
@@ -155,8 +165,8 @@ class TestState:
         state = _state(f=4, m=3)
         _decide(state, A, [1])
         _decide(state, B, [1])
-        state = sw.reconcile(state, [_u("vera/a.py", "x_f", 1, code="other"), B, C], "3.8.0")
-        assert state["units"][A.ident] == {"hash": "other", "mutants": None, "statuses": {}}
+        state = sw.reconcile(state, [_u("vera/a.py", "x_f", 1, code="1" * 16), B, C], "3.8.0")
+        assert state["units"][A.ident] == {"hash": "1" * 16, "mutants": None, "statuses": {}}
         assert state["units"][B.ident]["statuses"] == {"1": "killed"}
 
     def test_a_new_engine_starts_every_function_afresh(self) -> None:
@@ -166,11 +176,163 @@ class TestState:
         _decide(state, A, [1])
         state = sw.reconcile(state, UNITS, "3.9.0")
         assert state["engine"] == "3.9.0"
-        assert all(r == {"hash": "h", "mutants": None, "statuses": {}} for r in state["units"].values())
+        assert all(r == {"hash": H, "mutants": None, "statuses": {}} for r in state["units"].values())
 
     def test_a_function_gone_from_the_tree_is_dropped(self) -> None:
         state = sw.reconcile(_state(), [A, B], "3.8.0")
         assert C.ident not in state["units"]
+
+
+def _written_state() -> dict[str, Any]:
+    """A state as the stitch writes it: a closed cycle, a night, a count."""
+    state = _state()
+    for unit, n in {A: 4, B: 3, C: 5}.items():
+        state["units"][unit.ident]["mutants"] = n
+        _decide(state, unit, range(1, n + 1))
+    _decide(state, C, [5], "survived")
+    written, night = sw.stitch(state, "none", [_record(0, 1, {}, planned=0)], jobs=1, head=HEAD, units=UNITS,
+                               today="2026-10-17")
+    assert night["closed"]
+    _decide(written, A, [1, 2])
+    return json.loads(json.dumps(written))
+
+
+def _set(*path: Any) -> Any:
+    """A change at ``path[:-1]`` to the value ``path[-1]``."""
+    def change(state: dict[str, Any]) -> None:
+        target: Any = state
+        for key in path[:-2]:
+            target = target[key]
+        target[path[-2]] = path[-1]
+    return change
+
+
+BAD_STATES: dict[str, tuple[Any, str]] = {
+    "another schema": (_set("schema", 2), "not a schema 1 state"),
+    "a field it does not have": (_set("extra", 1), "the state does not have exactly the fields"),
+    "an engine that is not a version": (_set("engine", "3.8.0; touch /tmp/x"), "the engine version is malformed"),
+    "a cycle of zero": (_set("cycle", 0), "the cycle is not a whole number"),
+    "a cycle that is a flag": (_set("cycle", True), "the cycle is not a whole number"),
+    "a start that is not a date": (_set("cycle_started", "yesterday"), "the cycle's start is malformed"),
+    "a calibration out of range": (_set("calibration", 9.0), "the calibration is not a number from 0.2 to 5.0"),
+    "a calibration that is not a number": (_set("calibration", float("nan")), "the calibration is not a number"),
+    "a function outside vera/": (lambda s: s["units"].update({"../etc/x.py::x_f": s["units"][A.ident]}),
+                                 "function '../etc/x.py::x_f' is malformed"),
+    "a hash that is not hex": (_set("units", A.ident, "hash", "zz"), "vera/a.py::x_f's hash is malformed"),
+    "a mutant count over the limit": (_set("units", A.ident, "mutants", sw.MAX_MUTANTS + 1),
+                                      "vera/a.py::x_f's mutant count is not a whole number from 0 to 100000"),
+    "a negative mutant count": (_set("units", A.ident, "mutants", -1), "vera/a.py::x_f's mutant count"),
+    "a mutant number past the count": (_set("units", A.ident, "statuses", "5", "killed"),
+                                       "vera/a.py::x_f's mutant '5' is out of range"),
+    "a mutant number of zero": (_set("units", A.ident, "statuses", "0", "killed"), "mutant '0' is out of range"),
+    "a status mutmut does not print": (_set("units", A.ident, "statuses", "1", "pwned"),
+                                       "has a status mutmut does not print"),
+    "an undecided status": (_set("units", A.ident, "statuses", "1", "not checked"),
+                            "has a status mutmut does not print"),
+    "decided mutants and no count": (_set("units", A.ident, "mutants", None), "has decided mutants and no count"),
+    "a closed cycle's head that is not a commit": (_set("last_complete", "head", "main"),
+                                                   "the last closed cycle's head is malformed"),
+    "a closed cycle's negative count": (_set("last_complete", "modules", "vera/a.py", "killed", -1),
+                                        "vera/a.py's killed is not a whole number"),
+    "a survivor that is not a mutant": (lambda s: s["last_complete"]["survivors"].append("x; rm:survived"),
+                                        "survivor 'x; rm:survived' is malformed"),
+    "a night's head that is not a commit": (_set("nights", 0, "head", "abc"), "a night's head is malformed"),
+    "too many nights": (lambda s: s.update(nights=s["nights"] * (sw.KEPT_NIGHTS + 1)), "the nights"),
+}
+
+
+class TestStateChecks:
+    """The state comes from an artifact, so every field is checked."""
+
+    def test_a_state_the_stitch_wrote_loads(self, tmp_path: Path) -> None:
+        state = _written_state()
+        assert sw.load_state(sw.save_state(state, tmp_path), "x") == state
+
+    @pytest.mark.parametrize("change,why", list(BAD_STATES.values()), ids=list(BAD_STATES))
+    def test_a_state_out_of_bounds_is_refused(self, change: Any, why: str, tmp_path: Path) -> None:
+        state = _written_state()
+        change(state)
+        with pytest.raises(sw.StateError) as caught:
+            sw.load_state(sw.save_state(state, tmp_path), "x")
+        assert why in str(caught.value)
+
+    @pytest.mark.parametrize("field,value", [
+        ("head", "main"), ("state_in", "../x"), ("stopped", "maybe"), ("engine_s", -1),
+        ("results", {A.ident: {"hash": "zz", "mutants": 1, "statuses": {}}}),
+        ("results", {A.ident: {"hash": H, "mutants": None, "statuses": {}}}),
+        ("dropped_tests", ["a\nb"]),
+    ])
+    def test_a_malformed_slice_record_stops_the_night_short(self, field: str, value: Any) -> None:
+        record = _record(0, 1, {A.ident: {"hash": H, "mutants": 4, "statuses": {"1": "killed"}}})
+        record[field] = value
+        state, night = _stitch([record], jobs=1)
+        assert night["problems"][0].startswith("slice 0: a malformed record")
+        assert state["units"][A.ident]["statuses"] == {}
+
+
+REPO_ID = 1234
+WORKFLOW_PATH = ".github/workflows/mutation-nightly.yml"
+
+
+def _run(run_id: int, created: str, *, event: str = "schedule", head_repo: int = REPO_ID,
+         path: str = WORKFLOW_PATH) -> dict[str, Any]:
+    return {"id": run_id, "event": event, "head_branch": "main", "status": "completed",
+            "created_at": created, "head_repository": {"id": head_repo}, "repository": {"id": REPO_ID},
+            "path": path}
+
+
+class TestFindState:
+    """The night carries on from its own workflow's last state, never from an
+    artifact another run could have uploaded under the same name."""
+
+    def test_the_newest_own_run_with_a_state_is_taken(self) -> None:
+        runs = [_run(1, "2026-10-14T21:00:00Z"), _run(3, "2026-10-16T21:00:00Z"),
+                _run(2, "2026-10-15T21:00:00Z", event="workflow_dispatch")]
+        assert sw.pick_state_run(runs, REPO_ID, lambda run: True) == 3
+
+    def test_a_forks_run_on_a_branch_named_main_is_never_taken(self) -> None:
+        runs = [_run(9, "2026-10-17T00:00:00Z", head_repo=666), _run(3, "2026-10-16T21:00:00Z")]
+        assert sw.pick_state_run(runs, REPO_ID, lambda run: True) == 3
+
+    def test_a_run_of_another_event_or_workflow_is_never_taken(self) -> None:
+        runs = [_run(8, "2026-10-17T02:00:00Z", event="pull_request"),
+                _run(7, "2026-10-17T01:00:00Z", path=".github/workflows/ci.yml"),
+                _run(3, "2026-10-16T21:00:00Z")]
+        assert sw.pick_state_run(runs, REPO_ID, lambda run: True) == 3
+
+    def test_a_run_without_a_live_state_gives_way_to_the_one_before(self) -> None:
+        runs = [_run(2, "2026-10-15T21:00:00Z"), _run(3, "2026-10-16T21:00:00Z")]
+        assert sw.pick_state_run(runs, REPO_ID, lambda run: run != 3) == 2
+        assert sw.pick_state_run([], REPO_ID, lambda run: True) is None
+
+    def test_a_failed_lookup_fails_and_never_reads_as_no_state(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        fake = tmp_path / "failing_gh.py"
+        fake.write_text("import sys\nprint('HTTP 502', file=sys.stderr)\nsys.exit(1)\n", encoding="utf-8")
+        with pytest.raises(sw.md.LaneError):
+            sw.main(["find-state", "--repo", "o/r", "--repo-id", str(REPO_ID), "--gh", sys.executable, str(fake)])
+        assert "run=" not in capsys.readouterr().out
+
+    def test_the_command_asks_for_this_workflows_completed_runs_on_main(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        log = tmp_path / "gh.jsonl"
+        fake = tmp_path / "fake_gh.py"
+        fake.write_text(
+            "import json, sys\n"
+            f"open({str(log)!r}, 'a', encoding='utf-8').write(json.dumps(sys.argv[1:]) + '\\n')\n"
+            "path = sys.argv[2]\n"
+            f"runs = {json.dumps({'workflow_runs': [_run(5, '2026-10-16T21:00:00Z'), _run(6, '2026-10-17T21:00:00Z', head_repo=666)]})}\n"
+            "arts = {'artifacts': [{'name': 'mutation-sweep-state', 'expired': False}]}\n"
+            "print(json.dumps(runs if '/workflows/' in path else arts))\n", encoding="utf-8")
+        assert sw.main(["find-state", "--repo", "o/r", "--repo-id", str(REPO_ID),
+                        "--gh", sys.executable, str(fake)]) == 0
+        assert capsys.readouterr().out == "run=5\n"
+        calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        assert calls == [
+            ["api", "repos/o/r/actions/workflows/mutation-nightly.yml/runs?branch=main&status=completed&per_page=100"],
+            ["api", "repos/o/r/actions/runs/5/artifacts?name=mutation-sweep-state"]]
 
 
 # ---------------------------------------------------------------------------
@@ -259,31 +421,31 @@ class TestSliceResults:
             "vera.a.x_f__mutmut_1": "killed", "vera.a.x_f__mutmut_2": "not checked",
             "vera.a.x_f__mutmut_3": "check was interrupted by user",
             "vera.b.x_g__mutmut_1": "not checked", "vera.b.x_g__mutmut_2": "no tests"},
-            cut_short=False)
-        assert out == {A.ident: {"hash": "h", "mutants": 3, "statuses": {"1": "killed"}},
-                       C.ident: {"hash": "h", "mutants": 2, "statuses": {"2": "no tests"}}}
+            cut_short=False, finished=True)
+        assert out == {A.ident: {"hash": H, "mutants": 3, "statuses": {"1": "killed"}},
+                       C.ident: {"hash": H, "mutants": 2, "statuses": {"2": "no tests"}}}
 
     def test_a_status_a_budget_stop_can_leave_waits_for_a_run_it_did_not_stop(self) -> None:
         picks = [sw.Pick(unit=A, numbers=None)]
         results = {"vera.a.x_f__mutmut_1": "segfault", "vera.a.x_f__mutmut_2": "suspicious",
                    "vera.a.x_f__mutmut_3": "timeout"}
-        assert sw.slice_results(picks, results, cut_short=True)[A.ident]["statuses"] == {"3": "timeout"}
-        assert sw.slice_results(picks, results, cut_short=False)[A.ident]["statuses"] == {
+        assert sw.slice_results(picks, results, cut_short=True, finished=False)[A.ident]["statuses"] == {"3": "timeout"}
+        assert sw.slice_results(picks, results, cut_short=False, finished=True)[A.ident]["statuses"] == {
             "1": "segfault", "2": "suspicious", "3": "timeout"}
 
     def test_a_result_for_a_function_the_night_did_not_plan_is_refused(self) -> None:
         with pytest.raises(sw.StateError):
             sw.slice_results([sw.Pick(unit=A, numbers=None)], {"vera.b.x_g__mutmut_1": "killed"},
-                             cut_short=False)
+                             cut_short=False, finished=True)
 
     def test_a_listing_with_a_gap_in_its_numbers_is_refused(self) -> None:
         with pytest.raises(sw.StateError):
             sw.slice_results([sw.Pick(unit=A, numbers=None)],
                              {"vera.a.x_f__mutmut_1": "killed", "vera.a.x_f__mutmut_3": "killed"},
-                             cut_short=False)
+                             cut_short=False, finished=True)
 
 
-def _record(slice_: int, of: int, results: dict[str, Any], *, head: str = "h" * 40,
+def _record(slice_: int, of: int, results: dict[str, Any], *, head: str = HEAD,
             digest: str = "none", stopped: str | None = None, planned: int = 1) -> dict[str, Any]:
     return {"schema": sw.SCHEMA, "slice": slice_, "of": of, "head": head, "state_in": digest,
             "engine": "3.8.0", "budget_s": 100.0, "planned": [{"unit": "u"}] * planned,
@@ -293,68 +455,106 @@ def _record(slice_: int, of: int, results: dict[str, Any], *, head: str = "h" * 
 
 def _stitch(records: list[dict[str, Any]], state: dict[str, Any] | None = None, *, jobs: int = 2,
             ) -> tuple[dict[str, Any], dict[str, Any]]:
-    return sw.stitch(state or sw.empty_state("d"), "none", records, jobs=jobs, head="h" * 40,
+    return sw.stitch(state or sw.empty_state("2026-10-16"), "none", records, jobs=jobs, head=HEAD,
                      units=UNITS, today="2026-10-17")
 
 
 class TestStitch:
     def test_the_nights_slices_fold_into_the_state(self) -> None:
         state, night = _stitch([
-            _record(0, 2, {A.ident: {"hash": "h", "mutants": 4, "statuses": {"1": "killed", "2": "survived"}}}),
-            _record(1, 2, {A.ident: {"hash": "h", "mutants": 4, "statuses": {"3": "timeout"}},
-                           C.ident: {"hash": "h", "mutants": 2, "statuses": {}}}),
+            _record(0, 2, {A.ident: {"hash": H, "mutants": 4, "statuses": {"1": "killed", "2": "survived"}}}),
+            _record(1, 2, {A.ident: {"hash": H, "mutants": 4, "statuses": {"3": "timeout"}},
+                           C.ident: {"hash": H, "mutants": 2, "statuses": {}}}),
         ])
         assert night["problems"] == [] and night["moved"] == 5  # 3 decided, A and C counted
-        assert state["units"][A.ident] == {"hash": "h", "mutants": 4,
+        assert state["units"][A.ident] == {"hash": H, "mutants": 4,
                                            "statuses": {"1": "killed", "2": "survived", "3": "timeout"}}
         assert state["units"][C.ident]["mutants"] == 2 and state["units"][B.ident]["mutants"] is None
         assert state["nights"][-1] is night
 
     def test_a_slice_of_another_head_or_another_state_stops_the_night_short(self) -> None:
-        good = _record(0, 2, {A.ident: {"hash": "h", "mutants": 4, "statuses": {"1": "killed"}}})
+        good = _record(0, 2, {A.ident: {"hash": H, "mutants": 4, "statuses": {"1": "killed"}}})
         _, night = _stitch([good, _record(1, 2, {}, head="e" * 40)])
         assert any("ran eeee" in p for p in night["problems"])
-        _, night = _stitch([good, _record(1, 2, {}, digest="other")])
+        _, night = _stitch([good, _record(1, 2, {}, digest="f" * 64)])
         assert any("another state" in p for p in night["problems"])
 
     def test_a_missing_slice_stops_the_night_short(self) -> None:
-        _, night = _stitch([_record(0, 2, {A.ident: {"hash": "h", "mutants": 4, "statuses": {"1": "killed"}}})])
+        _, night = _stitch([_record(0, 2, {A.ident: {"hash": H, "mutants": 4, "statuses": {"1": "killed"}}})])
         assert night["problems"] == ["no record from slice(s) 1"]
 
     def test_a_slice_its_engine_stopped_stops_the_night_short_and_its_results_still_count(self) -> None:
         state, night = _stitch([
-            _record(0, 2, {A.ident: {"hash": "h", "mutants": 4, "statuses": {"1": "killed"}}}),
+            _record(0, 2, {A.ident: {"hash": H, "mutants": 4, "statuses": {"1": "killed"}}}),
             _record(1, 2, {}, stopped="engine")])
         assert night["problems"] == ["slice 1: stopped by the engine"]
         assert state["units"][A.ident]["statuses"] == {"1": "killed"}
 
     def test_a_night_that_decides_nothing_stops_short_and_survivors_never_do(self) -> None:
         state = _state(f=4)
-        _, night = _stitch([_record(0, 1, {A.ident: {"hash": "h", "mutants": 4, "statuses": {}}})],
+        _, night = _stitch([_record(0, 1, {A.ident: {"hash": H, "mutants": 4, "statuses": {}}})],
                            state, jobs=1)
         assert night["problems"] == ["the night decided no mutant and counted no function"]
-        _, night = _stitch([_record(0, 1, {B.ident: {"hash": "h", "mutants": 0, "statuses": {}}})],
+        _, night = _stitch([_record(0, 1, {B.ident: {"hash": H, "mutants": 0, "statuses": {}}})],
                            _state(f=4), jobs=1)
         assert night["problems"] == []  # counting a function with no mutant decides it
-        _, night = _stitch([_record(0, 1, {A.ident: {"hash": "h", "mutants": 4,
+        _, night = _stitch([_record(0, 1, {A.ident: {"hash": H, "mutants": 4,
                                                      "statuses": {"1": "survived"}}})], jobs=1)
         assert night["problems"] == []
 
+    def test_a_night_whose_every_slice_failed_keeps_the_state(self) -> None:
+        """A slice whose lane failed records no engine version; a night of
+        them must not read that as a new engine and start every function
+        afresh."""
+        state = _state(f=4)
+        _decide(state, A, [1, 2])
+        failed = _record(0, 1, {}, stopped="lane")
+        failed["engine"] = None
+        kept, night = _stitch([failed], json.loads(json.dumps(state)), jobs=1)
+        assert night["problems"] == ["slice 0: stopped by the lane"]
+        assert kept["engine"] == "3.8.0"
+        assert kept["units"][A.ident] == {"hash": H, "mutants": 4, "statuses": {"1": "killed", "2": "killed"}}
+
+    def test_a_recount_starts_the_function_afresh_and_the_rest_of_the_record_counts(self) -> None:
+        state = _state(f=4, g=5)
+        _decide(state, A, [1, 2])
+        record = _record(0, 1, {A.ident: {"hash": H, "mutants": 3, "statuses": {"3": "killed"}},
+                                B.ident: {"hash": "1" * 16, "mutants": 2, "statuses": {}},
+                                C.ident: {"hash": H, "mutants": 5, "statuses": {"1": "survived"}}})
+        state, night = _stitch([record], state, jobs=1)
+        assert state["units"][A.ident] == {"hash": H, "mutants": 3, "statuses": {"3": "killed"}}
+        assert night["notes"] == [f"{A.ident}: mutmut counts 3 mutants where the state counted 4, "
+                                  "so it starts afresh"]
+        assert night["problems"] == [f"slice 0 ran {B.ident} at code the tree does not hold"]
+        assert state["units"][C.ident]["statuses"] == {"1": "survived"}
+
+    def test_a_new_engine_restarts_the_cycle_and_says_so(self) -> None:
+        state = _state(f=4)
+        _decide(state, A, [1])
+        state["cycle_started"] = "2026-10-01"
+        record = _record(0, 1, {A.ident: {"hash": H, "mutants": 4, "statuses": {"2": "killed"}}})
+        record["engine"] = "3.9.0"
+        state, night = _stitch([record], state, jobs=1)
+        assert state["engine"] == "3.9.0" and state["cycle_started"] == "2026-10-17"
+        assert state["units"][A.ident]["statuses"] == {"2": "killed"}
+        assert night["notes"] == ["mutmut 3.8.0 gave way to 3.9.0: every function starts afresh, "
+                                  "and so does the cycle"]
+
     def test_a_slices_exit_is_two_only_when_it_failed_or_decided_nothing_it_held(self) -> None:
-        decided = {A.ident: {"hash": "h", "mutants": 1, "statuses": {"1": "survived"}}}
+        decided = {A.ident: {"hash": H, "mutants": 1, "statuses": {"1": "survived"}}}
         assert sw.slice_exit(_record(0, 1, decided)) == 0
         assert sw.slice_exit(_record(0, 1, decided, stopped="budget")) == 0
         assert sw.slice_exit(_record(0, 1, {}, planned=0)) == 0
         assert sw.slice_exit(_record(0, 1, {})) == 2
-        whole = _record(0, 1, {B.ident: {"hash": "h", "mutants": 0, "statuses": {}}})
-        whole["planned"] = [{"unit": B.ident, "hash": "h", "numbers": None}]
+        whole = _record(0, 1, {B.ident: {"hash": H, "mutants": 0, "statuses": {}}})
+        whole["planned"] = [{"unit": B.ident, "hash": H, "numbers": None}]
         assert sw.slice_exit(whole) == 0
         assert sw.slice_exit(_record(0, 1, decided, stopped="engine")) == 2
 
     def test_the_calibration_follows_what_the_mutants_cost(self) -> None:
         """Ten mutants estimated at 2.5 s each took 100 s past the fixed passes:
         the factor moves halfway from 1 to 4."""
-        record = _record(0, 1, {A.ident: {"hash": "h", "mutants": 10,
+        record = _record(0, 1, {A.ident: {"hash": H, "mutants": 10,
                                           "statuses": {str(n): "killed" for n in range(1, 11)}}})
         record["engine_s"] = sw.FIXED_S + 100.0
         state, _ = _stitch([record], jobs=1)
@@ -424,7 +624,7 @@ class TestCycle:
         state = _state()
         _complete(state, {A: 4, B: 3})
         state["units"][C.ident]["mutants"] = 1
-        done = {C.ident: {"hash": "h", "mutants": 1, "statuses": {"1": "killed"}}}
+        done = {C.ident: {"hash": H, "mutants": 1, "statuses": {"1": "killed"}}}
         closed, night = _stitch([_record(0, 1, done)], json.loads(json.dumps(state)), jobs=1)
         assert night["closed"] and closed["cycle"] == 2
         kept, night = _stitch([_record(0, 2, done)], json.loads(json.dumps(state)))
@@ -498,6 +698,29 @@ class TestWorkflow:
         assert budget == sw.DEFAULT_BUDGET_S
         assert budget + 30 * 60 <= job["timeout-minutes"] * 60 <= 6 * 3600
 
+    def test_the_state_is_found_among_this_workflows_own_runs(self) -> None:
+        (step,) = [s for s in self._steps("setup") if s.get("id") == "state"]
+        assert "scripts/mutate_sweep.py find-state" in step["run"] and '--repo-id "$REPO_ID"' in step["run"]
+        assert step["env"]["REPO_ID"] == "${{ github.repository_id }}"
+
+    def test_a_setup_lookup_that_fails_fails_the_step(self) -> None:
+        """bash with pipefail, and the command's output taken into a variable
+        before it is written, so its exit status is never thrown away."""
+        for step in self._steps("setup"):
+            if "run" in step:
+                assert step["shell"] == "bash", step.get("id")
+                first = step["run"].splitlines()[0]
+                assert first.split("=", 1)[1].startswith("$(python3 scripts/mutate_sweep.py "), first
+
+    def test_the_engine_installed_is_uv_locks(self) -> None:
+        import re
+        import tomllib
+
+        lock = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
+        (locked,) = [p["version"] for p in lock["package"] if p["name"] == "mutmut"]
+        (install,) = [s for s in self._steps("sweep") if s.get("name") == "Install dependencies"]
+        assert re.findall(r'"mutmut==([^"]+)"', install["run"]) == [locked]
+
     def test_the_jobs_are_the_setups_matrix_and_one_failing_slice_stops_no_other(self) -> None:
         sweep = self._wf()["jobs"]["sweep"]
         assert sweep["strategy"] == {"fail-fast": False,
@@ -540,6 +763,8 @@ if args[0] == "--version":
     print("mutmut, version 3.8.0")
     sys.exit(0)
 if args[0] == "run":
+    import time
+    time.sleep(float(os.environ.get("FAKE_RUN_SLEEP", "0")))
     failing = os.environ.get("FAKE_COPY_FAILURE", "")
     config = Path("pyproject.toml").read_text(encoding="utf-8")
     if failing and f"--deselect={failing}" not in config:
@@ -547,10 +772,10 @@ if args[0] == "run":
         print(f"FAILED {failing} - FileNotFoundError: x")
         print("failed to collect stats. runner returned 1")
         sys.exit(1)
-    sys.exit(0)
+    sys.exit(int(os.environ.get("FAKE_RUN_EXIT", "0")))
 if args[0] == "results":
     sys.stdout.write((state / "results.txt").read_text(encoding="utf-8"))
-    sys.exit(0)
+    sys.exit(int(os.environ.get("FAKE_RESULTS_EXIT", "0")))
 sys.exit(9)
 '''
 
@@ -592,7 +817,8 @@ def no_git_locators(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _night(repo: Path, tmp_path: Path, n: int, results: str, *, state: Path | None = None,
-           engine: list[str] | None = None) -> tuple[int, dict[str, Any], list[dict[str, Any]]]:
+           engine: list[str] | None = None, budget: float | None = None,
+           ) -> tuple[int, dict[str, Any], list[dict[str, Any]]]:
     fake = tmp_path / f"fake{n}"
     fake.mkdir()
     (fake / "results.txt").write_text(results, encoding="utf-8")
@@ -603,6 +829,7 @@ def _night(repo: Path, tmp_path: Path, n: int, results: str, *, state: Path | No
         code = sw.main(["night", "--slice", "0", "--of", "1", "--repo", str(repo), "--out", str(out),
                         "--workdir", str(tmp_path / f"work{n}"), "--max-children", "2",
                         *(["--state", str(state)] if state else []),
+                        *(["--budget", str(budget)] if budget else []),
                         "--engine", *(engine or [sys.executable, str(tmp_path / "fake_mutmut.py")])])
     finally:
         del os.environ["FAKE_STATE"]
@@ -616,6 +843,14 @@ def _stitch_cli(repo: Path, tmp_path: Path, n: int, state: Path | None) -> tuple
     code = sw.main(["stitch", "--of", "1", "--repo", str(repo), "--slices", str(tmp_path / f"slice{n}"),
                     "--out", str(out), *(["--state", str(state)] if state else [])])
     return code, json.loads((out / sw.STATE_FILE).read_text(encoding="utf-8"))
+
+
+_REAL_RUN_ENGINE = sw.md.run_engine
+
+
+def _quick_stop(*args: Any, **kwargs: Any) -> Any:
+    """``run_engine`` with a one-second grace, so a budget stop is quick."""
+    return _REAL_RUN_ENGINE(*args, **{**kwargs, "grace_s": (1.0, 1.0)})
 
 
 @pytest.mark.usefixtures("no_git_locators")
@@ -667,6 +902,77 @@ class TestEndToEnd:
             "    vera.m.x_f__mutmut_1: killed\n    vera.m.x_g__mutmut_1: killed\n"))
         assert code == 0 and record["dropped_tests"] == ["tests/test_m.py::test_f"]
         assert len([c for c in calls if c["args"][0] == "run"]) == 2
+
+    def test_a_failed_listing_counts_no_function(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Without mutmut's listing there is no evidence of any count: a
+        function taken whole must stay uncounted, not count zero mutants."""
+        monkeypatch.setenv("FAKE_RESULTS_EXIT", "1")
+        code, record, _ = _night(repo, tmp_path, 1, "")
+        assert code == 2 and record["stopped"] == "engine" and record["results"] == {}
+        _, state = _stitch_cli(repo, tmp_path, 1, None)
+        assert {r["mutants"] for r in state["units"].values()} == {None}
+
+    def test_an_empty_listing_from_a_stopped_run_counts_no_function(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A run the budget stopped before mutmut generated a function lists
+        none of its mutants, which is no evidence that it has none."""
+        monkeypatch.setenv("FAKE_RUN_SLEEP", "30")
+        monkeypatch.setattr(sw.md, "run_engine", lambda *a, **k: _quick_stop(*a, **k))
+        monkeypatch.setattr(sw, "FIXED_S", 0)
+        monkeypatch.setattr(sw, "OTHER_RATE_S", 0.01)  # both functions fit the two-second budget
+        code, record, _ = _night(repo, tmp_path, 1, "    vera.m.x_f__mutmut_1: not checked\n", budget=2)
+        assert [p["unit"] for p in record["planned"]] == ["vera/m.py::x_f", "vera/m.py::x_g"]
+        assert record["stopped"] == "budget" and code == 0  # x_f's count is learned
+        assert set(record["results"]) == {"vera/m.py::x_f"}  # x_g: not listed, so not counted
+
+    def test_an_engine_that_failed_before_generating_counts_no_function(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """R86's first repro: the run exits 2 before generating and the
+        listing fails.  The night is red, and the next one plans both
+        functions again."""
+        monkeypatch.setenv("FAKE_RUN_EXIT", "2")
+        monkeypatch.setenv("FAKE_RESULTS_EXIT", "1")
+        code, record, _ = _night(repo, tmp_path, 1, "")
+        assert code == 2 and record["stopped"] == "engine" and record["results"] == {}
+        code, state = _stitch_cli(repo, tmp_path, 1, None)
+        assert code == 2 and {r["mutants"] for r in state["units"].values()} == {None}
+        monkeypatch.delenv("FAKE_RUN_EXIT")
+        monkeypatch.delenv("FAKE_RESULTS_EXIT")
+        _, record, _ = _night(repo, tmp_path, 2, "    vera.m.x_f__mutmut_1: killed\n    vera.m.x_g__mutmut_1: killed\n",
+                              state=tmp_path / "state1")
+        assert [p["unit"] for p in record["planned"]] == ["vera/m.py::x_f", "vera/m.py::x_g"]
+
+    def test_a_failed_listing_after_a_budget_stop_is_the_engines_failure(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """R86's second repro: the run overruns its budget and the listing
+        fails.  That is not a budget stop: the night is red."""
+        monkeypatch.setenv("FAKE_RUN_SLEEP", "30")
+        monkeypatch.setenv("FAKE_RESULTS_EXIT", "1")
+        monkeypatch.setattr(sw.md, "run_engine", lambda *a, **k: _quick_stop(*a, **k))
+        code, record, _ = _night(repo, tmp_path, 1, "", budget=3)
+        assert code == 2 and record["stopped"] == "engine" and record["results"] == {}
+        code, state = _stitch_cli(repo, tmp_path, 1, None)
+        assert code == 2 and {r["mutants"] for r in state["units"].values()} == {None}
+
+    def test_a_status_a_budget_stop_left_stays_undecided(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The night hands its budget stop to the reading of the listing: a
+        `segfault` a stop can leave is not taken from a stopped run."""
+        monkeypatch.setenv("FAKE_RUN_SLEEP", "30")
+        monkeypatch.setattr(sw.md, "run_engine", lambda *a, **k: _quick_stop(*a, **k))
+        monkeypatch.setattr(sw, "FIXED_S", 0)
+        monkeypatch.setattr(sw, "OTHER_RATE_S", 0.01)
+        _, record, _ = _night(repo, tmp_path, 1, (
+            "    vera.m.x_f__mutmut_1: segfault\n    vera.m.x_f__mutmut_2: killed\n"), budget=2)
+        assert record["stopped"] == "budget"
+        assert record["results"]["vera/m.py::x_f"] == {"hash": record["results"]["vera/m.py::x_f"]["hash"],
+                                                       "mutants": 2, "statuses": {"2": "killed"}}
 
     def test_a_failure_of_the_lane_is_a_record_with_exit_two(self, repo: Path, tmp_path: Path) -> None:
         broken = tmp_path / "broken_engine.py"
