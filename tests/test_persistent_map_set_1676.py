@@ -839,6 +839,57 @@ def test_html_attributes_keep_their_order(host: str, tmp_path: Path) -> None:
     assert out == 'z,a,m 1,2,3 <p z="1" a="2" m="3">x</p>\n'
 
 
+def _printing(expr: str) -> str:
+    return f"""\
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{{
+  IO.print({expr});
+  IO.print("\\n")
+}}
+"""
+
+
+#: Values whose maps a host reads through the module's exports, each of
+#: which allocates: a JSON object and an element passed as temporaries, and
+#: maps nested in a JObject or an element (the #708 shape), whose later
+#: siblings the host reaches after an earlier sibling's map was read.
+_HOST_READS: dict[str, tuple[str, str]] = {
+    "json-temporary": (
+        'json_stringify(JObject(map_insert(map_insert(map_new(), "a", JArray([JNumber(1.0), JNumber(2.0)])), "c", JString("s"))))',
+        '{"a":[1,2],"c":"s"}'),
+    "json-nested": (
+        'json_stringify(JObject(map_insert(map_insert(map_new(), "x", JObject(map_insert(map_insert(map_new(), "y", JNumber(1.0)), "v", JArray([JNumber(2.0)])))), "z", JObject(map_insert(map_new(), "w", JArray([JNumber(5.0), JString("t")]))))))',
+        '{"x":{"y":1,"v":[2]},"z":{"w":[5,"t"]}}'),
+    "html-temporary": (
+        'html_to_string(HtmlElement("p", map_insert(map_insert(map_new(), "a", "1"), "b", "2"), [HtmlText("x")]))',
+        '<p a="1" b="2">x</p>'),
+    "html-nested": (
+        'html_to_string(HtmlElement("div", map_insert(map_new(), "id", "d"), [HtmlElement("p", map_insert(map_insert(map_new(), "a", "1"), "b", "2"), [HtmlText("x")]), HtmlElement("q", map_insert(map_new(), "c", "3"), [HtmlText("y")])]))',
+        '<div id="d"><p a="1" b="2">x</p><q c="3">y</q></div>'),
+}
+
+
+@pytest.mark.parametrize("host", ["native", "browser"])
+@pytest.mark.parametrize("shape", list(_HOST_READS))
+def test_a_host_reads_a_map_under_a_collection_at_every_allocation(
+    shape: str, host: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """`json_stringify` and `html_to_string` read each map through
+    `map_keys$ks` and `map_values$v<t>`, which allocate, so under
+    `VERA_EAGER_GC=1` a collection runs inside every read.  The host roots
+    the value it was given for the whole read, and the map and its keys
+    array around each, so nothing a later read reaches is swept."""
+    if host == "browser" and not _HAS_NODE:
+        pytest.skip("Node.js with --experimental-wasm-exnref is not available")
+    expr, expected = _HOST_READS[shape]
+    with monkeypatch.context() as patch:
+        patch.setenv("VERA_EAGER_GC", "1")
+        result = pipeline.compile(_printing(expr), file="reads.vera").result
+    assert result.ok, result.diagnostics
+    assert HOSTS[host](result, tmp_path) == expected + "\n"
+
+
 # =====================================================================
 # The server world: the same transcripts as a request handler's body
 # =====================================================================
@@ -1133,6 +1184,53 @@ def _constant_hash(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(hamt, "_hash_body", lambda cls: ["i64.const 7"])
 
 
+def _assert_one_hash(result: CompileResult) -> None:
+    """The constant hash reached the module: every `$hamt_hash$*` function
+    it carries returns 7, and none reads its key (every real body ends in
+    `$hamt_mix`).  A cell that passes under either hash proves nothing
+    unless the module it ran had the forced one."""
+    found = re.findall(r"\(func \$hamt_hash\$\w.*?(?=\n  \(func |\Z)", result.wat, re.S)
+    assert found, "the module carries no hash function"
+    assert all("i64.const 7" in f and "$hamt_mix" not in f for f in found), found
+
+
+_ONE_HASH = """\
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Map<String, Int> = map_new();
+  let @Map<String, Int> = array_fold(array_range(0, 1000), @Map<String, Int>.0, fn(@Map<String, Int>, @Int -> @Map<String, Int>) effects(pure) { map_insert(@Map<String, Int>.0, string_concat("k", int_to_string(@Int.0)), @Int.0) });
+  let @Int = array_fold(array_range(0, 1000), 0, fn(@Int, @Int -> @Int) effects(pure) {
+    match map_get(@Map<String, Int>.0, string_concat("k", int_to_string(@Int.0))) {
+      Some(@Int) -> if @Int.0 == @Int.1 then { @Int.2 + 1 } else { @Int.2 },
+      None -> @Int.1
+    }
+  });
+  IO.print(int_to_string(map_size(@Map<String, Int>.0)));
+  IO.print(" ");
+  IO.print(int_to_string(@Int.0));
+  IO.print(" ");
+  IO.print(match map_get(@Map<String, Int>.0, "absent") { Some(@Int) -> "found", None -> "none" });
+  IO.print("\\n")
+}
+"""
+
+
+def test_a_thousand_string_keys_on_one_hash_are_all_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The hash is unseeded (spec §9.4.3, #1736), so keys an adversary
+    chooses can share one: 1,000 `String` keys forced onto one hash all land in one
+    collision node, which each insert searches and copies whole.  The
+    inserts cost O(n²) (17 ms here, 0.6 ms with the hash; 1.3 s at 4,000),
+    and every lookup, and an absent key's, is right."""
+    _constant_hash(monkeypatch)
+    result = pipeline.compile(_ONE_HASH, file="one_hash.vera").result
+    assert result.ok, result.diagnostics
+    _assert_one_hash(result)
+    assert _native(result) == "1000 1000 none\n"
+
+
 def test_keys_that_share_every_hash_bit_are_all_kept(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1142,6 +1240,7 @@ def test_keys_that_share_every_hash_bit_are_all_kept(
     source = cell_program("Int", "Int", 40)
     result = pipeline.compile(source, file="collide.vera").result
     assert result.ok, result.diagnostics
+    _assert_one_hash(result)
     assert _native(result) == expected_transcript("Int", "Int", 40)
     header, mem = _run_pure(pipeline.compile(_CANONICAL, file="c.vera").result)
     assert isinstance(header, int)
@@ -1162,6 +1261,7 @@ def test_every_operation_is_the_same_when_every_key_collides(
     _constant_hash(monkeypatch)
     result = pipeline.compile(cell_program(key, value, n), file="collide.vera").result
     assert result.ok, result.diagnostics
+    _assert_one_hash(result)
     assert _native(result) == expected_transcript(key, value, n)
 
 

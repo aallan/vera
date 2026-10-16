@@ -291,6 +291,8 @@ Map is an opaque built-in type: a persistent hash trie in the module's own heap,
 
 Keys compare by SameValueZero. A `Float64` key is stored in a canonical form, `-0.0` as `0.0` and every NaN as one NaN, so `-0.0` and `0.0` are one key and a NaN key can be found again; a `String` key compares by content; any other key by its value. A key's hash is the `Hash` ability's value for its type (Section 9.8.1), its bits mixed before the trie reads them, so no comparison the trie makes requires `Ord`.
 
+The hash is not seeded. A `String` key hashes by FNV-1a over its UTF-8 bytes, and every key's hash then passes through MurmurHash3's 64-bit finalizer, a bijective mixer, so two `String` keys share a hash exactly when their 64-bit FNV-1a values are equal, and no two keys of another type ever share one. Keys that share a hash share one collision node below the trie's last branch, which an operation searches and copies whole, so an insert into it costs O(n) in the n keys it holds. A program that builds a `Map<String, _>` from keys an adversary chooses — the request headers `vera serve` builds into a `Request`, the members of a JSON text it parses — pays that cost on keys chosen to collide: measured natively with every key forced onto one hash, 4,000 inserts take 1.3 s, against 10 ms with the hash, and every lookup finds its key ([#1736](https://github.com/aallan/vera/issues/1736)).
+
 `map_keys` and `map_values` return a map's keys and values in insertion order, the two in step: a key inserted again keeps its first position and takes its new value, and a removed key loses its position, so inserting it again puts it last. A `JObject`'s members are serialized in this order (Section 9.7.1).
 
 **Operations:**

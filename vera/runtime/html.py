@@ -20,6 +20,7 @@ from vera.runtime.heap import (
     _read_i32,
     _read_wasm_string,
     _ShadowGuard,
+    _rooted_read,
     _write_i32,
 )
 
@@ -235,10 +236,10 @@ def register_html(linker: wasmtime.Linker, ops_used: set[str]) -> None:
         def host_html_to_string(
             caller: wasmtime.Caller, ptr: int,
         ) -> tuple[int, int]:
-            node = read_html(
+            node = _rooted_read(caller, ptr, lambda: read_html(
                 caller, ptr, _read_i32,
                 _read_wasm_string, _decode_attrs,
-            )
+            ))
             text = _html_to_string_py(node)
             return _alloc_string(caller, text)
 
@@ -256,10 +257,10 @@ def register_html(linker: wasmtime.Linker, ops_used: set[str]) -> None:
             caller: wasmtime.Caller,
             node_ptr: int, sel_ptr: int, sel_len: int,
         ) -> tuple[int, int]:
-            node = read_html(
+            node = _rooted_read(caller, node_ptr, lambda: read_html(
                 caller, node_ptr, _read_i32,
                 _read_wasm_string, _decode_attrs,
-            )
+            ))
             selector = _read_wasm_string(caller, sel_ptr, sel_len)
             matches = _html_query_py(node, selector)
             count = len(matches)
@@ -308,10 +309,10 @@ def register_html(linker: wasmtime.Linker, ops_used: set[str]) -> None:
         def host_html_text(
             caller: wasmtime.Caller, ptr: int,
         ) -> tuple[int, int]:
-            node = read_html(
+            node = _rooted_read(caller, ptr, lambda: read_html(
                 caller, ptr, _read_i32,
                 _read_wasm_string, _decode_attrs,
-            )
+            ))
             text = _html_text_py(node)
             return _alloc_string(caller, text)
 

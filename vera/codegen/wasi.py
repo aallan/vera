@@ -3580,7 +3580,8 @@ def _serve_handle(
     local.set $rw
     ;; response headers: read through the module's map_keys$ks and
     ;; map_values$vs (#1676), which allocate, so the response and the
-    ;; keys array stay rooted until both arrays are read
+    ;; keys array stay rooted until the second call returns; the loop
+    ;; below writes only the arena, so it reads both arrays unrooted
     local.get $resp
     call $shadow_push ;; root: response
     local.get $rw

@@ -11,7 +11,8 @@ functions.  Extracted from `execute()` in `vera/codegen/api.py` (#421).
 from __future__ import annotations
 
 import struct
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
+from typing import TypeVar
 
 import wasmtime
 
@@ -547,27 +548,49 @@ def _map_items(
 ) -> "list[tuple[str, object]]":
     """The entries of the ``Map<String, V>`` at *map_ptr*, in its order: a
     ``String`` value (*value_tag* ``s``) as a ``str``, a heap value (``b``)
-    as its pointer.  The caller keeps *map_ptr* rooted; each array the
-    module returns is read before the next call can collect it."""
-    keys_ptr, count = _map_export(caller, "map_keys$ks")(caller, map_ptr)
-    keys = [
-        _read_wasm_string(
-            caller, _read_i32(caller, keys_ptr + 8 * i),
-            _read_i32(caller, keys_ptr + 8 * i + 4))
-        for i in range(count)
-    ]
-    vals_ptr, _ = _map_export(caller, f"map_values$v{value_tag}")(caller, map_ptr)
-    values: list[object]
-    if value_tag == "s":
-        values = [
+    as its pointer.  Each export allocates, so the map, and the keys array
+    the first returns, stay rooted across both calls; whatever else reaches
+    the map is its reader's to root (``_rooted_read``)."""
+    with _ShadowGuard(caller) as guard:
+        guard.push(map_ptr)
+        keys_ptr, count = _map_export(caller, "map_keys$ks")(caller, map_ptr)
+        guard.push(keys_ptr)
+        keys = [
             _read_wasm_string(
-                caller, _read_i32(caller, vals_ptr + 8 * i),
-                _read_i32(caller, vals_ptr + 8 * i + 4))
+                caller, _read_i32(caller, keys_ptr + 8 * i),
+                _read_i32(caller, keys_ptr + 8 * i + 4))
             for i in range(count)
         ]
-    else:
-        values = [_read_i32(caller, vals_ptr + 4 * i) for i in range(count)]
+        vals_ptr, _ = _map_export(caller, f"map_values$v{value_tag}")(caller, map_ptr)
+        values: list[object]
+        if value_tag == "s":
+            values = [
+                _read_wasm_string(
+                    caller, _read_i32(caller, vals_ptr + 8 * i),
+                    _read_i32(caller, vals_ptr + 8 * i + 4))
+                for i in range(count)
+            ]
+        else:
+            values = [_read_i32(caller, vals_ptr + 4 * i) for i in range(count)]
     return list(zip(keys, values, strict=True))
+
+
+_T = TypeVar("_T")
+
+
+def _rooted_read(
+    caller: wasmtime.Caller, ptr: int, read: "Callable[[], _T]",
+) -> "_T":
+    """``read()``, with the value at *ptr* rooted for the whole of it.
+
+    The JSON and HTML readers reach each map through the module's
+    ``map_keys$ks`` and ``map_values$v<t>``, which allocate (#1676), so a
+    collection can run inside any one map's read; the value is rooted so
+    that it cannot sweep a sibling the walk reaches next, whether or not
+    the call site rooted the argument."""
+    with _ShadowGuard(caller) as guard:
+        guard.push(ptr)
+        return read()
 
 
 def _alloc_jobject_map(

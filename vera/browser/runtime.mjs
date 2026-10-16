@@ -2245,20 +2245,27 @@ function buildImportObject(module, moduleBytes) {
   // pointer.  The caller keeps mapPtr rooted; each array the module
   // returns is read before the next call can collect it.
   function mapEntries(mapPtr, vt) {
-    const [kp, count] = mapExport('map_keys$ks')(mapPtr);
-    const keys = [];
-    for (let i = 0; i < count; i++) {
-      keys.push(readString(readI32(kp + i * 8), readI32(kp + i * 8 + 4)));
-    }
-    const [vp] = mapExport('map_values$v' + vt)(mapPtr);
-    const pairs = [];
-    for (let i = 0; i < count; i++) {
-      const v = vt === 's'
-        ? readString(readI32(vp + i * 8), readI32(vp + i * 8 + 4))
-        : readI32(vp + i * 4) >>> 0;
-      pairs.push([keys[i], v]);
-    }
-    return pairs;
+    // Each export allocates (#1676): the map, and the keys array the first
+    // returns, stay rooted across both calls; whatever else reaches the
+    // map is its reader's to root (``gcRooted`` at each entry point).
+    return gcGuard(() => {
+      gcShadowPush(mapPtr);
+      const [kp, count] = mapExport('map_keys$ks')(mapPtr);
+      gcShadowPush(kp);
+      const keys = [];
+      for (let i = 0; i < count; i++) {
+        keys.push(readString(readI32(kp + i * 8), readI32(kp + i * 8 + 4)));
+      }
+      const [vp] = mapExport('map_values$v' + vt)(mapPtr);
+      const pairs = [];
+      for (let i = 0; i < count; i++) {
+        const v = vt === 's'
+          ? readString(readI32(vp + i * 8), readI32(vp + i * 8 + 4))
+          : readI32(vp + i * 4) >>> 0;
+        pairs.push([keys[i], v]);
+      }
+      return pairs;
+    });
   }
 
   // ── Decimal host imports ──────────────────────────────────────
@@ -3273,7 +3280,10 @@ function buildImportObject(module, moduleBytes) {
       // separators, insertion-ordered keys, ECMAScript number
       // rendering, and a refusal on a non-finite number rather than the
       // silent ``null`` bare JSON.stringify would substitute.
-      return allocString(stringifyCanonical(readJson(ptr)));
+      // #1676: the read reaches each object's members through the
+      // module's map exports, which allocate, so the value stays rooted
+      // for the whole read.
+      return allocString(stringifyCanonical(gcRooted(ptr, () => readJson(ptr))));
     };
   }
 
@@ -3748,7 +3758,8 @@ function buildImportObject(module, moduleBytes) {
 
   if (needed.has("html_to_string")) {
     imports.vera.html_to_string = (ptr) => {
-      const node = readHtml(ptr);
+      // #1676: rooted for the whole read, since the map exports allocate.
+      const node = gcRooted(ptr, () => readHtml(ptr));
       const text = htmlToString(node);
       return allocString(text);
     };
@@ -3756,7 +3767,8 @@ function buildImportObject(module, moduleBytes) {
 
   if (needed.has("html_query")) {
     imports.vera.html_query = (nodePtr, selPtr, selLen) => {
-      const node = readHtml(nodePtr);
+      // #1676: rooted for the whole read, since the map exports allocate.
+      const node = gcRooted(nodePtr, () => readHtml(nodePtr));
       const selector = readString(selPtr, selLen);
       const matches = htmlQuery(node, selector);
       const count = matches.length;
@@ -3776,7 +3788,8 @@ function buildImportObject(module, moduleBytes) {
 
   if (needed.has("html_text")) {
     imports.vera.html_text = (ptr) => {
-      const node = readHtml(ptr);
+      // #1676: rooted for the whole read, since the map exports allocate.
+      const node = gcRooted(ptr, () => readHtml(ptr));
       return allocString(htmlText(node));
     };
   }
