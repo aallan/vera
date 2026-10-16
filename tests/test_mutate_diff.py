@@ -830,13 +830,37 @@ class TestBudget:
         assert run.stopped == "budget"
         assert run.elapsed_s < 30
 
+    # Each step of the escalation is pinned by the signal that ends the child,
+    # and the child says "ready" once its handlers are in place: a budget
+    # shorter than its start-up would test the interrupt instead.
+    _IGNORING = ("import signal, time; {ignore}; print('ready', flush=True); time.sleep(60)")
+
+    @pytest.mark.skipif(os.name != "posix", reason="the escalation from an interrupt is POSIX's; "
+                        "elsewhere the run is terminated at once")
     def test_a_run_that_ignores_the_interrupt_is_terminated(self, tmp_path: Path) -> None:
-        code = ("import signal, time; signal.signal(signal.SIGINT, signal.SIG_IGN); "
-                "print('ready', flush=True); time.sleep(60)")
-        run = md.run_engine([sys.executable, "-c", code], cwd=tmp_path, budget_s=1,
-                            log_path=tmp_path / "log", grace_s=(1, 5))
+        import signal
+
+        code = self._IGNORING.format(ignore="signal.signal(signal.SIGINT, signal.SIG_IGN)")
+        run = md.run_engine([sys.executable, "-c", code], cwd=tmp_path, budget_s=3,
+                            log_path=tmp_path / "log", grace_s=(1, 20))
         assert run.stopped == "budget"
-        assert run.elapsed_s < 30
+        assert "ready" in (tmp_path / "log").read_text(encoding="utf-8")
+        assert run.returncode == -signal.SIGTERM
+        assert run.elapsed_s < 20
+
+    @pytest.mark.skipif(os.name != "posix", reason="the escalation from an interrupt is POSIX's; "
+                        "elsewhere the run is terminated at once")
+    def test_a_run_that_ignores_the_terminate_too_is_killed(self, tmp_path: Path) -> None:
+        import signal
+
+        code = self._IGNORING.format(
+            ignore="signal.signal(signal.SIGINT, signal.SIG_IGN); signal.signal(signal.SIGTERM, signal.SIG_IGN)")
+        run = md.run_engine([sys.executable, "-c", code], cwd=tmp_path, budget_s=3,
+                            log_path=tmp_path / "log", grace_s=(1, 1))
+        assert run.stopped == "budget"
+        assert "ready" in (tmp_path / "log").read_text(encoding="utf-8")
+        assert run.returncode == -signal.SIGKILL
+        assert run.elapsed_s < 20
 
 
 # ---------------------------------------------------------------------------
@@ -1025,6 +1049,20 @@ class TestEndToEnd:
         assert code == 0 and record["stopped"] is None
         (unit,) = record["functions"]
         assert unit["counts"] == {"no tests": 1} and unit["observable"] is False
+
+    def test_a_mutant_the_lane_cannot_place_stops_the_run_short(
+        self, repo: Path, tmp_path: Path,
+    ) -> None:
+        """In the narrowed tree every mutant mutmut reports belongs to a
+        changed function; one that does not (here a survivor of `other`,
+        which the diff leaves alone) means the mapping or the narrowing went
+        wrong, so the diff is not decided, whatever the table shows."""
+        results = "    vera.m.x_kept__mutmut_1: killed\n    vera.m.x_other__mutmut_1: survived\n"
+        code, record, _ = _main(repo, tmp_path, results)
+        assert code == 2 and record["stopped"] == "unmapped"
+        assert record["outside_diff"] == ["vera.m.x_other__mutmut_1"]
+        (unit,) = record["functions"]
+        assert unit["counts"] == {"killed": 1}
 
     def test_an_engine_failure_stops_the_run_short(self, repo: Path, tmp_path: Path) -> None:
         code, record, _ = _main(repo, tmp_path, "    vera.m.x_kept__mutmut_1: not checked\n",

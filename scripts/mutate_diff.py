@@ -38,8 +38,9 @@ Outputs: a table per function on stdout (and in ``--summary``, the job
 summary in CI), the survivors' ``mutmut show`` diffs, and a JSON record
 (``--json``).  The exit code is 0 when every mutant of the diff is killed or
 timed out, 1 when one survives, and 2 when the run stopped short: the budget
-ran out, the engine failed, or a mutant was left undecided (``not checked``,
-``suspicious``, ``segfault``, interrupted).  A run that cannot finish says
+ran out, the engine failed, a mutant was left undecided (``not checked``,
+``suspicious``, ``segfault``, interrupted), or mutmut reported a mutant of a
+function the lane did not map to the diff.  A run that cannot finish says
 so; it never passes.  A function no in-process test reaches has every
 mutant ``no tests``: it is reported as not observable in process, the rule
 MUTATION.md states for ``cli.py``, and does not fail the run.
@@ -789,8 +790,9 @@ def render(record: Mapping[str, Any]) -> str:
         if item["deleted"]:
             notes.append(f"`{item['path']}`: deleted " + ", ".join(f"`{q}`" for q in item["deleted"]))
     if record["outside_diff"]:
-        notes.append(f"{len(record['outside_diff'])} mutant(s) reported for functions the diff "
-                     "does not change, left out of the table")
+        names = ", ".join(f"`{n}`" for n in record["outside_diff"][:10])
+        notes.append(f"{len(record['outside_diff'])} mutant(s) mutmut reported for functions the "
+                     f"lane did not map to the diff, which stops the run short: {names}")
     if record["extra_tests"]:
         notes.append("the pull request's own test files, added to the selection: "
                      + ", ".join(f"`{t}`" for t in record["extra_tests"]))
@@ -824,6 +826,9 @@ def _outcome(code: int, rows: Sequence[UnitResult], stopped: str | None) -> str:
         return "Incomplete: the budget ran out before every mutant was decided."
     if stopped == "engine":
         return "Incomplete: the engine stopped before every mutant was decided."
+    if stopped == "unmapped":
+        return ("Incomplete: mutmut reported mutants of functions the lane did not map to "
+                "the diff, so the diff is not decided.")
     return "Incomplete: mutants of the diff were left undecided."
 
 
@@ -980,6 +985,10 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
             results = {name: "no tests" for name in results}
         rows = tally(mutable, results)
         record["outside_diff"] = outside_units(mutable, results)
+        if record["outside_diff"]:
+            # In the narrowed tree every mutant belongs to a changed unit; one
+            # that does not means the mapping or the narrowing went wrong.
+            stopped = stopped or "unmapped"
         for row in rows:
             for name in row.survivors:
                 shown = subprocess.run([*engine, "show", name], cwd=tree, capture_output=True,
