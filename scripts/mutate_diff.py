@@ -43,7 +43,7 @@ diffs, and a JSON record (``--json``) that lists every survivor.
 
 The exit code is 0 when no mutant of the diff survives and none is left
 undecided, the headline saying whether every mutant was killed or timed out
-or which functions no in-process test reaches; 1 when one survives; and 2
+or how many functions no in-process test reaches; 1 when one survives; and 2
 when the run stopped short: the budget ran out, the engine failed, a mutant
 was left undecided (``not checked``, ``suspicious``, ``segfault``,
 interrupted), or mutmut reported a mutant of a function the lane did not
@@ -975,8 +975,11 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
     base = _git(repo, "rev-parse", "--verify", f"{args.base}^{{commit}}").strip()
     head = _git(repo, "rev-parse", "--verify", f"{args.head}^{{commit}}").strip()
     merge_base = _git(repo, "merge-base", base, head).strip()
+    # The prefixes are named because parse_diff reads them, and a developer's
+    # git config can drop them (`diff.noprefix`).
     diff = _git(repo, "-c", "core.quotePath=false", "diff", "-U0", "--no-color",
-                "--no-ext-diff", "-M", merge_base, head, "--", "vera/")
+                "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "-M",
+                merge_base, head, "--", "vera/")
     verdicts: list[FileVerdict] = []
     for change in parse_diff(diff):
         base_src = _git(repo, "show", f"{merge_base}:{change.old_path}") if change.old_path else None

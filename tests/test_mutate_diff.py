@@ -850,6 +850,14 @@ class TestOutcome:
         assert md.outcome(0, rows, None) == (
             "Pass: no mutant survived; 1 mutant(s) in 1 function(s) not observable in process.")
 
+    def test_a_mutant_the_engine_skipped(self) -> None:
+        """mutmut 3.8 assigns no mutant the `skipped` status (exit code 34),
+        so the clause is pinned on a synthetic row."""
+        rows = self._rows({f"{F}1": "killed", f"{F}2": "skipped"}, "x_free")
+        assert md.exit_code(rows, stopped=None) == 0
+        assert md.outcome(0, rows, None) == (
+            "Pass: no mutant survived; 1 mutant(s) skipped by the engine.")
+
     def test_a_function_with_no_mutant(self) -> None:
         rows = self._rows({f"{F}1": "killed"}, "x_free", "x_bare")
         assert md.outcome(0, rows, None) == (
@@ -1047,8 +1055,9 @@ def _main(repo: Path, tmp_path: Path, results: str, run_exit: int = 0,
         ])
     finally:
         del os.environ["FAKE_STATE"], os.environ["FAKE_RUN_EXIT"], os.environ["FAKE_RUN_OUTPUT"]
-    calls = [json.loads(line) for line in
-             (state / "calls.jsonl").read_text(encoding="utf-8").splitlines()]
+    log = state / "calls.jsonl"
+    calls = ([json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+             if log.exists() else [])
     return code, json.loads(out_json.read_text(encoding="utf-8")), calls
 
 
@@ -1139,6 +1148,16 @@ class TestEndToEnd:
         assert record["outside_diff"] == ["vera.m.x_other__mutmut_1"]
         (unit,) = record["functions"]
         assert unit["counts"] == {"killed": 1}
+
+    def test_a_developers_diff_prefix_config_does_not_change_the_mapping(
+        self, repo: Path, tmp_path: Path,
+    ) -> None:
+        """`diff.noprefix` drops the `a/` and `b/` the diff parse reads, so the
+        lane names its prefixes on the `git diff` call."""
+        _git(repo, "config", "diff.noprefix", "true")
+        code, record, _ = _main(repo, tmp_path, "    vera.m.x_kept__mutmut_1: killed\n")
+        assert code == 0
+        assert [f["qualname"] for f in record["functions"]] == ["kept"]
 
     def test_a_hung_results_call_stops_the_run_short(
         self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
