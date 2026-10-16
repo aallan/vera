@@ -1,6 +1,6 @@
 # History
 
-How the Vera compiler was built, from initial commit through the instruments of Stage 21, across 152 active development days.
+How the Vera compiler was built, from initial commit through the hosts and the fold of Stage 23, across 158 active development days.
 
 Vera was developed in an interleaved spiral — each phase added a complete compiler layer with tests, documentation, and working examples before moving to the next. The compiler was built by a single developer working with Claude Code, with CodeRabbit providing AI code review on pull requests from v0.0.80 onwards. The entire project — language design, specification, compiler, test suite, documentation, website — was built from scratch starting 22 February 2026.
 
@@ -29,7 +29,9 @@ Version rows follow one rule: one sentence, at most one issue link.  [CHANGELOG.
 | 17 | 4 Jul | The v0.1.0 bug burndown | v0.1.0 |
 | 18 | 8 Jul | The visual documentation pass | v0.1.1 |
 | 19 + 20 | 9 Jul – 28 Sep | Verification completeness + single source (dual-threaded) | v0.1.2–v0.2.0 |
-| 21 | 9–10 Oct | Instruments and truth | v0.2.1 |
+| 21 | 9–13 Oct | Instruments and truth | v0.2.1–v0.2.2 |
+| 22 | 13–15 Oct | `Nat` and the lowering boundary | v0.2.3 |
+| 23 | 15–16 Oct | Hosts and the fold | v0.2.4 |
 
 ---
 
@@ -503,6 +505,16 @@ v0.2.3 made `Nat` the non-negative i64 that spec §2.2 defines, where the compil
 |---------|------|-------------|
 | v0.2.3 | 15 Oct | **`Nat` and the lowering boundary** — `Nat` the non-negative i64 and every literal an `Int`, what code generation cannot lower refused at check, effect operations held to their row, short-circuit `&&`, `\|\|` and `==>`, nested patterns read to full depth, and the open bugs consolidated by mechanism. |
 
+## Stage 23: Hosts and the fold (15–16 October)
+
+*One source where there were many.*
+
+v0.2.4 gave the host bindings and the tree walks one source each.  The built-in registry, `vera/builtins.py`, holds every built-in function as one record and every host import as one row, which the checker, code generation, the Python host, the browser runtime, the WASI target's refusals and spec §9's signature tables read, so a host operation is added in one row and implemented once per host; `IO.read_bytes` and `IO.write_bytes` were added that way, beside four conversions between strings, bytes and Base64 compiled in place.  `Map` and `Set` became persistent hash tries in the module's own code, which took their operations off every host and a fold of `map_insert` over 10,000 keys from 50.4 s to 41 ms natively.  One fold, `vera/fold.py`, carries the fourteen walkers the walker-coverage gate guarded, so the gate went, and compiled WAT stayed byte-identical over the corpus.  Mutation testing runs over a pull request's diff, and over all of `vera/` a slice a night.  The verifier assumes a call's facts only where its arguments fit the callee's parameters, a destructuring `let` is checked as the constructor pattern it names, and the collector marks a heap of any width.  The program generator, the stage's third source, carries over to v0.2.5.  The open `bug` issues numbered 33 at v0.2.3's cut; the cycle's fixes closed five, and it filed seventeen with `bug`, two of which moved to `testing` and `ci`; the day's consolidation closed fourteen `bug` issues into their class issues as instances, opening [#1744](https://github.com/aallan/vera/issues/1744) to hold two of them, so 30 are open.
+
+| Version | Date | What shipped |
+|---------|------|-------------|
+| v0.2.4 | 16 Oct | **Hosts and the fold** — every built-in one registry record and every host import bound from its row, `Map` and `Set` as persistent hash tries in the module's own code, bytes in, out and through, one fold over the AST with the walker-coverage gate retired, mutation testing over a pull request's diff and over all of `vera/` by night, a call's facts assumed only where its arguments fit, a destructuring `let` checked as the pattern it names, and a collector that marks a heap of any width. |
+
 ---
 
 ## By the numbers
@@ -522,4 +534,4 @@ Ten releases, chosen for the capability each one unlocked rather than even spaci
 | Spec chapters | 7 | 10 | 12 | 13 | 13 | 13 | 13 | 14 | 14 | 14 |
 | Python coverage | — | — | 90% | 96% | 95% | 95% | 95% | 95% | 95% | 95% |
 
-Total: **3,000+ commits, 213 tagged releases, 152 active development days.**
+Total: **3,000+ commits, 216 tagged releases, 158 active development days.**

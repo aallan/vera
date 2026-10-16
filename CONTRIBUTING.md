@@ -162,7 +162,7 @@ CI runs, in addition: the full suite, in the Linux and Windows shards and on eve
 
 If you modify documentation sources (SKILL.md, AGENTS.md, FAQ.md, LSP_SERVER.md, `vera/errors.py`, `vera/grammar.lark`, or `docs/index.html`), the `site-assets` hook will regenerate `docs/` files via `scripts/build_site.py`. The CI also runs `scripts/check_site_assets.py` to verify freshness.
 
-`docs/index.md` is a special case: it is not derived from `docs/index.html` but written out by `build_index_md()` in `scripts/build_site.py`, so an edit to the landing page's substance has to be made in both places. `check_site_assets.py` compares the load-bearing facts across the pair — benchmark version strings, problem and model counts, the results table, the editor names — and fails when they diverge or when one of them can no longer be located.
+`docs/index.md` is a special case: it is not derived from `docs/index.html` but written out by `build_index_md()` in `scripts/build_site.py`, so an edit to the landing page's substance has to be made in both places. `check_site_assets.py` compares the load-bearing facts across the pair — benchmark version strings, problem and model counts, the results table, the editor names, the status paragraph's counts of built-in functions, conformance programs and examples — and fails when they diverge or when one of them can no longer be located.
 
 ### Pre-push hook: CHANGELOG enforcement
 

@@ -24,7 +24,9 @@ Fix stale assets by running:
 
 Fix a coherence failure by hand, in ``build_index_md()`` — the Markdown
 companion is what agents fetch via ``rel="alternate"`` and ``llms.txt``,
-so a fact that has moved on in the HTML has to move on there too.
+so a fact that has moved on in the HTML has to move on there too.  The
+status paragraph's counts run the other way: ``build_index_md()`` measures
+them from the tree, so a count is fixed in ``docs/index.html``.
 """
 
 from __future__ import annotations
@@ -104,6 +106,11 @@ _PROSE_FACTS: tuple[_Fact, ...] = (
     _Fact("benchmark model count", r"\b(\w+) models, \w+ providers\b"),
     _Fact("benchmark provider count", r"\b\w+ models, (\w+) providers\b"),
     _Fact("models writing perfect Vera", r"\b(\w+) of \w+ frontier models\b"),
+    # The status paragraph's counts: build_index_md() writes them from the
+    # tree, and docs/index.html carries them by hand.
+    _Fact("built-in function count", r"\b(\d+) built-in functions\b"),
+    _Fact("conformance program count", r"\b(\d+)-program conformance suite\b"),
+    _Fact("worked example count", r"\b(\d+) worked examples\b"),
 )
 
 # Editor names, and every spelling each file uses for them.  Compared as a
@@ -402,7 +409,8 @@ def main() -> int:
             print(
                 f"ERROR: {len(incoherent)} landing-page fact(s) diverge"
                 f" between docs/index.html and docs/index.md"
-                f" (fix build_index_md() in scripts/build_site.py):"
+                f" (fix build_index_md() in scripts/build_site.py, or"
+                f" docs/index.html for a count it measures from the tree):"
             )
             for i in incoherent:
                 print(f"  {i}")

@@ -158,7 +158,7 @@ handle[State<Int>](@Int = 0) {
 }
 ```
 
-> **Status: Partially implemented.** Code generation compiles handlers only for `State<T>` and `Exn<E>`, and a handler for any other effect, a user-declared one included, is refused at check where it is written (E340). Handlers for the other effects are tracked in [#372](https://github.com/aallan/vera/issues/372).
+> **Status: Partially implemented.** Code generation compiles handlers only for `State<T>` and `Exn<E>`, and a handler for any other effect, a user-declared one included, is refused at check where it is written (E340). Handlers for the other effects are tracked in [#370](https://github.com/aallan/vera/issues/370).
 
 ### 7.5.1 Handler Syntax
 

@@ -7,6 +7,8 @@ import re
 from datetime import date
 from pathlib import Path
 
+import pytest
+
 
 # ---------------------------------------------------------------------------
 # Import _abs_links from the script directly (it lives in scripts/, not in
@@ -656,6 +658,56 @@ def test_fact_coherence_conflicting_values_within_one_file_is_caught(tmp_path):
     assert "VeraBench version" in joined
     assert "9.9.9" in joined
     assert str(md) in joined
+
+
+# The status paragraph's three counts.  `build_index_md()` writes them into
+# docs/index.md from the tree, and docs/index.html carries them by hand, so
+# the HTML's copy is the one that drifts: it said 164, 269 and 43 while the
+# tree held 168, 272 and 44.
+_STATUS_COUNTS = (
+    ("built-in function count", r"\b\d+ built-in functions\b", "{} built-in functions"),
+    (
+        "conformance program count",
+        r"\b\d+-program conformance suite\b",
+        "{}-program conformance suite",
+    ),
+    ("worked example count", r"\b\d+ worked examples\b", "{} worked examples"),
+)
+
+
+@pytest.mark.parametrize("side", ["html", "md"])
+@pytest.mark.parametrize(
+    ("label", "pattern", "template"),
+    _STATUS_COUNTS,
+    ids=[label for label, _, _ in _STATUS_COUNTS],
+)
+def test_fact_coherence_status_count_bump_is_caught(
+    tmp_path, side, label, pattern, template
+):
+    """A status-paragraph count changed in one file names the fact, the new
+    value and both files."""
+    html, md = _landing_pair(tmp_path)
+    _sub(html if side == "html" else md, pattern, template.format(9999))
+    errors = _check.check_fact_coherence(html, md)
+    joined = _joined(errors)
+    assert errors, f"a changed {label} must fail the gate"
+    assert f"{label} differs" in joined
+    assert "9999" in joined
+    assert str(html) in joined
+    assert str(md) in joined
+
+
+def test_fact_coherence_missing_status_counts_is_extraction_failure(tmp_path):
+    """Rewording the HTML's status paragraph so no count is found fails the
+    gate once per count, rather than switching the three checks off."""
+    html, md = _landing_pair(tmp_path)
+    _sub(html, r"A complete compiler with .*? under the MIT licence\.", "", re.DOTALL)
+    errors = _check.check_fact_coherence(html, md)
+    joined = _joined(errors)
+    for label, _, _ in _STATUS_COUNTS:
+        assert f"{label}: not found in {html}" in joined, joined
+
+
 def _last_md_bench_row(md):
     """Locate the final data row of the Markdown benchmark table.
 
