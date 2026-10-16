@@ -10,8 +10,7 @@ claim — yet the `Diagnostic` dataclass defaults `rationale`/`fix`/
 compiles and ships silently.
 
 This script makes "is every diagnostic fully tagged?" a mechanically
-checkable contract, mirroring `scripts/check_walker_coverage.py`
-(#597).  It AST-parses every `Diagnostic(...)` constructor and every
+checkable contract.  It AST-parses every `Diagnostic(...)` constructor and every
 `self._error(...)` / `self._warning(...)` call under `vera/` and fails
 if a required field is missing.  It also validates that every present
 `spec_ref` resolves to a real spec section/chapter, that every literal

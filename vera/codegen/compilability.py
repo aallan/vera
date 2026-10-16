@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from vera import ast
+from vera import ast, fold
 from vera.lowering import (
     contract_exprs,
     effect_row_entry_refusal,
@@ -19,7 +19,6 @@ from vera.lowering import (
 from vera.narrowing import MEMORY_EFFECTS
 from vera.monomorphize import mangle_type_name
 from vera.wasm.helpers import CellNames
-from vera.wasm.async_fusion import fused_async_target
 
 MAX_CELL_FAMILY_SYMBOL = 4096
 """Longest mangled State/Exn cell family symbol the compiler will emit.
@@ -442,162 +441,20 @@ class CompilabilityMixin:
         `assume`, or in a function it drops) declares nothing (#735).  What
         the walk still does is reach every closure, whose signature's
         boundary-guard predicates `_scan_anon_fn_signature` derives, the
-        derivation that reports E617 and E618.
+        derivation that reports E618 (E617 is reported where a guard is
+        emitted).
 
-        # WALKER_COVERAGE: (#597 — every Expr subclass below has a
-        # disposition; check_walker_coverage.py enforces completeness.)
-        #
-        # Handled (recurses into sub-exprs):
-        #   QualifiedCall     → recurses into args
-        #   FnCall            → recurses into args (a fused async call's
-        #                       into the inner call's)
-        #   Block             → recurses into each statement (LetStmt,
-        #                       LetDestruct, ExprStmt) + the trailing expr
-        #   LetStmt           → recurses into the bound value
-        #   LetDestruct       → recurses into the destructured value
-        #                       (#1210 round 5 — a destructuring `let` was
-        #                       absent from this walk ENTIRELY, so
-        #                       `let Tuple<@String, @String> =
-        #                       pairs(md_to_html("# hi"))` reached the
-        #                       lowering with no import registered)
-        #   ExprStmt          → recurses into the statement's expr
-        #   ConstructorCall   → recurses into each arg
-        #   BinaryExpr        → recurses into left + right
-        #   UnaryExpr         → recurses into operand
-        #   IfExpr            → recurses into cond + then + else
-        #   MatchExpr         → recurses into scrutinee + arm bodies
-        #   HandleExpr        → recurses into body
-        #   IndexExpr         → recurses into collection + index
-        #                       (defensive add #597 — masked today by
-        #                       type checker rejecting IO in index
-        #                       positions, but plugs the gap if a
-        #                       host-imported Int-returning builtin
-        #                       lands in the future)
-        #   ArrayLit          → recurses into each element (defensive
-        #                       add #597 — masked today by the [E602]
-        #                       path dropping IO-in-ArrayLit functions)
-        #   InterpolatedString → recurses into each Expr part
-        #                       (defensive add #597 — same masking as
-        #                       ArrayLit)
-        #   AnonFn            → recurses into body (defensive add
-        #                       #597) AND into the SIGNATURE's
-        #                       refinement predicates (#1210 round 7,
-        #                       via `_scan_anon_fn_signature`): a
-        #                       refined formal / return is guarded in
-        #                       the lifted body
-        #   AssertExpr        → recurses into the condition (#1210
-        #                       round 2)
-        #   AssumeExpr        → recurses into the condition
-        #   ForallExpr        → recurses into domain + predicate
-        #   ExistsExpr        → recurses into domain + predicate
-        #   ModuleCall        → recurses into each arg (#1210 round 5).
-        #                       The CALLEE is the imported module's own
-        #                       scan to register; the ARGUMENTS are this
-        #                       module's expressions and are lowered
-        #                       here, so the previous "tracked by that
-        #                       module's scan" disposition covered only
-        #                       half the node
-        #
-        # Intentionally ignored (leaves — no sub-exprs to recurse into):
-        #   IntLit            → leaf
-        #   FloatLit          → leaf
-        #   BoolLit           → leaf
-        #   StringLit         → leaf
-        #   UnitLit           → leaf
-        #   SlotRef           → leaf
-        #   ResultRef         → leaf
-        #   NullaryConstructor → zero-arg, no sub-exprs
-        #   OldExpr           → names an EffectRef, not an expression
-        #   NewExpr           → names an EffectRef, not an expression
-        #
-        # Cannot occur:
-        #   HoleExpr          → parser placeholder, check-time rejects
+        `vera.fold.walk` reaches every position a closure can be written
+        in, a destructuring `let`'s value, a module call's arguments and a
+        handler's state, body, clauses and `with` updates among them
+        (#1210), in the fold's order: a handler's body before its clauses,
+        so a closure in each reports its E618 in that order, the order the
+        lowering reports E617 in.  A closure's signature is walked before
+        its body.
         """
-        if isinstance(node, ast.QualifiedCall):
-            for arg in node.args:
-                self._scan_io_ops(arg)
-            return
-        if isinstance(node, ast.Block):
-            for stmt in node.statements:
-                # #1210 round 5: `LetDestruct` — a destructuring `let` — was
-                # missing here, so its value expression was never walked while
-                # codegen lowered it like any other.
-                if isinstance(stmt, (ast.LetStmt, ast.LetDestruct)):
-                    self._scan_io_ops(stmt.value)
-                elif isinstance(stmt, ast.ExprStmt):
-                    self._scan_io_ops(stmt.expr)
-            self._scan_io_ops(node.expr)
-        elif isinstance(node, ast.FnCall):
-            # #841: a fused async(Http.get(...)) is walked as the
-            # WasmContext translation lowers it (shared predicates in
-            # vera/wasm/async_fusion.py): the inner call's arguments.
-            fused = fused_async_target(node)
-            if fused is not None:
-                inner = node.args[0]
-                assert isinstance(inner, ast.QualifiedCall)  # noqa: S101
-                for arg in inner.args:
-                    self._scan_io_ops(arg)
-                return
-            for arg in node.args:
-                self._scan_io_ops(arg)
-        elif isinstance(node, ast.ConstructorCall):
-            for arg in node.args:
-                self._scan_io_ops(arg)
-        elif isinstance(node, ast.BinaryExpr):
-            self._scan_io_ops(node.left)
-            self._scan_io_ops(node.right)
-        elif isinstance(node, ast.UnaryExpr):
-            self._scan_io_ops(node.operand)
-        elif isinstance(node, ast.IfExpr):
-            self._scan_io_ops(node.condition)
-            self._scan_io_ops(node.then_branch)
-            if node.else_branch:
-                self._scan_io_ops(node.else_branch)
-        elif isinstance(node, ast.MatchExpr):
-            self._scan_io_ops(node.scrutinee)
-            for arm in node.arms:
-                self._scan_io_ops(arm.body)
-        elif isinstance(node, ast.HandleExpr):
-            # All four sub-expression positions, matching
-            # `_scan_expr_for_handlers` (#1210).
-            if node.state is not None:
-                self._scan_io_ops(node.state.init_expr)
-            for clause in node.clauses:
-                self._scan_io_ops(clause.body)
-                if clause.state_update is not None:
-                    self._scan_io_ops(clause.state_update[1])
-            self._scan_io_ops(node.body)
-        # Defensive sub-expr recursion (#597).
-        elif isinstance(node, ast.IndexExpr):
-            self._scan_io_ops(node.collection)
-            self._scan_io_ops(node.index)
-        elif isinstance(node, ast.ArrayLit):
-            for elem in node.elements:
-                self._scan_io_ops(elem)
-        elif isinstance(node, ast.InterpolatedString):
-            for part in node.parts:
-                # Parts are str (literal) or Expr (interpolated).
-                if not isinstance(part, str):
-                    self._scan_io_ops(part)
-        elif isinstance(node, ast.AnonFn):
-            # Body AND signature (#1210 round 7): a refined formal / return
-            # has its predicate lowered as a boundary guard in the lifted
-            # body.
-            self._scan_anon_fn_signature(node, self._scan_io_ops)
-            self._scan_io_ops(node.body)
-        # #1210 round 2 — symmetrical with `_scan_expr_for_handlers`.
-        elif isinstance(node, (ast.AssertExpr, ast.AssumeExpr)):
-            self._scan_io_ops(node.expr)
-        elif isinstance(node, (ast.ForallExpr, ast.ExistsExpr)):
-            self._scan_io_ops(node.domain)
-            self._scan_io_ops(node.predicate)
-        # #1210 round 5 — the CALLEE crosses a module boundary, the ARGUMENTS
-        # do not: they are this module's expressions, lowered into this
-        # module's body.  Both coverage tables used to dismiss the whole node
-        # as the imported module's business.
-        elif isinstance(node, ast.ModuleCall):
-            for arg in node.args:
-                self._scan_io_ops(arg)
+        for found in fold.walk(node):
+            if isinstance(found, ast.AnonFn):
+                self._scan_anon_fn_signature(found, self._scan_io_ops)
 
     def _scan_body_for_state_handlers(
         self, node: ast.Node, decl: ast.FnDecl | None = None,
@@ -690,185 +547,34 @@ class CompilabilityMixin:
                 self._unregistrable_exn_tags.append((type_arg, reason))
 
     def _scan_expr_for_handlers(self, node: ast.Node) -> None:
-        """Recurse into expressions looking for HandleExpr nodes.
+        """Register the State/Exn family of every handler under *node*, and
+        walk every closure's signature.
 
-        # WALKER_COVERAGE: (#597 — every Expr subclass below has a
-        # disposition; check_walker_coverage.py enforces completeness.)
-        #
-        # Handled (recurses into sub-exprs that may contain HandleExpr):
-        #   HandleExpr        → registers State<T>/Exn<E> types, then
-        #                       recurses into ALL FOUR sub-expression
-        #                       positions: the state-init expression, each
-        #                       clause body, each clause's `with` update,
-        #                       and the handled body.  The walk used to
-        #                       descend the body ALONE (#1210), so a family
-        #                       reached only from one of the other three was
-        #                       never registered while the lowering emitted
-        #                       its calls — `unknown func
-        #                       $vera.state_push_Nat` at whole-module WAT
-        #                       compilation, from a check-green program.
-        #   Block             → recurses into each statement (LetStmt,
-        #                       LetDestruct, ExprStmt) + the trailing expr
-        #   LetStmt           → recurses into the bound value
-        #   LetDestruct       → recurses into the destructured value
-        #                       (#1210 round 5 — a destructuring `let` was
-        #                       absent from this walk ENTIRELY, so
-        #                       `let Tuple<@Nat, @Nat> =
-        #                       pairn(handle[State<Nat>] … )` emitted
-        #                       `state_push_Nat` against no import, and
-        #                       an `Exn<Unit>` payload there bypassed the
-        #                       round-3 E612 gate outright)
-        #   ExprStmt          → recurses into the statement's expr
-        #   FnCall            → recurses into each arg
-        #   ConstructorCall   → recurses into each arg
-        #   BinaryExpr        → recurses into left + right
-        #   UnaryExpr         → recurses into operand
-        #   IfExpr            → recurses into cond + then + else
-        #   MatchExpr         → recurses into scrutinee + arm bodies
-        #   QualifiedCall     → recurses into args (defensive add #597)
-        #   IndexExpr         → recurses into collection + index
-        #                       (defensive add #597)
-        #   ArrayLit          → recurses into each element
-        #                       (defensive add #597)
-        #   InterpolatedString → recurses into each Expr part
-        #                       (defensive add #597)
-        #   AnonFn            → recurses into body (defensive add #597 —
-        #                       IS the primary defence: the closure
-        #                       compile pipeline does not run its own
-        #                       handler scan on lifted bodies, so
-        #                       without this branch HandleExprs inside
-        #                       a closure body would silently miss
-        #                       their State/Exn host-import
-        #                       registration) AND into the SIGNATURE's
-        #                       refinement predicates (#1210 round 7,
-        #                       via `_scan_anon_fn_signature`): the
-        #                       closure path guards a refined formal /
-        #                       return in that same lifted body, so
-        #                       `fn(@Big -> @Int)` behind an `apply_fn`
-        #                       emitted `state_push_Nat` against an
-        #                       import nothing declared
-        #   AssertExpr        → recurses into the condition (#1210
-        #                       round 2 — "pure" is not "handler-free":
-        #                       `assert(handle[State<Nat>] … > 0)` is
-        #                       check-green and LOWERED, so refusing to
-        #                       descend left `state_push_Nat` undeclared)
-        #   AssumeExpr        → recurses into the condition (same shape;
-        #                       verifier-only today, kept symmetric so
-        #                       the two cannot drift)
-        #   ForallExpr        → recurses into domain + predicate
-        #   ExistsExpr        → recurses into domain + predicate
-        #   ModuleCall        → recurses into each arg (#1210 round 5).
-        #                       Only the CALLEE is the imported module's
-        #                       to register; the ARGUMENTS are this
-        #                       module's expressions, lowered here.  The
-        #                       old "tracked by that module's own scan"
-        #                       disposition was true of the callee and
-        #                       false of the args, and
-        #                       `vera.math::identn(handle[State<Nat>] … )`
-        #                       compiled to `unknown func`
-        #
-        # Intentionally ignored (leaves — no sub-exprs to walk):
-        #   IntLit            → leaf
-        #   FloatLit          → leaf
-        #   BoolLit           → leaf
-        #   StringLit         → leaf
-        #   UnitLit           → leaf
-        #   SlotRef           → leaf
-        #   ResultRef         → leaf
-        #   NullaryConstructor → zero-arg, no sub-exprs
-        #   OldExpr           → names an EffectRef, not an expression
-        #   NewExpr           → names an EffectRef, not an expression
-        #
-        # Cannot occur:
-        #   HoleExpr          → parser placeholder, check-time rejects
+        `vera.fold.walk` reaches every position a handler can be written
+        in: a handler's own state, body, clauses and `with` updates, which
+        the walk once descended the body of alone, so a family reached only
+        from the other three was never registered while the lowering
+        emitted its calls (`unknown func $vera.state_push_Nat` from a
+        check-green program, #1210); a destructuring `let`'s value; a
+        module call's arguments, which are this module's expressions
+        however the callee is registered; an assertion, an assumption and a
+        quantifier, since a handler is an ordinary expression and is lowered
+        there; and a closure's body, since the closure compile pipeline runs
+        no scan of its own on a lifted body.  A closure's SIGNATURE is
+        lowered in that body too (#1210 round 7: its refined formals and
+        return are guarded there), so `_scan_anon_fn_signature` walks the
+        predicates `_signature_refinement_predicates` derives for it, before
+        its body.
+
+        A handler registers its family where the walk meets it, in the
+        fold's order, a handler's body before its clauses: the families are
+        declared in that order, and of the cells or payloads the backend
+        cannot compile, the one E607 or E612 names is the first the walk
+        meets.
         """
-        if isinstance(node, ast.HandleExpr):
-            self._register_scanned_handler(node)
-            if node.state is not None:
-                self._scan_expr_for_handlers(node.state.init_expr)
-            for clause in node.clauses:
-                self._scan_expr_for_handlers(clause.body)
-                if clause.state_update is not None:
-                    self._scan_expr_for_handlers(clause.state_update[1])
-            self._scan_expr_for_handlers(node.body)
-            return
-        if isinstance(node, ast.Block):
-            for stmt in node.statements:
-                # #1210 round 5: `LetDestruct` — a destructuring `let` — was
-                # missing here, so a handler in its value registered nothing
-                # while the lowering emitted the family's calls, AND the
-                # round-3 uncompilable-payload gate never saw the handler at
-                # all (`handle[Exn<Unit>]` there compiled to `unknown tag`
-                # where its `LetStmt` twin is a clean E612 function drop).
-                if isinstance(stmt, (ast.LetStmt, ast.LetDestruct)):
-                    self._scan_expr_for_handlers(stmt.value)
-                elif isinstance(stmt, ast.ExprStmt):
-                    self._scan_expr_for_handlers(stmt.expr)
-            self._scan_expr_for_handlers(node.expr)
-        elif isinstance(node, ast.FnCall):
-            for arg in node.args:
-                self._scan_expr_for_handlers(arg)
-        elif isinstance(node, ast.ConstructorCall):
-            for arg in node.args:
-                self._scan_expr_for_handlers(arg)
-        elif isinstance(node, ast.BinaryExpr):
-            self._scan_expr_for_handlers(node.left)
-            self._scan_expr_for_handlers(node.right)
-        elif isinstance(node, ast.UnaryExpr):
-            self._scan_expr_for_handlers(node.operand)
-        elif isinstance(node, ast.IfExpr):
-            self._scan_expr_for_handlers(node.condition)
-            self._scan_expr_for_handlers(node.then_branch)
-            if node.else_branch:
-                self._scan_expr_for_handlers(node.else_branch)
-        elif isinstance(node, ast.MatchExpr):
-            self._scan_expr_for_handlers(node.scrutinee)
-            for arm in node.arms:
-                self._scan_expr_for_handlers(arm.body)
-        # Defensive sub-expr recursion (#597) — symmetrical with
-        # `_scan_io_ops`.  The QualifiedCall / IndexExpr / ArrayLit
-        # / InterpolatedString branches are masked today by type-
-        # checker rules and the [E602] codegen-skip path.  The
-        # AnonFn branch is the PRIMARY defence — the closure
-        # compile pipeline does not call this scanner on lifted
-        # bodies, so HandleExprs inside a closure body would
-        # silently miss their State/Exn host-import registration
-        # without this branch.
-        elif isinstance(node, ast.QualifiedCall):
-            for arg in node.args:
-                self._scan_expr_for_handlers(arg)
-        elif isinstance(node, ast.IndexExpr):
-            self._scan_expr_for_handlers(node.collection)
-            self._scan_expr_for_handlers(node.index)
-        elif isinstance(node, ast.ArrayLit):
-            for elem in node.elements:
-                self._scan_expr_for_handlers(elem)
-        elif isinstance(node, ast.InterpolatedString):
-            for part in node.parts:
-                if not isinstance(part, str):
-                    self._scan_expr_for_handlers(part)
-        elif isinstance(node, ast.AnonFn):
-            # Body AND signature (#1210 round 7) — the closure path emits a
-            # boundary guard for every refined formal and for a refined
-            # return, and (since #1235) for each refined component of a tuple
-            # formal or return, so a `handle[State<Nat>]` in one of those
-            # predicates is lowered into the lifted body with nothing else to
-            # register it.
-            self._scan_anon_fn_signature(node, self._scan_expr_for_handlers)
-            self._scan_expr_for_handlers(node.body)
-        # #1210 round 2 — the contract-predicate positions.  These are not
-        # "cannot occur": a handle expression is an ordinary Bool-valued
-        # expression, so it type-checks inside an `assert` condition or a
-        # quantifier predicate, and codegen lowers it there.  Refusing to
-        # descend registered nothing while the lowering emitted the calls.
-        elif isinstance(node, (ast.AssertExpr, ast.AssumeExpr)):
-            self._scan_expr_for_handlers(node.expr)
-        elif isinstance(node, (ast.ForallExpr, ast.ExistsExpr)):
-            self._scan_expr_for_handlers(node.domain)
-            self._scan_expr_for_handlers(node.predicate)
-        # #1210 round 5 — symmetrical with `_scan_io_ops`: a module call's
-        # ARGUMENTS are this module's expressions, however the callee is
-        # registered.
-        elif isinstance(node, ast.ModuleCall):
-            for arg in node.args:
-                self._scan_expr_for_handlers(arg)
+        for found in fold.walk(node):
+            if isinstance(found, ast.HandleExpr):
+                self._register_scanned_handler(found)
+            elif isinstance(found, ast.AnonFn):
+                self._scan_anon_fn_signature(
+                    found, self._scan_expr_for_handlers)

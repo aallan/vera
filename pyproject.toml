@@ -273,7 +273,7 @@ pytest_add_cli_args_test_selection = [
     "tests/test_markdown.py",
     "tests/test_resolver.py",
     "tests/test_prelude.py",
-    "tests/test_walker_defensive_branches_597.py",
+    "tests/test_expr_fold.py",
     "tests/test_execute_characterization.py",
 ]
 
