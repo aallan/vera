@@ -1345,7 +1345,7 @@ _BY_NAME_INVENTORY: dict[tuple[str, str, str], int] = {
     ("vera/wasm/inference.py", "InferenceMixin._ctor_to_adt_name", "_ctor_to_adt"): 1,
     ("vera/wasm/inference.py", "InferenceMixin._get_arg_type_info_wasm", "_ctor_adt_tp_indices"): 1,
     ("vera/wasm/inference.py", "InferenceMixin._infer_block_result_type", "_ctor_layouts"): 2,
-    ("vera/wasm/inference.py", "InferenceMixin._infer_expr_wasm_type", "_ctor_layouts"): 2,
+    ("vera/wasm/inference.py", "_wt_constructor", "_ctor_layouts"): 1,
     ("vera/wasm/operators.py", "OperatorsMixin._full_ctor_type_name", "_ctor_adt_tp_indices"): 1,
     ("vera/wasm/operators.py", "OperatorsMixin._generate_adt_eq_fn_body", "_ctor_adt_tp_indices"): 1,
 }

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from vera import ast, naming
+from vera import ast, fold, naming
 from vera.wasm.helpers import (
     WasmSlotEnv,
     _align_up,
@@ -25,13 +25,7 @@ class ClosuresMixin:
         Records the AnonFn for later lifting by codegen.py.
         """
         # Collect free variables (captures from enclosing scope)
-        param_type_counts: dict[str, int] = {}
-        for p in expr.params:
-            pname = self._type_expr_name(p)
-            if pname:
-                param_type_counts[pname] = param_type_counts.get(pname, 0) + 1
-
-        captures = self._collect_free_vars(expr.body, param_type_counts)
+        captures = self._collect_free_vars(expr)
 
         # Assign closure ID and register for later lifting
         closure_id = self._next_closure_id
@@ -253,15 +247,18 @@ class ClosuresMixin:
 
     def _collect_free_vars(
         self,
-        body: ast.Expr,
-        param_counts: dict[str, int],
+        anon: ast.AnonFn,
     ) -> list[tuple[str, int, str]]:
         """Collect free variables in an anonymous function body.
 
-        Walks the body and finds SlotRef nodes that reference bindings
-        from the enclosing scope (De Bruijn index >= param count for
-        that type). Returns list of (type_name, adjusted_index, wasm_type).
-        The adjusted_index is the De Bruijn index in the OUTER scope.
+        Walks *anon* with the fold's scope walk (:func:`vera.fold.scoped`),
+        which has the closure's parameters and every binder its body declares
+        in scope where each reference is read, and finds the SlotRef nodes
+        that resolve to none of them: those reference bindings from the
+        enclosing scope.  Returns list of (type_name, adjusted_index,
+        wasm_type).  The adjusted_index is the De Bruijn index in the OUTER
+        scope: the reference's index less the binders of its name the closure
+        holds where it is read.
 
         After walking, the captures are normalised per type so that the
         lift-side env push (in `_compile_lifted_closure`) yields a
@@ -291,7 +288,58 @@ class ClosuresMixin:
         """
         free: list[tuple[str, int, str]] = []
         seen: set[tuple[str, int]] = set()
-        self._walk_free_vars(body, param_counts, free, seen)
+        for node, scope in fold.scoped(anon, self._type_expr_name):
+            if not isinstance(node, ast.SlotRef):
+                continue
+            # #1208: the ONE renderer, against this context's alias
+            # environment — a captured slot must key its capture under the
+            # SAME name `_translate_slot_ref` resolves and the closure's
+            # binders were named by (`_type_expr_name`), or the capture
+            # desyncs and the enclosing function drops (`unknown func`).
+            # Nested composites stay fully qualified (#914 finding 2).
+            type_name = naming.slot_ref_key(node, self._alias_env)
+            if scope.resolve(type_name, node.index) is not None:
+                continue
+            # This refers to an outer scope binding
+            outer_idx = node.index - scope.count(type_name)
+            key = (type_name, outer_idx)
+            if key in seen:
+                continue
+            seen.add(key)
+            # Infer the capture's serialisation width from its slot
+            # type name.  String / Array<T> values live as two
+            # consecutive i32 slots (ptr, len) and a closure capture
+            # must serialise both (#535): pre-#535 the capture path
+            # used a bare ``"i32"`` and stored only the ptr, so the
+            # body read len from adjacent struct memory (typically
+            # zero) and the captured value silently appeared empty.
+            #
+            # Route the decision through the SAME Future-transparent
+            # deciders the let-binding and slot-read paths use
+            # (`_is_pair_type_name` / `_slot_name_to_wasm_type`), NOT
+            # the literal String/Array check + `_type_name_to_wasm`
+            # (which maps every unknown name — including a resolved
+            # alias or a `Future<T>` wrapper — to ``"i32"``).  Since
+            # `Future<T>` is representation-transparent (#841), a
+            # captured `Future<String>` is a pair (i32_pair) and a
+            # captured `Future<Int>` is an i64; pre-#1044 both fell to
+            # the "i32" default — the pair silently stored ptr-only
+            # (empty value), the i64 pushed an i64 into an `i32.store`
+            # and trapped at WASM validation.  Both `_translate_anon_fn`
+            # (layout + store) and `_compile_lifted_closure` (layout +
+            # load) read this `wt` back from the capture tuple, so the
+            # two sides stay in agreement by construction.  The
+            # ``or "i32"`` guards the None `_slot_name_to_wasm_type`
+            # returns for a pair (unreachable — `_is_pair_type_name`
+            # took that branch) or a genuinely unrepresentable name
+            # (which could not have been bound in the outer scope,
+            # since binding uses the same mapper), matching the prior
+            # `_type_name_to_wasm` default.
+            if self._is_pair_type_name(type_name):
+                wt = "i32_pair"
+            else:
+                wt = self._slot_name_to_wasm_type(type_name) or "i32"
+            free.append((type_name, outer_idx, wt))
 
         # Group by type so we can fill prefix and sort within each type
         # independently.  `dict` preserves insertion order, so the
@@ -304,7 +352,7 @@ class ClosuresMixin:
         result: list[tuple[str, int, str]] = []
         for tname, entries in by_type.items():
             # Same `type_name` → same `wasm_type` (the wt computation in
-            # `_walk_free_vars` is deterministic per type_name); use the
+            # the loop above is deterministic per type_name); use the
             # first entry's wt for any synthetic prefix fills.
             wt = entries[0][1]
             seen_idxs = {idx for idx, _ in entries}
@@ -319,257 +367,3 @@ class ClosuresMixin:
                 result.append((tname, idx, ewt))
 
         return result
-
-    def _walk_free_vars(
-        self,
-        expr: ast.Expr,
-        param_counts: dict[str, int],
-        free: list[tuple[str, int, str]],
-        seen: set[tuple[str, int]],
-    ) -> None:
-        """Recursively walk an expression to find free variable references.
-
-        # WALKER_COVERAGE: (#597 — every Expr subclass below has a
-        # disposition; check_walker_coverage.py enforces completeness.)
-        #
-        # Handled (recurses into sub-exprs that may contain SlotRefs):
-        #   SlotRef           → leaf case, captures recorded if outer scope
-        #   BinaryExpr        → walks left + right
-        #   UnaryExpr         → walks operand
-        #   IndexExpr         → walks collection + index   (added #588)
-        #   ArrayLit          → walks each element         (added #588)
-        #   InterpolatedString → walks Expr parts          (added #588)
-        #   FnCall            → walks each arg
-        #   QualifiedCall     → walks each arg
-        #   ModuleCall        → walks each arg
-        #   ConstructorCall   → walks each arg
-        #   AnonFn            → walks body
-        #   IfExpr            → walks condition + then + else
-        #   MatchExpr         → walks scrutinee + each arm body
-        #   Block             → walks each stmt + trailing expr
-        #   HandleExpr        → walks body + each handler body  (added #588)
-        #   AssertExpr        → walks predicate                 (added #588)
-        #   AssumeExpr        → walks predicate                 (added #588)
-        #   ForallExpr        → walks body (defensive — walker's body
-        #                       can't reference outer captures, but the
-        #                       sub-Exprs are walked for symmetry)
-        #   ExistsExpr        → walks body (same rationale)
-        #
-        # Intentionally ignored (leaves — no sub-expressions to walk):
-        #   IntLit            → leaf
-        #   FloatLit          → leaf
-        #   BoolLit           → leaf
-        #   StringLit         → leaf
-        #   UnitLit           → leaf
-        #   NullaryConstructor → leaf (zero-arg by construction)
-        #
-        # Cannot occur (post-checker; would have been rejected upstream
-        # before reaching closure-lift):
-        #   HoleExpr          → parser placeholder; rejected at check time
-        #   OldExpr           → contract-only; not in body expressions
-        #   NewExpr           → contract-only; not in body expressions
-        #   ResultRef         → only valid in `ensures`; not in body
-        """
-        if isinstance(expr, ast.SlotRef):
-            # #1208: the ONE renderer, against this context's alias
-            # environment — a captured slot must key its capture under the
-            # SAME name `_translate_slot_ref` resolves and `param_counts` was
-            # built from (`_type_expr_name`), or the capture desyncs and the
-            # enclosing function drops (`unknown func`).  Nested composites
-            # stay fully qualified (#914 finding 2).
-            type_name = naming.slot_ref_key(expr, self._alias_env)
-            count = param_counts.get(type_name, 0)
-            if expr.index >= count:
-                # This refers to an outer scope binding
-                outer_idx = expr.index - count
-                key = (type_name, outer_idx)
-                if key not in seen:
-                    seen.add(key)
-                    # Infer the capture's serialisation width from its slot
-                    # type name.  String / Array<T> values live as two
-                    # consecutive i32 slots (ptr, len) and a closure capture
-                    # must serialise both (#535): pre-#535 the capture path
-                    # used a bare ``"i32"`` and stored only the ptr, so the
-                    # body read len from adjacent struct memory (typically
-                    # zero) and the captured value silently appeared empty.
-                    #
-                    # Route the decision through the SAME Future-transparent
-                    # deciders the let-binding and slot-read paths use
-                    # (`_is_pair_type_name` / `_slot_name_to_wasm_type`), NOT
-                    # the literal String/Array check + `_type_name_to_wasm`
-                    # (which maps every unknown name — including a resolved
-                    # alias or a `Future<T>` wrapper — to ``"i32"``).  Since
-                    # `Future<T>` is representation-transparent (#841), a
-                    # captured `Future<String>` is a pair (i32_pair) and a
-                    # captured `Future<Int>` is an i64; pre-#1044 both fell to
-                    # the "i32" default — the pair silently stored ptr-only
-                    # (empty value), the i64 pushed an i64 into an `i32.store`
-                    # and trapped at WASM validation.  Both `_translate_anon_fn`
-                    # (layout + store) and `_compile_lifted_closure` (layout +
-                    # load) read this `wt` back from the capture tuple, so the
-                    # two sides stay in agreement by construction.  The
-                    # ``or "i32"`` guards the None `_slot_name_to_wasm_type`
-                    # returns for a pair (unreachable — `_is_pair_type_name`
-                    # took that branch) or a genuinely unrepresentable name
-                    # (which could not have been bound in the outer scope,
-                    # since binding uses the same mapper), matching the prior
-                    # `_type_name_to_wasm` default.
-                    if self._is_pair_type_name(type_name):
-                        wt = "i32_pair"
-                    else:
-                        wt = self._slot_name_to_wasm_type(type_name) or "i32"
-                    free.append((type_name, outer_idx, wt))
-            return
-
-        if isinstance(expr, ast.BinaryExpr):
-            self._walk_free_vars(expr.left, param_counts, free, seen)
-            self._walk_free_vars(expr.right, param_counts, free, seen)
-        elif isinstance(expr, ast.UnaryExpr):
-            self._walk_free_vars(expr.operand, param_counts, free, seen)
-        elif isinstance(expr, ast.IfExpr):
-            self._walk_free_vars(expr.condition, param_counts, free, seen)
-            self._walk_free_vars(expr.then_branch, param_counts, free, seen)
-            self._walk_free_vars(expr.else_branch, param_counts, free, seen)
-        elif isinstance(expr, ast.Block):
-            extra = dict(param_counts)
-            for stmt in expr.statements:
-                if isinstance(stmt, ast.LetStmt):
-                    self._walk_free_vars(stmt.value, extra, free, seen)
-                    # The let binding adds to the local scope
-                    let_name = self._type_expr_name(stmt.type_expr)
-                    if let_name:
-                        extra[let_name] = extra.get(let_name, 0) + 1
-                elif isinstance(stmt, ast.ExprStmt):
-                    self._walk_free_vars(stmt.expr, extra, free, seen)
-            if expr.expr:
-                self._walk_free_vars(expr.expr, extra, free, seen)
-        elif isinstance(expr, ast.FnCall):
-            for arg in expr.args:
-                self._walk_free_vars(arg, param_counts, free, seen)
-        elif isinstance(expr, ast.QualifiedCall):
-            for arg in expr.args:
-                self._walk_free_vars(arg, param_counts, free, seen)
-        elif isinstance(expr, ast.ConstructorCall):
-            for arg in expr.args:
-                self._walk_free_vars(arg, param_counts, free, seen)
-        elif isinstance(expr, ast.MatchExpr):
-            self._walk_free_vars(expr.scrutinee, param_counts, free, seen)
-            for arm in expr.arms:
-                arm_extra = dict(param_counts)
-                # Match arm bindings add to scope
-                self._collect_pattern_bindings(
-                    arm.pattern, arm_extra,
-                )
-                self._walk_free_vars(arm.body, arm_extra, free, seen)
-        elif isinstance(expr, ast.AnonFn):
-            # #514: nested closures may reference outer-scope bindings
-            # via De Bruijn indices that exceed the inner closure's own
-            # parameter count for that type.  From the OUTER's
-            # perspective, anything an inner closure captures from the
-            # outer's scope is also a capture for the outer.  Recurse
-            # with the inner's params added to the count so its own
-            # parameter refs are excluded; remaining refs bubble up.
-            inner_counts = dict(param_counts)
-            for p in expr.params:
-                pname = self._type_expr_name(p)
-                if pname:
-                    inner_counts[pname] = inner_counts.get(pname, 0) + 1
-            self._walk_free_vars(expr.body, inner_counts, free, seen)
-        elif isinstance(expr, ast.IndexExpr):
-            # #588: indexing inside a closure body — `coll[idx]`.  Both
-            # the collection and index sub-expressions can reference
-            # captured outer slots (e.g. `@Array<Int>.0[@Nat.1]` where
-            # both halves come from the outer scope).  Pre-fix this
-            # branch was missing entirely: the walker fell through the
-            # if/elif chain, the outer-scope SlotRef inside `[]` was
-            # never recognised as a capture, so `captures` was empty
-            # at the lift site.  The body translation then failed
-            # (the SlotRef couldn't be resolved against the empty
-            # capture-only env) and `_compile_lifted_closure` returned
-            # None — but the call site had already emitted a
-            # `call_indirect` to the now-absent function-table entry,
-            # producing "unknown table 0: table index out of bounds"
-            # at WASM validation (flat case) or runtime "indirect call
-            # type mismatch" (nested case).
-            self._walk_free_vars(expr.collection, param_counts, free, seen)
-            self._walk_free_vars(expr.index, param_counts, free, seen)
-        elif isinstance(expr, ast.ArrayLit):
-            # Array literals may contain captured slots in their
-            # elements (e.g. `[@Int.0, @Int.1, @Int.2]`).  Same silent-
-            # fail class as IndexExpr above — missing branch silently
-            # drops the captures.
-            for elem in expr.elements:
-                self._walk_free_vars(elem, param_counts, free, seen)
-        elif isinstance(expr, ast.InterpolatedString):
-            # Interpolated string parts alternate `str | Expr`.
-            # Captured slots can appear in the Expr parts
-            # (e.g. `"value: \(@Int.0)"`); the str fragments have none.
-            for part in expr.parts:
-                if isinstance(part, ast.Expr):
-                    self._walk_free_vars(part, param_counts, free, seen)
-        elif isinstance(expr, ast.HandleExpr):
-            # Handle expression: walk the handled body, the optional
-            # initial state expression, and each clause's body and
-            # optional state-update expression.  Clause params add to
-            # the scope before the clause body is walked so the op's
-            # own parameters aren't treated as captures.
-            self._walk_free_vars(expr.body, param_counts, free, seen)
-            if expr.state is not None:
-                self._walk_free_vars(
-                    expr.state.init_expr, param_counts, free, seen,
-                )
-            for clause in expr.clauses:
-                clause_counts = dict(param_counts)
-                for p in clause.params:
-                    pname = self._type_expr_name(p)
-                    if pname:
-                        clause_counts[pname] = (
-                            clause_counts.get(pname, 0) + 1
-                        )
-                # Handler state (@T) is also in scope inside the clause
-                # body so references to it aren't captures.
-                if expr.state is not None:
-                    sname = self._type_expr_name(expr.state.type_expr)
-                    if sname:
-                        clause_counts[sname] = (
-                            clause_counts.get(sname, 0) + 1
-                        )
-                self._walk_free_vars(
-                    clause.body, clause_counts, free, seen,
-                )
-                if clause.state_update is not None:
-                    _, update_expr = clause.state_update
-                    self._walk_free_vars(
-                        update_expr, clause_counts, free, seen,
-                    )
-        elif isinstance(expr, (ast.AssertExpr, ast.AssumeExpr)):
-            # assert/assume wrap a Bool predicate that can reference
-            # outer slots.
-            self._walk_free_vars(expr.expr, param_counts, free, seen)
-        elif isinstance(expr, (ast.ForallExpr, ast.ExistsExpr)):
-            # Quantifiers walk both the domain (which may reference
-            # captures) and the predicate (an AnonFn — the existing
-            # AnonFn branch above already handles param-shadowing).
-            self._walk_free_vars(expr.domain, param_counts, free, seen)
-            self._walk_free_vars(expr.predicate, param_counts, free, seen)
-        elif isinstance(expr, ast.ModuleCall):
-            # Cross-module call: arguments may contain captured slots.
-            for arg in expr.args:
-                self._walk_free_vars(arg, param_counts, free, seen)
-        # Other expression types (literals: Int / Float / Bool / Unit /
-        # String / NullaryConstructor / HoleExpr / ResultRef / Old /
-        # New) have no sub-expressions that could reference captures.
-
-    def _collect_pattern_bindings(
-        self,
-        pattern: ast.Pattern,
-        counts: dict[str, int],
-    ) -> None:
-        """Collect type bindings introduced by a match pattern."""
-        if isinstance(pattern, ast.BindingPattern):
-            b_name = self._type_expr_name(pattern.type_expr)
-            if b_name:
-                counts[b_name] = counts.get(b_name, 0) + 1
-        elif isinstance(pattern, ast.ConstructorPattern):
-            for sub in pattern.sub_patterns:
-                self._collect_pattern_bindings(sub, counts)

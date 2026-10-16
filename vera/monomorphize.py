@@ -4563,13 +4563,13 @@ class Monomorphizer:
                 # The HANDLED body carries NO state slot binding in the
                 # consumers: codegen routes handler state through host-side
                 # state cells (_translate_handle_state translates the body
-                # with the env unchanged; _walk_free_vars likewise), so the
+                # with the env unchanged; _collect_free_vars likewise), so the
                 # walker must not count one — a phantom binding shifts every
                 # same-named ref in the body to a dangling or wrong local
                 # (adversarial panel, PR #972).  The checker agrees since
                 # #973: it binds no body-scope state either, rejecting such
                 # refs with E130.  Clause scopes above keep params + state:
-                # that is what _walk_free_vars counts (and Exn clause
+                # that is what _collect_free_vars counts (and Exn clause
                 # compilation pushes the thrown binder).
                 walk(v.body)
                 return
