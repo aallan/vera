@@ -926,6 +926,37 @@ KNOWN_MULTI_SITE_ERROR_CODES: dict[str, frozenset[tuple[str, str]]] = {
         ("vera/checker/expressions.py",
          "ExpressionsMixin._apply_quantifier_predicate"),
     }),
+    # A destructuring `let` is the one-arm constructor pattern it names
+    # (#1545): each code below is the one a `match` arm reports for the
+    # same fault, or for E170 the one a `let` binding does, applied to the
+    # destructure's head, field count, coverage and bindings and worded
+    # for it.
+    "E170": frozenset({
+        ("vera/checker/control.py", "ControlFlowMixin._check_destructure"),
+        ("vera/checker/expressions.py", "ExpressionsMixin._check_let"),
+    }),
+    "E311": frozenset({
+        ("vera/checker/control.py", "ControlFlowMixin._check_destructure"),
+        ("vera/checker/control.py",
+         "ControlFlowMixin._check_exhaustiveness"),
+    }),
+    "E313": frozenset({
+        ("vera/checker/control.py", "ControlFlowMixin._check_destructure"),
+        ("vera/checker/control.py",
+         "ControlFlowMixin._check_exhaustiveness"),
+    }),
+    "E314": frozenset({
+        ("vera/checker/control.py", "ControlFlowMixin._check_destructure"),
+        ("vera/checker/control.py", "ControlFlowMixin._pattern_mismatch"),
+    }),
+    "E320": frozenset({
+        ("vera/checker/control.py", "ControlFlowMixin._check_ctor_pattern"),
+        ("vera/checker/control.py", "ControlFlowMixin._check_destructure"),
+    }),
+    "E321": frozenset({
+        ("vera/checker/control.py", "ControlFlowMixin._check_ctor_pattern"),
+        ("vera/checker/control.py", "ControlFlowMixin._check_destructure"),
+    }),
     # A module-qualified call to a function the named module does not
     # declare: an imported module's path and the file's own path (#1558)
     # are two call shapes for one rule, each listing the module's functions.
