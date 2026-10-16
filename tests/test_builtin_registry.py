@@ -79,10 +79,31 @@ from vera.wasm.context import WasmContext
 pytestmark = pytest.mark.matrix(decides=[
     "vera/builtins.py",
     "vera/wasm/calls.py",
-    "vera/wasm/calls_containers.py",
     "vera/environment.py",
     "vera/codegen/assembly.py",
     "vera/codegen/compilability.py",
+    # The emitters a record names and the conventions they take.
+    "vera/wasm/calls_arrays.py",
+    "vera/wasm/calls_containers.py",
+    "vera/wasm/calls_encoding.py",
+    "vera/wasm/calls_handlers.py",
+    "vera/wasm/calls_markup.py",
+    "vera/wasm/calls_math.py",
+    "vera/wasm/calls_parsing.py",
+    "vera/wasm/calls_strings.py",
+    # The other readers, and the hosts' bindings the cells run.
+    "vera/introspect.py",
+    "vera/builtin_domains.py",
+    "vera/runtime/collections.py",
+    "vera/runtime/decimal.py",
+    "vera/runtime/html.py",
+    "vera/runtime/json.py",
+    "vera/runtime/map.py",
+    "vera/runtime/math.py",
+    "vera/runtime/md.py",
+    "vera/runtime/regex.py",
+    "vera/runtime/set.py",
+    "vera/browser/runtime.mjs",
 ])
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -327,34 +348,103 @@ public fn effects_probe(@String, @Nat -> @Int)
 }
 """
 
-#: The imports `every_builtin_source()` declares, in order, as the base
-#: (313c04db) declared them.
+#: The declarations `every_builtin_source()` makes, line for line and in
+#: order, as the base (313c04db) compiled them.
 _EVERY_BUILTIN_IMPORTS = (
-    "md_extract_code_blocks", "md_has_code_block", "md_has_heading",
-    "md_parse", "md_render", "regex_find", "regex_find_all", "regex_match",
-    "regex_replace", "map_contains$ks", "map_get$ks_vb", "map_get$ks_vi",
-    "map_get$ks_vs", "map_insert$ks_vi", "map_keys$ks", "map_new",
-    "map_remove$ks", "map_size", "map_values$vi", "set_add$ei",
-    "set_contains$ei", "set_new", "set_remove$ei", "set_size",
-    "set_to_array$ei", "decimal_abs", "decimal_add", "decimal_compare",
-    "decimal_div", "decimal_eq", "decimal_from_float", "decimal_from_int",
-    "decimal_from_string", "decimal_mul", "decimal_neg", "decimal_round",
-    "decimal_sub", "decimal_to_float", "decimal_to_string",
-    "host_decref_handle", "attach_bucket_to_wrapper", "json_parse",
-    "json_stringify", "html_parse", "html_to_string", "html_query",
-    "html_text", "log", "log2", "log10", "sin", "cos", "tan", "asin", "acos",
-    "atan", "atan2", "contract_fail", "trap",
+    '(import "vera" "md_extract_code_blocks" (func $vera.md_extract_code_blocks (param i32 i32 i32) (result i32 i32)))',
+    '(import "vera" "md_has_code_block" (func $vera.md_has_code_block (param i32 i32 i32) (result i32)))',
+    '(import "vera" "md_has_heading" (func $vera.md_has_heading (param i32 i64) (result i32)))',
+    '(import "vera" "md_parse" (func $vera.md_parse (param i32 i32) (result i32)))',
+    '(import "vera" "md_render" (func $vera.md_render (param i32) (result i32 i32)))',
+    '(import "vera" "regex_find" (func $vera.regex_find (param i32 i32 i32 i32) (result i32)))',
+    '(import "vera" "regex_find_all" (func $vera.regex_find_all (param i32 i32 i32 i32) (result i32)))',
+    '(import "vera" "regex_match" (func $vera.regex_match (param i32 i32 i32 i32) (result i32)))',
+    '(import "vera" "regex_replace" (func $vera.regex_replace (param i32 i32 i32 i32 i32 i32) (result i32)))',
+    '(import "vera" "map_contains$ks" (func $vera.map_contains$ks (param i32) (param i32) (param i32) (result i32)))',
+    '(import "vera" "map_get$ks_vb" (func $vera.map_get$ks_vb (param i32) (param i32) (param i32) (result i32)))',
+    '(import "vera" "map_get$ks_vi" (func $vera.map_get$ks_vi (param i32) (param i32) (param i32) (result i32)))',
+    '(import "vera" "map_get$ks_vs" (func $vera.map_get$ks_vs (param i32) (param i32) (param i32) (result i32)))',
+    '(import "vera" "map_insert$ks_vi" (func $vera.map_insert$ks_vi (param i32) (param i32) (param i32) (param i64) (result i32)))',
+    '(import "vera" "map_keys$ks" (func $vera.map_keys$ks (param i32) (result i32) (result i32)))',
+    '(import "vera" "map_new" (func $vera.map_new (result i32)))',
+    '(import "vera" "map_remove$ks" (func $vera.map_remove$ks (param i32) (param i32) (param i32) (result i32)))',
+    '(import "vera" "map_size" (func $vera.map_size (param i32) (result i64)))',
+    '(import "vera" "map_values$vi" (func $vera.map_values$vi (param i32) (result i32) (result i32)))',
+    '(import "vera" "set_add$ei" (func $vera.set_add$ei (param i32) (param i64) (result i32)))',
+    '(import "vera" "set_contains$ei" (func $vera.set_contains$ei (param i32) (param i64) (result i32)))',
+    '(import "vera" "set_new" (func $vera.set_new (result i32)))',
+    '(import "vera" "set_remove$ei" (func $vera.set_remove$ei (param i32) (param i64) (result i32)))',
+    '(import "vera" "set_size" (func $vera.set_size (param i32) (result i64)))',
+    '(import "vera" "set_to_array$ei" (func $vera.set_to_array$ei (param i32) (result i32) (result i32)))',
+    '(import "vera" "decimal_abs" (func $vera.decimal_abs (param i32) (result i32)))',
+    '(import "vera" "decimal_add" (func $vera.decimal_add (param i32) (param i32) (result i32)))',
+    '(import "vera" "decimal_compare" (func $vera.decimal_compare (param i32) (param i32) (result i32)))',
+    '(import "vera" "decimal_div" (func $vera.decimal_div (param i32) (param i32) (result i32)))',
+    '(import "vera" "decimal_eq" (func $vera.decimal_eq (param i32) (param i32) (result i32)))',
+    '(import "vera" "decimal_from_float" (func $vera.decimal_from_float (param f64) (result i32)))',
+    '(import "vera" "decimal_from_int" (func $vera.decimal_from_int (param i64) (result i32)))',
+    '(import "vera" "decimal_from_string" (func $vera.decimal_from_string (param i32) (param i32) (result i32)))',
+    '(import "vera" "decimal_mul" (func $vera.decimal_mul (param i32) (param i32) (result i32)))',
+    '(import "vera" "decimal_neg" (func $vera.decimal_neg (param i32) (result i32)))',
+    '(import "vera" "decimal_round" (func $vera.decimal_round (param i32) (param i64) (result i32)))',
+    '(import "vera" "decimal_sub" (func $vera.decimal_sub (param i32) (param i32) (result i32)))',
+    '(import "vera" "decimal_to_float" (func $vera.decimal_to_float (param i32) (result f64)))',
+    '(import "vera" "decimal_to_string" (func $vera.decimal_to_string (param i32) (result i32) (result i32)))',
+    '(import "vera" "host_decref_handle" (func $vera.host_decref_handle (param i32) (param i32)))',
+    '(import "vera" "attach_bucket_to_wrapper" (func $vera.attach_bucket_to_wrapper (param i32) (param i32) (param i32)))',
+    '(import "vera" "json_parse" (func $vera.json_parse (param i32 i32) (result i32)))',
+    '(import "vera" "json_stringify" (func $vera.json_stringify (param i32) (result i32 i32)))',
+    '(import "vera" "html_parse" (func $vera.html_parse (param i32 i32) (result i32)))',
+    '(import "vera" "html_to_string" (func $vera.html_to_string (param i32) (result i32 i32)))',
+    '(import "vera" "html_query" (func $vera.html_query (param i32 i32 i32) (result i32 i32)))',
+    '(import "vera" "html_text" (func $vera.html_text (param i32) (result i32 i32)))',
+    '(import "vera" "log" (func $vera.log (param f64) (result f64)))',
+    '(import "vera" "log2" (func $vera.log2 (param f64) (result f64)))',
+    '(import "vera" "log10" (func $vera.log10 (param f64) (result f64)))',
+    '(import "vera" "sin" (func $vera.sin (param f64) (result f64)))',
+    '(import "vera" "cos" (func $vera.cos (param f64) (result f64)))',
+    '(import "vera" "tan" (func $vera.tan (param f64) (result f64)))',
+    '(import "vera" "asin" (func $vera.asin (param f64) (result f64)))',
+    '(import "vera" "acos" (func $vera.acos (param f64) (result f64)))',
+    '(import "vera" "atan" (func $vera.atan (param f64) (result f64)))',
+    '(import "vera" "atan2" (func $vera.atan2 (param f64 f64) (result f64)))',
+    '(import "vera" "contract_fail" (func $vera.contract_fail (param i32 i32)))',
+    '(import "vera" "trap" (func $vera.trap (param i32 i32 i32)))',
 )
 
-#: The imports `_EVERY_EFFECT` declares, in order, as the base declared them.
+#: The declarations `_EVERY_EFFECT` makes, line for line and in order, as
+#: the base compiled them.
 _EVERY_EFFECT_IMPORTS = (
-    "args", "exit", "get_env", "print", "read_char", "read_file", "read_line",
-    "sleep", "stderr", "time", "write_file", "host_decref_handle",
-    "attach_bucket_to_wrapper", "http_get", "http_post", "async_http_get",
-    "async_http_post", "async_await", "inference_complete", "db_query",
-    "db_execute", "random_int", "random_float", "random_bool", "contract_fail",
-    "trap", "state_get_Int", "state_put_Int", "state_push_Int",
-    "state_pop_Int",
+    '(import "vera" "args" (func $vera.args (result i32 i32)))',
+    '(import "vera" "exit" (func $vera.exit (param i64)))',
+    '(import "vera" "get_env" (func $vera.get_env (param i32 i32) (result i32)))',
+    '(import "vera" "print" (func $vera.print (param i32 i32)))',
+    '(import "vera" "read_char" (func $vera.read_char (result i32)))',
+    '(import "vera" "read_file" (func $vera.read_file (param i32 i32) (result i32)))',
+    '(import "vera" "read_line" (func $vera.read_line (result i32 i32)))',
+    '(import "vera" "sleep" (func $vera.sleep (param i64)))',
+    '(import "vera" "stderr" (func $vera.stderr (param i32 i32)))',
+    '(import "vera" "time" (func $vera.time (result i64)))',
+    '(import "vera" "write_file" (func $vera.write_file (param i32 i32 i32 i32) (result i32)))',
+    '(import "vera" "host_decref_handle" (func $vera.host_decref_handle (param i32) (param i32)))',
+    '(import "vera" "attach_bucket_to_wrapper" (func $vera.attach_bucket_to_wrapper (param i32) (param i32) (param i32)))',
+    '(import "vera" "http_get" (func $vera.http_get (param i32 i32) (result i32)))',
+    '(import "vera" "http_post" (func $vera.http_post (param i32 i32 i32 i32) (result i32)))',
+    '(import "vera" "async_http_get" (func $vera.async_http_get (param i32 i32) (result i32)))',
+    '(import "vera" "async_http_post" (func $vera.async_http_post (param i32 i32 i32 i32) (result i32)))',
+    '(import "vera" "async_await" (func $vera.async_await (param i32) (result i32)))',
+    '(import "vera" "inference_complete" (func $vera.inference_complete (param i32 i32) (result i32)))',
+    '(import "vera" "db_query" (func $vera.db_query (param i32 i32 i32 i32) (result i32)))',
+    '(import "vera" "db_execute" (func $vera.db_execute (param i32 i32 i32 i32) (result i32)))',
+    '(import "vera" "random_int" (func $vera.random_int (param i64 i64) (result i64)))',
+    '(import "vera" "random_float" (func $vera.random_float (result f64)))',
+    '(import "vera" "random_bool" (func $vera.random_bool (result i32)))',
+    '(import "vera" "contract_fail" (func $vera.contract_fail (param i32 i32)))',
+    '(import "vera" "trap" (func $vera.trap (param i32 i32 i32)))',
+    '(import "vera" "state_get_Int" (func $vera.state_get_Int (result i64)))',
+    '(import "vera" "state_put_Int" (func $vera.state_put_Int (param i64)))',
+    '(import "vera" "state_push_Int" (func $vera.state_push_Int))',
+    '(import "vera" "state_pop_Int" (func $vera.state_pop_Int))',
 )
 
 
@@ -366,12 +456,31 @@ _EVERY_EFFECT_IMPORTS = (
     ],
 )
 def test_the_declaration_order_is_the_bases(source: str, golden: tuple[str, ...]) -> None:
-    """The families in their order, each family's rows in theirs, a per-instance
-    row's instances by name: the order the base declared, which seven families
-    keep unsorted (html, async, db, random and math among them)."""
+    """Every declaration line as the base wrote it, in the base's order: the
+    families in their order, each family's rows in theirs (seven families keep
+    theirs unsorted, html, async, db, random and math among them), a
+    per-instance row's instances by name, and each line's WAT types, so a row
+    whose types are wrong is red here although every reader follows it."""
     compiled = pipeline.compile(source)
     assert compiled.ok, [d.description for d in compiled.diagnostics][:5]
-    assert tuple(_declared(compiled.wat)) == golden
+    assert tuple(line.strip() for line in _declared(compiled.wat).values()) == golden
+
+
+def test_the_goldens_declare_every_row() -> None:
+    """Between them the two golden programs declare an instance of every row
+    of `HOST_IMPORTS`, so every row's types are held to the base's line.  A
+    row added later is called from a golden program and its line added to
+    that golden."""
+    rows: set[str] = set()
+    for line in _EVERY_BUILTIN_IMPORTS + _EVERY_EFFECT_IMPORTS:
+        found = _IMPORT_LINE.match(line)
+        assert found is not None, line
+        name = found.group(1)
+        row = host_import(name) or next(
+            r for r in HOST_IMPORTS
+            if r.instance == CELL and name.startswith(r.name + "_"))
+        rows.add(row.name)
+    assert rows == {row.name for row in HOST_IMPORTS}
 
 
 # ---------------------------------------------------------------------
@@ -504,7 +613,43 @@ def test_a_decimal_operations_literals_are_its_import() -> None:
         row = HOST_IMPORT_BY_NAME[op]
         assert op == spec.name and row.params == (param,) and row.results == (result,)
         seen += 1
-    assert seen == 5
+    assert seen > 0
+
+
+_AT_THE_CALL = [
+    spec for spec in _ALL
+    if isinstance(spec.lowering, (Inline, Host))
+    and spec.lowering.binding in (Binding.ARGS_AT, Binding.ARGS_SITE)
+]
+
+
+@pytest.mark.parametrize("spec", _AT_THE_CALL, ids=_ids(_AT_THE_CALL))
+def test_the_call_is_the_site_of_its_checks(spec: BuiltinSpec) -> None:
+    """`ARGS_AT` and `ARGS_SITE` hand the call to the emitter as the site of
+    the check it compiles, so every check in the probe is recorded at the
+    call."""
+    source = probe_source(spec)
+    _, _, _, call = probe_parts(spec)
+    line = source.splitlines().index(f"  {call}") + 1
+    compiled = pipeline.compile(source)
+    assert compiled.ok, [d.description for d in compiled.diagnostics]
+    found = pipeline.checks(compiled.result, function="probe")
+    assert found, "the call compiled to no check"
+    assert {(c.line, c.column) for c in found} == {(line, 3)}
+
+
+@pytest.mark.parametrize("name", sorted(INTRINSICS))
+def test_a_call_at_another_arity_is_an_ordinary_call(name: str) -> None:
+    """The dispatch lowers a name in place only at its record's arity: one
+    argument more falls through to the ordinary call, which code generation
+    without the checker's tables skips as a call to no function (E602)."""
+    intrinsic = INTRINSICS[name]
+    args = ", ".join(["1"] * (intrinsic.arity + 1))
+    source = _fn_source("probe", "@Unit", "Int", "effects(pure)", f"{name}({args})")
+    compiled = pipeline.compile(source, checked=False)
+    skips = [d for d in compiled.diagnostics if d.error_code == "E602"]
+    assert len(skips) == 1, [(d.error_code, d.description) for d in compiled.diagnostics]
+    assert f"call target {name!r} not registered" in skips[0].description
 
 
 # ---------------------------------------------------------------------
@@ -716,7 +861,11 @@ def test_the_domain_has_one_source() -> None:
     for domain, spec in zip(BUILTIN_DOMAINS, with_domain, strict=True):
         assert spec.domain is not None
         assert domain.requires == spec.domain.requires
-        assert domain.params == "@String, @Int"
+        assert domain.params == ", ".join(
+            f"@{_surface(t, {}, '')}" for t in spec.signature.params)
+    # The base wrote this one by hand; the derivation must give its text.
+    by_name = {d.name: d for d in BUILTIN_DOMAINS}
+    assert by_name["string_char_code"].params == "@String, @Int"
     for spec in with_domain:
         assert spec.domain is not None
         holders = [
@@ -984,6 +1133,33 @@ def test_the_prelude_records_are_the_prelude_bodies() -> None:
 
 def _families() -> Iterator[str]:
     return (f.name for f in HOST_FAMILIES)
+
+
+def _io_call(op: str) -> str:
+    """A call of IO operation *op* with literal arguments, its result bound."""
+    from vera.environment import TypeEnv
+
+    info = TypeEnv().effects["IO"].operations[op]
+    literal = {"String": '"x"', "Unit": "()", "Nat": "1", "Int": "1"}
+    args = ", ".join(literal[_surface(t, {}, "")] for t in info.param_types)
+    ret = _surface(info.return_type, {}, "")
+    if ret in ("Unit", "Never"):
+        return f"IO.{op}({args})"
+    return f"let @{ret} = IO.{op}({args});\n  ()"
+
+
+_IO_ROWS = [row for row in HOST_IMPORTS if row.family == "io"]
+
+
+@pytest.mark.parametrize("row", _IO_ROWS, ids=[row.name for row in _IO_ROWS])
+def test_an_import_the_host_allocates_through_exports_the_allocator(row: Any) -> None:
+    """A module calling one IO operation exports `alloc`, which the host
+    builds the result in, exactly when the operation's row needs it."""
+    source = _fn_source("main", "@Unit", "Unit", "effects(<IO>)", _io_call(row.name))
+    compiled = pipeline.compile(source)
+    assert compiled.ok, [d.description for d in compiled.diagnostics]
+    assert (row.name in _declared(compiled.wat)) is True
+    assert ('(export "alloc" (func $alloc))' in compiled.wat) is row.needs_alloc
 
 
 def _served_effects() -> list[str]:

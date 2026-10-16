@@ -271,9 +271,13 @@ class TestHostMirrored:
             SC.host_mirrored(tmp_path)
 
     def test_the_tree_reads_the_registrys_count(self) -> None:
-        """At the registry's introduction the row does not fall: the same 53."""
+        """The row read from the source is the registry's own count of the
+        built-ins it lowers through a host import."""
+        from vera.builtins import BUILTINS, Host
+
         root = Path(__file__).resolve().parent.parent
-        assert SC.host_mirrored(root)[0] == 53
+        hosted = [s for s in BUILTINS.values() if isinstance(s.lowering, Host)]
+        assert SC.host_mirrored(root)[0] == len(hosted)
 
 
 class TestSyncGates:

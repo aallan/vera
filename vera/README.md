@@ -851,7 +851,7 @@ The script is intentionally permissive about disposition text — it only enforc
 A built-in function is one record in `BUILTINS` in `builtins.py`: its signature, its `since`, and its lowering, which is one of three.
 
 - **In place** (`Inline`): the emitter, a method of one of the `wasm/calls_*.py` mixins, named in the record with the argument convention it takes (`Binding`).
-- **Through a host import** (`Host`): the emitter, a row in `HOST_IMPORTS` for each import it calls, which the module declares from the row, and the implementation in each host that binds the row's family: `runtime/<family>.py` and `browser/runtime.mjs`.  A new family also needs its in-use set in code generation (`_<family>_ops_used`), which `_declare_host_imports` and `execute()` read.
+- **Through a host import** (`Host`): the emitter, a row in `HOST_IMPORTS` for each import it calls, which the module declares from the row, and the implementation in each host that binds the row's family: `runtime/<family>.py` and `browser/runtime.mjs`.  A new family also needs its `HostFamily` in `HOST_FAMILIES` and its in-use set in code generation (`_<family>_ops_used`, or `_<family>_imports` for a per-instance family), entered in `_declare_host_imports`' `named` table and read by `execute()`.
 - **As a Vera body** (`Prelude`): the body, in `prelude.py`'s combinator blocks.
 
 ```python

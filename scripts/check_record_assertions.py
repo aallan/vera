@@ -127,12 +127,18 @@ KEPT: Mapping[str, str] = {
     "test_builtin_helpers_tagged_as_builtin::contract_fail": _HOST_NAMES,
     "tests/test_runtime_traps.py::TestSourceMapPopulation516."
     "test_no_spurious_entries_for_builtins::contract_fail": _HOST_NAMES,
-    # The order of a module's import declarations, the signals' among them.
+    # A module's import declarations, line for line, the signals' among them.
     _REGISTRY + "_EVERY_BUILTIN_IMPORTS::contract_fail": _RENDERING,
+    _REGISTRY + "_EVERY_BUILTIN_IMPORTS::vera.trap": _RENDERING,
     _REGISTRY + "_EVERY_EFFECT_IMPORTS::contract_fail": _RENDERING,
+    _REGISTRY + "_EVERY_EFFECT_IMPORTS::vera.trap": _RENDERING,
     _REGISTRY + "test_the_declaration_order_is_the_bases::_EVERY_BUILTIN_IMPORTS":
         _RENDERING,
     _REGISTRY + "test_the_declaration_order_is_the_bases::_EVERY_EFFECT_IMPORTS":
+        _RENDERING,
+    _REGISTRY + "test_the_goldens_declare_every_row::_EVERY_BUILTIN_IMPORTS":
+        _RENDERING,
+    _REGISTRY + "test_the_goldens_declare_every_row::_EVERY_EFFECT_IMPORTS":
         _RENDERING,
 }
 
