@@ -160,6 +160,10 @@ RUN_SPECS: dict[str, RunSpec] = {
     "base64": RunSpec(),
     "closures": RunSpec(fn="test_closure"),
     "collections": RunSpec(),
+    # Writes a file of every byte value, copies it by its bytes and reads
+    # the copy back; a failed write, copy or read prints the error and
+    # completes normally, so the sentinel is what proves the round trip.
+    "copy_bytes": RunSpec(expect="copied 256 bytes, identical"),
     # Reaches a real (in-memory) database and prints its error on the Err
     # arm before completing normally, so exit 0 alone does not mean the
     # round trip happened.
@@ -334,12 +338,15 @@ def check_coverage(
 # clock operations live under `IO`, so `file_io.vera` declares exactly
 # the bare `<IO>` that `hello_world.vera` does and only the operation it
 # calls tells the two apart.  Measured over the corpus, `DB` appears in
-# `database.vera` and `sqlitedb.vera` alone, and `IO.read_file` /
-# `IO.write_file` in `file_io.vera` alone.
+# `database.vera` and `sqlitedb.vera` alone, `IO.read_file` /
+# `IO.write_file` in `file_io.vera` alone, and `IO.read_bytes` /
+# `IO.write_bytes` in `copy_bytes.vera` alone.
 RESOURCE_EFFECTS: tuple[str, ...] = ("DB",)
 RESOURCE_OPS: tuple[tuple[str, str], ...] = (
     ("IO", "read_file"),
     ("IO", "write_file"),
+    ("IO", "read_bytes"),
+    ("IO", "write_bytes"),
 )
 
 

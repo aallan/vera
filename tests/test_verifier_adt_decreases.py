@@ -780,9 +780,14 @@ private fn sum(@List<Int> -> @Int)
         # u64 range left at Tier 3 prove (`life.vera` 7, `fizzbuzz.vera` 1).
         # T1 -1 -9 +9 +9 +4 +8 = +20; T3 -13 -10 -8 = -31; total -11:
         # 420/142/562 -> 440/111/551.
-        assert t1 == 440, f"Expected 440 T1, got {t1}"
-        assert t3 == 111, f"Expected 111 T3, got {t3}"
-        assert total == 551, f"Expected 551 total, got {total}"
+        #
+        # #1711: `copy_bytes.vera` is added, its five `requires(true)` and
+        # five `ensures(true)` proved and the index into the copy compared
+        # (`@Array<Byte>.1[@Nat.0]`) left to its bounds check: +10 T1, +1 T3:
+        # 440/111/551 -> 450/112/562.
+        assert t1 == 450, f"Expected 450 T1, got {t1}"
+        assert t3 == 112, f"Expected 112 T3, got {t3}"
+        assert total == 562, f"Expected 562 total, got {total}"
         # Zero is the load-bearing value, not a vacuous one: every corpus
         # narrowing is now covered by an emitted guard, so any reappearance
         # is a REGRESSION in guard coverage rather than a new example.  The

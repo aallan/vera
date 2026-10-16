@@ -905,7 +905,7 @@ The gate is what makes the set closed. It enumerates `examples/*.vera` from disk
 
 What the gate asserts is *runs green*, deliberately not *prints what it used to*: output pinning stays in the dedicated tests, which is why `sqlitedb.vera`'s rendered city table and `inference_json.vera`'s score line are pinned there and only trap-freedom here.
 
-Trap-freedom is two signals, not one — the discipline `check_examples.py` already applies, for the same reason. An exit code alone accepts two measured failures. Every spec names its entry point rather than relying on `vera run`'s first-export fallback, because a `main` that is privatised or renamed otherwise runs *some other function* at exit 0. And the three examples that reach outside the process — `sqlitedb.vera` for its committed fixture, `database.vera` for an in-memory database, `file_io.vera` for the filesystem — answer a failure by printing a message and completing normally, so each pins a substring only its success path prints. Deleting `examples/sqlitedb.sqlite` fails the gate on that sentinel rather than passing on the graceful in-memory arm.
+Trap-freedom is two signals, not one — the discipline `check_examples.py` already applies, for the same reason. An exit code alone accepts two measured failures. Every spec names its entry point rather than relying on `vera run`'s first-export fallback, because a `main` that is privatised or renamed otherwise runs *some other function* at exit 0. And the examples that reach outside the process — `sqlitedb.vera` for its committed fixture, `database.vera` for an in-memory database, `file_io.vera` and `copy_bytes.vera` for the filesystem — answer a failure by printing a message and completing normally, so each pins a substring only its success path prints. Deleting `examples/sqlitedb.sqlite` fails the gate on that sentinel rather than passing on the graceful in-memory arm.
 
 | Example | Executed by | Harness gate |
 |---------|-------------|--------------|
@@ -916,6 +916,7 @@ Trap-freedom is two signals, not one — the discipline `check_examples.py` alre
 | `base64.vera` | browser parity (stdout) | runs |
 | `closures.vera` | browser parity (return value); `test_codegen_closures.py` pins 15 and 105 | runs |
 | `collections.vera` | nothing, before the gate | runs |
+| `copy_bytes.vera` | the harness gate, natively | runs |
 | `database.vera` | nothing, before the gate | runs |
 | `effect_handler.vera` | browser parity (stdout + State round-trips); `test_codegen_effects.py` pins six results | runs |
 | `ephemeris.vera` | `test_examples_ephemeris.py` pins the full stdout, both geocentric distances, agreement with ERFA to 30″, and the per-function tier statuses — the eccentricity binds verified, `wrap_deg` at Tier 1, the transcendentals exactly `tier3` at a low, the default and a generous budget, `kepler_solve`'s termination proved | runs |

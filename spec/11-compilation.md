@@ -268,6 +268,8 @@ The `IO` effect is implemented via host imports. Each IO operation the program u
 | `read_line` | `(import "vera" "read_line" (func $vera.read_line (result i32 i32)))` |
 | `read_file` | `(import "vera" "read_file" (func $vera.read_file (param i32 i32) (result i32)))` |
 | `write_file` | `(import "vera" "write_file" (func $vera.write_file (param i32 i32 i32 i32) (result i32)))` |
+| `read_bytes` | `(import "vera" "read_bytes" (func $vera.read_bytes (param i32 i32) (result i32)))` |
+| `write_bytes` | `(import "vera" "write_bytes" (func $vera.write_bytes (param i32 i32 i32 i32) (result i32)))` |
 | `args` | `(import "vera" "args" (func $vera.args (result i32 i32)))` |
 | `exit` | `(import "vera" "exit" (func $vera.exit (param i64)))` |
 | `get_env` | `(import "vera" "get_env" (func $vera.get_env (param i32 i32) (result i32)))` |
@@ -276,7 +278,7 @@ The `IO` effect is implemented via host imports. Each IO operation the program u
 | `time` | `(import "vera" "time" (func $vera.time (result i64)))` |
 | `stderr` | `(import "vera" "stderr" (func $vera.stderr (param i32 i32)))` |
 
-Only the operations actually used in the program are imported. Operations that return host-allocated data (`read_line`, `read_char`, `read_file`, `write_file`, `args`, `get_env`) cause the module to export its `$alloc` function so the host can allocate WASM memory.
+Only the operations actually used in the program are imported. Operations that return host-allocated data (`read_line`, `read_char`, `read_file`, `write_file`, `read_bytes`, `write_bytes`, `args`, `get_env`) cause the module to export its `$alloc` function so the host can allocate WASM memory.
 
 `IO.exit` emits `unreachable` after the call since the process terminates. Operations returning `Result` or `Option` return an `i32` heap pointer to the ADT; operations returning `String` or `Array<String>` return an `(i32, i32)` pair.
 

@@ -287,7 +287,7 @@ The reference compiler is under active development. The current release includes
 - Working example programs ([`examples/`](examples/))
 - Built-in functions covering strings, arrays, math, parsing, and data types, as `vera builtins` lists them
 - Four built-in abilities (Eq, Ord, Hash, Show) with constrained generics and ADT auto-derivation
-- Full IO operations (print, read_line, read_char, read_file, write_file, args, exit, get_env, sleep, time, stderr)
+- Full IO operations (print, read_line, read_char, read_file, write_file, read_bytes, write_bytes, args, exit, get_env, sleep, time, stderr)
 - Algebraic data types, pattern matching, closures, generics with monomorphisation
 - Algebraic effect handlers with resume and state (compiled for `State` and `Exn` only)
 - Built-in `<Http>`, `<HttpServer>`, `<Inference>`, `<DB>`, `<State>`, `<IO>`, `<Async>`, `<Random>`, `<Diverge>`, and `Exn<T>` (typed exception) effects

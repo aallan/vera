@@ -2482,6 +2482,36 @@
     ]
   },
   {
+    "id": "ch09_base64_bytes",
+    "file": "ch09_base64_bytes.vera",
+    "chapter": 9,
+    "title": "Base64 encoding and decoding over Array<Byte>",
+    "level": "run",
+    "spec_ref": "Section 9.6.16",
+    "expected_stdout": "TQ==\nTWE=\nTWFu\n//79AA==\n|\nok 255,254,253,0\nok |\n256 32640\nerr invalid base64 length\nerr invalid base64\n",
+    "expected_exit": 0,
+    "features": [
+      "base64_encode_bytes",
+      "base64_decode_bytes",
+      "result_type"
+    ]
+  },
+  {
+    "id": "ch09_utf8_bytes",
+    "file": "ch09_utf8_bytes.vera",
+    "chapter": 9,
+    "title": "UTF-8 between String and Array<Byte>",
+    "level": "run",
+    "spec_ref": "Section 9.6.11",
+    "expected_stdout": "104,195,169,108,108,111,32,226,130,172\n0\nok h\u00e9llo \u20ac\nok |\nerr invalid UTF-8 at byte 1\nerr invalid UTF-8 at byte 2\nerr invalid UTF-8 at byte 0\nerr invalid UTF-8 at byte 0\nerr invalid UTF-8 at byte 2\n",
+    "expected_exit": 0,
+    "features": [
+      "string_to_bytes",
+      "bytes_to_string",
+      "result_type"
+    ]
+  },
+  {
     "id": "ch09_url_encoding",
     "file": "ch09_url_encoding.vera",
     "chapter": 9,

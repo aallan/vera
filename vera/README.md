@@ -116,7 +116,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | ` ├ calls.py` | | Core dispatcher for `_translate_call` / `_translate_qualified_call` (a built-in lowers through its registry record's emitter, `builtins.INTRINSICS`), generic resolution, shared element-type inference (domain mixins below) | |
 | ` ├ calls_arrays.py` | | `array_length` / `append` / `range` / `concat` / `slice` / `map` / `filter` / `fold` / `mapi` / `reverse` / `find` / `any` / `all` / `flatten` / `sort_by` | |
 | ` ├ calls_containers.py` | | Map, Set, Decimal (opaque-handle types) | |
-| ` ├ calls_encoding.py` | | Base64 and URL encoding/decoding/parsing | |
+| ` ├ calls_encoding.py` | | Base64 (over a `String` and over an `Array<Byte>`), UTF-8 between `String` and `Array<Byte>`, and URL encoding/decoding/parsing | |
 | ` ├ calls_handlers.py` | | Show/Hash ability dispatch, `handle[State<T>]` and `handle[Exn<E>]` | |
 | ` ├ calls_markup.py` | | JSON, HTML, Markdown, Regex, async/await (#841: fused concurrent lowering for `async(Http.get/post)`, identity otherwise) | |
 | ` ├ async_fusion.py` | | #841 fusion predicates — the single source of truth the `WasmContext` async/await lowering reads | `fused_async_target()`, `await_needs_check()`, `compute_future_ret_fns()` |
@@ -373,7 +373,7 @@ The **standard prelude** automatically provides `Option<T>`, `Result<T, E>`, `Or
 | `MdInline` | ADT | `MdText(String)`, `MdCode(String)`, `MdEmph(Array<MdInline>)`, `MdStrong(Array<MdInline>)`, `MdLink(Array<MdInline>, String)`, `MdImage(String, String)` |
 | `MdBlock` | ADT | `MdParagraph(Array<MdInline>)`, `MdHeading(Nat, Array<MdInline>)`, `MdCodeBlock(String, String)`, `MdBlockQuote(Array<MdBlock>)`, `MdList(Bool, Array<Array<MdBlock>>)`, `MdThematicBreak`, `MdTable(Array<Array<Array<MdInline>>>)`, `MdDocument(Array<MdBlock>)` |
 | `State<T>` | Effect | `get(Unit) → T`, `put(T) → Unit` operations |
-| `IO` | Effect | `print`, `read_line`, `read_char`, `read_file`, `write_file`, `args`, `exit`, `get_env`, `sleep`, `time`, `stderr` |
+| `IO` | Effect | `print`, `read_line`, `read_char`, `read_file`, `write_file`, `read_bytes`, `write_bytes`, `args`, `exit`, `get_env`, `sleep`, `time`, `stderr` |
 | `Async` | Effect | No operations — marker for async computation |
 | `Diverge` | Effect | No operations — marker for non-termination |
 | `array_length` | Function | `forall<T> Array<T> → Int`, pure |
@@ -403,6 +403,10 @@ The **standard prelude** automatically provides `Option<T>`, `Result<T, E>`, `Or
 | `parse_bool` | Function | `String → Result<Bool, String>`, pure |
 | `base64_encode` | Function | `String → String`, pure (RFC 4648) |
 | `base64_decode` | Function | `String → Result<String, String>`, pure |
+| `base64_encode_bytes` | Function | `Array<Byte> → String`, pure (RFC 4648) |
+| `base64_decode_bytes` | Function | `String → Result<Array<Byte>, String>`, pure |
+| `string_to_bytes` | Function | `String → Array<Byte>`, pure (the string's UTF-8 bytes) |
+| `bytes_to_string` | Function | `Array<Byte> → Result<String, String>`, pure (UTF-8 decode) |
 | `url_encode` | Function | `String → String`, pure (RFC 3986 percent-encoding) |
 | `url_decode` | Function | `String → Result<String, String>`, pure |
 | `url_parse` | Function | `String → Result<UrlParts, String>`, pure (RFC 3986 decomposition) |
