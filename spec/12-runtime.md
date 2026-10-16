@@ -532,7 +532,7 @@ The runtime implements a conservative mark-sweep garbage collector entirely in W
 
 ![Allocation and collection: $alloc aligns the request, tries the free list, bumps if there is room, and otherwise runs the three collector phases — clear marks, mark from shadow-stack roots with conservative scanning, sweep unmarked blocks onto the free list — before retrying and finally growing memory.](../assets/diagrams/gc-cycle.svg)
 
-**Shadow stack.** WASM does not support stack scanning, so the compiler maintains an explicit shadow stack in linear memory. The compiler pushes live heap pointers onto it at function entry (pointer-type parameters), after each `call $alloc` (newly allocated objects), and manages save/restore at function exit. Seven globals track the shadow stack and GC state:
+**Shadow stack.** WASM does not support stack scanning, so the compiler maintains an explicit shadow stack in linear memory. The compiler pushes live heap pointers onto it at function entry (pointer-type parameters), after each `call $alloc` (newly allocated objects), and manages save/restore at function exit. Ten globals track the shadow stack and GC state:
 
 | Global | Type | Purpose |
 |--------|------|---------|
@@ -543,6 +543,9 @@ The runtime implements a conservative mark-sweep garbage collector entirely in W
 | `$gc_heap_start` | `i32` | Heap start address (`data_end + 81920`, or `data_end + 147456` with the wrapper table; Section 12.5.1) |
 | `$gc_free_head` | `mut i32` | Free list head pointer |
 | `$gc_bm_base` | `mut i32` | Base of the object-base bitmap a collection builds |
+| `$gc_rs_lo` | `mut i32` | Header of the lowest object whose child a full mark worklist dropped |
+| `$gc_rs_off` | `mut i32` | Word offset in that object at which its push was dropped |
+| `$gc_rs_hi` | `mut i32` | Header of the highest object whose child a full mark worklist dropped |
 
 A program with the wrapper table also has `$gc_wrap_base`, `$gc_wrap_ptr` and `$gc_wrap_end`.
 
