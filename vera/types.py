@@ -18,8 +18,9 @@ if TYPE_CHECKING:
 # Built-in generic type-variable namespacing (#970)
 # =====================================================================
 
-# The built-in function registry (``vera/environment.py`` ``_register_builtins``)
-# names its internal generic vars ``T``/``U``/``A``/``B``/``E``/``K``/``V``.  The
+# The built-in registry (``vera/builtins.py``, registered by ``vera/environment.py``
+# ``_register_builtins``) names its internal generic vars ``T``/``U``/``A``/``B``/
+# ``E``/``K``/``V``.  The
 # inference skip-guard in ``_unify_for_inference`` compares a concrete argument's
 # type-args *by name* against the callee's ``forall_vars``; an identically-named
 # user ``forall<T>`` var therefore aborted unification and produced a spurious

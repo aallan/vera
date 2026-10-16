@@ -1,15 +1,16 @@
 """Best-effort "introduced-in version" (``since``) attribution for the compiler's
-built-in functions, effects, and abilities — the data behind the ``since`` field
-of ``vera builtins/effects/errors --json`` (#539).
+effects and abilities — the data behind the ``since`` field of ``vera
+effects/errors --json`` (#539).  A built-in function's version is in its record
+in :mod:`vera.builtins` (#735), which ``vera builtins --json`` reads.
 
-Keyed by registry name (built-in function / effect / ability), valued with the
-Vera version that first registered it as a bare version string (e.g.
-``"0.0.115"``). Reconstructed by git archaeology — ``git log -S '"name"' --
-vera/`` for the first introducing commit, then ``git tag --contains`` for the
-earliest release tag — cross-checked against the CHANGELOG release dates. The
-#288 "Rename for consistency" pass was traced through to each name's *true*
-introduction rather than the rename commit (e.g. ``string_upper`` dates to
-0.0.73 as ``to_upper``, not the 0.0.92 rename).
+Keyed by registry name (effect / ability), valued with the Vera version that
+first registered it as a bare version string (e.g. ``"0.0.115"``).
+Reconstructed by git archaeology — ``git log -S '"name"' -- vera/`` for the
+first introducing commit, then ``git tag --contains`` for the earliest release
+tag — cross-checked against the CHANGELOG release dates.  The built-ins' were
+reconstructed the same way, and the #288 "Rename for consistency" pass was
+traced through to each name's *true* introduction rather than the rename commit
+(e.g. ``string_upper`` dates to 0.0.73 as ``to_upper``, not the 0.0.92 rename).
 
 Diagnostic codes (``E`` / ``W``) are attributed too, and unlike the names above
 their attribution is *complete* rather than best-effort (#1157). They are stable
@@ -22,10 +23,10 @@ each release shipped (v0.1.7 → ``E207``-``E209`` + ``E217``; v0.1.6 → the
 that release introduced error codes at all, and no ``error_code=`` call site
 exists before it.
 
-Maintenance: when you add a built-in / effect / ability / diagnostic code, add
-its introduction version here in the same change. For a code that means the
+Maintenance: when you add an effect / ability / diagnostic code, add its
+introduction version here in the same change. For a code that means the
 *upcoming* version, since an unreleased change has no tag for the scan to find.
-A missing built-in reports ``"since": null`` — acceptable, the field is
+A missing effect reports ``"since": null`` — acceptable, the field is
 best-effort there — but a missing code fails
 ``tests/test_introspect.py::TestErrorsPayload::test_since_covers_every_code``,
 because ``ERROR_CODES`` is a closed enumeration and so can be held complete.
@@ -50,171 +51,6 @@ SINCE: dict[str, str] = {
     "Hash": "0.0.90",
     "Ord": "0.0.90",
     "Show": "0.0.90",
-    # --- Built-in functions ---
-    "abs": "0.0.70",
-    "acos": "0.0.116",
-    "array_all": "0.0.117",
-    "array_any": "0.0.117",
-    "array_append": "0.0.78",
-    "array_concat": "0.0.78",
-    "array_filter": "0.0.91",
-    "array_find": "0.0.117",
-    "array_flatten": "0.0.117",
-    "array_fold": "0.0.91",
-    "array_length": "0.0.78",
-    "array_map": "0.0.91",
-    "array_mapi": "0.0.117",
-    "array_range": "0.0.78",
-    "array_reverse": "0.0.117",
-    "array_slice": "0.0.91",
-    "array_sort_by": "0.0.117",
-    "asin": "0.0.116",
-    "async": "0.0.82",
-    "atan": "0.0.116",
-    "atan2": "0.0.116",
-    "await": "0.0.82",
-    "base64_decode": "0.0.79",
-    "base64_encode": "0.0.79",
-    "bool_to_string": "0.0.64",
-    "byte_to_int": "0.0.71",
-    "byte_to_string": "0.0.64",
-    "ceil": "0.0.70",
-    "char_to_lower": "0.0.118",
-    "char_to_upper": "0.0.118",
-    "clamp": "0.0.116",
-    "cos": "0.0.116",
-    "decimal_abs": "0.0.97",
-    "decimal_add": "0.0.97",
-    "decimal_compare": "0.0.97",
-    "decimal_div": "0.0.97",
-    "decimal_eq": "0.0.97",
-    "decimal_from_float": "0.0.97",
-    "decimal_from_int": "0.0.97",
-    "decimal_from_string": "0.0.97",
-    "decimal_mul": "0.0.97",
-    "decimal_neg": "0.0.97",
-    "decimal_round": "0.0.97",
-    "decimal_sub": "0.0.97",
-    "decimal_to_float": "0.0.97",
-    "decimal_to_string": "0.0.97",
-    "e": "0.0.116",
-    "float_clamp": "0.0.116",
-    "float_is_infinite": "0.0.72",
-    "float_is_nan": "0.0.72",
-    "float_to_int": "0.0.71",
-    "float_to_string": "0.0.64",
-    "floor": "0.0.70",
-    "html_attr": "0.0.100",
-    "html_parse": "0.0.100",
-    "html_query": "0.0.100",
-    "html_text": "0.0.100",
-    "html_to_string": "0.0.100",
-    "infinity": "0.0.72",
-    "int_to_byte": "0.0.71",
-    "int_to_float": "0.0.71",
-    "int_to_nat": "0.0.71",
-    "int_to_string": "0.0.64",
-    "is_alpha": "0.0.118",
-    "is_alphanumeric": "0.0.118",
-    "is_digit": "0.0.118",
-    "is_lower": "0.0.118",
-    "is_upper": "0.0.118",
-    "is_whitespace": "0.0.118",
-    "json_array_get": "0.0.98",
-    "json_array_length": "0.0.98",
-    "json_as_array": "0.0.119",
-    "json_as_bool": "0.0.119",
-    "json_as_int": "0.0.119",
-    "json_as_number": "0.0.119",
-    "json_as_object": "0.0.119",
-    "json_as_string": "0.0.119",
-    "json_get": "0.0.98",
-    "json_get_array": "0.0.119",
-    "json_get_bool": "0.0.119",
-    "json_get_int": "0.0.119",
-    "json_get_number": "0.0.119",
-    "json_get_string": "0.0.119",
-    "json_has_field": "0.0.98",
-    "json_keys": "0.0.98",
-    "json_parse": "0.0.98",
-    "json_stringify": "0.0.98",
-    "json_type": "0.0.98",
-    "log": "0.0.116",
-    "log10": "0.0.116",
-    "log2": "0.0.116",
-    "map_contains": "0.0.94",
-    "map_get": "0.0.94",
-    "map_insert": "0.0.94",
-    "map_keys": "0.0.94",
-    "map_new": "0.0.94",
-    "map_remove": "0.0.94",
-    "map_size": "0.0.94",
-    "map_values": "0.0.94",
-    "max": "0.0.70",
-    "md_extract_code_blocks": "0.0.84",
-    "md_has_code_block": "0.0.84",
-    "md_has_heading": "0.0.84",
-    "md_parse": "0.0.84",
-    "md_render": "0.0.84",
-    "min": "0.0.70",
-    "nan": "0.0.72",
-    "nat_to_int": "0.0.71",
-    "nat_to_string": "0.0.64",
-    "option_and_then": "0.0.89",
-    "option_map": "0.0.89",
-    "option_unwrap_or": "0.0.89",
-    "parse_bool": "0.0.77",
-    "parse_float64": "0.0.50",
-    "parse_int": "0.0.77",
-    "parse_nat": "0.0.50",
-    "pi": "0.0.116",
-    "pow": "0.0.70",
-    "regex_find": "0.0.86",
-    "regex_find_all": "0.0.86",
-    "regex_match": "0.0.86",
-    "regex_replace": "0.0.86",
-    "result_map": "0.0.89",
-    "result_unwrap_or": "0.0.89",
-    "round": "0.0.70",
-    "set_add": "0.0.95",
-    "set_contains": "0.0.95",
-    "set_new": "0.0.95",
-    "set_remove": "0.0.95",
-    "set_size": "0.0.95",
-    "set_to_array": "0.0.95",
-    "sign": "0.0.116",
-    "sin": "0.0.116",
-    "sqrt": "0.0.70",
-    "string_char_code": "0.0.50",
-    "string_chars": "0.0.118",
-    "string_concat": "0.0.50",
-    "string_contains": "0.0.73",
-    "string_ends_with": "0.0.73",
-    "string_from_char_code": "0.0.74",
-    "string_index_of": "0.0.73",
-    "string_join": "0.0.73",
-    "string_length": "0.0.50",
-    "string_lines": "0.0.118",
-    "string_lower": "0.0.73",
-    "string_pad_end": "0.0.118",
-    "string_pad_start": "0.0.118",
-    "string_repeat": "0.0.75",
-    "string_replace": "0.0.73",
-    "string_reverse": "0.0.118",
-    "string_slice": "0.0.50",
-    "string_split": "0.0.73",
-    "string_starts_with": "0.0.73",
-    "string_strip": "0.0.50",
-    "string_trim_end": "0.0.118",
-    "string_trim_start": "0.0.118",
-    "string_upper": "0.0.73",
-    "string_words": "0.0.118",
-    "tan": "0.0.116",
-    "to_string": "0.0.50",
-    "url_decode": "0.0.80",
-    "url_encode": "0.0.80",
-    "url_join": "0.0.81",
-    "url_parse": "0.0.81",
     # --- Diagnostic codes (#1157) ---
     "E001": "0.0.43",
     "E002": "0.0.43",

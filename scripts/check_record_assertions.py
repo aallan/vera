@@ -85,6 +85,7 @@ SELF_TEST = "tests/test_check_record_assertions.py"
 _1479 = "tests/test_emitted_checks_1479.py::"
 _NAMED = "tests/test_named_traps_1479.py::"
 _EXN = "tests/test_exn_throw_payload_1268.py::"
+_REGISTRY = "tests/test_builtin_registry.py::"
 
 #: The sites that stay on the text, ``"tests/<file>::<scope>::<shape>"`` to
 #: the reason.
@@ -126,6 +127,13 @@ KEPT: Mapping[str, str] = {
     "test_builtin_helpers_tagged_as_builtin::contract_fail": _HOST_NAMES,
     "tests/test_runtime_traps.py::TestSourceMapPopulation516."
     "test_no_spurious_entries_for_builtins::contract_fail": _HOST_NAMES,
+    # The order of a module's import declarations, the signals' among them.
+    _REGISTRY + "_EVERY_BUILTIN_IMPORTS::contract_fail": _RENDERING,
+    _REGISTRY + "_EVERY_EFFECT_IMPORTS::contract_fail": _RENDERING,
+    _REGISTRY + "test_the_declaration_order_is_the_bases::_EVERY_BUILTIN_IMPORTS":
+        _RENDERING,
+    _REGISTRY + "test_the_declaration_order_is_the_bases::_EVERY_EFFECT_IMPORTS":
+        _RENDERING,
 }
 
 

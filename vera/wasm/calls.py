@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from vera import ast
+from vera.builtins import INTRINSICS, Binding, Intrinsic
 from vera.monomorphize import (
     Monomorphizer,
     canonical_type_arg,
@@ -80,418 +81,14 @@ class CallsMixin:
         # change to the rule reaches both.  The table is the LEXICAL one
         # (#1299) — an intrinsic must not be displaced by a declaration
         # this call site cannot see, any more than an operation must.
+        # Which names are intrinsics, at which arity, and the emitter
+        # each lowers through, are the registry's (`vera.builtins`,
+        # #735); a name called at another arity falls through to the
+        # routes below, as an ordinary call does.
         if not bare_call_denotes_user_fn(call.name, self._scoped_fns):
-            if call.name == "array_length" and len(call.args) == 1:
-                return self._translate_array_length(call.args[0], env)
-            if call.name == "string_length" and len(call.args) == 1:
-                return self._translate_string_length(call.args[0], env)
-            if call.name == "string_concat" and len(call.args) == 2:
-                return self._translate_string_concat(
-                    call.args[0], call.args[1], env,
-                )
-            if call.name == "string_slice" and len(call.args) == 3:
-                return self._translate_string_slice(
-                    call.args[0], call.args[1], call.args[2], env,
-                )
-            if call.name == "string_char_code" and len(call.args) == 2:
-                return self._translate_char_code(
-                    call.args[0], call.args[1], env, at=call,
-                )
-            if call.name == "string_from_char_code" and len(call.args) == 1:
-                return self._translate_from_char_code(call.args[0], env)
-            if call.name == "string_repeat" and len(call.args) == 2:
-                return self._translate_string_repeat(
-                    call.args[0], call.args[1], env,
-                )
-            if call.name == "parse_nat" and len(call.args) == 1:
-                return self._translate_parse_nat(call.args[0], env)
-            if call.name == "parse_int" and len(call.args) == 1:
-                return self._translate_parse_int(call.args[0], env)
-            if call.name == "parse_float64" and len(call.args) == 1:
-                return self._translate_parse_float64(call.args[0], env)
-            if call.name == "parse_bool" and len(call.args) == 1:
-                return self._translate_parse_bool(call.args[0], env)
-            if call.name == "base64_encode" and len(call.args) == 1:
-                return self._translate_base64_encode(call.args[0], env)
-            if call.name == "base64_decode" and len(call.args) == 1:
-                return self._translate_base64_decode(call.args[0], env)
-            if call.name == "url_encode" and len(call.args) == 1:
-                return self._translate_url_encode(call.args[0], env)
-            if call.name == "url_decode" and len(call.args) == 1:
-                return self._translate_url_decode(call.args[0], env)
-            if call.name == "url_parse" and len(call.args) == 1:
-                return self._translate_url_parse(call.args[0], env)
-            if call.name == "url_join" and len(call.args) == 1:
-                return self._translate_url_join(call.args[0], env)
-            # Json host-import builtins
-            if call.name == "json_parse" and len(call.args) == 1:
-                return self._translate_json_parse(call.args[0], env)
-            if call.name == "json_stringify" and len(call.args) == 1:
-                return self._translate_json_stringify(call.args[0], env)
-            # Html host-import builtins
-            if call.name == "html_parse" and len(call.args) == 1:
-                return self._translate_html_parse(call.args[0], env)
-            if call.name == "html_to_string" and len(call.args) == 1:
-                return self._translate_html_to_string(call.args[0], env)
-            if call.name == "html_query" and len(call.args) == 2:
-                return self._translate_html_query(
-                    call.args[0], call.args[1], env,
-                )
-            if call.name == "html_text" and len(call.args) == 1:
-                return self._translate_html_text(call.args[0], env)
-            if call.name == "md_parse" and len(call.args) == 1:
-                return self._translate_md_parse(call.args[0], env)
-            if call.name == "md_render" and len(call.args) == 1:
-                return self._translate_md_render(call.args[0], env)
-            if call.name == "md_has_heading" and len(call.args) == 2:
-                return self._translate_md_has_heading(
-                    call.args[0], call.args[1], env,
-                )
-            if call.name == "md_has_code_block" and len(call.args) == 2:
-                return self._translate_md_has_code_block(
-                    call.args[0], call.args[1], env,
-                )
-            if call.name == "md_extract_code_blocks" and len(call.args) == 2:
-                return self._translate_md_extract_code_blocks(
-                    call.args[0], call.args[1], env,
-                )
-            # Regex host-import builtins (pure, host-provided)
-            if call.name == "regex_match" and len(call.args) == 2:
-                return self._translate_regex_match(
-                    call.args[0], call.args[1], env,
-                )
-            if call.name == "regex_find" and len(call.args) == 2:
-                return self._translate_regex_find(
-                    call.args[0], call.args[1], env,
-                )
-            if call.name == "regex_find_all" and len(call.args) == 2:
-                return self._translate_regex_find_all(
-                    call.args[0], call.args[1], env,
-                )
-            if call.name == "regex_replace" and len(call.args) == 3:
-                return self._translate_regex_replace(
-                    call.args[0], call.args[1], call.args[2], env,
-                )
-            if call.name == "async" and len(call.args) == 1:
-                return self._translate_async(call.args[0], env)
-            if call.name == "await" and len(call.args) == 1:
-                return self._translate_await(call.args[0], env)
-            if call.name == "to_string" and len(call.args) == 1:
-                return self._translate_to_string(call.args[0], env)
-            if call.name == "int_to_string" and len(call.args) == 1:
-                return self._translate_to_string(call.args[0], env)
-            if call.name == "nat_to_string" and len(call.args) == 1:
-                # #1362 (review): the missed member of the `@Nat`-parameter
-                # guard family its siblings joined in #757 (string_repeat,
-                # string_pad_*, string_from_char_code, md_has_heading).
-                # `nat_to_string` shares its lowering with `int_to_string`, so
-                # it inherited no boundary check and rendered a negative as
-                # "-7" — a wrong ANSWER for a @Nat formal, not a trap.  Guarded
-                # at this entry point only, since the shared translator also
-                # serves the genuinely-@Int callers.
-                #
-                # The guard goes on the ARGUMENT, which is why this does not
-                # simply wrap `_translate_to_string`: that returns the String
-                # (an i32 pair), and `_emit_nat_bind_guard` compares against
-                # `i64.const 0`, so wrapping the RESULT emitted a module that
-                # failed WASM validation outright ("expected i64, found i32")
-                # rather than one that trapped.  `_to_string_core` takes the
-                # argument's instructions, which is the value the boundary is
-                # about.
-                arg_instrs = self.translate_expr(call.args[0], env)
-                if arg_instrs is None:
-                    return None
-                if self._narrows_into_nat(call.args[0]):
-                    arg_instrs = self._emit_nat_bind_guard(
-                        arg_instrs, at=call.args[0])
-                return self._to_string_core(arg_instrs)
-            if call.name == "bool_to_string" and len(call.args) == 1:
-                return self._translate_bool_to_string(call.args[0], env)
-            if call.name == "byte_to_string" and len(call.args) == 1:
-                return self._translate_byte_to_string(call.args[0], env)
-            if call.name == "float_to_string" and len(call.args) == 1:
-                return self._translate_float_to_string(
-                    call.args[0], env, at=self._rendering_site(call))
-            if call.name == "string_strip" and len(call.args) == 1:
-                return self._translate_strip(call.args[0], env)
-            # String search builtins
-            if call.name == "string_contains" and len(call.args) == 2:
-                return self._translate_string_contains(
-                    call.args[0], call.args[1], env,
-                )
-            if call.name == "string_starts_with" and len(call.args) == 2:
-                return self._translate_starts_with(
-                    call.args[0], call.args[1], env,
-                )
-            if call.name == "string_ends_with" and len(call.args) == 2:
-                return self._translate_ends_with(
-                    call.args[0], call.args[1], env,
-                )
-            if call.name == "string_index_of" and len(call.args) == 2:
-                return self._translate_index_of(
-                    call.args[0], call.args[1], env,
-                )
-            # String transformation builtins
-            if call.name == "string_upper" and len(call.args) == 1:
-                return self._translate_to_upper(call.args[0], env)
-            if call.name == "string_lower" and len(call.args) == 1:
-                return self._translate_to_lower(call.args[0], env)
-            if call.name == "string_replace" and len(call.args) == 3:
-                return self._translate_replace(
-                    call.args[0], call.args[1], call.args[2], env,
-                )
-            if call.name == "string_split" and len(call.args) == 2:
-                return self._translate_split(
-                    call.args[0], call.args[1], env,
-                )
-            if call.name == "string_join" and len(call.args) == 2:
-                return self._translate_join(
-                    call.args[0], call.args[1], env,
-                )
-            # String utilities (#470)
-            if call.name == "string_chars" and len(call.args) == 1:
-                return self._translate_string_chars(call.args[0], env)
-            if call.name == "string_lines" and len(call.args) == 1:
-                return self._translate_string_lines(call.args[0], env)
-            if call.name == "string_words" and len(call.args) == 1:
-                return self._translate_string_words(call.args[0], env)
-            if call.name == "string_pad_start" and len(call.args) == 3:
-                return self._translate_string_pad_start(
-                    call.args[0], call.args[1], call.args[2], env,
-                )
-            if call.name == "string_pad_end" and len(call.args) == 3:
-                return self._translate_string_pad_end(
-                    call.args[0], call.args[1], call.args[2], env,
-                )
-            if call.name == "string_reverse" and len(call.args) == 1:
-                return self._translate_string_reverse(call.args[0], env)
-            if call.name == "string_trim_start" and len(call.args) == 1:
-                return self._translate_string_trim_start(call.args[0], env)
-            if call.name == "string_trim_end" and len(call.args) == 1:
-                return self._translate_string_trim_end(call.args[0], env)
-            # Character classification + case conversion (#471)
-            if call.name == "is_digit" and len(call.args) == 1:
-                return self._translate_is_digit(call.args[0], env)
-            if call.name == "is_alpha" and len(call.args) == 1:
-                return self._translate_is_alpha(call.args[0], env)
-            if call.name == "is_alphanumeric" and len(call.args) == 1:
-                return self._translate_is_alphanumeric(call.args[0], env)
-            if call.name == "is_whitespace" and len(call.args) == 1:
-                return self._translate_is_whitespace(call.args[0], env)
-            if call.name == "is_upper" and len(call.args) == 1:
-                return self._translate_is_upper(call.args[0], env)
-            if call.name == "is_lower" and len(call.args) == 1:
-                return self._translate_is_lower(call.args[0], env)
-            if call.name == "char_to_upper" and len(call.args) == 1:
-                return self._translate_char_to_upper(call.args[0], env)
-            if call.name == "char_to_lower" and len(call.args) == 1:
-                return self._translate_char_to_lower(call.args[0], env)
-            if call.name == "array_append" and len(call.args) == 2:
-                return self._translate_array_append(
-                    call.args[0], call.args[1], env,
-                )
-            if call.name == "array_range" and len(call.args) == 2:
-                return self._translate_array_range(
-                    call.args[0], call.args[1], env,
-                )
-            if call.name == "array_concat" and len(call.args) == 2:
-                return self._translate_array_concat(
-                    call.args[0], call.args[1], env,
-                )
-            if call.name == "array_slice" and len(call.args) == 3:
-                return self._translate_array_slice(
-                    call.args[0], call.args[1], call.args[2], env,
-                )
-            # Higher-order array combinators — iterative WASM (#480).
-            # array_map / array_filter / array_fold were previously
-            # injected as recursive Vera functions via prelude.py.
-            # Intercepted here instead so the loop uses O(1) shadow
-            # stack space regardless of input length.
-            if call.name == "array_map" and len(call.args) == 2:
-                return self._translate_array_map(
-                    call.args[0], call.args[1], env,
-                )
-            if call.name == "array_filter" and len(call.args) == 2:
-                return self._translate_array_filter(
-                    call.args[0], call.args[1], env,
-                )
-            if call.name == "array_fold" and len(call.args) == 3:
-                return self._translate_array_fold(
-                    call.args[0], call.args[1], call.args[2], env,
-                )
-            # Array utilities (#466 phase 1) — iterative, no ability
-            # dispatch required.  Sort/contains/index_of are tracked
-            # separately as they need compare$T/eq$T invocation
-            # reified as a primitive.
-            if call.name == "array_mapi" and len(call.args) == 2:
-                return self._translate_array_mapi(
-                    call.args[0], call.args[1], env,
-                )
-            if call.name == "array_reverse" and len(call.args) == 1:
-                return self._translate_array_reverse(call.args[0], env)
-            if call.name == "array_find" and len(call.args) == 2:
-                return self._translate_array_find(
-                    call.args[0], call.args[1], env,
-                )
-            if call.name == "array_any" and len(call.args) == 2:
-                return self._translate_array_any(
-                    call.args[0], call.args[1], env,
-                )
-            if call.name == "array_all" and len(call.args) == 2:
-                return self._translate_array_all(
-                    call.args[0], call.args[1], env,
-                )
-            if call.name == "array_flatten" and len(call.args) == 1:
-                return self._translate_array_flatten(call.args[0], env)
-            if call.name == "array_sort_by" and len(call.args) == 2:
-                return self._translate_array_sort_by(
-                    call.args[0], call.args[1], env,
-                )
-            # Numeric math builtins
-            if call.name == "abs" and len(call.args) == 1:
-                return self._translate_abs(call.args[0], env, at=call)
-            if call.name == "min" and len(call.args) == 2:
-                return self._translate_min(
-                    call.args[0], call.args[1], env,
-                )
-            if call.name == "max" and len(call.args) == 2:
-                return self._translate_max(
-                    call.args[0], call.args[1], env,
-                )
-            if call.name == "floor" and len(call.args) == 1:
-                return self._translate_floor(call.args[0], env, at=call)
-            if call.name == "ceil" and len(call.args) == 1:
-                return self._translate_ceil(call.args[0], env, at=call)
-            if call.name == "round" and len(call.args) == 1:
-                return self._translate_round(call.args[0], env, at=call)
-            if call.name == "sqrt" and len(call.args) == 1:
-                return self._translate_sqrt(call.args[0], env)
-            if call.name == "pow" and len(call.args) == 2:
-                return self._translate_pow(
-                    call.args[0], call.args[1], env,
-                )
-            # Numeric type conversions
-            if call.name == "int_to_float" and len(call.args) == 1:
-                return self._translate_to_float(call.args[0], env)
-            if call.name == "float_to_int" and len(call.args) == 1:
-                return self._translate_float_to_int(
-                    call.args[0], env, at=call)
-            if call.name == "nat_to_int" and len(call.args) == 1:
-                return self._translate_nat_to_int(call.args[0], env)
-            if call.name == "int_to_nat" and len(call.args) == 1:
-                return self._translate_int_to_nat(call.args[0], env)
-            if call.name == "byte_to_int" and len(call.args) == 1:
-                return self._translate_byte_to_int(call.args[0], env)
-            if call.name == "int_to_byte" and len(call.args) == 1:
-                return self._translate_int_to_byte(call.args[0], env)
-            # Float64 predicates and constants
-            if call.name == "float_is_nan" and len(call.args) == 1:
-                return self._translate_is_nan(call.args[0], env)
-            if call.name == "float_is_infinite" and len(call.args) == 1:
-                return self._translate_is_infinite(call.args[0], env)
-            if call.name == "nan" and len(call.args) == 0:
-                return self._translate_nan()
-            if call.name == "infinity" and len(call.args) == 0:
-                return self._translate_infinity()
-            # Math builtins (#467) — log/trig via host imports,
-            # constants and sign/clamp inlined as WAT.
-            if call.name in (
-                "log", "log2", "log10",
-                "sin", "cos", "tan", "asin", "acos", "atan",
-            ) and len(call.args) == 1:
-                return self._translate_math_unary_host(
-                    call.name, call.args[0], env,
-                )
-            if call.name == "atan2" and len(call.args) == 2:
-                return self._translate_atan2(
-                    call.args[0], call.args[1], env,
-                )
-            if call.name == "pi" and len(call.args) == 0:
-                return self._translate_pi()
-            if call.name == "e" and len(call.args) == 0:
-                return self._translate_e()
-            if call.name == "sign" and len(call.args) == 1:
-                return self._translate_sign(call.args[0], env)
-            if call.name == "clamp" and len(call.args) == 3:
-                return self._translate_clamp(
-                    call.args[0], call.args[1], call.args[2], env,
-                )
-            if call.name == "float_clamp" and len(call.args) == 3:
-                return self._translate_float_clamp(
-                    call.args[0], call.args[1], call.args[2], env,
-                )
-            # Ability operations dispatched at WASM level (§9.8)
-            if call.name == "show" and len(call.args) == 1:
-                return self._translate_show(call.args[0], env, call)
-            if call.name == "hash" and len(call.args) == 1:
-                return self._translate_hash(call.args[0], env)
-            # Map builtins
-            if call.name == "map_new" and len(call.args) == 0:
-                return self._translate_map_new(call, env)
-            if call.name == "map_insert" and len(call.args) == 3:
-                return self._translate_map_insert(call, env)
-            if call.name == "map_get" and len(call.args) == 2:
-                return self._translate_map_get(call, env)
-            if call.name == "map_contains" and len(call.args) == 2:
-                return self._translate_map_contains(call, env)
-            if call.name == "map_remove" and len(call.args) == 2:
-                return self._translate_map_remove(call, env)
-            if call.name == "map_size" and len(call.args) == 1:
-                return self._translate_map_size(call.args[0], env)
-            if call.name == "map_keys" and len(call.args) == 1:
-                return self._translate_map_keys(call, env)
-            if call.name == "map_values" and len(call.args) == 1:
-                return self._translate_map_values(call, env)
-            # Set builtins
-            if call.name == "set_new" and len(call.args) == 0:
-                return self._translate_set_new(call, env)
-            if call.name == "set_add" and len(call.args) == 2:
-                return self._translate_set_add(call, env)
-            if call.name == "set_contains" and len(call.args) == 2:
-                return self._translate_set_contains(call, env)
-            if call.name == "set_remove" and len(call.args) == 2:
-                return self._translate_set_remove(call, env)
-            if call.name == "set_size" and len(call.args) == 1:
-                return self._translate_set_size(call.args[0], env)
-            if call.name == "set_to_array" and len(call.args) == 1:
-                return self._translate_set_to_array(call, env)
-            # Decimal builtins
-            if call.name == "decimal_from_int" and len(call.args) == 1:
-                return self._translate_decimal_unary(
-                    call, env, "decimal_from_int", "i64", "i32")
-            if call.name == "decimal_from_float" and len(call.args) == 1:
-                return self._translate_decimal_unary(
-                    call, env, "decimal_from_float", "f64", "i32")
-            if call.name == "decimal_from_string" and len(call.args) == 1:
-                return self._translate_decimal_from_string(call, env)
-            if call.name == "decimal_to_string" and len(call.args) == 1:
-                return self._translate_decimal_to_string(call, env)
-            if call.name == "decimal_to_float" and len(call.args) == 1:
-                return self._translate_decimal_unary(
-                    call, env, "decimal_to_float", "i32", "f64")
-            if call.name == "decimal_add" and len(call.args) == 2:
-                return self._translate_decimal_binary(
-                    call, env, "decimal_add")
-            if call.name == "decimal_sub" and len(call.args) == 2:
-                return self._translate_decimal_binary(
-                    call, env, "decimal_sub")
-            if call.name == "decimal_mul" and len(call.args) == 2:
-                return self._translate_decimal_binary(
-                    call, env, "decimal_mul")
-            if call.name == "decimal_div" and len(call.args) == 2:
-                return self._translate_decimal_div(call, env)
-            if call.name == "decimal_neg" and len(call.args) == 1:
-                return self._translate_decimal_unary(
-                    call, env, "decimal_neg", "i32", "i32")
-            if call.name == "decimal_compare" and len(call.args) == 2:
-                return self._translate_decimal_compare(call, env)
-            if call.name == "decimal_eq" and len(call.args) == 2:
-                return self._translate_decimal_eq(call, env)
-            if call.name == "decimal_round" and len(call.args) == 2:
-                return self._translate_decimal_round(call, env)
-            if call.name == "decimal_abs" and len(call.args) == 1:
-                return self._translate_decimal_unary(
-                    call, env, "decimal_abs", "i32", "i32")
+            intrinsic = INTRINSICS.get(call.name)
+            if intrinsic is not None and len(call.args) == intrinsic.arity:
+                return self._lower_intrinsic(intrinsic, call, env)
 
         # Check if this is a closure application: apply_fn(closure, args...)
         if call.name == "apply_fn" and len(call.args) >= 2:
@@ -777,6 +374,32 @@ class CallsMixin:
         else:
             instructions.append(f"call ${call_target}")
         return instructions
+
+    def _lower_intrinsic(
+        self, intrinsic: Intrinsic, call: ast.FnCall, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Hand *call* to its intrinsic's emitter, in that emitter's
+        argument convention (:class:`vera.builtins.Binding`)."""
+        lowering = intrinsic.lowering
+        emit = getattr(self, lowering.emitter)
+        binding = lowering.binding
+        if binding is Binding.ARGS:
+            return emit(*call.args, env)
+        if binding is Binding.ARGS_AT:
+            return emit(*call.args, env, at=call)
+        if binding is Binding.ARGS_SITE:
+            return emit(*call.args, env, at=self._rendering_site(call))
+        if binding is Binding.ARGS_CALL:
+            return emit(*call.args, env, call)
+        if binding is Binding.CALL:
+            return emit(call, env)
+        if binding is Binding.CALL_EXTRA:
+            return emit(call, env, *lowering.extra)
+        if binding is Binding.NONE:
+            return emit()
+        if binding is Binding.NAMED:
+            return emit(call.name, *call.args, env)
+        raise AssertionError(f"{call.name}: no argument convention {binding}")
 
     def _guard_effect_op_arg(
         self,

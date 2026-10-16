@@ -134,10 +134,10 @@ class TestBuiltinsPayload:
         assert by_name["decimal_add"]["since"] == "0.0.97"
 
     def test_since_covers_every_builtin(self) -> None:
-        """Every built-in is attributed in vera/_since.py. A new built-in added
-        without a `since` entry fails here — the maintenance forcing-function."""
+        """Every built-in is attributed in its record in vera/builtins.py
+        (#735), which a record cannot be written without."""
         missing = sorted(i["name"] for i in builtins_payload()["items"] if i["since"] is None)
-        assert missing == [], f"built-ins missing a `since` in vera/_since.py: {missing}"
+        assert missing == [], f"built-ins missing a `since` in vera/builtins.py: {missing}"
 
     def test_since_no_orphan_keys(self) -> None:
         """Every SINCE key is a live registry name or diagnostic code —
