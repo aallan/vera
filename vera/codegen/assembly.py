@@ -6,12 +6,22 @@ memory, data sections, and closure infrastructure.
 
 from __future__ import annotations
 
+import itertools
 import re
+from collections.abc import Collection
 
+from vera.builtins import (
+    HOST_FAMILIES,
+    Gate,
+    cell_lines,
+    declaration_lines,
+    family_rows,
+    host_import,
+)
 from vera.envflags import flag_enabled
 from vera.monomorphize import mangle_type_name
 from vera.skip import CodegenInvariantError
-from vera.trap_registry import TRAP_IMPORT_WAT, signal_instructions
+from vera.trap_registry import signal_instructions
 from vera.wasm.helpers import MAX_INLINE_I32_VALUE
 
 # The two fixed regions between the data section and the GC heap.  Named
@@ -63,6 +73,75 @@ _WAT_FUNC_IMPORT_RE = re.compile(
 class AssemblyMixin:
     """Methods for assembling the WAT module."""
 
+    def _declare_host_imports(self, parts: list[str]) -> None:
+        """Declare the host imports the module calls, from the registry.
+
+        A family the module calls by name declares the imports code
+        generation recorded: the IO, Http, Inference, DB and Random
+        operations and the Markdown, Regex, Json, Html, fused-async and Math
+        built-ins by the names the pre-scan and their emitters collect, and
+        the Map, Set and Decimal ones by the instances their emitters
+        register.  The wrap table's helpers and the two signals are declared
+        by flag, and the four imports of a `State` cell once per cell.
+
+        Every flag an import in use sets is set before anything is declared:
+        the wrap table's helpers come before the Json, Html and fused-async
+        imports, whose use declares them too.
+        """
+        named: dict[str, Collection[str]] = {
+            "io": self._io_ops_used,
+            "md": self._md_ops_used,
+            "regex": self._regex_ops_used,
+            "map": self._map_imports,
+            "set": self._set_imports,
+            "decimal": self._decimal_imports,
+            "json": self._json_ops_used,
+            "html": self._html_ops_used,
+            "http": self._http_ops_used,
+            "async": self._async_ops_used,
+            "inference": self._inference_ops_used,
+            "db": self._db_ops_used,
+            "random": self._random_ops_used,
+            "math": self._math_ops_used,
+        }
+        in_use = itertools.chain(
+            *named.values(),
+            self._map_ops_used, self._set_ops_used, self._decimal_ops_used,
+        )
+        for name in in_use:
+            row = host_import(name)
+            if row is None:
+                continue
+            if row.needs_alloc:
+                self._needs_alloc = True
+            if row.needs_memory:
+                self._needs_memory = True
+            if row.needs_wrap_table:
+                # #573: the 64 KiB wrap table, `$register_wrapper`, phase 2c
+                # of `$gc_collect` and the two helpers declared below.
+                self._needs_wrap_table = True
+        flagged = {
+            "wrap": self._needs_wrap_table,
+            "contract": self._needs_contract_fail,
+            # #1479: a check called the signal, or the allocator reports
+            # heap exhaustion through it.
+            "trap": self._needs_trap or self._needs_alloc,
+        }
+        for family in HOST_FAMILIES:
+            if family.gate is Gate.NAMES:
+                parts.extend(declaration_lines(family.name, named[family.name]))
+            elif family.gate is Gate.FLAG:
+                if flagged[family.name]:
+                    parts.extend(declaration_lines(
+                        family.name,
+                        [row.name for row in family_rows(family.name)]))
+            else:
+                # #914: a composite cell type is mangled (#775) for the
+                # field string and the `$vera.…` identifier alike, as the
+                # host registration and the handler-body calls mangle it.
+                for cell, wasm_t in self._state_types:
+                    parts.extend(cell_lines(mangle_type_name(cell.family), wasm_t))
+
     @staticmethod
     def _assert_unique_func_names(wat: str) -> None:
         """Refuse a module that binds one function identifier twice (#1433).
@@ -101,357 +180,9 @@ class AssemblyMixin:
         """Assemble a complete WAT module from compiled functions."""
         parts: list[str] = ["(module"]
 
-        # Import IO operations as needed
-        _IO_IMPORTS: dict[str, str] = {
-            "print": "(func $vera.print (param i32 i32))",
-            "read_line": "(func $vera.read_line (result i32 i32))",
-            "read_file":
-                "(func $vera.read_file (param i32 i32) (result i32))",
-            "write_file":
-                "(func $vera.write_file"
-                " (param i32 i32 i32 i32) (result i32))",
-            "args": "(func $vera.args (result i32 i32))",
-            "exit": "(func $vera.exit (param i64))",
-            "get_env":
-                "(func $vera.get_env (param i32 i32) (result i32))",
-            # #463 — time and flow-control.
-            # sleep: ms (i64 Nat) → no result
-            # time: no params (Unit arg erased at WASM level) → i64 Nat
-            # stderr: (ptr, len) for String → no result
-            "sleep": "(func $vera.sleep (param i64))",
-            "time": "(func $vera.time (result i64))",
-            "stderr": "(func $vera.stderr (param i32 i32))",
-            # #618 — single-character input.
-            # read_char: no params (Unit arg erased) → i32 pointer to
-            # Result<String, String> ADT allocated host-side.
-            "read_char": "(func $vera.read_char (result i32))",
-        }
-        _IO_OPS_NEEDING_ALLOC = {
-            "read_line", "read_file", "write_file", "args", "get_env",
-            "read_char",
-        }
-        for op_name in sorted(self._io_ops_used):
-            sig = _IO_IMPORTS.get(op_name)
-            if sig:
-                parts.append(f'  (import "vera" "{op_name}" {sig})')
-        if self._io_ops_used & _IO_OPS_NEEDING_ALLOC:
-            self._needs_alloc = True
-
-        # Import Markdown host-import builtins (pure functions)
-        _MD_IMPORTS: dict[str, str] = {
-            "md_parse":
-                "(func $vera.md_parse (param i32 i32) (result i32))",
-            "md_render":
-                "(func $vera.md_render (param i32) (result i32 i32))",
-            "md_has_heading":
-                "(func $vera.md_has_heading"
-                " (param i32 i64) (result i32))",
-            "md_has_code_block":
-                "(func $vera.md_has_code_block"
-                " (param i32 i32 i32) (result i32))",
-            "md_extract_code_blocks":
-                "(func $vera.md_extract_code_blocks"
-                " (param i32 i32 i32) (result i32 i32))",
-        }
-        for op_name in sorted(self._md_ops_used):
-            sig = _MD_IMPORTS.get(op_name)
-            if sig:
-                parts.append(f'  (import "vera" "{op_name}" {sig})')
-        if self._md_ops_used:
-            self._needs_alloc = True
-
-        # Import Regex host-import builtins (pure functions)
-        _REGEX_IMPORTS: dict[str, str] = {
-            "regex_match":
-                "(func $vera.regex_match"
-                " (param i32 i32 i32 i32) (result i32))",
-            "regex_find":
-                "(func $vera.regex_find"
-                " (param i32 i32 i32 i32) (result i32))",
-            "regex_find_all":
-                "(func $vera.regex_find_all"
-                " (param i32 i32 i32 i32) (result i32))",
-            "regex_replace":
-                "(func $vera.regex_replace"
-                " (param i32 i32 i32 i32 i32 i32) (result i32))",
-        }
-        for op_name in sorted(self._regex_ops_used):
-            sig = _REGEX_IMPORTS.get(op_name)
-            if sig:
-                parts.append(f'  (import "vera" "{op_name}" {sig})')
-        if self._regex_ops_used:
-            self._needs_alloc = True
-
-        # Import Map host-import builtins (per-type-instantiation)
-        for import_line in sorted(self._map_imports):
-            parts.append(import_line)
-        if self._map_ops_used:
-            self._needs_alloc = True
-            self._needs_memory = True
-            # #573: Map / Set / Decimal all migrate to the heap-
-            # wrap-as-ADT scheme.  Any of them being used flips
-            # the wrap-table flag — ``assembly.py`` then allocates
-            # the 64 KiB side-table region, emits
-            # ``$register_wrapper``, adds Phase 2c to
-            # ``$gc_collect``, and (below, after all three blocks)
-            # imports the ``host_decref_handle`` helper.
-            self._needs_wrap_table = True
-
-        # Import Set host-import builtins (per-type-instantiation)
-        for import_line in sorted(self._set_imports):
-            parts.append(import_line)
-        if self._set_ops_used:
-            self._needs_alloc = True
-            self._needs_memory = True
-            # #573 phase 2: Set migrated to heap-wrap-as-ADT.
-            self._needs_wrap_table = True
-
-        # Import Decimal host-import builtins
-        for import_line in sorted(self._decimal_imports):
-            parts.append(import_line)
-        if self._decimal_ops_used:
-            self._needs_alloc = True
-            self._needs_memory = True
-            # #573 phase 3: Decimal migrated to heap-wrap-as-ADT.
-            self._needs_wrap_table = True
-
-        # #573: JSON and HTML host parsers allocate Map wrappers
-        # internally (for JObject's ``Map<String, Json>`` field
-        # and HtmlElement's ``Map<String, String>`` attrs) via
-        # ``_alloc_map_wrapper`` in ``vera/codegen/api.py``.
-        # Those allocations register with the wrap table and rely
-        # on Phase 2c + ``host_decref_handle`` for reclamation —
-        # without flipping the flag here, JSON/HTML-only programs
-        # (no user-level ``map_*`` ops) leak the underlying
-        # ``_map_store`` entries indefinitely because
-        # ``register_wrapper`` is unexported and Phase 2c isn't
-        # emitted.  Same flag flip; the gating cost is one extra
-        # 64 KiB region in linear memory.
-        if self._json_ops_used or self._html_ops_used:
-            self._needs_wrap_table = True
-
-        # #841: fused-async Future wrappers register with the wrap table
-        # so Phase 2c reclaims an unawaited future's host store entry.
-        # Await-only modules (possible when every fused async lives in
-        # another compilation) never allocate wrappers, so they don't
-        # flip the flag.
-        if self._async_ops_used & {"async_http_get", "async_http_post"}:
-            self._needs_wrap_table = True
-
-        # #573: emit ``host_decref_handle`` import after the
-        # gating blocks above have all run.  Phase 2c of
-        # ``$gc_collect`` calls this for each unmarked wrapper.
-        # Must come after the per-type imports so the WAT
-        # ``(import "vera" ...)`` declarations stay grouped by
-        # subsystem, but before the GC infrastructure is emitted
-        # (which references the import).
-        if self._needs_wrap_table:
-            parts.append(
-                '  (import "vera" "host_decref_handle" '
-                "(func $vera.host_decref_handle "
-                "(param i32) (param i32)))"
-            )
-            # #695/#705: bucket-population host import called by
-            # ``_emit_wrap_handle`` after every wrap step.
-            parts.append(
-                '  (import "vera" "attach_bucket_to_wrapper" '
-                "(func $vera.attach_bucket_to_wrapper "
-                "(param i32) (param i32) (param i32)))"
-            )
-
-        # Import Json host-import builtins
-        if "json_parse" in self._json_ops_used:
-            parts.append(
-                '  (import "vera" "json_parse" '
-                "(func $vera.json_parse (param i32 i32) (result i32)))"
-            )
-        if "json_stringify" in self._json_ops_used:
-            parts.append(
-                '  (import "vera" "json_stringify" '
-                "(func $vera.json_stringify (param i32) (result i32 i32)))"
-            )
-        if self._json_ops_used:
-            self._needs_alloc = True
-            self._needs_memory = True
-
-        # Import Html host-import builtins
-        if "html_parse" in self._html_ops_used:
-            parts.append(
-                '  (import "vera" "html_parse" '
-                "(func $vera.html_parse (param i32 i32) (result i32)))"
-            )
-        if "html_to_string" in self._html_ops_used:
-            parts.append(
-                '  (import "vera" "html_to_string" '
-                "(func $vera.html_to_string (param i32) (result i32 i32)))"
-            )
-        if "html_query" in self._html_ops_used:
-            parts.append(
-                '  (import "vera" "html_query" '
-                "(func $vera.html_query (param i32 i32 i32) (result i32 i32)))"
-            )
-        if "html_text" in self._html_ops_used:
-            parts.append(
-                '  (import "vera" "html_text" '
-                "(func $vera.html_text (param i32) (result i32 i32)))"
-            )
-        if self._html_ops_used:
-            self._needs_alloc = True
-            self._needs_memory = True
-
-        # Http host imports — http_get(url_ptr, url_len) -> i32 Result ptr
-        #                      http_post(url_ptr, url_len, body_ptr, body_len) -> i32
-        if "http_get" in self._http_ops_used:
-            parts.append(
-                '  (import "vera" "http_get" '
-                "(func $vera.http_get (param i32 i32) (result i32)))"
-            )
-        if "http_post" in self._http_ops_used:
-            parts.append(
-                '  (import "vera" "http_post" '
-                "(func $vera.http_post (param i32 i32 i32 i32) (result i32)))"
-            )
-        if self._http_ops_used:
-            self._needs_alloc = True
-            self._needs_memory = True
-
-        # #841: fused-async host imports.
-        #   async_http_get(url_ptr, url_len) -> i32 raw Future handle
-        #   async_http_post(url_ptr, url_len, body_ptr, body_len) -> i32
-        #   async_await(handle) -> i32 Result ptr (blocks on the guest
-        #   thread; the host builds the Result ADT via the exported alloc)
-        if "async_http_get" in self._async_ops_used:
-            parts.append(
-                '  (import "vera" "async_http_get" '
-                "(func $vera.async_http_get (param i32 i32) (result i32)))"
-            )
-        if "async_http_post" in self._async_ops_used:
-            parts.append(
-                '  (import "vera" "async_http_post" '
-                "(func $vera.async_http_post "
-                "(param i32 i32 i32 i32) (result i32)))"
-            )
-        if "async_await" in self._async_ops_used:
-            parts.append(
-                '  (import "vera" "async_await" '
-                "(func $vera.async_await (param i32) (result i32)))"
-            )
-        if self._async_ops_used:
-            self._needs_alloc = True
-            self._needs_memory = True
-
-        # Inference effect host imports: inference_complete(prompt_ptr, prompt_len) -> i32
-        if "inference_complete" in self._inference_ops_used:
-            parts.append(
-                '  (import "vera" "inference_complete" '
-                "(func $vera.inference_complete (param i32 i32) (result i32)))"
-            )
-        if self._inference_ops_used:
-            self._needs_alloc = True
-            self._needs_memory = True
-
-        # DB effect host imports (#229): db_query / db_execute take
-        # (sql_ptr, sql_len, params_ptr, params_count) and return an i32
-        # Result ADT pointer.
-        if "db_query" in self._db_ops_used:
-            parts.append(
-                '  (import "vera" "db_query" '
-                "(func $vera.db_query (param i32 i32 i32 i32) (result i32)))"
-            )
-        if "db_execute" in self._db_ops_used:
-            parts.append(
-                '  (import "vera" "db_execute" '
-                "(func $vera.db_execute (param i32 i32 i32 i32) (result i32)))"
-            )
-        if self._db_ops_used:
-            self._needs_alloc = True
-            self._needs_memory = True
-
-        # Random effect host imports (#465).  None of these allocate
-        # or return heap data — `random_int` returns a scalar i64,
-        # `random_float` returns f64, `random_bool` returns i32 (0/1).
-        # Unit arguments at the Vera level are erased, so
-        # `random_float()` and `random_bool()` take no parameters.
-        if "random_int" in self._random_ops_used:
-            parts.append(
-                '  (import "vera" "random_int" '
-                "(func $vera.random_int (param i64 i64) (result i64)))"
-            )
-        if "random_float" in self._random_ops_used:
-            parts.append(
-                '  (import "vera" "random_float" '
-                "(func $vera.random_float (result f64)))"
-            )
-        if "random_bool" in self._random_ops_used:
-            parts.append(
-                '  (import "vera" "random_bool" '
-                "(func $vera.random_bool (result i32)))"
-            )
-
-        # Math host imports (#467).  All log/trig ops share the
-        # same Float64 → Float64 unary shape, except atan2 which is
-        # (Float64, Float64) → Float64.  Mathematical constants
-        # pi()/e() and sign/clamp/float_clamp are inlined — no
-        # host import needed.
-        _MATH_UNARY = (
-            "log", "log2", "log10",
-            "sin", "cos", "tan", "asin", "acos", "atan",
-        )
-        for op_name in _MATH_UNARY:
-            if op_name in self._math_ops_used:
-                parts.append(
-                    f'  (import "vera" "{op_name}" '
-                    f"(func $vera.{op_name} (param f64) (result f64)))"
-                )
-        if "atan2" in self._math_ops_used:
-            parts.append(
-                '  (import "vera" "atan2" '
-                "(func $vera.atan2 (param f64 f64) (result f64)))"
-            )
-
-        # Import contract_fail for informative violation messages
-        if self._needs_contract_fail:
-            parts.append(
-                '  (import "vera" "contract_fail" '
-                "(func $vera.contract_fail (param i32 i32)))"
-            )
-
-        # #1479: the one signal every named check raises, its kind a code.
-        # Declared when a check called it, or when the module carries the
-        # allocator — `$alloc` and `$gc_collect` report heap exhaustion
-        # through it, and they are emitted exactly when `_needs_alloc` is
-        # set, so the two conditions together are the calls this module
-        # makes.  A call with no declaration is a module that will not load.
-        if self._needs_trap or self._needs_alloc:
-            parts.append(TRAP_IMPORT_WAT)
-
-        # Import State<T> host functions if needed.
-        # #914: composite T (`Tuple<Int, Int>`, `Option<Int>`) is routed
-        # through the injective `mangle_type_name` (#775) for BOTH the
-        # module/field string AND the `$vera.…` identifier.  A raw `<`/`,`/` `
-        # is illegal in a WAT identifier (the field string tolerates it, but
-        # mangling both keeps the host registration in `runtime/state.py` — it
-        # too mangles — matched by one consistent name).  Handler-body calls
-        # (`wasm/calls_handlers.py`, `codegen/functions.py`) mangle the same
-        # way, so import decl and call site never drift.
-        for cell, wasm_t in self._state_types:
-            m = mangle_type_name(cell.family)
-            parts.append(
-                f'  (import "vera" "state_get_{m}" '
-                f"(func $vera.state_get_{m} (result {wasm_t})))"
-            )
-            parts.append(
-                f'  (import "vera" "state_put_{m}" '
-                f"(func $vera.state_put_{m} (param {wasm_t})))"
-            )
-            parts.append(
-                f'  (import "vera" "state_push_{m}" '
-                f"(func $vera.state_push_{m}))"
-            )
-            parts.append(
-                f'  (import "vera" "state_pop_{m}" '
-                f"(func $vera.state_pop_{m}))"
-            )
+        # The host imports: every declaration is the registry's
+        # (`vera.builtins`, #735), in the order its families list them.
+        self._declare_host_imports(parts)
 
         # Exception tags for Exn<E>
         for type_name, wasm_t in self._exn_types:
@@ -634,24 +365,12 @@ class AssemblyMixin:
                 f"(mut i32) (i32.const 0))"
             )
 
-        # Export $alloc when host functions need to allocate WASM memory,
-        # or when the heap allocator is compiled in (e.g. String params need
-        # allocation for CLI argument passing)
-        if (
-            (self._io_ops_used & _IO_OPS_NEEDING_ALLOC)
-            or self._md_ops_used
-            or self._regex_ops_used
-            or self._map_ops_used
-            or self._set_ops_used
-            or self._decimal_ops_used
-            or self._json_ops_used
-            or self._html_ops_used
-            or self._http_ops_used
-            or self._async_ops_used
-            or self._inference_ops_used
-            or self._db_ops_used
-            or self._needs_alloc
-        ):
+        # Export $alloc when the heap allocator is compiled in: a host
+        # import that allocates in the module's memory set the flag when it
+        # was declared (its registry row's `needs_alloc`), and so does
+        # anything else that allocates (e.g. String params need allocation
+        # for CLI argument passing)
+        if self._needs_alloc:
             parts.append('  (export "alloc" (func $alloc))')
 
         # Closure type declarations (for call_indirect)

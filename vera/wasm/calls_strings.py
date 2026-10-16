@@ -610,6 +610,34 @@ class CallsStringsMixin:
             return None
         return self._to_string_core(arg_instrs)
 
+    def _translate_nat_to_string(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate nat_to_string(n) → String, guarding the `@Nat` formal.
+
+        #1362 (review): the missed member of the `@Nat`-parameter guard
+        family its siblings joined in #757 (string_repeat, string_pad_*,
+        string_from_char_code, md_has_heading).  `nat_to_string` shares its
+        lowering with `int_to_string`, so it inherited no boundary check and
+        rendered a negative as "-7" — a wrong ANSWER for a @Nat formal, not
+        a trap.  Guarded at this entry point only, since the shared
+        translator also serves the genuinely-@Int callers.
+
+        The guard goes on the ARGUMENT, which is why this does not simply
+        wrap `_translate_to_string`: that returns the String (an i32 pair),
+        and `_emit_nat_bind_guard` compares against `i64.const 0`, so
+        wrapping the RESULT emitted a module that failed WASM validation
+        outright ("expected i64, found i32") rather than one that trapped.
+        `_to_string_core` takes the argument's instructions, which is the
+        value the boundary is about.
+        """
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+        if self._narrows_into_nat(arg):
+            arg_instrs = self._emit_nat_bind_guard(arg_instrs, at=arg)
+        return self._to_string_core(arg_instrs)
+
     def _to_string_core(self, arg_instrs: list[str]) -> list[str]:
         """Int (i64) → decimal String (i32_pair) from a value producer.
 

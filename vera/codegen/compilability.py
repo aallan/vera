@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from vera import ast
+from vera.builtins import host_family_builtins
 from vera.lowering import (
     contract_exprs,
     effect_row_entry_refusal,
@@ -433,48 +434,16 @@ class CompilabilityMixin:
             self._exn_types.append((type_name, wasm_tag_t))
         return None
 
-    _MD_BUILTINS = frozenset({
-        "md_parse", "md_render", "md_has_heading",
-        "md_has_code_block", "md_extract_code_blocks",
-    })
-
-    _REGEX_BUILTINS = frozenset({
-        "regex_match", "regex_find", "regex_find_all", "regex_replace",
-    })
-
-    _MAP_BUILTINS = frozenset({
-        "map_new", "map_insert", "map_get", "map_contains",
-        "map_remove", "map_size", "map_keys", "map_values",
-    })
-
-    _SET_BUILTINS = frozenset({
-        "set_new", "set_add", "set_contains",
-        "set_remove", "set_size", "set_to_array",
-    })
-
-    _DECIMAL_BUILTINS = frozenset({
-        "decimal_from_int", "decimal_from_float", "decimal_from_string",
-        "decimal_to_string", "decimal_to_float",
-        "decimal_add", "decimal_sub", "decimal_mul", "decimal_div",
-        "decimal_neg", "decimal_compare", "decimal_eq",
-        "decimal_round", "decimal_abs",
-    })
-
-    _JSON_BUILTINS = frozenset({
-        "json_parse", "json_stringify",
-    })
-
-    _HTML_BUILTINS = frozenset({
-        "html_parse", "html_to_string", "html_query", "html_text",
-    })
-
-    # Math host-imported builtins (#467).  Only the log/trig ops —
-    # pi/e and sign/clamp/float_clamp are inlined as WAT, no
-    # host import needed.
-    _MATH_BUILTINS = frozenset({
-        "log", "log2", "log10",
-        "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
-    })
+    # The host-import families' built-ins, the registry's (`vera.builtins`,
+    # #735): a call to one registers its import below, by name.
+    _MD_BUILTINS = host_family_builtins("md")
+    _REGEX_BUILTINS = host_family_builtins("regex")
+    _MAP_BUILTINS = host_family_builtins("map")
+    _SET_BUILTINS = host_family_builtins("set")
+    _DECIMAL_BUILTINS = host_family_builtins("decimal")
+    _JSON_BUILTINS = host_family_builtins("json")
+    _HTML_BUILTINS = host_family_builtins("html")
+    _MATH_BUILTINS = host_family_builtins("math")
 
     def _scan_io_ops(self, node: ast.Node) -> None:
         """Walk a function body looking for IO, Markdown, and Regex builtins.

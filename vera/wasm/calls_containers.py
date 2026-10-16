@@ -21,6 +21,7 @@ at offset 4), register it with ``$register_wrapper``, and unwrap via
 from __future__ import annotations
 
 from vera import ast
+from vera.builtins import instance_name
 from vera.skip import CodegenSkip
 from vera.wasm.helpers import WasmSlotEnv, gc_shadow_push
 
@@ -206,17 +207,14 @@ class CallsContainersMixin:
             "i32.and",
         ]
 
-    def _register_decimal_import(
-        self, op: str, params: list[str], results: list[str],
-    ) -> str:
-        """Register a Decimal host import and return the WASM call name."""
-        wasm_name = f"$vera.{op}"
-        param_str = " ".join(f"(param {p})" for p in params)
-        result_str = " ".join(f"(result {r})" for r in results)
-        sig = f"(func {wasm_name} {param_str} {result_str})"
-        self._decimal_imports.add(f'  (import "vera" "{op}" {sig})')
+    def _register_decimal_import(self, op: str) -> str:
+        """Register a Decimal host import and return the WASM call name.
+
+        The declaration is the registry's row for *op* (`vera.builtins`).
+        """
+        self._decimal_imports.add(op)
         self._decimal_ops_used.add(op)
-        return wasm_name
+        return f"$vera.{op}"
 
     def _emit_wrap_decimal_result(self) -> list[str]:
         """Wrap a Decimal raw handle on the operand stack into a
@@ -256,8 +254,7 @@ class CallsContainersMixin:
         arg_instrs = self.translate_expr(call.args[0], env)
         if arg_instrs is None:
             return None
-        wasm_name = self._register_decimal_import(
-            op, [param_type], [result_type])
+        wasm_name = self._register_decimal_import(op)
         ins: list[str] = list(arg_instrs)
         # Input: unwrap if Decimal (i32 with handle semantics).
         if param_type == "i32":
@@ -285,8 +282,7 @@ class CallsContainersMixin:
         b_instrs = self.translate_expr(call.args[1], env)
         if a_instrs is None or b_instrs is None:
             return None
-        wasm_name = self._register_decimal_import(
-            op, ["i32", "i32"], ["i32"])
+        wasm_name = self._register_decimal_import(op)
         ins: list[str] = list(a_instrs)
         ins.extend(self._emit_unwrap_handle())
         ins.extend(b_instrs)
@@ -308,8 +304,7 @@ class CallsContainersMixin:
         arg_instrs = self.translate_expr(call.args[0], env)
         if arg_instrs is None:
             return None
-        wasm_name = self._register_decimal_import(
-            "decimal_from_string", ["i32", "i32"], ["i32"])
+        wasm_name = self._register_decimal_import("decimal_from_string")
         self.needs_alloc = True
         return arg_instrs + [f"call {wasm_name}"]
 
@@ -320,8 +315,7 @@ class CallsContainersMixin:
         arg_instrs = self.translate_expr(call.args[0], env)
         if arg_instrs is None:
             return None
-        wasm_name = self._register_decimal_import(
-            "decimal_to_string", ["i32"], ["i32", "i32"])
+        wasm_name = self._register_decimal_import("decimal_to_string")
         self.needs_alloc = True
         # Decimal keeps the wrapper/handle scheme: unwrap the wrapper to
         # the raw decimal-store handle before the host call.
@@ -343,8 +337,7 @@ class CallsContainersMixin:
         b_instrs = self.translate_expr(call.args[1], env)
         if a_instrs is None or b_instrs is None:
             return None
-        wasm_name = self._register_decimal_import(
-            "decimal_div", ["i32", "i32"], ["i32"])
+        wasm_name = self._register_decimal_import("decimal_div")
         self.needs_alloc = True
         ins: list[str] = list(a_instrs)
         ins.extend(self._emit_unwrap_handle())
@@ -361,8 +354,7 @@ class CallsContainersMixin:
         b_instrs = self.translate_expr(call.args[1], env)
         if a_instrs is None or b_instrs is None:
             return None
-        wasm_name = self._register_decimal_import(
-            "decimal_compare", ["i32", "i32"], ["i32"])
+        wasm_name = self._register_decimal_import("decimal_compare")
         self.needs_alloc = True
         ins: list[str] = list(a_instrs)
         ins.extend(self._emit_unwrap_handle())
@@ -379,8 +371,7 @@ class CallsContainersMixin:
         b_instrs = self.translate_expr(call.args[1], env)
         if a_instrs is None or b_instrs is None:
             return None
-        wasm_name = self._register_decimal_import(
-            "decimal_eq", ["i32", "i32"], ["i32"])
+        wasm_name = self._register_decimal_import("decimal_eq")
         ins: list[str] = list(a_instrs)
         ins.extend(self._emit_unwrap_handle())
         ins.extend(b_instrs)
@@ -396,8 +387,7 @@ class CallsContainersMixin:
         p_instrs = self.translate_expr(call.args[1], env)
         if d_instrs is None or p_instrs is None:
             return None
-        wasm_name = self._register_decimal_import(
-            "decimal_round", ["i32", "i64"], ["i32"])
+        wasm_name = self._register_decimal_import("decimal_round")
         ins: list[str] = list(d_instrs)
         ins.extend(self._emit_unwrap_handle())
         ins.extend(p_instrs)
@@ -446,7 +436,7 @@ class CallsContainersMixin:
         signal through the translator (the standard compile-failure
         convention).  When direct ``Map<K, Array<T>>`` support is
         added later it would belong here as a new tag (e.g. ``"a"``)
-        with matching ``_map_wasm_types`` entry.
+        with its WAT types in the registry's ``TAG_TYPES``.
         """
         # #1097: canonicalize an alias name, then peel transparent
         # ``Future<…>`` wrappers to the payload BEFORE the tag chain below
@@ -515,52 +505,20 @@ class CallsContainersMixin:
         # they are exactly the shapes with no inference arm today.
         return "b"
 
-    @staticmethod
-    def _map_wasm_types(tag: str) -> list[str]:
-        """Return WAT param types for a type tag."""
-        if tag == "i":
-            return ["i64"]
-        if tag == "f":
-            return ["f64"]
-        if tag == "s":
-            return ["i32", "i32"]
-        return ["i32"]
-
-    def _map_import_name(self, op: str, key_tag: str | None = None,
-                         val_tag: str | None = None) -> str:
-        """Build a mangled Map host import name and register it."""
-        if key_tag is not None and val_tag is not None:
-            suffix = f"$k{key_tag}_v{val_tag}"
-        elif key_tag is not None:
-            suffix = f"$k{key_tag}"
-        elif val_tag is not None:
-            suffix = f"$v{val_tag}"
-        else:
-            suffix = ""
-        name = f"{op}{suffix}"
-        self._map_ops_used.add(name)
-        return name
-
     def _register_map_import(
         self, op: str, key_tag: str | None = None,
         val_tag: str | None = None,
-        extra_params: list[str] | None = None,
-        results: list[str] | None = None,
     ) -> str:
-        """Register a Map host import and return the WASM call name."""
-        name = self._map_import_name(op, key_tag, val_tag)
-        wasm_name = f"$vera.{name}"
-        params: list[str] = []
-        if extra_params:
-            params.extend(extra_params)
-        param_str = " ".join(f"(param {p})" for p in params)
-        result_str = ""
-        if results:
-            result_str = " ".join(f"(result {r})" for r in results)
-        sig = f"(func {wasm_name} {param_str} {result_str})".rstrip()
-        import_line = f'  (import "vera" "{name}" {sig})'
-        self._map_imports.add(import_line)
-        return wasm_name
+        """Register a Map host import and return the WASM call name.
+
+        The import is *op* at the key and value representations its tags
+        name (``map_insert$ks_vi``); its declaration is the registry's row
+        for *op* (`vera.builtins`), which also says which tags name it.
+        """
+        name = instance_name(op, k=key_tag, v=val_tag)
+        self._map_ops_used.add(name)
+        self._map_imports.add(name)
+        return f"$vera.{name}"
 
     def _infer_map_key_type(self, call: "ast.FnCall") -> str | None:
         """Infer the Vera type of a Map's key from the call arguments."""
@@ -592,8 +550,7 @@ class CallsContainersMixin:
         when unreachable — no host store, no Phase 2c destructor.
         """
         wasm_name = "$vera.map_new"
-        sig = "(func $vera.map_new (result i32))"
-        self._map_imports.add(f'  (import "vera" "map_new" {sig})')
+        self._map_imports.add("map_new")
         self._map_ops_used.add("map_new")
         self.needs_alloc = True
         # #706: the host returns a wrapper_ptr (empty bucket-as-truth
@@ -628,12 +585,8 @@ class CallsContainersMixin:
                 "Map/Set with an Array-typed or zero-size key, value, or element is not supported",
             )
 
-        params = ["i32"]  # wrapper_ptr
-        params.extend(self._map_wasm_types(kt))  # key
-        params.extend(self._map_wasm_types(vt))  # value
         wasm_name = self._register_map_import(
             "map_insert", kt, vt,
-            extra_params=params, results=["i32"],
         )
         ins: list[str] = []
         # #1426: the §2.6.5 predicate on the VALUE going into the map.  The
@@ -717,11 +670,8 @@ class CallsContainersMixin:
                 "Map/Set with an Array-typed or zero-size key, value, or element is not supported",
             )
 
-        params = ["i32"]  # wrapper_ptr
-        params.extend(self._map_wasm_types(kt))  # key
         wasm_name = self._register_map_import(
             "map_get", kt, vt,
-            extra_params=params, results=["i32"],
         )
         self.needs_alloc = True
         ins: list[str] = []
@@ -857,11 +807,8 @@ class CallsContainersMixin:
                 "Map/Set with an Array-typed or zero-size key, value, or element is not supported",
             )
 
-        params = ["i32"]  # wrapper_ptr
-        params.extend(self._map_wasm_types(kt))  # key
         wasm_name = self._register_map_import(
             "map_contains", kt, None,
-            extra_params=params, results=["i32"],
         )
         ins: list[str] = []
         # #706: pass the Map wrapper_ptr directly (bucket-as-truth).
@@ -897,11 +844,8 @@ class CallsContainersMixin:
                 "Map/Set with an Array-typed or zero-size key, value, or element is not supported",
             )
 
-        params = ["i32"]  # wrapper_ptr
-        params.extend(self._map_wasm_types(kt))  # key
         wasm_name = self._register_map_import(
             "map_remove", kt, None,
-            extra_params=params, results=["i32"],
         )
         ins: list[str] = []
         # #706: pass the Map wrapper_ptr directly; host returns a fresh
@@ -929,8 +873,7 @@ class CallsContainersMixin:
         host reads the bucket header's count.  The result is i64.
         """
         wasm_name = "$vera.map_size"
-        sig = "(func $vera.map_size (param i32) (result i64))"
-        self._map_imports.add(f'  (import "vera" "map_size" {sig})')
+        self._map_imports.add("map_size")
         self._map_ops_used.add("map_size")
         arg_instrs = self.translate_expr(arg, env)
         if arg_instrs is None:
@@ -960,7 +903,6 @@ class CallsContainersMixin:
 
         wasm_name = self._register_map_import(
             "map_keys", kt, None,
-            extra_params=["i32"], results=["i32", "i32"],
         )
         self.needs_alloc = True
         arg_instrs = self.translate_expr(call.args[0], env)
@@ -991,7 +933,6 @@ class CallsContainersMixin:
 
         wasm_name = self._register_map_import(
             "map_values", val_tag=vt,
-            extra_params=["i32"], results=["i32", "i32"],
         )
         self.needs_alloc = True
         arg_instrs = self.translate_expr(call.args[0], env)
@@ -1057,32 +998,18 @@ class CallsContainersMixin:
 
     # ── Set<T> host-import builtins ──────────────────────────────
 
-    def _set_import_name(self, op: str, elem_tag: str | None = None) -> str:
-        """Build a mangled Set host import name."""
-        suffix = f"$e{elem_tag}" if elem_tag is not None else ""
-        name = f"{op}{suffix}"
-        self._set_ops_used.add(name)
-        return name
-
     def _register_set_import(
         self, op: str, elem_tag: str | None = None,
-        extra_params: list[str] | None = None,
-        results: list[str] | None = None,
     ) -> str:
-        """Register a Set host import and return the WASM call name."""
-        name = self._set_import_name(op, elem_tag)
-        wasm_name = f"$vera.{name}"
-        params: list[str] = []
-        if extra_params:
-            params.extend(extra_params)
-        param_str = " ".join(f"(param {p})" for p in params)
-        result_str = ""
-        if results:
-            result_str = " ".join(f"(result {r})" for r in results)
-        sig = f"(func {wasm_name} {param_str} {result_str})".rstrip()
-        import_line = f'  (import "vera" "{name}" {sig})'
-        self._set_imports.add(import_line)
-        return wasm_name
+        """Register a Set host import and return the WASM call name.
+
+        The import is *op* at the element representation its tag names
+        (``set_add$es``); its declaration is the registry's row for *op*.
+        """
+        name = instance_name(op, e=elem_tag)
+        self._set_ops_used.add(name)
+        self._set_imports.add(name)
+        return f"$vera.{name}"
 
     def _infer_set_elem_type(self, call: "ast.FnCall") -> str | None:
         """Infer the Vera type of a Set's element from call arguments."""
@@ -1129,8 +1056,7 @@ class CallsContainersMixin:
         Mirror of ``_translate_map_new``; see there for design.
         """
         wasm_name = "$vera.set_new"
-        sig = "(func $vera.set_new (result i32))"
-        self._set_imports.add(f'  (import "vera" "set_new" {sig})')
+        self._set_imports.add("set_new")
         self._set_ops_used.add("set_new")
         self.needs_alloc = True
         # #706: the host returns a wrapper_ptr (empty bucket-as-truth
@@ -1161,11 +1087,8 @@ class CallsContainersMixin:
                 "Map/Set with an Array-typed or zero-size key, value, or element is not supported",
             )
 
-        params = ["i32"]  # wrapper_ptr
-        params.extend(self._map_wasm_types(et))  # element
         wasm_name = self._register_set_import(
             "set_add", et,
-            extra_params=params, results=["i32"],
         )
         ins: list[str] = []
         # #706: pass the Set wrapper_ptr directly; the host returns a
@@ -1202,11 +1125,8 @@ class CallsContainersMixin:
                 "Map/Set with an Array-typed or zero-size key, value, or element is not supported",
             )
 
-        params = ["i32"]  # wrapper_ptr
-        params.extend(self._map_wasm_types(et))  # element
         wasm_name = self._register_set_import(
             "set_contains", et,
-            extra_params=params, results=["i32"],
         )
         ins: list[str] = []
         # #706: pass the Set wrapper_ptr directly (bucket-as-truth).
@@ -1241,11 +1161,8 @@ class CallsContainersMixin:
                 "Map/Set with an Array-typed or zero-size key, value, or element is not supported",
             )
 
-        params = ["i32"]  # wrapper_ptr
-        params.extend(self._map_wasm_types(et))  # element
         wasm_name = self._register_set_import(
             "set_remove", et,
-            extra_params=params, results=["i32"],
         )
         ins: list[str] = []
         # #706: pass the Set wrapper_ptr directly; the host returns a
@@ -1269,8 +1186,7 @@ class CallsContainersMixin:
     ) -> list[str] | None:
         """set_size(s) → i64 (#706: pass wrapper_ptr directly)."""
         wasm_name = "$vera.set_size"
-        sig = "(func $vera.set_size (param i32) (result i64))"
-        self._set_imports.add(f'  (import "vera" "set_size" {sig})')
+        self._set_imports.add("set_size")
         self._set_ops_used.add("set_size")
         arg_instrs = self.translate_expr(arg, env)
         if arg_instrs is None:
@@ -1300,7 +1216,6 @@ class CallsContainersMixin:
 
         wasm_name = self._register_set_import(
             "set_to_array", et,
-            extra_params=["i32"], results=["i32", "i32"],
         )
         self.needs_alloc = True
         arg_instrs = self.translate_expr(call.args[0], env)
