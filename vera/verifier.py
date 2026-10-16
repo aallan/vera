@@ -8968,15 +8968,18 @@ class ContractVerifier:
             for arg in expr.args:
                 yield arg, path
         else:
-            yield from self._nat_call(decl, expr, path, smt)
+            yield from self._nat_call(decl, expr, path, smt, bare=True)
 
     def _nat_call(
         self, decl: ast.FnDecl, expr: ast.FnCall | ast.ModuleCall, path: _Path, smt: SmtContext,
+        bare: bool = False,
     ) -> Iterator[tuple[ast.Node, _Path]]:
-        # Site 2: @Nat formal parameters narrowing an @Int argument.
+        # Site 2: @Nat formal parameters narrowing an @Int argument.  *bare*
+        # is a call by a bare name (an `FnCall`), which may name an effect
+        # operation; a module-qualified call never does.
         callee: object | None = self._callee_in_scope(expr, smt)
         param_types = getattr(callee, "param_types", None)
-        if param_types is None and isinstance(expr, ast.FnCall):
+        if param_types is None and bare:
             # #1203/#1268: a BARE effect operation has no
             # function-registry entry, so the formal loop below never
             # fired and its argument carried no obligation at all —
