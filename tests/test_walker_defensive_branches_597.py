@@ -812,14 +812,14 @@ class TestBoundaryGuardDerivationIsShared:
 
 
 class TestContractExprsDispatch:
-    """Every contract kind is enumerated, and an unknown one is loud.
+    """Every contract kind is enumerated, a new one by construction.
 
     The helper started as `getattr(c, "expr", None)`, which treats an
     unrecognised contract kind as "carries no predicates" — the silent skip it
     was written to fix, since `Decreases` carries `exprs` and was dropped
-    exactly that way.  Explicit dispatch turns the next new `ast.Contract`
-    subclass into a failure at the commit that adds it, and lets mypy see the
-    field accesses.
+    exactly that way.  It reads each clause's fields through `vera.fold`, so
+    the next new `ast.Contract` subclass has its expressions enumerated
+    whatever its fields are called.
     """
 
     @staticmethod
@@ -841,15 +841,20 @@ class TestContractExprsDispatch:
         assert [e.value for e in compilability.contract_exprs(contracts)] == [
             7, 8]
 
-    def test_an_unknown_contract_kind_raises(self) -> None:
-        """A new `ast.Contract` subclass must fail loud, not enumerate empty.
+    def test_a_new_contract_kind_is_enumerated_by_construction(self) -> None:
+        """A new `ast.Contract` subclass yields its expressions, in field
+        order, under field names no enumeration was told about.
 
         Constructed synthetically because every kind that exists today is
         handled — which is the point: this pins what happens to the NEXT one.
         """
 
+        @dataclasses.dataclass(frozen=True)
         class _FutureContract(ast.Contract):
-            pass
+            measure: ast.Expr
+            bounds: tuple[ast.Expr, ...]
 
-        with pytest.raises(TypeError, match="_FutureContract"):
-            list(compilability.contract_exprs((_FutureContract(),)))
+        future = _FutureContract(
+            measure=self._lit(4), bounds=(self._lit(5), self._lit(6)))
+        assert [e.value for e in compilability.contract_exprs((future,))] == [
+            4, 5, 6]
