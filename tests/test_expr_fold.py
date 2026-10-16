@@ -970,3 +970,14 @@ def test_a_handle_in_a_closure_captures_in_evaluation_order() -> None:
     same, 11 + 12."""
     ran = pipeline.run(_HANDLE_IN_CLOSURE, "main")
     assert ran.execution.value == 23
+
+
+def test_an_effect_operation_translates_its_arguments() -> None:
+    """`translate_expr`'s effect-operation arm: no term, and every argument
+    translated for what its translation records (`#776`): an array
+    literal's length and elements reach the solver."""
+    smt = SmtContext()
+    pair = ast.ArrayLit(elements=(_ONE, ast.IntLit(value=2)))
+    op = ast.QualifiedCall(qualifier="IO", name="print", args=(pair,))
+    assert smt.translate_expr(op, SlotEnv()) is None
+    assert len(smt.solver.assertions()) == 4
