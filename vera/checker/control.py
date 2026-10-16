@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import dataclasses
+from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
 
 from vera import ast, naming, patterns
+from vera.checker.calls import _type_var_occurrences
+from vera.checker.expressions import _holds_unknown
 from vera.checker.registration import builtin_effect_names
 from vera.environment import AdtInfo, Binding, ConstructorInfo, FunctionInfo
 from vera.formatter import format_type_canonical
@@ -1038,16 +1041,18 @@ class ControlFlowMixin:
 
         The head names the value's shape by a constructor (`let MkBox<…>`)
         or by the value's type (`let Wrap<…>` over a `Wrap<Int>`, whose
-        constructor is `W`; `let Tuple<…>`), as the verifier reads it
-        (`_destructure_ctor_name`); a type's name is read as the type where
-        it is the value's, even where another type has a constructor of
-        that name.  The first rule broken is the one reported:
+        constructor is `W`; `let Tuple<…>`), by its name or a type alias of
+        it, as the verifier reads it (`_destructure_ctor_name`); a type's
+        name is read as the type where it is the value's, even where
+        another type has a constructor of that name.  The first rule broken
+        is the one reported:
 
         - the head names a constructor or a data type (E320);
         - where the value's type decides it (`_scrutinee_for_pattern`), the
           head is that type's: `Tuple` a tuple of as many components as
           there are bindings, a constructor one of the type's own
-          (`_head_misfit`, E314), a type's name the type itself (E314);
+          (`_head_misfit`, E314), a type's name or alias the type itself
+          (E314);
         - a data constructor has one binding per field, the fields read at
           the value's type arguments (`_constructor_fields`, E321);
         - the one arm covers the value's type (the coverage reading a
@@ -1071,24 +1076,41 @@ class ControlFlowMixin:
         name = stmt.constructor
         count = len(stmt.type_bindings)
         scrut = self._scrutinee_for_pattern(ty)
+        # A type alias names the type it stands for (`type P = Pair;` and
+        # `let P<…>`), so the rules read that type's name, `Tuple` for an
+        # alias of a tuple type.  An alias that fixes type arguments is the
+        # value's type only where the value fits it, as a `let @P` value
+        # must; a generic alias, whose head supplies none, names its type
+        # by the type's name.
+        alias = self.env.type_aliases.get(name)
+        target = (base_type(alias.resolved_type) if alias is not None
+                  else None)
+        head = target.name if isinstance(target, AdtType) else name
         ci: ConstructorInfo | None = None
         # The data type the head names by its type name, the value's own
         # where `own` (its constructors then decide), another otherwise.
         named: AdtInfo | None = None
         own = False
-        if name != "Tuple":
-            ci = self._pattern_ctor_info(name)
-            if (isinstance(scrut, AdtType) and scrut.name == name
-                    and (ci is None or ci.parent_type != name)):
-                own = True
-                named = self._match_data_type(name)
+        if alias is not None and scrut is not None:
+            own = ((scrut.name == head
+                    if isinstance(target, AdtType)
+                    and isinstance(scrut, AdtType)
+                    else target is not None and types_equal(target, scrut))
+                   and (bool(alias.type_params)
+                        or self._fits(ty, alias.resolved_type)))
+        if head != "Tuple":
+            if alias is None:
+                ci = self._pattern_ctor_info(name)
+                own = (isinstance(scrut, AdtType) and scrut.name == name
+                       and (ci is None or ci.parent_type != name))
+            if own:
+                named = self._match_data_type(head)
             elif ci is None:
-                named = self._match_data_type(name)
-                if named is None:
+                named = self._match_data_type(head)
+                if named is None and alias is None:
                     if name in self._refused_ctor_names:
                         return  # #1497: the declaration's E158 is it
                     candidates, _stranger = self._stranger_constructor(name)
-                    form = self._destructure_form(ty)
                     self._error(
                         stmt,
                         f"Unknown constructor '{name}' in a destructuring "
@@ -1099,9 +1121,8 @@ class ControlFlowMixin:
                             "which must be the value's; no constructor or "
                             "data type of that name is defined or "
                             "imported."),
-                        fix=(f"Destructure the value by its type's "
-                             f"constructor: `{form}`." if form is not None
-                             else self._unknown_ctor_fix(name, candidates)),
+                        fix=(self._destructure_fix(ty)
+                             or self._unknown_ctor_fix(name, candidates)),
                         spec_ref='Chapter 4, Section 4.7.1 "Tuple Destructuring"',
                         error_code="E320",
                     )
@@ -1112,13 +1133,19 @@ class ControlFlowMixin:
         components: tuple[Type, ...] | None = None
         if scrut is not None:
             misfit: _HeadMisfit | None = None
-            if named is not None and not own:
-                misfit = _HeadMisfit(owner=name)
-            elif not own:
-                misfit = self._head_misfit(name, count, scrut)
+            if not own and (alias is not None
+                            or (named is not None and head != "Tuple")):
+                misfit = _HeadMisfit(owner=head)
+            elif head == "Tuple" or not own:
+                misfit = self._head_misfit(head, count, scrut)
             if misfit is not None:
                 shown = pretty_type(scrut)
-                if named is not None:
+                if alias is not None and not own:
+                    message = (f"Destructuring let names the type alias "
+                               f"'{name}', which stands for "
+                               f"{pretty_type(alias.resolved_type)}, but the "
+                               f"value has type {shown}.")
+                elif named is not None and not own:
                     message = (f"Destructuring let names the type '{name}', "
                                f"but the value has type {shown}.")
                 elif misfit.owner is not None:
@@ -1132,7 +1159,10 @@ class ControlFlowMixin:
                 else:
                     message = (f"Destructuring let names a tuple, but the "
                                f"value has type {shown}.")
-                form = self._destructure_form(ty)
+                whole = (f"Bind the value whole with `let @{shown} = …;`, "
+                         f"or match it." if self._fix_writes(scrut)
+                         else "Match the value, or destructure a value of "
+                              "the type the head names.")
                 self._error(
                     stmt, message,
                     rationale=(
@@ -1141,15 +1171,12 @@ class ControlFlowMixin:
                         "must be the value's: `Tuple` for a tuple with one "
                         "component per binding, and otherwise the value's "
                         "data type or a constructor of it."),
-                    fix=(f"Destructure the value by its type's "
-                         f"constructor: `{form}`." if form is not None
-                         else f"Bind the value whole with `let @{shown} = "
-                              f"…;`, or match it."),
+                    fix=self._destructure_fix(ty) or whole,
                     spec_ref='Chapter 4, Section 4.7.1 "Tuple Destructuring"',
                     error_code="E314",
                 )
                 return
-            if isinstance(scrut, AdtType) and name == "Tuple":
+            if isinstance(scrut, AdtType) and head == "Tuple":
                 components = scrut.type_args
         if ci is not None:
             fields = self._constructor_fields(ci, ty)
@@ -1165,34 +1192,43 @@ class ControlFlowMixin:
                         "constructor it takes its value apart by, so it "
                         "writes one binding per field."),
                     fix=(f"Write one binding per field of '{ci.name}': "
-                         f"`{_bindings_form(name, fields)}`." if fields
+                         f"`{_bindings_form(name, fields)}`."
+                         if fields and self._fix_writes(*fields)
+                         else f"Write one binding per field of "
+                              f"'{ci.name}', {len(fields)} in all." if fields
                          else f"'{ci.name}' has no field to bind: bind the "
                               f"value whole with `let @{pretty_type(ty)} = "
-                              f"…;`."),
+                              f"…;`." if self._fix_writes(ty)
+                         else f"'{ci.name}' has no field to bind: bind the "
+                              f"value whole with a plain `let`."),
                     spec_ref='Chapter 4, Section 4.7.1 "Tuple Destructuring"',
                     error_code="E321",
                 )
                 return
             if scrut is not None:
                 components = fields
-        head = ci.name if ci is not None else name
         missing = patterns.missing_cases(
             [ast.ConstructorPattern(
-                name=head, sub_patterns=(ast.WildcardPattern(),) * count)],
+                name=ci.name if ci is not None else head,
+                sub_patterns=(ast.WildcardPattern(),) * count)],
             base, lambda t: self._pattern_domain(t, after_error=after_error))
         if missing:
             shown = pretty_inferred_type(ty)
             if missing == ("_",):
-                built = ("a tuple" if name == "Tuple"
+                built = ("a tuple" if head == "Tuple"
                          else f"a value of {ci.parent_type}, the type "
                               f"'{name}' builds" if ci is not None
                          else f"a value of '{name}'")
-                if isinstance(base, UnknownType):
-                    # `apply_fn` over a type variable: no type to name.
-                    value = "the value's type is not known"
-                    fix = f"Destructure {built}."
+                # `apply_fn` over a type variable is typed `Unknown`: no type
+                # to name.
+                value = ("the value's type is not known"
+                         if isinstance(base, UnknownType)
+                         else f"the value has type {shown}")
+                if not self._fix_writes(ty):
+                    fix = (f"Bind the value whole with a plain `let`: "
+                           f"'{name}' has no constructor to take it apart "
+                           f"by." if own else f"Destructure {built}.")
                 else:
-                    value = f"the value has type {shown}"
                     fix = (f"Bind the value whole with `let @{shown} = "
                            f"…;`: '{name}' has no constructor to take it "
                            f"apart by." if own
@@ -1217,7 +1253,9 @@ class ControlFlowMixin:
             cases = ", ".join(missing)
             arms = [f"{self._uncovered_arm(m, base)} -> …" for m in missing]
             if ci is not None:
-                written = ", ".join("@" + pretty_type(b) for b in bindings)
+                written = ", ".join(
+                    "@" + pretty_type(b) if self._fix_writes(b) else "_"
+                    for b in bindings)
                 arms.insert(0, f"{ci.name}({written}) -> …")
                 message = (f"Destructuring let names '{name}', but a value "
                            f"of type {shown} may also be {cases}.")
@@ -1258,28 +1296,55 @@ class ControlFlowMixin:
                 fix=(f"Write the binding as "
                      f"`@{pretty_inferred_type(component)}`, the type of "
                      f"component {position}, or give the value a component "
-                     f"of type {pretty_type(binding)} there."),
+                     f"of type {pretty_type(binding)} there."
+                     if self._fix_writes(component)
+                     else f"Give the value a component of type "
+                          f"{pretty_type(binding)} there."),
                 spec_ref='Chapter 4, Section 4.7.1 "Tuple Destructuring"',
                 error_code="E170",
             )
 
-    def _destructure_form(self, ty: Type) -> str | None:
-        """The destructure that takes a value of *ty* apart, its bindings
-        at the value's component types, for a fix to write: a tuple's, and
-        the one constructor's of a data type that has one with a field; None
+    def _fix_writes(self, *types: Type) -> bool:
+        """Whether a fix may write each of *types* as code: every type
+        variable in it is one the enclosing function declares, and no part
+        of it is `Unknown`.  An inference variable left open (`T$1`, shown
+        as `?`) or another function's type variable is in no program's
+        scope here, so code that wrote one would not apply as written
+        (PR #1721 review)."""
+        for ty in types:
+            seen: Counter[str] = Counter()
+            _type_var_occurrences(ty, seen)
+            if (_holds_unknown(ty)
+                    or any(n not in self.env.type_params for n in seen)):
+                return False
+        return True
+
+    def _destructure_fix(self, ty: Type) -> str | None:
+        """The fix that destructures a value of *ty* by its own
+        constructor: a tuple's `Tuple` over its components, or the one
+        constructor of a data type that has one with a field, written out
+        where `_fix_writes` can write its types and named otherwise; None
         for any other type."""
         base = base_type(ty)
         if not isinstance(base, AdtType):
             return None
         if base.name == "Tuple":
-            return (_bindings_form("Tuple", base.type_args)
-                    if base.type_args else None)
-        info = self._match_data_type(base.name)
-        if info is None or len(info.constructors) != 1:
-            return None
-        (ci,) = info.constructors.values()
-        fields = self._constructor_fields(ci, ty)
-        return _bindings_form(ci.name, fields) if fields else None
+            if not base.type_args:
+                return None
+            ctor, fields = "Tuple", base.type_args
+        else:
+            info = self._match_data_type(base.name)
+            if info is None or len(info.constructors) != 1:
+                return None
+            (ci,) = info.constructors.values()
+            ctor, fields = ci.name, self._constructor_fields(ci, ty)
+            if not fields:
+                return None
+        if self._fix_writes(*fields):
+            return (f"Destructure the value by its type's constructor: "
+                    f"`{_bindings_form(ctor, fields)}`.")
+        return (f"Destructure the value by its type's constructor, "
+                f"'{ctor}', with one binding per component.")
 
     def _uncovered_arm(self, case: str, ty: Type) -> str:
         """The pattern an arm for the uncovered constructor *case* of *ty*

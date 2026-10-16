@@ -14,7 +14,9 @@ The head names the value's shape by a constructor (`let MkBox<…>`) or by
 the value's type (`let Wrap<…>` over a `Wrap<Int>` built by `W`; `let
 Tuple<…>`), as the verifier already read it (`_destructure_ctor_name`) and
 the #1503 instrument writes it: a type's name is read as the type where it
-is the value's, even beside another type's constructor of that name.
+is the value's, even beside another type's constructor of that name.  A
+type alias is a name of the type it stands for, so `let P<…>` with
+`type P = Pair;` reads as `let Pair<…>`, as it ran before the rule.
 
 The rule (spec §4.7.1): the destructure is held to the rules its one-arm
 `match` is, decided by the functions that decide them for the arm, and each
@@ -23,8 +25,8 @@ binding to the rule a `let` binding is held to:
 - the head names a constructor or a data type (E320);
 - it is the value's: `Tuple` a tuple of as many components as there are
   bindings, a constructor one of the value's type (E314; `_head_misfit`,
-  which a `match` arm's constructor pattern reads), a type's name the
-  value's type, whose one constructor it then takes the value apart by
+  which a `match` arm's constructor pattern reads), a type's name or alias
+  the value's type, whose one constructor it then takes the value apart by
   (E314, or E311 where the type has several);
 - a data constructor has one binding per field (E321), each field read at
   the value's type arguments (`_constructor_fields`);
@@ -40,6 +42,10 @@ binding to the rule a `let` binding is held to:
   refused; a type variable the source leaves open fits whatever the binding
   gives it, as the `let`'s expected type would have fixed it.
 
+A fix writes a type as code only where the enclosing function can write it:
+a type an inference variable leaves open (`T$1`, shown as `?`), or another
+function's type variable, is named in prose or left out (`_fix_writes`).
+
 The value's type is the type it synthesizes without an expected type, never
 the one the bindings would give it: an `if` whose branches build
 `Tuple(1, 2)` is a `Tuple<Int, Int>` whatever the destructure says (issue
@@ -48,8 +54,8 @@ the one the bindings would give it: an `if` whose branches build
 The class is every destructuring `let` whose head, arity or binding types
 disagree with its value, whatever the value's form.  The instrument crosses
 the head (a tuple of two components and of three, a data type with one
-constructor named by the constructor and by the type, a data type with two,
-the prelude's `Response`)
+constructor named by the constructor, by the type and by an alias of the
+type, a data type with two, the prelude's `Response`)
 with the value's form (a construction, a slot, a call, an `if` join, a
 `match` join, a block's tail), the relation of one component to its
 binding (equal, `@Nat` into `@Int`, `@Int` into `@Nat`, `String` for `Int`,
@@ -64,8 +70,8 @@ not cells.
 The reported programs, the members the matrix does not span (an unknown
 constructor, a prelude type with two constructors named by a constructor
 and by the type, a value of no data type, a built-in type with no
-constructors, another type's name, a generic data type, a type parameter,
-a value of no known type, the other constructor of a tuple and of a data
+constructors, another type's name and an alias of one, a generic data
+type, a type parameter, a value of no known type, the other constructor of a tuple and of a data
 type, a `@Byte` binding over an `Int` component, a closure field bound at a
 narrower effect row, a `@Never` binding) and each mutant's killer are
 unparametrised tests.  The negative space: the narrowing the destructure already had keeps
@@ -233,6 +239,24 @@ def test_named_another_types_name_is_refused() -> None:
                  prelude=("private data Pair { Pair(Int, Int) }\n"
                           "private data Other { MkOther(Int, Int) }"))
     _refused_once(source, "E314", _place(source, "let Other"))
+
+
+_ALIAS_OF_ANOTHER = _fn(
+    "let Q<@Int, @Int> = Pair(1, 2);\n  @Int.0",
+    prelude=("private data Pair { Pair(Int, Int) }\n"
+             "private data Other { MkOther(Int, Int) }\n\n"
+             "type Q = Other;"))
+
+
+def test_named_an_alias_of_another_type_is_refused() -> None:
+    """The message names the alias, the type it stands for and the
+    value's type."""
+    diagnostic = _one(_ALIAS_OF_ANOTHER, "E314")
+    assert diagnostic.description == (
+        "Destructuring let names the type alias 'Q', which stands for "
+        "Other, but the value has type Pair.")
+    assert (diagnostic.location.line, diagnostic.location.column) == (
+        _place(_ALIAS_OF_ANOTHER, "let Q"))
 
 
 def test_named_a_type_with_no_constructor_is_refused() -> None:
@@ -442,6 +466,10 @@ def test_the_other_type_name_fix_names_the_values_constructor() -> None:
            "E314", "Other<@Int, @Int>", "Pair<@Int, @Int>")
 
 
+def test_the_other_alias_fix_names_the_values_constructor() -> None:
+    _fixed(_ALIAS_OF_ANOTHER, "E314", "Q<@Int, @Int>", "Pair<@Int, @Int>")
+
+
 def test_the_two_constructor_type_fix_is_a_match() -> None:
     source = _fn("let Option<@Int> = @Option<Int>.0;\n  @Int.0",
                  sig="@Option<Int> -> @Int")
@@ -464,6 +492,91 @@ def test_the_type_parameter_fix_binds_the_value_whole() -> None:
     _fixed(_TYPE_PARAMETER.replace("  @Int.0\n}\n\npublic", "  0\n}\n\npublic"),
            "E313", "let Tuple<@Int, @Int> = @T.0;", "let @T = @T.0;",
            named="`let @T = ")
+
+
+# A fix over a component an inference variable leaves open (`None`'s `T`)
+# writes no code naming it: the open component is reached through `id`,
+# which the bindings' types do not reach, so a binding can fit it.
+_ID = """private forall<T> fn id(@T -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @T.0
+}"""
+
+
+def _no_unwritable_code(fix: str) -> None:
+    """No code in *fix*, between backticks, names a type no program can
+    hold: an open inference variable (`T$1`, or `?`)."""
+    code = fix.split("`")[1::2]
+    assert not any("T$" in c or "?" in c for c in code), fix
+
+
+def _open_fixed(source: str, code: str, old: str, new: str) -> None:
+    """The *code* diagnostic's fix writes no unwritable type, and *source*
+    with *old* replaced by *new*, as the fix says, checks clean."""
+    diagnostic = _one(source, code)
+    _no_unwritable_code(diagnostic.fix)
+    assert source.count(old) == 1, old
+    _clean(source.replace(old, new))
+
+
+def test_the_open_component_fix_gives_the_component_its_type() -> None:
+    source = _fn("let Tuple<@Int, @Int> = Tuple(None, 1);\n  @Int.0")
+    assert _one(source, "E170").fix == (
+        "Give the value a component of type Int there.")
+    _open_fixed(source, "E170", "Tuple(None, 1)", "Tuple(0, 1)")
+
+
+def test_the_open_unknown_constructor_fix_names_the_constructor() -> None:
+    source = _fn("let Nope<@Option<Int>, @Int> = id(Tuple(None, 1));\n"
+                 "  @Int.0", prelude=_ID)
+    _open_fixed(source, "E320", "let Nope<", "let Tuple<")
+
+
+def test_the_open_tuple_width_fix_names_the_constructor() -> None:
+    source = _fn("let Tuple<@Option<Int>, @Int, @Int> = id(Tuple(None, 1));\n"
+                 "  @Int.0", prelude=_ID)
+    _open_fixed(source, "E314", "<@Option<Int>, @Int, @Int>",
+                "<@Option<Int>, @Int>")
+
+
+def test_the_open_field_count_fix_counts_the_fields() -> None:
+    source = _fn("let MkBox<@Option<Int>, @Int> = id(MkBox(None));\n  0",
+                 prelude=f"private data Box<T> {{ MkBox(T) }}\n\n{_ID}")
+    assert _one(source, "E321").fix == (
+        "Write one binding per field of 'MkBox', 1 in all.")
+    _open_fixed(source, "E321", "<@Option<Int>, @Int>", "<@Option<Int>>")
+
+
+def test_the_open_value_fix_names_no_type_the_function_lacks() -> None:
+    """`boom`'s result is its own `T`, which `f` does not declare, so the
+    fix does not write `let @T`."""
+    source = """private forall<T> fn boom(@Int -> @T)
+  requires(true)
+  ensures(true)
+  effects(<Exn<String>>)
+{
+  throw("boom")
+}
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<Exn<String>>)
+{
+  let Tuple<@Int, @Int> = boom(@Int.0);
+  @Int.0
+}
+"""
+    assert _one(source, "E313").fix == "Destructure a tuple."
+    _open_fixed(source, "E313", "boom(@Int.0);", "Tuple(@Int.0, 2);")
+
+
+def test_the_open_whole_value_fix_writes_no_open_type() -> None:
+    source = _fn("let Tuple<@Int> = None;\n  @Int.0")
+    _no_unwritable_code(_one(source, "E314").fix)
 
 
 # =====================================================================
@@ -571,6 +684,71 @@ def test_the_values_type_name_is_read_as_the_type() -> None:
     verifier gives it, pinned for #1503 in `test_one_classifier_1503.py`)."""
     _clean(_BOX_BESIDE_OTHER)
     _clean(_BOX_BESIDE_OTHER.replace("let Box<", "let MkBox<"))
+
+
+_ALIAS_OF_THE_VALUE = """private data Pair { Pair(Int, Int) }
+
+type P = Pair;
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @P = Pair(@Int.0, 2);
+  let P<@Int, @Int> = @P.0;
+  @Int.1
+}
+"""
+
+
+def test_an_alias_of_the_values_type_is_read_as_the_type() -> None:
+    """`type P = Pair;` names `Pair`, so `let P<…>` takes a `Pair` apart
+    by its constructor and runs as it did before the rule."""
+    _clean(_ALIAS_OF_THE_VALUE)
+    assert pipeline.run(_ALIAS_OF_THE_VALUE, fn="f", args=[5]).value == 5
+
+
+def test_an_alias_of_a_tuple_type_reaches_the_tuple_rule() -> None:
+    """`type IP = Tuple<Int, Int>;` names a tuple type, read by the
+    `Tuple` rule; at base it returned 5."""
+    source = _fn("let IP<@Int, @Int> = Tuple(@Int.0, 2);\n  @Int.1",
+                 prelude="type IP = Tuple<Int, Int>;")
+    _clean(source)
+    assert pipeline.run(source, fn="f", args=[5]).value == 5
+
+
+def test_an_alias_with_type_arguments_names_its_type() -> None:
+    """`type IB = Box<Int>;` is a `Box<Int>`, the value's type; at base it
+    returned 5."""
+    source = _fn("let IB<@Int> = MkBox(@Int.0);\n  @Int.0",
+                 prelude=("private data Box<T> { MkBox(T) }\n\n"
+                          "type IB = Box<Int>;"))
+    _clean(source)
+    assert pipeline.run(source, fn="f", args=[5]).value == 5
+
+
+def test_a_generic_alias_names_its_type_by_the_types_name() -> None:
+    """`type Bx<T> = Box<T>;` written without arguments names `Box`."""
+    source = _fn("let Bx<@Int, @Int> = MkBox(@Int.0, 7);\n  @Int.0",
+                 prelude=("private data Box<T> { MkBox(Int, T) }\n\n"
+                          "type Bx<T> = Box<T>;"))
+    _clean(source)
+    assert pipeline.run(source, fn="f", args=[5]).value == 7
+
+
+def test_an_alias_of_a_tuple_type_is_held_to_its_components() -> None:
+    """An alias of a tuple type is read as `Tuple`, its components held to
+    the bindings, and the value's type to the alias's own arguments."""
+    alias = "type Pt = Tuple<Int, Int>;"
+    good = _fn("let @Pt = Tuple(@Int.0, 2);\n  let Pt<@Int, @Int> = @Pt.0;\n"
+               "  @Int.1", prelude=alias)
+    _clean(good)
+    wrong = good.replace("let Pt<@Int, @Int>", "let Pt<@Int, @String>")
+    _refused_once(wrong, "E170", _place(wrong, "String>"))
+    wider = _fn("let Pt<@Int, @Int, @Int> = Tuple(@Int.0, 2, 3);\n  @Int.1",
+                prelude=alias)
+    _refused_once(wider, "E314", _place(wider, "let Pt"))
 
 
 def test_a_rigid_type_variable_component_fits_itself() -> None:
@@ -738,6 +916,9 @@ _SHAPES = (
            "Pair", "Pair(1, {v})", ("Int", "{b}"), 1),
     _Shape("data1-by-type", "Wrap", "private data Wrap {{ W(Int, {c}) }}",
            "Wrap", "W(1, {v})", ("Int", "{b}"), 1),
+    _Shape("data1-by-alias", "PairAlias",
+           "private data Pair {{ Pair(Int, {c}) }}\n\ntype PairAlias = Pair;",
+           "Pair", "Pair(1, {v})", ("Int", "{b}"), 1),
     _Shape("data2", "Two", "private data Two {{ Two(Int, {c}), One(Int) }}",
            "Two", "Two(1, {v})", ("Int", "{b}"), 1, refutable=True),
     _Shape("prelude", "Response", "", "Response",
@@ -871,6 +1052,75 @@ def test_the_destructure_is_held_to_its_constructor_pattern(
                         else set()), kinds
 
 
+# The open family: a tuple whose varied component is `None`, its type
+# argument left open where no binding reaches it, over the value's forms a
+# construction can take and through `id`, at each arity, bound at `@Int`
+# (refused) and at `@Option<Int>` (fits).
+_OPEN_SOURCES: dict[str, str] = {
+    "construction": "{cons}",
+    "if": "if @Int.0 > 0 then {{ {cons} }} else {{ {cons} }}",
+    "match": "match @Int.0 {{ 0 -> {cons}, _ -> {cons} }}",
+    "block": "{{ {cons} }}",
+    "id": "id({cons})",
+}
+
+
+@dataclass(frozen=True)
+class _OpenCell:
+    shape: _Shape
+    source: str
+    binding: str
+    arity: str
+
+    def program(self) -> str:
+        shape = self.shape
+        cons = shape.construct.format(v="None")
+        written = [t.format(b=self.binding) for t in shape.bindings]
+        if self.arity == "fewer":
+            written = written[:-1]
+        elif self.arity == "more":
+            written = [*written, "Int"]
+        head = f"let Tuple<{', '.join('@' + t for t in written)}> ="
+        return _fn(f"{head} {_OPEN_SOURCES[self.source].format(cons=cons)};"
+                   f"\n  0", prelude=_ID)
+
+    def expected(self) -> str | None:
+        if self.arity != "equal":
+            return "E314"
+        return "E170" if self.binding == "Int" else None
+
+
+_OPEN_CELLS = [
+    _OpenCell(shape, source, binding, arity)
+    for shape in _SHAPES if shape.is_tuple
+    for source in _OPEN_SOURCES
+    for binding in ("Int", "Option<Int>")
+    for arity in _ARITIES
+]
+
+
+@pytest.mark.parametrize(
+    "cell", _OPEN_CELLS,
+    ids=[f"{c.shape.label}-{c.source}-{c.binding}-{c.arity}"
+         for c in _OPEN_CELLS])
+def test_an_open_component_is_held_to_the_rule(cell: _OpenCell) -> None:
+    checked = pipeline.check(cell.program())
+    assert [d.error_code for d in checked.diagnostics] == (
+        [cell.expected()] if cell.expected() else []), [
+        (d.error_code, d.description) for d in checked.diagnostics]
+    for d in checked.diagnostics:
+        _no_unwritable_code(d.fix)
+
+
+def test_no_fix_writes_a_type_no_program_can_hold() -> None:
+    """Over every matrix cell and every open cell, no destructure fix
+    writes an open inference variable as code."""
+    for program in [c.program() for c in _CELLS] + [
+            c.program() for c in _OPEN_CELLS]:
+        for d in pipeline.check(program).diagnostics:
+            _no_unwritable_code(d.fix)
+
+
 def test_the_matrix_spans_its_dimensions() -> None:
     """Every shape, value form, relation and arity has cells, and each of
     the rule's outcomes is reached (a vacuous dimension reads as
@@ -882,4 +1132,4 @@ def test_the_matrix_spans_its_dimensions() -> None:
     outcomes = {_expected(c) for c in _CELLS}
     assert outcomes == {None, ("E314", "let"), ("E321", "let"),
                         ("E311", "let"), ("E170", "binding")}
-    assert len(_CELLS) == 522
+    assert len(_CELLS) == 612
