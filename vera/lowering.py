@@ -32,8 +32,9 @@ and code generation's E607 stays the report for a clone at ``String``: the
 checker infers each call's type arguments but holds no instantiation set
 (#1679).
 
-Imports ``vera.ast``, ``vera.types`` and ``vera.narrowing``'s effect roster
-only, so the checker imports this module without importing code generation.
+Imports ``vera.ast``, ``vera.fold``, ``vera.types`` and ``vera.narrowing``'s
+effect roster only, so the checker imports this module without importing code
+generation.
 """
 
 from __future__ import annotations
@@ -41,7 +42,7 @@ from __future__ import annotations
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field, fields, is_dataclass
 
-from vera import ast
+from vera import ast, fold
 from vera.narrowing import COMPILABLE_EFFECTS
 from vera.types import (
     BOOL,
@@ -81,26 +82,15 @@ def contract_exprs(
     skipped it and a `handle[State<Nat>]` in a `decreases` measure emitted
     `state_push_Nat` against an import that was never declared.
 
-    The dispatch is EXPLICIT rather than attribute-probing (round-5 review).
-    A `getattr` fallback treats an unrecognised contract kind as "carries
-    nothing", which is the silent-skip failure this function was written to
-    fix — and it hides the field accesses from mypy, so a renamed field would
-    typecheck.  A new `ast.Contract` subclass now raises here instead, at the
-    commit that adds it.
+    The expressions are each clause's children in `vera.fold`, which reads
+    the clause's fields, so a contract kind added to `vera/ast.py` has its
+    expressions enumerated by construction, under whatever field names it
+    declares.
     """
     for contract in contracts:
-        if isinstance(contract, (ast.Requires, ast.Ensures, ast.Invariant)):
-            yield contract.expr
-        elif isinstance(contract, ast.Decreases):
-            yield from contract.exprs
-        else:
-            raise TypeError(
-                f"contract_exprs does not know how to enumerate the "
-                f"predicates of {type(contract).__name__} — a new "
-                f"ast.Contract subclass must be added here (and to the "
-                f"walkers' WALKER_COVERAGE checklists), or its expressions "
-                f"go unregistered while codegen lowers them"
-            )
+        for child in fold.children(contract):
+            if isinstance(child, ast.Expr):
+                yield child
 
 
 # =====================================================================
