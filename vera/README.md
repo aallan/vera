@@ -864,11 +864,11 @@ self.effects["Name"] = EffectInfo(
 
 ### Extending SMT translation
 
-Give the class its arm in `_SMT_ARMS`, the `fold.dispatch` table `SmtContext.translate_expr()` reads in `smt.py`. Return a Z3 expression for supported constructs. **Return `None`** for anything that can't be translated — this triggers Tier 3 gracefully rather than causing an error.
+Each `Expr` class's translation is its arm in `_SMT_ARMS`, the `fold.dispatch` table `SmtContext.translate_expr()` reads in `smt.py`: extend the class's arm, and give a new class one, without which the table refuses to build and the import of `vera.smt` fails, naming `translate_expr`. Return a Z3 expression for supported constructs. **Return `None`** for anything that can't be translated — this triggers Tier 3 gracefully rather than causing an error.
 
 ### Extending WASM compilation
 
-Add a case to `WasmContext.translate_expr()` in `wasm/context.py` (or the appropriate submodule). Return a list of WAT instruction strings for supported constructs. **Return `None`** for anything that can't be compiled — this triggers a "function skipped" warning rather than a compilation error.
+Each `Expr` class's translation is its arm in `_TRANSLATE_ARMS`, the `fold.dispatch` table `WasmContext.translate_expr()` reads in `wasm/context.py` (an arm may delegate to the appropriate submodule): extend the class's arm, and give a new class one, without which the table refuses to build and the import of `vera.wasm.context` fails, naming `_translate_expr_unscoped`. Return a list of WAT instruction strings for supported constructs. **Return `None`** for anything that can't be compiled — this triggers a "function skipped" warning rather than a compilation error.
 
 To add a new WASM type mapping, update `wasm_type()` in `wasm/helpers.py` and the type mapping table in `codegen/core.py`.
 
