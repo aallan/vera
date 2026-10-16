@@ -1038,3 +1038,94 @@ def test_the_decreases_walk_translates_a_condition_before_its_binding(
     assert order[0] == "BinaryExpr", (
         f"the walk translated {order[0]} first: the `let` was bound before "
         f"the condition inside it was reached ({order})")
+
+
+def _line_of(source: str, text: str) -> int:
+    """The 1-based line of the one occurrence of *text* in *source*."""
+    assert source.count(text) == 1, text
+    return source[:source.index(text)].count("\n") + 1
+
+
+_HANDLER_WRITES = """\
+private fn g(@Nat -> @Int)
+  requires(true)
+  ensures(@Int.result == nat_to_int(@Nat.0))
+  effects(pure)
+{
+  nat_to_int(@Nat.0)
+}
+
+public fn f(@Int -> @Int)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Nat>](@Nat = g(@Int.0)) {
+    get(@Unit) -> { resume(@Nat.0) },
+    put(@Nat) -> { resume(()) } with @Nat = g(nat_to_int(@Nat.0) - 1)
+  } in {
+    put(get(()));
+    nat_to_int(get(()))
+  }
+}
+"""
+
+
+def test_a_handler_s_state_writes_obligate_before_what_they_hold() -> None:
+    """The `@Nat`-binding walk's handler step obligates the state's
+    initialiser into its cell before the walk reaches the initialiser's own
+    sites, and a clause's step obligates its `with` update after the
+    clause's body and before the update's own sites, where the recursive
+    walk did: a write's record comes before the records of the value it
+    writes."""
+    envelope = pipeline.verify(_HANDLER_WRITES).envelope()
+    assert envelope["ok"], envelope
+    binds = [o["description"] for o in envelope["obligations"]
+             if o["kind"] == "nat_bind"]
+    assert binds == [
+        "g(@Int.0)", "@Int.0",
+        "g(nat_to_int(@Nat.0) - 1)", "nat_to_int(@Nat.0) - 1"], binds
+
+
+_DIVERGENT_CELL = """\
+private forall<T> fn h(@T, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<T>](@Int = 1) {
+    get(@Unit) -> { resume(@T.0) },
+    put(@T) -> { resume(()) } with @Int = 0 - 5
+  } in {
+    @Int.0
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Nat = 3;
+  h(@Nat.0, 7)
+}
+"""
+
+
+def test_a_with_update_is_obligated_against_its_handler_s_cell() -> None:
+    """A clause's `with` update writes its handler's cell, the effect's
+    `State<T>` argument, whatever the `with` annotation says (#1203).  A
+    generic handler may declare its state at another type than its cell,
+    which the checker leaves to the instantiation (#1206): at `Nat` the
+    declaration is E533, and the update `0 - 5` is refused into the `Nat`
+    cell (E503).  The clause's step cannot see its handler, so the
+    handler's step hands it the cell; a clause handed none reads the `Int`
+    annotation and obligates nothing."""
+    envelope = pipeline.verify(_DIVERGENT_CELL).envelope()
+    records = [(o["kind"], o["status"], o.get("error_code"), o["location"]["line"])
+               for o in envelope["obligations"]
+               if o["kind"] in ("state_decl", "nat_bind")]
+    assert ("state_decl", "violated", "E533",
+            _line_of(_DIVERGENT_CELL, "(@Int = 1)")) in records, records
+    assert ("nat_bind", "violated", "E503",
+            _line_of(_DIVERGENT_CELL, "with @Int = 0 - 5")) in records, records
