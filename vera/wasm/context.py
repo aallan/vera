@@ -20,9 +20,10 @@ See spec/11-compilation.md for the compilation specification.
 from __future__ import annotations
 
 import itertools
-from typing import TYPE_CHECKING, Callable
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any, Callable
 
-from vera import ast
+from vera import ast, fold
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv
 from vera.skip import (
     DERIVED_HELPER_DEPTH_CAP,
@@ -1764,111 +1765,11 @@ class WasmContext(
         Compound expressions (match, if, block) are void when all
         branches/the final expression are void.
 
-        # WALKER_COVERAGE: (#597 — positive-filter walker; default
-        # `return False` is correct for every Expr that produces a
-        # value.  Every Expr below has a disposition.)
-        #
-        # Handled (may be void; checked explicitly):
-        #   QualifiedCall     → True for void IO ops (print/exit/sleep/stderr)
-        #   UnitLit           → always True
-        #   FnCall            → True if user fn declared @Unit return
-        #   AssertExpr        → always True (returns Unit)
-        #   AssumeExpr        → always True (returns Unit)
-        #   MatchExpr         → True if all arm bodies are void
-        #   IfExpr            → True if both branches are void
-        #   Block             → True if trailing expr is void
-        #   HandleExpr        → True if body is void
-        #   ModuleCall        → True if resolved target fn returns @Unit
-        #
-        # Intentionally ignored (default `return False` = produces value):
-        #   IntLit            → always Int (i64) on stack
-        #   FloatLit          → always Float64 (f64) on stack
-        #   BoolLit           → always Bool (i32) on stack
-        #   StringLit         → always String (i32 pair) on stack
-        #   InterpolatedString → always String (i32 pair) on stack
-        #   SlotRef           → always type-matched value on stack
-        #   ResultRef         → always type-matched value on stack
-        #   BinaryExpr        → arith/cmp/logic — always produces value
-        #   UnaryExpr         → neg/not — always produces value
-        #   IndexExpr         → element value on stack
-        #   ArrayLit          → Array (i32 pair) on stack
-        #   ConstructorCall   → ADT (i32) on stack
-        #   NullaryConstructor → ADT (i32) on stack
-        #   AnonFn            → closure handle (i32) on stack
-        #   ForallExpr        → Bool (i32) on stack
-        #   ExistsExpr        → Bool (i32) on stack
-        #
-        # Cannot occur (rejected before reaching codegen):
-        #   HoleExpr          → parser placeholder; check time rejects
-        #   OldExpr           → contract-only
-        #   NewExpr           → contract-only
+        Each class's answer is its arm in ``_VOID_ARMS``, a
+        ``vera.fold.dispatch`` table, so every `Expr` class has one.
         """
-        if isinstance(expr, ast.QualifiedCall):
-            # IO.print/sleep/stderr return Unit (void);
-            # IO.exit never returns (unreachable);
-            # Other IO ops (read_line, read_file, time, args, get_env)
-            # produce values.
-            if expr.qualifier == "IO":
-                return expr.name in ("print", "exit", "sleep", "stderr")
-            # Http ops return Result<String, String> — not void
-            if expr.qualifier == "Http":
-                return False
-            # Inference.complete returns Result<String, String> — not void
-            if expr.qualifier == "Inference":
-                return False
-            # DB.query / DB.execute both return a Result — not void (#229)
-            if expr.qualifier == "DB":
-                return False
-            # All Random ops produce values (Int, Float64, or Bool); never void. (#465)
-            if expr.qualifier == "Random":
-                return False
-            # State ops are desugared to FnCall, not QualifiedCall.
-            # Future qualified effects should be added explicitly above.
-            # Default to void for unknown qualified calls as a safe
-            # fallback — WASM validation will catch mismatches.
-            return True
-        if isinstance(expr, ast.UnitLit):
-            return True
-        # #1284: bare form, so the ownership predicate decides whether the
-        # op registry answers at all — a user `fn put` returning a value is
-        # not void just because the handler's `put` is.
-        if (isinstance(expr, ast.FnCall)
-                and self._bare_call_denotes_op(expr.name)
-                and expr.name in self._effect_ops):
-            _name, is_void = self._effect_ops[expr.name]
-            return is_void
-        # User-defined fns declared with @Unit return type — registry stores
-        # them with value None alongside non-void returns.  Without this
-        # clause a `helper(); next_expr` block where `helper` is a user
-        # @Unit fn fell through to "produces a value", got a stray `drop`
-        # appended, and failed WASM validation with "expected a type but
-        # nothing on stack" (#584).
-        if isinstance(expr, ast.FnCall) and expr.name in self._fn_ret_types:
-            return self._fn_ret_types[expr.name] is None
-        # A module-qualified call is void iff its resolved target returns
-        # @Unit — mirror the FnCall clause on the resolved WASM target (bare
-        # name, the ``mod$…`` name when the bare name is locally shadowed, or a
-        # shadowed generic's per-instantiation clone), so a unit-returning
-        # ``m::f()`` in statement position gets no stray drop (#814; same class
-        # as the user-@Unit-fn case #584).
-        if isinstance(expr, ast.ModuleCall):
-            target = self._resolve_module_call_wasm_name(expr)
-            if target in self._fn_ret_types:
-                return self._fn_ret_types[target] is None
-            return False
-        if isinstance(expr, (ast.AssertExpr, ast.AssumeExpr)):
-            return True  # assert/assume return Unit (void)
-        # Compound expressions: void if all branches are void
-        if isinstance(expr, ast.MatchExpr):
-            return all(self._is_void_expr(arm.body) for arm in expr.arms)
-        if isinstance(expr, ast.IfExpr):
-            return (self._is_void_expr(expr.then_branch)
-                    and self._is_void_expr(expr.else_branch))
-        if isinstance(expr, ast.Block):
-            return self._is_void_expr(expr.expr)
-        if isinstance(expr, ast.HandleExpr):
-            return self._is_void_expr(expr.body)
-        return False
+        arm = _VOID_ARMS.get(type(expr))
+        return arm(self, expr) if arm is not None else False
 
     def _is_pair_result_expr(self, expr: ast.Expr) -> bool:
         """Check if an expression produces two values (ptr, len) on the stack.
@@ -1931,3 +1832,118 @@ class WasmContext(
                 return resolved
             return gen_base
         return self._module_qualified_targets.get(qkey, expr.name)
+
+
+# =====================================================================
+# `_is_void_expr`: one arm per expression class
+# =====================================================================
+
+def _void_qualified_call(ctx: WasmContext, expr: ast.QualifiedCall) -> bool:
+    # IO.print/sleep/stderr return Unit (void);
+    # IO.exit never returns (unreachable);
+    # Other IO ops (read_line, read_file, time, args, get_env)
+    # produce values.
+    if expr.qualifier == "IO":
+        return expr.name in ("print", "exit", "sleep", "stderr")
+    # Http ops return Result<String, String> — not void
+    if expr.qualifier == "Http":
+        return False
+    # Inference.complete returns Result<String, String> — not void
+    if expr.qualifier == "Inference":
+        return False
+    # DB.query / DB.execute both return a Result — not void (#229)
+    if expr.qualifier == "DB":
+        return False
+    # All Random ops produce values (Int, Float64, or Bool); never void. (#465)
+    if expr.qualifier == "Random":
+        return False
+    # State ops are desugared to FnCall, not QualifiedCall.
+    # Future qualified effects should be added explicitly above.
+    # Default to void for unknown qualified calls as a safe
+    # fallback — WASM validation will catch mismatches.
+    return True
+
+
+def _void_fn_call(ctx: WasmContext, expr: ast.FnCall) -> bool:
+    # #1284: bare form, so the ownership predicate decides whether the
+    # op registry answers at all — a user `fn put` returning a value is
+    # not void just because the handler's `put` is.
+    if ctx._bare_call_denotes_op(expr.name) and expr.name in ctx._effect_ops:
+        _name, is_void = ctx._effect_ops[expr.name]
+        return is_void
+    # User-defined fns declared with @Unit return type — registry stores
+    # them with value None alongside non-void returns.  Without this
+    # clause a `helper(); next_expr` block where `helper` is a user
+    # @Unit fn fell through to "produces a value", got a stray `drop`
+    # appended, and failed WASM validation with "expected a type but
+    # nothing on stack" (#584).
+    if expr.name in ctx._fn_ret_types:
+        return ctx._fn_ret_types[expr.name] is None
+    return False
+
+
+def _void_module_call(ctx: WasmContext, expr: ast.ModuleCall) -> bool:
+    # A module-qualified call is void iff its resolved target returns
+    # @Unit — mirror the FnCall clause on the resolved WASM target (bare
+    # name, the ``mod$…`` name when the bare name is locally shadowed, or a
+    # shadowed generic's per-instantiation clone), so a unit-returning
+    # ``m::f()`` in statement position gets no stray drop (#814; same class
+    # as the user-@Unit-fn case #584).
+    target = ctx._resolve_module_call_wasm_name(expr)
+    if target in ctx._fn_ret_types:
+        return ctx._fn_ret_types[target] is None
+    return False
+
+
+def _void_match(ctx: WasmContext, expr: ast.MatchExpr) -> bool:
+    return all(ctx._is_void_expr(arm.body) for arm in expr.arms)
+
+
+def _void_if(ctx: WasmContext, expr: ast.IfExpr) -> bool:
+    return (ctx._is_void_expr(expr.then_branch)
+            and ctx._is_void_expr(expr.else_branch))
+
+
+def _void_block(ctx: WasmContext, expr: ast.Block) -> bool:
+    return ctx._is_void_expr(expr.expr)
+
+
+def _void_handle(ctx: WasmContext, expr: ast.HandleExpr) -> bool:
+    return ctx._is_void_expr(expr.body)
+
+
+def _void_always(ctx: WasmContext, expr: ast.Expr) -> bool:
+    return True
+
+
+def _void_never(ctx: WasmContext, expr: ast.Expr) -> bool:
+    return False
+
+
+_VoidArm = Callable[[WasmContext, Any], bool]
+
+#: Whether an expression leaves nothing on the WASM stack, by class.
+_VOID_ARMS: Mapping[type[ast.Expr], _VoidArm] = fold.dispatch("_is_void_expr", {
+    ast.QualifiedCall: _void_qualified_call,
+    ast.FnCall: _void_fn_call,
+    ast.ModuleCall: _void_module_call,
+    # Compound expressions: void if all branches are void.
+    ast.MatchExpr: _void_match,
+    ast.IfExpr: _void_if,
+    ast.Block: _void_block,
+    ast.HandleExpr: _void_handle,
+    # Unit, and assert/assume, which return Unit.
+    **fold.each((ast.UnitLit, ast.AssertExpr, ast.AssumeExpr), _void_always),
+    # A value on the stack: a literal (Int i64, Float64 f64, Bool i32, a
+    # String pair), a slot or result reference, an operator, an index, an
+    # array, a constructor, a closure handle, a quantifier's Bool; and the
+    # classes rejected before code generation (a hole at check time, `old`
+    # and `new` outside a postcondition).
+    **fold.each((
+        ast.IntLit, ast.FloatLit, ast.BoolLit, ast.StringLit,
+        ast.InterpolatedString, ast.SlotRef, ast.ResultRef, ast.BinaryExpr,
+        ast.UnaryExpr, ast.IndexExpr, ast.ArrayLit, ast.ConstructorCall,
+        ast.NullaryConstructor, ast.AnonFn, ast.ForallExpr, ast.ExistsExpr,
+        ast.HoleExpr, ast.OldExpr, ast.NewExpr,
+    ), _void_never),
+})
