@@ -685,6 +685,7 @@ MARKED_FILES = (
     "test_nested_patterns_1697.py",
     "test_builtin_registry.py",
     "test_expr_fold.py",
+    "test_call_facts_after_obligations_1706.py",
 )
 UNMARKED_FILES = (
     "test_obligations.py",
