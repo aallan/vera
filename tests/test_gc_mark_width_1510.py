@@ -43,9 +43,12 @@ shadow stack's limit first, issue #692); a `Map` under eager collection
 The rescan's parts are pinned by unparametrised tests at the end of the
 file, which every pull request runs: the dropped child marked at all, a
 rescan followed by another while drains drop, both ends of the dirty range
-walked, each walk resuming where the last stopped (an iteration counter:
-that defect costs time, not a value), and the layout guard that keeps the
-seed from ever filling the worklist.
+walked, each walk stopping at the push it drops and the next resuming the
+object it stopped in at that word, however far below it a drain's drop
+has moved the range's bottom, with the stretch between jumped and the
+range's bottom resumed at the word recorded with it (iteration counters:
+those defects cost time, not a value), and the layout guard that keeps
+the seed from ever overflowing the worklist.
 """
 
 from __future__ import annotations
@@ -54,6 +57,7 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 
@@ -432,13 +436,17 @@ def test_a_rescan_that_fills_the_worklist_is_followed_by_another(
                   tmp_path, monkeypatch)
 
 
-_TWO_ARRAYS = _CHURN + _FIRST_CODES + f"""
+def _two_arrays(n: int) -> str:
+    """`main` builds two arrays of `n` strings each, the second's numbers
+    offset by `n`, runs `churn` while both are live, then sums the first
+    character code of every string, plus the churn's total."""
+    return _CHURN + _FIRST_CODES + f"""
 public fn main(-> @Int)
 {_HEAD}{{
-  let @Array<String> = array_map(array_range(0, 20000), \
+  let @Array<String> = array_map(array_range(0, {n}), \
 fn(@Int -> @String) effects(pure) {{ int_to_string(@Int.0) }});
-  let @Array<String> = array_map(array_range(0, 20000), \
-fn(@Int -> @String) effects(pure) {{ int_to_string(@Int.0 + 20000) }});
+  let @Array<String> = array_map(array_range(0, {n}), \
+fn(@Int -> @String) effects(pure) {{ int_to_string(@Int.0 + {n}) }});
   let @Nat = churn(0, {CHURN["normal"]});
   first_codes(@Array<String>.1) + first_codes(@Array<String>.0) \
 + nat_to_int(@Nat.0)
@@ -446,53 +454,208 @@ fn(@Int -> @String) effects(pure) {{ int_to_string(@Int.0 + 20000) }});
 """
 
 
+def _two_arrays_value(n: int) -> int:
+    """The value `_two_arrays(n)` returns."""
+    return sum(ord(str(i)[0]) for i in range(2 * n)) + 4096 * CHURN["normal"]
+
+
+def _records_above(n: int, descending: bool) -> str:
+    """`main` builds three arrays of `n` records of two strings each and
+    joins them with `array_concat` into one array, allocated above every
+    record, runs `churn` while it is live, then sums the first character
+    code of both strings of every record, plus the churn's total.  With
+    *descending* the joined array is reversed, so that its elements, in
+    index order, reach their records from the highest address down."""
+    joined = ("array_concat(array_concat(pairs(@Int.0), pairs(@Int.0)), "
+              "pairs(@Int.0))")
+    if descending:
+        joined = f"array_reverse({joined})"
+    return _CHURN + f"""
+private data Pair {{ P(String, String) }}
+
+private fn pairs(@Int -> @Array<Pair>)
+{_HEAD}{{
+  array_map(array_range(0, @Int.0), fn(@Int -> @Pair) effects(pure) {{
+    P(int_to_string(@Int.0), int_to_string(@Int.0 + {n}))
+  }})
+}}
+
+private fn codes(@Array<Pair>, @Int -> @Int)
+{_HEAD}{{
+  array_fold(@Array<Pair>.0, @Int.0, fn(@Int, @Pair -> @Int) effects(pure) \
+{{
+    match @Pair.0 {{
+      P(@String, @String) -> @Int.0 + string_char_code(@String.1, 0)
+        + string_char_code(@String.0, 0)
+    }}
+  }})
+}}
+
+private fn joined(@Int -> @Array<Pair>)
+{_HEAD}{{
+  {joined}
+}}
+
+public fn main(-> @Int)
+{_HEAD}{{
+  let @Array<Pair> = joined({n});
+  let @Nat = churn(0, {CHURN["normal"]});
+  codes(@Array<Pair>.0, nat_to_int(@Nat.0))
+}}
+"""
+
+
+def _records_above_value(n: int) -> int:
+    """The value `_records_above(n, ...)` returns, in either order."""
+    return (3 * sum(ord(str(i)[0]) + ord(str(i + n)[0]) for i in range(n))
+            + 4096 * CHURN["normal"])
+
+
+def _records_of_arrays(k: int, m: int) -> str:
+    """`main` builds `k` records, each a string and an array of `m`
+    strings, and reverses the array of records, so that the reversed array
+    lies above every record and inner array; runs `churn` while it is
+    live, then sums the first character code of every string, plus the
+    churn's total."""
+    return _CHURN + f"""
+private data Holder {{ H(String, Array<String>) }}
+
+private fn inner(@Int -> @Array<String>)
+{_HEAD}{{
+  array_map(array_range(0, {m}), fn(@Int -> @String) effects(pure) {{
+    int_to_string(@Int.0 + @Int.1)
+  }})
+}}
+
+private fn outer(@Int -> @Array<Holder>)
+{_HEAD}{{
+  array_reverse(array_map(array_range(0, @Int.0), fn(@Int -> @Holder) \
+effects(pure) {{ H(int_to_string(@Int.0), inner(@Int.0 * {m})) }}))
+}}
+
+private fn codes(@Array<String>, @Int -> @Int)
+{_HEAD}{{
+  array_fold(@Array<String>.0, @Int.0, fn(@Int, @String -> @Int) \
+effects(pure) {{ @Int.0 + string_char_code(@String.0, 0) }})
+}}
+
+private fn total(@Array<Holder>, @Int -> @Int)
+{_HEAD}{{
+  array_fold(@Array<Holder>.0, @Int.0, fn(@Int, @Holder -> @Int) \
+effects(pure) {{
+    match @Holder.0 {{
+      H(@String, @Array<String>) ->
+        codes(@Array<String>.0, @Int.0 + string_char_code(@String.0, 0))
+    }}
+  }})
+}}
+
+public fn main(-> @Int)
+{_HEAD}{{
+  let @Array<Holder> = outer({k});
+  let @Nat = churn(0, {CHURN["normal"]});
+  total(@Array<Holder>.0, nat_to_int(@Nat.0))
+}}
+"""
+
+
+def _records_of_arrays_value(k: int, m: int) -> int:
+    """The value `_records_of_arrays(k, m)` returns."""
+    return (sum(ord(str(i)[0]) for i in range(k))
+            + sum(ord(str(j)[0]) for j in range(k * m))
+            + 4096 * CHURN["normal"])
+
+
 def test_both_of_two_dirty_structures_are_rescanned() -> None:
     """Two live arrays of 20,000 strings each overflow the worklist in one
     drain, so the dirty range runs from the lower array to the higher:
     the rescan walks all of it, and the strings of both arrays are read
     back intact."""
-    ran = pipeline.run(_TWO_ARRAYS, file="two_arrays.vera", budget_s=600)
+    ran = pipeline.run(_two_arrays(20000), file="two_arrays.vera",
+                       budget_s=600)
     assert ran.trap is None, ran.trap
-    want = (sum(ord(str(i)[0]) for i in range(40000))
-            + 4096 * CHURN["normal"])
-    assert ran.execution.value == want
+    assert ran.execution.value == _two_arrays_value(20000)
 
 
 #: The counters `_counted_run` threads through the collector, each an
-#: exported mutable global: the words the rescan's walks visit, the walks,
-#: the collections that walked at least once, and that collection's flag.
-_COUNTERS = ("walk_words", "walks", "walked", "walking")
+#: exported mutable global: the words the rescan's walks visit, the chain
+#: headers they visit, the walks, the collections that walked at least
+#: once, and that collection's flag.
+_COUNTERS = ("walk_words", "walk_headers", "walks", "walked", "walking")
 
 
 def _bump(name: str) -> str:
     return f"global.get ${name}\ni32.const 1\ni32.add\nglobal.set ${name}\n"
 
 
-def _counted_run(result: CompileResult) -> tuple[int, dict[str, int]]:
+class _Walked(NamedTuple):
+    """One collection's walks, as `_counted_run`'s probes report them."""
+
+    #: Their `$rs_scan_loop` iterations: one per word a walk visits, and
+    #: one for the exit test of each object scanned to its end.
+    words: int
+    #: Their `$rw_loop` iterations: one per chain header a walk visits, and
+    #: one for the exit test of each walk that reaches its range's end.
+    headers: int
+    walks: int
+    #: Words from the lowest header a walk starts at to the end of the
+    #: highest dirty object's block: the stretch of the allocation chain
+    #: the walks are given.
+    span: int
+    #: The walks after the first that start below their range's top
+    #: object.
+    resumed_below_top: int
+
+
+#: The two host probes `_counted_run` declares: one where a walk starts,
+#: given its first header, the range's top header and the words and the
+#: headers walked so far, and one where marking ends, given the words and
+#: the headers walked by then.
+_PROBES = (
+    '  (import "probe" "walk" (func $probe_walk (param i32 i32 i32 i32)))\n'
+    '  (import "probe" "marked" (func $probe_marked (param i32 i32)))\n'
+)
+
+
+def _counted_run(
+    result: CompileResult,
+) -> tuple[int, dict[str, int], list[_Walked]]:
     """Run a pure program's `main` with the rescan's counters threaded
-    into its collector, and return its value and the counters.
+    into its collector, and return its value, the counters, and a record
+    of each collection that walked.
 
     The counters are placed at the labels Phase 2b's walk is emitted
-    under, `$rw_done` (where a walk starts) and `$rs_scan_loop` (once per
-    word a walk visits), each asserted present exactly once."""
+    under, `$rw_done` (where a walk starts), `$rw_loop` (once per chain
+    header a walk visits) and `$rs_scan_loop` (once per word a walk
+    visits), each asserted present exactly once.  The probes sit beside
+    the walk's counters and before the sweep, so the records read only
+    where walks start and where marking ends."""
     import wasmtime
 
     wat = result.wat
+    assert wat.startswith("(module\n"), wat[:40]
+    wat = "(module\n" + _PROBES + wat[len("(module\n"):]
     decls = "".join(
         f'  (global ${name} (export "{name}") (mut i32) (i32.const 0))\n'
         for name in _COUNTERS)
     anchor = "  (global $gc_free_head"
     assert wat.count(anchor) == 1
     wat = wat.replace(anchor, decls + anchor)
+    counts = "global.get $walk_words\nglobal.get $walk_headers\n"
     for label, code in (
         ("loop $rs_scan_loop\n", "loop $rs_scan_loop\n" + _bump("walk_words")),
+        ("loop $rw_loop\n", "loop $rw_loop\n" + _bump("walk_headers")),
         ("block $rw_done\n",
          _bump("walks") + "global.get $walking\ni32.eqz\nif\n"
          + _bump("walked") + "i32.const 1\nglobal.set $walking\nend\n"
-         + "block $rw_done\n"),
+         + "local.get $ptr\nlocal.get $rs_end\n" + counts
+         + "call $probe_walk\nblock $rw_done\n"),
         ("    ;; Worklist region: gc_stack_limit .. gc_worklist_end.\n",
          "    i32.const 0\n    global.set $walking\n"
          "    ;; Worklist region: gc_stack_limit .. gc_worklist_end.\n"),
+        ("    ;; === Phase 3: Sweep — build free list ===\n",
+         counts + "call $probe_marked\n"
+         "    ;; === Phase 3: Sweep — build free list ===\n"),
     ):
         assert wat.count(label) == 1, label
         wat = wat.replace(label, code)
@@ -500,37 +663,67 @@ def _counted_run(result: CompileResult) -> tuple[int, dict[str, int]]:
     store = wasmtime.Store(engine)
     linker = wasmtime.Linker(engine)
     module = wasmtime.Module(engine, wat)
+    walked: list[_Walked] = []
+    # This collection's walks: (first header, top header, the end of the
+    # top object's block, the words and the headers walked before it).
+    starts: list[tuple[int, int, int, int, int]] = []
+
+    def walk(first: int, top: int, words: int, headers: int) -> None:
+        header = int.from_bytes(
+            exports["memory"].read(store, top, top + 4), "little")
+        end = top + (((header >> 1) + 11) & ~7)  # the walk's own advance
+        starts.append((first, top, end, words, headers))
+
+    def marked(words: int, headers: int) -> None:
+        if starts:
+            walked.append(_Walked(
+                words=words - starts[0][3],
+                headers=headers - starts[0][4],
+                walks=len(starts),
+                span=(max(s[2] for s in starts)
+                      - min(s[0] for s in starts)) // 4,
+                resumed_below_top=sum(1 for s in starts[1:] if s[0] < s[1]),
+            ))
+            starts.clear()
 
     def refuse(*args: int) -> None:
         raise AssertionError(f"the program called a host import: {args}")
 
-    # A pure program's imports are the signals its checks would call; a
-    # run that passes them calls none, so each is a stub that fails.
+    i32 = wasmtime.ValType.i32()
+    linker.define_func("probe", "walk", wasmtime.FuncType([i32] * 4, []),
+                       walk)
+    linker.define_func("probe", "marked", wasmtime.FuncType([i32] * 2, []),
+                       marked)
+    # A pure program's own imports are the signals its checks would call;
+    # a run that passes them calls none, so each is a stub that fails.
     for imported in module.imports:
+        if imported.module == "probe":
+            continue
         assert isinstance(imported.type, wasmtime.FuncType), imported.name
         linker.define_func(imported.module, imported.name or "",
                            imported.type, refuse)
     exports = linker.instantiate(store, module).exports(store)
     value = exports["main"](store)
-    return value, {name: exports[name].value(store) for name in _COUNTERS}
+    counted = {name: exports[name].value(store) for name in _COUNTERS}
+    return value, counted, walked
 
 
 def test_each_rescan_resumes_where_the_last_one_stopped() -> None:
     """A walk that fills the worklist stops at the word whose push it
-    dropped, and the next walk resumes there, so in each collection the
-    walks visit each word of the one dirty object, an array of 100,000
-    strings (200,000 words), once, plus the dropped word each walk stops
-    on and the final exit test.  A walk that started over from the range's
-    first word would visit the prefix it had already pushed once per walk,
-    about three times as many words at six walks a collection.  The
-    iteration counter is the killer: the cost is the defect, not the
-    value."""
+    dropped, and the next walk resumes there, the object it stopped in
+    being the resume point, so in each collection the walks visit each
+    word of the one dirty object, an array of 100,000 strings (200,000
+    words), once, plus the dropped word each walk stops on and the final
+    exit test.  A walk that started over from the range's first word would
+    visit the prefix it had already pushed once per walk, about three times
+    as many words at six walks a collection.  The iteration counter is the
+    killer: the cost is the defect, not the value."""
     from vera.codegen.assembly import GC_WORKLIST_SIZE
 
     n = 100000
     result = _compile(_program("array", n, CHURN["normal"]), "resume", False,
                       pytest.MonkeyPatch())
-    value, counted = _counted_run(result)
+    value, counted, _ = _counted_run(result)
     assert value == _expected("array", n, CHURN["normal"])
     # The premise: collections walked, several times each, so a walk that
     # started over would revisit what an earlier walk pushed.
@@ -540,6 +733,113 @@ def test_each_rescan_resumes_where_the_last_one_stopped() -> None:
     words = 2 * n  # an `Array<String>` element is a (pointer, length) pair
     bound = counted["walked"] * (words + 1) + counted["walks"]
     assert counted["walk_words"] <= bound, (counted, bound)
+
+
+def _assert_each_stretch_walked_once(walked: list[_Walked]) -> None:
+    """In each collection the walks visit no more words than their range
+    spans and no more chain headers than half of it, a block being at
+    least two words, each plus one per walk.  That is each word and each
+    header of the range at most once: a walk scans an object from the word
+    its last walk stopped at, jumps the stretch below its resume object
+    that holds no drop, and starts on the word, and the header, the last
+    walk stopped on.  Each object's header word stands for its scan's exit
+    test, and a walk's own exit test for the header past its range."""
+    over = [c for c in walked
+            if c.words > c.span + c.walks
+            or 2 * c.headers > c.span + 2 * c.walks]
+    assert not over, (f"{len(over)} of {len(walked)} walked collections"
+                      f" exceed it, the most words in {max(over)}")
+
+
+def test_a_walk_that_fills_the_worklist_stops_there() -> None:
+    """A walk whose push finds the worklist full stops at that word, and
+    the next walk starts on it.  Two live arrays of 100,000 strings make
+    one range, from the lower array up to the higher with strings between
+    them, and walks stop inside the lower array, so each collection's
+    walks visit each word and header of the range once.  A walk that
+    carried on past its drop to the top of the range would visit what lies
+    above its stop again on each of those walks: more than twice the span
+    in the largest collection.  The iteration counters are the killer: the
+    cost is the defect, not the value."""
+    n = 100000
+    result = _compile(_two_arrays(n), "stop", False, pytest.MonkeyPatch())
+    value, _, walked = _counted_run(result)
+    assert value == _two_arrays_value(n)
+    # The premise: walks that resumed below the top of their range, where
+    # a walk that did not stop would have gone on to the top.
+    assert max(c.resumed_below_top for c in walked) >= 2, walked
+    _assert_each_stretch_walked_once(walked)
+
+
+def _counted_at(source: str, want: int, layout: int,
+                monkeypatch: pytest.MonkeyPatch) -> list[_Walked]:
+    """*source* run with `_counted_run` at a layout whose shadow stack and
+    worklist are both *layout* bytes, the smallest worklist the seed guard
+    accepts beside that shadow stack.  A smaller worklist takes more walks
+    over the same structure, so a lost resume point costs as much against
+    the span as at the default layout over a structure that many times
+    larger.  Asserts the value is *want*, and the premise: walks that began
+    at a drop below their resume object."""
+    from vera.codegen import assembly
+
+    monkeypatch.setattr(assembly, "GC_STACK_SIZE", layout)
+    monkeypatch.setattr(assembly, "GC_WORKLIST_SIZE", layout)
+    result = _compile(source, "counted", False, monkeypatch)
+    value, _, walked = _counted_run(result)
+    assert value == want
+    assert max(c.resumed_below_top for c in walked) >= 2, walked
+    return walked
+
+
+def test_a_walk_resumes_its_stop_past_drops_below_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every drain after a walk that stops in an array of records lying
+    above them pops a record whose second push it drops, and records it
+    below the array: the range's bottom moves down, the resume point does
+    not.  So each walk scans that record, jumps the records between, which
+    hold no drop, and resumes the array at the word the last walk stopped
+    at.  A walk that rescanned the array from its first word would visit
+    its prefix again on every walk, and one that crossed the records would
+    visit their headers again on every walk: either grows with the square
+    of the array's length.  Counted with a worklist of 1,024 entries, a
+    collection takes as many walks over the 75,000 records of 25,000 a
+    part as over the 1,200,000 of 400,000 a part at the default layout,
+    about 73."""
+    _assert_each_stretch_walked_once(_counted_at(
+        _records_above(25000, False), _records_above_value(25000), 4096,
+        monkeypatch))
+
+
+def test_a_walk_jumps_from_the_highest_drop_below_its_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same records reached from the highest address down, through a
+    reversed array: each drain's drop below the array lies under the last
+    one, so `$gc_rs_below`, reset at each stop that moves the resume
+    point, names that drop alone.  Kept from a stop before, it would name
+    the first drop of the collection, the highest, and every walk would
+    cross every record between the newest drop and that one."""
+    _assert_each_stretch_walked_once(_counted_at(
+        _records_above(25000, True), _records_above_value(25000), 4096,
+        monkeypatch))
+
+
+def test_a_walk_resumes_a_drop_below_its_stop_at_the_dropped_word(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Records each holding an array of 1,024 strings, under the reversed
+    array of them, which lies above: a drain that pops an inner array
+    drops pushes in it, below the resume object, and the walks that follow
+    stop inside it again before they reach the resume object.  So the
+    range's bottom is that inner array, from the word its push was dropped
+    at (`$gc_rs_off`), and each walk resumes it there.  One that scanned
+    it from its first word would visit its prefix again on every walk,
+    which grows with the square of the inner array's length.  Counted with
+    a worklist of 64 entries, a sixteenth of each inner array."""
+    _assert_each_stretch_walked_once(_counted_at(
+        _records_of_arrays(100, 1024), _records_of_arrays_value(100, 1024),
+        256, monkeypatch))
 
 
 def test_the_worklist_holds_every_root_the_seed_can_push() -> None:

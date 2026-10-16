@@ -311,14 +311,17 @@ class AssemblyMixin:
             )
             # #1510: the mark phase's dirty range — the header of the lowest
             # object a full worklist dropped a child of, the word it dropped
-            # at, and the header of the highest (`_emit_gc_collect`).  Module
-            # globals rather than `$gc_collect` locals: only the collector's
-            # cold paths touch them, and as locals they stayed live across
-            # the drain loop and cost every collection 10-20% with nothing
-            # dropped.
+            # at, and the header of the highest — and its resume point: the
+            # header of the object the last walk stopped in, the word it
+            # stopped at, and the header of the highest drop recorded below
+            # that object since (`_emit_gc_collect`).  Module globals rather
+            # than `$gc_collect` locals: only the collector's cold paths
+            # touch them, and as locals they stayed live across the drain
+            # loop and cost every collection 10-20% with nothing dropped.
             parts.extend(
                 f"  (global ${name} (mut i32) (i32.const 0))"
-                for name in ("gc_rs_lo", "gc_rs_off", "gc_rs_hi")
+                for name in ("gc_rs_lo", "gc_rs_off", "gc_rs_hi",
+                             "gc_rs_stop", "gc_rs_stop_off", "gc_rs_below")
             )
             if wrap_enabled:
                 gc_wraptable_end = gc_wraptable_base + gc_wraptable_size
@@ -1055,7 +1058,9 @@ class AssemblyMixin:
         later push would be dropped too — and the object is recorded as
         dirty from that word, the lowest dirty object's header in
         ``$gc_rs_lo`` with the word in ``$gc_rs_off``, the highest in
-        ``$gc_rs_hi``.  The loop leaves for the recording by a bare
+        ``$gc_rs_hi``; a drop below the object the last walk stopped in
+        (``$gc_rs_stop``) also raises ``$gc_rs_below``, the highest drop
+        recorded below it.  The loop leaves for the recording by a bare
         ``br_if`` to *drop*, so the recording stays out of the loop the
         collector spends its time in, and the range is held in module
         globals, which no register carries through that loop.  The Phase 2b
@@ -1171,6 +1176,26 @@ class AssemblyMixin:
             "  i32.const 4",
             "  i32.sub",
             "  global.set $gc_rs_hi",
+            "end",
+            ";; A drop below the object the last walk stopped in raises the",
+            ";; highest such drop, where the next walk jumps to that object.",
+            "local.get $obj_ptr",
+            "i32.const 4",
+            "i32.sub",
+            "global.get $gc_rs_stop",
+            "i32.lt_u",
+            "if",
+            "  local.get $obj_ptr",
+            "  i32.const 4",
+            "  i32.sub",
+            "  global.get $gc_rs_below",
+            "  i32.gt_u",
+            "  if",
+            "    local.get $obj_ptr",
+            "    i32.const 4",
+            "    i32.sub",
+            "    global.set $gc_rs_below",
+            "  end",
             "end",
             "end",
         )
@@ -1390,7 +1415,7 @@ class AssemblyMixin:
             "          i32.and\n"
             "          if\n"
             "            ;; Push onto worklist.  #1510: the seed cannot\n"
-            "            ;; fill it — one entry per shadow-stack root,\n"
+            "            ;; overflow it — one entry per shadow-stack root,\n"
             "            ;; onto an empty worklist no smaller than the\n"
             "            ;; shadow stack (`_assemble_module` refuses a\n"
             "            ;; layout where it is) — so this push, unlike a\n"
@@ -1420,18 +1445,39 @@ class AssemblyMixin:
             "    ;; [$gc_rs_lo, $gc_rs_hi] along the allocation chain, the\n"
             "    ;; lowest dirty from word $gc_rs_off.  A round drains the\n"
             "    ;; worklist, then walks the dirty range, scanning each marked\n"
-            "    ;; object again, which pushes the children it dropped.  A\n"
-            "    ;; drop during the walk ends it there and leaves the rest of\n"
-            "    ;; the range dirty, so the next walk resumes where this one\n"
-            "    ;; stopped.  Marking is complete when a drain ends with\n"
-            "    ;; nothing dirty.  A walk starts on an empty worklist, so it\n"
-            "    ;; either pushes nothing, and the next drain ends clean, or\n"
-            "    ;; gives that drain an unmarked object to mark: the rounds\n"
-            "    ;; end.\n"
+            "    ;; object again, which pushes the children it dropped.\n"
+            "    ;; Marking is complete when a drain ends with nothing dirty.\n"
+            "    ;; A walk starts on an empty worklist, so it either pushes\n"
+            "    ;; nothing, and the next drain ends clean, or gives that\n"
+            "    ;; drain an unmarked object to mark: the rounds end.\n"
+            "    ;; A drop during a walk stops it there, and its object and\n"
+            "    ;; word become the resume point, $gc_rs_stop from\n"
+            "    ;; $gc_rs_stop_off: a walk scans that object from that word.\n"
+            "    ;; A drop recorded below the resume object lowers the range's\n"
+            "    ;; bottom but not the resume point, and raises $gc_rs_below.\n"
+            "    ;; The invariant: below the resume object, the only dirty\n"
+            "    ;; objects are drops recorded since the walk that set it\n"
+            "    ;; stopped, all in [$gc_rs_lo, $gc_rs_below].  It holds at\n"
+            "    ;; the stop, the walk's first drop: every dirty object below\n"
+            "    ;; it lay in the walk's range, which the walk scanned up to\n"
+            "    ;; the stop, jumping only a stretch the invariant left\n"
+            "    ;; clean; and the recording keeps it for every drop since.\n"
+            "    ;; So a walk jumps from past $gc_rs_below straight to the\n"
+            "    ;; resume object.  A walk that stops below the resume object\n"
+            "    ;; stops inside [$gc_rs_lo, $gc_rs_below] and keeps both;\n"
+            "    ;; one that stops at or above it moves the resume point to\n"
+            "    ;; its stop, with nothing below dirty; one that reaches its\n"
+            "    ;; range's end leaves nothing pending and clears all three.\n"
             "    i32.const -1\n"
             "    global.set $gc_rs_lo\n"
             "    i32.const 0\n"
             "    global.set $gc_rs_hi\n"
+            "    i32.const 0\n"
+            "    global.set $gc_rs_stop\n"
+            "    i32.const 0\n"
+            "    global.set $gc_rs_stop_off\n"
+            "    i32.const 0\n"
+            "    global.set $gc_rs_below\n"
             "    block $mk_done\n"
             "    loop $mk_loop\n"
             "      block $m_done\n"
@@ -1524,10 +1570,20 @@ class AssemblyMixin:
             "      global.set $gc_rs_hi\n"
             "      block $rw_done\n"
             "      loop $rw_loop\n"
+            "        ;; Past its range's end the walk is complete: nothing it\n"
+            "        ;; was given is pending, so no object resumes.\n"
             "        local.get $ptr\n"
             "        local.get $rs_end\n"
             "        i32.gt_u\n"
-            "        br_if $rw_done\n"
+            "        if\n"
+            "          i32.const 0\n"
+            "          global.set $gc_rs_stop\n"
+            "          i32.const 0\n"
+            "          global.set $gc_rs_stop_off\n"
+            "          i32.const 0\n"
+            "          global.set $gc_rs_below\n"
+            "          br $rw_done\n"
+            "        end\n"
             "        local.get $ptr\n"
             "        i32.load\n"
             "        local.set $header\n"
@@ -1544,14 +1600,36 @@ class AssemblyMixin:
             "          i32.const 1\n"
             "          i32.shr_u\n"
             "          local.set $obj_size\n"
+            "          ;; The resume object is scanned from its word.\n"
+            "          local.get $ptr\n"
+            "          global.get $gc_rs_stop\n"
+            "          i32.eq\n"
+            "          if\n"
+            "            global.get $gc_rs_stop_off\n"
+            "            local.set $scan_ptr\n"
+            "          end\n"
             + self._emit_gc_scan("$rs_scan_done", "$rs_scan_drop",
                                  "$rs_scan_loop", "          ")
-            + "          ;; A dropped push ends the walk here: the rest of\n"
-            "          ;; the range stays dirty for the next walk.\n"
+            + "          ;; A dropped push ends the walk here, the rest of\n"
+            "          ;; the range dirty for the next.  A stop at or above\n"
+            "          ;; the resume object becomes the resume point, with\n"
+            "          ;; nothing below it dirty; a stop below it, inside\n"
+            "          ;; [$gc_rs_lo, $gc_rs_below], keeps it.\n"
             "          global.get $gc_rs_lo\n"
             "          global.get $gc_rs_hi\n"
             "          i32.le_u\n"
             "          if\n"
+            "            local.get $ptr\n"
+            "            global.get $gc_rs_stop\n"
+            "            i32.ge_u\n"
+            "            if\n"
+            "              local.get $ptr\n"
+            "              global.set $gc_rs_stop\n"
+            "              local.get $scan_ptr\n"
+            "              global.set $gc_rs_stop_off\n"
+            "              i32.const 0\n"
+            "              global.set $gc_rs_below\n"
+            "            end\n"
             "            local.get $rs_end\n"
             "            global.set $gc_rs_hi\n"
             "            br $rw_done\n"
@@ -1570,6 +1648,22 @@ class AssemblyMixin:
             "        local.get $ptr\n"
             "        i32.add\n"
             "        local.set $ptr\n"
+            "        ;; Past the highest drop below the resume object nothing\n"
+            "        ;; up to that object is dirty: jump to it.  The test for\n"
+            "        ;; the resume object comes first, as above it, where a\n"
+            "        ;; walk spends its time, nothing more is tested.\n"
+            "        local.get $ptr\n"
+            "        global.get $gc_rs_stop\n"
+            "        i32.lt_u\n"
+            "        if\n"
+            "          local.get $ptr\n"
+            "          global.get $gc_rs_below\n"
+            "          i32.gt_u\n"
+            "          if\n"
+            "            global.get $gc_rs_stop\n"
+            "            local.set $ptr\n"
+            "          end\n"
+            "        end\n"
             "        br $rw_loop\n"
             "      end\n"
             "      end\n"
