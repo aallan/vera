@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 import dataclasses
-from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 
 from vera import ast, naming, patterns
-from vera.checker.calls import _type_var_occurrences
-from vera.checker.expressions import _holds_unknown
 from vera.checker.registration import builtin_effect_names
 from vera.environment import AdtInfo, Binding, ConstructorInfo, FunctionInfo
 from vera.formatter import format_type_canonical
@@ -41,8 +38,10 @@ from vera.types import (
     AdtType,
     ConcreteEffectRow,
     EffectInstance,
+    FunctionType,
     PrimitiveType,
     PureEffectRow,
+    RefinedType,
     Type,
     TypeVar,
     UnknownType,
@@ -169,6 +168,31 @@ def _render_literal_pattern(pat: ast.Pattern) -> str:
     if isinstance(pat, ast.IntPattern):
         return str(pat.value)
     return "<literal>"  # pragma: no cover — only literal forms reach here
+
+
+def _display_only(ty: Type, declared: Collection[str]) -> bool:
+    """Whether `pretty_type` renders a part of *ty* that no program can be
+    written with: a refinement, whose predicate it elides (`{@Int | ...}`),
+    `Unknown` (`?`), and a type variable or an effect-row variable outside
+    *declared*, the enclosing function's own (an inference variable,
+    `T$1`, another function's, a built-in's).  The walk is the one
+    `pretty_type` and `pretty_effect` make."""
+    if isinstance(ty, (RefinedType, UnknownType)):
+        return True
+    if isinstance(ty, TypeVar):
+        return ty.name not in declared
+    if isinstance(ty, AdtType):
+        return any(_display_only(a, declared) for a in ty.type_args)
+    if isinstance(ty, FunctionType):
+        row = ty.effect
+        return (any(_display_only(p, declared) for p in ty.params)
+                or _display_only(ty.return_type, declared)
+                or (isinstance(row, ConcreteEffectRow)
+                    and (any(_display_only(a, declared)
+                             for e in row.effects for a in e.type_args)
+                         or (row.row_var is not None
+                             and row.row_var not in declared))))
+    return False
 
 
 def _bindings_form(name: str, types: tuple[Type, ...]) -> str:
@@ -1083,6 +1107,14 @@ class ControlFlowMixin:
         # must; a generic alias, whose head supplies none, names its type
         # by the type's name.
         alias = self.env.type_aliases.get(name)
+        if alias is not None and isinstance(scrut, AdtType):
+            # A constructor of the value's type is read as that
+            # constructor though an alias of another type has its name,
+            # the mirror of a type's name beside another type's
+            # constructor, as a `match` arm and the verifier read it.
+            own_ctor = self._pattern_ctor_info(name)
+            if own_ctor is not None and own_ctor.parent_type == scrut.name:
+                alias = None
         target = (base_type(alias.resolved_type) if alias is not None
                   else None)
         head = target.name if isinstance(target, AdtType) else name
@@ -1299,25 +1331,21 @@ class ControlFlowMixin:
                      f"of type {pretty_type(binding)} there."
                      if self._fix_writes(component)
                      else f"Give the value a component of type "
-                          f"{pretty_type(binding)} there."),
+                          f"{pretty_type(binding)} there, or write the "
+                          f"binding at the type of component {position}."),
                 spec_ref='Chapter 4, Section 4.7.1 "Tuple Destructuring"',
                 error_code="E170",
             )
 
     def _fix_writes(self, *types: Type) -> bool:
-        """Whether a fix may write each of *types* as code: every type
-        variable in it is one the enclosing function declares, and no part
-        of it is `Unknown`.  An inference variable left open (`T$1`, shown
-        as `?`) or another function's type variable is in no program's
-        scope here, so code that wrote one would not apply as written
-        (PR #1721 review)."""
-        for ty in types:
-            seen: Counter[str] = Counter()
-            _type_var_occurrences(ty, seen)
-            if (_holds_unknown(ty)
-                    or any(n not in self.env.type_params for n in seen)):
-                return False
-        return True
+        """Whether a fix may write each of *types* as code: `pretty_type`
+        renders none of it for display only (`_display_only`).  An
+        inference variable left open (`T$1`, shown as `?`), another
+        function's type variable and a refinement, whose predicate the
+        rendering elides, are in no program as written, so code that wrote
+        one would not apply (PR #1721 review); the fix says it in prose."""
+        return not any(_display_only(ty, self.env.type_params)
+                       for ty in types)
 
     def _destructure_fix(self, ty: Type) -> str | None:
         """The fix that destructures a value of *ty* by its own

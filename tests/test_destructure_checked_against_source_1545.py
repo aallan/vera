@@ -42,9 +42,11 @@ binding to the rule a `let` binding is held to:
   refused; a type variable the source leaves open fits whatever the binding
   gives it, as the `let`'s expected type would have fixed it.
 
-A fix writes a type as code only where the enclosing function can write it:
-a type an inference variable leaves open (`T$1`, shown as `?`), or another
-function's type variable, is named in prose or left out (`_fix_writes`).
+A fix writes a type as code only where a program can be written with its
+rendering: a refinement, whose predicate the rendering elides
+(`{@Int | ...}`), a type an inference variable leaves open (`T$1`, shown as
+`?`) and another function's type variable are named in prose or left out
+(`_fix_writes`).
 
 The value's type is the type it synthesizes without an expected type, never
 the one the bindings would give it: an `if` whose branches build
@@ -59,13 +61,14 @@ type, a data type with two, the prelude's `Response`)
 with the value's form (a construction, a slot, a call, an `if` join, a
 `match` join, a block's tail), the relation of one component to its
 binding (equal, `@Nat` into `@Int`, `@Int` into `@Nat`, `String` for `Int`,
-a refinement of the component's base) and the arity (one binding per
+a refinement of the component's base, a refined component into its base,
+`String` for a refined component) and the arity (one binding per
 component, one fewer, one more).  Each cell's verdict is stated as the rule
 above: one error of the first rule the cell breaks, at the `let` for the
 constructor's rules and at the binding for a component's, or a clean check
 whose narrowings the verifier still records.  `Response` declares no `Nat`
-field, so its `@Nat`-into-`@Int` cells would restate the equal ones and are
-not cells.
+field and no refined one, so its `@Nat`-into-`@Int` and refined-component
+cells would restate the equal ones and are not cells.
 
 The reported programs, the members the matrix does not span (an unknown
 constructor, a prelude type with two constructors named by a constructor
@@ -507,10 +510,11 @@ _ID = """private forall<T> fn id(@T -> @T)
 
 
 def _no_unwritable_code(fix: str) -> None:
-    """No code in *fix*, between backticks, names a type no program can
-    hold: an open inference variable (`T$1`, or `?`)."""
+    """No code in *fix*, between backticks, is a display rendering no
+    program can be written with: an open inference variable (`T$1`, or
+    `?`) or a refinement with its predicate elided (`...`)."""
     code = fix.split("`")[1::2]
-    assert not any("T$" in c or "?" in c for c in code), fix
+    assert not any("T$" in c or "?" in c or "..." in c for c in code), fix
 
 
 def _open_fixed(source: str, code: str, old: str, new: str) -> None:
@@ -525,7 +529,8 @@ def _open_fixed(source: str, code: str, old: str, new: str) -> None:
 def test_the_open_component_fix_gives_the_component_its_type() -> None:
     source = _fn("let Tuple<@Int, @Int> = Tuple(None, 1);\n  @Int.0")
     assert _one(source, "E170").fix == (
-        "Give the value a component of type Int there.")
+        "Give the value a component of type Int there, or write the "
+        "binding at the type of component 1.")
     _open_fixed(source, "E170", "Tuple(None, 1)", "Tuple(0, 1)")
 
 
@@ -577,6 +582,33 @@ public fn f(@Int -> @Int)
 def test_the_open_whole_value_fix_writes_no_open_type() -> None:
     source = _fn("let Tuple<@Int> = None;\n  @Int.0")
     _no_unwritable_code(_one(source, "E314").fix)
+
+
+# A component declared at a refinement is rendered with its predicate
+# elided, `{@Int | ...}`, which no program can be written with.
+_REFINED = ("type PosInt = { @Int | @Int.0 > 0 };\n\n"
+            "private data R { MkR(PosInt) }")
+
+
+def test_the_refined_component_fix_gives_the_component_its_type() -> None:
+    source = _fn("let @PosInt = 5;\n  let Tuple<@String, @Int> = "
+                 "Tuple(@PosInt.0, 1);\n  0", prelude=_REFINED)
+    _open_fixed(source, "E170", "Tuple(@PosInt.0, 1)", "Tuple(\"a\", 1)")
+
+
+def test_the_refined_unknown_constructor_fix_names_the_constructor() -> None:
+    source = _fn("let Nope<@Int> = MkR(5);\n  0", prelude=_REFINED)
+    _open_fixed(source, "E320", "let Nope<", "let MkR<")
+
+
+def test_the_refined_value_fix_names_its_constructor() -> None:
+    source = _fn("let Tuple<@Int> = MkR(5);\n  0", prelude=_REFINED)
+    _open_fixed(source, "E314", "let Tuple<@Int>", "let MkR<@PosInt>")
+
+
+def test_the_refined_field_count_fix_counts_the_fields() -> None:
+    source = _fn("let MkR<@Int, @Int> = MkR(5);\n  0", prelude=_REFINED)
+    _open_fixed(source, "E321", "<@Int, @Int>", "<@Int>")
 
 
 # =====================================================================
@@ -707,6 +739,19 @@ def test_an_alias_of_the_values_type_is_read_as_the_type() -> None:
     by its constructor and runs as it did before the rule."""
     _clean(_ALIAS_OF_THE_VALUE)
     assert pipeline.run(_ALIAS_OF_THE_VALUE, fn="f", args=[5]).value == 5
+
+
+def test_a_constructor_is_read_before_a_same_named_alias() -> None:
+    """`B` is a constructor of `A` and an alias of `Other`: over an `A`
+    the head is `A`'s constructor, as a `match` arm and the verifier read
+    it, and over an `Other` it is the alias of the value's type; each ran
+    at base and returns 5."""
+    decls = ("private data A { B(Int) }\nprivate data Other { MkO(Int) }"
+             "\n\ntype B = Other;")
+    for value in ("B(@Int.0)", "MkO(@Int.0)"):
+        source = _fn(f"let B<@Int> = {value};\n  @Int.0", prelude=decls)
+        _clean(source)
+        assert pipeline.run(source, fn="f", args=[5]).value == 5, value
 
 
 def test_an_alias_of_a_tuple_type_reaches_the_tuple_rule() -> None:
@@ -854,6 +899,8 @@ _RELATIONS: dict[str, tuple[str, str, str]] = {
     "narrow": ("Int", "@Int.0", "Nat"),
     "mismatch": ("Int", "@Int.0", "String"),
     "refine": ("Int", "@Int.0", "PosInt"),
+    "refined": ("PosInt", "@PosInt.0", "Int"),
+    "refined-mismatch": ("PosInt", "@PosInt.0", "String"),
 }
 
 _POS_INT = "type PosInt = { @Int | @Int.0 > 0 };"
@@ -863,14 +910,14 @@ _POS_INT = "type PosInt = { @Int | @Int.0 > 0 };"
 def test_the_destructure_refuses_what_the_plain_let_refuses(
         relation: str) -> None:
     """Each relation, written as a plain `let` of the component and as a
-    destructure of a tuple holding it: E170 exactly at `String` for `Int`,
-    and nothing for the rest."""
+    destructure of a tuple holding it: E170 exactly at `String` for an `Int`
+    or a refined `Int`, and nothing for the rest."""
     _c, value, binding = _RELATIONS[relation]
-    sig = "@Int, @Nat -> @Int"
+    sig = "@Int, @Nat, @PosInt -> @Int"
     plain = _fn(f"let @{binding} = {value};\n  0", sig=sig, prelude=_POS_INT)
     destructure = _fn(f"let Tuple<@Int, @{binding}> = Tuple(1, {value});\n"
                       f"  0", sig=sig, prelude=_POS_INT)
-    if relation == "mismatch":
+    if relation in ("mismatch", "refined-mismatch"):
         _refused_once(plain, "E170", _place(plain, f"{value};"))
         _refused_once(destructure, "E170", _place(destructure, "String>"))
     else:
@@ -932,7 +979,7 @@ _SHAPES = (
 _SOURCES: dict[str, tuple[str, str]] = {
     "construction": ("", "{cons}"),
     "slot": ("let @{type} = {cons};\n  ", "@{type}.0"),
-    "call": ("", "mk(@Int.0, @Nat.0)"),
+    "call": ("", "mk(@Int.0, @Nat.0, @PosInt.0)"),
     "if": ("", "if @Int.0 > 0 then {{ {cons} }} else {{ {cons} }}"),
     "match": ("", "match @Int.0 {{ 0 -> {cons}, _ -> {cons} }}"),
     "block": ("", "{{ {cons} }}"),
@@ -940,7 +987,7 @@ _SOURCES: dict[str, tuple[str, str]] = {
 
 _ARITIES = ("equal", "fewer", "more")
 
-_MK = """private fn mk(@Int, @Nat -> @{type})
+_MK = """private fn mk(@Int, @Nat, @PosInt -> @{type})
   requires(true)
   ensures(true)
   effects(pure)
@@ -984,7 +1031,7 @@ class _Cell:
         helper = (_MK.format(type=type_text, cons=cons)
                   if self.source == "call" else "")
         head = f"{_POS_INT}\n\n" + (f"{decl}\n\n" if decl else "")
-        return (f"{head}{helper}public fn f(@Int, @Nat -> @Int)\n"
+        return (f"{head}{helper}public fn f(@Int, @Nat, @PosInt -> @Int)\n"
                 f"  requires(true)\n  ensures(true)\n  effects(pure)\n{{\n"
                 f"  {pre.format(type=type_text, cons=cons)}"
                 f"{self.destructure} "
@@ -1005,12 +1052,13 @@ def _expected(cell: _Cell) -> tuple[str, str] | None:
     constructor's rules come before its components': a tuple of another
     width is the constructor's (E314), as a data constructor's field count
     is (E321); then a type with another constructor (E311); then the
-    varied component, refused only for `String` against `Int` (E170)."""
+    varied component, refused only for `String` against an `Int` or a
+    refined `Int` (E170)."""
     if cell.arity != "equal":
         return ("E314" if cell.shape.is_tuple else "E321", "let")
     if cell.shape.refutable:
         return ("E311", "let")
-    if cell.relation == "mismatch":
+    if cell.relation in ("mismatch", "refined-mismatch"):
         return ("E170", "binding")
     return None
 
@@ -1132,4 +1180,4 @@ def test_the_matrix_spans_its_dimensions() -> None:
     outcomes = {_expected(c) for c in _CELLS}
     assert outcomes == {None, ("E314", "let"), ("E321", "let"),
                         ("E311", "let"), ("E170", "binding")}
-    assert len(_CELLS) == 612
+    assert len(_CELLS) == 828
