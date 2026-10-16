@@ -1058,6 +1058,21 @@ class TestEndToEnd:
         assert json.loads(out_json.read_text(encoding="utf-8"))["functions"] == []
         assert not (state / "calls.jsonl").exists()
 
+    def test_a_failure_of_the_lane_itself_stops_the_run_short(
+        self, repo: Path, tmp_path: Path,
+    ) -> None:
+        """Exit 1 means a survivor, so a lane that fails (here, a base git
+        cannot resolve) exits 2 and says why, in the record and the summary."""
+        out_json = tmp_path / "out.json"
+        code = md.main(["--repo", str(repo), "--base", "no-such-ref", "--head", "HEAD",
+                        "--workdir", str(tmp_path / "work"), "--json", str(out_json),
+                        "--summary", str(tmp_path / "summary.md")])
+        assert code == 2
+        record = json.loads(out_json.read_text(encoding="utf-8"))
+        assert record["exit_code"] == 2 and record["stopped"] == "lane"
+        assert "no-such-ref" in record["error"]
+        assert "no-such-ref" in (tmp_path / "summary.md").read_text(encoding="utf-8")
+
     def test_a_non_empty_workdir_is_refused(self, repo: Path, tmp_path: Path) -> None:
         work = tmp_path / "work"
         work.mkdir()

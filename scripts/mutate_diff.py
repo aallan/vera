@@ -140,6 +140,10 @@ class NarrowError(ValueError):
     """The narrowing edit would move a line or change a node."""
 
 
+class LaneError(RuntimeError):
+    """A step of the lane outside mutmut failed (git, most often)."""
+
+
 # ---------------------------------------------------------------------------
 # The diff
 # ---------------------------------------------------------------------------
@@ -529,7 +533,7 @@ def _git(repo: Path, *args: str) -> str:
     result = subprocess.run(["git", "-C", str(repo), *args], capture_output=True,
                             text=True, encoding="utf-8", env=_git_env(), check=False)
     if result.returncode != 0:
-        raise SystemExit(f"git {' '.join(args)} failed: {result.stderr.strip()}")
+        raise LaneError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
     return result.stdout
 
 
@@ -537,7 +541,7 @@ def _extract(repo: Path, rev: str, dest: Path) -> None:
     archive = subprocess.run(["git", "-C", str(repo), "archive", "--format=tar", rev],
                              capture_output=True, env=_git_env(), check=False)
     if archive.returncode != 0:
-        raise SystemExit(f"git archive {rev} failed: {archive.stderr.decode('utf-8', 'replace')}")
+        raise LaneError(f"git archive {rev} failed: {archive.stderr.decode('utf-8', 'replace')}")
     with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as tar:
         tar.extractall(dest, filter="data")
 
@@ -874,7 +878,37 @@ def main(argv: Sequence[str] | None = None) -> int:
         workdir = Path(tempfile.mkdtemp(prefix="vera-mutate-diff-"))
     engine = list(args.engine) if args.engine else _default_engine()
     started = time.monotonic()
+    try:
+        return _lane(args, repo, workdir, engine, started)
+    except Exception as exc:  # noqa: BLE001 — a failure of the lane is exit 2, reported; 1 means a survivor
+        return _lane_failed(args, exc, started)
 
+
+def _lane_failed(args: argparse.Namespace, exc: Exception, started: float) -> int:
+    """Report a failure of the lane itself: exit 2, with the reason."""
+    import traceback
+
+    traceback.print_exc()
+    error = f"{type(exc).__name__}: {exc}"
+    summary = ("## Mutation testing over this diff\n\n"
+               f"**Incomplete: the lane stopped before mutmut decided the diff.**\n\n"
+               f"```\n{error}\n```\n")
+    print(summary)
+    if args.summary:
+        with open(args.summary, "a", encoding="utf-8") as fh:
+            fh.write(summary + "\n")
+    if args.json:
+        record = {"schema": 1, "exit_code": 2, "stopped": "lane", "error": error,
+                  "outcome": "Incomplete: the lane stopped before mutmut decided the diff.",
+                  "elapsed_s": round(time.monotonic() - started, 1), "functions": [], "files": []}
+        Path(args.json).write_text(json.dumps(record, indent=2, ensure_ascii=False) + "\n",
+                                   encoding="utf-8")
+    return 2
+
+
+def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str],
+          started: float) -> int:
+    """The lane: the diff, the scratch tree, the engine, the report."""
     base = _git(repo, "rev-parse", "--verify", f"{args.base}^{{commit}}").strip()
     head = _git(repo, "rev-parse", "--verify", f"{args.head}^{{commit}}").strip()
     merge_base = _git(repo, "merge-base", base, head).strip()
