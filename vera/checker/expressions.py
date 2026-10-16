@@ -8,10 +8,10 @@ quantifiers, and old/new contract expressions.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import ClassVar
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any, ClassVar
 
-from vera import ast, naming
+from vera import ast, fold, naming
 from vera.checker.sql import resolve_array_len, resolve_literal_string
 from vera.lowering import (
     PREDICATE_ARITY,
@@ -181,200 +181,14 @@ class ExpressionsMixin:
         if/match, and blocks so that nullary constructors of parameterised
         ADTs can resolve their TypeVars from context (bidirectional checking).
 
-        # WALKER_COVERAGE: (#597 — canonical "must handle every Expr"
-        # dispatcher.  Every subclass below has an explicit
-        # isinstance branch; check_walker_coverage.py enforces it.)
-        #
-        # Handled (every Expr subclass):
-        #   IntLit            → Int (or Byte via bidirectional check)
-        #   FloatLit          → Float64
-        #   BoolLit           → Bool
-        #   UnitLit           → Unit
-        #   StringLit         → String
-        #   InterpolatedString → String (sub-exprs type-checked)
-        #   HoleExpr          → emits E170, returns None
-        #   SlotRef           → resolved from current slot env
-        #   ResultRef         → emits E131 outside ensures
-        #   BinaryExpr        → arith/cmp/logic dispatch
-        #   UnaryExpr         → neg/not dispatch
-        #   IndexExpr         → element type of indexed collection
-        #   FnCall            → function-table lookup + arg check
-        #   QualifiedCall     → effect-op dispatch
-        #   ModuleCall        → imported-module lookup
-        #   ConstructorCall   → ADT constructor type
-        #   NullaryConstructor → ADT nullary constructor type
-        #   AnonFn            → fn-type from param + body
-        #   IfExpr            → unified branch type
-        #   MatchExpr         → unified arm type
-        #   Block             → trailing expr type (or Unit)
-        #   HandleExpr        → body type minus handled effect
-        #   AssertExpr        → Unit
-        #   AssumeExpr        → Unit
-        #   ForallExpr        → Bool (predicate type-checked under binders)
-        #   ExistsExpr        → Bool
-        #   OldExpr           → snapshot of inner expr (ensures-only)
-        #   NewExpr           → snapshot of inner expr (ensures-only)
-        #   ArrayLit          → Array<element-type>
-        #
-        # No "Cannot occur" entries: every Expr subclass is reachable
-        # by the type checker since it's the first compiler pass that
-        # sees user code.  This walker is the canonical complete set
-        # against which the other walkers are audited.
+        Each class's synthesis is its arm in ``_SYNTH_ARMS``, a
+        ``vera.fold.dispatch`` table, so every `Expr` class has one: the type
+        checker is the first pass that sees user code, so every class can
+        reach it.
         """
-        if isinstance(expr, ast.IntLit):
-            # Byte coercion: integer literals 0–255 accepted as Byte when
-            # the expected type resolves to Byte (bidirectional checking).
-            # #865: see through a refinement wrapper (`{ @Byte | P }`, incl.
-            # via a `type SmallByte = { @Byte | P }` alias) with `base_type`,
-            # not a bare `isinstance(expected, PrimitiveType)` — otherwise
-            # `let @{ @Byte | @Byte.0 < 10 } = 5` fell through to @Nat and
-            # rejected the literal with E170, the same coercion gap as the
-            # #865 call-argument site (the predicate is deferred to the
-            # verifier, which is exactly how a `@Byte` argument to a refined
-            # parameter is already handled).
-            if expected is not None and base_type(expected) == BYTE:
-                if 0 <= expr.value <= 255:
-                    return BYTE
-                # #1252: `@Byte` is a target machine type like `@Int` and
-                # `@Nat`, so an out-of-range literal in a `@Byte` context is
-                # the same E149 — reported HERE, where the mistake is, rather
-                # than left to fall through to `@Nat` and be described by
-                # whatever downstream mismatch that caused.  In a join it was
-                # E301 ("then-branch is Nat, else-branch is Byte"), true but
-                # about a consequence; at a call argument, E202; under a `let`,
-                # E170.  The literal keeps the type its context asked for, so
-                # the one real error is the only one reported.
-                self._literal_range_error(
-                    expr,
-                    f"Integer literal {expr.value} is out of range for "
-                    f"@Byte; the range is 0..255.",
-                    rationale=(
-                        "`@Byte` is an unsigned 8-bit integer, stored and "
-                        "compared at that width.  A literal outside 0..255 "
-                        "cannot be represented in it, so the value the "
-                        "verifier reasons about and the value the runtime "
-                        "holds would differ (#812/#1252)."
-                    ),
-                    fix=(
-                        "Use a literal in 0..255, or give the surrounding "
-                        "binding, argument or return a wider type such as "
-                        "`@Nat` or `@Int`."
-                    ),
-                    # This pass KNOWS the target is `@Byte`, so it supersedes
-                    # an unconstrained verdict on the same literal.
-                    contextual=True,
-                )
-                return BYTE
-            # #812: range-check the literal against its target machine type
-            # before typing it.  Every target but `@Byte` is i64 — `@Int`, and
-            # `@Nat`, its non-negative half — so the bound is i64.MAX wherever
-            # the literal is written, whatever its context.  A literal past it
-            # is a clean error here instead of (loud) an opaque `i64.const …
-            # out of range` codegen failure or (silent, unsound) a Tier-1
-            # proof over a value the i64 runtime reinterprets.  The operand of
-            # a negation reaches 2^63, `Int`'s minimum, and `_check_unary`
-            # bounds it there.
-            if (expr.value > _I64_MAX
-                    and self._negated_literal is not expr):
-                base = base_type(expected) if expected is not None else None
-                type_name = ("@Nat" if isinstance(base, PrimitiveType)
-                             and base.name == "Nat" else "@Int")
-                self._literal_range_error(
-                    expr,
-                    f"Integer literal {expr.value} is out of range for "
-                    f"{type_name} (i64); the maximum is {_I64_MAX}.",
-                    rationale=(
-                        "Integer literals are fixed-width at runtime: `@Int` "
-                        "is a signed 64-bit integer and `@Nat` holds its "
-                        "non-negative half, so neither holds a value above "
-                        f"{_I64_MAX}.  A literal beyond that range cannot be "
-                        "represented: codegen would either reject it or "
-                        "silently reinterpret its bit pattern, diverging from "
-                        "what the verifier proved (#812)."
-                    ),
-                    fix=(
-                        "Use a literal no greater than "
-                        f"{_I64_MAX}, or hold a larger value as a `@Float64` "
-                        "or a `@Decimal`."
-                    ),
-                    # `expected is None` names no target, so a later
-                    # contextual verdict (a `@Byte` one) wins.
-                    contextual=expected is not None,
-                )
-            # Every integer literal is an `Int` (spec §4.2).  In a `@Nat` or
-            # refined context it is a narrowing, which the checker admits
-            # (`Int` where `Nat` is expected) and the verifier obligates.
-            return INT
-        if isinstance(expr, ast.FloatLit):
-            return FLOAT64
-        if isinstance(expr, ast.StringLit):
-            return STRING
-        if isinstance(expr, ast.InterpolatedString):
-            return self._check_interpolated_string(expr)
-        if isinstance(expr, ast.BoolLit):
-            return BOOL
-        if isinstance(expr, ast.UnitLit):
-            return UNIT
-        if isinstance(expr, ast.HoleExpr):
-            return self._check_hole(expr, expected=expected)
-        if isinstance(expr, ast.SlotRef):
-            return self._check_slot_ref(expr)
-        if isinstance(expr, ast.ResultRef):
-            return self._check_result_ref(expr)
-        if isinstance(expr, ast.BinaryExpr):
-            return self._check_binary(expr)
-        if isinstance(expr, ast.UnaryExpr):
-            return self._check_unary(expr)
-        if isinstance(expr, ast.IndexExpr):
-            return self._check_index(expr, expected=expected)
-        if isinstance(expr, ast.FnCall):
-            result = self._check_fn_call(expr, expected=expected)
-            # Bidirectional coercion: when a generic call returns a type
-            # with unresolved TypeVars (e.g. map_new() → Map<K, V>) and
-            # we have an expected concrete type (e.g. Map<String, Int>),
-            # use the expected type if structurally compatible.
-            if (result is not None
-                    and expected is not None
-                    and contains_typevar(result)
-                    and not contains_typevar(expected)
-                    and isinstance(result, AdtType)
-                    and isinstance(expected, AdtType)
-                    and result.name == expected.name
-                    and len(result.type_args) == len(expected.type_args)):
-                return expected
-            return result
-        if isinstance(expr, ast.ConstructorCall):
-            return self._check_constructor_call(expr, expected=expected)
-        if isinstance(expr, ast.NullaryConstructor):
-            return self._check_nullary_constructor(expr, expected=expected)
-        if isinstance(expr, ast.QualifiedCall):
-            return self._check_qualified_call(expr)
-        if isinstance(expr, ast.ModuleCall):
-            return self._check_module_call(expr, expected=expected)
-        if isinstance(expr, ast.IfExpr):
-            return self._check_if(expr, expected=expected)
-        if isinstance(expr, ast.MatchExpr):
-            return self._check_match(expr, expected=expected)
-        if isinstance(expr, ast.Block):
-            return self._check_block(expr, expected=expected)
-        if isinstance(expr, ast.AnonFn):
-            return self._check_anon_fn(expr)
-        if isinstance(expr, ast.HandleExpr):
-            return self._check_handle(expr)
-        if isinstance(expr, ast.ArrayLit):
-            return self._check_array_lit(expr, expected=expected)
-        if isinstance(expr, ast.AssertExpr):
-            return self._check_assert(expr)
-        if isinstance(expr, ast.AssumeExpr):
-            return self._check_assume(expr)
-        if isinstance(expr, ast.ForallExpr):
-            return self._check_forall_expr(expr)
-        if isinstance(expr, ast.ExistsExpr):
-            return self._check_exists_expr(expr)
-        if isinstance(expr, ast.OldExpr):
-            return self._check_old_expr(expr)
-        if isinstance(expr, ast.NewExpr):
-            return self._check_new_expr(expr)
+        arm = _SYNTH_ARMS.get(type(expr))
+        if arm is not None:
+            return arm(self, expr, expected)
         self._error(
             expr,
             f"Unknown expression type: {type(expr).__name__}",
@@ -2163,3 +1977,161 @@ class ExpressionsMixin:
             return ei.type_args[0]
         # For other effects, return Unknown
         return UnknownType()
+
+
+# =====================================================================
+# `_synth_expr_impl`: one arm per expression class
+# =====================================================================
+
+def _synth_int_lit(ctx: ExpressionsMixin, expr: ast.IntLit,
+                   expected: Type | None) -> Type | None:
+    # Byte coercion: integer literals 0–255 accepted as Byte when
+    # the expected type resolves to Byte (bidirectional checking).
+    # #865: see through a refinement wrapper (`{ @Byte | P }`, incl.
+    # via a `type SmallByte = { @Byte | P }` alias) with `base_type`,
+    # not a bare `isinstance(expected, PrimitiveType)` — otherwise
+    # `let @{ @Byte | @Byte.0 < 10 } = 5` fell through to @Nat and
+    # rejected the literal with E170, the same coercion gap as the
+    # #865 call-argument site (the predicate is deferred to the
+    # verifier, which is exactly how a `@Byte` argument to a refined
+    # parameter is already handled).
+    if expected is not None and base_type(expected) == BYTE:
+        if 0 <= expr.value <= 255:
+            return BYTE
+        # #1252: `@Byte` is a target machine type like `@Int` and
+        # `@Nat`, so an out-of-range literal in a `@Byte` context is
+        # the same E149 — reported HERE, where the mistake is, rather
+        # than left to fall through to `@Nat` and be described by
+        # whatever downstream mismatch that caused.  In a join it was
+        # E301 ("then-branch is Nat, else-branch is Byte"), true but
+        # about a consequence; at a call argument, E202; under a `let`,
+        # E170.  The literal keeps the type its context asked for, so
+        # the one real error is the only one reported.
+        ctx._literal_range_error(
+            expr,
+            f"Integer literal {expr.value} is out of range for "
+            f"@Byte; the range is 0..255.",
+            rationale=(
+                "`@Byte` is an unsigned 8-bit integer, stored and "
+                "compared at that width.  A literal outside 0..255 "
+                "cannot be represented in it, so the value the "
+                "verifier reasons about and the value the runtime "
+                "holds would differ (#812/#1252)."
+            ),
+            fix=(
+                "Use a literal in 0..255, or give the surrounding "
+                "binding, argument or return a wider type such as "
+                "`@Nat` or `@Int`."
+            ),
+            # This pass KNOWS the target is `@Byte`, so it supersedes
+            # an unconstrained verdict on the same literal.
+            contextual=True,
+        )
+        return BYTE
+    # #812: range-check the literal against its target machine type
+    # before typing it.  Every target but `@Byte` is i64 — `@Int`, and
+    # `@Nat`, its non-negative half — so the bound is i64.MAX wherever
+    # the literal is written, whatever its context.  A literal past it
+    # is a clean error here instead of (loud) an opaque `i64.const …
+    # out of range` codegen failure or (silent, unsound) a Tier-1
+    # proof over a value the i64 runtime reinterprets.  The operand of
+    # a negation reaches 2^63, `Int`'s minimum, and `_check_unary`
+    # bounds it there.
+    if (expr.value > _I64_MAX
+            and ctx._negated_literal is not expr):
+        base = base_type(expected) if expected is not None else None
+        type_name = ("@Nat" if isinstance(base, PrimitiveType)
+                     and base.name == "Nat" else "@Int")
+        ctx._literal_range_error(
+            expr,
+            f"Integer literal {expr.value} is out of range for "
+            f"{type_name} (i64); the maximum is {_I64_MAX}.",
+            rationale=(
+                "Integer literals are fixed-width at runtime: `@Int` "
+                "is a signed 64-bit integer and `@Nat` holds its "
+                "non-negative half, so neither holds a value above "
+                f"{_I64_MAX}.  A literal beyond that range cannot be "
+                "represented: codegen would either reject it or "
+                "silently reinterpret its bit pattern, diverging from "
+                "what the verifier proved (#812)."
+            ),
+            fix=(
+                "Use a literal no greater than "
+                f"{_I64_MAX}, or hold a larger value as a `@Float64` "
+                "or a `@Decimal`."
+            ),
+            # `expected is None` names no target, so a later
+            # contextual verdict (a `@Byte` one) wins.
+            contextual=expected is not None,
+        )
+    # Every integer literal is an `Int` (spec §4.2).  In a `@Nat` or
+    # refined context it is a narrowing, which the checker admits
+    # (`Int` where `Nat` is expected) and the verifier obligates.
+    return INT
+
+
+def _synth_fn_call(ctx: ExpressionsMixin, expr: ast.FnCall,
+                   expected: Type | None) -> Type | None:
+    result = ctx._check_fn_call(expr, expected=expected)
+    # Bidirectional coercion: when a generic call returns a type
+    # with unresolved TypeVars (e.g. map_new() → Map<K, V>) and
+    # we have an expected concrete type (e.g. Map<String, Int>),
+    # use the expected type if structurally compatible.
+    if (result is not None
+            and expected is not None
+            and contains_typevar(result)
+            and not contains_typevar(expected)
+            and isinstance(result, AdtType)
+            and isinstance(expected, AdtType)
+            and result.name == expected.name
+            and len(result.type_args) == len(expected.type_args)):
+        return expected
+    return result
+
+
+_SynthArm = Callable[[ExpressionsMixin, Any, "Type | None"], "Type | None"]
+
+#: The type an expression synthesises, by class.
+_SYNTH_ARMS: Mapping[type[ast.Expr], _SynthArm] = fold.dispatch(
+    "_synth_expr_impl", {
+        ast.IntLit: _synth_int_lit,
+        ast.FloatLit: lambda ctx, e, expected: FLOAT64,
+        ast.StringLit: lambda ctx, e, expected: STRING,
+        ast.InterpolatedString:
+            lambda ctx, e, expected: ctx._check_interpolated_string(e),
+        ast.BoolLit: lambda ctx, e, expected: BOOL,
+        ast.UnitLit: lambda ctx, e, expected: UNIT,
+        ast.HoleExpr:
+            lambda ctx, e, expected: ctx._check_hole(e, expected=expected),
+        ast.SlotRef: lambda ctx, e, expected: ctx._check_slot_ref(e),
+        ast.ResultRef: lambda ctx, e, expected: ctx._check_result_ref(e),
+        ast.BinaryExpr: lambda ctx, e, expected: ctx._check_binary(e),
+        ast.UnaryExpr: lambda ctx, e, expected: ctx._check_unary(e),
+        ast.IndexExpr:
+            lambda ctx, e, expected: ctx._check_index(e, expected=expected),
+        ast.FnCall: _synth_fn_call,
+        ast.ConstructorCall: lambda ctx, e, expected:
+            ctx._check_constructor_call(e, expected=expected),
+        ast.NullaryConstructor: lambda ctx, e, expected:
+            ctx._check_nullary_constructor(e, expected=expected),
+        ast.QualifiedCall:
+            lambda ctx, e, expected: ctx._check_qualified_call(e),
+        ast.ModuleCall: lambda ctx, e, expected:
+            ctx._check_module_call(e, expected=expected),
+        ast.IfExpr:
+            lambda ctx, e, expected: ctx._check_if(e, expected=expected),
+        ast.MatchExpr:
+            lambda ctx, e, expected: ctx._check_match(e, expected=expected),
+        ast.Block:
+            lambda ctx, e, expected: ctx._check_block(e, expected=expected),
+        ast.AnonFn: lambda ctx, e, expected: ctx._check_anon_fn(e),
+        ast.HandleExpr: lambda ctx, e, expected: ctx._check_handle(e),
+        ast.ArrayLit: lambda ctx, e, expected:
+            ctx._check_array_lit(e, expected=expected),
+        ast.AssertExpr: lambda ctx, e, expected: ctx._check_assert(e),
+        ast.AssumeExpr: lambda ctx, e, expected: ctx._check_assume(e),
+        ast.ForallExpr: lambda ctx, e, expected: ctx._check_forall_expr(e),
+        ast.ExistsExpr: lambda ctx, e, expected: ctx._check_exists_expr(e),
+        ast.OldExpr: lambda ctx, e, expected: ctx._check_old_expr(e),
+        ast.NewExpr: lambda ctx, e, expected: ctx._check_new_expr(e),
+    })

@@ -598,7 +598,6 @@ _TABLES = frozenset({
 })
 
 
-@pytest.mark.xfail(strict=True, reason="the dispatch ports have not landed")
 def test_a_new_expr_subclass_fails_every_dispatching_module_at_import() -> None:
     """Declare a 30th `Expr` subclass before `vera.fold` is imported: the
     first dispatching module refuses to import, naming it, and every table
