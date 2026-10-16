@@ -686,6 +686,7 @@ MARKED_FILES = (
     "test_builtin_registry.py",
     "test_expr_fold.py",
     "test_call_facts_after_obligations_1706.py",
+    "test_destructure_checked_against_source_1545.py",
 )
 UNMARKED_FILES = (
     "test_obligations.py",

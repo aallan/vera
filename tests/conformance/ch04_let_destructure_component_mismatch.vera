@@ -1,0 +1,16 @@
+-- Conformance: a destructuring let is checked against its value
+-- (Chapter 4, Section 4.7.1).
+-- Tests: E170 — each binding of `let Tuple<@T1, ..., @Tn> = e;` is
+-- checked against the component of `e` it binds, as a let binding is
+-- checked against its value.  `Tuple(1, 2)` is a `Tuple<Int, Int>`, so
+-- its second component bound at `@String` is refused (#1545).
+-- Previously this passed check and verify, and `@String.0` read the
+-- integer 2 as a string.
+public fn probe(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let Tuple<@Int, @String> = Tuple(1, 2);
+  @Int.0
+}

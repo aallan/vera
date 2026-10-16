@@ -81,13 +81,14 @@ positions and not others.  Measured across every route of this file rather
 than remembered — and recomputed by
 `test_the_byte_literal_tally_is_what_the_routes_measure`, since a tally
 written out by hand stops being a measurement the moment the axis grows
-(CodeRabbit on PR #1478 caught this one two routes stale): THIRTEEN of the
+(CodeRabbit on PR #1478 caught this one two routes stale): FOURTEEN of the
 twenty-seven refuse the literal.  Seven E202 (an array element, and six of
 the seven tuple-component routes), one E121 (the seventh, the return),
 three E213 (a declared constructor field and both ADT sub-pattern routes),
-one E170 (a `Map` value) and one E314 (a match binding).  A literal would
-have excluded all thirteen for a reason that has nothing to do with the
-guard.
+two E170 (a `Map` value, and a tuple destructure, whose literal component
+is an `Int` as it is in the plain `let`, #1545) and one E314 (a match
+binding).  A literal would have excluded all fourteen for a reason that has
+nothing to do with the guard.
 """
 from __future__ import annotations
 
@@ -2157,8 +2158,8 @@ def test_the_record_and_registration_agree_about_a_state_cell(
 #: is a measurement that stops being one: this read "seven of eighteen" and
 #: then "five of the six tuple routes" while the file grew to twenty-seven
 #: routes (CodeRabbit on PR #1478).
-_BYTE_LITERAL_TALLY = {"E202": 7, "E121": 1, "E213": 3, "E170": 1, "E314": 1}
-_BYTE_LITERAL_TOTALS = (13, 27)
+_BYTE_LITERAL_TALLY = {"E202": 7, "E121": 1, "E213": 3, "E170": 2, "E314": 1}
+_BYTE_LITERAL_TOTALS = (14, 27)
 
 
 def test_the_byte_literal_tally_is_what_the_routes_measure(
@@ -2201,7 +2202,7 @@ def test_the_byte_literal_tally_is_what_the_routes_measure(
         f"measurement is {refused}"
     )
     text = __doc__ or ""
-    assert "THIRTEEN of the" in text and "Seven E202" in text, (
+    assert "FOURTEEN of the" in text and "Seven E202" in text, (
         "the docstring no longer states the tally this cell recomputes"
     )
 

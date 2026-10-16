@@ -1097,11 +1097,22 @@ class ExpressionsMixin:
             lambda name: (name == "Tuple") == tuple_shape,
         )
         value_ty = self._synth_expr(stmt.value)
+        # Read before the bindings are resolved, as a `match` reads it
+        # before its arms: an error in a binding's type says nothing about
+        # the value (#1671).
+        after_error = any(d.severity == "error" for d in self.errors)
 
         resolved_types: list[Type] = []
         for te in stmt.type_bindings:
             self._check_refinement_predicates(te)  # #861
             resolved_types.append(self._resolve_type(te))
+
+        # #1545: the destructure is the one-arm constructor pattern it
+        # names, held to the arm's rules and its bindings to a `let`'s,
+        # against the type the value synthesized above, never the type the
+        # bindings would give it (`_check_destructure`).
+        self._check_destructure(
+            stmt, value_ty, resolved_types, after_error=after_error)
 
         # #1541, PR #1583 review: a tuple destructure's bindings are the
         # type its source is expected at, as a `let`'s declared type is,
