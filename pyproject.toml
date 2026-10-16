@@ -195,15 +195,26 @@ only_mutate = [
 # mutmut copies tests/ + config but nothing else by default; the
 # in-process oracle also reads these repo files (the example round-trips in
 # test_codegen_infrastructure / _effects / _strings; test_errors'
-# error-display-sync against README / docs / spec), so the ./mutants/ copy
-# needs them or pytest errors at collection.
-also_copy = ["examples/", "README.md", "docs/", "spec/"]
+# error-display-sync against README / docs / spec / AGENTS.md and
+# scripts/build_site.py; the gates that test_formatter, test_checker_errors
+# and test_walker_defensive_branches_597 load from scripts/), so the
+# ./mutants/ copy needs them: mutmut's stats pass runs the selection with
+# -x, and one test that cannot pass in the copy stops every run.
+also_copy = ["examples/", "README.md", "docs/", "spec/", "scripts/", "AGENTS.md"]
 # `mutmut run` copies the project to ./mutants/ and runs the suite there,
 # so the working tree is never mutated in place.
 use_setproctitle = false  # required on macOS (mutmut PR #450)
 # Z3 / wasmtime headroom: a generous per-test cap so a slow-but-solvable
-# mutant is not misread as an unkillable timeout survivor.
-pytest_add_cli_args = ["--timeout=300"]
+# mutant is not misread as an unkillable timeout survivor.  The two
+# deselected tests parse vera/verifier.py's own text, which inside the
+# ./mutants/ copy is mutmut's generated file with every mutant inlined, so
+# they fail there with no mutant active; they read the module's source, not
+# its behaviour, so no mutant of another module can reach them either.
+pytest_add_cli_args = [
+    "--timeout=300",
+    "--deselect=tests/test_verifier_refinements.py::TestANonVerdictIsAttributedToTheRightOutcome::test_no_demotion_site_hardcodes_a_solver_reason",
+    "--deselect=tests/test_verifier_refinements.py::TestANonVerdictIsAttributedToTheRightOutcome::test_every_possibly_unguarded_demotion_supplies_a_reason",
+]
 # In-process oracle (positive selection).  Only these suites build Vera
 # programs inline (or from examples/, copied above) and exercise the
 # compiler in-process, so they work inside the ./mutants/ copy and can
