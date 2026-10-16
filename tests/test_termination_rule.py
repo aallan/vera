@@ -993,26 +993,28 @@ def test_a_call_the_walk_misses_withholds_the_proof(
         cell: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """#1520 / #1524 review: the proof is held to the call graph's calls.
 
-    The measure walk is made to skip one call, as a walk with a missing
-    branch would.  The call does not decrease, so a proof built from the
-    calls the walk did reach is false.  Which calls are on the cycle is
-    enumerated by `vera.callgraph`, independently of that walk, for a
-    declaration the graph holds and for a generic's clone alike, so the
-    missed call withholds the proof.  Remove that check and this cell
+    The measure walk is made to leave one call unrecorded, as a walk that
+    missed its position would.  The call does not decrease, so a proof
+    built from the calls the walk did record is false.  Which calls are on
+    the cycle is enumerated by `vera.callgraph`, independently of that walk,
+    for a declaration the graph holds and for a generic's clone alike, so
+    the missed call withholds the proof.  Remove that check and this cell
     reads `verified`.
     """
     real = ContractVerifier._walk_for_calls
-    missed: list[ast.FnCall] = []
+    missed: list[ast.FnCall | ast.ModuleCall] = []
 
     def walk(self: ContractVerifier, match: Any, expr: ast.Expr,
              *rest: Any) -> None:
-        if isinstance(expr, ast.FnCall) and any(
-                isinstance(a, ast.BinaryExpr)
-                and isinstance(a.right, ast.IntLit)
-                and a.right.value == _MISSED for a in expr.args):
-            missed.append(expr)
-            return
-        real(self, match, expr, *rest)
+        def unrecorded(call: ast.FnCall | ast.ModuleCall) -> Any:
+            if isinstance(call, ast.FnCall) and any(
+                    isinstance(a, ast.BinaryExpr)
+                    and isinstance(a.right, ast.IntLit)
+                    and a.right.value == _MISSED for a in call.args):
+                missed.append(call)
+                return None
+            return match(call)
+        real(self, unrecorded, expr, *rest)
 
     monkeypatch.setattr(ContractVerifier, "_walk_for_calls", walk)
     source, module_text = _MISSED_CELLS[cell]

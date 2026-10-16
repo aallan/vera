@@ -6,9 +6,7 @@ memory, data sections, and closure infrastructure.
 
 from __future__ import annotations
 
-import itertools
 import re
-from collections.abc import Collection
 
 from vera.builtins import (
     HOST_FAMILIES,
@@ -74,42 +72,27 @@ class AssemblyMixin:
     def _declare_host_imports(self, parts: list[str]) -> None:
         """Declare the host imports the module calls, from the registry.
 
-        A family the module calls by name declares the imports code
-        generation recorded: the IO, Http, Inference, DB and Random
-        operations and the Markdown, Regex, Json, Html, fused-async and Math
-        built-ins by the names the pre-scan and their emitters collect, and
-        the Map, Set and Decimal ones by the instances their emitters
-        register.  The wrap table's helpers and the two signals are declared
-        by flag, and the four imports of a `State` cell once per cell.
+        ``_host_imports_used`` holds the import name of every call the
+        module's emitted code makes, each emitter's: an effect operation's
+        import, a host-imported built-in's name, and an instance's
+        (``map_insert$ks_vi``) for a ``Map`` or ``Set`` call, so a call
+        code generation never emits declares nothing and raises no flag.
+        A family the module calls by name declares its rows among them.
+        The wrap table's helpers and the two signals are declared by flag,
+        and the four imports of a `State` cell once per cell, which a
+        handler or a declared effect row registers before the function is
+        emitted (the `old()` snapshot reads the cells while it is).
 
         Every flag an import in use sets is set before anything is declared:
         the wrap table's helpers come before the Json, Html and fused-async
         imports, whose use declares them too.
         """
-        named: dict[str, Collection[str]] = {
-            "io": self._io_ops_used,
-            "md": self._md_ops_used,
-            "regex": self._regex_ops_used,
-            "map": self._map_imports,
-            "set": self._set_imports,
-            "decimal": self._decimal_imports,
-            "json": self._json_ops_used,
-            "html": self._html_ops_used,
-            "http": self._http_ops_used,
-            "async": self._async_ops_used,
-            "inference": self._inference_ops_used,
-            "db": self._db_ops_used,
-            "random": self._random_ops_used,
-            "math": self._math_ops_used,
-        }
-        in_use = itertools.chain(
-            *named.values(),
-            self._map_ops_used, self._set_ops_used, self._decimal_ops_used,
-        )
-        for name in in_use:
+        named: dict[str, list[str]] = {}
+        for name in self._host_imports_used:
             row = host_import(name)
             if row is None:
                 continue
+            named.setdefault(row.family, []).append(name)
             if row.needs_alloc:
                 self._needs_alloc = True
             if row.needs_memory:
@@ -127,7 +110,7 @@ class AssemblyMixin:
         }
         for family in HOST_FAMILIES:
             if family.gate is Gate.NAMES:
-                parts.extend(declaration_lines(family.name, named[family.name]))
+                parts.extend(declaration_lines(family.name, named.get(family.name, ())))
             elif family.gate is Gate.FLAG:
                 if flagged[family.name]:
                     parts.extend(declaration_lines(

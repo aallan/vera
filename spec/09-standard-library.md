@@ -208,18 +208,22 @@ The standard prelude (§9.1.2) provides combinator functions that eliminate comm
 
 **Option combinators:**
 
+<!-- render_lists:begin signatures-option -->
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `option_unwrap_or` | `forall<T> (Option<T>, T) -> T` | Extract `Some` value or return default |
-| `option_map` | `forall<A, B> (Option<A>, fn(A -> B)) -> Option<B>` | Transform the value inside `Some` |
-| `option_and_then` | `forall<A, B> (Option<A>, fn(A -> Option<B>)) -> Option<B>` | Chain fallible operations |
+| `option_unwrap_or` | `forall<T> Option<T>, T -> T` | Extract `Some` value or return default |
+| `option_map` | `forall<A, B> Option<A>, fn(A -> B) -> Option<B>` | Transform the value inside `Some` |
+| `option_and_then` | `forall<A, B> Option<A>, fn(A -> Option<B>) -> Option<B>` | Chain fallible operations |
+<!-- render_lists:end signatures-option -->
 
 **Result combinators:**
 
+<!-- render_lists:begin signatures-result -->
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `result_unwrap_or` | `forall<T, E> (Result<T, E>, T) -> T` | Extract `Ok` value or return default |
-| `result_map` | `forall<A, B, E> (Result<A, E>, fn(A -> B)) -> Result<B, E>` | Transform the `Ok` value |
+| `result_unwrap_or` | `forall<T, E> Result<T, E>, T -> T` | Extract `Ok` value or return default |
+| `result_map` | `forall<A, B, E> Result<A, E>, fn(A -> B) -> Result<B, E>` | Transform the `Ok` value |
+<!-- render_lists:end signatures-result -->
 
 Combinators follow the `domain_verb` naming convention (see §5). They are injected as private generic functions before compilation and undergo normal monomorphization. A combinator is not injected if the user defines a function with the same name.
 
@@ -256,14 +260,16 @@ Set is an opaque built-in type. A set lives on the WASM heap, as a wrapper point
 
 **Operations:**
 
+<!-- render_lists:begin signatures-set -->
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `set_new()` | `forall<T> () → Set<T>` | Create an empty set |
-| `set_add(s, t)` | `forall<T> (Set<T>, T) → Set<T>` | Return a new set with the element added |
-| `set_contains(s, t)` | `forall<T> (Set<T>, T) → Bool` | Test whether an element is present |
-| `set_remove(s, t)` | `forall<T> (Set<T>, T) → Set<T>` | Return a new set without the element |
-| `set_size(s)` | `forall<T> (Set<T>) → Int` | Number of elements |
-| `set_to_array(s)` | `forall<T> (Set<T>) → Array<T>` | All elements as an array |
+| `set_new()` | `forall<T> () -> Set<T>` | Create an empty set |
+| `set_add(s, t)` | `forall<T> Set<T>, T -> Set<T>` | Return a new set with the element added |
+| `set_contains(s, t)` | `forall<T> Set<T>, T -> Bool` | Test whether an element is present |
+| `set_remove(s, t)` | `forall<T> Set<T>, T -> Set<T>` | Return a new set without the element |
+| `set_size(s)` | `forall<T> Set<T> -> Int` | Number of elements |
+| `set_to_array(s)` | `forall<T> Set<T> -> Array<T>` | All elements as an array |
+<!-- render_lists:end signatures-set -->
 
 ```
 private fn set_demo(-> @Int)
@@ -285,16 +291,18 @@ Map is an opaque built-in type. A map lives on the WASM heap, as a wrapper point
 
 **Operations:**
 
+<!-- render_lists:begin signatures-map -->
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `map_new()` | `forall<K, V> () -> Map<K, V>` | Create an empty map |
-| `map_insert(m, k, v)` | `forall<K, V> (Map<K, V>, K, V) -> Map<K, V>` | Return a new map with the entry added |
-| `map_get(m, k)` | `forall<K, V> (Map<K, V>, K) -> Option<V>` | Look up a key; `Some(v)` if present, `None` if absent |
-| `map_contains(m, k)` | `forall<K, V> (Map<K, V>, K) -> Bool` | Test whether a key is present |
-| `map_remove(m, k)` | `forall<K, V> (Map<K, V>, K) -> Map<K, V>` | Return a new map without the key |
-| `map_size(m)` | `forall<K, V> (Map<K, V>) -> Int` | Number of entries |
-| `map_keys(m)` | `forall<K, V> (Map<K, V>) -> Array<K>` | All keys as an array |
-| `map_values(m)` | `forall<K, V> (Map<K, V>) -> Array<V>` | All values as an array |
+| `map_insert(m, k, v)` | `forall<K, V> Map<K, V>, K, V -> Map<K, V>` | Return a new map with the entry added |
+| `map_get(m, k)` | `forall<K, V> Map<K, V>, K -> Option<V>` | Look up a key; `Some(v)` if present, `None` if absent |
+| `map_contains(m, k)` | `forall<K, V> Map<K, V>, K -> Bool` | Test whether a key is present |
+| `map_remove(m, k)` | `forall<K, V> Map<K, V>, K -> Map<K, V>` | Return a new map without the key |
+| `map_size(m)` | `forall<K, V> Map<K, V> -> Int` | Number of entries |
+| `map_keys(m)` | `forall<K, V> Map<K, V> -> Array<K>` | All keys as an array |
+| `map_values(m)` | `forall<K, V> Map<K, V> -> Array<V>` | All values as an array |
+<!-- render_lists:end signatures-map -->
 
 All Map operations require `Eq<K>` and `Hash<K>` ability constraints.
 
@@ -322,6 +330,7 @@ The `IO` effect has no type parameters. All IO operations are invoked as qualifi
 
 **Operations:**
 
+<!-- render_lists:begin signatures-io -->
 | Operation | Signature | Description |
 |-----------|-----------|-------------|
 | `print` | `String -> Unit` | Write a UTF-8 string to stdout |
@@ -335,6 +344,7 @@ The `IO` effect has no type parameters. All IO operations are invoked as qualifi
 | `sleep` | `Nat -> Unit` | Pause execution for N milliseconds |
 | `time` | `Unit -> Nat` | Current Unix time in milliseconds |
 | `stderr` | `String -> Unit` | Write a UTF-8 string to stderr |
+<!-- render_lists:end signatures-io -->
 
 The `IO` effect is registered as a built-in: the operations above are in scope for any function whose effect row names `IO`, and no declaration brings them there. An `effect IO { ... }` block in a program is a compile error (`E152`) — the same one-canonical-form rule that forbids redefining a built-in function (`E151`, Section 9.6). The rule is name-keyed and unconditional: a block whose operation signatures agree with the built-in is rejected too, because it is a second textual spelling of the same program (Chapter 0, Section 0.2, design goal 3). It also cannot be honoured — code generation lowers every qualified `IO.op(...)` call to the fixed host import selected by the qualifier and never reads the declaration, so a block whose signatures diverge from the built-in would compile to structurally invalid WebAssembly.
 
@@ -373,10 +383,12 @@ For the runtime implementation of IO operations, see Chapter 12, Section 12.4.1.
 
 The `State<T>` effect provides mutable state operations. Functions that read or write state must declare the specific state type in their effect row: `effects(<State<Int>>)`. Like `IO`, `State<T>` is built-in — no `effect State<T> { ... }` declaration is needed (and one is `E152`).
 
+<!-- render_lists:begin signatures-state -->
 | Operation | Signature | Description |
 |-----------|-----------|-------------|
 | `get` | `Unit -> T` | Reads the current state value; the `Unit` argument is written out, as `get(())` |
 | `put` | `T -> Unit` | Writes a new state value |
+<!-- render_lists:end signatures-state -->
 
 Multiple independent state types can be used in the same function by declaring them in the effect row. State operations (`get`, `put`) are called without qualification — the type checker resolves which state cell is targeted from the types:
 
@@ -421,10 +433,12 @@ Network I/O is modelled as a built-in algebraic effect with two operations: `get
 
 **Operations:**
 
+<!-- render_lists:begin signatures-http -->
 | Operation | Signature | Description |
 |-----------|-----------|-------------|
 | `get` | `String -> Result<String, String>` | Performs an HTTP GET request; `Ok(body)` on success, `Err(message)` on failure |
 | `post` | `String, String -> Result<String, String>` | Performs an HTTP POST request with the given body (sent as `application/json`); `Ok(body)` on success, `Err(message)` on failure |
+<!-- render_lists:end signatures-http -->
 
 This fits naturally with Vera's algebraic effect system and makes network I/O explicit. A `handle[Http]` is a checker error (`E340`), so the effect is declared and propagated but not mocked.
 
@@ -529,9 +543,11 @@ Key design points:
 
 The `Inference` effect models LLM calls as algebraic effects, making them explicit in the type system and contract-verifiable. Functions that call language models must declare `effects(<Inference>)`; pure functions cannot secretly call models.
 
+<!-- render_lists:begin signatures-inference -->
 | Operation | Signature | Description |
 |-----------|-----------|-------------|
 | `Inference.complete` | `String -> Result<String, String>` | Send a prompt to the configured LLM provider; returns `Ok(completion)` or `Err(message)` |
+<!-- render_lists:end signatures-inference -->
 
 `Inference` is a built-in effect — no `effect Inference { ... }` declaration is needed in source files (and one is `E152`).
 
@@ -974,6 +990,7 @@ Fifteen additional math functions cover common scientific computing needs: three
 
 The log and trig functions are uninterpreted in Z3's real-arithmetic fragment, so contracts that depend on their specific values fall to Tier 3 (runtime check). Call-site type checking and effect inference still apply.
 
+<!-- render_lists:begin signatures-math -->
 | Function | Signature | Description |
 |---|---|---|
 | `log` | `Float64 -> Float64` | Natural logarithm (base *e*) |
@@ -991,6 +1008,7 @@ The log and trig functions are uninterpreted in Z3's real-arithmetic fragment, s
 | `sign` | `Int -> Int` | `-1` for negative, `0` for zero, `1` for positive |
 | `clamp` | `Int, Int, Int -> Int` | `clamp(v, lo, hi)` restricts `v` to `[lo, hi]` |
 | `float_clamp` | `Float64, Float64, Float64 -> Float64` | Float64 variant of `clamp` |
+<!-- render_lists:end signatures-math -->
 
 The argument order for `atan2` is `(y, x)`, matching POSIX, Python's `math.atan2`, and JavaScript's `Math.atan2` — `atan2(1.0, 1.0)` is `π/4`, `atan2(1.0, -1.0)` is `3π/4`.
 
@@ -2155,10 +2173,12 @@ The `Json` type is provided by the standard prelude — no explicit `data` decla
 
 **Parsing and serialization:**
 
+<!-- render_lists:begin signatures-json-parse -->
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `json_parse(s)` | `(String) → Result<Json, String>` | Parse JSON text; `Err` outside the accepted domain below |
-| `json_stringify(j)` | `(Json) → String` | Serialize a Json value to its canonical JSON string |
+| `json_parse(s)` | `String -> Result<Json, String>` | Parse JSON text; `Err` outside the accepted domain below |
+| `json_stringify(j)` | `Json -> String` | Serialize a Json value to its canonical JSON string |
+<!-- render_lists:end signatures-json-parse -->
 
 **`json_parse`'s accepted domain.** Both runtimes accept exactly RFC 8259-valid text that decodes to finite numbers and to strings that are sequences of Unicode scalar values. Text outside that domain MUST produce `Err` at the parse rather than a value, and for the two exclusions below the message MUST be the same on every runtime. The domain is defined here rather than inherited from whatever the host parser happens to accept (DESIGN.md: explicit over implicit) — the two exclusions are precisely where the host parsers disagree:
 
@@ -2180,24 +2200,30 @@ The number rule is what makes serialization non-destructive: a document containi
 
 **Object access:**
 
+<!-- render_lists:begin signatures-json-object -->
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `json_get(j, key)` | `(Json, String) → Option<Json>` | Get a field from a JObject; `None` if absent or not an object |
-| `json_has_field(j, key)` | `(Json, String) → Bool` | Check whether a JObject has a field |
-| `json_keys(j)` | `(Json) → Array<String>` | Get all keys from a JObject; empty array if not an object |
+| `json_get(j, key)` | `Json, String -> Option<Json>` | Get a field from a JObject; `None` if absent or not an object |
+| `json_has_field(j, key)` | `Json, String -> Bool` | Check whether a JObject has a field |
+| `json_keys(j)` | `Json -> Array<String>` | Get all keys from a JObject; empty array if not an object |
+<!-- render_lists:end signatures-json-object -->
 
 **Array access:**
 
+<!-- render_lists:begin signatures-json-array -->
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `json_array_get(j, i)` | `(Json, Int) → Option<Json>` | Get element at index from a JArray; `None` if out of bounds or not an array |
-| `json_array_length(j)` | `(Json) → Int` | Get length of a JArray; 0 if not an array |
+| `json_array_get(j, i)` | `Json, Int -> Option<Json>` | Get element at index from a JArray; `None` if out of bounds or not an array |
+| `json_array_length(j)` | `Json -> Int` | Get length of a JArray; 0 if not an array |
+<!-- render_lists:end signatures-json-array -->
 
 **Type inspection:**
 
+<!-- render_lists:begin signatures-json-type -->
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `json_type(j)` | `(Json) → String` | Returns `"null"`, `"bool"`, `"number"`, `"string"`, `"array"`, or `"object"` |
+| `json_type(j)` | `Json -> String` | Returns `"null"`, `"bool"`, `"number"`, `"string"`, `"array"`, or `"object"` |
+<!-- render_lists:end signatures-json-type -->
 
 All JSON functions are pure. The `Json` type is a heap-allocated ADT — values are `i32` pointers into WASM linear memory with a tag + payload layout (like all Vera ADTs). Only `json_parse` and `json_stringify` are host imports (Python `json` / JavaScript `JSON`); the remaining utility functions (`json_get`, `json_has_field`, `json_type`, `json_keys`, `json_array_get`, `json_array_length`) are injected as Vera source from the standard prelude.
 
@@ -2236,13 +2262,15 @@ Decimal is an opaque built-in type implemented via host imports, following the s
 
 **Construction and conversion:**
 
+<!-- render_lists:begin signatures-decimal-construct -->
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `decimal_from_int(n)` | `(Int) → Decimal` | Exact conversion from integer |
-| `decimal_from_float(f)` | `(Float64) → Decimal` | Conversion via Python's `str(v)` float repr (may not be exact) |
-| `decimal_from_string(s)` | `(String) → Option<Decimal>` | Parse a decimal string per the grammar below; `None` on failure |
-| `decimal_to_string(d)` | `(Decimal) → String` | String representation |
-| `decimal_to_float(d)` | `(Decimal) → Float64` | Potentially lossy conversion to float |
+| `decimal_from_int(n)` | `Int -> Decimal` | Exact conversion from integer |
+| `decimal_from_float(f)` | `Float64 -> Decimal` | Conversion via Python's `str(v)` float repr (may not be exact) |
+| `decimal_from_string(s)` | `String -> Option<Decimal>` | Parse a decimal string per the grammar below; `None` on failure |
+| `decimal_to_string(d)` | `Decimal -> String` | String representation |
+| `decimal_to_float(d)` | `Decimal -> Float64` | Potentially lossy conversion to float |
+<!-- render_lists:end signatures-decimal-construct -->
 
 **`decimal_from_string` grammar:** both runtimes accept exactly the language `[+-]? ( digits ( "." digits? )? | "." digits ) ( ("e" | "E") [+-]? digits )?` where `digits` is one or more ASCII `0`–`9`, applied after ignoring surrounding whitespace — the six code points `is_whitespace` names (`0x09`, `0x0A`, `0x0B`, `0x0C`, `0x0D`, `0x20`) and no others, stated here because the two host libraries' own trim functions disagree about the rest in both directions, and the exponent token (when present) MUST satisfy `|exp| <= 999999` — the default context's exponent floor, cited by the `decimal_round` fallback below and chosen to keep operand magnitudes bounded and the exponent-token check exact. Only finite decimals are accepted: special values (`NaN`, `sNaN`, `Infinity`), digit-group underscores (`1_000`), non-ASCII digits, and out-of-range exponent tokens are all rejected with `None`, even where a host decimal library would accept them. The accepted domain is defined by this grammar rather than inherited from whatever the host library parses (DESIGN.md: explicit over implicit) — the Python host pre-validates with this grammar before constructing a `decimal.Decimal`, and the browser runtime's parser recognises the same language, checking the exponent token as a string before any numeric conversion (an unbounded token would otherwise round silently above 2^53). This `|exp| <= 999999` bound constrains **input literals** only; exact arithmetic on accepted operands can grow the exponent past it, as squaring the largest accepted literal shows, and such results are computed and rendered identically in both runtimes (the Python host runs the binary operations in a context whose exponent range is widened to the library maximum, `±10^18`, so a finite result never overflows and matches the browser's unbounded engine).
 
@@ -2268,22 +2296,26 @@ Returns `1E+1999998` on both runtimes. `decimal_from_string` yields an
 
 **Arithmetic:**
 
+<!-- render_lists:begin signatures-decimal-arithmetic -->
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `decimal_add(a, b)` | `(Decimal, Decimal) → Decimal` | Addition |
-| `decimal_sub(a, b)` | `(Decimal, Decimal) → Decimal` | Subtraction |
-| `decimal_mul(a, b)` | `(Decimal, Decimal) → Decimal` | Multiplication |
-| `decimal_div(a, b)` | `(Decimal, Decimal) → Option<Decimal>` | Division; `None` on division by zero |
-| `decimal_neg(d)` | `(Decimal) → Decimal` | Negation |
-| `decimal_abs(d)` | `(Decimal) → Decimal` | Absolute value |
-| `decimal_round(d, n)` | `(Decimal, Int) → Decimal` | Round to `n` decimal places |
+| `decimal_add(a, b)` | `Decimal, Decimal -> Decimal` | Addition |
+| `decimal_sub(a, b)` | `Decimal, Decimal -> Decimal` | Subtraction |
+| `decimal_mul(a, b)` | `Decimal, Decimal -> Decimal` | Multiplication |
+| `decimal_div(a, b)` | `Decimal, Decimal -> Option<Decimal>` | Division; `None` on division by zero |
+| `decimal_neg(d)` | `Decimal -> Decimal` | Negation |
+| `decimal_abs(d)` | `Decimal -> Decimal` | Absolute value |
+| `decimal_round(d, n)` | `Decimal, Int -> Decimal` | Round to `n` decimal places |
+<!-- render_lists:end signatures-decimal-arithmetic -->
 
 **Comparison:**
 
+<!-- render_lists:begin signatures-decimal-comparison -->
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `decimal_compare(a, b)` | `(Decimal, Decimal) → Ordering` | Returns `Less`, `Equal`, or `Greater` |
-| `decimal_eq(a, b)` | `(Decimal, Decimal) → Bool` | Equality test |
+| `decimal_compare(a, b)` | `Decimal, Decimal -> Ordering` | Returns `Less`, `Equal`, or `Greater` |
+| `decimal_eq(a, b)` | `Decimal, Decimal -> Bool` | Equality test |
+<!-- render_lists:end signatures-decimal-comparison -->
 
 **Example:**
 

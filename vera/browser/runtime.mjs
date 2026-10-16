@@ -328,8 +328,8 @@ function gcShadowPush(value) {
       '#707 browser runtime: $gc_sp / $gc_stack_limit not exported; ' +
       'module was built without GC support — multi-alloc host builders ' +
       '(Map / Set / markdown) cannot root intermediates.  Recompile ' +
-      'with GC enabled (any of map_ops_used / set_ops_used / ' +
-      'decimal_ops_used / md_ops_used / wrap-table-needing types).'
+      'with GC enabled (a module that declares a Map, Set, Decimal or ' +
+      'Markdown import, or a type the wrap table holds, has it).'
     );
   }
   const sp = wasm.gc_sp.value;
@@ -1947,6 +1947,119 @@ function recordStateWasmTypes(bytes) {
   } catch {
     // Leave stateWasmTypes as-is; stateDefaultFor's i32 fallback is safe.
   }
+}
+
+// render_lists:begin host-imports
+// The host imports a module can declare: one row of HOST_IMPORTS in
+// vera/builtins.py each, its name, its family, and how a declared
+// import names an instance of it ("" for none; "k", "v", "kv" or
+// "e" for a Map or Set row named by its key, value or element tag, as
+// `map_insert$ks_vi`; "cell" for a State row named by its cell, as
+// `state_get_Int`).  scripts/render_lists.py writes this block.
+const HOST_IMPORT_ROWS = new Map([
+  ["args", "io", ""],
+  ["exit", "io", ""],
+  ["get_env", "io", ""],
+  ["print", "io", ""],
+  ["read_char", "io", ""],
+  ["read_file", "io", ""],
+  ["read_line", "io", ""],
+  ["sleep", "io", ""],
+  ["stderr", "io", ""],
+  ["time", "io", ""],
+  ["write_file", "io", ""],
+  ["md_extract_code_blocks", "md", ""],
+  ["md_has_code_block", "md", ""],
+  ["md_has_heading", "md", ""],
+  ["md_parse", "md", ""],
+  ["md_render", "md", ""],
+  ["regex_find", "regex", ""],
+  ["regex_find_all", "regex", ""],
+  ["regex_match", "regex", ""],
+  ["regex_replace", "regex", ""],
+  ["map_contains", "map", "k"],
+  ["map_get", "map", "kv"],
+  ["map_insert", "map", "kv"],
+  ["map_keys", "map", "k"],
+  ["map_new", "map", ""],
+  ["map_remove", "map", "k"],
+  ["map_size", "map", ""],
+  ["map_values", "map", "v"],
+  ["set_add", "set", "e"],
+  ["set_contains", "set", "e"],
+  ["set_new", "set", ""],
+  ["set_remove", "set", "e"],
+  ["set_size", "set", ""],
+  ["set_to_array", "set", "e"],
+  ["decimal_abs", "decimal", ""],
+  ["decimal_add", "decimal", ""],
+  ["decimal_compare", "decimal", ""],
+  ["decimal_div", "decimal", ""],
+  ["decimal_eq", "decimal", ""],
+  ["decimal_from_float", "decimal", ""],
+  ["decimal_from_int", "decimal", ""],
+  ["decimal_from_string", "decimal", ""],
+  ["decimal_mul", "decimal", ""],
+  ["decimal_neg", "decimal", ""],
+  ["decimal_round", "decimal", ""],
+  ["decimal_sub", "decimal", ""],
+  ["decimal_to_float", "decimal", ""],
+  ["decimal_to_string", "decimal", ""],
+  ["host_decref_handle", "wrap", ""],
+  ["attach_bucket_to_wrapper", "wrap", ""],
+  ["json_parse", "json", ""],
+  ["json_stringify", "json", ""],
+  ["html_parse", "html", ""],
+  ["html_to_string", "html", ""],
+  ["html_query", "html", ""],
+  ["html_text", "html", ""],
+  ["http_get", "http", ""],
+  ["http_post", "http", ""],
+  ["async_http_get", "async", ""],
+  ["async_http_post", "async", ""],
+  ["async_await", "async", ""],
+  ["inference_complete", "inference", ""],
+  ["db_query", "db", ""],
+  ["db_execute", "db", ""],
+  ["random_int", "random", ""],
+  ["random_float", "random", ""],
+  ["random_bool", "random", ""],
+  ["log", "math", ""],
+  ["log2", "math", ""],
+  ["log10", "math", ""],
+  ["sin", "math", ""],
+  ["cos", "math", ""],
+  ["tan", "math", ""],
+  ["asin", "math", ""],
+  ["acos", "math", ""],
+  ["atan", "math", ""],
+  ["atan2", "math", ""],
+  ["contract_fail", "contract", ""],
+  ["trap", "trap", ""],
+  ["state_get", "state", "cell"],
+  ["state_put", "state", "cell"],
+  ["state_push", "state", "cell"],
+  ["state_pop", "state", "cell"],
+].map(([name, family, instance]) => [name, { name, family, instance }]));
+// render_lists:end host-imports
+
+/**
+ * The registry row a declared import is an instance of, or undefined: the
+ * row's own name, an instance's (`map_insert$ks_vi`), or a State cell's, the
+ * row's name and the cell's type (`state_get_Int`), as `host_import` reads
+ * them in vera/builtins.py.
+ *
+ * @param {string} name A `vera` import's name.
+ */
+function hostImportRow(name) {
+  const row = HOST_IMPORT_ROWS.get(name.split('$')[0]);
+  if (row !== undefined) return row;
+  for (const candidate of HOST_IMPORT_ROWS.values()) {
+    if (candidate.instance === 'cell' && name.startsWith(`${candidate.name}_`)) {
+      return candidate;
+    }
+  }
+  return undefined;
 }
 
 function buildImportObject(module, moduleBytes) {
@@ -4051,6 +4164,22 @@ function buildImportObject(module, moduleBytes) {
       const node = readHtml(ptr);
       return allocString(htmlText(node));
     };
+  }
+
+  // #735: every import the module declares is a row of the built-in
+  // registry, and is bound.
+  for (const name of needed) {
+    const row = hostImportRow(name);
+    if (row === undefined) {
+      throw new Error(
+        `the module imports vera.${name}, which no row of the built-in registry`
+        + ' declares (HOST_IMPORTS in vera/builtins.py)');
+    }
+    if (typeof imports.vera[name] !== 'function') {
+      throw new Error(
+        `the browser runtime binds no vera.${name}, an import of the registry's`
+        + ` ${row.family} row ${row.name}`);
+    }
   }
 
   return imports;

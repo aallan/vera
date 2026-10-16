@@ -239,8 +239,11 @@ class CodeGenerator(
         # own `effect` / `ability` declarations for the rest), so a formal
         # cannot be obligated by the verifier without being visible here.
         self._effect_op_params: dict[tuple[str, str], tuple[str | None, ...]] = {}
-        # Track which effect operations are needed
-        self._io_ops_used: set[str] = set()
+        # #735: the host imports the module's emitted code calls, by import
+        # name (a row's, or an instance's: `map_insert$ks_vi`), each
+        # `WasmContext`'s merged in, which `_declare_host_imports` declares
+        # from the registry's rows.
+        self._host_imports_used: set[str] = set()
         self._needs_contract_fail: bool = False
         # #1479: set (merged from each `WasmContext` at the per-scope seams)
         # when any check calls `vera.trap`, the one signal every named check
@@ -275,23 +278,9 @@ class CodeGenerator(
         # walk having run for the attribute to exist.
         self._unregistrable_state_cells: list[tuple[ast.TypeExpr, str]] = []
         self._unregistrable_exn_tags: list[tuple[ast.TypeExpr, str]] = []
-        self._md_ops_used: set[str] = set()  # Markdown host-import builtins
-        self._regex_ops_used: set[str] = set()  # Regex host-import builtins
-        self._map_ops_used: set[str] = set()  # Map host-import builtins
-        self._map_imports: set[str] = set()  # Map WAT import declarations
-        self._set_ops_used: set[str] = set()  # Set host-import builtins
-        self._set_imports: set[str] = set()  # Set WAT import declarations
-        self._decimal_ops_used: set[str] = set()  # Decimal host-import builtins
-        self._decimal_imports: set[str] = set()  # Decimal WAT import declarations
-        self._json_ops_used: set[str] = set()  # Json host-import builtins
-        self._html_ops_used: set[str] = set()  # Html host-import builtins
-        self._http_ops_used: set[str] = set()  # Http host-import builtins
-        # #841: fused-async host-import builtins (async_http_get /
-        # async_http_post / async_await)
-        self._async_ops_used: set[str] = set()
         # #841: fns declared to return Future<Result<String, String>>,
-        # shared by the _scan_io_ops pre-scan and the WasmContext await
-        # lowering (computed in compile() from the program decls).
+        # read by the WasmContext await lowering (computed in compile()
+        # from the program decls).
         self._future_ret_fns: frozenset[str] = frozenset()
         # #841 round 2: (module path, name) → return TypeExpr for every
         # imported module fn (harvested in modules.py), and the derived
@@ -302,10 +291,6 @@ class CodeGenerator(
         self._future_ret_module_fns: frozenset[
             tuple[tuple[str, ...], str]
         ] = frozenset()
-        self._inference_ops_used: set[str] = set()  # Inference host-import builtins
-        self._db_ops_used: set[str] = set()  # #229 DB host-import builtins
-        self._random_ops_used: set[str] = set()  # Random host-import builtins (#465)
-        self._math_ops_used: set[str] = set()  # Math host-import builtins (#467)
 
         # ADT layout metadata (populated during registration)
         self._adt_layouts: dict[str, dict[str, ConstructorLayout]] = {}
@@ -2473,19 +2458,6 @@ class CodeGenerator(
                 exports=[],
                 diagnostics=self.diagnostics,
                 state_types=[],
-                md_ops_used=set(),
-                regex_ops_used=set(),
-                map_ops_used=set(),
-                set_ops_used=set(),
-                decimal_ops_used=set(),
-                json_ops_used=set(),
-                html_ops_used=set(),
-                http_ops_used=set(),
-                async_ops_used=set(),
-                inference_ops_used=set(),
-                db_ops_used=set(),
-                random_ops_used=set(),
-                math_ops_used=set(),
             )
 
         # Pass 0: hoist non-generic where-helpers to parent-qualified
@@ -2546,10 +2518,10 @@ class CodeGenerator(
         # types resolve through (§8.4.1).
         self._check_entry_module_adt_contention(program)
 
-        # #841: Future<Result<String, String>>-returning fn names — one
-        # derivation feeds both import-emission passes (pre-scan +
-        # WasmContext) so they agree on which awaits need the
-        # fused-handle check.  Derived from the return-type registry
+        # #841: Future<Result<String, String>>-returning fn names — the
+        # one derivation the WasmContext await lowering reads to decide
+        # which awaits need the fused-handle check.  Derived from the
+        # return-type registry
         # (local Pass-1 registrations + the Pass-0 cross-module #628
         # harvest), not the local declarations, so imported and
         # module-qualified calls classify too.  #1109: the registry is
@@ -2852,19 +2824,6 @@ class CodeGenerator(
                 exports=[],
                 diagnostics=self.diagnostics,
                 state_types=list(self._state_types),
-                md_ops_used=set(self._md_ops_used),
-                regex_ops_used=set(self._regex_ops_used),
-                map_ops_used=set(self._map_ops_used),
-                set_ops_used=set(self._set_ops_used),
-                decimal_ops_used=set(self._decimal_ops_used),
-                json_ops_used=set(self._json_ops_used),
-                html_ops_used=set(self._html_ops_used),
-                http_ops_used=set(self._http_ops_used),
-                async_ops_used=set(self._async_ops_used),
-                inference_ops_used=set(self._inference_ops_used),
-                db_ops_used=set(self._db_ops_used),
-                random_ops_used=set(self._random_ops_used),
-                math_ops_used=set(self._math_ops_used),
             )
 
         # Pass 2: compile function bodies
@@ -3365,19 +3324,6 @@ class CodeGenerator(
                 exports=exports,
                 diagnostics=self.diagnostics,
                 state_types=list(self._state_types),
-                md_ops_used=set(self._md_ops_used),
-                regex_ops_used=set(self._regex_ops_used),
-                map_ops_used=set(self._map_ops_used),
-                set_ops_used=set(self._set_ops_used),
-                decimal_ops_used=set(self._decimal_ops_used),
-                json_ops_used=set(self._json_ops_used),
-                html_ops_used=set(self._html_ops_used),
-                http_ops_used=set(self._http_ops_used),
-                async_ops_used=set(self._async_ops_used),
-                inference_ops_used=set(self._inference_ops_used),
-                db_ops_used=set(self._db_ops_used),
-                random_ops_used=set(self._random_ops_used),
-                math_ops_used=set(self._math_ops_used),
             )
 
         fn_param_types = {
@@ -3428,19 +3374,6 @@ class CodeGenerator(
             exports=exports,
             diagnostics=self.diagnostics,
             state_types=list(self._state_types),
-            md_ops_used=set(self._md_ops_used),
-            regex_ops_used=set(self._regex_ops_used),
-            map_ops_used=set(self._map_ops_used),
-            set_ops_used=set(self._set_ops_used),
-            decimal_ops_used=set(self._decimal_ops_used),
-            json_ops_used=set(self._json_ops_used),
-            html_ops_used=set(self._html_ops_used),
-            http_ops_used=set(self._http_ops_used),
-            async_ops_used=set(self._async_ops_used),
-            inference_ops_used=set(self._inference_ops_used),
-            db_ops_used=set(self._db_ops_used),
-            random_ops_used=set(self._random_ops_used),
-            math_ops_used=set(self._math_ops_used),
             fn_param_types=fn_param_types,
             fn_param_nat=fn_param_nat,
             fn_param_byte=fn_param_byte,

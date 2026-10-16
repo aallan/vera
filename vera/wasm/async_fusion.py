@@ -16,13 +16,12 @@ checker's W002 whitelist: any expression W002 warns about contains an
 effectful call, so a warned ``async`` can never be fused — the warning
 "evaluates eagerly" is never false.
 
-Import emission is decided twice — by the ``_scan_io_ops`` pre-scan in
-``vera/codegen/compilability.py`` and by the ``WasmContext`` translation
-in ``vera/wasm/calls_markup.py`` — and merged at module assembly.  Both
-passes MUST agree on which calls fuse, or a fused call site references an
-import the pre-scan suppressed (WAT compile error) / the pre-scan emits a
-sync import the translation never calls.  These predicates are that
-single source of truth; do not re-derive the conditions inline.
+Import emission is decided once, by the ``WasmContext`` translation in
+``vera/wasm/calls_markup.py``, which registers the import each fused call
+or checked await calls (#735).  The ``_scan_io_ops`` walk in
+``vera/codegen/compilability.py`` registers none, and walks a fused call
+as the translation lowers it.  These predicates are the single source of
+truth for both; do not re-derive the conditions inline.
 """
 
 from __future__ import annotations
@@ -227,8 +226,7 @@ def compute_future_ret_fns(
     local-declarations-only scan missed cross-module futures and the
     await lowered to identity).  Computed once per program in
     ``vera/codegen/core.py`` after Pass 0/1 registration and consumed
-    by both import-emission passes (the ``_scan_io_ops`` pre-scan and
-    the ``WasmContext`` await lowering) so the two agree on which
+    by the ``WasmContext`` await lowering, which decides from it which
     directly-awaited call results need the fused-handle runtime check.
     The match resolves type aliases transitively (#1109) — a helper
     declared ``-> @MyFut`` with

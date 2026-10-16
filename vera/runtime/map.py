@@ -277,7 +277,8 @@ def register_map(linker: wasmtime.Linker, ops_used: set[str]) -> None:
         )
 
     # Register type-specific imports based on what the WAT uses.
-    # Parse the import names from map_ops_used to determine types.
+    # Parse the module's map imports, the names the binding table hands
+    # this binder, to determine types.
     for op_name in ops_used:
         if op_name.startswith("map_insert$"):
             # e.g. "map_insert$ki_vi"

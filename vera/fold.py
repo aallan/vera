@@ -37,6 +37,13 @@ module takes the choice away:
   ``TypeEnv.resolve_slot_binding`` does: the ``n``-th most recent binder
   whose name is ``T``.
 
+- **The context walk.**  :func:`contexts` yields every node with the
+  context a consumer's step gives it, a parameterised walk for the passes
+  whose context is not a scope (a verifier walk's path facts and slot
+  environment).  The step chooses each child's context, lazily, after the
+  previous child's subtree, and never the children: the walk refuses a step
+  that leaves one out.
+
 What a consumer may do: read nodes, keep them, compare them by identity, and
 build its own results from them.  What it may not: mutate the AST (nodes are
 frozen and the fold builds none), or ask the fold about types.  The fold is
@@ -55,7 +62,7 @@ import inspect
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, fields
 from types import MappingProxyType
-from typing import TypeVar
+from typing import Generic, TypeVar
 
 from vera import ast
 from vera.binders import BINDER_FIELDS
@@ -502,6 +509,77 @@ def scoped(root: object, namer: Namer,
         node, here, pending = stack.pop()
         yield node, here
         stack.extend(reversed(_scoped_children(node, here, pending, namer)))
+
+
+# =====================================================================
+# The context walk
+# =====================================================================
+
+C = TypeVar("C")
+
+#: A context walk's step: *node*'s children, each with the context it is
+#: evaluated in, or ``None`` when each is evaluated in *node*'s own.
+Step = Callable[[ast.Node, C], "Iterable[tuple[ast.Node, C]] | None"]
+
+
+class _Frame(Generic[C]):
+    """A node on the context walk's stack: the pairs its step gives, and
+    the children those must be, in order."""
+
+    __slots__ = ("node", "kids", "pairs", "given")
+
+    def __init__(self, node: ast.Node, ctx: C, step: Step[C]) -> None:
+        self.node = node
+        self.kids = children(node)
+        pairs = step(node, ctx)
+        self.pairs: Iterator[tuple[ast.Node, C]] = iter(
+            ((kid, ctx) for kid in self.kids) if pairs is None else pairs)
+        self.given = 0
+
+    def refusal(self, why: str) -> TypeError:
+        return TypeError(
+            f"vera.fold.contexts: the step for {type(self.node).__name__} "
+            f"{why}; a step gives the children `children()` yields, each "
+            f"once, in that order")
+
+
+def contexts(root: ast.Node, step: Step[C],
+             ctx: C) -> Iterator[tuple[ast.Node, C]]:
+    """Every node under *root*, pre-order as :func:`walk` visits them, with
+    the context it is evaluated in.
+
+    *ctx* is the context at *root*.  ``step(node, ctx)`` gives *node*'s
+    children with the context each is evaluated in, or ``None`` when each is
+    evaluated in *ctx*.  The walk iterates a step lazily: it asks for the
+    next child only once the previous child's subtree has been yielded, so a
+    step that derives a child's context from what is evaluated before it (a
+    condition, a binding, an assumption) runs in the order a recursive walk
+    runs it, interleaved with whatever the consumer does at each node it is
+    handed.
+
+    A step chooses contexts, never children: it gives exactly the children
+    :func:`children` yields, each once, in that order, or the walk raises
+    `TypeError` at the first one out of place, so no walk built on this one
+    can leave a child out."""
+    yield root, ctx
+    stack = [_Frame(root, ctx, step)]
+    while stack:
+        frame = stack[-1]
+        try:
+            child, child_ctx = next(frame.pairs)
+        except StopIteration:
+            if frame.given != len(frame.kids):
+                raise frame.refusal(
+                    f"gave {frame.given} of its {len(frame.kids)} "
+                    f"children") from None
+            stack.pop()
+            continue
+        if frame.given >= len(frame.kids) or child is not frame.kids[frame.given]:
+            raise frame.refusal(
+                f"gave {type(child).__name__} where child {frame.given} is due")
+        frame.given += 1
+        yield child, child_ctx
+        stack.append(_Frame(child, child_ctx, step))
 
 
 _check_order()
