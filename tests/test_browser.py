@@ -288,6 +288,7 @@ def _parity_stdout(src: str, tmp_path: Path, name: str = "parity") -> str:
 # Excludes:
 #   - io_operations: uses IO.read_line interactively
 #   - file_io: uses IO.read_file/write_file (browser returns Result.Err)
+#   - copy_bytes: uses IO.read_bytes/write_bytes (browser returns Result.Err)
 #   - database: uses DB.query/DB.execute (browser returns Result.Err)
 #   - sqlitedb: uses DB.query on an on-disk file (browser returns Result.Err)
 #   - modules: depends on imports (doesn't compile standalone)

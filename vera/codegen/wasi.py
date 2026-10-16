@@ -21,8 +21,9 @@ Topology (from the #237 design study, adapted — see PR notes):
 
     MAIN     — the ordinary Vera core module, post-processed textually:
                each ``(import "vera" "op" ...)`` becomes a same-named
-               ``call_indirect`` shim through a 16-slot (cli) / 32-slot
-               (server) funcref dispatch table that MAIN itself defines
+               ``call_indirect`` shim through a funcref dispatch table,
+               one entry past the highest slot of ``_OPS`` (cli) or of
+               32 entries (server), that MAIN itself defines
                and exports (defined after the closure table, so closure
                call sites keep table 0); plus a GC-exempt scratch arena,
                ``cabi_realloc``, and (cli world) the ``__wasi_run``
@@ -218,6 +219,23 @@ _OPS: dict[str, _OpSpec] = {
         ("io/error", "io/streams", "cli/stderr"),
         ("get-stderr", "bwf"), ("error",),
     ),
+    # #1711: a file's bytes, through read_file's and write_file's adapter
+    # bodies, which move the bytes as they are.  Past the server world's
+    # map ops (16..25), with which these slots share one index space.
+    "read_bytes": _op(
+        26, "i32 i32", "i32",
+        ("io/error", "io/streams", "filesystem/types",
+         "filesystem/preopens"),
+        ("get-directories", "open-at", "read-via", "bread", "err-dbg"),
+        ("error", "istream", "desc"), needs_alloc=True,
+    ),
+    "write_bytes": _op(
+        27, "i32 i32 i32 i32", "i32",
+        ("io/error", "io/streams", "filesystem/types",
+         "filesystem/preopens"),
+        ("get-directories", "open-at", "write-via", "bwf", "err-dbg"),
+        ("error", "ostream", "desc"), needs_alloc=True,
+    ),
 }
 
 #: The core module the adapter's functions live in.  A component trap's
@@ -234,6 +252,12 @@ TRAP_KIND_FUNCTION_PREFIX = "trap_kind_"
 #: The ops whose adapter implementation writes to stderr, and so needs the
 #: cached stderr handle and the chunked write loop.
 _STDERR_WRITERS = frozenset({"stderr", "contract_fail", "trap"})
+
+#: The ops that reach a file through the first preopened directory, and so
+#: need the cached preopen descriptor and the filesystem error names; and
+#: the two of them that write one.
+_FS_OPS = frozenset({"read_file", "write_file", "read_bytes", "write_bytes"})
+_FS_WRITERS = frozenset({"write_file", "write_bytes"})
 
 #: Entries the cli world's dispatch table holds — one past the highest slot
 #: in :data:`_OPS`, and the same number the core module imports.  Derived
@@ -737,14 +761,14 @@ def _build_statics(
     pointer past it, so statics are immortal and GC-exempt — ``Err``
     ADTs reference them directly with no copy.
     """
-    fs = bool(used & {"read_file", "write_file"})
+    fs = bool(used & _FS_OPS)
     msgs: dict[str, str] = {}
     if "read_char" in used:
         msgs["eof"] = "EOF"
     if fs:
         msgs["nopre"] = "no preopened directories"
         msgs["unk"] = "unknown filesystem error"
-    if "write_file" in used:
+    if used & _FS_WRITERS:
         msgs["closed"] = "stream closed"
 
     cursor = arena_base + _SLAB_SIZE
@@ -1101,7 +1125,7 @@ def _adapter_fields(used: set[str], lay: _Layout) -> list[str]:
         fields.append("  (global $stderr_h (mut i32) (i32.const -1))")
     if used & {"read_line", "read_char"}:
         fields.append("  (global $stdin_h (mut i32) (i32.const -1))")
-    if used & {"read_file", "write_file"}:
+    if used & _FS_OPS:
         # -2 = not yet fetched; -1 = fetched, no preopens.  The fetched
         # descriptor is cached for the process lifetime — get-directories
         # returns a fresh OWNED descriptor per call, so re-fetching per
@@ -1189,9 +1213,9 @@ _BYTES_EQ_FN = (
 def _helper_funcs(used: set[str], lay: _Layout) -> list[str]:
     """Shared adapter helpers, gated by the ops that need them."""
     out: list[str] = []
-    fs = bool(used & {"read_file", "write_file"})
+    fs = bool(used & _FS_OPS)
     needs_arena_reset = bool(used & _ALLOC_OPS)
-    needs_write = bool(used & (_STDERR_WRITERS | {"print", "write_file"}))
+    needs_write = bool(used & (_STDERR_WRITERS | _FS_WRITERS | {"print"}))
 
     if needs_arena_reset:
         out.append(
@@ -2206,13 +2230,17 @@ def _op_read_char(lay: _Layout) -> str:
     )
 
 
-def _op_read_file(lay: _Layout) -> str:
+def _op_read_file(lay: _Layout, name: str = "read_file") -> str:
+    """The adapter's read of a file whole: its bytes as they are, the `Ok`
+    payload of `IO.read_file` and, under *name* ``read_bytes``, of
+    `IO.read_bytes` (a `String` and an `Array<Byte>` lay their bytes out
+    alike)."""
     nopre_ptr, nopre_len = lay.statics["nopre"]
     op = lay.slab("open")
     st = lay.slab("stream")
     rd = lay.slab("read")
     return (
-        "  (func $op_read_file (param $pp i32) (param $pl i32) "
+        f"  (func $op_{name} (param $pp i32) (param $pl i32) "
         "(result i32)\n"
         "    (local $dfd i32)\n"
         "    (local $fd i32)\n"
@@ -2401,14 +2429,17 @@ def _op_read_file(lay: _Layout) -> str:
     )
 
 
-def _op_write_file(lay: _Layout) -> str:
+def _op_write_file(lay: _Layout, name: str = "write_file") -> str:
+    """The adapter's write of a file whole from the bytes of its data, as
+    they are: `IO.write_file`'s string and, under *name* ``write_bytes``,
+    `IO.write_bytes`'s array."""
     nopre_ptr, nopre_len = lay.statics["nopre"]
     closed_ptr, closed_len = lay.statics["closed"]
     op = lay.slab("open")
     st = lay.slab("stream")
     bwf = lay.slab("bwf")
     return (
-        "  (func $op_write_file (param $pp i32) (param $pl i32) "
+        f"  (func $op_{name} (param $pp i32) (param $pl i32) "
         "(param $dp i32) (param $dl i32) (result i32)\n"
         "    (local $dfd i32)\n"
         "    (local $fd i32)\n"
@@ -2565,6 +2596,8 @@ _OP_EMITTERS: dict[str, Callable[[_Layout], str]] = {
     "random_bool": _op_random_bool,
     "contract_fail": _op_contract_fail,
     "trap": _op_trap,
+    "read_bytes": lambda lay: _op_read_file(lay, "read_bytes"),
+    "write_bytes": lambda lay: _op_write_file(lay, "write_bytes"),
 }
 
 
@@ -2846,6 +2879,10 @@ _SERVER_REJECTED_OPS: dict[str, str] = {
                  " wasmtime serve proxy world)",
     "write_file": "IO.write_file (wasi:filesystem is not in the"
                   " wasmtime serve proxy world)",
+    "read_bytes": "IO.read_bytes (wasi:filesystem is not in the"
+                  " wasmtime serve proxy world)",
+    "write_bytes": "IO.write_bytes (wasi:filesystem is not in the"
+                   " wasmtime serve proxy world)",
     "args": "IO.args (wasi:cli/environment is not in the wasmtime"
             " serve proxy world)",
     "get_env": "IO.get_env (wasi:cli/environment is not in the"

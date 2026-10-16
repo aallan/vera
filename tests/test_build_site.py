@@ -856,3 +856,19 @@ class TestImplementationStatusAppendix:
         for h in headings:
             assert "\\" not in h, f"backslash in a generated path: {h!r}"
             assert h.startswith("## [spec/"), h
+
+
+# ---------------------------------------------------------------------------
+# The landing page's counts
+# ---------------------------------------------------------------------------
+
+def test_the_status_line_counts_the_registry_built_ins():
+    """The Markdown landing page states as many built-in functions as the
+    built-in registry holds (the records `vera builtins` lists), as it
+    states the conformance and example counts it computes, rather than a
+    number written into its template."""
+    from vera.builtins import BUILTINS
+
+    status = next(line for line in _mod.build_index_md().splitlines()
+                  if line.startswith("Vera is under"))
+    assert f"A complete compiler with {len(BUILTINS)} built-in functions" in status

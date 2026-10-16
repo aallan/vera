@@ -940,6 +940,32 @@ def _alloc_result_ok_string(
         _write_i32(caller, adt_ptr + 8, str_len)
     return adt_ptr
 
+def _alloc_result_ok_bytes(
+    caller: wasmtime.Caller, data: bytes,
+) -> int:
+    """Allocate Result.Ok(Array<Byte>) on the WASM heap; returns ADT ptr.
+
+    An ``Array<Byte>`` is a (ptr, len) pair over one-byte cells, the
+    layout generated code reads, so *data* is written as it is, in one
+    copy; the empty array is ``(0, 0)``.  The ADT is a ``Result<String,
+    String>``'s: tag at +0, ptr at +4, len at +8 (#1711).
+    """
+    length = len(data)
+    arr_ptr = 0
+    if length:
+        arr_ptr = _call_alloc(caller, length)
+        _write_bytes(caller, arr_ptr, data)
+    # GC-rooting: ``arr_ptr`` lives only in this Python local across the
+    # struct ``_call_alloc``; root it, as _alloc_result_ok_string does.
+    with _ShadowGuard(caller) as guard:
+        if arr_ptr != 0:
+            guard.push(arr_ptr)
+        adt_ptr = _call_alloc(caller, 12)
+        _write_i32(caller, adt_ptr, 0)       # tag = Ok
+        _write_i32(caller, adt_ptr + 4, arr_ptr)
+        _write_i32(caller, adt_ptr + 8, length)
+    return adt_ptr
+
 def _alloc_result_err_string(
     caller: wasmtime.Caller, s: str,
 ) -> int:

@@ -126,6 +126,8 @@ class InferenceMixin:
         "read_line": "i32_pair",
         "read_file": "i32",
         "write_file": "i32",
+        "read_bytes": "i32",   # Result<Array<Byte>, String> pointer (#1711)
+        "write_bytes": "i32",  # Result<Unit, String> pointer (#1711)
         "args": "i32_pair",
         "exit": None,
         "get_env": "i32",
@@ -238,9 +240,14 @@ class InferenceMixin:
         if expr.name in (
             "parse_nat", "parse_int", "parse_float64", "parse_bool",
             "base64_decode", "url_decode",
+            "base64_decode_bytes", "bytes_to_string",
         ):
             return "i32"
-        if expr.name in ("base64_encode", "url_encode", "url_join"):
+        if expr.name in ("base64_encode", "url_encode", "url_join",
+                         "base64_encode_bytes"):
+            return "i32_pair"
+        # string_to_bytes → Array<Byte> (i32_pair) (#1711)
+        if expr.name == "string_to_bytes":
             return "i32_pair"
         if expr.name == "url_parse":
             return "i32"

@@ -1,0 +1,67 @@
+-- Copy a file by its bytes: write every byte value to a file, copy that
+-- file to another with IO.read_bytes and IO.write_bytes, and read the copy
+-- back to compare it with what was written.  No byte is decoded, replaced
+-- or translated on the way.
+--
+-- Run:  vera run examples/copy_bytes.vera
+
+private fn to_byte(@Int -> @Option<Byte>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  int_to_byte(@Int.0)
+}
+
+private fn every_byte(@Unit -> @Array<Byte>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_fold(array_range(0, 256), [], fn(@Array<Byte>, @Int -> @Array<Byte>) effects(pure) { match to_byte(@Int.0) { Some(@Byte) -> array_append(@Array<Byte>.0, @Byte.0), None -> @Array<Byte>.0 } })
+}
+
+private fn same_bytes(@Array<Byte>, @Array<Byte> -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_length(@Array<Byte>.0) == array_length(@Array<Byte>.1) && array_all(array_mapi(@Array<Byte>.0, fn(@Byte, @Nat -> @Bool) effects(pure) { byte_to_int(@Byte.0) == byte_to_int(@Array<Byte>.1[@Nat.0]) }), fn(@Bool -> @Bool) effects(pure) { @Bool.0 })
+}
+
+private fn copy_file(@String, @String -> @Result<Int, String>)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  match IO.read_bytes(@String.1) {
+    Ok(@Array<Byte>) -> match IO.write_bytes(@String.0, @Array<Byte>.0) {
+      Ok(_) -> Ok(array_length(@Array<Byte>.0)),
+      Err(@String) -> Err(@String.0)
+    },
+    Err(@String) -> Err(@String.0)
+  }
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  let @Array<Byte> = every_byte(());
+  match IO.write_bytes("original.bin", @Array<Byte>.0) {
+    Err(@String) -> IO.print(string_concat("could not write original.bin: ", @String.0)),
+    Ok(_) -> match copy_file("original.bin", "copy.bin") {
+      Err(@String) -> IO.print(string_concat("could not copy original.bin: ", @String.0)),
+      Ok(@Int) -> match IO.read_bytes("copy.bin") {
+        Err(@String) -> IO.print(string_concat("could not read copy.bin: ", @String.0)),
+        Ok(@Array<Byte>) -> if same_bytes(@Array<Byte>.0, @Array<Byte>.1) then {
+          IO.print(string_concat(string_concat("copied ", int_to_string(@Int.0)), " bytes, identical\n"))
+        } else {
+          IO.print("the copy differs from the original\n")
+        }
+      }
+    }
+  };
+  ()
+}
