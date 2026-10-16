@@ -48,13 +48,13 @@ PYPROJECT = ROOT / "pyproject.toml"
 # removed test method reds this assertion by name, not just by count.
 _EXPECTED_RECLAMATION_TESTS = [
     "test_map_chain_reclaims_transients",
-    "test_json_object_map_bucket_path_at_scale",
+    "test_json_object_maps_round_trip_at_scale",
     "test_map_value_lookup_after_gc_pressure",
     "test_set_chain_reclaims_transients",
     "test_set_value_correct_after_gc_pressure",
     "test_decimal_chain_reclaims_transients",
-    "test_json_only_module_includes_wrap_table",
-    "test_html_only_module_includes_wrap_table",
+    "test_json_only_module_carries_no_wrap_table",
+    "test_html_only_module_carries_no_wrap_table",
     "test_register_wrapper_has_compaction_slow_path",
     "test_decimal_value_correct_after_gc_pressure",
 ]

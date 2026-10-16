@@ -801,6 +801,44 @@ def test_repro_json_parse_builds_a_10000_member_object(host: str, tmp_path: Path
     assert out == "10000 127781\n"
 
 
+_HTML_ATTRIBUTES = """\
+private fn show(@HtmlNode -> @String)
+  requires(true) ensures(true) effects(pure)
+{
+  match @HtmlNode.0 {
+    HtmlElement(@String, @Map<String, String>, @Array<HtmlNode>) -> string_concat(string_join(map_keys(@Map<String, String>.0), ","), string_concat(" ", string_concat(string_join(map_values(@Map<String, String>.0), ","), string_concat(" ", html_to_string(@HtmlNode.0))))),
+    HtmlText(@String) -> "text",
+    HtmlComment(@String) -> "comment"
+  }
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Map<String, String> = map_insert(map_insert(map_insert(map_new(), "z", "1"), "a", "2"), "m", "3");
+  let @Map<String, String> = map_new();
+  let @HtmlNode = HtmlElement("div", @Map<String, String>.0, [HtmlElement("p", @Map<String, String>.1, [HtmlText("x")])]);
+  IO.print(string_join(array_map(html_query(@HtmlNode.0, "p"), fn(@HtmlNode -> @String) effects(pure) { show(@HtmlNode.0) }), ";"));
+  IO.print("\\n")
+}
+"""
+
+
+@pytest.mark.parametrize("host", ["native", "browser"])
+def test_html_attributes_keep_their_order(host: str, tmp_path: Path) -> None:
+    """`html_query` reads its node's attributes through `map_keys$ks` and
+    `map_values$vs` and builds each match's with `map_from_arrays$ks_vs`;
+    the match reads back every attribute, in the order it was inserted,
+    and so does `html_to_string`.  The program builds its element rather
+    than parsing one, because the Node harness has no `DOMParser`, and the
+    browser's builder (`allocMapOf`) has no caller but `html_parse` and
+    `html_query`, so no other test reaches it."""
+    if host == "browser" and not _HAS_NODE:
+        pytest.skip("Node.js with --experimental-wasm-exnref is not available")
+    out = HOSTS[host](_compiled(_HTML_ATTRIBUTES), tmp_path)
+    assert out == 'z,a,m 1,2,3 <p z="1" a="2" m="3">x</p>\n'
+
+
 # =====================================================================
 # The server world: the same transcripts as a request handler's body
 # =====================================================================

@@ -1,7 +1,8 @@
 """WASM heap marshalling helpers for the Vera runtime.
 
 Memory read/write, shadow-stack GC rooting, wrapper-ADT handle tagging,
-the Map/Set bucket codec, and Result/Option/Array allocation -- all
+building and reading a map through the module's own exports, and
+Result/Option/Array allocation -- all
 parameterised by the `wasmtime.Caller` (memory is reached via
 `caller["memory"]` / `caller["alloc"]`), so they are plain module-level
 functions.  Extracted from `execute()` in `vera/codegen/api.py` (#421).
@@ -190,8 +191,7 @@ def _read_i32_at(caller: wasmtime.Caller, offset: int) -> int:
     Module-factory-level counterpart to ``_write_i32`` (line ~944).
     A nested ``_read_i32`` exists later inside the decimal closures;
     this version is shared by all module-level helpers that need
-    to inspect linear memory (e.g. the bucket-array
-    helpers added below for #695/#705).
+    to inspect linear memory (e.g. ``_map_items`` below).
 
     Bounds-checked via :func:`_require_readable` before the raw slice
     (#1442) — see there for why the check cannot live in the ctypes read.

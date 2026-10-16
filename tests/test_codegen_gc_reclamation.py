@@ -224,10 +224,11 @@ class TestHostHandleReclamation573:
 
     Covers:
 
-    * **chain reclaims transients** — a 1K/10K-iter ``array_fold``
-      chain keeps only the final Map / Set reachable; ``peak_heap_bytes``
-      grows ~O(N) (a leak would grow ~O(N^2)).  The Decimal chain still
-      asserts a bounded host-store residual.
+    * **chain reclaims transients** — a 1K/100K-step ``array_fold``
+      chain over a fixed live set of 64 keys keeps only the final Map /
+      Set reachable; ``peak_heap_bytes`` grows far less than the steps
+      (a leak grows with them).  The Decimal chain still asserts a
+      bounded host-store residual.
     * **value correct after pressure** — repeated lookups against the
       live final value across heavy GC cadence prove reclamation never
       evicts live entries.
@@ -241,13 +242,13 @@ class TestHostHandleReclamation573:
     """
 
     def test_map_chain_reclaims_transients(self) -> None:
-        """A long ``array_fold`` over ``map_insert`` keeps only the final
-        Map reachable; every transient path copy is reclaimed by ordinary
-        mark-sweep (no Python store to evict).
+        """A long ``array_fold`` of ``map_insert`` into 64 keys keeps
+        only the final Map reachable; every transient path copy is
+        reclaimed by ordinary mark-sweep (no Python store to evict).
 
-        Measured via ``peak_heap_bytes`` (the bump high-water mark): with
-        reclamation the heap grows ~O(N) across the chain (≈6x for 10x
-        the inserts); a leak would grow ~O(N^2) (≈100x).
+        Measured via ``peak_heap_bytes`` (the bump high-water mark): over
+        1,000 and 100,000 inserts it grows 13x with reclamation and 73x
+        without (the allocator's ``call $gc_collect`` removed).
         """
         def chain(n: int) -> str:
             return f"""
@@ -259,18 +260,18 @@ public fn main(@Unit -> @Int)
     array_range(1, {n + 1}),
     @Map<Int, Int>.0,
     fn(@Map<Int, Int>, @Int -> @Map<Int, Int>) effects(pure) {{
-      map_insert(@Map<Int, Int>.0, @Int.0, @Int.0)
+      map_insert(@Map<Int, Int>.0, @Int.0 % 64, @Int.0)
     }}
   );
-  match map_get(@Map<Int, Int>.0, {n // 2}) {{
+  match map_get(@Map<Int, Int>.0, 0) {{
     Some(@Int) -> @Int.0,
     None -> -1
   }}
 }}
 """
-        _assert_chain_reclaims(chain, 1000, 10000, 500, 5000)
+        _assert_chain_reclaims(chain, 1000, 100000, 960, 99968)
 
-    def test_json_object_map_bucket_path_at_scale(self) -> None:
+    def test_json_object_maps_round_trip_at_scale(self) -> None:
         """JSON's internal ``Map<String, Json>`` for each JObject is the
         module's own map, which the host builds through the exported
         ``map_from_arrays$ks_vb`` (#1676).  Parse 5 000 transient JObjects
@@ -284,12 +285,11 @@ public fn main(@Unit -> @Int)
         reclamation failure grows the heap only ~O(N) — the same order as
         the live ``array_range(0, N)`` input array — and a
         ``peak_heap_bytes`` ratio cannot separate the two (that signal
-        needs healthy O(N) vs leaked O(N^2), which holds for the Map/Set
-        chains above but never for constant-size transients).  Reclamation
-        of these JObject maps is covered there — the chains leak O(N^2)
-        through the same path-copying insert — and
-        their value reachability by ``TestMapHostStoreGCReachability695``
-        under ``VERA_EAGER_GC=1``.
+        needs a live set that stays fixed while the steps grow, which the
+        Map/Set chains here hold).  Reclamation of these JObject maps is
+        covered there — ``map_from_arrays`` builds them with the same
+        path-copying insert — and their value reachability by
+        ``TestMapHostStoreGCReachability695`` under ``VERA_EAGER_GC=1``.
         """
         src = """
 public fn main(@Unit -> @Int)
@@ -355,10 +355,12 @@ public fn main(@Unit -> @Int)
         assert _run(src) == 6993
 
     def test_set_chain_reclaims_transients(self) -> None:
-        """#706: a long ``array_fold`` over ``set_add`` keeps only the
-        final Set reachable; transients are reclaimed by mark-sweep.
+        """#706: a long ``array_fold`` of ``set_add`` and ``set_remove``
+        that holds a window of 64 elements keeps only the final Set
+        reachable; transients are reclaimed by mark-sweep.
 
-        Same ``peak_heap_bytes`` ~O(N) signal as the Map chain.
+        The Map chain's ``peak_heap_bytes`` signal: over 1,000 and 100,000
+        steps it grows 14x with reclamation and 85x without.
         """
         def chain(n: int) -> str:
             return f"""
@@ -370,13 +372,13 @@ public fn main(@Unit -> @Int)
     array_range(1, {n + 1}),
     @Set<Int>.0,
     fn(@Set<Int>, @Int -> @Set<Int>) effects(pure) {{
-      set_add(@Set<Int>.0, @Int.0)
+      set_remove(set_add(@Set<Int>.0, @Int.0), @Int.0 - 64)
     }}
   );
-  if set_contains(@Set<Int>.0, {n // 2}) then {{ 1 }} else {{ 0 }}
+  set_size(@Set<Int>.0)
 }}
 """
-        _assert_chain_reclaims(chain, 1000, 10000, 1, 1)
+        _assert_chain_reclaims(chain, 1000, 100000, 64, 64)
 
     def test_set_value_correct_after_gc_pressure(self) -> None:
         """Functional integrity for Set under GC pressure.

@@ -19,8 +19,10 @@
 -- remain reachable across the inner ``set_new`` alloc.
 --
 -- Post-fix invariant: all four tests return 0.  Any non-zero
--- result indicates the bucket-array mirror or shadow-rooting is
--- not functioning correctly.
+-- result indicates a value the map or set holds is unreachable by
+-- the scan, or the shadow-rooting is not functioning correctly.
+-- Since #1676 the map or set is the module's own trie, and the scan
+-- reaches its values through its branches and entries.
 -- ================================================================
 -- ================================================================
 -- test_map_string_json_user_level
@@ -80,9 +82,9 @@ public fn test_set_of_json_user_level(@Unit -> @Int)
 
 -- ================================================================
 -- test_map_chain_construction
--- Exercises chained map_insert calls to make sure intermediate
--- wrappers have their bucket arrays correctly populated when
--- passed to the next insert.  Builds a Map<String, Int> with
+-- Exercises chained map_insert calls to make sure each
+-- intermediate map holds its entries when passed to the next
+-- insert.  Builds a Map<String, Int> with
 -- 3 entries and verifies map_size returns 3.
 -- ================================================================
 public fn test_map_chain_construction(@Unit -> @Int)
@@ -100,9 +102,9 @@ public fn test_map_chain_construction(@Unit -> @Int)
 
 -- ================================================================
 -- test_set_chain_construction
--- Exercises chained set_add calls to confirm that intermediate
--- Set<String> wrappers have their bucket arrays populated
--- correctly before each subsequent add.  Adds 3 distinct elements
+-- Exercises chained set_add calls to confirm that each
+-- intermediate Set<String> holds its elements before each
+-- subsequent add.  Adds 3 distinct elements
 -- and verifies set_size returns 3.
 -- ================================================================
 public fn test_set_chain_construction(@Unit -> @Int)

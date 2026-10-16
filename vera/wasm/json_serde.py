@@ -298,7 +298,7 @@ def write_json(
 
     *guard* is a ``_ShadowGuard`` (defined in
     ``vera.codegen.api``).  Intermediate WASM heap pointers
-    (string body, array backing, map wrapper) are pushed onto
+    (string body, array backing, map) are pushed onto
     its shadow-stack window before any subsequent alloc that
     could trigger ``$gc_collect``.  See #692 + the analogous
     notes in ``html_serde.write_html`` for the bug class.
@@ -398,11 +398,11 @@ def write_json(
                 alloc_string, map_alloc, guard, v,
             )
             write_i32(caller, vals_ptr + 4 * i, val_ptr)
-        wrapper_ptr = map_alloc(caller, keys_ptr, vals_ptr, count)
-        guard.push(wrapper_ptr)
+        map_ptr = map_alloc(caller, keys_ptr, vals_ptr, count)
+        guard.push(map_ptr)
         ptr = alloc(caller, 8)
         write_i32(caller, ptr, _TAG_JOBJECT)
-        write_i32(caller, ptr + 4, wrapper_ptr)
+        write_i32(caller, ptr + 4, map_ptr)
         return ptr
 
     # Fallback: treat as string
@@ -424,9 +424,9 @@ def read_json(
 
     Returns: None, bool, float, str, list, or dict.
 
-    #706: ``decode_jobject(caller, wrapper_ptr)`` decodes a JObject's
-    ``Map<String, Json>`` from its bucket-as-truth wrapper (there is no
-    ``_map_store`` to look up by handle anymore).
+    ``decode_jobject(caller, map_ptr)`` reads a JObject's
+    ``Map<String, Json>``, in the map's order, through the module's
+    ``map_keys$ks`` and ``map_values$vb`` exports (#1676).
     """
     tag = read_i32(caller, ptr)
 
@@ -457,12 +457,10 @@ def read_json(
         return items
 
     if tag == _TAG_JOBJECT:
-        # #706: JObject's i32 field at offset 4 is a Map wrapper
-        # pointer whose bucket IS the map (bucket-as-truth).  Decode
-        # the ``Map<String, Json>`` directly from the bucket — the
-        # values are i32 Json heap pointers.
-        wrapper_ptr = read_i32(caller, ptr + 4)
-        raw_map = decode_jobject(caller, wrapper_ptr)
+        # JObject's i32 field at offset 4 is its ``Map<String, Json>``;
+        # the values are i32 Json heap pointers.
+        map_ptr = read_i32(caller, ptr + 4)
+        raw_map = decode_jobject(caller, map_ptr)
         obj: dict[str, Any] = {}
         for k, v in raw_map.items():
             obj[str(k)] = read_json(

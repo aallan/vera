@@ -237,9 +237,9 @@ class ExecuteResult:
     http_response: dict[str, object] | None = None
     # #706: the exported ``$heap_ptr`` bump frontier (monotonic
     # high-water mark of bytes ever allocated) read after the program
-    # returns.  Map / Set are now bucket-as-truth — their transient
-    # wrappers + buckets are plain heap objects reclaimed by the
-    # mark-sweep GC rather than evicted from a Python store, so the
+    # returns.  A Map or Set is a trie in the module's heap (#1676):
+    # its transient branches and entries are plain heap objects
+    # reclaimed by the mark-sweep GC, so the
     # reclamation tests assert this stays bounded as N scales (a
     # working free-list plateaus heap_ptr; a leak grows it linearly).
     # 0 for modules compiled without the GC runtime.
@@ -1171,7 +1171,7 @@ def execute(
         """Read the exported ``$heap_ptr`` global (bump high-water mark).
 
         #706: the GC heap stat the reclamation tests use to confirm
-        transient Map / Set wrappers + buckets are reclaimed.  Returns 0
+        transient Map / Set blocks are reclaimed.  Returns 0
         for modules compiled without the GC runtime (no ``heap_ptr``
         export).
         """

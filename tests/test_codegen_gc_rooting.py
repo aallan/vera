@@ -705,20 +705,21 @@ class TestMapHostStoreGCReachability695:
     next-pointer overwriting the freed block's first word, which
     ``json_array_length`` then read as a length.
 
-    Post-fix (#706 bucket-as-truth): every Map / Set wrapper carries a
-    ``bucket_ptr`` at body offset +8 pointing to a WASM-resident bucket
-    that IS the map / set — there is no ``_map_store`` / ``_set_store``
-    anymore.  The conservative scan reaches the values via shadow stack
-    → wrapper → bucket → val_ptr, so a ``Json`` value held only inside a
-    Set or JObject stays reachable across the synchronous host call.
+    #706 made a WASM-resident bucket the map or set, and #1676 made the
+    map or set the module's own trie: there is no ``_map_store`` /
+    ``_set_store``.  The conservative scan reaches the values via shadow
+    stack → header → branch → entry → value, so a ``Json`` value held
+    only inside a Set or JObject stays reachable across the synchronous
+    host call.
 
     Each test in this class drives the reproducer under
     ``VERA_EAGER_GC=1`` and asserts the post-fix value (e.g. ``10``)
-    is observed.  A regression that breaks bucket reachability — the
-    encode-time shadow-rooting of the new wrapper + bucket in
-    ``_encode_entries`` / ``_alloc_map_wrapper``, or the match-arm /
-    let-binding shadow-rooting in ``vera/wasm/data.py`` /
-    ``vera/wasm/context.py`` — flips the assertion back to ``0``.
+    is observed.  A regression that breaks that reachability — the
+    rooting of the keys and values arrays the JSON host writes
+    (``write_json``), the generated trie's own pushes
+    (``vera/wasm/hamt.py``), or the match-arm / let-binding
+    shadow-rooting in ``vera/wasm/data.py`` / ``vera/wasm/context.py``
+    — flips the assertion back to ``0``.
     """
 
     def test_eager_gc_set_of_json_post_walk_uaf(
@@ -789,8 +790,8 @@ public fn main(-> @Unit)
         ``json_get`` retrieves the still-live block and the assertion
         observes ``10``.  The architectural follow-up — move ``_map_store``
         reads into the bucket array and delete the Python store entirely
-        — landed as #706 (bucket-as-truth): the store is gone and the
-        bucket array is the sole truth.
+        — landed as #706 (bucket-as-truth), and #1676 replaced the
+        bucket with the module's own trie.
         """
         src = """
 public fn main(-> @Unit)
@@ -825,7 +826,7 @@ public fn main(-> @Unit)
 
         Where ``test_eager_gc_json_object_with_array_child_post_walk_uaf``
         exercises the JSON parser's internal ``Map<String, Json>``
-        construction (via ``_alloc_map_wrapper`` / ``json_parse``),
+        construction (via ``json_parse``'s ``write_json``),
         this test exercises the user-level path: a Vera program
         explicitly calling ``map_insert`` on a ``Json`` value
         returned from ``json_parse``.  Same bug class but a

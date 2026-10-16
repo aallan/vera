@@ -59,7 +59,7 @@ data UrlParts { UrlParts(String, String, String, String, String) }
 
 # #305 — HttpServer handler types, injected only when the program
 # mentions them (same conditional pattern as Json / HtmlNode: the Map
-# headers field pulls heap/bucket machinery, which must not leak into
+# headers field pulls heap and map machinery, which must not leak into
 # pure programs' WAT).
 # One block per HttpServer type: a module's demand for each is its own, so
 # one that declares its own `Request` still takes the prelude's `Response`.
