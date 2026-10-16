@@ -23,10 +23,10 @@ module takes the choice away:
 - **The dispatch.**  A pass whose work differs per expression class builds
   a :func:`dispatch` table, which refuses to be built unless it names every
   class in :data:`EXPR_CLASSES`.  A new subclass in ``vera/ast.py`` therefore
-  fails the import of every module that dispatches on `Expr`, at the commit
-  that adds it, where the `#597` gate read a checklist comment.  The arms
-  keep their own per-class logic, recursion included: the table decides
-  only which arm runs.
+  fails the import of every module that builds a `fold.dispatch` table, at
+  the commit that adds it, where the `#597` gate read a checklist comment.
+  The arms keep their own per-class logic, recursion included: the table
+  decides only which arm runs.
 
 - **The scope walk.**  :func:`scoped` yields every node with the slots in
   scope where it is evaluated.  The binder positions are

@@ -19,7 +19,7 @@ both to the AST:
     type are in scope `.0` is the most recent.
 (c) **Dispatch.**  A `fold.dispatch` table names every `Expr` class or
     refuses to be built, so a new subclass fails at the import of every
-    module that dispatches on `Expr`.
+    module that builds a `fold.dispatch` table.
 
 The two run-level cells at the end are the shapes the free-variable port
 changed: a destructuring `let` in a closure (refused at 313c04db, the
@@ -551,7 +551,7 @@ def test_a_reference_resolves_to_its_binder_inside_the_extent_only(
     for ref, owner, field, index in cell.bound:
         got = resolved.get(id(ref), "unreached")
         assert isinstance(got, fold.Binder), (position, ref, got)
-        assert (got.owner, got.field, got.index) == (owner, field, index), (
+        assert got.owner is owner and (got.field, got.index) == (field, index), (
             position, ref, (type(got.owner).__name__, got.field, got.index))
     for ref in cell.unbound:
         assert resolved.get(id(ref), "unreached") is None, (position, ref)
