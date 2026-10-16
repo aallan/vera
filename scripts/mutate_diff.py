@@ -257,15 +257,15 @@ def _code(node: ast.AST) -> str:
     return ast.dump(_StripDocstrings().visit(copy))
 
 
-def _header_comment(lines: Sequence[str], node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
-    """The comment on the line that ends the function's header, if any."""
+def _header_end(lines: Sequence[str], node: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[int, int | None]:
+    """The line that ends a function's header (the one holding its colon at
+    bracket depth 0), and the column of a comment on that line, if any."""
     first = node.lineno
     text = "".join(lines[first - 1:node.end_lineno or first])
     depth = 0
     colon_row = None
-    tokens = tokenize.generate_tokens(io.StringIO(text).readline)
     try:
-        for tok in tokens:
+        for tok in tokenize.generate_tokens(io.StringIO(text).readline):
             if colon_row is None:
                 if tok.type == tokenize.OP and tok.string in "([{":
                     depth += 1
@@ -276,10 +276,21 @@ def _header_comment(lines: Sequence[str], node: ast.FunctionDef | ast.AsyncFunct
             elif tok.start[0] != colon_row:
                 break
             elif tok.type == tokenize.COMMENT:
-                return tok.string
-    except (tokenize.TokenError, IndentationError, SyntaxError):
+                return first + colon_row - 1, tok.start[1]
+    except (tokenize.TokenError, IndentationError, SyntaxError) as exc:
+        raise NarrowError(f"cannot read the header of {node.name}: {exc}") from exc
+    if colon_row is None:
+        raise NarrowError(f"no header colon found for {node.name}")
+    return first + colon_row - 1, None
+
+
+def _header_comment(lines: Sequence[str], node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
+    """The comment on the line that ends the function's header, if any."""
+    try:
+        row, col = _header_end(lines, node)
+    except NarrowError:
         return ""
-    return ""
+    return "" if col is None else lines[row - 1][col:].rstrip("\r\n")
 
 
 def _is_block_pragma(comment: str) -> bool:
@@ -305,27 +316,35 @@ def _excluded(node: ast.FunctionDef | ast.AsyncFunctionDef, lines: Sequence[str]
 
 def scan_units(source: str, path: str = "") -> dict[str, Unit]:
     """Every unit mutmut mutates in ``source``, keyed by its mangled name."""
-    tree = ast.parse(source)
     lines = source.splitlines(keepends=True)
     units: dict[str, Unit] = {}
-
-    def add(node: ast.FunctionDef | ast.AsyncFunctionDef, cls: str | None) -> None:
-        key = f"x{SEP}{cls}{SEP}{node.name}" if cls else f"x_{node.name}"
+    for node, cls in _unit_nodes(ast.parse(source)):
+        key = _key(node.name, cls)
         start = min([d.lineno for d in node.decorator_list] + [node.lineno])
         units[key] = Unit(
             key=key, qualname=f"{cls}.{node.name}" if cls else node.name,
             path=path, start=start, end=node.end_lineno or node.lineno,
             code=_code(node), excluded=_excluded(node, lines),
         )
+    return units
 
+
+def _unit_nodes(tree: ast.Module) -> list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, str | None]]:
+    """The module's units, each with its class: its top-level functions and
+    the methods of its top-level classes, the ones mutmut mutates."""
+    found: list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, str | None]] = []
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            add(node, None)
+            found.append((node, None))
         elif isinstance(node, ast.ClassDef):
-            for member in node.body:
-                if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    add(member, node.name)
-    return units
+            found += [(m, node.name) for m in node.body
+                      if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    return found
+
+
+def _key(name: str, cls: str | None) -> str:
+    """mutmut's mangled name for a function or a method."""
+    return f"x{SEP}{cls}{SEP}{name}" if cls else f"x_{name}"
 
 
 @dataclass
@@ -432,54 +451,27 @@ def _mutant_number(name: str) -> int:
 
 
 def narrow(source: str, keep: Iterable[str]) -> str:
-    """``source`` with ``# pragma: no mutate block`` on every unit not kept."""
-    import libcst as cst
+    """``source`` with ``# pragma: no mutate block`` on every unit not kept.
 
+    The comment goes where mutmut reads a header's pragma: after the colon
+    that ends the header, or at the end of a one-line ``def``, ahead of a
+    comment already there.  A unit already under the block pragma is left
+    as it is.  Only comments are added, which the result's ``ast`` and line
+    count are checked for."""
     keep = set(keep)
-
-    class Marker(cst.CSTTransformer):
-        def __init__(self) -> None:
-            super().__init__()
-            self.classes: list[str] = []
-            self.depth = 0
-
-        def visit_ClassDef(self, node: cst.ClassDef) -> None:
-            self.classes.append(node.name.value)
-
-        def leave_ClassDef(self, original: cst.ClassDef, updated: cst.ClassDef) -> cst.ClassDef:
-            self.classes.pop()
-            return updated
-
-        def visit_FunctionDef(self, node: cst.FunctionDef) -> None:
-            self.depth += 1
-
-        def leave_FunctionDef(self, original: cst.FunctionDef,
-                              updated: cst.FunctionDef) -> cst.FunctionDef:
-            self.depth -= 1
-            if self.depth or len(self.classes) > 1:
-                return updated
-            name = original.name.value
-            key = f"x{SEP}{self.classes[0]}{SEP}{name}" if self.classes else f"x_{name}"
-            if key in keep:
-                return updated
-            body = updated.body
-            if isinstance(body, cst.IndentedBlock):
-                trailing = body.header
-            elif isinstance(body, cst.SimpleStatementSuite):
-                trailing = body.trailing_whitespace  # a one-line `def f(): ...`
-            else:
-                return updated
-            old = trailing.comment
-            if old is not None and _is_block_pragma(old.value):
-                return updated
-            text = PRAGMA if old is None else f"{PRAGMA}  {old.value}"
-            whitespace = trailing.whitespace if old is not None else cst.SimpleWhitespace("  ")
-            new = trailing.with_changes(whitespace=whitespace, comment=cst.Comment(text))
-            if isinstance(body, cst.IndentedBlock):
-                return updated.with_changes(body=body.with_changes(header=new))
-            return updated.with_changes(body=body.with_changes(trailing_whitespace=new))
-
-    out = cst.parse_module(source).visit(Marker()).code
+    lines = source.splitlines(keepends=True)
+    for node, cls in _unit_nodes(ast.parse(source)):
+        if _key(node.name, cls) in keep:
+            continue
+        row, col = _header_end(lines, node)
+        line = lines[row - 1]
+        text = line.rstrip("\r\n")
+        newline = line[len(text):]
+        if col is None:
+            lines[row - 1] = f"{text.rstrip()}  {PRAGMA}{newline}"
+        elif not _is_block_pragma(text[col:]):
+            lines[row - 1] = f"{text[:col]}{PRAGMA}  {text[col:]}{newline}"
+    out = "".join(lines)
     if out.count("\n") != source.count("\n"):
         raise NarrowError("the narrowing edit moved a line")
     if ast.dump(ast.parse(out)) != ast.dump(ast.parse(source)):

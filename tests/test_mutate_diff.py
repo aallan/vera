@@ -18,9 +18,10 @@ everything around mutmut itself:
   whole run end to end against a stand-in engine;
 - the workflow that runs it, read as data.
 
-The tests that need mutmut's own parser (libcst) or mutmut itself skip where
-the ``[mutation]`` extra is not installed; the lane's workflow installs it
-and runs this file before the script.
+The tests that need mutmut itself (its status table, and its generator
+reading the narrowing pragma) skip where the ``[mutation]`` extra is not
+installed; the lane's workflow installs it and runs this file before the
+script.
 """
 
 from __future__ import annotations
@@ -487,7 +488,6 @@ class TestMutantNames:
 
 class TestNarrowing:
     def test_untouched_units_get_the_block_pragma_and_touched_ones_do_not(self) -> None:
-        pytest.importorskip("libcst")
         out = md.narrow(BASE, {"x_top", f"x{SEP}Box{SEP}method"})
         lines = out.splitlines()
         assert "no mutate block" not in lines[_line_of(BASE, "def top(") - 1]
@@ -496,13 +496,11 @@ class TestNarrowing:
             assert "# pragma: no mutate block" in lines[_line_of(BASE, needle) - 1], needle
 
     def test_narrowing_moves_no_line_and_no_node(self) -> None:
-        pytest.importorskip("libcst")
         out = md.narrow(BASE, {"x_top"})
         assert len(out.splitlines()) == len(BASE.splitlines())
         assert ast.dump(ast.parse(out)) == ast.dump(ast.parse(BASE))
 
     def test_an_existing_comment_is_kept_behind_the_pragma(self) -> None:
-        pytest.importorskip("libcst")
         src = _src("""
             def f(x):  # noqa: C901
                 return x
@@ -511,10 +509,44 @@ class TestNarrowing:
         assert out.splitlines()[0].endswith("# pragma: no mutate block  # noqa: C901")
 
     def test_an_existing_block_pragma_is_left_alone(self) -> None:
-        pytest.importorskip("libcst")
         out = md.narrow(BASE, set())
         line = out.splitlines()[_line_of(BASE, "def pragmad(") - 1]
         assert line.count("no mutate") == 1
+
+    def test_the_pragma_goes_on_the_line_that_ends_a_wide_header(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The header's colon is the first at bracket depth 0: an annotation,
+        a dict default and a lambda each hold a colon inside the brackets."""
+        src = _src("""
+            def wide(
+                x: int,
+                y: dict[str, int] = {"a": 1},
+                f=lambda z: z,
+            ) -> int:  # noqa: B006
+                return x + y["a"] + f(1)
+
+
+            def kept(x):
+                return x * 2
+        """)
+        out = md.narrow(src, {"x_kept"})
+        lines = out.splitlines()
+        assert lines[4] == ") -> int:  # pragma: no mutate block  # noqa: B006"
+        assert [n for n, line in enumerate(lines) if "no mutate" in line] == [4]
+        pytest.importorskip("mutmut")
+        from mutmut.configuration import reset_config
+        from mutmut.mutation.file_mutation import mutate_file_contents
+
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.mutmut]\nsource_paths = ["."]\n', encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        reset_config()
+        try:
+            names = mutate_file_contents("m.py", out).mutant_names
+        finally:
+            reset_config()
+        assert names and {n.partition("__mutmut_")[0] for n in names} == {"x_kept"}
 
     def test_a_one_line_function_is_narrowed_too(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -960,8 +992,8 @@ class TestEndToEnd:
         assert code == 0
         run = next(c for c in calls if c["args"][0] == "run")
         assert run["args"][-1] == "vera.m.x_kept__mutmut_*"
-        tree = Path(run["cwd"])
-        assert tree.is_relative_to(tmp_path / "work")
+        tree = Path(run["cwd"]).resolve()
+        assert tree.is_relative_to((tmp_path / "work").resolve())
         cfg = tomllib.loads((tree / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["mutmut"]
         assert cfg["only_mutate"] == ["vera/m.py"]
         assert cfg["pytest_add_cli_args_test_selection"] == [
@@ -969,8 +1001,7 @@ class TestEndToEnd:
         assert record["extra_tests"] == ["tests/test_new.py", "tests/test_via_helper.py"]
         assert record["tests_left_out"] == ["tests/test_cli_new.py", "tests/test_tooling.py"]
         narrowed = (tree / "vera" / "m.py").read_text(encoding="utf-8")
-        if importlib.util.find_spec("libcst") is not None:
-            assert "def other(x):  # pragma: no mutate block" in narrowed
+        assert "def other(x):  # pragma: no mutate block" in narrowed
         assert "def kept(x):\n" in narrowed
         # the repository itself is untouched
         assert "no mutate" not in (repo / "vera" / "m.py").read_text(encoding="utf-8")
