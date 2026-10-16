@@ -39,14 +39,18 @@ mutmut over exactly those functions:
 
 Outputs: a table per function on stdout (and in ``--summary``, the job
 summary in CI), the first ``MAX_SHOWN_SURVIVORS`` survivors' ``mutmut show``
-diffs, and a JSON record (``--json``) that lists every survivor.  The exit code is 0 when every mutant of the diff is killed or
-timed out, 1 when one survives, and 2 when the run stopped short: the budget
-ran out, the engine failed, a mutant was left undecided (``not checked``,
-``suspicious``, ``segfault``, interrupted), or mutmut reported a mutant of a
-function the lane did not map to the diff.  A run that cannot finish says
-so; it never passes.  A function no in-process test reaches has every
-mutant ``no tests``: it is reported as not observable in process, the rule
-MUTATION.md states for ``cli.py``, and does not fail the run.
+diffs, and a JSON record (``--json``) that lists every survivor.
+
+The exit code is 0 when no mutant of the diff survives and none is left
+undecided, the headline saying whether every mutant was killed or timed out
+or which functions no in-process test reaches; 1 when one survives; and 2
+when the run stopped short: the budget ran out, the engine failed, a mutant
+was left undecided (``not checked``, ``suspicious``, ``segfault``,
+interrupted), or mutmut reported a mutant of a function the lane did not
+map to the diff.  A run that cannot finish says so; it never passes.  A
+function no in-process test reaches has every mutant ``no tests``: it is
+reported as not observable in process, the rule MUTATION.md states for
+``cli.py``, and does not fail the run.
 
 Usage:
     python scripts/mutate_diff.py                      # origin/main...HEAD
@@ -490,7 +494,11 @@ def narrow(source: str, keep: Iterable[str]) -> str:
     out = "".join(lines)
     if out.count("\n") != source.count("\n"):
         raise NarrowError("the narrowing edit moved a line")
-    if ast.dump(ast.parse(out)) != ast.dump(ast.parse(source)):
+    try:
+        narrowed = ast.parse(out)
+    except SyntaxError as exc:
+        raise NarrowError(f"the narrowing edit broke the syntax: {exc}") from exc
+    if ast.dump(narrowed) != ast.dump(ast.parse(source)):
         raise NarrowError("the narrowing edit changed a node")
     return out
 
@@ -735,7 +743,7 @@ def outside_units(units: Sequence[Unit], results: Mapping[str, str]) -> list[str
 
 
 def exit_code(rows: Sequence[UnitResult], *, stopped: str | None) -> int:
-    """0: every mutant killed or timed out; 1: a survivor; 2: stopped short."""
+    """0: no survivor and nothing undecided; 1: a survivor; 2: stopped short."""
     statuses = {status for row in rows for status, n in row.counts.items() if n}
     if stopped is not None or any(STATUSES[s] == "undecided" for s in statuses):
         return 2
@@ -838,10 +846,27 @@ def render(record: Mapping[str, Any]) -> str:
     return "\n".join(out)
 
 
-def _outcome(code: int, rows: Sequence[UnitResult], stopped: str | None) -> str:
+def outcome(code: int, rows: Sequence[UnitResult], stopped: str | None) -> str:
+    """The headline: what the run decided.  An exit 0 claims every mutant
+    killed or timed out only when every changed function had mutants and an
+    in-process test reached them; otherwise it says what was not tested."""
     if code == 0:
-        return "Pass: every mutant of the diff is killed or timed out." if rows else \
-            "Pass: nothing to mutate."
+        if not rows:
+            return "Pass: nothing to mutate."
+        unobserved = [r for r in rows if r.mutants and not r.observable]
+        empty = [r for r in rows if not r.mutants]
+        skipped = sum(r.counts.get("skipped", 0) for r in rows)
+        if not unobserved and not empty and not skipped:
+            return "Pass: every mutant of the diff is killed or timed out."
+        parts = []
+        if unobserved:
+            parts.append(f"{sum(r.mutants for r in unobserved)} mutant(s) in "
+                         f"{len(unobserved)} function(s) not observable in process")
+        if empty:
+            parts.append(f"{len(empty)} function(s) with no mutant")
+        if skipped:
+            parts.append(f"{skipped} mutant(s) skipped by the engine")
+        return "Pass: no mutant survived; " + "; ".join(parts) + "."
     if code == 1:
         n = sum(len(r.survivors) for r in rows)
         return f"Fail: {n} mutant(s) of the diff survive."
@@ -1038,7 +1063,7 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
     code = exit_code(rows, stopped=stopped)
     record["stopped"] = stopped
     record["exit_code"] = code
-    record["outcome"] = _outcome(code, rows, stopped)
+    record["outcome"] = outcome(code, rows, stopped)
     record["elapsed_s"] = round(time.monotonic() - started, 1)
     record["functions"] = [
         {**{k: v for k, v in asdict(row).items() if k != "diffs"},

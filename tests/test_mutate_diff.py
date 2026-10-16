@@ -500,6 +500,21 @@ class TestNarrowing:
         assert len(out.splitlines()) == len(BASE.splitlines())
         assert ast.dump(ast.parse(out)) == ast.dump(ast.parse(BASE))
 
+    def test_an_edit_that_adds_a_line_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(md, "PRAGMA", "# pragma: no mutate block\n#")
+        with pytest.raises(md.NarrowError, match="moved a line"):
+            md.narrow(BASE, set())
+
+    def test_an_edit_that_changes_a_node_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(md, "PRAGMA", "+ 1  # pragma: no mutate block")
+        with pytest.raises(md.NarrowError, match="changed a node"):
+            md.narrow("def one(x): return x + 1\n", set())
+
+    def test_an_edit_that_breaks_the_syntax_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(md, "PRAGMA", ")  # pragma: no mutate block")
+        with pytest.raises(md.NarrowError, match="syntax"):
+            md.narrow("def f(x):\n    return x\n", set())
+
     def test_an_existing_comment_is_kept_behind_the_pragma(self) -> None:
         src = _src("""
             def f(x):  # noqa: C901
@@ -811,6 +826,36 @@ class TestExitCode:
         assert md.exit_code(rows, stopped=stopped) == code
 
 
+class TestOutcome:
+    """An exit 0 says what was decided: every mutant killed or timed out, or
+    no survivor with some functions no in-process test reaches."""
+
+    def _rows(self, results: dict[str, str], *keys: str) -> list[Any]:
+        return md.tally([_unit(k) for k in keys], results)
+
+    def test_every_mutant_caught(self) -> None:
+        rows = self._rows({f"{F}1": "killed", f"{F}2": "timeout"}, "x_free")
+        assert md.outcome(0, rows, None) == "Pass: every mutant of the diff is killed or timed out."
+
+    def test_one_function_caught_and_one_not_observable(self) -> None:
+        results = {f"{F}1": "killed", "vera.smt.x_far__mutmut_1": "no tests",
+                   "vera.smt.x_far__mutmut_2": "no tests"}
+        rows = self._rows(results, "x_free", "x_far")
+        assert md.exit_code(rows, stopped=None) == 0
+        assert md.outcome(0, rows, None) == (
+            "Pass: no mutant survived; 2 mutant(s) in 1 function(s) not observable in process.")
+
+    def test_no_function_observable(self) -> None:
+        rows = self._rows({f"{F}1": "no tests"}, "x_free")
+        assert md.outcome(0, rows, None) == (
+            "Pass: no mutant survived; 1 mutant(s) in 1 function(s) not observable in process.")
+
+    def test_a_function_with_no_mutant(self) -> None:
+        rows = self._rows({f"{F}1": "killed"}, "x_free", "x_bare")
+        assert md.outcome(0, rows, None) == (
+            "Pass: no mutant survived; 1 function(s) with no mutant.")
+
+
 # ---------------------------------------------------------------------------
 # The engine and its budget
 # ---------------------------------------------------------------------------
@@ -911,7 +956,7 @@ if args[0] == "results":
     import time
     time.sleep(float(os.environ.get("FAKE_RESULTS_SLEEP", "0")))
     sys.stdout.write((state / "results.txt").read_text(encoding="utf-8"))
-    sys.exit(0)
+    sys.exit(int(os.environ.get("FAKE_RESULTS_EXIT", "0")))
 if args[0] == "show":
     print("# " + args[1] + ": survived")
     print("--- vera/m.py")
@@ -1076,6 +1121,8 @@ class TestEndToEnd:
             repo, tmp_path, "    vera.m.x_kept__mutmut_1: not checked\n", run_exit=1,
             run_output="Stopping early, because we could not find any test case for any mutant.")
         assert code == 0 and record["stopped"] is None
+        assert record["outcome"] == (
+            "Pass: no mutant survived; 1 mutant(s) in 1 function(s) not observable in process.")
         (unit,) = record["functions"]
         assert unit["counts"] == {"no tests": 1} and unit["observable"] is False
 
@@ -1118,6 +1165,20 @@ class TestEndToEnd:
         summary = (tmp_path / "summary.md").read_text(encoding="utf-8")
         assert summary.count("```diff") == 3
         assert "2 more survivors" in summary
+
+    def test_a_status_the_lane_does_not_model_stops_the_run_short(
+        self, repo: Path, tmp_path: Path,
+    ) -> None:
+        code, record, _ = _main(repo, tmp_path, "    vera.m.x_kept__mutmut_1: survived by proxy\n")
+        assert code == 2 and record["stopped"] == "engine"
+        assert "survived by proxy" in record["engine_tail"][0]
+
+    def test_a_failing_results_call_stops_the_run_short(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("FAKE_RESULTS_EXIT", "1")
+        code, record, _ = _main(repo, tmp_path, "    vera.m.x_kept__mutmut_1: killed\n")
+        assert code == 2 and record["stopped"] == "engine"
 
     def test_an_engine_failure_stops_the_run_short(self, repo: Path, tmp_path: Path) -> None:
         code, record, _ = _main(repo, tmp_path, "    vera.m.x_kept__mutmut_1: not checked\n",
