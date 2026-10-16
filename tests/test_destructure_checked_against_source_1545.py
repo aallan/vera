@@ -65,9 +65,10 @@ The reported programs, the members the matrix does not span (an unknown
 constructor, a prelude type with two constructors named by a constructor
 and by the type, a value of no data type, a built-in type with no
 constructors, another type's name, a generic data type, a type parameter,
-the other constructor of a tuple and of a data type, a `@Byte` binding over
-an `Int` component, a closure field bound at a narrower effect row, a
-`@Never` binding) and each mutant's killer are unparametrised tests.  The negative space: the narrowing the destructure already had keeps
+a value of no known type, the other constructor of a tuple and of a data
+type, a `@Byte` binding over an `Int` component, a closure field bound at a
+narrower effect row, a `@Never` binding) and each mutant's killer are
+unparametrised tests.  The negative space: the narrowing the destructure already had keeps
 its record and its trap, the plain `let`'s refusal is unchanged, the corpus
 destructures and the documented ones check clean, the components a match
 arm and a plain `let` accept are accepted here, and a `match` arm's own
@@ -279,6 +280,34 @@ def test_named_a_type_parameter_is_refused() -> None:
     refused the same way (E313)."""
     _refused_once(_TYPE_PARAMETER, "E313",
                   _place(_TYPE_PARAMETER, "let Tuple"))
+
+
+_UNKNOWN_VALUE = """private forall<F> fn g(@F -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let Tuple<@Int, @Int> = apply_fn(@F.0, 1);
+  @Int.0
+}
+"""
+
+
+def test_named_a_value_of_no_known_type_is_refused() -> None:
+    """`apply_fn` over a type variable is typed `Unknown` with no error
+    reported, and a `match` over it with only a constructor arm is refused
+    E313, which is then the error that refuses the program (#1671)."""
+    _refused_once(_UNKNOWN_VALUE, "E313", _place(_UNKNOWN_VALUE, "let Tuple"))
+
+
+def test_a_bindings_error_says_nothing_about_the_value() -> None:
+    """Whether an error has been reported is read before the bindings are
+    resolved, as a `match` reads it before its arms: an unknown binding
+    type (E136) leaves the value's own E313 standing."""
+    source = _UNKNOWN_VALUE.replace("Tuple<@Int, @Int>", "Tuple<@Nope, @Int>")
+    checked = pipeline.check(source)
+    assert [d.error_code for d in checked.diagnostics] == ["E136", "E313"], [
+        (d.error_code, d.description) for d in checked.diagnostics]
 
 
 def test_named_a_tuple_destructure_of_data_is_refused() -> None:

@@ -1024,7 +1024,7 @@ class ControlFlowMixin:
     def _check_destructure(
         self, stmt: ast.LetDestruct, value_ty: Type | None,
         bindings: list[Type], *, after_error: bool,
-    ) -> bool:
+    ) -> None:
         """Hold `let C<@T1, …, @Tn> = e;` to the rules its one-arm pattern
         `match e { C(@T1, …, @Tn) -> … }` is held to, read by the functions
         that decide them for the arm, and each binding to the rule a `let`
@@ -1063,12 +1063,11 @@ class ControlFlowMixin:
           binding).
 
         A value typed `Unknown` once an error has been reported is not
-        judged, as a `match` over one is not (#1671).  Returns whether the
-        destructure was refused."""
+        judged, as a `match` over one is not (#1671)."""
         ty = value_ty if value_ty is not None else UnknownType()
         base = base_type(ty)
         if isinstance(base, UnknownType) and after_error:
-            return False
+            return
         name = stmt.constructor
         count = len(stmt.type_bindings)
         scrut = self._scrutinee_for_pattern(ty)
@@ -1087,7 +1086,7 @@ class ControlFlowMixin:
                 named = self._match_data_type(name)
                 if named is None:
                     if name in self._refused_ctor_names:
-                        return False  # #1497: the declaration's E158 is it
+                        return  # #1497: the declaration's E158 is it
                     candidates, _stranger = self._stranger_constructor(name)
                     form = self._destructure_form(ty)
                     self._error(
@@ -1106,7 +1105,7 @@ class ControlFlowMixin:
                         spec_ref='Chapter 4, Section 4.7.1 "Tuple Destructuring"',
                         error_code="E320",
                     )
-                    return True
+                    return
             if named is not None:
                 ctors = list(named.constructors.values())
                 ci = ctors[0] if len(ctors) == 1 else None
@@ -1149,7 +1148,7 @@ class ControlFlowMixin:
                     spec_ref='Chapter 4, Section 4.7.1 "Tuple Destructuring"',
                     error_code="E314",
                 )
-                return True
+                return
             if isinstance(scrut, AdtType) and name == "Tuple":
                 components = scrut.type_args
         if ci is not None:
@@ -1173,7 +1172,7 @@ class ControlFlowMixin:
                     spec_ref='Chapter 4, Section 4.7.1 "Tuple Destructuring"',
                     error_code="E321",
                 )
-                return True
+                return
             if scrut is not None:
                 components = fields
         head = ci.name if ci is not None else name
@@ -1184,21 +1183,25 @@ class ControlFlowMixin:
         if missing:
             shown = pretty_inferred_type(ty)
             if missing == ("_",):
-                if own:
+                built = ("a tuple" if name == "Tuple"
+                         else f"a value of {ci.parent_type}, the type "
+                              f"'{name}' builds" if ci is not None
+                         else f"a value of '{name}'")
+                if isinstance(base, UnknownType):
+                    # `apply_fn` over a type variable: no type to name.
+                    value = "the value's type is not known"
+                    fix = f"Destructure {built}."
+                else:
+                    value = f"the value has type {shown}"
                     fix = (f"Bind the value whole with `let @{shown} = "
                            f"…;`: '{name}' has no constructor to take it "
-                           f"apart by.")
-                else:
-                    built = ("a tuple" if name == "Tuple"
-                             else f"a value of {ci.parent_type}, the type "
-                                  f"'{name}' builds" if ci is not None
-                             else f"a value of '{name}'")
-                    fix = (f"Destructure {built}, or bind this value whole "
-                           f"with `let @{shown} = …;`.")
+                           f"apart by." if own
+                           else f"Destructure {built}, or bind this value "
+                                f"whole with `let @{shown} = …;`.")
                 self._error(
                     stmt,
-                    f"Destructuring let names '{name}', but the value has "
-                    f"type {shown}, which no constructor is known to build.",
+                    f"Destructuring let names '{name}', but {value}, which "
+                    f"no constructor is known to build.",
                     rationale=(
                         "A destructuring let binds the fields of the "
                         "constructor that builds its value, so the value's "
@@ -1210,7 +1213,7 @@ class ControlFlowMixin:
                     spec_ref='Chapter 4, Section 4.7.1 "Tuple Destructuring"',
                     error_code="E313",
                 )
-                return True
+                return
             cases = ", ".join(missing)
             arms = [f"{self._uncovered_arm(m, base)} -> …" for m in missing]
             if ci is not None:
@@ -1234,15 +1237,13 @@ class ControlFlowMixin:
                 spec_ref='Chapter 4, Section 4.7.1 "Tuple Destructuring"',
                 error_code="E311",
             )
-            return True
+            return
         if components is None:
-            return False
-        refused = False
+            return
         for index, (te, binding, component) in enumerate(
                 zip(stmt.type_bindings, bindings, components)):
             if self._fits(component, binding):
                 continue
-            refused = True
             position = index + 1
             self._error(
                 te,
@@ -1261,7 +1262,6 @@ class ControlFlowMixin:
                 spec_ref='Chapter 4, Section 4.7.1 "Tuple Destructuring"',
                 error_code="E170",
             )
-        return refused
 
     def _destructure_form(self, ty: Type) -> str | None:
         """The destructure that takes a value of *ty* apart, its bindings

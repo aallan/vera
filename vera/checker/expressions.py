@@ -1111,7 +1111,7 @@ class ExpressionsMixin:
         # names, held to the arm's rules and its bindings to a `let`'s,
         # against the type the value synthesized above, never the type the
         # bindings would give it (`_check_destructure`).
-        refused = self._check_destructure(
+        self._check_destructure(
             stmt, value_ty, resolved_types, after_error=after_error)
 
         # #1541, PR #1583 review: a tuple destructure's bindings are the
@@ -1120,9 +1120,8 @@ class ExpressionsMixin:
         # reached through `if`, `match` and block tails or an index.  So
         # `let Tuple<@Nat, @Nat> = id(Tuple(1, 0 - 3))` is refused (E503)
         # as `let @Nat = id(0 - 3)` is, and so is the same call in an `if`
-        # branch.  A destructure refused above is not read again at its
-        # bindings' type, which would report its error a second time.
-        if tuple_shape and not refused:
+        # branch.
+        if tuple_shape:
             self._check_in_literal_context(
                 stmt.value, value_ty, AdtType("Tuple", tuple(resolved_types)))
 
