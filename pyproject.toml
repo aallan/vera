@@ -182,10 +182,11 @@ patch = ["subprocess"]
 # Mutate the whole compiler by default; scope a single sweep to one
 # module with `only_mutate`.
 source_paths = ["vera/"]
-# Soundness core (#387 first pass).  The whole-tree sweep is deferred:
-# codegen/api.py's ~3,500-line execute() makes mutmut inline a 774 MB
-# mutant file it can't index — impractical until #421 decomposes it.
-# The big wasm/calls_*.py files (28-67 MB) are likewise out of this pass.
+# A local run's scope: the soundness core (#387 first pass).  A whole file's
+# mutants can be far more than one run holds (vera/verifier.py's are a
+# 213 MB module), so the nightly sweep (scripts/mutate_sweep.py) and the
+# diff lane (scripts/mutate_diff.py) set only_mutate per run to the files
+# they mutate and narrow each to the functions they run.
 only_mutate = [
     "vera/verifier.py",
     "vera/smt.py",

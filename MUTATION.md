@@ -4,7 +4,7 @@ Runbook for [#387](https://github.com/aallan/vera/issues/387) — deliberately b
 
 > A passing suite is necessary, not sufficient. The #680 audit found 8 green-for-the-wrong-reason tests in one 57-test battery; #734 had to mutation-validate its own harness. Mutation testing systematises that check.
 
-**Baseline (soundness core):** 83.3% caught, 1,773 survivors. The committed score lives in `mutation-summary.csv` and the README badge; the **per-module chart and the full survivor inventory** are attached to the [baseline comment on #387](https://github.com/aallan/vera/issues/387#issuecomment-4779424892).
+**Baseline (soundness core):** 83.3% caught, 1,773 survivors. The committed score lives in `mutation-summary.csv` and the README badge; the **per-module chart and the full survivor inventory** are attached to the [baseline comment on #387](https://github.com/aallan/vera/issues/387#issuecomment-4779424892). The nightly sweep measures all of `vera/` over a cycle of nights, and its first closed cycle's score replaces this one (§ The measure-all baseline).
 
 ## Tool: mutmut (chosen over cosmic-ray)
 
@@ -70,23 +70,41 @@ mutmut show <mutant-name>          # see the exact diff for one mutant
    - **Genuine coverage gap** → add a test.
 3. **Re-confirm** (Z3-flakiness guardrail): re-run the specific mutant ≥2× before trusting a survivor. A mutant that makes a verification *barely* unsolvable can hit the Z3 timeout → `unknown` → Tier-3 and survive nondeterministically. If a survivor flips between runs, it's timeout-flaky, not a weak test — raise the `--timeout` / Z3 timeout rather than "fixing" a test.
 
-## The measure-all baseline (Phase 2)
+## The measure-all baseline
 
-Run the sweep **locally** (CI's 6 h job cap can't hold a multi-day run); the committed config scopes the first pass to the soundness core:
+The whole of `vera/` is measured by the nightly sweep: `.github/workflows/mutation-nightly.yml` running `scripts/mutate_sweep.py`, a slice a night. No single run holds it. At 366bf326 mutmut 3.8 makes 110,025 mutants in the 2,371 functions it mutates in `vera/`, 29,320 of them in the soundness core, and a mutant costs from a twentieth of a second (killed by its first test) to most of an hour on a runner (a survivor runs every test that reaches its function). The one local marathon that tried, on mutmut 3.6 and Python 3.14, deadlocked four times, 30% to 55% of the way through; the sweep has no marathon, so it does not meet that hang, and its runners use Python 3.12, as the test shards do.
+
+**A night.** At 21:00 UTC the `setup` job finds the newest `mutation-sweep-state` artifact a run on `main` uploaded, and seven `sweep` jobs (`JOBS` in the script) each plan the same night from it and run their slice:
+
+- The inventory: every function mutmut mutates, with a hash of its code (its `ast`, docstrings set aside). A function whose code changed since its mutants were decided starts afresh, one gone from the tree is dropped, and a new mutmut version starts every function afresh, since mutmut numbers a function's mutants by its own rules.
+- The plan: the undecided work in the tree's order, in one bin a job, each bin one job's budget (4.5 h) less the passes before its first mutant (48 minutes), at an estimated cost a mutant: 25 s in the soundness core and 2.5 s elsewhere, times a factor each night measures. A function whose mutant count is known splits across bins by its mutants' numbers; one whose count is not yet known, because mutmut has not yet generated it, goes whole into one bin, its cost estimated from its size. A bin's first piece is taken whatever it costs, so a job with work open decides something.
+- The run: a scratch tree of the head, narrowed to the bin's functions as the diff lane narrows a diff's (§ CI: the diff lane). mutmut's copy holds the whole tree, and the oracle is every `tests/test_*.py` file the lane's rule admits (235 of 266 today), the subprocess, Node and tooling families left out. A test that starts a Python or `vera` process is no oracle in the copy (§ Oracle), and one that fails there with no mutant active is dropped from the run and reported. On the measuring machine, beside another mutmut run, the stats pass over that oracle took 491 s and 588 s, and a sample bin of five functions spent 1,142 s before its first mutant, 546 s of it in the clean run of its covering tests; a runner is about 2.5 times slower.
+- The `stitch` job folds the slices' records into the state and keeps it as the `mutation-sweep-state` artifact for 90 days.
+
+**The cycle.** When every function's every mutant is decided, the cycle closes: its per-module totals and its survivors are kept in the state, and that night's artifact holds `mutation-summary.csv`, `mutation.json` and `mutation-survivors.csv`. The measured samples project a cycle at 160 to 250 runner hours of mutants, which is 43 to 68 job-nights at 3.7 h of mutants a job, and 6.2 to 9.7 nights at seven jobs a night; the factor the nights measure corrects the estimate as the cycle runs. A function that changes during a cycle is measured again within it, so a closed cycle holds every function's code as the sweep last found it.
+
+**The score and the badge.** A module's total is its mutants an in-process test reaches with a known outcome: killed (`caught by type check` included), survived, and timeout, which counts as caught, the core baseline's convention. Its `no tests` mutants are not observable in process (§ Oracle) and are counted apart. A `segfault` or `suspicious` mutant, which a budget stop can leave behind, is taken only from a run the budget did not stop, and is counted apart too. The README badge reads `mutation.json` on `main`, so a closed cycle reaches the badge by a pull request, the release pull request as a rule:
 
 ```bash
-caffeinate -dims mutmut run        # hours-to-days; resumable, leave it overnight
+gh run download <run-id> --name mutation-sweep-state --dir state   # the night that closed the cycle
+python scripts/mutate_sweep.py summary --state state               # the three files, at the repository root
 ```
 
-Turn the verdicts into the durable record with the reporting script:
+`mutation-summary.csv` and `mutation.json` are committed; `mutation-survivors.csv`, the triage inventory, is gitignored.
+
+**A night that stops short.** A night that decides no mutant and counts no function, a slice whose engine or lane fails, and a slice whose record is missing end the run red, and on the schedule the `issue` job files or updates one tracking issue, labelled `mutation-sweep`, as `nightly-stress.yml` does. Survivors never do: they are the measurement. The next night plans from the newest state, which holds what the night's other slices decided.
+
+**On demand.** A `workflow_dispatch` run is a night of as many jobs as it is given, one by default. Locally, `python scripts/mutate_sweep.py night --out out --budget 600` plans a one-job night from no state and runs it, and `python scripts/mutate_sweep.py stitch --slices out --out state` folds it into a state.
+
+**A module sweep by hand.** `scripts/mutation_report.py` turns a local sweep of one module (§ Run a module sweep) into the same three files, plus the per-module chart for an issue:
 
 ```bash
 python scripts/mutation_report.py --label core
 ```
 
-It writes **`mutation-summary.csv`** (committed — per-module total / killed / survived / timeout / caught%, a diff-able score history across sweeps), **`mutation.json`** (the README shields.io badge), **`mutation-survivors.csv`** (the survivor + timeout inventory, gitignored), and **`mutation-<label>.png`** (the per-module chart, gitignored — needs matplotlib, which ships in the `[mutation]` extra; the script skips the PNG with a note if it is absent). The script **fails loud** rather than emit a number it can't stand behind: an empty corpus, a result line it can't parse (mutmut format drift), a `mutmut results` status it doesn't model (`not checked` / `suspicious` / `caught by type check` — `mutmut results` lists every non-killed mutant, and these must not be folded into the derived killed count), a module missing from the `mutants/` tree, or a per-module total below its survived+timeout count is a hard error, not a skewed score. Post the headline score + per-module table as a comment on [#387](https://github.com/aallan/vera/issues/387), and drag-drop the inventory CSV and the chart into that comment (`gh` can't upload binaries; GitHub CDN-hosts them). The soundness core (`verifier` / `smt` / `checker` / `obligations`, all in-process tested) is triaged first; remaining modules become tracked per-module follow-ups under the issue.
+It **fails loud** rather than emit a number it can't stand behind: an empty corpus, a result line it can't parse (mutmut format drift), a `mutmut results` status it doesn't model (`not checked` / `suspicious` / `caught by type check` — `mutmut results` lists every non-killed mutant, and these must not be folded into the derived killed count), a module missing from the `mutants/` tree, or a per-module total below its survived+timeout count is a hard error, not a skewed score. The chart (`mutation-<label>.png`) needs matplotlib, which ships in the `[mutation]` extra; the script skips the PNG with a note if it is absent. Post the headline score + per-module table as a comment on [#387](https://github.com/aallan/vera/issues/387), and drag-drop the inventory CSV and the chart into that comment (`gh` can't upload binaries; GitHub CDN-hosts them).
 
-The committed score: 10,620 core mutants, **83.3% caught** (7,081 killed + 1,766 timeout), 1,773 survivors — `verifier.py` dominates the survivors (875); `checker/control.py` is the weakest-covered substantive module (60.6%).
+The core baseline it wrote, still committed until the sweep's first cycle closes: 10,620 core mutants, **83.3% caught** (7,081 killed + 1,766 timeout), 1,773 survivors — `verifier.py` dominates the survivors (875); `checker/control.py` is the weakest-covered substantive module (60.6%).
 
 ## CI: the diff lane
 
@@ -112,4 +130,4 @@ python scripts/mutate_diff.py                                   # origin/main...
 python scripts/mutate_diff.py --base <sha> --budget 600 --json out.json
 ```
 
-The whole-`vera/` sweep stays local (§ The measure-all baseline); a nightly rotation of per-module chunks is the follow-up [#795](https://github.com/aallan/vera/issues/795) tracks.
+The whole of `vera/` is measured nightly (§ The measure-all baseline).

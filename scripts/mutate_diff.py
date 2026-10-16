@@ -80,7 +80,7 @@ import tempfile
 import time
 import tokenize
 from collections import Counter
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -528,16 +528,18 @@ def _toml_value(value: Any) -> str:
 
 
 def rewrite_config(text: str, *, only_mutate: Sequence[str], extra_tests: Sequence[str],
-                   extra_args: Sequence[str] = ()) -> str:
+                   extra_args: Sequence[str] = (), also_copy: Sequence[str] | None = None) -> str:
     """``text`` with ``[tool.mutmut]``'s ``only_mutate`` replaced, ``extra_tests``
-    added to its test selection and ``extra_args`` to its pytest arguments;
-    everything else unchanged."""
+    added to its test selection and ``extra_args`` to its pytest arguments, and
+    ``also_copy`` replaced when given; everything else unchanged."""
     data = tomllib.loads(text)
     cfg = data.get("tool", {}).get("mutmut")
     if not isinstance(cfg, dict):
         raise ConfigError("pyproject.toml has no [tool.mutmut] table")
     new = dict(cfg)
     new["only_mutate"] = list(only_mutate)
+    if also_copy is not None:
+        new["also_copy"] = list(also_copy)
     selection = list(cfg.get("pytest_add_cli_args_test_selection", []))
     selection += [t for t in extra_tests if t not in selection]
     new["pytest_add_cli_args_test_selection"] = selection
@@ -697,6 +699,32 @@ def run_engine(cmd: Sequence[str], *, cwd: Path, budget_s: float, log_path: Path
             except ProcessLookupError:
                 pass
         return EngineRun(returncode, "budget", time.monotonic() - start)
+
+
+def run_dropping(cmd: Sequence[str], *, tree: Path, pyproject: Path,
+                 config_for: Callable[[Sequence[str]], str], budget_s: float, workdir: Path,
+                 env: Mapping[str, str]) -> tuple[EngineRun, Path, list[str]]:
+    """Run the engine in ``tree`` within ``budget_s``; when a test stops its
+    stats pass or its clean run (it fails inside mutmut's copy with no mutant
+    active, so it is no oracle there), drop it and run again in what is left
+    of the budget, up to ``MAX_COPY_DROPS`` tests.  ``config_for(dropped)`` is
+    the ``pyproject.toml`` text for a run without the tests dropped so far.
+    Returns the last run, its log and the tests dropped."""
+    dropped: list[str] = []
+    remaining = budget_s
+    attempt = 0
+    while True:
+        attempt += 1
+        pyproject.write_text(config_for(dropped), encoding="utf-8")
+        log = workdir / f"mutmut-run-{attempt}.log"
+        run = run_engine(cmd, cwd=tree, budget_s=remaining, log_path=log, env=env)
+        remaining -= run.elapsed_s
+        failing = (copy_failure(log.read_text(encoding="utf-8", errors="replace"))
+                   if run.stopped is None and run.returncode == 1 else None)
+        if (failing is None or failing in dropped or len(dropped) >= MAX_COPY_DROPS
+                or remaining <= 0):
+            return run, log, dropped
+        dropped.append(failing)
 
 
 def copy_failure(log: str) -> str | None:
@@ -1074,26 +1102,12 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
         config = pyproject.read_text(encoding="utf-8")
         record["engine_version"] = _engine_version(engine, env)
         globs = [mutant_glob(u.path, u.key) for u in mutable]
-        dropped: list[str] = []
-        remaining = args.budget
-        attempt = 0
-        while True:
-            attempt += 1
-            pyproject.write_text(rewrite_config(
+        run, log, dropped = run_dropping(
+            [*engine, "run", "--max-children", str(args.max_children), *globs],
+            tree=tree, pyproject=pyproject, budget_s=args.budget, workdir=workdir, env=env,
+            config_for=lambda dropped: rewrite_config(
                 config, only_mutate=files, extra_tests=extra_tests,
-                extra_args=[f"--deselect={test}" for test in dropped]), encoding="utf-8")
-            log = workdir / f"mutmut-run-{attempt}.log"
-            run = run_engine([*engine, "run", "--max-children", str(args.max_children), *globs],
-                             cwd=tree, budget_s=remaining, log_path=log, env=env)
-            remaining -= run.elapsed_s
-            failing = (copy_failure(log.read_text(encoding="utf-8", errors="replace"))
-                       if run.stopped is None and run.returncode == 1 else None)
-            if (failing is None or failing in dropped or len(dropped) >= MAX_COPY_DROPS
-                    or remaining <= 0):
-                break
-            # The test cannot pass in mutmut's copy with no mutant active, so it
-            # is no oracle there: drop it, and run again.
-            dropped.append(failing)
+                extra_args=[f"--deselect={test}" for test in dropped]))
         record["dropped_tests"] = dropped
         if skips.exists():
             # One node id a line: a parametrised id can hold a space.

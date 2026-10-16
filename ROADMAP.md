@@ -73,7 +73,7 @@ Exit criterion: the fold leaves WAT byte-identical over the corpus, and the gene
 | Bytes in, out and through | `IO.read_bytes` and `IO.write_bytes` over `Array<Byte>`, the UTF-8 conversions `string_to_bytes` and `bytes_to_string`, and base64 over bytes, written once through the registry for the Python, JavaScript and WASI hosts, with a packed one-byte layout for `Array<Byte>` in generated code.  Today `IO.read_file` decodes a file as UTF-8 on the native host, so a file whose bytes are not UTF-8 is an `Err` and one whose bytes happen to be is a `String`, the browser runtime refuses every read, nothing writes bytes, and `base64_decode` returns a `String`; the image operations of the `Decision` effect ([#1467](https://github.com/aallan/vera/issues/1467)) wait on this ([#1711](https://github.com/aallan/vera/issues/1711)). |
 | One fold | One `Expr` fold and one binder-aware scope walker; the hand-written dispatchers and scope implementations port to them one at a time, and the walker-coverage gate retires. |
 | A program generator | A type-directed generator feeds three nightly differentials: what checks compiles and loads with every public function exported; every obligation record has its guard and every guard its record; a Tier 1 proof meets no runtime violation on generated inputs. |
-| A mutation lane | Mutation testing scoped to a pull request's diff. |
+| A mutation lane | Mutation testing scoped to a pull request's diff, and a nightly sweep that measures all of `vera/` a slice a night. |
 
 ## Stage 25 — One resolver (v0.2.5)
 
@@ -243,7 +243,7 @@ Beyond the staged sprints — grouped by arc, each pulled forward by its trigger
 
 **Nominal types** — [#1358](https://github.com/aallan/vera/issues/1358) `newtype`: nominal scalar types, checked at use (the issue carries the design, a validation plan and an estimate).
 
-**Testing depth** — [#795](https://github.com/aallan/vera/issues/795) mutation testing beyond the soundness core (needs the full-sweep deadlock on mutmut 3.6 / Python 3.14 resolved first), [#792](https://github.com/aallan/vera/issues/792) feedback-driven hardening for the deep verifier/smt layers, [#170](https://github.com/aallan/vera/issues/170) Hypothesis as `vera test` generation backend (bookmark; trigger is sustained "cannot generate inputs" warnings).
+**Testing depth** — [#792](https://github.com/aallan/vera/issues/792) feedback-driven hardening for the deep verifier/smt layers, [#170](https://github.com/aallan/vera/issues/170) Hypothesis as `vera test` generation backend (bookmark; trigger is sustained "cannot generate inputs" warnings).
 
 **Concurrency and WASI** — [#406](https://github.com/aallan/vera/issues/406) WASI 0.3 native async (gated on wasmtime-py exposing component async), [#853](https://github.com/aallan/vera/issues/853) extend wasi-p2 beyond IO+Random (Http via `wasi:http` outgoing-handler, streaming filesystem, sockets), [#270](https://github.com/aallan/vera/issues/270) `handle[Async]` scheduling strategies, [#227](https://github.com/aallan/vera/issues/227) timeout/cancellation effects, [#228](https://github.com/aallan/vera/issues/228) WebSocket/SSE, [#770](https://github.com/aallan/vera/issues/770) non-blocking / timed stdin, [#844](https://github.com/aallan/vera/issues/844) advisory diagnostic for shape-unfusable `async` arguments.
 
