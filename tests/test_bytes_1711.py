@@ -35,8 +35,9 @@ instrument crosses each operation with the hosts that run it:
 - `IO.write_bytes` then `IO.read_bytes` of every byte value, a file the
   test wrote (CR, LF, `00` and `FF` read back unchanged), an empty file, a
   missing file and a missing directory, natively and in the WASI command
-  world; the browser's refusal where the native host reads and writes; the
-  server world's refusal.
+  world, and a program whose only file operation is a write; the browser's
+  refusal where the native host reads and writes; the server world's
+  refusal.
 - Three megabytes through each path while a collection runs.  Each cell
   takes well under a second, so none carries `stress`.
 
@@ -677,6 +678,36 @@ def test_bytes_round_trip_through_a_file(
     assert _stdout(result, target, tmp_path) == _ROUND_TRIP_STDOUT
     assert (tmp_path / "all.bin").read_bytes() == bytes(range(256))
     assert (tmp_path / "nothing.bin").read_bytes() == b""
+
+
+#: A program whose one file operation is a write: in the WASI command world
+#: the adapter's preopen descriptor and its filesystem messages must follow
+#: from `IO.write_bytes` alone, where a read in the same program would
+#: supply them.
+_WRITE_ONLY = """\
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  match IO.write_bytes("w.bin", string_to_bytes("\\u{0}\\u{FF}\\r\\n")) {
+    Ok(_) -> IO.print("ok\\n"),
+    Err(@String) -> IO.print(@String.0)
+  }
+}
+"""
+
+
+@pytest.mark.parametrize("target", ["native", "wasi-p2"])
+def test_a_write_alone_reaches_the_file(
+    target: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A program whose only file operation is `IO.write_bytes` writes its
+    bytes, natively and in the WASI command world."""
+    monkeypatch.chdir(tmp_path)
+    result = _compile(_WRITE_ONLY, "write_only")
+    assert _stdout(result, target, tmp_path) == "ok\n"
+    assert (tmp_path / "w.bin").read_bytes() == "\0ÿ\r\n".encode("utf-8")
 
 
 @pytest.mark.skipif(not _HAS_NODE, reason="Node.js with exnref is not available")
