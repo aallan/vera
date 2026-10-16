@@ -863,6 +863,33 @@ class TestBudget:
         assert run.elapsed_s < 20
 
 
+    @pytest.mark.skipif(os.name != "posix", reason="process groups are POSIX's")
+    def test_a_straggler_in_the_engines_group_is_ended_too(self, tmp_path: Path) -> None:
+        """The interrupt ends the engine itself; a process it started (a test's
+        subprocess, say) is still in its group, and the run ends that too."""
+        import time
+
+        code = ("import subprocess, sys, time; "
+                "c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+                "print('child', c.pid, flush=True); time.sleep(60)")
+        run = md.run_engine([sys.executable, "-c", code], cwd=tmp_path, budget_s=3,
+                            log_path=tmp_path / "log", grace_s=(5, 5))
+        assert run.stopped == "budget"
+        match = re.search(r"child (\d+)", (tmp_path / "log").read_text(encoding="utf-8"))
+        assert match is not None
+        pid = int(match.group(1))
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.2)
+        else:
+            os.kill(pid, 9)  # the test's own straggler, before it fails
+            raise AssertionError(f"the engine's child {pid} outlived the run")
+
+
 # ---------------------------------------------------------------------------
 # End to end, against a stand-in engine
 # ---------------------------------------------------------------------------
@@ -881,6 +908,8 @@ if args[0] == "run":
     print(os.environ.get("FAKE_RUN_OUTPUT", ""))
     sys.exit(int(os.environ.get("FAKE_RUN_EXIT", "0")))
 if args[0] == "results":
+    import time
+    time.sleep(float(os.environ.get("FAKE_RESULTS_SLEEP", "0")))
     sys.stdout.write((state / "results.txt").read_text(encoding="utf-8"))
     sys.exit(0)
 if args[0] == "show":
@@ -1063,6 +1092,32 @@ class TestEndToEnd:
         assert record["outside_diff"] == ["vera.m.x_other__mutmut_1"]
         (unit,) = record["functions"]
         assert unit["counts"] == {"killed": 1}
+
+    def test_a_hung_results_call_stops_the_run_short(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(md, "ENGINE_CALL_TIMEOUT_S", 1)
+        monkeypatch.setenv("FAKE_RESULTS_SLEEP", "30")
+        code, record, _ = _main(repo, tmp_path, "    vera.m.x_kept__mutmut_1: killed\n")
+        assert code == 2 and record["stopped"] == "engine"
+        assert record["elapsed_s"] < 20
+
+    def test_the_summary_shows_a_bounded_number_of_survivors(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A step summary over 1 MiB is dropped whole, so the summary shows at
+        most MAX_SHOWN_SURVIVORS diffs; the record lists every survivor."""
+        monkeypatch.setattr(md, "MAX_SHOWN_SURVIVORS", 3)
+        results = "".join(f"    vera.m.x_kept__mutmut_{i}: survived\n" for i in range(1, 6))
+        code, record, calls = _main(repo, tmp_path, results)
+        assert code == 1
+        (unit,) = record["functions"]
+        assert [s["name"] for s in unit["survivors"]] == [f"vera.m.x_kept__mutmut_{i}" for i in range(1, 6)]
+        assert [bool(s["diff"]) for s in unit["survivors"]] == [True, True, True, False, False]
+        assert len([c for c in calls if c["args"][0] == "show"]) == 3
+        summary = (tmp_path / "summary.md").read_text(encoding="utf-8")
+        assert summary.count("```diff") == 3
+        assert "2 more survivors" in summary
 
     def test_an_engine_failure_stops_the_run_short(self, repo: Path, tmp_path: Path) -> None:
         code, record, _ = _main(repo, tmp_path, "    vera.m.x_kept__mutmut_1: not checked\n",

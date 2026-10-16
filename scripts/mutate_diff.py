@@ -7,8 +7,9 @@ top-level function, or a method of a top-level class; a nested function is
 part of the one that encloses it) whose code the diff changes, and runs
 mutmut over exactly those functions:
 
-1. Each changed hunk is mapped to the unit that encloses it, by ``ast``.  A
-   unit counts as changed when its code differs from the merge base's (its
+1. Each changed line is mapped to the unit that holds it, by ``ast``: an
+   added line to the head's unit, a removed line to the base's.  A unit
+   counts as changed when its code differs from the merge base's (its
    ``ast`` with docstrings set aside) or it is new; a change to a docstring,
    a comment or the layout alone changes no unit.  Changed lines outside
    every unit (module-level code, a class body, a method of a nested class)
@@ -26,17 +27,19 @@ mutmut over exactly those functions:
    unchanged.
 3. The scratch tree's ``[tool.mutmut]`` is the repository's, with
    ``only_mutate`` set to those files and the pull request's own changed
-   test files added to the test selection (bar the tooling suites the
-   repository's selection leaves out on purpose).  mutmut then runs over
+   test files that reach the compiler in process (they import ``vera``,
+   directly or through a ``tests/`` helper) added to the test selection, bar
+   the families the selection leaves out on purpose.  mutmut then runs over
    one glob per changed unit (``vera.smt.xǁSmtContextǁreset__mutmut_*``):
    its stats pass records which tests reach each function, and each mutant
    runs only those tests, fastest first, stopping at the first failure.
 4. The run has a wall-clock budget.  When it runs out, mutmut is
-   interrupted, then terminated, and what it decided so far is reported.
+   interrupted, then its process group terminated, then killed, and what it
+   decided so far is reported.
 
 Outputs: a table per function on stdout (and in ``--summary``, the job
-summary in CI), the survivors' ``mutmut show`` diffs, and a JSON record
-(``--json``).  The exit code is 0 when every mutant of the diff is killed or
+summary in CI), the first ``MAX_SHOWN_SURVIVORS`` survivors' ``mutmut show``
+diffs, and a JSON record (``--json``) that lists every survivor.  The exit code is 0 when every mutant of the diff is killed or
 timed out, 1 when one survives, and 2 when the run stopped short: the budget
 ran out, the engine failed, a mutant was left undecided (``not checked``,
 ``suspicious``, ``segfault``, interrupted), or mutmut reported a mutant of a
@@ -124,6 +127,13 @@ NO_TESTS_SENTENCE = "could not find any test case for any mutant"
 
 DEFAULT_BUDGET_S = 2400
 
+#: Seconds for each short engine command (``results``, ``show``, ``--version``).
+ENGINE_CALL_TIMEOUT_S = 300
+
+#: Survivors whose ``mutmut show`` diff the summary carries: a step summary
+#: over 1 MiB is dropped whole, and the record lists every survivor.
+MAX_SHOWN_SURVIVORS = 60
+
 
 class DiffError(ValueError):
     """The diff text is not what ``git diff -U0`` prints."""
@@ -176,7 +186,8 @@ def _diff_path(spec: str, prefix: str) -> str | None:
 
 
 def parse_diff(text: str) -> list[FileChange]:
-    """The ``.py`` files of a ``git diff -U0`` and their changed head lines."""
+    """The ``.py`` files of a ``git diff -U0``, with the head lines each
+    adds and the base lines each removes."""
     changes: list[FileChange] = []
     section: dict[str, Any] | None = None
 
@@ -654,6 +665,13 @@ def run_engine(cmd: Sequence[str], *, cwd: Path, budget_s: float, log_path: Path
                 break
             except subprocess.TimeoutExpired:
                 continue
+        if posix:
+            # What the engine started (a test's subprocess) is still in its
+            # group once the engine itself has stopped.
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
         return EngineRun(returncode, "budget", time.monotonic() - start)
 
 
@@ -740,7 +758,7 @@ def render(record: Mapping[str, Any]) -> str:
     out = ["## Mutation testing over this diff", ""]
     out.append(f"`{record['merge_base'][:12]}...{record['head'][:12]}`, "
                f"mutmut {record['engine_version'] or '(not run)'}, "
-               f"budget {record['budget_s']} s, {record['elapsed_s']:.0f} s elapsed.")
+               f"budget {record['budget_s']:g} s, {record['elapsed_s']:.0f} s elapsed.")
     out.append("")
     out.append(f"**{record['outcome']}**")
     out.append("")
@@ -767,16 +785,21 @@ def render(record: Mapping[str, Any]) -> str:
     else:
         out.append("The diff changes no function mutmut mutates.")
         out.append("")
-    survivors = [(row, s) for row in functions for s in row["survivors"]]
+    survivors = [s for row in functions for s in row["survivors"]]
     if survivors:
         out.append("### Survivors")
         out.append("")
-        for row, survivor in survivors:
+        shown = [s for s in survivors if s["diff"]]
+        for survivor in shown:
             out.append(f"`{survivor['name']}`")
             out.append("")
             out.append("```diff")
             out.extend(survivor["diff"].rstrip("\n").splitlines())
             out.append("```")
+            out.append("")
+        if len(survivors) > len(shown):
+            out.append(f"{len(survivors) - len(shown)} more survivors are in the JSON record, "
+                       "by name, without their diffs.")
             out.append("")
     notes = []
     for item in record["files"]:
@@ -832,10 +855,20 @@ def _outcome(code: int, rows: Sequence[UnitResult], stopped: str | None) -> str:
     return "Incomplete: mutants of the diff were left undecided."
 
 
+def _engine_call(engine: Sequence[str], args: Sequence[str], *, cwd: Path | None,
+                 env: Mapping[str, str]) -> subprocess.CompletedProcess[str] | None:
+    """A short engine command, or None when it does not finish in time."""
+    try:
+        return subprocess.run([*engine, *args], cwd=cwd, capture_output=True, text=True,
+                              encoding="utf-8", env=dict(env), check=False,
+                              timeout=ENGINE_CALL_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        return None
+
+
 def _engine_version(engine: Sequence[str], env: Mapping[str, str]) -> str:
-    result = subprocess.run([*engine, "--version"], capture_output=True, text=True,
-                            encoding="utf-8", env=dict(env), check=False)
-    match = re.search(r"(\d+\.\d+[\w.]*)", result.stdout)
+    result = _engine_call(engine, ["--version"], cwd=None, env=env)
+    match = re.search(r"(\d+\.\d+[\w.]*)", result.stdout) if result is not None else None
     return match.group(1) if match else ""
 
 
@@ -969,11 +1002,12 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
         no_tests = run.returncode == 1 and NO_TESTS_SENTENCE in log.read_text(
             encoding="utf-8", errors="replace")
         stopped = run.stopped or (None if run.returncode == 0 or no_tests else "engine")
-        listed = subprocess.run([*engine, "results", "--all", "true"], cwd=tree,
-                                capture_output=True, text=True, encoding="utf-8",
-                                env=env, check=False)
+        listed = _engine_call(engine, ["results", "--all", "true"], cwd=tree, env=env)
         results: dict[str, str] = {}
-        if listed.returncode != 0:
+        if listed is None:
+            stopped = stopped or "engine"
+            record["engine_tail"] = [f"mutmut results did not finish in {ENGINE_CALL_TIMEOUT_S} s"]
+        elif listed.returncode != 0:
             stopped = stopped or "engine"
         else:
             try:
@@ -989,10 +1023,12 @@ def _lane(args: argparse.Namespace, repo: Path, workdir: Path, engine: list[str]
             # In the narrowed tree every mutant belongs to a changed unit; one
             # that does not means the mapping or the narrowing went wrong.
             stopped = stopped or "unmapped"
-        for row in rows:
-            for name in row.survivors:
-                shown = subprocess.run([*engine, "show", name], cwd=tree, capture_output=True,
-                                       text=True, encoding="utf-8", env=env, check=False)
+        to_show = [(row, name) for row in rows for name in row.survivors][:MAX_SHOWN_SURVIVORS]
+        for row, name in to_show:
+            shown = _engine_call(engine, ["show", name], cwd=tree, env=env)
+            if shown is None:
+                row.diffs[name] = f"(mutmut show did not finish in {ENGINE_CALL_TIMEOUT_S} s)"
+            else:
                 row.diffs[name] = shown.stdout if shown.returncode == 0 else shown.stderr
         if stopped is not None and not record["engine_tail"]:
             record["engine_tail"] = _tail(log)
