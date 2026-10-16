@@ -41,6 +41,8 @@ mutmut activates a mutant **in-process** via an import trampoline. Tests that sp
 
 Consequence for the baseline: code exercised *only* via subprocess (much of `cli.py`) will score low **because mutations are invisible there, not because its tests are weak** — mark those `# pragma: no mutate` with that reason, don't chase them as gaps.
 
+The copy holds `vera/`, `tests/`, the config files and `also_copy`, and mutmut's stats pass runs the whole selection there with `-x`, so one selected test that cannot pass in the copy stops every run. `also_copy` carries the repository files the selected tests read (`examples/`, `README.md`, `docs/`, `spec/`, `scripts/`, `AGENTS.md`), and `pytest_add_cli_args` deselects the two tests that parse `vera/verifier.py`'s own text, which in the copy is mutmut's generated file with every mutant inlined.
+
 ## Run a module sweep
 
 The committed config scopes the sweep to the **soundness core** via `only_mutate` (`verifier` / `smt` / `checker` / `obligations`), while `source_paths = ["vera/"]` keeps the whole compiler in range. To sweep a different module, point `only_mutate` at it (e.g. `only_mutate = ["vera/codegen/*"]`), then:
@@ -84,11 +86,28 @@ It writes **`mutation-summary.csv`** (committed — per-module total / killed / 
 
 The committed score: 10,620 core mutants, **83.3% caught** (7,081 killed + 1,766 timeout), 1,773 survivors — `verifier.py` dominates the survivors (875); `checker/control.py` is the weakest-covered substantive module (60.6%).
 
-## CI (follow-up)
+## CI: the diff lane
 
-Mutation testing runs **locally** — the measure-all baseline is a multi-day job that CI's 6 h per-job cap cannot hold. Two CI pieces are deliberately deferred to a dedicated follow-up PR (workflow files warrant their own focused security review):
+`.github/workflows/mutation-diff.yml` runs `scripts/mutate_diff.py` on a pull request that changes a `vera/**/*.py` file, or the lane's own script, test file or workflow: mutmut over the functions the pull request changes, beside the other checks.
 
-1. A **non-gating** on-demand sweep (`workflow_dispatch`) for running a bounded per-module sweep in CI when convenient.
-2. The **diff-scoped PR gate** — mutate only the changed lines of a diff, run in parallel with the existing matrix, block on a survivor. Cheap because it only touches what a PR changed. It will need a matching entry in the branch-protection required-checks list (which is decoupled from the workflow YAML and synced by hand).
+**What it mutates.** The diff from the pull request's merge base, mapped to the units mutmut mutates: a top-level function, or a method of a top-level class, a nested function belonging to the one that encloses it. A unit counts as changed when its code differs from the merge base's (its `ast`, docstrings set aside) or it is new, so a docstring, a comment or a layout change alone mutates nothing. The script extracts the head commit into a scratch tree (`git archive`; the checkout is never touched) and gives every unit the diff leaves alone in a changed file `# pragma: no mutate block` on its header, so mutmut generates the changed units' mutants and no others. A file's every mutant can be far more than the diff's: `vera/verifier.py`'s are a 213 MB module that took 447 s to generate, where the 16 functions [#1715](https://github.com/aallan/vera/pull/1715) changed in it and in `vera/smt.py` took 41 s.
 
-Both land once the baseline is stable and the soundness core is clean.
+**The oracle.** The repository's `[tool.mutmut]` selection, plus the pull request's own changed `tests/test_*.py` files that reach the compiler in process (they import `vera`, directly or through a `tests/` helper), bar the families the selection leaves out on purpose: the subprocess, Node and tooling suites. mutmut's stats pass records which tests reach each function, and each mutant runs only those, fastest first, stopping at the first failure.
+
+**The verdict.** Exit 0 when no mutant of the diff survives and none is left undecided, the headline saying whether every mutant was killed or timed out or counting the functions no in-process test reaches, which the table names; 1 when one survives; 2 when the run stops short: the budget runs out, the engine fails, a mutant is left undecided (`not checked`, `suspicious`, `segfault`, interrupted), or mutmut reports a mutant of a function the lane did not map to the diff, which in the narrowed tree means the mapping or the narrowing went wrong. Exit 2 outranks exit 1: a run that left a mutant undecided has not measured the diff, whatever it found. A function no in-process test reaches has every mutant `no tests`; it is reported as not observable in process (§ Oracle) and does not fail the run. The job summary has a row per changed function, the first 60 survivors' `mutmut show` diffs (a step summary over 1 MiB is dropped whole), and what the diff changes that mutmut does not mutate; the JSON record, the `mutation-diff` artifact, lists every survivor.
+
+**The budget is the designed limit.** mutmut gets 2,400 s and the job 55 minutes. A diff that touches the verifier's large walkers cannot finish inside a pull request's budget: [#1715](https://github.com/aallan/vera/pull/1715)'s diff holds 2,207 mutants, 1,256 of them in `_walk_for_nat_binding_obligations`, and each surviving mutant runs every test that reaches its function. Such a run ends with exit 2 and the partial table, the designed behaviour of a check that is not required: its red says the diff was not fully measured, never that it passed. Branch protection's required list is synced by hand and does not name the job.
+
+**What it adds to a pull request's own mutants.** A fix pull request still runs its hand-written mutants, one per mechanism it adds, deletes or moves; the lane adds mutmut's systematic mutants over every function it changes. A survivor is triaged as in § Triaging a survivor: a weak test to strengthen, or an equivalent mutant to mark `# pragma: no mutate` with its reason.
+
+**Blind spots of the engine.** mutmut 3 mutates no decorated function bar one whose only decorator is `@staticmethod` or `@classmethod` (a `@contextlib.contextmanager` helper has no mutants), no method of a nested class, no module-level or class-body code, no `__new__`, `__getattribute__` or `__setattr__`, and no triple-quoted string, so a docstring is never mutated. The lane lists a changed function of those kinds as not mutated, with the reason, and counts the changed lines outside every function.
+
+Run it locally:
+
+```bash
+pip install -e ".[mutation]"
+python scripts/mutate_diff.py                                   # origin/main...HEAD, 2,400 s budget
+python scripts/mutate_diff.py --base <sha> --budget 600 --json out.json
+```
+
+The whole-`vera/` sweep stays local (§ The measure-all baseline); a nightly rotation of per-module chunks is the follow-up [#795](https://github.com/aallan/vera/issues/795) tracks.
