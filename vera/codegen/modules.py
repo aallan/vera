@@ -12,6 +12,7 @@ from dataclasses import fields as dc_fields
 from typing import TYPE_CHECKING
 
 from vera import ast
+from vera.builtins import INTRINSICS
 from vera.errors import Diagnostic, SourceLocation
 from vera.module_view import imported_data_types
 from vera.monomorphize import (
@@ -52,6 +53,14 @@ class _Ambiguous:
 
 
 _AMBIGUOUS = _Ambiguous()
+
+#: The names `_translate_call` dispatches that are not in the built-in
+#: registry's `INTRINSICS`: closure application, the `Eq` and `Ord`
+#: operations it rewrites, and the effect operations a handler or an
+#: effect row binds.
+_DISPATCHED_NAMES: frozenset[str] = frozenset({
+    "apply_fn", "eq", "compare", "get", "put", "throw", "resume",
+})
 
 # "No declaration keeps the bare spelling" — distinct from every
 # `data_decl_shape` value, so a keeper comparison against it is always
@@ -2095,71 +2104,11 @@ class CrossModuleMixin:
         # a main-program body — drop it so such a call is reported unresolved
         # rather than silently binding to the emitted-for-a-sibling definition.
         known -= self._transitive_only_names
-        # Built-in names handled specially in _translate_call
-        known.update({
-            "array_length", "array_append", "array_range", "array_concat",
-            "array_slice",
-            # Higher-order combinators — all iterative WASM (#480).
-            "array_map", "array_filter", "array_fold",
-            # Array utilities (#466 phase 1) — also iterative WASM.
-            "array_mapi", "array_reverse", "array_find",
-            "array_any", "array_all", "array_flatten", "array_sort_by",
-            "apply_fn", "get", "put", "throw", "resume",
-            "string_length", "string_concat", "string_slice",
-            "string_char_code", "string_from_char_code", "string_repeat",
-            "parse_nat", "parse_int", "parse_float64", "parse_bool",
-            "base64_encode", "base64_decode",
-            "url_encode", "url_decode", "url_parse", "url_join",
-            "to_string", "int_to_string", "bool_to_string",
-            "nat_to_string", "byte_to_string", "float_to_string",
-            "string_strip",
-            "string_contains", "string_starts_with", "string_ends_with",
-            "string_index_of",
-            "string_upper", "string_lower", "string_replace",
-            "string_split", "string_join",
-            # String utilities (#470) — all iterative WAT.
-            "string_chars", "string_lines", "string_words",
-            "string_pad_start", "string_pad_end",
-            "string_reverse", "string_trim_start", "string_trim_end",
-            # Character classification + case conversion (#471) — all
-            # ASCII-range checks inlined as WAT.
-            "is_digit", "is_alpha", "is_alphanumeric",
-            "is_whitespace", "is_upper", "is_lower",
-            "char_to_upper", "char_to_lower",
-            "abs", "min", "max", "floor", "ceil", "round", "sqrt", "pow",
-            # Math builtins (#467) — log/trig via host imports,
-            # pi/e/sign/clamp/float_clamp inlined as WAT.
-            "log", "log2", "log10",
-            "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
-            "pi", "e", "sign", "clamp", "float_clamp",
-            "int_to_float", "float_to_int", "nat_to_int", "int_to_nat",
-            "byte_to_int", "int_to_byte",
-            "float_is_nan", "float_is_infinite", "nan", "infinity",
-            "async", "await",
-            "md_parse", "md_render", "md_has_heading",
-            "md_has_code_block", "md_extract_code_blocks",
-            "regex_match", "regex_find", "regex_find_all",
-            "regex_replace",
-            # Ability operations (§9.8) — rewritten or dispatched by codegen
-            "eq", "compare", "show", "hash",
-            # Map operations (§9.4.3) — host-import builtins
-            "map_new", "map_insert", "map_get", "map_contains",
-            "map_remove", "map_size", "map_keys", "map_values",
-            # Set operations (§9.4.2) — host-import builtins
-            "set_new", "set_add", "set_contains",
-            "set_remove", "set_size", "set_to_array",
-            # Decimal operations (§9.7.2) — host-import builtins
-            "decimal_from_int", "decimal_from_float",
-            "decimal_from_string", "decimal_to_string",
-            "decimal_to_float", "decimal_add", "decimal_sub",
-            "decimal_mul", "decimal_div", "decimal_neg",
-            "decimal_compare", "decimal_eq",
-            "decimal_round", "decimal_abs",
-            # Json operations (§9.7.1) — host-import builtins
-            "json_parse", "json_stringify",
-            # Html operations (§9.7.4) — host-import builtins
-            "html_parse", "html_to_string", "html_query", "html_text",
-        })
+        # Every name `_translate_call` lowers in place of a call: the
+        # registry's built-ins with an emitter and its ability intrinsics,
+        # and the names the dispatch reads that are neither.
+        known.update(INTRINSICS)
+        known.update(_DISPATCHED_NAMES)
 
         seen: set[str] = set()  # deduplicate by function name
 

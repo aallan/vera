@@ -361,6 +361,10 @@ parse_bool(@String.0)                   -- returns Result<Bool, String>
                                         -- strict: only "true" and "false" are valid
 base64_encode(@String.0)                -- returns String (RFC 4648)
 base64_decode(@String.0)                -- returns Result<String, String>
+base64_encode_bytes(@Array<Byte>.0)     -- returns String (RFC 4648, over bytes)
+base64_decode_bytes(@String.0)          -- returns Result<Array<Byte>, String>
+string_to_bytes(@String.0)              -- returns Array<Byte> (the string's UTF-8 bytes)
+bytes_to_string(@Array<Byte>.0)         -- returns Result<String, String> (UTF-8 decode)
 url_encode(@String.0)                   -- returns String (RFC 3986 percent-encoding)
 url_decode(@String.0)                   -- returns Result<String, String>
 url_parse(@String.0)                    -- returns Result<UrlParts, String>

@@ -427,6 +427,18 @@ BUILTINS: Mapping[str, BuiltinSpec] = _table(
         since="0.0.79", lowering=Inline("_translate_base64_encode")),
     _fn("base64_decode", (STRING,), _result(STRING, STRING),
         since="0.0.79", lowering=Inline("_translate_base64_decode")),
+    # A `String` and an `Array<Byte>` are both a (ptr, len) pair over
+    # one-byte cells, so the string pair's emitters encode and decode bytes
+    # (#1711).
+    _fn("base64_encode_bytes", (_array(BYTE),), STRING,
+        since="0.2.4", lowering=Inline("_translate_base64_encode")),
+    _fn("base64_decode_bytes", (STRING,), _result(_array(BYTE), STRING),
+        since="0.2.4", lowering=Inline("_translate_base64_decode")),
+    # --- UTF-8 between `String` and `Array<Byte>` (#1711) ------------------
+    _fn("string_to_bytes", (STRING,), _array(BYTE),
+        since="0.2.4", lowering=Inline("_translate_string_to_bytes")),
+    _fn("bytes_to_string", (_array(BYTE),), _result(STRING, STRING),
+        since="0.2.4", lowering=Inline("_translate_bytes_to_string")),
     _fn("url_encode", (STRING,), STRING,
         since="0.0.80", lowering=Inline("_translate_url_encode")),
     _fn("url_decode", (STRING,), _result(STRING, STRING),
@@ -840,12 +852,14 @@ HOST_IMPORTS: tuple[HostImport, ...] = (
     _io("exit", ("i64",), ()),
     _io("get_env", _I32_PAIR, ("i32",), alloc=True),
     _io("print", _I32_PAIR, (), server=True),
+    _io("read_bytes", _I32_PAIR, ("i32",), alloc=True),
     _io("read_char", (), ("i32",), alloc=True),
     _io("read_file", _I32_PAIR, ("i32",), alloc=True),
     _io("read_line", (), _I32_PAIR, alloc=True),
     _io("sleep", ("i64",), (), server=True),
     _io("stderr", _I32_PAIR, (), server=True),
     _io("time", (), ("i64",), server=True),
+    _io("write_bytes", ("i32", "i32", "i32", "i32"), ("i32",), alloc=True),
     _io("write_file", ("i32", "i32", "i32", "i32"), ("i32",), alloc=True),
     # --- Markdown (§9.7.3) --------------------------------------------------
     _md("md_extract_code_blocks", ("i32", "i32", "i32"), _I32_PAIR),
