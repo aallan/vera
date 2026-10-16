@@ -119,7 +119,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | ` ├ calls_encoding.py` | | Base64 and URL encoding/decoding/parsing | |
 | ` ├ calls_handlers.py` | | Show/Hash ability dispatch, `handle[State<T>]` and `handle[Exn<E>]` | |
 | ` ├ calls_markup.py` | | JSON, HTML, Markdown, Regex, async/await (#841: fused concurrent lowering for `async(Http.get/post)`, identity otherwise) | |
-| ` ├ async_fusion.py` | | #841 fusion predicates — the single source of truth shared by the `_scan_io_ops` walk and the `WasmContext` async/await lowering | `fused_async_target()`, `await_needs_check()`, `compute_future_ret_fns()` |
+| ` ├ async_fusion.py` | | #841 fusion predicates — the single source of truth the `WasmContext` async/await lowering reads | `fused_async_target()`, `await_needs_check()`, `compute_future_ret_fns()` |
 | ` ├ calls_math.py` | | `abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`, Float64 predicates, numeric conversions | |
 | ` ├ calls_parsing.py` | | `parse_nat` / `parse_int` / `parse_bool` / `parse_float64` state machines | |
 | ` ├ calls_strings.py` | | All string ops (length, concat, slice, search, transform, split, join, chars/lines/words, reverse, trim_start/end, pad_start/end, char_to_upper/lower, classifiers) + to-string conversions; `_translate_strip` delegates to the trim helper to keep the whitespace predicate consistent | |

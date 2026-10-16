@@ -25,11 +25,16 @@ both to the AST:
     previous child's subtree has been visited, and refuses a step that
     leaves a child out, adds one or reorders them.
 
-The two run-level cells at the end are the shapes the free-variable port
-changed: a destructuring `let` in a closure (refused at 313c04db, the
-function dropped with "unsupported expressions" and `main` with E620), and a
-closure whose `handle` captures different new types in its body and in its
-state (its capture layout order moved; the run output is the same).
+After the tables' cells come the shapes the ports changed or pin: a
+destructuring `let` in a closure (refused at 313c04db, the function dropped
+with "unsupported expressions" and `main` with E620); a closure whose
+`handle` captures different new types in its body and in its state (its
+capture layout order moved; the run output is the same); and an effect
+operation's arguments, which the SMT table translates for what they record.
+Then the consumers of the context walk: the `decreases` walk's translation
+order, and the `@Nat`-binding walk's handler writes.  Then the pre-scans'
+order, a handler's body before its clauses.  Last come the pins the
+walker-coverage gate's test file held, moved here when the gate retired.
 """
 
 from __future__ import annotations

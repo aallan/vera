@@ -18,10 +18,9 @@ effectful call, so a warned ``async`` can never be fused — the warning
 
 Import emission is decided once, by the ``WasmContext`` translation in
 ``vera/wasm/calls_markup.py``, which registers the import each fused call
-or checked await calls (#735).  The ``_scan_io_ops`` walk in
-``vera/codegen/compilability.py`` registers none, and walks a fused call
-as the translation lowers it.  These predicates are the single source of
-truth for both; do not re-derive the conditions inline.
+or checked await calls (#735).  These predicates are the single source of
+truth for that translation, their one reader; do not re-derive the
+conditions inline.
 """
 
 from __future__ import annotations

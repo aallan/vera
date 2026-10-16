@@ -9850,8 +9850,9 @@ class ContractVerifier:
                     and clause.op_name == "get"):
                 r_arg = self._tail_resume_value(clause.body)
                 if r_arg is not None:
+                    resumed = _Path.fresh()
                     self._obligate_binding_triple(
-                        decl, r_arg, cell_ty, smt, SlotEnv(), [],
+                        decl, r_arg, cell_ty, smt, resumed.env, resumed.facts,
                         site="State-op resume",
                         nat_guarded=True,
                     )
@@ -9879,9 +9880,10 @@ class ContractVerifier:
             upd_ty = (cell_ty if cell_ty is not None
                       else self._resolve_type(
                           clause.state_update[0]))
+            written = _Path.fresh()
             self._obligate_binding_triple(
                 decl, clause.state_update[1], upd_ty, smt,
-                SlotEnv(), [], site="handler state update",
+                written.env, written.facts, site="handler state update",
                 nat_guarded=True,
                 refined_guarded=self._refined_bind_site_guarded(
                     _STATE_WRITE_SITE),
