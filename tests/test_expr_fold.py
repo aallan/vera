@@ -20,6 +20,10 @@ both to the AST:
 (c) **Dispatch.**  A `fold.dispatch` table names every `Expr` class or
     refuses to be built, so a new subclass fails at the import of every
     module that builds a `fold.dispatch` table.
+(d) **Context.**  `fold.contexts` visits as `walk` does, hands each child
+    the context its step gives, asks for a child's context only once the
+    previous child's subtree has been visited, and refuses a step that
+    leaves a child out, adds one or reorders them.
 
 The two run-level cells at the end are the shapes the free-variable port
 changed: a destructuring `let` in a closure (refused at 313c04db, the
@@ -662,6 +666,83 @@ def test_a_new_expr_subclass_fails_every_dispatching_module_at_import() -> None:
     lines = out.stdout.splitlines()
     assert lines[0] == "import refused", out.stdout
     assert set(lines[1].split()) == _TABLES, out.stdout
+
+
+# =====================================================================
+# (d) The context walk
+# =====================================================================
+
+def test_contexts_with_no_step_visits_as_walk_does() -> None:
+    """With every step `None`, every node of every class, pre-order, each
+    in the root's context."""
+    for cls in _node_classes():
+        root, _ = _Builder().built(cls)
+        pairs = list(fold.contexts(root, lambda node, ctx: None, "root"))
+        assert [id(node) for node, _ in pairs] == _reached(root), cls.__name__
+        assert {ctx for _, ctx in pairs} == {"root"}, cls.__name__
+
+
+def _depths(root: ast.Node) -> dict[int, int]:
+    out: dict[int, int] = {}
+
+    def visit(node: ast.Node, depth: int) -> None:
+        out[id(node)] = depth
+        for kid in fold.children(node):
+            visit(kid, depth + 1)
+
+    visit(root, 0)
+    return out
+
+
+def test_contexts_hands_each_child_the_context_its_step_gives() -> None:
+    for cls in _node_classes():
+        root, _ = _Builder().built(cls)
+        pairs = list(fold.contexts(
+            root, lambda node, depth: ((kid, depth + 1) for kid in fold.children(node)), 0))
+        assert {id(node): depth for node, depth in pairs} == _depths(root), cls.__name__
+
+
+def test_contexts_refuses_a_step_that_leaves_out_adds_or_reorders_a_child() -> None:
+    left, right = ast.IntLit(value=1), ast.IntLit(value=2)
+    root = ast.BinaryExpr(op=ast.BinOp.ADD, left=left, right=right)
+    copy = ast.IntLit(value=1)
+    assert copy == left and copy is not left
+    for given in ([(left, 0)], [(right, 0), (left, 0)],
+                  [(left, 0), (right, 0), (left, 0)], [(copy, 0), (right, 0)]):
+        def step(node: ast.Node, ctx: int,
+                 given: list[tuple[ast.Node, int]] = given) -> list[tuple[ast.Node, int]] | None:
+            return given if node is root else None
+        with pytest.raises(TypeError, match="BinaryExpr"):
+            list(fold.contexts(root, step, 0))
+
+
+def test_contexts_asks_for_a_childs_context_after_the_previous_subtree() -> None:
+    """A step runs between its children: what it does to give the `else`
+    branch its context happens after the whole `then` branch is visited."""
+    log: list[str] = []
+    cond = ast.BinaryExpr(op=ast.BinOp.LT, left=_ONE, right=ast.IntLit(value=2))
+    root = ast.IfExpr(condition=cond, then_branch=_tail(ast.IntLit(value=3)),
+                      else_branch=_tail(ast.IntLit(value=4)))
+
+    def step(node: ast.Node, ctx: str):  # type: ignore[no-untyped-def]
+        if node is not root:
+            return None
+        return if_step()
+
+    def if_step():  # type: ignore[no-untyped-def]
+        yield root.condition, "cond"
+        log.append("then's context")
+        yield root.then_branch, "then"
+        log.append("else's context")
+        yield root.else_branch, "else"
+
+    for node, ctx in fold.contexts(root, step, "root"):
+        log.append(f"{type(node).__name__}@{ctx}")
+    assert log == [
+        "IfExpr@root", "BinaryExpr@cond", "IntLit@cond", "IntLit@cond",
+        "then's context", "Block@then", "IntLit@then",
+        "else's context", "Block@else", "IntLit@else",
+    ]
 
 
 # =====================================================================

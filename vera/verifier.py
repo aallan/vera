@@ -25,9 +25,9 @@ from dataclasses import fields as ast_fields
 from fractions import Fraction
 from collections.abc import Sequence
 from functools import lru_cache, partial
-from typing import TYPE_CHECKING, ClassVar, NamedTuple, cast
+from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple, cast
 
-from vera import ast, binders, carriers, narrowing, naming
+from vera import ast, binders, carriers, fold, narrowing, naming
 from vera.callgraph import CallGraph, computation_calls
 from vera.environment import ConstructorInfo, FunctionInfo, TypeEnv
 from vera.monomorphize import (
@@ -367,6 +367,31 @@ class ArmContext:
     def assuming(self, base: Sequence[object]) -> list[object]:
         """*base* plus what this arm establishes."""
         return [*base, *self.facts]
+
+
+class _Path(NamedTuple):
+    """Where a verifier walk reads a position: the path facts that hold
+    there and the slots in scope.  The context of the walks built on
+    `vera.fold.contexts`."""
+
+    facts: tuple[object, ...]
+    env: SlotEnv
+
+    def assuming(self, *facts: object) -> _Path:
+        """This path with *facts* holding as well."""
+        return _Path((*self.facts, *facts), self.env)
+
+    @staticmethod
+    def fresh() -> _Path:
+        """THE context of a handler clause's body and `with` update and of a
+        closure's body: no slots and no facts.  Such a body binds slots of
+        its own over the enclosing ones (a clause the operation's arguments
+        and the handler state, a closure its parameters), and a closure can
+        run in another activation than the one that built it; the walks
+        model none of that (#779, #1492), so the body is read with nothing
+        it could prove from an enclosing binding.  Every call and every
+        obligation there is still found."""
+        return _Path((), SlotEnv())
 
 
 class RecursiveCall(NamedTuple):
@@ -7679,302 +7704,154 @@ class ContractVerifier:
         smt: SmtContext,
         slot_env: SlotEnv,
     ) -> None:
-        """Recursively walk AST, tracking Z3 path conditions and slot env.
+        """Walk *expr*, tracking Z3 path conditions and slot env.
 
         The `decreases` walk: it records each call *match* puts on the cycle
         with the path conditions and slot env its arguments are read in.
         `_verify_decreases` holds what it records to the call graph's own
         enumeration (`_decreases_expected`), so a position missing here
         withholds a proof rather than making one; a position walked with the
-        wrong env is the failure that check cannot see, and each branch
-        below says which env it reads a position in.
-
-        # WALKER_COVERAGE: (#597 — every Expr subclass has a disposition;
-        # check_walker_coverage.py enforces completeness.  #1524 review:
-        # ForallExpr and ExistsExpr were leaves here, so a recursive call in a
-        # quantifier was proved away on the path with no other check.)
-        #
-        # Handled (explicit isinstance branch — record and/or recurse):
-        #   FnCall             → record if on the cycle; recurse args
-        #   ModuleCall         → record if on the cycle (a call by the
-        #                        module's own path, #1558); recurse args
-        #   IfExpr             → condition (enclosing path), branches under it
-        #   Block              → let / destructure values, statements, tail,
-        #                        with each binding pushed on the env and
-        #                        each bare assert/assume's fact on the path
-        #   BinaryExpr         → recurse operands, the right of `&&`,
-        #                        `||` and `==>` under the left (#1501)
-        #   UnaryExpr          → recurse operand
-        #   MatchExpr          → scrutinee; arm bodies in the arm's env
-        #   HandleExpr         → state init + body (enclosing env); clause
-        #                        bodies and updates (empty env, no path facts)
-        #   AnonFn             → body (empty env, no path facts)
-        #   ForallExpr         → domain (enclosing env) + predicate (AnonFn)
-        #   ExistsExpr         → domain (enclosing env) + predicate (AnonFn)
-        #   ConstructorCall    → recurse args
-        #   QualifiedCall      → recurse args (effect operation)
-        #   IndexExpr          → recurse collection + index
-        #   ArrayLit           → recurse elements
-        #   InterpolatedString → recurse interpolated parts
-        #   AssertExpr         → recurse condition
-        #   AssumeExpr         → recurse condition
-        #
-        # Leaf — no sub-expression, walk terminates:
-        #   IntLit             → literal
-        #   BoolLit            → literal
-        #   StringLit          → literal
-        #   FloatLit           → literal
-        #   UnitLit            → literal
-        #   SlotRef            → bound slot, no sub-expression
-        #   ResultRef          → @result reference, no sub-expression
-        #   NullaryConstructor → nullary ADT tag, no sub-expression
-        #   OldExpr            → contract state operator (effect_ref only)
-        #   NewExpr            → contract state operator (effect_ref only)
-        #
-        # Cannot occur — rejected before this walk:
-        #   HoleExpr           → check time rejects (E170)
+        wrong env is the failure that check cannot see.  `vera.fold.contexts`
+        reaches every position, and `_calls_step` says which path each is
+        read in.
         """
-        if isinstance(expr, (ast.FnCall, ast.ModuleCall)):
-            # A module-qualified call is on the cycle only when it is by the
-            # module's own path (#1558); *match* knows the ones that are.
-            callee = match(expr)
-            if callee is not None:
-                results.append(RecursiveCall(
-                    callee, expr.args, list(z3_path_conds), slot_env, expr,
-                ))
-            # Also walk into arguments (they might contain recursive calls)
-            for arg in expr.args:
-                self._walk_for_calls(match, arg, z3_path_conds, results,
-                                     smt, slot_env)
-            return
+        start = _Path(tuple(z3_path_conds), slot_env)
+        for node, path in fold.contexts(expr, self._calls_step(smt), start):
+            if isinstance(node, (ast.FnCall, ast.ModuleCall)):
+                # A module-qualified call is on the cycle only when it is by
+                # the module's own path (#1558); *match* knows the ones that
+                # are.
+                callee = match(node)
+                if callee is not None:
+                    results.append(RecursiveCall(
+                        callee, node.args, list(path.facts), path.env, node,
+                    ))
 
-        if isinstance(expr, ast.IfExpr):
-            # #1492: a call in the condition runs on every path, so it is
-            # walked under the enclosing path conditions.
-            self._walk_for_calls(match, expr.condition, z3_path_conds,
-                                 results, smt, slot_env)
-            z3_cond = smt.translate_expr(expr.condition, slot_env)
-            if z3_cond is not None:
-                import z3 as z3mod
-                then_conds = z3_path_conds + [z3_cond]
-                self._walk_for_calls(match, expr.then_branch,
-                                     then_conds, results, smt, slot_env)
-                else_conds = z3_path_conds + [z3mod.Not(z3_cond)]
-                self._walk_for_calls(match, expr.else_branch,
-                                     else_conds, results, smt, slot_env)
-            else:  # pragma: no cover
-                self._walk_for_calls(match, expr.then_branch,
-                                     z3_path_conds, results, smt, slot_env)
-                self._walk_for_calls(match, expr.else_branch,
-                                     z3_path_conds, results, smt, slot_env)
-            return
+    def _calls_step(self, smt: SmtContext) -> fold.Step[_Path]:
+        """The `decreases` walk's context transitions, by class: every
+        other node reads its children on its own path."""
+        transitions: dict[type[ast.Node], Callable[
+            [Any, _Path, SmtContext], Iterator[tuple[ast.Node, _Path]]]] = {
+            ast.IfExpr: self._calls_if,
+            ast.Block: self._calls_block,
+            ast.BinaryExpr: self._calls_binary,
+            ast.MatchExpr: self._calls_match,
+            ast.HandleExpr: _path_handle,
+            ast.AnonFn: _path_closure,
+        }
 
-        if isinstance(expr, ast.Block):
-            # Every binder the block crosses is pushed, so a later call's
-            # argument is read in the scope it is written in: its consumers
-            # record from it (#1480 review).
-            cur_env = slot_env
-            # #804's assume half, as the body walk has it: a bare `assert`
-            # or `assume` holds for the rest of its block, so its predicate
-            # is a path fact of every later statement and of the tail.  A
-            # tail call's measure lost it, and was refused E502 after an
-            # `assert` that makes it hold (#1480 review).  A new list per
-            # fact, never an append: an untranslatable `if` hands both of
-            # its branches this walk's list, and a fact appended to it would
-            # reach the other branch.
-            cur_conds = z3_path_conds
-            for stmt in expr.statements:
-                if isinstance(stmt, ast.LetStmt):
-                    self._walk_for_calls(match, stmt.value,
-                                         cur_conds, results, smt, cur_env)
-                    # #1492, #1480: a binding the SMT layer cannot translate
-                    # is still pushed, not skipped as this walk once did.
-                    # The calls it finds are not only looked at: their
-                    # arguments are translated in this env to compare the
-                    # measure, and to obligate the measure a tail call
-                    # evaluates.  Leaving an untranslatable binding out of
-                    # the env shifted every later slot of its type onto an
-                    # outer one, so `f(@Nat.0 - 1)` after such a `let` read
-                    # the PARAMETER, proved a decrease the run then broke,
-                    # and the guard trapped a program verified at Tier 1.  A
-                    # fresh value keeps the De Bruijn positions aligned and
-                    # carries only its declared type's invariant, which the
-                    # value has; tracked, an obligation over it falls to
-                    # Tier 3 rather than being refused on its unconstrained
-                    # value.  FRESH_VAR, not OPAQUE_SHADOW: over a same-typed
-                    # outer, the shadow is a bare const of the outer's sort,
-                    # and a `@Nat` binding lost the `>= 0` its termination
-                    # proof needs (#1480 review).
-                    with self._placeholders_tracked():
-                        bound = self._apply_let_binding(
-                            stmt, smt, cur_env,
-                            policy=BlockBindingPolicy.FRESH_VAR,
-                        )
-                    if bound is not None:  # FRESH_VAR never halts
-                        cur_env = bound
-                elif isinstance(stmt, ast.LetDestruct):
-                    # #1492: a destructure's right-hand side is evaluated like
-                    # any other, and it was skipped, so a recursive call there
-                    # was never compared with the measure.  Its binders become
-                    # opaque values, so a later call whose arguments read one
-                    # can only fail to prove, never prove from a stale outer.
-                    self._walk_for_calls(match, stmt.value,
-                                         cur_conds, results, smt, cur_env)
-                    cur_env = self._shadow_destructured_slots(
-                        stmt, smt, cur_env)
-                elif isinstance(stmt, ast.ExprStmt):
-                    # Walk a statement-position expression for recursive-group
-                    # calls so `decreases` sees a discarded recursive call
-                    # (test_decreases_resolves_via_stmt_position_recursive_call).
-                    self._walk_for_calls(match, stmt.expr,
-                                         cur_conds, results, smt, cur_env)
-                fact = self._assumed_block_fact(stmt, smt, cur_env)
-                if fact is not None:
-                    cur_conds = [*cur_conds, fact]
-            self._walk_for_calls(match, expr.expr, cur_conds,
-                                 results, smt, cur_env)
-            return
+        def step(node: ast.Node, path: _Path) -> Iterator[tuple[ast.Node, _Path]] | None:
+            transition = transitions.get(type(node))
+            return None if transition is None else transition(node, path, smt)
 
-        if isinstance(expr, ast.BinaryExpr):
-            # #1501: the right operand of `&&`, `||` and `==>` runs only
-            # where the left one does not decide the result.
-            self._walk_for_calls(match, expr.left, z3_path_conds,
-                                 results, smt, slot_env)
-            premise = smt.short_circuit_premise(expr, slot_env)
-            self._walk_for_calls(
-                match, expr.right,
-                z3_path_conds if premise is None
-                else [*z3_path_conds, premise],
-                results, smt, slot_env)
-            return
+        return step
 
-        if isinstance(expr, ast.UnaryExpr):
-            self._walk_for_calls(match, expr.operand, z3_path_conds,
-                                 results, smt, slot_env)
-            return
+    def _calls_if(
+        self, expr: ast.IfExpr, path: _Path, smt: SmtContext,
+    ) -> Iterator[tuple[ast.Node, _Path]]:
+        # #1492: a call in the condition runs on every path, so it is
+        # walked under the enclosing path conditions.
+        yield expr.condition, path
+        z3_cond = smt.translate_expr(expr.condition, path.env)
+        if z3_cond is not None:
+            import z3 as z3mod
+            yield expr.then_branch, path.assuming(z3_cond)
+            yield expr.else_branch, path.assuming(z3mod.Not(z3_cond))
+        else:  # pragma: no cover
+            yield expr.then_branch, path
+            yield expr.else_branch, path
 
-        if isinstance(expr, ast.MatchExpr):
-            self._walk_for_calls(match, expr.scrutinee, z3_path_conds,
-                                 results, smt, slot_env)
-            scrutinee_z3 = smt.translate_expr(expr.scrutinee, slot_env)
-            for index, match_arm in enumerate(expr.arms):
-                # #1403: through the one arm-context derivation, which is
-                # what stopped this walk reading an arm against the
-                # enclosing env.  It spends the discriminant and the arm's
-                # facts as PREMISES of the measure goal rather than on
-                # `_path_conditions`, because `_verify_decreases` folds its
-                # own premise set into the query.
-                arm = self._enter_match_arm(
-                    expr.scrutinee, scrutinee_z3, match_arm.pattern,
-                    smt, slot_env,
-                    earlier=[a.pattern for a in expr.arms[:index]],
-                )
-                arm_conds = list(z3_path_conds)
-                if arm.condition is not None:
-                    arm_conds.append(arm.condition)
-                arm_conds.extend(arm.facts)
-                self._walk_for_calls(match, match_arm.body, arm_conds,
-                                     results, smt, arm.env)
-            return
+    def _calls_block(
+        self, block: ast.Block, path: _Path, smt: SmtContext,
+    ) -> Iterator[tuple[ast.Node, _Path]]:
+        # Every binder the block crosses is pushed, so a later call's
+        # argument is read in the scope it is written in: its consumers
+        # record from it (#1480 review).
+        # #804's assume half, as the body walk has it: a bare `assert`
+        # or `assume` holds for the rest of its block, so its predicate
+        # is a path fact of every later statement and of the tail.  A
+        # tail call's measure lost it, and was refused E502 after an
+        # `assert` that makes it hold (#1480 review).  A new tuple per
+        # fact, never an append: an untranslatable `if` hands both of
+        # its branches this walk's facts, and a fact appended to them would
+        # reach the other branch.
+        cur_env, cur_facts = path.env, path.facts
+        for stmt in block.statements:
+            # Each statement is read on the path so far: a `let`'s or a
+            # destructure's value before its binders are pushed, and a
+            # statement-position expression, so `decreases` sees a
+            # discarded recursive call
+            # (test_decreases_resolves_via_stmt_position_recursive_call).
+            yield stmt, _Path(cur_facts, cur_env)
+            if isinstance(stmt, ast.LetStmt):
+                # #1492, #1480: a binding the SMT layer cannot translate
+                # is still pushed, not skipped as this walk once did.
+                # The calls it finds are not only looked at: their
+                # arguments are translated in this env to compare the
+                # measure, and to obligate the measure a tail call
+                # evaluates.  Leaving an untranslatable binding out of
+                # the env shifted every later slot of its type onto an
+                # outer one, so `f(@Nat.0 - 1)` after such a `let` read
+                # the PARAMETER, proved a decrease the run then broke,
+                # and the guard trapped a program verified at Tier 1.  A
+                # fresh value keeps the De Bruijn positions aligned and
+                # carries only its declared type's invariant, which the
+                # value has; tracked, an obligation over it falls to
+                # Tier 3 rather than being refused on its unconstrained
+                # value.  FRESH_VAR, not OPAQUE_SHADOW: over a same-typed
+                # outer, the shadow is a bare const of the outer's sort,
+                # and a `@Nat` binding lost the `>= 0` its termination
+                # proof needs (#1480 review).
+                with self._placeholders_tracked():
+                    bound = self._apply_let_binding(
+                        stmt, smt, cur_env,
+                        policy=BlockBindingPolicy.FRESH_VAR,
+                    )
+                if bound is not None:  # FRESH_VAR never halts
+                    cur_env = bound
+            elif isinstance(stmt, ast.LetDestruct):
+                # #1492: a destructure's right-hand side is evaluated like
+                # any other, and it was skipped, so a recursive call there
+                # was never compared with the measure.  Its binders become
+                # opaque values, so a later call whose arguments read one
+                # can only fail to prove, never prove from a stale outer.
+                cur_env = self._shadow_destructured_slots(stmt, smt, cur_env)
+            fact = self._assumed_block_fact(stmt, smt, cur_env)
+            if fact is not None:
+                cur_facts = (*cur_facts, fact)
+        yield block.expr, _Path(cur_facts, cur_env)
 
-        # PR #1179 review F1: these value-carrying nodes were silently
-        # skipped, so a recursive call inside them was invisible to
-        # `_verify_decreases` — a measure-violating call in a handler
-        # clause or a closure body rode a Tier-1 proof and the runtime
-        # guard then trapped a `verify`-green program.  Path conditions
-        # are NOT extended here (conservative: fewer assumptions can
-        # only make the proof harder, never wrongly easier).
-        #
-        # A clause or a closure body binds slots of its own over the
-        # enclosing ones, so it is not read against the enclosing env
-        # (#1480 review, #1492): there a closure's `@Nat.0` was the
-        # enclosing PARAMETER, and a measure proved over it held for a
-        # value the call never passes.
-        if isinstance(expr, ast.HandleExpr):
-            # The state's initialiser and the handled body are enclosing-
-            # scope code: the state is no slot in the body (§7.5.1).
-            if expr.state is not None:
-                self._walk_for_calls(match, expr.state.init_expr,
-                                     z3_path_conds, results, smt, slot_env)
-            self._walk_for_calls(match, expr.body, z3_path_conds,
-                                 results, smt, slot_env)
-            # #1492: a clause body binds the operation's arguments (and the
-            # handler state) as its most recent slots, so reading its calls
-            # against the enclosing env named the PARAMETER where the clause
-            # names the thrown value — `throw(@Nat) -> { f(@Nat.0 - 1) }`
-            # under `throw(@Nat.0 + 5)` was proved a decrease and trapped.
-            # It is read with no slots and no path facts: every call there
-            # is still found, and none can be proved from a binding this
-            # walk does not model.
-            for clause in expr.clauses:
-                self._walk_for_calls(match, clause.body,
-                                     [], results, smt, SlotEnv())
-                if clause.state_update is not None:
-                    self._walk_for_calls(match, clause.state_update[1],
-                                         [], results, smt, SlotEnv())
-            return
+    def _calls_binary(
+        self, expr: ast.BinaryExpr, path: _Path, smt: SmtContext,
+    ) -> Iterator[tuple[ast.Node, _Path]]:
+        # #1501: the right operand of `&&`, `||` and `==>` runs only
+        # where the left one does not decide the result.
+        yield expr.left, path
+        premise = smt.short_circuit_premise(expr, path.env)
+        yield expr.right, path if premise is None else path.assuming(premise)
 
-        if isinstance(expr, ast.AnonFn):
-            # #1492: the same for a closure.  Its parameters shadow outer
-            # slots of their type, so `fn(@Nat -> @Nat) { f(@Nat.0 - 1) }`
-            # applied to `n + 10` was read as `f(n - 1)` and proved; and a
-            # closure can be applied in another activation than the one
-            # that built it, where the entry measure is not the one the
-            # path facts describe.  The body is read with no slots and no
-            # path facts, so its calls are found and none is proved.
-            self._walk_for_calls(match, expr.body, [],
-                                 results, smt, SlotEnv())
-            return
-
-        if isinstance(expr, (ast.ForallExpr, ast.ExistsExpr)):
-            # #1524 review: the domain is an operand evaluated in this
-            # activation, so it is read like one.  The predicate is a
-            # closure, and the branch above reads it as one: its calls are
-            # found and none is proved.
-            self._walk_for_calls(match, expr.domain, z3_path_conds,
-                                 results, smt, slot_env)
-            self._walk_for_calls(match, expr.predicate, z3_path_conds,
-                                 results, smt, slot_env)
-            return
-
-        if isinstance(expr, (ast.ConstructorCall, ast.QualifiedCall)):
-            for arg in expr.args:
-                self._walk_for_calls(match, arg, z3_path_conds,
-                                     results, smt, slot_env)
-            return
-
-        if isinstance(expr, ast.IndexExpr):
-            self._walk_for_calls(match, expr.collection, z3_path_conds,
-                                 results, smt, slot_env)
-            self._walk_for_calls(match, expr.index, z3_path_conds,
-                                 results, smt, slot_env)
-            return
-
-        if isinstance(expr, ast.ArrayLit):
-            for el in expr.elements:
-                self._walk_for_calls(match, el, z3_path_conds,
-                                     results, smt, slot_env)
-            return
-
-        if isinstance(expr, ast.InterpolatedString):
-            for part in expr.parts:
-                if isinstance(part, ast.Expr):
-                    self._walk_for_calls(match, part, z3_path_conds,
-                                         results, smt, slot_env)
-            return
-
-        if isinstance(expr, (ast.AssertExpr, ast.AssumeExpr)):
-            self._walk_for_calls(match, expr.expr, z3_path_conds,
-                                 results, smt, slot_env)
-            return
-
-        # Leaves (the checklist above): no sub-expression to hold a call.
-        return
-
-    # -----------------------------------------------------------------
-    # Primitive-operation safety obligations: @Nat subtraction underflow
-    # (#520), division/modulo by zero + array index bounds (#680)
-    # -----------------------------------------------------------------
+    def _calls_match(
+        self, expr: ast.MatchExpr, path: _Path, smt: SmtContext,
+    ) -> Iterator[tuple[ast.Node, _Path]]:
+        yield expr.scrutinee, path
+        scrutinee_z3 = smt.translate_expr(expr.scrutinee, path.env)
+        for index, match_arm in enumerate(expr.arms):
+            # #1403: through the one arm-context derivation, which is
+            # what stopped this walk reading an arm against the
+            # enclosing env.  It spends the discriminant and the arm's
+            # facts as PREMISES of the measure goal rather than on
+            # `_path_conditions`, because `_verify_decreases` folds its
+            # own premise set into the query.
+            arm = self._enter_match_arm(
+                expr.scrutinee, scrutinee_z3, match_arm.pattern,
+                smt, path.env,
+                earlier=[a.pattern for a in expr.arms[:index]],
+            )
+            arm_facts = list(path.facts)
+            if arm.condition is not None:
+                arm_facts.append(arm.condition)
+            arm_facts.extend(arm.facts)
+            yield match_arm, _Path(tuple(arm_facts), arm.env)
 
     def _assumed_block_fact(
         self, stmt: ast.Stmt, smt: SmtContext, slot_env: SlotEnv,
@@ -15928,3 +15805,53 @@ class ContractVerifier:
         passes the callee's module env (``_callee_alias_env``).
         """
         return naming.slot_name(te, self._current_alias_env if env is None else env)
+
+
+def _path_handle(
+    expr: ast.HandleExpr, path: _Path, smt: SmtContext,
+) -> Iterator[tuple[ast.Node, _Path]]:
+    """A `handle`'s context transition, for every walk built on `_Path`:
+    the state's initialiser and the handled body on the enclosing path, and
+    each clause, its body and its `with` update, on `_Path.fresh()`.
+
+    PR #1179 review F1: these value-carrying nodes were silently skipped,
+    so a recursive call inside them was invisible to `_verify_decreases` —
+    a measure-violating call in a handler clause or a closure body rode a
+    Tier-1 proof and the runtime guard then trapped a `verify`-green
+    program.  Path conditions are NOT extended here (conservative: fewer
+    assumptions can only make the proof harder, never wrongly easier).
+
+    A clause or a closure body binds slots of its own over the enclosing
+    ones, so it is not read against the enclosing env (#1480 review,
+    #1492): there a closure's `@Nat.0` was the enclosing PARAMETER, and a
+    measure proved over it held for a value the call never passes.
+    """
+    # The state's initialiser and the handled body are enclosing-
+    # scope code: the state is no slot in the body (§7.5.1).
+    if expr.state is not None:
+        yield expr.state, path
+    yield expr.body, path
+    # #1492: a clause body binds the operation's arguments (and the
+    # handler state) as its most recent slots, so reading its calls
+    # against the enclosing env named the PARAMETER where the clause
+    # names the thrown value — `throw(@Nat) -> { f(@Nat.0 - 1) }`
+    # under `throw(@Nat.0 + 5)` was proved a decrease and trapped.
+    # It is read with no slots and no path facts: every call there
+    # is still found, and none can be proved from a binding this
+    # walk does not model.
+    for clause in expr.clauses:
+        yield clause, _Path.fresh()
+
+
+def _path_closure(
+    expr: ast.AnonFn, path: _Path, smt: SmtContext,
+) -> Iterator[tuple[ast.Node, _Path]]:
+    """A closure's context transition, for every walk built on `_Path`."""
+    # #1492: the same for a closure.  Its parameters shadow outer
+    # slots of their type, so `fn(@Nat -> @Nat) { f(@Nat.0 - 1) }`
+    # applied to `n + 10` was read as `f(n - 1)` and proved; and a
+    # closure can be applied in another activation than the one
+    # that built it, where the entry measure is not the one the
+    # path facts describe.  The body is read with no slots and no
+    # path facts, so its calls are found and none is proved.
+    yield expr.body, _Path.fresh()
