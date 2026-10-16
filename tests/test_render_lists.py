@@ -849,3 +849,37 @@ class TestRegistryBlocks:
         assert RL.signature_text(["Map<K, V>", "K"], "Bool", ["K", "V"]) == (
             "forall<K, V> Map<K, V>, K -> Bool")
         assert RL.signature_text([], "Float64") == "() -> Float64"
+
+    def test_no_rendered_signature_loses_a_constraint_or_an_effect(self) -> None:
+        """A Signature cell writes a record's parameter and return types, and
+        neither its effect nor its constraints: each built-in a table lists is
+        pure, and its constraints are exactly the ones the table's section
+        states in prose, `Eq` and `Hash` on a `Set`'s element and on a
+        `Map`'s key.  A record carrying any other would lose it in its cell."""
+        from vera.builtins import BUILTINS
+        from vera.types import PureEffectRow
+
+        stated = {"signatures-set": (("Eq", "T"), ("Hash", "T")),
+                  "signatures-map": (("Eq", "K"), ("Hash", "K"))}
+        read = RL._read(ROOT, RL.SPEC, set(RL.SIGNATURE_BLOCKS))
+        assert not isinstance(read, str), read
+        text, spans = read
+        seen: dict[str, list[str]] = {}
+        for block, kind in RL.SIGNATURE_BLOCKS.items():
+            if kind is not None:
+                continue
+            start, end = spans[block]
+            section = text[text.rfind("\n#", 0, start):start]
+            constraints = stated.get(block, ())
+            for ability, var in constraints:
+                assert f"`{ability}`" in section and f"`{var}`" in section, (block, ability)
+            rows = [line for line in text[start:end].splitlines() if line.startswith("|")]
+            for line in rows[2:]:
+                cells = RL._row_cells(line)
+                named = RL._ROW_NAME.match(cells[0]) if cells else None
+                assert named is not None, line
+                signature = BUILTINS[named.group(1)].signature
+                assert signature.effect == PureEffectRow(), named.group(1)
+                assert signature.constraints == constraints, named.group(1)
+                seen.setdefault(block, []).append(named.group(1))
+        assert set(stated) <= set(seen), sorted(seen)

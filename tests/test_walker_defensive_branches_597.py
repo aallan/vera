@@ -14,8 +14,10 @@ result.  Pins each branch's behaviour against future regression.
 The 11 defensive branches:
 
 - ``_scan_io_ops`` (compilability.py): IndexExpr, ArrayLit,
-  InterpolatedString, AnonFn → recurses into sub-exprs to find
-  IO/host-import builtins.
+  InterpolatedString, AnonFn → recurses into sub-exprs.  The walk
+  registers no import (each emitter registers the ones it calls,
+  #735), so these positions are pinned on compiled programs: a host
+  call in each declares its import.
 - ``_scan_expr_for_handlers`` (compilability.py): QualifiedCall,
   IndexExpr, ArrayLit, InterpolatedString, AnonFn → recurses
   into sub-exprs to find HandleExpr nodes.
@@ -77,75 +79,63 @@ def _make_ctx() -> WasmContext:
     return WasmContext(string_pool=StringPool())
 
 
-def _io_print(arg: ast.Expr = ast.UnitLit()) -> ast.QualifiedCall:
-    return ast.QualifiedCall(qualifier="IO", name="print", args=(arg,))
-
-
-def _slot(type_name: str = "Int", index: int = 0) -> ast.SlotRef:
-    return ast.SlotRef(
-        type_name=type_name, type_args=None, index=index)
-
-
 # =====================================================================
 # `_scan_io_ops` defensive branches (#597)
 # =====================================================================
 
 
+def _declared_imports(body: str, formals: str, ret: str, effect: str,
+                      decls: str = "") -> set[str]:
+    """The host imports a module declares whose `main` has *body*."""
+    from tests import pipeline
+
+    source = (f"{decls}public fn main({formals} -> @{ret})\n"
+              f"  requires(true)\n  ensures(true)\n  {effect}\n{{\n  {body}\n}}\n")
+    compiled = pipeline.compile(source)
+    assert compiled.ok, [d.description for d in compiled.diagnostics]
+    assert "main" in compiled.exports
+    return set(re.findall(r'^\s*\(import "vera" "([^"]+)" ', compiled.wat, re.MULTILINE))
+
+
 class TestScanIoOpsDefensiveBranches:
-    """Each branch recurses into a sub-expression position so IO/
-    host-import builtins buried inside are still registered."""
+    """A host call in each of these positions declares its import.  The
+    pre-scan's branches walk them and register nothing: the emitter that
+    lowers the call registers the import it calls (#735), so what pins each
+    position is the compiled module's declaration."""
 
     def test_indexexpr_collection_recursion(self) -> None:
-        cg = _make_cg()
-        # `coll[0]` where coll is an IO call (purely synthetic —
-        # type checker would reject this construction at the source
-        # level, but the scanner must still find it for the defensive
-        # branch to be testable).
-        node = ast.IndexExpr(
-            collection=_io_print(), index=ast.IntLit(value=0))
-        cg._scan_io_ops(node)
-        assert "print" in cg._host_imports_used
+        # An IO call's array indexed directly is dropped (E602), so the
+        # collection is a host built-in's.
+        assert "map_keys$ks" in _declared_imports(
+            "map_keys(@Map<String, Int>.0)[0]", "@Map<String, Int>", "String",
+            "effects(pure)")
 
     def test_indexexpr_index_recursion(self) -> None:
-        cg = _make_cg()
-        node = ast.IndexExpr(
-            collection=_slot("Array"), index=_io_print())
-        cg._scan_io_ops(node)
-        assert "print" in cg._host_imports_used
+        assert "time" in _declared_imports(
+            "@Array<Int>.0[nat_to_int(IO.time(()))]", "@Array<Int>", "Int",
+            "effects(<IO>)")
 
     def test_arraylit_elements_recursion(self) -> None:
-        cg = _make_cg()
-        node = ast.ArrayLit(elements=(_io_print(),))
-        cg._scan_io_ops(node)
-        assert "print" in cg._host_imports_used
+        assert "read_line" in _declared_imports(
+            "[IO.read_line(())]", "", "Array<String>", "effects(<IO>)")
 
     def test_interpolated_string_parts_recursion(self) -> None:
-        cg = _make_cg()
-        # InterpolatedString.parts is `tuple[Expr | str, ...]` —
-        # string fragments are bare ``str`` and Expr parts are AST
-        # nodes.  The defensive branch must skip the str parts and
-        # recurse into the Expr parts.
-        node = ast.InterpolatedString(
-            parts=("prefix: ", _io_print(), " suffix"))
-        cg._scan_io_ops(node)
-        assert "print" in cg._host_imports_used
+        # The literal fragments are bare `str`, the interpolated part an
+        # expression.
+        assert "read_line" in _declared_imports(
+            'IO.print("prefix: \\(IO.read_line(())) suffix")', "", "Unit",
+            "effects(<IO>)")
 
     def test_anonfn_body_recursion(self) -> None:
-        cg = _make_cg()
-        # The AnonFn defensive branch is the PRIMARY defence —
-        # `_compile_lifted_closure` does NOT call `_scan_io_ops`
-        # on lifted bodies.  Without this branch, IO ops inside
-        # a closure body would silently miss their host-import
-        # registration.
-        body = ast.Block(statements=(), expr=_io_print())
-        node = ast.AnonFn(
-            params=(),
-            return_type=ast.NamedType(name="Unit", type_args=None),
-            effect=ast.PureEffect(),
-            body=body,
-        )
-        cg._scan_io_ops(node)
-        assert "print" in cg._host_imports_used
+        # A lifted closure's body: its own context registers the import,
+        # merged into the module's when the closure is lifted.
+        decls = (
+            "type Reader = fn(Unit -> String) effects(<IO>);\n\n"
+            "private fn run(@Reader -> @String)\n  requires(true)\n"
+            "  ensures(true)\n  effects(<IO>)\n{\n  apply_fn(@Reader.0, ())\n}\n\n")
+        assert "read_line" in _declared_imports(
+            "run(fn(@Unit -> @String) effects(<IO>) { IO.read_line(()) })", "", "String",
+            "effects(<IO>)", decls)
 
 
 # =====================================================================

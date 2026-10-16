@@ -317,8 +317,9 @@ class WasmContext(
             adt_tp_param_names or {}
         )
         # #735: the host imports the emitted calls use, by import name (a
-        # row's, or an instance's: `map_insert$ks_vi`), propagated to codegen
-        # core, which declares them from the registry's rows.
+        # row's, or an instance's: `map_insert$ks_vi`), each emitter adding
+        # the ones it calls, propagated to codegen core, which declares them
+        # from the registry's rows.
         self._host_imports_used: set[str] = set()
         # #573: wrap-table flag — set when any host-handle type
         # migrates to the heap-wrap-as-ADT scheme so the GC

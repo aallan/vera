@@ -532,6 +532,9 @@ class CallsMixin:
             # not required.
             self._host_imports_used.add(call.name)
             instructions.append(f"call $vera.{call.name}")
+        elif call.qualifier == "IO":
+            self._host_imports_used.add(call.name)
+            instructions.append(f"call $vera.{call.name}")
         else:
             instructions.append(f"call $vera.{call.name}")
         # IO.exit never returns — add unreachable to satisfy WASM validation

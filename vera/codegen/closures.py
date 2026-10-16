@@ -932,8 +932,9 @@ class ClosureLiftingMixin:
                         ]
 
         # Propagate the host imports the closure's body uses to module level:
-        # every family's, as the per-function merge does (#735).  The
-        # _scan_io_ops AnonFn branch predicts them too (#808, #841).
+        # every family's, as the per-function merge does (#735).  This is
+        # their one route: each emitter registers the imports it calls, on
+        # the closure's own `ctx`.
         self._host_imports_used.update(ctx._host_imports_used)
         # #1479: a check inside a lifted closure body raises its signal's
         # flag on the closure ctx; OR it into the module ``self`` so

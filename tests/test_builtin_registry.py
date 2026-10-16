@@ -16,6 +16,9 @@ those parameters.  Each built-in gets these cells:
   that implement a built-in function are those of this built-in's record:
   one family's, for a `Host` record, and none, for an `Inline` or
   `Prelude` one;
+- for a `Host` record, the same call in a function code generation drops
+  (E602) declares what no call declares: a module declares the imports its
+  emitted code calls;
 - E151 refuses a declaration of its name, except a `Prelude` record's, whose
   declaration replaces the prelude's body and is accepted;
 - its emitter exists on `WasmContext` and takes the arguments its record's
@@ -27,8 +30,9 @@ those parameters.  Each built-in gets these cells:
 The hosts read the registry too: the Python host binds a module's imports
 through the binder of each row's family, and refuses one no row declares or
 no binder defines; the browser runtime's roster is the registry's rendering,
-and every corpus module's imports are among its rows; the WASI component's
-refusals follow each row's worlds.
+and every corpus module's imports are among its rows; each WASI world's gate
+refuses a module declaring an import whose row's worlds lack it, so the
+world's import parser reads only rows it implements.
 
 The cells that pin each reader to the registry change a record and watch
 the reader follow: the checker's `FunctionInfo`, the dispatch, the
@@ -41,6 +45,7 @@ intrinsics to their behaviour, which no record decides.
 from __future__ import annotations
 
 import ast as pyast
+import functools
 import inspect
 import re
 from collections.abc import Iterator
@@ -546,6 +551,124 @@ def test_call_declares_its_registry_imports(spec: BuiltinSpec) -> None:
 
 
 # ---------------------------------------------------------------------
+# A call code generation never emits declares nothing
+# ---------------------------------------------------------------------
+
+
+#: A statement code generation cannot lower, an array of closures (E602), so
+#: the function holding it is dropped after the pre-scan has walked its body.
+#: It calls no host import.
+_DROPPER = "let @Array<Dropper> = [fn(@Int -> @Int) effects(pure) { @Int.0 }];"
+
+#: A `main` that calls no host import, so no import a call declares is one
+#: `main` declares too.
+_ZERO = _fn_source("main", "@Unit", "Int", "effects(pure)", "0")
+
+_PRINTS = """\
+public fn main(-> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.print("hi\\n")
+}
+"""
+
+
+def _dropped_source(formals: str, ret: str, effect: str, body: str,
+                    decls: str = "") -> str:
+    """A program whose public `dead` holds *body* after the dropper, beside
+    a `main` that calls no host import."""
+    return (f"{decls}type Dropper = fn(Int -> Int) effects(pure);\n\n"
+            + _fn_source("dead", formals, ret, effect, f"{_DROPPER}\n  {body}")
+            + "\n" + _ZERO)
+
+
+def _module_declarations(source: str, *, dropped: bool) -> dict[str, str]:
+    """The declarations of *source*'s module, its `dead` dropped by code
+    generation (E602) or compiled."""
+    compiled = pipeline.compile(source)
+    assert compiled.ok, [d.description for d in compiled.diagnostics]
+    assert ("dead" in compiled.exports) is not dropped
+    assert ("E602" in {d.error_code for d in compiled.warnings}) is dropped
+    return _declared(compiled.wat)
+
+
+@functools.cache
+def _no_call_declarations() -> dict[str, str]:
+    """What the module declares with no call in `dead`: nothing."""
+    return _module_declarations(
+        _dropped_source("@Int", "Int", "effects(pure)", "@Int.0"), dropped=True)
+
+
+@pytest.mark.parametrize("spec", _HOSTED, ids=_ids(_HOSTED))
+def test_a_dropped_call_declares_nothing(spec: BuiltinSpec) -> None:
+    """A call in a function code generation drops declares what no call
+    declares, and the same function compiled declares the call's import: a
+    module declares the imports its emitted code calls, and the pre-scan's
+    walk of a body is no source of them (it declared the call's row, or for
+    a `Map` or `Set` row raised the wrap table's flag, #735)."""
+    aliases, formals, ret, call = probe_parts(spec)
+    decls = "".join(f"type {n} = {d};\n\n" for n, d in aliases.items())
+    effect = _effect_clause(spec)
+    # `dead` also takes a value of its return type, which the module with
+    # no call returns: the two mention the same types, so a prelude body a
+    # type brings in (a `Json`'s, an `HtmlNode`'s) is compiled in both.
+    both = f"{formals}, @{ret}"
+    dropped = _dropped_source(both, ret, effect, call, decls)
+    without = _dropped_source(both, ret, effect, f"@{ret}.0", decls)
+    assert (_module_declarations(dropped, dropped=True)
+            == _module_declarations(without, dropped=True))
+    kept = decls + _fn_source("dead", formals, ret, effect, call) + "\n" + _ZERO
+    assert any((row := host_import(name)) is not None and row.serves == spec.name
+               for name in _module_declarations(kept, dropped=False))
+
+
+#: The rows a host effect operation's call declares, the fused `async` forms
+#: and `await` among them; a `State` cell's are declared by its handler or
+#: its effect row, before the function is emitted.
+_OPERATION_ROWS = [
+    row for row in HOST_IMPORTS
+    if row.serves == "await"
+    or row.serves.split(".")[0] in ("IO", "Http", "Inference", "DB", "Random")]
+
+_FUTURE = "@Future<Result<String, String>>"
+
+
+def _operation_body(row: Any) -> tuple[str, str]:
+    """The effect clause, and a body calling *row*'s operation with literal
+    arguments."""
+    from vera.environment import TypeEnv
+
+    if row.serves == "await":
+        return "effects(<Http, Async>)", (
+            f'let {_FUTURE} = async(Http.get("x"));\n'
+            f"  let @Result<String, String> = await({_FUTURE}.0);\n  ()")
+    effect, op = row.serves.split(".")
+    info = TypeEnv().effects[effect].operations[op]
+    literal = {"String": '"x"', "Unit": "()", "Nat": "1", "Int": "1"}
+    written = [_surface(t, {}, "") for t in info.param_types]
+    args = ", ".join("[]" if w.startswith("Array<") else literal[w] for w in written)
+    call = f"{effect}.{op}({args})"
+    if row.family == "async":
+        return "effects(<Http, Async>)", f"let {_FUTURE} = async({call});\n  ()"
+    ret = _surface(info.return_type, {}, "")
+    if ret in ("Unit", "Never"):
+        return f"effects(<{effect}>)", call
+    return f"effects(<{effect}>)", f"let @{ret} = {call};\n  ()"
+
+
+@pytest.mark.parametrize("row", _OPERATION_ROWS, ids=[row.name for row in _OPERATION_ROWS])
+def test_a_dropped_operation_declares_nothing(row: Any) -> None:
+    """The same for each host effect operation's row."""
+    effect, body = _operation_body(row)
+    dropped = _dropped_source("@Int", "Unit", effect, body)
+    assert _module_declarations(dropped, dropped=True) == _no_call_declarations()
+    kept = _fn_source("dead", "@Int", "Unit", effect, body) + "\n" + _ZERO
+    assert row.name in _module_declarations(kept, dropped=False)
+
+
+# ---------------------------------------------------------------------
 # A declaration of the built-in's name
 # ---------------------------------------------------------------------
 
@@ -869,6 +992,39 @@ def test_the_browser_refuses_an_import_no_row_declares(tmp_path: Path) -> None:
     assert "vera.no_such_import, which no row of the built-in registry" in proc.stderr
 
 
+def test_the_browser_refuses_an_import_it_leaves_unbound(tmp_path: Path) -> None:
+    """A declared import of a row the runtime binds nothing for is refused,
+    naming its row: run on a copy of the runtime whose roster holds one more
+    row, a stand-in no binding serves, by a module that imports it."""
+    import shutil
+    import subprocess
+
+    import wasmtime
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is not on PATH")
+    browser = ROOT / "vera" / "browser"
+    runtime = (browser / "runtime.mjs").read_text(encoding="utf-8")
+    roster_end = ("].map(([name, family, instance]) => [name, { name, family, instance }]));\n"
+                  "// render_lists:end host-imports\n")
+    assert runtime.count(roster_end) == 1
+    (tmp_path / "runtime.mjs").write_text(
+        runtime.replace(roster_end, '  ["stand_in", "math", ""],\n' + roster_end),
+        encoding="utf-8")
+    shutil.copy(browser / "harness.mjs", tmp_path / "harness.mjs")
+    compiled = pipeline.compile(_SIN).result
+    wasm = tmp_path / "unbound.wasm"
+    wasm.write_bytes(wasmtime.wat2wasm(_with_import(
+        compiled.wat, '  (import "vera" "stand_in" (func $vera.stand_in))')))
+    proc = subprocess.run(
+        [node, str(tmp_path / "harness.mjs"), str(wasm)],
+        capture_output=True, text=True, encoding="utf-8", timeout=60, check=False)
+    assert proc.returncode != 0 and proc.stdout == "", proc.stdout
+    assert ("the browser runtime binds no vera.stand_in, an import of the registry's"
+            " math row stand_in") in proc.stderr
+
+
 # ---------------------------------------------------------------------
 # WASI: each row's worlds decide what the component refuses
 # ---------------------------------------------------------------------
@@ -877,43 +1033,137 @@ def test_the_browser_refuses_an_import_no_row_declares(tmp_path: Path) -> None:
 class _Module:
     """What the WASI gates read of a compiled module."""
 
-    def __init__(self, names: list[str]) -> None:
-        self.wat = "\n".join(import_line(n) for n in names) + "\n"
+    def __init__(self, lines: list[str]) -> None:
+        self.wat = "\n".join(lines) + "\n"
         self.state_types: list[Any] = []
 
 
-#: One row of each WASI disposition, by its worlds, at an instance the
-#: server world implements where it is a map row.
-_DISPOSITIONS = [
-    pytest.param("print", True, True, id="both_worlds"),
-    pytest.param("read_line", True, False, id="cli_only"),
-    pytest.param("map_insert$ks_vs", False, True, id="server_only"),
-    pytest.param("sin", False, False, id="neither"),
-]
+def _planted(row: Any) -> tuple[str, str]:
+    """An import of *row* and its declaration: the row's own name, its
+    instance at `String` tags (the `Map` instances the server world
+    implements), or its `State` cell's at `Int`."""
+    if row.instance == CELL:
+        name = f"{row.name}_Int"
+        return name, next(line for line in registry.cell_lines("Int", "i64")
+                          if f'"{name}"' in line)
+    name = registry.instance_name(row.name, **dict.fromkeys(row.instance, "s"))
+    return name, import_line(name)
 
 
-@pytest.mark.parametrize(("name", "cli", "server"), _DISPOSITIONS)
-def test_wasi_follows_the_rows_worlds(name: str, cli: bool, server: bool) -> None:
+@pytest.mark.parametrize("world", [registry.WASI_CLI, registry.WASI_SERVER])
+@pytest.mark.parametrize("row", HOST_IMPORTS, ids=[row.name for row in HOST_IMPORTS])
+def test_wasi_follows_the_rows_worlds(row: Any, world: str) -> None:
+    """Each world's gate refuses a module declaring an import of a row whose
+    worlds lack it, naming the import (a flag family's and a cell's among
+    them), and admits one whose row's worlds hold it, which the world's
+    import parser then reads: no row reaches the parser's out-of-sync
+    error."""
     from vera.codegen import wasi
 
-    row = host_import(name)
-    assert row is not None
-    assert (registry.WASI_CLI in row.wasi, registry.WASI_SERVER in row.wasi) == (cli, server)
-    module: Any = _Module([name])
+    name, line = _planted(row)
+    module: Any = _Module([line])
+    cli = world == registry.WASI_CLI
+    gate = wasi._gate_families if cli else wasi._gate_families_server
+    if world not in row.wasi:
+        # A cli-only IO operation is refused with its own reason.
+        reason = None if cli else wasi._SERVER_REJECTED_OPS.get(name)
+        with pytest.raises(ValueError, match=re.escape(reason or name)):
+            gate(module)
+        return
+    gate(module)
     if cli:
-        wasi._gate_families(module)
+        parsed = wasi._IMPORT_RE.match(line)
+        assert parsed is not None and parsed.group(1) == name, line
+        assert parsed.group(2) == wasi._expected_sig(wasi._OPS[name])
     else:
-        with pytest.raises(ValueError, match=rf"{row.family} \({re.escape(name)}\)"):
-            wasi._gate_families(module)
-    if server:
-        wasi._gate_families_server(module)
-        assert wasi._parse_server_imports(module.wat)
-    elif row.family in wasi._SERVER_REFUSED:
-        with pytest.raises(ValueError, match=rf"{row.family} \({re.escape(name)}\)"):
-            wasi._gate_families_server(module)
-    else:
-        with pytest.raises(ValueError, match=re.escape(wasi._SERVER_REJECTED_OPS[name])):
-            wasi._parse_server_imports(module.wat)
+        assert set(wasi._parse_server_imports(module.wat)) == {name}
+
+
+#: Modules whose one `Map`, `Set`, `Decimal` or math call is one code
+#: generation never emits, under an `assume` or in a function it drops
+#: (E602).  At 477f184a the cli world refused each, and with one set of the
+#: imports in use the first three reached its import parser's out-of-sync
+#: error, on the wrap table's helpers their bare `Map` or `Set` name raised.
+_NEVER_EMITTED = {
+    "assumed_map_contains": """\
+public fn f(@Map<String, Int> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  assume(map_contains(@Map<String, Int>.0, "a"));
+  7
+}
+""",
+    "dropped_map_insert": """\
+public fn g(@Map<Int, Array<Int>>, @Int -> @Map<Int, Array<Int>>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  map_insert(@Map<Int, Array<Int>>.0, @Int.0, [1, 2])
+}
+""",
+    "dropped_set_add": """\
+public fn g(@Set<Array<Int>> -> @Set<Array<Int>>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  set_add(@Set<Array<Int>>.0, [1, 2])
+}
+""",
+    "assumed_sin": """\
+public fn f(@Float64 -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  assume(sin(@Float64.0) < 2.0);
+  7
+}
+""",
+    "dropped_decimal_add": """\
+public fn g(@Set<Array<Int>> -> @Decimal)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Set<Array<Int>> = set_add(@Set<Array<Int>>.0, [1, 2]);
+  decimal_add(decimal_from_int(1), decimal_from_int(2))
+}
+""",
+}
+
+_HANDLES = """\
+public fn handle(@Request -> @Response)
+  requires(true)
+  ensures(true)
+  effects(<HttpServer>)
+{
+  Response(200, map_new(), "hi")
+}
+"""
+
+
+def test_repro_a_call_never_emitted_reaches_no_parser_error() -> None:
+    """Each module, beside a `main` and beside a `handle`, compiles to a
+    component for its world, and the cli world's runs: the call declares
+    nothing, so neither world's gate refuses it, and no import reaches a
+    parser that has no op for it."""
+    from vera.codegen.wasi import emit_wasi_component
+    from vera.runtime.wasi_host import execute_wasi_p2
+
+    for shape, source in _NEVER_EMITTED.items():
+        cli = pipeline.compile(source + "\n" + _PRINTS)
+        assert cli.ok, (shape, [d.description for d in cli.diagnostics])
+        dropped = "E602" in {d.error_code for d in cli.warnings}
+        assert dropped is shape.startswith("dropped_"), shape
+        assert isinstance(emit_wasi_component(cli.result, "cli"), str), shape
+        assert execute_wasi_p2(cli.result).stdout == "hi\n", shape
+        server = pipeline.compile(source + "\n" + _HANDLES)
+        assert server.ok, (shape, [d.description for d in server.diagnostics])
+        assert isinstance(emit_wasi_component(server.result, "server"), str), shape
 
 
 def test_the_wasi_tables_are_the_rows_worlds() -> None:
@@ -942,8 +1192,8 @@ def test_the_wasi_tables_are_the_rows_worlds() -> None:
 
 def test_the_wasi_refusal_names_the_modules_imports() -> None:
     """The refusal lists a family's imports as the module declares them,
-    families in the registry's order (a map call's instance, not the
-    pre-scan's bare `map_insert`)."""
+    families in the registry's order (a map call's instance, not the bare
+    `map_insert`)."""
     from vera.codegen.wasi import emit_wasi_component
 
     compiled = pipeline.compile("""\
@@ -1090,17 +1340,14 @@ def test_the_declarations_render_from_the_registry(
     assert line.endswith("(func $vera.md_render (param i32) (result i32) (result i32)))")
 
 
-def test_the_prescan_reads_the_registrys_host_builtins() -> None:
-    """The pre-scan registers a call to a host-imported built-in by one
-    membership test, against the registry's `Host` records; no family set
-    is written beside it, and code generation keeps one set of the host
-    imports in use where it kept one per family (#735)."""
-    from vera.codegen.compilability import CompilabilityMixin
-
+def test_one_set_holds_the_imports_the_emitted_code_calls() -> None:
+    """Code generation keeps one set of the host imports in use, where it
+    kept one per family: the emitters write it, each with the imports it
+    calls, and the pre-scan writes nothing to it and keeps no family set of
+    built-ins (#735)."""
     source = (ROOT / "vera" / "codegen" / "compilability.py").read_text(encoding="utf-8")
-    assert not re.findall(r"^\s*_[A-Z]+_BUILTINS\s*=", source.replace("_HOST_BUILTINS", ""),
-                          re.MULTILINE)
-    assert CompilabilityMixin._HOST_BUILTINS == {spec.name for spec in _HOSTED}
+    assert not re.findall(r"^\s*_[A-Z]+_BUILTINS\s*=", source, re.MULTILINE)
+    assert not re.findall(r"_host_imports_used\.(?:add|update)\(", source)
     generator = pipeline.compile(probe_source(BUILTINS["md_parse"])).generator
     assert generator is not None
     per_family = [a for a in vars(generator)

@@ -10,7 +10,6 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from vera import ast
-from vera.builtins import BUILTINS, Host
 from vera.lowering import (
     contract_exprs,
     effect_row_entry_refusal,
@@ -20,7 +19,7 @@ from vera.lowering import (
 from vera.narrowing import MEMORY_EFFECTS
 from vera.monomorphize import mangle_type_name
 from vera.wasm.helpers import CellNames
-from vera.wasm.async_fusion import await_needs_check, fused_async_target
+from vera.wasm.async_fusion import fused_async_target
 
 MAX_CELL_FAMILY_SYMBOL = 4096
 """Longest mangled State/Exn cell family symbol the compiler will emit.
@@ -434,27 +433,24 @@ class CompilabilityMixin:
             self._exn_types.append((type_name, wasm_tag_t))
         return None
 
-    # The built-ins lowered through a host import, the registry's `Host`
-    # records (`vera.builtins`, #735): a call to one registers its name below,
-    # which declares its row's import, or stands for a per-instance row's use.
-    _HOST_BUILTINS = frozenset(
-        name for name, spec in BUILTINS.items() if isinstance(spec.lowering, Host))
-
     def _scan_io_ops(self, node: ast.Node) -> None:
-        """Walk a function body looking for IO, Markdown, and Regex builtins.
+        """Walk a function body, and each predicate `emit_function` hands it.
 
-        Registers the import name of each host effect operation (print,
-        http_get, etc.) and each host-imported built-in it calls into
-        ``_host_imports_used``, which the module's declarations read.
+        The walk registers no host import: each emitter registers the
+        imports it calls, so a module declares what its emitted code calls,
+        and a call the walk reaches that code generation never emits (in an
+        `assume`, or in a function it drops) declares nothing (#735).  What
+        the walk still does is reach every closure, whose signature's
+        boundary-guard predicates `_scan_anon_fn_signature` derives, the
+        derivation that reports E617 and E618.
 
         # WALKER_COVERAGE: (#597 — every Expr subclass below has a
         # disposition; check_walker_coverage.py enforces completeness.)
         #
-        # Handled (recurses into sub-exprs that may contain registrable calls):
-        #   QualifiedCall     → registers IO/Http/Inference/Random op
-        #                       then recurses into args
-        #   FnCall            → registers Markdown/Regex/Map/Set/Decimal/
-        #                       Json/Html/Math builtin then recurses args
+        # Handled (recurses into sub-exprs):
+        #   QualifiedCall     → recurses into args
+        #   FnCall            → recurses into args (a fused async call's
+        #                       into the inner call's)
         #   Block             → recurses into each statement (LetStmt,
         #                       LetDestruct, ExprStmt) + the trailing expr
         #   LetStmt           → recurses into the bound value
@@ -484,24 +480,13 @@ class CompilabilityMixin:
         #                       (defensive add #597 — same masking as
         #                       ArrayLit)
         #   AnonFn            → recurses into body (defensive add
-        #                       #597 — IS the primary defence: pr-
-        #                       review of #668 surfaced that
-        #                       `_compile_lifted_closure` in
-        #                       `vera/codegen/closures.py` does NOT
-        #                       call this scanner on lifted bodies,
-        #                       so without this branch IO ops
-        #                       inside a closure body would silently
-        #                       miss their host-import registration)
-        #                       AND into the SIGNATURE's refinement
-        #                       predicates (#1210 round 7, via
-        #                       `_scan_anon_fn_signature`): a refined
-        #                       formal / return is guarded in that
-        #                       same lifted body
+        #                       #597) AND into the SIGNATURE's
+        #                       refinement predicates (#1210 round 7,
+        #                       via `_scan_anon_fn_signature`): a
+        #                       refined formal / return is guarded in
+        #                       the lifted body
         #   AssertExpr        → recurses into the condition (#1210
-        #                       round 2 — pure ≠ host-import-free: an
-        #                       `md_*` / `regex_*` builtin, or a
-        #                       handler clause reached through one,
-        #                       registers its import only here)
+        #                       round 2)
         #   AssumeExpr        → recurses into the condition
         #   ForallExpr        → recurses into domain + predicate
         #   ExistsExpr        → recurses into domain + predicate
@@ -529,21 +514,6 @@ class CompilabilityMixin:
         #   HoleExpr          → parser placeholder, check-time rejects
         """
         if isinstance(node, ast.QualifiedCall):
-            if node.qualifier == "IO":
-                self._host_imports_used.add(node.name)
-            elif node.qualifier == "Http":
-                self._host_imports_used.add(f"http_{node.name}")
-            elif node.qualifier == "Inference":
-                self._host_imports_used.add(f"inference_{node.name}")
-            elif node.qualifier == "DB":
-                self._host_imports_used.add(f"db_{node.name}")  # #229
-            elif node.qualifier == "Random":
-                # #465 — op names already begin with `random_`
-                # (`random_int`/`random_float`/`random_bool`), which
-                # both reads naturally at the call site and prevents
-                # collision with bare `int`/`float`/`bool` user
-                # effect ops.  Track the name directly.
-                self._host_imports_used.add(node.name)
             for arg in node.args:
                 self._scan_io_ops(arg)
             return
@@ -558,43 +528,16 @@ class CompilabilityMixin:
                     self._scan_io_ops(stmt.expr)
             self._scan_io_ops(node.expr)
         elif isinstance(node, ast.FnCall):
-            # #841: fused-async interception — must agree exactly with
-            # the WasmContext translation (shared predicates in
-            # vera/wasm/async_fusion.py).  A fused async(Http.get(...))
-            # registers the async_http_* import INSTEAD of the sync
-            # http_* the QualifiedCall branch would register when the
-            # walk reached the inner call; an await that needs the
-            # fused-handle runtime check additionally registers
-            # async_await (its argument is still scanned normally).
+            # #841: a fused async(Http.get(...)) is walked as the
+            # WasmContext translation lowers it (shared predicates in
+            # vera/wasm/async_fusion.py): the inner call's arguments.
             fused = fused_async_target(node)
             if fused is not None:
-                self._host_imports_used.add(fused)
                 inner = node.args[0]
                 assert isinstance(inner, ast.QualifiedCall)  # noqa: S101
                 for arg in inner.args:
                     self._scan_io_ops(arg)
                 return
-            # NOTE: this pre-scan registration is redundant-but-benign for
-            # await — the WasmContext translation's single registration
-            # site in calls_markup.py already guarantees the import ⟺
-            # check ⟺ host coherence.  It is kept so the two passes call
-            # the shared predicate with identical inputs (the module
-            # docstring's "both passes MUST agree" invariant) rather
-            # than one of them silently drifting.
-            if (
-                node.name == "await"
-                and len(node.args) == 1
-                and await_needs_check(
-                    node.args[0],
-                    self._future_ret_fns,
-                    self._future_ret_module_fns,
-                    self._type_aliases,
-                    self._type_alias_params,
-                )
-            ):
-                self._host_imports_used.add("async_await")
-            if node.name in self._HOST_BUILTINS:
-                self._host_imports_used.add(node.name)
             for arg in node.args:
                 self._scan_io_ops(arg)
         elif isinstance(node, ast.ConstructorCall):
@@ -616,10 +559,7 @@ class CompilabilityMixin:
                 self._scan_io_ops(arm.body)
         elif isinstance(node, ast.HandleExpr):
             # All four sub-expression positions, matching
-            # `_scan_expr_for_handlers` (#1210): a host-imported builtin
-            # reached only from a state-init expression, a clause body, or a
-            # clause's `with` update would otherwise emit an orphaned
-            # `call $vera.<name>` with no import declaration.
+            # `_scan_expr_for_handlers` (#1210).
             if node.state is not None:
                 self._scan_io_ops(node.state.init_expr)
             for clause in node.clauses:
@@ -627,15 +567,7 @@ class CompilabilityMixin:
                 if clause.state_update is not None:
                     self._scan_io_ops(clause.state_update[1])
             self._scan_io_ops(node.body)
-        # Defensive sub-expr recursion (#597) — three of the four
-        # branches below (IndexExpr, ArrayLit, InterpolatedString)
-        # are masked today by type-checker rules and the [E602]
-        # codegen-skip path; the AnonFn branch is the PRIMARY
-        # defence — the closure compile pipeline does not call
-        # this scanner on lifted bodies (verified by pr-review
-        # audit on #668), so IO ops inside a closure body would
-        # silently miss their host-import registration without
-        # this branch.
+        # Defensive sub-expr recursion (#597).
         elif isinstance(node, ast.IndexExpr):
             self._scan_io_ops(node.collection)
             self._scan_io_ops(node.index)
@@ -650,14 +582,10 @@ class CompilabilityMixin:
         elif isinstance(node, ast.AnonFn):
             # Body AND signature (#1210 round 7): a refined formal / return
             # has its predicate lowered as a boundary guard in the lifted
-            # body, so an `md_*` / `regex_*` builtin written in one is
-            # emitted from here and registered by nobody else.
+            # body.
             self._scan_anon_fn_signature(node, self._scan_io_ops)
             self._scan_io_ops(node.body)
-        # #1210 round 2 — symmetrical with `_scan_expr_for_handlers`.  The
-        # handler walk now descends these positions, so a handler reached
-        # through one is lowered; anything its clause bodies call has to be
-        # registered from here or the module references an undeclared import.
+        # #1210 round 2 — symmetrical with `_scan_expr_for_handlers`.
         elif isinstance(node, (ast.AssertExpr, ast.AssumeExpr)):
             self._scan_io_ops(node.expr)
         elif isinstance(node, (ast.ForallExpr, ast.ExistsExpr)):

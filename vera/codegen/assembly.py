@@ -74,14 +74,16 @@ class AssemblyMixin:
     def _declare_host_imports(self, parts: list[str]) -> None:
         """Declare the host imports the module calls, from the registry.
 
-        ``_host_imports_used`` holds every import name code generation
-        recorded, the pre-scan's and each emitted call's: an effect
-        operation's import, a host-imported built-in's name, and an
-        instance's (``map_insert$ks_vi``) for a ``Map``, ``Set`` or
-        ``Decimal`` call.  A family the module calls by name declares its
-        rows among them, where a per-instance row's own name declares
-        nothing.  The wrap table's helpers and the two signals are declared
-        by flag, and the four imports of a `State` cell once per cell.
+        ``_host_imports_used`` holds the import name of every call the
+        module's emitted code makes, each emitter's: an effect operation's
+        import, a host-imported built-in's name, and an instance's
+        (``map_insert$ks_vi``) for a ``Map`` or ``Set`` call, so a call
+        code generation never emits declares nothing and raises no flag.
+        A family the module calls by name declares its rows among them.
+        The wrap table's helpers and the two signals are declared by flag,
+        and the four imports of a `State` cell once per cell, which a
+        handler or a declared effect row registers before the function is
+        emitted (the `old()` snapshot reads the cells while it is).
 
         Every flag an import in use sets is set before anything is declared:
         the wrap table's helpers come before the Json, Html and fused-async
