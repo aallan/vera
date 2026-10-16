@@ -1111,8 +1111,8 @@ def test_1413_every_reader_of_a_source_fact_consults_the_one_gate() -> None:
         "verifier:_check_nested_refinement_obligation",
         "verifier:_check_refined_binding_obligation_term",
         "verifier:_declared_type_facts",
+        "verifier:_nat_block",
         "verifier:_subpattern_source_facts",
-        "verifier:_walk_for_nat_binding_obligations",
     ], (
         f"the set of functions reading a declared-type source fact changed: "
         f"{readers}.  A new one must call `_established_facts` (the check "

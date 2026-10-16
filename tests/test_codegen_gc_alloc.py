@@ -444,12 +444,14 @@ public fn f(-> @Int)
         assert layer2 == layer2_expected, (
             f"Layer 2 opcode pattern drifted: {layer2!r}"
         )
-        # The gate is worthless unless BOTH candidate sites carry it —
-        # the Phase 2 shadow-stack seed and the Phase 2b transitive
-        # scan — and unless Phase 1 actually fills the bitmap they read.
-        assert wat.count("call $gc_is_base") == 2, (
-            "both candidate sites (Phase 2 seed, Phase 2b scan) must "
-            "consult the object-base bitmap"
+        # The gate is worthless unless EVERY candidate site carries it —
+        # the Phase 2 shadow-stack seed, and the Phase 2b scan both its
+        # drain and its rescan of the objects a full worklist dropped
+        # children of (#1510) run — and unless Phase 1 actually fills
+        # the bitmap they read.
+        assert wat.count("call $gc_is_base") == 3, (
+            "every candidate site (Phase 2 seed, Phase 2b drain scan, "
+            "Phase 2b rescan) must consult the object-base bitmap"
         )
         assert wat.count("call $gc_set_base") == 1, (
             "Phase 1's walk must record every object base"
@@ -774,29 +776,24 @@ public fn main(@Unit -> @Int)
 
 
 class TestWorklistOverflow348:
-    """`#348`: GC worklist overflow trap (was: silent use-after-free).
+    """`#348`: the GC mark worklist's size and region.
 
     The mark-phase worklist sits between the shadow stack and the
-    heap.  Pre-fix: 16 KiB capacity (4 096 entries); when full, the
-    push branches in Phase 2 (seed) and Phase 2b (mark scan) silently
-    skipped — leaving reachable objects unmarked, which the sweep
-    phase then freed as garbage (a real use-after-free hole for
-    programs with object graphs holding more than ~4 K pointers
-    reachable from a single root).
-
-    Post-fix:
-      - Worklist quadrupled to 64 KiB (16 384 entries).  Reasonable
-        program shapes don't reach the cap.
-      - Both push branches now `unreachable` on overflow rather than
-        silently dropping.  Any residual overflow is a clean WASM
-        trap, not silent corruption.
+    heap.  Before #348 it held 4 096 entries and a push that found it
+    full was skipped, leaving a reachable object unmarked for the
+    sweep to free; #348 quadrupled it to 64 KiB (16 384 entries) and
+    made a full worklist trap.  #1510 removed the trap: a full
+    worklist now drops the push and records the object being scanned,
+    and the dropped children are marked by a rescan, so marking
+    completes for any heap — `tests/test_gc_mark_width_1510.py` is
+    that class's instrument.
 
     The wide-graph runtime regression is covered directly: the
     `array_map` shadow-stack overflow that used to trip at ~4 000
     elements was #570, since fixed (the stress suite runs
     `array_map` over 10 000 ints), so the 5 000-element
     `Array<Box>` graph below exercises the mark loop at full width,
-    plus structural pins on the WAT.
+    plus a structural pin on the region's size.
     """
 
     def test_wide_graph_with_gc_pressure(self) -> None:
@@ -856,55 +853,3 @@ public fn main(-> @Int)
             'i32 (i32.const 16384))'
         ) in result.wat
         assert "(global $gc_heap_start i32 (i32.const 81920))" in result.wat
-
-    def test_worklist_overflow_traps_in_wat(self) -> None:
-        """Structural pin: both worklist push branches trap on overflow.
-
-        Pre-fix, the seed (Phase 2) and mark-scan (Phase 2b) push
-        branches both used `i32.lt_u` followed by a guarded push,
-        silently dropping pushes when the worklist was full.
-        Post-fix, both use `i32.ge_u` followed by `unreachable` —
-        any overflow is a clean trap rather than silent corruption.
-        """
-        source = """\
-private data Box { MkBox(Int) }
-
-public fn main(-> @Int)
-  requires(true) ensures(true) effects(pure)
-{ match MkBox(42) { MkBox(@Int) -> @Int.0 } }
-"""
-        result = _compile_ok(source)
-        wat = result.wat
-        # Extract the $gc_collect function body for inspection.
-        gc_start = wat.index("(func $gc_collect")
-        gc_end = wat.index("\n  (func ", gc_start + 1) if "\n  (func " in wat[gc_start + 1 :] else len(wat)
-        gc_collect = wat[gc_start:gc_end]
-        # Match the exact overflow-guard opcode sequence:
-        #   local.get $wl_ptr
-        #   local.get $wl_end
-        #   i32.ge_u
-        #   if
-        #     unreachable
-        # (with arbitrary indentation between lines).  Pre-fix the
-        # corresponding sequence used `i32.lt_u` followed by a push,
-        # so this regex would match zero times against a regressed
-        # file even if `i32.ge_u` continued to appear elsewhere.
-        # The two matches correspond to:
-        #   - Phase 2 seed: scan_ptr loop, push of root pointers
-        #   - Phase 2b mark-scan: per-payload-word push of children
-        pattern = re.compile(
-            r"local\.get \$wl_ptr\s*"
-            r"local\.get \$wl_end\s*"
-            r"i32\.ge_u\s*"
-            r"if\s*"
-            r"unreachable",
-            re.MULTILINE,
-        )
-        matches = pattern.findall(gc_collect)
-        assert len(matches) >= 2, (
-            f"Expected ≥2 worklist-overflow guard sequences in $gc_collect "
-            f"(Phase 2 seed + Phase 2b scan), found {len(matches)}.  "
-            f"Pre-fix shape used `i32.lt_u` + push; post-fix uses "
-            f"`i32.ge_u` + `unreachable` — a regression here would "
-            f"mean one or both push branches reverted to silent-drop."
-        )

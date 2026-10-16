@@ -196,10 +196,10 @@ only_mutate = [
 # in-process oracle also reads these repo files (the example round-trips in
 # test_codegen_infrastructure / _effects / _strings; test_errors'
 # error-display-sync against README / docs / spec / AGENTS.md and
-# scripts/build_site.py; the gates that test_formatter, test_checker_errors
-# and test_walker_defensive_branches_597 load from scripts/), so the
-# ./mutants/ copy needs them: mutmut's stats pass runs the selection with
-# -x, and one test that cannot pass in the copy stops every run.
+# scripts/build_site.py; the gates that test_formatter and
+# test_checker_errors load from scripts/), so the ./mutants/ copy needs
+# them: mutmut's stats pass runs the selection with -x, and one test that
+# cannot pass in the copy stops every run.
 also_copy = ["examples/", "README.md", "docs/", "spec/", "scripts/", "AGENTS.md"]
 # `mutmut run` copies the project to ./mutants/ and runs the suite there,
 # so the working tree is never mutated in place.
@@ -284,7 +284,7 @@ pytest_add_cli_args_test_selection = [
     "tests/test_markdown.py",
     "tests/test_resolver.py",
     "tests/test_prelude.py",
-    "tests/test_walker_defensive_branches_597.py",
+    "tests/test_expr_fold.py",
     "tests/test_execute_characterization.py",
 ]
 

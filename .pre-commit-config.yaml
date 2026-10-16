@@ -92,8 +92,8 @@ repos:
         # the formatter: this PR changed it from `vera/transform.py` and
         # `vera/ast.py` (a new `where_span`), neither of which a
         # formatter-only pattern matches.  Match all Python under
-        # `vera/` (same reasoning as walker-coverage and
-        # diagnostic-fields) so no input to `vera fmt` can change
+        # `vera/` (same reasoning as diagnostic-fields) so no input to
+        # `vera fmt` can change
         # without re-running the gate.
         files: '(\.vera$|vera/.*\.py$|vera/grammar\.lark$|scripts/check_corpus_canonical\.py$)'
 
@@ -157,22 +157,6 @@ repos:
         pass_filenames: false
         files: '(vera/grammar\.lark$|spec/10-grammar\.md$|scripts/check_grammar_alignment\.py$)'
 
-      - id: walker-coverage
-        name: walker coverage
-        entry: .venv/bin/python scripts/check_walker_coverage.py
-        language: system
-        pass_filenames: false
-        # Match all Python under `vera/` plus the script itself.
-        # The script's auto-discovery globs `vera/**/*.py` for
-        # walkers carrying the `WALKER_COVERAGE:` marker, so the
-        # hook's trigger must be at least as broad — otherwise a
-        # new walker file landing outside the previously-listed
-        # subpaths (e.g. `vera/transform.py`, `vera/parser/foo.py`)
-        # would be auto-discovered by the script but edits to it
-        # wouldn't trigger the hook, replicating the registry-
-        # drift silent-skip class this PR is meant to close.
-        files: '(vera/.*\.py$|scripts/check_walker_coverage\.py$)'
-
       - id: test-drivers
         name: test drivers
         entry: .venv/bin/python scripts/check_test_drivers.py
@@ -194,7 +178,8 @@ repos:
         pass_filenames: false
         # The script auto-discovers every Diagnostic(...) constructor and
         # _error/_warning call under `vera/**/*.py`, so the trigger must be
-        # at least as broad as that glob (same reasoning as walker-coverage).
+        # at least as broad as that glob, or an edit to a file it reads would
+        # not re-run it.
         # It ALSO validates each spec_ref against the section/chapter titles in
         # `spec/**/*.md`, so a spec-only retitle can invalidate an unchanged
         # citation — include spec markdown so that edit re-runs the check too.
@@ -207,7 +192,7 @@ repos:
         pass_filenames: false
         # Auto-discovers every text-mode open()/read_text()/write_text() under
         # vera/, scripts/, tests/ (#645), so the trigger must be at least that
-        # broad (same reasoning as diagnostic-fields / walker-coverage).
+        # broad (same reasoning as diagnostic-fields).
         files: '((vera|scripts|tests)/.*\.py$)'
 
       # Offline: limitations.json loads, and the two hand-kept Bugs

@@ -889,6 +889,8 @@ _READERS: dict[tuple[str, str, str], str] = {
     ("vera/verifier.py", "ContractVerifier._narrows_into_refined",
      "_resolved_type_of"): "a refinement's identity, never inferred from "
                            "a literal",
+    ("vera/verifier.py", "ContractVerifier._nat_block",
+     "_resolved_type_of"): "facts a slot or call source establishes",
     ("vera/verifier.py", "ContractVerifier._obligate_destructure_narrowings",
      "_resolved_type_of"): "the source's arity and refined components; "
                            "the sign legs read the component classifier",
@@ -906,8 +908,6 @@ _READERS: dict[tuple[str, str, str], str] = {
     ("vera/verifier.py", "ContractVerifier._subpattern_source_facts",
      "_resolved_type_of"): "facts an opaque scrutinee's declaration "
                            "establishes",
-    ("vera/verifier.py", "ContractVerifier._walk_for_nat_binding_obligations",
-     "_resolved_type_of"): "facts a slot or call source establishes",
     ("vera/wasm/calls.py", "CallsMixin._unify_param_arg_wasm",
      "_expr_semantic_types"): "clone naming (#1327), not a guard",
     ("vera/wasm/context.py", "WasmContext.__init__",
@@ -948,7 +948,11 @@ _TARGET_READERS: dict[tuple[str, str, str], str] = {
      "_expr_target_types"): "threads the table into a function's context",
     ("vera/verifier.py", "ContractVerifier.__init__",
      "_expr_target_types"): "stores the table",
+    ("vera/verifier.py", "ContractVerifier._nat_array",
+     "_target_type_of"): _TARGET,
     ("vera/verifier.py", "ContractVerifier._nat_binding_target",
+     "_target_type_of"): _TARGET,
+    ("vera/verifier.py", "ContractVerifier._nat_constructor_call",
      "_target_type_of"): _TARGET,
     ("vera/verifier.py", "ContractVerifier._nested_refinement_formal",
      "_target_type_of"): _TARGET,
@@ -956,8 +960,6 @@ _TARGET_READERS: dict[tuple[str, str, str], str] = {
      "_target_type_of"): _TARGET,
     ("vera/verifier.py", "ContractVerifier._target_type_of",
      "_expr_target_types"): "the accessor",
-    ("vera/verifier.py", "ContractVerifier._walk_for_nat_binding_obligations",
-     "_target_type_of"): _TARGET,
     ("vera/wasm/context.py", "WasmContext.__init__",
      "_expr_target_types"): "stores the table",
     ("vera/wasm/context.py", "WasmContext.set_expr_target_types",

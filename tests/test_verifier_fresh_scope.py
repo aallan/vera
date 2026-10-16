@@ -290,9 +290,7 @@ public fn f(@Array<Int>, @Array<Int> -> @Array<Int>)
 
 # =====================================================================
 # Review round: the nat-binding walker descends assert / assume
-# conditions (a call argument narrowing inside one is obligated) and
-# carries the WALKER_COVERAGE marker so the #597 gate enforces its
-# case split from now on.
+# conditions (a call argument narrowing inside one is obligated).
 # =====================================================================
 
 class TestNatBindingWalkerAssertAssume:

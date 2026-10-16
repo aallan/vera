@@ -8827,23 +8827,83 @@ class ContractVerifier:
         and codegen-guarded on BOTH dispatch paths (clause-inlined and
         bare intrinsic), so they record ``tier3_runtime``.
 
-        # WALKER_COVERAGE: (#597 — every Expr subclass has a disposition;
-        # check_walker_coverage.py enforces completeness.)
-        #   IntLit             → intentionally ignored (leaf, no binding site)
-        #   BoolLit            → intentionally ignored (leaf)
-        #   FloatLit           → intentionally ignored (leaf)
-        #   StringLit          → intentionally ignored (leaf)
-        #   UnitLit            → intentionally ignored (leaf)
-        #   SlotRef            → intentionally ignored (leaf)
-        #   ResultRef          → intentionally ignored (leaf)
-        #   NullaryConstructor → intentionally ignored (leaf)
-        #   OldExpr            → cannot occur (body-only walker — old/new
-        #                        outside ensures is rejected at check time)
-        #   NewExpr            → cannot occur (as OldExpr)
-        #   HoleExpr           → cannot occur (check time rejects)
+        `vera.fold.contexts` reaches every position.  The classes whose arm
+        does more than read its children on its own path are steps in
+        `_nat_step`, each obligating its sites where the recursive walk
+        obligated them, between the children it walks.
         """
-        if (isinstance(expr, ast.FnCall) and expr.name == "apply_fn"
-                and expr.args):
+        start = _Path(assumptions, slot_env)
+        for _node, _path in fold.contexts(
+                expr, self._nat_step(decl, smt), start):
+            pass
+
+    def _nat_step(
+        self, decl: ast.FnDecl, smt: SmtContext,
+    ) -> fold.Step[_Path]:
+        """The `@Nat`-binding walk's arms, by class.
+
+        Every other class reads its children on its own path: a unary
+        operand, an index expression's collection and index, an
+        interpolated string's expression parts, an assertion's or an
+        assumption's condition, a quantifier's domain and predicate, a
+        handler state's initialiser, and the leaves (literals, slot refs,
+        `@T.result`, a nullary constructor, and `old` / `new`, which the
+        walk meets in an `ensures` clause and which hold no expression).
+
+        Expression containers that hold arbitrary sub-expressions: a
+        narrowing nested inside one (e.g. `[takes_nat(@Int.0)]`) must
+        still be visited.
+
+        PR #1202 review: an assert/assume CONDITION can host a
+        narrowing binding site (`assert(takes_nat(0 - 5) > 0)`) —
+        the primitive-op and calls walkers already descend these;
+        without the descent the nat-binding walker recorded nothing and
+        a provably-negative argument passed silently.
+
+        #779: the quantifier DOMAIN is enclosing-scope code (full
+        precision); the predicate is an AnonFn, whose step reads
+        its body under the fresh-scope env.  (Latent: that arm's
+        return obligations cite `_compile_lifted_closure`, but
+        quantifier predicates are INLINED by `_translate_quantifier`,
+        not lifted — moot today because the checker-accepted non-Bool
+        predicate shapes fail codegen before any guard could run.)
+
+        A handler clause's `with` update writes its handler's cell, which
+        the clause's own step cannot see: *cells* holds the cell type of
+        each handler whose clauses the walk is in, innermost last, and a
+        clause's step is handed the innermost one when it is created.
+        """
+        cells: list[Type | None] = []
+        arms: dict[type[ast.Node], Callable[
+            [ast.FnDecl, Any, _Path, SmtContext],
+            Iterator[tuple[ast.Node, _Path]]]] = {
+            ast.FnCall: self._nat_fn_call,
+            ast.ModuleCall: self._nat_call,
+            ast.ConstructorCall: self._nat_constructor_call,
+            ast.QualifiedCall: self._nat_qualified_call,
+            ast.AnonFn: self._nat_closure,
+            ast.IfExpr: self._nat_if,
+            ast.Block: self._nat_block,
+            ast.BinaryExpr: self._nat_binary,
+            ast.MatchExpr: self._nat_match,
+            ast.ArrayLit: self._nat_array,
+            ast.HandleExpr: (
+                lambda decl, e, path, smt:
+                self._nat_handle(decl, e, path, smt, cells)),
+        }
+
+        def step(node: ast.Node, path: _Path) -> Iterator[tuple[ast.Node, _Path]] | None:
+            if type(node) is ast.HandlerClause:
+                return self._nat_clause(decl, node, path, smt, cells[-1])
+            arm = arms.get(type(node))
+            return None if arm is None else arm(decl, node, path, smt)
+
+        return step
+
+    def _nat_fn_call(
+        self, decl: ast.FnDecl, expr: ast.FnCall, path: _Path, smt: SmtContext,
+    ) -> Iterator[tuple[ast.Node, _Path]]:
+        if expr.name == "apply_fn" and expr.args:
             # `apply_fn(closure, a0, a1, …)` is a checker special form (no
             # `param_types`), so it is excluded from the generic call-arg path
             # below; obligate each argument against its recovered closure
@@ -8871,8 +8931,8 @@ class ContractVerifier:
                     if (refined_target is not None
                             and self._narrows_into_refined(arg, refined_target)):
                         self._check_refined_binding_obligation(
-                            decl, arg, refined_target, smt, slot_env,
-                            assumptions, site="closure argument",
+                            decl, arg, refined_target, smt, path.env,
+                            path.facts, site="closure argument",
                             guarded=True,
                         )
                     # #1017: the @Int -> @Nat NARROWING.  A provably-negative
@@ -8885,7 +8945,7 @@ class ContractVerifier:
                     elif (self._nat_binding_target(arg, resolved_formal)
                             and self._narrows_into_nat(arg)):
                         self._check_nat_binding_obligation(
-                            decl, arg, smt, slot_env, assumptions,
+                            decl, arg, smt, path.env, path.facts,
                             site="closure argument", guarded=True,
                         )
                     # #1410, the closure-boundary twin of the call argument.
@@ -8902,1009 +8962,933 @@ class ContractVerifier:
                     # lifted prologue exactly as it does a function's — so
                     # the derivation is shared rather than forced.
                     self._check_nested_refinement_obligation(
-                        decl, arg, resolved_formal, smt, slot_env,
-                        assumptions, site="closure argument",
+                        decl, arg, resolved_formal, smt, path.env,
+                        path.facts, site="closure argument",
                     )
             for arg in expr.args:
-                self._walk_for_nat_binding_obligations(
-                    decl, arg, smt, slot_env, assumptions,
-                )
-            return
+                yield arg, path
+        else:
+            yield from self._nat_call(decl, expr, path, smt, bare=True)
 
-        if isinstance(expr, ast.AnonFn):
-            # The closure body is opaque to the SMT layer (its params/captures
-            # are not in the outer slot env — translating the body here would
-            # mis-resolve a closure param onto an outer same-named slot and
-            # could prove a FALSE Tier-1), so its RETURN obligations are
-            # SHALLOW-syntactic (opacity-forced, never Tier-1), while the body
-            # ITSELF is walked separately below under the #779 fresh-scope
-            # empty env.
-            resolved_ret = self._resolve_type(expr.return_type)
-            # #1032: a REFINED closure return — the return-side dual of the
-            # #1024 formal narrowing at the apply_fn branch above.  Pre-fix
-            # `fn(@Int -> @Pos) { @Int.0 }` returned -5 (or 0, which clears the
-            # @Nat base's `>= 0`) through the refined slot on a verify-clean
-            # program: no arm here claimed a RefinedType return, and codegen's
-            # #984 leaf gate excluded refinements assuming a boundary guard
-            # that did not exist.  Refined-FIRST, ahead of the narrowing arm
-            # below, for the same reason as everywhere else: the refinement's
-            # FULL predicate is the boundary invariant.  Same
-            # shallow-syntactic, opacity-forced treatment as its siblings
-            # (always tier3, never a false Tier-1 — the named refined-return
-            # path discharges via SMT, but this body is opaque): codegen guards
-            # the lifted body's return value (`_compile_lifted_closure`, the
-            # closure mirror of `_compile_postconditions`' refined-return
-            # guard), except over an erased `@Unit` base, which has no local to
-            # check — recorded honestly unguarded, as at every other site.
-            # Deliberately UNGATED (unlike the argument side's
-            # `_narrows_into_refined`): the closure body is opaque, so even a
-            # body already typed at the refined type could carry a raw leaf
-            # through a join — obligating every refined return keeps the
-            # obligation stream exactly matched to codegen's unconditional
-            # guard (the lockstep invariant), at worst one redundant tier3 on
-            # an identity-shaped closure.
-            if self._is_refined_type(resolved_ret):
-                self._record_refined_bind_tier3(
-                    decl, expr.body, "closure return",
-                    guarded=self._refined_boundary_codegen_guardable(
-                        resolved_ret),
-                    reason=(
-                        "a closure body is opaque to the verifier, so its "
-                        "returned value is never translated and the predicate "
-                        "has nothing to be tested against"
-                    ),
-                )
-            # #984: the @Int -> @Nat NARROWING — a
-            # bare @Int closure body narrowing into a @Nat closure RETURN can be
-            # negative (`fn(@Int -> @Nat) { @Int.0 }` applied to -5 returned -5
-            # through the @Nat slot on a verify-clean program: the #758 return
-            # nat-bind hole reachable only through `_compile_lifted_closure`).
-            # Shallow-syntactic, opacity-forced treatment
-            # (never a FALSE Tier-1): record tier3 guarded, backed by codegen's
-            # per-narrowing-leaf `>= 0` guard in `_compile_lifted_closure`.  A
-            # refinement OVER @Nat is a RefinedType with its own boundary
-            # predicate, claimed by the refined-first #1032 arm above — so this
-            # arm sees only the bare @Nat primitive and the two never co-fire
-            # on one site.
-            elif (self._is_nat_type(resolved_ret)
-                    and self._return_narrows_into_nat(expr.body)):
-                self._record_nat_bind_tier3(
-                    decl, expr.body, "closure return", "tier3", guarded=True)
-            # #779/#985: descend into the closure BODY under an EMPTY slot
-            # environment — the fresh-scope walk.  Interior slot-dependent
-            # binding sites are obligated Tier-3, while literal-only shapes
-            # classify exactly — a manifest `let @Nat = 0 - 5` is a loud
-            # E503 (a slot
-            # reference never resolves onto an outer same-named slot, so no
-            # FALSE Tier-1 is possible; the lifted closure's interior
-            # codegen guards back them), and a NESTED AnonFn re-enters this
-            # arm so its own return narrowing obligations record —
-            # the #985 residual of the shallow single-level treatment above.
-            self._walk_for_nat_binding_obligations(
-                decl, expr.body, smt, SlotEnv(), [],
-            )
-            return
-
-        if isinstance(expr, (ast.FnCall, ast.ModuleCall)):
-            # Site 2: @Nat formal parameters narrowing an @Int argument.
-            callee: object | None = self._callee_in_scope(expr, smt)
-            param_types = getattr(callee, "param_types", None)
-            if param_types is None and isinstance(expr, ast.FnCall):
-                # #1203/#1268: a BARE effect operation has no
-                # function-registry entry, so the formal loop below never
-                # fired and its argument carried no obligation at all —
-                # `put(@Int.0)` against a @Nat cell was verify-clean while
-                # `vera run` stored a negative, and `throw(0 - 5)` under
-                # `effects(<Exn<Nat>>)` was verify-clean while `vera run`
-                # returned -5 through the @Nat payload.  The gate is
-                # STRUCTURAL — does this name resolve to an operation —
-                # rather than a list of the built-in names that motivated
-                # each fix: a list is a claim about every name not on it, and
-                # the first version's claim was false, obligating a bare
-                # user-effect op spelled `put` while the same narrowing
-                # through one spelled `emit` stayed silent (PR review round
-                # 1).  Both spec §2.6.4 and KNOWN_ISSUES' #754 row say every
-                # narrowing binding site is obligated, effect-operation
-                # arguments included, so the name-keyed version contradicted
-                # the documented rule as well as itself.  Resolution is the
-                # innermost handled effect declaring the name, else the
-                # ordered registry; a bare call the checker accepted that
-                # resolves to no operation (a built-in function, say) simply
-                # obligates nothing.  The checker's #747 side-table records
-                # the instantiated target, so the refined/nat pair
-                # runs with formal=None (table-driven).
-                #
-                # The guarded flag is COMPUTED, not hardcoded (PR #1202
-                # adversarial round — a hardcoded True claimed a runtime
-                # check the bare intrinsic path did not have): the builtin
-                # State ops are guarded on both dispatch paths (the
-                # clause-inlined store and the bare intrinsic call, which
-                # keys the guard off the dispatch target's cell type), which
-                # is why the test is the op's PARENT EFFECT and not its name
-                # — a user effect's `put` is no more guarded than its
-                # `emit`.  `Exn`'s `throw` joined `State` at the guarded end
-                # in #1268: its payload now takes the same sign guards at the
-                # op-call site plus the §2.6.5 predicate guard for a REFINED
-                # payload, so it is the one op whose refined arm is guarded
-                # too (`refined_guarded` below).  Everything else is still
-                # the #754 unguarded class and discloses E504/E506: a
-                # user-effect op of any name, whose dispatch carries only a
-                # target (`_effect_ops`) and so reaches no cell a guard could
-                # be keyed on.  A `resume` value is obligated from the
-                # HandleExpr arm
-                # instead, where the clause's effect identity is known;
-                # `resume` resolves to no operation here, so the two cannot
-                # both fire.
-                op = None
-                for eff_name in reversed(self._walk_handled_effects):
-                    info = self.env.lookup_effect(eff_name)
-                    if info is not None and expr.name in info.operations:
-                        op = info.operations[expr.name]
-                        break
-                if op is None:
-                    op = self.env.lookup_effect_op(expr.name)
-                if op is not None:
-                    op_guarded = op.parent_effect in ("State", "Exn")
-                    op_site = ("State-op argument"
-                               if op.parent_effect == "State"
-                               else "effect-operation argument")
-                    for arg in expr.args:
-                        self._obligate_binding_triple(
-                            decl, arg, None, smt, slot_env, assumptions,
-                            site=op_site,
-                            nat_guarded=op_guarded,
-                            # #1268 for the `throw` payload, #1439 for the
-                            # `State` writes — both read from the shared
-                            # site table, so this leg and the qualified one
-                            # below cannot answer differently.
-                            refined_guarded=(
-                                op.parent_effect == "Exn"
-                                or (op.parent_effect == "State"
-                                    and self._refined_bind_site_guarded(
-                                        _STATE_WRITE_SITE))
-                            ),
-                        )
-            if param_types is not None:
-                # A generic function whose `TypeVar` formal is fixed to @Nat
-                # by context (e.g. `T = Nat`) is recovered from the checker's
-                # recorded instantiation (`_nat_binding_target` -> the target
-                # side-table, #747), so it obligates like a concretely-@Nat
-                # formal — as for generic constructor fields and effect-op
-                # formals.
-                # The targets are the ones the call's translation guards the
-                # callee's facts with (#1706): this arm obligates the ones an
-                # argument NARROWS into, the guard requires all of them.
-                for owed in self._argument_targets(expr.args, param_types):
-                    arg = owed.arg
-                    # #746: a refined formal is the matched half of param-assume
-                    # (R1) — the caller proves the argument satisfies the
-                    # refinement here.  `_refined_binding_target` recovers a
-                    # concrete refined formal AND a generic formal instantiated
-                    # to a RefinedType at this call site (from the side-table).
-                    # Refined-first so a refinement-over-@Nat formal discharges
-                    # its full predicate rather than only `>= 0` (R9).
-                    refined_target = owed.refined
-                    if (refined_target is not None
-                            and self._narrows_into_refined(arg, refined_target)):
-                        self._check_refined_binding_obligation(
-                            decl, arg, refined_target, smt, slot_env,
-                            assumptions, site="call argument",
-                            guarded=True,
-                        )
-                    elif owed.nat and self._narrows_into_nat(arg):
-                        self._check_nat_binding_obligation(
-                            decl, arg, smt, slot_env, assumptions,
-                            site="call argument",
-                            # Codegen-guarded for a USER callee: a concrete
-                            # @Nat formal guards directly, and a generic formal
-                            # fixed to @Nat is guarded from the argument's
-                            # recorded target, the table this arm read
-                            # (`_guard_nat_instantiated_arg`): the clone is
-                            # named from the arguments' own types, so
-                            # `pick(-3, 5)` at `Nat` calls `pick$Int`.  A
-                            # built-in guards its type-variable formals the
-                            # same way, and one of them plants no guard at
-                            # all, so the flag is READ FROM the measured
-                            # inventory rather than assumed (#1362).
-                            guarded=self._call_arg_nat_guarded(
-                                expr.name, arg),
-                        )
-                    # #1410: a refinement written INSIDE the formal — an ADT
-                    # payload, a tuple component — is assumed by the callee's
-                    # single modular proof, so the caller establishes it here.
-                    # The arms above claim the formal's HEAD only; this one
-                    # claims what its structure contains, so it rides
-                    # ALONGSIDE them rather than joining the elif chain (a
-                    # `{ @Tuple<PosInt, Int> | P }` formal carries both, and
-                    # they are different facts about one value).
-                    self._check_nested_refinement_obligation(
-                        decl, arg, owed.nested,
-                        smt, slot_env, assumptions, site="call argument",
-                        callee=expr.name,
-                    )
-            for arg in expr.args:
-                self._walk_for_nat_binding_obligations(
-                    decl, arg, smt, slot_env, assumptions,
-                )
-            return
-
-        if isinstance(expr, ast.ConstructorCall):
-            # @Nat constructor fields narrowing an @Int argument.  A
-            # concretely-@Nat field obligates directly (#552); a generic
-            # field (TypeVar) instantiated to @Nat at this call site is
-            # resolved via the checker's recorded instantiated target
-            # (`_nat_binding_target` -> the semantic-type side-table, #747).
-            ci = self._lookup_constructor_info(expr.name)
-            if ci is not None and ci.field_types is not None:
-                for arg, field_ty in zip(expr.args, ci.field_types):
-                    # #746: a refined field obligates the argument against its
-                    # predicate (refined-first); `_refined_binding_target` also
-                    # recovers a generic field instantiated to a RefinedType.
-                    refined_target = self._refined_binding_target(arg, field_ty)
-                    if (refined_target is not None
-                            and self._narrows_into_refined(arg, refined_target)):
-                        self._check_refined_binding_obligation(
-                            decl, arg, refined_target, smt, slot_env,
-                            assumptions, site="constructor field",
-                            guarded=self._construction_refined_guarded(
-                                "constructor field", refined_target),
-                        )
-                    elif (self._nat_binding_target(arg, field_ty)
-                            and self._narrows_into_nat(arg)):
-                        self._check_nat_binding_obligation(
-                            decl, arg, smt, slot_env, assumptions,
-                            site="constructor field",
-                            # Codegen guards a concrete @Nat field from the
-                            # layout bitmap and — since #757 — a GENERIC field
-                            # instantiated to @Nat here from the argument's own
-                            # recorded target, which is the same table (and the
-                            # same question) `_nat_binding_target` above just
-                            # consulted.  Reaching this arm therefore means the
-                            # guard is emitted, by either route.
-                            guarded=True,
-                        )
-                    # #1410 (PR review F3): a field whose TYPE writes a
-                    # refinement on a component.  A field like
-                    # `data Box { MkBox(Option<PosInt>) }` is claimed by none
-                    # of the arms above, which read the field's HEAD, so the
-                    # exclusion the argument rule makes for a construction was
-                    # false of this shape: `consume(MkBox(mkint(x)))` was
-                    # skipped as a construction while its own site claimed
-                    # nothing, the payload was obligated nowhere, and the run
-                    # refuted the consumer's postcondition.
-                    #
-                    # The target goes through `_nested_refinement_formal`,
-                    # which is the recovery every other binding-obligation
-                    # target makes (#747): a GENERIC constructor's declared
-                    # field is a `TypeVar`, and only the checker's recorded
-                    # instantiation says what it became.  Without that,
-                    # `data Box<T> { MkBox(T) }` built at
-                    # `Box<Option<PosInt>>` raised nothing at all, while the
-                    # concrete spelling of the same program was refuted
-                    # (PR #1420 review).  A constructor field is not a
-                    # function boundary, so nothing guards it.
-                    self._check_nested_refinement_obligation(
-                        decl, arg,
-                        self._nested_refinement_formal(arg, field_ty),
-                        smt, slot_env, assumptions,
-                        site="constructor field",
-                    )
-            else:
-                # `Tuple` (and any other built-in carrier) is NOT user-
-                # registered, so `_lookup_constructor_info` is None and the
-                # field-obligation loop above is skipped — which left a refined
-                # component built in value / call-argument / return position
-                # UNobligated, a false Tier-1 / silent negative (the user-ADT
-                # case above already obligates its fields).  Recover the
-                # component *target* types from the construction site's expected
-                # type and obligate each refined / @Nat component, mirroring the
-                # field path (#746; PR-review-found gap, the #758 analogue for
-                # refinement components).  guarded=False — codegen does not
-                # component-guard a tuple value.
-                target = self._target_type_of(expr)
-                if isinstance(target, RefinedType):
-                    # A refinement OVER a tuple (`{ @Tuple<PosInt, Int> | P }`)
-                    # hides the `Tuple` base, so unwrap it before reading the
-                    # component types — else the refined components are
-                    # statically UNobligated (a false Tier-1, though codegen
-                    # runtime-guards them) (CR PR-review).
-                    target = target.base
-                comp_types = (
-                    target.type_args
-                    if isinstance(target, AdtType)
-                    and len(target.type_args) == len(expr.args)
-                    else ()
-                )
-                # One descent, shared with the container walk and with the
-                # enclosing `let`'s declared type: each of the three routes
-                # can reach the same component, and a second recording of one
-                # obligation inflates `len(obligations)`.  The guardedness
-                # each arm claims is per SITE, from the two rosters above,
-                # rather than restated at each call.
-                for arg, comp_ty in zip(expr.args, comp_types):
-                    # One descent, shared with the container walk and
-                    # with the enclosing `let`'s declared type: each of
-                    # the three routes can reach the same component, and
-                    # a second recording of one obligation inflates
-                    # `len(obligations)`.  Guardedness is per SITE, from
-                    # the rosters, rather than restated at each call.
-                    self._obligate_construction_component(
-                        decl, arg, comp_ty, smt, slot_env, assumptions,
-                        site="tuple component",
-                    )
-                    # #1410 (PR review F3), the built-in carrier's twin: a
-                    # tuple component whose own type writes a refinement on
-                    # a component of ITS structure.  Construction guards no
-                    # component, so unguarded.
-                    self._check_nested_refinement_obligation(
-                        decl, arg, comp_ty, smt, slot_env, assumptions,
-                        site="tuple component",
-                    )
-            for arg in expr.args:
-                self._walk_for_nat_binding_obligations(
-                    decl, arg, smt, slot_env, assumptions,
-                )
-            return
-
-        if isinstance(expr, ast.QualifiedCall):
-            # Effect operations (e.g. `IO.sleep : Nat -> Unit`) narrow an
-            # @Int argument into a @Nat formal just like a plain call.
-            op = self.env.lookup_effect_op(expr.name, qualifier=expr.qualifier)
-            param_types = getattr(op, "param_types", None)
-            if param_types is not None:
-                # Guardedness is the BARE arm's rule, on the same key (#1268).
-                # The QUALIFIED spelling is the same operation at the same
-                # boundary — codegen's `State.put` / `Exn.throw` arms
-                # synthesize a bare node and delegate to the very dispatcher
-                # that emits the guards — so the two spellings must record
-                # identical statuses or the obligation stream says the
-                # boundary moved when only the syntax did.  This arm still
-                # said "codegen does NOT yet guard effect-op arguments",
-                # stale since #1203 gave `State`'s write boundaries their
-                # guards and false again since #1268 gave `throw`'s payload
-                # the sign guard AND the predicate guard: `Exn.throw(v)` was
-                # guarded at run time and disclosed E504/E506 as if it were
-                # not.  The qualifier NAMES the effect, so `op.parent_effect`
-                # is exactly the bare arm's resolved answer with no
-                # innermost-handler search needed.  Everything else stays the
-                # #754 unguarded class (`IO.sleep`'s `@Nat` formal, a
-                # user-declared effect's op) and discloses honestly.
-                op_effect = getattr(op, "parent_effect", None)
-                op_site = ("State-op argument" if op_effect == "State"
+    def _nat_call(
+        self, decl: ast.FnDecl, expr: ast.FnCall | ast.ModuleCall, path: _Path, smt: SmtContext,
+        bare: bool = False,
+    ) -> Iterator[tuple[ast.Node, _Path]]:
+        # Site 2: @Nat formal parameters narrowing an @Int argument.  *bare*
+        # is a call by a bare name (an `FnCall`), which may name an effect
+        # operation; a module-qualified call never does.
+        callee: object | None = self._callee_in_scope(expr, smt)
+        param_types = getattr(callee, "param_types", None)
+        if param_types is None and bare:
+            # #1203/#1268: a BARE effect operation has no
+            # function-registry entry, so the formal loop below never
+            # fired and its argument carried no obligation at all —
+            # `put(@Int.0)` against a @Nat cell was verify-clean while
+            # `vera run` stored a negative, and `throw(0 - 5)` under
+            # `effects(<Exn<Nat>>)` was verify-clean while `vera run`
+            # returned -5 through the @Nat payload.  The gate is
+            # STRUCTURAL — does this name resolve to an operation —
+            # rather than a list of the built-in names that motivated
+            # each fix: a list is a claim about every name not on it, and
+            # the first version's claim was false, obligating a bare
+            # user-effect op spelled `put` while the same narrowing
+            # through one spelled `emit` stayed silent (PR review round
+            # 1).  Both spec §2.6.4 and KNOWN_ISSUES' #754 row say every
+            # narrowing binding site is obligated, effect-operation
+            # arguments included, so the name-keyed version contradicted
+            # the documented rule as well as itself.  Resolution is the
+            # innermost handled effect declaring the name, else the
+            # ordered registry; a bare call the checker accepted that
+            # resolves to no operation (a built-in function, say) simply
+            # obligates nothing.  The checker's #747 side-table records
+            # the instantiated target, so the refined/nat pair
+            # runs with formal=None (table-driven).
+            #
+            # The guarded flag is COMPUTED, not hardcoded (PR #1202
+            # adversarial round — a hardcoded True claimed a runtime
+            # check the bare intrinsic path did not have): the builtin
+            # State ops are guarded on both dispatch paths (the
+            # clause-inlined store and the bare intrinsic call, which
+            # keys the guard off the dispatch target's cell type), which
+            # is why the test is the op's PARENT EFFECT and not its name
+            # — a user effect's `put` is no more guarded than its
+            # `emit`.  `Exn`'s `throw` joined `State` at the guarded end
+            # in #1268: its payload now takes the same sign guards at the
+            # op-call site plus the §2.6.5 predicate guard for a REFINED
+            # payload, so it is the one op whose refined arm is guarded
+            # too (`refined_guarded` below).  Everything else is still
+            # the #754 unguarded class and discloses E504/E506: a
+            # user-effect op of any name, whose dispatch carries only a
+            # target (`_effect_ops`) and so reaches no cell a guard could
+            # be keyed on.  A `resume` value is obligated from the
+            # HandleExpr arm
+            # instead, where the clause's effect identity is known;
+            # `resume` resolves to no operation here, so the two cannot
+            # both fire.
+            op = None
+            for eff_name in reversed(self._walk_handled_effects):
+                info = self.env.lookup_effect(eff_name)
+                if info is not None and expr.name in info.operations:
+                    op = info.operations[expr.name]
+                    break
+            if op is None:
+                op = self.env.lookup_effect_op(expr.name)
+            if op is not None:
+                op_guarded = op.parent_effect in ("State", "Exn")
+                op_site = ("State-op argument"
+                           if op.parent_effect == "State"
                            else "effect-operation argument")
-                # The SHARED pair, not a local copy of it.  A concretely-@Nat
-                # formal obligates directly (#552); a generic (TypeVar)
-                # formal — `E<T>.wait` instantiated as `E<Nat>` — is resolved
-                # via the checker's recorded instantiated target
-                # (`_nat_binding_target`, #747), as for generic constructor
-                # fields; and a refined formal obligates its predicate
-                # refined-FIRST (#746), the side-table recovering a generic
-                # formal instantiated to a RefinedType.  Routing through
-                # `_obligate_binding_triple` means the arms cannot drift
-                # apart by omission (PR #1325 review).
-                for arg, formal in zip(expr.args, param_types):
-                    # Guardedness is PER FORMAL since #754.  Two routes reach
-                    # a guard and they answer different questions: `State`
-                    # and `Exn` are guarded whatever their formal says,
-                    # because their formal IS a type variable and the cell
-                    # supplies the width; every other operation is guarded
-                    # exactly when its DECLARED formal resolves to a concrete
-                    # `@Nat` or `@Int`, which is the condition codegen's
-                    # `_guard_effect_op_arg` reads off the same registry.  A
-                    # generic formal instantiated to `@Nat` at this call site
-                    # is obligated (the side-table sees it) and NOT guarded
-                    # (the declaration codegen reads does not), so the two
-                    # must be asked separately rather than folded into one
-                    # per-operation flag.
-                    op_guarded = (
-                        op_effect in ("State", "Exn")
-                        or self._effect_op_formal_guarded(op_effect, formal)
-                    )
+                for arg in expr.args:
                     self._obligate_binding_triple(
-                        decl, arg, formal, smt, slot_env, assumptions,
+                        decl, arg, None, smt, path.env, path.facts,
                         site=op_site,
                         nat_guarded=op_guarded,
-                        # #1268 gave the `throw` payload the refinement
-                        # predicate, and #1439 the `State` write boundaries
-                        # — the init, `put`'s argument, and a clause's
-                        # `with @T = …` override — so both write families
-                        # now lower it.  Read from the shared site table
-                        # rather than restated here, so the classification
-                        # and the emitter move together.
+                        # #1268 for the `throw` payload, #1439 for the
+                        # `State` writes — both read from the shared
+                        # site table, so this leg and the qualified one
+                        # below cannot answer differently.
                         refined_guarded=(
-                            op_effect == "Exn"
-                            or (op_effect == "State"
+                            op.parent_effect == "Exn"
+                            or (op.parent_effect == "State"
                                 and self._refined_bind_site_guarded(
                                     _STATE_WRITE_SITE))
                         ),
                     )
-            for arg in expr.args:
-                self._walk_for_nat_binding_obligations(
-                    decl, arg, smt, slot_env, assumptions,
-                )
-            return
-
-        if isinstance(expr, ast.IfExpr):
-            # Each arm is walked under its own path condition, so an
-            # obligation inside `if c then … else …` discharges assuming `c`
-            # in the then-branch and `!c` in the else-branch.
-            self._walk_for_nat_binding_obligations(
-                decl, expr.condition, smt, slot_env, assumptions,
-            )
-            z3_cond = smt.translate_expr(expr.condition, slot_env)
-            if z3_cond is not None:
-                import z3 as z3mod
-                smt._path_conditions.append(z3_cond)
-                try:
-                    self._walk_for_nat_binding_obligations(
-                        decl, expr.then_branch, smt, slot_env, assumptions,
+        if param_types is not None:
+            # A generic function whose `TypeVar` formal is fixed to @Nat
+            # by context (e.g. `T = Nat`) is recovered from the checker's
+            # recorded instantiation (`_nat_binding_target` -> the target
+            # side-table, #747), so it obligates like a concretely-@Nat
+            # formal — as for generic constructor fields and effect-op
+            # formals.
+            # The targets are the ones the call's translation guards the
+            # callee's facts with (#1706): this arm obligates the ones an
+            # argument NARROWS into, the guard requires all of them.
+            for owed in self._argument_targets(expr.args, param_types):
+                arg = owed.arg
+                # #746: a refined formal is the matched half of param-assume
+                # (R1) — the caller proves the argument satisfies the
+                # refinement here.  `_refined_binding_target` recovers a
+                # concrete refined formal AND a generic formal instantiated
+                # to a RefinedType at this call site (from the side-table).
+                # Refined-first so a refinement-over-@Nat formal discharges
+                # its full predicate rather than only `>= 0` (R9).
+                refined_target = owed.refined
+                if (refined_target is not None
+                        and self._narrows_into_refined(arg, refined_target)):
+                    self._check_refined_binding_obligation(
+                        decl, arg, refined_target, smt, path.env,
+                        path.facts, site="call argument",
+                        guarded=True,
                     )
+                elif owed.nat and self._narrows_into_nat(arg):
+                    self._check_nat_binding_obligation(
+                        decl, arg, smt, path.env, path.facts,
+                        site="call argument",
+                        # Codegen-guarded for a USER callee: a concrete
+                        # @Nat formal guards directly, and a generic formal
+                        # fixed to @Nat is guarded from the argument's
+                        # recorded target, the table this arm read
+                        # (`_guard_nat_instantiated_arg`): the clone is
+                        # named from the arguments' own types, so
+                        # `pick(-3, 5)` at `Nat` calls `pick$Int`.  A
+                        # built-in guards its type-variable formals the
+                        # same way, and one of them plants no guard at
+                        # all, so the flag is READ FROM the measured
+                        # inventory rather than assumed (#1362).
+                        guarded=self._call_arg_nat_guarded(
+                            expr.name, arg),
+                    )
+                # #1410: a refinement written INSIDE the formal — an ADT
+                # payload, a tuple component — is assumed by the callee's
+                # single modular proof, so the caller establishes it here.
+                # The arms above claim the formal's HEAD only; this one
+                # claims what its structure contains, so it rides
+                # ALONGSIDE them rather than joining the elif chain (a
+                # `{ @Tuple<PosInt, Int> | P }` formal carries both, and
+                # they are different facts about one value).
+                self._check_nested_refinement_obligation(
+                    decl, arg, owed.nested,
+                    smt, path.env, path.facts, site="call argument",
+                    callee=expr.name,
+                )
+        for arg in expr.args:
+            yield arg, path
+
+    def _nat_closure(
+        self, decl: ast.FnDecl, expr: ast.AnonFn, path: _Path, smt: SmtContext,
+    ) -> Iterator[tuple[ast.Node, _Path]]:
+        # The closure body is opaque to the SMT layer (its params/captures
+        # are not in the outer slot env — translating the body here would
+        # mis-resolve a closure param onto an outer same-named slot and
+        # could prove a FALSE Tier-1), so its RETURN obligations are
+        # SHALLOW-syntactic (opacity-forced, never Tier-1), while the body
+        # ITSELF is walked separately below under the #779 fresh-scope
+        # empty env.
+        resolved_ret = self._resolve_type(expr.return_type)
+        # #1032: a REFINED closure return — the return-side dual of the
+        # #1024 formal narrowing at the apply_fn branch above.  Pre-fix
+        # `fn(@Int -> @Pos) { @Int.0 }` returned -5 (or 0, which clears the
+        # @Nat base's `>= 0`) through the refined slot on a verify-clean
+        # program: no arm here claimed a RefinedType return, and codegen's
+        # #984 leaf gate excluded refinements assuming a boundary guard
+        # that did not exist.  Refined-FIRST, ahead of the narrowing arm
+        # below, for the same reason as everywhere else: the refinement's
+        # FULL predicate is the boundary invariant.  Same
+        # shallow-syntactic, opacity-forced treatment as its siblings
+        # (always tier3, never a false Tier-1 — the named refined-return
+        # path discharges via SMT, but this body is opaque): codegen guards
+        # the lifted body's return value (`_compile_lifted_closure`, the
+        # closure mirror of `_compile_postconditions`' refined-return
+        # guard), except over an erased `@Unit` base, which has no local to
+        # check — recorded honestly unguarded, as at every other site.
+        # Deliberately UNGATED (unlike the argument side's
+        # `_narrows_into_refined`): the closure body is opaque, so even a
+        # body already typed at the refined type could carry a raw leaf
+        # through a join — obligating every refined return keeps the
+        # obligation stream exactly matched to codegen's unconditional
+        # guard (the lockstep invariant), at worst one redundant tier3 on
+        # an identity-shaped closure.
+        if self._is_refined_type(resolved_ret):
+            self._record_refined_bind_tier3(
+                decl, expr.body, "closure return",
+                guarded=self._refined_boundary_codegen_guardable(
+                    resolved_ret),
+                reason=(
+                    "a closure body is opaque to the verifier, so its "
+                    "returned value is never translated and the predicate "
+                    "has nothing to be tested against"
+                ),
+            )
+        # #984: the @Int -> @Nat NARROWING — a
+        # bare @Int closure body narrowing into a @Nat closure RETURN can be
+        # negative (`fn(@Int -> @Nat) { @Int.0 }` applied to -5 returned -5
+        # through the @Nat slot on a verify-clean program: the #758 return
+        # nat-bind hole reachable only through `_compile_lifted_closure`).
+        # Shallow-syntactic, opacity-forced treatment
+        # (never a FALSE Tier-1): record tier3 guarded, backed by codegen's
+        # per-narrowing-leaf `>= 0` guard in `_compile_lifted_closure`.  A
+        # refinement OVER @Nat is a RefinedType with its own boundary
+        # predicate, claimed by the refined-first #1032 arm above — so this
+        # arm sees only the bare @Nat primitive and the two never co-fire
+        # on one site.
+        elif (self._is_nat_type(resolved_ret)
+                and self._return_narrows_into_nat(expr.body)):
+            self._record_nat_bind_tier3(
+                decl, expr.body, "closure return", "tier3", guarded=True)
+        # #779/#985: descend into the closure BODY under an EMPTY slot
+        # environment — the fresh-scope walk.  Interior slot-dependent
+        # binding sites are obligated Tier-3, while literal-only shapes
+        # classify exactly — a manifest `let @Nat = 0 - 5` is a loud
+        # E503 (a slot
+        # reference never resolves onto an outer same-named slot, so no
+        # FALSE Tier-1 is possible; the lifted closure's interior
+        # codegen guards back them), and a NESTED AnonFn re-enters this
+        # arm so its own return narrowing obligations record —
+        # the #985 residual of the shallow single-level treatment above.
+        yield from _path_closure(expr, path, smt)
+
+    def _nat_constructor_call(
+        self, decl: ast.FnDecl, expr: ast.ConstructorCall, path: _Path, smt: SmtContext,
+    ) -> Iterator[tuple[ast.Node, _Path]]:
+        # @Nat constructor fields narrowing an @Int argument.  A
+        # concretely-@Nat field obligates directly (#552); a generic
+        # field (TypeVar) instantiated to @Nat at this call site is
+        # resolved via the checker's recorded instantiated target
+        # (`_nat_binding_target` -> the semantic-type side-table, #747).
+        ci = self._lookup_constructor_info(expr.name)
+        if ci is not None and ci.field_types is not None:
+            for arg, field_ty in zip(expr.args, ci.field_types):
+                # #746: a refined field obligates the argument against its
+                # predicate (refined-first); `_refined_binding_target` also
+                # recovers a generic field instantiated to a RefinedType.
+                refined_target = self._refined_binding_target(arg, field_ty)
+                if (refined_target is not None
+                        and self._narrows_into_refined(arg, refined_target)):
+                    self._check_refined_binding_obligation(
+                        decl, arg, refined_target, smt, path.env,
+                        path.facts, site="constructor field",
+                        guarded=self._construction_refined_guarded(
+                            "constructor field", refined_target),
+                    )
+                elif (self._nat_binding_target(arg, field_ty)
+                        and self._narrows_into_nat(arg)):
+                    self._check_nat_binding_obligation(
+                        decl, arg, smt, path.env, path.facts,
+                        site="constructor field",
+                        # Codegen guards a concrete @Nat field from the
+                        # layout bitmap and — since #757 — a GENERIC field
+                        # instantiated to @Nat here from the argument's own
+                        # recorded target, which is the same table (and the
+                        # same question) `_nat_binding_target` above just
+                        # consulted.  Reaching this arm therefore means the
+                        # guard is emitted, by either route.
+                        guarded=True,
+                    )
+                # #1410 (PR review F3): a field whose TYPE writes a
+                # refinement on a component.  A field like
+                # `data Box { MkBox(Option<PosInt>) }` is claimed by none
+                # of the arms above, which read the field's HEAD, so the
+                # exclusion the argument rule makes for a construction was
+                # false of this shape: `consume(MkBox(mkint(x)))` was
+                # skipped as a construction while its own site claimed
+                # nothing, the payload was obligated nowhere, and the run
+                # refuted the consumer's postcondition.
+                #
+                # The target goes through `_nested_refinement_formal`,
+                # which is the recovery every other binding-obligation
+                # target makes (#747): a GENERIC constructor's declared
+                # field is a `TypeVar`, and only the checker's recorded
+                # instantiation says what it became.  Without that,
+                # `data Box<T> { MkBox(T) }` built at
+                # `Box<Option<PosInt>>` raised nothing at all, while the
+                # concrete spelling of the same program was refuted
+                # (PR #1420 review).  A constructor field is not a
+                # function boundary, so nothing guards it.
+                self._check_nested_refinement_obligation(
+                    decl, arg,
+                    self._nested_refinement_formal(arg, field_ty),
+                    smt, path.env, path.facts,
+                    site="constructor field",
+                )
+        else:
+            # `Tuple` (and any other built-in carrier) is NOT user-
+            # registered, so `_lookup_constructor_info` is None and the
+            # field-obligation loop above is skipped — which left a refined
+            # component built in value / call-argument / return position
+            # UNobligated, a false Tier-1 / silent negative (the user-ADT
+            # case above already obligates its fields).  Recover the
+            # component *target* types from the construction site's expected
+            # type and obligate each refined / @Nat component, mirroring the
+            # field path (#746; PR-review-found gap, the #758 analogue for
+            # refinement components).  guarded=False — codegen does not
+            # component-guard a tuple value.
+            target = self._target_type_of(expr)
+            if isinstance(target, RefinedType):
+                # A refinement OVER a tuple (`{ @Tuple<PosInt, Int> | P }`)
+                # hides the `Tuple` base, so unwrap it before reading the
+                # component types — else the refined components are
+                # statically UNobligated (a false Tier-1, though codegen
+                # runtime-guards them) (CR PR-review).
+                target = target.base
+            comp_types = (
+                target.type_args
+                if isinstance(target, AdtType)
+                and len(target.type_args) == len(expr.args)
+                else ()
+            )
+            # One descent, shared with the container walk and with the
+            # enclosing `let`'s declared type: each of the three routes
+            # can reach the same component, and a second recording of one
+            # obligation inflates `len(obligations)`.  The guardedness
+            # each arm claims is per SITE, from the two rosters above,
+            # rather than restated at each call.
+            for arg, comp_ty in zip(expr.args, comp_types):
+                # One descent, shared with the container walk and
+                # with the enclosing `let`'s declared type: each of
+                # the three routes can reach the same component, and
+                # a second recording of one obligation inflates
+                # `len(obligations)`.  Guardedness is per SITE, from
+                # the rosters, rather than restated at each call.
+                self._obligate_construction_component(
+                    decl, arg, comp_ty, smt, path.env, path.facts,
+                    site="tuple component",
+                )
+                # #1410 (PR review F3), the built-in carrier's twin: a
+                # tuple component whose own type writes a refinement on
+                # a component of ITS structure.  Construction guards no
+                # component, so unguarded.
+                self._check_nested_refinement_obligation(
+                    decl, arg, comp_ty, smt, path.env, path.facts,
+                    site="tuple component",
+                )
+        for arg in expr.args:
+            yield arg, path
+
+    def _nat_qualified_call(
+        self, decl: ast.FnDecl, expr: ast.QualifiedCall, path: _Path, smt: SmtContext,
+    ) -> Iterator[tuple[ast.Node, _Path]]:
+        # Effect operations (e.g. `IO.sleep : Nat -> Unit`) narrow an
+        # @Int argument into a @Nat formal just like a plain call.
+        op = self.env.lookup_effect_op(expr.name, qualifier=expr.qualifier)
+        param_types = getattr(op, "param_types", None)
+        if param_types is not None:
+            # Guardedness is the BARE arm's rule, on the same key (#1268).
+            # The QUALIFIED spelling is the same operation at the same
+            # boundary — codegen's `State.put` / `Exn.throw` arms
+            # synthesize a bare node and delegate to the very dispatcher
+            # that emits the guards — so the two spellings must record
+            # identical statuses or the obligation stream says the
+            # boundary moved when only the syntax did.  This arm still
+            # said "codegen does NOT yet guard effect-op arguments",
+            # stale since #1203 gave `State`'s write boundaries their
+            # guards and false again since #1268 gave `throw`'s payload
+            # the sign guard AND the predicate guard: `Exn.throw(v)` was
+            # guarded at run time and disclosed E504/E506 as if it were
+            # not.  The qualifier NAMES the effect, so `op.parent_effect`
+            # is exactly the bare arm's resolved answer with no
+            # innermost-handler search needed.  Everything else stays the
+            # #754 unguarded class (`IO.sleep`'s `@Nat` formal, a
+            # user-declared effect's op) and discloses honestly.
+            op_effect = getattr(op, "parent_effect", None)
+            op_site = ("State-op argument" if op_effect == "State"
+                       else "effect-operation argument")
+            # The SHARED pair, not a local copy of it.  A concretely-@Nat
+            # formal obligates directly (#552); a generic (TypeVar)
+            # formal — `E<T>.wait` instantiated as `E<Nat>` — is resolved
+            # via the checker's recorded instantiated target
+            # (`_nat_binding_target`, #747), as for generic constructor
+            # fields; and a refined formal obligates its predicate
+            # refined-FIRST (#746), the side-table recovering a generic
+            # formal instantiated to a RefinedType.  Routing through
+            # `_obligate_binding_triple` means the arms cannot drift
+            # apart by omission (PR #1325 review).
+            for arg, formal in zip(expr.args, param_types):
+                # Guardedness is PER FORMAL since #754.  Two routes reach
+                # a guard and they answer different questions: `State`
+                # and `Exn` are guarded whatever their formal says,
+                # because their formal IS a type variable and the cell
+                # supplies the width; every other operation is guarded
+                # exactly when its DECLARED formal resolves to a concrete
+                # `@Nat` or `@Int`, which is the condition codegen's
+                # `_guard_effect_op_arg` reads off the same registry.  A
+                # generic formal instantiated to `@Nat` at this call site
+                # is obligated (the side-table sees it) and NOT guarded
+                # (the declaration codegen reads does not), so the two
+                # must be asked separately rather than folded into one
+                # per-operation flag.
+                op_guarded = (
+                    op_effect in ("State", "Exn")
+                    or self._effect_op_formal_guarded(op_effect, formal)
+                )
+                self._obligate_binding_triple(
+                    decl, arg, formal, smt, path.env, path.facts,
+                    site=op_site,
+                    nat_guarded=op_guarded,
+                    # #1268 gave the `throw` payload the refinement
+                    # predicate, and #1439 the `State` write boundaries
+                    # — the init, `put`'s argument, and a clause's
+                    # `with @T = …` override — so both write families
+                    # now lower it.  Read from the shared site table
+                    # rather than restated here, so the classification
+                    # and the emitter move together.
+                    refined_guarded=(
+                        op_effect == "Exn"
+                        or (op_effect == "State"
+                            and self._refined_bind_site_guarded(
+                                _STATE_WRITE_SITE))
+                    ),
+                )
+        for arg in expr.args:
+            yield arg, path
+
+    def _nat_if(
+        self, decl: ast.FnDecl, expr: ast.IfExpr, path: _Path, smt: SmtContext,
+    ) -> Iterator[tuple[ast.Node, _Path]]:
+        # Each arm is walked under its own path condition, so an
+        # obligation inside `if c then … else …` discharges assuming `c`
+        # in the then-branch and `!c` in the else-branch.
+        yield expr.condition, path
+        z3_cond = smt.translate_expr(expr.condition, path.env)
+        if z3_cond is not None:
+            import z3 as z3mod
+            smt._path_conditions.append(z3_cond)
+            try:
+                yield expr.then_branch, path
+            finally:
+                smt._path_conditions.pop()
+            if expr.else_branch is not None:
+                smt._path_conditions.append(z3mod.Not(z3_cond))
+                try:
+                    yield expr.else_branch, path
                 finally:
                     smt._path_conditions.pop()
-                if expr.else_branch is not None:
-                    smt._path_conditions.append(z3mod.Not(z3_cond))
-                    try:
-                        self._walk_for_nat_binding_obligations(
-                            decl, expr.else_branch, smt, slot_env,
-                            assumptions,
-                        )
-                    finally:
-                        smt._path_conditions.pop()
-            else:  # condition untranslatable — hot under the #779 empty env
-                self._walk_for_nat_binding_obligations(
-                    decl, expr.then_branch, smt, slot_env, assumptions,
-                )
-                if expr.else_branch is not None:
-                    self._walk_for_nat_binding_obligations(
-                        decl, expr.else_branch, smt, slot_env, assumptions,
-                    )
-            return
+        else:  # condition untranslatable — hot under the #779 empty env
+            yield expr.then_branch, path
+            if expr.else_branch is not None:
+                yield expr.else_branch, path
 
-        if isinstance(expr, ast.Block):
-            cur_env = slot_env
-            # Block-local assumptions: a refined/@Nat slot bound by a let or
-            # destructure in this block seeds its *source* type's invariant
-            # here, so a later re-narrowing in the same block can discharge
-            # against it (#746).  We copy rather than mutate the shared
-            # `assumptions` list: a seeded fact is valid only within this
-            # block's scope — leaking it into a sibling scope (e.g. across
-            # match arms, which share the caller's `assumptions`) would be
-            # unsound (a fact established on one arm's binding does not hold on
-            # another's).
-            block_assumptions = list(assumptions)
-            for stmt in expr.statements:
-                if isinstance(stmt, ast.LetStmt):
-                    # Site 1: `let @Nat = <Int>` / `let @Refined = <value>`.
-                    self._walk_for_nat_binding_obligations(
-                        decl, stmt.value, smt, cur_env, block_assumptions,
-                    )
-                    let_ty = self._resolve_type(stmt.type_expr)
-                    # Refined-first: a refinement-over-@Nat let discharges its
-                    # full predicate (`>= 0 && P`) rather than only `>= 0` via
-                    # the nat path; a bare @Nat let stays on the nat path (R9).
-                    if (self._is_refined_type(let_ty)
-                            and self._narrows_into_refined(stmt.value, let_ty)):
-                        self._check_refined_binding_obligation(
-                            decl, stmt.value, let_ty, smt, cur_env,
-                            block_assumptions,
-                            site="let binding",
-                        )
-                    elif (self._is_nat_type(let_ty)
-                            and self._narrows_into_nat(stmt.value)):
-                        self._check_nat_binding_obligation(
-                            decl, stmt.value, smt, cur_env, block_assumptions,
-                            site="let binding",
-                        )
-                    elif isinstance(let_ty, AdtType) and let_ty.type_args:
-                        # A CONTAINER let: the scalar arms above see a
-                        # `Map`/`Array`/`Tuple` and decline, so before #1426's
-                        # third pass the component a container was declared to
-                        # hold was obligated only when the value's own node
-                        # carried a recorded target.  The declared type is
-                        # threaded down instead, which reaches the shapes
-                        # where the table is silent (a nested literal's inner
-                        # element, a `map_insert` value).
-                        self._obligate_construction_component(
-                            decl, stmt.value, let_ty, smt, cur_env,
-                            block_assumptions, site="let binding",
-                        )
-                    # #1410 (PR review F4b): a `let` whose declared type writes
-                    # a refinement on a COMPONENT publishes that claim to every
-                    # later reader of the slot, and nothing established it —
-                    # `let @Option<PosInt> = mkint(x)` was Tier-1 clean, exit 0,
-                    # and refuted at run time.  Obligated here so the slot's
-                    # declared type is a fact by the time anything reads it.
-                    # Alongside the arms above, not in the chain: they claim the
-                    # let type's HEAD, this one what its structure contains.
-                    # `guarded=False` for the reason the refined arm above is
-                    # also False: codegen's component decomposition runs at a
-                    # FUNCTION boundary, and a `let` is not one.  Deriving the
-                    # flag from the target type claimed a runtime check for a
-                    # `let @Tuple<PosInt, Int>` that nothing at that site
-                    # emits — the #1362 shape, and inconsistent with its own
-                    # neighbour three lines up (PR #1420 review).
-                    self._check_nested_refinement_obligation(
+    def _nat_block(
+        self, decl: ast.FnDecl, expr: ast.Block, path: _Path, smt: SmtContext,
+    ) -> Iterator[tuple[ast.Node, _Path]]:
+        cur_env = path.env
+        # Block-local assumptions: a refined/@Nat slot bound by a let or
+        # destructure in this block seeds its *source* type's invariant
+        # here, so a later re-narrowing in the same block can discharge
+        # against it (#746).  We copy rather than mutate the shared
+        # `path.facts` list: a seeded fact is valid only within this
+        # block's scope — leaking it into a sibling scope (e.g. across
+        # match arms, which share the caller's `path.facts`) would be
+        # unsound (a fact established on one arm's binding does not hold on
+        # another's).
+        block_assumptions = list(path.facts)
+        for stmt in expr.statements:
+            # Each statement is read on the path so far, the block-local
+            # list included: a `let`'s or a destructure's value before its
+            # binders are pushed, and a statement-position expression, walked
+            # for @Nat narrowing obligations
+            # (test_narrow_stmt_position_obligated).
+            yield stmt, _Path(block_assumptions, cur_env)
+            if isinstance(stmt, ast.LetStmt):
+                # Site 1: `let @Nat = <Int>` / `let @Refined = <value>`.
+                let_ty = self._resolve_type(stmt.type_expr)
+                # Refined-first: a refinement-over-@Nat let discharges its
+                # full predicate (`>= 0 && P`) rather than only `>= 0` via
+                # the nat path; a bare @Nat let stays on the nat path (R9).
+                if (self._is_refined_type(let_ty)
+                        and self._narrows_into_refined(stmt.value, let_ty)):
+                    self._check_refined_binding_obligation(
                         decl, stmt.value, let_ty, smt, cur_env,
-                        block_assumptions, site="let binding", guarded=False,
+                        block_assumptions,
+                        site="let binding",
                     )
-                    # Rebind the let slot in cur_env so a later obligation
-                    # translates against this value, not a stale outer binding
-                    # of the same slot name.  When the RHS translates, `val` is
-                    # its exact term — and `translate_expr` already asserts a
-                    # refined-return predicate / `declare_nat`'s `>= 0` on a
-                    # call result (#746), so a later re-narrowing of the bound
-                    # slot (`let @NonNeg = @PosInt.0` after `let @PosInt =
-                    # mk()`) discharges with no extra seeding here.  An
-                    # untranslatable RHS (e.g. `let @Int = E.next(())`) falls
-                    # back to a fresh slot var carrying its type invariant only,
-                    # so the stale outer binding is never reused for a later
-                    # obligation — mirrors the destructure path (PR #748).  We
-                    # deliberately do NOT seed the resolved source type over a
-                    # fresh fallback var: a fresh var is disconnected from the
-                    # value, so asserting its declared type would be an
-                    # unchecked assumption (and the checker types `0 - 5` as
-                    # `Nat`, so `>= 0` over the value `-5` would vacuously
-                    # discharge later obligations).
-                    bound = self._apply_let_binding(
-                        stmt, smt, cur_env,
-                        policy=BlockBindingPolicy.FRESH_VAR,
-                    )
-                    if bound is not None:  # FRESH_VAR never halts
-                        cur_env = bound
-                elif isinstance(stmt, ast.LetDestruct):
-                    # `let Tuple<@Nat, ...> = <source>`.  A literal-constructor
-                    # source (`Tuple(<Int>, ...)`) pairs each binding with a
-                    # translatable sub-expression, obligated directly; a
-                    # non-literal source (#747 site 2) is projected
-                    # component-wise out of the translated RHS, now that the
-                    # SMT layer models a tuple as a projectable datatype.
-                    self._walk_for_nat_binding_obligations(
+                elif (self._is_nat_type(let_ty)
+                        and self._narrows_into_nat(stmt.value)):
+                    self._check_nat_binding_obligation(
                         decl, stmt.value, smt, cur_env, block_assumptions,
+                        site="let binding",
                     )
-                    lit_args: tuple[ast.Expr, ...] = ()
-                    if (isinstance(stmt.value, ast.ConstructorCall)
-                            and stmt.value.name == stmt.constructor):
-                        lit_args = stmt.value.args
-                        for te, sub in zip(stmt.type_bindings, lit_args):
-                            comp_ty = self._resolve_type(te)
-                            # #746: a refined tuple component obligates its
-                            # sub-expression against the predicate (refined-
-                            # first, mirroring the let site).
-                            if (self._is_refined_type(comp_ty)
-                                    and self._narrows_into_refined(sub, comp_ty)):
-                                self._check_refined_binding_obligation(
-                                    decl, sub, comp_ty, smt, cur_env,
-                                    block_assumptions,
-                                    site="tuple destructure",
-                                )
-                            elif (self._is_nat_type(comp_ty)
-                                    and self._narrows_into_nat(sub)):
-                                self._check_nat_binding_obligation(
-                                    decl, sub, smt, cur_env, block_assumptions,
-                                    site="tuple destructure",
-                                )
-                    else:
-                        # Non-literal source (#747): project the tuple
-                        # components out of the translated RHS and obligate
-                        # each @Nat narrowing.
-                        self._obligate_destructure_narrowings(
-                            decl, stmt, smt, cur_env, block_assumptions)
-                    # Rebind every destructured slot in cur_env so a later
-                    # obligation translates against the destructured value, not
-                    # a stale outer binding of the same slot name (PR #748).  A
-                    # literal component is translated in the *outer* env first
-                    # (avoiding same-type self-shadowing); a non-literal source —
-                    # or a component the SMT layer can't translate — falls back
-                    # to a fresh slot var carrying only its type invariant, so
-                    # the stale outer binding is never reused.
-                    #
-                    # #746: alongside the rebind, seed the bound slot's *source*
-                    # component type fact into the block assumptions so a later
-                    # re-narrowing of that slot can discharge.  The fact is read
-                    # from the RHS's resolved type — its constructor's field
-                    # `i`, instantiated against it (`src_args`) — and is
-                    # only seeded when (a) the source value PROVABLY has that
-                    # type and (b) the component is non-literal — see the gate
-                    # below.  It is never the (possibly-unproven) target
-                    # sub-pattern type, so a component whose source genuinely
-                    # lacks the fact still obligates and (correctly) errors.
-                    src_tuple_ty = self._resolved_type_of(stmt.value)
-                    if isinstance(src_tuple_ty, RefinedType):
-                        # A refined tuple source (`{ @Tuple<PosInt, Int> | P }`)
-                        # hides the `Tuple` base; unwrap it so the component
-                        # source facts are seeded — else a later re-narrowing of
-                        # a component (`@PosInt.0` into `@NonNeg`) wrongly errors
-                        # E505 for want of the invariant the source carries (CR
-                        # PR-review).
-                        src_tuple_ty = src_tuple_ty.base
-                    # Binding i is the constructor's field i: its type is
-                    # the field's declared type instantiated against the
-                    # source's arguments, not argument i — which it is only
-                    # for a `Tuple`.  Read by index, `MkBox(Int, T)` bound
-                    # from a `Box<Nat>` seeded the `Int` field with `Nat`'s
-                    # `>= 0` and PROVED a later `let @Nat = @Int.0` at Tier 1
-                    # (PR #1537 review).
-                    src_ctor = self._destructure_ctor_name(stmt, src_tuple_ty)
-                    src_args = (
-                        self._instantiated_field_types(src_ctor, src_tuple_ty)
-                        if src_ctor is not None
-                        and isinstance(src_tuple_ty, AdtType)
-                        else None
-                    ) or ()
-                    # A source whose declared type the value PROVABLY has — a
-                    # `SlotRef` (a param/let access, guaranteed by R1's param-
-                    # assume / the let's own checked binding) or a call (its
-                    # callee discharged the return type) — lets us seed the
-                    # source component type's fact (below).  A literal
-                    # `ConstructorCall`, an `if`/`match`, or an arithmetic
-                    # source is EXCLUDED: the checker types those optimistically
-                    # (e.g. `Tuple(0 - 5, ...)` and `if ... Tuple(0 - 1, ...)`
-                    # are both typed `Tuple<Nat, Nat>`), embedding a deferred,
-                    # still-unproven narrowing — seeding `Nat`'s `>= 0` over the
-                    # value `-5`/`-1` would assert a falsehood and vacuously
-                    # discharge every later obligation.
-                    source_guaranteed = isinstance(
-                        stmt.value,
-                        (ast.SlotRef, ast.FnCall, ast.ModuleCall),
-                    )
-                    # #1413: the THIRD reader.  "A call — its callee
-                    # discharged the return type" is precisely the premise
-                    # disclosure withdraws, so a guaranteed source is not
-                    # guaranteed when this run disclosed it.  A `SlotRef`
-                    # source is answered by its TERM (translating one is an
-                    # env lookup, recording no obligation) and a call by its
-                    # callee, which covers a forwarding wrapper too; the
-                    # translation is skipped outright unless some disclosure
-                    # is live, so a clean program pays nothing.
-                    src_term = None
-                    if source_guaranteed and self._disclosure_is_live(smt):
-                        src_term = (
-                            smt.translate_expr(stmt.value, cur_env)
-                            if isinstance(stmt.value, ast.SlotRef) else None
-                        )
-                    pushed: list[tuple[str, object]] = []
-                    seeds: list[object] = []
-                    for i, te in enumerate(stmt.type_bindings):
-                        type_name = smt._type_expr_to_slot_name(te)
-                        if type_name is None:
-                            continue
-                        slot_val: object | None = None
-                        if i < len(lit_args):
-                            # Literal component: exact value; no seed needed.
-                            slot_val = smt.translate_expr(lit_args[i], cur_env)
-                        if slot_val is None:
-                            # Non-literal / untranslatable component: a fresh var
-                            # invalidates the stale outer binding (PR #748).
-                            slot_val = self._fresh_slot_var(smt, te)
-                        if slot_val is not None:
-                            pushed.append((type_name, slot_val))
-                            # #746: seed the source component type's fact over
-                            # the bound var, so a later re-narrowing of this slot
-                            # (`let @NonNeg = @PosInt.0`) discharges against it.
-                            # Only for a guaranteed source and a non-literal
-                            # component (a literal's slot var is its exact value,
-                            # which carries its own entailments) — never the
-                            # (possibly-unproven) target sub-pattern type, so a
-                            # component whose source genuinely lacks the fact
-                            # still obligates and (correctly) errors.
-                            if (source_guaranteed and i >= len(lit_args)
-                                    and i < len(src_args)):
-                                comp_fact = self._term_source_fact(
-                                    smt, src_args[i], slot_val)
-                                if comp_fact is not None:
-                                    # Through the shared gate.  Withholding
-                                    # moves a BLOCK-scoped seed onto a
-                                    # FUNCTION-scoped list, which widens only
-                                    # the second (tainted) attempt — the one
-                                    # whose sole outcome is a `disclosed`
-                                    # demotion.  A fact leaking past its block
-                                    # can therefore cost a Tier-1 proof
-                                    # elsewhere in the function, never grant
-                                    # one; the arm facts have been carried the
-                                    # same way since #1363.
-                                    seeds.extend(self._established_facts(
-                                        [comp_fact], source=stmt.value,
-                                        term=src_term, smt=smt))
-                    for tn, sv in pushed:
-                        cur_env = cur_env.push(tn, sv)
-                    block_assumptions.extend(seeds)
-                elif isinstance(stmt, ast.ExprStmt):
-                    # Walk a statement-position expression for @Nat narrowing
-                    # obligations (test_narrow_stmt_position_obligated).
-                    self._walk_for_nat_binding_obligations(
-                        decl, stmt.expr, smt, cur_env, block_assumptions,
-                    )
-                # #804: a bare assert/assume contributes its predicate as a fact
-                # for LATER siblings (the assume-half of the WP rule).  Appended
-                # to the block-local `block_assumptions` copy — positional (later
-                # statements + trailing expr only) and block-scoped (the copy is
-                # discarded at block exit, so a branch fact never leaks).
-                fact = self._assumed_block_fact(stmt, smt, cur_env)
-                if fact is not None:
-                    block_assumptions.append(fact)
-            self._walk_for_nat_binding_obligations(
-                decl, expr.expr, smt, cur_env, block_assumptions,
-            )
-            return
-
-        if isinstance(expr, ast.BinaryExpr):
-            # #1501: the right operand of `&&`, `||` and `==>` is walked
-            # under the left one, which decides whether it runs.
-            self._walk_for_nat_binding_obligations(
-                decl, expr.left, smt, slot_env, assumptions,
-            )
-            with smt.premise(smt.short_circuit_premise(expr, slot_env)):
-                self._walk_for_nat_binding_obligations(
-                    decl, expr.right, smt, slot_env, assumptions,
-                )
-            return
-
-        if isinstance(expr, ast.UnaryExpr):
-            self._walk_for_nat_binding_obligations(
-                decl, expr.operand, smt, slot_env, assumptions,
-            )
-            return
-
-        if isinstance(expr, ast.MatchExpr):
-            self._walk_for_nat_binding_obligations(
-                decl, expr.scrutinee, smt, slot_env, assumptions,
-            )
-            scrutinee_z3 = smt.translate_expr(expr.scrutinee, slot_env)
-            for index, match_arm in enumerate(expr.arms):
-                # #1403: through the one arm-context derivation.  Its
-                # untranslatable case is what fixes this walk's own defect —
-                # it minted the fresh binders UNTRACKED, so
-                # `_contains_opaque_shadow` could not see them, the gate that
-                # filters refutations never engaged, and a correct program was
-                # refused E505 on a placeholder Z3 was free to pick a
-                # violating value for.
-                #
-                # Prove the arm's @Nat narrowing obligations AND walk its body
-                # under the arm's discriminant condition.  A sub-pattern field
-                # accessor is only read when the arm is taken, so discharging
-                # it must assume the constructor matched — otherwise Z3 may
-                # witness a negative payload in a branch that never reads it,
-                # a false E503 (CR #756).  An irrefutable pattern has no
-                # discriminant of its own; after an exact earlier arm it
-                # carries that arm's negation (#1576).
-                arm = self._enter_match_arm(
-                    expr.scrutinee, scrutinee_z3, match_arm.pattern,
-                    smt, slot_env,
-                    earlier=[a.pattern for a in expr.arms[:index]],
-                )
-                arm_env = arm.env
-                with self._under_arm(smt, arm):
-                    # Site 4: top-level `match <value> { @Nat / @Refined -> }`.
-                    arm_assumptions = list(assumptions)
-                    if isinstance(match_arm.pattern, ast.BindingPattern):
-                        pat_ty = self._resolve_type(match_arm.pattern.type_expr)
-                        # Refined-first (R9): a refinement-over-@Nat bind
-                        # discharges its full predicate, not only `>= 0`.
-                        if (self._is_refined_type(pat_ty)
-                                and self._narrows_into_refined(
-                                    expr.scrutinee, pat_ty)):
-                            self._check_refined_binding_obligation(
-                                decl, expr.scrutinee, pat_ty, smt, slot_env,
-                                assumptions, site="match binding",
-                            )
-                        elif (self._is_nat_type(pat_ty)
-                                and self._narrows_into_nat(expr.scrutinee)):
-                            self._check_nat_binding_obligation(
-                                decl, expr.scrutinee, smt, slot_env,
-                                assumptions, site="match binding",
-                            )
-                    elif isinstance(match_arm.pattern, ast.ConstructorPattern):
-                        # Site 1 (#747): @Nat sub-patterns narrowing a
-                        # non-@Nat ADT field — the @Int payload of
-                        # `Some(@Nat.0)` on an `Option<Int>` scrutinee.
-                        #
-                        # This OBLIGATES; the facts each bound field carries
-                        # from its source type come from `arm_ctx`, which is
-                        # where every consumer now gets them.  They used to be
-                        # returned from here as well, so the same derivation
-                        # ran twice for this one walk and once for everybody
-                        # else — which is how three readers came to disagree
-                        # about what an arm establishes (#1403).
-                        self._obligate_subpattern_narrowings(
-                            decl, expr.scrutinee, scrutinee_z3,
-                            match_arm.pattern, smt, slot_env, assumptions,
-                        )
-                    # A downstream narrowing that depends on a binding's own
-                    # invariant discharges from the arm's facts instead of
-                    # reporting a false E503 (CR).
-                    arm_assumptions = arm.assuming(arm_assumptions)
-                    self._walk_for_nat_binding_obligations(
-                        decl, match_arm.body, smt, arm_env, arm_assumptions,
-                    )
-            return
-
-        # Expression containers that hold arbitrary sub-expressions: a
-        # narrowing nested inside one (e.g. `[takes_nat(@Int.0)]`) must
-        # still be visited.  (The #520 subtraction walker has the same
-        # pre-existing container gap; aligning it is out of #552's scope.)
-        if isinstance(expr, ast.ArrayLit):
-            # Every element obligation at this construction position —
-            # refined predicate and `@Nat` narrowing — goes through the
-            # one typed descent, refined-FIRST (R9).  Recording any of them here
-            # instead would be a SECOND route to the same obligation: the
-            # enclosing `let` reaches these same nodes through its declared
-            # type, which is the only source that survives for a nested
-            # literal or a `map_insert` value, and two routes recording one
-            # obligation inflates `len(obligations)`.
-            target = self._target_type_of(expr)
-            base = target.base if isinstance(target, RefinedType) else target
-            elem_ty = (
-                base.type_args[0]
-                if isinstance(base, AdtType) and base.name == "Array"
-                and base.type_args
-                else None
-            )
-            if elem_ty is not None:
-                for elem in expr.elements:
+                elif isinstance(let_ty, AdtType) and let_ty.type_args:
+                    # A CONTAINER let: the scalar arms above see a
+                    # `Map`/`Array`/`Tuple` and decline, so before #1426's
+                    # third pass the component a container was declared to
+                    # hold was obligated only when the value's own node
+                    # carried a recorded target.  The declared type is
+                    # threaded down instead, which reaches the shapes
+                    # where the table is silent (a nested literal's inner
+                    # element, a `map_insert` value).
                     self._obligate_construction_component(
-                        decl, elem, elem_ty, smt, slot_env, assumptions,
-                        site="array element",
+                        decl, stmt.value, let_ty, smt, cur_env,
+                        block_assumptions, site="let binding",
                     )
-            for elem in expr.elements:
-                self._walk_for_nat_binding_obligations(
-                    decl, elem, smt, slot_env, assumptions,
+                # #1410 (PR review F4b): a `let` whose declared type writes
+                # a refinement on a COMPONENT publishes that claim to every
+                # later reader of the slot, and nothing established it —
+                # `let @Option<PosInt> = mkint(x)` was Tier-1 clean, exit 0,
+                # and refuted at run time.  Obligated here so the slot's
+                # declared type is a fact by the time anything reads it.
+                # Alongside the arms above, not in the chain: they claim the
+                # let type's HEAD, this one what its structure contains.
+                # `guarded=False` for the reason the refined arm above is
+                # also False: codegen's component decomposition runs at a
+                # FUNCTION boundary, and a `let` is not one.  Deriving the
+                # flag from the target type claimed a runtime check for a
+                # `let @Tuple<PosInt, Int>` that nothing at that site
+                # emits — the #1362 shape, and inconsistent with its own
+                # neighbour three lines up (PR #1420 review).
+                self._check_nested_refinement_obligation(
+                    decl, stmt.value, let_ty, smt, cur_env,
+                    block_assumptions, site="let binding", guarded=False,
                 )
-            return
-
-        if isinstance(expr, ast.IndexExpr):
-            self._walk_for_nat_binding_obligations(
-                decl, expr.collection, smt, slot_env, assumptions,
-            )
-            self._walk_for_nat_binding_obligations(
-                decl, expr.index, smt, slot_env, assumptions,
-            )
-            return
-
-        if isinstance(expr, ast.InterpolatedString):
-            for part in expr.parts:
-                if isinstance(part, ast.Expr):
-                    self._walk_for_nat_binding_obligations(
-                        decl, part, smt, slot_env, assumptions,
+                # Rebind the let slot in cur_env so a later obligation
+                # translates against this value, not a stale outer binding
+                # of the same slot name.  When the RHS translates, `val` is
+                # its exact term — and `translate_expr` already asserts a
+                # refined-return predicate / `declare_nat`'s `>= 0` on a
+                # call result (#746), so a later re-narrowing of the bound
+                # slot (`let @NonNeg = @PosInt.0` after `let @PosInt =
+                # mk()`) discharges with no extra seeding here.  An
+                # untranslatable RHS (e.g. `let @Int = E.next(())`) falls
+                # back to a fresh slot var carrying its type invariant only,
+                # so the stale outer binding is never reused for a later
+                # obligation — mirrors the destructure path (PR #748).  We
+                # deliberately do NOT seed the resolved source type over a
+                # fresh fallback var: a fresh var is disconnected from the
+                # value, so asserting its declared type would be an
+                # unchecked assumption (and the checker types `0 - 5` as
+                # `Nat`, so `>= 0` over the value `-5` would vacuously
+                # discharge later obligations).
+                bound = self._apply_let_binding(
+                    stmt, smt, cur_env,
+                    policy=BlockBindingPolicy.FRESH_VAR,
+                )
+                if bound is not None:  # FRESH_VAR never halts
+                    cur_env = bound
+            elif isinstance(stmt, ast.LetDestruct):
+                # `let Tuple<@Nat, ...> = <source>`.  A literal-constructor
+                # source (`Tuple(<Int>, ...)`) pairs each binding with a
+                # translatable sub-expression, obligated directly; a
+                # non-literal source (#747 site 2) is projected
+                # component-wise out of the translated RHS, now that the
+                # SMT layer models a tuple as a projectable datatype.
+                lit_args: tuple[ast.Expr, ...] = ()
+                if (isinstance(stmt.value, ast.ConstructorCall)
+                        and stmt.value.name == stmt.constructor):
+                    lit_args = stmt.value.args
+                    for te, sub in zip(stmt.type_bindings, lit_args):
+                        comp_ty = self._resolve_type(te)
+                        # #746: a refined tuple component obligates its
+                        # sub-expression against the predicate (refined-
+                        # first, mirroring the let site).
+                        if (self._is_refined_type(comp_ty)
+                                and self._narrows_into_refined(sub, comp_ty)):
+                            self._check_refined_binding_obligation(
+                                decl, sub, comp_ty, smt, cur_env,
+                                block_assumptions,
+                                site="tuple destructure",
+                            )
+                        elif (self._is_nat_type(comp_ty)
+                                and self._narrows_into_nat(sub)):
+                            self._check_nat_binding_obligation(
+                                decl, sub, smt, cur_env, block_assumptions,
+                                site="tuple destructure",
+                            )
+                else:
+                    # Non-literal source (#747): project the tuple
+                    # components out of the translated RHS and obligate
+                    # each @Nat narrowing.
+                    self._obligate_destructure_narrowings(
+                        decl, stmt, smt, cur_env, block_assumptions)
+                # Rebind every destructured slot in cur_env so a later
+                # obligation translates against the destructured value, not
+                # a stale outer binding of the same slot name (PR #748).  A
+                # literal component is translated in the *outer* env first
+                # (avoiding same-type self-shadowing); a non-literal source —
+                # or a component the SMT layer can't translate — falls back
+                # to a fresh slot var carrying only its type invariant, so
+                # the stale outer binding is never reused.
+                #
+                # #746: alongside the rebind, seed the bound slot's *source*
+                # component type fact into the block assumptions so a later
+                # re-narrowing of that slot can discharge.  The fact is read
+                # from the RHS's resolved type — its constructor's field
+                # `i`, instantiated against it (`src_args`) — and is
+                # only seeded when (a) the source value PROVABLY has that
+                # type and (b) the component is non-literal — see the gate
+                # below.  It is never the (possibly-unproven) target
+                # sub-pattern type, so a component whose source genuinely
+                # lacks the fact still obligates and (correctly) errors.
+                src_tuple_ty = self._resolved_type_of(stmt.value)
+                if isinstance(src_tuple_ty, RefinedType):
+                    # A refined tuple source (`{ @Tuple<PosInt, Int> | P }`)
+                    # hides the `Tuple` base; unwrap it so the component
+                    # source facts are seeded — else a later re-narrowing of
+                    # a component (`@PosInt.0` into `@NonNeg`) wrongly errors
+                    # E505 for want of the invariant the source carries (CR
+                    # PR-review).
+                    src_tuple_ty = src_tuple_ty.base
+                # Binding i is the constructor's field i: its type is
+                # the field's declared type instantiated against the
+                # source's arguments, not argument i — which it is only
+                # for a `Tuple`.  Read by index, `MkBox(Int, T)` bound
+                # from a `Box<Nat>` seeded the `Int` field with `Nat`'s
+                # `>= 0` and PROVED a later `let @Nat = @Int.0` at Tier 1
+                # (PR #1537 review).
+                src_ctor = self._destructure_ctor_name(stmt, src_tuple_ty)
+                src_args = (
+                    self._instantiated_field_types(src_ctor, src_tuple_ty)
+                    if src_ctor is not None
+                    and isinstance(src_tuple_ty, AdtType)
+                    else None
+                ) or ()
+                # A source whose declared type the value PROVABLY has — a
+                # `SlotRef` (a param/let access, guaranteed by R1's param-
+                # assume / the let's own checked binding) or a call (its
+                # callee discharged the return type) — lets us seed the
+                # source component type's fact (below).  A literal
+                # `ConstructorCall`, an `if`/`match`, or an arithmetic
+                # source is EXCLUDED: the checker types those optimistically
+                # (e.g. `Tuple(0 - 5, ...)` and `if ... Tuple(0 - 1, ...)`
+                # are both typed `Tuple<Nat, Nat>`), embedding a deferred,
+                # still-unproven narrowing — seeding `Nat`'s `>= 0` over the
+                # value `-5`/`-1` would assert a falsehood and vacuously
+                # discharge every later obligation.
+                source_guaranteed = isinstance(
+                    stmt.value,
+                    (ast.SlotRef, ast.FnCall, ast.ModuleCall),
+                )
+                # #1413: the THIRD reader.  "A call — its callee
+                # discharged the return type" is precisely the premise
+                # disclosure withdraws, so a guaranteed source is not
+                # guaranteed when this run disclosed it.  A `SlotRef`
+                # source is answered by its TERM (translating one is an
+                # env lookup, recording no obligation) and a call by its
+                # callee, which covers a forwarding wrapper too; the
+                # translation is skipped outright unless some disclosure
+                # is live, so a clean program pays nothing.
+                src_term = None
+                if source_guaranteed and self._disclosure_is_live(smt):
+                    src_term = (
+                        smt.translate_expr(stmt.value, cur_env)
+                        if isinstance(stmt.value, ast.SlotRef) else None
                     )
-            return
+                pushed: list[tuple[str, object]] = []
+                seeds: list[object] = []
+                for i, te in enumerate(stmt.type_bindings):
+                    type_name = smt._type_expr_to_slot_name(te)
+                    if type_name is None:
+                        continue
+                    slot_val: object | None = None
+                    if i < len(lit_args):
+                        # Literal component: exact value; no seed needed.
+                        slot_val = smt.translate_expr(lit_args[i], cur_env)
+                    if slot_val is None:
+                        # Non-literal / untranslatable component: a fresh var
+                        # invalidates the stale outer binding (PR #748).
+                        slot_val = self._fresh_slot_var(smt, te)
+                    if slot_val is not None:
+                        pushed.append((type_name, slot_val))
+                        # #746: seed the source component type's fact over
+                        # the bound var, so a later re-narrowing of this slot
+                        # (`let @NonNeg = @PosInt.0`) discharges against it.
+                        # Only for a guaranteed source and a non-literal
+                        # component (a literal's slot var is its exact value,
+                        # which carries its own entailments) — never the
+                        # (possibly-unproven) target sub-pattern type, so a
+                        # component whose source genuinely lacks the fact
+                        # still obligates and (correctly) errors.
+                        if (source_guaranteed and i >= len(lit_args)
+                                and i < len(src_args)):
+                            comp_fact = self._term_source_fact(
+                                smt, src_args[i], slot_val)
+                            if comp_fact is not None:
+                                # Through the shared gate.  Withholding
+                                # moves a BLOCK-scoped seed onto a
+                                # FUNCTION-scoped list, which widens only
+                                # the second (tainted) attempt — the one
+                                # whose sole outcome is a `disclosed`
+                                # demotion.  A fact leaking past its block
+                                # can therefore cost a Tier-1 proof
+                                # elsewhere in the function, never grant
+                                # one; the arm facts have been carried the
+                                # same way since #1363.
+                                seeds.extend(self._established_facts(
+                                    [comp_fact], source=stmt.value,
+                                    term=src_term, smt=smt))
+                for tn, sv in pushed:
+                    cur_env = cur_env.push(tn, sv)
+                block_assumptions.extend(seeds)
+            # #804: a bare assert/assume contributes its predicate as a fact
+            # for LATER siblings (the assume-half of the WP rule).  Appended
+            # to the block-local `block_assumptions` copy — positional (later
+            # statements + trailing expr only) and block-scoped (the copy is
+            # discarded at block exit, so a branch fact never leaks).
+            fact = self._assumed_block_fact(stmt, smt, cur_env)
+            if fact is not None:
+                block_assumptions.append(fact)
+        yield expr.expr, _Path(block_assumptions, cur_env)
 
-        if isinstance(expr, (ast.AssertExpr, ast.AssumeExpr)):
-            # PR #1202 review: an assert/assume CONDITION can host a
-            # narrowing binding site (`assert(takes_nat(0 - 5) > 0)`) —
-            # the primitive-op and calls walkers already descend these;
-            # without this arm the nat-binding walker recorded nothing and
-            # a provably-negative argument passed silently.
-            self._walk_for_nat_binding_obligations(
-                decl, expr.expr, smt, slot_env, assumptions,
-            )
-            return
+    def _nat_binary(
+        self, decl: ast.FnDecl, expr: ast.BinaryExpr, path: _Path, smt: SmtContext,
+    ) -> Iterator[tuple[ast.Node, _Path]]:
+        # #1501: the right operand of `&&`, `||` and `==>` is walked
+        # under the left one, which decides whether it runs.
+        yield expr.left, path
+        with smt.premise(smt.short_circuit_premise(expr, path.env)):
+            yield expr.right, path
 
-        if isinstance(expr, (ast.ForallExpr, ast.ExistsExpr)):
-            # #779: the quantifier DOMAIN is enclosing-scope code (full
-            # precision); the predicate is an AnonFn, whose arm above walks
-            # its body under the fresh-scope env.  (Latent: that arm's
-            # return obligations cite `_compile_lifted_closure`, but
-            # quantifier predicates are INLINED by `_translate_quantifier`,
-            # not lifted — moot today because the checker-accepted non-Bool
-            # predicate shapes fail codegen before any guard could run.)
-            self._walk_for_nat_binding_obligations(
-                decl, expr.domain, smt, slot_env, assumptions,
+    def _nat_match(
+        self, decl: ast.FnDecl, expr: ast.MatchExpr, path: _Path, smt: SmtContext,
+    ) -> Iterator[tuple[ast.Node, _Path]]:
+        yield expr.scrutinee, path
+        scrutinee_z3 = smt.translate_expr(expr.scrutinee, path.env)
+        for index, match_arm in enumerate(expr.arms):
+            # #1403: through the one arm-context derivation.  Its
+            # untranslatable case is what fixes this walk's own defect —
+            # it minted the fresh binders UNTRACKED, so
+            # `_contains_opaque_shadow` could not see them, the gate that
+            # filters refutations never engaged, and a correct program was
+            # refused E505 on a placeholder Z3 was free to pick a
+            # violating value for.
+            #
+            # Prove the arm's @Nat narrowing obligations AND walk its body
+            # under the arm's discriminant condition.  A sub-pattern field
+            # accessor is only read when the arm is taken, so discharging
+            # it must assume the constructor matched — otherwise Z3 may
+            # witness a negative payload in a branch that never reads it,
+            # a false E503 (CR #756).  An irrefutable pattern has no
+            # discriminant of its own; after an exact earlier arm it
+            # carries that arm's negation (#1576).
+            arm = self._enter_match_arm(
+                expr.scrutinee, scrutinee_z3, match_arm.pattern,
+                smt, path.env,
+                earlier=[a.pattern for a in expr.arms[:index]],
             )
-            self._walk_for_nat_binding_obligations(
-                decl, expr.predicate, smt, slot_env, assumptions,
-            )
-            return
-
-        if isinstance(expr, ast.HandleExpr):
-            # #1445/#1448: the clause BINDERS, before anything else in
-            # this arm — they are obligated whether or not the handler
-            # declares state, and an `Exn` handler declares none.
-            self._obligate_clause_binder(decl, expr, smt)
-            # #779: state-init and BODY are enclosing-scope code; clause
-            # bodies and state updates bind the operation's fresh
-            # parameters (and the handler state slot), so they walk under
-            # the empty fresh-scope env
-            # (mirroring the primitive-op walker; #1179's calls walk visits
-            # the same positions but keeps the enclosing env — a call-site
-            # hit there only ADDS a proof, so it has no aliasing hazard).
-            if expr.state is not None:
-                # #1203: the state-init BINDS into the state CELL — whose
-                # type is the effect's `State<T>` type argument, NOT the
-                # declared `with` annotation (the checker rejects a
-                # concrete mismatch as E336 (#1206), but a generic
-                # handler's TypeVar cell defers that check and the
-                # divergence can reappear at instantiation, so the
-                # obligations keep keying off the cell; pre-E336, keying
-                # off the annotation let `(@Int = <neg>)` on a
-                # `State<Nat>` handler bypass the obligation entirely —
-                # PR #1202 adversarial round).  Same refined/nat pair as a let binding,
-                # at enclosing-scope precision (a `requires` can prove it
-                # Tier-1).  Codegen guards the init store, so guarded=True
-                # for the sign-bit pair; the refined predicate has NO
-                # handler-boundary guard, so that arm discloses honestly.
-                self._check_state_decl_divergence(decl, expr)
-                state_ty = self._handler_cell_type(expr)
-                self._obligate_binding_triple(
-                    decl, expr.state.init_expr, state_ty, smt, slot_env,
-                    assumptions, site="handler state init",
-                    nat_guarded=True,
-                    refined_guarded=self._refined_bind_site_guarded(
-                        _STATE_WRITE_SITE),
-                )
-                self._walk_for_nat_binding_obligations(
-                    decl, expr.state.init_expr, smt, slot_env, assumptions,
-                )
-            # The handled effect's NAME wraps the BODY walk ONLY — the
-            # checker marks the effect handled around `_synth_expr(body)`
-            # alone (control.py: the state init and the clauses are
-            # checked BEFORE the push), so a bare `put` in a nested
-            # handler's init or clause body belongs to the ENCLOSING
-            # context.  Round-9 review: the wider push claimed the
-            # builtin State guard for an init/clause put the checker
-            # typed as a user effect's op.  `_verify_fn` resets the
-            # stack per function as leak insurance.
-            if isinstance(expr.effect, ast.EffectRef):
-                self._walk_handled_effects.append(expr.effect.name)
-            try:
-                self._walk_for_nat_binding_obligations(
-                    decl, expr.body, smt, slot_env, assumptions,
-                )
-            finally:
-                if isinstance(expr.effect, ast.EffectRef):
-                    self._walk_handled_effects.pop()
-            cell_ty = self._handler_cell_type(expr)
-            # The resume obligation below is builtin-State-specific: its
-            # guarded=True promise is the STATE clause inlining's wrapper.
-            # A user effect declaring an op named `get` gets no such
-            # guard, so it must not enter this arm (round-4 review).
-            is_builtin_state = (
-                isinstance(expr.effect, ast.EffectRef)
-                and expr.effect.name == "State"
-            )
-            for clause in expr.clauses:
-                # #1203: a State GET clause's tail `resume(v)` is the op's
-                # cell-typed RESULT — obligate a narrowing resume
-                # value here, where the effect identity is known (the
-                # FnCall walk cannot see the enclosing handler).  Fresh
-                # clause scope: slot-dependent values record Tier-3,
-                # guarded=True (codegen wraps the get-clause body's net
-                # value — run-differential-backed).
-                if (is_builtin_state and cell_ty is not None
-                        and clause.op_name == "get"):
-                    r_arg = self._tail_resume_value(clause.body)
-                    if r_arg is not None:
-                        self._obligate_binding_triple(
-                            decl, r_arg, cell_ty, smt, SlotEnv(), [],
-                            site="State-op resume",
-                            nat_guarded=True,
+            arm_env = arm.env
+            with self._under_arm(smt, arm):
+                # Site 4: top-level `match <value> { @Nat / @Refined -> }`.
+                arm_assumptions = list(path.facts)
+                if isinstance(match_arm.pattern, ast.BindingPattern):
+                    pat_ty = self._resolve_type(match_arm.pattern.type_expr)
+                    # Refined-first (R9): a refinement-over-@Nat bind
+                    # discharges its full predicate, not only `>= 0`.
+                    if (self._is_refined_type(pat_ty)
+                            and self._narrows_into_refined(
+                                expr.scrutinee, pat_ty)):
+                        self._check_refined_binding_obligation(
+                            decl, expr.scrutinee, pat_ty, smt, path.env,
+                            path.facts, site="match binding",
                         )
-                self._walk_for_nat_binding_obligations(
-                    decl, clause.body, smt, SlotEnv(), [],
-                )
-                if clause.state_update is not None:
-                    # #1203: `with @T = <expr>` WRITES the state cell — the
-                    # same binding triple against the CELL type (preferring
-                    # the effect's `State<T>` argument over the declared
-                    # annotation, as at the init), under the fresh clause
-                    # env (slot-dependent updates record Tier-3; a
-                    # literal-negative is loud).
-                    upd_ty = (cell_ty if cell_ty is not None
-                              else self._resolve_type(
-                                  clause.state_update[0]))
-                    self._obligate_binding_triple(
-                        decl, clause.state_update[1], upd_ty, smt,
-                        SlotEnv(), [], site="handler state update",
-                        nat_guarded=True,
-                        refined_guarded=self._refined_bind_site_guarded(
-                            _STATE_WRITE_SITE),
+                    elif (self._is_nat_type(pat_ty)
+                            and self._narrows_into_nat(expr.scrutinee)):
+                        self._check_nat_binding_obligation(
+                            decl, expr.scrutinee, smt, path.env,
+                            path.facts, site="match binding",
+                        )
+                elif isinstance(match_arm.pattern, ast.ConstructorPattern):
+                    # Site 1 (#747): @Nat sub-patterns narrowing a
+                    # non-@Nat ADT field — the @Int payload of
+                    # `Some(@Nat.0)` on an `Option<Int>` scrutinee.
+                    #
+                    # This OBLIGATES; the facts each bound field carries
+                    # from its source type come from `arm_ctx`, which is
+                    # where every consumer now gets them.  They used to be
+                    # returned from here as well, so the same derivation
+                    # ran twice for this one walk and once for everybody
+                    # else — which is how three readers came to disagree
+                    # about what an arm establishes (#1403).
+                    self._obligate_subpattern_narrowings(
+                        decl, expr.scrutinee, scrutinee_z3,
+                        match_arm.pattern, smt, path.env, path.facts,
                     )
-                    self._walk_for_nat_binding_obligations(
-                        decl, clause.state_update[1], smt, SlotEnv(), [],
-                    )
-            return
+                # A downstream narrowing that depends on a binding's own
+                # invariant discharges from the arm's facts instead of
+                # reporting a false E503 (CR).
+                arm_assumptions = arm.assuming(arm_assumptions)
+                yield match_arm, _Path(arm_assumptions, arm_env)
 
-        # Other expression types — no nested binding site to walk.
-        return
+    def _nat_array(
+        self, decl: ast.FnDecl, expr: ast.ArrayLit, path: _Path, smt: SmtContext,
+    ) -> Iterator[tuple[ast.Node, _Path]]:
+        # Every element obligation at this construction position —
+        # refined predicate and `@Nat` narrowing — goes through the
+        # one typed descent, refined-FIRST (R9).  Recording any of them here
+        # instead would be a SECOND route to the same obligation: the
+        # enclosing `let` reaches these same nodes through its declared
+        # type, which is the only source that survives for a nested
+        # literal or a `map_insert` value, and two routes recording one
+        # obligation inflates `len(obligations)`.
+        target = self._target_type_of(expr)
+        base = target.base if isinstance(target, RefinedType) else target
+        elem_ty = (
+            base.type_args[0]
+            if isinstance(base, AdtType) and base.name == "Array"
+            and base.type_args
+            else None
+        )
+        if elem_ty is not None:
+            for elem in expr.elements:
+                self._obligate_construction_component(
+                    decl, elem, elem_ty, smt, path.env, path.facts,
+                    site="array element",
+                )
+        for elem in expr.elements:
+            yield elem, path
+
+    def _nat_handle(
+        self, decl: ast.FnDecl, expr: ast.HandleExpr, path: _Path, smt: SmtContext,
+        cells: list[Type | None],
+    ) -> Iterator[tuple[ast.Node, _Path]]:
+        # #1445/#1448: the clause BINDERS, before anything else in
+        # this arm — they are obligated whether or not the handler
+        # declares state, and an `Exn` handler declares none.
+        self._obligate_clause_binder(decl, expr, smt)
+        # #779: state-init and BODY are enclosing-scope code; clause
+        # bodies and state updates bind the operation's fresh
+        # parameters (and the handler state slot), so they walk under
+        # the empty fresh-scope env, as the primitive-op and calls walks
+        # read them (`_path_handle`).
+        if expr.state is not None:
+            # #1203: the state-init BINDS into the state CELL — whose
+            # type is the effect's `State<T>` type argument, NOT the
+            # declared `with` annotation (the checker rejects a
+            # concrete mismatch as E336 (#1206), but a generic
+            # handler's TypeVar cell defers that check and the
+            # divergence can reappear at instantiation, so the
+            # obligations keep keying off the cell; pre-E336, keying
+            # off the annotation let `(@Int = <neg>)` on a
+            # `State<Nat>` handler bypass the obligation entirely —
+            # PR #1202 adversarial round).  Same refined/nat pair as a let binding,
+            # at enclosing-scope precision (a `requires` can prove it
+            # Tier-1).  Codegen guards the init store, so guarded=True
+            # for the sign-bit pair; the refined predicate has NO
+            # handler-boundary guard, so that arm discloses honestly.
+            self._check_state_decl_divergence(decl, expr)
+            state_ty = self._handler_cell_type(expr)
+            self._obligate_binding_triple(
+                decl, expr.state.init_expr, state_ty, smt, path.env,
+                path.facts, site="handler state init",
+                nat_guarded=True,
+                refined_guarded=self._refined_bind_site_guarded(
+                    _STATE_WRITE_SITE),
+            )
+            yield expr.state, path
+        # The handled effect's NAME wraps the BODY walk ONLY — the
+        # checker marks the effect handled around `_synth_expr(body)`
+        # alone (control.py: the state init and the clauses are
+        # checked BEFORE the push), so a bare `put` in a nested
+        # handler's init or clause body belongs to the ENCLOSING
+        # context.  Round-9 review: the wider push claimed the
+        # builtin State guard for an init/clause put the checker
+        # typed as a user effect's op.  `_verify_fn` resets the
+        # stack per function as leak insurance.
+        if isinstance(expr.effect, ast.EffectRef):
+            self._walk_handled_effects.append(expr.effect.name)
+        try:
+            yield expr.body, path
+        finally:
+            if isinstance(expr.effect, ast.EffectRef):
+                self._walk_handled_effects.pop()
+        cell_ty = self._handler_cell_type(expr)
+        # The resume obligation below is builtin-State-specific: its
+        # guarded=True promise is the STATE clause inlining's wrapper.
+        # A user effect declaring an op named `get` gets no such
+        # guard, so it must not enter this arm (round-4 review).
+        is_builtin_state = (
+            isinstance(expr.effect, ast.EffectRef)
+            and expr.effect.name == "State"
+        )
+        for clause in expr.clauses:
+            # #1203: a State GET clause's tail `resume(v)` is the op's
+            # cell-typed RESULT — obligate a narrowing resume
+            # value here, where the effect identity is known (the
+            # FnCall walk cannot see the enclosing handler).  Fresh
+            # clause scope: slot-dependent values record Tier-3,
+            # guarded=True (codegen wraps the get-clause body's net
+            # value — run-differential-backed).
+            if (is_builtin_state and cell_ty is not None
+                    and clause.op_name == "get"):
+                r_arg = self._tail_resume_value(clause.body)
+                if r_arg is not None:
+                    resumed = _Path.fresh()
+                    self._obligate_binding_triple(
+                        decl, r_arg, cell_ty, smt, resumed.env, resumed.facts,
+                        site="State-op resume",
+                        nat_guarded=True,
+                    )
+            cells.append(cell_ty)
+            try:
+                yield clause, _Path.fresh()
+            finally:
+                cells.pop()
+
+    def _nat_clause(
+        self, decl: ast.FnDecl, clause: ast.HandlerClause, path: _Path,
+        smt: SmtContext, cell_ty: Type | None,
+    ) -> Iterator[tuple[ast.Node, _Path]]:
+        # A clause's body and its `with` update are read on fresh paths
+        # (`_Path.fresh()`, which its handler's step gives it), and the
+        # update's own obligation is checked between them.
+        yield clause.body, path
+        if clause.state_update is not None:
+            # #1203: `with @T = <expr>` WRITES the state cell — the
+            # same binding triple against the CELL type (preferring
+            # the effect's `State<T>` argument over the declared
+            # annotation, as at the init), under the fresh clause
+            # env (slot-dependent updates record Tier-3; a
+            # literal-negative is loud).
+            upd_ty = (cell_ty if cell_ty is not None
+                      else self._resolve_type(
+                          clause.state_update[0]))
+            written = _Path.fresh()
+            self._obligate_binding_triple(
+                decl, clause.state_update[1], upd_ty, smt,
+                written.env, written.facts, site="handler state update",
+                nat_guarded=True,
+                refined_guarded=self._refined_bind_site_guarded(
+                    _STATE_WRITE_SITE),
+            )
+            yield clause.state_update[1], _Path.fresh()
 
     def _is_opaque_shadow(self, term: z3.ExprRef) -> bool:
         """True iff *term* is a fresh const pushed to shadow a stale outer slot
