@@ -1421,20 +1421,7 @@ class FunctionCompilationMixin:
         if ctx.needs_alloc:
             self._needs_alloc = True
             self._needs_memory = True
-        self._map_imports.update(ctx._map_imports)
-        self._map_ops_used.update(ctx._map_ops_used)
-        self._set_imports.update(ctx._set_imports)
-        self._set_ops_used.update(ctx._set_ops_used)
-        self._decimal_imports.update(ctx._decimal_imports)
-        self._decimal_ops_used.update(ctx._decimal_ops_used)
-        self._json_ops_used.update(ctx._json_ops_used)
-        self._html_ops_used.update(ctx._html_ops_used)
-        self._http_ops_used.update(ctx._http_ops_used)
-        self._async_ops_used.update(ctx._async_ops_used)
-        self._inference_ops_used.update(ctx._inference_ops_used)
-        self._db_ops_used.update(ctx._db_ops_used)  # #229
-        self._random_ops_used.update(ctx._random_ops_used)
-        self._math_ops_used.update(ctx._math_ops_used)
+        self._host_imports_used.update(ctx._host_imports_used)
         # #1479: the trap signal and the contract channel, merged HERE —
         # after the precondition, body, lifted-closure and postcondition
         # phases — because a check lowered in any of them raises its flag on

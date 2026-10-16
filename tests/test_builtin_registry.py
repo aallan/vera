@@ -20,8 +20,15 @@ those parameters.  Each built-in gets these cells:
   declaration replaces the prelude's body and is accepted;
 - its emitter exists on `WasmContext` and takes the arguments its record's
   convention hands it, at the record's arity;
-- for a `Host` record, the Python host's `register_<family>` defines each
-  import the compiled call declares, and the browser runtime names it.
+- for a `Host` record, the Python host's binding table binds exactly the
+  imports the compiled call declares, each with its declaration's types, and
+  the browser runtime's roster lists their rows.
+
+The hosts read the registry too: the Python host binds a module's imports
+through the binder of each row's family, and refuses one no row declares or
+no binder defines; the browser runtime's roster is the registry's rendering,
+and every corpus module's imports are among its rows; the WASI component's
+refusals follow each row's worlds.
 
 The cells that pin each reader to the registry change a record and watch
 the reader follow: the checker's `FunctionInfo`, the dispatch, the
@@ -37,7 +44,6 @@ import ast as pyast
 import inspect
 import re
 from collections.abc import Iterator
-from decimal import Decimal as PyDecimal
 from pathlib import Path
 from typing import Any
 
@@ -103,7 +109,20 @@ pytestmark = pytest.mark.matrix(decides=[
     "vera/runtime/md.py",
     "vera/runtime/regex.py",
     "vera/runtime/set.py",
+    "vera/runtime/async_http.py",
+    "vera/runtime/db.py",
+    "vera/runtime/http.py",
+    "vera/runtime/inference.py",
+    "vera/runtime/random.py",
+    "vera/runtime/state.py",
     "vera/browser/runtime.mjs",
+    "vera/codegen/api.py",
+    "vera/codegen/wasi.py",
+    "vera/codegen/core.py",
+    "vera/codegen/functions.py",
+    "vera/codegen/closures.py",
+    "vera/wasm/context.py",
+    "vera/monomorphize.py",
 ])
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -658,76 +677,336 @@ def test_a_call_at_another_arity_is_an_ordinary_call(name: str) -> None:
 
 
 class _RecordingLinker:
-    """Records what a `register_<family>` defines; binds nothing."""
+    """Records each import a binder defines, with its types; binds nothing."""
 
     def __init__(self) -> None:
-        self.defined: set[str] = set()
+        self.defined: dict[str, tuple[list[str], list[str]]] = {}
 
-    def define_func(self, module: str, name: str, *_args: object,
+    def define_func(self, module: str, name: str, ty: Any, *_args: object,
                     **_kwargs: object) -> None:
-        assert module == "vera"
-        self.defined.add(name)
+        assert module == "vera" and name not in self.defined, name
+        self.defined[name] = ([str(p) for p in ty.params], [str(r) for r in ty.results])
 
 
-def _python_host_defines(family: str, ops: set[str]) -> set[str]:
-    from vera.runtime import decimal, html, json, map, math, md, regex, set as set_mod
+def _line_types(line: str) -> tuple[list[str], list[str]]:
+    """The parameter and result types a declaration line writes."""
+    params = [t for group in re.findall(r"\(param ([^()]*)\)", line) for t in group.split()]
+    results = [t for group in re.findall(r"\(result ([^()]*)\)", line) for t in group.split()]
+    return params, results
 
+
+def _host_env(own_lines: dict[str, str], state_types: list[Any]) -> Any:
+    """A `HostEnv` whose own bindings stand in for `execute()`'s closures,
+    each typed as the module declares it."""
+    import wasmtime
+
+    from vera.codegen.api import HostEnv
+
+    def func_type(line: str) -> Any:
+        params, results = _line_types(line)
+        return wasmtime.FuncType([getattr(wasmtime.ValType, p)() for p in params],
+                                 [getattr(wasmtime.ValType, r)() for r in results])
+
+    own = {name: (func_type(line), lambda *_a: None) for name, line in own_lines.items()}
+    return HostEnv(own=own, state_types=state_types, initial_state=None, state_store={},
+                   env_vars={}, decimal_store={}, future_store={}, host_store_refs={})
+
+
+_OWN_FAMILIES = frozenset({"io", "contract", "trap", "wrap"})
+
+
+def _bound(declared: dict[str, str],
+           state_types: list[Any] | None = None) -> dict[str, tuple[list[str], list[str]]]:
+    """What `bind_host_imports` defines for a module that declares
+    *declared*, `execute()`'s own bindings stood in for."""
+    from vera.codegen.api import bind_host_imports
+
+    own = {n: line for n, line in declared.items()
+           if (row := host_import(n)) is not None and row.family in _OWN_FAMILIES}
+    env = _host_env(own, state_types or [])
     linker: Any = _RecordingLinker()
-    if family == "md":
-        md.register_md(linker)
-    elif family == "regex":
-        regex.register_regex(linker)
-    elif family == "map":
-        map.register_map(linker, ops)
-    elif family == "set":
-        set_mod.register_set(linker, ops)
-    elif family == "decimal":
-        store: dict[int, PyDecimal] = {}
-        decimal.register_decimal(linker, ops, store, {})
-    elif family == "json":
-        json.register_json(linker, ops)
-    elif family == "html":
-        html.register_html(linker, ops)
-    elif family == "math":
-        math.register_math(linker, ops)
-    else:  # pragma: no cover — a family with no binder
-        raise AssertionError(f"no Python binder for family {family!r}")
+    try:
+        bind_host_imports(linker, [("vera", n) for n in declared], env)
+    finally:
+        if env.executor is not None:
+            env.executor.shutdown(wait=False)
     return linker.defined
-
-
-def _served_imports(spec: BuiltinSpec) -> set[str]:
-    compiled = pipeline.compile(probe_source(spec))
-    assert compiled.ok, [d.description for d in compiled.diagnostics]
-    return {n for n in _declared(compiled.wat) if host_import(n).serves == spec.name}
 
 
 @pytest.mark.parametrize("spec", _HOSTED, ids=_ids(_HOSTED))
 def test_python_host_binds_the_import(spec: BuiltinSpec) -> None:
-    assert isinstance(spec.lowering, Host)
-    names = _served_imports(spec)
-    assert names
-    assert names <= _python_host_defines(spec.lowering.family, names)
+    """The Python host binds exactly the imports a call to the record
+    declares, each through its family's binder in `HOST_BINDERS`, with the
+    types its declaration line writes."""
+    compiled = pipeline.compile(probe_source(spec))
+    assert compiled.ok, [d.description for d in compiled.diagnostics]
+    declared = _declared(compiled.wat)
+    assert any(host_import(n).serves == spec.name for n in declared)
+    bound = _bound(declared)
+    assert set(bound) == set(declared)
+    for name, line in declared.items():
+        assert bound[name] == _line_types(line), name
 
 
-def _js_binds(name: str, runtime: str) -> bool:
-    n = re.escape(name)
-    forms = (
-        rf"needed\.has\(['\"]{n}['\"]\)",
-        rf"imports\.vera\.{n}\b",
-        rf"imports\.vera\[['\"]{n}['\"]\]",
-        rf"^\s*{n}\s*:",
-        rf"\^{n}\\\$",
-    )
-    return any(re.search(form, runtime, re.MULTILINE) for form in forms)
+def test_every_family_has_a_binder() -> None:
+    from vera.codegen.api import HOST_BINDERS
+
+    assert set(HOST_BINDERS) == {family.name for family in HOST_FAMILIES}
+
+
+def _with_import(wat: str, line: str) -> str:
+    """*wat* with one more import declaration, after its first."""
+    at = wat.index('  (import "vera" ')
+    return wat[:at] + line + "\n" + wat[at:]
+
+
+_SIN = """\
+public fn main(-> @Float64)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  sin(1.0)
+}
+"""
+
+
+def test_an_import_no_row_declares_is_refused_naming_it() -> None:
+    import dataclasses
+
+    from vera.codegen.api import HostBindingError, execute
+
+    compiled = pipeline.compile(_SIN).result
+    unknown = dataclasses.replace(compiled, wat=_with_import(
+        compiled.wat, '  (import "vera" "no_such_import" (func $vera.no_such_import))'))
+    with pytest.raises(HostBindingError, match=r"vera\.no_such_import, which no row"):
+        execute(unknown)
+    assert execute(compiled).value == pytest.approx(0.8414709848078965)
+
+
+def test_an_import_no_binder_defines_is_refused_naming_its_row(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    from vera.codegen import api
+
+    binders = dict(api.HOST_BINDERS)
+    binders["math"] = lambda linker, names, env: None
+    monkeypatch.setattr(api, "HOST_BINDERS", binders)
+    with pytest.raises(api.HostBindingError, match=r"binds no vera\.sin, an import of the"
+                       r" registry's math row sin, which serves sin"):
+        api.execute(pipeline.compile(_SIN).result)
+
+
+def _roster() -> list[tuple[str, str, str]]:
+    """The browser runtime's roster: each row's name, family and instance."""
+    text = (ROOT / "vera" / "browser" / "runtime.mjs").read_text(encoding="utf-8")
+    block = text.split("// render_lists:begin host-imports\n")[1].split(
+        "// render_lists:end host-imports\n")[0]
+    return re.findall(r'^  \["([^"]+)", "([^"]+)", "([^"]*)"\],$', block, re.MULTILINE)
+
+
+def _roster_row(name: str, rows: dict[str, tuple[str, str]]) -> str | None:
+    """The roster row a declared import is an instance of, as the runtime's
+    `hostImportRow` reads it."""
+    base = name.split("$")[0]
+    if base in rows:
+        return base
+    return next((row for row, (_family, instance) in rows.items()
+                 if instance == CELL and name.startswith(row + "_")), None)
+
+
+def test_the_roster_is_the_registrys() -> None:
+    """The browser runtime's roster lists every row, in the registry's
+    order, with its family and instance."""
+    assert _roster() == [(row.name, row.family, row.instance) for row in HOST_IMPORTS]
 
 
 @pytest.mark.parametrize("spec", _HOSTED, ids=_ids(_HOSTED))
-def test_browser_runtime_names_the_import(spec: BuiltinSpec) -> None:
-    runtime = (ROOT / "vera" / "browser" / "runtime.mjs").read_text(encoding="utf-8")
-    rows = [row for row in HOST_IMPORTS if row.serves == spec.name]
-    assert rows
-    for row in rows:
-        assert _js_binds(row.name, runtime), row.name
+def test_browser_runtime_lists_the_import(spec: BuiltinSpec) -> None:
+    rows = {name: (family, instance) for name, family, instance in _roster()}
+    served = [row for row in HOST_IMPORTS if row.serves == spec.name]
+    assert served
+    for row in served:
+        assert rows[row.name][0] == spec.lowering.family, row.name
+
+
+_CORPUS = sorted(
+    [*(ROOT / "examples").glob("*.vera"), *(ROOT / "tests" / "conformance").glob("*.vera")])
+
+
+@pytest.mark.parametrize("path", _CORPUS, ids=[p.name for p in _CORPUS])
+def test_a_corpus_modules_imports_are_roster_rows(path: Path) -> None:
+    """Every `vera` import a corpus program's module declares is a row the
+    browser runtime's roster lists, and the Python host binds it."""
+    compiled = pipeline.compile(path.read_text(encoding="utf-8"), file=str(path),
+                                root=path.parent)
+    if compiled._result is None or not compiled.result.ok:
+        pytest.skip("the program does not compile (a negative fixture)")
+    declared = _declared(compiled.result.wat)
+    rows = {name: (family, instance) for name, family, instance in _roster()}
+    for name in declared:
+        assert _roster_row(name, rows) is not None, name
+    assert set(_bound(declared, compiled.result.state_types)) == set(declared)
+
+
+def test_the_browser_refuses_an_import_no_row_declares(tmp_path: Path) -> None:
+    import shutil
+    import subprocess
+
+    import wasmtime
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is not on PATH")
+    compiled = pipeline.compile(_SIN).result
+    wasm = tmp_path / "unknown.wasm"
+    wasm.write_bytes(wasmtime.wat2wasm(_with_import(
+        compiled.wat, '  (import "vera" "no_such_import" (func $vera.no_such_import))')))
+    proc = subprocess.run(
+        [node, str(ROOT / "vera" / "browser" / "harness.mjs"), str(wasm)],
+        capture_output=True, text=True, encoding="utf-8", timeout=60, check=False)
+    # The harness reports a module it cannot initialise on stderr.
+    assert proc.returncode != 0 and proc.stdout == "", proc.stdout
+    assert "vera.no_such_import, which no row of the built-in registry" in proc.stderr
+
+
+# ---------------------------------------------------------------------
+# WASI: each row's worlds decide what the component refuses
+# ---------------------------------------------------------------------
+
+
+class _Module:
+    """What the WASI gates read of a compiled module."""
+
+    def __init__(self, names: list[str]) -> None:
+        self.wat = "\n".join(import_line(n) for n in names) + "\n"
+        self.state_types: list[Any] = []
+
+
+#: One row of each WASI disposition, by its worlds, at an instance the
+#: server world implements where it is a map row.
+_DISPOSITIONS = [
+    pytest.param("print", True, True, id="both_worlds"),
+    pytest.param("read_line", True, False, id="cli_only"),
+    pytest.param("map_insert$ks_vs", False, True, id="server_only"),
+    pytest.param("sin", False, False, id="neither"),
+]
+
+
+@pytest.mark.parametrize(("name", "cli", "server"), _DISPOSITIONS)
+def test_wasi_follows_the_rows_worlds(name: str, cli: bool, server: bool) -> None:
+    from vera.codegen import wasi
+
+    row = host_import(name)
+    assert row is not None
+    assert (registry.WASI_CLI in row.wasi, registry.WASI_SERVER in row.wasi) == (cli, server)
+    module: Any = _Module([name])
+    if cli:
+        wasi._gate_families(module)
+    else:
+        with pytest.raises(ValueError, match=rf"{row.family} \({re.escape(name)}\)"):
+            wasi._gate_families(module)
+    if server:
+        wasi._gate_families_server(module)
+        assert wasi._parse_server_imports(module.wat)
+    elif row.family in wasi._SERVER_REFUSED:
+        with pytest.raises(ValueError, match=rf"{row.family} \({re.escape(name)}\)"):
+            wasi._gate_families_server(module)
+    else:
+        with pytest.raises(ValueError, match=re.escape(wasi._SERVER_REJECTED_OPS[name])):
+            wasi._parse_server_imports(module.wat)
+
+
+def test_the_wasi_tables_are_the_rows_worlds() -> None:
+    """The cli world's adapter ops are its rows, with their types; the server
+    world keeps the rows both worlds implement and names a reason for each
+    cli-only row it refuses; its map ops are the map rows' instances."""
+    from vera.codegen import wasi
+
+    worlds = {row.name: set(row.wasi) for row in HOST_IMPORTS}
+    assert set(wasi._OPS) == {n for n, w in worlds.items() if registry.WASI_CLI in w}
+    for name, op in wasi._OPS.items():
+        params, results = _line_types(import_line(name))
+        assert (op.params, op.results) == (" ".join(params), " ".join(results)), name
+    both = {registry.WASI_CLI, registry.WASI_SERVER}
+    assert wasi._SERVER_IO_OPS == {n for n, w in worlds.items() if w == both}
+    assert set(wasi._SERVER_REJECTED_OPS) == {
+        n for n, w in worlds.items() if w == {registry.WASI_CLI}}
+    for name, op in wasi._MAP_OPS.items():
+        row = host_import(name)
+        assert row is not None and registry.WASI_SERVER in row.wasi, name
+        params, results = _line_types(import_line(name))
+        assert (op.params, op.results) == (" ".join(params), " ".join(results)), name
+    assert wasi._CLI_REFUSED == registry.wasi_refused(registry.WASI_CLI)
+    assert wasi._SERVER_REFUSED == registry.wasi_refused(registry.WASI_SERVER)
+
+
+def test_the_wasi_refusal_names_the_modules_imports() -> None:
+    """The refusal lists a family's imports as the module declares them,
+    families in the registry's order (a map call's instance, not the
+    pre-scan's bare `map_insert`)."""
+    from vera.codegen.wasi import emit_wasi_component
+
+    compiled = pipeline.compile("""\
+public fn main(-> @Float64)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Map<String, Int> = map_insert(map_new(), "k", 1);
+  sin(int_to_float(map_size(@Map<String, Int>.0)))
+}
+""").result
+    with pytest.raises(ValueError) as refused:
+        emit_wasi_component(compiled)
+    assert ("following host families: map (map_insert$ks_vi, map_new, map_size);"
+            " math (sin)") in str(refused.value)
+
+
+# ---------------------------------------------------------------------
+# The other readers PR B moved onto the registry
+# ---------------------------------------------------------------------
+
+
+def test_compile_result_carries_no_family_set() -> None:
+    import dataclasses
+
+    from vera.codegen.api import CompileResult
+
+    assert [f.name for f in dataclasses.fields(CompileResult)
+            if f.name.endswith("_ops_used")] == []
+
+
+def test_the_return_tables_are_the_records() -> None:
+    """`vera/monomorphize.py`'s two return tables are read from the records:
+    no literal table is written, and `string_length`'s historical `Int` is
+    the one name that is not its record's."""
+    from vera import monomorphize
+
+    source = (ROOT / "vera" / "monomorphize.py").read_text(encoding="utf-8")
+    for node in pyast.walk(pyast.parse(source)):
+        if isinstance(node, (pyast.Assign, pyast.AnnAssign)):
+            targets = node.targets if isinstance(node, pyast.Assign) else [node.target]
+            names = {pyast.unparse(target) for target in targets}
+            if names & {"_BUILTIN_VERA_RETURN_TYPES", "_BUILTIN_PARAMETERIZED_RETURNS"}:
+                assert not isinstance(node.value, pyast.Dict), names
+    assert monomorphize._HISTORICAL_RETURN_NAMES == {"string_length": "Int"}
+    assert BUILTINS["string_length"].signature.ret.name == "Nat"
+
+
+def test_the_rendered_blocks_are_the_registrys() -> None:
+    """The browser runtime's roster and spec §9's signature tables are what
+    `scripts/render_lists.py` renders from the registry."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("render_lists", ROOT / "scripts" / "render_lists.py")
+    assert spec is not None and spec.loader is not None
+    render_lists = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(render_lists)
+    blocks, errors = render_lists.plan(ROOT)
+    assert errors == []
+    ours = [b for b in blocks if b.name == "host-imports" or b.name.startswith("signatures-")]
+    assert len(ours) == 1 + len(render_lists.SIGNATURE_BLOCKS)
+    assert [b.name for b in ours if b.current != b.new] == []
 
 
 def test_the_python_hosts_tags_are_the_registrys() -> None:
@@ -811,28 +1090,23 @@ def test_the_declarations_render_from_the_registry(
     assert line.endswith("(func $vera.md_render (param i32) (result i32) (result i32)))")
 
 
-def test_the_family_sets_are_the_registrys() -> None:
-    """compilability.py's host-import family sets are derived, not written."""
+def test_the_prescan_reads_the_registrys_host_builtins() -> None:
+    """The pre-scan registers a call to a host-imported built-in by one
+    membership test, against the registry's `Host` records; no family set
+    is written beside it, and code generation keeps one set of the host
+    imports in use where it kept one per family (#735)."""
     from vera.codegen.compilability import CompilabilityMixin
 
     source = (ROOT / "vera" / "codegen" / "compilability.py").read_text(encoding="utf-8")
-    tree = pyast.parse(source)
-    family_sets = {
-        node.targets[0].id: node.value
-        for node in pyast.walk(tree)
-        if isinstance(node, pyast.Assign) and len(node.targets) == 1
-        and isinstance(node.targets[0], pyast.Name)
-        and re.fullmatch(r"_[A-Z]+_BUILTINS", node.targets[0].id)
-    }
-    assert family_sets, "no family set in compilability.py"
-    for attr, value in family_sets.items():
-        derived = (isinstance(value, pyast.Call)
-                   and pyast.unparse(value.func).endswith("host_family_builtins"))
-        assert derived, f"{attr} is written by hand"
-        family = attr[1:-len("_BUILTINS")].lower()
-        assert getattr(CompilabilityMixin, attr) == registry.host_family_builtins(family)
-    hosted = {spec.lowering.family for spec in _HOSTED}
-    assert {a[1:-len("_BUILTINS")].lower() for a in family_sets} == hosted
+    assert not re.findall(r"^\s*_[A-Z]+_BUILTINS\s*=", source.replace("_HOST_BUILTINS", ""),
+                          re.MULTILINE)
+    assert CompilabilityMixin._HOST_BUILTINS == {spec.name for spec in _HOSTED}
+    generator = pipeline.compile(probe_source(BUILTINS["md_parse"])).generator
+    assert generator is not None
+    per_family = [a for a in vars(generator)
+                  if re.fullmatch(r"_[a-z]+_(ops_used|imports)", a)]
+    assert per_family == []
+    assert "md_parse" in generator._host_imports_used
 
 
 def test_builtins_json_reads_the_registry(monkeypatch: pytest.MonkeyPatch) -> None:

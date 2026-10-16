@@ -1422,7 +1422,7 @@ class TestRandomEffect:
               sanity).
         Also asserts the WAT imports `$vera.random_int` and does
         NOT import `$vera.random_float` or `$vera.random_bool` —
-        confirms ``_random_ops_used`` gating is working.
+        confirms ``_host_imports_used`` gating is working.
         """
         import random
         random.seed(0)

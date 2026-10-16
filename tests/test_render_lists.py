@@ -197,7 +197,38 @@ _OTHER_BLOCK = (
     f"| Ten | {_LINK.format(n=10)} | a note on ten |\n"
 )
 
-_ALL_FILES = {**_EFFECT_FILES, **_DOCS}
+
+def _signature_tables() -> str:
+    """Each signature block, one stale row naming an entry every registry
+    the tests render from has: `abs`, or an effect's operation."""
+    first = {"IO": "`print`", "State": "`get`", "Http": "`get`",
+             "Inference": "`Inference.complete`"}
+    parts = []
+    for block, effect in RL.SIGNATURE_BLOCKS.items():
+        head = "Operation" if effect else "Function"
+        name = first[effect] if effect else "`abs`"
+        parts.append(
+            f"<!-- render_lists:begin {block} -->\n"
+            f"| {head} | Signature | Description |\n"
+            "|---|---|---|\n"
+            f"| {name} | `stale` | Its own words, `a \\| b`. |\n"
+            f"<!-- render_lists:end {block} -->\n\n")
+    return "# Chapter nine\n\n" + "".join(parts)
+
+
+#: The roster and the signature tables, each block stale.
+_REGISTRY_FILES = {
+    RL.ROSTER: (
+        "// The runtime.\n"
+        "// render_lists:begin host-imports\n"
+        "// stale\n"
+        "// render_lists:end host-imports\n"
+        "export function f() {}\n"
+    ),
+    RL.SPEC: _signature_tables(),
+}
+
+_ALL_FILES = {**_EFFECT_FILES, **_DOCS, **_REGISTRY_FILES}
 
 
 def _write(path: Path, text: str) -> None:
@@ -489,6 +520,9 @@ class TestEffects:
             '    return {"items": [{"name": n, "kind": "effect"} for n in names]\n'
             '            + [{"name": "Eq", "kind": "ability"}]}\n',
         )
+        _write(root / "vera" / "builtins.py", _PLANTED_BUILTINS)
+        _write(root / "vera" / "types.py", _PLANTED_TYPES)
+        _write(root / "vera" / "environment.py", _PLANTED_ENVIRONMENT)
         env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
         env["PYTHONIOENCODING"] = "utf-8"
 
@@ -506,8 +540,58 @@ class TestEffects:
         assert written.returncode == 0, written.stdout + written.stderr
         vim = (root / VIM).read_text(encoding="utf-8")
         assert "Gamma" in vim and "Eq" not in vim
+        roster = (root / RL.ROSTER).read_text(encoding="utf-8")
+        assert '["gamma_op", "gamma", ""],' in roster
+        spec = (root / RL.SPEC).read_text(encoding="utf-8")
+        assert "| `abs` | `Gamma -> Gamma` |" in spec
         fresh = run("--check")
         assert fresh.returncode == 0, fresh.stdout + fresh.stderr
+
+
+#: A registry a planted `vera` package holds: one host import, one
+#: built-in and each signature table's effect with one operation.
+_PLANTED_BUILTINS = """\
+class _Row:
+    def __init__(self, name, family, instance=""):
+        self.name, self.family, self.instance = name, family, instance
+
+
+class _Signature:
+    params = ("Gamma",)
+    ret = "Gamma"
+    forall = None
+
+
+class _Spec:
+    signature = _Signature()
+
+
+HOST_IMPORTS = [_Row("gamma_op", "gamma")]
+BUILTINS = {"abs": _Spec()}
+"""
+_PLANTED_TYPES = """\
+class FunctionType:
+    pass
+
+
+def pretty_type(ty):
+    return str(ty)
+"""
+_PLANTED_ENVIRONMENT = """\
+class _Op:
+    param_types = ("Gamma",)
+    return_type = "Gamma"
+
+
+class _Effect:
+    def __init__(self, op):
+        self.operations = {op: _Op()}
+
+
+class TypeEnv:
+    effects = {"IO": _Effect("print"), "State": _Effect("get"),
+               "Http": _Effect("get"), "Inference": _Effect("complete")}
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -644,7 +728,7 @@ class TestCheckAndWrite:
     def test_check_is_red_on_a_stale_tree_and_green_after_write(self, tmp_path: Path) -> None:
         root = _tree(tmp_path)
         stale = RL.stale_blocks(root, effects=EFFECTS)
-        assert len(stale) == len(_ALL_FILES), stale
+        assert len(stale) == len(RL.plan(root, effects=EFFECTS)[0]), stale
         assert any(VSCODE in s for s in stale) and any("sub/OTHER.md" in s for s in stale)
         files, errors = RL.write(root, effects=EFFECTS)
         assert errors == [] and sorted(files) == sorted(_ALL_FILES)
@@ -675,14 +759,18 @@ class TestCheckAndWrite:
         """Every line outside a block survives a write byte for byte."""
         root = _tree(tmp_path)
         blocks, errors = RL.plan(root, effects=EFFECTS)
-        assert errors == [] and len(blocks) == len(_ALL_FILES)
+        assert errors == [] and {b.path for b in blocks} == set(_ALL_FILES)
         RL.write(root, effects=EFFECTS)
-        for block in blocks:
-            original = _ALL_FILES[block.path]
-            start, end = RL.read_blocks(original, block.path)[block.name]
-            assert original[start:end] == block.current
-            text = (root / block.path).read_text(encoding="utf-8")
-            assert text == original[:start] + block.new + original[end:]
+        for rel, original in _ALL_FILES.items():
+            spans = RL.read_blocks(original, rel)
+            assert isinstance(spans, dict), spans
+            expected = original
+            here = sorted((b for b in blocks if b.path == rel), key=lambda b: -spans[b.name][0])
+            for block in here:
+                start, end = spans[block.name]
+                assert original[start:end] == block.current
+                expected = expected[:start] + block.new + expected[end:]
+            assert (root / rel).read_text(encoding="utf-8") == expected
 
     def test_a_refused_block_writes_nothing(self, tmp_path: Path) -> None:
         """One error anywhere and no file is written, so a half-rendered
@@ -699,4 +787,65 @@ class TestCheckAndWrite:
         against the live registry."""
         blocks, errors = RL.plan(ROOT)
         assert errors == []
-        assert len({(b.path, b.name) for b in blocks}) == len(blocks) == 12
+        data = RL.load_limitations(ROOT)
+        assert not isinstance(data, list), data
+        expected = (len(RL.EFFECT_TARGETS) + len(data.tables) + 1
+                    + len(RL.SIGNATURE_BLOCKS))
+        assert len({(b.path, b.name) for b in blocks}) == len(blocks) == expected
+
+
+# ---------------------------------------------------------------------------
+# The host-import roster and the signature tables
+# ---------------------------------------------------------------------------
+
+
+class TestRegistryBlocks:
+    def test_a_js_block_uses_line_comments(self) -> None:
+        text = "a\n// render_lists:begin roster\nb\n// render_lists:end roster\nc\n"
+        spans = RL.read_blocks(text, "x.mjs")
+        assert isinstance(spans, dict)
+        start, end = spans["roster"]
+        assert text[start:end] == "b\n"
+
+    def test_the_roster_renders_each_row(self, tmp_path: Path) -> None:
+        root = _tree(tmp_path)
+        rows = [("print", "io", ""), ("map_get", "map", "kv"), ("state_get", "state", "cell")]
+        blocks, errors = RL.plan(root, host_rows=rows)
+        assert errors == []
+        roster = _rendered(blocks)[(RL.ROSTER, "host-imports")]
+        assert re.findall(r'^  \[(.*)\],$', roster, re.MULTILINE) == [
+            '"print", "io", ""', '"map_get", "map", "kv"', '"state_get", "state", "cell"']
+
+    def test_one_more_row_changes_only_the_roster(self, tmp_path: Path) -> None:
+        root = _tree(tmp_path)
+        rows = [("print", "io", "")]
+        before, _ = RL.plan(root, host_rows=rows)
+        after, _ = RL.plan(root, host_rows=[*rows, ("gamma", "gamma", "")])
+        moved = [b.name for b, c in zip(before, after) if b.new != c.new]
+        assert moved == ["host-imports"]
+
+    def test_a_row_gets_its_signature_and_keeps_its_words(self, tmp_path: Path) -> None:
+        root = _tree(tmp_path)
+        known = {None: {"abs": "Int -> Nat"}, "IO": {"print": "String -> Unit"},
+                 "State": {"get": "Unit -> T"}, "Http": {"get": "String -> R"},
+                 "Inference": {"complete": "String -> R"}}
+        blocks, errors = RL.plan(root, known_signatures=known)
+        assert errors == []
+        rendered = _rendered(blocks)
+        assert ("| `abs` | `Int -> Nat` | Its own words, `a \\| b`. |"
+                in rendered[(RL.SPEC, "signatures-math")])
+        assert ("| `Inference.complete` | `String -> R` |"
+                in rendered[(RL.SPEC, "signatures-inference")])
+
+    def test_a_row_naming_no_entry_is_refused(self, tmp_path: Path) -> None:
+        root = _tree(tmp_path)
+        known: dict[str | None, dict[str, str]] = {
+            None: {}, "IO": {"print": "x"}, "State": {"get": "x"},
+            "Http": {"get": "x"}, "Inference": {"complete": "x"}}
+        _, errors = RL.plan(root, known_signatures=known)
+        assert any("lists `abs`, which is no built-in" in e for e in errors), errors
+
+    def test_the_signature_notation(self) -> None:
+        assert RL.signature_text(["Map<K, V>", "K"], "Bool", ["K", "V"]) == (
+            "forall<K, V> Map<K, V>, K -> Bool")
+        assert RL.signature_text([], "Float64") == "() -> Float64"

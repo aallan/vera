@@ -475,8 +475,8 @@ public fn main(@Unit -> @Bool)
         ``map_*`` ops) still emits the wrap-table infrastructure
         (``host_decref_handle`` import, ``$register_wrapper``, export).
 
-        The ``_decref_used`` / ``_needs_wrap_table`` predicates flip on
-        ``_json_ops_used`` / ``_html_ops_used`` (this was #573 finding
+        The ``_needs_wrap_table`` flag flips on a Json or Html import in
+        ``_host_imports_used``, whose row sets it (this was #573 finding
         5: JSON / HTML modules must not trap at instantiation when the
         host accesses the ``register_wrapper`` export).  Post-#706
         ``write_json``'s JObject branch builds its ``Map<String, Json>``
@@ -503,7 +503,7 @@ public fn main(@Unit -> @Int)
         ), (
             "#573 finding 5 regression: JSON-only program is "
             "missing the host_decref_handle import (gated on "
-            "_json_ops_used so the wrap-table machinery is present)."
+            "the json_parse row's flag so the wrap-table machinery is present)."
         )
         assert "$register_wrapper" in wat, (
             "#573 finding 5 regression: JSON-only program is "
@@ -524,11 +524,11 @@ public fn main(@Unit -> @Int)
         ``write_html``'s HtmlElement attrs branch builds its
         ``Map<String, String>`` as a bucket-as-truth wrapper exactly
         like ``write_json``'s JObject branch — neither registers
-        post-#706, so the infra is emitted (gated on ``_html_ops_used``)
+        post-#706, so the infra is emitted (gated on the Html rows' flag)
         but unused here.  Compiling ``html_parse`` typically also pulls
         in the prelude's ``html_attr`` (which dispatches to
-        ``map_get``), so ``_map_ops_used`` is set anyway in practice —
-        but the ``_html_ops_used`` gating is the load-bearing one if
+        ``map_get``), so a Map import sets the flag anyway in practice —
+        but the Html rows' flag is the load-bearing one if
         that prelude transitivity ever changes.
         """
         src = """
@@ -546,7 +546,7 @@ public fn main(@Unit -> @Int)
             'import "vera" "host_decref_handle"' in wat
         ), (
             "#573 finding 5 regression (HTML): missing "
-            "host_decref_handle import (gated on _html_ops_used so "
+            "host_decref_handle import (gated on the Html rows' flag so "
             "the wrap-table machinery is present)."
         )
         assert "$register_wrapper" in wat, (

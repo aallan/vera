@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from vera import ast
-from vera.builtins import host_family_builtins
+from vera.builtins import BUILTINS, Host
 from vera.lowering import (
     contract_exprs,
     effect_row_entry_refusal,
@@ -434,24 +434,18 @@ class CompilabilityMixin:
             self._exn_types.append((type_name, wasm_tag_t))
         return None
 
-    # The host-import families' built-ins, the registry's (`vera.builtins`,
-    # #735): a call to one registers its import below, by name.
-    _MD_BUILTINS = host_family_builtins("md")
-    _REGEX_BUILTINS = host_family_builtins("regex")
-    _MAP_BUILTINS = host_family_builtins("map")
-    _SET_BUILTINS = host_family_builtins("set")
-    _DECIMAL_BUILTINS = host_family_builtins("decimal")
-    _JSON_BUILTINS = host_family_builtins("json")
-    _HTML_BUILTINS = host_family_builtins("html")
-    _MATH_BUILTINS = host_family_builtins("math")
+    # The built-ins lowered through a host import, the registry's `Host`
+    # records (`vera.builtins`, #735): a call to one registers its name below,
+    # which declares its row's import, or stands for a per-instance row's use.
+    _HOST_BUILTINS = frozenset(
+        name for name, spec in BUILTINS.items() if isinstance(spec.lowering, Host))
 
     def _scan_io_ops(self, node: ast.Node) -> None:
         """Walk a function body looking for IO, Markdown, and Regex builtins.
 
-        Registers each distinct IO operation name (print, read_line, etc.)
-        into ``_io_ops_used`` for per-operation import emission.  Also
-        registers Markdown host-import builtins into ``_md_ops_used``
-        and regex host-import builtins into ``_regex_ops_used``.
+        Registers the import name of each host effect operation (print,
+        http_get, etc.) and each host-imported built-in it calls into
+        ``_host_imports_used``, which the module's declarations read.
 
         # WALKER_COVERAGE: (#597 — every Expr subclass below has a
         # disposition; check_walker_coverage.py enforces completeness.)
@@ -536,20 +530,20 @@ class CompilabilityMixin:
         """
         if isinstance(node, ast.QualifiedCall):
             if node.qualifier == "IO":
-                self._io_ops_used.add(node.name)
+                self._host_imports_used.add(node.name)
             elif node.qualifier == "Http":
-                self._http_ops_used.add(f"http_{node.name}")
+                self._host_imports_used.add(f"http_{node.name}")
             elif node.qualifier == "Inference":
-                self._inference_ops_used.add(f"inference_{node.name}")
+                self._host_imports_used.add(f"inference_{node.name}")
             elif node.qualifier == "DB":
-                self._db_ops_used.add(f"db_{node.name}")  # #229
+                self._host_imports_used.add(f"db_{node.name}")  # #229
             elif node.qualifier == "Random":
                 # #465 — op names already begin with `random_`
                 # (`random_int`/`random_float`/`random_bool`), which
                 # both reads naturally at the call site and prevents
                 # collision with bare `int`/`float`/`bool` user
                 # effect ops.  Track the name directly.
-                self._random_ops_used.add(node.name)
+                self._host_imports_used.add(node.name)
             for arg in node.args:
                 self._scan_io_ops(arg)
             return
@@ -574,7 +568,7 @@ class CompilabilityMixin:
             # async_await (its argument is still scanned normally).
             fused = fused_async_target(node)
             if fused is not None:
-                self._async_ops_used.add(fused)
+                self._host_imports_used.add(fused)
                 inner = node.args[0]
                 assert isinstance(inner, ast.QualifiedCall)  # noqa: S101
                 for arg in inner.args:
@@ -598,23 +592,9 @@ class CompilabilityMixin:
                     self._type_alias_params,
                 )
             ):
-                self._async_ops_used.add("async_await")
-            if node.name in self._MD_BUILTINS:
-                self._md_ops_used.add(node.name)
-            if node.name in self._REGEX_BUILTINS:
-                self._regex_ops_used.add(node.name)
-            if node.name in self._MAP_BUILTINS:
-                self._map_ops_used.add(node.name)
-            if node.name in self._SET_BUILTINS:
-                self._set_ops_used.add(node.name)
-            if node.name in self._DECIMAL_BUILTINS:
-                self._decimal_ops_used.add(node.name)
-            if node.name in self._JSON_BUILTINS:
-                self._json_ops_used.add(node.name)
-            if node.name in self._HTML_BUILTINS:
-                self._html_ops_used.add(node.name)
-            if node.name in self._MATH_BUILTINS:
-                self._math_ops_used.add(node.name)
+                self._host_imports_used.add("async_await")
+            if node.name in self._HOST_BUILTINS:
+                self._host_imports_used.add(node.name)
             for arg in node.args:
                 self._scan_io_ops(arg)
         elif isinstance(node, ast.ConstructorCall):

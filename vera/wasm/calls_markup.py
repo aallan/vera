@@ -35,7 +35,7 @@ class CallsMarkupMixin:
         if arg_instrs is None:
             return None
         self.needs_alloc = True
-        self._json_ops_used.add("json_parse")
+        self._host_imports_used.add("json_parse")
         ins: list[str] = []
         ins.extend(arg_instrs)
         ins.append("call $vera.json_parse")
@@ -52,7 +52,7 @@ class CallsMarkupMixin:
         if arg_instrs is None:
             return None
         self.needs_alloc = True
-        self._json_ops_used.add("json_stringify")
+        self._host_imports_used.add("json_stringify")
         ins: list[str] = []
         ins.extend(arg_instrs)
         ins.append("call $vera.json_stringify")
@@ -71,7 +71,7 @@ class CallsMarkupMixin:
         if arg_instrs is None:
             return None
         self.needs_alloc = True
-        self._html_ops_used.add("html_parse")
+        self._host_imports_used.add("html_parse")
         ins: list[str] = []
         ins.extend(arg_instrs)
         ins.append("call $vera.html_parse")
@@ -88,7 +88,7 @@ class CallsMarkupMixin:
         if arg_instrs is None:
             return None
         self.needs_alloc = True
-        self._html_ops_used.add("html_to_string")
+        self._host_imports_used.add("html_to_string")
         ins: list[str] = []
         ins.extend(arg_instrs)
         ins.append("call $vera.html_to_string")
@@ -106,7 +106,7 @@ class CallsMarkupMixin:
         if node_instrs is None or sel_instrs is None:
             return None
         self.needs_alloc = True
-        self._html_ops_used.add("html_query")
+        self._host_imports_used.add("html_query")
         ins: list[str] = []
         ins.extend(node_instrs)
         ins.extend(sel_instrs)
@@ -124,7 +124,7 @@ class CallsMarkupMixin:
         if arg_instrs is None:
             return None
         self.needs_alloc = True
-        self._html_ops_used.add("html_text")
+        self._host_imports_used.add("html_text")
         ins: list[str] = []
         ins.extend(arg_instrs)
         ins.append("call $vera.html_text")
@@ -336,7 +336,7 @@ class CallsMarkupMixin:
             if arg_instrs is None:
                 return None
             instructions.extend(arg_instrs)
-        self._async_ops_used.add(target)
+        self._host_imports_used.add(target)
         self.needs_alloc = True
         instructions.append(f"call $vera.{target}")
         # Wrap the returned raw handle exactly like a Decimal handle
@@ -383,7 +383,7 @@ class CallsMarkupMixin:
         arg_instrs = self.translate_expr(arg, env)
         if arg_instrs is None:
             return None
-        self._async_ops_used.add("async_await")
+        self._host_imports_used.add("async_await")
         self.needs_alloc = True
         value_tmp = self.alloc_local("i32")
         return [

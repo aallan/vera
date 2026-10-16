@@ -689,13 +689,6 @@ def _intrinsics() -> dict[str, Intrinsic]:
 INTRINSICS: Mapping[str, Intrinsic] = _intrinsics()
 
 
-def host_family_builtins(family: str) -> frozenset[str]:
-    """The built-in functions lowered through host imports of *family*."""
-    return frozenset(
-        spec.name for spec in BUILTINS.values()
-        if isinstance(spec.lowering, Host) and spec.lowering.family == family)
-
-
 def trap_rows(name: str) -> list[TrapEmitter]:
     """The ``TRAP_EMITTERS`` rows of intrinsic *name*'s emitter: the checks
     its translation can trap at, each with its kind."""
@@ -761,7 +754,16 @@ class HostImport:
     needs_alloc: bool = False
     needs_memory: bool = False
     needs_wrap_table: bool = False
+    #: The WASI worlds whose component implements the import
+    #: (``vera/codegen/wasi.py``): ``WASI_CLI``, ``WASI_SERVER``, both, or
+    #: neither, and a module that declares it for another world is refused.
+    wasi: tuple[str, ...] = ()
 
+
+#: The two worlds of ``--target wasi-p2``: the command and the HTTP server.
+WASI_CLI = "cli"
+WASI_SERVER = "server"
+_BOTH = (WASI_CLI, WASI_SERVER)
 
 #: The families, in the order a module declares their imports.
 HOST_FAMILIES: tuple[HostFamily, ...] = (
@@ -787,9 +789,12 @@ HOST_FAMILIES: tuple[HostFamily, ...] = (
 
 
 def _io(name: str, params: tuple[str, ...], results: tuple[str, ...],
-        *, alloc: bool = False) -> HostImport:
+        *, alloc: bool = False, server: bool = False) -> HostImport:
+    """An IO operation: the cli world's adapter implements every one, and
+    the server world's the four a request handler can use."""
     return HostImport(name, "io", params, results, serves=f"IO.{name}",
-                      needs_alloc=alloc)
+                      needs_alloc=alloc,
+                      wasi=_BOTH if server else (WASI_CLI,))
 
 
 def _md(name: str, params: tuple[str, ...], results: tuple[str, ...]) -> HostImport:
@@ -802,11 +807,13 @@ def _regex(name: str, params: tuple[str, ...]) -> HostImport:
 
 
 def _handle(family: str, name: str, params: tuple[str, ...],
-            results: tuple[str, ...], instance: str = "") -> HostImport:
+            results: tuple[str, ...], instance: str = "",
+            *, wasi: tuple[str, ...] = ()) -> HostImport:
     """A Map, Set or Decimal import: its value lives on the GC heap behind
     a wrapper the wrap table reclaims (#573)."""
     return HostImport(name, family, params, results, instance, serves=name,
-                      needs_alloc=True, needs_memory=True, needs_wrap_table=True)
+                      needs_alloc=True, needs_memory=True, needs_wrap_table=True,
+                      wasi=wasi)
 
 
 def _heap(family: str, name: str, params: tuple[str, ...],
@@ -818,8 +825,10 @@ def _heap(family: str, name: str, params: tuple[str, ...],
 
 
 def _scalar(family: str, name: str, params: tuple[str, ...],
-            results: tuple[str, ...], serves: str = "") -> HostImport:
-    return HostImport(name, family, params, results, serves=serves or name)
+            results: tuple[str, ...], serves: str = "",
+            *, wasi: tuple[str, ...] = ()) -> HostImport:
+    return HostImport(name, family, params, results, serves=serves or name,
+                      wasi=wasi)
 
 
 _I32_PAIR = ("i32", "i32")
@@ -830,13 +839,13 @@ HOST_IMPORTS: tuple[HostImport, ...] = (
     _io("args", (), _I32_PAIR, alloc=True),
     _io("exit", ("i64",), ()),
     _io("get_env", _I32_PAIR, ("i32",), alloc=True),
-    _io("print", _I32_PAIR, ()),
+    _io("print", _I32_PAIR, (), server=True),
     _io("read_char", (), ("i32",), alloc=True),
     _io("read_file", _I32_PAIR, ("i32",), alloc=True),
     _io("read_line", (), _I32_PAIR, alloc=True),
-    _io("sleep", ("i64",), ()),
-    _io("stderr", _I32_PAIR, ()),
-    _io("time", (), ("i64",)),
+    _io("sleep", ("i64",), (), server=True),
+    _io("stderr", _I32_PAIR, (), server=True),
+    _io("time", (), ("i64",), server=True),
     _io("write_file", ("i32", "i32", "i32", "i32"), ("i32",), alloc=True),
     # --- Markdown (§9.7.3) --------------------------------------------------
     _md("md_extract_code_blocks", ("i32", "i32", "i32"), _I32_PAIR),
@@ -850,15 +859,15 @@ HOST_IMPORTS: tuple[HostImport, ...] = (
     _regex("regex_match", ("i32", "i32", "i32", "i32")),
     _regex("regex_replace", ("i32", "i32", "i32", "i32", "i32", "i32")),
     # --- Map<K, V>: the map is a wrapper pointer (#706) ---------------------
-    _handle("map", "map_contains", ("i32", "K"), ("i32",), "k"),
+    _handle("map", "map_contains", ("i32", "K"), ("i32",), "k", wasi=(WASI_SERVER,)),
     # `map_get` is named by its value too: the host builds the `Option<V>`.
-    _handle("map", "map_get", ("i32", "K"), ("i32",), "kv"),
-    _handle("map", "map_insert", ("i32", "K", "V"), ("i32",), "kv"),
-    _handle("map", "map_keys", ("i32",), _I32_PAIR, "k"),
-    _handle("map", "map_new", (), ("i32",)),
-    _handle("map", "map_remove", ("i32", "K"), ("i32",), "k"),
-    _handle("map", "map_size", ("i32",), ("i64",)),
-    _handle("map", "map_values", ("i32",), _I32_PAIR, "v"),
+    _handle("map", "map_get", ("i32", "K"), ("i32",), "kv", wasi=(WASI_SERVER,)),
+    _handle("map", "map_insert", ("i32", "K", "V"), ("i32",), "kv", wasi=(WASI_SERVER,)),
+    _handle("map", "map_keys", ("i32",), _I32_PAIR, "k", wasi=(WASI_SERVER,)),
+    _handle("map", "map_new", (), ("i32",), wasi=(WASI_SERVER,)),
+    _handle("map", "map_remove", ("i32", "K"), ("i32",), "k", wasi=(WASI_SERVER,)),
+    _handle("map", "map_size", ("i32",), ("i64",), wasi=(WASI_SERVER,)),
+    _handle("map", "map_values", ("i32",), _I32_PAIR, "v", wasi=(WASI_SERVER,)),
     # --- Set<T> -----------------------------------------------------------------
     _handle("set", "set_add", ("i32", "E"), ("i32",), "e"),
     _handle("set", "set_contains", ("i32", "E"), ("i32",), "e"),
@@ -884,8 +893,9 @@ HOST_IMPORTS: tuple[HostImport, ...] = (
     # --- The wrap table's two helpers (#573, #695/#705): declared when
     # any wrapper is, and called by `$gc_collect`'s phase 2c and by the
     # wrap step ---------------------------------------------------------------
-    HostImport("host_decref_handle", "wrap", ("i32", "i32")),
-    HostImport("attach_bucket_to_wrapper", "wrap", ("i32", "i32", "i32")),
+    HostImport("host_decref_handle", "wrap", ("i32", "i32"), wasi=(WASI_SERVER,)),
+    HostImport("attach_bucket_to_wrapper", "wrap", ("i32", "i32", "i32"),
+               wasi=(WASI_SERVER,)),
     # --- Json and Html: the parsers allocate the `Map` of a `JObject` or
     # an `HtmlElement`, so they declare the wrap table too (#573) -----------
     _heap("json", "json_parse", _I32_PAIR, ("i32",), wrap=True),
@@ -909,9 +919,9 @@ HOST_IMPORTS: tuple[HostImport, ...] = (
     _heap("db", "db_query", ("i32", "i32", "i32", "i32"), ("i32",), "DB.query"),
     _heap("db", "db_execute", ("i32", "i32", "i32", "i32"), ("i32",), "DB.execute"),
     # --- Random effect operations (#465): scalars, nothing allocated --------
-    _scalar("random", "random_int", ("i64", "i64"), ("i64",), "Random.random_int"),
-    _scalar("random", "random_float", (), ("f64",), "Random.random_float"),
-    _scalar("random", "random_bool", (), ("i32",), "Random.random_bool"),
+    _scalar("random", "random_int", ("i64", "i64"), ("i64",), "Random.random_int", wasi=_BOTH),
+    _scalar("random", "random_float", (), ("f64",), "Random.random_float", wasi=_BOTH),
+    _scalar("random", "random_bool", (), ("i32",), "Random.random_bool", wasi=_BOTH),
     # --- Math (#467) ---------------------------------------------------------
     _scalar("math", "log", ("f64",), ("f64",)),
     _scalar("math", "log2", ("f64",), ("f64",)),
@@ -924,8 +934,8 @@ HOST_IMPORTS: tuple[HostImport, ...] = (
     _scalar("math", "atan", ("f64",), ("f64",)),
     _scalar("math", "atan2", ("f64", "f64"), ("f64",)),
     # --- The two signals a failing check calls before it traps (#1479) -----
-    HostImport(CONTRACT_SIGNAL, "contract", ("i32", "i32")),
-    HostImport(TRAP_SIGNAL, "trap", line=TRAP_IMPORT_WAT),
+    HostImport(CONTRACT_SIGNAL, "contract", ("i32", "i32"), wasi=_BOTH),
+    HostImport(TRAP_SIGNAL, "trap", line=TRAP_IMPORT_WAT, wasi=_BOTH),
     # --- State<T>: four imports per cell, its family mangled (#914) ---------
     HostImport("state_get", "state", (), ("C",), "cell", serves="State.get"),
     HostImport("state_put", "state", ("C",), (), "cell", serves="State.put"),
@@ -954,6 +964,8 @@ def family_rows(family: str) -> Iterator[HostImport]:
 #: The ``instance`` of a ``State`` row: named by :func:`cell_lines`.
 CELL = "cell"
 
+_CELL_ROWS = tuple(row for row in HOST_IMPORTS if row.instance == CELL)
+
 
 def instance_name(op: str, **tags: str | None) -> str:
     """The import name of *op* at the representations *tags* names.
@@ -973,8 +985,23 @@ def instance_name(op: str, **tags: str | None) -> str:
 
 
 def host_import(name: str) -> HostImport | None:
-    """The row a declared import *name* is an instance of, or None."""
-    return HOST_IMPORT_BY_NAME.get(name.partition("$")[0])
+    """The row a declared import *name* is an instance of, or None: the
+    row's own name, an instance's (``map_insert$ks_vi``), or a ``State``
+    cell's, the row's name and the cell's family (``state_get_Int``)."""
+    row = HOST_IMPORT_BY_NAME.get(name.partition("$")[0])
+    if row is not None:
+        return row
+    return next((r for r in _CELL_ROWS if name.startswith(r.name + "_")), None)
+
+
+def wasi_refused(world: str) -> tuple[str, ...]:
+    """The families a module calls by name whose rows *world*'s component
+    implements none of, in :data:`HOST_FAMILIES`' order: a module that
+    declares one of their imports is refused for that world."""
+    return tuple(
+        f.name for f in HOST_FAMILIES
+        if f.gate is Gate.NAMES
+        and not any(world in row.wasi for row in family_rows(f.name)))
 
 
 def _func(name: str, params: tuple[str, ...], results: tuple[str, ...],
@@ -1056,6 +1083,9 @@ def _validate() -> None:
         raise ValueError("host imports are not in HOST_FAMILIES' order")
     if len(HOST_IMPORT_BY_NAME) != len(HOST_IMPORTS):  # pragma: no cover
         raise ValueError("a host import is declared twice")
+    for row in HOST_IMPORTS:
+        if not set(row.wasi) <= set(_BOTH):  # pragma: no cover — table typo
+            raise ValueError(f"host import {row.name}: unknown WASI world in {row.wasi}")
     for row in HOST_IMPORTS:
         slots = {t.lower() for t in (*row.params, *row.results) if t.isupper()}
         # A slot may name the import without changing its signature

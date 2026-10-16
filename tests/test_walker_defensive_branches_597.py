@@ -104,20 +104,20 @@ class TestScanIoOpsDefensiveBranches:
         node = ast.IndexExpr(
             collection=_io_print(), index=ast.IntLit(value=0))
         cg._scan_io_ops(node)
-        assert "print" in cg._io_ops_used
+        assert "print" in cg._host_imports_used
 
     def test_indexexpr_index_recursion(self) -> None:
         cg = _make_cg()
         node = ast.IndexExpr(
             collection=_slot("Array"), index=_io_print())
         cg._scan_io_ops(node)
-        assert "print" in cg._io_ops_used
+        assert "print" in cg._host_imports_used
 
     def test_arraylit_elements_recursion(self) -> None:
         cg = _make_cg()
         node = ast.ArrayLit(elements=(_io_print(),))
         cg._scan_io_ops(node)
-        assert "print" in cg._io_ops_used
+        assert "print" in cg._host_imports_used
 
     def test_interpolated_string_parts_recursion(self) -> None:
         cg = _make_cg()
@@ -128,7 +128,7 @@ class TestScanIoOpsDefensiveBranches:
         node = ast.InterpolatedString(
             parts=("prefix: ", _io_print(), " suffix"))
         cg._scan_io_ops(node)
-        assert "print" in cg._io_ops_used
+        assert "print" in cg._host_imports_used
 
     def test_anonfn_body_recursion(self) -> None:
         cg = _make_cg()
@@ -145,7 +145,7 @@ class TestScanIoOpsDefensiveBranches:
             body=body,
         )
         cg._scan_io_ops(node)
-        assert "print" in cg._io_ops_used
+        assert "print" in cg._host_imports_used
 
 
 # =====================================================================
