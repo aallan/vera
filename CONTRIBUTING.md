@@ -43,8 +43,9 @@ For contributions to the reference compiler:
 
 ### Built-in functions and types
 
-When adding or modifying built-in functions (registered in `vera/environment.py`):
+When adding or modifying built-in functions (one record each in `vera/builtins.py`, which `vera/environment.py` registers):
 
+- **One record, and the hosts.** A built-in is its record: its signature, its `since`, and its lowering, in place or through a host import, whose row in the same file the module declares.  A host-imported one is also implemented in each host, `vera/runtime/<family>.py` and `vera/browser/runtime.mjs`; `tests/test_builtin_registry.py` holds every record to the checker, its emitter and the hosts ([vera/README.md](vera/README.md) § "New built-in function or effect").
 - **Prelude types are automatic.** `Option<T>`, `Result<T, E>`, `Ordering`, and `UrlParts` are provided by the standard prelude in every program — no explicit `data` declaration is required. `Json`, `HtmlNode`, `Request` and `Response` are injected the same way when a program mentions them. User-defined types with the same name shadow the prelude.
 - **Follow the naming convention** (spec §9.1.1): `domain_verb` for most functions (e.g. `string_length`, `array_append`), `source_to_target` for conversions (e.g. `int_to_float`), `domain_is_predicate` for boolean tests (e.g. `float_is_nan`). Only math universals (`abs`, `min`, `max`, etc.) are prefix-less.
 - **Match the spec.** Type signatures should use the types specified in the language specification (e.g. `NAT` where the spec says `Nat`, not `INT`). Reference the relevant spec chapter and section in your PR description.
