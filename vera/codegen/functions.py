@@ -722,7 +722,7 @@ class FunctionCompilationMixin:
         ctx.set_fn_ret_type_exprs(self._fn_ret_type_exprs)
         # #841: Future<Result<String, String>>-returning fn names, for the
         # await lowering's directly-awaited-call check (computed once in
-        # core.py, shared with the _scan_io_ops pre-scan).
+        # core.py).
         ctx.set_future_ret_fns(
             self._future_ret_fns, self._future_ret_module_fns,
         )
@@ -911,20 +911,15 @@ class FunctionCompilationMixin:
         if not self._scan_body_for_state_handlers(decl.body, decl):
             return None
 
-        # Scan body for IO qualified calls to register per-op imports
+        # The pre-scan walks the body, the contract predicates and the
+        # signature's refinement predicates.  It registers no host import:
+        # each emitter registers the imports it calls, on `ctx`, merged
+        # below with the module's (#735).  What it reaches is each closure's
+        # signature, whose guard predicates' derivation reports E617/E618.
         self._scan_io_ops(decl.body)
-        # #823: also scan the contract predicates.  Markdown / regex host
-        # imports are registered ONLY by this scan (they have no per-function
-        # `ctx` set-site, unlike map/set/http/…), and the scan is otherwise
-        # body-only — so an `md_*` / `regex_*` builtin inside a runtime-checked
-        # `requires(...)` / `ensures(...)` would emit an orphaned
-        # `call $vera.<name>` with no import declaration and fail WAT
-        # compilation.  Contracts are pure, so the QualifiedCall (IO / Http /
-        # Inference / Random) branches of the scan never fire here — except
-        # through a handler clause body, which is ordinary code.
-        # `contract_exprs` is the shared enumeration (#1210 round 2): the
-        # `getattr(c, "expr")` shortcut this replaced skipped `decreases`,
-        # whose measure lives in `exprs`.
+        # #823: and the contract predicates.  `contract_exprs` is the shared
+        # enumeration (#1210 round 2): the `getattr(c, "expr")` shortcut this
+        # replaced skipped `decreases`, whose measure lives in `exprs`.
         for _pred in contract_exprs(decl.contracts):
             self._scan_io_ops(_pred)
         # #1210 round 5: and the SIGNATURE's refinement predicates, which are
@@ -1421,20 +1416,7 @@ class FunctionCompilationMixin:
         if ctx.needs_alloc:
             self._needs_alloc = True
             self._needs_memory = True
-        self._map_imports.update(ctx._map_imports)
-        self._map_ops_used.update(ctx._map_ops_used)
-        self._set_imports.update(ctx._set_imports)
-        self._set_ops_used.update(ctx._set_ops_used)
-        self._decimal_imports.update(ctx._decimal_imports)
-        self._decimal_ops_used.update(ctx._decimal_ops_used)
-        self._json_ops_used.update(ctx._json_ops_used)
-        self._html_ops_used.update(ctx._html_ops_used)
-        self._http_ops_used.update(ctx._http_ops_used)
-        self._async_ops_used.update(ctx._async_ops_used)
-        self._inference_ops_used.update(ctx._inference_ops_used)
-        self._db_ops_used.update(ctx._db_ops_used)  # #229
-        self._random_ops_used.update(ctx._random_ops_used)
-        self._math_ops_used.update(ctx._math_ops_used)
+        self._host_imports_used.update(ctx._host_imports_used)
         # #1479: the trap signal and the contract channel, merged HERE —
         # after the precondition, body, lifted-closure and postcondition
         # phases — because a check lowered in any of them raises its flag on

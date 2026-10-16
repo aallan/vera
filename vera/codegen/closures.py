@@ -931,19 +931,11 @@ class ClosureLiftingMixin:
                             f"local.get {ret_local}",
                         ]
 
-        # Propagate host-import tracking from closure ctx to module level
-        self._map_ops_used.update(ctx._map_ops_used)
-        self._map_imports.update(ctx._map_imports)
-        self._set_ops_used.update(ctx._set_ops_used)
-        self._set_imports.update(ctx._set_imports)
-        self._decimal_ops_used.update(ctx._decimal_ops_used)
-        self._decimal_imports.update(ctx._decimal_imports)
-        self._json_ops_used.update(ctx._json_ops_used)
-        self._html_ops_used.update(ctx._html_ops_used)
-        # #841: fused async/await inside a lifted closure body registers
-        # its host imports on the closure ctx (the _scan_io_ops AnonFn
-        # branch also covers these — same belt-and-braces as #808).
-        self._async_ops_used.update(ctx._async_ops_used)
+        # Propagate the host imports the closure's body uses to module level:
+        # every family's, as the per-function merge does (#735).  This is
+        # their one route: each emitter registers the imports it calls, on
+        # the closure's own `ctx`.
+        self._host_imports_used.update(ctx._host_imports_used)
         # #1479: a check inside a lifted closure body raises its signal's
         # flag on the closure ctx; OR it into the module ``self`` so
         # ``_assemble_module`` declares the import (the same propagation the

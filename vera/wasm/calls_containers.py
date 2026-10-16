@@ -212,8 +212,7 @@ class CallsContainersMixin:
 
         The declaration is the registry's row for *op* (`vera.builtins`).
         """
-        self._decimal_imports.add(op)
-        self._decimal_ops_used.add(op)
+        self._host_imports_used.add(op)
         return f"$vera.{op}"
 
     def _emit_wrap_decimal_result(self) -> list[str]:
@@ -516,8 +515,7 @@ class CallsContainersMixin:
         for *op* (`vera.builtins`), which also says which tags name it.
         """
         name = instance_name(op, k=key_tag, v=val_tag)
-        self._map_ops_used.add(name)
-        self._map_imports.add(name)
+        self._host_imports_used.add(name)
         return f"$vera.{name}"
 
     def _infer_map_key_type(self, call: "ast.FnCall") -> str | None:
@@ -550,8 +548,7 @@ class CallsContainersMixin:
         when unreachable — no host store, no Phase 2c destructor.
         """
         wasm_name = "$vera.map_new"
-        self._map_imports.add("map_new")
-        self._map_ops_used.add("map_new")
+        self._host_imports_used.add("map_new")
         self.needs_alloc = True
         # #706: the host returns a wrapper_ptr (empty bucket-as-truth
         # Map) directly; `_root_landed_value` roots it (#1379).
@@ -873,8 +870,7 @@ class CallsContainersMixin:
         host reads the bucket header's count.  The result is i64.
         """
         wasm_name = "$vera.map_size"
-        self._map_imports.add("map_size")
-        self._map_ops_used.add("map_size")
+        self._host_imports_used.add("map_size")
         arg_instrs = self.translate_expr(arg, env)
         if arg_instrs is None:
             return None
@@ -1007,8 +1003,7 @@ class CallsContainersMixin:
         (``set_add$es``); its declaration is the registry's row for *op*.
         """
         name = instance_name(op, e=elem_tag)
-        self._set_ops_used.add(name)
-        self._set_imports.add(name)
+        self._host_imports_used.add(name)
         return f"$vera.{name}"
 
     def _infer_set_elem_type(self, call: "ast.FnCall") -> str | None:
@@ -1056,8 +1051,7 @@ class CallsContainersMixin:
         Mirror of ``_translate_map_new``; see there for design.
         """
         wasm_name = "$vera.set_new"
-        self._set_imports.add("set_new")
-        self._set_ops_used.add("set_new")
+        self._host_imports_used.add("set_new")
         self.needs_alloc = True
         # #706: the host returns a wrapper_ptr (empty bucket-as-truth
         # Set); `_root_landed_value` roots it (#1379).
@@ -1186,8 +1180,7 @@ class CallsContainersMixin:
     ) -> list[str] | None:
         """set_size(s) → i64 (#706: pass wrapper_ptr directly)."""
         wasm_name = "$vera.set_size"
-        self._set_imports.add("set_size")
-        self._set_ops_used.add("set_size")
+        self._host_imports_used.add("set_size")
         arg_instrs = self.translate_expr(arg, env)
         if arg_instrs is None:
             return None
