@@ -861,8 +861,8 @@ class ClosureLiftingMixin:
             # refined-return guard (`_compile_postconditions`, contracts.py):
             # save the result to locals, check the predicate over it, push it
             # back.  The verifier records the refined closure return `tier3`
-            # guarded on the strength of THIS guard (the AnonFn refined arm in
-            # `_walk_for_nat_binding_obligations`); without it,
+            # guarded on the strength of THIS guard (the AnonFn refined arm of
+            # `_walk_for_nat_binding_obligations`, `_nat_closure`); without it,
             # `fn(@Int -> @Pos) { @Int.0 }` returned -5 — or 0, which clears
             # the @Nat base's `>= 0` — out through the refined slot silently.
             # An i32_pair result (String/Array base) saves both halves and
