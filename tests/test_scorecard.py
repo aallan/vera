@@ -241,6 +241,44 @@ class TestHostMirrored:
         with pytest.raises(SC.MeasureError, match="_MAP_OPS"):
             SC.host_mirrored(tmp_path)
 
+    # Four records, two of them lowered through a host import.
+    _REGISTRY = (
+        "BUILTINS = _table(\n"
+        "    _fn('md_parse', (STRING,), X, since='0.0.84',\n"
+        "        lowering=Host('_translate_md_parse', 'md')),\n"
+        "    _fn('log', (FLOAT64,), FLOAT64, since='0.0.116',\n"
+        "        lowering=Host('_translate_math_unary_host', 'math', Binding.NAMED)),\n"
+        "    _fn('abs', (INT,), NAT, since='0.0.70', lowering=Inline('_translate_abs')),\n"
+        "    _fn('json_get', (J, STRING), O, since='0.0.98', lowering=Prelude()),\n"
+        ")\n"
+    )
+
+    def test_the_registry_is_the_source_where_it_exists(self, tmp_path: Path) -> None:
+        """The registry's host-lowered records, not the family sets beside it."""
+        _write(tmp_path / "vera" / "builtins.py", self._REGISTRY)
+        _write(tmp_path / "vera" / "codegen" / "compilability.py", self._COMPILABILITY)
+        _write(tmp_path / "vera" / "codegen" / "wasi.py", self._WASI)
+        assert SC.host_mirrored(tmp_path) == (2, 4)
+
+    def test_a_registry_with_no_host_record_is_an_error_not_a_zero(
+        self, tmp_path: Path,
+    ) -> None:
+        _write(tmp_path / "vera" / "builtins.py",
+               "BUILTINS = _table(_fn('abs', (INT,), NAT, since='0.0.70',"
+               " lowering=Inline('_translate_abs')))\n")
+        _write(tmp_path / "vera" / "codegen" / "wasi.py", self._WASI)
+        with pytest.raises(SC.MeasureError, match="host import"):
+            SC.host_mirrored(tmp_path)
+
+    def test_the_tree_reads_the_registrys_count(self) -> None:
+        """The row read from the source is the registry's own count of the
+        built-ins it lowers through a host import."""
+        from vera.builtins import BUILTINS, Host
+
+        root = Path(__file__).resolve().parent.parent
+        hosted = [s for s in BUILTINS.values() if isinstance(s.lowering, Host)]
+        assert SC.host_mirrored(root)[0] == len(hosted)
+
 
 class TestSyncGates:
     def test_the_audits_mirror_gates_that_still_exist(self, tmp_path: Path) -> None:

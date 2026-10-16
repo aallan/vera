@@ -145,11 +145,13 @@ MEASURES: tuple[Measure, ...] = (
             " the last"),
     Measure("host_mirrored", "Host built-ins hand-mirrored across hosts",
             "53 × 2, plus WASI", TREE,
-            "the built-ins in the host-import family sets of"
-            " `vera/codegen/compilability.py` (`_MD_BUILTINS` and the rest), each"
-            " written by hand in the Python host and in `vera/browser/runtime.mjs`,"
-            " and the map operations `vera/codegen/wasi.py` writes again for the"
-            " WASI server world (`_MAP_OPS`)"),
+            "the built-ins whose record in the built-in registry,"
+            " `vera/builtins.py`, lowers through a host import (`Host`; before the"
+            " registry, the host-import family sets of"
+            " `vera/codegen/compilability.py`), each written by hand in the Python"
+            " host and in `vera/browser/runtime.mjs`, and the map operations"
+            " `vera/codegen/wasi.py` writes again for the WASI server world"
+            " (`_MAP_OPS`)"),
     Measure("sync_gates", "Gate scripts that exist only to sync copies", "8 of 23", TREE,
             "the scripts of the audit's eight still classed as such ("
             + ", ".join(f"`{g}`" for g in MIRROR_GATES)
@@ -402,28 +404,60 @@ def _string_set(name: str, value: ast.expr) -> set[str]:
     )
 
 
+def _hosted_records(registry: Path) -> set[str]:
+    """The built-ins whose record in the registry lowers through a host
+    import: each `_fn("name", ..., lowering=Host(...))` of `vera/builtins.py`."""
+    names: set[str] = set()
+    for node in ast.walk(_parse(registry)):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "_fn" and node.args
+                and isinstance(node.args[0], ast.Constant)):
+            continue
+        lowering = next((k.value for k in node.keywords if k.arg == "lowering"), None)
+        if (isinstance(lowering, ast.Call) and isinstance(lowering.func, ast.Name)
+                and lowering.func.id == "Host"):
+            names.add(node.args[0].value)
+    return names
+
+
 def host_mirrored(root: Path) -> tuple[int, int]:
     """The built-ins a host implements, and the WASI map operations.
 
-    The built-ins are the members of the host-import family sets of
+    The built-ins are those whose record in the built-in registry,
+    `vera/builtins.py`, lowers through a host import (`Host`), each written
+    by hand in the Python host and in `vera/browser/runtime.mjs`; in a tree
+    from before the registry, the members of the host-import family sets of
     `vera/codegen/compilability.py` (`_MD_BUILTINS` and the rest, which the
-    audit's 53 were exactly), each written by hand in the Python host and
-    in `vera/browser/runtime.mjs`; the map operations are the entries of
+    audit's 53 were exactly).  The map operations are the entries of
     `vera/codegen/wasi.py`'s `_MAP_OPS`, which the WASI server world writes
     again.  A module without its table is an error, not a zero: zero is
     the target, and the row must not read as met because its source moved.
     """
-    compilability = root / "vera" / "codegen" / "compilability.py"
-    families = [
-        _string_set(name, value) for name, value in _assignments(_parse(compilability))
-        if _FAMILY.match(name)
-    ]
-    if not families:
-        raise MeasureError(
-            "vera/codegen/compilability.py has no `_*_BUILTINS` host-import family"
-            " set, the source the host-built-ins row reads; scripts/scorecard.py's"
-            " `host_mirrored` needs the source that replaced them"
-        )
+    registry = root / "vera" / "builtins.py"
+    if registry.exists():
+        hosted = _hosted_records(registry)
+        if not hosted:
+            raise MeasureError(
+                "vera/builtins.py has no record lowered through a host import"
+                " (`lowering=Host(...)`), the source the host-built-ins row"
+                " reads; scripts/scorecard.py's `host_mirrored` needs the"
+                " source that replaced them"
+            )
+        families = [hosted]
+    else:
+        compilability = root / "vera" / "codegen" / "compilability.py"
+        families = [
+            _string_set(name, value)
+            for name, value in _assignments(_parse(compilability))
+            if _FAMILY.match(name)
+        ]
+        if not families:
+            raise MeasureError(
+                "vera/codegen/compilability.py has no `_*_BUILTINS` host-import"
+                " family set, the source the host-built-ins row reads;"
+                " scripts/scorecard.py's `host_mirrored` needs the source that"
+                " replaced them"
+            )
     tables = [
         value for name, value in _assignments(_parse(root / "vera" / "codegen" / "wasi.py"))
         if name == "_MAP_OPS"

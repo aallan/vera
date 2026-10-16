@@ -140,9 +140,9 @@ def _op(
     )
 
 
-#: Slot table.  Signatures mirror ``vera/codegen/assembly.py``
-#: (`_IO_IMPORTS` + the Random block + contract_fail/trap) and
-#: are cross-checked against the parsed import lines at emit time.
+#: Slot table.  Signatures mirror the registry's io, random, contract and
+#: trap rows (``vera/builtins.py``) and are cross-checked against the parsed
+#: import lines at emit time.
 _OPS: dict[str, _OpSpec] = {
     "print": _op(
         0, "i32 i32", "",

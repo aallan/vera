@@ -2,22 +2,24 @@
 
 Each builder returns a ``{"schema": ..., "items": [...]}`` dict sourced directly
 from the live compiler registries (``vera.errors.ERROR_CODES``, the built-in
-function / effect / ability tables in ``vera.environment.TypeEnv``), so a
-published count is the registry's own length — never a hand-maintained number
-that can drift from the compiler. See #539 (and the doc-consolidation brief,
-#528) for the motivation: "the compiler becomes the source of truth for its own
-internals."
+registry ``vera.builtins.BUILTINS``, the effect / ability tables in
+``vera.environment.TypeEnv``), so a published count is the registry's own
+length — never a hand-maintained number that can drift from the compiler. See
+#539 (and the doc-consolidation brief, #528) for the motivation: "the compiler
+becomes the source of truth for its own internals."
 
-The ``since`` (version-introduced) field is present on every item, resolved
-against :mod:`vera._since`. It is complete for diagnostic codes (#1157) —
-``ERROR_CODES`` is a closed enumeration, so every code carries a version — and
-best-effort for built-ins, effects, and abilities, where an unattributed name
-reports ``None``.
+The ``since`` (version-introduced) field is present on every item.  A
+built-in's is its record's (#735), which every record carries.  A diagnostic
+code's, an effect's and an ability's is resolved against :mod:`vera._since`:
+complete for diagnostic codes (#1157) — ``ERROR_CODES`` is a closed
+enumeration, so every code carries a version — and best-effort for effects and
+abilities, where an unattributed name reports ``None``.
 """
 
 from __future__ import annotations
 
 from vera._since import SINCE
+from vera.builtins import BUILTINS
 from vera.errors import ERROR_CODES
 
 # Map a diagnostic code's two-character prefix to the compiler phase that emits
@@ -61,17 +63,16 @@ def errors_payload() -> dict[str, object]:
 def builtins_payload() -> dict[str, object]:
     """Enumerate the built-in function registry as ``{schema, items}``.
 
-    Sourced from ``TypeEnv().functions`` so the count is the live registry's
-    length — the hand-maintained "164 built-in functions" claim made canonical.
-    ``module`` is ``"core"`` (the standard prelude) and ``kind`` is ``"function"``
-    for every entry today; both are carried explicitly for forward-compatibility.
+    Sourced from the registry, ``vera.builtins.BUILTINS``, whose records are
+    the functions ``TypeEnv`` registers, so the count is the live registry's
+    length.  ``module`` is ``"core"`` (the standard prelude) and ``kind`` is
+    ``"function"`` for every entry today; both are carried explicitly for
+    forward-compatibility.
     """
-    from vera.environment import TypeEnv
-
-    env = TypeEnv()
     items: list[dict[str, str | None]] = [
-        {"name": name, "module": "core", "kind": "function", "since": SINCE.get(name)}
-        for name in sorted(env.functions)
+        {"name": name, "module": "core", "kind": "function",
+         "since": BUILTINS[name].since}
+        for name in sorted(BUILTINS)
     ]
     return {"schema": "vera-builtins/1", "items": items}
 

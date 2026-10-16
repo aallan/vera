@@ -567,13 +567,9 @@ class ContractsMixin:
                 site.projection or "",
                 key_tag=tag if slot == "key" else None,
                 val_tag=tag if slot == "value" else None,
-                extra_params=["i32"], results=["i32", "i32"],
             )
         else:
-            wasm_name = ctx._register_set_import(
-                site.projection or "", tag,
-                extra_params=["i32"], results=["i32", "i32"],
-            )
+            wasm_name = ctx._register_set_import(site.projection or "", tag)
         ctx.needs_alloc = True  # the projection allocates the array it returns
         seq_ptr = ctx.alloc_local("i32")
         seq_len = ctx.alloc_local("i32")
