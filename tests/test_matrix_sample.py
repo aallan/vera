@@ -683,6 +683,7 @@ MARKED_FILES = (
     "test_nat_i64.py",
     "test_short_circuit_1501.py",
     "test_nested_patterns_1697.py",
+    "test_expr_fold.py",
 )
 UNMARKED_FILES = (
     "test_obligations.py",
